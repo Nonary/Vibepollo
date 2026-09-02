@@ -35,7 +35,10 @@
   </div>
 
   <h2>Arch Linux and CachyOS</h2>
-  <p>Import and locally trust the repository signing key once:</p>
+  <p>Vibepollo's Linux beta is built and tested on CachyOS with KDE Plasma 6 on Wayland. The quickest path is the installer script, which checks the requirements, installs kernel headers and the package, and opens the firewall:</p>
+  <pre><code>curl -fsSLO https://raw.githubusercontent.com/Nonary/Vibepollo/master/scripts/linux_install.sh
+sudo bash linux_install.sh</code></pre>
+  <p>The full guide, including manual steps and troubleshooting, is at <a href="https://github.com/Nonary/Vibepollo/blob/master/docs/linux/install.md">docs/linux/install.md</a>. To add the repository by hand, import and locally trust the repository signing key once:</p>
   <pre><code>curl -fsSLo /tmp/nonary-vibepollo.gpg \
   https://nonary.github.io/Vibepollo/arch/x86_64/nonary-vibepollo.gpg
 curl -fsSLo /tmp/nonary-vibepollo-fingerprint.txt \

@@ -50,164 +50,51 @@ sudo pkg delete Sunshine
 
 ### Linux
 
-**CUDA Compatibility**
+Linux support is in **beta** and ships as a native package for **Arch Linux and CachyOS** (x86_64).
+Vibepollo is developed and tested on **CachyOS with KDE Plasma 6 on Wayland**; other Arch-based
+distributions are supported on a best-effort basis. AppImage, Flatpak, Debian/Ubuntu,
+Fedora/openSUSE, Homebrew, and Docker builds are not produced for this beta.
 
-CUDA is used for NVFBC capture.
-
-> [!NOTE]
-> See [CUDA GPUS](https://developer.nvidia.com/cuda-gpus) to cross-reference Compute Capability to your GPU.
-> The table below applies to packages provided by LizardByte. If you use an official LizardByte package, then you do not
-> need to install CUDA.
-
-<table>
-    <caption>CUDA Compatibility</caption>
-    <tr>
-        <th>CUDA Version</th>
-        <th>Min Driver</th>
-        <th>CUDA Compute Capabilities</th>
-        <th>Package</th>
-    </tr>
-    <tr>
-        <td rowspan="8">13.1.1</td>
-        <td rowspan="8">590.48.01</td>
-        <td rowspan="8">50;52;60;61;62;70;72;75;80;86;87;89;90;100;101;103;120;121</td>
-        <td>sunshine.AppImage</td>
-    </tr>
-    <tr>
-        <td>sunshine-ubuntu-22.04-{arch}.deb</td>
-    </tr>
-    <tr>
-        <td>sunshine-ubuntu-24.04-{arch}.deb</td>
-    </tr>
-    <tr>
-        <td>sunshine-debian-trixie-{arch}.deb</td>
-    </tr>
-    <tr>
-        <td>sunshine_{arch}.flatpak</td>
-    </tr>
-    <tr>
-        <td>Sunshine (copr - Fedora)</td>
-    </tr>
-    <tr>
-        <td>Sunshine (copr - OpenSUSE)</td>
-    </tr>
-    <tr>
-        <td>vibepollo-*.pkg.tar.zst</td>
-    </tr>
-</table>
-
-#### AppImage
-
-> [!CAUTION]
-> Use distro-specific packages instead of the AppImage if they are available.
-> AppImage does not support KMS capture.
-
-> [!NOTE]
-> The AppImage is built on Ubuntu 22.04, which requires `glibc 2.35` or newer and `libstdc++ 3.4.11` or newer.
-
-##### Install
-1. Download [sunshine.AppImage](https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine.AppImage)
-   into your home directory.
-   ```bash
-   cd ~
-   wget https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine.AppImage
-   ```
-2. Open terminal and run the following command.
-   ```bash
-   ./sunshine.AppImage --install
-   ```
-
-##### Run
-```bash
-./sunshine.AppImage --install && ./sunshine.AppImage
-```
-
-##### Uninstall
-```bash
-./sunshine.AppImage --remove
-```
+The complete guide, including manual installation, verification, troubleshooting, and the file
+layout, is [docs/linux/install.md](linux/install.md).
 
 #### Arch Linux and CachyOS
 
 ##### Requirements
 
-The native package streams the machine's KDE Plasma desktop and, on NVIDIA GPUs, the login screen
-before anyone signs in. It requires:
+- **KDE Plasma 6 on Wayland**, started by **SDDM** or **Plasma Login Manager**. GNOME, X11
+  sessions, other compositors, and remote logins are not streamed.
+- **Linux 6.16 or newer with matching kernel headers** (for example `linux-cachyos-headers`).
+  The managed virtual-display driver is built with DKMS during installation.
+- **A GPU with an H.264 hardware encoder.** NVIDIA uses NVENC from `nvidia-utils`; AMD and Intel
+  use VAAPI (`libva-mesa-driver` or `intel-media-driver`). Pre-login streaming is NVIDIA-only.
+- **A single interactive desktop account**, or run
+  `sudo /usr/libexec/vibeshine/vibepollo-machine-host configure USER` once to choose the owner.
 
-- **KDE Plasma 6 on Wayland**, started by **Plasma Login Manager** or **SDDM**. GNOME, X11 sessions,
-  other compositors, and remote logins are not streamed; the controller logs the refused session
-  in `journalctl -u vibepollo-session-controller.service`.
-- **Linux 6.16 or newer with matching kernel headers** for the running kernel, for example
-  `linux-cachyos-headers`, `linux-headers`, `linux-zen-headers`, or `linux-lts-headers`. The
-  managed virtual-display module is built with DKMS during installation.
-- **A GPU with an H.264 hardware encoder.** HEVC and AV1 are used when the GPU supports them.
-  NVIDIA GPUs use native NVENC; AMD and Intel GPUs use VAAPI (`libva-mesa-driver` or
-  `intel-media-driver`). The pre-login stream is only supported on NVIDIA GPUs; other GPUs stream
-  after login.
-- **A single interactive desktop account.** The package selects it automatically. Machines with
-  several accounts must run `sudo /usr/libexec/vibeshine/vibepollo-machine-host configure USER`
-  once to choose the streaming owner.
+##### Install
 
-##### Install from the signed repository
-
-Import and locally trust the Nonary repository key:
+Download and run the installer script. It checks the requirements, installs the headers for the
+running kernel, installs the package from the signed repository (or the latest GitHub release when
+the repository is unavailable), opens firewalld or ufw, and tells you whether to reboot:
 
 ```bash
-curl -fsSLo /tmp/nonary-vibepollo.gpg \
-  https://nonary.github.io/Vibepollo/arch/x86_64/nonary-vibepollo.gpg
-curl -fsSLo /tmp/nonary-vibepollo-fingerprint.txt \
-  https://nonary.github.io/Vibepollo/arch/x86_64/nonary-vibepollo-fingerprint.txt
-sudo pacman-key --add /tmp/nonary-vibepollo.gpg
-sudo pacman-key --lsign-key "$(tr -d '[:space:]' </tmp/nonary-vibepollo-fingerprint.txt)"
+curl -fsSLO https://raw.githubusercontent.com/Nonary/Vibepollo/master/scripts/linux_install.sh
+sudo bash linux_install.sh
 ```
 
-Add the repository and install Vibepollo:
-
-```bash
-sudo install -Dm644 /dev/stdin /etc/pacman.d/vibepollo.conf <<'EOF'
-[vibepollo]
-SigLevel = Required
-Server = https://nonary.github.io/Vibepollo/arch/x86_64
-EOF
-grep -qxF 'Include = /etc/pacman.d/vibepollo.conf' /etc/pacman.conf || \
-  printf '\nInclude = /etc/pacman.d/vibepollo.conf\n' | sudo tee -a /etc/pacman.conf
-sudo pacman -Syu vibepollo
-```
-
-Future releases then arrive through the normal `pacman -Syu` upgrade process. Install only one
-streaming host at a time: Vibepollo replaces Sunshine or Vibepollo. Preserve existing configuration
-and pairing data when transitioning, including earlier manually built Vibepollo installations.
-
-As a fallback, open the desired [Vibepollo release page](https://github.com/Nonary/Vibepollo/releases)
-and use the exact download link and `pacman -U` command in its **Arch Linux and CachyOS** section.
-That section uses the built package's actual filename, including Arch's normalized prerelease version
-format.
-
-The package installs the managed virtual-display driver automatically on Linux 6.16 and newer.
-If matching kernel headers are absent, it prints the exact `sudo pacman -S --needed
-<kernel-package>-headers` command for the kernel currently booted. Run that command and retry
-the driver setup with:
-
-```bash
-sudo /usr/libexec/vibeshine/vibeshine-drm-install install
-```
-
-This detection covers the standard, LTS, and CachyOS kernel package variants; users do not need
-to guess a header package name.
+To install a specific release, pass `--version 1.19.0-beta.5`. To install a package you already
+downloaded from the [releases page](https://github.com/Nonary/Vibepollo/releases), pass
+`--package ./vibepollo-*.pkg.tar.zst`. Manual repository and `pacman -U` steps are in the
+[Linux install guide](linux/install.md#install-manually).
 
 ##### After installation
 
-The package prints any remaining step at the end of the pacman transaction. On a typical machine
-there are three:
-
-1. **Reboot if asked.** A kernel that already holds an older module, or a one-time Secure Boot
-   signing-key enrollment, both require one reboot before the virtual display works.
-2. **Log in to the Plasma desktop and pair.** Open `https://localhost:47990` on the machine,
-   create the Web UI username and password, then pair Moonlight with the PIN. Pairing and the Web
-   UI are only reachable from a logged-in desktop; the pre-login stream reuses the pairing you
-   created there and cannot pair new clients.
-3. **Open the firewall** if one is enabled. The package ships service definitions for both
-   common firewalls:
+1. **Reboot if asked.** A kernel that still holds an older driver, or a one-time Secure Boot key
+   enrollment, needs one reboot.
+2. **Log in to Plasma (Wayland) and pair.** Open `https://localhost:47990` on the machine, create
+   the Web UI login, then pair Moonlight with the PIN. Pairing works only from a logged-in
+   desktop; the pre-login stream reuses that pairing.
+3. **Open the firewall** if the script did not do it for you:
 
    ```bash
    # firewalld
@@ -217,156 +104,18 @@ there are three:
    ```
 
    Vibepollo listens on TCP 47984, 47989, 47990, and 48010, and UDP 47998 to 48000 and 48010.
+4. **Log out and back in once** so the PipeWire audio drop-in the package installs takes effect.
 
-The machine host runs as system services; there is no per-user unit to enable:
+Check the host with:
 
 ```bash
 sudo systemctl status vibepollo-session-controller.service vibepollo.service
-sudo journalctl -u vibepollo-session-controller.service -u vibepollo.service --since '-10 minutes'
+sudo journalctl -u vibepollo-session-controller.service -u vibepollo.service -b
 ```
-
-The controller waits until the configured user's Plasma Wayland session (or the NVIDIA pre-login
-greeter) is active, then starts the host. The audio stream expects the PipeWire quantum the package
-installs in `/usr/share/pipewire/pipewire.conf.d/50-vibepollo-audio.conf` (240 samples at 48 kHz);
-restart PipeWire or log in again after the first installation so it takes effect.
-
 ##### Uninstall
 ```bash
 sudo pacman -R vibepollo
 ```
-
-#### Debian/Ubuntu
-
-##### Install
-Download `sunshine-{distro}-{distro-version}-{arch}.deb` and run the following command.
-```bash
-sudo dpkg -i ./sunshine-{distro}-{distro-version}-{arch}.deb
-```
-
-> [!NOTE]
-> The `{distro-version}` is the version of the distro we built the package on. The `{arch}` is the
-> architecture of your operating system.
-
-> [!TIP]
-> You can double-click the deb file to see details about the package and begin installation.
-
-##### Uninstall
-```bash
-sudo apt remove sunshine
-```
-
-#### Fedora/OpenSUSE
-
-> [!TIP]
-> The package name is case-sensitive.
-
-##### Install (GitHub releases)
-Download `Sunshine-{version}.{distro+version}.{arch}.rpm` and run the following command.
-```bash
-sudo dnf install ./Sunshine-{version}.{distro}.{arch}.rpm
-```
-
-> [!NOTE]
-> The `{distro+version}` is the distro and distro version of the distro we built the package on. The `{arch}` is the
-> architecture of your operating system.
-
-> [!TIP]
-> You can double-click the rpm file to see details about the package and begin installation.
-
-##### Uninstall
-```bash
-sudo dnf remove sunshine
-```
-
-##### Install (Copr)
-
-> [!IMPORTANT]
-> Stable builds are only available if the Sunshine release was made after the Fedora version release.
-> Because of this, it is often recommended to use the beta copr; however, you do not need to regularly update.
-> This could lead to annoyances in rare cases where there may be a breaking change.
-
-1. Enable copr repository.
-   ```bash
-   sudo dnf copr enable lizardbyte/stable
-   ```
-
-   or
-   ```bash
-   sudo dnf copr enable lizardbyte/beta
-   ```
-
-2. Install the package.
-   ```bash
-   sudo dnf install Sunshine
-   ```
-
-##### Uninstall
-```bash
-sudo dnf remove Sunshine
-```
-
-#### Flatpak
-
-> [!CAUTION]
-> Use distro-specific packages instead of the Flatpak if they are available.
-> Flatpak does not support KMS capture.
-
-Using this package requires that you have [Flatpak](https://flatpak.org/setup) installed.
-
-##### Download (local option)
-1. Download `vibepollo_{arch}.flatpak` and run the following command.
-
-   > [!NOTE]
-   > Replace `{arch}` with your system architecture.
-
-##### Install (system level)
-```bash
-flatpak install --system ./vibepollo_{arch}.flatpak
-```
-
-##### Install (user level)
-```bash
-flatpak install --user ./vibepollo_{arch}.flatpak
-```
-
-##### Additional installation (required)
-```bash
-flatpak run --command=additional-install.sh io.github.Nonary.vibepollo
-```
-
-##### Run with NVFBC capture (X11 Only) or XDG Portal (Wayland Only)
-```bash
-flatpak run io.github.Nonary.vibepollo
-```
-
-##### Uninstall
-```bash
-flatpak run --command=remove-additional-install.sh io.github.Nonary.vibepollo
-flatpak uninstall --delete-data io.github.Nonary.vibepollo
-```
-
-#### Homebrew
-
-> [!IMPORTANT]
-> The Homebrew package is experimental on Linux.
-
-This package requires that you have [Homebrew](https://docs.brew.sh/Installation) installed.
-
-##### Install
-```bash
-brew update
-brew upgrade
-brew tap LizardByte/homebrew
-brew install sunshine
-```
-
-##### Uninstall
-```bash
-brew uninstall sunshine
-```
-
-> [!TIP]
-> For beta you can replace `sunshine` with `sunshine-beta` in the above commands.
 
 ### macOS
 
@@ -512,7 +261,7 @@ After adding yourself to the group, log out and log back in for the changes to t
 
 #### Services
 
-Native packages (Arch, CachyOS, Debian, Fedora) install Vibepollo as machine-wide system services.
+The Arch/CachyOS package installs Vibepollo as machine-wide system services.
 The session controller is enabled during installation and starts the streaming host whenever the
 configured user's KDE Plasma Wayland session is active:
 
@@ -530,11 +279,9 @@ sudo /usr/libexec/vibeshine/vibepollo-machine-host configure USER
 sudo systemctl enable --now vibepollo-session-controller.service
 ```
 
-AppImage and Flatpak builds still run as a per-user service:
-
-```bash
-systemctl --user --now enable app-io.github.Nonary.vibepollo
-```
+There is no per-user unit on Linux. Never enable `app-io.github.Nonary.vibepollo` with
+`systemctl --user`, and never add file capabilities to `/usr/bin/vibepollo`; the packaged host
+already carries the capabilities it needs.
 
 ### macOS
 The first time you start Sunshine, you will be asked to grant access to screen recording and your microphone.
@@ -563,16 +310,16 @@ recommended to restart your computer.
 ## Usage
 
 ### Basic usage
-If Sunshine is not installed/running as a service, then start Sunshine with the following command, unless a start
-command is listed in the specified package [install](#install) instructions above.
-
-> [!NOTE]
-> A service is a process that runs in the background. This is the default when installing Sunshine from the
-> Windows installer. Running multiple instances of Sunshine is not advised.
+On Windows and Linux, Vibepollo runs as a service that the installer sets up; you do not start it by
+hand. On Linux the session controller starts the host whenever the configured user's Plasma Wayland
+session is active (see the [Linux install guide](linux/install.md)). Elsewhere, start it with:
 
 ```bash
-sunshine
+vibepollo
 ```
+
+> [!NOTE]
+> Running multiple instances of Vibepollo is not advised.
 
 ### Specify config file
 ```bash
@@ -584,26 +331,11 @@ vibepollo <directory of conf file>/vibepollo.conf
 > If no config file is entered, the default location will be used.
 > The configuration file specified will be created if it doesn't exist.
 
-### Start Sunshine over SSH (Linux/X11)
-Assuming you are already logged into the host, you can use this command
-
-```bash
-ssh <user>@<ip_address> 'export DISPLAY=:0; sunshine'
-```
-
-If you are logged into the host with only a tty (teletypewriter), you can use `startx` to start the X server prior to
-executing Sunshine. You nay need to add `sleep` between `startx` and `sunshine` to allow more time for the display to
-be ready.
-
-```bash
-ssh <user>@<ip_address> 'startx &; export DISPLAY=:0; sunshine'
-```
-
-> [!TIP]
-> You could also use the `~/.bash_profile` or `~/.bashrc` files to set up the `DISPLAY` variable.
-
-@seealso{See [Remote SSH Headless Setup](https://app.lizardbyte.dev/2023-09-14-remote-ssh-headless-sunshine-setup)
-on how to set up a headless streaming server without autologin and dummy plugs (X11 + NVidia GPUs)}
+### Headless Linux hosts
+Vibepollo does not stream X11 sessions or manually started hosts. On a headless Linux machine keep
+the SDDM or Plasma Login Manager greeter running: NVIDIA hosts stream the login screen itself and
+you sign in from Moonlight, while AMD and Intel hosts need an autologin or a local sign-in before
+the stream starts. The managed virtual display replaces dummy plugs.
 
 ### Configuration
 
@@ -641,17 +373,9 @@ by default. You may replace *localhost* with your internal ip address.
 ### Arguments
 To get a list of available arguments, run the following command.
 
-@tabs{
-   @tab{ General | ```bash
-      vibepollo --help
-      ```}
-   @tab{ AppImage | ```bash
-      ./sunshine.AppImage --help
-      ```}
-   @tab{ Flatpak | ```bash
-      flatpak run --command=vibepollo io.github.Nonary.vibepollo --help
-      ```}
-}
+```bash
+vibepollo --help
+```
 
 ### Shortcuts
 All shortcuts start with `Ctrl+Alt+Shift`, just like Moonlight.
@@ -683,10 +407,11 @@ All shortcuts start with `Ctrl+Alt+Shift`, just like Moonlight.
 * The "Desktop" app works the same as any other application except it has no commands. It does not start an application,
   instead it simply starts a stream. If you removed it and would like to get it back, just add a new application with
   the name "Desktop" and "desktop.png" as the image path.
-* For the Linux flatpak you must prepend commands with `flatpak-spawn --host`.
 * If inputs (mouse, keyboard, gamepads...) aren't working after connecting:
 
-  * On FreeBSD/Linux, add the user running sunshine to the `input` group.
+  * On Linux the packaged host already belongs to the `vibepollo-uinput` group that owns
+    `/dev/uinput` and `/dev/uhid`; check `journalctl -u vibepollo.service` for uinput errors.
+  * On FreeBSD, add the user running Vibepollo to the `input` group.
 
 * The FreeBSD version of Sunshine is missing some features that are present on Linux.
   The following are known limitations.

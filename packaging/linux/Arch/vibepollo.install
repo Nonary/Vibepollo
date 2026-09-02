@@ -1,7 +1,12 @@
 # shellcheck shell=bash
 
 do_secure_executables() {
+  # pacman's own systemd-sysusers hook only runs after the whole transaction,
+  # but this scriptlet starts vibeshine-vkms-control.socket (SocketGroup=
+  # vibeshine-vkms) before that. Create both account sets now so a first
+  # install does not fail to resolve the group.
   systemd-sysusers /usr/lib/sysusers.d/vibepollo.conf
+  systemd-sysusers /usr/lib/sysusers.d/vibeshine-vkms.conf
   local executable client broker host public_identity broker_identity host_identity
   local broker_capabilities host_capabilities
   executable=$(readlink -f /usr/bin/vibepollo) || return 1
@@ -704,14 +709,14 @@ do_install_vibeshine_drm() {
 
 do_print_next_steps() {
   cat <<'NEXT_STEPS'
-==> Vibeshine next steps
+==> Vibepollo next steps
     1. Log in to a KDE Plasma (Wayland) desktop as the configured user.
     2. Open https://localhost:47990 on this machine, create the Web UI login, then pair Moonlight.
        Pairing is only possible from a logged-in desktop; the pre-login greeter stream reuses that pairing.
-    3. If a firewall is enabled, allow the Vibeshine ports:
-         firewalld:  sudo firewall-cmd --permanent --add-service=vibeshine && sudo firewall-cmd --reload
-         ufw:        sudo ufw allow Vibeshine
-    Status: sudo systemctl status vibeshine-session-controller.service vibeshine.service
+    3. If a firewall is enabled, allow the Vibepollo ports:
+         firewalld:  sudo firewall-cmd --permanent --add-service=vibepollo && sudo firewall-cmd --reload
+         ufw:        sudo ufw allow Vibepollo
+    Status: sudo systemctl status vibepollo-session-controller.service vibepollo.service
 NEXT_STEPS
 }
 
@@ -792,6 +797,10 @@ do_install_prelogin() {
       return 1
     fi
   else
+    # Lift the runtime masks that do_quiesce_machine_host applied so the
+    # follow-up command below can actually start the host without a reboot.
+    vibepollo_unmask_host_for_controller ||
+      echo 'warning: the Vibepollo host units stay masked until the next reboot.' >&2
     echo '==> ACTION REQUIRED: Vibepollo could not choose the desktop user who owns streaming on this machine.' >&2
     echo "    Run:  sudo $helper configure USER" >&2
     echo '    then: sudo systemctl enable --now vibepollo-session-controller.service' >&2

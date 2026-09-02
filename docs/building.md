@@ -62,15 +62,11 @@ dependencies we use in Debian-based, Fedora-based and Arch-based distributions. 
 script to support other distributions.
 
 ##### KMS Capture
-If you are using KMS, patching the Sunshine binary with `setcap` is required. Some post-install scripts handle this. If building
-from source and using the binary directly, this will also work:
-
-```bash
-sudo cp build/sunshine /tmp
-sudo setcap cap_sys_admin,cap_sys_nice+p /tmp/sunshine
-sudo getcap /tmp/sunshine
-sudo mv /tmp/sunshine build/sunshine
-```
+Do **not** add file capabilities to the `vibepollo` binary. On Linux the public `/usr/bin/vibepollo`
+must stay unprivileged; KMS capture runs inside the private `/usr/libexec/vibeshine/vibepollo-host`,
+which the package installs with exactly `cap_sys_admin,cap_sys_nice=p`, and the package hook
+verifies that the public binary has no capabilities. Install through the Arch package (or follow the
+staged-install recipe in `AGENTS.md`) rather than running a capability-patched build directly.
 
 ##### CUDA Toolkit
 Sunshine requires CUDA Toolkit for NVFBC capture. There are two caveats to CUDA:
