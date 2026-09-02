@@ -141,7 +141,8 @@ namespace nvhttp::pairing_policy {
     const std::string_view client_certificate_hex,
     const std::string_view salt_hex,
     const std::size_t pending_sessions,
-    const bool replacing_existing
+    const bool replacing_existing,
+    const bool same_identity
   ) {
     // Pairing is accepted at the login screen too. Completing it still
     // requires the Web UI login to submit the PIN, so the greeter gains no
@@ -155,13 +156,15 @@ namespace nvhttp::pairing_policy {
     if (!valid_hex_field(salt_hex, salt_hex_length, 128)) {
       return {false, "Invalid pairing salt"};
     }
-    // A same-uniqueid request is not a continuation: it supplies a new
-    // certificate and salt and could replace the identity that the operator
-    // intended to approve. Never replace or multiplex a pending request.
-    if (pending_sessions >= max_pending_sessions) {
+    // A same-uniqueid request from a different certificate is not a
+    // continuation: accepting it could swap the identity the operator is about
+    // to approve. The identical certificate may replace its own pending
+    // request, which lets a cancelled Moonlight attempt retry at once instead
+    // of waiting out the expiry; completing the pairing still requires that
+    // certificate's private key, so nothing else can hijack the slot.
+    if (pending_sessions >= max_pending_sessions && !(replacing_existing && same_identity)) {
       return {false, "Too many pending pairing sessions"};
     }
-    (void) replacing_existing;
     return {true, {}};
   }
 
