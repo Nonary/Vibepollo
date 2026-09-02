@@ -469,7 +469,11 @@ jobs:
           LIBVIRTUALDISPLAY_RELEASE_TAG: v1.6.3
         run: |
           $ErrorActionPreference = 'Stop'
-          $downloadDir = Join-Path $PWD 'libvirtualdisplay-release'
+          # The folder name carries the release version. refresh_driver_package.ps1
+          # reads it from a libvirtualdisplay-<version>-windows-x64 path and then
+          # never needs `git describe` in the (shallow, tagless) submodule checkout.
+          $releaseVersion = $env:LIBVIRTUALDISPLAY_RELEASE_TAG.TrimStart('v')
+          $downloadDir = Join-Path $PWD "libvirtualdisplay-$releaseVersion-windows-x64"
           .\scripts\download_libvirtualdisplay_release.ps1 `
             -Repository Nonary/libvirtualdisplay `
             -Tag $env:LIBVIRTUALDISPLAY_RELEASE_TAG `
