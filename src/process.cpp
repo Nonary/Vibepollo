@@ -1807,9 +1807,27 @@ namespace proc {
               << " because a safe direct-launch request could not be constructed; the already-running Steam broker cannot inherit their environment.";
           }
         } else {
+          const auto known = std::find_if(games.begin(), games.end(), [steam_app_id](const auto &candidate) {
+            return candidate.app_id == steam_app_id;
+          });
+          const std::string reason = games.empty() ?
+            "the Steam catalog scan returned no games" :
+            known == games.end() ?
+              "the app is absent from the " + std::to_string(games.size()) + " scanned games" :
+              "the app is present but not marked installed";
           BOOST_LOG(error)
             << "Stream-owned launch features cannot activate for Steam app " << steam_app_id
-            << " because the installed game could not be resolved from Steam metadata.";
+            << " because the installed game could not be resolved from Steam metadata: " << reason << '.';
+#ifdef __linux__
+          if (const char *machine_host = std::getenv("VIBEPOLLO_MACHINE_HOST"); machine_host && *machine_host) {
+            // The raw apps.json command cannot run inside the machine host: it
+            // has no desktop, and the broker refuses unauthorized commands.
+            // Ask the Steam client in the desktop session to launch it instead.
+            _app.cmd = platf::steam::launch_command(steam_app_id);
+            BOOST_LOG(warning)
+              << "Falling back to a Steam client launch in the desktop session for app " << steam_app_id << '.';
+          }
+#endif
         }
       } else {
         BOOST_LOG(error)

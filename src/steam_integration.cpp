@@ -1090,6 +1090,13 @@ namespace platf::steam {
 #elif defined(__APPLE__)
     return "open " + launch_uri(app_id);
 #else
+  #if defined(__linux__)
+    // The machine host has no desktop of its own; the session broker runs
+    // `steam -applaunch` inside the selected desktop session for it.
+    if (machine_host_mode()) {
+      return "/usr/libexec/vibeshine/vibepollo-session-exec steam " + std::to_string(app_id);
+    }
+  #endif
     // Send the request directly to Steam. Desktop URI openers can exit
     // successfully even when KDE drops the handoff during an output switch.
     return "steam -applaunch " + std::to_string(app_id);
