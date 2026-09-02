@@ -3351,7 +3351,7 @@ namespace proc {
   namespace {
     constexpr std::size_t maximum_machine_cover_bytes = 16U * 1024U * 1024U;
 
-    bool machine_host_runtime() {
+    [[maybe_unused]] bool machine_host_runtime() {
       const char *value = std::getenv("VIBEPOLLO_MACHINE_HOST");
       return value && std::string_view {value} == "1";
     }

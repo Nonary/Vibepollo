@@ -195,7 +195,9 @@ namespace platf::lutris {
     if (database_path.empty()) return {};
 
     sqlite3 *raw_database = nullptr;
-    if (sqlite3_open_v2(database_path.c_str(), &raw_database,
+    // sqlite takes a narrow UTF-8 string; fs::path::c_str() is wchar_t on Windows.
+    const auto database_path_utf8 = database_path.string();
+    if (sqlite3_open_v2(database_path_utf8.c_str(), &raw_database,
                         SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr) != SQLITE_OK) {
       if (raw_database) sqlite3_close(raw_database);
       return {};
