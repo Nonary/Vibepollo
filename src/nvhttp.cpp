@@ -2997,7 +2997,7 @@ namespace nvhttp {
           const auto client_certificate = get_arg(args, "clientcert", "");
           const auto salt = get_arg(args, "salt", "");
           const bool replacing = map_id_sess.contains(uniqID);
-          const auto admission = pairing_policy::admit_pending_session(false, uniqID, client_certificate, salt, map_id_sess.size(), replacing);
+          const auto admission = pairing_policy::admit_pending_session(uniqID, client_certificate, salt, map_id_sess.size(), replacing);
           if (!admission.accepted) {
             tree.put("root.<xmlattr>.status_code", admission.failure_message == "Too many pending pairing sessions"sv ? 429 : 400);
             tree.put("root.<xmlattr>.status_message", admission.failure_message);
