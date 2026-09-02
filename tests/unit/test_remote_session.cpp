@@ -17,6 +17,11 @@ TEST(RemoteSession, SyntheticIdsAndLegacyIdsNeverFallThrough) {
   EXPECT_EQ(remote_session::identify(2147483605), remote_session::control_e::monitor);
   EXPECT_EQ(remote_session::identify(11, "9a1c5a25-58fe-40e0-b9aa-7d3f00000006"), remote_session::control_e::input);
   EXPECT_EQ(remote_session::identify(remote_session::running_game_id), remote_session::control_e::running_game);
+  const auto running_id = remote_session::synthetic_running_game_id(42);
+  EXPECT_NE(running_id, 42);
+  EXPECT_EQ(remote_session::identify(running_id), remote_session::control_e::none);
+  EXPECT_EQ(remote_session::identify(running_id, {}, 42), remote_session::control_e::running_game);
+  EXPECT_EQ(remote_session::identify(running_id, {}, 43), remote_session::control_e::none);
   EXPECT_EQ(remote_session::identify(11), remote_session::control_e::none);
   EXPECT_TRUE(remote_session::reserved_name("remote monitor"));
   EXPECT_TRUE(remote_session::reserved_name("Remote Input"));
@@ -48,7 +53,7 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   EXPECT_TRUE(normal_observer.free);
   EXPECT_EQ(normal_observer.current_game, 0);
   ASSERT_EQ(normal_observer.catalogue.size(), 6);
-  EXPECT_EQ(normal_observer.catalogue[0].id, remote_session::running_game_id);
+  EXPECT_EQ(normal_observer.catalogue[0].id, remote_session::synthetic_running_game_id(42));
   EXPECT_EQ(normal_observer.catalogue[1].id, remote_session::terminate_id);
   EXPECT_EQ(normal_observer.catalogue[2].title, "One");
   EXPECT_EQ(normal_observer.catalogue[3].title, "Two");
@@ -57,9 +62,9 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
 
   const auto observer = remote_session::project(caller("other"), game(), {}, configured, true);
   ASSERT_EQ(observer.catalogue.size(), 6);
-  EXPECT_EQ(observer.catalogue[0].id, remote_session::running_game_id);
+  EXPECT_EQ(observer.catalogue[0].id, remote_session::synthetic_running_game_id(42));
   EXPECT_EQ(observer.catalogue[1].id, remote_session::terminate_id);
-  EXPECT_EQ(observer.catalogue[1].title, "Terminate");
+  EXPECT_EQ(observer.catalogue[1].title, " Terminate");
   EXPECT_EQ(observer.catalogue[2].title, "One");
   EXPECT_EQ(observer.catalogue[3].title, "Two");
   EXPECT_EQ(observer.catalogue[4].id, remote_session::input_id);
@@ -78,7 +83,7 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
 
   const auto input_during_game = remote_session::project(caller("input"), game(), {.role = remote_session::role_e::input}, configured, true);
   ASSERT_EQ(input_during_game.catalogue.size(), 5);
-  EXPECT_EQ(input_during_game.catalogue[0].id, remote_session::running_game_id);
+  EXPECT_EQ(input_during_game.catalogue[0].id, remote_session::synthetic_running_game_id(42));
   EXPECT_EQ(input_during_game.catalogue[1].id, remote_session::terminate_id);
   EXPECT_EQ(input_during_game.catalogue[2].title, "One");
   EXPECT_EQ(input_during_game.catalogue[3].title, "Two");
@@ -134,9 +139,9 @@ TEST(RemoteSession, SecondaryCatalogueKeepsConfiguredRunningAppBesideInvisibleRe
 
   const auto projection = remote_session::project(caller("other"), active_game, {}, configured, false);
   ASSERT_EQ(projection.catalogue.size(), 6);
-  EXPECT_EQ(projection.catalogue[0].id, remote_session::running_game_id);
+  EXPECT_EQ(projection.catalogue[0].id, remote_session::synthetic_running_game_id(active_game.app.id));
   EXPECT_EQ(projection.catalogue[0].uuid, remote_session::synthetic_uuid(remote_session::control_e::running_game));
-  EXPECT_EQ(projection.catalogue[0].title, " Running game");
+  EXPECT_EQ(projection.catalogue[0].title, "    Running game");
   EXPECT_EQ(projection.catalogue[2].id, active_game.app.id);
   EXPECT_EQ(projection.catalogue[2].uuid, active_game.app.uuid);
   EXPECT_EQ(projection.catalogue[2].title, active_game.app.title);
@@ -144,6 +149,35 @@ TEST(RemoteSession, SecondaryCatalogueKeepsConfiguredRunningAppBesideInvisibleRe
     remote_session::dispatch(caller("other"), active_game, {}, remote_session::identify(projection.catalogue[0].id, projection.catalogue[0].uuid)).resume_role,
     remote_session::role_e::game
   );
+}
+
+TEST(RemoteSession, ResumeTileIdentityAndAlphabeticalRanksTrackTheRunningApp) {
+  const remote_session::app_t first {42, "first", "Zebra", false};
+  const remote_session::app_t second {77, "second", "Alpha", false};
+  const auto first_tile = remote_session::synthetic_running_game(first);
+  const auto repeated_first_tile = remote_session::synthetic_running_game(first);
+  const auto second_tile = remote_session::synthetic_running_game(second);
+
+  EXPECT_EQ(first_tile.id, repeated_first_tile.id);
+  EXPECT_NE(first_tile.id, first.id);
+  EXPECT_NE(first_tile.id, second_tile.id);
+
+  std::vector<remote_session::app_t> alphabetized {
+    {1, "ordinary", "Another game", false},
+    remote_session::synthetic(remote_session::control_e::terminate),
+    remote_session::synthetic(remote_session::control_e::resume),
+    remote_session::synthetic(remote_session::control_e::monitor),
+    first_tile,
+  };
+  std::sort(alphabetized.begin(), alphabetized.end(), [](const auto &left, const auto &right) {
+    return left.title < right.title;
+  });
+
+  EXPECT_EQ(alphabetized[0].id, first_tile.id);
+  EXPECT_EQ(alphabetized[1].id, remote_session::monitor_id);
+  EXPECT_EQ(alphabetized[2].id, remote_session::resume_id);
+  EXPECT_EQ(alphabetized[3].id, remote_session::terminate_id);
+  EXPECT_EQ(alphabetized[4].id, 1);
 }
 
 TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {

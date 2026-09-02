@@ -4148,14 +4148,13 @@ namespace nvhttp {
 
       auto appid_str = get_arg(args, "appid", "0");
       auto appuuid_str = get_arg(args, "appuuid", "");
-      // Remote-session controls are host actions, never configured apps. Keep
-      // them out of resolve_app() so stale control identifiers cannot launch a
-      // real app with a colliding id or UUID.
-      const auto synthetic_control = remote_session::identify(util::from_view(appid_str), appuuid_str);
-      // A secondary Moonlight client sees the running game in its projected
-      // catalogue even though serverinfo is deliberately presented as free.
-      // Launching that advertised entry is therefore a Resume request, not an
-      // attempt to start the configured application again.
+      // Synthetic controls are host actions, never configured applications.
+      // Identify them before resolve_app() so they cannot collide with an
+      // apps.json id and accidentally launch a real process.
+      const auto synthetic_control = remote_session::identify(util::from_view(appid_str), appuuid_str, current_appid);
+      // A secondary client sees the active game in its projected catalogue
+      // while serverinfo is deliberately presented as free. Selecting it is a
+      // Resume request, not a second process launch.
       if (synthetic_control == remote_session::control_e::none && current_appid > 0) {
         if (const auto active_app = proc::proc.resolve_app(current_appid)) {
           const bool requests_active_app =
@@ -5778,16 +5777,18 @@ namespace nvhttp {
     auto args = request->parse_query_string();
     const auto appid = get_arg(args, "appid", "0");
     const auto appuuid = get_arg(args, "appuuid", "");
+    const auto current_appid = proc::proc.running();
+    const auto synthetic_control = remote_session::identify(util::from_view(appid), appuuid, current_appid);
     auto app_ctx = proc::proc.resolve_app(appid, appuuid);
     std::string app_image;
     if (app_ctx) {
       app_image = proc::validate_app_image_path(app_ctx->image_path);
-    } else if (remote_session::identify(util::from_view(appid), appuuid) == remote_session::control_e::running_game) {
-      if (const auto running_app = proc::proc.resolve_app(proc::proc.running())) {
+    } else if (synthetic_control == remote_session::control_e::running_game) {
+      if (const auto running_app = proc::proc.resolve_app(current_appid)) {
         app_image = proc::validate_app_image_path(running_app->image_path);
       }
     } else if (const auto artwork = remote_session::synthetic_artwork_filename(
-                 remote_session::identify(util::from_view(appid), appuuid)
+                 synthetic_control
                )) {
       app_image = (fs::path {SUNSHINE_ASSETS_DIR} / "remote-session" / std::string {*artwork}).string();
     } else {

@@ -154,8 +154,10 @@ namespace remote_session {
 
   [[nodiscard]] bool reserved_name(std::string_view name);
   [[nodiscard]] control_e identify(std::int32_t id, std::string_view uuid = {});
+  [[nodiscard]] control_e identify(std::int32_t id, std::string_view uuid, std::int32_t running_app_id);
   [[nodiscard]] std::string synthetic_uuid(control_e control);
   [[nodiscard]] app_t synthetic(control_e control);
+  [[nodiscard]] std::int32_t synthetic_running_game_id(std::int32_t app_id);
   [[nodiscard]] app_t synthetic_running_game(const app_t &game);
   [[nodiscard]] std::optional<std::string_view> synthetic_artwork_filename(control_e control);
   [[nodiscard]] bool exposes_active_game(

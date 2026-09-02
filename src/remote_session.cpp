@@ -39,6 +39,13 @@ namespace remote_session {
     bool contains(const std::vector<std::string> &values, std::string_view value) {
       return std::find(values.begin(), values.end(), value) != values.end();
     }
+    bool reserved_synthetic_id(const std::int32_t id) {
+      return (id >= resume_id && id <= running_game_id) ||
+             (id >= 2147483601 && id <= 2147483606);
+    }
+    std::string ranked_title(const std::string_view rank, const std::string_view title) {
+      return std::string {rank} + std::string {title};
+    }
     bool owns_game(const caller_t &caller, const game_t &game) { return game.running && caller.paired && caller.uuid == game.owner_uuid; }
   }
 
@@ -57,6 +64,14 @@ namespace remote_session {
     return control_e::none;
   }
 
+  control_e identify(const std::int32_t id, const std::string_view uuid, const std::int32_t running_app_id) {
+    const auto control = identify(id, uuid);
+    if (control != control_e::none) return control;
+    return running_app_id > 0 && id == synthetic_running_game_id(running_app_id) ?
+             control_e::running_game :
+             control_e::none;
+  }
+
   std::string synthetic_uuid(const control_e control) {
     const auto suffix = static_cast<unsigned>(control);
     return suffix >= 1 && suffix <= 7 ? "9a1c5a25-58fe-40e0-b9aa-7d3f0000000" + std::to_string(suffix) : std::string {};
@@ -64,25 +79,39 @@ namespace remote_session {
 
   app_t synthetic(const control_e control) {
     switch (control) {
-      case control_e::resume: return {resume_id, synthetic_uuid(control), "Resume", true};
+      case control_e::resume: return {resume_id, synthetic_uuid(control), ranked_title("  ", "Resume"), true};
       case control_e::disconnect_monitor: return {disconnect_monitor_id, synthetic_uuid(control), "Disconnect Monitor", true};
       case control_e::disconnect_input: return {disconnect_input_id, synthetic_uuid(control), "Disconnect Input", true};
-      case control_e::terminate: return {terminate_id, synthetic_uuid(control), "Terminate", true};
-      case control_e::monitor: return {monitor_id, synthetic_uuid(control), "Remote Monitor", true};
+      case control_e::terminate: return {terminate_id, synthetic_uuid(control), ranked_title(" ", "Terminate"), true};
+      case control_e::monitor: return {monitor_id, synthetic_uuid(control), ranked_title("   ", "Remote Monitor"), true};
       case control_e::input: return {input_id, synthetic_uuid(control), "Remote Input", true};
       default: return {};
     }
   }
 
+  std::int32_t synthetic_running_game_id(const std::int32_t app_id) {
+    // Toggle a high value bit so the resume-only identity remains stable for
+    // one app/art revision but changes with the configured app identity. Skip
+    // control IDs so the contextual running-game check cannot be shadowed by
+    // an ordinary synthetic-control lookup.
+    constexpr std::uint32_t positive_id_mask = 0x7fffffffU;
+    constexpr std::uint32_t identity_salt = 0x40000000U;
+    const auto source = static_cast<std::uint32_t>(app_id) & positive_id_mask;
+    auto candidate = (source ^ identity_salt) & positive_id_mask;
+    while (candidate == 0 || candidate == source || reserved_synthetic_id(static_cast<std::int32_t>(candidate))) {
+      candidate = candidate == positive_id_mask ? 1 : candidate + 1;
+    }
+    return static_cast<std::int32_t>(candidate);
+  }
+
   app_t synthetic_running_game(const app_t &game) {
-    // Moonlight clients commonly alphabetize the received catalogue. A
-    // leading space keeps this resume-only duplicate ahead of ordinary
-    // alphanumeric titles without changing what the user sees.
-    constexpr std::string_view sort_prefix {" "};
+    // Moonlight clients commonly alphabetize the received catalogue. Ranked
+    // leading spaces keep this resume-only duplicate first, followed by
+    // Remote Monitor, Resume, and Terminate, without changing visible labels.
     return {
-      running_game_id,
+      synthetic_running_game_id(game.id),
       synthetic_uuid(control_e::running_game),
-      std::string {sort_prefix} + game.title,
+      ranked_title("    ", game.title),
       true,
     };
   }
