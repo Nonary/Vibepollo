@@ -618,7 +618,14 @@ jobs:
           sudo /usr/libexec/vibeshine/vibeshine-drm-install install
           \`\`\`
 
-          See the [full Arch/CachyOS installation guide](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG_NAME}/docs/getting_started.md#arch-linux-and-cachyos).
+          Or let the installer script handle headers, the package, and the firewall:
+
+          \`\`\`bash
+          curl -fsSLO https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG_NAME}/scripts/linux_install.sh
+          sudo bash linux_install.sh --version ${RELEASE_VERSION}
+          \`\`\`
+
+          See the [full Linux installation guide](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG_NAME}/docs/linux/install.md).
           EOF
 
       - name: Debug artifacts

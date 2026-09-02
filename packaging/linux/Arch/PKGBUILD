@@ -102,8 +102,10 @@ if [[ "${_use_cuda::1}" == "d" ]] && pacman -Qi cuda &> /dev/null; then
 fi
 
 if [[ "${_use_cuda::1}" == "t" ]]; then
+  # NVENC and NvFBC are loaded at runtime from the driver's libnvidia-encode /
+  # libnvidia-fbc, so the toolkit is a build-time need only.
   optdepends+=(
-    'cuda: Nvidia GPU encoding support'
+    'nvidia-utils: Nvidia GPU encoding (NVENC) and pre-login streaming'
     'nvidia-modprobe: initialize Nvidia devices for pre-login streaming'
   )
 fi
