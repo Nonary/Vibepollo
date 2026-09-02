@@ -532,16 +532,28 @@ stop_broker_instances() {
   return 1
 }
 
+# The broker socket unit removes its listening path on a normal stop. A path
+# that survives a confirmed stop is stale (a package hook masked the unit
+# before stopping it, so systemd no longer knew the path); nothing can accept
+# on it, and leaving it there kept admission closed until a reboot. Only a
+# plain socket at the exact path is removed, never a symlink or anything else.
+broker_socket_path_is_clear() {
+  if [[ -S "$broker_socket_path" && ! -L "$broker_socket_path" ]]; then
+    /usr/bin/rm -f -- "$broker_socket_path" || return 1
+  fi
+  [[ ! -e "$broker_socket_path" && ! -L "$broker_socket_path" ]]
+}
+
 close_broker_admission() {
   local deadline=${1:-$((SECONDS + quiesce_timeout))}
   if broker_unit_is_stopped "$deadline" "$broker_socket_service"; then
-    [[ ! -e "$broker_socket_path" && ! -L "$broker_socket_path" ]]
+    broker_socket_path_is_clear
     return
   fi
   bounded_system_systemctl "$deadline" --no-block stop "$broker_socket_service" >/dev/null 2>&1 || return 1
   while ((SECONDS < deadline)); do
     if broker_unit_is_stopped "$deadline" "$broker_socket_service"; then
-      [[ ! -e "$broker_socket_path" && ! -L "$broker_socket_path" ]]
+      broker_socket_path_is_clear
       return
     fi
     ((SECONDS < deadline)) || break
