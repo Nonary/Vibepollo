@@ -119,9 +119,18 @@ vibepollo_unit_is_quiescent() {
       ControlGroup) control_group=$value ;;
     esac
   done <<<"$properties"
-  ((${#seen[@]} == 5)) || return 1
+  [[ -n ${seen[LoadState]:-} && -n ${seen[ActiveState]:-} &&
+     -n ${seen[SubState]:-} && -n ${seen[ControlGroup]:-} ]] || return 1
+  # Socket units carry no MainPID property, so `systemctl show` omits it.
+  if [[ "$unit" == *.socket ]]; then
+    ((${#seen[@]} == 4 || ${#seen[@]} == 5)) || return 1
+    [[ -z ${seen[MainPID]:-} || "$pid" == 0 ]] || return 1
+  else
+    ((${#seen[@]} == 5)) || return 1
+    [[ "$pid" == 0 ]] || return 1
+  fi
   [[ "$load:$state:$substate" =~ ^(not-found:inactive:dead|(loaded|masked|masked-runtime):(inactive:dead|failed:failed))$ ]] || return 1
-  [[ "$pid" == 0 ]] && vibepollo_cgroup_is_quiescent "$control_group"
+  vibepollo_cgroup_is_quiescent "$control_group"
 }
 
 vibepollo_unit_is_disabled() {
@@ -134,7 +143,10 @@ vibepollo_restore_template_is_masked() {
   local state load
   state=$(timeout --signal=KILL 5 systemctl is-enabled \
     'vibepollo-session-restore@.service' 2>/dev/null || true)
-  load=$(timeout --signal=KILL 5 systemctl show 'vibepollo-session-restore@.service' \
+  # systemd 261 rejects a bare template name in `systemctl show` ("neither a
+  # valid invocation ID nor unit name"), so probe an instance of the template:
+  # an instance of a masked template reports LoadState=masked.
+  load=$(timeout --signal=KILL 5 systemctl show 'vibepollo-session-restore@mask-probe.service' \
     --property=LoadState 2>/dev/null) || return 1
   [[ "$state" =~ ^(masked|masked-runtime)$ && "$load" == 'LoadState=masked' ]]
 }
@@ -279,7 +291,12 @@ vibepollo_activate_host_upgrade_fence() {
   local properties
   systemctl daemon-reload || exit 1
   properties=$(timeout --signal=KILL 5 systemctl show vibepollo.service \
-    --property=RefuseManualStart --property=KillMode --property=SendSIGKILL 2>/dev/null) || exit 1
+    --property=LoadState --property=RefuseManualStart --property=KillMode --property=SendSIGKILL 2>/dev/null) || exit 1
+  # A first installation has no vibepollo.service yet, and a drop-in alone does
+  # not create one, so there is no host to fence.
+  if grep -qx 'LoadState=not-found' <<<"$properties"; then
+    return 0
+  fi
   grep -qx 'RefuseManualStart=yes' <<<"$properties" && \
     grep -qx "KillMode=$vibepollo_upgrade_kill_mode" <<<"$properties" && \
     grep -qx 'SendSIGKILL=no' <<<"$properties"
@@ -785,6 +802,9 @@ do_install_prelogin() {
   systemctl daemon-reload
   [[ -x "$helper" ]] || return 0
   if "$helper" configure-auto; then
+    # Older hosts wrote world-readable credentials that the current profile
+    # check rejects; normalize ownership and modes before the host starts.
+    "$helper" repair-profile || echo 'warning: could not repair the machine profile permissions.' >&2
     if ! systemctl enable vibepollo-session-controller.service; then
       do_quiesce_machine_host || true
       echo 'error: could not enable the Vibepollo session controller safely.' >&2

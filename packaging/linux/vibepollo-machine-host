@@ -384,6 +384,11 @@ rewrite_machine_cover_paths() {
   IFS=: read -r account_name _ _ _ _ account_home _ <<<"$entry"
   [[ "$account_name" == "$source_user" && "$account_home" == /* ]] ||
     fail 'machine-profile source account is invalid'
+  if [[ ! -e "$apps" && ! -L "$apps" ]]; then
+    # A fresh machine profile has no imported catalog. The host writes its
+    # default apps.json on first start, so there are no cover paths to rewrite.
+    return 0
+  fi
   [[ -f "$apps" && ! -L "$apps" ]] || fail 'machine application catalog is unsafe'
   attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$apps") || return 1
   [[ "$attributes" == "${service_user}:${service_user}:600:regular file" ]] ||
@@ -433,10 +438,42 @@ rewrite_machine_cover_paths() {
   /usr/bin/mv -fT -- "$temporary" "$apps"
 }
 
+profile_tree_repair_modes() {
+  # The service-owned 0700 top directory already keeps every other account
+  # out, so modes beneath it only need normalizing, never refusing. The host
+  # itself wrote cacert.pem world-readable in earlier builds; repair anything
+  # this account owns instead of crash-looping on it.
+  local root=$1
+  [[ -d "$root" && ! -L "$root" ]] || return 0
+  /usr/bin/find "$root" -xdev -mindepth 1 -user "$service_user" ! -group "$service_user" \
+    -exec /usr/bin/chgrp -h "$service_user" '{}' + 2>/dev/null || true
+  /usr/bin/find "$root" -xdev -mindepth 1 -type d -user "$service_user" ! -perm 0700 \
+    -exec /usr/bin/chmod 0700 '{}' + 2>/dev/null || true
+  /usr/bin/find "$root" -xdev -mindepth 1 -type f -user "$service_user" ! -perm 0600 \
+    -exec /usr/bin/chmod 0600 '{}' + 2>/dev/null || true
+}
+
 prepare_service_profile() {
   [[ $(/usr/bin/id -un) == "$service_user" ]] || fail 'profile preparation requires the service account'
+  profile_tree_repair_modes "$machine_profile"
   profile_tree_is_sanitized "$machine_profile" || fail 'machine profile permissions are unsafe'
   rewrite_machine_cover_paths
+}
+
+repair_profile_tree() {
+  # Root-side repair for package install and upgrade: give the whole machine
+  # profile back to the service account with the expected modes so an older
+  # install (or a stray root-owned file) cannot keep the host from starting.
+  require_root repair-profile || return 1
+  [[ -e "$machine_profile" || -L "$machine_profile" ]] || return 0
+  [[ -d "$machine_profile" && ! -L "$machine_profile" ]] || fail 'machine profile is not a directory'
+  profile_is_safe "$machine_profile" || return 1
+  /usr/bin/chown "$service_user:$service_user" -- "$machine_profile" || return 1
+  /usr/bin/chmod 0700 -- "$machine_profile" || return 1
+  /usr/bin/find "$machine_profile" -xdev -mindepth 1 -exec /usr/bin/chown -h "$service_user:$service_user" '{}' + || return 1
+  /usr/bin/find "$machine_profile" -xdev -mindepth 1 -type d -exec /usr/bin/chmod 0700 '{}' + || return 1
+  /usr/bin/find "$machine_profile" -xdev -mindepth 1 -type f -exec /usr/bin/chmod 0600 '{}' + || return 1
+  profile_tree_is_sanitized "$machine_profile" || fail 'machine profile could not be repaired'
 }
 
 remove_root_staging() {
@@ -760,8 +797,16 @@ system_unit_is_quiescent() {
       ControlGroup) control_group=$value ;;
     esac
   done <<<"$properties"
-  ((${#seen[@]} == 5)) || return 1
-  [[ "$pid" == 0 ]] || return 1
+  [[ -n ${seen[LoadState]:-} && -n ${seen[ActiveState]:-} &&
+     -n ${seen[SubState]:-} && -n ${seen[ControlGroup]:-} ]] || return 1
+  # Socket units carry no MainPID property, so `systemctl show` omits it.
+  if [[ "$unit" == *.socket ]]; then
+    ((${#seen[@]} == 4 || ${#seen[@]} == 5)) || return 1
+    [[ -z ${seen[MainPID]:-} || "$pid" == 0 ]] || return 1
+  else
+    ((${#seen[@]} == 5)) || return 1
+    [[ "$pid" == 0 ]] || return 1
+  fi
   case "$load:$active:$substate" in
     loaded:inactive:dead|loaded:failed:failed|masked:inactive:dead|masked-runtime:inactive:dead|not-found:inactive:dead) ;;
     *) return 1 ;;
@@ -914,9 +959,10 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     authorize-commands) [[ $# == 1 ]] || exit 2; authorize_commands ;;
     migrate-profile) [[ $# == 1 ]] || exit 2; migrate_profile ;;
     prepare-profile) [[ $# == 1 ]] || exit 2; prepare_service_profile ;;
+    repair-profile) [[ $# == 1 ]] || exit 2; repair_profile_tree ;;
     run) [[ $# == 1 ]] || exit 2; run_host ;;
     remove-pam) [[ $# == 1 ]] || exit 2; remove_pam_hook ;;
     reset) [[ $# == 1 ]] || exit 2; reset_machine ;;
-    *) /usr/bin/printf 'usage: %s {configure USER|configure-auto|authorize-commands|migrate-profile|prepare-profile|run|remove-pam|reset}\n' "$0" >&2; exit 2 ;;
+    *) /usr/bin/printf 'usage: %s {configure USER|configure-auto|authorize-commands|migrate-profile|prepare-profile|repair-profile|run|remove-pam|reset}\n' "$0" >&2; exit 2 ;;
   esac
 fi
