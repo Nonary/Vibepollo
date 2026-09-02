@@ -24,8 +24,10 @@ TEST(RemoteSession, SyntheticIdsAndLegacyIdsNeverFallThrough) {
   EXPECT_EQ(remote_session::identify(running_id, {}, 43), remote_session::control_e::none);
   EXPECT_EQ(remote_session::identify(11), remote_session::control_e::none);
   EXPECT_TRUE(remote_session::reserved_name("remote monitor"));
+  EXPECT_TRUE(remote_session::reserved_name("    Remote Monitor"));
   EXPECT_TRUE(remote_session::reserved_name("Remote Input"));
   EXPECT_TRUE(remote_session::reserved_name("Virtual Display"));
+  EXPECT_TRUE(remote_session::reserved_name("   Remote Input"));
   EXPECT_TRUE(remote_session::reserved_name("Terminate"));
   ASSERT_TRUE(remote_session::synthetic_artwork_filename(remote_session::control_e::monitor));
   EXPECT_EQ(*remote_session::synthetic_artwork_filename(remote_session::control_e::monitor), "remote-monitor.png");
@@ -100,11 +102,15 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
 }
 
 TEST(RemoteSession, ConfiguredRemoteMarkersCannotShadowSyntheticControls) {
+  const auto configured_input = remote_session::synthetic(remote_session::control_e::input);
+  const auto configured_monitor = remote_session::synthetic(remote_session::control_e::monitor);
   const std::vector<remote_session::app_t> configured {
     {1, "one", "One", false},
     {2, "shadow-input", "Remote Input", false},
     {3, "shadow-monitor", "remote monitor", false},
     {4, "legacy-virtual-display", "Virtual Display", false},
+    {5, configured_input.uuid, configured_input.title, false},
+    {6, configured_monitor.uuid, configured_monitor.title, false},
   };
   const auto idle = remote_session::project(caller("client"), {}, {}, configured, false);
   ASSERT_EQ(idle.catalogue.size(), 3);

@@ -181,10 +181,11 @@ namespace confighttp {
       }
 
       const auto default_image = std::string {"remote-session/"} + std::string {*artwork};
+      const auto configured_name = control == remote_session::control_e::input ? "Remote Input" : "Remote Monitor";
       const auto index = find_app_index_by_uuid(file_tree["apps"], synthetic.uuid);
       if (!index) {
         file_tree["apps"].push_back({
-          {"name", synthetic.title},
+          {"name", configured_name},
           {"uuid", synthetic.uuid},
           {"image-path", default_image},
         });
@@ -193,8 +194,8 @@ namespace confighttp {
       }
 
       auto &app = file_tree["apps"][*index];
-      if (app.value("name", std::string {}) != synthetic.title) {
-        app["name"] = synthetic.title;
+      if (app.value("name", std::string {}) != configured_name) {
+        app["name"] = configured_name;
         changed = true;
       }
       if (!app.contains("image-path") || !app["image-path"].is_string() || app["image-path"].get<std::string>().empty()) {
