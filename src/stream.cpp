@@ -22,6 +22,7 @@
 #include <system_error>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
 
 // lib includes
 #include <boost/algorithm/string/predicate.hpp>
@@ -1958,6 +1959,23 @@ namespace stream {
     auto ratecontrol_next_frame_start = std::chrono::steady_clock::now();
     std::optional<std::chrono::steady_clock::time_point> last_frame_timestamp;
 
+    struct wire_timeline_frame_t {
+      int64_t frame_index;
+      uint32_t rtp_timestamp;
+      std::chrono::steady_clock::time_point source_timestamp;
+      std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
+      std::chrono::steady_clock::time_point packet_enqueue_timestamp;
+      std::chrono::steady_clock::time_point packet_pop_timestamp;
+      std::chrono::steady_clock::time_point send_complete_timestamp;
+    };
+    struct wire_timeline_state_t {
+      std::optional<wire_timeline_frame_t> previous_frame;
+      std::chrono::steady_clock::time_point window_started;
+      unsigned lines = 0;
+      unsigned suppressed = 0;
+    };
+    std::unordered_map<session_t *, wire_timeline_state_t> wire_timeline_by_session;
+
     while (auto packet = packets->pop()) {
       if (shutdown_event->peek()) {
         break;
@@ -1970,6 +1988,19 @@ namespace stream {
         continue;
       }
       const auto packet_pop_timestamp = std::chrono::steady_clock::now();
+      auto wire_state_it = wire_timeline_by_session.find(session);
+      if (wire_state_it == wire_timeline_by_session.end()) {
+        // Bound diagnostic state even if many sessions are created during one
+        // long-lived broadcast-thread generation.
+        if (wire_timeline_by_session.size() >= 16) {
+          wire_timeline_by_session.erase(wire_timeline_by_session.begin());
+        }
+        wire_state_it = wire_timeline_by_session.emplace(
+          session,
+          wire_timeline_state_t {.window_started = packet_pop_timestamp}
+        ).first;
+      }
+      auto &wire_timeline_state = wire_state_it->second;
       packet_queue_latency_logger.collect_and_log(std::chrono::duration<double, std::milli>(packet_pop_timestamp - packet->packet_enqueue_timestamp).count());
       if (packet->frame_timestamp) {
         if (last_frame_timestamp) {
@@ -2139,6 +2170,18 @@ namespace stream {
         size_t ratecontrol_frame_packets_sent = 0;
         size_t ratecontrol_group_packets_sent = 0;
 
+        // RTP uses the paced presentation timestamp, while the remaining
+        // timeline points below use actual host processing/send times. Keeping
+        // both lets a client trace distinguish a source gap from a frame held
+        // after capture.
+        bool frame_is_dupe = false;
+        if (!packet->frame_timestamp) {
+          packet->frame_timestamp = ratecontrol_next_frame_start;
+          frame_is_dupe = true;
+        }
+        using rtp_tick = std::chrono::duration<uint32_t, std::ratio<1, 90000>>;
+        const uint32_t timestamp = std::chrono::round<rtp_tick>(*packet->frame_timestamp - video_epoch).count();
+
         auto blockIndex = 0;
         std::for_each(fec_blocks_begin, fec_blocks_end, [&](std::string_view &current_payload) {
           auto packets = (current_payload.size() + (blocksize - 1)) / blocksize;
@@ -2182,17 +2225,6 @@ namespace stream {
           };
 
           size_t next_shard_to_send = 0;
-
-          // RTP video timestamps use a 90 KHz clock and the paced/scheduled frame timestamp.
-          // Raw capture timing is tracked separately for frame_processing_latency.
-          // When a timestamp isn't available (duplicate frames), the timestamp from rate control is used instead.
-          bool frame_is_dupe = false;
-          if (!packet->frame_timestamp) {
-            packet->frame_timestamp = ratecontrol_next_frame_start;
-            frame_is_dupe = true;
-          }
-          using rtp_tick = std::chrono::duration<uint32_t, std::ratio<1, 90000>>;
-          uint32_t timestamp = std::chrono::round<rtp_tick>(*packet->frame_timestamp - video_epoch).count();
 
           // set FEC info now that we know for sure what our percentage will be for this frame
           for (auto x = 0; x < shards.size(); ++x) {
@@ -2306,6 +2338,93 @@ namespace stream {
         });
 
         session->video.lowseq = lowseq;
+
+        const auto send_complete_timestamp = std::chrono::steady_clock::now();
+        if (!frame_is_dupe) {
+          const wire_timeline_frame_t current_wire_frame {
+            .frame_index = packet->frame_index(),
+            .rtp_timestamp = timestamp,
+            .source_timestamp = *packet->frame_timestamp,
+            .host_processing_timestamp = packet->host_processing_timestamp,
+            .packet_enqueue_timestamp = packet->packet_enqueue_timestamp,
+            .packet_pop_timestamp = packet_pop_timestamp,
+            .send_complete_timestamp = send_complete_timestamp,
+          };
+
+          // A reused session address or a restarted frame sequence must not be
+          // joined to stale state from an older stream.
+          if (wire_timeline_state.previous_frame &&
+              current_wire_frame.frame_index <= wire_timeline_state.previous_frame->frame_index) {
+            wire_timeline_state = wire_timeline_state_t {.window_started = send_complete_timestamp};
+          }
+
+          if (wire_timeline_state.previous_frame) {
+            const auto &previous_wire_frame = *wire_timeline_state.previous_frame;
+            const auto source_gap = current_wire_frame.source_timestamp - previous_wire_frame.source_timestamp;
+            if (source_gap >= 40ms) {
+              if (send_complete_timestamp - wire_timeline_state.window_started >= 10s) {
+                if (wire_timeline_state.suppressed != 0) {
+                  BOOST_LOG(debug) << "Host video gap timeline: suppressed="sv << wire_timeline_state.suppressed
+                                   << " events in the previous rate-limit window"sv;
+                }
+                wire_timeline_state.window_started = send_complete_timestamp;
+                wire_timeline_state.lines = 0;
+                wire_timeline_state.suppressed = 0;
+              }
+
+              if (wire_timeline_state.lines < 8) {
+                const auto elapsed_ms = [](auto end, auto start) {
+                  return std::chrono::duration<double, std::milli>(end - start).count();
+                };
+                const auto host_age_ms = [&](const wire_timeline_frame_t &frame) {
+                  return frame.host_processing_timestamp ?
+                           elapsed_ms(frame.packet_enqueue_timestamp, *frame.host_processing_timestamp) :
+                           -1.0;
+                };
+                BOOST_LOG(debug)
+                  << "Host video gap timeline: source_gap="sv << elapsed_ms(
+                       current_wire_frame.source_timestamp,
+                       previous_wire_frame.source_timestamp
+                     )
+                  << "ms prev={frame="sv << previous_wire_frame.frame_index
+                  << ",rtp="sv << previous_wire_frame.rtp_timestamp
+                  << ",source_to_enqueue="sv << elapsed_ms(
+                       previous_wire_frame.packet_enqueue_timestamp,
+                       previous_wire_frame.source_timestamp
+                     )
+                  << "ms,host_to_enqueue="sv << host_age_ms(previous_wire_frame)
+                  << "ms,queue="sv << elapsed_ms(
+                       previous_wire_frame.packet_pop_timestamp,
+                       previous_wire_frame.packet_enqueue_timestamp
+                     )
+                  << "ms,pop_to_send="sv << elapsed_ms(
+                       previous_wire_frame.send_complete_timestamp,
+                       previous_wire_frame.packet_pop_timestamp
+                     )
+                  << "ms} curr={frame="sv << current_wire_frame.frame_index
+                  << ",rtp="sv << current_wire_frame.rtp_timestamp
+                  << ",source_to_enqueue="sv << elapsed_ms(
+                       current_wire_frame.packet_enqueue_timestamp,
+                       current_wire_frame.source_timestamp
+                     )
+                  << "ms,host_to_enqueue="sv << host_age_ms(current_wire_frame)
+                  << "ms,queue="sv << elapsed_ms(
+                       current_wire_frame.packet_pop_timestamp,
+                       current_wire_frame.packet_enqueue_timestamp
+                     )
+                  << "ms,pop_to_send="sv << elapsed_ms(
+                       current_wire_frame.send_complete_timestamp,
+                       current_wire_frame.packet_pop_timestamp
+                     )
+                  << "ms}"sv;
+                ++wire_timeline_state.lines;
+              } else {
+                ++wire_timeline_state.suppressed;
+              }
+            }
+          }
+          wire_timeline_state.previous_frame = current_wire_frame;
+        }
 
         // Update per-session performance counters
         session->stats.frames_sent.fetch_add(1, std::memory_order_relaxed);
