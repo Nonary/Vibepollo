@@ -14,3 +14,15 @@ TEST(UtilityHex, ShortAndSeparatedInputRemainSupported) {
   EXPECT_EQ((util::from_hex<std::array<std::uint8_t, 4>>("12:34:56:78", true)),
             (std::array<std::uint8_t, 4> {0x12, 0x34, 0x56, 0x78}));
 }
+
+TEST(UtilityHex, EmptyVectorsAreSafeInEitherDirection) {
+  std::vector<std::uint8_t> empty;
+  EXPECT_EQ(util::hex_vec(empty), "");
+  EXPECT_EQ(util::hex_vec(empty, true), "");
+}
+TEST(UtilityHex, AppendingObjectPreservesItsByteRepresentation) {
+  const std::array<std::uint8_t, 3> value {0, 0x7f, 0xff};
+  std::vector<std::uint8_t> bytes {0x42};
+  util::append_struct(bytes, value);
+  EXPECT_EQ(bytes, (std::vector<std::uint8_t> {0x42, 0, 0x7f, 0xff}));
+}
