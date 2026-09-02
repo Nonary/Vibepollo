@@ -137,16 +137,15 @@ namespace nvhttp::pairing_policy {
   }
 
   admission_decision_t admit_pending_session(
-    const bool greeter_session,
     const std::string_view unique_id,
     const std::string_view client_certificate_hex,
     const std::string_view salt_hex,
     const std::size_t pending_sessions,
     const bool replacing_existing
   ) {
-    if (greeter_session) {
-      return {false, "Pairing is disabled before login"};
-    }
+    // Pairing is accepted at the login screen too. Completing it still
+    // requires the Web UI login to submit the PIN, so the greeter gains no
+    // unauthenticated path; refusing here was a GameStream habit only.
     if (!valid_unique_id(unique_id)) {
       return {false, "Invalid uniqueid"};
     }

@@ -83,7 +83,6 @@ namespace nvhttp::pairing_policy {
     std::string_view presented_certificate_identity
   );
   admission_decision_t admit_pending_session(
-    bool greeter_session,
     std::string_view unique_id,
     std::string_view client_certificate_hex,
     std::string_view salt_hex,
