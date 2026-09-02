@@ -3601,7 +3601,7 @@ namespace nvhttp {
       // Synthetic controls are host actions, never configured applications.
       // Identify them before resolve_app() so they cannot collide with an
       // apps.json id and accidentally launch a real process.
-      const auto synthetic_control = remote_session::identify(util::from_view(appid_str), appuuid_str);
+      const auto synthetic_control = remote_session::identify(util::from_view(appid_str), appuuid_str, current_appid);
       // A secondary client sees the active game in its projected catalogue
       // while serverinfo is deliberately presented as free. Selecting it is a
       // Resume request, not a second process launch.
@@ -5021,16 +5021,18 @@ namespace nvhttp {
     auto args = request->parse_query_string();
     const auto appid = get_arg(args, "appid", "0");
     const auto appuuid = get_arg(args, "appuuid", "");
+    const auto current_appid = proc::proc.running();
+    const auto synthetic_control = remote_session::identify(util::from_view(appid), appuuid, current_appid);
     auto app_ctx = proc::proc.resolve_app(appid, appuuid);
     std::string app_image;
     if (app_ctx) {
       app_image = proc::validate_app_image_path(app_ctx->image_path);
-    } else if (remote_session::identify(util::from_view(appid), appuuid) == remote_session::control_e::running_game) {
-      if (const auto running_app = proc::proc.resolve_app(proc::proc.running())) {
+    } else if (synthetic_control == remote_session::control_e::running_game) {
+      if (const auto running_app = proc::proc.resolve_app(current_appid)) {
         app_image = proc::validate_app_image_path(running_app->image_path);
       }
     } else if (const auto artwork = remote_session::synthetic_artwork_filename(
-                 remote_session::identify(util::from_view(appid), appuuid)
+                 synthetic_control
                )) {
       app_image = (fs::path {SUNSHINE_ASSETS_DIR} / "remote-session" / std::string {*artwork}).string();
     } else {
