@@ -349,7 +349,9 @@ if vibepollo_privileged_helper_is_safe "$vibepollo_machine_host" && \
    "$vibepollo_machine_host" configure-auto; then
   vibepollo_machine_configured=1
 else
-  echo "warning: configure a machine profile owner before enabling Vibepollo."
+  echo "==> ACTION REQUIRED: Vibepollo could not choose the desktop user who owns streaming on this machine." >&2
+  echo "    Run:  sudo /usr/libexec/vibeshine/vibepollo-machine-host configure USER" >&2
+  echo "    then: sudo systemctl enable --now vibepollo-session-controller.service" >&2
 fi
 
 if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-kwin-capability" ]; then

@@ -119,8 +119,9 @@ compositor. Compare the installed `modinfo` version with
 `/sys/module/vibeshine_drm/version` and reboot when they differ.
 
 On this KDE/Wayland/NVIDIA host, keep `capture = kms`. A healthy deployment
-requires the event-driven Vibepollo DRM capture message and successful H.264,
-HEVC, and AV1 NVENC discovery. Unit activity, TCP listeners, or a reachable Web
+requires the event-driven Vibepollo DRM capture message and successful H.264
+encoder discovery; HEVC and AV1 are reported when the GPU supports them but are
+not required for readiness. Unit activity, TCP listeners, or a reachable Web
 UI alone are not proof that remote display works. Test both the greeter and the
 desktop after a reboot, expecting the greeter stream to disconnect at login.
 

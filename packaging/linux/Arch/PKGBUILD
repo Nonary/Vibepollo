@@ -79,9 +79,14 @@ makedepends=(
 )
 
 optdepends=(
+  'intel-media-driver: Intel GPU encoding support'
   'libva-mesa-driver: AMD GPU encoding support'
   'linux-cachyos-headers: build the virtual-display module for the standard CachyOS kernel'
+  'linux-cachyos-lts-headers: build the virtual-display module for the CachyOS LTS kernel'
   'linux-headers: build the virtual-display module for the standard Arch kernel'
+  'linux-lts-headers: build the virtual-display module for the Arch LTS kernel'
+  'linux-zen-headers: build the virtual-display module for the Arch zen kernel'
+  'plasma-workspace: KDE Plasma Wayland desktop that the machine host streams'
   'shim-signed: provide a signed shim boot chain for MOK trust on strict Secure Boot systems'
 )
 

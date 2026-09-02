@@ -153,6 +153,19 @@ else()
     if(UDEV_FOUND)
         install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/60-sunshine.rules"
                 DESTINATION "${UDEV_RULES_INSTALL_DIR}")
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/70-vibepollo-uinput.rules"
+                    DESTINATION "${UDEV_RULES_INSTALL_DIR}")
+        endif()
+    endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # Firewall service definitions and the PipeWire quantum the stream expects.
+        install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/firewalld/vibepollo.xml"
+                DESTINATION "lib/firewalld/services")
+        install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/ufw/vibepollo"
+                DESTINATION "${CMAKE_INSTALL_FULL_SYSCONFDIR}/ufw/applications.d")
+        install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/pipewire/50-vibepollo-audio.conf"
+                DESTINATION "${CMAKE_INSTALL_DATADIR}/pipewire/pipewire.conf.d")
     endif()
     if(SYSTEMD_FOUND)
         if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")

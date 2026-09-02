@@ -201,6 +201,11 @@ initialize_application_environment() {
 extract_desktop_authorizations() {
   local source=$1 destination=$2 entries encoded decoded raw_directory raw_command directory command size
   local authorization_count=0 manifest_bytes=0 line_bytes
+  if [[ ! -e "$source" && ! -L "$source" ]]; then
+    # A fresh machine profile has no application list yet; authorize nothing.
+    : >"$destination"
+    return 0
+  fi
   [[ -f "$source" && ! -L "$source" ]] || fail "unsafe application list: $source"
   size=$(/usr/bin/stat -c '%s' -- "$source") || return 1
   [[ "$size" =~ ^[0-9]+$ ]] && ((size > 0 && size <= 16777216)) ||
@@ -516,17 +521,31 @@ configure_automatically() {
   elif [[ -f "$legacy_settings_file" && ! -L "$legacy_settings_file" ]]; then
     selected=$(read_desktop_user "$legacy_settings_file")
   else
-    while IFS=: read -r user _ uid _ _ home _; do
-      [[ "$uid" =~ ^[0-9]+$ && "$uid" -ge 1000 && "$home" == /* && -d "$home" && ! -L "$home" ]] || continue
-      for state in "$home/.config/vibepollo/vibepollo_state.json" "$home/.config/vibepollo/sunshine_state.json"; do
+    local -a accounts=()
+    while IFS=: read -r user _ uid _ _ home shell; do
+      [[ "$uid" =~ ^[0-9]+$ && "$uid" -ge 1000 && "$uid" -lt 60000 && "$home" == /* && -d "$home" && ! -L "$home" ]] || continue
+      valid_user "$user" || continue
+      case "$shell" in */nologin|*/false|'') continue ;; esac
+      accounts+=("$user")
+      for state in "$home/.config/vibepollo/vibeshine_state.json" "$home/.config/vibepollo/sunshine_state.json"; do
         if user_exec "$user" /usr/bin/test -f "$state" && ! user_exec "$user" /usr/bin/test -L "$state"; then
           candidates+=("$user")
           break
         fi
       done
     done < <(/usr/bin/getent passwd)
-    ((${#candidates[@]} == 1)) || fail 'automatic setup requires exactly one desktop Vibepollo profile'
-    selected=${candidates[0]}
+    if ((${#candidates[@]} == 1)); then
+      selected=${candidates[0]}
+    elif ((${#candidates[@]} > 1)); then
+      fail "automatic setup found several desktop Vibepollo profiles (${candidates[*]}); choose one with: vibepollo-machine-host configure USER"
+    elif ((${#accounts[@]} == 1)); then
+      # First installation: the only interactive account owns the machine profile.
+      selected=${accounts[0]}
+    elif ((${#accounts[@]} == 0)); then
+      fail 'automatic setup found no interactive desktop account; choose one with: vibepollo-machine-host configure USER'
+    else
+      fail "automatic setup found several desktop accounts (${accounts[*]}); choose one with: vibepollo-machine-host configure USER"
+    fi
   fi
   write_settings "$selected"
   migrate_profile
@@ -584,6 +603,16 @@ load_session() {
   fi
 }
 
+nvidia_gpu_present() {
+  local device vendor class
+  for device in /sys/bus/pci/devices/*; do
+    read -r vendor <"$device/vendor" 2>/dev/null || continue
+    read -r class <"$device/class" 2>/dev/null || continue
+    [[ "$vendor" == 0x10de && "$class" == 0x03* ]] && return 0
+  done
+  return 1
+}
+
 run_host() {
   local host_capabilities host_log='' host_log_directory=/run/vibepollo/host/logs
   local host_log_prefix host_pid readiness_attempt state status shutting_down=0
@@ -604,7 +633,11 @@ run_host() {
     fail 'host runtime directory is unsafe'
   [[ ! -e "$host_log_directory" && ! -L "$host_log_directory" ]] || fail 'host readiness log directory is unsafe'
   overrides+=("log_path=$host_log_prefix")
-  if [[ "$session_role" == greeter ]]; then overrides+=('encoder=nvenc_experimental' 'capture=kms' 'min_log_level=info' 'virtual_display_mode=shared' 'virtual_display_layout=exclusive' 'dd_config_revert_on_disconnect=enabled' 'dd_config_revert_delay=0' 'origin_web_ui_allowed=pc' 'session_history_enabled=disabled' 'frame_limiter_enable=false' 'file_apps=/usr/share/vibepollo/prelogin/apps.json'); fi
+  if [[ "$session_role" == greeter ]]; then
+    # The greeter has no interactive fallback, so pin the proven NVENC path on
+    # NVIDIA hosts. Other GPUs keep automatic encoder selection (VAAPI/software).
+    if nvidia_gpu_present; then overrides+=('encoder=nvenc_experimental'); fi
+    overrides+=('capture=kms' 'min_log_level=info' 'virtual_display_mode=shared' 'virtual_display_layout=exclusive' 'dd_config_revert_on_disconnect=enabled' 'dd_config_revert_delay=0' 'origin_web_ui_allowed=pc' 'session_history_enabled=disabled' 'frame_limiter_enable=false' 'file_apps=/usr/share/vibepollo/prelogin/apps.json'); fi
   environment=("HOME=$machine_profile" "USER=$service_user" "LOGNAME=$service_user" "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin" "LANG=C.UTF-8" "SHELL=/bin/sh" \
     "XDG_CONFIG_HOME=/var/lib" "XDG_RUNTIME_DIR=/run/vibepollo/host" "VIBEPOLLO_MACHINE_HOST=1" \
     "VIBEPOLLO_SESSION_ROLE=$session_role" "VIBEPOLLO_SESSION_USER=$session_user" "VIBEPOLLO_SESSION_UID=$session_uid" "VIBEPOLLO_SESSION_GID=$session_gid" "VIBEPOLLO_SESSION_GROUPS=$session_groups" \
@@ -655,14 +688,16 @@ run_host() {
       return "${status:-1}"
     fi
     # KMS capture is instantiated by the first stream and is verified after a
-    # client connects; startup readiness proves the listener and every encoder.
+    # client connects; startup readiness proves the listener and the mandatory
+    # H.264 encoder. HEVC and AV1 depend on the GPU generation and are optional.
     if find_host_readiness_log &&
        /usr/bin/grep -Fq 'Configuration UI available at' "$host_log" &&
-       /usr/bin/grep -Fq 'Found H.264 encoder:' "$host_log" &&
-       /usr/bin/grep -Fq 'Found HEVC encoder:' "$host_log" &&
-       /usr/bin/grep -Fq 'Found AV1 encoder:' "$host_log"; then
+       /usr/bin/grep -Fq 'Found H.264 encoder:' "$host_log"; then
+      local codecs=H.264
+      /usr/bin/grep -Fq 'Found HEVC encoder:' "$host_log" && codecs+=', HEVC'
+      /usr/bin/grep -Fq 'Found AV1 encoder:' "$host_log" && codecs+=', AV1'
       /usr/bin/systemd-notify --pid="$$" --ready \
-        --status="Vibepollo generation $session_generation is listening with H.264, HEVC, and AV1 encoders" || {
+        --status="Vibepollo generation $session_generation is listening with $codecs encoders" || {
           terminate_host
           break
         }

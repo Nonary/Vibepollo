@@ -390,10 +390,18 @@ int main(int argc, char **argv) {
   const int source = open_beneath(home, source_relative,
                                   O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
   if (source < 0) {
+    const int open_error = errno;
     close(home);
     close(destination);
-    report_error("could not open the confined desktop profile");
     free(passwd_buffer);
+    if (open_error == ENOENT) {
+      /* A first installation has no desktop profile to import. The empty
+       * staging directory becomes a fresh machine profile. */
+      fprintf(stderr, "vibepollo-profile-import: no desktop profile to import; starting fresh\n");
+      return 0;
+    }
+    errno = open_error;
+    report_error("could not open the confined desktop profile");
     return 1;
   }
   struct stat source_attributes;
