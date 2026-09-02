@@ -168,6 +168,13 @@ process environment, so compositor children never inherit the bridge. Because
 any set-user-ID program could be started with the library preloaded, every hook
 in it stays a pass-through unless the process is `/usr/bin/kwin_wayland`.
 
+A capability-bearing KWin is also non-dumpable, so `/proc/PID/exe`,
+`/proc/PID/environ`, and the ownership of `/proc/PID` itself are root-only
+even for the session user. The session-environment helper therefore identifies
+the compositor through the world-readable `cgroup`, `status`, and `comm` files
+and only uses the `exe` link when it is readable. Any future helper that
+inspects KWin must assume the same.
+
 The cleaner long-term options are a KWin feature that maps a display device to
 a render node through udev, or registering the virtual DRM device under the
 NVIDIA PCI device in the kernel. The kernel route changes what every libdrm

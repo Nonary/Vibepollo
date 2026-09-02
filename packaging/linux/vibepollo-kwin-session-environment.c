@@ -251,23 +251,72 @@ static bool read_unified_cgroup_at(int process_directory, char *destination, siz
   return parse_unified_cgroup(contents, destination, capacity);
 }
 
-static bool process_is_session_kwin(int process_directory, uid_t uid, const char *expected_cgroup) {
+static bool read_status_uid(int process_directory, uid_t *uid_out) {
+  char contents[4096] = {0};
+  size_t length = 0;
+  if (!uid_out || !read_file_at_bounded(process_directory, "status", contents, sizeof(contents) - 1, &length)) {
+    return false;
+  }
+  contents[length] = 0;
+  char *line = contents;
+  while (line && *line) {
+    char *next = strchr(line, '\n');
+    if (next) {
+      *next = 0;
+    }
+    if (!strncmp(line, "Uid:", 4)) {
+      unsigned long real_uid = 0;
+      if (sscanf(line + 4, " %lu", &real_uid) != 1 || real_uid > UINT_MAX) {
+        return false;
+      }
+      *uid_out = (uid_t) real_uid;
+      return true;
+    }
+    line = next ? next + 1 : NULL;
+  }
+  return false;
+}
+
+static bool process_executable_is_kwin(int process_directory) {
   char executable[PATH_MAX] = {0};
-  char cgroup[MAXIMUM_CGROUP_BYTES] = {0};
-  struct stat attributes = {0};
-  if (process_directory < 0 || !expected_cgroup || fstat(process_directory, &attributes) || attributes.st_uid != uid) {
-    return false;
-  }
   const ssize_t executable_length = readlinkat(process_directory, "exe", executable, sizeof(executable) - 1);
-  if (executable_length <= 0 || (size_t) executable_length >= sizeof(executable) - 1) {
+  if (executable_length > 0 && (size_t) executable_length < sizeof(executable) - 1) {
+    executable[executable_length] = 0;
+    return !strcmp(executable, "/usr/bin/kwin_wayland");
+  }
+  if (executable_length >= 0 || (errno != EACCES && errno != EPERM)) {
     return false;
   }
-  executable[executable_length] = 0;
-  if (strcmp(executable, "/usr/bin/kwin_wayland")) {
+  // The distro KWin carries cap_sys_nice, so it runs non-dumpable and its
+  // /proc/PID/exe link is readable by root only. The caller has already
+  // confined the candidate to this unit's cgroup and real UID; the readable
+  // thread name is the remaining identity check.
+  char name[64] = {0};
+  size_t length = 0;
+  if (!read_file_at_bounded(process_directory, "comm", name, sizeof(name) - 1, &length) || !length) {
     return false;
   }
-  return read_unified_cgroup_at(process_directory, cgroup, sizeof(cgroup)) &&
-         !strcmp(cgroup, expected_cgroup);
+  name[length] = 0;
+  if (name[length - 1] == '\n') {
+    name[length - 1] = 0;
+  }
+  return !strcmp(name, "kwin_wayland");
+}
+
+static bool process_is_session_kwin(int process_directory, uid_t uid, const char *expected_cgroup) {
+  char cgroup[MAXIMUM_CGROUP_BYTES] = {0};
+  uid_t process_uid = 0;
+  if (process_directory < 0 || !expected_cgroup) {
+    return false;
+  }
+  // /proc/PID is root-owned for a capability-bearing process, so identify the
+  // owner through the world-readable status file instead of the directory.
+  if (!read_unified_cgroup_at(process_directory, cgroup, sizeof(cgroup)) ||
+      strcmp(cgroup, expected_cgroup) ||
+      !read_status_uid(process_directory, &process_uid) || process_uid != uid) {
+    return false;
+  }
+  return process_executable_is_kwin(process_directory);
 }
 
 static enum kwin_session_kind session_kind_from_cgroup(const char *cgroup) {
