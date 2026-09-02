@@ -729,7 +729,7 @@ do_print_next_steps() {
 ==> Vibepollo next steps
     1. Log in to a KDE Plasma (Wayland) desktop as the configured user.
     2. Open https://localhost:47990 on this machine, create the Web UI login, then pair Moonlight.
-       Pairing is only possible from a logged-in desktop; the pre-login greeter stream reuses that pairing.
+       Pairing also works at the login screen; enter the PIN in the Web UI from another device.
     3. If a firewall is enabled, allow the Vibepollo ports:
          firewalld:  sudo firewall-cmd --permanent --add-service=vibepollo && sudo firewall-cmd --reload
          ufw:        sudo ufw allow Vibepollo

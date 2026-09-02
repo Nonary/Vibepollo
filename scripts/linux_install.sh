@@ -435,7 +435,7 @@ print_summary() {
   fi
   printf '    %d. Log in to your KDE Plasma (Wayland) desktop.\n' "$step"; step=$((step + 1))
   printf '    %d. Open https://localhost:47990 on this machine, create the Web UI login, then pair Moonlight with the PIN.\n' "$step"; step=$((step + 1))
-  printf '       Pairing only works from a logged-in desktop; the pre-login stream reuses that pairing.\n'
+  printf '       Pairing also works at the login screen; enter the PIN in the Web UI from another device.\n'
   printf '    %d. Log out and back in once (or restart PipeWire) so the audio quantum drop-in takes effect.\n' "$step"; step=$((step + 1))
   printf '\n    Status:  sudo systemctl status vibepollo-session-controller.service vibepollo.service\n'
   printf '    Logs:    sudo journalctl -u vibepollo-session-controller.service -u vibepollo.service -b\n'
