@@ -101,13 +101,15 @@ namespace {
   class shutdown_deadline_t {
   public:
     explicit shutdown_deadline_t(std::atomic_bool *signal_requested, bool supervised_machine_host):
-        signal_requested_ {signal_requested} {
-      // systemd owns the machine host's process lifecycle.  A process-local
-      // deadline cannot safely bypass ordered encoder, capture, and display
-      // teardown with _Exit() while imported GPU resources are still live.
-      if (supervised_machine_host) {
-        return;
-      }
+        signal_requested_ {signal_requested},
+        supervised_machine_host_ {supervised_machine_host} {
+      // The machine host runs under systemd with SendSIGKILL=no so that the
+      // display topology survives a stop. That makes this watchdog the only
+      // thing that can end a shutdown whose joins never return: without it a
+      // hung host outlives its unit, keeps the ports, and blocks every
+      // upgrade and restart until someone kills it by hand. The preserve
+      // request was already made when the signal arrived, so a forced exit
+      // after the deadline loses nothing that a graceful exit would keep.
       try {
         worker_ = std::jthread([this](std::stop_token) {
           run();
@@ -174,8 +176,10 @@ namespace {
         return;
       }
 
-      constexpr auto kShutdownDeadline = std::chrono::seconds(10);
-      if (cv_.wait_until(lock, std::chrono::steady_clock::now() + kShutdownDeadline, [this] {
+      // The machine host's unit allows 20 seconds for a stop; leave a margin so
+      // the forced exit lands before systemd gives up on the unit.
+      const auto deadline = supervised_machine_host_ ? std::chrono::seconds(15) : std::chrono::seconds(10);
+      if (cv_.wait_until(lock, std::chrono::steady_clock::now() + deadline, [this] {
             return state_ != state_e::armed;
           })) {
         return;
@@ -185,7 +189,13 @@ namespace {
       // therefore cannot leave a stale timer behind to trap later.
       state_ = state_e::firing;
       lock.unlock();
-      BOOST_LOG(fatal) << "10 seconds passed, yet Sunshine's still running: Forcing shutdown"sv;
+      BOOST_LOG(fatal) << deadline.count() << " seconds passed, yet Vibepollo's still running: Forcing shutdown"sv;
+      if (supervised_machine_host_) {
+        // A trap would leave the process (and its ports) behind for systemd,
+        // which is exactly the orphan this deadline exists to prevent.
+        logging::log_flush();
+        std::_Exit(lifetime::desired_exit_code);
+      }
       lifetime::debug_trap();
     }
 
@@ -193,6 +203,7 @@ namespace {
     std::condition_variable cv_;
     state_e state_ {state_e::idle};
     std::atomic_bool *signal_requested_ = nullptr;
+    bool supervised_machine_host_ = false;
     std::jthread worker_;
   };
 }  // namespace

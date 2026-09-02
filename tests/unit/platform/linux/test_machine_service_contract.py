@@ -333,14 +333,16 @@ if not machine_guard_at < machine_return_at < self_reexec_at:
     raise AssertionError("machine-host restart guard does not precede ordinary self-reexec registration")
 require(linux_misc, "execv(executable, lifetime::get_argv())", "ordinary Linux self-reexec")
 
-# A supervised machine child must complete ordered GPU teardown.  Its service
-# manager owns termination; an in-process deadline may not bypass destructors.
+# A supervised machine child first requests display preservation and attempts
+# ordered GPU teardown. Bound hung joins before systemd's 20-second timeout.
 for invariant in (
     'std::getenv("VIBEPOLLO_MACHINE_HOST")',
     "machine_host_environment[0] == '1'",
     "machine_host_environment[1] == '\\0'",
     "shutdown_deadline_t shutdown_deadline {&shutdown_signal_requested, supervised_machine_host}",
-    "if (supervised_machine_host)",
+    "if (supervised_machine_host_)",
+    "supervised_machine_host_ ? std::chrono::seconds(15) : std::chrono::seconds(10)",
+    "std::_Exit(lifetime::desired_exit_code)",
     "pthread_sigmask(SIG_BLOCK",
     "sigwait(&termination_signal_set",
     "request_process_shutdown_preserve()",
