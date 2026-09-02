@@ -87,9 +87,12 @@ namespace remote_session {
       case control_e::resume: return {resume_id, synthetic_uuid(control), ranked_title("  ", "Resume"), true};
       case control_e::disconnect_monitor: return {disconnect_monitor_id, synthetic_uuid(control), "Disconnect Monitor", true};
       case control_e::disconnect_input: return {disconnect_input_id, synthetic_uuid(control), "Disconnect Input", true};
-      case control_e::terminate: return {terminate_id, synthetic_uuid(control), ranked_title(" ", "Terminate"), true};
-      case control_e::monitor: return {monitor_id, synthetic_uuid(control), ranked_title("   ", "Remote Monitor"), true};
-      case control_e::input: return {input_id, synthetic_uuid(control), "Remote Input", true};
+      case control_e::terminate:
+        return {terminate_id, synthetic_uuid(control), ranked_title(" ", "Terminate"), true};
+      case control_e::monitor:
+        return {monitor_id, synthetic_uuid(control), ranked_title("    ", "Remote Monitor"), true};
+      case control_e::input:
+        return {input_id, synthetic_uuid(control), ranked_title("   ", "Remote Input"), true};
       default: return {};
     }
   }
@@ -112,11 +115,12 @@ namespace remote_session {
   app_t synthetic_running_game(const app_t &game) {
     // Moonlight clients commonly alphabetize the received catalogue. Ranked
     // leading spaces keep this resume-only duplicate first, followed by
-    // Remote Monitor, Resume, and Terminate, without changing visible labels.
+    // Remote Monitor, Remote Input, Resume, and Terminate, without changing
+    // visible labels.
     return {
       synthetic_running_game_id(game.id),
       synthetic_uuid(control_e::running_game),
-      ranked_title("    ", game.title),
+      ranked_title("     ", game.title),
       true,
     };
   }
@@ -178,7 +182,11 @@ namespace remote_session {
       // configured app. Keep that complete catalogue, but add a distinct,
       // resume-only copy of the active game at the front. The configured copy
       // remains available under its normal identity.
-      result.catalogue = {synthetic_running_game(game.app), synthetic(control_e::terminate)};
+      result.catalogue = {
+        synthetic_running_game(game.app),
+        synthetic(control_e::resume),
+        synthetic(control_e::terminate),
+      };
       result.catalogue.insert(result.catalogue.end(), visible_configured.begin(), visible_configured.end());
       if (owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
       result.catalogue.push_back(synthetic(control_e::monitor));
