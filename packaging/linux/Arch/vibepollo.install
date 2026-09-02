@@ -193,7 +193,9 @@ vibepollo_stop_exact_unit() {
   # Never bypass a service's ordered resource teardown.  Killing systemctl
   # only abandons the client while its manager job continues; killing the unit
   # cgroup can strand live GPU imports and is therefore forbidden here.
-  timeout --signal=TERM --kill-after=2 30 systemctl stop "$1" 2>/dev/null
+  # Controller cleanup can legitimately spend more than 30 seconds draining
+  # the host and GPU bindings; keep waiting for the manager's ordered stop.
+  timeout --signal=TERM --kill-after=2 60 systemctl stop "$1" 2>/dev/null
 }
 
 vibepollo_capture_unit_list() {
@@ -367,6 +369,22 @@ vibepollo_controller_remains_frozen() {
     grep -qx "MainPID=$vibepollo_controller_pid" <<<"$properties" && \
     grep -qx "ControlGroup=$vibepollo_controller_cgroup" <<<"$properties" && \
     grep -qx 'FreezerState=frozen' <<<"$properties"
+}
+
+vibepollo_thaw_controller() {
+  local properties
+  ((vibepollo_controller_was_frozen == 1)) || return 0
+  timeout --signal=KILL 15 systemctl thaw \
+    vibepollo-session-controller.service 2>/dev/null || return 1
+  vibepollo_controller_was_frozen=0
+  properties=$(timeout --signal=KILL 5 systemctl show vibepollo-session-controller.service \
+    --property=ActiveState --property=SubState --property=MainPID \
+    --property=ControlGroup --property=FreezerState 2>/dev/null) || return 1
+  grep -qx 'ActiveState=active' <<<"$properties" && \
+    grep -qx 'SubState=running' <<<"$properties" && \
+    grep -qx "MainPID=$vibepollo_controller_pid" <<<"$properties" && \
+    grep -qx "ControlGroup=$vibepollo_controller_cgroup" <<<"$properties" && \
+    grep -qx 'FreezerState=running' <<<"$properties"
 }
 
 vibepollo_stop_brokers() (
@@ -600,6 +618,45 @@ vibepollo_cleanup_legacy_transition_state() {
   )
 }
 
+vibepollo_preserved_quiesce_is_safe() {
+  local unit contents
+  vibepollo_runtime_root_is_safe_or_absent && \
+    vibepollo_restore_template_is_masked && \
+    vibepollo_control_socket_is_masked && \
+    vibepollo_broker_socket_is_masked && \
+    vibepollo_host_unit_is_masked || return 1
+  for unit in \
+    vibeshine-vkms-control.socket \
+    vibepollo-session-exec.socket \
+    vibepollo-session-controller.service \
+    vibepollo.service \
+    vibepollo-prelogin.service \
+    vibepollo-machine-prepare.service; do
+    # A timed-out pre-hook may leave the controller enabled even though its
+    # stop job completed moments later. The admission and host masks above are
+    # the restart fence; quiescence, rather than enablement, is the proof needed
+    # before the post-hook repairs and starts the new installation.
+    vibepollo_unit_is_quiescent "$unit" || return 1
+  done
+  vibepollo_control_instances_are_quiescent && \
+    vibepollo_brokers_are_quiescent && \
+    vibepollo_restore_instances_are_quiescent || return 1
+  [[ ! -e "$vibepollo_broker_socket" && ! -L "$vibepollo_broker_socket" &&
+     ! -e "$vibepollo_control_socket" && ! -L "$vibepollo_control_socket" &&
+     ! -e "$vibepollo_legacy_handoff_directory" && ! -L "$vibepollo_legacy_handoff_directory" &&
+     ! -e "$vibepollo_legacy_restore_directory" && ! -L "$vibepollo_legacy_restore_directory" &&
+     ! -e "$vibepollo_legacy_transition_lock" && ! -L "$vibepollo_legacy_transition_lock" &&
+     ! -e "$vibepollo_legacy_prelogin_marker" && ! -L "$vibepollo_legacy_prelogin_marker" ]] || return 1
+  if [[ -e "$vibepollo_host_upgrade_dropin" || -L "$vibepollo_host_upgrade_dropin" ]]; then
+    [[ -f "$vibepollo_host_upgrade_dropin" && ! -L "$vibepollo_host_upgrade_dropin" &&
+       $(stat -c '%u:%g:%a:%h:%F' -- "$vibepollo_host_upgrade_dropin") == \
+         '0:0:644:1:regular file' ]] || return 1
+    contents=$(sed -n '1,6p' -- "$vibepollo_host_upgrade_dropin") || return 1
+    [[ "$contents" == $'[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=process\nSendSIGKILL=no' ||
+       "$contents" == $'[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=control-group\nSendSIGKILL=no' ]] || return 1
+  fi
+}
+
 vibepollo_quiesce_step=''
 # Run one quiesce step and remember its name for the failure report.
 vq() {
@@ -617,8 +674,8 @@ vibepollo_abort_quiesce() {
     vibepollo_controller_was_frozen=0
   fi
   # Pre-replacement never unmasks anything: fail closed by stopping the
-  # controller and host under the fence (systemd thaws before it stops), then
-  # drop the fence so post-replacement can bring the new host up cleanly.
+  # controller and host under the fence, then drop the fence so
+  # post-replacement can bring the new host up cleanly.
   vibepollo_stop_exact_unit vibepollo-session-controller.service
   vibepollo_stop_exact_unit vibepollo.service
   # Socket paths that outlived a masked-then-stopped unit would keep the next
@@ -649,6 +706,11 @@ do_quiesce_machine_host() {
   local unit legacy_status have_systemd=0
   if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
     have_systemd=1
+    # Arch invokes this scriptlet both before and after replacing the package.
+    # A successful pre-upgrade deliberately leaves every admission path masked;
+    # accept that proven state instead of activating a drop-in through the
+    # host's runtime mask during post-upgrade.
+    vibepollo_preserved_quiesce_is_safe && return 0
     vq vibepollo_select_upgrade_kill_mode || return 1
     vq vibepollo_prepare_host_upgrade_fence || return 1
     vq vibepollo_freeze_controller || return 1
@@ -689,9 +751,11 @@ do_quiesce_machine_host() {
     vq vibepollo_stop_restore_instances || return 1
     vq vibepollo_stop_brokers || return 1
     vq vibepollo_controller_remains_frozen || return 1
+    # systemd refuses StopUnit for a frozen service. Admission and the host are
+    # already masked here, so thaw the controller only for its ordered stop.
+    vq vibepollo_thaw_controller || return 1
     vibepollo_stop_exact_unit vibepollo-session-controller.service
     vq vibepollo_unit_is_quiescent vibepollo-session-controller.service || return 1
-    vibepollo_controller_was_frozen=0
     vibepollo_stop_exact_unit vibepollo-prelogin.service
     vibepollo_stop_exact_unit vibepollo-machine-prepare.service
     timeout --signal=KILL 15 systemctl disable vibepollo-session-controller.service --now 2>/dev/null || true

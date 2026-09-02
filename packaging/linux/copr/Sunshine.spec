@@ -472,7 +472,9 @@ vibepollo_stop_exact_unit() {
   # Never bypass a service's ordered resource teardown.  Killing systemctl
   # only abandons the client while its manager job continues; killing the unit
   # cgroup can strand live GPU imports and is therefore forbidden here.
-  timeout --signal=TERM --kill-after=2 30 systemctl stop "$1" 2>/dev/null
+  # Controller cleanup can legitimately spend more than 30 seconds draining
+  # the host and GPU bindings; keep waiting for the manager's ordered stop.
+  timeout --signal=TERM --kill-after=2 60 systemctl stop "$1" 2>/dev/null
 }
 vibepollo_bounded_unit_list() (
   vibepollo_unit_pattern=$1
@@ -756,6 +758,20 @@ vibepollo_controller_remains_frozen() {
     printf '%%s\n' "$vibepollo_controller_state" | grep -qx "ControlGroup=$vibepollo_controller_cgroup" && \
     printf '%%s\n' "$vibepollo_controller_state" | grep -qx 'FreezerState=frozen'
 }
+vibepollo_thaw_controller() {
+  [ "$vibepollo_controller_was_frozen" -eq 1 ] || return 0
+  timeout --signal=KILL 15 systemctl thaw \
+    vibepollo-session-controller.service 2>/dev/null || return 1
+  vibepollo_controller_was_frozen=0
+  vibepollo_controller_state=$(timeout --signal=KILL 5 systemctl show \
+    vibepollo-session-controller.service --property=ActiveState --property=SubState \
+    --property=MainPID --property=ControlGroup --property=FreezerState 2>/dev/null) || return 1
+  printf '%%s\n' "$vibepollo_controller_state" | grep -qx 'ActiveState=active' && \
+    printf '%%s\n' "$vibepollo_controller_state" | grep -qx 'SubState=running' && \
+    printf '%%s\n' "$vibepollo_controller_state" | grep -qx "MainPID=$vibepollo_controller_pid" && \
+    printf '%%s\n' "$vibepollo_controller_state" | grep -qx "ControlGroup=$vibepollo_controller_cgroup" && \
+    printf '%%s\n' "$vibepollo_controller_state" | grep -qx 'FreezerState=running'
+}
 vibepollo_run_optional_legacy_command() {
   if [ ! -e "$vibepollo_legacy_host" ] && [ ! -L "$vibepollo_legacy_host" ]; then return 2; fi
   vibepollo_privileged_helper_is_safe "$vibepollo_legacy_host" || return 1
@@ -923,9 +939,11 @@ vibepollo_quiesce_machine_host() {
     vibepollo_stop_restore_instances || return 1
     vibepollo_stop_brokers || return 1
     vibepollo_controller_remains_frozen || return 1
+    # systemd refuses StopUnit for a frozen service. Admission and the host are
+    # already masked here, so thaw the controller only for its ordered stop.
+    vibepollo_thaw_controller || return 1
     vibepollo_stop_exact_unit vibepollo-session-controller.service
     vibepollo_unit_is_quiescent vibepollo-session-controller.service || return 1
-    vibepollo_controller_was_frozen=0
     vibepollo_stop_exact_unit vibepollo-prelogin.service
     vibepollo_stop_exact_unit vibepollo-machine-prepare.service
     timeout --signal=KILL 15 systemctl disable vibepollo-session-controller.service --now 2>/dev/null || true
@@ -1110,7 +1128,7 @@ vibepollo_stop_exact_unit() {
   # Never bypass a service's ordered resource teardown.  Killing systemctl
   # only abandons the client while its manager job continues; killing the unit
   # cgroup can strand live GPU imports and is therefore forbidden here.
-  timeout --signal=TERM --kill-after=2 30 systemctl stop "$1" 2>/dev/null
+  timeout --signal=TERM --kill-after=2 60 systemctl stop "$1" 2>/dev/null
 }
 vibepollo_bounded_broker_list() (
   vibepollo_broker_list=$(mktemp /run/vibepollo-broker-units.XXXXXX) || exit 1
@@ -1460,7 +1478,7 @@ vibepollo_preun_stop_exact_unit() {
   # Never bypass a service's ordered resource teardown.  Killing systemctl
   # only abandons the client while its manager job continues; killing the unit
   # cgroup can strand live GPU imports and is therefore forbidden here.
-  timeout --signal=TERM --kill-after=2 30 systemctl stop "$1" 2>/dev/null
+  timeout --signal=TERM --kill-after=2 60 systemctl stop "$1" 2>/dev/null
 }
 vibepollo_preun_bounded_broker_list() (
   vibepollo_broker_list=$(mktemp /run/vibepollo-broker-units.XXXXXX) || exit 1
