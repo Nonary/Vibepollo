@@ -60,7 +60,8 @@ jobs:
 
           # The tags endpoint only resolves published releases. A draft has no tag
           # ref yet, so with allow_draft fall back to matching tag_name in the list.
-          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${source_tag}" 2>/dev/null || true)"
+          # gh api prints the error body on stdout, so drop it when the lookup fails.
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${source_tag}" 2>/dev/null)" || release_json=""
           if [[ -z "${release_json}" && "${ALLOW_DRAFT}" == "true" ]]; then
             release_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
               | jq -cs --arg tag "${source_tag}" '[.[][] | select(.tag_name == $tag and .draft == true)] | first // empty')"
