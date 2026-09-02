@@ -600,39 +600,81 @@ vibepollo_cleanup_legacy_transition_state() {
   )
 }
 
+vibepollo_quiesce_step=''
+# Run one quiesce step and remember its name for the failure report.
+vq() {
+  vibepollo_quiesce_step=$*
+  "$@"
+}
+
+# Undo a partial quiesce. Without this a failed check left the controller
+# frozen behind runtime masks and the upgrade fence, with the old host still
+# running and nothing able to restart it until a reboot.
+vibepollo_abort_quiesce() {
+  echo "error: could not quiesce the existing Vibepollo host (failed step: ${vibepollo_quiesce_step:-unknown}); the previous host is left running." >&2
+  if ((vibepollo_controller_was_frozen == 1)); then
+    timeout --signal=KILL 15 systemctl thaw vibepollo-session-controller.service 2>/dev/null || true
+    vibepollo_controller_was_frozen=0
+  fi
+  # Pre-replacement never unmasks anything: fail closed by stopping the
+  # controller and host under the fence (systemd thaws before it stops), then
+  # drop the fence so post-replacement can bring the new host up cleanly.
+  vibepollo_stop_exact_unit vibepollo-session-controller.service
+  vibepollo_stop_exact_unit vibepollo.service
+  rm -f -- "$vibepollo_host_upgrade_dropin" 2>/dev/null || true
+  rmdir -- "$vibepollo_host_upgrade_dropin_dir" 2>/dev/null || true
+  systemctl daemon-reload 2>/dev/null || true
+}
+
+vibepollo_quiesce_or_abort() {
+  vibepollo_quiesce_step=''
+  if do_quiesce_machine_host; then
+    return 0
+  fi
+  vibepollo_abort_quiesce
+  return 1
+}
+
 do_quiesce_machine_host() {
   local unit legacy_status have_systemd=0
   if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
     have_systemd=1
-    vibepollo_select_upgrade_kill_mode || return 1
-    vibepollo_prepare_host_upgrade_fence || return 1
-    vibepollo_freeze_controller || return 1
-    vibepollo_host_is_stable_or_quiescent || return 1
-    vibepollo_activate_host_upgrade_fence || return 1
-    vibepollo_controller_remains_frozen || return 1
-    vibepollo_host_is_stable_or_quiescent || return 1
-    timeout --signal=KILL 15 systemctl mask --runtime \
+    vq vibepollo_select_upgrade_kill_mode || return 1
+    vq vibepollo_prepare_host_upgrade_fence || return 1
+    vq vibepollo_freeze_controller || return 1
+    vq vibepollo_host_is_stable_or_quiescent || return 1
+    vq vibepollo_activate_host_upgrade_fence || return 1
+    vq vibepollo_controller_remains_frozen || return 1
+    vq vibepollo_host_is_stable_or_quiescent || return 1
+    vq timeout --signal=KILL 15 systemctl mask --runtime \
       'vibepollo-session-restore@.service' 2>/dev/null || return 1
-    vibepollo_restore_template_is_masked || return 1
-    vibepollo_disable_legacy_handoff || return 1
-    timeout --signal=KILL 15 systemctl mask --runtime vibeshine-vkms-control.socket 2>/dev/null || return 1
-    vibepollo_control_socket_is_masked || return 1
+    vq vibepollo_restore_template_is_masked || return 1
+    vq vibepollo_disable_legacy_handoff || return 1
+    vq timeout --signal=KILL 15 systemctl mask --runtime vibeshine-vkms-control.socket 2>/dev/null || return 1
+    vq vibepollo_control_socket_is_masked || return 1
     vibepollo_stop_exact_unit vibeshine-vkms-control.socket
-    vibepollo_unit_is_quiescent vibeshine-vkms-control.socket || return 1
-    vibepollo_control_instances_are_quiescent || return 1
-    timeout --signal=KILL 15 systemctl mask --runtime vibepollo-session-exec.socket 2>/dev/null || return 1
-    vibepollo_broker_socket_is_masked || return 1
+    vq vibepollo_unit_is_quiescent vibeshine-vkms-control.socket || return 1
+    # Masking the socket unit before stopping it drops its RemoveOnStop=
+    # configuration, so the listening path survives the stop. Nothing can
+    # accept on it any more; remove it so the instance check sees a clean slate.
+    if [[ -S "$vibepollo_control_socket" && ! -L "$vibepollo_control_socket" ]]; then
+      vibepollo_quiesce_step='remove stale vkms control socket'
+      rm -f -- "$vibepollo_control_socket" || return 1
+    fi
+    vq vibepollo_control_instances_are_quiescent || return 1
+    vq timeout --signal=KILL 15 systemctl mask --runtime vibepollo-session-exec.socket 2>/dev/null || return 1
+    vq vibepollo_broker_socket_is_masked || return 1
     vibepollo_stop_exact_unit vibepollo-session-exec.socket
-    vibepollo_unit_is_quiescent vibepollo-session-exec.socket || return 1
+    vq vibepollo_unit_is_quiescent vibepollo-session-exec.socket || return 1
     vibepollo_stop_exact_unit vibepollo.service
-    vibepollo_unit_is_quiescent vibepollo.service || return 1
-    timeout --signal=KILL 15 systemctl mask --runtime vibepollo.service 2>/dev/null || return 1
-    vibepollo_host_unit_is_masked || return 1
-    vibepollo_stop_restore_instances || return 1
-    vibepollo_stop_brokers || return 1
-    vibepollo_controller_remains_frozen || return 1
+    vq vibepollo_unit_is_quiescent vibepollo.service || return 1
+    vq timeout --signal=KILL 15 systemctl mask --runtime vibepollo.service 2>/dev/null || return 1
+    vq vibepollo_host_unit_is_masked || return 1
+    vq vibepollo_stop_restore_instances || return 1
+    vq vibepollo_stop_brokers || return 1
+    vq vibepollo_controller_remains_frozen || return 1
     vibepollo_stop_exact_unit vibepollo-session-controller.service
-    vibepollo_unit_is_quiescent vibepollo-session-controller.service || return 1
+    vq vibepollo_unit_is_quiescent vibepollo-session-controller.service || return 1
     vibepollo_controller_was_frozen=0
     vibepollo_stop_exact_unit vibepollo-prelogin.service
     vibepollo_stop_exact_unit vibepollo-machine-prepare.service
@@ -806,13 +848,13 @@ do_install_prelogin() {
     # check rejects; normalize ownership and modes before the host starts.
     "$helper" repair-profile || echo 'warning: could not repair the machine profile permissions.' >&2
     if ! systemctl enable vibepollo-session-controller.service; then
-      do_quiesce_machine_host || true
+      vibepollo_quiesce_or_abort || true
       echo 'error: could not enable the Vibepollo session controller safely.' >&2
       return 1
     fi
     if ! vibepollo_unmask_host_for_controller ||
        ! systemctl start vibepollo-session-controller.service; then
-      do_quiesce_machine_host || true
+      vibepollo_quiesce_or_abort || true
       echo 'error: could not start the Vibepollo session controller safely.' >&2
       return 1
     fi
@@ -829,15 +871,15 @@ do_install_prelogin() {
 }
 
 pre_install() {
-  do_quiesce_machine_host
+  vibepollo_quiesce_or_abort
 }
 
 pre_upgrade() {
-  do_quiesce_machine_host
+  vibepollo_quiesce_or_abort
 }
 
 post_install() {
-  do_quiesce_machine_host
+  vibepollo_quiesce_or_abort
   do_secure_executables
   do_udev_reload
   do_restore_kwin_capability
@@ -847,7 +889,7 @@ post_install() {
 }
 
 post_upgrade() {
-  do_quiesce_machine_host
+  vibepollo_quiesce_or_abort
   do_secure_executables
   do_udev_reload
   do_restore_kwin_capability
@@ -857,7 +899,7 @@ post_upgrade() {
 }
 
 pre_remove() {
-  do_quiesce_machine_host || return 1
+  vibepollo_quiesce_or_abort || return 1
   systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
   /usr/libexec/vibeshine/vibepollo-machine-host remove-pam 2>/dev/null || true
   systemctl stop vibeshine-vkms.service 2>/dev/null || true
