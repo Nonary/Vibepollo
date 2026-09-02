@@ -13,10 +13,14 @@
 #include <algorithm>
 #include <charconv>
 #include <cerrno>
+#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <iostream>
 #include <optional>
 #include <pwd.h>
@@ -27,6 +31,9 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
+#include <syslog.h>
+#include <time.h>
 #include <unistd.h>
 
 namespace {
@@ -176,12 +183,120 @@ namespace {
     return policy;
   }
 
+  // The session broker discards this helper's stderr, so mirror every
+  // diagnostic into the journal where `journalctl -t vibepollo-steam-launch`
+  // can find it.
+  void report(int priority, const std::string &message) {
+    std::cerr << "vibepollo-steam-launch: " << message << '\n';
+    syslog(priority, "%s", message.c_str());
+  }
+
+  fs::path steam_state_directory() {
+    const char *home = std::getenv("HOME");
+    return home && *home ? fs::path(home) / ".steam" : fs::path {};
+  }
+
+  // Steam records its client PID in ~/.steam/steam.pid and opens
+  // ~/.steam/steam.pipe once it accepts commands. A stale pid file is the
+  // normal state after the client crashed or the machine slept.
+  bool steam_client_running(const fs::path &state) {
+    if (state.empty()) {
+      return false;
+    }
+    std::ifstream input(state / "steam.pid");
+    std::string token;
+    if (!(input >> token)) {
+      return false;
+    }
+    std::uint32_t pid = 0;
+    if (!parse_u32(token, pid) || pid == 0 || kill(static_cast<pid_t>(pid), 0) != 0) {
+      return false;
+    }
+    std::ifstream cmdline("/proc/" + std::to_string(pid) + "/cmdline");
+    std::string command((std::istreambuf_iterator<char>(cmdline)), std::istreambuf_iterator<char>());
+    return command.find("steam") != std::string::npos;
+  }
+
+  bool steam_client_ready(const fs::path &state) {
+    std::error_code error;
+    return steam_client_running(state) && fs::exists(state / "steam.pipe", error);
+  }
+
+  // Start the client detached from this launcher so it survives the game
+  // and the transient unit that runs us.
+  bool start_steam_client() {
+    const pid_t child = fork();
+    if (child < 0) {
+      return false;
+    }
+    if (child == 0) {
+      if (setsid() < 0) {
+        _exit(126);
+      }
+      const pid_t grandchild = fork();
+      if (grandchild != 0) {
+        _exit(grandchild < 0 ? 126 : 0);
+      }
+      const int null_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
+      if (null_fd < 0 || dup2(null_fd, STDIN_FILENO) < 0 ||
+          dup2(null_fd, STDOUT_FILENO) < 0 || dup2(null_fd, STDERR_FILENO) < 0) {
+        _exit(126);
+      }
+      execl("/usr/bin/steam", "steam", "-silent", static_cast<char *>(nullptr));
+      _exit(errno == ENOENT ? 127 : 126);
+    }
+    int status = 0;
+    if (waitpid(child, &status, 0) != child) {
+      return false;
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+  }
+
+  void sleep_milliseconds(long milliseconds) {
+    timespec interval {milliseconds / 1000, (milliseconds % 1000) * 1000000L};
+    while (nanosleep(&interval, &interval) != 0 && errno == EINTR) {
+    }
+  }
+
+  // Proton titles need a live Steam client for Steamworks; without one the
+  // game exits within seconds and nothing explains why. Bring the client up
+  // first and give it a bounded time to become ready.
+  void ensure_steam_client() {
+    const auto state = steam_state_directory();
+    if (state.empty()) {
+      return;
+    }
+    if (steam_client_ready(state)) {
+      return;
+    }
+    if (steam_client_running(state)) {
+      report(LOG_INFO, "Steam client is starting; waiting for it to accept commands");
+    } else {
+      report(LOG_WARNING, "Steam client is not running; starting it before the direct launch");
+      if (!start_steam_client()) {
+        report(LOG_ERR, "could not start the Steam client; launching anyway");
+        return;
+      }
+    }
+    constexpr int ready_timeout_ms = 90000;
+    constexpr int poll_ms = 500;
+    for (int waited = 0; waited < ready_timeout_ms; waited += poll_ms) {
+      sleep_milliseconds(poll_ms);
+      if (steam_client_ready(state)) {
+        report(LOG_INFO, "Steam client is ready after " + std::to_string(waited + poll_ms) + " ms");
+        return;
+      }
+    }
+    report(LOG_WARNING, "Steam client did not signal readiness within " +
+                          std::to_string(ready_timeout_ms / 1000) + " s; launching anyway");
+  }
+
   int launch(std::uint32_t app_id,
              const platf::steam::session_launch_policy_t &policy) {
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
         prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1 ||
         !install_clean_environment()) {
-      std::cerr << "vibepollo-steam-launch: unsafe desktop execution context\n";
+      report(LOG_ERR, "unsafe desktop execution context");
       return 126;
     }
 
@@ -189,30 +304,30 @@ namespace {
     try {
       scoped_metadata_limits limits;
       if (!limits.armed()) {
-        std::cerr << "vibepollo-steam-launch: could not bound metadata parsing\n";
+        report(LOG_ERR, "could not bound metadata parsing");
         return 126;
       }
       const auto roots = platf::steam::default_library_roots();
       if (roots.empty()) {
-        std::cerr << "vibepollo-steam-launch: Steam installation is unavailable\n";
+        report(LOG_ERR, "Steam installation is unavailable");
         return 1;
       }
       games = platf::steam::discover(roots);
     } catch (...) {
-      std::cerr << "vibepollo-steam-launch: Steam metadata parsing failed\n";
+      report(LOG_ERR, "Steam metadata parsing failed");
       return 1;
     }
     const auto game = std::find_if(games.begin(), games.end(), [app_id](const auto &candidate) {
       return candidate.app_id == app_id && candidate.installed;
     });
     if (game == games.end()) {
-      std::cerr << "vibepollo-steam-launch: requested AppID is not installed\n";
+      report(LOG_ERR, "requested AppID is not installed");
       return 1;
     }
 
     const auto command = platf::steam::launch_command(*game);
     if (command.empty() || command == platf::steam::launch_command(app_id)) {
-      std::cerr << "vibepollo-steam-launch: direct launch metadata is incomplete\n";
+      report(LOG_ERR, "direct launch metadata is incomplete");
       return 1;
     }
 
@@ -228,7 +343,7 @@ namespace {
         policy.limiter_method
       );
       if (state.empty()) {
-        std::cerr << "vibepollo-steam-launch: could not create limiter state\n";
+        report(LOG_ERR, "could not create limiter state");
         return 1;
       }
     }
@@ -236,19 +351,22 @@ namespace {
     if (setenv("NVPRESENT_ENABLE_SMOOTH_MOTION", policy.smooth_motion ? "1" : "", 1) != 0 ||
         setenv("NVPRESENT_QUEUE_FAMILY",
                policy.smooth_motion_graphics_queue ? "1" : "", 1) != 0) {
-      std::cerr << "vibepollo-steam-launch: could not install launch policy\n";
+      report(LOG_ERR, "could not install launch policy");
       return 1;
     }
+
+    ensure_steam_client();
 
     // Steam Launch Options are user-authored shell expressions. They are
     // interpreted only here, after irreversible transition to that same UID.
     execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char *>(nullptr));
-    std::cerr << "vibepollo-steam-launch: exec failed: " << std::strerror(errno) << '\n';
+    report(LOG_ERR, std::string("exec failed: ") + std::strerror(errno));
     return errno == ENOENT ? 127 : 126;
   }
 }  // namespace
 
 int main(int argc, char **argv) {
+  openlog("vibepollo-steam-launch", LOG_PID, LOG_USER);
   std::uint32_t app_id = 0;
   const auto policy = parse_policy(argc, argv, app_id);
   if (!policy) {
