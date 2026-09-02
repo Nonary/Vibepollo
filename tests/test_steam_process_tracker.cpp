@@ -56,10 +56,10 @@ namespace {
 
 TEST(SteamProcessTracker, AssociatesOnlyNewInstallProcesses) {
   const auto root = std::filesystem::path("/tmp/steam/library/steamapps/common/Game");
-  const auto old_game = process(10, 1, "/tmp/steam/library/steamapps/common/Game/game", root.c_str());
+  const auto old_game = process(10, 1, "/tmp/steam/library/steamapps/common/Game/game", root.string().c_str());
   const auto baseline = snapshot({old_game, process(1, 0, "/sbin/init")});
   const auto after = snapshot({old_game, process(1, 0, "/sbin/init"),
-                               process(20, 1, "/tmp/steam/library/steamapps/common/Game/game", root.c_str())});
+                               process(20, 1, "/tmp/steam/library/steamapps/common/Game/game", root.string().c_str())});
 
   const auto result = lifecycle::associate(baseline, after, root);
   ASSERT_TRUE(result.associated());
@@ -80,8 +80,8 @@ TEST(SteamProcessTracker, PathBoundaryDoesNotMatchSiblingDirectory) {
 
 TEST(SteamProcessTracker, ProtectsSteamClientAndExplicitRoot) {
   const auto root = std::filesystem::path("/games/Example");
-  const auto steam = process(30, 1, "/usr/lib/steam/steam", root.c_str(), {"steam"});
-  const auto wrapper = process(31, 1, "/opt/launcher", root.c_str());
+  const auto steam = process(30, 1, "/usr/lib/steam/steam", root.string().c_str(), {"steam"});
+  const auto wrapper = process(31, 1, "/opt/launcher", root.string().c_str());
   const auto baseline = lifecycle::process_snapshot {};
   const auto after = snapshot({steam, wrapper});
   lifecycle::association_options options;
@@ -96,7 +96,7 @@ TEST(SteamProcessTracker, ExpandsNewDescendantsOutsideInstallDirectory) {
   const auto root = std::filesystem::path("/games/Example");
   const auto baseline = snapshot({process(1, 0, "/sbin/init")});
   const auto after = snapshot({process(1, 0, "/sbin/init"),
-                               process(40, 1, "/games/Example/game", root.c_str()),
+                               process(40, 1, "/games/Example/game", root.string().c_str()),
                                process(41, 40, "/usr/bin/renderer", "/tmp"),
                                process(42, 41, "/usr/bin/child", "/tmp")});
   const auto result = lifecycle::associate(baseline, after, root);
@@ -119,7 +119,7 @@ TEST(SteamProcessTracker, ProtonCommandLineIsAssociationEvidence) {
 
 TEST(SteamProcessTracker, ReportsBaselineOnlyAndUntrackableSeparately) {
   const auto root = std::filesystem::path("/games/Example");
-  const auto existing = process(60, 1, "/games/Example/game", root.c_str());
+  const auto existing = process(60, 1, "/games/Example/game", root.string().c_str());
   const auto baseline = snapshot({existing});
   EXPECT_EQ(lifecycle::associate(baseline, baseline, root).outcome,
             lifecycle::association_outcome::baseline_only);
@@ -131,7 +131,7 @@ TEST(SteamProcessTracker, ReportsBaselineOnlyAndUntrackableSeparately) {
 TEST(SteamProcessTracker, UsesAvailableRecordsFromAnIncompleteProcSnapshot) {
   const auto root = std::filesystem::path("/games/Example");
   const auto baseline = lifecycle::process_snapshot {};
-  auto after = snapshot({process(62, 1, "/games/Example/game", root.c_str())});
+  auto after = snapshot({process(62, 1, "/games/Example/game", root.string().c_str())});
   after.complete = false;  // another /proc entry disappeared during enumeration
   const auto result = lifecycle::associate(baseline, after, root);
   EXPECT_EQ(result.outcome, lifecycle::association_outcome::associated);

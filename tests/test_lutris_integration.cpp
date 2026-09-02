@@ -39,7 +39,7 @@ namespace {
 
   void write_test_cover(const fs::path &path) {
 #ifdef VIBESHINE_STEAM_ARTWORK_IMAGE_LIBS
-    auto *file = std::fopen(path.c_str(), "wb");
+    auto *file = std::fopen(path.string().c_str(), "wb");
     ASSERT_NE(file, nullptr);
     jpeg_compress_struct compressor {};
     jpeg_error_mgr error {};
@@ -103,7 +103,7 @@ TEST(LutrisDiscovery, ReadsInstalledGamesAndClassifiesSteam) {
   std::ofstream(lutris_data / "coverart/battlenet.jpg").put('x');
   std::ofstream(base / "icons/hicolor/128x128/apps/lutris_battlenet.png").put('x');
   sqlite3 *database = nullptr;
-  ASSERT_EQ(sqlite3_open(path.c_str(), &database), SQLITE_OK);
+  ASSERT_EQ(sqlite3_open(path.string().c_str(), &database), SQLITE_OK);
   const char *schema =
     "CREATE TABLE games(id INTEGER, name TEXT, slug TEXT, runner TEXT, platform TEXT, directory TEXT, "
     "configpath TEXT, service TEXT, service_id TEXT, lastplayed INTEGER, playtime REAL, installed INTEGER);"
