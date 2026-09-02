@@ -676,6 +676,16 @@ vibepollo_abort_quiesce() {
   # drop the fence so post-replacement can bring the new host up cleanly.
   vibepollo_stop_exact_unit vibepollo-session-controller.service
   vibepollo_stop_exact_unit vibepollo.service
+  # Socket paths that outlived a masked-then-stopped unit would keep the next
+  # controller's cleanup failing; drop them only once their unit is stopped.
+  if vibepollo_unit_is_quiescent vibepollo-session-exec.socket &&
+     [ -S "$vibepollo_broker_socket" ] && [ ! -L "$vibepollo_broker_socket" ]; then
+    rm -f -- "$vibepollo_broker_socket" 2>/dev/null || true
+  fi
+  if vibepollo_unit_is_quiescent vibeshine-vkms-control.socket &&
+     [ -S "$vibepollo_control_socket" ] && [ ! -L "$vibepollo_control_socket" ]; then
+    rm -f -- "$vibepollo_control_socket" 2>/dev/null || true
+  fi
   rm -f -- "$vibepollo_host_upgrade_dropin" 2>/dev/null || true
   rmdir -- "$vibepollo_host_upgrade_dropin_dir" 2>/dev/null || true
   systemctl daemon-reload 2>/dev/null || true
@@ -737,6 +747,12 @@ vibepollo_quiesce_machine_host() {
     vq vibepollo_broker_socket_is_masked || return 1
     vibepollo_stop_exact_unit vibepollo-session-exec.socket
     vq vibepollo_unit_is_quiescent vibepollo-session-exec.socket || return 1
+    # Same RemoveOnStop= loss as the control socket above: a stale broker path
+    # keeps the controller's admission closed until it is removed.
+    if [ -S "$vibepollo_broker_socket" ] && [ ! -L "$vibepollo_broker_socket" ]; then
+      vibepollo_quiesce_step='remove stale session broker socket'
+      rm -f -- "$vibepollo_broker_socket" || return 1
+    fi
     vibepollo_stop_exact_unit vibepollo.service
     vq vibepollo_unit_is_quiescent vibepollo.service || return 1
     vq timeout --signal=KILL 15 systemctl mask --runtime \
