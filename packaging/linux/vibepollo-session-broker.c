@@ -1164,7 +1164,11 @@ static int execute_request(int argc, char **argv,
   else if (!strcmp(argv[1], "app") && argc == 3 && !strcmp(identity->role, "desktop") &&
            command_is_authorized(identity->role, argv[2], service_gid,
                                  authorized_directory, sizeof(authorized_directory))) operation = APP;
-  else return 126;
+  else {
+    fprintf(stderr, "vibepollo-session-broker: rejected request '%s' (argc=%d, role=%s)\n",
+            argv[1], argc, identity->role);
+    return 126;
+  }
 
   if (!drop_to_session(identity) || !validate_session_endpoints(identity) ||
       !validate_xauthority(identity)) {

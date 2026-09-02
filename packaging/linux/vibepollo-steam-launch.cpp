@@ -35,6 +35,7 @@
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
+#include <vector>
 
 namespace {
   namespace fs = std::filesystem;
@@ -217,32 +218,101 @@ namespace {
     return command.find("steam") != std::string::npos;
   }
 
-  bool steam_client_ready(const fs::path &state) {
-    std::error_code error;
-    return steam_client_running(state) && fs::exists(state / "steam.pipe", error);
+  // Run a small helper with a bounded lifetime and report whether its stdout
+  // contained `needle`. Used for D-Bus name probes; never for anything the
+  // user controls.
+  bool helper_output_contains(const char *path, char *const argv[], std::string_view needle) {
+    int output_pipe[2] = {-1, -1};
+    if (pipe2(output_pipe, O_CLOEXEC) != 0) {
+      return false;
+    }
+    const pid_t child = fork();
+    if (child < 0) {
+      close(output_pipe[0]);
+      close(output_pipe[1]);
+      return false;
+    }
+    if (child == 0) {
+      const int null_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
+      if (null_fd < 0 || dup2(null_fd, STDIN_FILENO) < 0 ||
+          dup2(output_pipe[1], STDOUT_FILENO) < 0 || dup2(null_fd, STDERR_FILENO) < 0) {
+        _exit(126);
+      }
+      alarm(10);
+      execv(path, argv);
+      _exit(127);
+    }
+    close(output_pipe[1]);
+    std::string output;
+    char buffer[4096];
+    for (;;) {
+      const ssize_t received = read(output_pipe[0], buffer, sizeof(buffer));
+      if (received <= 0) {
+        break;
+      }
+      if (output.size() < 1 << 20) {
+        output.append(buffer, static_cast<std::size_t>(received));
+      }
+    }
+    close(output_pipe[0]);
+    int status = 0;
+    (void) waitpid(child, &status, 0);
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0 && output.find(needle) != std::string::npos;
   }
 
-  // Start the client detached from this launcher so it survives the game
-  // and the transient unit that runs us.
+  // Proton runs games "alongside Steam" through this session-bus service,
+  // which the client registers only once it has finished bootstrapping. A
+  // stale steam.pipe left by a crashed client must not count as ready.
+  bool steam_client_ready(const fs::path &state) {
+    if (!steam_client_running(state)) {
+      return false;
+    }
+    char *const argv[] = {
+      const_cast<char *>("busctl"), const_cast<char *>("--user"), const_cast<char *>("--no-pager"),
+      const_cast<char *>("--no-legend"), const_cast<char *>("list"), nullptr
+    };
+    return helper_output_contains("/usr/bin/busctl", argv, "com.steampowered.PressureVessel.LaunchAlongsideSteam");
+  }
+
+  // Start the client in its own transient user unit. Launching it from this
+  // process would place it in the game's unit, and systemd kills that whole
+  // control group the moment the game exits, taking Steam down with it.
   bool start_steam_client() {
+    const std::string unit = "vibepollo-steam-client-" + std::to_string(::time(nullptr));
+    std::vector<std::string> arguments = {
+      "systemd-run", "--user", "--quiet", "--collect",
+      "--unit=" + unit,
+      "--description=Steam client started by Vibepollo",
+      "--property=KillMode=process"
+    };
+    for (const char *name : {"HOME", "USER", "LOGNAME", "PATH", "LANG", "XDG_RUNTIME_DIR",
+                             "XDG_CONFIG_HOME", "XDG_DATA_HOME", "DBUS_SESSION_BUS_ADDRESS",
+                             "XDG_SESSION_TYPE", "WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY"}) {
+      if (const char *value = std::getenv(name)) {
+        arguments.push_back(std::string("--setenv=") + name + "=" + value);
+      }
+    }
+    arguments.emplace_back("/usr/bin/steam");
+    arguments.emplace_back("-silent");
+    std::vector<char *> argv;
+    argv.reserve(arguments.size() + 1);
+    for (auto &argument : arguments) {
+      argv.push_back(argument.data());
+    }
+    argv.push_back(nullptr);
+
     const pid_t child = fork();
     if (child < 0) {
       return false;
     }
     if (child == 0) {
-      if (setsid() < 0) {
-        _exit(126);
-      }
-      const pid_t grandchild = fork();
-      if (grandchild != 0) {
-        _exit(grandchild < 0 ? 126 : 0);
-      }
       const int null_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
       if (null_fd < 0 || dup2(null_fd, STDIN_FILENO) < 0 ||
           dup2(null_fd, STDOUT_FILENO) < 0 || dup2(null_fd, STDERR_FILENO) < 0) {
         _exit(126);
       }
-      execl("/usr/bin/steam", "steam", "-silent", static_cast<char *>(nullptr));
+      alarm(15);
+      execv("/usr/bin/systemd-run", argv.data());
       _exit(errno == ENOENT ? 127 : 126);
     }
     int status = 0;
@@ -284,6 +354,7 @@ namespace {
       sleep_milliseconds(poll_ms);
       if (steam_client_ready(state)) {
         report(LOG_INFO, "Steam client is ready after " + std::to_string(waited + poll_ms) + " ms");
+        sleep_milliseconds(2000);
         return;
       }
     }
