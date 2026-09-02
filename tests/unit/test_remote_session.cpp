@@ -29,6 +29,10 @@ TEST(RemoteSession, SyntheticIdsAndLegacyIdsNeverFallThrough) {
   EXPECT_TRUE(remote_session::reserved_name("Virtual Display"));
   EXPECT_TRUE(remote_session::reserved_name("   Remote Input"));
   EXPECT_TRUE(remote_session::reserved_name("Terminate"));
+  EXPECT_EQ(remote_session::synthetic(remote_session::control_e::monitor).title, "Remote Monitor");
+  EXPECT_EQ(remote_session::synthetic(remote_session::control_e::input).title, "Remote Input");
+  EXPECT_EQ(remote_session::synthetic(remote_session::control_e::resume).title, "Resume");
+  EXPECT_EQ(remote_session::synthetic(remote_session::control_e::terminate).title, "Terminate");
   ASSERT_TRUE(remote_session::synthetic_artwork_filename(remote_session::control_e::monitor));
   EXPECT_EQ(*remote_session::synthetic_artwork_filename(remote_session::control_e::monitor), "remote-monitor.png");
   ASSERT_TRUE(remote_session::synthetic_artwork_filename(remote_session::control_e::disconnect_monitor));
@@ -163,7 +167,7 @@ TEST(RemoteSession, SecondaryCatalogueKeepsConfiguredRunningAppBesideInvisibleRe
   );
 }
 
-TEST(RemoteSession, ResumeTileIdentityAndAlphabeticalRanksTrackTheRunningApp) {
+TEST(RemoteSession, OnlySecondaryCatalogueControlsReceiveAlphabeticalPriority) {
   const remote_session::app_t first {42, "first", "Zebra", false};
   const remote_session::app_t second {77, "second", "Alpha", false};
   const auto first_tile = remote_session::synthetic_running_game(first);
@@ -174,24 +178,25 @@ TEST(RemoteSession, ResumeTileIdentityAndAlphabeticalRanksTrackTheRunningApp) {
   EXPECT_NE(first_tile.id, first.id);
   EXPECT_NE(first_tile.id, second_tile.id);
 
-  std::vector<remote_session::app_t> alphabetized {
-    {1, "ordinary", "Another game", false},
-    remote_session::synthetic(remote_session::control_e::terminate),
-    remote_session::synthetic(remote_session::control_e::resume),
-    remote_session::synthetic(remote_session::control_e::input),
-    remote_session::synthetic(remote_session::control_e::monitor),
-    first_tile,
-  };
-  std::sort(alphabetized.begin(), alphabetized.end(), [](const auto &left, const auto &right) {
+  const std::vector<remote_session::app_t> configured {{1, "ordinary", "Another game", false}};
+  auto primary = remote_session::project(caller("first"), {.running = true, .owner_uuid = "first", .app = first}, {}, configured, false).catalogue;
+  std::sort(primary.begin(), primary.end(), [](const auto &left, const auto &right) {
     return left.title < right.title;
   });
+  EXPECT_EQ(primary[0].id, 1);
+  EXPECT_EQ(primary[1].id, remote_session::input_id);
+  EXPECT_EQ(primary[2].id, remote_session::monitor_id);
 
-  EXPECT_EQ(alphabetized[0].id, first_tile.id);
-  EXPECT_EQ(alphabetized[1].id, remote_session::monitor_id);
-  EXPECT_EQ(alphabetized[2].id, remote_session::input_id);
-  EXPECT_EQ(alphabetized[3].id, remote_session::resume_id);
-  EXPECT_EQ(alphabetized[4].id, remote_session::terminate_id);
-  EXPECT_EQ(alphabetized[5].id, 1);
+  auto secondary = remote_session::project(caller("other"), {.running = true, .owner_uuid = "first", .app = first}, {}, configured, false).catalogue;
+  std::sort(secondary.begin(), secondary.end(), [](const auto &left, const auto &right) {
+    return left.title < right.title;
+  });
+  EXPECT_EQ(secondary[0].id, first_tile.id);
+  EXPECT_EQ(secondary[1].id, remote_session::monitor_id);
+  EXPECT_EQ(secondary[2].id, remote_session::input_id);
+  EXPECT_EQ(secondary[3].id, remote_session::resume_id);
+  EXPECT_EQ(secondary[4].id, remote_session::terminate_id);
+  EXPECT_EQ(secondary[5].id, 1);
 }
 
 TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {
