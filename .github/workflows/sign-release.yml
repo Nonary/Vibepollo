@@ -348,7 +348,7 @@ jobs:
       symbol_release_prefix: polo
       require_signpath_signing: true
       signpath_signing_policy_slug: release-signing
-      signpath_wait_for_completion_timeout_in_seconds: 600
+      signpath_wait_for_completion_timeout_in_seconds: 3600
       require_truehdr_runtime: true
     secrets:
       symbol_token: ${{ secrets.SYMBOL_TOKEN }}
