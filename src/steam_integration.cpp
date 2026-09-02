@@ -652,7 +652,7 @@ namespace {
     }
   }
 
-  void apply_proton_metadata(platf::steam::game_t &game) {
+  [[maybe_unused]] void apply_proton_metadata(platf::steam::game_t &game) {
     if (game.launch_os != "windows") {
       return;
     }
@@ -757,7 +757,7 @@ namespace {
     }
   }
 
-  std::string shell_quote(std::string_view value) {
+  [[maybe_unused]] std::string shell_quote(std::string_view value) {
     std::string result = "'";
     for (const char ch : value) {
       if (ch == '\'') {
