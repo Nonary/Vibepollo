@@ -1,0 +1,5 @@
+# The machine-scoped Vibepollo host runs as the unprivileged "vibepollo"
+# account. Grant it virtual input devices through a dedicated group instead of
+# the broad "input" group, which would also expose every physical input event.
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="vibepollo-uinput", MODE="0660", OPTIONS+="static_node=uinput", TAG+="uaccess"
+KERNEL=="uhid", SUBSYSTEM=="misc", GROUP="vibepollo-uinput", MODE="0660", OPTIONS+="static_node=uhid", TAG+="uaccess"

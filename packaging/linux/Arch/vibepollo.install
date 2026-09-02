@@ -689,15 +689,30 @@ do_install_vibeshine_drm() {
   fi
   case $install_rc in
     4)
-      echo "warning: Vibepollo DRM was updated, but the loaded module is stale; reboot before using managed virtual displays."
+      echo "==> ACTION REQUIRED: the Vibepollo DRM module was updated, but the running kernel still holds the old one. Reboot before streaming." >&2
       ;;
     5)
-      echo "Vibepollo DRM authorization is queued. Reboot and approve the pending MOK confirmations once."
+      echo "==> ACTION REQUIRED: Vibepollo DRM signing key enrollment is queued. Reboot and approve the pending MOK confirmation once." >&2
       ;;
     *)
-      echo "warning: Vibepollo DRM installation failed; managed virtual displays are unavailable."
+      echo "==> ACTION REQUIRED: the Vibepollo virtual-display module was not installed, so streaming is unavailable." >&2
+      echo "    Install the headers for the running kernel (see the message above), then run:" >&2
+      echo "      sudo /usr/libexec/vibeshine/vibeshine-drm-install install" >&2
       ;;
   esac
+}
+
+do_print_next_steps() {
+  cat <<'NEXT_STEPS'
+==> Vibeshine next steps
+    1. Log in to a KDE Plasma (Wayland) desktop as the configured user.
+    2. Open https://localhost:47990 on this machine, create the Web UI login, then pair Moonlight.
+       Pairing is only possible from a logged-in desktop; the pre-login greeter stream reuses that pairing.
+    3. If a firewall is enabled, allow the Vibeshine ports:
+         firewalld:  sudo firewall-cmd --permanent --add-service=vibeshine && sudo firewall-cmd --reload
+         ufw:        sudo ufw allow Vibeshine
+    Status: sudo systemctl status vibeshine-session-controller.service vibeshine.service
+NEXT_STEPS
 }
 
 do_prepare_kwin() {
@@ -767,8 +782,10 @@ do_install_prelogin() {
       return 1
     fi
   else
-    echo 'warning: Vibepollo needs an explicit machine profile owner.'
-    echo "         Run: sudo $helper configure USER"
+    echo '==> ACTION REQUIRED: Vibepollo could not choose the desktop user who owns streaming on this machine.' >&2
+    echo "    Run:  sudo $helper configure USER" >&2
+    echo '    then: sudo systemctl enable --now vibepollo-session-controller.service' >&2
+    return 1
   fi
 }
 
@@ -784,20 +801,20 @@ post_install() {
   do_quiesce_machine_host
   do_secure_executables
   do_udev_reload
-  modprobe uhid
   do_prepare_kwin
   do_install_vibeshine_drm
-  do_install_prelogin
+  do_install_prelogin || true
+  do_print_next_steps
 }
 
 post_upgrade() {
   do_quiesce_machine_host
   do_secure_executables
   do_udev_reload
-  modprobe uhid
   do_prepare_kwin
   do_install_vibeshine_drm
-  do_install_prelogin
+  do_install_prelogin || true
+  do_print_next_steps
 }
 
 pre_remove() {

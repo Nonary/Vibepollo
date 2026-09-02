@@ -108,7 +108,7 @@ for exact_predicate in (
     '"$observed_active" == yes',
     '"$observed_state" == active',
     '"$observed_class" == user',
-    '"$observed_service" == plasmalogin',
+    'desktop_service_supported "$observed_service"',
     '"$observed_class" == greeter',
     '"$observed_service" == plasmalogin-greeter',
 ):
@@ -260,6 +260,25 @@ forbid(controller, '[[ -S "$candidate_runtime/bus" ]]', "capability-bounded runt
 # The network host owns machine state but no login lifecycle. Its only
 # privilege expansion is the existing KMS binary plus the narrow session shim.
 require(sysusers, 'u vibepollo - "Vibepollo machine host" /var/lib/vibepollo /usr/bin/nologin', "machine account")
+require(sysusers, "g vibepollo-uinput - -", "virtual input group the host unit joins")
+require(host_unit, "SupplementaryGroups=video render vibepollo-uinput vibeshine-vkms", "restricted virtual input membership")
+require(host, '"$home/.config/vibepollo/vibeshine_state.json"', "existing Vibepollo pairing profile discovery")
+require(host, '"$home/.config/vibepollo/sunshine_state.json"', "legacy pairing profile discovery")
+require(controller, 'desktop_service_supported() { [[ "$1" =~ ^(plasmalogin|sddm|sddm-autologin)$ ]]; }',
+        "SDDM and Plasma Login Manager desktop sessions")
+uinput_rules = (linux / "70-vibepollo-uinput.rules").read_text()
+for rule in (
+    'KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="vibepollo-uinput", MODE="0660"',
+    'KERNEL=="uhid", SUBSYSTEM=="misc", GROUP="vibepollo-uinput", MODE="0660"',
+):
+    require(uinput_rules, rule, "dedicated virtual input device group")
+for native_asset in (
+    "%{_udevrulesdir}/70-vibepollo-uinput.rules",
+    "%{_prefix}/lib/firewalld/services/vibepollo.xml",
+    "%{_sysconfdir}/ufw/applications.d/vibepollo",
+    "%{_datadir}/pipewire/pipewire.conf.d/50-vibepollo-audio.conf",
+):
+    require(rpm, native_asset, "RPM native setup asset manifest")
 require(host_unit, "Requires=vibepollo-session-exec.socket", "broker-loss host revocation")
 require(host_unit, "Wants=vibeshine-vkms.service", "machine host unit")
 require(host_unit, "After=vibepollo-session-controller.service vibepollo-session-exec.socket", "ordered machine-host startup")

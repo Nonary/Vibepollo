@@ -126,7 +126,8 @@ working stream. On this host, readiness requires:
 - the controller bound the exact active local seat0 KDE Wayland session;
 - the managed virtual output exists and KMS uses event-driven Vibepollo DRM
   capture;
-- H.264, HEVC, and AV1 NVENC probes all succeed;
+- the H.264 encoder probe succeeds (HEVC and AV1 are optional and depend on
+  the GPU generation; requiring them would lock out every pre-AV1 GPU);
 - required UDP ports are listening/reachable;
 - a real client can connect at the greeter, disconnect at login, and reconnect
   to the desktop.

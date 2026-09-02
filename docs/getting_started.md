@@ -129,6 +129,25 @@ CUDA is used for NVFBC capture.
 
 #### Arch Linux and CachyOS
 
+##### Requirements
+
+The native package streams the machine's KDE Plasma desktop and, on NVIDIA GPUs, the login screen
+before anyone signs in. It requires:
+
+- **KDE Plasma 6 on Wayland**, started by **Plasma Login Manager** or **SDDM**. GNOME, X11 sessions,
+  other compositors, and remote logins are not streamed; the controller logs the refused session
+  in `journalctl -u vibepollo-session-controller.service`.
+- **Linux 6.16 or newer with matching kernel headers** for the running kernel, for example
+  `linux-cachyos-headers`, `linux-headers`, `linux-zen-headers`, or `linux-lts-headers`. The
+  managed virtual-display module is built with DKMS during installation.
+- **A GPU with an H.264 hardware encoder.** HEVC and AV1 are used when the GPU supports them.
+  NVIDIA GPUs use native NVENC; AMD and Intel GPUs use VAAPI (`libva-mesa-driver` or
+  `intel-media-driver`). The pre-login stream is only supported on NVIDIA GPUs; other GPUs stream
+  after login.
+- **A single interactive desktop account.** The package selects it automatically. Machines with
+  several accounts must run `sudo /usr/libexec/vibeshine/vibepollo-machine-host configure USER`
+  once to choose the streaming owner.
+
 ##### Install from the signed repository
 
 Import and locally trust the Nonary repository key:
@@ -156,7 +175,7 @@ sudo pacman -Syu vibepollo
 ```
 
 Future releases then arrive through the normal `pacman -Syu` upgrade process. Install only one
-streaming host at a time: Vibepollo replaces Sunshine or Vibeshine. Preserve existing configuration
+streaming host at a time: Vibepollo replaces Sunshine or Vibepollo. Preserve existing configuration
 and pairing data when transitioning, including earlier manually built Vibepollo installations.
 
 As a fallback, open the desired [Vibepollo release page](https://github.com/Nonary/Vibepollo/releases)
@@ -175,6 +194,41 @@ sudo /usr/libexec/vibeshine/vibeshine-drm-install install
 
 This detection covers the standard, LTS, and CachyOS kernel package variants; users do not need
 to guess a header package name.
+
+##### After installation
+
+The package prints any remaining step at the end of the pacman transaction. On a typical machine
+there are three:
+
+1. **Reboot if asked.** A kernel that already holds an older module, or a one-time Secure Boot
+   signing-key enrollment, both require one reboot before the virtual display works.
+2. **Log in to the Plasma desktop and pair.** Open `https://localhost:47990` on the machine,
+   create the Web UI username and password, then pair Moonlight with the PIN. Pairing and the Web
+   UI are only reachable from a logged-in desktop; the pre-login stream reuses the pairing you
+   created there and cannot pair new clients.
+3. **Open the firewall** if one is enabled. The package ships service definitions for both
+   common firewalls:
+
+   ```bash
+   # firewalld
+   sudo firewall-cmd --permanent --add-service=vibepollo && sudo firewall-cmd --reload
+   # ufw
+   sudo ufw allow Vibepollo
+   ```
+
+   Vibepollo listens on TCP 47984, 47989, 47990, and 48010, and UDP 47998 to 48000 and 48010.
+
+The machine host runs as system services; there is no per-user unit to enable:
+
+```bash
+sudo systemctl status vibepollo-session-controller.service vibepollo.service
+sudo journalctl -u vibepollo-session-controller.service -u vibepollo.service --since '-10 minutes'
+```
+
+The controller waits until the configured user's Plasma Wayland session (or the NVIDIA pre-login
+greeter) is active, then starts the host. The audio stream expects the PipeWire quantum the package
+installs in `/usr/share/pipewire/pipewire.conf.d/50-vibepollo-audio.conf` (240 samples at 48 kHz);
+restart PipeWire or log in again after the first installation so it takes effect.
 
 ##### Uninstall
 ```bash
@@ -260,19 +314,19 @@ sudo dnf remove Sunshine
 Using this package requires that you have [Flatpak](https://flatpak.org/setup) installed.
 
 ##### Download (local option)
-1. Download `vibeshine_{arch}.flatpak` and run the following command.
+1. Download `vibepollo_{arch}.flatpak` and run the following command.
 
    > [!NOTE]
    > Replace `{arch}` with your system architecture.
 
 ##### Install (system level)
 ```bash
-flatpak install --system ./vibeshine_{arch}.flatpak
+flatpak install --system ./vibepollo_{arch}.flatpak
 ```
 
 ##### Install (user level)
 ```bash
-flatpak install --user ./vibeshine_{arch}.flatpak
+flatpak install --user ./vibepollo_{arch}.flatpak
 ```
 
 ##### Additional installation (required)
@@ -458,19 +512,29 @@ After adding yourself to the group, log out and log back in for the changes to t
 
 #### Services
 
-**Start once**
+Native packages (Arch, CachyOS, Debian, Fedora) install Vibepollo as machine-wide system services.
+The session controller is enabled during installation and starts the streaming host whenever the
+configured user's KDE Plasma Wayland session is active:
+
 ```bash
-systemctl --user start app-io.github.Nonary.vibepollo
+sudo systemctl status vibepollo-session-controller.service vibepollo.service
+sudo journalctl -u vibepollo-session-controller.service -u vibepollo.service --since '-10 minutes'
 ```
 
-**Start on boot**
+Do not start `vibepollo.service` directly; the controller binds the login session first. If the
+installer could not pick the desktop account automatically, choose it once and enable the
+controller:
+
+```bash
+sudo /usr/libexec/vibeshine/vibepollo-machine-host configure USER
+sudo systemctl enable --now vibepollo-session-controller.service
+```
+
+AppImage and Flatpak builds still run as a per-user service:
+
 ```bash
 systemctl --user --now enable app-io.github.Nonary.vibepollo
 ```
-
-> [!NOTE]
-> The full service name follows the application ID, `app-io.github.Nonary.vibepollo`, and it is also
-> aliased to `vibepollo.service` for convenience.
 
 ### macOS
 The first time you start Sunshine, you will be asked to grant access to screen recording and your microphone.
@@ -672,11 +736,11 @@ Additional information:
     output exposes only a primary plane, forcing the compositor to include cursors and overlays in that
     final framebuffer. Older modules without the frame-export ABI are rejected rather than polled.
 
-  Enable the managed virtual-display pool after installation:
+  Native packages build the module and start the managed virtual-display pool automatically.
+  To retry the build by hand or inspect the installed module:
 
   ```bash
   sudo /usr/libexec/vibeshine/vibeshine-drm-install install
-  sudo systemctl enable --now vibeshine-vkms.service
   modinfo vibeshine_drm
   ```
 

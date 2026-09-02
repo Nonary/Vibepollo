@@ -49,6 +49,9 @@ announce() {
 }
 
 valid_user() { [[ "$1" =~ ^[a-z_][a-z0-9_-]*$ ]]; }
+# Plasma Login Manager and SDDM both start the Plasma Wayland desktop through
+# the systemd user manager, which session readiness verifies unit by unit.
+desktop_service_supported() { [[ "$1" =~ ^(plasmalogin|sddm|sddm-autologin)$ ]]; }
 valid_uid() { [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]; }
 valid_session_id() { [[ "$1" =~ ^[A-Za-z0-9_.-]+$ ]]; }
 valid_wayland_display() { [[ "$1" =~ ^wayland-[0-9]+$ ]]; }
@@ -126,8 +129,11 @@ loginctl_session_properties() {
       --property=Service 2>/dev/null
 }
 
+rejected_session=''
+
 observe_active_session() {
   local properties line key value runtime_mode
+  rejected_session=''
   local observed_user='' observed_name='' observed_seat='' observed_remote=''
   local observed_type='' observed_class='' observed_active='' observed_state='' observed_service=''
   local entry
@@ -158,12 +164,13 @@ observe_active_session() {
      "$observed_state" == active ]] || return 1
 
   if [[ "$observed_name" == "$desktop_user" && "$observed_user" == "$desktop_uid" &&
-        "$observed_class" == user && "$observed_service" == plasmalogin ]]; then
+        "$observed_class" == user ]] && desktop_service_supported "$observed_service"; then
     candidate_role=desktop
   elif [[ "$observed_name" == "$greeter_user" && "$observed_class" == greeter &&
           "$observed_service" == plasmalogin-greeter ]]; then
     candidate_role=greeter
   else
+    rejected_session="user=$observed_name class=$observed_class service=$observed_service"
     return 2
   fi
 
@@ -820,7 +827,7 @@ reconcile_once() {
       return 0
     fi
     if ((observed_status == 2)); then
-      announce unsupported-session 'active graphical session is not the configured desktop or greeter; host is off'
+      announce unsupported-session "active graphical session is not the configured desktop or greeter ($rejected_session; expected desktop user $desktop_user on a Plasma Wayland session started by Plasma Login Manager or SDDM); host is off"
     else
       announce no-session 'waiting for an authoritative local Wayland session'
     fi

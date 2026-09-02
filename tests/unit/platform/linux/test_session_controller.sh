@@ -483,4 +483,13 @@ fi
 ((SECONDS - cleanup_started <= 2)) || fail_test 'wedged application cleanup exceeded its total deadline'
 ((${#mock_stopped_units[@]} == 1)) || fail_test 'wedged application stop was retried instead of polled'
 
+for supported in plasmalogin sddm sddm-autologin; do
+  desktop_service_supported "$supported" || fail_test "desktop login service $supported was rejected"
+done
+for unsupported in plasmalogin-greeter sddm-greeter gdm-password lightdm login sshd ''; do
+  if desktop_service_supported "$unsupported"; then
+    fail_test "desktop login service '$unsupported' was accepted"
+  fi
+done
+
 /usr/bin/printf 'PASS: deterministic machine-session controller transitions\n'

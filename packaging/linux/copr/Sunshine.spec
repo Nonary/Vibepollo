@@ -1356,7 +1356,9 @@ if [ ! -x "$(command -v rpm-ostree)" ]; then
       exit 1
     fi
   else
-    echo "warning: configure a machine profile owner before enabling Vibepollo."
+    echo "==> ACTION REQUIRED: Vibepollo could not choose the desktop user who owns streaming on this machine." >&2
+    echo "    Run:  sudo /usr/libexec/vibeshine/vibepollo-machine-host configure USER" >&2
+    echo "    then: sudo systemctl enable --now vibepollo-session-controller.service" >&2
   fi
 else
   echo "rpm-ostree environment detected, skipping post install steps. Restart to apply the changes."
@@ -1610,6 +1612,12 @@ fi
 
 # Udev rules
 %{_udevrulesdir}/*-sunshine.rules
+%{_udevrulesdir}/70-vibepollo-uinput.rules
+
+# Native firewall profiles and PipeWire capture defaults
+%{_prefix}/lib/firewalld/services/vibepollo.xml
+%{_sysconfdir}/ufw/applications.d/vibepollo
+%{_datadir}/pipewire/pipewire.conf.d/50-vibepollo-audio.conf
 
 # Modules-load configuration
 %{_modulesloaddir}/*-sunshine.conf
