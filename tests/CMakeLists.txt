@@ -549,6 +549,10 @@ sunshine_register_component(NAME test_component_virtual_display_manifest TEST_SO
     INCLUDE_DIRECTORIES "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
+    sunshine_register_component(NAME test_component_linux_secure_open
+        TEST_SOURCE unit/platform/linux/test_secure_open.cpp
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/linux/secure_open.cpp")
+
     add_executable(test_linux_capability_sanitizer
         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_capability_sanitizer.cpp")
     target_include_directories(test_linux_capability_sanitizer PRIVATE "${LIBCAP_INCLUDE_DIRS}")

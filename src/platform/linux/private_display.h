@@ -24,6 +24,14 @@ namespace platf::linux_private_display {
     std::string error;
   };
 
+  /**
+   * Fence process shutdown from compositor and connector mutation. The
+   * request operation is a single lock-free atomic store and is safe from the
+   * synchronous Linux signal-wait path before teardown begins.
+   */
+  void request_process_shutdown_preserve() noexcept;
+  bool process_shutdown_preserve_requested() noexcept;
+
   /** Disable unowned private outputs left enabled after a compositor/service crash. */
   bool initialize();
 
@@ -63,7 +71,7 @@ namespace platf::linux_private_display {
   );
 
   /** Release only this client's connector reservation; topology apply performs the disable. */
-  void remote_remove_owned_display(const std::string &client_uuid);
+  bool remote_remove_owned_display(const std::string &client_uuid);
 
   /** Inspect stable ownership while constructing the Remote Monitor baseline. */
   bool is_private_output(const std::string &output_name);

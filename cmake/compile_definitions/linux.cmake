@@ -344,6 +344,8 @@ list(APPEND PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/linux/misc.h"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/misc.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/mangohud_policy.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/secure_open.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/secure_open.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/host_stats.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/audio.cpp")
 

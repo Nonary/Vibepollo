@@ -16,19 +16,13 @@ namespace platf::linux_private_display::restore_policy {
     bool enabled {false};
     bool connected {false};
     bool private_output {false};
+    bool retiring {false};
   };
 
-  /** An enabled saved topology must retain a scanout until one saved output is capture-ready. */
-  inline bool requires_guard(const std::span<const candidate_t> candidates) {
-    return std::ranges::any_of(candidates, [](const auto &candidate) {
-      return candidate.enabled;
-    });
-  }
-
-  /** Prefer a physical saved output, falling back to a connected private output for private-only baselines. */
+  /** Prefer a surviving physical output, falling back to a distinct surviving private output. */
   inline std::optional<std::string> select_guard(const std::span<const candidate_t> candidates) {
     const auto eligible = [](const candidate_t &candidate) {
-      return !candidate.name.empty() && candidate.enabled && candidate.connected;
+      return !candidate.name.empty() && candidate.enabled && candidate.connected && !candidate.retiring;
     };
     const auto physical = std::ranges::find_if(candidates, [&](const auto &candidate) {
       return eligible(candidate) && !candidate.private_output;

@@ -8,14 +8,51 @@ if command -v systemd-sysusers >/dev/null 2>&1; then
 fi
 
 vibepollo_controller="@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-session-controller"
+vibepollo_host_upgrade_dropin_dir=/run/systemd/system/vibepollo.service.d
+vibepollo_host_upgrade_dropin=$vibepollo_host_upgrade_dropin_dir/90-vibepollo-safe-upgrade.conf
 vibepollo_privileged_helper_is_safe() {
   [ -f "$1" ] && [ ! -L "$1" ] && [ -x "$1" ] || return 1
   [ "$(stat -c '%u:%g:%a:%h:%F' -- "$1")" = \
     '0:0:755:1:regular file' ]
 }
 vibepollo_unmask_host_for_controller() {
-  timeout --signal=KILL 15 systemctl unmask --runtime vibepollo-session-exec.socket 2>/dev/null || return 1
+  vibepollo_unit_is_quiescent vibepollo-session-controller.service || return 1
+  vibepollo_unit_is_quiescent vibepollo-session-exec.socket || return 1
+  if [ -e "$vibepollo_host_upgrade_dropin" ] || [ -L "$vibepollo_host_upgrade_dropin" ]; then
+    [ -f "$vibepollo_host_upgrade_dropin" ] && [ ! -L "$vibepollo_host_upgrade_dropin" ] || return 1
+    [ "$(stat -c '%u:%g:%a:%h:%F' -- "$vibepollo_host_upgrade_dropin")" = \
+      '0:0:644:1:regular file' ] || return 1
+    vibepollo_upgrade_contents=$(sed -n '1,6p' -- "$vibepollo_host_upgrade_dropin") || return 1
+    case "$vibepollo_upgrade_contents" in
+      '[Unit]
+RefuseManualStart=yes
+
+[Service]
+KillMode=process
+SendSIGKILL=no' | \
+      '[Unit]
+RefuseManualStart=yes
+
+[Service]
+KillMode=control-group
+SendSIGKILL=no') ;;
+      *) return 1 ;;
+    esac
+    rm -f -- "$vibepollo_host_upgrade_dropin" || return 1
+    rmdir -- "$vibepollo_host_upgrade_dropin_dir" 2>/dev/null || true
+  fi
+  systemctl daemon-reload || return 1
   timeout --signal=KILL 15 systemctl unmask --runtime vibepollo.service 2>/dev/null || return 1
+  systemctl daemon-reload || return 1
+  vibepollo_new_host_properties=$(timeout --signal=KILL 5 systemctl show vibepollo.service \
+    --property=RefuseManualStart --property=KillMode --property=SendSIGKILL 2>/dev/null) || return 1
+  printf '%s\n' "$vibepollo_new_host_properties" | grep -qx 'RefuseManualStart=no' || return 1
+  printf '%s\n' "$vibepollo_new_host_properties" | grep -qx 'KillMode=control-group' || return 1
+  printf '%s\n' "$vibepollo_new_host_properties" | grep -qx 'SendSIGKILL=no' || return 1
+  timeout --signal=KILL 15 systemctl unmask --runtime vibeshine-vkms-control.socket 2>/dev/null || return 1
+  systemctl start vibeshine-vkms-control.socket || return 1
+  systemctl is-active --quiet vibeshine-vkms-control.socket || return 1
+  timeout --signal=KILL 15 systemctl unmask --runtime vibepollo-session-exec.socket 2>/dev/null || return 1
   vibepollo_host_state=$(timeout --signal=KILL 5 systemctl is-enabled \
     vibepollo.service 2>/dev/null || true)
   vibepollo_host_load=$(timeout --signal=KILL 5 systemctl show \
@@ -102,9 +139,10 @@ vibepollo_broker_unit_is_safe() {
 }
 
 vibepollo_stop_exact_unit() {
-  timeout --signal=KILL 30 systemctl stop "$1" 2>/dev/null && return 0
-  timeout --signal=KILL 5 systemctl kill --kill-whom=all --signal=KILL "$1" 2>/dev/null || true
-  timeout --signal=KILL 10 systemctl stop "$1" 2>/dev/null || true
+  # Never bypass a service's ordered resource teardown.  Killing systemctl
+  # only abandons the client while its manager job continues; killing the unit
+  # cgroup can strand live GPU imports and is therefore forbidden here.
+  timeout --signal=TERM --kill-after=2 30 systemctl stop "$1" 2>/dev/null
 }
 
 vibepollo_capture_broker_list() {

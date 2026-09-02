@@ -78,9 +78,10 @@ vibepollo_broker_unit_is_safe() {
 }
 
 vibepollo_stop_exact_unit() {
-  timeout --signal=KILL 30 systemctl stop "$1" 2>/dev/null && return 0
-  timeout --signal=KILL 5 systemctl kill --kill-whom=all --signal=KILL "$1" 2>/dev/null || true
-  timeout --signal=KILL 10 systemctl stop "$1" 2>/dev/null || true
+  # Never bypass a service's ordered resource teardown.  Killing systemctl
+  # only abandons the client while its manager job continues; killing the unit
+  # cgroup can strand live GPU imports and is therefore forbidden here.
+  timeout --signal=TERM --kill-after=2 30 systemctl stop "$1" 2>/dev/null
 }
 
 vibepollo_capture_broker_list() {

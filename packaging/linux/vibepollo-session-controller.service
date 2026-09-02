@@ -22,7 +22,7 @@ RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
 
 User=root
-SupplementaryGroups=vibepollo vibeshine-vkms
+SupplementaryGroups=vibepollo
 CapabilityBoundingSet=CAP_SETGID CAP_SETUID
 AmbientCapabilities=CAP_SETUID
 NoNewPrivileges=yes

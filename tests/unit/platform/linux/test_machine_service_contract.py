@@ -25,6 +25,8 @@ kwin_environment_dropin = (linux / "vibepollo-kwin-session-environment.conf").re
 pairing_policy = (root / "src/http_pairing_policy.cpp").read_text()
 host = (linux / "vibepollo-machine-host").read_text()
 host_unit = (linux / "vibepollo.service").read_text()
+broker_unit = (linux / "vibepollo-session-exec@.service").read_text()
+broker_socket_unit = (linux / "vibepollo-session-exec.socket").read_text()
 launcher = (linux / "vibepollo-session-exec.c").read_text()
 broker = (linux / "vibepollo-session-broker.c").read_text()
 steam_launcher = (linux / "vibepollo-steam-launch.cpp").read_text()
@@ -185,7 +187,7 @@ require(
 )
 for forbidden in ("ExecStart=", "ExecStartPre=", "WantedBy="):
     forbid(kwin_environment_dropin, forbidden, "KWin session environment drop-in")
-require(controller, "stop_host || success=1", "fail-closed transition ordering")
+require(controller, 'stop_host "$deadline" || success=1', "fail-closed transition ordering")
 require(controller, "binding_matches_candidate complete", "display credential rebinding")
 require(controller, "observe_active_session || return 1", "authoritative transition snapshot")
 require(controller, "read_user_environment || return 1", "current transition credentials")
@@ -201,7 +203,7 @@ for stopped_property in ("ActiveState", "SubState", "MainPID", "ControlGroup", "
     require(controller, stopped_property, "systemd/cgroup host stop proof")
 forbid(controller, "/usr/bin/ss", "spoofable global port gating")
 require(controller, 'local pattern="vibepollo-app-${generation}-*.service"', "generation-scoped application cleanup")
-require(controller, "stop_bound_session_apps || success=1", "application cleanup transition ordering")
+require(controller, 'stop_bound_session_apps "$deadline" || success=1', "application cleanup transition ordering")
 require(controller, "host-stop-cleanup-failed", "stopped existing-binding cleanup")
 inactive_binding_at = controller.index("if ((binding_matches)) && ! host_is_active; then")
 readiness_probe_at = controller.index("if ! session_is_ready; then")
@@ -215,25 +217,37 @@ forbid(existing_binding_branch, "start_host", "direct existing-binding restart")
 quiesce_body = controller.split("\nquiesce() {\n", 1)[1].split("\n}\n\nnext_generation()", 1)[0]
 quiesce_normalized = " ".join(quiesce_body.split())
 quiesce_order = (
-    quiesce_normalized.index("close_broker_admission || return 1"),
-    quiesce_normalized.index("stop_host || success=1"),
-    quiesce_normalized.index("stop_broker_instances || success=1"),
-    quiesce_normalized.index("stop_bound_session_apps || success=1"),
-    quiesce_normalized.rindex("stop_broker_instances || success=1"),
+    quiesce_normalized.index('close_broker_admission "$deadline" || return 1'),
+    quiesce_normalized.index('stop_host "$deadline" || success=1'),
+    quiesce_normalized.index('stop_broker_instances "$deadline" || success=1'),
+    quiesce_normalized.index('stop_bound_session_apps "$deadline" || success=1'),
+    quiesce_normalized.rindex('stop_broker_instances "$deadline" || success=1'),
     quiesce_normalized.index("((success == 0)) || return 1"),
     quiesce_normalized.index("remove_session_record || success=1"),
 )
 if tuple(sorted(quiesce_order)) != quiesce_order:
     raise AssertionError("controller quiesce does not close admission, drain every exact cgroup, then revoke state")
 for broker_stop_proof in (
-    "local deadline=$((SECONDS + stop_timeout))",
+    "local deadline=$((SECONDS + quiesce_timeout)) success=0",
+    "local -A stop_requested=()",
     "broker_unit_is_stopped",
     "--property=ControlGroup",
     "session_app_control_group_is_empty",
     "required_clean_passes=10",
 ):
     require(controller, broker_stop_proof, "bounded broker cgroup quiescence")
-require(controller, "readonly -a managed_outputs=(Virtual-1 Virtual-2 Virtual-3 Virtual-4)", "full connector-pool cleanup")
+for forced_stop in ("kill --kill-whom=all --signal=KILL",):
+    forbid(controller, forced_stop, "controller graceful cgroup quiescence")
+shutdown_body = controller.split("\nshutdown_controller() {\n", 1)[1].split("\n}\n\nrun_controller()", 1)[0]
+forbid(shutdown_body, "\n  quiesce", "single ExecStopPost quiesce transaction")
+for forbidden_connector_authority in (
+    "connector_request",
+    "release_connectors",
+    "vkms-control.sock",
+    "vkms-leases",
+):
+    forbid(controller, forbidden_connector_authority, "controller display ownership")
+forbid(controller_unit, "SupplementaryGroups=vibeshine vibeshine-vkms", "controller display ownership")
 require(controller, "next_generation", "generation-bound session records")
 require(controller, 'chmod 0640 "$temporary"', "trusted session record mode")
 require(controller, "xauthority_is_private", "private owner-only Xauthority")
@@ -246,7 +260,19 @@ forbid(controller, '[[ -S "$candidate_runtime/bus" ]]', "capability-bounded runt
 # The network host owns machine state but no login lifecycle. Its only
 # privilege expansion is the existing KMS binary plus the narrow session shim.
 require(sysusers, 'u vibepollo - "Vibepollo machine host" /var/lib/vibepollo /usr/bin/nologin', "machine account")
-require(host_unit, "BindsTo=vibepollo-session-controller.service", "machine host unit")
+require(host_unit, "Requires=vibepollo-session-exec.socket", "broker-loss host revocation")
+require(host_unit, "Wants=vibeshine-vkms.service", "machine host unit")
+require(host_unit, "After=vibepollo-session-controller.service vibepollo-session-exec.socket", "ordered machine-host startup")
+for unit_text, label in (
+    (broker_socket_unit, "session broker socket"),
+    (broker_unit, "session broker connection"),
+):
+    require(unit_text, "After=vibepollo-session-controller.service", f"{label} startup ordering")
+    require(unit_text, "Before=vibepollo.service", f"{label} shutdown drain ordering")
+    forbid(unit_text, "BindsTo=vibepollo-session-controller.service", f"{label} ordered controller cleanup")
+    forbid(unit_text, "PartOf=vibepollo-session-controller.service", f"{label} ordered controller cleanup")
+require(host_unit, "KillMode=control-group", "machine host process-tree shutdown")
+require(host_unit, "SendSIGKILL=no", "GPU-owner graceful shutdown")
 require(host_unit, "Type=notify", "encoder-gated machine host readiness")
 require(host_unit, "NotifyAccess=all", "encoder-gated machine host readiness")
 require(host_unit, "TimeoutStartSec=45", "encoder-gated machine host readiness")
@@ -260,8 +286,15 @@ require(host_unit, "DevicePolicy=closed", "machine host unit")
 require(host_unit, "ProtectSystem=strict", "machine host unit")
 require(host_unit, "ProtectHome=yes", "machine host unit")
 require(host_unit, "PrivateTmp=yes", "machine host unit")
-for forbidden in ("User=root", "CAP_DAC_OVERRIDE", "machine-prepare", "ExecStopPost=", "WantedBy="):
+require(host_unit, "RestrictSUIDSGID=yes", "machine host unit")
+for forbidden in (
+    "User=root", "CAP_DAC_OVERRIDE", "machine-prepare", "ExecStopPost=", "WantedBy=", "KillMode=mixed",
+    "BindsTo=vibepollo-session-controller.service",
+):
     forbid(host_unit_directives, forbidden, "machine host unit")
+require(host, "trap mark_host_shutdown TERM INT HUP", "single service signal delivery")
+forbid(host, "trap 'forward_host_signal", "duplicate service signal delivery")
+require(host, "((shutting_down)) || terminate_host", "single child termination request")
 
 # API restart of the private child exits back to the readiness-gating wrapper.
 # Ordinary Linux launches retain the historical atexit self-reexec path.
@@ -281,29 +314,78 @@ if not machine_guard_at < machine_return_at < self_reexec_at:
     raise AssertionError("machine-host restart guard does not precede ordinary self-reexec registration")
 require(linux_misc, "execv(executable, lifetime::get_argv())", "ordinary Linux self-reexec")
 
-# The last-resort shutdown watchdog also avoids the core-dump/debug-trap path
-# only for the exact supervised machine-child environment.
-deadline_body = main_source.split("constexpr auto kShutdownDeadline", 1)[1].split(
-    "\n    std::mutex mutex_", 1
-)[0]
-for invariant in (
-    '#ifdef __linux__',
-    "if (supervised_machine_host_)",
-    "std::_Exit(EXIT_FAILURE);",
-    "lifetime::debug_trap();",
-):
-    require(deadline_body, invariant, "machine-host forced-exit fallback")
+# A supervised machine child must complete ordered GPU teardown.  Its service
+# manager owns termination; an in-process deadline may not bypass destructors.
 for invariant in (
     'std::getenv("VIBEPOLLO_MACHINE_HOST")',
     "machine_host_environment[0] == '1'",
     "machine_host_environment[1] == '\\0'",
     "shutdown_deadline_t shutdown_deadline {&shutdown_signal_requested, supervised_machine_host}",
+    "if (supervised_machine_host)",
+    "pthread_sigmask(SIG_BLOCK",
+    "sigwait(&termination_signal_set",
+    "request_process_shutdown_preserve()",
 ):
-    require(main_source, invariant, "exact supervised machine-host shutdown mode")
-forced_exit_at = deadline_body.index("std::_Exit(")
-ordinary_trap_at = deadline_body.index("lifetime::debug_trap();")
-if forced_exit_at >= ordinary_trap_at:
-    raise AssertionError("machine-only forced exit does not precede the ordinary debug trap")
+    require(main_source, invariant, "supervised machine-host shutdown ownership")
+forbid(main_source, "std::_Exit(EXIT_FAILURE);", "supervised machine-host shutdown ownership")
+require(private_display, "process_shutdown_preserve_requested()", "shutdown display handoff fence")
+require(nvhttp, "process_shutdown_preserve_requested()", "shutdown display handoff fence")
+require(private_display, "std::shared_mutex topology_mutation_gate", "shutdown topology mutation barrier")
+request_shutdown_body = private_display.split(
+    "void request_process_shutdown_preserve() noexcept {", 1
+)[1].split("\n  bool process_shutdown_preserve_requested()", 1)[0]
+shutdown_store_at = request_shutdown_body.index(
+    "preserve_for_process_shutdown.store(true, std::memory_order_release)"
+)
+shutdown_barrier_at = request_shutdown_body.index(
+    "std::unique_lock mutation_barrier {topology_mutation_gate}"
+)
+if shutdown_store_at >= shutdown_barrier_at:
+    raise AssertionError("shutdown must close topology admission before draining an admitted mutation")
+for mutation_name, end_marker, preserved_result in (
+    ("connect_managed_output", "bool disconnect_managed_output", "return false;"),
+    ("disconnect_managed_output", "std::string connector_sysfs_path", "return true;"),
+):
+    mutation_body = private_display.split(f"bool {mutation_name}", 1)[1].split(end_marker, 1)[0]
+    if mutation_body.count("process_shutdown_preserve_requested()") < 2:
+        raise AssertionError(
+            f"{mutation_name} must check shutdown before and after entering the shared mutation gate"
+        )
+    first_fence_at = mutation_body.index("process_shutdown_preserve_requested()")
+    shared_gate_at = mutation_body.index("std::shared_lock")
+    require(mutation_body, "topology_mutation_gate", f"{mutation_name} shared mutation gate")
+    second_fence_at = mutation_body.index("process_shutdown_preserve_requested()", first_fence_at + 1)
+    if not first_fence_at < shared_gate_at < second_fence_at:
+        raise AssertionError(f"{mutation_name} does not close post-shutdown reader admission")
+    require(mutation_body, preserved_result, f"{mutation_name} shutdown result")
+doctor_body = private_display.split("command_result_t run_doctor", 1)[1].split(
+    "std::optional<json> query_configuration", 1
+)[0]
+for invariant in (
+    "if (mutating)",
+    "process_shutdown_preserve_requested()",
+    "std::shared_lock {topology_mutation_gate}",
+    "g_subprocess_newv(",
+    "mutation_admission.unlock()",
+    "g_subprocess_communicate_utf8(",
+):
+    require(doctor_body, invariant, "bounded KScreen mutation admission")
+if not (
+    doctor_body.index("std::shared_lock {topology_mutation_gate}")
+    < doctor_body.index("g_subprocess_newv(")
+    < doctor_body.index("mutation_admission.unlock()")
+    < doctor_body.index("g_subprocess_communicate_utf8(")
+):
+    raise AssertionError("KScreen mutation admission remains held across its unbounded response")
+execute_body = private_display.split("bool execute_configuration", 1)[1].split(
+    "double floating_point", 1
+)[0]
+require(execute_body, "run_doctor(arguments, true)", "fenced KScreen mutation spawn")
+forbid(execute_body, "std::shared_lock", "KScreen response outside mutation admission")
+initialize_body = private_display.split("\n  bool initialize() {", 1)[1].split(
+    "\n  prepare_result_t prepare_session", 1
+)[0]
+require(initialize_body, "process_shutdown_preserve_requested()", "private-display startup shutdown fence")
 
 require(host, "readonly machine_profile=/var/lib/vibepollo", "machine host")
 require(host, '"HOME=$machine_profile"', "machine host HOME isolation")
@@ -610,6 +692,7 @@ for lifecycle, label in (
         raise AssertionError(f"{label} lacks sustained clean broker enumeration")
     forbid(lifecycle, "systemctl stop 'vibepollo-session-exec@*.service'", label)
     forbid(lifecycle, 'systemctl stop "vibepollo-session-exec@*.service"', label)
+    forbid(lifecycle, "systemctl kill --kill-whom=all --signal=KILL", label)
 
 # Pre-replacement hooks must quiesce both the immediately prior architecture
 # and the controller/broker architecture without trusting systemctl globs.
@@ -618,10 +701,26 @@ for lifecycle, label in (
     (arch_pre, "Arch pre-replacement"),
     (rpm_pre, "RPM pre-replacement"),
 ):
+    normalized = " ".join(lifecycle.replace("\\\n", " ").split())
     for invariant in (
-        "mask --runtime vibepollo-session-exec.socket",
+        "vibepollo_broker_socket_is_masked",
         "vibepollo_stop_brokers",
         "vibepollo_broker_unit_is_safe",
+        "vibeshine-vkms-control.socket",
+        "vibepollo_control_unit_is_safe",
+        "vibepollo_control_instances_are_quiescent",
+        "vibepollo_select_upgrade_kill_mode",
+        "vibepollo_prepare_host_upgrade_fence",
+        "vibepollo_activate_host_upgrade_fence",
+        "RefuseManualStart=yes",
+        "vibepollo_upgrade_kill_mode=process",
+        "vibepollo_upgrade_kill_mode=control-group",
+        "SendSIGKILL=no",
+        "--property=Job",
+        "systemctl freeze",
+        "FreezerState=frozen",
+        "frozen 1",
+        "vibepollo_controller_remains_frozen",
         "vibepollo-session-controller.service",
         "vibepollo.service",
         "vibepollo-prelogin.service",
@@ -638,8 +737,6 @@ for lifecycle, label in (
         "--property=ControlGroup",
         "populated 0",
         "vibepollo_unit_is_disabled",
-        "/run/vibepollo/session.env",
-        "/run/vibepollo/runtime-acl",
         "/run/vibepollo/session-broker.sock",
         "/run/vibepollo/session-handoffs",
         "/run/vibepollo/session-restores",
@@ -662,28 +759,72 @@ for lifecycle, label in (
     forbid(lifecycle, "systemctl stop 'vibepollo-session-restore@*.service'", label)
     forbid(lifecycle, 'systemctl stop "vibepollo-session-restore@*.service"', label)
     forbid(lifecycle, "systemctl unmask", label)
-    normalized = " ".join(lifecycle.replace("\\\n", " ").split())
-    restore_mask_at = normalized.index("systemctl mask --runtime 'vibepollo-session-restore@.service'")
-    host_mask_at = normalized.index("systemctl mask --runtime vibepollo.service")
-    helper_close_at = normalized.index("vibepollo_disable_legacy_handoff || return 1", host_mask_at)
-    broker_admission_at = normalized.index("systemctl mask --runtime vibepollo-session-exec.socket", helper_close_at)
-    first_restore_stop = normalized.index("vibepollo_stop_restore_instances || return 1", broker_admission_at)
+    forbid(lifecycle, "systemctl kill --kill-whom=all --signal=KILL", label)
+    forbid(lifecycle, "vibepollo_session_record=", label)
+    forbid(lifecycle, "vibepollo_legacy_acl=", label)
+    function_name = "do_quiesce_machine_host" if label.startswith("Arch") else "vibepollo_quiesce_machine_host"
+    quiesce_source = lifecycle.rsplit(f"\n{function_name}() {{\n", 1)[1].split("\n}\n", 1)[0]
+    quiesce = " ".join(quiesce_source.replace("\\\n", " ").split())
+    prepare_at = quiesce.index("vibepollo_prepare_host_upgrade_fence || return 1")
+    freeze_at = quiesce.index("vibepollo_freeze_controller || return 1", prepare_at)
+    activate_at = quiesce.index("vibepollo_activate_host_upgrade_fence || return 1", freeze_at)
+    control_mask_at = quiesce.index("systemctl mask --runtime vibeshine-vkms-control.socket", activate_at)
+    control_stop_at = quiesce.index("vibepollo_stop_exact_unit vibeshine-vkms-control.socket", control_mask_at)
+    control_drain_at = quiesce.index("vibepollo_control_instances_are_quiescent || return 1", control_stop_at)
+    restore_mask_at = quiesce.index("systemctl mask --runtime 'vibepollo-session-restore@.service'", activate_at)
+    helper_close_at = quiesce.index("vibepollo_disable_legacy_handoff || return 1", restore_mask_at)
+    broker_admission_at = quiesce.index("systemctl mask --runtime vibepollo-session-exec.socket", control_drain_at)
+    broker_stop_at = quiesce.index("vibepollo_stop_exact_unit vibepollo-session-exec.socket", broker_admission_at)
+    host_stop_at = quiesce.index("vibepollo_stop_exact_unit vibepollo.service", broker_stop_at)
+    host_mask_at = quiesce.index("systemctl mask --runtime vibepollo.service", host_stop_at)
+    first_restore_stop = quiesce.index("vibepollo_stop_restore_instances || return 1", host_mask_at)
+    broker_drain_at = quiesce.index("vibepollo_stop_brokers || return 1", first_restore_stop)
+    frozen_proof_at = quiesce.index("vibepollo_controller_remains_frozen || return 1", broker_drain_at)
+    controller_stop_at = quiesce.index("vibepollo_stop_exact_unit vibepollo-session-controller.service", frozen_proof_at)
     remove_pam_at = normalized.index("vibepollo_run_optional_legacy_command remove-pam", first_restore_stop)
     last_restore_stop = normalized.rindex("vibepollo_stop_restore_instances || return 1")
     legacy_cleanup_at = normalized.rindex("vibepollo_cleanup_legacy_transition_state || return 1")
     if not (
-        restore_mask_at
-        < host_mask_at
+        prepare_at
+        < freeze_at
+        < activate_at
+        < restore_mask_at
         < helper_close_at
+        < control_mask_at
+        < control_stop_at
+        < control_drain_at
         < broker_admission_at
+        < broker_stop_at
+        < host_stop_at
+        < host_mask_at
         < first_restore_stop
-        < remove_pam_at
-        < last_restore_stop
-        < legacy_cleanup_at
+        < broker_drain_at
+        < frozen_proof_at
+        < controller_stop_at
     ):
-        raise AssertionError(f"{label} does not close legacy admission and state in fail-closed order")
+        raise AssertionError(f"{label} does not fence the old controller/host and drain GPU ownership in fail-closed order")
+    if not remove_pam_at < last_restore_stop < legacy_cleanup_at:
+        raise AssertionError(f"{label} does not finish legacy admission and state cleanup in fail-closed order")
     if "loaded | masked" not in lifecycle and "loaded|masked" not in lifecycle:
         raise AssertionError(f"{label} rejects masked legacy restore instances during exact cgroup cleanup")
+
+for function_name in (
+    "vibepollo_control_instances_are_quiescent",
+    "vibepollo_stop_brokers",
+    "vibepollo_stop_restore_instances",
+    "vibepollo_restore_instances_are_quiescent",
+):
+    require(rpm_pre, f"{function_name}() (", "RPM pre-replacement subshell isolation")
+require(rpm_post, "vibepollo_stop_brokers() (", "RPM post-replacement subshell isolation")
+require(rpm_preun, "vibepollo_preun_stop_brokers() (", "RPM preun subshell isolation")
+for command in (
+    "systemctl daemon-reload || exit 1",
+    ") || exit 1",
+    "grep -qx 'RefuseManualStart=yes' || exit 1",
+    'grep -qx "KillMode=$vibepollo_upgrade_kill_mode" || exit 1',
+    "grep -qx 'SendSIGKILL=no' || exit 1",
+):
+    require(rpm_pre, command, "RPM upgrade-fence fail-closed activation")
 
 # The host mask survives replacement until the new controller/socket are the
 # next components activated. The obsolete restore template is never unmasked.
@@ -694,6 +835,12 @@ for lifecycle, label in (
 ):
     for invariant in (
         "vibepollo_unmask_host_for_controller",
+        "90-vibepollo-safe-upgrade.conf",
+        "RefuseManualStart=no",
+        "KillMode=control-group",
+        "SendSIGKILL=no",
+        "unmask --runtime vibeshine-vkms-control.socket",
+        "start vibeshine-vkms-control.socket",
         "unmask --runtime vibepollo-session-exec.socket",
         "unmask --runtime vibepollo.service",
         "LoadState=loaded",

@@ -68,9 +68,12 @@ readonly vibepollo_controller=/usr/libexec/vibeshine/vibepollo-session-controlle
 readonly vibepollo_legacy_host=/usr/libexec/vibeshine/vibepollo-machine-host
 readonly vibepollo_legacy_handoff=/usr/libexec/vibeshine/vibepollo-session-handoff
 readonly vibepollo_runtime_root=/run/vibepollo
-readonly vibepollo_session_record=/run/vibepollo/session.env
-readonly vibepollo_legacy_acl=/run/vibepollo/runtime-acl
 readonly vibepollo_broker_socket=/run/vibepollo/session-broker.sock
+readonly vibepollo_control_socket=/run/vibeshine/vkms-control.sock
+readonly vibepollo_host_upgrade_dropin_dir=/run/systemd/system/vibepollo.service.d
+readonly vibepollo_host_upgrade_dropin=$vibepollo_host_upgrade_dropin_dir/90-vibepollo-safe-upgrade.conf
+vibepollo_controller_was_frozen=0
+vibepollo_upgrade_kill_mode=
 readonly vibepollo_legacy_handoff_directory=/run/vibepollo/session-handoffs
 readonly vibepollo_legacy_restore_directory=/run/vibepollo/session-restores
 readonly vibepollo_legacy_transition_lock=/run/vibepollo/session-handoff.lock
@@ -148,6 +151,15 @@ vibepollo_broker_socket_is_masked() {
   [[ "$state" =~ ^(masked|masked-runtime)$ && "$load" == 'LoadState=masked' ]]
 }
 
+vibepollo_control_socket_is_masked() {
+  local state load
+  state=$(timeout --signal=KILL 5 systemctl is-enabled \
+    vibeshine-vkms-control.socket 2>/dev/null || true)
+  load=$(timeout --signal=KILL 5 systemctl show vibeshine-vkms-control.socket \
+    --property=LoadState 2>/dev/null) || return 1
+  [[ "$state" =~ ^(masked|masked-runtime)$ && "$load" == 'LoadState=masked' ]]
+}
+
 vibepollo_restore_unit_is_safe() {
   [[ "$1" =~ ^vibepollo-session-restore@[1-9][0-9]*\.service$ ]]
 }
@@ -156,10 +168,15 @@ vibepollo_broker_unit_is_safe() {
   [[ "$1" =~ ^vibepollo-session-exec@[A-Za-z0-9_.:-]+\.service$ ]]
 }
 
+vibepollo_control_unit_is_safe() {
+  [[ "$1" =~ ^vibeshine-vkms-control@[A-Za-z0-9_.:-]+\.service$ ]]
+}
+
 vibepollo_stop_exact_unit() {
-  timeout --signal=KILL 30 systemctl stop "$1" 2>/dev/null && return 0
-  timeout --signal=KILL 5 systemctl kill --kill-whom=all --signal=KILL "$1" 2>/dev/null || true
-  timeout --signal=KILL 10 systemctl stop "$1" 2>/dev/null || true
+  # Never bypass a service's ordered resource teardown.  Killing systemctl
+  # only abandons the client while its manager job continues; killing the unit
+  # cgroup can strand live GPU imports and is therefore forbidden here.
+  timeout --signal=TERM --kill-after=2 30 systemctl stop "$1" 2>/dev/null
 }
 
 vibepollo_capture_unit_list() {
@@ -173,6 +190,161 @@ vibepollo_capture_unit_list() {
   ) || return 1
   size=$(stat -c '%s' -- "$path") || return 1
   [[ "$size" =~ ^[0-9]+$ && "$size" -le 65536 ]]
+}
+
+vibepollo_control_instances_are_quiescent() (
+  local list unit load state substate line dirty attempt=0 clean_passes=0
+  local -a fields=()
+  local -A seen=()
+  list=$(mktemp /run/vibepollo-control-units.XXXXXX) || exit 1
+  trap 'rm -f -- "$list"' EXIT
+  trap 'exit 1' HUP INT TERM
+  while ((attempt < 100)); do
+    dirty=0
+    seen=()
+    vibepollo_capture_unit_list "$list" 'vibeshine-vkms-control@*.service' || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -n "$line" && "$line" != *$'\r'* ]] || { [[ -z "$line" ]] && continue; return 1; }
+      read -ra fields <<<"$line"
+      [[ ${fields[0]:-} == '●' ]] && fields=("${fields[@]:1}")
+      ((${#fields[@]} >= 4)) || return 1
+      unit=${fields[0]}; load=${fields[1]}; state=${fields[2]}; substate=${fields[3]}
+      vibepollo_control_unit_is_safe "$unit" && [[ "$load" == loaded ]] || return 1
+      [[ "$state:$substate" =~ ^[a-z-]+:[a-z-]+$ && -z ${seen[$unit]:-} ]] || return 1
+      seen[$unit]=1
+      ((${#seen[@]} <= 256)) || return 1
+      vibepollo_unit_is_quiescent "$unit" || dirty=1
+    done <"$list"
+    if ((dirty == 0)); then
+      ((clean_passes += 1))
+      if ((clean_passes >= 5)); then
+        [[ ! -e "$vibepollo_control_socket" && ! -L "$vibepollo_control_socket" ]]
+        return
+      fi
+    else
+      clean_passes=0
+    fi
+    ((attempt += 1))
+    sleep 0.1
+  done
+  return 1
+)
+
+vibepollo_select_upgrade_kill_mode() {
+  if [[ ! -e "$vibepollo_legacy_host" && ! -L "$vibepollo_legacy_host" ]]; then
+    vibepollo_unit_is_quiescent vibepollo.service || return 1
+    vibepollo_upgrade_kill_mode=control-group
+    return 0
+  fi
+  vibepollo_privileged_helper_is_safe "$vibepollo_legacy_host" || return 1
+  if grep -Fqx '  trap mark_host_shutdown TERM INT HUP' "$vibepollo_legacy_host"; then
+    vibepollo_upgrade_kill_mode=control-group
+  elif grep -Fqx "  trap 'forward_host_signal TERM' TERM" "$vibepollo_legacy_host" && \
+       grep -Fqx "  trap 'forward_host_signal INT' INT" "$vibepollo_legacy_host" && \
+       grep -Fqx "  trap 'forward_host_signal HUP' HUP" "$vibepollo_legacy_host"; then
+    vibepollo_upgrade_kill_mode=process
+  else
+    return 1
+  fi
+}
+
+vibepollo_prepare_host_upgrade_fence() (
+  local temporary
+  [[ ! -L "$vibepollo_host_upgrade_dropin_dir" && ! -L "$vibepollo_host_upgrade_dropin" ]] || exit 1
+  install -d -o root -g root -m 0755 -- "$vibepollo_host_upgrade_dropin_dir" || exit 1
+  [[ $(stat -c '%u:%g:%a:%F' -- "$vibepollo_host_upgrade_dropin_dir") == \
+     '0:0:755:directory' ]] || exit 1
+  temporary=$(mktemp /run/vibepollo-host-upgrade.XXXXXX) || exit 1
+  trap 'rm -f -- "$temporary"' EXIT
+  [[ "$vibepollo_upgrade_kill_mode" =~ ^(process|control-group)$ ]] || exit 1
+  printf '[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=%s\nSendSIGKILL=no\n' \
+    "$vibepollo_upgrade_kill_mode" >"$temporary" || exit 1
+  chmod 0600 -- "$temporary" || exit 1
+  if [[ -e "$vibepollo_host_upgrade_dropin" ]]; then
+    [[ $(stat -c '%u:%g:%a:%h:%F' -- "$vibepollo_host_upgrade_dropin") == \
+       '0:0:644:1:regular file' ]] || exit 1
+    cmp -s -- "$temporary" "$vibepollo_host_upgrade_dropin" || exit 1
+  fi
+  install -o root -g root -m 0644 -- "$temporary" "$vibepollo_host_upgrade_dropin" || exit 1
+  [[ $(stat -c '%u:%g:%a:%h:%F' -- "$vibepollo_host_upgrade_dropin") == \
+     '0:0:644:1:regular file' ]] || exit 1
+)
+
+vibepollo_activate_host_upgrade_fence() {
+  local properties
+  systemctl daemon-reload || exit 1
+  properties=$(timeout --signal=KILL 5 systemctl show vibepollo.service \
+    --property=RefuseManualStart --property=KillMode --property=SendSIGKILL 2>/dev/null) || exit 1
+  grep -qx 'RefuseManualStart=yes' <<<"$properties" && \
+    grep -qx "KillMode=$vibepollo_upgrade_kill_mode" <<<"$properties" && \
+    grep -qx 'SendSIGKILL=no' <<<"$properties"
+}
+
+vibepollo_host_is_stable_or_quiescent() {
+  local properties active substate pid control_group job
+  properties=$(timeout --signal=KILL 5 systemctl show vibepollo.service \
+    --property=ActiveState --property=SubState --property=MainPID \
+    --property=ControlGroup --property=Job 2>/dev/null) || return 1
+  active=$(sed -n 's/^ActiveState=//p' <<<"$properties")
+  substate=$(sed -n 's/^SubState=//p' <<<"$properties")
+  pid=$(sed -n 's/^MainPID=//p' <<<"$properties")
+  control_group=$(sed -n 's/^ControlGroup=//p' <<<"$properties")
+  job=$(sed -n 's/^Job=//p' <<<"$properties")
+  [[ -z "$job" ]] || return 1
+  if [[ "$active" == active && "$substate" == running && "$pid" =~ ^[1-9][0-9]*$ &&
+        "$control_group" == /* ]]; then
+    return 0
+  fi
+  [[ "$active:$substate:$pid" =~ ^(inactive:dead:0|failed:failed:0)$ ]] &&
+    vibepollo_cgroup_is_quiescent "$control_group"
+}
+
+vibepollo_freeze_controller() {
+  local properties active substate freezer_path events_path
+  if vibepollo_unit_is_quiescent vibepollo-session-controller.service; then
+    vibepollo_controller_was_frozen=0
+    return 0
+  fi
+  properties=$(timeout --signal=KILL 5 systemctl show vibepollo-session-controller.service \
+    --property=ActiveState --property=SubState --property=MainPID \
+    --property=ControlGroup --property=FreezerState 2>/dev/null) || return 1
+  active=$(sed -n 's/^ActiveState=//p' <<<"$properties")
+  substate=$(sed -n 's/^SubState=//p' <<<"$properties")
+  vibepollo_controller_pid=$(sed -n 's/^MainPID=//p' <<<"$properties")
+  vibepollo_controller_cgroup=$(sed -n 's/^ControlGroup=//p' <<<"$properties")
+  [[ "$active" == active && "$substate" == running && "$vibepollo_controller_pid" =~ ^[1-9][0-9]*$ &&
+     "$vibepollo_controller_cgroup" == /* && "$vibepollo_controller_cgroup" != */../* &&
+     "$vibepollo_controller_cgroup" != */.. ]] || return 1
+  timeout --signal=TERM --kill-after=2 15 systemctl freeze \
+    vibepollo-session-controller.service 2>/dev/null || return 1
+  properties=$(timeout --signal=KILL 5 systemctl show vibepollo-session-controller.service \
+    --property=ActiveState --property=SubState --property=MainPID \
+    --property=ControlGroup --property=FreezerState 2>/dev/null) || return 1
+  grep -qx 'ActiveState=active' <<<"$properties" && \
+    grep -qx 'SubState=running' <<<"$properties" && \
+    grep -qx "MainPID=$vibepollo_controller_pid" <<<"$properties" && \
+    grep -qx "ControlGroup=$vibepollo_controller_cgroup" <<<"$properties" && \
+    grep -qx 'FreezerState=frozen' <<<"$properties" || return 1
+  freezer_path=/sys/fs/cgroup$vibepollo_controller_cgroup/cgroup.freeze
+  events_path=/sys/fs/cgroup$vibepollo_controller_cgroup/cgroup.events
+  [[ -f "$freezer_path" && ! -L "$freezer_path" &&
+     -f "$events_path" && ! -L "$events_path" ]] &&
+    grep -qx '1' "$freezer_path" && grep -qx 'populated 1' "$events_path" &&
+    grep -qx 'frozen 1' "$events_path" || return 1
+  vibepollo_controller_was_frozen=1
+}
+
+vibepollo_controller_remains_frozen() {
+  local properties
+  ((vibepollo_controller_was_frozen == 1)) || return 0
+  properties=$(timeout --signal=KILL 5 systemctl show vibepollo-session-controller.service \
+    --property=ActiveState --property=SubState --property=MainPID \
+    --property=ControlGroup --property=FreezerState 2>/dev/null) || return 1
+  grep -qx 'ActiveState=active' <<<"$properties" && \
+    grep -qx 'SubState=running' <<<"$properties" && \
+    grep -qx "MainPID=$vibepollo_controller_pid" <<<"$properties" && \
+    grep -qx "ControlGroup=$vibepollo_controller_cgroup" <<<"$properties" && \
+    grep -qx 'FreezerState=frozen' <<<"$properties"
 }
 
 vibepollo_stop_brokers() (
@@ -410,20 +582,36 @@ do_quiesce_machine_host() {
   local unit legacy_status have_systemd=0
   if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
     have_systemd=1
+    vibepollo_select_upgrade_kill_mode || return 1
+    vibepollo_prepare_host_upgrade_fence || return 1
+    vibepollo_freeze_controller || return 1
+    vibepollo_host_is_stable_or_quiescent || return 1
+    vibepollo_activate_host_upgrade_fence || return 1
+    vibepollo_controller_remains_frozen || return 1
+    vibepollo_host_is_stable_or_quiescent || return 1
     timeout --signal=KILL 15 systemctl mask --runtime \
       'vibepollo-session-restore@.service' 2>/dev/null || return 1
     vibepollo_restore_template_is_masked || return 1
-    timeout --signal=KILL 15 systemctl mask --runtime vibepollo.service 2>/dev/null || return 1
-    vibepollo_host_unit_is_masked || return 1
     vibepollo_disable_legacy_handoff || return 1
+    timeout --signal=KILL 15 systemctl mask --runtime vibeshine-vkms-control.socket 2>/dev/null || return 1
+    vibepollo_control_socket_is_masked || return 1
+    vibepollo_stop_exact_unit vibeshine-vkms-control.socket
+    vibepollo_unit_is_quiescent vibeshine-vkms-control.socket || return 1
+    vibepollo_control_instances_are_quiescent || return 1
     timeout --signal=KILL 15 systemctl mask --runtime vibepollo-session-exec.socket 2>/dev/null || return 1
     vibepollo_broker_socket_is_masked || return 1
     vibepollo_stop_exact_unit vibepollo-session-exec.socket
     vibepollo_unit_is_quiescent vibepollo-session-exec.socket || return 1
+    vibepollo_stop_exact_unit vibepollo.service
+    vibepollo_unit_is_quiescent vibepollo.service || return 1
+    timeout --signal=KILL 15 systemctl mask --runtime vibepollo.service 2>/dev/null || return 1
+    vibepollo_host_unit_is_masked || return 1
     vibepollo_stop_restore_instances || return 1
     vibepollo_stop_brokers || return 1
+    vibepollo_controller_remains_frozen || return 1
     vibepollo_stop_exact_unit vibepollo-session-controller.service
-    vibepollo_stop_exact_unit vibepollo.service
+    vibepollo_unit_is_quiescent vibepollo-session-controller.service || return 1
+    vibepollo_controller_was_frozen=0
     vibepollo_stop_exact_unit vibepollo-prelogin.service
     vibepollo_stop_exact_unit vibepollo-machine-prepare.service
     timeout --signal=KILL 15 systemctl disable vibepollo-session-controller.service --now 2>/dev/null || true
@@ -435,11 +623,10 @@ do_quiesce_machine_host() {
   ((have_systemd)) || vibepollo_disable_legacy_handoff || return 1
   vibepollo_runtime_root_is_safe_or_absent || return 1
 
-  if [[ -e "$vibepollo_controller" || -L "$vibepollo_controller" ]]; then
+  if ((have_systemd == 0)) && [[ -e "$vibepollo_controller" || -L "$vibepollo_controller" ]]; then
     vibepollo_privileged_helper_is_safe "$vibepollo_controller" || return 1
-    ((have_systemd == 1)) || return 1
     timeout --signal=KILL 40 "$vibepollo_controller" cleanup || return 1
-  else
+  elif ((have_systemd == 0)); then
     vibepollo_run_optional_legacy_command cleanup
     legacy_status=$?
     ((legacy_status == 0 || legacy_status == 2)) || return 1
@@ -477,8 +664,6 @@ do_quiesce_machine_host() {
     rm -f -- "$vibepollo_broker_socket" || return 1
   fi
   [[ ! -e "$vibepollo_broker_socket" && ! -L "$vibepollo_broker_socket" &&
-     ! -e "$vibepollo_session_record" && ! -L "$vibepollo_session_record" &&
-     ! -e "$vibepollo_legacy_acl" && ! -L "$vibepollo_legacy_acl" &&
      ! -e "$vibepollo_legacy_handoff_directory" && ! -L "$vibepollo_legacy_handoff_directory" &&
      ! -e "$vibepollo_legacy_restore_directory" && ! -L "$vibepollo_legacy_restore_directory" &&
      ! -e "$vibepollo_legacy_transition_lock" && ! -L "$vibepollo_legacy_transition_lock" &&
@@ -522,9 +707,31 @@ do_prepare_kwin() {
 }
 
 vibepollo_unmask_host_for_controller() {
-  local state load socket_state socket_load
-  timeout --signal=KILL 15 systemctl unmask --runtime vibepollo-session-exec.socket 2>/dev/null || return 1
+  local state load socket_state socket_load contents properties
+  vibepollo_unit_is_quiescent vibepollo-session-controller.service || return 1
+  vibepollo_unit_is_quiescent vibepollo-session-exec.socket || return 1
+  if [[ -e "$vibepollo_host_upgrade_dropin" || -L "$vibepollo_host_upgrade_dropin" ]]; then
+    [[ -f "$vibepollo_host_upgrade_dropin" && ! -L "$vibepollo_host_upgrade_dropin" &&
+       $(stat -c '%u:%g:%a:%h:%F' -- "$vibepollo_host_upgrade_dropin") == \
+         '0:0:644:1:regular file' ]] || return 1
+    contents=$(sed -n '1,6p' -- "$vibepollo_host_upgrade_dropin") || return 1
+    [[ "$contents" == $'[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=process\nSendSIGKILL=no' ||
+       "$contents" == $'[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=control-group\nSendSIGKILL=no' ]] || return 1
+    rm -f -- "$vibepollo_host_upgrade_dropin" || return 1
+    rmdir -- "$vibepollo_host_upgrade_dropin_dir" 2>/dev/null || true
+  fi
+  systemctl daemon-reload || return 1
   timeout --signal=KILL 15 systemctl unmask --runtime vibepollo.service 2>/dev/null || return 1
+  systemctl daemon-reload || return 1
+  properties=$(timeout --signal=KILL 5 systemctl show vibepollo.service \
+    --property=RefuseManualStart --property=KillMode --property=SendSIGKILL 2>/dev/null) || return 1
+  grep -qx 'RefuseManualStart=no' <<<"$properties" && \
+    grep -qx 'KillMode=control-group' <<<"$properties" && \
+    grep -qx 'SendSIGKILL=no' <<<"$properties" || return 1
+  timeout --signal=KILL 15 systemctl unmask --runtime vibeshine-vkms-control.socket 2>/dev/null || return 1
+  systemctl start vibeshine-vkms-control.socket || return 1
+  systemctl is-active --quiet vibeshine-vkms-control.socket || return 1
+  timeout --signal=KILL 15 systemctl unmask --runtime vibepollo-session-exec.socket 2>/dev/null || return 1
   state=$(timeout --signal=KILL 5 systemctl is-enabled vibepollo.service 2>/dev/null || true)
   load=$(timeout --signal=KILL 5 systemctl show vibepollo.service \
     --property=LoadState 2>/dev/null) || return 1

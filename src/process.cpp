@@ -13,8 +13,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
@@ -78,6 +78,7 @@
 #elif defined(__linux__)
   #include "platform/linux/mangohud_policy.h"
   #include "platform/linux/mangohud_state.h"
+  #include "platform/linux/secure_open.h"
   #include "platform/linux/smooth_motion_policy.h"
   #include "steam_integration.h"
 
@@ -952,6 +953,7 @@ namespace proc {
 
 #ifdef _WIN32
   std::atomic<VDISPLAY::DRIVER_STATUS> vDisplayDriverStatus {VDISPLAY::DRIVER_STATUS::UNKNOWN};
+
   namespace {
     lifecycle::deferred_action_t deferred_display_revert;
   }
@@ -1754,25 +1756,24 @@ namespace proc {
               effective_frame_limiter && !proton_limiter;
             platf::steam::session_launch_policy_t policy {
               .provider = proton_overlay_enabled ? "mangohud-proton" :
-                          (effective_frame_limiter && proton_limiter ? "proton" :
-                           (mangohud_limiter_enabled ? "mangohud" : "disabled")),
+                                                   (effective_frame_limiter && proton_limiter ? "proton" :
+                                                                                                (mangohud_limiter_enabled ? "mangohud" : "disabled")),
               .limit_millihz = effective_frame_limiter ?
-                                 mangohud_policy.limit_millihz : 0,
+                                 mangohud_policy.limit_millihz :
+                                 0,
               .preset = "custom",
               .always_show_graph = false,
               .limiter_method = mangohud_limiter_enabled &&
-                                  config::frame_limiter.mangohud_limiter_method == "early" ?
-                                  "early" : "late",
+                                    config::frame_limiter.mangohud_limiter_method == "early" ?
+                                  "early" :
+                                  "late",
               .smooth_motion = smooth_motion_policy.enabled,
               .smooth_motion_graphics_queue = smooth_motion_policy.enabled &&
-                                                smooth_motion_policy.use_graphics_queue,
+                                              smooth_motion_policy.use_graphics_queue,
             };
             const bool overlay = policy.provider == "mangohud" ||
                                  policy.provider == "mangohud-proton";
-            if (overlay && (config::frame_limiter.mangohud_preset == "1" ||
-                            config::frame_limiter.mangohud_preset == "2" ||
-                            config::frame_limiter.mangohud_preset == "3" ||
-                            config::frame_limiter.mangohud_preset == "4")) {
+            if (overlay && (config::frame_limiter.mangohud_preset == "1" || config::frame_limiter.mangohud_preset == "2" || config::frame_limiter.mangohud_preset == "3" || config::frame_limiter.mangohud_preset == "4")) {
               policy.preset = config::frame_limiter.mangohud_preset;
             }
             policy.always_show_graph =
@@ -2615,8 +2616,7 @@ namespace proc {
     if (_steam_tracking_active) {
       const auto now = std::chrono::steady_clock::now();
       constexpr auto tracking_poll_interval = 100ms;
-      if (_steam_last_tracking_poll.time_since_epoch().count() == 0 ||
-          now - _steam_last_tracking_poll >= tracking_poll_interval) {
+      if (_steam_last_tracking_poll.time_since_epoch().count() == 0 || now - _steam_last_tracking_poll >= tracking_poll_interval) {
         _steam_last_tracking_poll = now;
         const auto tracking = _steam_tracker.finish();
         _steam_tracking_exit.observe(_steam_tracking_associated, tracking);
@@ -2630,8 +2630,7 @@ namespace proc {
           }
           _steam_tracking_associated = true;
           placebo = false;
-        } else if (_steam_tracking_associated &&
-                   tracking.reason.find("unavailable") == std::string::npos) {
+        } else if (_steam_tracking_associated && tracking.reason.find("unavailable") == std::string::npos) {
           // A complete snapshot with no retained PID means the tracked game
           // tree has exited. Let the normal cleanup path run below.
           _steam_tracking_associated = false;
@@ -2978,9 +2977,13 @@ namespace proc {
       }
       platf::steam::lifecycle::stop_options steam_stop_options;
       steam_stop_options.grace_period = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::max(remaining_timeout, 0s));
+        std::max(remaining_timeout, 0s)
+      );
       const auto stopped = platf::steam::lifecycle::stop_tree(
-        _steam_tracker.tree(), *_steam_process_controller, steam_stop_options);
+        _steam_tracker.tree(),
+        *_steam_process_controller,
+        steam_stop_options
+      );
       const auto provider_name = !_app.steam_id.empty() ? "Steam" : "Lutris";
       BOOST_LOG(info) << provider_name << " tracked tree termination requested: TERM=" << stopped.terminate_sent
                       << ", KILL=" << stopped.kill_sent << ", skipped=" << stopped.skipped
@@ -3366,7 +3369,8 @@ namespace proc {
 
     std::optional<std::filesystem::path> confined_relative_path(
       const std::filesystem::path &candidate,
-      const std::filesystem::path &root) {
+      const std::filesystem::path &root
+    ) {
       const auto normalized_candidate = candidate.lexically_normal();
       const auto normalized_root = root.lexically_normal();
       auto relative = normalized_candidate.lexically_relative(normalized_root);
@@ -3383,13 +3387,12 @@ namespace proc {
 
     std::optional<catalog::byte_buffer_t> read_machine_image(
       const std::string &path,
-      const bool complete) {
+      const bool complete
+    ) {
       const std::filesystem::path candidate {path};
       const std::filesystem::path assets_root {SUNSHINE_ASSETS_DIR};
       const std::filesystem::path covers_root = platf::appdata() / "covers";
-      if (!candidate.is_absolute() ||
-          !catalog::machine_image_path_is_confined(
-            path, assets_root.string(), covers_root.string())) {
+      if (!candidate.is_absolute() || !catalog::machine_image_path_is_confined(path, assets_root.string(), covers_root.string())) {
         return std::nullopt;
       }
 
@@ -3413,10 +3416,10 @@ namespace proc {
       struct stat root_attributes {};
       const bool safe_root = fstat(root_descriptor, &root_attributes) == 0 &&
                              S_ISDIR(root_attributes.st_mode) &&
-                             (root_attributes.st_mode & 0022) == 0 &&
-                             (immutable_assets ? root_attributes.st_uid == 0 :
-                                                 root_attributes.st_uid == geteuid() &&
-                                                   (root_attributes.st_mode & 0077) == 0);
+                             (root_attributes.st_mode & 07777) ==
+                               (immutable_assets ? 0755 : 0700) &&
+                             root_attributes.st_uid ==
+                               (immutable_assets ? uid_t {0} : geteuid());
       if (!safe_root) {
         close(root_descriptor);
         return std::nullopt;
@@ -3428,19 +3431,29 @@ namespace proc {
         .resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS |
                    RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV,
       };
-      const int descriptor = static_cast<int>(syscall(
-        SYS_openat2, root_descriptor, relative_string.c_str(), &how, sizeof(how)));
+      int descriptor = static_cast<int>(syscall(
+        SYS_openat2,
+        root_descriptor,
+        relative_string.c_str(),
+        &how,
+        sizeof(how)
+      ));
+      if (descriptor < 0 && errno == ENOSYS) {
+        descriptor = platf::linux_security::open_readonly_beneath(
+          root_descriptor,
+          *relative,
+          root_attributes.st_dev,
+          immutable_assets ? uid_t {0} : geteuid(),
+          !immutable_assets
+        );
+      }
       close(root_descriptor);
       if (descriptor < 0) {
         return std::nullopt;
       }
 
       struct stat before {}, after {};
-      if (fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) ||
-          before.st_size < 8 ||
-          static_cast<std::uint64_t>(before.st_size) > maximum_machine_cover_bytes ||
-          (before.st_mode & 0022) != 0 ||
-          (immutable_assets ? before.st_uid != 0 : before.st_uid != geteuid())) {
+      if (fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size < 8 || static_cast<std::uint64_t>(before.st_size) > maximum_machine_cover_bytes || (before.st_mode & 07777) != (immutable_assets ? 0644 : 0600) || (immutable_assets ? before.st_uid != 0 : before.st_uid != geteuid())) {
         close(descriptor);
         return std::nullopt;
       }
@@ -3493,7 +3506,8 @@ namespace proc {
       std::move(app_image_path),
       SUNSHINE_ASSETS_DIR,
       DEFAULT_APP_IMAGE_PATH,
-      read_image_for_validation);
+      read_image_for_validation
+    );
   }
 
   std::optional<std::string> read_validated_app_image(const std::string &validated_path) {
@@ -3504,7 +3518,9 @@ namespace proc {
         return std::nullopt;
       }
       return std::string {
-        reinterpret_cast<const char *>(bytes->data()), bytes->size()};
+        reinterpret_cast<const char *>(bytes->data()),
+        bytes->size()
+      };
     }
 #endif
     std::ifstream file(validated_path, std::ios::binary | std::ios::ate);
@@ -3519,9 +3535,7 @@ namespace proc {
     file.seekg(0);
     const auto stream_size = static_cast<std::streamsize>(size);
     file.read(bytes.data(), stream_size);
-    if (file.gcount() != stream_size ||
-        !catalog::has_png_signature(std::span<const std::uint8_t> {
-          reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size()})) {
+    if (file.gcount() != stream_size || !catalog::has_png_signature(std::span<const std::uint8_t> {reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size()})) {
       return std::nullopt;
     }
     return bytes;

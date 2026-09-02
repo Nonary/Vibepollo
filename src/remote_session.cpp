@@ -41,12 +41,14 @@ namespace remote_session {
     bool contains(const std::vector<std::string> &values, std::string_view value) {
       return std::find(values.begin(), values.end(), value) != values.end();
     }
+
     bool reserved_synthetic_id(const std::int32_t id) {
       return (id >= resume_id && id <= running_game_id) ||
              id == secondary_resume_id || id == secondary_terminate_id ||
              id == secondary_monitor_id || id == secondary_input_id ||
              (id >= 2147483601 && id <= 2147483606);
     }
+
     std::string ranked_title(const std::string_view rank, const std::string_view title) {
       return std::string {rank} + std::string {title};
     }
@@ -87,7 +89,9 @@ namespace remote_session {
 
   control_e identify(const std::int32_t id, const std::string_view uuid, const std::int32_t running_app_id) {
     const auto control = identify(id, uuid);
-    if (control != control_e::none) return control;
+    if (control != control_e::none) {
+      return control;
+    }
     return running_app_id > 0 && id == synthetic_running_game_id(running_app_id) ?
              control_e::running_game :
              control_e::none;
