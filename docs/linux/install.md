@@ -177,6 +177,17 @@ unit disconnects any client that is streaming.
 Keep `capture = kms` in `/var/lib/vibepollo/vibepollo.conf`. The `wlr` and portal capture paths are
 not used by the machine host and a portal probe can block unattended startup.
 
+Two things on the host machine will silently stop streaming:
+
+- **Automatic suspend.** KDE's power settings suspend an idle machine even while Vibepollo is
+  waiting for clients. On a streaming host, set "When inactive" to "Do nothing" under System
+  Settings, Power Management, or at least disable it for the AC-powered profile.
+- **A second desktop session for the same user.** A VNC or RDP server that starts its own Plasma
+  X11 session (`vncserver@:1.service`, `plasma-x11-session`) imports that session's environment
+  into your systemd user manager and stops the Wayland workspace target. The controller then
+  reports `waiting for desktop session N to become usable` and never starts the host. Stop and
+  disable that service; Vibepollo's own pre-login stream is the supported remote path.
+
 ## Where things live
 
 | Path | Purpose |
