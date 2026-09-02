@@ -407,7 +407,10 @@ namespace http {
       return -1;
     }
 
-    fs::permissions(cert_path, fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read | fs::perms::owner_write, fs::perm_options::replace, err_code);
+    // Keep the certificate owner-only. Only this process reads it (clients
+    // receive it during pairing), and the Linux machine host refuses to start
+    // when anything under its state directory is readable by other accounts.
+    fs::permissions(cert_path, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, err_code);
 
     if (err_code) {
       BOOST_LOG(error) << "Couldn't change permissions of ["sv << config::nvhttp.cert << "] :"sv << err_code.message();
