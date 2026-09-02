@@ -2568,33 +2568,42 @@ namespace nvhttp {
       map_id_sess.erase(unique_id);
     }
 
+    /**
+     * @brief Answer the client still waiting on a pending pairing request and close that connection.
+     * @param session The pending session whose getservercert response is still open.
+     * @param status_code The HTTP-style status code to report.
+     * @param status_message The status message to report.
+     */
+    void close_pending_pairing_response(pair_session_t &session, const int status_code, const std::string_view status_message) {
+      pt::ptree tree;
+      tree.put("root.paired", 0);
+      tree.put("root.<xmlattr>.status_code", status_code);
+      tree.put("root.<xmlattr>.status_message", std::string(status_message));
+      std::ostringstream data;
+      pt::write_xml(data, tree);
+      auto &response = session.async_insert_pin.response;
+      try {
+        if (response.has_left() && response.left()) {
+          response.left()->close_connection_after_response = true;
+          response.left()->write(data.str());
+        } else if (response.has_right() && response.right()) {
+          response.right()->close_connection_after_response = true;
+          response.right()->write(data.str());
+        }
+      } catch (const std::exception &error) {
+        BOOST_LOG(debug) << "Closing a pending pairing response failed: " << error.what();
+      } catch (...) {
+        BOOST_LOG(debug) << "Closing a pending pairing response failed";
+      }
+    }
+
     void expire_pairing_sessions_locked(const std::chrono::steady_clock::time_point now) {
       for (auto session = map_id_sess.begin(); session != map_id_sess.end();) {
         if (now - session->second.created_at <= pairing_session_expiry) {
           ++session;
           continue;
         }
-
-        pt::ptree tree;
-        tree.put("root.paired", 0);
-        tree.put("root.<xmlattr>.status_code", 408);
-        tree.put("root.<xmlattr>.status_message", "Pairing request expired");
-        std::ostringstream data;
-        pt::write_xml(data, tree);
-        auto &response = session->second.async_insert_pin.response;
-        try {
-          if (response.has_left() && response.left()) {
-            response.left()->close_connection_after_response = true;
-            response.left()->write(data.str());
-          } else if (response.has_right() && response.right()) {
-            response.right()->close_connection_after_response = true;
-            response.right()->write(data.str());
-          }
-        } catch (const std::exception &error) {
-          BOOST_LOG(debug) << "Closing an expired pairing response failed: " << error.what();
-        } catch (...) {
-          BOOST_LOG(debug) << "Closing an expired pairing response failed";
-        }
+        close_pending_pairing_response(session->second, 408, "Pairing request expired"sv);
         session = map_id_sess.erase(session);
       }
     }
@@ -2996,12 +3005,19 @@ namespace nvhttp {
         if (it->second == "getservercert"sv) {
           const auto client_certificate = get_arg(args, "clientcert", "");
           const auto salt = get_arg(args, "salt", "");
-          const bool replacing = map_id_sess.contains(uniqID);
-          const auto admission = pairing_policy::admit_pending_session(uniqID, client_certificate, salt, map_id_sess.size(), replacing);
+          const auto existing = map_id_sess.find(uniqID);
+          const bool replacing = existing != map_id_sess.end();
+          const bool same_identity = replacing && pairing_policy::valid_hex_field(client_certificate, 2) &&
+                                     existing->second.client.cert == util::from_hex_vec(client_certificate, true);
+          const auto admission = pairing_policy::admit_pending_session(uniqID, client_certificate, salt, map_id_sess.size(), replacing, same_identity);
           if (!admission.accepted) {
             tree.put("root.<xmlattr>.status_code", admission.failure_message == "Too many pending pairing sessions"sv ? 429 : 400);
             tree.put("root.<xmlattr>.status_message", admission.failure_message);
             return;
+          }
+          if (replacing) {
+            close_pending_pairing_response(existing->second, 409, "Pairing request replaced by a newer request from the same client"sv);
+            map_id_sess.erase(existing);
           }
           pair_session_t sess;
 

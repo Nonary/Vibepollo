@@ -87,7 +87,8 @@ namespace nvhttp::pairing_policy {
     std::string_view client_certificate_hex,
     std::string_view salt_hex,
     std::size_t pending_sessions,
-    bool replacing_existing
+    bool replacing_existing,
+    bool same_identity
   );
 
   decision_t begin_get_server_certificate(session_state_t state, std::size_t salt_size);
