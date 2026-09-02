@@ -9,6 +9,11 @@ on:
         description: Published v-less Vibepollo release tag, for example 1.19.0
         required: true
         type: string
+      allow_draft:
+        description: Publish the package from a draft release. Only for a first release whose assets were reviewed by hand.
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: arch-repository
@@ -41,6 +46,7 @@ jobs:
         id: release
         shell: bash
         env:
+          ALLOW_DRAFT: ${{ inputs.allow_draft }}
           REQUESTED_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
@@ -52,10 +58,23 @@ jobs:
             exit 1
           fi
 
-          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${source_tag}")"
-          if [[ "$(jq -r '.draft' <<<"${release_json}")" != false ]]; then
-            echo "::error::Release ${source_tag} is still a draft."
+          # The tags endpoint only resolves published releases. A draft has no tag
+          # ref yet, so with allow_draft fall back to matching tag_name in the list.
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${source_tag}" 2>/dev/null || true)"
+          if [[ -z "${release_json}" && "${ALLOW_DRAFT}" == "true" ]]; then
+            release_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              | jq -cs --arg tag "${source_tag}" '[.[][] | select(.tag_name == $tag and .draft == true)] | first // empty')"
+          fi
+          if [[ -z "${release_json}" ]]; then
+            echo "::error::No release found for tag ${source_tag}."
             exit 1
+          fi
+          if [[ "$(jq -r '.draft' <<<"${release_json}")" != false ]]; then
+            if [[ "${ALLOW_DRAFT}" != "true" ]]; then
+              echo "::error::Release ${source_tag} is still a draft."
+              exit 1
+            fi
+            echo "::warning::Publishing the Arch package from draft release ${source_tag} because allow_draft was set."
           fi
 
           mapfile -t package_assets < <(
