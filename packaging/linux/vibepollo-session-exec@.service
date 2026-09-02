@@ -1,8 +1,11 @@
 [Unit]
 Description=Vibepollo session execution broker connection
 Documentation=https://github.com/Nonary/Vibepollo
-BindsTo=vibepollo-session-controller.service
 After=vibepollo-session-controller.service
+# The host's synchronous session client is part of its cgroup. Stop the host
+# first so an admitted KScreen transaction can complete and report before its
+# root broker connection is torn down.
+Before=vibepollo.service
 
 [Service]
 Type=exec

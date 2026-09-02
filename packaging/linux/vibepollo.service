@@ -1,7 +1,9 @@
 [Unit]
 Description=Vibepollo machine streaming host
 Documentation=https://github.com/Nonary/Vibepollo
-BindsTo=vibepollo-session-controller.service
+# The controller owns ordered cleanup through ExecStopPost. Binding this unit
+# directly to the controller would queue a concurrent stop and bypass that
+# close-admission, drain-host, drain-broker sequence.
 Requires=vibepollo-session-exec.socket
 Wants=vibeshine-vkms.service
 After=vibepollo-session-controller.service vibepollo-session-exec.socket vibeshine-vkms.service
@@ -26,7 +28,10 @@ AmbientCapabilities=
 NoNewPrivileges=no
 ExecStart=/usr/libexec/vibeshine/vibepollo-machine-host run
 Restart=no
-KillMode=mixed
+KillMode=control-group
+# A stuck GPU teardown must leave this unit deactivating and block rebinding;
+# killing the process tree would strand imported DRM/NVENC resources.
+SendSIGKILL=no
 TimeoutStartSec=45
 TimeoutStopSec=20
 MemoryMax=2G

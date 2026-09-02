@@ -35,6 +35,23 @@ TEST(LinuxPrivateDisplayRestorePolicy, FallsBackToPrivateGuardForPrivateBaseline
   EXPECT_EQ(policy::select_guard(candidates), "Virtual-2");
 }
 
+TEST(LinuxPrivateDisplayRestorePolicy, RetiringPrivateOutputCannotGuardItsOwnDisconnect) {
+  constexpr std::array candidates {
+    policy::candidate_t {"Virtual-1", true, true, true, true},
+  };
+
+  EXPECT_FALSE(policy::select_guard(candidates).has_value());
+}
+
+TEST(LinuxPrivateDisplayRestorePolicy, DistinctPrivateOutputCanGuardRetirement) {
+  constexpr std::array candidates {
+    policy::candidate_t {"Virtual-1", true, true, true, true},
+    policy::candidate_t {"Virtual-2", true, true, true, false},
+  };
+
+  EXPECT_EQ(policy::select_guard(candidates), "Virtual-2");
+}
+
 TEST(LinuxPrivateDisplayRestorePolicy, RejectsDisabledAndDisconnectedGuards) {
   const std::array candidates {
     policy::candidate_t {"HDMI-A-1", false, true, false},
@@ -49,7 +66,6 @@ TEST(LinuxPrivateDisplayRestorePolicy, EnabledDisconnectedBaselineStillRequiresG
     policy::candidate_t {"HDMI-A-1", true, false, false},
   };
 
-  EXPECT_TRUE(policy::requires_guard(candidates));
   EXPECT_FALSE(policy::select_guard(candidates).has_value());
 }
 
@@ -59,7 +75,7 @@ TEST(LinuxPrivateDisplayRestorePolicy, HeadlessBaselineDoesNotRequireGuard) {
     policy::candidate_t {"Virtual-1", false, false, true},
   };
 
-  EXPECT_FALSE(policy::requires_guard(candidates));
+  EXPECT_FALSE(policy::select_guard(candidates).has_value());
 }
 
 TEST(LinuxPrivateDisplayRestorePolicy, MissingGuardActivationFailsSafely) {

@@ -1,9 +1,11 @@
 [Unit]
 Description=Vibepollo session execution broker socket
 Documentation=https://github.com/Nonary/Vibepollo
-BindsTo=vibepollo-session-controller.service
 After=vibepollo-session-controller.service
-PartOf=vibepollo-session-controller.service
+# Keep admission alive until the GPU host has drained every already-accepted
+# compositor request during machine shutdown. Controller cleanup stops this
+# socket explicitly before requesting the host stop on manual transitions.
+Before=vibepollo.service
 
 [Socket]
 ListenSequentialPacket=/run/vibepollo/session-broker.sock

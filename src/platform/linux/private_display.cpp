@@ -8,7 +8,6 @@
 #include "hdr_policy.h"
 #include "private_display_restore_policy.h"
 #include "private_display_resume_policy.h"
-
 #include "src/config.h"
 #include "src/display_device.h"
 #include "src/logging.h"
@@ -16,8 +15,6 @@
 #include "src/rtsp.h"
 #include "src/state_storage.h"
 #include "src/virtual_display_scale.h"
-
-#include <virtual_display/driver/linux_control_client.h>
 
 #include <algorithm>
 #include <atomic>
@@ -32,8 +29,10 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <set>
+#include <shared_mutex>
 #include <sys/stat.h>
 #include <thread>
+#include <virtual_display/driver/linux_control_client.h>
 
 namespace platf::linux_private_display {
   namespace {
@@ -41,6 +40,9 @@ namespace platf::linux_private_display {
 
     constexpr auto output_publication_timeout = std::chrono::seconds {3};
     constexpr auto output_verification_timeout = std::chrono::seconds {3};
+    static_assert(std::atomic_bool::is_always_lock_free);
+    std::atomic_bool preserve_for_process_shutdown {false};
+    std::shared_mutex topology_mutation_gate;
 
     struct command_result_t {
       bool success {false};
@@ -92,7 +94,7 @@ namespace platf::linux_private_display {
       return result;
     }
 
-    command_result_t run_doctor(const std::vector<std::string> &arguments) {
+    command_result_t run_doctor(const std::vector<std::string> &arguments, const bool mutating = false) {
       command_result_t result;
       const auto executable = doctor_path();
       if (!executable) {
@@ -118,6 +120,19 @@ namespace platf::linux_private_display {
       }
       argv.push_back(nullptr);
 
+      std::shared_lock<std::shared_mutex> mutation_admission;
+      if (mutating) {
+        if (process_shutdown_preserve_requested()) {
+          result.success = true;
+          return result;
+        }
+        mutation_admission = std::shared_lock {topology_mutation_gate};
+        if (process_shutdown_preserve_requested()) {
+          result.success = true;
+          return result;
+        }
+      }
+
       GError *error = nullptr;
       GSubprocess *process = g_subprocess_newv(
         argv.data(),
@@ -130,6 +145,13 @@ namespace platf::linux_private_display {
           g_error_free(error);
         }
         return result;
+      }
+      // Admission closes once the exact helper exists. Its KScreen request is
+      // deliberately allowed to drain outside the gate: shutdown must never
+      // cancel a compositor transaction, but it also must not wait for an
+      // unbounded external reply before publishing the shutdown event.
+      if (mutation_admission.owns_lock()) {
+        mutation_admission.unlock();
       }
 
       gchar *stdout_text = nullptr;
@@ -251,20 +273,41 @@ namespace platf::linux_private_display {
       return std::nullopt;
     }
 
+    bool disconnect_managed_output(const std::string &name);
+
     bool connect_managed_output(const std::string &name) {
-      if (!broker_set_connected(name, true)) {
+      if (process_shutdown_preserve_requested()) {
         return false;
+      }
+      {
+        std::shared_lock mutation_admission {topology_mutation_gate};
+        if (process_shutdown_preserve_requested()) {
+          return false;
+        }
+        if (!broker_set_connected(name, true)) {
+          return false;
+        }
       }
       if (wait_for_output_publication(name)) {
         return true;
       }
       BOOST_LOG(error) << "Linux private display: " << name
                        << " did not publish in KScreen after broker connection.";
-      (void) broker_set_connected(name, false);
+      // Re-enter through the normal fenced disconnect path. If shutdown was
+      // requested during publication, preserve the admitted connector for the
+      // successor instead of beginning a rollback mutation.
+      (void) disconnect_managed_output(name);
       return false;
     }
 
     bool disconnect_managed_output(const std::string &name) {
+      if (process_shutdown_preserve_requested()) {
+        return true;
+      }
+      std::shared_lock mutation_lock {topology_mutation_gate};
+      if (process_shutdown_preserve_requested()) {
+        return true;
+      }
       return !is_managed_output(name) || broker_set_connected(name, false);
     }
 
@@ -348,7 +391,7 @@ namespace platf::linux_private_display {
       if (arguments.empty()) {
         return true;
       }
-      const auto result = run_doctor(arguments);
+      const auto result = run_doctor(arguments, true);
       if (!result.success) {
         BOOST_LOG(error) << "Linux private display: KScreen " << operation << " failed: "
                          << (result.stderr_text.empty() ? result.stdout_text : result.stderr_text);
@@ -431,7 +474,6 @@ namespace platf::linux_private_display {
       std::vector<std::string> deactivate;
       std::vector<std::string> guard_activate;
       std::optional<std::string> guard_output;
-      bool guard_required {false};
     };
 
     std::vector<std::string> output_activation_arguments(
@@ -458,7 +500,11 @@ namespace platf::linux_private_display {
       return arguments;
     }
 
-    phased_configuration_t restore_arguments(const json &snapshot, const json &current) {
+    phased_configuration_t restore_arguments(
+      const json &snapshot,
+      const json &current,
+      const std::set<std::string> &retiring_outputs
+    ) {
       phased_configuration_t arguments;
       const auto private_names = private_output_set();
       bool restored_non_private = false;
@@ -470,14 +516,20 @@ namespace platf::linux_private_display {
         const auto name = saved.value("name", std::string {});
         if (name.empty()) {
           if (enabled(saved)) {
-            guard_candidates.push_back({name, true, false, false});
+            guard_candidates.push_back({name, true, false, false, false});
           }
           continue;
         }
         snapshot_names.insert(name);
         const auto *present = find_output(current, name);
         const bool is_connected = present && connected(*present);
-        guard_candidates.push_back({name, enabled(saved), is_connected, private_names.contains(name)});
+        guard_candidates.push_back({
+          name,
+          enabled(saved),
+          is_connected,
+          private_names.contains(name),
+          retiring_outputs.contains(name),
+        });
         if (!is_connected) {
           continue;
         }
@@ -492,7 +544,6 @@ namespace platf::linux_private_display {
         activation_by_output.emplace(name, std::move(activation));
       }
 
-      arguments.guard_required = restore_policy::requires_guard(guard_candidates);
       arguments.guard_output = restore_policy::select_guard(guard_candidates);
       if (arguments.guard_output) {
         const auto activation = restore_policy::guard_activation(arguments.guard_output, activation_by_output);
@@ -709,6 +760,9 @@ namespace platf::linux_private_display {
   }  // namespace
 
   bool initialize() {
+    if (process_shutdown_preserve_requested()) {
+      return false;
+    }
     const auto private_names = private_output_set();
     if (private_names.empty()) {
       BOOST_LOG(info) << "Linux private display: no managed or explicitly reserved outputs are provisioned.";
@@ -737,10 +791,12 @@ namespace platf::linux_private_display {
       const auto *output = find_output(*configuration, name);
       const bool capture_ready_private =
         output && connected(*output) && enabled(*output) && capture_names.contains(name);
-      if (restore_policy::preserve_private_scanout(capture_ready_physical, capture_ready_private)) {
+      const bool active_private = output && connected(*output) && enabled(*output);
+      if (restore_policy::preserve_private_scanout(capture_ready_physical, capture_ready_private) || (!capture_ready_physical && active_private)) {
         preserved_private_outputs.insert(name);
         BOOST_LOG(warning) << "Linux private display: preserving capture-ready " << name
-                           << " during startup because no physical capture output is ready.";
+                           << " during startup because no physical capture output is ready"
+                           << (capture_ready_private ? "." : " and capture enumeration is still pending.");
         continue;
       }
       if (!disconnect_managed_output(name)) {
@@ -1130,6 +1186,19 @@ namespace platf::linux_private_display {
     return true;
   }
 
+  void request_process_shutdown_preserve() noexcept {
+    preserve_for_process_shutdown.store(true, std::memory_order_release);
+    // Drain only bounded mutation-admission sections. KScreen helpers which
+    // were already spawned continue outside the gate and are never cancelled
+    // mid-transaction; the signal thread can therefore publish shutdown
+    // without waiting for an unbounded compositor reply.
+    std::unique_lock mutation_barrier {topology_mutation_gate};
+  }
+
+  bool process_shutdown_preserve_requested() noexcept {
+    return preserve_for_process_shutdown.load(std::memory_order_acquire);
+  }
+
   bool remote_create_or_reclaim(
     const std::string &client_uuid,
     const remote_display_topology::mode_t &mode
@@ -1187,6 +1256,9 @@ namespace platf::linux_private_display {
   bool remote_apply_composed_topology(
     const std::vector<remote_display_topology::node_t> &nodes
   ) {
+    if (process_shutdown_preserve_requested()) {
+      return true;
+    }
     // An empty composition occurs when a headless final owner releases. The
     // saved pre-stream topology is the authoritative way to disable its output.
     if (nodes.empty()) {
@@ -1471,25 +1543,43 @@ namespace platf::linux_private_display {
     return std::nullopt;
   }
 
-  void remote_remove_owned_display(const std::string &client_uuid) {
+  bool remote_remove_owned_display(const std::string &client_uuid) {
+    if (process_shutdown_preserve_requested()) {
+      return true;
+    }
     auto &manager = state();
     std::lock_guard lock {manager.mutex};
     const auto reservation = manager.reservations.find(client_reservation_identity(client_uuid));
     if (reservation == manager.reservations.end()) {
-      return;
+      return true;
     }
     const auto output_name = reservation->second;
     if (const auto configuration = query_configuration()) {
       remember_scale(manager, reservation->first, find_output(*configuration, output_name));
     }
+    const bool still_reserved = std::ranges::any_of(manager.reservations, [&](const auto &entry) {
+      return entry.first != reservation->first && entry.second == output_name;
+    });
+    if (!still_reserved) {
+      const auto configuration = query_configuration();
+      const auto capture_outputs = platf::display_names(platf::mem_type_e::unknown);
+      const bool has_capture_ready_survivor = configuration &&
+                                              std::ranges::any_of((*configuration)["outputs"], [&](const json &output) {
+                                                const auto name = output.value("name", std::string {});
+                                                return name != output_name && connected(output) && enabled(output) &&
+                                                       std::ranges::find(capture_outputs, name) != capture_outputs.end();
+                                              });
+      if (!has_capture_ready_survivor) {
+        BOOST_LOG(warning) << "Linux private display: preserving released output " << output_name
+                           << " because no distinct capture-ready scanout can guard its disconnect.";
+      } else if (!disconnect_managed_output(output_name)) {
+        BOOST_LOG(error) << "Linux private display: failed to disconnect released output " << output_name << '.';
+        return false;
+      }
+    }
     manager.newly_connected_reservations.erase(reservation->first);
     manager.reservations.erase(reservation);
-    const bool still_reserved = std::ranges::any_of(manager.reservations, [&](const auto &entry) {
-      return entry.second == output_name;
-    });
-    if (!still_reserved && !disconnect_managed_output(output_name)) {
-      BOOST_LOG(error) << "Linux private display: failed to disconnect released output " << output_name << '.';
-    }
+    return true;
   }
 
   bool is_private_output(const std::string &output_name) {
@@ -1505,6 +1595,9 @@ namespace platf::linux_private_display {
 
   bool revert() {
     cancel_scheduled_revert();
+    if (process_shutdown_preserve_requested()) {
+      return true;
+    }
     auto &manager = state();
     std::lock_guard lock {manager.mutex};
     std::set<std::string> reserved_outputs;
@@ -1516,46 +1609,64 @@ namespace platf::linux_private_display {
       remember_reserved_scales(manager, *current);
     }
     if (!manager.snapshot) {
+      if (!reserved_outputs.empty()) {
+        BOOST_LOG(warning) << "Linux private display: no saved replacement topology can guard connector release; preserving the current private scanout and releasing only process-local ownership.";
+      }
       manager.reservations.clear();
       manager.newly_connected_reservations.clear();
-      bool disconnected = true;
-      for (const auto &output_name : reserved_outputs) {
-        disconnected = disconnect_managed_output(output_name) && disconnected;
-      }
-      return disconnected;
+      return true;
     }
     if (!current) {
       return false;
     }
-    const auto arguments = restore_arguments(*manager.snapshot, *current);
-    if (arguments.guard_required) {
-      if (!arguments.guard_output) {
-        BOOST_LOG(error) << "Linux private display: no connected saved output can guard topology restore; preserving the current private scanout.";
-        return false;
-      }
-      if (!execute_configuration(arguments.guard_activate, "topology restore guard activation")) {
-        return false;
-      }
-      const auto guard_snapshot = snapshot_for_output(*manager.snapshot, *arguments.guard_output);
-      if (!wait_for_snapshot_activation(guard_snapshot)) {
-        BOOST_LOG(error) << "Linux private display: saved output " << *arguments.guard_output
-                         << " did not activate as the topology restore guard; preserving the current private scanout.";
-        return false;
-      }
-      if (!wait_for_capture_publication(*arguments.guard_output)) {
-        BOOST_LOG(error) << "Linux private display: saved output " << *arguments.guard_output
-                         << " activated in KScreen but did not publish to the capture backend; preserving the current private scanout.";
-        return false;
-      }
-      BOOST_LOG(debug) << "Linux private display: capture-ready restore guard "
-                       << *arguments.guard_output << " is active.";
+    const auto arguments = restore_arguments(*manager.snapshot, *current, reserved_outputs);
+    if (!arguments.guard_output) {
+      // A headless saved baseline, or a saved private output which is itself
+      // being retired, cannot authorize removing the compositor's last live
+      // scanout. Release only process-local client ownership; startup can
+      // retire the preserved connector after a distinct physical capture
+      // source exists.
+      BOOST_LOG(warning) << "Linux private display: no distinct connected saved output can guard topology restore; preserving the current private scanout.";
+      manager.snapshot.reset();
+      manager.reservations.clear();
+      manager.newly_connected_reservations.clear();
+      return true;
     }
+    if (!execute_configuration(arguments.guard_activate, "topology restore guard activation")) {
+      return false;
+    }
+    const auto guard_snapshot = snapshot_for_output(*manager.snapshot, *arguments.guard_output);
+    if (!wait_for_snapshot_activation(guard_snapshot)) {
+      BOOST_LOG(error) << "Linux private display: saved output " << *arguments.guard_output
+                       << " did not activate as the topology restore guard; preserving the current private scanout.";
+      return false;
+    }
+    if (!wait_for_capture_publication(*arguments.guard_output)) {
+      BOOST_LOG(error) << "Linux private display: saved output " << *arguments.guard_output
+                       << " activated in KScreen but did not publish to the capture backend; preserving the current private scanout.";
+      return false;
+    }
+    BOOST_LOG(debug) << "Linux private display: capture-ready restore guard "
+                     << *arguments.guard_output << " is active.";
     // Apply retirement and activation as one KScreen transaction. Activating
     // every saved output before retiring the private output can exceed the
     // compositor's max-active-output limit. The capture-ready guard above
     // ensures this transaction cannot create a transient zero-output desktop.
-    auto restore = arguments.deactivate;
-    restore.insert(restore.end(), arguments.activate.begin(), arguments.activate.end());
+    std::vector<std::string> restore;
+    std::ranges::copy_if(arguments.deactivate, std::back_inserter(restore), [&](const auto &argument) {
+      // Keep every retiring scanout live until a distinct guard has survived
+      // the complete restore and the final capture-publication check.
+      return std::ranges::none_of(reserved_outputs, [&](const auto &retiring_output) {
+        return argument.starts_with("output." + retiring_output + ".");
+      });
+    });
+    const auto guard_prefix = "output." + *arguments.guard_output + ".";
+    std::ranges::copy_if(arguments.activate, std::back_inserter(restore), [&](const auto &argument) {
+      // The guard is already in its exact saved state and capture-verified.
+      // Reissuing its mode/HDR properties here could retrain the physical link
+      // between verification and connector retirement.
+      return !argument.starts_with(guard_prefix);
+    });
     if (!execute_configuration(restore, "topology restore")) {
       return false;
     }
@@ -1563,9 +1674,11 @@ namespace platf::linux_private_display {
       BOOST_LOG(error) << "Linux private display: timed out activating the saved output topology.";
       return false;
     }
-    manager.snapshot.reset();
-    manager.reservations.clear();
-    manager.newly_connected_reservations.clear();
+    if (!wait_for_capture_publication(*arguments.guard_output)) {
+      BOOST_LOG(error) << "Linux private display: restore guard " << *arguments.guard_output
+                       << " lost capture publication before connector retirement; preserving the current private scanout.";
+      return false;
+    }
     bool disconnected = true;
     for (const auto &output_name : reserved_outputs) {
       disconnected = disconnect_managed_output(output_name) && disconnected;
@@ -1574,6 +1687,9 @@ namespace platf::linux_private_display {
       BOOST_LOG(error) << "Linux private display: restored topology but failed to disconnect one or more released outputs.";
       return false;
     }
+    manager.snapshot.reset();
+    manager.reservations.clear();
+    manager.newly_connected_reservations.clear();
     BOOST_LOG(info) << "Linux private display: restored the pre-stream output topology.";
     return true;
   }

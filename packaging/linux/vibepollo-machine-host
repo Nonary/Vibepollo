@@ -518,7 +518,7 @@ configure_automatically() {
   else
     while IFS=: read -r user _ uid _ _ home _; do
       [[ "$uid" =~ ^[0-9]+$ && "$uid" -ge 1000 && "$home" == /* && -d "$home" && ! -L "$home" ]] || continue
-      for state in "$home/.config/vibepollo/vibeshine_state.json" "$home/.config/vibepollo/sunshine_state.json"; do
+      for state in "$home/.config/vibepollo/vibepollo_state.json" "$home/.config/vibepollo/sunshine_state.json"; do
         if user_exec "$user" /usr/bin/test -f "$state" && ! user_exec "$user" /usr/bin/test -L "$state"; then
           candidates+=("$user")
           break
@@ -613,13 +613,18 @@ run_host() {
     "$machine_host_executable" "$machine_profile/vibepollo.conf" "${overrides[@]}" &
   host_pid=$!
 
-  forward_host_signal() {
+  mark_host_shutdown() {
     shutting_down=1
-    /usr/bin/kill -s "$1" -- "$host_pid" 2>/dev/null || :
   }
-  trap 'forward_host_signal TERM' TERM
-  trap 'forward_host_signal INT' INT
-  trap 'forward_host_signal HUP' HUP
+  terminate_host() {
+    mark_host_shutdown
+    /usr/bin/kill -s TERM -- "$host_pid" 2>/dev/null || :
+  }
+  # KillMode=control-group delivers the service signal to both this readiness
+  # supervisor and the real host.  The trap must only interrupt wait(1);
+  # forwarding a second signal can re-enter the host's shutdown handler while
+  # it is releasing encoder and DRM resources.
+  trap mark_host_shutdown TERM INT HUP
 
   find_host_readiness_log() {
     local candidate attributes count=0
@@ -658,7 +663,7 @@ run_host() {
        /usr/bin/grep -Fq 'Found AV1 encoder:' "$host_log"; then
       /usr/bin/systemd-notify --pid="$$" --ready \
         --status="Vibepollo generation $session_generation is listening with H.264, HEVC, and AV1 encoders" || {
-          forward_host_signal TERM
+          terminate_host
           break
         }
       while /usr/bin/kill -0 "$host_pid" 2>/dev/null; do
@@ -670,7 +675,10 @@ run_host() {
     /usr/bin/sleep 0.1
   done
 
-  forward_host_signal TERM
+  # During a service stop systemd already delivered exactly one signal to the
+  # complete cgroup.  Only readiness failures initiated by this wrapper need
+  # it to request child termination itself.
+  ((shutting_down)) || terminate_host
   while /usr/bin/kill -0 "$host_pid" 2>/dev/null; do
     wait "$host_pid" || status=$?
   done

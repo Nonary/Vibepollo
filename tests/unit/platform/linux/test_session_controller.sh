@@ -10,7 +10,6 @@ controller_close_broker_definition=$(declare -f close_broker_admission)
 controller_stop_host_definition=$(declare -f stop_host)
 controller_stop_brokers_definition=$(declare -f stop_broker_instances)
 controller_stop_apps_definition=$(declare -f stop_bound_session_apps)
-controller_release_connectors_definition=$(declare -f release_connectors)
 controller_remove_record_definition=$(declare -f remove_session_record)
 
 declare -a events=()
@@ -247,7 +246,6 @@ close_broker_admission() { quiesce_events+=(C); }
 stop_host() { quiesce_events+=(H); return 1; }
 stop_broker_instances() { quiesce_events+=(B); }
 stop_bound_session_apps() { quiesce_events+=(A); }
-release_connectors() { quiesce_events+=(R); }
 remove_session_record() { quiesce_events+=(D); }
 if quiesce; then
   fail_test 'quiesce accepted a host cgroup that did not stop'
@@ -258,7 +256,6 @@ eval "$controller_close_broker_definition"
 eval "$controller_stop_host_definition"
 eval "$controller_stop_brokers_definition"
 eval "$controller_stop_apps_definition"
-eval "$controller_release_connectors_definition"
 eval "$controller_remove_record_definition"
 
 # Targets intentionally omit MainPID; services still require a live main
@@ -378,27 +375,35 @@ if host_unit_is_stopped $'LoadState=loaded\nActiveState=inactive\nSubState=dead\
   fail_test 'nonzero host MainPID was accepted as stopped'
 fi
 
-# Host-stop escalation never falls back to an unbounded systemctl call.
+# Host stop is requested once, then the exact cgroup is polled to completion.
+# The controller never escalates the GPU-owning service to SIGKILL.
 mock_system_systemctl_calls_file=$mock_app_state_directory/system-systemctl-calls
 : >"$mock_system_systemctl_calls_file"
-system_systemctl_bounded() {
+mock_host_stop_requested=0
+bounded_system_systemctl() {
+  local deadline=$1
+  shift
+  [[ "$deadline" =~ ^[1-9][0-9]*$ ]] || return 1
   /usr/bin/printf '%s\n' "$*" >>"$mock_system_systemctl_calls_file"
   case "$*" in
-    "5 is-active --quiet $host_service") return 0 ;;
-    "25 stop $host_service") return 1 ;;
-    "5 kill --kill-whom=all --signal=KILL $host_service") return 0 ;;
-    "5 --no-block stop $host_service") return 0 ;;
-    "5 show $host_service --property=LoadState --property=ActiveState --property=SubState --property=MainPID --property=ControlGroup")
-      /usr/bin/printf '%s\n' "$stopped_host_properties"
+    "show $host_service --property=LoadState --property=ActiveState --property=SubState --property=MainPID --property=ControlGroup")
+      if ((mock_host_stop_requested)); then
+        /usr/bin/printf '%s\n' "$stopped_host_properties"
+      else
+        /usr/bin/printf '%s\n' \
+          'LoadState=loaded' 'ActiveState=active' 'SubState=running' \
+          'MainPID=1234' 'ControlGroup='
+      fi
       return 0
       ;;
+    "--no-block stop $host_service") mock_host_stop_requested=1; return 0 ;;
     *) return 1 ;;
   esac
 }
-stop_host || fail_test 'bounded host-stop fallback failed'
+stop_host "$((SECONDS + 2))" || fail_test 'bounded host stop did not reach cgroup-empty state'
 mapfile -t mock_system_systemctl_calls <"$mock_system_systemctl_calls_file"
 [[ "${mock_system_systemctl_calls[*]}" == \
-   "5 is-active --quiet $host_service 25 stop $host_service 5 kill --kill-whom=all --signal=KILL $host_service 5 --no-block stop $host_service 5 show $host_service --property=LoadState --property=ActiveState --property=SubState --property=MainPID --property=ControlGroup" ]] ||
+   "show $host_service --property=LoadState --property=ActiveState --property=SubState --property=MainPID --property=ControlGroup --no-block stop $host_service show $host_service --property=LoadState --property=ActiveState --property=SubState --property=MainPID --property=ControlGroup" ]] ||
   fail_test "unexpected bounded host-stop calls: ${mock_system_systemctl_calls[*]}"
 
 # The controller passes X credentials only to target-UID helpers. The file
@@ -429,7 +434,7 @@ mock_app_list_outputs=(
   $'vibepollo-app-42-202.service loaded activating start second\n'
   '' '' '' '' '' '' '' '' '' '' '' ''
 )
-stop_session_generation_apps desktop 1000 1000 /run/user/1000 42 4 ||
+stop_session_generation_apps desktop 1000 1000 /run/user/1000 42 "$((SECONDS + 4))" ||
   fail_test 'generation-scoped delayed-registration cleanup failed'
 [[ "${mock_stopped_units[*]}" == 'vibepollo-app-42-101.service vibepollo-app-42-202.service' ]] ||
   fail_test "unexpected application units stopped: ${mock_stopped_units[*]}"
@@ -458,7 +463,7 @@ for unsafe_output in \
   mock_app_list_outputs=("$unsafe_output")
   mock_app_default_output=''
   mock_stopped_units=()
-  if stop_session_generation_apps desktop 1000 1000 /run/user/1000 42 1; then
+  if stop_session_generation_apps desktop 1000 1000 /run/user/1000 42 "$((SECONDS + 1))"; then
     fail_test 'cleanup accepted malformed or cross-generation enumeration output'
   fi
   ((${#mock_stopped_units[@]} == 0)) || fail_test 'unsafe unit reached systemctl stop'
@@ -472,75 +477,10 @@ mock_app_list_outputs=()
 mock_stopped_units=()
 mock_stop_effective=0
 cleanup_started=$SECONDS
-if stop_session_generation_apps desktop 1000 1000 /run/user/1000 42 1; then
+if stop_session_generation_apps desktop 1000 1000 /run/user/1000 42 "$((SECONDS + 1))"; then
   fail_test 'cleanup accepted a unit that remained active after stop'
 fi
 ((SECONDS - cleanup_started <= 2)) || fail_test 'wedged application cleanup exceeded its total deadline'
-((${#mock_stopped_units[@]} > 0)) || fail_test 'wedged application unit never received an exact stop request'
-
-# First-install cleanup may accept a wholly absent connector subsystem, but it
-# must not reinterpret a partial pool, a surviving lease, or a control socket
-# as proof that display ownership is gone.
-declare -A mock_connector_states=()
-declare -A mock_connector_leases=()
-mock_connector_socket_present=0
-declare -a mock_connector_requests=()
-reset_mock_connector_pool() {
-  local state=$1 output
-  mock_connector_states=()
-  mock_connector_leases=()
-  mock_connector_socket_present=0
-  mock_connector_requests=()
-  for output in "${managed_outputs[@]}"; do
-    mock_connector_states[$output]=$state
-    mock_connector_leases[$output]=0
-  done
-}
-connector_output_connection_state() {
-  local destination=$1 output=$2
-  local -n result=$destination
-  [[ -n ${mock_connector_states[$output]+x} &&
-     "${mock_connector_states[$output]}" =~ ^(absent|connected|disconnected)$ ]] || return 1
-  result=${mock_connector_states[$output]}
-}
-connector_owner_lease_is_absent() {
-  [[ ${mock_connector_leases[$1]:-1} == 0 ]]
-}
-connector_control_socket_is_absent() {
-  ((mock_connector_socket_present == 0))
-}
-connector_request() {
-  mock_connector_requests+=("$1")
-  return 1
-}
-
-reset_mock_connector_pool absent
-connectors_are_disconnected || fail_test 'fully absent first-install connector state was rejected'
-release_connectors || fail_test 'fully absent first-install connector cleanup failed'
-((${#mock_connector_requests[@]} == 0)) || fail_test 'fully absent connector state triggered a control request'
-
-reset_mock_connector_pool absent
-mock_connector_socket_present=1
-if connectors_are_disconnected || release_connectors; then
-  fail_test 'absent sysfs pool with a surviving control socket was accepted'
-fi
-((${#mock_connector_requests[@]} == 0)) || fail_test 'mixed absent/socket state triggered a control request'
-
-reset_mock_connector_pool absent
-mock_connector_leases[Virtual-2]=1
-if connectors_are_disconnected || release_connectors; then
-  fail_test 'absent sysfs pool with a surviving owner lease was accepted'
-fi
-((${#mock_connector_requests[@]} == 0)) || fail_test 'mixed absent/lease state triggered a control request'
-
-reset_mock_connector_pool absent
-mock_connector_states[Virtual-1]=disconnected
-if connectors_are_disconnected || release_connectors; then
-  fail_test 'partially created connector pool was accepted'
-fi
-((${#mock_connector_requests[@]} == 0)) || fail_test 'partial connector pool triggered a control request'
-
-reset_mock_connector_pool disconnected
-connectors_are_disconnected || fail_test 'complete disconnected connector pool was rejected'
+((${#mock_stopped_units[@]} == 1)) || fail_test 'wedged application stop was retried instead of polled'
 
 /usr/bin/printf 'PASS: deterministic machine-session controller transitions\n'

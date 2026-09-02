@@ -8,8 +8,6 @@ readonly session_file=$runtime_root/session.env
 readonly generation_file=$runtime_root/session-generation
 readonly legacy_handoff_directory=$runtime_root/session-handoffs
 readonly legacy_restore_directory=$runtime_root/session-restores
-readonly control_socket=$runtime_root/vkms-control.sock
-readonly lease_directory=$runtime_root/vkms-leases
 readonly host_service=vibepollo.service
 readonly broker_socket_service=vibepollo-session-exec.socket
 readonly broker_socket_path=$runtime_root/session-broker.sock
@@ -19,7 +17,7 @@ readonly seat_name=seat0
 readonly reconcile_delay=1
 readonly command_timeout=5
 readonly stop_timeout=25
-readonly -a managed_outputs=(Virtual-1 Virtual-2 Virtual-3 Virtual-4)
+readonly quiesce_timeout=30
 
 desktop_user=''
 desktop_uid=''
@@ -383,130 +381,22 @@ host_unit_is_stopped() {
 }
 
 stop_host() {
-  if system_systemctl_bounded "$command_timeout" is-active --quiet "$host_service" ||
-     system_systemctl_bounded "$command_timeout" is-failed --quiet "$host_service"; then
-    if ! system_systemctl_bounded "$stop_timeout" stop "$host_service"; then
-      system_systemctl_bounded "$command_timeout" kill --kill-whom=all --signal=KILL \
-        "$host_service" >/dev/null 2>&1 || :
-      system_systemctl_bounded "$command_timeout" --no-block stop \
-        "$host_service" >/dev/null 2>&1 || :
-    fi
-  fi
-  host_unit_is_stopped
-}
-
-connector_request() {
-  local request=$1
-  [[ -S "$control_socket" && ! -L "$control_socket" ]] || return 1
-  /usr/bin/printf '%s\n' "$request" |
-    /usr/bin/timeout --signal=KILL 3 /usr/bin/socat - "UNIX-CONNECT:$control_socket"
-}
-
-connector_owner_lease_is_absent() {
-  local output=$1
-  if [[ -e "$lease_directory" || -L "$lease_directory" ]]; then
-    [[ -d "$lease_directory" && ! -L "$lease_directory" ]] || return 1
-  fi
-  [[ ! -e "$lease_directory/$output.owner" && ! -L "$lease_directory/$output.owner" ]]
-}
-
-connector_control_socket_is_absent() {
-  [[ ! -e "$control_socket" && ! -L "$control_socket" ]]
-}
-
-connector_output_connection_state() {
-  local destination=$1 output=$2 path connection observed='' found=0
-  local -n result=$destination
-  result=''
-  for path in /sys/class/drm/*-"$output"/status; do
-    if [[ ! -e "$path" && ! -L "$path" ]]; then
-      continue
-    fi
-    [[ -f "$path" && ! -L "$path" ]] || return 1
-    connection=$(<"$path") || return 1
-    [[ "$connection" == connected || "$connection" == disconnected ]] || return 1
-    if ((found)) && [[ "$connection" != "$observed" ]]; then
-      return 1
-    fi
-    observed=$connection
-    found=1
+  local deadline=${1:-$((SECONDS + quiesce_timeout))}
+  local properties
+  properties=$(bounded_system_systemctl "$deadline" show "$host_service" \
+    --property=LoadState --property=ActiveState --property=SubState \
+    --property=MainPID --property=ControlGroup 2>/dev/null) || return 1
+  host_unit_is_stopped "$properties" && return 0
+  bounded_system_systemctl "$deadline" --no-block stop "$host_service" >/dev/null 2>&1 || return 1
+  while ((SECONDS < deadline)); do
+    properties=$(bounded_system_systemctl "$deadline" show "$host_service" \
+      --property=LoadState --property=ActiveState --property=SubState \
+      --property=MainPID --property=ControlGroup 2>/dev/null) || return 1
+    host_unit_is_stopped "$properties" && return 0
+    ((SECONDS < deadline)) || break
+    /usr/bin/sleep 0.1
   done
-  if ((found)); then
-    result=$observed
-  else
-    result=absent
-  fi
-}
-
-connector_pool_presence() {
-  local destination=$1 output state absent=0 present=0
-  local -n result=$destination
-  result=''
-  for output in "${managed_outputs[@]}"; do
-    connector_output_connection_state state "$output" || return 1
-    if [[ "$state" == absent ]]; then
-      ((absent += 1))
-    else
-      ((present += 1))
-    fi
-  done
-  if ((absent == ${#managed_outputs[@]})); then
-    result=absent
-  elif ((present == ${#managed_outputs[@]})); then
-    result=present
-  else
-    # Never act on a partially created or partially removed connector pool.
-    return 1
-  fi
-}
-
-connectors_are_disconnected() {
-  local output state pool
-  connector_pool_presence pool || return 1
-  if [[ "$pool" == absent ]]; then
-    # Before the DRM helper has ever been installed or started there is no
-    # pool to release. This is safe only when *all* three representations are
-    # absent: every managed sysfs node, every owner lease, and the control
-    # socket. Any partial first-install state remains fail closed.
-    connector_control_socket_is_absent || return 1
-    for output in "${managed_outputs[@]}"; do
-      connector_owner_lease_is_absent "$output" || return 1
-    done
-    return 0
-  fi
-  for output in "${managed_outputs[@]}"; do
-    connector_owner_lease_is_absent "$output" || return 1
-    connector_output_connection_state state "$output" || return 1
-    [[ "$state" == disconnected ]] || return 1
-  done
-}
-
-release_connectors() {
-  local output status response state pool
-  connectors_are_disconnected && return 0
-  # Distinguish an actionable, complete connector pool from a mixed/partial
-  # first-install state before sending any mutating request.
-  connector_pool_presence pool || return 1
-  [[ "$pool" == present ]] || return 1
-  for output in "${managed_outputs[@]}"; do
-    if connector_owner_lease_is_absent "$output"; then
-      connector_output_connection_state state "$output" || return 1
-      [[ "$state" == disconnected ]] && continue
-    fi
-    status=$(connector_request "status $output") || return 1
-    case "$status" in
-      "STATUS disconnected $output") ;;
-      "STATUS connected $output")
-        response=$(connector_request "disconnect $output") || return 1
-        [[ "$response" == "OK disconnected $output" ]] || return 1
-        ;;
-      *) return 1 ;;
-    esac
-    connector_owner_lease_is_absent "$output" || return 1
-    connector_output_connection_state state "$output" || return 1
-    [[ "$state" == disconnected ]] || return 1
-  done
-  connectors_are_disconnected
+  return 1
 }
 
 read_session_record() {
@@ -606,9 +496,10 @@ enumerate_broker_instances() {
 }
 
 stop_broker_instances() {
-  local deadline=$((SECONDS + stop_timeout)) clean_passes=0 all_stopped unit
+  local deadline=${1:-$((SECONDS + quiesce_timeout))} clean_passes=0 all_stopped unit
   local required_clean_passes=10
   local -a units=()
+  local -A stop_requested=()
   while ((SECONDS < deadline)); do
     enumerate_broker_instances units "$deadline" || return 1
     all_stopped=1
@@ -617,11 +508,9 @@ stop_broker_instances() {
         continue
       fi
       all_stopped=0
-      bounded_system_systemctl "$deadline" --no-block stop "$unit" >/dev/null 2>&1 || :
-      if ! broker_unit_is_stopped "$deadline" "$unit"; then
-        bounded_system_systemctl "$deadline" kill --kill-whom=all --signal=KILL \
-          "$unit" >/dev/null 2>&1 || :
-        bounded_system_systemctl "$deadline" --no-block stop "$unit" >/dev/null 2>&1 || :
+      if [[ -z ${stop_requested[$unit]:-} ]]; then
+        bounded_system_systemctl "$deadline" --no-block stop "$unit" >/dev/null 2>&1 || return 1
+        stop_requested[$unit]=1
       fi
     done
     if ((all_stopped)); then
@@ -637,17 +526,21 @@ stop_broker_instances() {
 }
 
 close_broker_admission() {
-  if system_systemctl_bounded "$command_timeout" is-active --quiet "$broker_socket_service" ||
-     system_systemctl_bounded "$command_timeout" is-failed --quiet "$broker_socket_service"; then
-    system_systemctl_bounded "$stop_timeout" stop "$broker_socket_service" >/dev/null 2>&1 || {
-      system_systemctl_bounded "$command_timeout" kill --kill-whom=all --signal=KILL \
-        "$broker_socket_service" >/dev/null 2>&1 || :
-      system_systemctl_bounded "$command_timeout" --no-block stop \
-        "$broker_socket_service" >/dev/null 2>&1 || :
-    }
+  local deadline=${1:-$((SECONDS + quiesce_timeout))}
+  if broker_unit_is_stopped "$deadline" "$broker_socket_service"; then
+    [[ ! -e "$broker_socket_path" && ! -L "$broker_socket_path" ]]
+    return
   fi
-  system_unit_is_stopped "$broker_socket_service" || return 1
-  [[ ! -e "$broker_socket_path" && ! -L "$broker_socket_path" ]]
+  bounded_system_systemctl "$deadline" --no-block stop "$broker_socket_service" >/dev/null 2>&1 || return 1
+  while ((SECONDS < deadline)); do
+    if broker_unit_is_stopped "$deadline" "$broker_socket_service"; then
+      [[ ! -e "$broker_socket_path" && ! -L "$broker_socket_path" ]]
+      return
+    fi
+    ((SECONDS < deadline)) || break
+    /usr/bin/sleep 0.1
+  done
+  return 1
 }
 
 open_broker_admission() {
@@ -725,13 +618,13 @@ enumerate_session_generation_apps() {
 }
 
 stop_session_generation_apps() {
-  local user=$1 uid=$2 gid=$3 runtime=$4 generation=$5 cleanup_budget=${6:-$stop_timeout}
-  local deadline clean_passes=0 unit all_stopped
+  local user=$1 uid=$2 gid=$3 runtime=$4 generation=$5
+  local deadline=${6:-$((SECONDS + quiesce_timeout))} clean_passes=0 unit all_stopped
   local required_clean_passes=10
   local -a units=()
-  [[ "$generation" =~ ^[1-9][0-9]*$ && "$cleanup_budget" =~ ^[1-9][0-9]*$ &&
-     cleanup_budget -le stop_timeout ]] || return 1
-  deadline=$((SECONDS + cleanup_budget))
+  local -A stop_requested=()
+  [[ "$generation" =~ ^[1-9][0-9]*$ && "$deadline" =~ ^[1-9][0-9]*$ &&
+     deadline -gt SECONDS ]] || return 1
   while ((SECONDS < deadline)); do
     enumerate_session_generation_apps units "$deadline" "$user" "$uid" "$gid" "$runtime" \
       "$generation" || return 1
@@ -744,9 +637,11 @@ stop_session_generation_apps() {
       # even if the stop completes immediately; only a later re-enumeration
       # can contribute to the consecutive-clean proof.
       all_stopped=0
-      bounded_session_systemctl "$deadline" "$user" "$uid" "$gid" "$runtime" \
-        --no-block stop "$unit" >/dev/null 2>&1 || :
-      session_app_unit_is_stopped "$deadline" "$user" "$uid" "$gid" "$runtime" "$unit" || :
+      if [[ -z ${stop_requested[$unit]:-} ]]; then
+        bounded_session_systemctl "$deadline" "$user" "$uid" "$gid" "$runtime" \
+          --no-block stop "$unit" >/dev/null 2>&1 || return 1
+        stop_requested[$unit]=1
+      fi
     done
     if ((all_stopped)); then
       ((clean_passes += 1))
@@ -761,6 +656,7 @@ stop_session_generation_apps() {
 }
 
 stop_bound_session_apps() {
+  local deadline=${1:-$((SECONDS + quiesce_timeout))}
   local status entry account_user account_uid account_gid account_home
   local -A bound=()
   read_session_record bound
@@ -780,7 +676,7 @@ stop_bound_session_apps() {
   [[ "$account_user" == "${bound[user]}" && "$account_uid" == "${bound[uid]}" &&
      "$account_gid" == "${bound[gid]}" && "$account_home" == "${bound[home]}" ]] || return 1
   stop_session_generation_apps "$account_user" "$account_uid" "$account_gid" \
-    "${bound[runtime]}" "${bound[generation]}"
+    "${bound[runtime]}" "${bound[generation]}" "$deadline"
 }
 
 remove_session_record() {
@@ -802,26 +698,29 @@ cleanup_legacy_state() {
 }
 
 quiesce() {
-  local success=0
+  local deadline=$((SECONDS + quiesce_timeout)) success=0
   # Close new service-account requests first. Admission stays closed until a
   # fully validated replacement binding is published immediately before host
   # start.
-  close_broker_admission || return 1
+  close_broker_admission "$deadline" || return 1
   # Attempt every bounded cgroup shutdown even when one worker is stuck. This
   # is especially important for display-query brokers: a host blocked in the
   # display driver must not strand an independently stoppable query worker.
   # Display/session state is revoked only after all exact cgroups prove empty.
-  stop_host || success=1
-  stop_broker_instances || success=1
+  stop_host "$deadline" || success=1
+  stop_broker_instances "$deadline" || success=1
   # Application units are generation-bound by the trusted session record. Do
   # not touch another session's units, even when the same user manager survives
   # a greeter/desktop transition.
-  stop_bound_session_apps || success=1
+  stop_bound_session_apps "$deadline" || success=1
   # Repeat after application cleanup so an accepted connection that was
   # already queued when admission closed cannot register after the first pass.
-  stop_broker_instances || success=1
+  stop_broker_instances "$deadline" || success=1
   ((success == 0)) || return 1
-  release_connectors || success=1
+  # The host owns the compositor topology and releases a managed connector
+  # only after its replacement scanout is verified.  If a restore is unsafe
+  # or the host exits unexpectedly, preserve the machine-owned connector for
+  # adoption by the next host rather than hot-unplugging KWin's last output.
   remove_session_record || success=1
   return "$success"
 }
@@ -1031,8 +930,9 @@ reconcile_once() {
 shutdown_controller() {
   ((shutting_down == 0)) || return
   shutting_down=1
-  announce shutdown 'controller is stopping; quiescing the machine host'
-  quiesce || error 'shutdown cleanup was incomplete'
+  # The unit's single ExecStopPost transaction owns shutdown cleanup.  Do not
+  # start a second independent deadline from this process's EXIT trap.
+  announce shutdown 'controller is stopping; systemd will quiesce the machine host'
 }
 
 run_controller() {

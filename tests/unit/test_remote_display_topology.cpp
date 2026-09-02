@@ -354,10 +354,19 @@ TEST(RemoteDisplayTopology, TransportLossDefersGlobalCleanupAndExplicitReleasePr
   remote_display_topology::coordinator_t coordinator;
   std::vector<std::string> removals;
   coordinator.set_runtime_callbacks({
-    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
-    .apply_composed_topology = [](const auto &) { return true; },
-    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; },
-    .remove_owned_display = [&removals](const auto &uuid) { removals.push_back(uuid); },
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) {
+      return true;
+    },
+    .apply_composed_topology = [](const auto &) {
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+    .remove_owned_display = [&removals](const auto &uuid) {
+      removals.push_back(uuid);
+      return true;
+    },
   });
 
   ASSERT_TRUE(coordinator.activate_or_resume("one", "One", {}, 1).ready);
@@ -373,6 +382,99 @@ TEST(RemoteDisplayTopology, TransportLossDefersGlobalCleanupAndExplicitReleasePr
 
   coordinator.explicit_release("two", 1, "final owner released");
   EXPECT_EQ(removals, std::vector<std::string>({"one", "two"}));
+  EXPECT_TRUE(coordinator.generic_virtual_display_cleanup_allowed());
+}
+
+TEST(RemoteDisplayTopology, ReleaseAppliesReplacementBeforeDisconnectingDepartingOutput) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> events;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) {
+      return true;
+    },
+    .apply_composed_topology = [&events](const auto &nodes) {
+      events.push_back("apply:" + std::to_string(nodes.size()));
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+    .remove_owned_display = [&events](const auto &uuid) {
+      events.push_back("remove:" + uuid);
+      return true;
+    },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("one", "One", {}, 1).ready);
+  events.clear();
+  coordinator.explicit_release("one", 1, "done");
+
+  EXPECT_EQ(events, (std::vector<std::string> {"apply:0", "remove:one"}));
+  EXPECT_TRUE(coordinator.generic_virtual_display_cleanup_allowed());
+}
+
+TEST(RemoteDisplayTopology, FailedReplacementOrDisconnectRetainsOwnership) {
+  remote_display_topology::coordinator_t coordinator;
+  bool reject_empty = false;
+  bool reject_remove = false;
+  int removals = 0;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) {
+      return true;
+    },
+    .apply_composed_topology = [&reject_empty](const auto &nodes) {
+      return !(reject_empty && nodes.empty());
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+    .remove_owned_display = [&reject_remove, &removals](const auto &) {
+      ++removals;
+      return !reject_remove;
+    },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("one", "One", {}, 1).ready);
+  reject_empty = true;
+  coordinator.explicit_release("one", 1, "failed topology handoff");
+  EXPECT_EQ(removals, 0);
+  EXPECT_TRUE(coordinator.snapshot("one", 1).accepted);
+
+  reject_empty = false;
+  reject_remove = true;
+  coordinator.explicit_release("one", 1, "failed connector release");
+  EXPECT_EQ(removals, 1);
+  EXPECT_TRUE(coordinator.snapshot("one", 1).accepted);
+  EXPECT_FALSE(coordinator.generic_virtual_display_cleanup_allowed());
+}
+
+TEST(RemoteDisplayTopology, SupervisedShutdownPreservesPlatformDisplaysUntouched) {
+  remote_display_topology::coordinator_t coordinator;
+  int applies = 0;
+  int removals = 0;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) {
+      return true;
+    },
+    .apply_composed_topology = [&applies](const auto &) {
+      ++applies;
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+    .remove_owned_display = [&removals](const auto &) {
+      ++removals;
+      return true;
+    },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("one", "One", {}, 1).ready);
+  applies = 0;
+  coordinator.shutdown(true);
+
+  EXPECT_EQ(applies, 0);
+  EXPECT_EQ(removals, 0);
   EXPECT_TRUE(coordinator.generic_virtual_display_cleanup_allowed());
 }
 
@@ -458,13 +560,20 @@ TEST(RemoteDisplayTopology, ExactOutputIsBoundToTheRequestedModeAndOldGeneration
   remote_display_topology::mode_t observed {};
   int removals = 0;
   coordinator.set_runtime_callbacks({
-    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
-    .apply_composed_topology = [](const auto &) { return true; },
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) {
+      return true;
+    },
+    .apply_composed_topology = [](const auto &) {
+      return true;
+    },
     .exact_target_has_current_mode_and_dxgi = [&observed](const auto &, const auto &mode) {
       observed = mode;
       return mode.width == 2560 && mode.height == 1440 ? std::optional<std::string> {"\\\\.\\DISPLAY7"} : std::nullopt;
     },
-    .remove_owned_display = [&removals](const auto &) { ++removals; },
+    .remove_owned_display = [&removals](const auto &) {
+      ++removals;
+      return true;
+    },
   });
   EXPECT_TRUE(coordinator.activate_or_resume("one", "One", {2560, 1440, 120}, 8).ready);
   EXPECT_EQ(observed.width, 2560);

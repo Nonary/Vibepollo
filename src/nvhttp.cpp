@@ -378,7 +378,7 @@ namespace nvhttp {
           const auto stable_uuid = VDISPLAY::virtualDisplayUuidFromStableId(client_uuid);
           GUID guid {};
           std::memcpy(&guid, stable_uuid.b8, sizeof(guid));
-          (void) VDISPLAY::removeVirtualDisplay(guid);
+          return VDISPLAY::removeVirtualDisplay(guid);
         },
       });
       remote_display_topology::instance().set_plaintext_rtsp_warning_provider([](const std::string &) {
@@ -538,7 +538,6 @@ namespace nvhttp {
       if (!reservation.accepted) {
         launch_session->normal_vdd_capacity_rejected = true;
         launch_session->virtual_display_failed = true;
-        platf::linux_private_display::remote_remove_owned_display(launch_session->client_uuid);
         return linux_normal_identity_result_e::capacity_rejected;
       }
 
@@ -560,10 +559,10 @@ namespace nvhttp {
             reservation.token
           );
           const auto protected_clients = remote_display_topology::instance().protected_remote_monitor_client_ids();
-          if (std::find(protected_clients.begin(), protected_clients.end(), launch_session->client_uuid) == protected_clients.end()) {
-            platf::linux_private_display::remote_remove_owned_display(launch_session->client_uuid);
+          const bool topology_restored = remote_display_topology::instance().reapply_composed_topology();
+          if (topology_restored && std::find(protected_clients.begin(), protected_clients.end(), launch_session->client_uuid) == protected_clients.end()) {
+            (void) platf::linux_private_display::remote_remove_owned_display(launch_session->client_uuid);
           }
-          (void) remote_display_topology::instance().reapply_composed_topology();
         }
         launch_session->normal_vdd_identity_token = 0;
         launch_session->normal_vdd_identity_newly_reserved = false;
@@ -577,8 +576,9 @@ namespace nvhttp {
             launch_session->client_uuid,
             reservation.token
           );
-          platf::linux_private_display::remote_remove_owned_display(launch_session->client_uuid);
-          (void) remote_display_topology::instance().reapply_composed_topology();
+          if (remote_display_topology::instance().reapply_composed_topology()) {
+            (void) platf::linux_private_display::remote_remove_owned_display(launch_session->client_uuid);
+          }
         }
         launch_session->normal_vdd_identity_token = 0;
         launch_session->normal_vdd_identity_newly_reserved = false;
@@ -599,10 +599,10 @@ namespace nvhttp {
         launch_session->normal_vdd_identity_token
       );
       const auto protected_clients = remote_display_topology::instance().protected_remote_monitor_client_ids();
-      if (std::find(protected_clients.begin(), protected_clients.end(), launch_session->client_uuid) == protected_clients.end()) {
-        platf::linux_private_display::remote_remove_owned_display(launch_session->client_uuid);
+      const bool topology_restored = remote_display_topology::instance().reapply_composed_topology();
+      if (topology_restored && std::find(protected_clients.begin(), protected_clients.end(), launch_session->client_uuid) == protected_clients.end()) {
+        (void) platf::linux_private_display::remote_remove_owned_display(launch_session->client_uuid);
       }
-      (void) remote_display_topology::instance().reapply_composed_topology();
     }
 
     void register_remote_monitor_runtime() {
@@ -648,7 +648,9 @@ namespace nvhttp {
           remote_display_topology::instance().unpair_client(std::string {uuid});
         },
         .shutdown = [] {
-          remote_display_topology::instance().shutdown();
+          remote_display_topology::instance().shutdown(
+            platf::linux_private_display::process_shutdown_preserve_requested()
+          );
         },
       });
     }
@@ -5787,9 +5789,7 @@ namespace nvhttp {
       if (const auto running_app = proc::proc.resolve_app(current_appid)) {
         app_image = proc::validate_app_image_path(running_app->image_path);
       }
-    } else if (const auto artwork = remote_session::synthetic_artwork_filename(
-                 synthetic_control
-               )) {
+    } else if (const auto artwork = remote_session::synthetic_artwork_filename(synthetic_control)) {
       app_image = (fs::path {SUNSHINE_ASSETS_DIR} / "remote-session" / std::string {*artwork}).string();
     } else {
       app_image = proc::proc.get_app_image((int) util::from_view(appid));
@@ -6275,6 +6275,14 @@ namespace nvhttp {
 
     // Wait for any event
     shutdown_event->view();
+
+#ifdef __linux__
+    if (const char *machine_host = std::getenv("VIBEPOLLO_MACHINE_HOST"); machine_host && machine_host[0] == '1' && machine_host[1] == '\0') {
+      // Publish the handoff fence before any session destructor can recompose,
+      // restore, or disconnect a compositor-owned output.
+      platf::linux_private_display::request_process_shutdown_preserve();
+    }
+#endif
     pairing_expiry_worker.request_stop();
     pairing_expiry_worker.join();
 

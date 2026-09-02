@@ -57,7 +57,7 @@ namespace remote_display_topology {
     // requested mode and a capture-enumerated DXGI name.  Passing the mode here
     // prevents a callback from treating a GUID/device-id lookup as readiness.
     std::function<std::optional<std::string>(const std::string &client_uuid, const mode_t &mode)> exact_target_has_current_mode_and_dxgi;
-    std::function<void(const std::string &client_uuid)> remove_owned_display;
+    std::function<bool(const std::string &client_uuid)> remove_owned_display;
   };
 
   struct activation_result_t {
@@ -114,7 +114,8 @@ namespace remote_display_topology {
     void note_lease_lost(const std::string &client_uuid);
     void disconnect_monitor(const std::string &client_uuid);
     void unpair_client(const std::string &client_uuid);
-    void shutdown();
+    /** Drop runtime state, optionally preserving every platform display untouched. */
+    void shutdown(bool preserve_owned_displays = false);
     nlohmann::json snapshot(const std::vector<nlohmann::json> &paired_clients) const;
 
   private:
