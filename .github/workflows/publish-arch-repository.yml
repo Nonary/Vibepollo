@@ -162,6 +162,8 @@ jobs:
           SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_GPG_PASSPHRASE }}
         run: |
           set -euo pipefail
+          # The checkout is owned by a different uid than the container user.
+          git config --global --add safe.directory '*'
           publication_dir="${RUNNER_TEMP}/arch-repo"
           if git fetch --depth=1 origin refs/heads/arch-repo:refs/remotes/origin/arch-repo; then
             git worktree add "${publication_dir}" refs/remotes/origin/arch-repo
@@ -199,6 +201,8 @@ jobs:
           RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
         run: |
           set -euo pipefail
+          # The checkout is owned by a different uid than the container user.
+          git config --global --add safe.directory '*'
           publication_dir="${RUNNER_TEMP}/arch-repo"
           git -C "${publication_dir}" config user.name 'Nonary release automation'
           git -C "${publication_dir}" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
