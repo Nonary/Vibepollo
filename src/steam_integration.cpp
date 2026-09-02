@@ -23,8 +23,11 @@
 #include <unordered_set>
 
 #ifdef _WIN32
-  #include <shellapi.h>
+  // clang-format off
+  // windows.h must precede shellapi.h: the latter relies on its type macros.
   #include <windows.h>
+  #include <shellapi.h>
+  // clang-format on
 #elif defined(__APPLE__)
   #include <fcntl.h>
   #include <sys/types.h>
