@@ -715,10 +715,21 @@ do_print_next_steps() {
 NEXT_STEPS
 }
 
-do_prepare_kwin() {
-  local helper=/usr/libexec/vibeshine/vibeshine-kwin-capability
-  [[ -x "$helper" ]] || return 0
-  "$helper" prepare || echo 'warning: could not prepare capability-free KWin for the Vibepollo GPU bridge.'
+do_restore_kwin_capability() {
+  # Earlier Vibepollo builds removed cap_sys_nice from the distro KWin binary
+  # so the GPU bridge could be preloaded. The bridge is now a trusted
+  # set-user-ID library, so give KWin its realtime capability back.
+  local kwin=/usr/bin/kwin_wayland marker=user.vibeshine.cap_sys_nice_removed
+  systemctl disable --now vibepollo-kwin-capability.path vibeshine-kwin-capability.path 2>/dev/null || true
+  rm -f /etc/systemd/system/multi-user.target.wants/vibepollo-kwin-capability.path /etc/systemd/system/multi-user.target.wants/vibeshine-kwin-capability.path
+  [[ -f "$kwin" && ! -L "$kwin" ]] || return 0
+  python3 -c 'import os, sys; os.getxattr(sys.argv[1], sys.argv[2])' "$kwin" "$marker" 2>/dev/null || return 0
+  if setcap cap_sys_nice=ep "$kwin"; then
+    python3 -c 'import os, sys; os.removexattr(sys.argv[1], sys.argv[2])' "$kwin" "$marker" 2>/dev/null || true
+    echo "restored cap_sys_nice on $kwin (removed by an earlier Vibepollo build)"
+  else
+    echo "warning: could not restore cap_sys_nice on $kwin; reinstall the kwin package." >&2
+  fi
 }
 
 vibepollo_unmask_host_for_controller() {
@@ -769,7 +780,6 @@ do_install_prelogin() {
   systemctl daemon-reload
   [[ -x "$helper" ]] || return 0
   if "$helper" configure-auto; then
-    systemctl enable --now vibepollo-kwin-capability.path || echo 'warning: could not enable the KWin capability watcher.'
     if ! systemctl enable vibepollo-session-controller.service; then
       do_quiesce_machine_host || true
       echo 'error: could not enable the Vibepollo session controller safely.' >&2
@@ -801,7 +811,7 @@ post_install() {
   do_quiesce_machine_host
   do_secure_executables
   do_udev_reload
-  do_prepare_kwin
+  do_restore_kwin_capability
   do_install_vibeshine_drm
   do_install_prelogin || true
   do_print_next_steps
@@ -811,7 +821,7 @@ post_upgrade() {
   do_quiesce_machine_host
   do_secure_executables
   do_udev_reload
-  do_prepare_kwin
+  do_restore_kwin_capability
   do_install_vibeshine_drm
   do_install_prelogin || true
   do_print_next_steps
@@ -820,11 +830,10 @@ post_upgrade() {
 pre_remove() {
   do_quiesce_machine_host || return 1
   systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
-  systemctl disable --now vibepollo-kwin-capability.path 2>/dev/null || true
   /usr/libexec/vibeshine/vibepollo-machine-host remove-pam 2>/dev/null || true
   systemctl stop vibeshine-vkms.service 2>/dev/null || true
   systemctl stop vibeshine-drm-setup.service 2>/dev/null || true
-  /usr/libexec/vibeshine/vibeshine-kwin-capability restore 2>/dev/null || true
+  do_restore_kwin_capability || true
   /usr/libexec/vibeshine/vibeshine-drm-install remove || \
     echo "warning: could not remove the Vibepollo HDR DRM module cleanly."
 }

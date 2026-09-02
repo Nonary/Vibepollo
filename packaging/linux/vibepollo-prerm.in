@@ -216,14 +216,10 @@ case "${1:-}" in
     if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
       timeout --signal=KILL 30 systemctl stop vibeshine-vkms.service 2>/dev/null || true
       timeout --signal=KILL 30 systemctl stop vibeshine-drm-setup.service 2>/dev/null || true
-      timeout --signal=KILL 15 systemctl disable vibepollo-kwin-capability.path --now 2>/dev/null || true
     fi
     if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" ]; then
       "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" remove || \
         echo "warning: could not remove the Vibepollo HDR DRM module cleanly."
-    fi
-    if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-kwin-capability" ]; then
-      "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-kwin-capability" restore || true
     fi
     ;;
 esac
