@@ -115,8 +115,8 @@ there are four.
    enrollment, needs one reboot. On the Secure Boot path the firmware shows the blue MOK Manager
    screen: choose **Enroll MOK**, continue, and enter the password you typed during installation.
 2. **Log in to Plasma (Wayland) and pair.** Open <https://localhost:47990> on the machine, create
-   the Web UI username and password, then pair Moonlight with the PIN. Pairing works only from a
-   logged-in desktop. The pre-login stream reuses that pairing and cannot pair new clients.
+   the Web UI username and password, then pair Moonlight with the PIN. Pairing also works at the
+   login screen: the Web UI stays reachable there, so enter the PIN from another device.
 3. **Open the firewall** if one is enabled. The package ships definitions for both common firewalls:
 
    ```bash

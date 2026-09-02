@@ -103,16 +103,17 @@ a packaging change.
 
 ## Pre-login has a deliberately smaller feature surface
 
-The greeter may expose only the passive Desktop stream. New pairing requests,
-arbitrary application launch, Steam/Lutris synchronization, and policy changes
-belong to an authenticated desktop/admin context. Pairing requests and HTTP
-bodies need hard size/count limits and timer-driven expiry rather than cleanup
-only when another request arrives.
+The greeter may expose only the passive Desktop stream. Arbitrary application
+launch, Steam/Lutris synchronization, and policy changes belong to an
+authenticated desktop/admin context. New pairing requests are accepted at the
+greeter: completing one still requires the Web UI login to submit the PIN, so
+refusing them was a GameStream habit rather than a Vibepollo requirement.
+Pairing requests and HTTP bodies need hard size/count limits and timer-driven
+expiry rather than cleanup only when another request arrives.
 
 Every enabled client in the service-owned pairing database is authorized
 before login; there is deliberately no second machine allowlist. Disabled,
-unknown, malformed, or ambiguous pairing state fails closed, and new pairing
-and PIN requests remain unavailable at the greeter.
+unknown, malformed, or ambiguous pairing state fails closed.
 
 Provider scanning runs as the selected session user. Its response is bounded
 and path-free so the machine host never consumes user-controlled executable or
