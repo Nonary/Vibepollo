@@ -1311,6 +1311,23 @@ jobs:
             return ($sig.Status -eq 'Valid')
           }
 
+          # signtool.exe is not on PATH on a bare windows-2022 runner. Prefer PATH, then fall
+          # back to the newest x64 signtool under the installed Windows SDK.
+          function Resolve-SignTool {
+            $command = Get-Command signtool.exe -ErrorAction SilentlyContinue
+            if ($null -ne $command) { return $command.Source }
+            $kitsRoot = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -Name KitsRoot10 -ErrorAction SilentlyContinue).KitsRoot10
+            if (-not [string]::IsNullOrWhiteSpace($kitsRoot)) {
+              $candidate = Get-ChildItem -Path (Join-Path $kitsRoot 'bin') -Directory -Filter '10.*' -ErrorAction SilentlyContinue |
+                Sort-Object { [version] $_.Name } -Descending |
+                ForEach-Object { Join-Path $_.FullName 'x64\signtool.exe' } |
+                Where-Object { Test-Path -LiteralPath $_ } |
+                Select-Object -First 1
+              if ($candidate) { return $candidate }
+            }
+            throw 'signtool.exe was not found on PATH or under the Windows SDK KitsRoot10.'
+          }
+
           $failures = New-Object System.Collections.Generic.List[string]
 
           $installer = Join-Path (Join-Path $PWD 'artifacts') $env:INSTALLER_NAME
@@ -1355,7 +1372,7 @@ jobs:
               $failures.Add("virtual display catalog signer is not SignPath Foundation: $($catalogSignature.SignerCertificate.Subject)")
             }
             if (-not $allowUntrustedSignatures) {
-              $signtool = (Get-Command signtool.exe -ErrorAction Stop).Source
+              $signtool = Resolve-SignTool
               foreach ($catalogPayload in @($virtualDisplayInf, $virtualDisplayDll)) {
                 & $signtool verify '/v' '/pa' '/c' $virtualDisplayCatalog $catalogPayload
                 if ($LASTEXITCODE -ne 0) {
@@ -1531,7 +1548,7 @@ jobs:
                       $vhfToolSignature.SignerCertificate.Subject -ne $expectedSignPathFoundationSigner) {
                     throw "VHF catalog/setup signer is not SignPath Foundation: catalog='$($vhfCatalogSignature.SignerCertificate.Subject)'; setup='$($vhfToolSignature.SignerCertificate.Subject)'"
                   }
-                  $signTool = (Get-Command signtool.exe -ErrorAction Stop).Source
+                  $signTool = Resolve-SignTool
                   foreach ($payload in @(
                     (Join-Path $vhfPackageDir 'driver\VibeshineVhfGamepad.inf'),
                     (Join-Path $vhfPackageDir 'driver\VibeshineVhfGamepad.dll')
