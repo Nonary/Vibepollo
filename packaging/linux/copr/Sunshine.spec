@@ -1319,8 +1319,31 @@ if [ ! -x "$(command -v rpm-ostree)" ]; then
     echo "error: udevadm not found or not executable."
   fi
 
-  %{_prefix}/libexec/vibeshine/vibeshine-kwin-capability prepare || \
-    echo "warning: could not prepare capability-free KWin for the Vibepollo GPU bridge."
+  vibepollo_restore_kwin_capability() {
+    # Earlier Vibepollo builds removed cap_sys_nice from the distro KWin binary
+    # so the GPU bridge could be preloaded. The bridge is now a trusted
+    # set-user-ID library, so give KWin its realtime capability back.
+    kwin=/usr/bin/kwin_wayland
+    marker=user.vibeshine.cap_sys_nice_removed
+    timeout --signal=KILL 15 systemctl disable vibepollo-kwin-capability.path vibeshine-kwin-capability.path --now 2>/dev/null || true
+    rm -f /etc/systemd/system/multi-user.target.wants/vibepollo-kwin-capability.path /etc/systemd/system/multi-user.target.wants/vibeshine-kwin-capability.path
+    [ -f "$kwin" ] && [ ! -L "$kwin" ] || return 0
+    if command -v getfattr >/dev/null 2>&1; then
+      getfattr -n "$marker" --only-values "$kwin" >/dev/null 2>&1 || return 0
+    elif command -v python3 >/dev/null 2>&1; then
+      python3 -c 'import os, sys; os.getxattr(sys.argv[1], sys.argv[2])' "$kwin" "$marker" 2>/dev/null || return 0
+    else
+      return 0
+    fi
+    if setcap cap_sys_nice=ep "$kwin"; then
+      setfattr -x "$marker" "$kwin" 2>/dev/null || \
+        python3 -c 'import os, sys; os.removexattr(sys.argv[1], sys.argv[2])' "$kwin" "$marker" 2>/dev/null || true
+      echo "restored cap_sys_nice on $kwin (removed by an earlier Vibepollo build)"
+    else
+      echo "warning: could not restore cap_sys_nice on $kwin; reinstall the kwin package." >&2
+    fi
+  }
+  vibepollo_restore_kwin_capability || true
 
   if %{_prefix}/libexec/vibeshine/vibeshine-drm-install install; then
     :
@@ -1342,7 +1365,6 @@ if [ ! -x "$(command -v rpm-ostree)" ]; then
   systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
   systemctl daemon-reload || exit 1
   if "$vibepollo_machine_helper" configure-auto; then
-    systemctl enable --now vibepollo-kwin-capability.path || echo "warning: could not enable the KWin capability watcher."
     if ! systemctl enable vibepollo-session-controller.service; then
       vibepollo_quiesce_machine_host || true
       echo "error: could not enable the Vibepollo controller safely; all machine-host units remain off." >&2
@@ -1556,10 +1578,8 @@ if [ "$1" -eq 0 ]; then
     echo "error: refusing to uninstall while Vibepollo cgroups or session state remain." >&2
     exit 1
   }
-  timeout --signal=KILL 15 systemctl disable vibepollo-kwin-capability.path --now 2>/dev/null || true
   timeout --signal=KILL 30 systemctl stop vibeshine-vkms.service 2>/dev/null || true
   timeout --signal=KILL 30 systemctl stop vibeshine-drm-setup.service 2>/dev/null || true
-  %{_prefix}/libexec/vibeshine/vibeshine-kwin-capability restore || true
   %{_prefix}/libexec/vibeshine/vibeshine-drm-install remove || \
     echo "warning: could not remove the Vibepollo HDR DRM module cleanly."
 fi
@@ -1582,8 +1602,7 @@ fi
 %{_prefix}/libexec/vibeshine/vibepollo-machine-host
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-kwin-session-environment
 %attr(0750,root,vibepollo) %caps(cap_sys_admin,cap_sys_nice+p) %{_prefix}/libexec/vibeshine/vibepollo-host
-%{_prefix}/libexec/vibeshine/vibeshine-kwin-capability
-%{_prefix}/lib/vibeshine/libvibeshine-kwin-gpu.so
+%attr(4755,root,root) %{_libdir}/libvibeshine-kwin-gpu.so
 
 # Dedicated access group for the privileged virtual-display control socket
 %{_prefix}/lib/sysusers.d/vibeshine-vkms.conf
@@ -1593,9 +1612,9 @@ fi
 /usr/src/vibeshine-drm-*
 
 # KWin user-unit drop-ins; Linux does not install the generic app service.
-%{_userunitdir}/plasma-kwin_wayland.service.d/vibepollo-kwin-gpu.conf
+%{_userunitdir}/plasma-kwin_wayland.service.d/vibeshine-kwin-gpu.conf
 %{_userunitdir}/plasma-kwin_wayland.service.d/vibepollo-kwin-session-environment.conf
-%{_userunitdir}/plasma-login-kwin_wayland.service.d/vibepollo-kwin-gpu.conf
+%{_userunitdir}/plasma-login-kwin_wayland.service.d/vibeshine-kwin-gpu.conf
 %{_userunitdir}/plasma-login-kwin_wayland.service.d/vibepollo-kwin-session-environment.conf
 
 # Privileged virtual-display provisioning service
@@ -1607,8 +1626,6 @@ fi
 %{_unitdir}/vibepollo-session-exec@.service
 %{_unitdir}/vibepollo-session-controller.service
 %{_unitdir}/vibepollo.service
-%{_unitdir}/vibepollo-kwin-capability-refresh.service
-%{_unitdir}/vibepollo-kwin-capability.path
 
 # Udev rules
 %{_udevrulesdir}/*-sunshine.rules

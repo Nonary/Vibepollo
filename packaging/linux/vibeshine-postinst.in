@@ -354,10 +354,33 @@ else
   echo "    then: sudo systemctl enable --now vibepollo-session-controller.service" >&2
 fi
 
-if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-kwin-capability" ]; then
-  "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-kwin-capability" prepare || \
-    echo "warning: could not prepare capability-free KWin for the Vibepollo GPU bridge."
-fi
+vibepollo_restore_kwin_capability() {
+  # Earlier Vibepollo builds removed cap_sys_nice from the distro KWin binary
+  # so the GPU bridge could be preloaded. The bridge is now a trusted
+  # set-user-ID library, so give KWin its realtime capability back.
+  kwin=/usr/bin/kwin_wayland
+  marker=user.vibeshine.cap_sys_nice_removed
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    timeout --signal=KILL 15 systemctl disable vibepollo-kwin-capability.path vibeshine-kwin-capability.path --now 2>/dev/null || true
+  fi
+  rm -f /etc/systemd/system/multi-user.target.wants/vibepollo-kwin-capability.path /etc/systemd/system/multi-user.target.wants/vibeshine-kwin-capability.path
+  [ -f "$kwin" ] && [ ! -L "$kwin" ] || return 0
+  if command -v getfattr >/dev/null 2>&1; then
+    getfattr -n "$marker" --only-values "$kwin" >/dev/null 2>&1 || return 0
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os, sys; os.getxattr(sys.argv[1], sys.argv[2])' "$kwin" "$marker" 2>/dev/null || return 0
+  else
+    return 0
+  fi
+  if setcap cap_sys_nice=ep "$kwin"; then
+    setfattr -x "$marker" "$kwin" 2>/dev/null || \
+      python3 -c 'import os, sys; os.removexattr(sys.argv[1], sys.argv[2])' "$kwin" "$marker" 2>/dev/null || true
+    echo "restored cap_sys_nice on $kwin (removed by an earlier Vibepollo build)"
+  else
+    echo "warning: could not restore cap_sys_nice on $kwin; reinstall the kwin package." >&2
+  fi
+}
+vibepollo_restore_kwin_capability || true
 
 VIBESHINE_EXECUTABLE_PATH="@CMAKE_INSTALL_FULL_BINDIR@/vibepollo"
 VIBESHINE_EXECUTABLE_CAPABILITY_MODE=unit
@@ -382,7 +405,6 @@ if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" ]; th
 fi
 
 if [ "$vibepollo_machine_configured" -eq 1 ]; then
-  systemctl enable --now vibepollo-kwin-capability.path || echo "warning: could not enable the KWin capability watcher."
   if ! systemctl enable vibepollo-session-controller.service; then
     vibepollo_quiesce_machine_host || true
     echo "error: could not enable the Vibepollo controller safely; all machine-host units remain off." >&2

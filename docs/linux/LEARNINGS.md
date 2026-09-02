@@ -148,6 +148,31 @@ The installed and loaded `vibeshine_drm` versions may differ after a package
 update because the compositor holds the old module. A reboot, not merely a
 Vibepollo restart, is required in that case.
 
+## The KWin GPU bridge must not modify KWin
+
+KWin 6 pairs each KMS device with a render GPU by comparing libdrm PCI bus
+identity. The virtual display lives on a faux bus, so without help KWin
+renders it in software and copies every frame on the CPU. The bridge is an
+`LD_PRELOAD` library that reports the NVIDIA bus identity for the virtual
+device, which makes KWin scan out NVIDIA-tiled buffers directly.
+
+The distro `kwin_wayland` carries `cap_sys_nice` so it can take realtime
+scheduling. That puts the dynamic loader into secure-execution mode, which
+ignores `LD_PRELOAD` paths. An earlier build stripped the capability from the
+vendor binary, re-stripped it after every KWin update, and cost every KDE user
+KWin's realtime priority. Do not do that again. glibc's documented rule for
+privileged programs is used instead: the bridge is installed in the trusted
+system library directory with the set-user-ID bit and preloaded by bare name.
+The bit is only a trust marker; the loader also removes `LD_PRELOAD` from the
+process environment, so compositor children never inherit the bridge. Because
+any set-user-ID program could be started with the library preloaded, every hook
+in it stays a pass-through unless the process is `/usr/bin/kwin_wayland`.
+
+The cleaner long-term options are a KWin feature that maps a display device to
+a render node through udev, or registering the virtual DRM device under the
+NVIDIA PCI device in the kernel. The kernel route changes what every libdrm
+consumer sees and was judged too wide for the first release.
+
 ## Review discipline
 
 Architecture and privilege changes receive a defensive Daybreak review before

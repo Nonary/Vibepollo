@@ -921,12 +921,16 @@ for obsolete_version_contract in ("Version: %{build_version}", "BUILD_VERSION=v%
     forbid(rpm, obsolete_version_contract, "RPM split application/package version")
 forbid(rpm, "%{_userunitdir}/*.service", "RPM deterministic manifest")
 for dropin in (
-    "%{_userunitdir}/plasma-kwin_wayland.service.d/vibepollo-kwin-gpu.conf",
+    "%{_userunitdir}/plasma-kwin_wayland.service.d/vibeshine-kwin-gpu.conf",
     "%{_userunitdir}/plasma-kwin_wayland.service.d/vibepollo-kwin-session-environment.conf",
-    "%{_userunitdir}/plasma-login-kwin_wayland.service.d/vibepollo-kwin-gpu.conf",
+    "%{_userunitdir}/plasma-login-kwin_wayland.service.d/vibeshine-kwin-gpu.conf",
     "%{_userunitdir}/plasma-login-kwin_wayland.service.d/vibepollo-kwin-session-environment.conf",
 ):
     require(rpm, dropin, "RPM deterministic manifest")
+require(rpm, "%attr(4755,root,root) %{_libdir}/libvibeshine-kwin-gpu.so", "shared trusted GPU bridge manifest")
+for lifecycle in (arch_install, postinst):
+    require(lifecycle, "user.vibeshine.cap_sys_nice_removed", "shared previous GPU bridge marker")
+    require(lifecycle, "vibepollo-kwin-capability.path vibeshine-kwin-capability.path", "legacy watcher retirement")
 require(special_packaging, 'SUNSHINE_SERVICE_READINESS_COMMAND "ExecStartPre=/bin/sleep 5"', "ordinary user service")
 forbid(special_packaging, "vibepollo-session-ready", "ordinary user service")
 
