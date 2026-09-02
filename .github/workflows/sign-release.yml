@@ -581,7 +581,7 @@ jobs:
             find arch-artifacts -type f -print >&2
             exit 1
           fi
-          package_info="$(bsdtar -xOf "${packages[0]}" .PKGINFO)"
+          package_info="$(tar --zstd -xOf "${packages[0]}" .PKGINFO)"
           # Arch pkgver disallows SemVer's prerelease separator. Keep this
           # expectation aligned with special_package_configuration.cmake.
           arch_package_version=${RELEASE_VERSION//-/}
