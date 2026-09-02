@@ -48,6 +48,17 @@ namespace remote_session {
     std::string ranked_title(const std::string_view rank, const std::string_view title) {
       return std::string {rank} + std::string {title};
     }
+    app_t prioritized_secondary_control(const control_e control) {
+      auto app = synthetic(control);
+      switch (control) {
+        case control_e::monitor: app.title = ranked_title("    ", app.title); break;
+        case control_e::input: app.title = ranked_title("   ", app.title); break;
+        case control_e::resume: app.title = ranked_title("  ", app.title); break;
+        case control_e::terminate: app.title = ranked_title(" ", app.title); break;
+        default: break;
+      }
+      return app;
+    }
     bool owns_game(const caller_t &caller, const game_t &game) { return game.running && caller.paired && caller.uuid == game.owner_uuid; }
   }
 
@@ -83,15 +94,12 @@ namespace remote_session {
 
   app_t synthetic(const control_e control) {
     switch (control) {
-      case control_e::resume: return {resume_id, synthetic_uuid(control), ranked_title("  ", "Resume"), true};
+      case control_e::resume: return {resume_id, synthetic_uuid(control), "Resume", true};
       case control_e::disconnect_monitor: return {disconnect_monitor_id, synthetic_uuid(control), "Disconnect Monitor", true};
       case control_e::disconnect_input: return {disconnect_input_id, synthetic_uuid(control), "Disconnect Input", true};
-      case control_e::terminate:
-        return {terminate_id, synthetic_uuid(control), ranked_title(" ", "Terminate"), true};
-      case control_e::monitor:
-        return {monitor_id, synthetic_uuid(control), ranked_title("    ", "Remote Monitor"), true};
-      case control_e::input:
-        return {input_id, synthetic_uuid(control), ranked_title("   ", "Remote Input"), true};
+      case control_e::terminate: return {terminate_id, synthetic_uuid(control), "Terminate", true};
+      case control_e::monitor: return {monitor_id, synthetic_uuid(control), "Remote Monitor", true};
+      case control_e::input: return {input_id, synthetic_uuid(control), "Remote Input", true};
       default: return {};
     }
   }
@@ -184,12 +192,12 @@ namespace remote_session {
       // remains available under its normal identity.
       result.catalogue = {
         synthetic_running_game(game.app),
-        synthetic(control_e::resume),
-        synthetic(control_e::terminate),
+        prioritized_secondary_control(control_e::resume),
+        prioritized_secondary_control(control_e::terminate),
       };
       result.catalogue.insert(result.catalogue.end(), visible_configured.begin(), visible_configured.end());
-      if (owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
-      result.catalogue.push_back(synthetic(control_e::monitor));
+      if (owner.role != role_e::input) result.catalogue.push_back(prioritized_secondary_control(control_e::input));
+      result.catalogue.push_back(prioritized_secondary_control(control_e::monitor));
       return result;
     }
     result.catalogue = visible_configured;
