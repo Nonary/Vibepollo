@@ -126,7 +126,17 @@ int main(void) {
   CHECK(run_command_bounded("/usr/bin/printf", print_arguments, 500,
                             command_output, sizeof(command_output)) == 0);
   CHECK(application_unit_name_is_safe("vibepollo-app-7-1.service"));
+  CHECK(steam_launch_retry_is_safe(126, true, 0, 2));
+  CHECK(!steam_launch_retry_is_safe(126, false, 0, 2));
+  CHECK(!steam_launch_retry_is_safe(126, true, 1, 2));
+  CHECK(!steam_launch_retry_is_safe(126, true, 0, 1));
+  CHECK(!steam_launch_retry_is_safe(0, true, 0, 2));
+  termination_signal = SIGTERM;
+  CHECK(!steam_launch_retry_is_safe(126, true, 0, 2));
+  termination_signal = 0;
+  CHECK(application_unit_name_is_safe("vibepollo-app-7-1-2.service"));
   CHECK(!application_unit_name_is_safe("vibepollo-app-7.service"));
+  CHECK(!application_unit_name_is_safe("vibepollo-app-7-1-x.service"));
   CHECK(!application_unit_name_is_safe("vibepollo-app-7-1.service.extra"));
   CHECK(!application_unit_name_is_safe("--all"));
   CHECK(application_cgroup_path_is_safe(
