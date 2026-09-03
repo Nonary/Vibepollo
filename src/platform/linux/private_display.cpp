@@ -6,6 +6,7 @@
 #include "private_display.h"
 
 #include "hdr_policy.h"
+#include "private_display_mode_policy.h"
 #include "private_display_restore_policy.h"
 #include "private_display_resume_policy.h"
 #include "src/config.h"
@@ -458,6 +459,22 @@ namespace platf::linux_private_display {
       }
       const auto size = output.value("size", json::object());
       return {size.value("width", 0u), size.value("height", 0u)};
+    }
+
+    bool mode_matches_refresh(
+      const json &output,
+      const std::string &mode_id,
+      const display_device::FloatingPoint &refresh_rate
+    ) {
+      for (const auto &mode : output.value("modes", json::array())) {
+        if (mode.value("id", std::string {}) == mode_id) {
+          return mode_policy::refresh_matches(
+            mode.value("refreshRate", 0.0),
+            floating_point(refresh_rate)
+          );
+        }
+      }
+      return false;
     }
 
     std::pair<int, int> logical_size(const json &output) {
@@ -982,7 +999,8 @@ namespace platf::linux_private_display {
 
     auto mode_id = best_mode_id(*target_before, resolution, refresh);
     const bool prefer_highest = refresh && floating_point(*refresh) >= 9999.0;
-    if (mode_id.empty() && resolution && refresh && !prefer_highest && is_managed_output(session.virtual_display_device_id)) {
+    if (resolution && refresh && !prefer_highest && is_managed_output(session.virtual_display_device_id) &&
+        (mode_id.empty() || !mode_matches_refresh(*target_before, mode_id, *refresh))) {
       const auto refresh_millihz = static_cast<unsigned int>(std::max(1.0, std::round(floating_point(*refresh) * 1000.0)));
       const auto custom_mode = "output." + session.virtual_display_device_id + ".addCustomMode." +
                                std::to_string(resolution->m_width) + "." +
@@ -1340,7 +1358,9 @@ namespace platf::linux_private_display {
         1,
       };
       entry.mode_id = best_mode_id(*output, resolution, refresh);
-      if (entry.mode_id.empty() && is_managed_output(entry.name)) {
+      if (is_managed_output(entry.name) &&
+          (entry.mode_id.empty() || !mode_matches_refresh(*output, entry.mode_id, refresh))) {
+        entry.mode_id.clear();
         custom_modes.push_back(
           "output." + entry.name + ".addCustomMode." +
           std::to_string(resolution.m_width) + "." +

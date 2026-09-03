@@ -503,6 +503,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     sunshine_register_component(NAME test_component_linux_kmsgrab_selection TEST_SOURCE unit/platform/linux/test_kmsgrab_selection.cpp
         LINK_LIBRARIES sunshine_libvirtualdisplay_uapi)
     sunshine_register_component(NAME test_component_linux_hdr_policy TEST_SOURCE unit/platform/linux/test_hdr_policy.cpp)
+    sunshine_register_component(NAME test_component_linux_private_display_mode_policy TEST_SOURCE unit/platform/linux/test_private_display_mode_policy.cpp)
     sunshine_register_component(NAME test_component_linux_mangohud_policy TEST_SOURCE unit/platform/linux/test_mangohud_policy.cpp)
     add_test(
         NAME test_component_linux_mangohud_wrapper
