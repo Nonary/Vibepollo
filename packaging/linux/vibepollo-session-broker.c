@@ -35,6 +35,10 @@ static const char application_supervisor_path[] =
   "/usr/libexec/vibeshine/vibepollo-app-supervisor";
 static const char steam_launch_path[] =
   "/usr/libexec/vibeshine/vibepollo-steam-launch";
+// Steam can still be settling its previous transient launch unit when the
+// next request arrives.  Retry only the desktop Steam fallback; the direct
+// launcher and arbitrary app commands must never be replayed automatically.
+static const unsigned int steam_launch_attempts = 2;
 
 static bool sanitize_startup_capabilities(void) {
   const int entry_errno = errno;
@@ -802,6 +806,14 @@ static bool application_unit_name_is_safe(const char *unit) {
   while (isdigit((unsigned char) *cursor)) ++cursor;
   if (*cursor++ != '-' || !isdigit((unsigned char) *cursor)) return false;
   while (isdigit((unsigned char) *cursor)) ++cursor;
+  // A retry gets a distinct numeric suffix so systemd cannot confuse it with
+  // a collected unit from the previous attempt.  Keep the original two-field
+  // form valid for cleanup of units created by older brokers.
+  if (*cursor == '-') {
+    ++cursor;
+    if (!isdigit((unsigned char) *cursor)) return false;
+    while (isdigit((unsigned char) *cursor)) ++cursor;
+  }
   return !strcmp(cursor, suffix);
 }
 
@@ -973,7 +985,13 @@ static bool make_watchdog_pipe(int descriptors[2]) {
   return true;
 }
 
-static int supervise_user_service(const char *unit, char *const arguments[]) {
+static bool steam_launch_retry_is_safe(int result, bool cleanup_verified,
+                                       unsigned int attempt, unsigned int attempts) {
+  return result == 126 && cleanup_verified && !termination_signal && attempt + 1 < attempts;
+}
+
+static int supervise_user_service(const char *unit, char *const arguments[], bool *cleanup_verified) {
+  *cleanup_verified = false;
   termination_signal = 0;
   if (!set_termination_handlers(request_user_service_stop)) return 126;
   if (termination_signal) return 128 + termination_signal;
@@ -1035,21 +1053,29 @@ static int supervise_user_service(const char *unit, char *const arguments[]) {
     runner_exited = terminate_and_reap_child(runner, SIGTERM, 500, &status);
   }
   const bool unit_stopped = runner_exited && stop_user_service(unit);
-  if (!runner_exited || !unit_stopped || worker_error) return 126;
+  if (!runner_exited || !unit_stopped || worker_error) {
+    fprintf(stderr,
+            "vibepollo-session-broker: user service %s cleanup failed "
+            "(runner=%s, unit=%s, worker=%s)\n",
+            unit, runner_exited ? "exited" : "running",
+            unit_stopped ? "stopped" : "not-stopped",
+            worker_error ? "error" : "ok");
+    return 126;
+  }
   if (termination_signal) return 128 + termination_signal;
+  *cleanup_verified = true;
   return wait_status_exit_code(status);
 }
 
 static int exec_user_service(const struct session_identity *identity, const char *directory,
-                             char *const command_argv[]) {
+                             char *const command_argv[], bool recover_steam_launch) {
   char unit[192], environment_home[PATH_MAX + 16], environment_user[80], environment_logname[80];
   char environment_runtime[PATH_MAX + 32], environment_config[PATH_MAX + 32];
   char environment_data[PATH_MAX + 32], environment_pipewire[PATH_MAX + 32];
   char environment_bus[PATH_MAX + 48], environment_wayland[96], environment_display[96];
   char environment_xauthority[PATH_MAX + 16];
   char environment_path[sizeof(fixed_path) + sizeof("PATH=")];
-  if (snprintf(unit, sizeof(unit), "vibepollo-app-%lu-%ld.service", identity->generation, (long) getpid()) >= (int) sizeof(unit) ||
-      snprintf(environment_home, sizeof(environment_home), "HOME=%s", identity->home) >= (int) sizeof(environment_home) ||
+  if (snprintf(environment_home, sizeof(environment_home), "HOME=%s", identity->home) >= (int) sizeof(environment_home) ||
       snprintf(environment_user, sizeof(environment_user), "USER=%s", identity->user) >= (int) sizeof(environment_user) ||
       snprintf(environment_logname, sizeof(environment_logname), "LOGNAME=%s", identity->user) >= (int) sizeof(environment_logname) ||
       snprintf(environment_path, sizeof(environment_path), "PATH=%s", fixed_path) >= (int) sizeof(environment_path) ||
@@ -1062,65 +1088,85 @@ static int exec_user_service(const struct session_identity *identity, const char
       (identity->x_display[0] && snprintf(environment_display, sizeof(environment_display), "DISPLAY=%s", identity->x_display) >= (int) sizeof(environment_display)) ||
       (identity->xauthority[0] && snprintf(environment_xauthority, sizeof(environment_xauthority), "XAUTHORITY=%s", identity->xauthority) >= (int) sizeof(environment_xauthority))) return 126;
   char *arguments[72];
-  size_t index = 0;
-  arguments[index++] = "systemd-run";
-  arguments[index++] = "--user";
-  arguments[index++] = "--quiet";
-  arguments[index++] = "--wait";
-  arguments[index++] = "--pipe";
-  arguments[index++] = "--collect";
-  arguments[index++] = "--service-type=exec";
-  arguments[index++] = "--expand-environment=no";
-  arguments[index++] = "--property=ExitType=main";
-  arguments[index++] = "--property=KillMode=control-group";
-  arguments[index++] = "--property=TimeoutStopSec=5s";
-  arguments[index++] = "--property=Restart=no";
-  arguments[index++] = "--property=RemainAfterExit=no";
-  arguments[index++] = "--unit";
-  arguments[index++] = unit;
-  arguments[index++] = "--setenv";
-  arguments[index++] = environment_home;
-  arguments[index++] = "--setenv";
-  arguments[index++] = environment_user;
-  arguments[index++] = "--setenv";
-  arguments[index++] = environment_logname;
-  arguments[index++] = "--setenv";
-  arguments[index++] = environment_path;
-  arguments[index++] = "--setenv";
-  arguments[index++] = environment_runtime;
-  arguments[index++] = "--setenv";
-  arguments[index++] = environment_config;
-  arguments[index++] = "--setenv";
-  arguments[index++] = environment_data;
-  arguments[index++] = "--setenv";
-  arguments[index++] = environment_pipewire;
-  arguments[index++] = "--setenv";
-  arguments[index++] = environment_bus;
-  arguments[index++] = "--setenv";
-  arguments[index++] = "XDG_SESSION_TYPE=wayland";
-  arguments[index++] = "--setenv";
-  arguments[index++] = environment_wayland;
-  if (identity->x_display[0]) {
+  const unsigned int attempts = recover_steam_launch ? steam_launch_attempts : 1;
+  for (unsigned int attempt = 0; attempt < attempts; ++attempt) {
+    const int unit_length = recover_steam_launch
+      ? snprintf(unit, sizeof(unit), "vibepollo-app-%lu-%ld-%u.service",
+                 identity->generation, (long) getpid(), attempt + 1)
+      : snprintf(unit, sizeof(unit), "vibepollo-app-%lu-%ld.service",
+                 identity->generation, (long) getpid());
+    if (unit_length < 0 || unit_length >= (int) sizeof(unit)) return 126;
+
+    size_t index = 0;
+    arguments[index++] = "systemd-run";
+    arguments[index++] = "--user";
+    arguments[index++] = "--quiet";
+    arguments[index++] = "--wait";
+    arguments[index++] = "--pipe";
+    arguments[index++] = "--collect";
+    arguments[index++] = "--service-type=exec";
+    arguments[index++] = "--expand-environment=no";
+    arguments[index++] = "--property=ExitType=main";
+    arguments[index++] = "--property=KillMode=control-group";
+    arguments[index++] = "--property=TimeoutStopSec=5s";
+    arguments[index++] = "--property=Restart=no";
+    arguments[index++] = "--property=RemainAfterExit=no";
+    arguments[index++] = "--unit";
+    arguments[index++] = unit;
     arguments[index++] = "--setenv";
-    arguments[index++] = environment_display;
-  }
-  if (identity->xauthority[0]) {
+    arguments[index++] = environment_home;
     arguments[index++] = "--setenv";
-    arguments[index++] = environment_xauthority;
+    arguments[index++] = environment_user;
+    arguments[index++] = "--setenv";
+    arguments[index++] = environment_logname;
+    arguments[index++] = "--setenv";
+    arguments[index++] = environment_path;
+    arguments[index++] = "--setenv";
+    arguments[index++] = environment_runtime;
+    arguments[index++] = "--setenv";
+    arguments[index++] = environment_config;
+    arguments[index++] = "--setenv";
+    arguments[index++] = environment_data;
+    arguments[index++] = "--setenv";
+    arguments[index++] = environment_pipewire;
+    arguments[index++] = "--setenv";
+    arguments[index++] = environment_bus;
+    arguments[index++] = "--setenv";
+    arguments[index++] = "XDG_SESSION_TYPE=wayland";
+    arguments[index++] = "--setenv";
+    arguments[index++] = environment_wayland;
+    if (identity->x_display[0]) {
+      arguments[index++] = "--setenv";
+      arguments[index++] = environment_display;
+    }
+    if (identity->xauthority[0]) {
+      arguments[index++] = "--setenv";
+      arguments[index++] = environment_xauthority;
+    }
+    if (directory && directory[0]) {
+      arguments[index++] = "--working-directory";
+      arguments[index++] = (char *) directory;
+    }
+    arguments[index++] = "--";
+    arguments[index++] = (char *) application_supervisor_path;
+    arguments[index++] = "--";
+    for (size_t command_index = 0; command_argv[command_index]; ++command_index) {
+      if (index + 1 >= sizeof(arguments) / sizeof(arguments[0])) return 126;
+      arguments[index++] = command_argv[command_index];
+    }
+    arguments[index] = NULL;
+
+    bool cleanup_verified = false;
+    const int result = supervise_user_service(unit, arguments, &cleanup_verified);
+    if (termination_signal) return 128 + termination_signal;
+    if (!steam_launch_retry_is_safe(result, cleanup_verified, attempt, attempts)) return result;
+    fprintf(stderr,
+            "vibepollo-session-broker: Steam launch attempt %u failed with "
+            "exit 126; retrying with a fresh transient unit\n", attempt + 1);
+    const struct timespec retry_delay = {.tv_sec = 0, .tv_nsec = 250000000};
+    (void) nanosleep(&retry_delay, NULL);
   }
-  if (directory && directory[0]) {
-    arguments[index++] = "--working-directory";
-    arguments[index++] = (char *) directory;
-  }
-  arguments[index++] = "--";
-  arguments[index++] = (char *) application_supervisor_path;
-  arguments[index++] = "--";
-  for (size_t command_index = 0; command_argv[command_index]; ++command_index) {
-    if (index + 1 >= sizeof(arguments) / sizeof(arguments[0])) return 126;
-    arguments[index++] = command_argv[command_index];
-  }
-  arguments[index] = NULL;
-  return supervise_user_service(unit, arguments);
+  return 126;
 }
 
 static int execute_request(int argc, char **argv,
@@ -1239,21 +1285,21 @@ static int execute_request(int argc, char **argv,
       // transient unit.  That daemon and its external descendants are not
       // owned by this connection; cancellation covers only unit descendants.
       char *const arguments[] = {"/usr/bin/steam", "-applaunch", argv[2], NULL};
-      return exec_user_service(identity, NULL, arguments);
+      return exec_user_service(identity, NULL, arguments, true);
     }
     case STEAM_DIRECT: {
       char *const arguments[] = {
         (char *) steam_launch_path, argv[2], argv[3], argv[4], argv[5],
         argv[6], argv[7], argv[8], argv[9], NULL
       };
-      return exec_user_service(identity, NULL, arguments);
+      return exec_user_service(identity, NULL, arguments, false);
     }
     case LUTRIS: {
       // Apply the same ownership boundary to an already-running Lutris daemon.
       char uri[160];
       if (snprintf(uri, sizeof(uri), "lutris:rungameid/%s", argv[2]) >= (int) sizeof(uri)) return 126;
       char *const arguments[] = {"/usr/bin/lutris", uri, NULL};
-      return exec_user_service(identity, NULL, arguments);
+      return exec_user_service(identity, NULL, arguments, false);
     }
     case PROVIDER_STEAM_SCAN: {
       char *const arguments[] = {"vibepollo-provider-scan", "steam", NULL};
@@ -1267,7 +1313,7 @@ static int execute_request(int argc, char **argv,
     }
     case APP: {
       char *const arguments[] = {"/bin/sh", "-c", argv[2], "--", NULL};
-      return exec_user_service(identity, authorized_directory, arguments);
+      return exec_user_service(identity, authorized_directory, arguments, false);
     }
   }
   perror("vibepollo-session-broker");
