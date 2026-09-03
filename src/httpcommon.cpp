@@ -205,6 +205,7 @@ namespace http {
 
   std::string unique_id;
   uuid_util::uuid_t uuid;
+  bool credentials_created_this_run = false;
   net::net_e origin_web_ui_allowed;
 
 #ifdef _WIN32
@@ -224,9 +225,12 @@ namespace http {
       config::nvhttp.pkey = (dir / ("pkey-"s + unique_id)).string();
     }
 
-    if ((!fs::exists(config::nvhttp.pkey) || !fs::exists(config::nvhttp.cert)) &&
-        create_creds(config::nvhttp.pkey, config::nvhttp.cert)) {
-      return -1;
+    const bool had_credential_material = fs::exists(config::nvhttp.pkey) || fs::exists(config::nvhttp.cert);
+    if ((!fs::exists(config::nvhttp.pkey) || !fs::exists(config::nvhttp.cert))) {
+      if (create_creds(config::nvhttp.pkey, config::nvhttp.cert)) {
+        return -1;
+      }
+      credentials_created_this_run = !had_credential_material;
     }
     switch (user_creds_state(config::sunshine.credentials_file)) {
       case creds_state::missing_file:

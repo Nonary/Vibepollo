@@ -57,6 +57,14 @@ namespace {
       [&store](const std::string &target, const std::string &contents) { return store.write(target, contents); },
       [&store](const std::string &target) { return store.read(target); });
   }
+
+  policy::load_result_e load_for_read(memory_state_store_t &store, const std::string &path, pt::ptree &tree) {
+    return policy::load_json_for_read(
+      path,
+      tree,
+      [&store](const std::string &target) { return store.read(target); }
+    );
+  }
 }  // namespace
 
 TEST(StateStorageLoadForUpdate, MissingFileReturnsTrueWithEmptyTree) {
@@ -125,4 +133,44 @@ TEST(StateStorageLoadForUpdate, CorruptThenWriteProducesValidFile) {
   EXPECT_TRUE(load_for_update(store, "heal_cycle.json", readback));
   EXPECT_EQ(readback.get<std::string>("root.recovered", ""), "yes");
   ASSERT_EQ(store.quarantined.size(), 1U);
+}
+
+TEST(StateStorageLoadForUpdate, FailedReadDoesNotAuthorizeAnEmptyReplacement) {
+  pt::ptree tree;
+
+  const auto result = policy::load_json_for_update(
+    "unavailable.json",
+    tree,
+    [](const std::string &) {
+      return policy::read_result_t {policy::read_status_e::failed, {}};
+    },
+    [](const std::string &) {
+      ADD_FAILURE() << "failed reads must not be quarantined";
+    }
+  );
+
+  EXPECT_EQ(result, policy::load_result_e::failed);
+  EXPECT_TRUE(tree.empty());
+}
+
+TEST(StateStorageLoadForRead, CorruptFileIsReportedWithoutQuarantine) {
+  memory_state_store_t store;
+  store.files.emplace("corrupt.json", "{ not valid json ]");
+  pt::ptree tree;
+
+  EXPECT_EQ(load_for_read(store, "corrupt.json", tree), policy::load_result_e::corrupt);
+  EXPECT_TRUE(tree.empty());
+  EXPECT_TRUE(store.files.contains("corrupt.json"));
+  EXPECT_TRUE(store.quarantined.empty());
+}
+
+TEST(StateStorageLoadForRead, BlankFileIsNotTreatedAsANewProfile) {
+  memory_state_store_t store;
+  store.files.emplace("blank.json", "  \r\n\t");
+  pt::ptree tree;
+
+  EXPECT_EQ(load_for_read(store, "blank.json", tree), policy::load_result_e::corrupt);
+  EXPECT_TRUE(tree.empty());
+  EXPECT_TRUE(store.files.contains("blank.json"));
+  EXPECT_TRUE(store.quarantined.empty());
 }

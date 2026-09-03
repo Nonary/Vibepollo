@@ -5998,7 +5998,18 @@ namespace nvhttp {
     bool clean_slate = config::sunshine.flags[config::flag::FRESH_STATE];
 
     if (!clean_slate) {
-      load_state();
+      if (!load_state()) {
+        // Do not expose a newly generated uniqueid when durable pairing state
+        // is unavailable. The controller will retry after the filesystem or
+        // profile issue is repaired, while the recovery copy remains intact.
+        BOOST_LOG(fatal) << "HTTP interface is stopping because durable pairing state could not be loaded."sv;
+        shutdown_event->raise(true);
+        return;
+      }
+    } else {
+      // FRESH_STATE is an explicit, non-persistent test/reset mode. It is the
+      // only path allowed to operate without a durable state snapshot.
+      authorization_state_ready.store(true, std::memory_order_release);
     }
 
     auto pkey = file_handler::read_file(config::nvhttp.pkey.c_str());
