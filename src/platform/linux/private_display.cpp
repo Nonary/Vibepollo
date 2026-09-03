@@ -203,6 +203,20 @@ namespace platf::linux_private_display {
       }
     }
 
+    template<typename Predicate>
+    bool wait_for_stable_configuration(Predicate &&predicate) {
+      const auto deadline = std::chrono::steady_clock::now() + output_verification_timeout;
+      linux_hdr::output_state_stabilizer_t stabilizer;
+      do {
+        const auto configuration = query_configuration();
+        if (stabilizer.observe(configuration && predicate(*configuration))) {
+          return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      } while (std::chrono::steady_clock::now() < deadline);
+      return false;
+    }
+
     const json *find_output(const json &configuration, const std::string &name) {
       for (const auto &output : configuration["outputs"]) {
         if (output.value("name", std::string {}) == name) {
@@ -955,6 +969,7 @@ namespace platf::linux_private_display {
     std::set<std::string> reserved_outputs;
     std::optional<double> saved_scale;
     std::string identity;
+    bool newly_connected = false;
     {
       std::lock_guard lock {manager.mutex};
       snapshot_configuration_if_needed(manager, *configuration);
@@ -963,8 +978,9 @@ namespace platf::linux_private_display {
       }
       const auto mode = session.virtual_display_mode_override.value_or(config::video.virtual_display_mode);
       identity = reservation_identity(session, mode == config::video_t::virtual_display_mode_e::shared);
+      newly_connected = manager.newly_connected_reservations.contains(identity);
       if (config::video.dd.virtual_display_scale_percent == 0 &&
-          (manager.newly_connected_reservations.contains(identity) || !enabled(*target_before))) {
+          (newly_connected || !enabled(*target_before))) {
         saved_scale = retained_scale(manager, identity);
       }
     }
@@ -1120,9 +1136,13 @@ namespace platf::linux_private_display {
       hdr_capable,
       hdr_capable && target_before->value("hdr", false)
     );
-    if (hdr_policy.command) {
-      arguments.push_back(target_prefix + "hdr." + std::string(*hdr_policy.command ? "enable" : "disable"));
-    } else if (parsed_hdr_state.value_or(false) && !hdr_capable) {
+    const std::vector<std::string> hdr_arguments = hdr_policy.command ?
+      std::vector<std::string> {target_prefix + "hdr." + std::string(*hdr_policy.command ? "enable" : "disable")} :
+      std::vector<std::string> {};
+    const std::vector<std::string> hdr_rearm_arguments = linux_hdr::requires_hdr_rearm(hdr_policy.command, newly_connected) ?
+      std::vector<std::string> {target_prefix + "hdr.disable"} :
+      std::vector<std::string> {};
+    if (!hdr_policy.command && parsed_hdr_state.value_or(false) && !hdr_capable) {
       BOOST_LOG(warning) << "Linux private display: " << session.virtual_display_device_id
                          << " does not advertise HDR10; the verified session will use SDR.";
     }
@@ -1144,26 +1164,52 @@ namespace platf::linux_private_display {
       }
     }
 
-    // kscreen-doctor returning success only means KWin accepted the request.
-    // Do not admit capture until the exact mode and requested HDR state have
-    // actually become current on the leased connector.
-    const auto verification_deadline = std::chrono::steady_clock::now() + output_verification_timeout;
-    bool verified = false;
+    // A newly enabled output can expose its requested HDR bit before KWin has
+    // committed the mode and color pipeline. First settle the topology, then
+    // apply HDR in its own KScreen transaction so it cannot be lost behind the
+    // modeset. This also leaves no unapplied composite transaction for KDE's
+    // HDR calibration UI to inherit.
+    const auto base_matches = [&](const json &current) {
+      const auto *output = find_output(current, session.virtual_display_device_id);
+      return output && connected(*output) && enabled(*output) &&
+             output->value("currentModeId", std::string {}) == mode_id &&
+             std::abs(output->value("scale", 1.0) - target_scale) < 0.01;
+    };
+    if (!wait_for_stable_configuration(base_matches)) {
+      BOOST_LOG(error) << "Linux private display: timed out stabilizing mode/scale state on "
+                       << session.virtual_display_device_id << '.';
+      return false;
+    }
+    if (!execute_configuration(hdr_rearm_arguments, "HDR rearm")) {
+      return false;
+    }
+    if (!hdr_rearm_arguments.empty() && !wait_for_stable_configuration([&](const json &current) {
+          if (!base_matches(current)) {
+            return false;
+          }
+          const auto *output = find_output(current, session.virtual_display_device_id);
+          return !output->value("hdr", false);
+        })) {
+      BOOST_LOG(error) << "Linux private display: timed out stabilizing the pre-HDR state on "
+                       << session.virtual_display_device_id << '.';
+      return false;
+    }
+    if (!execute_configuration(hdr_arguments, "HDR activation")) {
+      return false;
+    }
+
     bool verified_hdr_enabled = false;
-    do {
-      if (const auto current = query_configuration()) {
-        if (const auto *output = find_output(*current, session.virtual_display_device_id);
-            output && connected(*output) && enabled(*output) &&
-            output->value("currentModeId", std::string {}) == mode_id &&
-            std::abs(output->value("scale", 1.0) - target_scale) < 0.01 &&
-            (!hdr_policy.command || output->value("hdr", false) == *hdr_policy.command)) {
-          verified_hdr_enabled = hdr_capable && output->value("hdr", false);
-          verified = true;
-          break;
-        }
+    const bool verified = wait_for_stable_configuration([&](const json &current) {
+      if (!base_matches(current)) {
+        return false;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    } while (std::chrono::steady_clock::now() < verification_deadline);
+      const auto *output = find_output(current, session.virtual_display_device_id);
+      if (hdr_policy.command && output->value("hdr", false) != *hdr_policy.command) {
+        return false;
+      }
+      verified_hdr_enabled = hdr_capable && output->value("hdr", false);
+      return true;
+    });
 
     if (!verified) {
       BOOST_LOG(error) << "Linux private display: timed out verifying mode/HDR/scale state on "
@@ -1437,6 +1483,8 @@ namespace platf::linux_private_display {
 
     std::set<std::string> desired_names;
     std::vector<std::string> activate_arguments;
+    std::vector<std::string> hdr_rearm_arguments;
+    std::vector<std::string> hdr_arguments;
     std::vector<std::string> deactivate_arguments;
     int next_priority = 2;
     for (std::size_t i = 0; i < desired.size(); ++i) {
@@ -1462,7 +1510,13 @@ namespace platf::linux_private_display {
         );
         activate_arguments.push_back(prefix + "scale." + std::to_string(entry.scale));
         if (const auto *output = find_output(*configuration, entry.name); output_hdr_capable(output, entry.name)) {
-          activate_arguments.push_back(prefix + "hdr." + std::string(entry.node.configured_mode.hdr ? "enable" : "disable"));
+          if (linux_hdr::requires_hdr_rearm(
+                entry.node.configured_mode.hdr,
+                manager.newly_connected_reservations.contains(entry.identity)
+              )) {
+            hdr_rearm_arguments.push_back(prefix + "hdr.disable");
+          }
+          hdr_arguments.push_back(prefix + "hdr." + std::string(entry.node.configured_mode.hdr ? "enable" : "disable"));
         } else if (entry.node.configured_mode.hdr) {
           BOOST_LOG(error) << "Linux Remote Monitor: " << entry.name
                            << " does not advertise HDR10 capability.";
@@ -1488,27 +1542,52 @@ namespace platf::linux_private_display {
       return false;
     }
 
-    const auto verification_deadline = std::chrono::steady_clock::now() + output_verification_timeout;
-    bool verified = false;
-    do {
-      if (const auto current = query_configuration()) {
-        verified = std::ranges::all_of(desired, [&](const auto &entry) {
-          const auto *output = find_output(*current, entry.name);
-          if (!output || !connected(*output) || !enabled(*output)) {
-            return false;
-          }
-          return !entry.owned_client ||
-                 (output->value("currentModeId", std::string {}) == entry.mode_id &&
-                  std::abs(output->value("scale", 1.0) - entry.scale) < 0.01 &&
-                  (!output_hdr_capable(output, entry.name) ||
-                   output->value("hdr", false) == entry.node.configured_mode.hdr));
-        });
-        if (verified) {
-          break;
+    const auto topology_matches = [&](const json &current) {
+      return std::ranges::all_of(desired, [&](const auto &entry) {
+        const auto *output = find_output(current, entry.name);
+        if (!output || !connected(*output) || !enabled(*output)) {
+          return false;
         }
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    } while (std::chrono::steady_clock::now() < verification_deadline);
+        return !entry.owned_client ||
+               (output->value("currentModeId", std::string {}) == entry.mode_id &&
+                std::abs(output->value("scale", 1.0) - entry.scale) < 0.01);
+      });
+    };
+    if (!wait_for_stable_configuration(topology_matches)) {
+      BOOST_LOG(error) << "Linux Remote Monitor: timed out stabilizing the composed mode/scale state.";
+      return false;
+    }
+    if (!execute_configuration(hdr_rearm_arguments, "Remote Monitor HDR rearm")) {
+      return false;
+    }
+    if (!hdr_rearm_arguments.empty() && !wait_for_stable_configuration([&](const json &current) {
+          return topology_matches(current) && std::ranges::all_of(desired, [&](const auto &entry) {
+            if (!entry.owned_client || !linux_hdr::requires_hdr_rearm(
+                                         entry.node.configured_mode.hdr,
+                                         manager.newly_connected_reservations.contains(entry.identity)
+                                       )) {
+              return true;
+            }
+            const auto *output = find_output(current, entry.name);
+            return output && !output->value("hdr", false);
+          });
+        })) {
+      BOOST_LOG(error) << "Linux Remote Monitor: timed out stabilizing the pre-HDR output state.";
+      return false;
+    }
+    if (!execute_configuration(hdr_arguments, "Remote Monitor HDR activation")) {
+      return false;
+    }
+    const bool verified = wait_for_stable_configuration([&](const json &current) {
+      return topology_matches(current) && std::ranges::all_of(desired, [&](const auto &entry) {
+        if (!entry.owned_client) {
+          return true;
+        }
+        const auto *output = find_output(current, entry.name);
+        return !output_hdr_capable(output, entry.name) ||
+               output->value("hdr", false) == entry.node.configured_mode.hdr;
+      });
+    });
     if (!verified) {
       BOOST_LOG(error) << "Linux Remote Monitor: timed out verifying the composed mode/HDR/scale state.";
       return false;

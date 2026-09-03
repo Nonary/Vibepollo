@@ -86,3 +86,22 @@ TEST(LinuxHdrPolicy, AutomaticDisplayHdrPolicyHonorsCapability) {
   EXPECT_FALSE(unsupported.command.has_value());
   EXPECT_FALSE(unsupported.expected_enabled);
 }
+
+TEST(LinuxHdrPolicy, OutputStateRequiresConsecutiveStableObservations) {
+  hdr::output_state_stabilizer_t stabilizer;
+
+  EXPECT_FALSE(stabilizer.observe(true));
+  EXPECT_FALSE(stabilizer.observe(true));
+  EXPECT_FALSE(stabilizer.observe(false));
+  EXPECT_FALSE(stabilizer.observe(true));
+  EXPECT_FALSE(stabilizer.observe(true));
+  EXPECT_TRUE(stabilizer.observe(true));
+  EXPECT_TRUE(stabilizer.observe(true));
+}
+
+TEST(LinuxHdrPolicy, OnlyNewlyConnectedHdrOutputsRequireRearm) {
+  EXPECT_TRUE(hdr::requires_hdr_rearm(true, true));
+  EXPECT_FALSE(hdr::requires_hdr_rearm(true, false));
+  EXPECT_FALSE(hdr::requires_hdr_rearm(false, true));
+  EXPECT_FALSE(hdr::requires_hdr_rearm(std::nullopt, true));
+}
