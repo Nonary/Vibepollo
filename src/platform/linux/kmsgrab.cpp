@@ -1641,7 +1641,7 @@ namespace platf {
                 break;
               case platf::capture_e::ok:
                 if (!captured_timestamp) {
-                  BOOST_LOG(error) << "Vibeshine DRM presentation is missing its validated timestamp."sv;
+                  BOOST_LOG(error) << "vibeshine_drm presentation is missing its validated timestamp."sv;
                   return std::nullopt;
                 }
                 presentation_rate_limiter.mark_delivered(*captured_timestamp);
