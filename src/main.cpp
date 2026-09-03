@@ -48,6 +48,7 @@
 
   #include "src/display_helper_integration.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
+  #include "src/platform/windows/local_input_monitor.h"
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/playnite_integration.h"
   #include "src/platform/windows/rtss_integration.h"
@@ -746,6 +747,13 @@ int main(int argc, char *argv[]) {
 #endif
 
   auto host_stats_deinit_guard = host_stats::start();
+
+#ifdef _WIN32
+  // Feeds nvhttp::launch()'s local-activity guard (config::sunshine.local_activity_guard_seconds).
+  // Started unconditionally - the guard threshold check at call time is what
+  // actually enables/disables the behavior, same as host_stats above.
+  auto local_input_monitor_deinit_guard = local_input_monitor::start();
+#endif
 
   if (shutdown_event->peek()) {
     return lifetime::desired_exit_code;
