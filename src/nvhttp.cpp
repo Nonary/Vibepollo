@@ -153,6 +153,19 @@ namespace nvhttp {
       std::lock_guard lock {remote_role_owners_mutex};
       remote_role_owners.clear();
     }
+
+    bool has_stream_session_activity() {
+      // RTSP removes STOPPING sessions from session_count() before stream::session::join()
+      // returns; pending launches/creations reserve the process-wide runtime layer
+      // before either protocol publishes an active session.
+      return rtsp_stream::has_pending_launch_or_startup() ||
+             rtsp_stream::session_count_no_cleanup() > 0 ||
+             stream::session::running_sessions.load(std::memory_order_acquire) != 0 ||
+             stream::session::teardown_sessions.load(std::memory_order_acquire) != 0 ||
+             webrtc_stream::has_active_or_pending_sessions() ||
+             webrtc_stream::has_capture_active() ||
+             webrtc_stream::has_teardown_in_progress();
+    }
   }  // namespace
 
   static constexpr std::string_view EMPTY_PROPERTY_TREE_ERROR_MSG = "Property tree is empty. Probably, control flow got interrupted by an unexpected C++ exception. This is a bug in Sunshine. Moonlight-qt will report Malformed XML (missing root element)."sv;
@@ -1730,16 +1743,6 @@ namespace nvhttp {
 
 #ifndef _WIN32
   namespace {
-    bool has_stream_session_activity() {
-      return rtsp_stream::has_pending_launch_or_startup() ||
-             rtsp_stream::session_count_no_cleanup() > 0 ||
-             stream::session::running_sessions.load(std::memory_order_acquire) != 0 ||
-             stream::session::teardown_sessions.load(std::memory_order_acquire) != 0 ||
-             webrtc_stream::has_active_or_pending_sessions() ||
-             webrtc_stream::has_capture_active() ||
-             webrtc_stream::has_teardown_in_progress();
-    }
-
     http_encoder_capabilities_t advertised_encoder_capabilities_for_http() {
       const auto publish = [](video::advertised_encoder_capabilities_t caps, const std::string_view reason) {
         const bool probe_complete = video::has_successful_encoder_probe();
@@ -4621,6 +4624,7 @@ namespace nvhttp {
 
         return;
       }
+    }
 
       no_active_sessions = !has_stream_session_activity();
 
@@ -5252,6 +5256,7 @@ namespace nvhttp {
 
         return;
       }
+    }
 
     auto encryption_mode = net::encryption_mode_for_address(request->remote_endpoint().address());
     if (!launch_session->rtsp_cipher && encryption_mode == config::ENCRYPTION_MODE_MANDATORY) {
