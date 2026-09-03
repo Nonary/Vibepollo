@@ -37,6 +37,29 @@ TEST(SteamSync, UpdatesAndRemovesOnlyManagedEntries) {
   EXPECT_EQ(root["apps"][1]["name"], "Manual same ID");
 }
 
+TEST(SteamSync, AdoptsLegacyEntryWithCanonicalSteamUuid) {
+  const auto legacy_uuid =
+    platf::steam::sync::policy::canonical_steam_app_uuid(1182900);
+  nlohmann::json root = {{"apps", nlohmann::json::array({
+                                    nlohmann::json {{"name", "Legacy Steam game"},
+                                                    {"uuid", legacy_uuid},
+                                                    {"cmd", "steam -applaunch 1182900"}},
+                                    nlohmann::json {{"name", "Manual same ID"},
+                                                    {"steam-id", "1182900"}},
+                                  })}};
+  platf::steam::game_t game;
+  game.app_id = 1182900;
+  game.name = "A Plague Tale: Requiem";
+
+  EXPECT_TRUE(platf::steam::sync::policy::reconcile(root, {game}));
+  ASSERT_EQ(root["apps"].size(), 2U);
+  EXPECT_EQ(root["apps"][0]["steam-id"], "1182900");
+  EXPECT_EQ(root["apps"][0]["steam-managed"], "auto");
+  EXPECT_EQ(root["apps"][0]["name"], "A Plague Tale: Requiem");
+  EXPECT_EQ(root["apps"][1]["name"], "Manual same ID");
+  EXPECT_FALSE(root["apps"][1].contains("steam-managed"));
+}
+
 TEST(SteamSync, IdenticalManagedEntryDoesNotReportChange) {
   nlohmann::json root = {{"apps", nlohmann::json::array()}};
   platf::steam::game_t game;

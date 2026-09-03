@@ -1283,11 +1283,15 @@ static int execute_request(int argc, char **argv,
       break;
     }
     case STEAM: {
-      // A pre-existing Steam daemon may accept this request outside the
-      // transient unit.  That daemon and its external descendants are not
-      // owned by this connection; cancellation covers only unit descendants.
+      // This is a short-lived handoff to the already-running desktop Steam
+      // daemon, not a directly owned game process.  The broker worker has
+      // already dropped to the selected desktop UID and validated its session
+      // endpoints, so execute the handoff here.  Wrapping it in a transient
+      // user unit can fail before Steam is reached when the broker itself is
+      // running inside systemd's hardened system-service namespace.
       char *const arguments[] = {"/usr/bin/steam", "-applaunch", argv[2], NULL};
-      return exec_user_service(identity, NULL, arguments, true);
+      execv("/usr/bin/steam", arguments);
+      break;
     }
     case STEAM_DIRECT: {
       char *const arguments[] = {

@@ -486,6 +486,7 @@ for invariant in (
 for forbidden in ("execvp(", "execlp(", '"kscreen" &&', '"pactl" &&', '"parec" &&'):
     forbid(session_execution, forbidden, "session execution path")
 require(broker, '!strcmp(identity->role, "desktop")', "desktop-only application launch")
+require(broker, 'execv("/usr/bin/steam", arguments);', "direct desktop Steam handoff")
 
 require(private_display, '? "display-query" : "display-apply"', "KScreen semantic routing")
 forbidden_broker_poll = "query_connector(output_name)"
