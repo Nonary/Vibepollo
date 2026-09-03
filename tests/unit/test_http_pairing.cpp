@@ -196,3 +196,64 @@ TEST(PairingTest, OutOfOrderCalls) {
   server_certificate = pairing_policy::begin_get_server_certificate(session, valid_salt_size);
   ASSERT_FALSE(server_certificate.accepted);
 }
+
+#include <src/paired_state_policy.h>
+
+namespace {
+  nlohmann::json paired_snapshot() {
+    return nlohmann::json::parse(R"({"username":"owner","password":"hash","salt":"salt","root":{"uniqueid":"11111111-1111-1111-1111-111111111111","api_tokens":[{"hash":"token"}],"named_devices":[{"uuid":"22222222-2222-2222-2222-222222222222","cert":"certificate","perm":3,"enable_legacy_ordering":false,"allow_client_commands":false,"do":[{"cmd":"launch","elevated":true}],"undo":[{"cmd":"stop","elevated":false}],"config_overrides":{"fps":"60"},"future_setting":"keep"}]}})");
+  }
+}
+
+TEST(PairedStateRecovery, RetainsApolloPermissionsCommandsAndSharedState) {
+  auto snapshot = paired_snapshot();
+  const auto original = snapshot;
+  EXPECT_TRUE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  EXPECT_EQ(snapshot, original);
+  EXPECT_EQ(nlohmann::json::parse(snapshot.dump()), original);
+}
+
+TEST(PairedStateRecovery, RejectsMalformedPermissionRatherThanGrantingDefault) {
+  for (const auto &invalid : {nlohmann::json("bad"), nlohmann::json(-1), nlohmann::json(4294967296ULL), nlohmann::json::object()}) {
+    auto snapshot = paired_snapshot();
+    snapshot["root"]["named_devices"][0]["perm"] = invalid;
+    EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  }
+}
+
+TEST(PairedStateRecovery, RejectsInvalidIdentityAndDuplicateRecords) {
+  auto snapshot = paired_snapshot();
+  snapshot["root"]["uniqueid"] = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx";
+  EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  snapshot = paired_snapshot();
+  snapshot["root"]["named_devices"].push_back(snapshot["root"]["named_devices"][0]);
+  EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  snapshot = paired_snapshot();
+  snapshot["root"]["named_devices"] = "broken";
+  EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
+}
+
+TEST(PairedStateRecovery, AcceptsPropertyTreeEmptyContainersAndScalarValues) {
+  auto snapshot = paired_snapshot();
+  auto &client = snapshot["root"]["named_devices"][0];
+  client["perm"] = "3";
+  client["allow_client_commands"] = "false";
+  client["do"] = "";
+  client["undo"] = "";
+  client["config_overrides"] = "";
+  EXPECT_TRUE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  EXPECT_TRUE(client["do"].is_array());
+  EXPECT_TRUE(client["config_overrides"].is_object());
+  snapshot["root"]["named_devices"] = "";
+  EXPECT_TRUE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  EXPECT_TRUE(snapshot["root"]["named_devices"].empty());
+}
+
+TEST(PairedStateRecovery, RejectsMalformedCommandAndPolicyFlags) {
+  auto snapshot = paired_snapshot();
+  snapshot["root"]["named_devices"][0]["do"][0]["elevated"] = "invalid";
+  EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  snapshot = paired_snapshot();
+  snapshot["root"]["named_devices"][0]["allow_client_commands"] = "invalid";
+  EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
+}

@@ -56,6 +56,7 @@
 #include "remote_session.h"
 #include "platform/common.h"
 #include "state_storage.h"
+#include "paired_state_policy.h"
 #include "update.h"
 #ifdef _WIN32
   #include "platform/windows/display.h"
@@ -1512,6 +1513,7 @@ namespace nvhttp {
     std::unordered_map<std::string, pair_session_t> map_id_sess;
     client_t client_root;
     std::mutex client_mutex;
+    std::atomic_bool authorization_state_ready {false};
     std::atomic<uint32_t> session_id_counter;
 
 
@@ -1621,27 +1623,28 @@ namespace nvhttp {
       return std::nullopt;
     }
 
-    void save_state() {
-      statefile::migrate_recent_state_keys();
+    bool save_state_snapshot_locked(const client_t &client, bool allow_missing_state = false) {
+      if (!authorization_state_ready.load(std::memory_order_acquire)) return false;
       const auto &sunshine_path = statefile::sunshine_state_path();
       const auto &vibeshine_path = statefile::vibeshine_state_path();
       const bool share_state_file = statefile::share_state_file();
-      const client_t client = client_root_snapshot();
 
-      std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
-
-      nlohmann::json root = nlohmann::json::object();
-      if (fs::exists(sunshine_path)) {
-        try {
-          std::ifstream in(sunshine_path);
-          in >> root;
-        } catch (const std::exception &e) {
-          BOOST_LOG(error) << "Couldn't read "sv << sunshine_path << ": "sv << e.what();
-          return;
+      nlohmann::json root;
+      const auto primary = statefile::load_json(sunshine_path, root);
+      if (primary != statefile::json_load_result_e::loaded || !state_policy::normalize_snapshot(root)) {
+        nlohmann::json backup;
+        const auto backup_status = statefile::load_json(statefile::sunshine_state_backup_path(), backup);
+        if (primary == statefile::json_load_result_e::failed) return false;
+        if (backup_status == statefile::json_load_result_e::loaded && state_policy::normalize_snapshot(backup)) {
+          root = std::move(backup);
+        } else if (allow_missing_state && primary == statefile::json_load_result_e::missing && backup_status == statefile::json_load_result_e::missing) {
+          root = {{"root", nlohmann::json::object()}};
+        } else {
+          BOOST_LOG(error) << "Refusing to replace unavailable Vibepollo pairing state.";
+          return false;
         }
       }
 
-      root["root"] = nlohmann::json::object();
       root["root"]["uniqueid"] = http::unique_id;
       root["root"]["remote_display_layout"] = client.remote_display_layout_json;
       if (share_state_file) {
@@ -1717,10 +1720,14 @@ namespace nvhttp {
       }
 
       root["root"]["named_devices"] = named_cert_nodes;
+      root["root"].erase("devices");  // Legacy certificates now have canonical records.
 
-      if (file_handler::write_file(sunshine_path.c_str(), root.dump(4)) != 0) {
-        BOOST_LOG(error) << "Couldn't write "sv << sunshine_path;
-        return;
+      try {
+        if (!state_policy::normalize_snapshot(root)) return false;
+        statefile::write_sunshine_state_atomic(root);
+      } catch (const std::exception &e) {
+        BOOST_LOG(error) << "Couldn't write Vibepollo pairing state: " << e.what();
+        return false;
       }
 
       if (!share_state_file) {
@@ -1739,7 +1746,7 @@ namespace nvhttp {
             pt::read_json(vibeshine_path, vibeshine_tree);
           } catch (const std::exception &e) {
             BOOST_LOG(error) << "Couldn't read "sv << vibeshine_path << ": "sv << e.what();
-            return;
+            return true;
           }
         }
 
@@ -1758,35 +1765,157 @@ namespace nvhttp {
           BOOST_LOG(error) << "Couldn't write "sv << vibeshine_path << ": "sv << e.what();
         }
       }
+      return true;
     }
 
-    void load_state() {
+    void save_state() {
+      if (config::sunshine.flags[config::flag::FRESH_STATE]) return;
+      statefile::migrate_recent_state_keys();
+      // Match load_state lock order and snapshot only after gaining the state lock.
+      std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
+      (void) save_state_snapshot_locked(client_root_snapshot());
+    }
+
+    bool load_state() {
       statefile::migrate_recent_state_keys();
       const auto &sunshine_path = statefile::sunshine_state_path();
       const auto &vibeshine_path = statefile::vibeshine_state_path();
       const bool share_state_file = statefile::share_state_file();
-
       std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
+      struct parsed_state_t {
+        client_t client;
+        nlohmann::json layout;
+      };
+      const auto parse_state = [](nlohmann::json &tree) -> std::optional<parsed_state_t> {
+        try {
+          if (!state_policy::normalize_snapshot(tree)) return std::nullopt;
+          const auto &root = tree["root"];
+          client_t client;
+          client.remote_display_layout_json = root.value("remote_display_layout", client.remote_display_layout_json);
 
-      if (!fs::exists(sunshine_path)) {
-        BOOST_LOG(info) << "File "sv << sunshine_path << " doesn't exist"sv;
-        http::unique_id = uuid_util::uuid_t::generate().string();
-        update::state.last_notified_version.clear();
-        return;
-      }
+          if (root.contains("devices")) {
+            for (auto &device_node : root["devices"]) {
+              if (device_node.contains("certs")) {
+                for (auto &el : device_node["certs"]) {
+                  auto named_cert_p = std::make_shared<crypto::named_cert_t>();
+                  named_cert_p->name = "";
+                  named_cert_p->cert = el.get<std::string>();
+                  named_cert_p->uuid = uuid_util::uuid_t::generate().string();
+                  named_cert_p->display_mode = "";
+                  named_cert_p->output_name_override.clear();
+                  named_cert_p->perm = PERM::_all;
+                  named_cert_p->enable_legacy_ordering = true;
+                  named_cert_p->allow_client_commands = true;
+                  named_cert_p->always_use_virtual_display = false;
+                  named_cert_p->prefer_10bit_sdr = false;
+                  client.named_devices.emplace_back(named_cert_p);
+                }
+              }
+            }
+          }
 
+
+          if (root.contains("named_devices")) {
+            for (auto &el : root["named_devices"]) {
+              auto named_cert_p = std::make_shared<crypto::named_cert_t>();
+              named_cert_p->name = el.value("name", "");
+              named_cert_p->cert = el.value("cert", "");
+              named_cert_p->uuid = el.value("uuid", "");
+              named_cert_p->display_mode = el.value("display_mode", "");
+              named_cert_p->hdr_profile = el.value("hdr_profile", "");
+              named_cert_p->output_name_override = el.value("output_name_override", "");
+              named_cert_p->virtual_display_mode_override = el.value("virtual_display_mode", "");
+              named_cert_p->virtual_display_layout_override = el.value("virtual_display_layout", "");
+              named_cert_p->perm = (PERM) (util::get_non_string_json_value<uint32_t>(el, "perm", (uint32_t) PERM::_all)) & PERM::_all;
+              named_cert_p->enable_legacy_ordering = util::get_non_string_json_value<bool>(el, "enable_legacy_ordering", true);
+              named_cert_p->allow_client_commands = util::get_non_string_json_value<bool>(el, "allow_client_commands", true);
+              named_cert_p->always_use_virtual_display = util::get_non_string_json_value<bool>(el, "always_use_virtual_display", false);
+              named_cert_p->prefer_10bit_sdr =
+                el.contains("prefer_10bit_sdr") && !el["prefer_10bit_sdr"].is_null() &&
+                util::get_non_string_json_value<bool>(el, "prefer_10bit_sdr", false);
+              if (el.contains("last_seen") && !el["last_seen"].is_null()) {
+                named_cert_p->last_seen = util::get_non_string_json_value<std::int64_t>(el, "last_seen", 0);
+              } else {
+                named_cert_p->last_seen.reset();
+              }
+              named_cert_p->config_overrides.clear();
+              if (el.contains("config_overrides") && el["config_overrides"].is_object()) {
+                for (const auto &entry : el["config_overrides"].items()) {
+                  if (entry.key().empty()) {
+                    continue;
+                  }
+                  named_cert_p->config_overrides[entry.key()] = entry.value().get<std::string>();
+                }
+              }
+              {
+                std::unordered_map<std::string, std::string> normalized_overrides;
+                config::merge_config_overrides(normalized_overrides, named_cert_p->config_overrides);
+                named_cert_p->config_overrides = std::move(normalized_overrides);
+              }
+              named_cert_p->do_cmds = extract_command_entries(el, "do");
+              named_cert_p->undo_cmds = extract_command_entries(el, "undo");
+              client.named_devices.emplace_back(named_cert_p);
+            }
+          }
+
+
+          nlohmann::json remote_display_layout;
+          try {
+            remote_display_layout = remote_display_topology::normalize_layout(
+              nlohmann::json::parse(client.remote_display_layout_json)
+            );
+          } catch (...) {
+            remote_display_layout = remote_display_topology::normalize_layout(nlohmann::json {});
+          }
+          client.remote_display_layout_json = remote_display_layout.dump();
+
+          std::unordered_set<std::string> identities;
+          for (const auto &named_cert : client.named_devices) {
+            auto certificate = crypto::x509(named_cert->cert);
+            if (!certificate || !identities.insert(crypto::pem(certificate)).second) return std::nullopt;
+          }
+          return parsed_state_t {std::move(client), std::move(remote_display_layout)};
+        } catch (...) {
+          BOOST_LOG(error) << "Vibepollo pairing state is malformed.";
+          return std::nullopt;
+        }
+      };
       nlohmann::json tree;
-      try {
-        std::ifstream in(sunshine_path);
-        in >> tree;
-      } catch (const std::exception &e) {
-        BOOST_LOG(error) << "Couldn't read "sv << sunshine_path << ": "sv << e.what();
-        return;
+      const auto primary = statefile::load_json(sunshine_path, tree);
+      if (primary == statefile::json_load_result_e::failed) return false;
+      auto parsed = primary == statefile::json_load_result_e::loaded ? parse_state(tree) : std::nullopt;
+      bool recovered = false;
+      if (!parsed) {
+        nlohmann::json backup;
+        const auto backup_status = statefile::load_json(statefile::sunshine_state_backup_path(), backup);
+        if (backup_status == statefile::json_load_result_e::loaded) parsed = parse_state(backup);
+        if (parsed) {
+          tree = std::move(backup);
+          recovered = true;
+        } else if (primary == statefile::json_load_result_e::missing && backup_status == statefile::json_load_result_e::missing && http::credentials_created_this_run) {
+          http::uuid = uuid_util::uuid_t::generate();
+          http::unique_id = http::uuid.string();
+          authorization_state_ready.store(true, std::memory_order_release);
+          if (!save_state_snapshot_locked(client_t {}, true)) {
+            authorization_state_ready.store(false, std::memory_order_release);
+            return false;
+          }
+          update::state.last_notified_version.clear();
+          return true;
+        } else {
+          BOOST_LOG(error) << "No valid Vibepollo pairing snapshot; refusing to create a replacement identity.";
+          return false;
+        }
       }
-
-      nlohmann::json root = tree.contains("root") ? tree["root"] : nlohmann::json::object();
-
-
+      try {
+        if (recovered) statefile::write_sunshine_state_atomic(tree);
+        else statefile::write_json_atomic(statefile::sunshine_state_backup_path(), tree);
+      } catch (const std::exception &e) {
+        BOOST_LOG(warning) << "Could not persist Vibepollo recovery snapshot: " << e.what();
+      }
+      const auto &root = tree["root"];
+      http::unique_id = root["uniqueid"].get<std::string>();
+      http::uuid = uuid_util::uuid_t::parse(http::unique_id);
       if (share_state_file) {
         update::state.last_notified_version = root.value("last_notified_version", "");
       } else if (fs::exists(vibeshine_path)) {
@@ -1820,126 +1949,47 @@ namespace nvhttp {
       }
 #endif
 
-      if (!root.contains("uniqueid")) {
-        http::uuid = uuid_util::uuid_t::generate();
-        http::unique_id = http::uuid.string();
-        return;
-      }
-
-      std::string uid = root["uniqueid"];
-      http::uuid = uuid_util::uuid_t::parse(uid);
-      http::unique_id = uid;
-
-      client_t client;
-      client.remote_display_layout_json = root.value("remote_display_layout", client.remote_display_layout_json);
-
-      if (root.contains("devices")) {
-        for (auto &device_node : root["devices"]) {
-          if (device_node.contains("certs")) {
-            for (auto &el : device_node["certs"]) {
-              auto named_cert_p = std::make_shared<crypto::named_cert_t>();
-              named_cert_p->name = "";
-              named_cert_p->cert = el.get<std::string>();
-              named_cert_p->uuid = uuid_util::uuid_t::generate().string();
-              named_cert_p->display_mode = "";
-              named_cert_p->output_name_override.clear();
-              named_cert_p->perm = PERM::_all;
-              named_cert_p->enable_legacy_ordering = true;
-              named_cert_p->allow_client_commands = true;
-              named_cert_p->always_use_virtual_display = false;
-              named_cert_p->prefer_10bit_sdr = false;
-              client.named_devices.emplace_back(named_cert_p);
-            }
-          }
-        }
-      }
-
-
-      if (root.contains("named_devices")) {
-        for (auto &el : root["named_devices"]) {
-          auto named_cert_p = std::make_shared<crypto::named_cert_t>();
-          named_cert_p->name = el.value("name", "");
-          named_cert_p->cert = el.value("cert", "");
-          named_cert_p->uuid = el.value("uuid", "");
-          named_cert_p->display_mode = el.value("display_mode", "");
-          named_cert_p->hdr_profile = el.value("hdr_profile", "");
-          named_cert_p->output_name_override = el.value("output_name_override", "");
-          named_cert_p->virtual_display_mode_override = el.value("virtual_display_mode", "");
-          named_cert_p->virtual_display_layout_override = el.value("virtual_display_layout", "");
-          named_cert_p->perm = (PERM) (util::get_non_string_json_value<uint32_t>(el, "perm", (uint32_t) PERM::_all)) & PERM::_all;
-          named_cert_p->enable_legacy_ordering = util::get_non_string_json_value<bool>(el, "enable_legacy_ordering", true);
-          named_cert_p->allow_client_commands = util::get_non_string_json_value<bool>(el, "allow_client_commands", true);
-          named_cert_p->always_use_virtual_display = util::get_non_string_json_value<bool>(el, "always_use_virtual_display", false);
-          named_cert_p->prefer_10bit_sdr =
-            el.contains("prefer_10bit_sdr") && !el["prefer_10bit_sdr"].is_null() &&
-            util::get_non_string_json_value<bool>(el, "prefer_10bit_sdr", false);
-          if (el.contains("last_seen") && !el["last_seen"].is_null()) {
-            named_cert_p->last_seen = util::get_non_string_json_value<std::int64_t>(el, "last_seen", 0);
-          } else {
-            named_cert_p->last_seen.reset();
-          }
-          named_cert_p->config_overrides.clear();
-          if (el.contains("config_overrides") && el["config_overrides"].is_object()) {
-            for (const auto &entry : el["config_overrides"].items()) {
-              if (entry.key().empty()) {
-                continue;
-              }
-              named_cert_p->config_overrides[entry.key()] = entry.value().get<std::string>();
-            }
-          }
-          {
-            std::unordered_map<std::string, std::string> normalized_overrides;
-            config::merge_config_overrides(normalized_overrides, named_cert_p->config_overrides);
-            named_cert_p->config_overrides = std::move(normalized_overrides);
-          }
-          named_cert_p->do_cmds = extract_command_entries(el, "do");
-          named_cert_p->undo_cmds = extract_command_entries(el, "undo");
-          client.named_devices.emplace_back(named_cert_p);
-        }
-      }
-
-
-      nlohmann::json remote_display_layout;
-      try {
-        remote_display_layout = remote_display_topology::normalize_layout(
-          nlohmann::json::parse(client.remote_display_layout_json)
-        );
-      } catch (...) {
-        remote_display_layout = remote_display_topology::normalize_layout(nlohmann::json {});
-      }
-      client.remote_display_layout_json = remote_display_layout.dump();
-
       {
         std::lock_guard<std::mutex> lock(client_mutex);
         cert_chain.clear();
-        for (auto &named_cert : client.named_devices) {
-          cert_chain.add(named_cert);
-
-        }
-
-        client_root = client;
+        for (auto &named_cert : parsed->client.named_devices) cert_chain.add(named_cert);
+        client_root = std::move(parsed->client);
       }
-
-      remote_display_topology::instance().set_layout(std::move(remote_display_layout));
+      remote_display_topology::instance().set_layout(std::move(parsed->layout));
+      authorization_state_ready.store(true, std::memory_order_release);
+      return true;
     }
 
-    void add_authorized_client(const p_named_cert_t &named_cert_p) {
-      {
-        std::lock_guard<std::mutex> lock(client_mutex);
-        client_root.named_devices.push_back(named_cert_p);
+    bool add_authorized_client(const p_named_cert_t &named_cert_p) {
+      const bool transient = config::sunshine.flags[config::flag::FRESH_STATE];
+      if (!transient) statefile::migrate_recent_state_keys();
+      std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
+      std::lock_guard<std::mutex> client_lock(client_mutex);
+      if (!transient && !authorization_state_ready.load(std::memory_order_acquire)) return false;
+      auto candidate = crypto::x509(named_cert_p->cert);
+      if (!candidate) return false;
+      auto existing = std::find_if(client_root.named_devices.begin(), client_root.named_devices.end(), [&](const auto &record) {
+        auto certificate = crypto::x509(record->cert);
+        return certificate && X509_cmp(candidate.get(), certificate.get()) == 0;
+      });
+      if (existing != client_root.named_devices.end()) {
+        // An explicit re-pair retains Apollo permissions, commands, stable UUID
+        // and display preferences instead of creating a default-permission copy.
+        *named_cert_p = **existing;
+        return true;
       }
-
+      if (client_root.named_devices.size() >= 256) return false;
+      client_root.named_devices.push_back(named_cert_p);
+      if (!transient && !save_state_snapshot_locked(client_root)) {
+        client_root.named_devices.pop_back();
+        return false;
+      }
+      cert_chain.add(client_root.named_devices.back());
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
       system_tray::update_tray_paired(named_cert_p->name);
 #endif
-
-
-      if (!config::sunshine.flags[config::flag::FRESH_STATE]) {
-        save_state();
-        load_state();
-      }
+      return true;
     }
-
 
     struct resolved_client_identity_t {
       std::string uuid;
@@ -2693,7 +2743,12 @@ namespace nvhttp {
         named_cert_p->always_use_virtual_display = false;
         named_cert_p->output_name_override.clear();
 
-        add_authorized_client(named_cert_p);
+        if (!add_authorized_client(named_cert_p)) {
+          tree.put("root.paired", 0);
+          tree.put("root.<xmlattr>.status_code", 503);
+          remove_session(sess);
+          return;
+        }
 
         if (pending_certs) {
           pending_certs->raise(crypto::x509(named_cert_p->cert));
@@ -5091,7 +5146,18 @@ namespace nvhttp {
     bool clean_slate = config::sunshine.flags[config::flag::FRESH_STATE];
 
     if (!clean_slate) {
-      load_state();
+      if (!load_state()) {
+        // Do not expose a newly generated uniqueid when durable pairing state
+        // is unavailable. The controller will retry after the filesystem or
+        // profile issue is repaired, while the recovery copy remains intact.
+        BOOST_LOG(fatal) << "HTTP interface is stopping because durable pairing state could not be loaded."sv;
+        shutdown_event->raise(true);
+        return;
+      }
+    } else {
+      // FRESH_STATE is an explicit, non-persistent test/reset mode. It is the
+      // only path allowed to operate without a durable state snapshot.
+      authorization_state_ready.store(true, std::memory_order_release);
     }
 
     auto pkey = file_handler::read_file(config::nvhttp.pkey.c_str());
@@ -5350,6 +5416,7 @@ namespace nvhttp {
   }
 
   void erase_all_clients() {
+    if (!config::sunshine.flags[config::flag::FRESH_STATE] && !authorization_state_ready.load(std::memory_order_acquire)) return;
     const auto clients = client_root_snapshot().named_devices;
     for (const auto &client : clients) {
       if (!client) continue;
@@ -5625,6 +5692,12 @@ namespace nvhttp {
   // (Windows-only) display_helper_integration is included above
 
   bool unpair_client(const std::string_view uuid) {
+    if (!config::sunshine.flags[config::flag::FRESH_STATE] &&
+        !authorization_state_ready.load(std::memory_order_acquire)) {
+      BOOST_LOG(error) << "Refusing to remove pairing state because durable state is unavailable."sv;
+      return false;
+    }
+
     bool removed = false;
 
     bool empty = false;

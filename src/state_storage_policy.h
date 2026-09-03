@@ -45,6 +45,20 @@ namespace statefile::policy {
     const quarantine_file_t &quarantine_file);
 
   /**
+   * @brief Reads JSON without changing the source file. An existing blank file is
+   *        reported as corrupt so startup cannot mint a new identity for a
+   *        truncated state file.
+   *
+   * This is the startup path: recovery must be selected before a damaged
+   * primary is moved aside, otherwise a retry could mistake the missing
+   * primary for a new installation.
+   */
+  load_result_e load_json_for_read(
+    const std::string &path,
+    boost::property_tree::ptree &tree,
+    const read_file_t &read_file);
+
+  /**
    * @brief Serializes, writes, and re-parses JSON through injected storage operations.
    */
   void write_json_atomic(

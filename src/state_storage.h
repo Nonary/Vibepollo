@@ -1,13 +1,23 @@
 #pragma once
 
 #include <boost/property_tree/ptree_fwd.hpp>
+#include <nlohmann/json_fwd.hpp>
 #include <mutex>
 #include <string>
 #include <vector>
 
 namespace statefile {
 
+  enum class json_load_result_e {
+    loaded,
+    missing,
+    corrupt,
+    failed,
+  };
+
   const std::string &sunshine_state_path();
+
+  std::string sunshine_state_backup_path();
 
   const std::string &vibeshine_state_path();
 
@@ -23,6 +33,28 @@ namespace statefile {
    * on-disk writes from leaving malformed JSON behind.
    */
   void write_json_atomic(const std::string &path, const boost::property_tree::ptree &tree);
+
+  /**
+   * @brief Persist the primary Sunshine state and refresh its recovery copy.
+   *
+   * The backup is written only after the primary has been atomically replaced,
+   * so it remains a last-known-good snapshot if a later primary write is
+   * interrupted or the primary is found unreadable.
+   */
+  void write_sunshine_state_atomic(const boost::property_tree::ptree &tree);
+
+  // Preserve Vibepollo JSON types in paired-client permissions and commands.
+  void write_sunshine_state_atomic(const nlohmann::json &tree);
+  void write_json_atomic(const std::string &path, const nlohmann::json &tree);
+
+  /**
+   * @brief Read a state file while preserving enough detail for recovery.
+   *
+   * Malformed or blank content is reported without changing the source; failed
+   * inspection or reads are never treated as an empty state.
+   */
+  json_load_result_e load_json(const std::string &path, boost::property_tree::ptree &tree);
+  json_load_result_e load_json(const std::string &path, nlohmann::json &tree);
 
   /**
    * @brief Load an existing JSON file before a read/modify/write update.

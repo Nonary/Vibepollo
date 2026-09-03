@@ -1,0 +1,88 @@
+#pragma once
+
+#include <algorithm>
+#include <charconv>
+#include <cctype>
+#include <limits>
+#include <nlohmann/json.hpp>
+#include <string>
+#include <unordered_set>
+
+namespace nvhttp::state_policy {
+  inline bool valid_uuid(const std::string &value) {
+    if (value.size() != 36) return false;
+    for (std::size_t i = 0; i < value.size(); ++i) {
+      if (i == 8 || i == 13 || i == 18 || i == 23) {
+        if (value[i] != '-') return false;
+      } else if (!std::isxdigit(static_cast<unsigned char>(value[i]))) return false;
+    }
+    return true;
+  }
+
+  inline bool boolean(const nlohmann::json &value) {
+    return value.is_boolean() || (value.is_number_integer() && (value == 0 || value == 1)) ||
+           (value.is_string() && (value == "true" || value == "false" || value == "0" || value == "1"));
+  }
+
+  inline bool permission(const nlohmann::json &value) {
+    if (value.is_number_unsigned()) return value.get<std::uint64_t>() <= std::numeric_limits<std::uint32_t>::max();
+    if (value.is_number_integer()) return value.get<std::int64_t>() >= 0 && value.get<std::int64_t>() <= std::numeric_limits<std::uint32_t>::max();
+    if (!value.is_string()) return false;
+    const auto &text = value.get_ref<const std::string &>();
+    std::uint32_t parsed;
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), parsed);
+    return result.ec == std::errc {} && result.ptr == text.data() + text.size();
+  }
+
+  // Old property-tree writers encode empty arrays as "". Normalize only those
+  // known containers; preserve every Apollo permission, command and unknown key.
+  inline bool normalize_snapshot(nlohmann::json &tree) {
+    if (!tree.is_object() || !tree.contains("root") || !tree["root"].is_object()) return false;
+    auto &root = tree["root"];
+    if (!root.contains("uniqueid") || !root["uniqueid"].is_string() || !valid_uuid(root["uniqueid"])) return false;
+    const auto array = [](nlohmann::json &node) {
+      if (node == "") node = nlohmann::json::array();
+      return node.is_array();
+    };
+    std::unordered_set<std::string> uuids;
+    std::unordered_set<std::string> certs;
+    if (root.contains("named_devices")) {
+      auto &devices = root["named_devices"];
+      if (!array(devices) || devices.size() > 256) return false;
+      for (auto &device : devices) {
+        if (!device.is_object() || !device.contains("uuid") || !device["uuid"].is_string() ||
+            !valid_uuid(device["uuid"]) || !uuids.insert(device["uuid"]).second ||
+            !device.contains("cert") || !device["cert"].is_string() || device["cert"].get_ref<const std::string &>().empty() ||
+            device["cert"].get_ref<const std::string &>().size() > 65536 || !certs.insert(device["cert"]).second) return false;
+        if (device.contains("perm") && !permission(device["perm"])) return false;
+        for (const auto key : {"enable_legacy_ordering", "allow_client_commands", "always_use_virtual_display", "prefer_10bit_sdr"}) {
+          if (device.contains(key) && !device[key].is_null() && !boolean(device[key])) return false;
+        }
+        for (const auto key : {"do", "undo"}) {
+          if (!device.contains(key)) continue;
+          if (!array(device[key])) return false;
+          for (const auto &command : device[key]) {
+            if (!command.is_object() || !command.contains("cmd") || !command["cmd"].is_string() ||
+                (command.contains("elevated") && !boolean(command["elevated"]))) return false;
+          }
+        }
+        if (device.contains("config_overrides") && device["config_overrides"] == "") device["config_overrides"] = nlohmann::json::object();
+        if (device.contains("config_overrides") && !device["config_overrides"].is_object()) return false;
+      }
+    }
+    if (root.contains("devices")) {
+      if (!array(root["devices"])) return false;
+      std::size_t legacy_count = uuids.size();
+      for (auto &device : root["devices"]) {
+        if (!device.is_object()) return false;
+        if (!device.contains("certs")) continue;
+        if (!array(device["certs"])) return false;
+        for (const auto &cert : device["certs"]) {
+          if (++legacy_count > 256 || !cert.is_string() || cert.get_ref<const std::string &>().empty() ||
+              cert.get_ref<const std::string &>().size() > 65536 || !certs.insert(cert).second) return false;
+        }
+      }
+    }
+    return true;
+  }
+}  // namespace nvhttp::state_policy

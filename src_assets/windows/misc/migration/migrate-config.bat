@@ -27,6 +27,12 @@ if exist "%OLD_DIR%\sunshine_state.json" (
         icacls "%NEW_DIR%\sunshine_state.json" /reset
     )
 )
+if exist "%OLD_DIR%\sunshine_state.json.bak" (
+    if not exist "%NEW_DIR%\sunshine_state.json.bak" (
+        move "%OLD_DIR%\sunshine_state.json.bak" "%NEW_DIR%\sunshine_state.json.bak"
+        icacls "%NEW_DIR%\sunshine_state.json.bak" /reset
+    )
+)
 
 rem Migrate the credentials directory
 if exist "%OLD_DIR%\credentials\" (

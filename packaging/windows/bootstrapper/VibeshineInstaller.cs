@@ -7037,6 +7037,7 @@ namespace VibepolloInstaller {
           "sunshine.conf",
           "sunshine.log",
           "sunshine_state.json",
+          "sunshine_state.json.bak",
           "vibeshine_state.json",
           "virtual_display_cache.json",
           "nvprefs_undo.json",

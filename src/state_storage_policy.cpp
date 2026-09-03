@@ -70,6 +70,47 @@ namespace statefile::policy {
     }
   }
 
+  load_result_e load_json_for_read(
+    const std::string &path,
+    pt::ptree &tree,
+    const read_file_t &read_file) {
+    tree = {};
+    if (path.empty() || !read_file) {
+      return load_result_e::failed;
+    }
+
+    auto result = read_file(path);
+    if (result.status == read_status_e::missing) {
+      return load_result_e::missing;
+    }
+    if (result.status != read_status_e::loaded) {
+      return load_result_e::failed;
+    }
+
+    auto &contents = result.contents;
+    if (contents.size() >= 3 &&
+        static_cast<unsigned char>(contents[0]) == 0xEF &&
+        static_cast<unsigned char>(contents[1]) == 0xBB &&
+        static_cast<unsigned char>(contents[2]) == 0xBF) {
+      contents.erase(0, 3);
+    }
+    if (contents.find_first_not_of(" \t\r\n\f\v"sv) == std::string::npos) {
+      // An existing but empty state file is not a new profile during startup.
+      // Treating it as missing would allow the caller to mint a replacement
+      // identity when the last snapshot was merely truncated or unreadable.
+      return load_result_e::corrupt;
+    }
+
+    try {
+      std::istringstream in(contents);
+      pt::read_json(in, tree);
+      return load_result_e::loaded;
+    } catch (...) {
+      tree = {};
+      return load_result_e::corrupt;
+    }
+  }
+
   void write_json_atomic(
     const std::string &path,
     const pt::ptree &tree,
