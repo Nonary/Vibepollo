@@ -275,8 +275,8 @@ jobs:
       SIGNPATH_SIGNING_POLICY_SLUG: ${{ inputs.signpath_signing_policy_slug }}
       SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_msi_artifact_configuration_slug }}
       SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_artifact_configuration_slug }}
-      VIBEPOLLO_DEPS_DIR: ${{ github.workspace }}\.vibeshine-deps
-      WEBRTC_ROOT: ${{ github.workspace }}\.vibeshine-deps\libwebrtc\out
+      VIBEPOLLO_DEPS_DIR: ${{ github.workspace }}\.vibepollo-deps
+      WEBRTC_ROOT: ${{ github.workspace }}\.vibepollo-deps\libwebrtc\out
       TRUEHDR_RUNTIME_ROOT: ${{ github.workspace }}\.vibeshine-deps\truehdr-runtime
     defaults:
       run:

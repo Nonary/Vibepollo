@@ -11,7 +11,7 @@ If you forgot your credentials to the web UI, try this.
     ```
   }
   @tab{AppImage | ```bash
-    ./sunshine.AppImage --creds {new-username} {new-password}
+    ./vibepollo.AppImage --creds {new-username} {new-password}
     ```
   }
   @tab{Flatpak | ```bash

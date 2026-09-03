@@ -398,8 +398,8 @@ fi
 %{_datadir}/applications/*.desktop
 
 # Icons
-%{_datadir}/icons/hicolor/scalable/apps/io.github.Nonary.vibepollo.svg
-%{_datadir}/icons/hicolor/scalable/status/io.github.Nonary.vibepollo-*.svg
+%{_datadir}/icons/hicolor/scalable/apps/apollo.svg
+%{_datadir}/icons/hicolor/scalable/status/apollo*.svg
 
 # Metainfo
 %{_datadir}/metainfo/*.metainfo.xml

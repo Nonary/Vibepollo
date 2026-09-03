@@ -183,6 +183,8 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             '[[ "${asset_name}" == "release-provenance.json" ]] && continue',
             workflow_text,
         )
+        self.assertIn("arch_release_version=${RELEASE_VERSION//-/}", workflow_text)
+        self.assertIn("arch_release_version=${arch_release_version//+/.}", workflow_text)
 
         release_steps = jobs["release"]["steps"]
         close_issues = next(

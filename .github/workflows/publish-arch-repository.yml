@@ -73,8 +73,10 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" >"incoming/${package_name}"
 
           package_info="$(bsdtar -xOf "incoming/${package_name}" .PKGINFO)"
+          arch_release_version=${release_version//-/}
+          arch_release_version=${arch_release_version//+/.}
           grep -qx 'pkgname = vibepollo' <<<"${package_info}"
-          grep -qx "pkgver = ${release_version}-1" <<<"${package_info}"
+          grep -qx "pkgver = ${arch_release_version}-1" <<<"${package_info}"
           grep -qx 'arch = x86_64' <<<"${package_info}"
 
           echo "package_name=${package_name}" >>"${GITHUB_OUTPUT}"

@@ -7,7 +7,7 @@ example `release_notes/1.19.0-beta.4.md`.
 Linux release candidates live on `vibe-test`. Every push to that branch builds and validates the
 installable Arch/CachyOS package without creating a GitHub Release, updating the signed pacman
 repository, or deploying the production Pages site. Download the `build-Archlinux` artifact from
-the successful CI run for installation and MOK testing. Promote the verified commit to `vibe`
+the successful CI run for installation and MOK testing. Promote the verified commit to `master`
 before creating the first production tag.
 
 ## Prepare the release

@@ -580,7 +580,9 @@ jobs:
             exit 1
           fi
           package_info="$(bsdtar -xOf "${packages[0]}" .PKGINFO)"
-          if ! grep -qx "pkgver = ${RELEASE_VERSION}-1" <<< "${package_info}"; then
+          arch_release_version=${RELEASE_VERSION//-/}
+          arch_release_version=${arch_release_version//+/.}
+          if ! grep -qx "pkgver = ${arch_release_version}-1" <<< "${package_info}"; then
             echo "::error::Arch package version does not match release ${RELEASE_VERSION}."
             grep '^pkgver = ' <<< "${package_info}" >&2 || true
             exit 1

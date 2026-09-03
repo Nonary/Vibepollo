@@ -71,7 +71,7 @@ CUDA is used for NVFBC capture.
         <td rowspan="8">13.1.1</td>
         <td rowspan="8">590.48.01</td>
         <td rowspan="8">50;52;60;61;62;70;72;75;80;86;87;89;90;100;101;103;120;121</td>
-        <td>sunshine.AppImage</td>
+        <td>vibepollo.AppImage</td>
     </tr>
     <tr>
         <td>sunshine-ubuntu-22.04-{arch}.deb</td>
@@ -106,25 +106,25 @@ CUDA is used for NVFBC capture.
 > The AppImage is built on Ubuntu 22.04, which requires `glibc 2.35` or newer and `libstdc++ 3.4.11` or newer.
 
 ##### Install
-1. Download [sunshine.AppImage](https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine.AppImage)
+1. Download [vibepollo.AppImage](https://github.com/Nonary/Vibepollo/releases/latest/download/vibepollo.AppImage)
    into your home directory.
    ```bash
    cd ~
-   wget https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine.AppImage
+   wget https://github.com/Nonary/Vibepollo/releases/latest/download/vibepollo.AppImage
    ```
 2. Open terminal and run the following command.
    ```bash
-   ./sunshine.AppImage --install
+   ./vibepollo.AppImage --install
    ```
 
 ##### Run
 ```bash
-./sunshine.AppImage --install && ./sunshine.AppImage
+./vibepollo.AppImage --install && ./vibepollo.AppImage
 ```
 
 ##### Uninstall
 ```bash
-./sunshine.AppImage --remove
+./vibepollo.AppImage --remove
 ```
 
 #### Arch Linux and CachyOS
@@ -582,7 +582,7 @@ To get a list of available arguments, run the following command.
       vibepollo --help
       ```}
    @tab{ AppImage | ```bash
-      ./sunshine.AppImage --help
+      ./vibepollo.AppImage --help
       ```}
    @tab{ Flatpak | ```bash
       flatpak run --command=vibepollo io.github.Nonary.vibepollo --help

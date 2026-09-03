@@ -46,6 +46,8 @@ class ArchRepositoryWorkflowTest(unittest.TestCase):
         self.assertIn("Expected exactly one non-debug Vibepollo Arch package", text)
         self.assertIn("--detach-sign \"incoming/${PACKAGE_NAME}\"", text)
         self.assertIn("--detach-sign vibepollo.db.tar.gz", text)
+        self.assertIn("arch_release_version=${release_version//-/}", text)
+        self.assertIn("arch_release_version=${arch_release_version//+/.}", text)
         self.assertIn("gpg --batch --verify", text)
         self.assertIn("git -C \"${publication_dir}\" push origin HEAD:arch-repo", text)
         self.assertIn("gh workflow run update-pages.yml --ref master", text)
