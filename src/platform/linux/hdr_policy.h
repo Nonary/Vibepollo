@@ -13,6 +13,30 @@
 
 namespace platf::linux_hdr {
 
+  /**
+   * KScreen can publish the requested HDR bit before KWin has committed the
+   * matching output color pipeline. Require several consecutive observations
+   * before treating an externally applied output state as capture-ready.
+   */
+  struct output_state_stabilizer_t {
+    static constexpr std::size_t required_observations = 3;
+
+    std::size_t matching_observations {};
+
+    [[nodiscard]] constexpr bool observe(const bool matches) noexcept {
+      matching_observations = matches ? matching_observations + 1 : 0;
+      return matching_observations >= required_observations;
+    }
+  };
+
+  /** A newly published connector may retain a stale true bit from its prior lease. */
+  [[nodiscard]] constexpr bool requires_hdr_rearm(
+    const std::optional<bool> command,
+    const bool newly_connected
+  ) noexcept {
+    return newly_connected && command.value_or(false);
+  }
+
   struct output_state_policy_t {
     // Empty means the display-device policy explicitly requested no HDR
     // change (dd_hdr_option=disabled). It must never be reinterpreted as the
