@@ -443,15 +443,15 @@ namespace platf {
 
       std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous_audio, [[maybe_unused]] bool host_audio_enabled) override {
         // Sink choice priority:
-        // 1. Config sink
-        // 2. Last sink swapped to (Usually virtual in this case)
+        // 1. Last sink swapped to (usually the managed virtual sink)
+        // 2. Config sink
         // 3. Default Sink
         // An attempt was made to always use default to match the switching mechanic,
         // but this happens right after the swap so the default returned by PA was not
         // the new one just set!
-        auto sink_name = config::audio.sink;
+        auto sink_name = requested_sink;
         if (sink_name.empty()) {
-          sink_name = requested_sink;
+          sink_name = config::audio.sink;
         }
         if (sink_name.empty()) {
           sink_name = get_default_sink_name();
