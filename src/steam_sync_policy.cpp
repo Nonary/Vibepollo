@@ -85,6 +85,13 @@ namespace platf::steam::sync::policy {
       return {};
     }
 
+    bool has_canonical_steam_identity(const nlohmann::json &app,
+                                      std::uint32_t app_id) {
+      return app.contains("uuid") && app["uuid"].is_string() &&
+             lower(app["uuid"].get<std::string>()) ==
+               canonical_steam_app_uuid(app_id);
+    }
+
     bool excluded(const game_t &game, const std::vector<config::id_name_t> &entries) {
       const auto id = std::to_string(game.app_id);
       for (const auto &entry : entries) {
@@ -277,7 +284,16 @@ namespace platf::steam::sync::policy {
     for (auto it = entries.begin(); it != entries.end();) {
       auto &app = *it;
       const auto steam_id = id_of(app);
-      if (steam_id.empty() || (!app.contains("steam-managed") || app["steam-managed"] != "auto")) {
+      const auto parsed_id = app_id_of(app);
+      const bool managed = app.contains("steam-managed") &&
+                           app["steam-managed"] == "auto";
+      // Early auto-imported entries already received Vibepollo's reserved,
+      // deterministic Steam UUID but predate the steam-managed marker.  That
+      // UUID is an ownership marker strong enough to adopt the entry.  Keep
+      // shortcuts identified only by steam-id untouched as manual entries.
+      const bool legacy_managed = !app.contains("steam-managed") && parsed_id &&
+                                  has_canonical_steam_identity(app, *parsed_id);
+      if (steam_id.empty() || (!managed && !legacy_managed)) {
         ++it;
         continue;
       }
