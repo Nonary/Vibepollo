@@ -204,13 +204,17 @@ namespace platf::linux_private_display {
     }
 
     template<typename Predicate>
-    bool wait_for_stable_configuration(Predicate &&predicate) {
+    bool wait_for_configuration(Predicate &&predicate, const bool require_stability = false) {
       const auto deadline = std::chrono::steady_clock::now() + output_verification_timeout;
       linux_hdr::output_state_stabilizer_t stabilizer;
       do {
         const auto configuration = query_configuration();
-        if (stabilizer.observe(configuration && predicate(*configuration))) {
+        const bool matches = configuration && predicate(*configuration);
+        if (matches && (!require_stability || stabilizer.observe(true))) {
           return true;
+        }
+        if (require_stability && !matches) {
+          (void) stabilizer.observe(false);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
       } while (std::chrono::steady_clock::now() < deadline);
@@ -1142,6 +1146,7 @@ namespace platf::linux_private_display {
     const std::vector<std::string> hdr_rearm_arguments = linux_hdr::requires_hdr_rearm(hdr_policy.command, newly_connected) ?
       std::vector<std::string> {target_prefix + "hdr.disable"} :
       std::vector<std::string> {};
+    const bool require_hdr_stability = !hdr_rearm_arguments.empty();
     if (!hdr_policy.command && parsed_hdr_state.value_or(false) && !hdr_capable) {
       BOOST_LOG(warning) << "Linux private display: " << session.virtual_display_device_id
                          << " does not advertise HDR10; the verified session will use SDR.";
@@ -1175,7 +1180,10 @@ namespace platf::linux_private_display {
              output->value("currentModeId", std::string {}) == mode_id &&
              std::abs(output->value("scale", 1.0) - target_scale) < 0.01;
     };
-    if (!wait_for_stable_configuration(base_matches)) {
+    // Mode/scale publication is only an ordering barrier for the following
+    // HDR transaction. Requiring three fresh kscreen-doctor processes here
+    // adds seconds to every launch without strengthening the final HDR gate.
+    if (!wait_for_configuration(base_matches)) {
       BOOST_LOG(error) << "Linux private display: timed out stabilizing mode/scale state on "
                        << session.virtual_display_device_id << '.';
       return false;
@@ -1183,7 +1191,7 @@ namespace platf::linux_private_display {
     if (!execute_configuration(hdr_rearm_arguments, "HDR rearm")) {
       return false;
     }
-    if (!hdr_rearm_arguments.empty() && !wait_for_stable_configuration([&](const json &current) {
+    if (!hdr_rearm_arguments.empty() && !wait_for_configuration([&](const json &current) {
           if (!base_matches(current)) {
             return false;
           }
@@ -1199,7 +1207,7 @@ namespace platf::linux_private_display {
     }
 
     bool verified_hdr_enabled = false;
-    const bool verified = wait_for_stable_configuration([&](const json &current) {
+    const bool verified = wait_for_configuration([&](const json &current) {
       if (!base_matches(current)) {
         return false;
       }
@@ -1209,7 +1217,7 @@ namespace platf::linux_private_display {
       }
       verified_hdr_enabled = hdr_capable && output->value("hdr", false);
       return true;
-    });
+    }, require_hdr_stability);
 
     if (!verified) {
       BOOST_LOG(error) << "Linux private display: timed out verifying mode/HDR/scale state on "
@@ -1553,14 +1561,16 @@ namespace platf::linux_private_display {
                 std::abs(output->value("scale", 1.0) - entry.scale) < 0.01);
       });
     };
-    if (!wait_for_stable_configuration(topology_matches)) {
+    // This observation orders the HDR transaction after the modeset. The
+    // final verification below is the phase that must remain stable.
+    if (!wait_for_configuration(topology_matches)) {
       BOOST_LOG(error) << "Linux Remote Monitor: timed out stabilizing the composed mode/scale state.";
       return false;
     }
     if (!execute_configuration(hdr_rearm_arguments, "Remote Monitor HDR rearm")) {
       return false;
     }
-    if (!hdr_rearm_arguments.empty() && !wait_for_stable_configuration([&](const json &current) {
+    if (!hdr_rearm_arguments.empty() && !wait_for_configuration([&](const json &current) {
           return topology_matches(current) && std::ranges::all_of(desired, [&](const auto &entry) {
             if (!entry.owned_client || !linux_hdr::requires_hdr_rearm(
                                          entry.node.configured_mode.hdr,
@@ -1578,7 +1588,7 @@ namespace platf::linux_private_display {
     if (!execute_configuration(hdr_arguments, "Remote Monitor HDR activation")) {
       return false;
     }
-    const bool verified = wait_for_stable_configuration([&](const json &current) {
+    const bool verified = wait_for_configuration([&](const json &current) {
       return topology_matches(current) && std::ranges::all_of(desired, [&](const auto &entry) {
         if (!entry.owned_client) {
           return true;
@@ -1587,7 +1597,7 @@ namespace platf::linux_private_display {
         return !output_hdr_capable(output, entry.name) ||
                output->value("hdr", false) == entry.node.configured_mode.hdr;
       });
-    });
+    }, !hdr_rearm_arguments.empty());
     if (!verified) {
       BOOST_LOG(error) << "Linux Remote Monitor: timed out verifying the composed mode/HDR/scale state.";
       return false;
