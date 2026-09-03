@@ -51,7 +51,7 @@ announce() {
 valid_user() { [[ "$1" =~ ^[a-z_][a-z0-9_-]*$ ]]; }
 # Plasma Login Manager and SDDM both start the Plasma Wayland desktop through
 # the systemd user manager, which session readiness verifies unit by unit.
-desktop_service_supported() { [[ "$1" =~ ^(plasmalogin|sddm|sddm-autologin)$ ]]; }
+desktop_service_supported() { [[ "$1" =~ ^(plasmalogin|plasmalogin-autologin|sddm|sddm-autologin)$ ]]; }
 valid_uid() { [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]; }
 valid_session_id() { [[ "$1" =~ ^[A-Za-z0-9_.-]+$ ]]; }
 valid_wayland_display() { [[ "$1" =~ ^wayland-[0-9]+$ ]]; }
