@@ -293,7 +293,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn("AddSeconds($timeoutSeconds)", action_text)
 
 
-class WindowsWorkflowEfficiencyTest(unittest.TestCase):
+class WindowsWorkflowBehaviorTest(unittest.TestCase):
     def test_release_build_uses_shallow_cached_dependencies(self) -> None:
         workflow = load_workflow("ci-windows.yml")
         workflow_text = (ROOT / ".github" / "workflows" / "ci-windows.yml").read_text(
@@ -343,7 +343,7 @@ class WindowsWorkflowEfficiencyTest(unittest.TestCase):
             workflow_text,
         )
         self.assertIn(
-            "          # Release tag builds save unsigned artifacts and rely on prior branch/PR testing; other calls retain tests.\n"
+            "          # Release tag builds omit test targets; ordinary reusable-workflow calls retain them.\n"
             "          cmake \\",
             workflow_text,
         )
