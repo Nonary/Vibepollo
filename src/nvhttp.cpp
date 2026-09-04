@@ -48,6 +48,7 @@
 #include "display_helper_integration.h"
 #include "file_handler.h"
 #include "globals.h"
+#include "hdr_request_policy.h"
 #include "httpcommon.h"
 #include "http_pairing_policy.h"
 #include "hdr_request_policy.h"
@@ -2903,7 +2904,14 @@ namespace nvhttp {
       launch_session->gcmap = util::from_view(get_arg(args, "gcmap", "0"));
       launch_session->enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
       launch_session->client_vrr_requested = util::from_view(get_arg(args, "clientVrrRequested", "0"));
-      launch_session->prefer_sdr_10bit = verified_client->prefer_10bit_sdr;
+      auto color_app_ctx = launch_app_ctx;
+      if (!color_app_ctx && launch_session->appid <= 0 && launch_appuuid_arg.empty()) {
+        color_app_ctx = proc::proc.resolve_app(proc::proc.current_app_id());
+      }
+      launch_session->prefer_sdr_10bit = rtsp_stream::hdr_request_policy::resolve_prefer_10bit_sdr(
+        verified_client->prefer_10bit_sdr,
+        color_app_ctx ? color_app_ctx->prefer_10bit_sdr : std::nullopt
+      );
 #if defined(_WIN32) || defined(__linux__)
       {
         const auto hdr_request = rtsp_stream::hdr_request_policy::apply(

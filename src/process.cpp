@@ -3958,6 +3958,7 @@ namespace proc {
         "elevated",
         "auto-detach",
         "wait-all",
+        "prefer-10bit-sdr",
         "use-app-identity",
         "per-client-app-identity",
         "virtual-display"
@@ -4297,6 +4298,9 @@ namespace proc {
         std::optional<bool> legacy_override;
         if (app_node.contains("lossless-scaling-legacy-auto-detect")) {
           legacy_override = util::get_non_string_json_value<bool>(app_node, "lossless-scaling-legacy-auto-detect", false);
+        }
+        if (app_node.contains("prefer-10bit-sdr") && !app_node["prefer-10bit-sdr"].is_null()) {
+          ctx.prefer_10bit_sdr = util::get_non_string_json_value<bool>(app_node, "prefer-10bit-sdr", false);
         }
         std::optional<std::string> dd_config_override;
         if (app_node.contains("dd-configuration-option")) {

@@ -352,6 +352,22 @@
             </div>
           </div>
 
+          <div class="space-y-2">
+            <label for="app-prefer-10bit-sdr" class="block text-sm font-semibold">
+              {{ t('config.prefer_10bit_sdr') }}
+            </label>
+            <select
+              id="app-prefer-10bit-sdr"
+              v-model="form.prefer10BitSdr"
+              class="w-full rounded-md border border-dark/20 dark:border-light/20 bg-light dark:bg-surface p-2"
+            >
+              <option :value="null">{{ t('config.app_prefer_10bit_sdr_inherit') }}</option>
+              <option :value="true">{{ t('_common.enabled') }}</option>
+              <option :value="false">{{ t('_common.disabled') }}</option>
+            </select>
+            <p class="text-[11px] opacity-70">{{ t('config.app_prefer_10bit_sdr_desc') }}</p>
+          </div>
+
           <AppEditRtxHdrSection
             v-if="isWindows && hasNvidia"
             v-model:form="form"
@@ -611,6 +627,7 @@ function fresh(): AppForm {
     stateCmd: [],
     detached: [],
     virtualScreen: false,
+    prefer10BitSdr: null,
     output: '',
     frameGenerationProvider: 'game-provided',
     frameGenerationMode: 'off',
@@ -999,6 +1016,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     losslessScalingProfile: profileKey,
     losslessScalingProfiles: losslessProfiles,
     losslessScalingLaunchDelay: lsLaunchDelay,
+    prefer10BitSdr: typeof src?.['prefer-10bit-sdr'] === 'boolean' ? src['prefer-10bit-sdr'] : null,
     rtxHdrMode: rtxHdrOverrides.mode,
     rtxHdrValuesOverride: rtxHdrOverrides.valuesOverride,
     rtxHdrForceSdr: rtxHdrOverrides.forceSdr,
@@ -1060,6 +1078,9 @@ function toServerPayload(f: AppForm): Record<string, any> {
     payload['uuid'] = f.uuid;
   }
 
+  if (f.prefer10BitSdr !== null) {
+    payload['prefer-10bit-sdr'] = f.prefer10BitSdr;
+  }
   // Only persist virtual display mode/layout if explicitly set and different from global defaults
   const _globalVDMode = globalVirtualDisplayMode.value;
   const _globalVDLayout = globalVirtualDisplayLayout.value;
