@@ -1243,6 +1243,7 @@ function emptyForm(): EditorForm {
     virtualDisplayMode: '',
     virtualDisplayLayout: '',
     ddConfigurationOption: '',
+    prefer10BitSdr: null,
     frameGenerationProvider: '',
     frameGenerationMode: '',
     gen1FramegenFix: false,
