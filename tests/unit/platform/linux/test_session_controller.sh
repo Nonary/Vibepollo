@@ -25,6 +25,7 @@ mock_start=1
 mock_active_first=1
 mock_active_second=1
 mock_active_call=0
+session_observation_retry_pending=0
 
 fail_test() {
   /usr/bin/printf 'FAIL: %s\n' "$*" >&2
@@ -54,6 +55,7 @@ reset_scenario() {
   last_status=''
   health_cycle=0
   readiness_retry_pending=0
+  session_observation_retry_pending=0
   mock_policy=1
   mock_observe=0
   mock_identity=0
@@ -80,6 +82,10 @@ observe_active_session() {
   candidate_runtime=/run/user/1000
   candidate_groups=1000,998
   candidate_role=desktop
+}
+
+read_session_record() {
+  ((mock_identity))
 }
 
 binding_matches_candidate() {
@@ -148,6 +154,41 @@ reconcile_once
 expect_events Q
 expect_state 0 0
 
+# Suspend can interrupt the authoritative session query while the existing
+# binding and host remain valid. Preserve them for one observation retry.
+reset_scenario
+mock_observe=1
+mock_identity=1
+mock_complete=1
+mock_host=1
+reconcile_once
+expect_events ''
+expect_state 1 1
+[[ "$session_observation_retry_pending" == 1 ]] ||
+  fail_test 'interrupted session observation did not schedule a retry'
+
+# A successful observation clears the retry and keeps the running host.
+mock_observe=0
+events=()
+reconcile_once
+expect_events I
+expect_state 1 1
+[[ "$session_observation_retry_pending" == 0 ]] ||
+  fail_test 'successful session observation retry remained pending'
+
+# Repeated observation failures do not stop an already-running automatic host.
+reset_scenario
+mock_observe=1
+mock_identity=1
+mock_complete=1
+mock_host=1
+session_observation_retry_pending=1
+reconcile_once
+expect_events ''
+expect_state 1 1
+[[ "$session_observation_retry_pending" == 1 ]] ||
+  fail_test 'repeated session observation failure did not preserve the running host'
+
 # An unready target stays quiesced and never publishes or starts a host.
 reset_scenario
 mock_ready=0
@@ -203,7 +244,7 @@ expect_state 1 1
 [[ "$readiness_retry_pending" == 0 ]] ||
   fail_test 'successful running-host readiness retry remained pending'
 
-# A second consecutive failure is authoritative and performs normal cleanup.
+# Repeated readiness failures do not stop an already-running automatic host.
 reset_scenario
 mock_identity=1
 mock_complete=1
@@ -211,8 +252,10 @@ mock_host=1
 mock_ready=0
 readiness_retry_pending=1
 reconcile_once
-expect_events I,R,Q
-expect_state 0 0
+expect_events I,R
+expect_state 1 1
+[[ "$readiness_retry_pending" == 1 ]] ||
+  fail_test 'repeated readiness failure did not preserve the running host'
 
 # New display credentials in the same logind session force disconnect/rebind.
 reset_scenario
