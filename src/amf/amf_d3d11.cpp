@@ -988,6 +988,22 @@ namespace amf {
       if (config.pa_activity_type && !set_verified_int64(AMF_PA_ACTIVITY_TYPE, *config.pa_activity_type, "PA activity type")) return false;
     }
 
+    // Preserve the finite GOP used by the Xbox HEVC workaround. Select the
+    // codec explicitly: accepting a property is not a reliable codec probe.
+    const auto gdr_ctbs = lifecycle::hevc_gdr_ctbs_per_slot(
+      client_config.enableIntraRefresh == 1,
+      video_format,
+      client_config.width,
+      client_config.height);
+    if (gdr_ctbs) {
+      if (!set_verified_int64(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, lifecycle::hevc_gdr_gop_frames, "HEVC GDR GOP size") ||
+          !set_verified_int64(AMF_VIDEO_ENCODER_HEVC_INTRA_REFRESH_NUM_CTBS_PER_SLOT, *gdr_ctbs, "HEVC GDR CTBs per slot")) {
+        return false;
+      }
+      BOOST_LOG(info) << "AMF: configured HEVC intra refresh with GOP=" << lifecycle::hevc_gdr_gop_frames
+                      << ", CTBs per slot=" << *gdr_ctbs;
+    }
+
     // NOTE: LOWLATENCY_MODE is intentionally NOT forced here.
     //
     // Previously this block hard-coded AMF_VIDEO_ENCODER_(HEVC_)LOWLATENCY_MODE = true
@@ -1893,6 +1909,8 @@ namespace amf {
       return false;
     };
 
+    // Intra refresh must not intercept the initial or recovery IDR requested by
+    // the client. Apply only the negotiated codec's per-frame properties.
     auto set_forced_idr_properties = [&]() {
       auto check = [&](AMF_RESULT property_result, const char *label) {
         if (property_result == AMF_OK) return true;

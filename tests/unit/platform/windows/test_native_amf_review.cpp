@@ -235,6 +235,29 @@ namespace {
            av1.disable_ltr;
   }
 
+  bool hevc_gdr_uses_negotiated_codec_and_dimensions() {
+    using amf::lifecycle::hevc_gdr_ctbs_per_slot;
+    if (hevc_gdr_ctbs_per_slot(false, 1, 3840, 2160) ||
+        hevc_gdr_ctbs_per_slot(true, 0, 3840, 2160) ||
+        hevc_gdr_ctbs_per_slot(true, 2, 3840, 2160) ||
+        hevc_gdr_ctbs_per_slot(true, 3, 3840, 2160) ||
+        hevc_gdr_ctbs_per_slot(true, 1, 0, 2160) ||
+        hevc_gdr_ctbs_per_slot(true, 1, 3840, -1)) {
+      return false;
+    }
+
+    // Each ordinary stream refreshes one actual CTB row per slot, rather than
+    // inheriting 60 CTBs from an assumed 4K surface before encoder Init().
+    return hevc_gdr_ctbs_per_slot(true, 1, 1280, 720) == 20 &&
+           hevc_gdr_ctbs_per_slot(true, 1, 1920, 1080) == 30 &&
+           hevc_gdr_ctbs_per_slot(true, 1, 2560, 1440) == 40 &&
+           hevc_gdr_ctbs_per_slot(true, 1, 3840, 2160) == 60 &&
+           hevc_gdr_ctbs_per_slot(true, 1, 1921, 1081) == 31 &&
+           hevc_gdr_ctbs_per_slot(true, 1, 1, 1) == 1 &&
+           hevc_gdr_ctbs_per_slot(true, 1, 64, 7680) == 1 &&
+           hevc_gdr_ctbs_per_slot(true, 1, 64, 7681) == 2;
+  }
+
   bool effective_reference_frame_limit_matches_configure_and_verify() {
     using amf::lifecycle::effective_reference_frame_limit;
 
@@ -557,6 +580,7 @@ int main() {
              automatic_h264_coder_preserves_driver_default() &&
              experimental_selection_is_explicit_only() &&
              xbox_intra_refresh_maps_to_native_amf() &&
+             hevc_gdr_uses_negotiated_codec_and_dimensions() &&
              effective_reference_frame_limit_matches_configure_and_verify() &&
              repeated_input_rotates_away_from_a_lookahead_owned_surface() &&
              surface_pool_can_prime_a_retaining_driver() &&
@@ -613,6 +637,10 @@ TEST(SunshineNativeAmfReview, ExperimentalSelectionIsExplicitOnly) {
 
 TEST(SunshineNativeAmfReview, XboxIntraRefreshMapsToNativeAmf) {
   EXPECT_TRUE(xbox_intra_refresh_maps_to_native_amf());
+}
+
+TEST(SunshineNativeAmfReview, HevcGdrUsesNegotiatedCodecAndDimensions) {
+  EXPECT_TRUE(hevc_gdr_uses_negotiated_codec_and_dimensions());
 }
 
 TEST(SunshineNativeAmfReview, EffectiveReferenceFrameLimitMatchesConfigureAndVerify) {
