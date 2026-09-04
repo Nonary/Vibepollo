@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 
+#include <signal.h>
 #include <stdio.h>
 #include <sys/wait.h>
 
@@ -15,7 +16,58 @@ int vibepollo_session_exec_entrypoint(int argc, char **argv);
   } \
 } while (0)
 
+static int check_client_termination(int signal_number, bool pending) {
+  int peers[2];
+  CHECK(!socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, peers));
+  const pid_t child = fork();
+  CHECK(child >= 0);
+  if (!child) {
+    close(peers[0]);
+    // Bound regressions: an inherited blocked termination signal must not
+    // leave this test (or a real broker client) waiting forever.
+    struct sigaction action = {.sa_handler = SIG_DFL};
+    sigset_t signals;
+    if (sigemptyset(&action.sa_mask) || sigaction(SIGALRM, &action, NULL) ||
+        sigemptyset(&signals) || sigaddset(&signals, SIGALRM) ||
+        sigprocmask(SIG_UNBLOCK, &signals, NULL)) _exit(1);
+    alarm(2);
+
+    // The host blocks SIGINT/SIGTERM for sigwait(). Shell launchers can also
+    // pass ignored dispositions through exec. Exercise both at client entry.
+    action.sa_handler = pending ? SIG_DFL : SIG_IGN;
+    if (sigaction(signal_number, &action, NULL) || sigemptyset(&signals) ||
+        sigaddset(&signals, signal_number) ||
+        sigprocmask(SIG_BLOCK, &signals, NULL)) _exit(1);
+    if (pending && kill(getpid(), signal_number)) _exit(1);
+
+    char *arguments[] = {"vibepollo-session-exec", NULL};
+    if (vibepollo_session_exec_entrypoint(1, arguments) != 2) _exit(1);
+    if (pending) _exit(1); // A pending stop must take effect at client entry.
+    if (send(peers[1], "R", 1, MSG_NOSIGNAL) != 1) _exit(1);
+    _exit(relay_responses(peers[1], 42));
+  }
+  close(peers[1]);
+  char ready = 0;
+  const ssize_t received = pending ? 0 : recv(peers[0], &ready, 1, 0);
+  const int sent = !pending && received == 1 ? kill(child, signal_number) : 0;
+  int status = 0;
+  const pid_t reaped = waitpid(child, &status, 0);
+  // Termination must close the broker connection as well as empty the host
+  // cgroup, so the broker can cancel the generation-bound application.
+  const ssize_t disconnected = recv(peers[0], &ready, 1, MSG_DONTWAIT);
+  close(peers[0]);
+  CHECK(pending || (received == 1 && !sent));
+  CHECK(reaped == child && WIFSIGNALED(status) && WTERMSIG(status) == signal_number);
+  CHECK(disconnected == 0);
+  return 0;
+}
+
 int main(void) {
+  CHECK(!check_client_termination(SIGTERM, true));
+  CHECK(!check_client_termination(SIGTERM, false));
+  CHECK(!check_client_termination(SIGINT, false));
+  CHECK(!check_client_termination(SIGHUP, false));
+
   uint64_t generation = 0;
   CHECK(!parse_generation(NULL, &generation));
   CHECK(!parse_generation("", &generation));
@@ -76,6 +128,6 @@ int main(void) {
   CHECK(waitpid(child, &status, 0) == child);
   CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 
-  puts("PASS: unprivileged session client framing and capability discard");
+  puts("PASS: unprivileged session client termination, framing and capability discard");
   return 0;
 }

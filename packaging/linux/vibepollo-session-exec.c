@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -22,6 +23,21 @@ static bool drop_client_capabilities(void) {
   const int result = cap_set_proc(empty);
   cap_free(empty);
   return !result && !prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+}
+
+static bool restore_termination_signals(void) {
+  // The host blocks SIGINT/SIGTERM for its sigwait() thread. The mask and
+  // ignored shell dispositions survive exec, but this client has no signal
+  // monitor. Restore ordinary termination before any blocking broker I/O so
+  // stopping the host closes this connection and lets the broker drain its app.
+  struct sigaction action = {.sa_handler = SIG_DFL};
+  if (sigemptyset(&action.sa_mask) || sigaction(SIGTERM, &action, NULL) ||
+      sigaction(SIGINT, &action, NULL) || sigaction(SIGHUP, &action, NULL)) return false;
+
+  sigset_t signals;
+  if (sigemptyset(&signals) || sigaddset(&signals, SIGTERM) ||
+      sigaddset(&signals, SIGINT) || sigaddset(&signals, SIGHUP)) return false;
+  return !sigprocmask(SIG_UNBLOCK, &signals, NULL);
 }
 
 static bool parse_generation(const char *value, uint64_t *generation) {
@@ -197,6 +213,7 @@ static int relay_responses(int socket_fd, uint64_t generation) {
 int main(int argc, char **argv) {
   uint64_t generation = 0;
   if (!drop_client_capabilities()) return fail("could not discard inherited capabilities");
+  if (!restore_termination_signals()) return fail("could not restore termination signals");
   if (argc < 2) return 2;
   if (!parse_generation(getenv("VIBEPOLLO_SESSION_GENERATION"), &generation)) {
     errno = 0;
