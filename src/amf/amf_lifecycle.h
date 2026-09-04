@@ -254,6 +254,25 @@ namespace amf::lifecycle {
     };
   }
 
+  inline constexpr int hevc_gdr_gop_frames = 120;
+
+  inline constexpr std::optional<int64_t> hevc_gdr_ctbs_per_slot(
+    bool requested,
+    int video_format,
+    int width,
+    int height) noexcept {
+    if (!requested || video_format != 1 || width <= 0 || height <= 0) {
+      return std::nullopt;
+    }
+
+    // Preserve the row-based refresh used by the Xbox workaround, with AMF's
+    // documented 64x64 CTBs and the dimensions passed to encoder Init().
+    const int64_t ctbs_wide = (static_cast<int64_t>(width) + 63) / 64;
+    const int64_t ctbs_high = (static_cast<int64_t>(height) + 63) / 64;
+    const int64_t rows_per_slot = (ctbs_high + hevc_gdr_gop_frames - 1) / hevc_gdr_gop_frames;
+    return rows_per_slot * ctbs_wide;
+  }
+
   inline constexpr int intra_refresh_period_frames = 300;
   inline constexpr int intra_refresh_duration_frames = intra_refresh_period_frames - 1;
   inline constexpr int av1_continuous_intra_refresh_mode = 2;
