@@ -504,10 +504,15 @@ namespace egl {
       EGL_NONE
     };
 
-    int count;
-    EGLConfig conf;
+    int count = 0;
+    EGLConfig conf = nullptr;
     if (!eglChooseConfig(display, conf_attr, &conf, 1, &count)) {
       BOOST_LOG(error) << "Couldn't set config attributes: ["sv << util::hex(eglGetError()).to_string_view() << ']';
+      return std::nullopt;
+    }
+
+    if (count == 0 || conf == nullptr) {
+      BOOST_LOG(error) << "No EGL configuration supports OpenGL on the selected display"sv;
       return std::nullopt;
     }
 
