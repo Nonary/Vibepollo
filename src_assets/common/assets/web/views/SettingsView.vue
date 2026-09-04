@@ -462,8 +462,15 @@ function groupTitle(id: string): string {
 }
 
 function groupDescription(id: string): string {
-  const key = `ui.settings.groups.${id}.description`;
-  return messageExists(key) ? t(key) : '';
+  const platform = String(hostMetadata.value.platform ?? '').toLocaleLowerCase();
+  const candidates = [
+    platform.includes('windows') ? `ui.settings.groups.${id}.description_windows` : '',
+    platform.includes('linux') ? `ui.settings.groups.${id}.description_linux` : '',
+    platform.includes('mac') ? `ui.settings.groups.${id}.description_macos` : '',
+    `ui.settings.groups.${id}.description`,
+  ].filter(Boolean);
+  const key = candidates.find((candidate) => messageExists(candidate));
+  return key ? t(key) : '';
 }
 
 function fieldLabel(field: SettingsField): string {
@@ -483,6 +490,9 @@ function fieldDescription(field: SettingsField): string {
     platform.includes('windows') ? `config.${field.key}_desc_windows` : '',
     platform.includes('linux') ? `config.${field.key}_desc_linux` : '',
     platform.includes('mac') ? `config.${field.key}_desc_macos` : '',
+    platform.includes('windows') ? `ui.settings.fields.${field.key}.description_windows` : '',
+    platform.includes('linux') ? `ui.settings.fields.${field.key}.description_linux` : '',
+    platform.includes('mac') ? `ui.settings.fields.${field.key}.description_macos` : '',
     `config.${field.key}_desc`,
     `ui.settings.fields.${field.key}.description`,
   ].filter(Boolean);

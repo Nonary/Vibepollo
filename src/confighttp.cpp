@@ -74,6 +74,7 @@
 #ifdef _WIN32
   #include "platform/windows/virtual_display_cleanup.h"
 #elif defined(__linux__)
+  #include "platform/linux/capture_status.h"
   #include "platform/linux/private_display.h"
 #endif
 
@@ -3106,9 +3107,22 @@ namespace confighttp {
 #if defined(__linux__)
     output_tree["providers"]["lutris"] = true;
     output_tree["providers"]["mangohud"] = true;
+    const char *session_role = std::getenv("VIBEPOLLO_SESSION_ROLE");
+    const std::string role = session_role ? session_role : "unknown";
+    output_tree["linux"] = {{"session_role", role == "desktop" || role == "greeter" ? role : "unknown"}};
+    const bool managed_active = platf::linux_capture_status::managed_event_capture_active();
+    output_tree["capture_status"] = {
+      {"configured_backend", config::video.capture},
+      {"observed_backend", managed_active ? "kms" : "unknown"},
+      {"managed_event_driven", managed_active},
+      {"virtual_display_configured", config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled},
+    };
+    const bool virtual_capable = platf::linux_private_display::capable();
+    const bool virtual_ready = platf::linux_private_display::ready();
     output_tree["virtual_display"] = {
-      {"capable", platf::linux_private_display::capable()},
-      {"ready", platf::linux_private_display::ready()},
+      {"capable", virtual_capable},
+      {"ready", virtual_ready},
+      {"reason", virtual_ready ? "" : virtual_capable ? "session_or_output_unavailable" : "driver_or_outputs_unavailable"},
       {"backend", "kscreen-vkms"},
       {"modes", {"per_client", "shared"}},
       {"layouts", {"exclusive", "extended", "extended_primary", "extended_isolated", "extended_primary_isolated"}},

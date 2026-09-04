@@ -406,22 +406,22 @@ const remoteMonitorFields = (): SettingsField[] => [
   boolean('remote_monitor_mute_audio', {
     labelKey: 'ui.settings.fields.remote_monitor_mute_audio.label',
     descriptionKey: 'ui.settings.fields.remote_monitor_mute_audio.description',
-    platform: 'windows',
+    platform: ['windows', 'linux'],
   }),
   boolean('remote_monitor_disconnect_on_stream_end', {
     labelKey: 'ui.settings.fields.remote_monitor_disconnect_on_stream_end.label',
     descriptionKey: 'ui.settings.fields.remote_monitor_disconnect_on_stream_end.description',
-    platform: 'windows',
+    platform: ['windows', 'linux'],
   }),
   boolean('remote_monitor_disconnect_on_client_disconnect', {
     labelKey: 'ui.settings.fields.remote_monitor_disconnect_on_client_disconnect.label',
     descriptionKey: 'ui.settings.fields.remote_monitor_disconnect_on_client_disconnect.description',
-    platform: 'windows',
+    platform: ['windows', 'linux'],
   }),
   boolean('remote_monitor_terminate_on_first_request', {
     labelKey: 'ui.settings.fields.remote_monitor_terminate_on_first_request.label',
     descriptionKey: 'ui.settings.fields.remote_monitor_terminate_on_first_request.description',
-    platform: 'windows',
+    platform: ['windows', 'linux'],
   }),
 ];
 

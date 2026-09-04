@@ -46,6 +46,27 @@ test('capture options follow the host platform', () => {
   );
 });
 
+test('Linux remote-monitor controls and frame-generation labels are available', () => {
+  for (const key of [
+    'remote_monitor_mute_audio',
+    'remote_monitor_disconnect_on_stream_end',
+    'remote_monitor_disconnect_on_client_disconnect',
+    'remote_monitor_terminate_on_first_request',
+  ]) {
+    assert.equal(matchesPlatform(settingsFields.get(key)!, 'linux'), true);
+    assert.equal(matchesPlatform(settingsFields.get(key)!, 'windows'), true);
+    assert.equal(matchesPlatform(settingsFields.get(key)!, 'macos'), false);
+  }
+  const messages = JSON.parse(readFileSync(
+    new URL('../public/assets/locale/ui/en.json', import.meta.url), 'utf8',
+  ));
+  for (const option of frameGenerationOptionsForPlatform('linux')) {
+    const label = option.labelKey.split('.').reduce((value, key) => value?.[key], messages);
+    assert.equal(typeof label, 'string', option.labelKey);
+    assert.ok(label.length);
+  }
+});
+
 test('gamepad options follow the host platform', () => {
   assert.deepEqual(
     gamepadOptionsForPlatform('linux').map((option) => option.value),
