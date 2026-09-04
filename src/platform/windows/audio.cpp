@@ -655,7 +655,7 @@ namespace platf::audio {
       return capture_e::ok;
     }
 
-    int init(std::uint32_t sample_rate, std::uint32_t frame_size, std::uint32_t channels_out, bool continuous) {
+    int init(std::uint32_t sample_rate, std::uint32_t frame_size, std::uint32_t channels_out, bool continuous, const std::wstring &capture_device_id) {
       audio_event.reset(CreateEventA(nullptr, FALSE, FALSE, nullptr));
       if (!audio_event) {
         BOOST_LOG(error) << "Couldn't create Event handle"sv;
@@ -686,7 +686,17 @@ namespace platf::audio {
         return -1;
       }
 
-      auto device = default_device(device_enum);
+      follow_default_device = capture_device_id.empty();
+      device_t device;
+      if (follow_default_device) {
+        device = default_device(device_enum);
+      } else {
+        status = device_enum->GetDevice(capture_device_id.c_str(), &device);
+        if (FAILED(status)) {
+          BOOST_LOG(error) << "Couldn't open selected audio endpoint [0x"sv << util::hex(status).to_string_view() << ']';
+          return -1;
+        }
+      }
       if (!device) {
         return -1;
       }
@@ -792,7 +802,7 @@ namespace platf::audio {
       } block_aligned;
 
       // Check if the default audio device has changed
-      if (endpt_notification.check_default_render_device_changed()) {
+      if (follow_default_device && endpt_notification.check_default_render_device_changed()) {
         // Invoke the audio_control_t's callback if it wants one
         if (default_endpt_changed_cb) {
           (*default_endpt_changed_cb)();
@@ -888,6 +898,7 @@ namespace platf::audio {
     float *sample_buf_pos;
     int channels;
     bool continuous_audio;
+    bool follow_default_device = true;
 
     HANDLE mmcss_task_handle = nullptr;
   };
@@ -989,7 +1000,7 @@ namespace platf::audio {
     std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous_audio, [[maybe_unused]] bool host_audio_enabled) override {
       auto mic = std::make_unique<mic_wasapi_t>();
 
-      if (mic->init(sample_rate, frame_size, channels, continuous_audio)) {
+      if (mic->init(sample_rate, frame_size, channels, continuous_audio, capture_device_id)) {
         return nullptr;
       }
 
@@ -1073,6 +1084,16 @@ namespace platf::audio {
 
       BOOST_LOG(error) << "Couldn't set virtual audio sink waveformat";
       return std::nullopt;
+    }
+
+    int set_capture_sink(const std::string &sink) override {
+      auto matched = find_device_id(match_all_fields(utf_utils::from_utf8(sink)));
+      if (!matched) {
+        BOOST_LOG(error) << "Couldn't find audio sink " << sink;
+        return -1;
+      }
+      capture_device_id = matched->second;
+      return 0;
     }
 
     int set_sink(const std::string &sink) override {
@@ -3283,6 +3304,7 @@ namespace platf::audio {
     role_device_ids_t captured_default_device_ids;
     pending_role_restore_handoff_t pending_role_restore_handoff;
     std::string assigned_sink;
+    std::wstring capture_device_id;
     std::wstring assigned_device_id;
   };
 }  // namespace platf::audio

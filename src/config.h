@@ -259,6 +259,7 @@ namespace config {
     bool install_steam_drivers;
     bool keep_default;
     bool auto_capture;
+    bool sink_capture_only;  ///< Capture the selected Windows audio sink without changing default outputs.
   };
 
   constexpr int ENCRYPTION_MODE_NEVER = 0;  // Never use video encryption, even if the client supports it

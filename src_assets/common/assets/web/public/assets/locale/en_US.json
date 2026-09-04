@@ -445,6 +445,8 @@
     "amd_vbaq_desc": "The human visual system is typically less sensitive to artifacts in highly textured areas. In VBAQ mode, pixel variance is used to indicate the complexity of spatial textures, allowing the encoder to allocate more bits to smoother areas. VBAQ is enabled by default. Auto leaves the property unset so the selected AMF usage preset can choose it.",
     "apply_note": "Click 'Apply' to restart Vibepollo and apply changes. This will terminate any running sessions.",
     "audio_sink": "Audio Sink",
+    "audio_sink_capture_only": "Capture Audio Sink Only",
+    "audio_sink_capture_only_desc": "Capture the selected Audio Sink without changing Windows default output devices. Route the desired app audio to that device in Windows first. Requires an explicit Audio Sink; virtual sink routing still takes precedence. Disabled by default.",
     "audio_sink_desc_linux": "The name of the audio sink used for Audio Loopback. If you do not specify this variable, pulseaudio will select the default monitor device. You can find the name of the audio sink using either command:",
     "audio_sink_desc_macos": "The name of the audio sink used for Audio Loopback. Vibepollo can only access microphones on macOS due to system limitations. To stream system audio using Soundflower or BlackHole.",
     "audio_sink_desc_windows": "Manually specify a specific audio device to capture. If unset, the device is chosen automatically. We strongly recommend leaving this field blank to use automatic device selection! If you have multiple audio devices with identical names, you can get the Device ID using the following command:",

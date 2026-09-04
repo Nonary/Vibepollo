@@ -283,11 +283,22 @@ namespace audio {
 
     // Only the first to start a session may change the default sink
     if (!ref->sink_flag->exchange(true, std::memory_order_acquire)) {
-      // If the selected sink is different than the current one, change sinks.
-      ref->restore_sink = ref->sink.host != sink;
-      if (ref->restore_sink) {
-        if (control->set_sink(sink)) {
+#ifdef _WIN32
+      if (policy::capture_sink_without_routing(config::audio.sink_capture_only, config::audio.sink, config::audio.virtual_sink, sink)) {
+        // Pin capture even if this endpoint is currently the default. Later
+        // default changes must not redirect capture or require restoration.
+        if (control->set_capture_sink(sink)) {
           return;
+        }
+      } else
+#endif
+      {
+        // If the selected sink is different than the current one, change sinks.
+        ref->restore_sink = ref->sink.host != sink;
+        if (ref->restore_sink) {
+          if (control->set_sink(sink)) {
+            return;
+          }
         }
       }
     }

@@ -968,6 +968,7 @@ namespace config {
     true,  // install_steam_drivers
     true,  // keep_sink_default
     true,  // auto_capture
+    false,  // audio_sink_capture_only
   };
 
   stream_t stream {
@@ -2039,6 +2040,7 @@ namespace config {
     string_f(vars, "audio_sink", audio.sink);
     string_f(vars, "virtual_sink", audio.virtual_sink);
     bool_f(vars, "stream_audio", audio.stream);
+    bool_f(vars, "audio_sink_capture_only", audio.sink_capture_only);
     bool_f(vars, "install_steam_audio_drivers", audio.install_steam_drivers);
     bool_f(vars, "keep_sink_default", audio.keep_default);
     bool_f(vars, "auto_capture_sink", audio.auto_capture);
@@ -2586,6 +2588,7 @@ namespace config {
 
         // Stream audio/video and display automation
         "audio_sink",
+        "audio_sink_capture_only",
         "virtual_sink",
         "stream_audio",
         "adapter_name",
