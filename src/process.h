@@ -137,6 +137,8 @@ namespace proc {
     bool frame_gen_limiter_fix;
     bool elevated;
     bool virtual_screen {false};
+    // Unset inherits the device preference; false allows normal client HDR requests.
+    std::optional<bool> prefer_10bit_sdr;
     std::optional<config::video_t::virtual_display_mode_e> virtual_display_mode_override;
     std::optional<config::video_t::virtual_display_layout_e> virtual_display_layout_override;
     bool auto_detach;

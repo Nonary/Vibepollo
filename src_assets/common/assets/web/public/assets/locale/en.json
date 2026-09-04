@@ -489,6 +489,8 @@
     "av1_mode_2": "Vibepollo will advertise support for AV1 Main 8-bit profile",
     "av1_mode_3": "Vibepollo will advertise support for AV1 Main 8-bit and 10-bit (HDR) profiles",
     "av1_mode_desc": "Allows the client to request AV1 Main 8-bit or 10-bit video streams. AV1 is more CPU-intensive to encode, so enabling this may reduce performance when using software encoding.",
+    "app_prefer_10bit_sdr_inherit": "Use device preference",
+    "app_prefer_10bit_sdr_desc": "Override the device preference for this application. Enabled keeps HDR requests in SDR with a 10-bit HEVC or AV1 stream; disabled allows normal HDR requests. SDR clients and H.264 remain 8-bit. Explicit HDR request overrides still take priority. Applies on the next launch or resume.",
     "prefer_10bit_sdr": "10-bit SDR instead of HDR",
     "prefer_10bit_sdr_label": "Stream this client's HDR requests as 10-bit SDR",
     "prefer_10bit_sdr_desc": "When this client asks for HDR, leave the display in SDR and send a 10-bit SDR stream instead. The extra bit depth reduces banding without switching your display or TV into HDR. Requires HEVC or AV1 Main10; H.264 sessions stay 8-bit. Clients that request SDR are unaffected — they are never upgraded to 10-bit, because they negotiate an 8-bit decoder.",

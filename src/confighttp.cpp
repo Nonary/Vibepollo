@@ -1734,6 +1734,7 @@ namespace confighttp {
         "allow-client-commands",
         "use-app-identity",
         "per-client-app-identity",
+        "prefer-10bit-sdr",
         "gen1-framegen-fix",
         "gen2-framegen-fix",
         "dlss-framegen-capture-fix",  // backward compatibility

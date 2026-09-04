@@ -6,6 +6,8 @@
 
 #include "config.h"
 
+#include <optional>
+
 namespace rtsp_stream::hdr_request_policy {
 
   struct state_t {
@@ -15,6 +17,15 @@ namespace rtsp_stream::hdr_request_policy {
 
     constexpr bool operator==(const state_t &) const = default;
   };
+
+  // Applications can choose SDR/HDR independently of the paired device default.
+  // Keep the client HDR/decoder request unchanged: SDR clients must remain 8-bit.
+  [[nodiscard]] constexpr bool resolve_prefer_10bit_sdr(
+    const bool client_preference,
+    const std::optional<bool> app_preference
+  ) {
+    return app_preference.value_or(client_preference);
+  }
 
   [[nodiscard]] constexpr state_t apply(
     state_t state,

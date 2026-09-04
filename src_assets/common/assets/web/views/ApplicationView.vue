@@ -61,6 +61,7 @@ interface EditorForm {
   virtualScreen: boolean;
   virtualDisplayMode: string;
   virtualDisplayLayout: string;
+  prefer10BitSdr: boolean | null;
   ddConfigurationOption: string;
   frameGenerationProvider: string;
   frameGenerationMode: string;
@@ -1069,6 +1070,7 @@ const editableKeys = new Set([
   'virtual-screen',
   'virtual-display-mode',
   'virtual-display-layout',
+  'prefer-10bit-sdr',
   'dd-configuration-option',
   'frame-generation-provider',
   'frame-generation-mode',
@@ -1334,6 +1336,7 @@ function hydrate(app: AppRecord): void {
     virtualScreen: asBoolean(app['virtual-screen']),
     virtualDisplayMode: asString(app['virtual-display-mode']),
     virtualDisplayLayout: asString(app['virtual-display-layout']),
+    prefer10BitSdr: app['prefer-10bit-sdr'] == null ? null : asBoolean(app['prefer-10bit-sdr']),
     ddConfigurationOption: asString(app['dd-configuration-option']),
     frameGenerationProvider: asString(app['frame-generation-provider']),
     frameGenerationMode: frameGenerationModeFor(app),
@@ -1504,6 +1507,7 @@ function buildPayload(): AppRecord {
   setOptionalString(payload, 'playnite-managed', form.playniteManaged);
   setOptionalString(payload, 'virtual-display-mode', form.virtualDisplayMode);
   setOptionalString(payload, 'virtual-display-layout', form.virtualDisplayLayout);
+  setOptionalBoolean(payload, 'prefer-10bit-sdr', form.prefer10BitSdr);
   setOptionalString(payload, 'dd-configuration-option', form.ddConfigurationOption);
   setOptionalString(payload, 'frame-generation-provider', form.frameGenerationProvider);
   setOptionalString(payload, 'frame-generation-mode', form.frameGenerationMode);
@@ -2836,6 +2840,17 @@ onBeforeUnmount(() => {
           <p>{{ t('ui.application.sections.display.description') }}</p>
         </div>
         <div class="vs-settings-group">
+          <SettingRow
+            :label="t('config.prefer_10bit_sdr')"
+            :description="t('config.app_prefer_10bit_sdr_desc')"
+            control-id="app-prefer-10bit-sdr"
+          >
+            <select id="app-prefer-10bit-sdr" v-model="form.prefer10BitSdr" class="vs-select">
+              <option :value="null">{{ t('config.app_prefer_10bit_sdr_inherit') }}</option>
+              <option :value="true">{{ t('_common.enabled') }}</option>
+              <option :value="false">{{ t('_common.disabled') }}</option>
+            </select>
+          </SettingRow>
           <fieldset class="app-display-routing">
             <legend>{{ t('config.app_display_override_label') }}</legend>
             <p>{{ t('config.app_display_override_hint') }}</p>

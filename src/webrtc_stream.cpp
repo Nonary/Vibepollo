@@ -55,6 +55,7 @@
 #include "crypto.h"
 #include "file_handler.h"
 #include "globals.h"
+#include "hdr_request_policy.h"
 #include "httpcommon.h"
 #include "input.h"
 #include "logging.h"
@@ -2558,7 +2559,13 @@ namespace webrtc_stream {
 #endif
 
     bool resolve_prefer_10bit_sdr(const SessionOptions &options) {
-      return options.client_uuid && nvhttp::get_client_prefer_10bit_sdr(*options.client_uuid);
+      const int requested_app_id = options.app_id.value_or(0);
+      const int app_id = requested_app_id > 0 ? requested_app_id : proc::proc.current_app_id();
+      const auto app = app_id > 0 ? proc::proc.resolve_app(app_id) : std::optional<proc::ctx_t> {};
+      return rtsp_stream::hdr_request_policy::resolve_prefer_10bit_sdr(
+        options.client_uuid && nvhttp::get_client_prefer_10bit_sdr(*options.client_uuid),
+        app ? app->prefer_10bit_sdr : std::nullopt
+      );
     }
 
     video::config_t build_video_config(const SessionOptions &options, std::optional<bool> resolved_prefer_10bit_sdr = std::nullopt) {
