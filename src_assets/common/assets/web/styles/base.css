@@ -8,6 +8,8 @@
 html {
   min-block-size: 100%;
   color-scheme: dark;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
   background: var(--vs-color-bg-canvas);
   scrollbar-gutter: stable;
   text-size-adjust: 100%;
