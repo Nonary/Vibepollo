@@ -36,6 +36,7 @@ candidate_generation=''
 last_status=''
 shutting_down=0
 health_cycle=0
+readiness_retry_pending=0
 
 log() { /usr/bin/printf 'vibepollo-session-controller: %s\n' "$*"; }
 error() { /usr/bin/printf 'vibepollo-session-controller: %s\n' "$*" >&2; }
@@ -850,6 +851,7 @@ reconcile_once() {
     binding_matches=1
   else
     health_cycle=0
+    readiness_retry_pending=0
     if ! quiesce; then
       announce transition-cleanup-failed 'transition cleanup failed; host remains off and cleanup will retry'
       return 0
@@ -859,7 +861,7 @@ reconcile_once() {
 
   if ((binding_matches)) && host_is_active; then
     ((health_cycle += 1))
-    if ((health_cycle < 5)); then
+    if ((health_cycle < 5 && readiness_retry_pending == 0)); then
       announce "running-${candidate_role}-${candidate_session}" \
         "host is bound to ready ${candidate_role} session ${candidate_session}"
       return 0
@@ -880,6 +882,19 @@ reconcile_once() {
   fi
 
   if ! session_is_ready; then
+    # A compositor query that spans suspend expires as the machine resumes,
+    # even though logind still identifies the same session and the notified
+    # host remains alive. Retry that one interrupted health probe before
+    # destroying the binding. The pending flag bypasses the cheap health path
+    # on the next cycle; a second failure still performs the full fail-closed
+    # cleanup. New hosts and changed session identities receive no grace.
+    if ((binding_matches && readiness_retry_pending == 0)) && host_is_active; then
+      readiness_retry_pending=1
+      announce "retrying-${candidate_role}-${candidate_session}" \
+        "running ${candidate_role} session ${candidate_session} failed one readiness probe; retrying before cleanup"
+      return 0
+    fi
+    readiness_retry_pending=0
     if ((quiesced == 0)) && ! quiesce; then
       announce readiness-cleanup-failed 'session readiness was lost and cleanup failed; retrying immediately'
       return 0
@@ -888,6 +903,7 @@ reconcile_once() {
       "waiting for ${candidate_role} session ${candidate_session} to become usable"
     return 0
   fi
+  readiness_retry_pending=0
 
   if ((binding_matches)) && ! binding_matches_candidate complete; then
     binding_matches=0
