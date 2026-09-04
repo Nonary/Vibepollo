@@ -638,6 +638,15 @@ namespace platf {
     virtual void request_refresh() {
     }
 
+    /**
+     * @brief Whether capture delivery is driven by source presentation events.
+     * @details Event-driven sources need explicit refresh requests when a new
+     *          consumer joins. Fixed-rate sources retain the normal queue flow.
+     */
+    [[nodiscard]] virtual bool is_event_driven_capture() const {
+      return false;
+    }
+
     virtual bool get_hdr_metadata(SS_HDR_METADATA &metadata) {
       std::memset(&metadata, 0, sizeof(metadata));
       return false;

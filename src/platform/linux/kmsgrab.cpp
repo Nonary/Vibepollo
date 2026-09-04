@@ -967,6 +967,10 @@ namespace platf {
         }
       }
 
+      [[nodiscard]] bool is_event_driven_capture() const override {
+        return presentation_mode.event_capture_enabled();
+      }
+
       bool is_hdr() {
         if (!hdr_metadata_blob_id || *hdr_metadata_blob_id == 0) {
           return false;

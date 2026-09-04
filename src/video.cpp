@@ -3288,19 +3288,22 @@ namespace video {
 
     while (capture_ctx_queue->running()) {
       bool artificial_reinit = false;
+      const bool event_driven_capture = disp->is_event_driven_capture();
 
       auto push_captured_image_callback = [&](std::shared_ptr<platf::img_t> &&img, bool frame_captured) -> bool {
-        bool new_context_needs_frame = false;
-        while (auto pending_context = capture_ctx_queue->pop(0ms)) {
-          auto new_context = std::move(*pending_context);
-          if (!frame_captured && new_context.images->running()) {
-            new_context_needs_frame = true;
+        if (event_driven_capture) {
+          bool new_context_needs_frame = false;
+          while (auto pending_context = capture_ctx_queue->pop(0ms)) {
+            auto new_context = std::move(*pending_context);
+            if (!frame_captured && new_context.images->running()) {
+              new_context_needs_frame = true;
+            }
+            capture_ctxs.emplace_back(std::move(new_context));
           }
-          capture_ctxs.emplace_back(std::move(new_context));
-        }
 
-        if (new_context_needs_frame) {
-          disp->request_refresh();
+          if (new_context_needs_frame) {
+            disp->request_refresh();
+          }
         }
 
         KITTY_WHILE_LOOP(auto capture_ctx = std::begin(capture_ctxs), capture_ctx != std::end(capture_ctxs), {
@@ -3320,7 +3323,12 @@ namespace video {
         if (!capture_ctx_queue->running()) {
           return false;
         }
-        if (capture_ctxs.empty()) {
+
+        if (!event_driven_capture) {
+          while (auto pending_context = capture_ctx_queue->pop(0ms)) {
+            capture_ctxs.emplace_back(std::move(*pending_context));
+          }
+        } else if (capture_ctxs.empty()) {
           return false;
         }
 
@@ -5851,6 +5859,7 @@ namespace video {
     if (!disp) {
       return encode_e::error;
     }
+    const bool event_driven_capture = disp->is_event_driven_capture();
 
     auto img = disp->alloc_img();
     if (!img || disp->dummy_img(img.get())) {
@@ -5876,11 +5885,11 @@ namespace video {
           return false;
         }
 
-        if (!frame_captured && encode_session_ctx_queue.peek()) {
+        if (event_driven_capture && !frame_captured && encode_session_ctx_queue.peek()) {
           disp->request_refresh();
         }
 
-        while (frame_captured) {
+        while (!event_driven_capture || frame_captured) {
           auto encode_session_ctx = encode_session_ctx_queue.pop(0ms);
           if (!encode_session_ctx) break;
 
@@ -5907,6 +5916,9 @@ namespace video {
             }));
 
             if (synced_sessions.empty()) {
+              if (!event_driven_capture) {
+                return false;
+              }
               if (!encode_session_ctx_queue.wait_for_data(50ms)) {
                 return false;
               }
