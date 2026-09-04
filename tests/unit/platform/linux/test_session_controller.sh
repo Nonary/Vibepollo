@@ -53,6 +53,7 @@ reset_scenario() {
   events=()
   last_status=''
   health_cycle=0
+  readiness_retry_pending=0
   mock_policy=1
   mock_observe=0
   mock_identity=0
@@ -178,6 +179,40 @@ health_cycle=4
 reconcile_once
 expect_events I,R,C
 expect_state 1 1
+
+# Suspend can interrupt a compositor query while the same notified host and
+# logind identity remain valid. Preserve it for one immediate readiness retry.
+reset_scenario
+mock_identity=1
+mock_complete=1
+mock_host=1
+mock_ready=0
+health_cycle=4
+reconcile_once
+expect_events I,R
+expect_state 1 1
+[[ "$readiness_retry_pending" == 1 ]] ||
+  fail_test 'interrupted running-host readiness did not schedule an immediate retry'
+
+# The pending retry bypasses the cheap health path and clears on success.
+mock_ready=1
+events=()
+reconcile_once
+expect_events I,R,C
+expect_state 1 1
+[[ "$readiness_retry_pending" == 0 ]] ||
+  fail_test 'successful running-host readiness retry remained pending'
+
+# A second consecutive failure is authoritative and performs normal cleanup.
+reset_scenario
+mock_identity=1
+mock_complete=1
+mock_host=1
+mock_ready=0
+readiness_retry_pending=1
+reconcile_once
+expect_events I,R,Q
+expect_state 0 0
 
 # New display credentials in the same logind session force disconnect/rebind.
 reset_scenario
