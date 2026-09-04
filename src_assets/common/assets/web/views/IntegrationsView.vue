@@ -1240,9 +1240,9 @@ async function saveMangoSettings(): Promise<void> {
       frame_limiter_enable: submitted.enabled,
       frame_limiter_provider: submitted.provider,
       frame_limiter_fps_limit: fps,
-      mangohud_limiter_method: mangoDraft.value.limiterMethod,
-      mangohud_preset: mangoDraft.value.overlayPreset,
-      mangohud_always_show_graph: mangoDraft.value.alwaysShowGraph,
+      mangohud_limiter_method: submitted.limiterMethod,
+      mangohud_preset: submitted.overlayPreset,
+      mangohud_always_show_graph: submitted.alwaysShowGraph,
     });
     if (result.status === false) throw new Error(t('ui.integrations.errors.mangohudUpdateFailed'));
     mangoOriginal.value = submitted;
@@ -1251,6 +1251,9 @@ async function saveMangoSettings(): Promise<void> {
       enabled: submitted.enabled,
       configured_provider: submitted.provider,
       fps_limit: submitted.fpsLimit,
+      limiter_method: submitted.limiterMethod,
+      overlay_preset: submitted.overlayPreset,
+      always_show_graph: submitted.alwaysShowGraph,
     };
     delete errors.value.mangohud;
     notice.value = t('ui.integrations.notices.mangohudUpdated');
