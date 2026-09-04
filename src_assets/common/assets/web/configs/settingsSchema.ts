@@ -1,3 +1,9 @@
+import {
+  advancedEncoderGroups,
+  extendedDefaults,
+  extendedField,
+  playnitePolicyFields,
+} from './extendedSettings.ts';
 export type SettingsFieldKind =
   | 'boolean'
   | 'number'
@@ -8,7 +14,8 @@ export type SettingsFieldKind =
   | 'textarea'
   | 'mode-remapping'
   | 'display-recovery'
-  | 'command-preparations';
+  | 'command-preparations'
+  | 'server-commands';
 
 export interface SettingsOption {
   labelKey: string;
@@ -40,7 +47,7 @@ export interface SettingsField {
   platform?: 'windows' | 'linux' | 'macos' | Array<'windows' | 'linux' | 'macos'>;
   visibleWhen?: SettingsVisibility;
   source?: 'gpu';
-  encoderFamily?: 'nvidia' | 'intel' | 'amd';
+  encoderFamily?: 'nvidia' | 'intel' | 'amd' | 'vaapi' | 'vulkan' | 'videotoolbox' | 'software';
   integration?: 'rtss' | 'lossless';
 }
 
@@ -155,6 +162,8 @@ export interface SettingsGroup {
   id: string;
   fields: SettingsField[];
   collapsed?: boolean;
+  platform?: SettingsField['platform'];
+  link?: string;
   visibleWhen?: SettingsVisibility;
 }
 
@@ -284,35 +293,6 @@ export function gamepadOptionsForPlatform(platform: string): SettingsOption[] {
       : new Set(['auto']);
   return gamepadOptions.filter((candidate) => supportedValues.has(candidate.value));
 }
-
-const nvencPresetOptions = [
-  option('1', 'ui.settings.options.nvenc_preset.p1'),
-  option('2', 'ui.settings.options.nvenc_preset.p2'),
-  option('3', 'ui.settings.options.nvenc_preset.p3'),
-  option('4', 'ui.settings.options.nvenc_preset.p4'),
-  option('5', 'ui.settings.options.nvenc_preset.p5'),
-  option('6', 'ui.settings.options.nvenc_preset.p6'),
-  option('7', 'ui.settings.options.nvenc_preset.p7'),
-];
-
-const nvencPresetField = (): SettingsField => select('nvenc_preset', nvencPresetOptions);
-
-const qsvPresetOptions = [
-  option('veryslow', 'ui.settings.options.qsv_preset.veryslow'),
-  option('slower', 'ui.settings.options.qsv_preset.slower'),
-  option('slow', 'ui.settings.options.qsv_preset.slow'),
-  option('medium', 'ui.settings.options.qsv_preset.medium'),
-  option('fast', 'ui.settings.options.qsv_preset.fast'),
-  option('faster', 'ui.settings.options.qsv_preset.faster'),
-  option('veryfast', 'ui.settings.options.qsv_preset.veryfast'),
-];
-
-const amdQualityOptions = [
-  option('auto', 'ui.settings.options.amd_quality.auto'),
-  option('speed', 'ui.settings.options.amd_quality.speed'),
-  option('balanced', 'ui.settings.options.amd_quality.balanced'),
-  option('quality', 'ui.settings.options.amd_quality.quality'),
-];
 
 const frameLimiterOptions = [
   option('auto', '_common.auto'),
@@ -506,14 +486,20 @@ export const settingsCategories: SettingsCategory[] = [
     groups: [
       {
         id: 'everyday_display',
+        fields: [everydayDisplayFields()[0], virtualDisplayCustomizationFields()[0]],
+      },
+      {
+        id: 'everyday_appearance',
         fields: [
-          ...everydayDisplayFields(),
-          ...virtualDisplayCustomizationFields(),
-          select('capture', captureOptions, {
-            labelKey: 'ui.settings.fields.capture.label',
-            descriptionKey: 'ui.settings.fields.capture.description',
-            recommended: true,
-          }),
+          ...everydayDisplayFields().filter(
+            (field) =>
+              ![
+                'virtual_display_mode',
+                'dd_configuration_option',
+                'dd_hdr_request_override',
+              ].includes(field.key),
+          ),
+          virtualDisplayCustomizationFields()[1],
         ],
       },
       {
@@ -532,6 +518,7 @@ export const settingsCategories: SettingsCategory[] = [
       },
       {
         id: 'everyday_smoothness',
+        platform: 'windows',
         visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
         fields: [
           select('frame_limiter_auto_virtual_framegen', frameGenerationOptions, {
@@ -544,70 +531,21 @@ export const settingsCategories: SettingsCategory[] = [
             descriptionKey: 'ui.settings.fields.rtss_allow_virtual_display_override.description',
             warningKey: 'ui.settings.fields.rtss_allow_virtual_display_override.warning',
             platform: 'windows',
-            visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
           }),
         ],
       },
+      { id: 'everyday_audio', link: '/settings?category=audio', fields: [boolean('stream_audio')] },
       {
-        id: 'everyday_encoding',
+        id: 'everyday_input',
+        link: '/settings?category=input',
         fields: [
-          select('encoder', [option('', '_common.auto')], {
-            labelKey: 'ui.settings.fields.encoder.label',
-            descriptionKey: 'ui.settings.fields.encoder.description',
-            recommended: true,
-          }),
-          select('nvenc_preset', nvencPresetOptions, { encoderFamily: 'nvidia' }),
-          select('qsv_preset', qsvPresetOptions, { encoderFamily: 'intel' }),
-          select('amd_quality', amdQualityOptions, { encoderFamily: 'amd' }),
-          number('fec_percentage', {
-            min: 1,
-            max: 255,
-            step: 1,
-            labelKey: 'ui.settings.fields.fec_percentage.label',
-            descriptionKey: 'ui.settings.fields.fec_percentage.description',
-          }),
-        ],
-      },
-      {
-        id: 'everyday_recovery',
-        fields: [
-          displayRecovery(),
-          boolean('dd_config_revert_on_disconnect', {
-            labelKey: 'ui.settings.fields.dd_config_revert_on_disconnect.label',
-            descriptionKey: 'ui.settings.fields.dd_config_revert_on_disconnect.description',
+          boolean('controller'),
+          select('gamepad', gamepadOptions, {
             platform: ['windows', 'linux'],
+            visibleWhen: { key: 'controller', equals: true },
           }),
-          duration(
-            'dd_paused_virtual_display_timeout_secs',
-            [
-              option('0', 'ui.settings.options.paused_display_timeout.until_game_closes'),
-              option('1800', 'ui.settings.options.paused_display_timeout.thirty_minutes'),
-              option('3600', 'ui.settings.options.paused_display_timeout.one_hour'),
-              option('7200', 'ui.settings.options.paused_display_timeout.two_hours'),
-              option('14400', 'ui.settings.options.paused_display_timeout.four_hours'),
-            ],
-            {
-              labelKey: 'ui.settings.fields.dd_paused_virtual_display_timeout_secs.label',
-              descriptionKey:
-                'ui.settings.fields.dd_paused_virtual_display_timeout_secs.description',
-              warningKey: 'ui.settings.fields.dd_paused_virtual_display_timeout_secs.warning',
-              recommended: true,
-              platform: ['windows', 'linux'],
-              visibleWhen: { key: 'dd_config_revert_on_disconnect', equals: false },
-            },
-          ),
-        ],
-      },
-      {
-        id: 'everyday_automation',
-        fields: [
-          {
-            key: 'global_prep_cmd',
-            kind: 'command-preparations',
-            labelKey: 'config.global_prep_cmd',
-            descriptionKey: 'config.global_prep_cmd_desc',
-            stacked: true,
-          },
+          boolean('keyboard'),
+          boolean('mouse'),
         ],
       },
     ],
@@ -718,6 +656,14 @@ export const settingsCategories: SettingsCategory[] = [
       {
         id: 'display_recovery',
         fields: [
+          displayRecovery(),
+          {
+            key: 'dd_snapshot_exclude_devices',
+            kind: 'textarea',
+            platform: 'windows',
+            stacked: true,
+          },
+          text('fallback_mode'),
           boolean('dd_config_revert_on_disconnect', { platform: ['windows', 'linux'] }),
           number('dd_config_revert_delay', {
             min: 0,
@@ -748,7 +694,17 @@ export const settingsCategories: SettingsCategory[] = [
           boolean('wgc_pacing_smoothing', { platform: 'windows' }),
         ],
       },
-      { id: 'pacing_limiter', fields: everydayPacingFields() },
+      {
+        id: 'pacing_limiter',
+        fields: [
+          ...everydayPacingFields(),
+          boolean('limit_framerate'),
+          boolean('rtss_allow_virtual_display_override', {
+            platform: 'windows',
+            warningKey: 'ui.settings.fields.rtss_allow_virtual_display_override.warning',
+          }),
+        ],
+      },
       {
         id: 'pacing_integrations',
         fields: [
@@ -788,6 +744,9 @@ export const settingsCategories: SettingsCategory[] = [
           boolean('keyboard'),
           boolean('mouse'),
           boolean('controller'),
+          boolean('enable_input_only_mode'),
+          boolean('forward_rumble'),
+          boolean('legacy_ordering'),
           select('gamepad', gamepadOptions, { platform: ['windows', 'linux'] }),
           boolean('motion_as_ds4'),
           boolean('touchpad_as_ds4'),
@@ -800,6 +759,10 @@ export const settingsCategories: SettingsCategory[] = [
       {
         id: 'input_repeat',
         fields: [
+          extendedField('back_button_timeout'),
+          extendedField('key_rightalt_to_key_win'),
+          extendedField('ds5_inputtino_randomize_mac', { platform: 'linux' }),
+          { key: 'keybindings', kind: 'textarea', stacked: true },
           number('key_repeat_delay', { min: 0, step: 1 }),
           number('key_repeat_frequency', { min: 0.1, step: 0.1 }),
         ],
@@ -813,6 +776,8 @@ export const settingsCategories: SettingsCategory[] = [
         id: 'audio_routing',
         fields: [
           boolean('stream_audio'),
+          boolean('keep_sink_default'),
+          boolean('auto_capture_sink'),
           text('audio_sink', { monospace: true, stacked: true }),
           text('virtual_sink', { monospace: true, stacked: true }),
           boolean('install_steam_audio_drivers', { platform: 'windows' }),
@@ -824,10 +789,18 @@ export const settingsCategories: SettingsCategory[] = [
     id: 'video',
     groups: [
       {
+        id: 'video_rtx_hdr',
+        platform: 'windows',
+        collapsed: true,
+        fields: Object.keys(extendedDefaults)
+          .filter((key) => key.startsWith('rtx_hdr'))
+          .map((key) => extendedField(key, { platform: 'windows' })),
+      },
+      {
         id: 'video_encoder',
         fields: [
           select('encoder', [option('', '_common.auto')]),
-          nvencPresetField(),
+          boolean('ignore_encoder_probe_failure'),
           boolean('wgc_pacing_smoothing', { platform: 'windows' }),
         ],
       },
@@ -853,11 +826,13 @@ export const settingsCategories: SettingsCategory[] = [
         fields: [
           number('max_bitrate', { min: 0, step: 1 }),
           number('minimum_fps_target', { min: 0, max: 1000, step: 0.1 }),
+          extendedField('min_threads', { min: 1, step: 1 }),
           number('qp', { min: 0, max: 51, step: 1 }),
           number('fec_percentage', { min: 0, max: 255, step: 1 }),
           number('video_max_batch_size_kb', { min: 1, step: 1 }),
         ],
       },
+      ...advancedEncoderGroups,
     ],
   },
   {
@@ -872,6 +847,7 @@ export const settingsCategories: SettingsCategory[] = [
             option('wan', 'ui.settings.options.origin.wan'),
           ]),
           boolean('upnp', { restartRequired: true }),
+          boolean('enable_discovery'),
           select(
             'address_family',
             [
@@ -889,6 +865,7 @@ export const settingsCategories: SettingsCategory[] = [
       {
         id: 'network_security',
         fields: [
+          boolean('enable_pairing'),
           select('lan_encryption_mode', [
             option('0', '_common.disabled'),
             option('1', 'ui.settings.options.encryption.optional'),
@@ -899,6 +876,8 @@ export const settingsCategories: SettingsCategory[] = [
             option('1', 'ui.settings.options.encryption.optional'),
             option('2', 'ui.settings.options.encryption.required'),
           ]),
+          extendedField('session_token_ttl_seconds'),
+          extendedField('remember_me_refresh_token_ttl_seconds'),
           text('csrf_allowed_origins', { stacked: true }),
         ],
       },
@@ -908,10 +887,23 @@ export const settingsCategories: SettingsCategory[] = [
     id: 'host',
     groups: [
       {
+        id: 'everyday_automation',
+        collapsed: true,
+        fields: [
+          { key: 'global_prep_cmd', kind: 'command-preparations', stacked: true },
+          { key: 'global_state_cmd', kind: 'command-preparations', labelKey: 'config.global_state_cmd', descriptionKey: 'config.global_state_cmd_desc', stacked: true },
+          { key: 'server_cmd', kind: 'server-commands', labelKey: 'config.server_cmd', descriptionKey: 'config.server_cmd_desc', stacked: true },
+        ],
+      },
+      {
         id: 'host_identity',
         fields: [
+          extendedField('locale'),
+          extendedField('update_check_interval'),
           text('sunshine_name', { placeholderKey: 'ui.settings.placeholders.host_name' }),
           boolean('system_tray'),
+          boolean('hide_tray_controls'),
+          boolean('envvar_compatibility_mode'),
           boolean('notify_pre_releases'),
           select('min_log_level', [
             option('0', 'ui.settings.options.log_level.verbose'),
@@ -927,6 +919,15 @@ export const settingsCategories: SettingsCategory[] = [
       {
         id: 'host_history',
         fields: [
+          ...Object.keys(extendedDefaults)
+            .filter(
+              (key) =>
+                key.startsWith('realtime_stats_') &&
+                !['realtime_stats_enabled', 'realtime_stats_poll_interval_ms'].includes(key),
+            )
+            .map((key) =>
+              extendedField(key, { visibleWhen: { key: 'realtime_stats_enabled', equals: true } }),
+            ),
           boolean('session_history_enabled'),
           number('session_history_ttl_days', {
             min: 0,
@@ -955,6 +956,9 @@ export const settingsCategories: SettingsCategory[] = [
       {
         id: 'file_paths',
         fields: [
+          extendedField('credentials_file', { monospace: true, stacked: true }),
+          text('vibeshine_file_state', { monospace: true, stacked: true }),
+          extendedField('file_state', { monospace: true, stacked: true }),
           text('file_apps', { monospace: true, stacked: true }),
           text('log_path', { monospace: true, stacked: true }),
           text('pkey', { monospace: true, restartRequired: true, stacked: true }),
@@ -966,6 +970,8 @@ export const settingsCategories: SettingsCategory[] = [
 ];
 
 export const settingsDefaults: Record<string, unknown> = {
+  ...extendedDefaults,
+  gamepad: 'auto',
   virtual_display_mode: 'per_client',
   virtual_display_layout: 'exclusive',
   remote_monitor_mute_audio: false,
@@ -1030,6 +1036,18 @@ export const settingsDefaults: Record<string, unknown> = {
   audio_sink: '',
   virtual_sink: '',
   encoder: '',
+  enable_pairing: true,
+  enable_discovery: true,
+  hide_tray_controls: false,
+  enable_input_only_mode: false,
+  forward_rumble: true,
+  keep_sink_default: true,
+  auto_capture_sink: true,
+  fallback_mode: '1920x1080x60',
+  limit_framerate: true,
+  envvar_compatibility_mode: false,
+  legacy_ordering: false,
+  ignore_encoder_probe_failure: false,
   nvenc_preset: 1,
   qsv_preset: 'medium',
   amd_quality: 'balanced',
@@ -1072,3 +1090,114 @@ export const knownSettingsKeys = new Set(
 knownSettingsKeys.add('adapter_pnp_id');
 
 export const restartRequiredKeys = new Set(['address_family', 'cert', 'pkey', 'port', 'upnp']);
+
+export function matchesPlatform(
+  field: { platform?: SettingsField['platform'] },
+  platform: string,
+): boolean {
+  if (!field.platform) return true;
+  const normalized = platform.toLowerCase().replace('darwin', 'macos');
+  const supported = Array.isArray(field.platform) ? field.platform : [field.platform];
+  return supported.some((value) => normalized.includes(value === 'macos' ? 'mac' : value));
+}
+
+export function encoderFamilyFor(encoder: string): SettingsField['encoderFamily'] | undefined {
+  if (encoder.startsWith('nvenc')) return 'nvidia';
+  if (encoder.startsWith('amdvce')) return 'amd';
+  if (encoder === 'quicksync') return 'intel';
+  if (['vaapi', 'vulkan', 'videotoolbox', 'software'].includes(encoder))
+    return encoder as SettingsField['encoderFamily'];
+  return undefined;
+}
+
+export function encoderOptionsForPlatform(platform: string): SettingsOption[] {
+  const p = platform.toLowerCase();
+  const encoders = p.includes('windows')
+    ? ['nvenc', 'quicksync', 'amdvce_ffmpeg', 'amdvce_experimental', 'mediafoundation', 'software']
+    : p.includes('linux')
+      ? ['nvenc', 'nvenc_legacy', 'vulkan', 'vaapi', 'software']
+      : p.includes('mac')
+        ? ['videotoolbox', 'software']
+        : [];
+  return [
+    option('', 'ui.settings.options.encoder.auto'),
+    ...encoders.map((value) => option(value, `ui.settings.options.encoder.${value}`)),
+  ];
+}
+
+export function optionsForPlatform(field: SettingsField, platform: string): SettingsOption[] {
+  if (field.key === 'encoder') return encoderOptionsForPlatform(platform);
+  if (field.key === 'capture') return captureOptionsForPlatform(platform);
+  if (field.key === 'gamepad') return gamepadOptionsForPlatform(platform);
+  if (field.key === 'frame_limiter_auto_virtual_framegen')
+    return frameGenerationOptionsForPlatform(platform);
+  if (field.key === 'virtual_display_mode' && platform.toLowerCase().includes('linux'))
+    return [
+      option('per_client', 'ui.settings.linux.per_client'),
+      option('shared', 'ui.settings.linux.shared'),
+      option('disabled', 'ui.settings.options.virtual_display_mode.physical'),
+    ];
+  if (field.key === 'frame_limiter_provider' && platform.toLowerCase().includes('linux'))
+    return [
+      option('auto', 'ui.settings.options.frame_limiter_provider.autoLinux'),
+      ...['mangohud', 'proton', 'mangohud-proton', 'none'].map((value) =>
+        option(
+          value,
+          `ui.settings.options.frame_limiter_provider.${value === 'mangohud-proton' ? 'mangohudProton' : value}`,
+        ),
+      ),
+    ];
+  return field.options ?? [];
+}
+
+// Canonical definitions prefer the dedicated category over Everyday shortcuts.
+export const settingsFields = new Map(
+  settingsCategories.flatMap((category) =>
+    category.groups.flatMap((group) => group.fields.map((field) => [field.key, field] as const)),
+  ),
+);
+export function fieldForPlatform(field: SettingsField, platform: string): SettingsField {
+  return field.source === 'gpu' && !platform.toLowerCase().includes('windows')
+    ? { ...field, kind: 'text', source: undefined, monospace: true }
+    : field;
+}
+
+export const settingsDestinations: Array<{
+  labelKey: string;
+  to: string;
+  keys: string[];
+  platform?: SettingsField['platform'];
+}> = [
+  {
+    labelKey: 'ui.integrations.playnite.policies_title',
+    to: '/integrations#playnite-policies',
+    platform: 'windows',
+    keys: playnitePolicyFields
+      .map((field) => field.key)
+      .concat([
+        'playnite',
+        'playnite_sync_categories',
+        'playnite_exclude_games',
+        'playnite_exclude_categories',
+        'playnite_sync_plugins',
+        'playnite_exclude_plugins',
+      ]),
+  },
+  {
+    labelKey: 'ui.integrations.steam.name',
+    to: '/integrations#integration-steam',
+    keys: ['steam', 'steam_auto_sync', 'steam_exclude_games', 'steam_include_tools'],
+  },
+  {
+    labelKey: 'ui.integrations.lutris.name',
+    to: '/integrations#integration-lutris',
+    platform: 'linux',
+    keys: ['lutris', 'lutris_auto_sync', 'lutris_include_steam'],
+  },
+  {
+    labelKey: 'ui.integrations.mangohud.name',
+    to: '/integrations#integration-mangohud',
+    platform: 'linux',
+    keys: ['mangohud_preset', 'mangohud_always_show_graph', 'overlay'],
+  },
+];

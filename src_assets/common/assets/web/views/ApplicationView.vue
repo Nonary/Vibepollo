@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { providerSupported } from '@/utils/providerCapabilities';
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
+import { useUnsavedChanges } from '@/composables/useUnsavedChanges';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
 
@@ -31,6 +33,10 @@ import { searchCovers, updatePlayniteCover, uploadCover } from '@/services/cover
 import {
   gamepadOptionsForPlatform,
   settingsCategories,
+  settingsFields,
+  fieldForPlatform,
+  matchesPlatform,
+  optionsForPlatform,
   settingsDefaults,
   type SettingsField,
   type SettingsOption,
@@ -655,6 +661,7 @@ const overrideCatalogGroups = computed(() => {
       fields: category.groups
         .flatMap((group) => group.fields)
         .filter((field) => {
+          if (!matchesPlatform(field, String(overrideMetadata.value.platform ?? ''))) return false;
           if (
             !overrideVisibleForDisplay(field.key) ||
             field.key === 'adapter_pnp_id' ||
@@ -916,7 +923,8 @@ function resetRtxHdrCalibration(): void {
 }
 
 function overrideField(key: string): SettingsField | undefined {
-  return overrideFieldsByKey.value.get(key);
+  const field = settingsFields.get(key);
+  return field ? fieldForPlatform(field, String(overrideMetadata.value.platform ?? '')) : undefined;
 }
 
 function overrideMessageExists(key: string): boolean {
@@ -1018,49 +1026,9 @@ function overrideSelectOptions(key: string): Array<{ label: string; value: strin
     return overrideGpuOptions().map(({ label, value }) => ({ label, value }));
   }
 
-  let declaredOptions = field?.options ?? [];
-  if (key === 'gamepad') {
-    declaredOptions = gamepadOptionsForPlatform(String(overrideMetadata.value.platform ?? ''));
-  } else if (key === 'encoder') {
-    const auto: SettingsOption = { value: '', labelKey: '_common.auto' };
-    const platform = String(overrideMetadata.value.platform ?? '').toLocaleLowerCase();
-    declaredOptions = platform.includes('windows')
-      ? [
-          auto,
-          { value: 'nvenc', labelKey: 'ui.settings.options.encoder.nvenc' },
-          { value: 'quicksync', labelKey: 'ui.settings.options.encoder.quicksync' },
-          { value: 'amdvce_ffmpeg', labelKey: 'ui.settings.options.encoder.amdvce_ffmpeg' },
-          { value: 'amdvce_experimental', labelKey: 'ui.settings.options.encoder.amdvce_experimental' },
-          { value: 'mediafoundation', labelKey: 'ui.settings.options.encoder.mediafoundation' },
-          { value: 'software', labelKey: 'ui.settings.options.encoder.software' },
-        ]
-      : platform.includes('mac')
-        ? [
-            auto,
-            { value: 'videotoolbox', labelKey: 'ui.settings.options.encoder.videotoolbox' },
-            { value: 'software', labelKey: 'ui.settings.options.encoder.software' },
-          ]
-        : platform
-          ? [
-              auto,
-              {
-                value: 'nvenc',
-                labelKey: 'ui.settings.options.encoder.nvenc',
-              },
-              ...(platform.includes('linux')
-                ? [
-                    {
-                      value: 'nvenc_legacy',
-                      labelKey: 'ui.settings.options.encoder.nvenc_legacy',
-                    },
-                  ]
-                : []),
-              { value: 'vulkan', labelKey: 'ui.settings.options.encoder.vulkan' },
-              { value: 'vaapi', labelKey: 'ui.settings.options.encoder.vaapi' },
-              { value: 'software', labelKey: 'ui.settings.options.encoder.software' },
-            ]
-          : [auto];
-  }
+  const declaredOptions = field
+    ? optionsForPlatform(field, String(overrideMetadata.value.platform ?? ''))
+    : [];
 
   const options = declaredOptions.map((option) => ({
     label: overrideOptionLabel(option),
@@ -1219,7 +1187,13 @@ const editableKeys = new Set([
   'detached',
   'config-overrides',
 ]);
-const transientKeys = new Set(['id', 'index', 'image-version', 'playnite-icon-version', 'remote-session']);
+const transientKeys = new Set([
+  'id',
+  'index',
+  'image-version',
+  'playnite-icon-version',
+  'remote-session',
+]);
 
 function newUuid(): string {
   return crypto.randomUUID();
@@ -1307,6 +1281,15 @@ const isDirty = computed(
   () =>
     isNew.value ||
     (Boolean(initialSnapshot.value) && JSON.stringify(form) !== initialSnapshot.value),
+);
+const leavingAfterSave = ref(false);
+useUnsavedChanges(
+  computed(
+    () =>
+      !leavingAfterSave.value &&
+      Boolean(initialSnapshot.value) &&
+      JSON.stringify(form) !== initialSnapshot.value,
+  ),
 );
 const errorMessages = computed(() => Object.values(errors));
 const sourceCoverUrl = computed(() => (sourceApp.value ? appCoverUrl(sourceApp.value) : ''));
@@ -1710,11 +1693,7 @@ function buildPayload(): AppRecord {
   setOptionalString(payload, 'steam-artwork-client-path', form.steamArtworkClientPath);
   setOptionalString(payload, 'steam-artwork-format', form.steamArtworkFormat);
   setOptionalString(payload, 'steam-app-type', form.steamAppType);
-  setOptionalBoolean(
-    payload,
-    'steam-artwork-client-compatible',
-    form.steamArtworkClientCompatible,
-  );
+  setOptionalBoolean(payload, 'steam-artwork-client-compatible', form.steamArtworkClientCompatible);
   setOptionalString(payload, 'lutris-id', form.lutrisId);
   setOptionalString(payload, 'lutris-managed', form.lutrisManaged);
   setOptionalString(payload, 'lutris-slug', form.lutrisSlug);
@@ -1873,9 +1852,7 @@ function steamGame(value: unknown): SteamGame | null {
     artworkClientPath: asString(game.artwork_client_path),
     artworkFormat: asString(game.artwork_format),
     artworkClientCompatible:
-      typeof game.artwork_client_compatible === 'boolean'
-        ? game.artwork_client_compatible
-        : null,
+      typeof game.artwork_client_compatible === 'boolean' ? game.artwork_client_compatible : null,
     appType: asString(game.app_type),
     launchUri: asString(game.launch_uri) || `steam://rungameid/${steamId}`,
     lastPlayed: Number(game.last_played) || 0,
@@ -1979,7 +1956,7 @@ function closePlaynitePicker(): void {
 }
 
 function openSteamPicker(): void {
-  if (!isNew.value) return;
+  if (!isNew.value || !providerSupported(overrideMetadata.value, 'steam')) return;
   cancelPlayniteClose();
   playnitePickerOpen.value = false;
   playniteActiveIndex.value = -1;
@@ -1994,7 +1971,7 @@ function openSteamPicker(): void {
 }
 
 function openLutrisPicker(): void {
-  if (!isNew.value) return;
+  if (!isNew.value || !providerSupported(overrideMetadata.value, 'lutris')) return;
   cancelPlayniteClose();
   playnitePickerOpen.value = false;
   playniteActiveIndex.value = -1;
@@ -2174,6 +2151,11 @@ function useCustomApplication(): void {
 }
 
 function handleNameInput(): void {
+  const activePicker = steamPickerOpen.value
+    ? 'steam'
+    : lutrisPickerOpen.value
+      ? 'lutris'
+      : 'playnite';
   if (isPlayniteLinked.value) clearPlayniteLink();
   if (isSteamLinked.value) clearSteamLink();
   if (isLutrisLinked.value) clearLutrisLink();
@@ -2195,6 +2177,27 @@ function movePlayniteActiveOption(delta: number): void {
 
 function handleNameKeydown(event: KeyboardEvent): void {
   if (!isNew.value) return;
+  const steamActive = steamPickerOpen.value;
+  const lutrisActive = lutrisPickerOpen.value;
+  const games = steamActive
+    ? filteredSteamGames.value
+    : lutrisActive
+      ? filteredLutrisGames.value
+      : filteredPlayniteGames.value;
+  const activeIndex = steamActive
+    ? steamActiveIndex
+    : lutrisActive
+      ? lutrisActiveIndex
+      : playniteActiveIndex;
+  const moveActiveOption = (delta: number) => {
+    if (!games.length) return;
+    activeIndex.value =
+      activeIndex.value < 0
+        ? delta < 0
+          ? games.length - 1
+          : 0
+        : (activeIndex.value + delta + games.length) % games.length;
+  };
   if (event.key === 'ArrowDown') {
     event.preventDefault();
     if (!playnitePickerOpen.value) openPlaynitePicker();
@@ -2665,6 +2668,7 @@ async function submit(): Promise<void> {
     await saveApp(payload);
     commitRtxHdrLiveState();
     await fetchApps().catch(() => []);
+    leavingAfterSave.value = true;
     await router.push({ name: 'library' });
   } catch (cause) {
     saveError.value = localizedError(cause, 'ui.application.errors.save');
@@ -2674,6 +2678,8 @@ async function submit(): Promise<void> {
 }
 
 async function cancel(): Promise<void> {
+  if (isDirty.value && !window.confirm(t('ui.settings.leave_warning'))) return;
+  leavingAfterSave.value = true;
   await restoreOriginalRtxHdrLiveOverrides();
   void router.push({ name: 'library' });
 }
@@ -2699,6 +2705,7 @@ async function confirmDelete(): Promise<void> {
     await deleteApp(form.uuid);
     await fetchApps().catch(() => []);
     deleteOpen.value = false;
+    leavingAfterSave.value = true;
     await router.push({ name: 'library' });
   } catch (cause) {
     deleteError.value = localizedError(cause, 'ui.application.errors.delete');
@@ -2897,7 +2904,7 @@ onBeforeUnmount(() => {
                 @click="openPlaynitePicker"
               />
               <AppButton
-                v-if="isNew"
+                v-if="isNew && providerSupported(overrideMetadata, 'steam')"
                 size="compact"
                 icon="gamepad"
                 :label="t('ui.application.steam.browse')"
@@ -2906,7 +2913,7 @@ onBeforeUnmount(() => {
                 @click="openSteamPicker"
               />
               <AppButton
-                v-if="isNew && isLinuxHost"
+                v-if="isNew && providerSupported(overrideMetadata, 'lutris')"
                 size="compact"
                 icon="library"
                 :label="t('ui.application.lutris.browse')"
@@ -3001,7 +3008,9 @@ onBeforeUnmount(() => {
                 >
                   <UiIcon name="gamepad" :size="16" aria-hidden="true" />
                   <span>{{ game.name }}</span>
-                  <span v-if="game.installDir" class="editor-steam-option__path">{{ game.installDir }}</span>
+                  <span v-if="game.installDir" class="editor-steam-option__path">{{
+                    game.installDir
+                  }}</span>
                 </button>
                 <p v-if="!filteredSteamGames.length" class="editor-playnite-picker__notice">
                   {{ t('ui.application.steam.empty') }}
@@ -3718,7 +3727,7 @@ onBeforeUnmount(() => {
                 type="text"
               />
             </label>
-            <label class="vs-checkbox prep-entry__elevated">
+            <label v-if="isWindowsHost" class="vs-checkbox prep-entry__elevated">
               <input v-model="entry.elevated" type="checkbox" />
               <span>{{ t('ui.application.prep.elevated') }}</span>
             </label>
@@ -3967,7 +3976,11 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section v-if="!isNew && !isRemoteSession" class="editor-danger" aria-labelledby="danger-heading">
+      <section
+        v-if="!isNew && !isRemoteSession"
+        class="editor-danger"
+        aria-labelledby="danger-heading"
+      >
         <div>
           <h2 id="danger-heading">{{ t('ui.application.delete.sectionTitle') }}</h2>
           <p>{{ t('ui.application.delete.sectionDescription') }}</p>

@@ -1,14 +1,33 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, toRaw } from 'vue';
+import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref, toRaw, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router';
+import { useSystemStore, type HostMetadata } from '@/stores/system';
+import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
+import { acknowledgeSettings, configBoolean, settingError } from '@/utils/settings';
 
-import { apiGet, apiPatch, apiPost } from '@/api/client';
+import { ApiError, apiGet, apiPatch, apiPost } from '@/api/client';
 import DisplayModeOverrides from '@/components/settings/DisplayModeOverrides.vue';
 import DisplayRecoverySettings from '@/components/settings/DisplayRecoverySettings.vue';
 import GlobalPrepCommands from '@/components/settings/GlobalPrepCommands.vue';
+import ServerCommands from '@/components/settings/ServerCommands.vue';
 import SettingsIntegrationPath from '@/components/settings/SettingsIntegrationPath.vue';
-import { InlineAlert, LoadingSkeleton, PageHeader, StatusBadge, UiIcon } from '@/components/ui';
 import {
+  SettingRow,
+  ConfirmDialog,
+  InlineAlert,
+  LoadingSkeleton,
+  PageHeader,
+  StatusBadge,
+  UiIcon,
+} from '@/components/ui';
+import {
+  fieldForPlatform,
+  matchesPlatform,
+  encoderFamilyFor,
+  optionsForPlatform,
+  settingsFields,
+  settingsDestinations,
   captureOptionsForPlatform,
   frameGenerationOptionsForPlatform,
   gamepadOptionsForPlatform,
@@ -20,9 +39,15 @@ import {
   type SettingsOption,
   type SettingsVisibility,
 } from '@/configs/settingsSchema';
-import { serializeCommandRows } from '@/utils/v2Parity';
+import { serializeCommandRows, serializeServerCommandRows } from '@/utils/v2Parity';
 
 const { locale, t, te } = useI18n();
+const system = useSystemStore();
+const route = useRoute();
+const router = useRouter();
+const confirmation = ref<'restart' | 'reset' | null>(null);
+const resetting = ref(false);
+const form = ref<HTMLFormElement | null>(null);
 
 function messageExists(key: string): boolean {
   return te(key) || te(key, 'en');
@@ -46,17 +71,7 @@ interface GpuMetadata {
   dedicated_video_memory?: number | string;
 }
 
-interface MetadataResponse {
-  gpus?: GpuMetadata[];
-  platform?: string;
-  prerelease?: string;
-  virtual_display?: {
-    capable?: boolean;
-    ready?: boolean;
-  };
-  windows_build_number?: number;
-  windows_major_version?: number;
-}
+type MetadataResponse = HostMetadata;
 
 interface DisplaySettingsGroup extends SettingsGroup {
   categoryId: string;
@@ -77,14 +92,24 @@ interface DisplayDevice {
 }
 
 const loading = ref(true);
+const configLoaded = ref(false);
 const saving = ref(false);
 const restarting = ref(false);
-const restartAvailable = ref(false);
+const restartAvailable = computed({
+  get: () => system.restartRequired,
+  set: (value: boolean) => {
+    system.restartRequired = value;
+  },
+});
 const displayOverridesValid = ref(true);
 const error = ref('');
 const notice = ref('');
-const search = ref('');
-const activeCategory = ref(settingsCategories[0].id);
+const search = ref(typeof route.query.q === 'string' ? route.query.q : '');
+const activeCategory = ref(
+  settingsCategories.some((item) => item.id === route.query.category)
+    ? String(route.query.category)
+    : settingsCategories[0].id,
+);
 const hostMetadata = ref<MetadataResponse>({});
 const values = reactive<Record<string, unknown>>({});
 const original = ref<Record<string, unknown>>({});
@@ -128,13 +153,6 @@ const preferredGpu = computed<GpuMetadata | null>(() => {
   );
 });
 
-function encoderFamily(encoder: string): SettingsField['encoderFamily'] | undefined {
-  if (encoder === 'nvenc' || encoder === 'nvenc_legacy' || encoder === 'nvenc_experimental') return 'nvidia';
-  if (encoder === 'quicksync') return 'intel';
-  if (encoder === 'amdvce_experimental' || encoder === 'amdvce_ffmpeg') return 'amd';
-  return undefined;
-}
-
 const preferredAutomaticEncoderFamily = computed<SettingsField['encoderFamily'] | undefined>(() => {
   switch (numericMetadataValue(preferredGpu.value?.vendor_id)) {
     case 0x10de:
@@ -152,7 +170,7 @@ const preferredAutomaticEncoderFamily = computed<SettingsField['encoderFamily'] 
 const effectiveEncoderFamily = computed<SettingsField['encoderFamily'] | undefined>(() => {
   const configuredEncoder = String(values.encoder ?? '');
   return configuredEncoder
-    ? encoderFamily(configuredEncoder)
+    ? encoderFamilyFor(configuredEncoder)
     : preferredAutomaticEncoderFamily.value;
 });
 
@@ -167,6 +185,7 @@ const automaticCaptureLabel = computed(() => {
 });
 
 const automaticEncoderLabel = computed(() => {
+  if (!isWindowsHost.value) return t('ui.settings.options.encoder.auto');
   const family = preferredAutomaticEncoderFamily.value;
   const gpuName = preferredGpu.value?.description?.trim() ?? '';
   const encoderKey =
@@ -261,7 +280,9 @@ const dirtyKeys = computed(() => {
 
 const isDirty = computed(() => dirtyKeys.value.length > 0);
 const saveAllowed = computed(
-  () => displayOverridesValid.value || !dirtyKeys.value.includes('dd_mode_remapping'),
+  () =>
+    configLoaded.value &&
+    (displayOverridesValid.value || !dirtyKeys.value.includes('dd_mode_remapping')),
 );
 const restartPending = computed(() => dirtyKeys.value.some((key) => restartRequiredKeys.has(key)));
 
@@ -286,30 +307,38 @@ const filteredGroups = computed(() => {
 
   return categories.flatMap((settingsCategory) =>
     settingsCategory.groups
-      .filter((group) => query || groupIsVisible(group))
+      .filter(
+        (group) => matchesPlatform(group, hostPlatform.value) && (query || groupIsVisible(group)),
+      )
       .map<DisplaySettingsGroup>((group) => ({
         ...group,
         categoryId: settingsCategory.id,
-        fields: group.fields.filter((field) => {
-          const matches =
-            !query ||
-            `${categoryLabel(settingsCategory.id)} ${groupTitle(group.id)} ${fieldLabel(field)} ${fieldDescription(field)} ${field.key}`
-              .toLocaleLowerCase(locale.value)
-              .includes(query);
-          const matchesEncoder =
-            !field.encoderFamily || field.encoderFamily === effectiveEncoderFamily.value;
-          if (
-            !matches ||
-            !fieldMatchesPlatform(field) ||
-            !matchesEncoder ||
-            (!query && !fieldIsVisible(field))
-          ) {
-            return false;
-          }
-          if (query && seenKeys.has(field.key)) return false;
-          if (query) seenKeys.add(field.key);
-          return true;
-        }),
+        fields: group.fields
+          .map((field) => fieldForPlatform(field, hostPlatform.value))
+          .filter((field) => {
+            const matches =
+              !query ||
+              `${categoryLabel(settingsCategory.id)} ${groupTitle(group.id)} ${fieldLabel(field)} ${fieldDescription(field)} ${field.key}`
+                .toLocaleLowerCase(locale.value)
+                .includes(query);
+            const matchesEncoder =
+              !field.encoderFamily ||
+              !effectiveEncoderFamily.value ||
+              field.encoderFamily === effectiveEncoderFamily.value ||
+              Boolean(query) ||
+              route.hash === `#setting-${field.key}`;
+            if (
+              !matches ||
+              !fieldMatchesPlatform(field) ||
+              !matchesEncoder ||
+              (!query && route.hash !== `#setting-${field.key}` && !fieldIsVisible(field))
+            ) {
+              return false;
+            }
+            if (seenKeys.has(field.key)) return false;
+            seenKeys.add(field.key);
+            return true;
+          }),
       }))
       .filter((group) => group.fields.length),
   );
@@ -355,6 +384,16 @@ const everydaySummary = computed(() => [
               ),
   },
 ]);
+
+const destinationResults = computed(() => {
+  const q = search.value.trim().toLocaleLowerCase(locale.value);
+  if (!q) return [];
+  return settingsDestinations.filter(
+    (item) =>
+      matchesPlatform(item, hostPlatform.value) &&
+      `${t(item.labelKey)} ${item.keys.join(' ')}`.toLocaleLowerCase(locale.value).includes(q),
+  );
+});
 
 const gpuOptions = computed<GpuOption[]>(() => {
   const options: GpuOption[] = [
@@ -408,12 +447,7 @@ function valuesMatch(current: unknown, expected: string | boolean): boolean {
 }
 
 function fieldMatchesPlatform(field: SettingsField): boolean {
-  if (field.platform) {
-    const platform = String(hostMetadata.value.platform ?? '').toLocaleLowerCase();
-    const supported = Array.isArray(field.platform) ? field.platform : [field.platform];
-    return supported.some((candidate) => platform.includes(candidate));
-  }
-  return true;
+  return matchesPlatform(field, hostPlatform.value);
 }
 
 function visibilityMatches(condition?: SettingsVisibility): boolean {
@@ -435,7 +469,9 @@ function fieldIsVisible(field: SettingsField): boolean {
   return (
     fieldMatchesPlatform(field) &&
     visibilityMatches(field.visibleWhen) &&
-    (!field.encoderFamily || field.encoderFamily === effectiveEncoderFamily.value)
+    (!field.encoderFamily ||
+      !effectiveEncoderFamily.value ||
+      field.encoderFamily === effectiveEncoderFamily.value)
   );
 }
 
@@ -444,13 +480,7 @@ function fieldIsInactive(field: SettingsField): boolean {
 }
 
 function fieldByKey(key: string): SettingsField | undefined {
-  for (const settingsCategory of settingsCategories) {
-    for (const group of settingsCategory.groups) {
-      const field = group.fields.find((candidate) => candidate.key === key);
-      if (field) return field;
-    }
-  }
-  return undefined;
+  return settingsFields.get(key);
 }
 
 function categoryLabel(id: string): string {
@@ -478,10 +508,12 @@ function fieldLabel(field: SettingsField): string {
   const key =
     field.labelKey ??
     (messageExists(configKey) ? configKey : `ui.settings.fields.${field.key}.label`);
-  return t(key);
+  return messageExists(key) ? t(key) : field.key.replaceAll('_', ' ');
 }
 
 function fieldDescription(field: SettingsField): string {
+  const linuxKey = `ui.settings.linux.fields.${field.key}`;
+  if (isLinuxHost.value && messageExists(linuxKey)) return t(linuxKey);
   if (field.descriptionKey) return t(field.descriptionKey);
   const platform = String(hostMetadata.value.platform ?? '').toLocaleLowerCase();
   const candidates = [
@@ -498,11 +530,6 @@ function fieldDescription(field: SettingsField): string {
   return key ? t(key) : '';
 }
 
-function fieldUsesCustomEditor(field: SettingsField): boolean {
-  const kind = String(field.kind);
-  return kind === 'command-preparations' || kind === 'server-commands';
-}
-
 function optionText(option: SettingsOption, fieldKey = ''): string {
   if (!option.value && fieldKey === 'capture') return automaticCaptureLabel.value;
   if (!option.value && fieldKey === 'encoder') return automaticEncoderLabel.value;
@@ -510,7 +537,9 @@ function optionText(option: SettingsOption, fieldKey = ''): string {
   if (!option.labelKey) {
     return gpu?.adapterName || option.value;
   }
-  return t(option.labelKey, { name: gpu?.adapterName ?? '', value: option.value });
+  return messageExists(option.labelKey)
+    ? t(option.labelKey, { name: gpu?.adapterName ?? '', value: option.value })
+    : option.labelKey;
 }
 
 function localizedOption(value: string, labelKey: string): SettingsOption {
@@ -529,57 +558,7 @@ function optionsFor(field: SettingsField): SettingsOption[] {
 
   const platform = String(hostMetadata.value.platform ?? '').toLocaleLowerCase();
   const current = String(values[field.key] ?? '');
-  let options = field.options ?? [];
-
-  if (field.key === 'gamepad') return gamepadOptionsForPlatform(platform);
-
-  if (field.key === 'encoder') {
-    const common = [localizedOption('', 'ui.settings.options.encoder.auto')];
-    options = common;
-    if (platform.includes('windows')) {
-      options = [
-        ...common,
-        localizedOption('nvenc', 'ui.settings.options.encoder.nvenc'),
-        localizedOption('quicksync', 'ui.settings.options.encoder.quicksync'),
-        localizedOption('amdvce_ffmpeg', 'ui.settings.options.encoder.amdvce_ffmpeg'),
-        localizedOption('amdvce_experimental', 'ui.settings.options.encoder.amdvce_experimental'),
-        localizedOption('mediafoundation', 'ui.settings.options.encoder.mediafoundation'),
-        localizedOption('software', 'ui.settings.options.encoder.software'),
-      ];
-    } else if (platform.includes('mac')) {
-      options = [
-        ...common,
-        localizedOption('videotoolbox', 'ui.settings.options.encoder.videotoolbox'),
-        localizedOption('software', 'ui.settings.options.encoder.software'),
-      ];
-    } else if (platform) {
-      options = [
-        ...common,
-        localizedOption('nvenc', 'ui.settings.options.encoder.nvenc'),
-        ...(platform.includes('linux')
-          ? [localizedOption('nvenc_legacy', 'ui.settings.options.encoder.nvenc_legacy')]
-          : []),
-        localizedOption('vulkan', 'ui.settings.options.encoder.vulkan'),
-        localizedOption('vaapi', 'ui.settings.options.encoder.vaapi'),
-        localizedOption('software', 'ui.settings.options.encoder.software'),
-      ];
-    }
-  } else if (field.key === 'capture') {
-    options = captureOptionsForPlatform(platform);
-  } else if (field.key === 'frame_limiter_auto_virtual_framegen') {
-    options = frameGenerationOptionsForPlatform(platform);
-  } else if (field.key === 'frame_limiter_provider' && platform.includes('linux')) {
-    options = [
-      localizedOption('auto', '_common.auto'),
-      localizedOption('mangohud', 'ui.settings.options.frame_limiter_provider.mangohud'),
-      localizedOption('proton', 'ui.settings.options.frame_limiter_provider.proton'),
-      localizedOption(
-        'mangohud-proton',
-        'ui.settings.options.frame_limiter_provider.mangohudProton',
-      ),
-      localizedOption('none', 'ui.settings.options.frame_limiter_provider.none'),
-    ];
-  }
+  let options = optionsForPlatform(field, platform);
 
   if (current && !options.some((option) => option.value === current)) {
     return [...options, localizedOption(current, 'ui.settings.options.current')];
@@ -624,6 +603,7 @@ function fieldDescriptionIds(field: SettingsField): string | undefined {
 function selectCategory(id: string): void {
   activeCategory.value = id;
   search.value = '';
+  void router.push({ query: { category: id }, hash: '' });
 }
 
 function updateCategory(event: Event): void {
@@ -653,6 +633,17 @@ function saveValue(key: string): unknown {
       (row) => row.do.trim() || row.undo.trim(),
     );
   }
+  if (key === 'server_cmd') {
+    return serializeServerCommandRows(value, hostPlatform.value).filter(
+      (row) => row.name.trim() && row.cmd.trim(),
+    );
+  }
+  if (
+    ['keybindings', 'dd_snapshot_exclude_devices'].includes(key) &&
+    typeof value === 'string' &&
+    value.trim()
+  )
+    return JSON.parse(value);
   return value === '' ? null : value;
 }
 
@@ -705,7 +696,9 @@ async function load(): Promise<void> {
         return {};
       }),
     ]);
+    if (response.status === false) throw new Error('config-load-rejected');
     hostMetadata.value = metadata;
+    system.metadata = metadata;
     const configured = normalizeConfiguredValues(
       Object.fromEntries(Object.entries(response).filter(([key]) => key !== 'status')),
     );
@@ -728,13 +721,18 @@ async function load(): Promise<void> {
     if (metadata.prerelease) defaults.min_log_level = 1;
 
     const normalized = { ...defaults, ...configured };
+    for (const [key, field] of settingsFields)
+      if (field.kind === 'boolean' && key in normalized)
+        normalized[key] = configBoolean(normalized[key]);
     Object.keys(values).forEach((key) => delete values[key]);
     Object.assign(values, normalized);
     original.value = cloneSettings(normalized);
+    configLoaded.value = true;
   } catch {
     error.value = t('ui.settings.errors.load');
   } finally {
     loading.value = false;
+    void focusLinkedField();
   }
 }
 
@@ -756,14 +754,25 @@ async function loadDisplayDevices(force = false): Promise<void> {
 }
 
 async function save(): Promise<void> {
-  if (!isDirty.value || saving.value || !saveAllowed.value) return;
+  if (!isDirty.value || saving.value || !saveAllowed.value || !form.value?.reportValidity()) return;
+  const invalid = dirtyKeys.value
+    .map((key) => ({ key, error: settingError(settingsFields.get(key), values[key]) }))
+    .find((item) => item.error);
+  if (invalid) {
+    error.value = `${fieldLabel(settingsFields.get(invalid.key)!)}: ${t(invalid.error!)}`;
+    return;
+  }
   saving.value = true;
   error.value = '';
   notice.value = '';
   try {
-    const patch = Object.fromEntries(dirtyKeys.value.map((key) => [key, saveValue(key)]));
+    const submitted = Object.fromEntries(
+      dirtyKeys.value.map((key) => [key, cloneValueForSave(values[key])]),
+    );
+    const patch = Object.fromEntries(Object.keys(submitted).map((key) => [key, saveValue(key)]));
     const result = await apiPatch<SaveResult>('/api/config', patch);
-    original.value = cloneSettings(values);
+    if (result.status === false) throw new Error('save-rejected');
+    original.value = acknowledgeSettings(original.value, submitted);
     restartAvailable.value ||= Boolean(result.restartRequired);
     notice.value = restartAvailable.value
       ? t('ui.settings.notices.saved_restart')
@@ -792,30 +801,86 @@ async function restart(): Promise<void> {
   notice.value = t('ui.settings.notices.restarting');
   try {
     await apiPost('/api/restart');
-  } catch {
-    // The host may terminate the HTTP connection as part of a successful restart.
-  } finally {
-    window.setTimeout(() => window.location.reload(), 3500);
+  } catch (cause) {
+    if (cause instanceof ApiError) {
+      error.value = t('ui.maintenance.errors.actionFailed');
+      restarting.value = false;
+      return;
+    }
   }
+  window.setTimeout(() => window.location.reload(), 3500);
 }
 
 async function resetDisplayPersistence(): Promise<void> {
+  if (resetting.value) return;
+  resetting.value = true;
   error.value = '';
   notice.value = '';
   try {
-    await apiPost('/api/reset-display-device-persistence');
+    const result = await apiPost<{ status?: boolean }>('/api/reset-display-device-persistence');
+    if (result.status === false) throw new Error('reset-rejected');
     notice.value = t('ui.settings.notices.display_state_cleared');
   } catch {
     error.value = t('ui.settings.errors.reset_display');
+  } finally {
+    resetting.value = false;
   }
 }
 
-onMounted(() => void load());
+function cloneValueForSave(value: unknown): unknown {
+  return value === undefined ? undefined : structuredClone(toRaw(value));
+}
+
+async function focusLinkedField(): Promise<void> {
+  await nextTick();
+  let id: string;
+  try {
+    id = decodeURIComponent(route.hash.slice(1));
+  } catch {
+    return;
+  }
+  if (!id.startsWith('setting-')) return;
+  const element = document.getElementById(id);
+  for (let parent = element?.parentElement; parent; parent = parent.parentElement) {
+    if (parent instanceof HTMLDetailsElement) parent.open = true;
+  }
+  await nextTick();
+  element?.scrollIntoView({ block: 'center' });
+  element?.focus({ preventScroll: true });
+}
+watch(search, (q) => {
+  if (q === (route.query.q ?? '')) return;
+  void router.replace({ query: { ...route.query, q: q || undefined } });
+});
+watch(
+  () => route.fullPath,
+  () => {
+    if (settingsCategories.some((item) => item.id === route.query.category))
+      activeCategory.value = String(route.query.category);
+    search.value = typeof route.query.q === 'string' ? route.query.q : '';
+    void focusLinkedField();
+  },
+);
+function beforeUnload(event: BeforeUnloadEvent): void {
+  if (isDirty.value || saving.value) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+}
+onBeforeRouteLeave(
+  () => (!isDirty.value && !saving.value) || window.confirm(t('ui.settings.leave_warning')),
+);
+onMounted(() => {
+  void load();
+  window.addEventListener('beforeunload', beforeUnload);
+});
+onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
 </script>
 
 <template>
   <form
-    class="page page--narrow settings-page"
+    ref="form"
+    class="page settings-page"
     :class="{ 'settings-page--dirty': isDirty }"
     @submit.prevent="save"
   >
@@ -854,7 +919,7 @@ onMounted(() => void load());
           type="button"
           :disabled="restarting"
           :aria-busy="restarting"
-          @click="restart"
+          @click="confirmation = 'restart'"
         >
           {{ t(restarting ? 'ui.settings.notices.restarting' : 'ui.settings.restart_now') }}
         </button>
@@ -927,11 +992,15 @@ onMounted(() => void load());
       </nav>
 
       <div class="settings-content">
-        <div v-if="loading" class="settings-group" :aria-label="t('ui.settings.loading')">
+        <div
+          v-if="loading"
+          class="settings-group vs-settings-group"
+          :aria-label="t('ui.settings.loading')"
+        >
           <LoadingSkeleton v-for="index in 6" :key="index" height="64px" />
         </div>
 
-        <template v-else>
+        <template v-else-if="configLoaded">
           <header class="settings-category-heading" aria-live="polite" aria-atomic="true">
             <span>{{
               t(isSearching ? 'ui.settings.all_settings' : 'ui.settings.selected_category')
@@ -942,16 +1011,20 @@ onMounted(() => void load());
             <p>{{ categoryDescription }}</p>
           </header>
 
-          <dl
-            v-if="activeCategory === 'everyday' && !isSearching"
-            class="settings-summary"
-            :aria-label="t('ui.settings.summary.label')"
+          <nav
+            v-if="destinationResults.length"
+            class="settings-destinations"
+            :aria-label="t('ui.settings.more_options')"
           >
-            <div v-for="item in everydaySummary" :key="item.label">
-              <dt>{{ item.label }}</dt>
-              <dd>{{ item.value }}</dd>
-            </div>
-          </dl>
+            <RouterLink v-for="item in destinationResults" :key="item.to" :to="item.to"
+              >{{ t(item.labelKey) }} →</RouterLink
+            >
+          </nav>
+          <LinuxCaptureStatus
+            v-if="isLinuxHost && !isSearching && ['everyday', 'display'].includes(activeCategory)"
+            :metadata="hostMetadata"
+            :virtual-mode="String(values.virtual_display_mode ?? '')"
+          />
 
           <section
             v-for="group in filteredGroups"
@@ -984,75 +1057,33 @@ onMounted(() => void load());
               >
                 {{ t('ui.settings.virtual_display_unavailable.description') }}
               </InlineAlert>
-              <div class="settings-group">
-                <div
+              <div class="settings-group vs-settings-group">
+                <SettingRow
                   v-for="field in group.fields"
                   :key="field.key"
-                  class="settings-row"
-                  :class="{
-                    'settings-row--stacked': field.stacked,
-                    'settings-row--recovery': field.kind === 'display-recovery',
-                  }"
+                  :label="fieldLabel(field)"
+                  :control-id="`setting-${field.key}`"
+                  :stacked="field.stacked || field.kind === 'display-recovery'"
+                  :disabled="fieldIsInactive(field)"
+                  :restart-required="field.restartRequired"
                 >
-                  <div v-if="field.kind === 'mode-remapping'" class="settings-row__copy">
-                    <span :id="`setting-${field.key}-label`" class="settings-row__label">
-                      {{ fieldLabel(field) }}
-                    </span>
-                    <span
-                      v-if="fieldDescription(field)"
-                      :id="`setting-${field.key}-description`"
-                      class="settings-row__description"
-                    >
-                      {{ fieldDescription(field) }}
-                    </span>
-                  </div>
-
-                  <component
-                    :is="fieldUsesCustomEditor(field) || field.kind === 'boolean' ? 'div' : 'label'"
-                    v-else-if="field.kind !== 'display-recovery'"
-                    class="settings-row__copy"
-                    :for="
-                      fieldUsesCustomEditor(field) || field.kind === 'boolean'
-                        ? undefined
-                        : `setting-${field.key}`
-                    "
-                  >
-                    <component
-                      :is="field.kind === 'boolean' ? 'label' : 'span'"
-                      :id="`setting-${field.key}-label`"
-                      class="settings-row__label"
-                      :for="field.kind === 'boolean' ? `setting-${field.key}` : undefined"
-                    >
-                      {{ fieldLabel(field) }}
-                      <StatusBadge v-if="field.recommended" tone="success" compact>
-                        {{ t('ui.settings.recommended') }}
-                      </StatusBadge>
-                      <StatusBadge v-if="field.restartRequired" tone="warning" compact>
-                        {{ t('ui.settings.restart') }}
-                      </StatusBadge>
-                    </component>
-                    <span
-                      v-if="fieldDescription(field)"
-                      :id="`setting-${field.key}-description`"
-                      class="settings-row__description"
-                    >
-                      {{ fieldDescription(field) }}
-                    </span>
+                  <template #label>
+                    <span :id="`setting-${field.key}-label`">{{ fieldLabel(field) }}</span>
+                  </template>
+                  <template #description>
+                    <span v-if="fieldDescription(field)" :id="`setting-${field.key}-description`">{{
+                      fieldDescription(field)
+                    }}</span>
                     <span
                       v-if="fieldWarningIsVisible(field)"
                       :id="`setting-${field.key}-warning`"
                       class="settings-row__warning"
+                      >{{ t(field.warningKey ?? '') }}</span
                     >
-                      {{ t(field.warningKey ?? '') }}
-                    </span>
-                    <span
-                      v-if="dependencyHint(field)"
-                      :id="`setting-${field.key}-dependency`"
-                      class="settings-row__dependency"
-                    >
-                      {{ dependencyHint(field) }}
-                    </span>
-                  </component>
+                    <span v-if="dependencyHint(field)" :id="`setting-${field.key}-dependency`">{{
+                      dependencyHint(field)
+                    }}</span>
+                  </template>
 
                   <label v-if="field.kind === 'boolean'" class="vs-switch">
                     <input
@@ -1091,7 +1122,11 @@ onMounted(() => void load());
                     v-else-if="field.kind === 'textarea'"
                     :id="`setting-${field.key}`"
                     :class="['vs-textarea', { monospace: field.monospace }]"
-                    :value="String(values[field.key] ?? '')"
+                    :value="
+                      typeof values[field.key] === 'object'
+                        ? JSON.stringify(values[field.key], null, 2)
+                        : String(values[field.key] ?? '')
+                    "
                     :placeholder="field.placeholderKey ? t(field.placeholderKey) : undefined"
                     :disabled="fieldIsInactive(field)"
                     :aria-labelledby="`setting-${field.key}-label`"
@@ -1127,6 +1162,13 @@ onMounted(() => void load());
                     @update:model-value="values[field.key] = $event"
                   />
 
+                  <ServerCommands
+                    v-else-if="field.kind === 'server-commands'"
+                    :model-value="values[field.key]"
+                    :platform="hostPlatform"
+                    @update:model-value="values[field.key] = $event"
+                  />
+
                   <SettingsIntegrationPath
                     v-else-if="field.kind === 'integration-path'"
                     :kind="field.integration ?? 'rtss'"
@@ -1143,14 +1185,18 @@ onMounted(() => void load());
                     :min="field.min"
                     :max="field.max"
                     :step="field.step"
-                    :value="String(values[field.key] ?? '')"
+                    :value="
+                      typeof values[field.key] === 'object'
+                        ? JSON.stringify(values[field.key], null, 2)
+                        : String(values[field.key] ?? '')
+                    "
                     :placeholder="field.placeholderKey ? t(field.placeholderKey) : undefined"
                     :disabled="fieldIsInactive(field)"
                     :aria-labelledby="`setting-${field.key}-label`"
                     :aria-describedby="fieldDescriptionIds(field)"
                     @input="updateValue(field.key, $event, field)"
                   />
-                </div>
+                </SettingRow>
               </div>
               <div
                 v-if="
@@ -1165,24 +1211,21 @@ onMounted(() => void load());
                   <h4>{{ groupTitle('display_target') }}</h4>
                   <p>{{ groupDescription('display_target') }}</p>
                 </div>
-                <div class="settings-group">
-                  <div class="settings-row settings-physical-display__row">
-                    <label class="settings-row__copy" for="setting-output_name">
-                      <span id="setting-output_name-label" class="settings-row__label">
-                        {{ t('config.output_name') }}
-                      </span>
-                      <span id="setting-output_name-description" class="settings-row__description">
-                        {{ physicalDisplayDescription }}
-                      </span>
-                    </label>
+                <div class="settings-group vs-settings-group">
+                  <SettingRow
+                    :label="t('config.output_name')"
+                    :description="physicalDisplayDescription"
+                    control-id="setting-output_name"
+                    v-slot="{ labelId, descriptionId }"
+                  >
                     <div class="settings-physical-display__control">
                       <select
                         v-if="supportsDisplayDeviceEnumeration && !displayDevicesError"
                         id="setting-output_name"
                         class="vs-select"
                         :value="String(values.output_name ?? '')"
-                        aria-labelledby="setting-output_name-label"
-                        aria-describedby="setting-output_name-description"
+                        :aria-labelledby="labelId"
+                        :aria-describedby="descriptionId"
                         @focus="loadDisplayDevices()"
                         @change="updateValue('output_name', $event)"
                       >
@@ -1211,11 +1254,11 @@ onMounted(() => void load());
                         class="vs-input monospace"
                         type="text"
                         :value="String(values.output_name ?? '')"
-                        aria-labelledby="setting-output_name-label"
+                        :aria-labelledby="labelId"
                         :aria-describedby="
                           displayDevicesError
-                            ? 'setting-output_name-description setting-output_name-error'
-                            : 'setting-output_name-description'
+                            ? `${descriptionId} setting-output_name-error`
+                            : descriptionId
                         "
                         @input="updateValue('output_name', $event)"
                       />
@@ -1239,13 +1282,22 @@ onMounted(() => void load());
                         {{ displayDevicesError }}
                       </span>
                     </div>
-                  </div>
+                  </SettingRow>
                 </div>
               </div>
+              <RouterLink v-if="group.link" class="settings-more" :to="group.link">{{
+                t('ui.settings.more_options')
+              }}</RouterLink>
+              <p v-if="group.id === 'everyday_audio'" class="settings-more">
+                {{ t(isLinuxHost ? 'ui.settings.linux.audio' : 'ui.settings.audio_summary') }}
+              </p>
             </component>
           </section>
 
-          <div v-if="filteredGroups.length === 0" class="settings-empty">
+          <div
+            v-if="filteredGroups.length === 0 && destinationResults.length === 0"
+            class="settings-empty"
+          >
             {{ t('ui.settings.no_results', { query: search }) }}
           </div>
         </template>
@@ -1259,7 +1311,12 @@ onMounted(() => void load());
             <h2 id="display-recovery-title">{{ t('ui.settings.display_recovery.title') }}</h2>
             <p>{{ t('ui.settings.display_recovery.description') }}</p>
           </div>
-          <button class="button button--danger-text" type="button" @click="resetDisplayPersistence">
+          <button
+            class="button button--danger-text"
+            type="button"
+            :disabled="resetting"
+            @click="confirmation = 'reset'"
+          >
             {{ t('ui.settings.display_recovery.action') }}
           </button>
         </section>
@@ -1296,11 +1353,33 @@ onMounted(() => void load());
         </button>
       </div>
     </div>
+    <ConfirmDialog
+      :open="confirmation !== null"
+      :title="
+        t(
+          confirmation === 'restart'
+            ? 'ui.maintenance.confirm.restartTitle'
+            : 'ui.settings.display_recovery.title',
+        )
+      "
+      :description="
+        t(
+          confirmation === 'restart'
+            ? 'ui.maintenance.confirm.restartDescription'
+            : 'ui.settings.reset_warning',
+        )
+      "
+      :confirm-label="t('_common.continue')"
+      tone="danger"
+      @update:open="!$event && (confirmation = null)"
+      @confirm="confirmation === 'restart' ? restart() : resetDisplayPersistence()"
+    />
   </form>
 </template>
 
 <style scoped>
 .settings-page {
+  max-width: 1200px;
   padding-bottom: var(--vs-space-80);
 }
 
@@ -1310,7 +1389,6 @@ onMounted(() => void load());
 
 .settings-tools,
 .settings-layout,
-.settings-row,
 .save-bar,
 .save-bar__actions,
 .danger-zone {
@@ -1378,6 +1456,7 @@ onMounted(() => void load());
 }
 
 .settings-content {
+  container-type: inline-size;
   min-width: 0;
   flex: 1;
 }
@@ -1405,39 +1484,6 @@ onMounted(() => void load());
   max-width: 680px;
   margin: var(--vs-space-4) 0 0;
   color: var(--vs-color-text-secondary);
-}
-
-.settings-summary {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin-bottom: var(--vs-space-32);
-  border-block: 1px solid var(--vs-color-border-subtle);
-}
-
-.settings-summary > div {
-  min-width: 0;
-  padding: var(--vs-space-12) var(--vs-space-16);
-}
-
-.settings-summary > div + div {
-  border-left: 1px solid var(--vs-color-border-subtle);
-}
-
-.settings-summary dt,
-.settings-summary dd {
-  display: block;
-}
-
-.settings-summary dt {
-  color: var(--vs-color-text-muted);
-  font-size: 12px;
-}
-
-.settings-summary dd {
-  margin-top: var(--vs-space-2);
-  color: var(--vs-color-text-primary);
-  font-weight: 600;
-  line-height: 18px;
 }
 
 .settings-section + .settings-section,
@@ -1509,62 +1555,9 @@ onMounted(() => void load());
 }
 
 .settings-group {
-  overflow: hidden;
   border: 1px solid var(--vs-color-border-subtle);
   border-radius: var(--vs-radius-card);
   background: var(--vs-color-bg-surface);
-}
-
-.settings-row {
-  display: grid;
-  min-height: var(--vs-size-row-settings);
-  grid-template-columns: minmax(240px, 1fr) minmax(300px, 420px);
-  align-items: center;
-  gap: var(--vs-space-24);
-  padding: var(--vs-space-16) var(--vs-space-20);
-}
-
-.settings-row + .settings-row {
-  border-top: 1px solid var(--vs-color-border-subtle);
-}
-
-.settings-row--stacked {
-  grid-template-columns: minmax(0, 1fr);
-  align-items: stretch;
-  gap: var(--vs-space-12);
-}
-
-.settings-row--recovery {
-  padding: 0;
-}
-
-.settings-row__copy {
-  min-width: 0;
-}
-
-.settings-row__label {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  column-gap: var(--vs-space-8);
-  row-gap: var(--vs-space-4);
-  color: var(--vs-color-text-primary);
-  font-weight: 600;
-}
-
-.settings-row__description,
-.settings-row__warning,
-.settings-row__dependency,
-.settings-row code {
-  display: block;
-  margin-top: var(--vs-space-4);
-  color: var(--vs-color-text-secondary);
-  font-size: 13px;
-  line-height: 18px;
-}
-
-.settings-row__dependency {
-  color: var(--vs-color-status-warning);
 }
 
 .settings-row__warning {
@@ -1573,24 +1566,6 @@ onMounted(() => void load());
   color: var(--vs-color-status-warning);
   font-size: 13px;
   line-height: 18px;
-}
-
-.settings-row input:not([type='checkbox']),
-.settings-row select,
-.settings-row textarea {
-  width: 100%;
-  min-width: 0;
-}
-
-.settings-row--stacked input:not([type='checkbox']),
-.settings-row--stacked select,
-.settings-row--stacked textarea {
-  width: 100%;
-  min-width: 0;
-}
-
-.settings-row > .vs-switch {
-  justify-self: end;
 }
 
 .settings-physical-display {
@@ -1614,6 +1589,7 @@ onMounted(() => void load());
 }
 
 .settings-physical-display__control {
+  width: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
@@ -1662,9 +1638,9 @@ onMounted(() => void load());
   align-items: center;
   justify-content: space-between;
   gap: var(--vs-space-24);
-  width: min(calc(100vw - var(--vs-navigation-width-expanded) - var(--vs-space-64)), 960px);
+  width: auto;
   padding: var(--vs-space-12) var(--vs-space-16);
-  margin-inline: auto;
+  margin-inline: 0;
   border: 1px solid var(--vs-color-border-strong);
   border-radius: var(--vs-radius-card);
   background: var(--vs-color-bg-raised);
@@ -1673,7 +1649,7 @@ onMounted(() => void load());
 
 :global(.app-shell--collapsed) .save-bar {
   left: calc(var(--vs-navigation-width-collapsed) + var(--vs-space-32));
-  width: min(calc(100vw - var(--vs-navigation-width-collapsed) - var(--vs-space-64)), 960px);
+  width: auto;
 }
 
 .save-bar strong,
@@ -1693,28 +1669,7 @@ onMounted(() => void load());
 @media (max-width: 1023px) {
   .save-bar {
     left: calc(var(--vs-navigation-width-collapsed) + var(--vs-space-32));
-    width: min(calc(100vw - var(--vs-navigation-width-collapsed) - var(--vs-space-64)), 960px);
-  }
-}
-
-@media (max-width: 1099px) {
-  .settings-row {
-    grid-template-columns: minmax(0, 1fr);
-    align-items: stretch;
-    gap: var(--vs-space-12);
-  }
-
-  .settings-row > .vs-switch {
-    justify-self: start;
-  }
-
-  .settings-summary {
-    grid-template-columns: 1fr;
-  }
-
-  .settings-summary > div + div {
-    border-top: 1px solid var(--vs-color-border-subtle);
-    border-left: 0;
+    width: auto;
   }
 }
 
@@ -1743,18 +1698,6 @@ onMounted(() => void load());
     font-weight: 600;
   }
 
-  .settings-row {
-    align-items: stretch;
-    flex-direction: column;
-    gap: var(--vs-space-12);
-  }
-
-  .settings-row input:not([type='checkbox']),
-  .settings-row select,
-  .settings-row textarea {
-    width: 100%;
-  }
-
   .save-bar {
     inset: auto 0 0;
     width: auto;
@@ -1773,5 +1716,23 @@ onMounted(() => void load());
   .save-bar__actions > * {
     flex: 1;
   }
+}
+.settings-more {
+  display: block;
+  margin: var(--vs-space-12) 0;
+  color: var(--vs-color-text-secondary);
+}
+.settings-content
+  :deep(.vs-setting-row__control > :is(input:not([type='checkbox']), select, textarea)) {
+  width: 100%;
+  min-width: 0;
+}
+.settings-content :deep(.vs-setting-row__control) {
+  flex-wrap: wrap;
+}
+.settings-destinations {
+  display: grid;
+  gap: var(--vs-space-12);
+  margin-block: var(--vs-space-24);
 }
 </style>

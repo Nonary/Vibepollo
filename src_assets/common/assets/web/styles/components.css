@@ -230,7 +230,8 @@
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: var(--vs-space-12);
   padding: var(--vs-space-12) var(--vs-space-16);
-  border: var(--vs-border-width) solid color-mix(in srgb, var(--vs-alert-color) 54%, var(--vs-color-border-subtle));
+  border: var(--vs-border-width) solid
+    color-mix(in srgb, var(--vs-alert-color) 54%, var(--vs-color-border-subtle));
   border-inline-start-width: var(--vs-border-emphasis-width);
   border-radius: var(--vs-radius-control);
   background: color-mix(in srgb, var(--vs-alert-color) 8%, var(--vs-color-bg-surface));
@@ -529,10 +530,7 @@
 }
 
 .vs-dialog {
-  inline-size: min(
-    calc(100vw - (var(--vs-space-16) * 2)),
-    var(--vs-dialog-confirmation-width)
-  );
+  inline-size: min(calc(100vw - (var(--vs-space-16) * 2)), var(--vs-dialog-confirmation-width));
   max-inline-size: none;
   max-block-size: min(calc(100vh - (var(--vs-space-24) * 2)), 48rem);
   margin: auto;
@@ -546,7 +544,8 @@
 
 .vs-dialog::backdrop {
   background: var(--vs-overlay-backdrop, var(--vs-color-overlay-backdrop));
-  animation: vs-dialog-backdrop-in var(--vs-motion-duration-overlay) var(--vs-motion-easing-standard);
+  animation: vs-dialog-backdrop-in var(--vs-motion-duration-overlay)
+    var(--vs-motion-easing-standard);
 }
 
 .vs-dialog__panel {
@@ -726,5 +725,40 @@
   .vs-dialog::backdrop {
     background: Canvas;
     opacity: 0.75;
+  }
+}
+
+/* Reflow against editor width, including nested settings navigation. */
+.vs-settings-group,
+.integration-settings {
+  container-type: inline-size;
+}
+.vs-setting-row {
+  grid-template-columns: minmax(0, 1fr) minmax(12rem, 42%);
+}
+.vs-setting-row--stacked {
+  grid-template-columns: minmax(0, 1fr);
+}
+.vs-setting-row__control {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+.vs-setting-row__control > :is(.vs-input, .vs-select, .vs-textarea, .integration-control) {
+  inline-size: 100%;
+  min-inline-size: 0;
+}
+.vs-setting-row__description,
+.vs-setting-row__label {
+  overflow-wrap: anywhere;
+}
+@container (max-width: 719px) {
+  .vs-setting-row:not(.vs-setting-row--stacked) {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: var(--vs-space-12);
+  }
+  .vs-setting-row__control {
+    justify-content: flex-start;
+    min-inline-size: 0;
   }
 }

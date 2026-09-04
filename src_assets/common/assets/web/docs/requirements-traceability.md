@@ -68,3 +68,43 @@ This matrix turns the UX specification into implementation ownership and observa
 3. Responsive behavior is demonstrated with realistic long strings, not only placeholder copy.
 4. Loading, empty, partial, unavailable, and failure states preserve context and provide the next useful action.
 5. Live updates do not cause unexpected focus movement, row reordering, layout shift, or excessive announcements.
+
+## v2 completion coverage
+
+The field catalog is the common source for global settings and application/device overrides.
+`settingsDestinations` indexes settings owned by Integrations. `adapter_pnp_id` is edited
+with the Windows adapter selector rather than as an independent field. Existing configuration
+values are preserved when platform rules hide their controls.
+
+| Workflow                                                                         | v2 destination                                 | Verification                                                                                     |
+| -------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Linux virtual-screen selection, local monitors, resolution/refresh, HDR, scaling | Settings → Everyday                            | Browser fixtures cover recommendations, unavailability, physical selection and responsive layout |
+| Automatic Windows smoothness                                                     | Settings → Everyday                            | Windows fixture retains the platform-specific control                                            |
+| Capture backend and manual pacing overrides                                      | Settings → Advanced capture and pacing         | Shared platform option and parity tests                                                          |
+| NVIDIA, AMD, Intel, VA-API, Vulkan, VideoToolbox and software tuning             | Settings → Video & quality                     | Catalog coverage, encoder family tests and direct-link browser scenario                          |
+| Audio, controller, keyboard and mouse                                            | Everyday, with detailed Audio/Input categories | Saving a single field preserves unrelated configuration                                          |
+| Remote Monitor, display remapping and recovery                                   | Settings → Displays; Devices                   | Existing serialization and platform parity tests                                                 |
+| App and device overrides                                                         | Library → application; Devices → settings      | Common canonical field definitions, platform options and runtime allowlist                       |
+| Language, token lifetimes, history/statistics and file locations                 | Host, Network and Files categories             | Catalog coverage and API boolean normalization tests                                             |
+| Steam/Lutris/MangoHud and Playnite                                               | Integrations                                   | Platform-specific views; Playnite policies use explicit Save/Discard                             |
+| Pairing, individual disconnect/unpair and bulk unpair                            | Pair / Devices                                 | Bulk-unpair browser test verifies explicit confirmation                                          |
+| Release information and Linux diagnostics                                        | Maintenance                                    | Browser test verifies logs and display setup are reachable                                       |
+| Search, category history and direct field links                                  | Settings                                       | Browser test retains unsaved edits through category navigation                                   |
+| Save, deferred application and restart state                                     | Settings                                       | Snapshot acknowledgement, rejected-save and validation tests                                     |
+| Library, browser streaming, stats, logs, API tokens, authentication              | Existing canonical routes                      | Shared layout primitives and route smoke checks                                                  |
+
+### Verification commands
+
+From the web directory, with Node 22 or newer:
+
+- `npm ci`
+- `npm run test:unit`
+- `npx playwright install chromium`
+- `npm run test:e2e`
+- `npm run build`
+
+Browser tests mock host APIs and never restart or reconfigure a live host. Screenshots and
+traces go to `/tmp/vibeshine-ui-results` by default; set `VIBESHINE_TEST_OUTPUT` to override.
+The Linux `test_component_linux_capture_status` target checks concurrent capture lifetime
+and cleanup. Real hardware capture performance and the pre-login transition require host
+validation; UI fixtures cannot establish latency measurements.

@@ -2,6 +2,8 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
+import ReleaseNotes from '@/components/settings/ReleaseNotes.vue';
+import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
 import { ApiError, apiDelete, apiGet, apiPost } from '@/api/client';
 import {
   AppButton,
@@ -519,6 +521,23 @@ onMounted(() => void load());
     </template>
 
     <template v-else>
+      <section v-if="metadata?.platform === 'linux'" class="maintenance-section">
+        <LinuxCaptureStatus
+          :metadata="metadata"
+          :virtual-mode="
+            metadata.capture_status?.virtual_display_configured === false ? 'disabled' : undefined
+          "
+        />
+        <div class="maintenance-actions">
+          <RouterLink class="button button--secondary" to="/settings?category=display">{{
+            t('ui.maintenance.linux.display')
+          }}</RouterLink>
+          <RouterLink class="button button--secondary" to="/logs">{{
+            t('ui.maintenance.linux.logs')
+          }}</RouterLink>
+        </div>
+      </section>
+      <ReleaseNotes class="maintenance-section" :installed-version="metadata?.version" />
       <section class="maintenance-section" aria-labelledby="installed-version-title">
         <div class="maintenance-section__heading">
           <div>

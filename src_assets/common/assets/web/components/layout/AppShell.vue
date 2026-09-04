@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute } from 'vue-router';
 
@@ -27,13 +27,14 @@ const secondaryNavigation = [
 ] as const;
 
 const statusText = computed(() => {
+  if (system.health === 'unknown') return t('ui.settings.linux.states.unknown');
   if (system.health === 'warning') return t('ui.status.needs_attention');
   if (system.health === 'streaming') return t('ui.status.streaming');
   return t('ui.status.ready');
 });
 
 const statusIcon = computed(() => {
-  if (system.health === 'warning') return 'alert-triangle';
+  if (system.health === 'unknown' || system.health === 'warning') return 'alert-triangle';
   if (system.health === 'streaming') return 'activity';
   return 'check-circle';
 });
@@ -55,7 +56,22 @@ function closeMobileNavigation(): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape' && system.mobileNavOpen) closeMobileNavigation();
+  if (!system.mobileNavOpen) return;
+  if (event.key === 'Escape') closeMobileNavigation();
+  if (event.key === 'Tab') {
+    const elements = Array.from(
+      navigation.value?.querySelectorAll<HTMLElement>('a[href], button, select') ?? [],
+    ).filter((element) => element.getClientRects().length);
+    const first = elements[0],
+      last = elements.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  }
 }
 
 watch(
@@ -63,8 +79,32 @@ watch(
   () => closeMobileNavigation(),
 );
 
-onMounted(() => window.addEventListener('keydown', onKeydown));
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
+let hostTimer: number | undefined;
+const navigation = ref<HTMLElement | null>(null);
+let navInvoker: HTMLElement | null = null;
+watch(
+  () => system.mobileNavOpen,
+  async (open) => {
+    if (open) {
+      navInvoker = document.activeElement as HTMLElement;
+      await nextTick();
+      navigation.value?.querySelector<HTMLElement>('button, a')?.focus();
+    } else {
+      await nextTick();
+      navInvoker?.focus();
+    }
+  },
+);
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown);
+  hostTimer = window.setInterval(() => {
+    if (!document.hidden) void system.refreshHost();
+  }, 10000);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown);
+  window.clearInterval(hostTimer);
+});
 </script>
 
 <template>
@@ -100,7 +140,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
       @click="closeMobileNavigation"
     />
 
-    <aside id="app-navigation" class="sidebar" :aria-label="t('ui.shell.primary_navigation')">
+    <aside
+      ref="navigation"
+      :role="system.mobileNavOpen ? 'dialog' : undefined"
+      :aria-modal="system.mobileNavOpen ? true : undefined"
+      id="app-navigation"
+      class="sidebar"
+      :aria-label="t('ui.shell.primary_navigation')"
+    >
       <div class="sidebar__header">
         <RouterLink class="brand" to="/" :aria-label="t('ui.shell.brand_overview')">
           <img src="/images/logo-apollo-45.png" alt="" width="32" height="32" />
@@ -214,7 +261,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
       </div>
     </aside>
 
-    <main id="main-content" class="main-content" tabindex="-1">
+    <main
+      :inert="system.mobileNavOpen || undefined"
+      id="main-content"
+      class="main-content"
+      tabindex="-1"
+    >
       <slot />
     </main>
   </div>

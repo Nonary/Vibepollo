@@ -3,11 +3,16 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
+  matchesPlatform,
+  settingsFields,
+  optionsForPlatform,
+  encoderFamilyFor,
+  fieldForPlatform,
   captureOptionsForPlatform,
   frameGenerationOptionsForPlatform,
   gamepadOptionsForPlatform,
-  settingsDefaults,
   settingsCategories,
+  settingsDefaults,
   type SettingsField,
 } from '../configs/settingsSchema.ts';
 import {
@@ -15,6 +20,8 @@ import {
   downsampleHostHistory,
   hostHistoryPeaks,
   normalizeCommandRows,
+  normalizeServerCommandRows,
+  serializeServerCommandRows,
   preserveHiddenDisplayValues,
   serializeCommandRows,
 } from '../utils/v2Parity.ts';
@@ -121,7 +128,7 @@ test('Linux keeps common virtual-display policy and hides Windows display intern
 test('Linux exposes Remote Monitor behavior controls', () => {
   const remoteMonitor = settingsCategories
     .flatMap((category) => category.groups)
-    .find((group) => group.id === 'everyday_remote_monitor');
+    .find((group) => group.id === 'display_remote_monitor');
   assert.ok(remoteMonitor);
 
   for (const key of [
@@ -135,6 +142,35 @@ test('Linux exposes Remote Monitor behavior controls', () => {
     );
     assert.deepEqual(field?.platform, ['windows', 'linux'], `${key} must support Linux`);
   }
+});
+
+test('Everyday prioritizes screen, appearance, audio and input on Linux', () => {
+  const everyday = settingsCategories.find((category) => category.id === 'everyday')!;
+  const groups = everyday.groups.filter((group) => matchesPlatform(group, 'linux'));
+  assert.deepEqual(
+    groups.map((group) => group.id),
+    ['everyday_display', 'everyday_appearance', 'everyday_remote_monitor', 'everyday_resolution', 'everyday_audio', 'everyday_input'],
+  );
+  assert.ok(groups.every((group) => !group.collapsed));
+  const keys = groups.flatMap((group) => group.fields.map((field) => field.key));
+  for (const key of [
+    'virtual_display_mode',
+    'virtual_display_layout',
+    'dd_resolution_option',
+    'dd_refresh_rate_option',
+    'dd_virtual_display_scale',
+    'stream_audio',
+    'controller',
+  ])
+    assert.ok(keys.includes(key));
+  for (const key of [
+    'capture',
+    'encoder',
+    'fec_percentage',
+    'global_prep_cmd',
+    'frame_limiter_auto_virtual_framegen',
+  ])
+    assert.ok(!keys.includes(key));
 });
 
 test('Linux virtual-display pacing uses Linux-specific copy', () => {
@@ -220,6 +256,29 @@ test('Linux uses display enumeration and persistence reset', () => {
     settingsView,
     /v-if="\(isWindowsHost \|\| isLinuxHost\) && activeCategory === 'display' && !isSearching"/,
   );
+  assert.match(settingsView, /v-if="supportsDisplayDeviceEnumeration && !displayDevicesError"/);
+});
+
+test('Settings protects drafts and keeps restart actions available', () => {
+  const settingsView = readFileSync(new URL('../views/SettingsView.vue', import.meta.url), 'utf8');
+  assert.match(settingsView, /<form[\s\S]*@submit\.prevent="save"/);
+  assert.match(settingsView, /class="button button--primary" type="submit"/);
+  assert.match(settingsView, /:disabled="loading \|\| saving \|\| isDirty"/);
+  assert.match(settingsView, /restartAvailable\.value \|\|= Boolean\(result\.restartRequired\)/);
+  assert.match(settingsView, /v-else-if="notice \|\| restartAvailable"/);
+  assert.match(settingsView, /:disabled="restarting"/);
+});
+
+test('Settings explains unavailable host metadata and virtual-display readiness', () => {
+  const settingsView = readFileSync(new URL('../views/SettingsView.vue', import.meta.url), 'utf8');
+  assert.match(settingsView, /metadataUnavailable\.value = true/);
+  assert.match(settingsView, /virtualDisplayUnavailable/);
+
+  const messages = JSON.parse(
+    readFileSync(new URL('../public/assets/locale/ui/en.json', import.meta.url), 'utf8'),
+  );
+  assert.equal(typeof messages.ui.settings.metadata_unavailable.description, 'string');
+  assert.equal(typeof messages.ui.settings.virtual_display_unavailable.description, 'string');
 });
 
 test('global command rows preserve order, verbatim text, and Windows elevation', () => {
@@ -292,24 +351,46 @@ test('host compute readouts label current and peak values explicitly', () => {
   assert.doesNotMatch(chart, /t\('stats\.peak'\)[^\n]*\/[^\n]*t\('stats\.current'\)/);
 });
 
-test('Settings protects drafts and keeps restart actions available', () => {
-  const settingsView = readFileSync(new URL('../views/SettingsView.vue', import.meta.url), 'utf8');
-  assert.match(settingsView, /<form[\s\S]*@submit\.prevent="save"/);
-  assert.match(settingsView, /class="button button--primary" type="submit"/);
-  assert.match(settingsView, /:disabled="loading \|\| saving \|\| isDirty"/);
-  assert.match(settingsView, /restartAvailable\.value \|\|= Boolean\(result\.restartRequired\)/);
-  assert.match(settingsView, /v-else-if="notice \|\| restartAvailable"/);
-  assert.match(settingsView, /:disabled="restarting"/);
+test('advanced encoder settings have actual fields and platform-aware options', () => {
+  for (const key of [
+    'nvenc_twopass',
+    'nvenc_spatial_aq',
+    'qsv_coder',
+    'amd_rc',
+    'vaapi_strict_rc_buffer',
+    'vk_tune',
+    'sw_preset',
+    'vt_software',
+    'keybindings',
+    'session_token_ttl_seconds',
+    'realtime_stats_show_host_stats',
+  ])
+    assert.ok(settingsFields.has(key), key);
+  assert.equal(encoderFamilyFor('vaapi'), 'vaapi');
+  assert.equal(encoderFamilyFor('vulkan'), 'vulkan');
+  assert.equal(encoderFamilyFor('nvenc_legacy'), 'nvidia');
+  assert.equal(matchesPlatform(settingsFields.get('qsv_coder')!, 'linux'), false);
+  assert.equal(fieldForPlatform(settingsFields.get('adapter_name')!, 'linux').kind, 'text');
+  assert.equal(
+    optionsForPlatform(settingsFields.get('virtual_display_mode')!, 'linux')[0].value,
+    'per_client',
+  );
 });
 
-test('Settings explains unavailable host metadata and virtual-display readiness', () => {
-  const settingsView = readFileSync(new URL('../views/SettingsView.vue', import.meta.url), 'utf8');
-  assert.match(settingsView, /metadataUnavailable\.value = true/);
-  assert.match(settingsView, /virtualDisplayUnavailable/);
-
-  const messages = JSON.parse(
-    readFileSync(new URL('../public/assets/locale/ui/en.json', import.meta.url), 'utf8'),
+test('client command edits survive the latest-device merge before save', () => {
+  const devicesView = readFileSync(new URL('../views/DevicesView.vue', import.meta.url), 'utf8');
+  assert.match(
+    devicesView,
+    /'allowClientCommands',\s*'doCommands',\s*'undoCommands',\s*'displayMode'/,
   );
-  assert.equal(typeof messages.ui.settings.metadata_unavailable.description, 'string');
-  assert.equal(typeof messages.ui.settings.virtual_display_unavailable.description, 'string');
+});
+
+test('server command rows round-trip for the Vibepollo editor', () => {
+  const server = normalizeServerCommandRows(
+    JSON.stringify([{ name: 'Open overlay', cmd: 'overlay.exe', elevated: true }]),
+    'windows',
+  );
+  assert.deepEqual(serializeServerCommandRows(server, 'windows'), [
+    { name: 'Open overlay', cmd: 'overlay.exe', elevated: true },
+  ]);
 });
