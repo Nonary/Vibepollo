@@ -937,6 +937,9 @@ namespace platf {
         }
 
         initialize_presentation_events();
+        if (!presentation_mode.event_capture_enabled() && !presentation_mode.fixed_rate_allowed()) {
+          return -1;
+        }
 
         return 0;
       }
