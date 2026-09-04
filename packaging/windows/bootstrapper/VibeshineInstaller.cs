@@ -5356,7 +5356,56 @@ namespace VibepolloInstaller {
         return 1;
       }
 
+      if (product != null && !product.IsWindowsInstaller && IsNsisUninstaller(executablePath)
+          && arguments.IndexOf("_?=", StringComparison.Ordinal) < 0) {
+        // NSIS normally spawns a temporary copy and exits before removal is done.
+        // Waiting for that launcher races the old file/service cleanup with MSI.
+        // Run our own copy so the old uninstaller can delete its original file,
+        // without scheduling the replacement uninstall.exe for deletion at reboot.
+        var installDirectory = Path.GetDirectoryName(Path.GetFullPath(executablePath));
+        var temporaryDirectory = Path.Combine(Path.GetTempPath(), "vibepollo_legacy_uninstall_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(temporaryDirectory);
+        var temporaryUninstaller = Path.Combine(temporaryDirectory, "uninstall.exe");
+        try {
+          File.Copy(executablePath, temporaryUninstaller);
+          // NSIS requires _?= last and unquoted, including paths with spaces.
+          return RunProcess(temporaryUninstaller, arguments + " _?=" + installDirectory, hiddenWindow, requestElevationIfNeeded);
+        } finally {
+          TryDeleteFile(temporaryUninstaller);
+          try {
+            Directory.Delete(temporaryDirectory);
+          } catch {
+          }
+        }
+      }
+
       return RunProcess(executablePath, arguments, hiddenWindow, requestElevationIfNeeded);
+    }
+
+    private static bool IsNsisUninstaller(string executablePath) {
+      // NSIS firstheader is aligned to 512 bytes; require the uninstall flag
+      // and all signature words so MSI, Inno, and other EXEs keep their commands.
+      // https://github.com/kichik/nsis/blob/master/Source/exehead/fileform.h
+      try {
+        using (var reader = new BinaryReader(File.OpenRead(executablePath))) {
+          for (long offset = 0; offset + 28 <= reader.BaseStream.Length; offset += 512) {
+            reader.BaseStream.Position = offset;
+            var flags = reader.ReadUInt32();
+            if ((flags & 1) != 0 && (flags & ~15u) == 0
+                && reader.ReadUInt32() == 0xDEADBEEF
+                && reader.ReadUInt32() == 0x6C6C754E
+                && reader.ReadUInt32() == 0x74666F73
+                && reader.ReadUInt32() == 0x74736E49) {
+              return true;
+            }
+          }
+        }
+      } catch (IOException) {
+      } catch (UnauthorizedAccessException) {
+      } catch (ArgumentException) {
+      } catch (NotSupportedException) {
+      }
+      return false;
     }
 
     private static string BuildSilentUninstallCommand(InstalledProductInfo product) {
