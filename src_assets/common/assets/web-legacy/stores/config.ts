@@ -125,6 +125,7 @@ const defaultGroups = [
     name: 'Audio/Video',
     options: {
       audio_sink: '',
+      audio_sink_capture_only: 'disabled',
       virtual_sink: '',
       install_steam_audio_drivers: 'enabled',
       stream_audio: 'enabled',

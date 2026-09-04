@@ -697,6 +697,11 @@ namespace platf {
   public:
     virtual int set_sink(const std::string &sink) = 0;
 
+    // Select a loopback endpoint without changing system routing, when supported.
+    virtual int set_capture_sink([[maybe_unused]] const std::string &sink) {
+      return -1;
+    }
+
     virtual std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous, bool host_audio_enabled) = 0;
 
     /**

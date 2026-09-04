@@ -266,6 +266,12 @@ function selectVirtualDisplayLayout(v: unknown) {
     <PlatformLayout>
       <template #windows>
         <ConfigFieldRenderer
+          setting-key="audio_sink_capture_only"
+          v-model="config.audio_sink_capture_only"
+          class="mb-6"
+        />
+
+        <ConfigFieldRenderer
           setting-key="virtual_sink"
           v-model="config.virtual_sink"
           class="mb-6"

@@ -874,6 +874,37 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### audio_sink_capture_only
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            On Windows, capture the explicitly selected [audio_sink](#audio_sink)
+            without changing any default output device. Route the desired application's
+            audio to that device in Windows before connecting. Capture stays on that
+            endpoint if the Windows default changes during the stream.
+            <br>
+            Requires a non-empty audio_sink. Virtual sink selection still takes precedence:
+            leave virtual_sink empty and enable host audio in the client if you have an
+            automatically detected virtual audio device. Other platforms ignore this option.
+            When disabled, selecting an Audio Sink retains the existing behavior of switching
+            Windows default outputs for the stream and restoring them afterward.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">disabled</td>
+    </tr>
+    <tr>
+        <td>Example (Windows)</td>
+        <td colspan="2">@code{}
+            audio_sink = Speakers (High Definition Audio Device)
+            audio_sink_capture_only = enabled
+            @endcode</td>
+    </tr>
+</table>
+
 ### virtual_sink
 
 <table>

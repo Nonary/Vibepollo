@@ -62,6 +62,11 @@ namespace audio::policy {
     );
   }
 
+  bool capture_sink_without_routing(bool enabled, const std::string &configured_sink, const std::string &configured_virtual_sink, const std::string &selected_sink) {
+    return enabled && !configured_sink.empty() && configured_virtual_sink.empty() &&
+           selected_sink == configured_sink;
+  }
+
   sample_action_e sample_action(sample_status_e status) {
     switch (status) {
       case sample_status_e::ok:
