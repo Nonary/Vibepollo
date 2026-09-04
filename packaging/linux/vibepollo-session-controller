@@ -37,6 +37,7 @@ last_status=''
 shutting_down=0
 health_cycle=0
 readiness_retry_pending=0
+session_observation_retry_pending=0
 
 log() { /usr/bin/printf 'vibepollo-session-controller: %s\n' "$*"; }
 error() { /usr/bin/printf 'vibepollo-session-controller: %s\n' "$*" >&2; }
@@ -835,6 +836,24 @@ reconcile_once() {
   observe_active_session
   observed_status=$?
   if ((observed_status != 0)); then
+    # logind can briefly reject an otherwise valid session query while the
+    # machine enters or leaves suspend. Preserve an already-running binding
+    # until it recovers so that this transient observation failure does not
+    # stop the host during the suspend transition. A confirmed unsupported
+    # session, or loss of the running host, still takes the normal fail-closed
+    # cleanup path.
+    if ((observed_status == 1)); then
+      local -A bound=()
+      if read_session_record bound && host_is_active; then
+        if ((session_observation_retry_pending == 0)); then
+          announce session-observation-retry \
+            'authoritative session observation failed for the running binding; retrying until it recovers'
+        fi
+        session_observation_retry_pending=1
+        return 0
+      fi
+    fi
+    session_observation_retry_pending=0
     if ! quiesce; then
       announce session-cleanup-failed 'session selection changed and cleanup failed; retrying immediately'
       return 0
@@ -846,6 +865,7 @@ reconcile_once() {
     fi
     return 0
   fi
+  session_observation_retry_pending=0
 
   if binding_matches_candidate identity; then
     binding_matches=1
@@ -884,14 +904,15 @@ reconcile_once() {
   if ! session_is_ready; then
     # A compositor query that spans suspend expires as the machine resumes,
     # even though logind still identifies the same session and the notified
-    # host remains alive. Retry that one interrupted health probe before
-    # destroying the binding. The pending flag bypasses the cheap health path
-    # on the next cycle; a second failure still performs the full fail-closed
-    # cleanup. New hosts and changed session identities receive no grace.
-    if ((binding_matches && readiness_retry_pending == 0)) && host_is_active; then
+    # host remains alive. Keep the automatic host running and retry until the
+    # existing session becomes usable again. New hosts and changed session
+    # identities still take the normal transition path above.
+    if ((binding_matches)) && host_is_active; then
+      if ((readiness_retry_pending == 0)); then
+        announce "retrying-${candidate_role}-${candidate_session}" \
+          "running ${candidate_role} session ${candidate_session} failed a readiness probe; retrying until it recovers"
+      fi
       readiness_retry_pending=1
-      announce "retrying-${candidate_role}-${candidate_session}" \
-        "running ${candidate_role} session ${candidate_session} failed one readiness probe; retrying before cleanup"
       return 0
     fi
     readiness_retry_pending=0
