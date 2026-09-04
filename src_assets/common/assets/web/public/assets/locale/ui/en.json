@@ -659,7 +659,10 @@
     "removeUninstalledDescription": "When synchronizing all installed games, remove managed applications when their game is no longer installed. Recent-only synchronization always removes games that leave the selected set.",
     "resultCount": "{count} results",
     "searchGames": "Search games or app IDs...",
-        "unknownGame": "Steam game {id}"
+    "selectionDescription": "Exclude games from automatic synchronization without removing them from your Steam library.",
+    "selectionTitle": "Choose synchronized games",
+    "synchronizedCount": "{count} synchronized",
+    "unknownGame": "Steam game {id}"
       },
       "lutris": {
         "advancedSettings": "Advanced provider overlap",
