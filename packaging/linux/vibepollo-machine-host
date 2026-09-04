@@ -653,7 +653,12 @@ nvidia_gpu_present() {
 run_host() {
   local host_capabilities host_log='' host_log_directory=/run/vibepollo/host/logs
   local host_log_prefix host_pid readiness_attempt state status shutting_down=0
-  local -a overrides=('system_tray=disabled') environment
+  # Linux private displays are capture-ready through the Vibeshine DRM/KMS
+  # path.  Leaving desktop sessions to inherit a compositor capture setting
+  # makes a newly reserved output disappear during KWin's topology refresh,
+  # producing a connected session with no video.  Keep this aligned with the
+  # machine-wide Linux capture policy for every selected session role.
+  local -a overrides=('system_tray=disabled' 'capture=kms') environment
   [[ $(/usr/bin/id -un) == "$service_user" ]] || fail "run requires $service_user"
   load_session
   capability_free_exec "$machine_host" prepare-profile
@@ -677,7 +682,7 @@ run_host() {
     # The Web UI must stay reachable from the LAN at the login screen: nobody
     # can open a browser on the greeter itself, and pairing a new Moonlight
     # client needs the PIN entered there. The Web UI login still gates it.
-    overrides+=('capture=kms' 'min_log_level=info' 'virtual_display_mode=shared' 'virtual_display_layout=exclusive' 'dd_config_revert_on_disconnect=enabled' 'dd_config_revert_delay=0' 'origin_web_ui_allowed=lan' 'session_history_enabled=disabled' 'frame_limiter_enable=false' 'file_apps=/usr/share/vibepollo/prelogin/apps.json'); fi
+    overrides+=('min_log_level=info' 'virtual_display_mode=shared' 'virtual_display_layout=exclusive' 'dd_config_revert_on_disconnect=enabled' 'dd_config_revert_delay=0' 'origin_web_ui_allowed=lan' 'session_history_enabled=disabled' 'frame_limiter_enable=false' 'file_apps=/usr/share/vibepollo/prelogin/apps.json'); fi
   environment=("HOME=$machine_profile" "USER=$service_user" "LOGNAME=$service_user" "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin" "LANG=C.UTF-8" "SHELL=/bin/sh" \
     "XDG_CONFIG_HOME=/var/lib" "XDG_RUNTIME_DIR=/run/vibepollo/host" "VIBEPOLLO_MACHINE_HOST=1" \
     "VIBEPOLLO_SESSION_ROLE=$session_role" "VIBEPOLLO_SESSION_USER=$session_user" "VIBEPOLLO_SESSION_UID=$session_uid" "VIBEPOLLO_SESSION_GID=$session_gid" "VIBEPOLLO_SESSION_GROUPS=$session_groups" \
