@@ -159,7 +159,7 @@ namespace platf::vhf_gamepad {
         std::memcpy(feedback.right_effect.parameters.data(), payload.right_trigger.parameters,
                     feedback.right_effect.parameters.size());
         // Both triggers travel in one report, so both are always current.
-        feedback.trigger_event_flags = 0x03;
+        feedback.trigger_event_flags = DS_EFFECT_LEFT_TRIGGER | DS_EFFECT_RIGHT_TRIGGER;
         feedback.has_trigger_effects = true;
       }
       return true;

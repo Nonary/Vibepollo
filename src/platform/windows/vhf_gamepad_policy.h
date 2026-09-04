@@ -74,7 +74,11 @@ namespace platf::vhf_gamepad {
              has_rgb == other.has_rgb &&
              left_trigger == other.left_trigger &&
              right_trigger == other.right_trigger &&
-             has_triggers == other.has_triggers;
+             has_triggers == other.has_triggers &&
+             left_effect == other.left_effect &&
+             right_effect == other.right_effect &&
+             trigger_event_flags == other.trigger_event_flags &&
+             has_trigger_effects == other.has_trigger_effects;
     }
   };
 
