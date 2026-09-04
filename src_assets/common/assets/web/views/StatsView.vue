@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { configBoolean } from '@/utils/settings';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
@@ -90,23 +91,25 @@ const stoppingSessionKey = ref('');
 let refreshTimer: number | undefined;
 let refreshInFlight = false;
 
-const statsEnabled = computed(() => Boolean(config.value.realtime_stats_enabled ?? true));
+const statsEnabled = computed(() => configBoolean(config.value.realtime_stats_enabled, true));
 const showActiveSessions = computed(() =>
-  Boolean(config.value.realtime_stats_show_active_sessions ?? true),
+  configBoolean(config.value.realtime_stats_show_active_sessions, true),
 );
-const showHostStats = computed(() => Boolean(config.value.realtime_stats_show_host_stats ?? true));
+const showHostStats = computed(() =>
+  configBoolean(config.value.realtime_stats_show_host_stats, true),
+);
 const showHostCharts = computed(() =>
-  Boolean(config.value.realtime_stats_show_host_charts ?? true),
+  configBoolean(config.value.realtime_stats_show_host_charts, true),
 );
 const showSessionHistory = computed(() =>
-  Boolean(config.value.realtime_stats_show_session_history ?? true),
+  configBoolean(config.value.realtime_stats_show_session_history, true),
 );
 const pollInterval = computed(() => {
   const configured = Number(config.value.realtime_stats_poll_interval_ms ?? 2000);
   return Math.max(1000, Math.min(10000, Number.isFinite(configured) ? configured : 2000));
 });
 const pauseWhenHidden = computed(() =>
-  Boolean(config.value.realtime_stats_pause_when_hidden ?? true),
+  configBoolean(config.value.realtime_stats_pause_when_hidden, true),
 );
 const maxHistoryPoints = computed(() => {
   const configured = Number(config.value.realtime_stats_max_history_points ?? 300);

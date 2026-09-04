@@ -3052,6 +3052,15 @@ namespace confighttp {
 #endif
     // Build/release date provided by CMake (ISO 8601 when available)
     output_tree["release_date"] = PROJECT_RELEASE_DATE;
+    // UI status reads must never start a capture or probe an encoder.
+    bool probe_complete = false;
+    const auto encoder_caps = video::advertised_encoder_capabilities(false, &probe_complete);
+    output_tree["encoder_status"] = {
+      {"state", probe_complete ? "ready" : video::has_attempted_encoder_probe() ? "failed" : "unknown"},
+      {"h264", probe_complete},
+      {"hevc", probe_complete && encoder_caps.hevc_mode >= 2},
+      {"av1", probe_complete && encoder_caps.av1_mode >= 2},
+    };
 #if defined(_WIN32)
     try {
       const auto gpus = platf::enumerate_gpus();

@@ -290,7 +290,7 @@
       },
       "steam": {
         "browse": "Browse Steam games",
-        "editNotice": "Vibeshine manages this game's core launch details from Steam metadata. Optional preparation and detached commands remain available under Advanced launch controls.",
+        "editNotice": "Vibepollo manages this game's core launch details from Steam metadata. Optional preparation and detached commands remain available under Advanced launch controls.",
         "empty": "No installed Steam games match this name.",
         "loadFailed": "Unable to load Steam games. Check that Steam is installed and its libraries are readable.",
         "loading": "Loading Steam games...",
@@ -301,7 +301,7 @@
       },
       "lutris": {
         "browse": "Browse Lutris games",
-        "editNotice": "Vibeshine manages this game's launch command from Lutris metadata. Those generated details stay hidden here; automatic Lutris entries refresh them during sync.",
+        "editNotice": "Vibepollo manages this game's launch command from Lutris metadata. Those generated details stay hidden here; automatic Lutris entries refresh them during sync.",
         "empty": "No imported Lutris games match this name.",
         "loadFailed": "Unable to load Lutris games. Check that Lutris is installed and its library is readable.",
         "loading": "Loading Lutris games...",
@@ -489,6 +489,12 @@
       "status": {
         "blocked": "Blocked",
         "streaming": "Streaming"
+      },
+      "unpair_all": {
+        "action": "Unpair all devices",
+        "title": "Unpair every device?",
+        "description": "All paired devices will lose access and the running application will stop. Each device must be paired again before it can connect.",
+        "success": "All devices were unpaired."
       }
     },
     "integrations": {
@@ -531,8 +537,8 @@
       "errors": {
         "actionFailed": "The integration action failed.",
         "actionIncomplete": "The integration action did not complete.",
-    "losslessStatus": "Lossless Scaling status is unavailable.",
-    "mangohudStatus": "MangoHUD status is unavailable.",
+        "losslessStatus": "Lossless Scaling status is unavailable.",
+        "mangohudStatus": "MangoHUD status is unavailable.",
         "mangohudUpdateFailed": "Unable to update MangoHUD settings.",
         "lutrisStatus": "Lutris status is unavailable.",
         "lutrisGames": "Lutris games are unavailable.",
@@ -568,7 +574,7 @@
       "notices": {
         "playniteInstalled": "The Playnite extension was installed.",
         "playniteRemoved": "The Playnite extension was removed.",
-    "playniteSynced": "Playnite synchronization completed.",
+        "playniteSynced": "Playnite synchronization completed.",
         "mangohudUpdated": "MangoHUD settings updated.",
         "lutrisSynced": "Lutris synchronization completed.",
         "lutrisExclusionsUpdated": "Lutris game exclusions updated.",
@@ -580,65 +586,85 @@
       },
       "playnite": {
         "description": "Synchronizes installed games and metadata through the Vibepollo extension.",
-        "shortDescription": "Library synchronization and launch integration."
-  },
-  "mangohud": {
-    "alwaysLimit": "Always limit rendered frames",
-    "alwaysLimitDescription": "Apply MangoHUD limiting to every game launched during a stream. Automatic virtual-screen pacing can still request MangoHUD when this is off.",
-    "description": "Linux frame limiting and pacing for Vulkan and OpenGL games.",
-    "fixedLimit": "Fixed limit: {fps} FPS",
-    "fpsLimit": "Frame-rate limit",
-    "fpsLimitDescription": "Use 0 to follow the client stream rate, or enter a fixed limit with up to three decimal places.",
-    "name": "MangoHUD",
-    "provider": "Limiter provider",
-    "providerAuto": "Automatic — use MangoHUD on Linux",
-    "providerDescription": "Automatic is recommended. None disables MangoHUD for both manual and automatic pacing policies.",
-    "providerMangoHud": "MangoHUD",
-    "providerNone": "None",
-    "settingsDescription": "Choose when Vibepollo injects MangoHUD and how its frame limit is calculated.",
-    "settingsTitle": "Frame-limiter settings",
-    "streamLimit": "Limit follows the client stream rate"
-  },
+        "shortDescription": "Library synchronization and launch integration.",
+        "policies_title": "Library and launch policies"
+      },
+      "mangohud": {
+        "alwaysShowGraph": "Always show frame-time graph",
+        "alwaysShowGraphDescription": "Keep the MangoHud overlay visible and include its live frame-time graph for every managed launch.",
+        "alwaysLimit": "Always limit rendered frames",
+        "alwaysLimitDescription": "Apply the selected Linux limiter to every game launched during a stream. Automatic virtual-screen pacing can still request a limiter when this is off.",
+        "description": "Linux game frame limiting and optional MangoHUD telemetry.",
+        "fixedLimit": "Fixed limit: {fps} FPS",
+        "fpsLimit": "Frame-rate limit",
+        "fpsLimitDescription": "Use 0 to follow the client stream rate, or enter a fixed limit with up to three decimal places.",
+        "limiterMethod": "MangoHUD limiter timing",
+        "limiterMethodDescription": "Only applies when MangoHUD owns the limit. Early waits before presentation for smoother pacing with more latency. Late waits after presentation for lower latency, but cannot limit frame-generated output. The Proton limiter supports frame generation.",
+        "limiterMethodEarly": "Early — smoother pacing, more latency",
+        "limiterMethodLate": "Late — lower latency, no frame-generation limiting",
+        "name": "MangoHUD",
+        "overlayMissing": "Proton ready · MangoHUD overlay missing",
+        "overlayPreset": "Metrics and layout",
+        "overlayPresetDescription": "Choose one of MangoHud's standard metric layouts, or keep the metrics from your MangoHud configuration.",
+        "presetCustom": "Use MangoHud configuration",
+        "presetDetailed": "Detailed",
+        "presetExtended": "Extended",
+        "presetFpsOnly": "FPS only",
+        "presetHorizontal": "Horizontal",
+        "provider": "Limiter provider",
+        "providerAuto": "Automatic — Proton limiter + MangoHUD overlay",
+        "providerDescription": "Automatic uses Proton's built-in DXVK or vkd3d-proton limiter for managed Steam games and keeps the MangoHUD overlay visible. Proton also limits frame-generated output. Choose MangoHUD to use its limiter with selectable early or late timing.",
+        "providerMangoHud": "MangoHUD",
+        "providerMangoHudProton": "MangoHUD + Proton",
+        "providerProton": "Proton DXVK/VKD3D",
+        "providerNone": "None",
+        "settingsDescription": "Choose the limiter, whether MangoHUD remains visible, and how the frame limit is calculated.",
+        "settingsTitle": "Frame-limiter settings",
+        "streamLimit": "Limit follows the client stream rate"
+      },
       "steam": {
-    "advancedSettings": "Advanced discovery settings",
-    "appId": "Steam app {id}",
+        "advancedSettings": "Advanced discovery settings",
+        "appId": "Steam app {id}",
         "autoSync": "Synchronize installed games automatically",
         "autoSyncDescription": "Keep installed Steam games synchronized with the streaming library.",
         "description": "Discovers installed games from local Steam libraries.",
-    "excludeGame": "Exclude {name} from automatic synchronization",
-    "exclude": "Exclude",
-    "excluded": "Excluded",
-    "excludedCount": "{count} excluded",
-    "excludeResults": "Exclude results",
+        "excludeGame": "Exclude {name} from automatic synchronization",
+        "exclude": "Exclude",
+        "excluded": "Excluded",
+        "excludedCount": "{count} excluded",
+        "excludeResults": "Exclude results",
         "exclusionsDescription": "Excluded games remain available for manual applications but are not added by Steam auto-sync.",
         "exclusionsTitle": "Excluded games",
-    "filteredTool": "Filtered by app type",
-    "filterGames": "Filter games",
-    "filters": {
-      "all": "All games",
-      "excluded": "Excluded",
-      "included": "Included"
-    },
+        "filteredTool": "Filtered by app type",
+        "filterGames": "Filter games",
+        "filters": {
+          "all": "All games",
+          "excluded": "Excluded",
+          "included": "Included"
+        },
         "forced": "Enabled (Linux policy)",
         "gameCount": "{count} installed games",
-    "includeTools": "Advanced: include tools and runtimes",
-    "includeToolsDescription": "Also import Proton runtimes, redistributables, DLC, and other non-game Steam app types.",
-    "include": "Include",
-    "included": "Included",
-    "includeResults": "Include results",
-    "importableCount": "{count} selected for synchronization",
+        "includeTools": "Advanced: include tools and runtimes",
+        "includeToolsDescription": "Also import Proton runtimes, redistributables, DLC, and other non-game Steam app types.",
+        "include": "Include",
+        "included": "Included",
+        "includeResults": "Include results",
+        "importableCount": "{count} selected for synchronization",
         "loadingGames": "Loading discovered Steam games...",
         "linuxForced": "Steam is required on Linux.",
         "manageGames": "Choose synchronized games",
         "name": "Steam",
-    "noGames": "No Steam games were discovered.",
-    "noMatchingGames": "No games match this search and filter.",
-    "policyDescription": "Control automatic library updates and advanced Steam discovery behavior.",
-    "policyTitle": "Synchronization policy",
+        "noGames": "No Steam games were discovered.",
+        "noMatchingGames": "No games match this search and filter.",
+        "policyDescription": "Control automatic library updates and advanced Steam discovery behavior.",
+        "policyTitle": "Synchronization policy",
         "removeUninstalled": "Remove uninstalled games automatically",
-    "removeUninstalledDescription": "Remove Steam-managed applications when their game is no longer installed.",
-    "resultCount": "{count} results",
-    "searchGames": "Search games or app IDs...",
+        "removeUninstalledDescription": "When synchronizing all installed games, remove managed applications when their game is no longer installed. Recent-only synchronization always removes games that leave the selected set.",
+        "resultCount": "{count} results",
+        "searchGames": "Search games or app IDs...",
+        "selectionDescription": "Exclude games from automatic synchronization without removing them from your Steam library.",
+        "selectionTitle": "Choose synchronized games",
+        "synchronizedCount": "{count} synchronized",
         "unknownGame": "Steam game {id}"
       },
       "lutris": {
@@ -647,7 +673,7 @@
         "autoSyncDescription": "Keep installed Lutris games synchronized with the streaming library.",
         "description": "Discovers non-Steam games and launchers from your local Lutris library.",
         "excludedCount": "{count} excluded",
-        "exclusionsDescription": "Excluded games stay in Lutris but are not added to Vibeshine automatically.",
+        "exclusionsDescription": "Excluded games stay in Lutris but are not added to Vibepollo automatically.",
         "exclusionsTitle": "Excluded games",
         "filterGames": "Filter games",
         "gameCount": "{count} installed games",
@@ -690,10 +716,10 @@
         "updateRequired": "Update required",
         "windowsOnly": "Windows only"
       },
-  "syncing": "Syncing",
-  "saved": "All changes saved",
-  "title": "Integrations",
-  "unsavedChanges": "Unsaved changes",
+      "syncing": "Syncing",
+      "saved": "All changes saved",
+      "title": "Integrations",
+      "unsavedChanges": "Unsaved changes",
       "updated": "Integration updated",
       "vigem": {
         "description": "Provides virtual Xbox and DualShock controllers to streamed applications.",
@@ -1007,6 +1033,22 @@
         "title": "Installed version",
         "unknown": "Unknown version",
         "version": "Version"
+      },
+      "linux": {
+        "title": "Linux streaming setup",
+        "description": "Check the managed virtual screen, active desktop session, and encoder before troubleshooting a stream.",
+        "logs": "Open and download logs",
+        "display": "Display settings"
+      },
+      "releases": {
+        "title": "Updates and release notes",
+        "check": "Check for updates",
+        "available": "Latest release",
+        "current": "Installed version",
+        "unavailable": "Release information is unavailable. Try again later.",
+        "open": "Read release notes",
+        "empty": "No release notes are available.",
+        "loading": "Checking releases…"
       }
     },
     "nav": {
@@ -1415,7 +1457,7 @@
           "label": "Displays"
         },
         "everyday": {
-          "description": "The choices that most directly affect how a stream looks, feels, and starts.",
+          "description": "The essentials for your streaming screen, sound, and controls.",
           "label": "Everyday setup"
         },
         "files": {
@@ -1436,7 +1478,7 @@
         },
         "pacing": {
           "description": "Capture method, frame limiting, and pacing integrations.",
-          "label": "Capture & pacing"
+          "label": "Advanced capture and pacing"
         },
         "video": {
           "description": "Encoder selection, codec capability, bitrate, and resilience.",
@@ -1511,10 +1553,12 @@
           "warning": "When this expires, Vibepollo removes the virtual display even if the game is still running. Some older games can crash when their display disappears. Close the game first or choose Until the game closes."
         },
         "dd_refresh_rate_option": {
-          "description": "Match the client request, prefer the highest compatible rate, or use a fixed value."
+          "label": "Screen refresh rate",
+          "description": "Follow the requested stream FPS using Vibepollo’s display policy, preserve the host refresh rate, or set it manually."
         },
         "dd_resolution_option": {
-          "description": "Match the client request, preserve the current mode, or use a fixed resolution."
+          "label": "Screen resolution",
+          "description": "Follow the client’s requested resolution, preserve the host display, or use a manual resolution."
         },
         "dd_virtual_display_permanent_count": {
           "description": "Keep up to four virtual monitors outside streams. 0 creates them only when needed.",
@@ -1522,7 +1566,11 @@
         },
         "dd_virtual_display_scale": {
           "description": "Adjust interface size without changing the resolution requested by the client.",
-          "label": "Windows scaling"
+          "label": "Display scaling"
+        },
+        "virtual_display_outputs": {
+          "description": "Optional DRM connectors reserved for streaming. Leave empty for the managed pool. Supported Linux hosts use event-driven KMS capture for Vibepollo virtual screens.",
+          "label": "Linux private display connectors"
         },
         "remote_monitor_mute_audio": {
           "description": "Send picture and input without sending game or desktop audio to the Remote Monitor client.",
@@ -1545,7 +1593,7 @@
           "label": "Confirm before replacing a running app"
         },
         "capture": {
-          "description": "Automatic follows the capture backend Vibepollo already chooses for this Windows version. Override it only for compatibility or a specific pacing behavior.",
+          "description": "Automatic follows the host’s capture policy. Supported Linux machine hosts use direct KMS capture. Override only for compatibility.",
           "label": "Capture method"
         },
         "encoder": {
@@ -1602,8 +1650,8 @@
           "label": "RTSS installation folder"
         },
         "virtual_display_layout": {
-          "description": "Choose whether physical displays remain part of the Windows desktop while streaming.",
-          "label": "How it joins the desktop"
+          "description": "Choose whether physical displays remain part of the host desktop while streaming.",
+          "label": "Local monitors while streaming"
         },
         "virtual_display_mode": {
           "description": "Choose whether Vibepollo captures a physical monitor or creates a display sized for the client.",
@@ -1682,8 +1730,8 @@
           "title": "Capture, encoding, sound, and controllers"
         },
         "everyday_display": {
-          "description": "Choose the streaming screen, how it joins the Windows desktop, and how Windows captures it.",
-          "title": "Screen used for streaming"
+          "title": "Streaming screen",
+          "description": "Choose the screen your clients will see and what happens to your local monitors."
         },
         "everyday_encoding": {
           "description": "Use the preferred dedicated GPU automatically, then adjust only its relevant preset and stream recovery overhead.",
@@ -1711,10 +1759,11 @@
         },
         "everyday_smoothness": {
           "description": "Virtual screens automatically match the game cap to the stream and switch between desktop and game refresh rates.",
+          "description_linux": "Vibepollo manages virtual-screen capture automatically. Manual Linux pacing overrides are available under Advanced capture and pacing.",
           "title": "Automatic virtual-screen smoothness"
         },
         "everyday_virtual_display": {
-          "description": "Customize layout, Windows scaling, automatic 1×/4× pacing, and cleanup for virtual screens selected here or requested by an app or client.",
+          "description": "Customize virtual-screen layout, scaling, and cleanup.",
           "title": "Advanced virtual-screen options"
         },
         "file_paths": {
@@ -1756,11 +1805,55 @@
         },
         "video_quality": {
           "title": "Quality and transport budget"
+        },
+        "everyday_appearance": {
+          "title": "Resolution and appearance",
+          "description": "Follow the resolution and FPS requested in your client, or set a host-display override. Scaling changes the size of text and controls."
+        },
+        "everyday_audio": {
+          "title": "Audio",
+          "description": "Send the host’s sound to your streaming device."
+        },
+        "everyday_input": {
+          "title": "Input",
+          "description": "Choose which controls your streaming devices can use."
+        },
+        "video_rtx_hdr": {
+          "title": "RTX HDR",
+          "description": "Windows NVIDIA HDR conversion settings."
+        },
+        "encoder_nvenc": {
+          "title": "NVIDIA NVENC",
+          "description": "Advanced settings for this encoder. Automatic selection is verified by the host when streaming starts."
+        },
+        "encoder_qsv": {
+          "title": "Intel QuickSync",
+          "description": "Advanced settings for this encoder. Automatic selection is verified by the host when streaming starts."
+        },
+        "encoder_amd": {
+          "title": "AMD AMF",
+          "description": "Advanced settings for this encoder. Automatic selection is verified by the host when streaming starts."
+        },
+        "encoder_vt": {
+          "title": "Apple VideoToolbox",
+          "description": "Advanced settings for this encoder. Automatic selection is verified by the host when streaming starts."
+        },
+        "encoder_vaapi": {
+          "title": "VA-API",
+          "description": "Advanced settings for this encoder. Automatic selection is verified by the host when streaming starts."
+        },
+        "encoder_vk": {
+          "title": "Vulkan",
+          "description": "Advanced settings for this encoder. Automatic selection is verified by the host when streaming starts."
+        },
+        "encoder_sw": {
+          "title": "Software encoding",
+          "description": "Advanced settings for this encoder. Automatic selection is verified by the host when streaming starts."
         }
       },
       "loading": "Loading settings",
       "metadata_unavailable": {
-        "description": "Host-specific settings may be hidden until Vibeshine can report this system's platform and hardware.",
+        "description": "Host-specific settings may be hidden until Vibepollo can report this system's platform and hardware.",
         "title": "Some host details are unavailable"
       },
       "no_results": "No settings match “{query}”.",
@@ -2038,6 +2131,47 @@
       "virtual_display_unavailable": {
         "description": "Choose a physical display or finish installing the Linux virtual-display module before streaming.",
         "title": "Virtual displays are not ready on this host"
+      },
+      "linux": {
+        "title": "Virtual screens, built for streaming",
+        "recommendation": "Use a Vibepollo virtual screen for the lowest capture latency and smoothest frame delivery on supported Linux hosts.",
+        "explanation": "Vibepollo captures frames as the virtual screen presents them. Keep automatic resolution and refresh matching for a smooth experience without manual pacing setup.",
+        "per_client": "Virtual screen per device",
+        "shared": "One shared virtual screen",
+        "states": {
+          "active": "Verified capture active",
+          "configured": "Configured for direct capture",
+          "unavailable": "Setup needs attention",
+          "physical": "Physical screen selected",
+          "unknown": "Not yet verified"
+        },
+        "reasons": {
+          "driver_or_outputs_unavailable": "The virtual-screen driver or its managed outputs are unavailable. Check the Linux installation before selecting a virtual screen.",
+          "session_or_output_unavailable": "The desktop session or virtual output is not ready. Check the session and display setup.",
+          "unknown": "The host could not verify its virtual screens. Check the Linux setup and try again."
+        },
+        "greeter": "Pre-login streaming uses one shared virtual screen. Logging in ends this stream; reconnect to stream your desktop. Desktop preferences apply after login.",
+        "repair": "Open Linux setup and troubleshooting",
+        "audio": "Linux uses the managed virtual audio sink automatically. Change audio routing only when you need a specific device.",
+        "unverified": "The host is reachable, but streaming readiness has not been verified yet.",
+        "check_setup": "Check display and encoder readiness in Settings, or open Logs for the reported failure.",
+        "fields": {
+          "virtual_display_mode": "Virtual screens are recommended for the lowest capture latency and smoothest frame delivery. Use a screen per device, share one screen, or select a physical monitor.",
+          "virtual_display_layout": "Choose what happens to your local monitors during streaming. Using only the virtual screen turns off the other displays until the desktop is restored.",
+          "capture": "The supported Linux machine host uses KMS for direct virtual-screen capture. Other backends are compatibility overrides and may not support unattended streaming.",
+          "adapter_name": "Leave empty for automatic GPU selection. To select a render device explicitly, enter its Linux path, such as /dev/dri/renderD128.",
+          "dd_virtual_display_scale": "Adjust text and interface size on the virtual screen. Automatic follows the supported display policy.",
+          "virtual_display_outputs": "Leave empty to use the managed virtual-screen pool. Explicit DRM connector names are an advanced override."
+        }
+      },
+      "leave_warning": "You have unsaved changes. Leave this page and discard them?",
+      "reset_warning": "This restores the desktop and clears saved display state. It can interrupt the current stream.",
+      "more_options": "More settings",
+      "audio_summary": "Use automatic audio routing, or open Audio to select a specific device.",
+      "validation": {
+        "number": "Enter a number within the allowed range.",
+        "resolution": "Enter a resolution such as 2560x1440.",
+        "array": "Enter a JSON array; leave empty to use the default."
       }
     },
     "api_tokens": {

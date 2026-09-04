@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { providerSupported } from '@/utils/providerCapabilities';
+import { useUnsavedChanges } from '@/composables/useUnsavedChanges';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 
+import PlaynitePolicySettings from '@/components/settings/PlaynitePolicySettings.vue';
 import { ApiError, apiGet, apiPatch, apiPost } from '@/api/client';
 import {
   AppButton,
@@ -114,7 +118,7 @@ interface VigemStatus {
   version_compatible?: boolean;
   packaged_version?: string;
   error?: string;
-  // False when Vibeshine's own virtual gamepad driver is available, so a missing
+  // False when Vibepollo's own virtual gamepad driver is available, so a missing
   // ViGEmBus is an unused option rather than a problem.
   required?: boolean;
 }
@@ -426,11 +430,12 @@ async function load(preserveNotice = false): Promise<void> {
 
   if (!system.metadata) await system.refreshHost();
 
-  const steamResult = (await Promise.allSettled([apiGet<SteamStatus>('/api/steam/status')]))[0];
-  const lutrisResult = isLinux.value
+  const steamResult = providerSupported(system.metadata, 'steam')
+    ? (await Promise.allSettled([apiGet<SteamStatus>('/api/steam/status')]))[0] : undefined;
+  const lutrisResult = providerSupported(system.metadata, 'lutris')
     ? (await Promise.allSettled([apiGet<LutrisStatus>('/api/lutris/status')]))[0]
     : undefined;
-  const mangoResult = isLinux.value
+  const mangoResult = providerSupported(system.metadata, 'mangohud')
     ? (await Promise.allSettled([apiGet<MangoHudStatus>('/api/frame-limiter/status')]))[0]
     : undefined;
   const windowsResults = isWindows.value
@@ -444,8 +449,8 @@ async function load(preserveNotice = false): Promise<void> {
     : [];
   const [playniteResult, rtssResult, losslessResult, vigemResult, vulkanResult] = windowsResults;
 
-  if (steamResult.status === 'fulfilled') steam.value = steamResult.value;
-  else nextErrors.steam = message(steamResult.reason, t('ui.integrations.errors.steamStatus'));
+  if (steamResult?.status === 'fulfilled') steam.value = steamResult.value;
+  else if (steamResult) nextErrors.steam = message(steamResult.reason, t('ui.integrations.errors.steamStatus'));
 
   if (lutrisResult?.status === 'fulfilled') lutris.value = lutrisResult.value;
   else if (lutrisResult)
@@ -453,7 +458,7 @@ async function load(preserveNotice = false): Promise<void> {
 
   if (mangoResult?.status === 'fulfilled') {
     mangohud.value = mangoResult.value;
-    resetMangoDraft();
+    if (!mangoDirty.value && !mangoSaving.value) resetMangoDraft();
   } else if (mangoResult) {
     nextErrors.mangohud = message(mangoResult.reason, t('ui.integrations.errors.mangohudStatus'));
   }
@@ -484,7 +489,7 @@ async function load(preserveNotice = false): Promise<void> {
   else if (vulkanResult)
     nextErrors.vulkan = message(vulkanResult.reason, t('ui.integrations.errors.vulkanStatus'));
 
-  if (steamResult.status === 'fulfilled') await loadSteamGames();
+  if (steamResult?.status === 'fulfilled') await loadSteamGames();
   if (lutrisResult?.status === 'fulfilled') await loadLutrisGames();
 
   errors.value = nextErrors;
@@ -777,10 +782,10 @@ function failedSummary(id: IntegrationId, name: string, description: string): In
 }
 
 const summaries = computed(() => {
-  if (isLinux.value) return [steamSummary(), lutrisSummary(), mangoHudSummary()];
+  if (isLinux.value) return [steamSummary(), lutrisSummary(), mangoHudSummary()].filter((item) => providerSupported(system.metadata, item.id));
   if (isWindows.value) {
     return [
-      steamSummary(),
+      ...(providerSupported(system.metadata, 'steam') ? [steamSummary()] : []),
       playniteSummary(),
       rtssSummary(),
       losslessSummary(),
@@ -788,7 +793,7 @@ const summaries = computed(() => {
       vulkanSummary(),
     ];
   }
-  return [steamSummary()];
+  return providerSupported(system.metadata, 'steam') ? [steamSummary()] : [];
 });
 
 const errorCount = computed(() => Object.keys(errors.value).length);
@@ -1062,13 +1067,22 @@ async function saveMangoSettings(): Promise<void> {
   try {
     const fps = Math.max(0, Math.min(1000, Number(mangoDraft.value.fpsLimit) || 0));
     mangoDraft.value.fpsLimit = fps;
-    await apiPatch('/api/config', {
-      frame_limiter_enable: mangoDraft.value.enabled,
-      frame_limiter_provider: mangoDraft.value.provider,
+    const submitted = { ...mangoDraft.value };
+    const result = await apiPatch<{ status?: boolean }>('/api/config', {
+      frame_limiter_enable: submitted.enabled,
+      frame_limiter_provider: submitted.provider,
       frame_limiter_fps_limit: fps,
     });
+    if (result.status === false) throw new Error(t('ui.integrations.errors.mangohudUpdateFailed'));
+    mangoOriginal.value = submitted;
+    mangohud.value = {
+      ...mangohud.value,
+      enabled: submitted.enabled,
+      configured_provider: submitted.provider,
+      fps_limit: submitted.fpsLimit,
+    };
+    delete errors.value.mangohud;
     notice.value = t('ui.integrations.notices.mangohudUpdated');
-    await load(true);
   } catch (cause) {
     errors.value = {
       ...errors.value,
@@ -1079,6 +1093,16 @@ async function saveMangoSettings(): Promise<void> {
   }
 }
 
+useUnsavedChanges(computed(() => mangoDirty.value || mangoSaving.value));
+const route = useRoute();
+watch(
+  () => [loading.value, route.hash],
+  async () => {
+    if (loading.value || !route.hash) return;
+    await nextTick();
+    document.getElementById(route.hash.slice(1))?.scrollIntoView({ block: 'start' });
+  },
+);
 onMounted(() => void load());
 </script>
 
@@ -1148,7 +1172,7 @@ onMounted(() => void load());
             <h2 :id="`integration-${summary.id}`">{{ summary.name }}</h2>
             <StatusBadge :label="summary.status" :tone="summary.tone" compact />
           </div>
-          <p>{{ summary.description }}</p>
+          <PlaynitePolicySettings v-if="summary.id === 'playnite' && isWindows" />
           <ul v-if="summary.details.length" class="integration-details">
             <li v-for="detail in summary.details" :key="detail">{{ detail }}</li>
           </ul>

@@ -2,6 +2,7 @@ import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 
 import { apiGet, apiPost, clearCsrfToken } from '@/api/client';
+import { hostReadiness, type ReadinessMetadata } from '@/utils/hostReadiness';
 import type { SessionStatus } from '@/types/sessions';
 
 export interface AuthStatus {
@@ -10,7 +11,16 @@ export interface AuthStatus {
   login_required: boolean;
 }
 
-export interface HostMetadata {
+export interface HostMetadata extends ReadinessMetadata {
+  gpus?: Array<{
+    description?: string;
+    pnp_id?: string;
+    vendor_id?: number | string;
+    dedicated_video_memory?: number | string;
+  }>;
+  prerelease?: string;
+  windows_build_number?: number;
+  windows_major_version?: number;
   platform?: string;
   status?: boolean;
   version?: string;
@@ -51,18 +61,15 @@ export const useSystemStore = defineStore('system', () => {
   const lastUpdatedAt = ref<number | null>(null);
 
   const needsSetup = computed(() => !auth.value.credentials_configured);
-  const needsLogin = computed(
-    () => auth.value.credentials_configured && auth.value.login_required,
-  );
+  const needsLogin = computed(() => auth.value.credentials_configured && auth.value.login_required);
   const canUseApp = computed(() => !needsSetup.value && !needsLogin.value);
-  const isStreaming = computed(
-    () => Boolean(session.value?.appRunning || (session.value?.activeSessions ?? 0) > 0),
+  const isStreaming = computed(() =>
+    Boolean(session.value?.appRunning || (session.value?.activeSessions ?? 0) > 0),
   );
-  const health = computed<'healthy' | 'streaming' | 'warning'>(() => {
-    if (error.value) return 'warning';
-    if (isStreaming.value) return 'streaming';
-    return 'healthy';
-  });
+  const restartRequired = ref(false);
+  const health = computed(() =>
+    hostReadiness(metadata.value, isStreaming.value, Boolean(error.value)),
+  );
 
   function applyTheme(): void {
     const resolved =
@@ -192,6 +199,7 @@ export const useSystemStore = defineStore('system', () => {
     needsLogin,
     needsSetup,
     refreshHost,
+    restartRequired,
     session,
     setTheme,
     theme,

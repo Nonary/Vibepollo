@@ -299,6 +299,7 @@ hr {
 .vs-checkbox,
 .vs-radio,
 .vs-switch {
+  position: relative;
   display: inline-flex;
   min-block-size: var(--vs-size-control-compact);
   align-items: center;
@@ -317,8 +318,13 @@ hr {
 
 .vs-switch > input {
   position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
   opacity: 0;
-  pointer-events: none;
+  cursor: inherit;
 }
 
 .vs-switch__track {

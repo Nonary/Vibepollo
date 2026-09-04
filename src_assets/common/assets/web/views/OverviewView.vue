@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
+import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
 import { ApiError, apiGet } from '@/api/client';
 import {
   AppButton,
@@ -46,6 +47,7 @@ async function refresh(silent = false): Promise<void> {
   refreshing.value = true;
   if (!silent) loading.value = true;
 
+  void system.refreshHost();
   const results = await Promise.allSettled([
     apiGet<SessionStatus>('/api/session/status'),
     apiGet<HostStatsSnapshot>('/api/host/stats'),
@@ -135,6 +137,18 @@ const readiness = computed<{ label: string; detail: string; tone: StatusTone }>(
       tone: 'info',
     };
   }
+  if (system.health === 'unknown')
+    return {
+      label: t('ui.settings.linux.states.unknown'),
+      detail: t('ui.settings.linux.unverified'),
+      tone: 'neutral',
+    };
+  if (system.health === 'warning' && !warnings.value.length)
+    return {
+      label: t('ui.status.needs_attention'),
+      detail: t('ui.settings.linux.check_setup'),
+      tone: 'warning',
+    };
   if (warnings.value.length) {
     return {
       label: t('ui.overview.readiness.attention'),
@@ -221,6 +235,15 @@ onBeforeUnmount(() => {
     </template>
 
     <template v-else>
+      <LinuxCaptureStatus
+        v-if="system.metadata?.platform === 'linux'"
+        :metadata="system.metadata"
+        :virtual-mode="
+          system.metadata.capture_status?.virtual_display_configured === false
+            ? 'disabled'
+            : undefined
+        "
+      />
       <section
         class="readiness-panel"
         :data-tone="readiness.tone"

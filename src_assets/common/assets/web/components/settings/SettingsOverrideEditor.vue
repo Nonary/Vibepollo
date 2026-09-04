@@ -5,6 +5,10 @@ import { useI18n } from 'vue-i18n';
 import {
   clientOverrideableKeys,
   settingsCategories,
+  settingsFields,
+  fieldForPlatform,
+  matchesPlatform,
+  optionsForPlatform,
   settingsDefaults,
   type SettingsField,
   type SettingsOption,
@@ -97,7 +101,8 @@ const fieldsByKey = computed(() => {
 });
 
 function fieldFor(key: string): SettingsField | undefined {
-  return fieldsByKey.value.get(key);
+  const field = settingsFields.get(key);
+  return field ? fieldForPlatform(field, String(props.metadata.platform ?? '')) : undefined;
 }
 
 function isAllowed(key: string): boolean {
@@ -127,7 +132,7 @@ function descriptionFor(key: string): string {
 function optionLabel(option: SettingsOption): string {
   return option.labelKey && messageExists(option.labelKey)
     ? t(option.labelKey, { value: option.value })
-    : humanize(option.value);
+    : option.labelKey || humanize(option.value);
 }
 
 function readValue(key: string): unknown {
@@ -176,7 +181,12 @@ function isHiddenForDisplay(key: string): boolean {
 
 const overrideKeys = computed(() =>
   Object.keys(props.modelValue)
-    .filter((key) => key !== 'adapter_pnp_id' && !isHiddenForDisplay(key))
+    .filter(
+      (key) =>
+        key !== 'adapter_pnp_id' &&
+        !isHiddenForDisplay(key) &&
+        (!fieldFor(key) || matchesPlatform(fieldFor(key)!, String(props.metadata.platform ?? ''))),
+    )
     .sort((a, b) => labelFor(a).localeCompare(labelFor(b))),
 );
 
@@ -192,6 +202,7 @@ const catalogGroups = computed(() => {
         .flatMap((group) => group.fields)
         .filter((field) => {
           if (
+            !matchesPlatform(field, String(props.metadata.platform ?? '')) ||
             !isAllowed(field.key) ||
             isHiddenForDisplay(field.key) ||
             field.key === 'adapter_pnp_id' ||
@@ -286,22 +297,9 @@ function selectOptions(key: string): Array<{ label: string; value: string }> {
     return gpuOptions().map(({ label, value }) => ({ label, value }));
   }
 
-  let declaredOptions = field?.options ?? [];
-  if (key === 'encoder') {
-    const auto: SettingsOption = { value: '', labelKey: '_common.auto' };
-    const platform = String(props.metadata.platform ?? '').toLocaleLowerCase();
-    declaredOptions = platform.includes('windows')
-      ? [
-          auto,
-          { value: 'nvenc', labelKey: 'ui.settings.options.encoder.nvenc' },
-          { value: 'quicksync', labelKey: 'ui.settings.options.encoder.quicksync' },
-          { value: 'amdvce_ffmpeg', labelKey: 'ui.settings.options.encoder.amdvce_ffmpeg' },
-          { value: 'amdvce_experimental', labelKey: 'ui.settings.options.encoder.amdvce_experimental' },
-          { value: 'mediafoundation', labelKey: 'ui.settings.options.encoder.mediafoundation' },
-          { value: 'software', labelKey: 'ui.settings.options.encoder.software' },
-        ]
-      : [auto, { value: 'software', labelKey: 'ui.settings.options.encoder.software' }];
-  }
+  const declaredOptions = field
+    ? optionsForPlatform(field, String(props.metadata.platform ?? ''))
+    : [];
 
   const options = declaredOptions.map((option) => ({
     label: optionLabel(option),

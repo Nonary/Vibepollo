@@ -112,6 +112,7 @@ const router = createRouter({
   ],
   scrollBehavior(to, from, savedPosition) {
     if (savedPosition) return savedPosition;
+    if (to.hash && to.path !== '/settings') return { el: to.hash, top: 24 };
     if (to.path === from.path) return undefined;
     return { top: 0 };
   },

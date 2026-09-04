@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, toRaw } from 'vue';
+import { useUnsavedChanges } from '@/composables/useUnsavedChanges';
 import { useI18n } from 'vue-i18n';
 
 import { ApiError, apiGet, apiPost } from '@/api/client';
@@ -66,6 +67,27 @@ interface PendingAction {
   device: PairedDevice;
 }
 
+const unpairAllOpen = ref(false);
+const unpairAllBusy = ref(false);
+async function unpairAll(): Promise<void> {
+  if (unpairAllBusy.value) return;
+  unpairAllBusy.value = true;
+  try {
+    const result = await apiPost<MutationResponse>('/api/clients/unpair-all');
+    if (result.status !== true) throw new Error('unpair-rejected');
+    drafts.value = {};
+    draftOrigins.value = {};
+    openEditors.value = new Set();
+    unpairAllOpen.value = false;
+    notice.value = t('ui.devices.unpair_all.success');
+    await loadDevices(true);
+  } catch {
+    error.value = t('ui.devices.error.action');
+  } finally {
+    unpairAllBusy.value = false;
+  }
+}
+
 const devices = ref<PairedDevice[]>([]);
 const drafts = ref<Record<string, ClientDeviceDraft>>({});
 const draftOrigins = ref<Record<string, ClientDeviceDraft>>({});
@@ -91,6 +113,15 @@ const openEditors = ref<Set<string>>(new Set());
 const pendingAction = ref<PendingAction | null>(null);
 const confirmOpen = ref(false);
 let refreshTimer: number | undefined;
+
+useUnsavedChanges(
+  computed(() =>
+    Object.keys(drafts.value).some(
+      (uuid) =>
+        draftOrigins.value[uuid] && !sameDraft(drafts.value[uuid], draftOrigins.value[uuid]),
+    ),
+  ),
+);
 
 const filteredDevices = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase(locale.value);
@@ -832,6 +863,24 @@ onBeforeUnmount(() => {
       </ul>
     </div>
 
+    <section v-if="devices.length" class="devices-bulk-actions">
+      <AppButton
+        variant="tertiary"
+        :label="t('ui.devices.unpair_all.action')"
+        :disabled="Boolean(busyUuid)"
+        @click="unpairAllOpen = true"
+      />
+    </section>
+    <ConfirmDialog
+      v-model:open="unpairAllOpen"
+      :title="t('ui.devices.unpair_all.title')"
+      :description="t('ui.devices.unpair_all.description')"
+      :confirm-label="t('ui.devices.unpair_all.action')"
+      :busy="unpairAllBusy"
+      :close-on-confirm="false"
+      tone="danger"
+      @confirm="unpairAll"
+    />
     <ConfirmDialog
       v-model:open="confirmOpen"
       :title="confirmTitle"
