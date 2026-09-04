@@ -1578,6 +1578,14 @@ namespace amf {
           last_output_progress = std::chrono::steady_clock::now();
           consecutive_query_failures = 0;
           completed_outputs.emplace_back(std::move(encoded_frame));
+          if (!preanalysis_enabled && !drain_requested &&
+              completed_output_count >= accepted_input_count) {
+            // All submitted frames have output. Park the pump without another
+            // potentially blocking QueryOutput call, which would compete with
+            // the next encode-thread query. Surface ownership still belongs to
+            // the release observers, independently of this polling decision.
+            output_poll_requested = false;
+          }
         }
         outcome.fatal = output_fatal;
       }
@@ -1649,6 +1657,18 @@ namespace amf {
   amf_d3d11::output_query_outcome_t
   amf_d3d11::query_output_once() {
     std::lock_guard query_lock(output_query_mutex);
+    {
+      std::lock_guard lock(state_mutex);
+      // A direct query may have completed the work while the pump waited for
+      // output_query_mutex. Recheck its wakeup under query ownership so a stale
+      // request cannot enter the driver after the direct path has parked it.
+      if (output_fatal || (!output_poll_requested && !drain_requested)) {
+        output_query_outcome_t outcome;
+        outcome.poll_disarmed = true;
+        outcome.fatal = output_fatal;
+        return outcome;
+      }
+    }
     return query_output_once_locked();
   }
 
@@ -1664,6 +1684,19 @@ namespace amf {
 
       output_query_outcome_t outcome;
       do {
+        {
+          std::lock_guard lock(state_mutex);
+          // The pump can publish output between the caller's snapshot and this
+          // try-lock. Return any ready packet immediately, including an older
+          // frame from a retaining driver, instead of waiting for a newer one.
+          // Check the deadline before entering a potentially blocking query.
+          if (output_fatal || !completed_outputs.empty() ||
+              last_completed_frame_index >= required_frame_index ||
+              std::chrono::steady_clock::now() >= deadline) {
+            outcome.fatal = output_fatal;
+            return outcome;
+          }
+        }
         outcome = query_output_once_locked();
         if (outcome.fatal ||
             outcome.kind == output_query_kind_e::eof ||
@@ -1671,16 +1704,6 @@ namespace amf {
           return outcome;
         }
 
-        {
-          std::lock_guard lock(state_mutex);
-          if (last_completed_frame_index >= required_frame_index) {
-            return outcome;
-          }
-        }
-
-        if (std::chrono::steady_clock::now() >= deadline) {
-          return outcome;
-        }
         if (outcome.kind == output_query_kind_e::no_output && !query_timeout_supported) {
           // FFmpeg spins QueryOutput while async_depth is saturated. Yield only
           // for runtimes that cannot block inside QueryOutput themselves.
@@ -1737,10 +1760,12 @@ namespace amf {
         if (outcome.kind == output_query_kind_e::no_output) {
           if (!outcome.poll_disarmed) {
             if (outcome.latency_waiter_active) {
-              // FFmpeg immediately re-queries while async_depth is saturated.
-              // Yield once to let VCN/runtime workers run, but never impose the
-              // old fixed 1 ms delay on a caller waiting for this exact frame.
-              std::this_thread::yield();
+              // A blocking QueryOutput already let the runtime make progress.
+              // Match the direct path and re-query immediately in that case;
+              // yield only for runtimes/results that return without waiting.
+              if (!query_timeout_supported || outcome.result == AMF_NEED_MORE_INPUT) {
+                std::this_thread::yield();
+              }
             } else if (lifecycle::output_poll_requires_fixed_backoff(
                          outcome.latency_waiter_active ? 1 : 0,
                          outcome.result == AMF_NEED_MORE_INPUT,
@@ -1842,7 +1867,7 @@ namespace amf {
           output_poll_requested = true;
           state_cv.notify_all();
           state_cv.wait_until(lock, encode_deadline, [&]() {
-            return output_fatal || low_latency_capacity_available();
+            return output_fatal || !completed_outputs.empty() || low_latency_capacity_available();
           });
           --active_output_poll_waiters;
           state_cv.notify_all();
@@ -1927,13 +1952,17 @@ namespace amf {
             encode_deadline,
             std::chrono::steady_clock::now() + lifecycle::driver_wait_budget(current_config.framerate));
           state_cv.wait_until(lock, repeat_deadline, [&]() {
-            return output_fatal || find_repeat_slot().has_value();
+            return output_fatal || !completed_outputs.empty() || find_repeat_slot().has_value();
           });
           repeat_slot = find_repeat_slot();
         }
         drain_completed_outputs_locked();
         if (output_fatal) {
           result.fatal = true;
+          return result;
+        }
+        if (!results.empty()) {
+          // Deliver completed output before reserving a surface for a duplicate.
           return result;
         }
         if (!repeat_slot) {
@@ -2171,20 +2200,28 @@ namespace amf {
       };
       if (!capacity_available()) {
         drain_completed_outputs_locked();
+        if (output_fatal || !results.empty()) {
+          result.fatal = output_fatal;
+          return result;
+        }
         ++active_output_poll_waiters;
         output_poll_requested = true;
         state_cv.notify_all();
         state_cv.wait_until(lock, submission_deadline, [&]() {
-          // QueryOutput completion and AMFSurfaceObserver release are separate
-          // events. Keep the remaining budget after an output arrives; only an
-          // actual ownership release makes SubmitInput safe again.
-          return lifecycle::saturation_wait_should_finish(output_fatal, capacity_available());
+          // An output packet is deliverable even if AMF still owns its input
+          // surface. Wake to return that packet; only a release permits another
+          // SubmitInput, and the ready-output branch below skips that submission.
+          return !completed_outputs.empty() ||
+                 lifecycle::saturation_wait_should_finish(output_fatal, capacity_available());
         });
         --active_output_poll_waiters;
         state_cv.notify_all();
         drain_completed_outputs_locked();
         if (output_fatal) {
           result.fatal = true;
+          return result;
+        }
+        if (!results.empty()) {
           return result;
         }
         if (!capacity_available()) {
@@ -2250,7 +2287,12 @@ namespace amf {
       },
       [&]() {
         std::unique_lock lock(state_mutex);
-        if (std::chrono::steady_clock::now() >= submission_deadline) return true;
+        // This input was not consumed. Deliver an older ready packet instead
+        // of holding it behind retries for this now-stale capture.
+        if (output_fatal || !completed_outputs.empty() ||
+            std::chrono::steady_clock::now() >= submission_deadline) {
+          return true;
+        }
         const auto completion_generation = completed_output_count;
         const auto owned_surface_generation = input_surfaces_in_flight;
         // QueryOutput may have disarmed itself after AMF_NEED_MORE_INPUT. A full
@@ -2262,13 +2304,14 @@ namespace amf {
         state_cv.wait_until(lock, std::min(
           submission_deadline,
           std::chrono::steady_clock::now() + std::chrono::milliseconds(1)), [&]() {
-          return output_fatal ||
+          return output_fatal || !completed_outputs.empty() ||
                  completed_output_count > completion_generation ||
                  input_surfaces_in_flight < owned_surface_generation;
         });
         --active_output_poll_waiters;
         state_cv.notify_all();
-        return output_fatal || std::chrono::steady_clock::now() >= submission_deadline;
+        return output_fatal || !completed_outputs.empty() ||
+               std::chrono::steady_clock::now() >= submission_deadline;
       },
       retryable_submit,
       20);
@@ -2279,6 +2322,10 @@ namespace amf {
         drain_completed_outputs_locked();
         if (output_fatal) {
           result.fatal = true;
+          return result;
+        }
+        if (!results.empty()) {
+          // Ready-output cancellation is progress, not an exhausted retry error.
           return result;
         }
         in_flight = static_cast<int>(input_surfaces_in_flight);
@@ -2437,7 +2484,7 @@ namespace amf {
         state_cv.notify_all();
       }
       state_cv.wait_until(state_lock, encode_deadline, [&]() {
-        return output_fatal || lifecycle::output_coalesce_target_reached(
+        return output_fatal || !completed_outputs.empty() || lifecycle::output_coalesce_target_reached(
                                  *required_output_frame_index,
                                  completed_before_submission,
                                  completed_output_count,
@@ -2493,14 +2540,25 @@ namespace amf {
   amf_d3d11::drain_output(std::chrono::milliseconds timeout) {
     amf_encode_result result;
     std::unique_lock lock(state_mutex);
-    ++active_output_poll_waiters;
-    output_poll_requested = true;
-    state_cv.notify_all();
-    state_cv.wait_for(lock, timeout, [&]() {
-      return output_fatal || drain_complete || !completed_outputs.empty();
-    });
-    --active_output_poll_waiters;
-    state_cv.notify_all();
+    // Never wait while packets are ready, or rearm an encoder with no work.
+    // Remaining accepted inputs still need polling even when this call returns
+    // an older packet. An explicit drain must also poll through EOF without input.
+    if (!output_fatal && !drain_complete &&
+        (drain_requested || accepted_input_count > completed_output_count)) {
+      const bool start_poll = !output_poll_requested;
+      output_poll_requested = true;
+      if (completed_outputs.empty() && timeout > std::chrono::milliseconds::zero()) {
+        ++active_output_poll_waiters;
+        state_cv.notify_all();
+        state_cv.wait_for(lock, timeout, [&]() {
+          return output_fatal || drain_complete || !completed_outputs.empty();
+        });
+        --active_output_poll_waiters;
+        state_cv.notify_all();
+      } else if (start_poll) {
+        state_cv.notify_all();
+      }
+    }
     while (!completed_outputs.empty()) {
       result.frames.emplace_back(std::move(completed_outputs.front()));
       completed_outputs.pop_front();
