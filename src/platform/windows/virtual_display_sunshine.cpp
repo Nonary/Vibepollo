@@ -3251,11 +3251,38 @@ namespace VDISPLAY_SUNSHINE {
       return name;
     }
 
+    std::optional<std::wstring> resolve_virtual_monitor_device_path_for_id(const std::string &device_id) {
+      if (device_id.empty()) {
+        return std::nullopt;
+      }
+      const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(
+        display_device::DeviceEnumerationDetail::Minimal
+      );
+      if (devices) {
+        for (const auto &device : *devices) {
+          if (equals_ci(device.m_device_id, device_id) &&
+              is_virtual_display_device(device) && !device.m_monitor_device_path.empty()) {
+            return platf::from_utf8(device.m_monitor_device_path);
+          }
+        }
+      }
+      return std::nullopt;
+    }
+
     std::optional<std::wstring> resolve_monitor_device_path_once(
       const std::optional<std::wstring> &display_name,
       const std::optional<std::string> &device_id,
       const std::optional<std::string> &client_name = std::nullopt
     ) {
+      // Creation can return before a GDI name exists. The helper's stable
+      // device GUID is not a CCD name: resolve it again on every attempt so a
+      // deferred scale can follow the exact target as Windows publishes it.
+      if (device_id) {
+        if (auto path = resolve_virtual_monitor_device_path_for_id(*device_id)) {
+          return path;
+        }
+      }
+
       std::optional<std::string> normalized_target;
       if (display_name && !display_name->empty()) {
         normalized_target = normalize_display_name(platf::to_utf8(*display_name));
@@ -7305,19 +7332,20 @@ namespace VDISPLAY_SUNSHINE {
         );
         if (scale_percent > 0) {
 
-          auto apply_scale_to_path = [scale_percent](const std::wstring &path) {
+          auto apply_scale_to_path = [scale_percent](const std::wstring &path, const bool report_missing_target = true) {
             const auto scale_result = VDISPLAY::set_display_scale_percent(path, scale_percent);
             if (scale_result.applied) {
               BOOST_LOG(info) << "Virtual display scale: requested " << scale_result.requested_percent
                               << "%, recommended " << scale_result.recommended_percent
                               << "%, previous " << scale_result.previous_percent
                               << "%, current " << scale_result.current_percent << "%.";
-            } else {
+            } else if (scale_result.target_found || report_missing_target) {
               BOOST_LOG(warning) << "Virtual display scale: unable to apply "
                                  << scale_result.requested_percent << "% (status=" << scale_result.status
                                  << ", target_found=" << scale_result.target_found
                                  << ", queried=" << scale_result.queried << ").";
             }
+            return scale_result;
           };
 
           const bool has_virtual_target_identity =
@@ -7375,11 +7403,15 @@ namespace VDISPLAY_SUNSHINE {
                     worker_stop_token
                   );
                   if (path && !path->empty()) {
-                    apply_scale_to_path(*path);
-                    return;
+                    // A published monitor path can precede its active CCD
+                    // source. Keep waiting until APPLY makes it writable.
+                    const auto scale_result = apply_scale_to_path(*path, false);
+                    if (scale_result.applied || scale_result.target_found) {
+                      return;
+                    }
                   }
                   if (std::chrono::steady_clock::now() >= deadline) {
-                    BOOST_LOG(warning) << "Virtual display scale: monitor device path did not become available within "
+                    BOOST_LOG(warning) << "Virtual display scale: monitor target did not become active within "
                                        << std::chrono::duration_cast<std::chrono::seconds>(kActivationBudget).count()
                                        << "s; Windows scale was not applied.";
                     return;
