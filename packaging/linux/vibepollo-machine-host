@@ -51,51 +51,51 @@ capability_clean_exec() {
 
 resolve_desktop_identity() {
   local requested=$1 entry
-  valid_user "$requested" || fail 'invalid desktop account name'
-  entry=$(/usr/bin/getent passwd "$requested") || fail 'desktop account does not exist'
+  valid_user "$requested" || { fail 'invalid desktop account name'; return 1; }
+  entry=$(/usr/bin/getent passwd "$requested") || { fail 'desktop account does not exist'; return 1; }
   IFS=: read -r desktop_user _ desktop_uid desktop_gid _ desktop_home _ <<<"$entry"
-  [[ "$desktop_user" == "$requested" && "$desktop_uid" =~ ^[0-9]+$ && "$desktop_uid" -ge 1000 ]] || fail 'desktop account is invalid'
+  [[ "$desktop_user" == "$requested" && "$desktop_uid" =~ ^[0-9]+$ && "$desktop_uid" -ge 1000 ]] || { fail 'desktop account is invalid'; return 1; }
   [[ "$desktop_gid" =~ ^[0-9]+$ && "$desktop_home" == /* && -d "$desktop_home" && ! -L "$desktop_home" ]] || fail 'desktop home is unsafe'
 }
 
 read_desktop_user() {
   local source=$1 attributes key value line selected=''
   [[ -f "$source" && ! -L "$source" ]] || return 1
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$source")
-  [[ "$attributes" == 'root:root:600:regular file' ]] || fail "$source must be root:root mode 0600"
+  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$source") || return 1
+  [[ "$attributes" == 'root:root:600:regular file' ]] || { fail "$source must be root:root mode 0600"; return 1; }
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -n "$line" && "$line" != \#* ]] || continue; key=${line%%=*}; value=${line#*=}
     case "$key" in
-      desktop_user) [[ -z "$selected" ]] || fail 'multiple desktop users selected'; selected=$value ;;
+      desktop_user) [[ -z "$selected" ]] || { fail 'multiple desktop users selected'; return 1; }; selected=$value ;;
       # Accept only a valid obsolete UUID while configure-auto atomically
       # rewrites the policy to its canonical desktop-user-only form.
       allowed_client_uuid)
         value=${value^^}
         [[ "$value" =~ ^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$ ]] ||
-          fail 'invalid obsolete allowed client UUID'
+          { fail 'invalid obsolete allowed client UUID'; return 1; }
         ;;
-      *) fail "unknown setting in $source: $key" ;;
+      *) fail "unknown setting in $source: $key"; return 1 ;;
     esac
   done <"$source"
-  [[ -n "$selected" ]] || fail "$source does not select a desktop user"; /usr/bin/printf '%s\n' "$selected"
+  [[ -n "$selected" ]] || { fail "$source does not select a desktop user"; return 1; }; /usr/bin/printf '%s\n' "$selected"
 }
 
 
 load_settings() {
   local selected
-  selected=$(read_desktop_user "$settings_file") || fail "missing settings: $settings_file"
+  selected=$(read_desktop_user "$settings_file") || { fail "missing settings: $settings_file"; return 1; }
   resolve_desktop_identity "$selected"
 }
 
 write_settings() {
   local requested_user=$1 temporary
-  require_root configure
-  resolve_desktop_identity "$requested_user"
-  /usr/bin/install -d -o root -g root -m 0755 /etc/vibepollo
-  temporary=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .machine.XXXXXX)
-  /usr/bin/printf 'desktop_user=%s\n' "$desktop_user" >"$temporary"
-  /usr/bin/chown root:root "$temporary"
-  /usr/bin/chmod 0600 "$temporary"
+  require_root configure || return 1
+  resolve_desktop_identity "$requested_user" || return 1
+  /usr/bin/install -d -o root -g root -m 0755 /etc/vibepollo || return 1
+  temporary=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .machine.XXXXXX) || return 1
+  /usr/bin/printf 'desktop_user=%s\n' "$desktop_user" >"$temporary" || return 1
+  /usr/bin/chown root:root "$temporary" || return 1
+  /usr/bin/chmod 0600 "$temporary" || return 1
   /usr/bin/mv -fT -- "$temporary" "$settings_file"
 }
 
@@ -340,12 +340,12 @@ ensure_command_manifest() {
   local attributes
   if [[ -f "$command_manifest" && ! -L "$command_manifest" ]]; then
     attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$command_manifest") || return 1
-    [[ "$attributes" == "root:${service_user}:640:regular file" ]] || fail 'administrator command manifest is unsafe'
+    [[ "$attributes" == "root:${service_user}:640:regular file" ]] || { fail 'administrator command manifest is unsafe'; return 1; }
     manifest_is_v2 && return 0
     migrate_legacy_command_manifest
     return
   fi
-  [[ ! -e "$command_manifest" && ! -L "$command_manifest" ]] || fail 'administrator command manifest is unsafe'
+  [[ ! -e "$command_manifest" && ! -L "$command_manifest" ]] || { fail 'administrator command manifest is unsafe'; return 1; }
   authorize_commands
 }
 
@@ -466,7 +466,7 @@ repair_profile_tree() {
   # install (or a stray root-owned file) cannot keep the host from starting.
   require_root repair-profile || return 1
   [[ -e "$machine_profile" || -L "$machine_profile" ]] || return 0
-  [[ -d "$machine_profile" && ! -L "$machine_profile" ]] || fail 'machine profile is not a directory'
+  [[ -d "$machine_profile" && ! -L "$machine_profile" ]] || { fail 'machine profile is not a directory'; return 1; }
   profile_is_safe "$machine_profile" || return 1
   /usr/bin/chown "$service_user:$service_user" -- "$machine_profile" || return 1
   /usr/bin/chmod 0700 -- "$machine_profile" || return 1
@@ -538,25 +538,27 @@ publish_migrated_profile() (
 )
 
 migrate_profile() {
-  require_root migrate-profile; load_settings; /usr/bin/getent passwd "$service_user" >/dev/null || fail "missing system account: $service_user"
+  require_root migrate-profile || return 1
+  load_settings || return 1
+  /usr/bin/getent passwd "$service_user" >/dev/null || { fail "missing system account: $service_user"; return 1; }
   if [[ -f "$profile_marker" && ! -L "$profile_marker" ]]; then
     profile_tree_is_sanitized "$machine_profile" || fail 'existing machine profile is not sanitized'
     return
   fi
-  [[ ! -e "$profile_marker" && ! -L "$profile_marker" ]] || fail 'unsafe machine-profile marker'
+  [[ ! -e "$profile_marker" && ! -L "$profile_marker" ]] || { fail 'unsafe machine-profile marker'; return 1; }
   [[ $(/usr/bin/stat -c '%U:%G:%a:%F' -- /var/lib) == 'root:root:755:directory' ]] ||
-    fail '/var/lib is not a safe migration parent'
-  publish_migrated_profile || fail 'profile staging or atomic publication failed'
+    { fail '/var/lib is not a safe migration parent'; return 1; }
+  publish_migrated_profile || { fail 'profile staging or atomic publication failed'; return 1; }
   /usr/bin/printf 'vibepollo-machine-host: migrated the selected desktop profile into the machine profile\n'
 }
 
 configure_automatically() {
   local home selected state user uid; local -a candidates=()
-  require_root configure-auto
+  require_root configure-auto || return 1
   if [[ -f "$settings_file" && ! -L "$settings_file" ]]; then
-    selected=$(read_desktop_user "$settings_file")
+    selected=$(read_desktop_user "$settings_file") || return 1
   elif [[ -f "$legacy_settings_file" && ! -L "$legacy_settings_file" ]]; then
-    selected=$(read_desktop_user "$legacy_settings_file")
+    selected=$(read_desktop_user "$legacy_settings_file") || return 1
   else
     local -a accounts=()
     while IFS=: read -r user _ uid _ _ home shell; do
@@ -574,19 +576,29 @@ configure_automatically() {
     if ((${#candidates[@]} == 1)); then
       selected=${candidates[0]}
     elif ((${#candidates[@]} > 1)); then
-      fail "automatic setup found several desktop Vibepollo profiles (${candidates[*]}); choose one with: vibepollo-machine-host configure USER"
+      fail "automatic setup found several desktop Vibepollo profiles (${candidates[*]}); choose one with: sudo vibepollo configure USER"; return 1
     elif ((${#accounts[@]} == 1)); then
       # First installation: the only interactive account owns the machine profile.
       selected=${accounts[0]}
     elif ((${#accounts[@]} == 0)); then
-      fail 'automatic setup found no interactive desktop account; choose one with: vibepollo-machine-host configure USER'
+      fail 'automatic setup found no interactive desktop account; choose one with: sudo vibepollo configure USER'; return 1
     else
-      fail "automatic setup found several desktop accounts (${accounts[*]}); choose one with: vibepollo-machine-host configure USER"
+      fail "automatic setup found several desktop accounts (${accounts[*]}); choose one with: sudo vibepollo configure USER"; return 1
     fi
   fi
-  write_settings "$selected"
-  migrate_profile
-  ensure_command_manifest
+  write_settings "$selected" || return 1
+  prepare_upgrade_profile
+}
+
+prepare_upgrade_profile() {
+  # All native package formats use this same ordered upgrade path. Repair old
+  # ownership/modes before validating an existing profile; never re-import a
+  # marked machine profile or authorize additional commands during an upgrade.
+  # Explicit returns matter when configure_automatically is called in an if.
+  repair_profile_tree || return 1
+  migrate_profile || return 1
+  user_exec "$service_user" "$machine_host" prepare-profile || return 1
+  ensure_command_manifest || return 1
 }
 
 user_exec() {
@@ -962,7 +974,7 @@ reset_machine() {
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   case "${1:-}" in
-    configure) [[ $# == 2 ]] || exit 2; shift; write_settings "$@"; migrate_profile; authorize_commands ;;
+    configure) [[ $# == 2 ]] || exit 2; shift; write_settings "$@"; prepare_upgrade_profile ;;
     configure-auto) [[ $# == 1 ]] || exit 2; configure_automatically ;;
     authorize-commands) [[ $# == 1 ]] || exit 2; authorize_commands ;;
     migrate-profile) [[ $# == 1 ]] || exit 2; migrate_profile ;;

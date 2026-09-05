@@ -33,6 +33,9 @@
 // local includes
 #include "logging.h"
 #include "logging_policy.h"
+#ifdef __linux__
+  #include "platform/linux/maintenance_cli.h"
+#endif
 
 // conditional includes
 #ifdef __ANDROID__
@@ -789,6 +792,9 @@ namespace logging {
   }
 
   void print_help(const char *name) {
+#ifdef __linux__
+    std::cout << platf::linux_cli::help << std::endl;
+#endif
     std::cout
       << "Usage: "sv << name << " [options] [/path/to/configuration_file] [--cmd]"sv << std::endl
       << "    Any configurable option can be overwritten with: \"name=value\""sv << std::endl
