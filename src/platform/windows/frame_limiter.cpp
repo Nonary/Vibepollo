@@ -87,7 +87,6 @@ namespace platf {
     bool g_prev_frame_limiter_enabled = false;
     std::string g_prev_frame_limiter_provider;
     bool g_prev_frame_limiter_provider_set = false;
-    bool g_prev_disable_vsync = false;
     std::string g_prev_rtss_frame_limit_type;
     bool g_prev_rtss_frame_limit_type_set = false;
     std::string g_prev_capture_mode;
@@ -245,14 +244,12 @@ namespace platf {
     const bool default_policy_can_use_rtss =
       configured_provider == frame_limiter_provider::auto_detect || configured_provider == frame_limiter_provider::rtss;
 
-    // Frame generation policy: enable limiter/vsync defaults and tune RTSS sync unless explicitly overridden.
+    // Frame generation policy: enable the limiter and tune RTSS sync unless explicitly overridden.
     if (policy_overrides_enabled) {
       g_prev_frame_limiter_enabled = config::frame_limiter.enable;
       g_prev_frame_limiter_provider = config::frame_limiter.provider;
       g_prev_frame_limiter_provider_set = true;
-      g_prev_disable_vsync = config::frame_limiter.disable_vsync;
       config::frame_limiter.enable = true;
-      config::frame_limiter.disable_vsync = true;
       if ((capture_fix_enabled || physical_framegen_policy_enabled) && allow_framegen_default_provider) {
         config::frame_limiter.provider = "rtss";
       }
@@ -285,7 +282,9 @@ namespace platf {
       g_prev_capture_mode_set = false;
     }
 
-    const bool want_nv_vsync_override = (config::frame_limiter.disable_vsync || policy_overrides_enabled) && nvidia_gpu_present && nvcp_ready;
+    // Frame generation pacing must respect the separate VSYNC preference.
+    // The dummy-plug HDR workaround already sets this preference in config.
+    const bool want_nv_vsync_override = config::frame_limiter.disable_vsync && nvidia_gpu_present && nvcp_ready;
     g_nvcp_force_vsync_off = want_nv_vsync_override;
     g_nvcp_apply_smooth_motion = want_smooth_motion;
 
@@ -514,7 +513,6 @@ namespace platf {
       if (g_prev_frame_limiter_provider_set) {
         config::frame_limiter.provider = g_prev_frame_limiter_provider;
       }
-      config::frame_limiter.disable_vsync = g_prev_disable_vsync;
       if (g_prev_rtss_frame_limit_type_set) {
         config::rtss.frame_limit_type = g_prev_rtss_frame_limit_type;
       }
