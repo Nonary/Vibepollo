@@ -67,7 +67,9 @@ must not mutate the user's environment.
 
 Provider discovery uses `/usr/libexec/vibeshine/vibepollo-provider-scan`. It
 runs as the selected unprivileged session user and returns a bounded, path-free
-description to the machine host. Linux always enables Steam and never launches
+description to the machine host. Separate numeric-ID artwork requests convert
+local covers under that same session identity and return bounded PNG bytes to
+the service-owned cache; user artwork paths never cross into the host. Linux always enables Steam and never launches
 the Windows-only Playnite integration.
 
 Stream-owned Steam launch policy uses the semantic `steam-direct` broker

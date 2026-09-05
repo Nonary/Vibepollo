@@ -137,9 +137,35 @@ namespace platf::provider_scan {
              root.at("games").is_array() && root.at("games").size() <= max_games;
     }
 
+    std::string artwork_revision(std::initializer_list<fs::path> paths) {
+      std::uint64_t hash = 1469598103934665603ULL;
+      bool found = false;
+      for (const auto &path : paths) {
+        std::error_code ec;
+        if (path.empty() || !fs::is_regular_file(path, ec)) continue;
+        const auto size = fs::file_size(path, ec);
+        if (ec) continue;
+        const auto time = fs::last_write_time(path, ec);
+        if (ec) continue;
+        found = true;
+        const auto value = path.generic_string() + ":" + std::to_string(size) + ":" +
+                           std::to_string(time.time_since_epoch().count());
+        for (const unsigned char byte : value) hash = (hash ^ byte) * 1099511628211ULL;
+      }
+      return found ? std::to_string(hash) : std::string {};
+    }
+
+    bool decode_artwork_revision(const json &entry, std::string &revision) {
+      if (!entry.is_object()) return false;
+      if (!entry.contains("artwork_revision")) return true;
+      if (!safe_string_field(entry, "artwork_revision", revision, 20)) return false;
+      return std::all_of(revision.begin(), revision.end(), [](unsigned char c) { return c >= '0' && c <= '9'; });
+    }
+
     json steam_game_json(const steam::game_t &game) {
       return {
         {"app_id", game.app_id},
+        {"artwork_revision", artwork_revision({game.artwork_path, game.boxart_path, game.icon_path})},
         {"name", game.name},
         {"app_type", game.app_type},
         {"installed", game.installed},
@@ -153,6 +179,7 @@ namespace platf::provider_scan {
     json lutris_game_json(const lutris::game_t &game) {
       return {
         {"id", game.id},
+        {"artwork_revision", artwork_revision({game.artwork_path, game.icon_path})},
         {"name", game.name},
         {"slug", game.slug},
         {"runner", game.runner},
@@ -223,10 +250,14 @@ namespace platf::provider_scan {
     result.available = parsed->at("available").get<bool>();
     if (!result.available && !parsed->at("games").empty()) return std::nullopt;
     std::set<std::uint32_t> seen;
-    for (const auto &entry : parsed->at("games")) {
+    for (auto entry : parsed->at("games")) {
+      std::string revision;
+      if (!decode_artwork_revision(entry, revision)) return std::nullopt;
+      entry.erase("artwork_revision");
       if (!exact_keys(entry, {"app_id", "name", "app_type", "installed",
                               "last_played", "playtime_minutes", "state_flags", "last_updated"})) return std::nullopt;
       steam::game_t game;
+      game.session_artwork_revision = revision;
       std::uint64_t number = 0;
       if (!unsigned_number(entry.at("app_id"), number) || number == 0 || number > UINT32_MAX ||
           !seen.insert(static_cast<std::uint32_t>(number)).second) return std::nullopt;
@@ -260,10 +291,14 @@ namespace platf::provider_scan {
     result.executable_available = parsed->at("executable_available").get<bool>();
     if (!result.database_available && !parsed->at("games").empty()) return std::nullopt;
     std::set<std::int64_t> seen;
-    for (const auto &entry : parsed->at("games")) {
+    for (auto entry : parsed->at("games")) {
+      std::string revision;
+      if (!decode_artwork_revision(entry, revision)) return std::nullopt;
+      entry.erase("artwork_revision");
       if (!exact_keys(entry, {"id", "name", "slug", "runner", "platform", "service",
                               "service_id", "last_played", "playtime_seconds"})) return std::nullopt;
       lutris::game_t game;
+      game.session_artwork_revision = revision;
       if (!signed_number(entry.at("id"), game.id) || game.id <= 0 || !seen.insert(game.id).second ||
           !safe_string_field(entry, "name", game.name, max_name_bytes) ||
           !safe_string_field(entry, "slug", game.slug, max_label_bytes) ||

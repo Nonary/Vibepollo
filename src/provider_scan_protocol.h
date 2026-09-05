@@ -34,7 +34,8 @@ namespace platf::provider_scan {
   };
 
   // The wire catalog intentionally excludes every user-derived filesystem
-  // path, local artwork, and Steam direct-launch command field. The machine
+  // path and Steam direct-launch command field. Only an opaque artwork revision
+  // crosses in the catalog; separate ID-only requests return bounded PNG bytes. The machine
   // host must never open or interpolate desktop-user-controlled provider
   // content while holding CAP_SYS_ADMIN.
   std::optional<std::string> encode_steam_catalog(const steam_catalog_t &catalog);
