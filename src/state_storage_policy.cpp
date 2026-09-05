@@ -307,14 +307,21 @@ namespace statefile::policy {
 
   load_result_e load_primary_state_for_update(
     const std::string &path, pt::ptree &tree, const read_file_t &read_file,
-    const write_file_t &write_file, const validate_primary_t &validate) {
-    const auto primary_status = load_json_for_read(path, tree, read_file);
+    const write_file_t &write_file, const validate_primary_t &validate,
+    const std::function<bool(const std::string &)> &validate_json) {
+    tree = {};
+    if (path.empty() || !read_file) return load_result_e::failed;
+    const auto primary_file = read_file(path);
+    const auto primary_status = load_json_for_read(path, tree,
+      [&primary_file](const std::string &) { return primary_file; });
     if (primary_status == load_result_e::failed || !validate || !write_file) return load_result_e::failed;
     const auto backup_file = read_file(path + ".bak");
     pt::ptree backup;
     const auto backup_status = load_json_for_read(path + ".bak", backup,
       [&backup_file](const std::string &) { return backup_file; });
-    if (primary_status == load_result_e::loaded && primary_write_allowed(tree, backup_status, backup, validate)) {
+    const bool primary_json_valid = !validate_json || validate_json(primary_file.contents);
+    const bool backup_json_valid = !validate_json || validate_json(backup_file.contents);
+    if (primary_status == load_result_e::loaded && primary_json_valid && primary_write_allowed(tree, backup_status, backup, validate)) {
       return load_result_e::loaded;
     }
     if (primary_status == load_result_e::loaded && validate(tree, true) && !validate(tree, false)) {
@@ -325,7 +332,7 @@ namespace statefile::policy {
     }
     tree = {};
     if (primary_status == load_result_e::missing && backup_status == load_result_e::missing) return load_result_e::missing;
-    if (backup_status != load_result_e::loaded || !validate(backup, false)) return load_result_e::failed;
+    if (backup_status != load_result_e::loaded || !backup_json_valid || !validate(backup, false)) return load_result_e::failed;
     if (!write_file(path, backup_file.contents)) return load_result_e::failed;
     const auto restored = read_file(path);
     if (restored.status != read_status_e::loaded || restored.contents != backup_file.contents) return load_result_e::failed;
