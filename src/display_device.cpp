@@ -807,7 +807,9 @@ namespace display_device {
         .width = session.width, .height = session.height, .fps = session.fps,
         .enable_hdr = session.enable_hdr, .prefer_sdr_10bit = session.prefer_sdr_10bit, .force_sdr = session.force_sdr,
         .client_display_mode_override = session.client_display_mode_override,
-        .client_display_refresh_millihz = session.client_display_refresh_millihz,
+        // Normalize at the RTSP boundary: downstream sessions may store FPS in
+        // millihertz, while the isolated policy interprets its FPS fallback as Hz.
+        .client_display_refresh_millihz = rtsp_stream::effective_display_refresh_millihz(session),
         .framegen_refresh_rate = session.framegen_refresh_rate,
         .framegen_refresh_millihz = session.framegen_refresh_millihz,
       };
