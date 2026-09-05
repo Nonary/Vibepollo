@@ -184,14 +184,10 @@ and configuration write formats remain compatible.
 
 - `encoder_status`: `state` (`ready`, `failed`, or `unknown`) and `h264`, `hevc`, `av1`
   support from the current encoder-probe cache. Reading metadata never initiates a probe.
-- Linux `linux.session_role`: `desktop`, `greeter`, or `unknown`.
-- Linux `virtual_display.reason`: empty when ready; otherwise
-  `driver_or_outputs_unavailable` or `session_or_output_unavailable`.
-- Linux `capture_status`: `configured_backend`, `virtual_display_configured`,
-  `observed_backend`, and `managed_event_driven`. An observed `kms` backend with
-  `managed_event_driven: true` means a managed presentation-event capture loop is currently
-  running. Outside that capture lifetime the observed backend is `unknown`. This does not
-  claim that another backend is unavailable or that a configured capture path was verified.
+- Provider actions are shown only when the corresponding `providers` capability is explicitly
+  true. Missing Steam, Lutris, MangoHUD, and Playnite-toggle capabilities mean unavailable.
+- Private Linux display telemetry is not emitted by this Vibepollo backend. Clients must not
+  infer support from the platform name or display configuration alone.
 
 Clients must tolerate absent status fields from older hosts and distinguish unknown status
 from verified readiness. Virtual-display readiness is not required for physical capture.

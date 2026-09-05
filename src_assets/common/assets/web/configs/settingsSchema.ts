@@ -484,11 +484,33 @@ export const settingsCategories: SettingsCategory[] = [
           }),
         ],
       },
-      { id: 'everyday_audio', link: '/settings?category=audio', fields: [boolean('stream_audio')] },
+      {
+        id: 'everyday_audio',
+        link: '/settings?category=audio',
+        fields: [
+          select('keep_sink_default', [
+            option('enabled', '_common.enabled'),
+            option('disabled', '_common.disabled'),
+          ]),
+          select('auto_capture_sink', [
+            option('enabled', '_common.enabled'),
+            option('disabled', '_common.disabled'),
+          ]),
+          boolean('stream_audio'),
+        ],
+      },
       {
         id: 'everyday_input',
         link: '/settings?category=input',
         fields: [
+          select('enable_input_only_mode', [
+            option('enabled', '_common.enabled'),
+            option('disabled', '_common.disabled'),
+          ]),
+          select('forward_rumble', [
+            option('enabled', '_common.enabled'),
+            option('disabled', '_common.disabled'),
+          ]),
           boolean('controller'),
           select('gamepad', gamepadOptions, {
             platform: ['windows', 'linux'],
@@ -802,6 +824,14 @@ export const settingsCategories: SettingsCategory[] = [
       {
         id: 'network_security',
         fields: [
+          select('enable_pairing', [
+            option('enabled', '_common.enabled'),
+            option('disabled', '_common.disabled'),
+          ]),
+          select('enable_discovery', [
+            option('enabled', '_common.enabled'),
+            option('disabled', '_common.disabled'),
+          ]),
           select('lan_encryption_mode', [
             option('0', '_common.disabled'),
             option('1', 'ui.settings.options.encryption.optional'),
@@ -826,16 +856,49 @@ export const settingsCategories: SettingsCategory[] = [
         id: 'everyday_automation',
         collapsed: true,
         fields: [
+          select('limit_framerate', [
+            option('enabled', '_common.enabled'),
+            option('disabled', '_common.disabled'),
+          ]),
+          select('envvar_compatibility_mode', [
+            option('enabled', '_common.enabled'),
+            option('disabled', '_common.disabled'),
+          ]),
+          select('legacy_ordering', [
+            option('enabled', '_common.enabled'),
+            option('disabled', '_common.disabled'),
+          ]),
+          select('ignore_encoder_probe_failure', [
+            option('enabled', '_common.enabled'),
+            option('disabled', '_common.disabled'),
+          ]),
           { key: 'global_prep_cmd', kind: 'command-preparations', stacked: true },
-          { key: 'global_state_cmd', kind: 'command-preparations', labelKey: 'config.global_state_cmd', descriptionKey: 'config.global_state_cmd_desc', stacked: true },
-          { key: 'server_cmd', kind: 'server-commands', labelKey: 'config.server_cmd', descriptionKey: 'config.server_cmd_desc', stacked: true },
+          {
+            key: 'global_state_cmd',
+            kind: 'command-preparations',
+            labelKey: 'config.global_state_cmd',
+            descriptionKey: 'config.global_state_cmd_desc',
+            stacked: true,
+          },
+          {
+            key: 'server_cmd',
+            kind: 'server-commands',
+            labelKey: 'config.server_cmd',
+            descriptionKey: 'config.server_cmd_desc',
+            stacked: true,
+          },
         ],
       },
       {
         id: 'host_identity',
         fields: [
+          select('hide_tray_controls', [
+            option('enabled', '_common.enabled'),
+            option('disabled', '_common.disabled'),
+          ]),
           extendedField('locale'),
           extendedField('update_check_interval'),
+          text('fallback_mode'),
           text('sunshine_name', { placeholderKey: 'ui.settings.placeholders.host_name' }),
           boolean('system_tray'),
           boolean('notify_pre_releases'),
@@ -904,6 +967,19 @@ export const settingsCategories: SettingsCategory[] = [
 ];
 
 export const settingsDefaults: Record<string, unknown> = {
+  enable_pairing: 'enabled',
+  enable_discovery: 'enabled',
+  hide_tray_controls: 'disabled',
+  keep_sink_default: 'enabled',
+  auto_capture_sink: 'enabled',
+  enable_input_only_mode: 'disabled',
+  forward_rumble: 'enabled',
+  limit_framerate: 'enabled',
+  envvar_compatibility_mode: 'disabled',
+  legacy_ordering: 'disabled',
+  ignore_encoder_probe_failure: 'disabled',
+  fallback_mode: '1920x1080x60',
+
   ...extendedDefaults,
   gamepad: 'auto',
   virtual_display_mode: 'per_client',

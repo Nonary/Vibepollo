@@ -1,4 +1,9 @@
 <script setup lang="ts">
+import {
+  providerSupported,
+  supportsManagedLinuxDisplay,
+  settingsCapabilitySupported,
+} from '@/utils/providerCapabilities';
 import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref, toRaw, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router';
@@ -219,7 +224,9 @@ const virtualDisplayUnavailable = computed(
     (hostMetadata.value.virtual_display?.capable === false ||
       hostMetadata.value.virtual_display?.ready === false),
 );
-const supportsDisplayDeviceEnumeration = computed(() => isWindowsHost.value || isLinuxHost.value);
+const supportsDisplayDeviceEnumeration = computed(
+  () => isWindowsHost.value || supportsManagedLinuxDisplay(hostMetadata.value),
+);
 
 const physicalDisplaySelected = computed(
   () => String(values.virtual_display_mode ?? '') === 'disabled',
@@ -344,6 +351,8 @@ const destinationResults = computed(() => {
   return settingsDestinations.filter(
     (item) =>
       matchesPlatform(item, hostPlatform.value) &&
+      (!item.to.includes('#integration-') ||
+        providerSupported(hostMetadata.value, item.to.split('#integration-')[1])) &&
       `${t(item.labelKey)} ${item.keys.join(' ')}`.toLocaleLowerCase(locale.value).includes(q),
   );
 });
@@ -400,7 +409,10 @@ function valuesMatch(current: unknown, expected: string | boolean): boolean {
 }
 
 function fieldMatchesPlatform(field: SettingsField): boolean {
-  return matchesPlatform(field, hostPlatform.value);
+  return (
+    matchesPlatform(field, hostPlatform.value) &&
+    settingsCapabilitySupported(field.key, hostMetadata.value)
+  );
 }
 
 function visibilityMatches(condition?: SettingsVisibility): boolean {
@@ -961,7 +973,12 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
             >
           </nav>
           <LinuxCaptureStatus
-            v-if="isLinuxHost && !isSearching && ['everyday', 'display'].includes(activeCategory)"
+            v-if="
+              isLinuxHost &&
+              supportsManagedLinuxDisplay(hostMetadata) &&
+              !isSearching &&
+              ['everyday', 'display'].includes(activeCategory)
+            "
             :metadata="hostMetadata"
             :virtual-mode="String(values.virtual_display_mode ?? '')"
           />

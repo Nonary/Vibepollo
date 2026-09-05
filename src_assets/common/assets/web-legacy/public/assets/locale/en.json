@@ -403,6 +403,8 @@
     "output_name_default": "Primary display (default)"
   },
   "config": {
+    "rtss_allow_virtual_display_override": "Allow non-Reflex RTSS modes on virtual displays",
+    "rtss_allow_virtual_display_override_desc": "Virtual displays normally enforce NVIDIA Reflex because DLSS Frame Generation can otherwise add significant latency. Enable this only to apply the selected RTSS mode to virtual displays; mark a DLSS/FSR game as Frame generation -> Game provided to force Reflex for that app.",
     "remote_monitor_confirm_app_replacement": "Confirm before replacing a running app",
     "remote_monitor_confirm_app_replacement_desc": "Reject the first request to replace a running app, then advertise it as resumable for 60 seconds so Moonlight can show its close-app warning. Remote Input and Remote Monitor still attach without that warning. Turn this off to replace apps immediately.",
     "remote_monitor_options_title": "Remote Monitor options",

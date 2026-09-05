@@ -30,7 +30,7 @@ const state = computed(() => linuxCaptureState(props.metadata, props.virtualMode
       <p v-if="metadata.linux?.session_role === 'greeter'">{{ t('ui.settings.linux.greeter') }}</p>
       <a
         v-if="state === 'unavailable' || state === 'unknown'"
-        href="https://github.com/Nonary/Vibepollo/blob/vibe/docs/linux/install.md"
+        href="https://github.com/Nonary/Vibepollo/issues"
         target="_blank"
         rel="noopener noreferrer"
         >{{ t('ui.settings.linux.repair') }}</a

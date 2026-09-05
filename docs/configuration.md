@@ -4502,3 +4502,30 @@ Sets the maximum network packet size used for streaming. Set `0` to use the defa
   <summary></summary>
   [TOC]
 </details>
+
+
+## Remote Monitor lifecycle
+
+### remote_monitor_mute_audio
+
+Send picture and input without sending game or desktop audio to the Remote Monitor client.
+
+Accepts `enabled` or `disabled`.
+
+### remote_monitor_disconnect_on_stream_end
+
+Remove the client's extra monitor when its stream finishes. Leave this off to keep the monitor ready for Resume.
+
+Accepts `enabled` or `disabled`.
+
+### remote_monitor_disconnect_on_client_disconnect
+
+Remove the extra monitor as soon as the client connection drops or you use Disconnect, even if the monitor was waiting for Resume.
+
+Accepts `enabled` or `disabled`.
+
+### remote_monitor_terminate_on_first_request
+
+Moonlight needs Vibepollo to advertise the host as available to extra clients so it can show the running game and Terminate control. Leave this off to require launching Terminate twice; the original game client is not affected.
+
+Accepts `enabled` or `disabled`.

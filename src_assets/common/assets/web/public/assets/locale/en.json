@@ -397,6 +397,16 @@
     "output_name_default": "Primary display (default)"
   },
   "config": {
+    "remote_monitor_mute_audio": "Mute audio on Remote Monitor",
+    "remote_monitor_mute_audio_desc": "Send picture and input without sending game or desktop audio to the Remote Monitor client.",
+    "remote_monitor_disconnect_on_stream_end": "Remove it when the Remote Monitor stream ends",
+    "remote_monitor_disconnect_on_stream_end_desc": "Remove the client's extra monitor when its stream finishes. Leave this off to keep the monitor ready for Resume.",
+    "remote_monitor_disconnect_on_client_disconnect": "Remove it when the client disconnects",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "Remove the extra monitor as soon as the client connection drops or you use Disconnect, even if the monitor was waiting for Resume.",
+    "remote_monitor_terminate_on_first_request": "Terminate on the first request",
+    "remote_monitor_terminate_on_first_request_desc": "Moonlight needs Vibepollo to advertise the host as available to extra clients so it can show the running game and Terminate control. Leave this off to require launching Terminate twice; the original game client is not affected.",
+    "rtss_allow_virtual_display_override": "Allow non-Reflex RTSS modes on virtual displays",
+    "rtss_allow_virtual_display_override_desc": "Virtual displays normally enforce NVIDIA Reflex because DLSS Frame Generation can otherwise add significant latency. Enable this only to apply the selected RTSS mode to virtual displays; mark a DLSS/FSR game as Frame generation -> Game provided to force Reflex for that app.",
     "remote_monitor_confirm_app_replacement": "Confirm before replacing a running app",
     "remote_monitor_confirm_app_replacement_desc": "Reject the first request to replace a running app, then advertise it as resumable for 60 seconds so Moonlight can show its close-app warning. Remote Input and Remote Monitor still attach without that warning. Turn this off to replace apps immediately.",
     "amf": {

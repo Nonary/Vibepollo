@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { supportsManagedLinuxDisplay } from '@/utils/providerCapabilities';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
@@ -408,7 +409,7 @@ onBeforeUnmount(() => {
         </section>
       </div>
       <LinuxCaptureStatus
-        v-if="system.metadata?.platform === 'linux'"
+        v-if="system.metadata?.platform === 'linux' && supportsManagedLinuxDisplay(system.metadata)"
         :metadata="system.metadata"
         :virtual-mode="
           system.metadata.capture_status?.virtual_display_configured === false
