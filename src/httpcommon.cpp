@@ -232,6 +232,12 @@ namespace http {
       }
       credentials_created_this_run = !had_credential_material;
     }
+    // Credential inspection precedes nvhttp pairing-state startup. Restore its
+    // snapshot here, before malformed state could abort startup or enable setup.
+    if (!clean_slate && !statefile::recover_credentials(config::sunshine.credentials_file)) {
+      BOOST_LOG(error) << "Credential state and its recovery copy are unavailable; refusing credential setup.";
+      return -1;
+    }
     switch (user_creds_state(config::sunshine.credentials_file)) {
       case creds_state::missing_file:
         BOOST_LOG(info) << "Use the configuration API to set your new username and password before getting started";

@@ -61,6 +61,7 @@
 #include "paired_state_policy.h"
 #include "state_storage_policy.h"
 #include "update.h"
+#include "state_storage_policy.h"
 #ifdef _WIN32
   #include "platform/windows/display.h"
   #include "platform/windows/display_helper_request_policy.h"
