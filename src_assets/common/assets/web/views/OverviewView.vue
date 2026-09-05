@@ -10,7 +10,6 @@ import {
   InlineAlert,
   LoadingSkeleton,
   PageHeader,
-  StatusBadge,
   UiIcon,
   type StatusTone,
 } from '@/components/ui';
@@ -31,6 +30,7 @@ const { locale, t } = useI18n();
 const system = useSystemStore();
 const session = ref<SessionStatus | null>(null);
 const hostStats = ref<HostStatsSnapshot | null>(null);
+const statsStale = ref(false);
 const hostInfo = ref<HostInfo | null>(null);
 const loading = ref(true);
 const refreshing = ref(false);
@@ -65,7 +65,9 @@ async function refresh(silent = false): Promise<void> {
 
   if (statsResult.status === 'fulfilled') {
     hostStats.value = statsResult.value;
+    statsStale.value = false;
   } else {
+    statsStale.value = true;
     nextErrors.push(errorMessage(statsResult.reason, t('ui.overview.errors.hostMetrics')));
   }
 
@@ -107,7 +109,10 @@ const warnings = computed<OverviewWarning[]>(() => {
       action: t('ui.overview.actions.openStats'),
     });
   }
-  if (session.value?.lastEncoderProbeFailed) {
+  if (
+    session.value?.lastEncoderProbeFailed ||
+    system.metadata?.encoder_status?.state === 'failed'
+  ) {
     result.push({
       key: 'encoder-probe-failed',
       title: t('ui.overview.warnings.encoderProbe.title'),
@@ -172,8 +177,44 @@ const lastUpdatedLabel = computed(() =>
     : t('ui.overview.notUpdated'),
 );
 
+const readinessIcon = computed(() => {
+  if (readiness.value.tone === 'warning') return 'alert-triangle';
+  if (readiness.value.tone === 'neutral') return 'info';
+  return isStreaming.value ? 'activity' : 'check-circle';
+});
+const primaryAction = computed(() => {
+  if (isStreaming.value)
+    return { to: '/stats', label: t('ui.overview.actions.openStats'), icon: 'activity' } as const;
+  if (warnings.value.length)
+    return {
+      to: warnings.value[0].to,
+      label: warnings.value[0].action,
+      icon: 'chevron-right',
+    } as const;
+  if (system.health === 'unknown' || system.health === 'warning')
+    return {
+      to: '/settings?category=display',
+      label: t('ui.overview.actions.reviewSetup'),
+      icon: 'settings',
+    } as const;
+  return { to: '/pair', label: t('ui.overview.actions.pairDevice'), icon: 'plus' } as const;
+});
+const quickActions = [
+  { key: 'library', to: '/library', icon: 'library' },
+  { key: 'devices', to: '/devices', icon: 'devices' },
+  { key: 'settings', to: '/settings', icon: 'settings' },
+] as const;
+const metrics = computed(() => [
+  { label: t('host.cpu'), value: hostStats.value?.cpu_percent },
+  { label: t('host.gpu'), value: hostStats.value?.gpu_percent },
+  { label: t('ui.overview.memory'), value: hostStats.value?.ram_percent },
+  { label: t('host.vram'), value: hostStats.value?.vram_percent },
+]);
+function validPercent(value: number | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100;
+}
 function percent(value: number | undefined): string {
-  return Number.isFinite(value)
+  return validPercent(value)
     ? new Intl.NumberFormat(locale.value || undefined, {
         maximumFractionDigits: 0,
         style: 'percent',
@@ -202,125 +243,78 @@ onBeforeUnmount(() => {
 <template>
   <div class="page page--wide overview-page">
     <PageHeader :title="t('ui.overview.title')" :description="t('ui.overview.description')">
-      <template #meta>
-        <span class="overview-updated">{{
-          t('ui.overview.updated', { time: lastUpdatedLabel })
-        }}</span>
-      </template>
       <template #actions>
-        <a class="button button--secondary" href="/">
-          {{ t('ui.overview.actions.useLegacyWebUi') }}
-        </a>
-        <AppButton
-          icon="refresh"
-          :label="t('_common.refresh')"
-          variant="secondary"
-          :busy="refreshing"
-          :busy-label="t('ui.overview.refreshing')"
-          @click="refresh()"
-        />
+        <div class="overview-refresh">
+          <span class="overview-updated">{{
+            t('ui.overview.updated', { time: lastUpdatedLabel })
+          }}</span>
+          <AppButton
+            icon="refresh"
+            :label="t('_common.refresh')"
+            variant="secondary"
+            :busy="refreshing"
+            :busy-label="t('ui.overview.refreshing')"
+            @click="refresh(true)"
+          />
+        </div>
       </template>
     </PageHeader>
-
-    <div class="visually-hidden" aria-live="polite" aria-atomic="true">
-      {{ readiness.label }}
-    </div>
-
+    <div class="visually-hidden" aria-live="polite" aria-atomic="true">{{ readiness.label }}</div>
     <template v-if="loading">
-      <LoadingSkeleton variant="block" height="168px" :label="t('ui.overview.loadingReadiness')" />
-      <div class="overview-summary-grid" aria-hidden="true">
-        <LoadingSkeleton variant="block" height="136px" />
-        <LoadingSkeleton variant="block" height="136px" />
-      </div>
+      <LoadingSkeleton variant="block" height="184px" :label="t('ui.overview.loadingReadiness')" />
+      <LoadingSkeleton variant="block" height="320px" :label="t('ui.overview.loadingReadiness')" />
     </template>
-
     <template v-else>
-      <LinuxCaptureStatus
-        v-if="system.metadata?.platform === 'linux'"
-        :metadata="system.metadata"
-        :virtual-mode="
-          system.metadata.capture_status?.virtual_display_configured === false
-            ? 'disabled'
-            : undefined
-        "
-      />
       <section
         class="readiness-panel"
         :data-tone="readiness.tone"
         aria-labelledby="readiness-title"
       >
         <div class="readiness-panel__state">
-          <span class="readiness-panel__icon" aria-hidden="true">
-            <UiIcon
-              :name="isStreaming ? 'activity' : warnings.length ? 'alert-triangle' : 'check-circle'"
-              :size="24"
-            />
-          </span>
-          <div>
-            <StatusBadge :label="readiness.label" :tone="readiness.tone" />
-            <h2 id="readiness-title">{{ readiness.detail }}</h2>
-            <p>
-              {{ hostInfo?.cpu_model || t('ui.overview.hardwareUnavailable') }}
-              <span v-if="hostInfo?.gpu_model"> &middot; {{ hostInfo.gpu_model }}</span>
+          <span class="readiness-panel__icon" aria-hidden="true"
+            ><UiIcon :name="readinessIcon" :size="28"
+          /></span>
+          <div class="readiness-panel__copy">
+            <span class="readiness-panel__eyebrow">{{
+              t('ui.overview.readiness.hostStatus')
+            }}</span>
+            <h2 id="readiness-title">{{ readiness.label }}</h2>
+            <p>{{ readiness.detail }}</p>
+            <p v-if="isStreaming" class="readiness-panel__sessions">
+              {{
+                t(
+                  (session?.activeSessions ?? 0) === 1
+                    ? 'ui.overview.activeSessions.one'
+                    : 'ui.overview.activeSessions.other',
+                  { count: session?.activeSessions ?? 0 },
+                )
+              }}
             </p>
           </div>
         </div>
         <div class="readiness-panel__actions">
-          <RouterLink class="button button--secondary" to="/stats">
-            {{ t('ui.overview.actions.openStats') }}
-            <UiIcon name="chevron-right" aria-hidden="true" />
+          <RouterLink class="button button--primary" :to="primaryAction.to">
+            <UiIcon :name="primaryAction.icon" />{{ primaryAction.label }}
           </RouterLink>
-          <RouterLink v-if="!isStreaming" class="button button--primary" to="/stream">
-            <UiIcon name="play" aria-hidden="true" />
-            {{ t('ui.overview.actions.startBrowserStream') }}
+          <RouterLink v-if="!isStreaming" class="button button--secondary" to="/stream">
+            <UiIcon name="play" />{{ t('ui.overview.actions.startBrowserStream') }}
           </RouterLink>
         </div>
       </section>
 
-      <div v-if="isStreaming || warnings.length" class="overview-summary-grid">
-        <section
-          v-if="isStreaming"
-          class="overview-summary-card"
-          aria-labelledby="active-stream-title"
-        >
-          <div class="overview-summary-card__heading">
-            <span class="summary-icon summary-icon--info" aria-hidden="true"
-              ><UiIcon name="activity"
-            /></span>
-            <StatusBadge :label="t('_common.active')" tone="info" compact />
-          </div>
-          <h2 id="active-stream-title">{{ session?.appName || t('ui.overview.remoteStream') }}</h2>
-          <p>
-            {{
-              t(
-                (session?.activeSessions ?? 0) === 1
-                  ? 'ui.overview.activeSessions.one'
-                  : 'ui.overview.activeSessions.other',
-                { count: session?.activeSessions ?? 0 },
-              )
-            }}
-          </p>
-          <RouterLink to="/stats">{{ t('ui.overview.actions.openStats') }}</RouterLink>
-        </section>
-
-        <section
-          v-for="warning in warnings.slice(0, isStreaming ? 1 : 2)"
+      <div v-if="warnings.length" class="overview-notices">
+        <InlineAlert
+          v-for="warning in warnings"
           :key="warning.key"
-          class="overview-summary-card"
-          :aria-labelledby="`warning-${warning.key}`"
+          tone="warning"
+          :title="warning.title"
         >
-          <div class="overview-summary-card__heading">
-            <span class="summary-icon summary-icon--warning" aria-hidden="true"
-              ><UiIcon name="alert-triangle"
-            /></span>
-            <StatusBadge :label="t('ui.overview.attention')" tone="warning" compact />
-          </div>
-          <h2 :id="`warning-${warning.key}`">{{ warning.title }}</h2>
-          <p>{{ warning.detail }}</p>
-          <RouterLink :to="warning.to">{{ warning.action }}</RouterLink>
-        </section>
+          {{ warning.detail }}
+          <template #actions
+            ><RouterLink :to="warning.to">{{ warning.action }}</RouterLink></template
+          >
+        </InlineAlert>
       </div>
-
       <InlineAlert
         v-if="fetchErrors.length > 1"
         tone="warning"
@@ -334,26 +328,34 @@ onBeforeUnmount(() => {
           <div class="overview-panel__heading">
             <div>
               <h2 id="host-metrics-title">{{ t('ui.overview.hostLoad.title') }}</h2>
-              <p>{{ t('ui.overview.hostLoad.description') }}</p>
+              <p :class="{ 'overview-stale': statsStale && hostStats }">
+                {{
+                  t(
+                    statsStale && hostStats
+                      ? 'ui.overview.hostLoad.staleDescription'
+                      : 'ui.overview.hostLoad.description',
+                  )
+                }}
+              </p>
             </div>
-            <RouterLink to="/stats">{{ t('ui.overview.actions.openStats') }}</RouterLink>
+            <RouterLink class="overview-detail-link" to="/stats"
+              >{{ t('ui.overview.actions.viewDetails') }}<UiIcon name="chevron-right"
+            /></RouterLink>
           </div>
           <dl v-if="hostStats" class="metric-grid">
-            <div>
-              <dt>{{ t('host.cpu') }}</dt>
-              <dd>{{ percent(hostStats.cpu_percent) }}</dd>
-            </div>
-            <div>
-              <dt>{{ t('host.gpu') }}</dt>
-              <dd>{{ percent(hostStats.gpu_percent) }}</dd>
-            </div>
-            <div>
-              <dt>{{ t('ui.overview.memory') }}</dt>
-              <dd>{{ percent(hostStats.ram_percent) }}</dd>
-            </div>
-            <div>
-              <dt>{{ t('host.vram') }}</dt>
-              <dd>{{ percent(hostStats.vram_percent) }}</dd>
+            <div
+              v-for="metric in metrics"
+              :key="metric.label"
+              :class="{ 'metric--unavailable': !validPercent(metric.value) }"
+            >
+              <dt>{{ metric.label }}</dt>
+              <dd>{{ percent(metric.value) }}</dd>
+              <div class="metric-track" aria-hidden="true">
+                <span
+                  :style="{ width: `${validPercent(metric.value) ? metric.value : 0}%` }"
+                  :data-high="validPercent(metric.value) && metric.value >= 95"
+                />
+              </div>
             </div>
           </dl>
           <EmptyState
@@ -363,7 +365,10 @@ onBeforeUnmount(() => {
             :title="t('ui.overview.hostLoad.unavailableTitle')"
             :description="t('ui.overview.hostLoad.unavailableDescription')"
           />
-          <p v-if="hostStats" class="metric-footnote">
+          <p
+            v-if="hostStats && hostStats.ram_total_bytes > 0 && hostStats.ram_used_bytes >= 0"
+            class="metric-footnote"
+          >
             {{
               t('ui.overview.hostLoad.memoryInUse', {
                 total: formatBytes(hostStats.ram_total_bytes, locale),
@@ -371,56 +376,66 @@ onBeforeUnmount(() => {
               })
             }}
           </p>
+          <dl class="host-details" :aria-label="t('ui.overview.hostDetails')">
+            <div>
+              <dt>{{ t('ui.overview.processor') }}</dt>
+              <dd>{{ hostInfo?.cpu_model || t('ui.overview.unavailable') }}</dd>
+            </div>
+            <div>
+              <dt>{{ t('ui.overview.graphics') }}</dt>
+              <dd>{{ hostInfo?.gpu_model || t('ui.overview.unavailable') }}</dd>
+            </div>
+          </dl>
         </section>
 
-        <section class="overview-panel overview-action-panel" aria-labelledby="report-bug-title">
+        <section class="overview-panel workspace-panel" aria-labelledby="workspace-title">
           <div class="overview-panel__heading">
-            <div>
-              <span class="overview-action-panel__icon" aria-hidden="true">
-                <UiIcon name="help" :size="20" />
-              </span>
-              <h2 id="report-bug-title">{{ t('ui.overview.reportBug.title') }}</h2>
-              <p>{{ t('ui.overview.reportBug.description') }}</p>
-            </div>
+            <h2 id="workspace-title">{{ t('ui.overview.quickActions.title') }}</h2>
           </div>
+          <RouterLink
+            v-for="action in quickActions"
+            :key="action.key"
+            class="workspace-link"
+            :to="action.to"
+          >
+            <span class="workspace-link__icon"><UiIcon :name="action.icon" :size="20" /></span>
+            <span class="workspace-link__copy"
+              ><strong>{{ t(`ui.overview.quickActions.${action.key}`) }}</strong
+              ><span>{{ t(`ui.overview.quickActions.${action.key}Detail`) }}</span></span
+            >
+            <UiIcon name="chevron-right" :size="16" />
+          </RouterLink>
+        </section>
+      </div>
+      <LinuxCaptureStatus
+        v-if="system.metadata?.platform === 'linux'"
+        :metadata="system.metadata"
+        :virtual-mode="
+          system.metadata.capture_status?.virtual_display_configured === false
+            ? 'disabled'
+            : undefined
+        "
+      />
+      <footer class="overview-footer">
+        <span
+          >{{ t('ui.overview.installedVersion') }}
+          <strong>{{ system.metadata?.version || t('_common.unknown') }}</strong></span
+        >
+        <nav :aria-label="t('ui.overview.support')">
           <a
-            class="button button--secondary button--compact"
             href="https://github.com/Nonary/Vibepollo/issues/new/choose"
             target="_blank"
             rel="noopener noreferrer"
-          >
-            {{ t('ui.overview.actions.reportBug') }}
-            <UiIcon name="external-link" :size="16" aria-hidden="true" />
-          </a>
-        </section>
-
-        <section class="overview-panel overview-action-panel" aria-labelledby="updates-title">
-          <div class="overview-panel__heading">
-            <div>
-              <span class="overview-action-panel__icon" aria-hidden="true">
-                <UiIcon name="download" :size="20" />
-              </span>
-              <h2 id="updates-title">{{ t('ui.overview.updates.title') }}</h2>
-              <p>
-                {{
-                  t('ui.overview.updates.installed', {
-                    version: system.metadata?.version || t('_common.unknown'),
-                  })
-                }}
-              </p>
-            </div>
-          </div>
+            >{{ t('ui.overview.actions.reportBug') }}<UiIcon name="external-link" :size="14"
+          /></a>
           <a
-            class="button button--secondary button--compact"
             href="https://github.com/Nonary/Vibepollo/releases/latest"
             target="_blank"
             rel="noopener noreferrer"
-          >
-            {{ t('ui.overview.actions.checkUpdates') }}
-            <UiIcon name="external-link" :size="16" aria-hidden="true" />
-          </a>
-        </section>
-      </div>
+            >{{ t('ui.overview.actions.checkUpdates') }}<UiIcon name="external-link" :size="14"
+          /></a>
+        </nav>
+      </footer>
     </template>
   </div>
 </template>
@@ -430,253 +445,313 @@ onBeforeUnmount(() => {
   display: grid;
   gap: var(--vs-space-24);
 }
-
+.overview-refresh {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vs-space-16);
+}
 .overview-updated {
   color: var(--vs-color-text-muted);
   font-size: var(--vs-type-size-metadata);
 }
-
 .readiness-panel,
-.overview-summary-card,
 .overview-panel {
+  min-width: 0;
   border: var(--vs-border-width) solid var(--vs-color-border-subtle);
   border-radius: var(--vs-radius-card);
   background: var(--vs-color-bg-surface);
 }
-
 .readiness-panel {
   --readiness-color: var(--vs-color-status-success);
   display: flex;
-  min-height: 10.5rem;
+  min-height: 184px;
   align-items: center;
   justify-content: space-between;
-  gap: var(--vs-space-24);
-  padding: var(--vs-space-24);
-  border-inline-start: var(--vs-border-emphasis-width) solid var(--readiness-color);
+  gap: var(--vs-space-32);
+  padding: var(--vs-space-32);
 }
-
 .readiness-panel[data-tone='info'] {
   --readiness-color: var(--vs-color-status-info);
 }
-
 .readiness-panel[data-tone='warning'] {
   --readiness-color: var(--vs-color-status-warning);
 }
-
+.readiness-panel[data-tone='neutral'] {
+  --readiness-color: var(--vs-color-text-muted);
+}
 .readiness-panel__state {
   display: flex;
   min-width: 0;
-  align-items: flex-start;
-  gap: var(--vs-space-16);
+  align-items: center;
+  gap: var(--vs-space-20);
 }
-
-.readiness-panel__actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--vs-space-8);
+.readiness-panel__copy {
+  min-width: 0;
 }
-
-.readiness-panel__icon,
-.summary-icon {
+.readiness-panel__eyebrow {
+  color: var(--readiness-color);
+  font-size: var(--vs-type-size-metadata);
+  font-weight: var(--vs-type-weight-medium);
+}
+.readiness-panel__icon {
   display: grid;
+  width: var(--vs-space-64);
+  height: var(--vs-space-64);
   flex: none;
   place-items: center;
-  border-radius: var(--vs-radius-control);
-}
-
-.readiness-panel__icon {
-  width: 3rem;
-  height: 3rem;
-  background: color-mix(in srgb, var(--readiness-color) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--readiness-color) 22%, transparent);
+  border-radius: var(--vs-radius-dialog);
+  background: color-mix(in srgb, var(--readiness-color) 8%, transparent);
   color: var(--readiness-color);
 }
-
 .readiness-panel h2 {
-  margin-top: var(--vs-space-8);
-  font-size: var(--vs-type-size-panel);
-  line-height: var(--vs-type-line-height-panel);
+  margin: var(--vs-space-4) 0 var(--vs-space-8);
+  font-size: 28px;
+  line-height: 36px;
 }
-
-.readiness-panel p,
-.overview-summary-card p,
-.overview-panel__heading p,
-.metric-footnote {
-  color: var(--vs-color-text-secondary);
-}
-
 .readiness-panel p {
-  margin-top: var(--vs-space-4);
+  max-width: 32rem;
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-control);
 }
-
-.overview-summary-grid,
+.readiness-panel__sessions {
+  margin-top: var(--vs-space-8);
+}
+.readiness-panel__actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: var(--vs-space-8);
+}
+.overview-notices {
+  display: grid;
+  gap: var(--vs-space-12);
+}
 .overview-detail-grid {
   display: grid;
-  gap: var(--vs-space-16);
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: var(--vs-space-24);
 }
-
-.overview-summary-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.overview-panel {
+  padding: var(--vs-space-24);
 }
-
-.overview-summary-card {
-  display: grid;
-  min-height: 8.5rem;
-  align-content: start;
-  gap: var(--vs-space-8);
-  padding: var(--vs-space-16);
-}
-
-.overview-summary-card__heading,
 .overview-panel__heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--vs-space-12);
 }
-
-.summary-icon {
-  width: 2rem;
-  height: 2rem;
-  background: var(--vs-color-bg-subtle);
-}
-
-.summary-icon--info {
-  color: var(--vs-color-status-info);
-}
-
-.summary-icon--warning {
-  color: var(--vs-color-status-warning);
-}
-
-.overview-summary-card h2,
 .overview-panel h2 {
-  font-size: var(--vs-type-size-section);
-  line-height: var(--vs-type-line-height-section);
+  font-size: 16px;
+  line-height: 24px;
 }
-
-.overview-summary-card > a,
-.overview-panel__heading > a {
-  width: fit-content;
-  font-size: var(--vs-type-size-control);
-  font-weight: var(--vs-type-weight-medium);
-}
-
-.overview-detail-grid {
-  grid-template-columns: minmax(0, 1.35fr) repeat(2, minmax(14rem, 0.65fr));
-}
-
-.overview-panel {
-  min-width: 0;
-  padding: var(--vs-card-padding);
-}
-
 .overview-panel__heading p {
-  margin-top: var(--vs-space-2);
+  margin-top: var(--vs-space-4);
+  color: var(--vs-color-text-muted);
   font-size: var(--vs-type-size-metadata);
 }
-
+.overview-panel__heading .overview-stale {
+  color: var(--vs-color-status-warning);
+}
+.overview-detail-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vs-space-4);
+  font-size: 12px;
+  text-decoration: none;
+}
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--vs-space-8);
-  margin-top: var(--vs-space-20);
+  gap: var(--vs-space-20);
+  margin-top: var(--vs-space-32);
 }
-
 .metric-grid > div {
   min-width: 0;
-  padding: var(--vs-space-12);
-  border-radius: var(--vs-radius-control);
-  background: var(--vs-color-bg-subtle);
 }
-
 .metric-grid dt {
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-metadata);
+}
+.metric-grid dd {
+  margin: var(--vs-space-8) 0 var(--vs-space-16);
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: var(--vs-type-weight-medium);
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.metric-grid .metric--unavailable dd {
+  font-size: var(--vs-type-size-helper);
+  letter-spacing: normal;
+}
+.metric-track {
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--vs-radius-pill);
+  background: var(--vs-color-border-subtle);
+}
+.metric-track > span {
+  display: block;
+  height: 100%;
+  background: var(--vs-color-accent-default);
+  border-radius: inherit;
+}
+.metric-track > span[data-high='true'] {
+  background: var(--vs-color-status-warning);
+}
+.metric-footnote {
+  margin-top: var(--vs-space-16);
   color: var(--vs-color-text-muted);
   font-size: var(--vs-type-size-helper);
 }
-
-.metric-grid dd {
-  margin: var(--vs-space-4) 0 0;
-  font-size: var(--vs-type-size-section);
-  font-weight: var(--vs-type-weight-semibold);
-  font-variant-numeric: tabular-nums;
-}
-
-.metric-footnote {
-  margin-top: var(--vs-space-12);
+.host-details {
+  display: grid;
+  gap: var(--vs-space-12);
+  padding-top: var(--vs-space-20);
+  margin-top: var(--vs-space-24);
+  border-top: 1px solid var(--vs-color-border-subtle);
   font-size: var(--vs-type-size-metadata);
 }
-
-.overview-action-panel {
+.host-details > div {
   display: flex;
-  min-height: 13rem;
-  flex-direction: column;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: var(--vs-space-20);
+  gap: var(--vs-space-8) var(--vs-space-16);
 }
-
-.overview-action-panel__icon {
-  display: grid;
-  width: 2.5rem;
-  height: 2.5rem;
-  place-items: center;
+.host-details dt {
+  color: var(--vs-color-text-muted);
+}
+.host-details dd {
+  color: var(--vs-color-text-secondary);
+  overflow-wrap: anywhere;
+}
+.workspace-panel {
+  padding-bottom: var(--vs-space-12);
+}
+.workspace-panel .overview-panel__heading {
   margin-bottom: var(--vs-space-12);
-  border-radius: var(--vs-radius-control);
+}
+.workspace-link {
+  display: flex;
+  align-items: center;
+  gap: var(--vs-space-16);
+  padding: var(--vs-space-16) 0;
+  color: var(--vs-color-text-muted);
+  text-decoration: none;
+}
+.workspace-link + .workspace-link {
+  border-top: 1px solid var(--vs-color-border-subtle);
+}
+.workspace-link__icon {
+  display: grid;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  place-items: center;
   background: var(--vs-color-bg-subtle);
+  border-radius: var(--vs-radius-control);
+  color: var(--vs-color-text-secondary);
+}
+.workspace-link__copy {
+  min-width: 0;
+  flex: 1;
+}
+.workspace-link strong {
+  display: block;
+  color: var(--vs-color-text-primary);
+  font-size: var(--vs-type-size-control);
+  font-weight: var(--vs-type-weight-medium);
+}
+.workspace-link__copy > span {
+  display: block;
+  margin-top: var(--vs-space-4);
+  font-size: var(--vs-type-size-metadata);
+  line-height: 20px;
+}
+.workspace-link:hover strong,
+.workspace-link:hover > svg,
+.workspace-link:hover .workspace-link__icon {
   color: var(--vs-color-accent-default);
 }
-
-.overview-action-panel > .button {
-  width: fit-content;
+.overview-page :deep(.linux-capture) {
+  margin-bottom: 0;
 }
-
-@media (max-width: 63.999rem) {
-  .overview-detail-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .overview-detail-grid > :first-child {
-    grid-column: 1 / -1;
-  }
+.overview-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vs-space-16);
+  color: var(--vs-color-text-muted);
+  font-size: var(--vs-type-size-helper);
 }
-
-@media (max-width: 47.999rem) {
-  .readiness-panel {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .readiness-panel__actions {
-    width: 100%;
-    flex-direction: column;
-  }
-
-  .readiness-panel__actions > .button {
-    width: 100%;
-  }
-
-  .overview-summary-grid,
+.overview-footer strong {
+  margin-left: var(--vs-space-8);
+  font-weight: var(--vs-type-weight-medium);
+  color: var(--vs-color-text-secondary);
+}
+.overview-footer nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vs-space-24);
+}
+.overview-footer a {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vs-space-8);
+  color: var(--vs-color-text-muted);
+  text-decoration: none;
+}
+.overview-footer a:hover {
+  color: var(--vs-color-accent-default);
+}
+@media (max-width: 1199px) {
   .overview-detail-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-
+}
+@media (max-width: 767px) {
+  .readiness-panel {
+    padding: var(--vs-space-24);
+    align-items: stretch;
+    flex-direction: column;
+    gap: var(--vs-space-24);
+  }
+  .readiness-panel__state {
+    align-items: flex-start;
+  }
+  .readiness-panel__icon {
+    width: 44px;
+    height: 44px;
+  }
+  .readiness-panel h2 {
+    font-size: 24px;
+    line-height: 32px;
+  }
+  .overview-panel {
+    padding: var(--vs-space-20);
+  }
   .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--vs-space-24);
   }
 }
-
-@media (max-width: 29.999rem) {
+@media (max-width: 359px) {
   .readiness-panel__state {
     flex-direction: column;
   }
 }
-
 @media (forced-colors: active) {
-  .readiness-panel,
-  .overview-summary-card,
-  .overview-panel,
-  .metric-grid > div {
-    border: var(--vs-border-width) solid CanvasText;
+  .readiness-panel__icon,
+  .metric-track {
+    border: 1px solid CanvasText;
+  }
+  .metric-track > span {
+    background: Highlight;
+    forced-color-adjust: none;
   }
 }
 </style>

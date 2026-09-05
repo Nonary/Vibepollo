@@ -11,6 +11,7 @@ import {
   InlineAlert,
   LoadingSkeleton,
   PageHeader,
+  StatusBadge,
   UiIcon,
 } from '@/components/ui';
 import {
@@ -137,6 +138,15 @@ function searchSummary(app: AppRecord): string {
 
 function displayName(app: AppRecord): string {
   return appName(app) || t('ui.library.unnamed');
+}
+
+function appInitials(app: AppRecord): string {
+  return displayName(app)
+    .split(/\s+/u)
+    .slice(0, 2)
+    .map((part) => Array.from(part)[0])
+    .join('')
+    .toLocaleUpperCase(locale.value);
 }
 
 function isRemoteSessionApp(app: AppRecord): boolean {
@@ -472,6 +482,9 @@ onBeforeUnmount(() => {
   <div class="vs-page vs-page--dashboard library-page">
     <PageHeader :title="t('ui.library.page.title')" :description="t('ui.library.page.description')">
       <template #actions>
+        <RouterLink class="button button--secondary" to="/integrations"
+          ><UiIcon name="integrations" />{{ t('ui.library.actions.sources') }}</RouterLink
+        >
         <AppButton
           icon="plus"
           variant="primary"
@@ -522,23 +535,31 @@ onBeforeUnmount(() => {
 
       <div class="library-view-toggle" role="group" :aria-label="t('ui.library.view.label')">
         <AppButton
-          size="compact"
+          size="default"
+          icon="overview"
+          icon-only
+          :title="t('ui.library.view.grid')"
           :variant="viewMode === 'grid' ? 'secondary' : 'tertiary'"
           :label="t('ui.library.view.grid')"
           :aria-pressed="viewMode === 'grid'"
           @click="setView('grid')"
         />
         <AppButton
-          size="compact"
+          size="default"
+          icon="list"
+          icon-only
+          :title="t('ui.library.view.list')"
           :variant="viewMode === 'list' ? 'secondary' : 'tertiary'"
           :label="t('ui.library.view.list')"
           :aria-pressed="viewMode === 'list'"
           @click="setView('list')"
         />
       </div>
-
-      <span class="library-result-count" role="status" aria-live="polite">{{ resultLabel }}</span>
     </section>
+    <div class="library-collection-heading">
+      <h2>{{ t('ui.library.collection.label') }}</h2>
+      <span class="library-result-count" role="status" aria-live="polite">{{ resultLabel }}</span>
+    </div>
 
     <div v-if="selectedUuids.size" class="library-selection" role="status">
       <StatusBadge tone="info">
@@ -640,10 +661,24 @@ onBeforeUnmount(() => {
                 v-else
                 class="library-item__artwork-fallback"
                 role="img"
-                :aria-label="t('ui.library.cover.unavailableLabel', { name: displayName(app) })"
+                :aria-label="t('ui.library.cover.fallbackLabel', { name: displayName(app) })"
               >
-                <UiIcon name="gamepad" :size="32" aria-hidden="true" />
-                <span>{{ t('ui.library.cover.unavailable') }}</span>
+                <UiIcon
+                  v-if="isRemoteSessionApp(app)"
+                  name="devices"
+                  :size="48"
+                  aria-hidden="true"
+                />
+                <span v-else class="library-item__monogram" aria-hidden="true">{{
+                  appInitials(app)
+                }}</span>
+                <span>{{
+                  t(
+                    isRemoteSessionApp(app)
+                      ? 'ui.library.cover.desktop'
+                      : 'ui.library.cover.application',
+                  )
+                }}</span>
               </span>
               <span v-if="selectedUuids.has(appUuid(app))" class="library-item__selected-mark">
                 <UiIcon name="check" :size="16" aria-hidden="true" />
@@ -685,13 +720,7 @@ onBeforeUnmount(() => {
               <span class="library-item__title-line">
                 <span class="library-item__title">{{ displayName(app) }}</span>
               </span>
-              <span
-                v-if="commandSummary(app)"
-                class="library-item__command vs-monospace"
-                :title="commandSummary(app)"
-              >
-                {{ commandSummary(app) }}
-              </span>
+              <span class="library-item__source">{{ providerLabel(app) }}</span>
             </span>
           </button>
 
@@ -796,8 +825,29 @@ onBeforeUnmount(() => {
   gap: var(--vs-space-20);
 }
 
-.library-page :deep(.vs-page-header) {
-  padding-block-end: 0;
+.library-collection-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vs-space-8);
+  margin-top: var(--vs-space-8);
+}
+.library-collection-heading h2 {
+  font-size: var(--vs-type-size-control);
+  font-weight: var(--vs-type-weight-medium);
+}
+.library-page :deep(.vs-empty-state) {
+  width: 100%;
+  max-inline-size: none;
+  min-block-size: 22rem;
+  border: 1px solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-card);
+  background: var(--vs-color-bg-surface);
+}
+.library-view-toggle :deep([aria-pressed='true']) {
+  background: var(--vs-color-bg-raised);
+  border-color: transparent;
 }
 
 .library-toolbar,
@@ -818,8 +868,7 @@ onBeforeUnmount(() => {
   padding: var(--vs-space-12);
   border: var(--vs-border-width) solid var(--vs-color-border-subtle);
   border-radius: var(--vs-radius-card);
-  background: color-mix(in srgb, var(--vs-color-bg-canvas) 92%, transparent);
-  backdrop-filter: blur(10px);
+  background: var(--vs-color-bg-surface);
 }
 
 .library-search {
@@ -957,8 +1006,22 @@ onBeforeUnmount(() => {
   gap: var(--vs-space-8);
   padding: var(--vs-space-16);
   color: var(--vs-color-text-muted);
+  background: color-mix(in srgb, var(--vs-color-accent-default) 5%, var(--vs-color-bg-surface));
   font-size: var(--vs-type-size-helper);
   text-align: center;
+}
+.library-item__monogram {
+  color: color-mix(in srgb, var(--vs-color-accent-default) 70%, var(--vs-color-text-muted));
+  font-size: 56px;
+  line-height: 1.2;
+  font-weight: var(--vs-type-weight-medium);
+  letter-spacing: -0.06em;
+}
+.library-collection--list .library-item__monogram {
+  font-size: 24px;
+}
+.library-collection--list .library-item__artwork-fallback > span:last-child {
+  display: none;
 }
 
 .library-item__selected-mark {
@@ -982,11 +1045,11 @@ onBeforeUnmount(() => {
   inline-size: 2rem;
   block-size: 2rem;
   place-items: center;
-  border: var(--vs-border-width) solid color-mix(in srgb, white 28%, transparent);
+  border: var(--vs-border-width) solid var(--vs-color-border-strong);
   border-radius: var(--vs-radius-control);
   background: color-mix(in srgb, var(--vs-color-bg-canvas) 82%, transparent);
   box-shadow: var(--vs-shadow-raised);
-  color: white;
+  color: var(--vs-color-text-primary);
   backdrop-filter: blur(8px);
 }
 
@@ -1023,7 +1086,8 @@ onBeforeUnmount(() => {
   flex: 1 1 auto;
 }
 
-.library-item__command {
+.library-item__source {
+  font-size: var(--vs-type-size-helper);
   overflow: hidden;
   color: var(--vs-color-text-muted);
   text-overflow: ellipsis;
@@ -1139,10 +1203,6 @@ onBeforeUnmount(() => {
   .library-grid,
   .library-collection--grid {
     grid-template-columns: repeat(auto-fill, minmax(var(--vs-game-card-min-width-mobile), 1fr));
-  }
-
-  .library-item__command {
-    display: none;
   }
 }
 

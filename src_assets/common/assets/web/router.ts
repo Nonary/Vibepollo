@@ -1,18 +1,18 @@
 import { createRouter, createWebHistory } from 'vue-router';
-
-import ApplicationView from '@/views/ApplicationView.vue';
-import ApiTokensView from '@/views/ApiTokensView.vue';
-import BrowserStreamView from '@/views/BrowserStreamView.vue';
-import DevicesView from '@/views/DevicesView.vue';
-import IntegrationsView from '@/views/IntegrationsView.vue';
-import LibraryView from '@/views/LibraryView.vue';
-import LogsView from '@/views/LogsView.vue';
-import MaintenanceView from '@/views/MaintenanceView.vue';
-import NotFoundView from '@/views/NotFoundView.vue';
 import OverviewView from '@/views/OverviewView.vue';
-import PairView from '@/views/PairView.vue';
-import SettingsView from '@/views/SettingsView.vue';
-import StatsView from '@/views/StatsView.vue';
+
+const ApplicationView = () => import('@/views/ApplicationView.vue');
+const ApiTokensView = () => import('@/views/ApiTokensView.vue');
+const BrowserStreamView = () => import('@/views/BrowserStreamView.vue');
+const DevicesView = () => import('@/views/DevicesView.vue');
+const IntegrationsView = () => import('@/views/IntegrationsView.vue');
+const LibraryView = () => import('@/views/LibraryView.vue');
+const LogsView = () => import('@/views/LogsView.vue');
+const MaintenanceView = () => import('@/views/MaintenanceView.vue');
+const NotFoundView = () => import('@/views/NotFoundView.vue');
+const PairView = () => import('@/views/PairView.vue');
+const SettingsView = () => import('@/views/SettingsView.vue');
+const StatsView = () => import('@/views/StatsView.vue');
 
 const router = createRouter({
   history: createWebHistory('/v2/'),
