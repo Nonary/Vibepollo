@@ -6,6 +6,7 @@
 
 #include <boost/property_tree/ptree.hpp>
 #include <src/state_storage_policy.h>
+#include <src/paired_state_policy.h>
 
 #include <map>
 #include <string>
@@ -650,4 +651,113 @@ TEST(StateStorageComposedStartup, RunningHostSaveCannotRollBackChangedCredential
   const auto original = store.files;
   EXPECT_FALSE(save_running_host_metadata(store, "11111111-1111-1111-1111-111111111111"));
   EXPECT_EQ(store.files, original);
+}
+
+
+namespace {
+  const auto apollo_snapshot = R"({"root":{"uniqueid":"11111111-1111-1111-1111-111111111111","remote_display_layout":"{}","named_devices":[{"uuid":"22222222-2222-2222-2222-222222222222","cert":"certificate","name":"Client","perm":15,"allow_client_commands":true,"do":[{"cmd":"start","elevated":false}],"undo":[{"cmd":"stop","elevated":true}],"config_overrides":{"fps":"60"},"future_field":{"count":7}}]}})";
+
+  policy::load_result_e load_apollo_primary(memory_state_store_t &store, pt::ptree &tree) {
+    return policy::load_primary_state_for_update("shared.json", tree,
+      [&store](const std::string &path) { return store.read(path); },
+      [&store](const std::string &path, const std::string &contents) { return store.write(path, contents); },
+      nvhttp::state_policy::valid_primary_tree, nvhttp::state_policy::valid_primary_json);
+  }
+}
+
+TEST(StateStorageApollo, TypedClientDamageRecoversExactBackupBeforeStartup) {
+  for (const auto key : {"name", "display_mode", "hdr_profile", "output_name_override", "virtual_display_mode", "virtual_display_layout"}) {
+    SCOPED_TRACE(key);
+    memory_state_store_t store;
+    auto damaged = nlohmann::json::parse(apollo_snapshot);
+    damaged["root"]["named_devices"][0][key] = 123;
+    store.files["shared.json"] = damaged.dump();
+    store.files["shared.json.bak"] = apollo_snapshot;
+    pt::ptree tree;
+    ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
+    EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
+    EXPECT_EQ(store.files["shared.json.bak"], apollo_snapshot);
+    auto selected = nlohmann::json::parse(store.files["shared.json"]);
+    ASSERT_TRUE(nvhttp::state_policy::normalize_snapshot(selected));
+    EXPECT_EQ(selected["root"]["named_devices"][0].value("name", ""), "Client");
+    EXPECT_TRUE(selected["root"]["named_devices"][0]["perm"].is_number_integer());
+    EXPECT_TRUE(selected["root"]["named_devices"][0]["allow_client_commands"].is_boolean());
+    EXPECT_EQ(selected["root"]["named_devices"][0]["future_field"]["count"], 7);
+  }
+}
+
+TEST(StateStorageApollo, InvalidTypedBackupIsNeverRestored) {
+  memory_state_store_t store;
+  auto damaged = nlohmann::json::parse(apollo_snapshot);
+  damaged["root"]["named_devices"][0]["config_overrides"]["fps"] = 60;
+  store.files["shared.json"] = "broken";
+  store.files["shared.json.bak"] = damaged.dump();
+  pt::ptree tree;
+  EXPECT_EQ(load_apollo_primary(store, tree), policy::load_result_e::failed);
+  EXPECT_EQ(store.files["shared.json"], "broken");
+  EXPECT_EQ(store.files["shared.json.bak"], damaged.dump());
+}
+
+TEST(StateStorageApollo, InvalidTypedLayoutRecoversAndValidPrimaryKeepsExactTypes) {
+  memory_state_store_t store;
+  auto damaged = nlohmann::json::parse(apollo_snapshot);
+  damaged["root"]["remote_display_layout"] = nlohmann::json::object();
+  EXPECT_FALSE(nvhttp::state_policy::valid_primary_json(damaged.dump()));
+  store.files["shared.json"] = damaged.dump();
+  store.files["shared.json.bak"] = apollo_snapshot;
+  pt::ptree tree;
+  ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
+  EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
+  store.files["shared.json.bak"] = "broken";
+  ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
+  EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
+  EXPECT_EQ(store.files["shared.json.bak"], "broken");
+}
+
+
+TEST(StateStorageApollo, InvalidNotificationVersionRecoversBeforeTypedStartupRead) {
+  memory_state_store_t store;
+  auto damaged = nlohmann::json::parse(apollo_snapshot);
+  damaged["root"]["last_notified_version"] = 123;
+  store.files["shared.json"] = damaged.dump();
+  store.files["shared.json.bak"] = apollo_snapshot;
+  pt::ptree tree;
+  ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
+  EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
+  EXPECT_NO_THROW(nlohmann::json::parse(store.files["shared.json"])["root"].value("last_notified_version", ""));
+}
+
+TEST(StateStorageApollo, LegacyNumericBooleansRemainUsableByTypedClientAndCommandParser) {
+  for (int value : {0, 1}) {
+    auto snapshot = nlohmann::json::parse(apollo_snapshot);
+    auto &device = snapshot["root"]["named_devices"][0];
+    for (const auto key : {"enable_legacy_ordering", "allow_client_commands", "always_use_virtual_display", "prefer_10bit_sdr"}) device[key] = value;
+    device["do"][0]["elevated"] = value;
+    device["undo"][0]["elevated"] = value;
+    ASSERT_TRUE(nvhttp::state_policy::valid_primary_json(snapshot.dump()));
+    ASSERT_TRUE(nvhttp::state_policy::normalize_snapshot(snapshot));
+    for (const auto key : {"enable_legacy_ordering", "allow_client_commands", "always_use_virtual_display", "prefer_10bit_sdr"}) EXPECT_EQ(device[key].get<bool>(), value != 0);
+    EXPECT_EQ(device["do"][0]["elevated"].get<bool>(), value != 0);
+    EXPECT_EQ(device["undo"][0]["elevated"].get<bool>(), value != 0);
+  }
+}
+
+
+TEST(StateStorageApollo, BooleanLastSeenCannotBypassRecovery) {
+  memory_state_store_t store;
+  auto damaged = nlohmann::json::parse(apollo_snapshot);
+  damaged["root"]["named_devices"][0]["last_seen"] = true;
+  store.files["shared.json"] = damaged.dump();
+  store.files["shared.json.bak"] = apollo_snapshot;
+  pt::ptree tree;
+  ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
+  EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
+}
+
+TEST(StateStorageApollo, MissingReadCallbackFailsClosed) {
+  pt::ptree tree;
+  tree.put("old", "value");
+  EXPECT_EQ(policy::load_primary_state_for_update("shared.json", tree, {}, {}, nvhttp::state_policy::valid_primary_tree,
+    nvhttp::state_policy::valid_primary_json), policy::load_result_e::failed);
+  EXPECT_TRUE(tree.empty());
 }

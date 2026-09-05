@@ -44,6 +44,9 @@ namespace nvhttp::state_policy {
     if (!tree.is_object() || !tree.contains("root") || !tree["root"].is_object()) return false;
     auto &root = tree["root"];
     if (!root.contains("uniqueid") || !root["uniqueid"].is_string() || !valid_uuid(root["uniqueid"])) return false;
+    for (const auto key : {"remote_display_layout", "last_notified_version"}) {
+      if (root.contains(key) && !root[key].is_string()) return false;
+    }
     const auto array = [](nlohmann::json &node) {
       if (node == "") node = nlohmann::json::array();
       return node.is_array();
@@ -59,19 +62,30 @@ namespace nvhttp::state_policy {
             !device.contains("cert") || !device["cert"].is_string() || device["cert"].get_ref<const std::string &>().empty() ||
             device["cert"].get_ref<const std::string &>().size() > 65536 || !certs.insert(device["cert"]).second) return false;
         if (device.contains("perm") && !permission(device["perm"])) return false;
+        if (device.contains("last_seen") && device["last_seen"].is_boolean()) return false;
+        for (const auto key : {"name", "display_mode", "hdr_profile", "output_name_override", "virtual_display_mode", "virtual_display_layout"}) {
+          if (device.contains(key) && !device[key].is_string()) return false;
+        }
         for (const auto key : {"enable_legacy_ordering", "allow_client_commands", "always_use_virtual_display", "prefer_10bit_sdr"}) {
           if (device.contains(key) && !device[key].is_null() && !boolean(device[key])) return false;
+          if (device.contains(key) && device[key].is_number_integer()) device[key] = device[key] == 1;
         }
         for (const auto key : {"do", "undo"}) {
           if (!device.contains(key)) continue;
           if (!array(device[key])) return false;
-          for (const auto &command : device[key]) {
+          for (auto &command : device[key]) {
             if (!command.is_object() || !command.contains("cmd") || !command["cmd"].is_string() ||
                 (command.contains("elevated") && !boolean(command["elevated"]))) return false;
+            if (command.contains("elevated") && command["elevated"].is_number_integer()) command["elevated"] = command["elevated"] == 1;
           }
         }
         if (device.contains("config_overrides") && device["config_overrides"] == "") device["config_overrides"] = nlohmann::json::object();
         if (device.contains("config_overrides") && !device["config_overrides"].is_object()) return false;
+        if (device.contains("config_overrides")) {
+          for (const auto &entry : device["config_overrides"].items()) {
+            if (!entry.key().empty() && !entry.value().is_string()) return false;
+          }
+        }
       }
     }
     if (root.contains("devices")) {
@@ -88,6 +102,20 @@ namespace nvhttp::state_policy {
       }
     }
     return true;
+  }
+
+  // The shared property-tree policy validates structure and certificates, but
+  // erases scalar types. Check the original JSON before choosing a recovery
+  // snapshot so a typed-parser failure cannot bypass a usable backup.
+  inline bool valid_primary_json(const std::string &contents) {
+    try {
+      auto typed = nlohmann::json::parse(contents);
+      if (!typed.is_object()) return false;
+      if (!typed.contains("root") || !typed["root"].is_object() || !typed["root"].contains("uniqueid")) return true;
+      return normalize_snapshot(typed);
+    } catch (...) {
+      return false;
+    }
   }
   inline bool valid_primary_tree(const boost::property_tree::ptree &tree, bool allow_bootstrap) {
     if (!statefile::policy::valid_primary_state(tree, allow_bootstrap)) return false;

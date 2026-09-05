@@ -172,7 +172,7 @@ namespace statefile {
         return policy::load_primary_state_for_update(sunshine_state_path(), out, read_state_file,
           [](const std::string &target, const std::string &contents) {
             return file_handler::write_file(target.c_str(), contents) == 0;
-          }, valid_primary_snapshot);
+          }, valid_primary_snapshot, nvhttp::state_policy::valid_primary_json);
       }
       if (is_auxiliary_state(path.string())) {
         return load_auxiliary_state(path.string(), out);
@@ -603,6 +603,9 @@ namespace statefile {
   }
 
   void write_sunshine_state_atomic(const nlohmann::json &tree) {
+    if (!nvhttp::state_policy::valid_primary_json(tree.dump())) {
+      throw std::runtime_error("refusing to replace primary state with invalid client field types");
+    }
     pt::ptree candidate;
     std::istringstream input(tree.dump());
     pt::read_json(input, candidate);
