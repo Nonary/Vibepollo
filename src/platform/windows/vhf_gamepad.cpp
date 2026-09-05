@@ -262,6 +262,8 @@ namespace platf {
     if (feedback.has_trigger_effects) {
       const bool effects_changed =
         !slot.have_feedback ||
+        !slot.last_feedback.has_trigger_effects ||
+        slot.last_feedback.trigger_event_flags != feedback.trigger_event_flags ||
         slot.last_feedback.left_effect != feedback.left_effect ||
         slot.last_feedback.right_effect != feedback.right_effect;
       if (effects_changed) {
