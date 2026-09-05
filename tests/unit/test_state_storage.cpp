@@ -367,3 +367,190 @@ TEST(StateStorageAuxiliary, FailedPrimaryWriteDoesNotRefreshBackup) {
   EXPECT_EQ(writes, 1U);
   EXPECT_EQ(store.files[auxiliary_backup], auxiliary_snapshot);
 }
+
+namespace {
+  constexpr auto credential_snapshot = R"({"username":"owner","password":"saved-hash","salt":"saved-salt","root":{"uniqueid":"11111111-1111-1111-1111-111111111111","named_devices":[{"perm":3,"allow_client_commands":false}]}})";
+  policy::load_result_e recover_credentials(memory_state_store_t &store, const std::string &path = "credentials.json", bool refresh = true) {
+    return policy::recover_credentials(path,
+      [&store](const std::string &target) { return store.read(target); },
+      [&store](const std::string &target, const std::string &contents) { return store.write(target, contents); }, refresh);
+  }
+}
+
+TEST(StateStorageCredentials, RepairsBeforeCredentialInspectionAndPreservesExactSnapshot) {
+  for (const auto damaged : {"broken", "", "[]", R"({"username":{"invalid":"node"},"password":"hash","salt":"salt"})", R"({"username":"owner","password":"hash"})"}) {
+    memory_state_store_t store;
+    store.files["credentials.json"] = damaged;
+    store.files["credentials.json.bak"] = credential_snapshot;
+    EXPECT_EQ(recover_credentials(store), policy::load_result_e::loaded);
+    EXPECT_EQ(store.files["credentials.json"], credential_snapshot);
+    EXPECT_EQ(store.files["credentials.json.bak"], credential_snapshot);
+  }
+}
+
+TEST(StateStorageCredentials, MissingPrimaryUsesItsOwnBackup) {
+  memory_state_store_t store;
+  store.files["custom/login.json.bak"] = credential_snapshot;
+  store.files["sunshine_state.json.bak"] = "unrelated host credentials";
+  EXPECT_EQ(recover_credentials(store, "custom/login.json"), policy::load_result_e::loaded);
+  EXPECT_EQ(store.files["custom/login.json"], credential_snapshot);
+  EXPECT_EQ(store.files["sunshine_state.json.bak"], "unrelated host credentials");
+}
+
+TEST(StateStorageCredentials, FreshCustomPathDoesNotUseHostCredentials) {
+  memory_state_store_t store;
+  store.files["sunshine_state.json.bak"] = credential_snapshot;
+  EXPECT_EQ(recover_credentials(store, "custom/login.json"), policy::load_result_e::missing);
+  EXPECT_FALSE(store.files.contains("custom/login.json"));
+}
+
+TEST(StateStorageCredentials, ValidPrimaryPasswordChangeWinsOverStaleBackup) {
+  memory_state_store_t store;
+  store.files["credentials.json"] = R"({"username":"owner","password":"new-hash","salt":"new-salt"})";
+  store.files["credentials.json.bak"] = credential_snapshot;
+  const auto current = store.files["credentials.json"];
+  EXPECT_EQ(recover_credentials(store), policy::load_result_e::loaded);
+  EXPECT_EQ(store.files["credentials.json"], current);
+  EXPECT_EQ(store.files["credentials.json.bak"], current);
+}
+
+TEST(StateStorageCredentials, ManagedBackupRefreshWaitsForFullStateValidation) {
+  memory_state_store_t store;
+  store.files["sunshine_state.json"] = R"({"username":"owner","password":"hash","salt":"salt","root":{"uniqueid":"invalid-host-id"}})";
+  store.files["sunshine_state.json.bak"] = credential_snapshot;
+  EXPECT_EQ(recover_credentials(store, "sunshine_state.json", false), policy::load_result_e::loaded);
+  EXPECT_EQ(store.files["sunshine_state.json.bak"], credential_snapshot);
+}
+
+TEST(StateStorageCredentials, ExplicitCredentialRemovalNeverRestoresOldLogin) {
+  memory_state_store_t store;
+  store.files["credentials.json"] = "{}";
+  store.files["credentials.json.bak"] = credential_snapshot;
+  EXPECT_EQ(recover_credentials(store), policy::load_result_e::loaded);
+  EXPECT_EQ(store.files["credentials.json"], "{}");
+  EXPECT_EQ(store.files["credentials.json.bak"], "{}");
+  store.files["credentials.json"] = "broken";
+  EXPECT_EQ(recover_credentials(store), policy::load_result_e::failed);
+  EXPECT_EQ(store.files["credentials.json"], "broken");
+}
+
+TEST(StateStorageCredentials, InvalidRecoveryNeverEnablesCredentialSetup) {
+  for (const auto invalid : {"broken", "{}", R"({"username":"owner","salt":"salt"})", R"({"username":"owner","password":"hash","salt":""})", R"({"username":"owner","password":"hash","salt":"salt","root":"broken"})"}) {
+    memory_state_store_t store;
+    store.files["credentials.json"] = "damaged";
+    store.files["credentials.json.bak"] = invalid;
+    EXPECT_EQ(recover_credentials(store), policy::load_result_e::failed);
+    EXPECT_EQ(store.files["credentials.json"], "damaged");
+    EXPECT_EQ(store.files["credentials.json.bak"], invalid);
+  }
+}
+
+TEST(StateStorageCredentials, FailedReadNeverRestoresAnOlderCredentialSnapshot) {
+  unsigned writes = 0;
+  EXPECT_EQ(policy::recover_credentials("credentials.json",
+    [](const std::string &path) {
+      return path.ends_with(".bak") ? policy::read_result_t {policy::read_status_e::loaded, credential_snapshot} : policy::read_result_t {policy::read_status_e::failed, {}};
+    }, [&writes](const std::string &, const std::string &) { ++writes; return true; }), policy::load_result_e::failed);
+  EXPECT_EQ(writes, 0U);
+}
+
+TEST(StateStorageCredentials, FailedRestoreDoesNotDestroyBackup) {
+  memory_state_store_t store;
+  store.files["credentials.json"] = "damaged";
+  store.files["credentials.json.bak"] = credential_snapshot;
+  EXPECT_EQ(policy::recover_credentials("credentials.json",
+    [&store](const std::string &path) { return store.read(path); },
+    [](const std::string &, const std::string &) { return false; }), policy::load_result_e::failed);
+  EXPECT_EQ(store.files["credentials.json.bak"], credential_snapshot);
+}
+
+namespace {
+  constexpr auto paired_snapshot = R"({"username":"owner","password":"hash","salt":"salt","root":{"uniqueid":"11111111-1111-1111-1111-111111111111","named_devices":[{"uuid":"22222222-2222-2222-2222-222222222222","name":"client","cert":"certificate","enabled":"false"}],"api_tokens":[{"hash":"token"}]}})";
+  policy::load_result_e load_primary(memory_state_store_t &store, pt::ptree &tree) {
+    return policy::load_primary_state_for_update("shared.json", tree,
+      [&store](const std::string &path) { return store.read(path); },
+      [&store](const std::string &path, const std::string &contents) { return store.write(path, contents); }, policy::valid_primary_state);
+  }
+}
+
+TEST(StateStoragePrimary, SharedMetadataUpdateRecoversIdentityAndAuthorization) {
+  memory_state_store_t store;
+  store.files["shared.json"] = "broken";
+  store.files["shared.json.bak"] = paired_snapshot;
+  pt::ptree tree;
+  ASSERT_EQ(load_primary(store, tree), policy::load_result_e::loaded);
+  EXPECT_EQ(store.files["shared.json"], paired_snapshot);
+  EXPECT_FALSE(tree.get_child("root.named_devices").front().second.get<bool>("enabled"));
+  tree.put("root.display_helper_engine", "v2");
+  EXPECT_TRUE(policy::primary_write_allowed(tree, policy::load_result_e::loaded, tree, policy::valid_primary_state));
+  EXPECT_EQ(store.files["shared.json.bak"], paired_snapshot);
+}
+
+TEST(StateStoragePrimary, MissingPrimaryRecoversBeforeMetadataCanCreatePartialState) {
+  memory_state_store_t store;
+  store.files["shared.json.bak"] = paired_snapshot;
+  pt::ptree tree;
+  ASSERT_EQ(load_primary(store, tree), policy::load_result_e::loaded);
+  EXPECT_EQ(tree.get<std::string>("root.uniqueid"), "11111111-1111-1111-1111-111111111111");
+}
+
+TEST(StateStoragePrimary, PartialMetadataCannotReplaceAnExistingIdentityBackup) {
+  memory_state_store_t store;
+  store.files["shared.json.bak"] = paired_snapshot;
+  pt::ptree backup;
+  ASSERT_EQ(load_for_read(store, "shared.json.bak", backup), policy::load_result_e::loaded);
+  pt::ptree partial;
+  partial.put("root.display_helper_engine", "v2");
+  EXPECT_FALSE(policy::primary_write_allowed(partial, policy::load_result_e::loaded, backup, policy::valid_primary_state));
+  store.files["shared.json"] = R"({"root":{"display_helper_engine":"v2"}})";
+  EXPECT_EQ(load_primary(store, partial), policy::load_result_e::failed);
+  EXPECT_EQ(store.files["shared.json.bak"], paired_snapshot);
+}
+
+TEST(StateStoragePrimary, CorruptSnapshotsFailClosedWithoutQuarantine) {
+  memory_state_store_t store;
+  store.files["shared.json"] = "broken";
+  store.files["shared.json.bak"] = R"({"root":{"uniqueid":{"invalid":"shape"}}})";
+  pt::ptree tree;
+  EXPECT_EQ(load_primary(store, tree), policy::load_result_e::failed);
+  EXPECT_TRUE(tree.empty());
+  EXPECT_TRUE(store.quarantined.empty());
+  EXPECT_EQ(store.files["shared.json"], "broken");
+}
+
+TEST(StateStoragePrimary, BootstrapCredentialsAndMetadataAreAllowedOnlyWithoutPriorIdentity) {
+  memory_state_store_t store;
+  pt::ptree tree;
+  EXPECT_EQ(load_primary(store, tree), policy::load_result_e::missing);
+  tree.put("username", "owner");
+  tree.put("password", "hash");
+  tree.put("salt", "salt");
+  EXPECT_TRUE(policy::primary_write_allowed(tree, policy::load_result_e::missing, {}, policy::valid_primary_state));
+  EXPECT_TRUE(policy::valid_primary_state(tree, true));
+  EXPECT_FALSE(policy::valid_primary_state(tree, false));
+  tree.put("root.display_helper_engine", "v2");
+  EXPECT_TRUE(policy::primary_write_allowed(tree, policy::load_result_e::missing, {}, policy::valid_primary_state));
+  EXPECT_FALSE(policy::primary_write_allowed(tree, policy::load_result_e::failed, {}, policy::valid_primary_state));
+}
+
+TEST(StateStoragePrimary, SemanticClientDamageCannotRefreshRecoveryCopy) {
+  memory_state_store_t store;
+  store.files["shared.json"] = paired_snapshot;
+  pt::ptree tree;
+  ASSERT_EQ(load_for_read(store, "shared.json", tree), policy::load_result_e::loaded);
+  auto damaged = tree;
+  damaged.get_child("root.named_devices").front().second.put("enabled", "invalid");
+  EXPECT_FALSE(policy::primary_write_allowed(damaged, policy::load_result_e::loaded, tree, policy::valid_primary_state));
+  damaged = tree;
+  damaged.get_child("root.named_devices").front().second.put("uuid", "invalid-uuid");
+  EXPECT_FALSE(policy::primary_write_allowed(damaged, policy::load_result_e::loaded, tree, policy::valid_primary_state));
+}
+
+TEST(StateStoragePrimary, StorageReadFailureDoesNotRestoreOldAuthorization) {
+  pt::ptree tree;
+  unsigned writes = 0;
+  EXPECT_EQ(policy::load_primary_state_for_update("shared.json", tree,
+    [](const std::string &) { return policy::read_result_t {policy::read_status_e::failed, {}}; },
+    [&writes](const std::string &, const std::string &) { ++writes; return true; }, policy::valid_primary_state), policy::load_result_e::failed);
+  EXPECT_EQ(writes, 0U);
+}

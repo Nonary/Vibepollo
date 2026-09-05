@@ -1,6 +1,10 @@
 #pragma once
 
+#include "state_storage_policy.h"
+
 #include <algorithm>
+#include <boost/property_tree/json_parser.hpp>
+#include <sstream>
 #include <charconv>
 #include <cctype>
 #include <limits>
@@ -84,5 +88,13 @@ namespace nvhttp::state_policy {
       }
     }
     return true;
+  }
+  inline bool valid_primary_tree(const boost::property_tree::ptree &tree, bool allow_bootstrap) {
+    if (!statefile::policy::valid_primary_state(tree, allow_bootstrap)) return false;
+    if (!statefile::policy::valid_primary_state(tree, false)) return true;
+    std::ostringstream serialized;
+    boost::property_tree::write_json(serialized, tree);
+    auto typed = nlohmann::json::parse(serialized.str());
+    return normalize_snapshot(typed);
   }
 }  // namespace nvhttp::state_policy

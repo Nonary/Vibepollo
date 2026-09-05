@@ -62,7 +62,7 @@ namespace statefile {
   /**
    * @brief Load an existing JSON file before a read/modify/write update.
    *
-   * Auxiliary state is recovered from its validated backup first and fails closed
+   * Primary and auxiliary state recover from validated backups first and fail closed
    * when damaged state has no usable snapshot. The rules below apply to other files.
    * Returns true (with @p tree populated, or empty when there is nothing usable to
    * preserve) when it is safe for the caller to proceed and rewrite the file:
@@ -85,6 +85,9 @@ namespace statefile {
    * touching intentionally private subdirectories such as credentials.
    */
   void repair_config_permissions();
+
+  /** Restore the configured credential file before HTTP initialization. Locks state_mutex(). */
+  bool recover_credentials(const std::string &path);
 
   void migrate_recent_state_keys();
 

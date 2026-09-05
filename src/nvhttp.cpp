@@ -58,6 +58,7 @@
 #include "state_storage.h"
 #include "paired_state_policy.h"
 #include "update.h"
+#include "state_storage_policy.h"
 #ifdef _WIN32
   #include "platform/windows/display.h"
   #include "platform/windows/display_helper_request_policy.h"
@@ -1623,6 +1624,16 @@ namespace nvhttp {
       return std::nullopt;
     }
 
+    bool primary_bootstrap(statefile::json_load_result_e status, const nlohmann::json &snapshot) {
+      if (status == statefile::json_load_result_e::missing) return true;
+      if (status != statefile::json_load_result_e::loaded || !snapshot.is_object() ||
+          (snapshot.contains("root") && !snapshot["root"].is_object())) return false;
+      pt::ptree tree;
+      std::istringstream input(snapshot.dump());
+      pt::read_json(input, tree);
+      return statefile::policy::valid_primary_state(tree, true) && !statefile::policy::valid_primary_state(tree, false);
+    }
+
     bool save_state_snapshot_locked(const client_t &client, bool allow_missing_state = false) {
       if (!authorization_state_ready.load(std::memory_order_acquire)) return false;
       const auto &sunshine_path = statefile::sunshine_state_path();
@@ -1637,8 +1648,11 @@ namespace nvhttp {
         if (primary == statefile::json_load_result_e::failed) return false;
         if (backup_status == statefile::json_load_result_e::loaded && state_policy::normalize_snapshot(backup)) {
           root = std::move(backup);
-        } else if (allow_missing_state && primary == statefile::json_load_result_e::missing && backup_status == statefile::json_load_result_e::missing) {
-          root = {{"root", nlohmann::json::object()}};
+        } else if (allow_missing_state && primary_bootstrap(primary, root) && primary_bootstrap(backup_status, backup)) {
+          if (primary == statefile::json_load_result_e::missing) {
+            root = backup_status == statefile::json_load_result_e::loaded ? backup : nlohmann::json::object();
+          }
+          if (!root.contains("root")) root["root"] = nlohmann::json::object();
         } else {
           BOOST_LOG(error) << "Refusing to replace unavailable Vibepollo pairing state.";
           return false;
@@ -1885,7 +1899,7 @@ namespace nvhttp {
         if (parsed) {
           tree = std::move(backup);
           recovered = true;
-        } else if (primary == statefile::json_load_result_e::missing && backup_status == statefile::json_load_result_e::missing && http::credentials_created_this_run) {
+        } else if (primary_bootstrap(primary, tree) && primary_bootstrap(backup_status, backup) && http::credentials_created_this_run) {
           http::uuid = uuid_util::uuid_t::generate();
           http::unique_id = http::uuid.string();
           authorization_state_ready.store(true, std::memory_order_release);

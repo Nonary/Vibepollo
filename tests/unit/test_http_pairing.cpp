@@ -201,7 +201,7 @@ TEST(PairingTest, OutOfOrderCalls) {
 
 namespace {
   nlohmann::json paired_snapshot() {
-    return nlohmann::json::parse(R"({"username":"owner","password":"hash","salt":"salt","root":{"uniqueid":"11111111-1111-1111-1111-111111111111","api_tokens":[{"hash":"token"}],"named_devices":[{"uuid":"22222222-2222-2222-2222-222222222222","cert":"certificate","perm":3,"enable_legacy_ordering":false,"allow_client_commands":false,"do":[{"cmd":"launch","elevated":true}],"undo":[{"cmd":"stop","elevated":false}],"config_overrides":{"fps":"60"},"future_setting":"keep"}]}})");
+    return nlohmann::json::parse(R"({"username":"owner","password":"hash","salt":"salt","root":{"uniqueid":"11111111-1111-1111-1111-111111111111","api_tokens":[{"hash":"token"}],"named_devices":[{"uuid":"22222222-2222-2222-2222-222222222222","name":"client","cert":"certificate","perm":3,"enable_legacy_ordering":false,"allow_client_commands":false,"do":[{"cmd":"launch","elevated":true}],"undo":[{"cmd":"stop","elevated":false}],"config_overrides":{"fps":"60"},"future_setting":"keep"}]}})");
   }
 }
 
@@ -256,4 +256,24 @@ TEST(PairedStateRecovery, RejectsMalformedCommandAndPolicyFlags) {
   snapshot = paired_snapshot();
   snapshot["root"]["named_devices"][0]["allow_client_commands"] = "invalid";
   EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
+}
+
+TEST(PairedStateRecovery, PrimaryWriterGuardIncludesApolloPermissionsAndCommands) {
+  const auto convert = [](const nlohmann::json &json) {
+    boost::property_tree::ptree tree;
+    std::istringstream input(json.dump());
+    boost::property_tree::read_json(input, tree);
+    return tree;
+  };
+  auto snapshot = paired_snapshot();
+  const auto backup = convert(snapshot);
+  EXPECT_TRUE(nvhttp::state_policy::valid_primary_tree(backup, false));
+  snapshot["root"]["named_devices"][0]["perm"] = "invalid";
+  EXPECT_FALSE(statefile::policy::primary_write_allowed(convert(snapshot), statefile::policy::load_result_e::loaded, backup, nvhttp::state_policy::valid_primary_tree));
+  snapshot = paired_snapshot();
+  snapshot["root"]["named_devices"][0]["do"][0]["elevated"] = "invalid";
+  EXPECT_FALSE(statefile::policy::primary_write_allowed(convert(snapshot), statefile::policy::load_result_e::loaded, backup, nvhttp::state_policy::valid_primary_tree));
+  const auto partial = convert(nlohmann::json::parse(R"({"root":{"display_helper_engine":"v2"}})"));
+  EXPECT_FALSE(statefile::policy::primary_write_allowed(partial, statefile::policy::load_result_e::loaded, backup, nvhttp::state_policy::valid_primary_tree));
+  EXPECT_TRUE(statefile::policy::primary_write_allowed(partial, statefile::policy::load_result_e::missing, {}, nvhttp::state_policy::valid_primary_tree));
 }
