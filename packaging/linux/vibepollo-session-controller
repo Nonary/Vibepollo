@@ -504,16 +504,66 @@ enumerate_broker_instances() {
   done <<<"$output"
 }
 
+collect_stopped_broker_instances() {
+  local destination=$1 deadline=$2 output line unit='' properties='' expected
+  shift 2
+  local -n stopped_result=$destination
+  local -A requested=() observed=()
+  stopped_result=()
+  (($# > 0)) || return 0
+  for expected in "$@"; do
+    [[ "$expected" =~ ^vibepollo-session-exec@[A-Za-z0-9_.:-]+\.service$ &&
+       -z ${requested[$expected]:-} ]] || return 1
+    requested[$expected]=1
+  done
+  # Keep every clean-window observation, but avoid spawning systemctl once
+  # per retained (often failed) broker on every pass. Id binds each property
+  # record to the exact enumerated unit; missing/duplicate records fail closed.
+  if ! output=$(bounded_system_systemctl "$deadline" show "$@" \
+      --property=Id --property=LoadState --property=ActiveState --property=SubState \
+      --property=MainPID --property=ControlGroup 2>/dev/null |
+      /usr/bin/head -c 262145); then
+    # A unit may be garbage-collected between list-units and show. Preserve
+    # the existing per-unit absence proof on a failed bulk query.
+    for expected in "$@"; do
+      if broker_unit_is_stopped "$deadline" "$expected"; then
+        stopped_result[$expected]=1
+      fi
+    done
+    return 0
+  fi
+  ((${#output} <= 262144)) || return 1
+  while IFS= read -r line; do
+    if [[ -z "$line" ]]; then
+      [[ -n "$unit" || -n "$properties" ]] || continue
+      [[ -n "$unit" && -n ${requested[$unit]:-} && -z ${observed[$unit]:-} ]] || return 1
+      observed[$unit]=1
+      if system_unit_is_stopped "$unit" "$properties"; then
+        stopped_result[$unit]=1
+      fi
+      unit=''; properties=''
+    elif [[ "$line" == Id=* ]]; then
+      [[ -z "$unit" ]] || return 1
+      unit=${line#Id=}
+      [[ "$unit" =~ ^vibepollo-session-exec@[A-Za-z0-9_.:-]+\.service$ ]] || return 1
+    else
+      properties+=${properties:+$'\n'}$line
+    fi
+  done <<<"$output"$'\n'
+  ((${#observed[@]} == ${#requested[@]}))
+}
+
 stop_broker_instances() {
   local deadline=${1:-$((SECONDS + quiesce_timeout))} clean_passes=0 all_stopped unit
   local required_clean_passes=10
   local -a units=()
-  local -A stop_requested=()
+  local -A stop_requested=() stopped=()
   while ((SECONDS < deadline)); do
     enumerate_broker_instances units "$deadline" || return 1
+    collect_stopped_broker_instances stopped "$deadline" "${units[@]}" || return 1
     all_stopped=1
     for unit in "${units[@]}"; do
-      if broker_unit_is_stopped "$deadline" "$unit"; then
+      if [[ -n ${stopped[$unit]:-} ]]; then
         continue
       fi
       all_stopped=0
