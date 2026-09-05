@@ -9,6 +9,11 @@
 #include <random>
 #include <vector>
 
+#if defined(__linux__)
+  #include <sys/wait.h>
+  #include <unistd.h>
+#endif
+
 namespace fs = std::filesystem;
 using namespace platf::steam;
 
@@ -481,6 +486,61 @@ TEST(SteamLaunch, DirectNativeLaunchTreatsOptionsWithoutPlaceholderAsArguments) 
     "/bin/sh -c '/usr/bin/vibepollo-mangohud --appid 480 -- env SteamAppId=480 SteamGameId=480 "
     "'\\''/games/Spacewar/spacewar'\\'' -default -user-option'"
   );
+}
+
+TEST(SteamLaunch, RelocatedBundleExecutesItsOwnHelperWithQuotedPath) {
+  constexpr auto fixture_variable = "VIBESHINE_TEST_RELOCATED_STEAM_HELPER";
+  if (const auto *fixture = std::getenv(fixture_variable)) {
+    game_t game;
+    game.app_id = 480;
+    game.launch_executable = "/usr/bin/true";
+    game.launch_os = "linux";
+    // The generated command must locate its helper independently of cwd/PATH,
+    // preserve the apostrophe in the bundle directory, and execute the game.
+    fs::current_path("/");
+    const auto command = launch_command(game);
+    EXPECT_EQ(std::system(command.c_str()), 0);
+    EXPECT_TRUE(fs::is_regular_file(fs::path(fixture) / "helper-ran"));
+    return;
+  }
+
+  const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());
+  const auto bundle = fs::temp_directory_path() / ("vibepollo Steam's bundle " + std::to_string(nonce));
+  struct fixture_cleanup {
+    fs::path path;
+    ~fixture_cleanup() {
+      std::error_code error;
+      fs::remove_all(path, error);
+    }
+  } cleanup {bundle};
+  fs::create_directories(bundle);
+  const auto host = bundle / "vibepollo-test";
+  fs::copy_file(fs::read_symlink("/proc/self/exe"), host);
+  const auto helper = bundle / "vibepollo-mangohud";
+  {
+    std::ofstream output(helper);
+    output << "#!/bin/sh\nset -eu\n"
+              "[ \"$1\" = --appid ] && [ \"$2\" = 480 ] && [ \"$3\" = -- ]\n"
+              "shift 3\n"
+              "touch -- \"${0%/*}/helper-ran\"\n"
+              "exec \"$@\"\n";
+  }
+  fs::permissions(helper, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+
+  const auto child = fork();
+  ASSERT_NE(child, -1);
+  if (child == 0) {
+    setenv(fixture_variable, bundle.c_str(), 1);
+    execl(host.c_str(), host.c_str(),
+          "--gtest_filter=SteamLaunch.RelocatedBundleExecutesItsOwnHelperWithQuotedPath",
+          static_cast<char *>(nullptr));
+    _exit(127);
+  }
+  int status = 0;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+  EXPECT_TRUE(fs::is_regular_file(bundle / "helper-ran"));
 }
 
 TEST(SteamLaunch, FallsBackToBrokerWhenProtonMetadataIsUnavailable) {

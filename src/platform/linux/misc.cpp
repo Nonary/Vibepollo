@@ -1330,31 +1330,39 @@ namespace platf {
     (void) required_adapter;
     // Keep KMS as first element to check before dropping CAP_SYS_ADMIN
 #ifdef SUNSHINE_BUILD_DRM
-    const bool prefer_private_hdr_kms =
+    // SteamOS KWin rounds PipeWire refresh rates and converts capture to SDR.
+    // Managed outputs use completed DRM frames for both exact pacing and HDR;
+    // their privileged operations run in the restricted capture helper.
+  #ifdef SUNSHINE_BUILD_STEAMOS
+    const bool require_managed_kms = linux_private_display::is_kernel_output(display_name);
+  #else
+    const bool require_managed_kms = false;
+  #endif
+    const bool prefer_private_kms =
       !sources[source::KMS] &&
-      platf::linux_private_display_capture::prefer_kms(
+      (require_managed_kms || platf::linux_private_display_capture::prefer_kms(
         config.dynamicRange,
         config.force_sdr,
         config.prefer_sdr_10bit,
         linux_private_display::is_private_output(display_name)
-      );
-    if (prefer_private_hdr_kms) {
-      BOOST_LOG(info) << "Linux private HDR display detected; preferring direct KMS capture over the configured compositor capture path."sv;
+      ));
+    if (prefer_private_kms) {
+      BOOST_LOG(info) << "Capturing the private display through completed DRM frames."sv;
 
       // KMS display initialization resolves stable connector names through the
       // state populated by enumeration. This must run while CAP_SYS_ADMIN is
       // still available, before the normal compositor path drops it below.
       const auto kms_outputs = kms_display_names(hwdevice_type);
       if (kms_outputs.empty()) {
-        BOOST_LOG(error) << "Direct KMS capture is unavailable for private HDR display ["sv
-                         << display_name << "]; refusing an HDR compositor fallback."sv;
+        BOOST_LOG(error) << "Direct KMS capture is unavailable for private display ["sv
+                         << display_name << "]; refusing a compositor fallback that loses the requested mode or HDR."sv;
         return nullptr;
       } else if (auto kms = kms_display(hwdevice_type, display_name, config)) {
-        BOOST_LOG(info) << "Screencasting private HDR display ["sv << display_name << "] with KMS"sv;
+        BOOST_LOG(info) << "Screencasting private display ["sv << display_name << "] with KMS"sv;
         return kms;
       } else {
-        BOOST_LOG(error) << "Direct KMS capture failed for private HDR display ["sv
-                         << display_name << "]; refusing an HDR compositor fallback."sv;
+        BOOST_LOG(error) << "Direct KMS capture failed for private display ["sv
+                         << display_name << "]; refusing a compositor fallback that loses the requested mode or HDR."sv;
         return nullptr;
       }
     }

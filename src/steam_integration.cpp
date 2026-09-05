@@ -1219,7 +1219,20 @@ namespace platf::steam {
       return launch_command(game.app_id);
     }
 
-    std::string command = "/usr/bin/vibepollo-mangohud --appid " + std::to_string(game.app_id) + " -- env ";
+    std::string wrapper = "/usr/bin/vibepollo-mangohud";
+    // Relocatable installations ship the helper beside the running host.
+    // Resolve the executable itself so switching a bundle's "current"
+    // symlink cannot send an older host through a different release's helper.
+    std::error_code wrapper_error;
+    const auto executable = fs::read_symlink("/proc/self/exe", wrapper_error);
+    if (!wrapper_error) {
+      const auto bundled_wrapper = executable.parent_path() / "vibepollo-mangohud";
+      if (bundled_wrapper != wrapper && fs::is_regular_file(bundled_wrapper, wrapper_error) &&
+          access(bundled_wrapper.c_str(), X_OK) == 0) {
+        wrapper = shell_quote(bundled_wrapper.generic_string());
+      }
+    }
+    std::string command = wrapper + " --appid " + std::to_string(game.app_id) + " -- env ";
     command += "SteamAppId=" + std::to_string(game.app_id) + " ";
     command += "SteamGameId=" + std::to_string(game.app_id) + " ";
     if (game.launch_os == "windows") {

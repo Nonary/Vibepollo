@@ -55,6 +55,23 @@ namespace platf::kms::selection {
     return driver_name == "vibeshine_drm";
   }
 
+  /**
+   * A display-only card exports its renderer's original DMA-BUFs but cannot
+   * initialize VAAPI or Vulkan itself. Ordinary KMS cards keep their existing
+   * render-node selection, including the primary-node fallback.
+   */
+  inline std::string render_device_path(
+    std::string_view driver_name,
+    std::string_view card_path,
+    std::string_view reported_render_node,
+    std::string_view selected_render_node
+  ) {
+    if (driver_requires_direct_import(driver_name)) {
+      return std::string {selected_render_node};
+    }
+    return std::string {reported_render_node.empty() ? card_path : reported_render_node};
+  }
+
   struct monitor_t {
     std::string card_path;
     std::string connector_name;

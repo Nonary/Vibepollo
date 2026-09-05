@@ -25,6 +25,7 @@
 #include "cuda.h"
 #include "graphics.h"
 #include "hdr_policy.h"
+#include "kms_capture_client.h"
 #include "kmsgrab_pacing.h"
 #include "kmsgrab_selection.h"
 #include "scoped_capability.h"
@@ -336,12 +337,11 @@ namespace platf {
       int init(const char *path) {
         vulkan_device_path = path;
         linux_security::scoped_effective_capability admin {CAP_SYS_ADMIN};
-        if (!admin.active()) {
-          BOOST_LOG(error) << "Cannot initialize KMS device because CAP_SYS_ADMIN "sv
-                           << (admin.unavailable() ? "is not permitted"sv : "could not be raised safely"sv);
+        if (!admin.active() && !admin.unavailable()) {
+          BOOST_LOG(error) << "Cannot safely raise the permitted KMS capability."sv;
           return -1;
         }
-        fd.el = open(path, O_RDWR);
+        fd.el = open(path, O_RDWR | O_CLOEXEC);
 
         if (fd.el < 0) {
           BOOST_LOG(error) << "Couldn't open: "sv << path << ": "sv << strerror(errno);
@@ -358,21 +358,57 @@ namespace platf {
           return -1;
         }
         driver_name = std::move(*validated_driver_name);
+        // Opening a dormant card before KWin can make this fd DRM master.
+        // Its original opener may drop that role without CAP_SYS_ADMIN.
+        if (driver_name == "vibeshine_drm" && drmIsMaster(fd.el) && drmDropMaster(fd.el) != 0) {
+          BOOST_LOG(error) << "Cannot release private-display modesetting ownership to the compositor."sv;
+          return -1;
+        }
+        if (!admin.active()) {
+          // The SteamOS host stays capability-free. Only the managed virtual
+          // driver can use the separately installed, restricted capture helper.
+          if (driver_name != "vibeshine_drm") {
+            return -1;
+          }
+          capture_helper = kms_capture::client_t::open(fd.el);
+          if (!capture_helper) {
+            BOOST_LOG(error) << "The private display capture helper is unavailable: "sv << strerror(errno);
+            return -1;
+          }
+        }
         BOOST_LOG(info) << path << " -> "sv << driver_name << " "sv
                         << ver->version_major << '.' << ver->version_minor << '.' << ver->version_patchlevel;
 
-        // Open the render node for this card to share with libva.
-        // If it fails, we'll just share the primary node instead.
+        // Display-only Vibeshine cards export the physical renderer's buffers;
+        // their own node cannot initialize an encoder. Keep the capture fd on
+        // the virtual card and use the selected GPU only for VAAPI/Vulkan.
+        const bool separate_renderer_required = selection::driver_requires_direct_import(driver_name);
+        const auto selected_render_node = separate_renderer_required ? resolve_render_device() : std::string {};
         char *rendernode_path = drmGetRenderDeviceNameFromFd(fd.el);
-        if (rendernode_path) {
-          vulkan_device_path = rendernode_path;
-          BOOST_LOG(debug) << "Opening render node: "sv << rendernode_path;
-          render_fd.el = open(rendernode_path, O_RDWR);
+        const auto renderer_path = selection::render_device_path(
+          driver_name,
+          path,
+          rendernode_path ? rendernode_path : "",
+          selected_render_node
+        );
+        free(rendernode_path);
+        if (separate_renderer_required || renderer_path != path) {
+          BOOST_LOG(debug) << "Opening render node: "sv << renderer_path;
+          render_fd.el = open(renderer_path.c_str(), O_RDWR | O_CLOEXEC);
           if (render_fd.el < 0) {
-            BOOST_LOG(warning) << "Couldn't open render node: "sv << rendernode_path << ": "sv << strerror(errno);
+            if (separate_renderer_required) {
+              BOOST_LOG(error) << "Cannot encode the private display using render node "sv
+                               << renderer_path << ": "sv << strerror(errno);
+              return -1;
+            }
+            BOOST_LOG(warning) << "Couldn't open render node: "sv << renderer_path << ": "sv << strerror(errno);
             render_fd.el = dup(fd.el);
           }
-          free(rendernode_path);
+          if (separate_renderer_required && drmGetNodeTypeFromFd(render_fd.el) != DRM_NODE_RENDER) {
+            BOOST_LOG(error) << "The private display requires a physical GPU render node; selected "sv << renderer_path;
+            return -1;
+          }
+          vulkan_device_path = renderer_path;
         } else {
           BOOST_LOG(warning) << "No render device name for: "sv << path;
           render_fd.el = dup(fd.el);
@@ -406,6 +442,34 @@ namespace platf {
       }
 
       fb_t fb(plane_t::pointer plane) {
+        if (capture_helper) {
+          drmModeFB2 metadata {};
+          std::array<int, 4> buffers {-1, -1, -1, -1};
+          if (capture_helper->framebuffer(plane->plane_id, plane->crtc_id, plane->fb_id, metadata, buffers) != 0) {
+            return nullptr;
+          }
+          // Import into our own DRM file: GEM handles are file-local, while
+          // the helper transfers only real DMA-BUF descriptors over IPC.
+          auto *owned = static_cast<drmModeFB2 *>(std::calloc(1, sizeof(drmModeFB2)));
+          if (!owned) {
+            for (const auto buffer : buffers) {
+              if (buffer >= 0) close(buffer);
+            }
+            return nullptr;
+          }
+          *owned = metadata;
+          auto result = std::make_unique<wrapper_fb>(fd.el, owned);
+          bool success = true;
+          for (std::size_t i = 0; i < buffers.size(); ++i) {
+            if (buffers[i] >= 0) {
+              if (drmPrimeFDToHandle(fd.el, buffers[i], &result->handles[i]) != 0) {
+                success = false;
+              }
+              close(buffers[i]);
+            }
+          }
+          return success ? std::move(result) : nullptr;
+        }
         drmModeFB2 *fb2 = nullptr;
         drmModeFB *fb = nullptr;
         {
@@ -613,6 +677,7 @@ namespace platf {
       }
 
       file_t fd;
+      std::unique_ptr<kms_capture::client_t> capture_helper;
       file_t render_fd;
       plane_res_t plane_res;
       std::string driver_name;
@@ -1369,7 +1434,11 @@ namespace platf {
         request.crtc_id = static_cast<std::uint32_t>(crtc_id);
 
         int ioctl_error = 0;
-        {
+        if (card.capture_helper) {
+          if (card.capture_helper->frame(request) != 0) {
+            ioctl_error = errno;
+          }
+        } else {
           linux_security::scoped_effective_capability admin {CAP_SYS_ADMIN};
           if (!admin.active()) {
             BOOST_LOG(error) << "Cannot export a KMS presentation frame because CAP_SYS_ADMIN "sv
@@ -1510,7 +1579,11 @@ namespace platf {
           request.timeout_ms = requested_timeout_ms;
 
           int ioctl_error = 0;
-          {
+          if (card.capture_helper) {
+            if (card.capture_helper->wait(request) != 0) {
+              ioctl_error = errno;
+            }
+          } else {
             linux_security::scoped_effective_capability admin {CAP_SYS_ADMIN};
             if (!admin.active()) {
               BOOST_LOG(error) << "Cannot wait for KMS presentation because CAP_SYS_ADMIN "sv
