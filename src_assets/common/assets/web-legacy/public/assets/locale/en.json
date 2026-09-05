@@ -429,7 +429,7 @@
     "amd_preanalysis_desc": "This enables rate-control preanalysis, which may increase quality at the expense of increased encoding latency.",
     "amd_quality": "AMF Quality",
     "amd_quality_balanced": "balanced -- balance speed and quality",
-    "amd_quality_desc": "This controls the balance between encoding speed and quality. The default is Balanced. Auto leaves the property unset so the selected AMF usage preset can choose it.",
+    "amd_quality_desc": "This controls the balance between encoding speed and quality. Speed is the default to prioritize low latency; Balanced and Quality may improve image quality at the same bitrate. Auto leaves the property unset so the selected AMF usage preset can choose it.",
     "amd_quality_group": "AMF Quality Settings (native + FFmpeg)",
     "amd_quality_quality": "quality -- prefer quality",
     "amd_quality_speed": "speed -- prefer speed",

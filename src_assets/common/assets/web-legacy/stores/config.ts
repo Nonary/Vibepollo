@@ -292,7 +292,7 @@ const defaultGroups = [
       amd_rc: 'vbr_latency',
       amd_qvbr_quality_level: 0,
       amd_enforce_hrd: 'disabled',
-      amd_quality: 'balanced',
+      amd_quality: 'speed',
       amd_preanalysis: 'disabled',
       amd_vbaq: 'enabled',
       amd_coder: 'auto',

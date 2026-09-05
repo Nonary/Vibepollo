@@ -421,7 +421,7 @@
     "amd_preanalysis_desc": "Isso permite a pré-análise de controle de taxa, que pode aumentar a qualidade às custas de uma maior latência de codificação.",
     "amd_quality": "Qualidade AMF",
     "amd_quality_balanced": "balanced -- equilibra velocidade e qualidade",
-    "amd_quality_desc": "Isso controla o equilíbrio entre a velocidade e a qualidade da codificação. O padrão é Balanced. A opção Auto deixa a propriedade sem definição para que a predefinição de uso do AMF selecionada possa escolhê-la.",
+    "amd_quality_desc": "Isso controla o equilíbrio entre a velocidade e a qualidade da codificação. O padrão é speed. A opção Auto deixa a propriedade sem definição para que a predefinição de uso do AMF selecionada possa escolhê-la.",
     "amd_quality_group": "Configurações de qualidade do AMF (nativo + FFmpeg)",
     "amd_quality_quality": "qualidade -- prefere qualidade",
     "amd_quality_speed": "velocidade -- prefere velocidade",

@@ -867,9 +867,9 @@ namespace config {
       (int) amd::rc_av1_e::vbr_latency,  // rate control (av1)
       std::nullopt,  // qvbr_quality_level (0/unset = encoder default)
       0,  // enforce_hrd
-      (int) amd::quality_h264_e::balanced,  // quality (h264)
-      (int) amd::quality_hevc_e::balanced,  // quality (hevc)
-      (int) amd::quality_av1_e::balanced,  // quality (av1)
+      (int) amd::quality_h264_e::speed,  // quality (h264)
+      (int) amd::quality_hevc_e::speed,  // quality (hevc)
+      (int) amd::quality_av1_e::speed,  // quality (av1)
       0,  // preanalysis
       1,  // vbaq
       (int) amd::coder_e::_auto,  // coder

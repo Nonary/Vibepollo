@@ -4,6 +4,7 @@
  */
 
 #include "src/amf/amf_lifecycle.h"
+#include "src/platform/windows/capture_gpu_policy.h"
 
 #include <array>
 #include <atomic>
@@ -21,6 +22,65 @@
 using namespace std::chrono_literals;
 
 namespace {
+
+  bool fresh_cursor_capture_releases_output_before_caching_desktop() {
+    std::vector<int> commands;
+    int desktop = 42;
+    int cached_desktop = 17;
+    int output = 0;
+    const bool result = platf::dxgi::capture_policy::submit_cursor_frame(
+      true,
+      [&](bool fresh) {
+        commands.push_back(1);
+        output = fresh ? desktop : cached_desktop;
+      },
+      [&]() {
+        commands.push_back(2);
+        output += 100;
+      },
+      [&]() {
+        commands.push_back(3);
+        return output == 142 && cached_desktop == 17;
+      },
+      [&]() {
+        commands.push_back(4);
+        cached_desktop = desktop;
+      });
+    return result && commands == std::vector<int> {1, 2, 3, 4} &&
+           output == 142 && cached_desktop == 42;
+  }
+
+  bool mouse_only_capture_uses_unmodified_cached_desktop() {
+    int cached_desktop = 42;
+    int output = 0;
+    int cache_copies = 0;
+    int releases = 0;
+    for (int cursor : {100, 200}) {
+      if (!platf::dxgi::capture_policy::submit_cursor_frame(
+            false,
+            [&](bool fresh) { output = fresh ? -1 : cached_desktop; },
+            [&]() { output += cursor; },
+            [&]() {
+              ++releases;
+              return true;
+            },
+            [&]() {
+              ++cache_copies;
+              cached_desktop = output;
+            }) ||
+          output != 42 + cursor) {
+        return false;
+      }
+    }
+    return cached_desktop == 42 && cache_copies == 0 && releases == 2;
+  }
+
+  bool failed_capture_handoff_is_not_reported_as_a_valid_frame() {
+    bool cache_copied = false;
+    const bool result = platf::dxgi::capture_policy::submit_cursor_frame(
+      true, [](bool) {}, []() {}, []() { return false; }, [&]() { cache_copied = true; });
+    return !result && !cache_copied;
+  }
 
   enum class fake_amf_result_e {
     ok,
@@ -584,7 +644,10 @@ namespace {
 #ifdef SUNSHINE_AMF_LIFECYCLE_STANDALONE
 
 int main() {
-  return synchronous_release_during_submit_is_reentrant_safe() &&
+  return fresh_cursor_capture_releases_output_before_caching_desktop() &&
+             mouse_only_capture_uses_unmodified_cached_desktop() &&
+             failed_capture_handoff_is_not_reported_as_a_valid_frame() &&
+             synchronous_release_during_submit_is_reentrant_safe() &&
              backpressure_retries_the_same_submission_until_accepted() &&
              exhausted_backpressure_reinitializes_without_owned_surfaces() &&
              recovery_state_changes_only_after_accepted_input() &&
@@ -615,6 +678,18 @@ int main() {
 }
 
 #else
+
+TEST(WindowsCaptureGpuPolicy, FreshCursorFrameIsReleasedBeforeBackgroundCopy) {
+  EXPECT_TRUE(fresh_cursor_capture_releases_output_before_caching_desktop());
+}
+
+TEST(WindowsCaptureGpuPolicy, MouseOnlyFramesPreserveCursorFreeBackground) {
+  EXPECT_TRUE(mouse_only_capture_uses_unmodified_cached_desktop());
+}
+
+TEST(WindowsCaptureGpuPolicy, FailedHandoffRejectsFrame) {
+  EXPECT_TRUE(failed_capture_handoff_is_not_reported_as_a_valid_frame());
+}
 
 TEST(SunshineNativeAmfReview, SynchronousReleaseDuringSubmitIsReentrantSafe) {
   EXPECT_TRUE(synchronous_release_during_submit_is_reentrant_safe());

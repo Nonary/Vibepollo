@@ -335,18 +335,28 @@ namespace platf::dxgi {
     const auto capture_mutex_wait_start = std::chrono::steady_clock::now();
     HRESULT status = d3d_img->capture_mutex->AcquireSync(0, 3000);
     const auto capture_mutex_wait = std::chrono::steady_clock::now() - capture_mutex_wait_start;
-    if (status == WAIT_ABANDONED) {
-      BOOST_LOG(error) << "Capture texture keyed mutex was abandoned; continuing with lock held";
-    } else if (status != S_OK) {
+    // WAIT_ABANDONED means the mutex and surface must be recreated; it is not
+    // valid ownership of the capture image.
+    if (status != S_OK) {
       BOOST_LOG(error) << "Failed to lock capture texture [0x"sv << util::hex(status).to_string_view() << ']';
       return capture_e::error;
     }
 
-    auto release_capture_mutex = util::fail_guard([&]() {
+    bool capture_mutex_held = true;
+    auto release_capture_mutex_now = [&]() {
+      if (!capture_mutex_held) {
+        return true;
+      }
+      capture_mutex_held = false;
       const HRESULT release_status = d3d_img->capture_mutex->ReleaseSync(0);
       if (FAILED(release_status)) {
         BOOST_LOG(warning) << "Failed to release capture texture mutex [0x"sv << util::hex(release_status).to_string_view() << ']';
+        return false;
       }
+      return true;
+    };
+    auto release_capture_mutex = util::fail_guard([&]() {
+      (void) release_capture_mutex_now();
     });
 
     texture2d_t src;
@@ -374,6 +384,14 @@ namespace platf::dxgi {
     // helper is free to publish the next frame as soon as we drop this mutex.
     _ipc_session->release();
     _frame_locked = false;
+
+    // Submit the encoder-image handoff before timing/logging/bookkeeping. Holding
+    // the keyed mutex until function exit delays the GPU release behind CPU work.
+    // The shared IPC source was released first; neither lock covers diagnostics.
+    if (!release_capture_mutex_now()) {
+      return capture_e::error;
+    }
+    release_capture_mutex.disable();
 
     const auto copy_count = g_wgc_snapshot_copies.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto capture_mutex_wait_ms = std::chrono::duration<double, std::milli>(capture_mutex_wait).count();

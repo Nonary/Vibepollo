@@ -3534,6 +3534,7 @@ runtime version is written to the log on every AMD HDR HEVC attempt (search for
         <td>Description</td>
         <td colspan="2">
             The quality profile controls the tradeoff between speed and quality of encoding.
+            Speed is the default to prioritize low latency. Existing explicit selections are preserved.
             `auto` leaves the quality property unset so the selected AMF usage preset can choose it.
             @note{This option only applies when using amdvce [encoder](#encoder).}
         </td>
@@ -3541,13 +3542,13 @@ runtime version is written to the log on every AMD HDR HEVC attempt (search for
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            balanced
+            speed
             @endcode</td>
     </tr>
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            amd_quality = balanced
+            amd_quality = speed
             @endcode</td>
     </tr>
     <tr>
