@@ -8,14 +8,16 @@ die() { printf 'update-user.sh: %s\n' "$*" >&2; exit 1; }
 payload=
 check=no
 private_display=no
+defer_start=no
 while (($#)); do
   case "$1" in
     --payload) (($# >= 2)) || die '--payload requires a directory'; payload=$2; shift 2 ;;
     --check) check=yes; shift ;;
     --enable-private-display) private_display=yes; shift ;;
+    --defer-start) defer_start=yes; shift ;;
     -h|--help)
       cat <<'EOF'
-Usage: update-user.sh --payload DIR [--check] [--enable-private-display]
+Usage: update-user.sh --payload DIR [--check] [--enable-private-display] [--defer-start]
 
 Updates the existing Vibepollo user installation, preserving its profile and
 paired clients. Execution restarts the service and disconnects active streams.
@@ -24,6 +26,9 @@ when the updated host can be stopped; otherwise backups are retained untouched.
 --check performs preflight only; it does not install or restart anything.
 --enable-private-display enables client-driven private displays. The kernel
 pool and privileged capture helper must already have been provisioned.
+--defer-start stops the previous host and prepares the update for the next
+boot without starting it. The existing service must be persistently enabled.
+Startup and streaming remain unverified until the machine is rebooted.
 EOF
       exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -146,6 +151,9 @@ gamestream_port=$(cat "$work/port")
 https_port=$((gamestream_port + 1))
 enabled=$(systemctl --user is-enabled "$unit" 2>/dev/null || true)
 case "$enabled" in enabled|enabled-runtime|disabled|static|indirect) ;; *) die 'service is missing, masked, or has an unsupported enable state' ;; esac
+if [[ "$defer_start" == yes && "$enabled" != enabled ]]; then
+  die '--defer-start requires the existing service to be persistently enabled for next boot'
+fi
 was_active=no
 systemctl --user is-active --quiet "$unit" && was_active=yes
 if [[ "$check" == yes ]]; then
@@ -284,6 +292,20 @@ with temporary.open('x') as stream:
     os.fsync(stream.fileno())
 os.replace(temporary, path)
 PY
+fi
+if [[ "$defer_start" == yes ]]; then
+  # Keep reconnecting clients away from a new host paired with the old kernel
+  # until the caller performs its explicit reboot. Existing rollback still
+  # restores and restarts the previous host on any error before this point.
+  remaining_pid=$(systemctl --user show "$unit" --property=MainPID --value)
+  remaining_state=$(systemctl --user show "$unit" --property=ActiveState --value)
+  [[ "$remaining_pid" == 0 && ( "$remaining_state" == inactive || "$remaining_state" == failed ) ]] ||
+    die 'the previous host could not be confirmed stopped for the deferred update'
+  [[ $(systemctl --user is-enabled "$unit") == enabled ]] || die 'the updated service is not enabled for next boot'
+  success=yes
+  printf 'Vibepollo update prepared for next boot; the host remains stopped. Reboot to start it and verify streaming.\n'
+  printf 'Rollback backup: %s\n' "$backup"
+  exit 0
 fi
 service_started_at=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
 systemctl --user restart "$unit"

@@ -1,0 +1,224 @@
+Subject: [PATCH] drm/vibeshine: publish each connector's exact requested mode
+
+Apply after 0001 to a copied libvirtualdisplay/linux/vibeshine-drm tree.
+A bounded root-owned configfs triple adds one exact client-sized mode and
+refreshes the connector catalog without disconnecting it. Synthetic timings
+preserve odd dimensions and fractional refresh instead of CVT rounding.
+
+--- a/vkms_connector.c
++++ b/vkms_connector.c
+@@ -30,6 +30,10 @@
+ static int vkms_conn_get_modes(struct drm_connector *connector)
+ {
+ 	const struct drm_edid *drm_edid;
++	struct vkms_connector *vkms = drm_connector_to_vkms_connector(connector);
++	struct vibeshine_drm_requested_mode requested;
++	struct drm_display_mode *mode, *entry;
++	unsigned long flags;
+ 	int count;
+ 
+ 	drm_edid = drm_edid_alloc(vibeshine_hdr_edid,
+@@ -46,7 +50,31 @@
+ 	count += drm_add_modes_noedid(connector, XRES_MAX, YRES_MAX);
+ 	drm_set_preferred_mode(connector, 3840, 2160);
+ 
+-	return count;
++	spin_lock_irqsave(&vkms->requested_mode_lock, flags);
++	requested = vkms->requested_mode;
++	spin_unlock_irqrestore(&vkms->requested_mode_lock, flags);
++	if (!vibeshine_drm_requested_mode_valid(&requested))
++		return count;
++	mode = drm_mode_create(connector->dev);
++	if (!mode)
++		return count;
++	mode->hdisplay = requested.width;
++	mode->hsync_start = requested.width + 48;
++	mode->hsync_end = requested.width + 80;
++	mode->htotal = requested.width + 160;
++	mode->vdisplay = requested.height;
++	mode->vsync_start = requested.height + 3;
++	mode->vsync_end = requested.height + 6;
++	mode->vtotal = requested.height + 45;
++	mode->clock = vibeshine_drm_requested_mode_clock_khz(&requested);
++	mode->flags = DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_NVSYNC;
++	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
++	drm_mode_set_name(mode);
++	list_for_each_entry(entry, &connector->probed_modes, head)
++		entry->type &= ~DRM_MODE_TYPE_PREFERRED;
++	drm_mode_probed_add(connector, mode);
++
++	return count + 1;
+ }
+ 
+ static struct drm_encoder *vkms_conn_best_encoder(struct drm_connector *connector)
+@@ -74,6 +102,7 @@
+ 	connector = drmm_kzalloc(dev, sizeof(*connector), GFP_KERNEL);
+ 	if (!connector)
+ 		return ERR_PTR(-ENOMEM);
++	spin_lock_init(&connector->requested_mode_lock);
+ 
+ 	ret = drmm_connector_init(dev, &connector->base, &vkms_connector_funcs,
+ 				  DRM_MODE_CONNECTOR_VIRTUAL, NULL);
+@@ -121,3 +150,14 @@
+ 
+ 	drm_kms_helper_hotplug_event(dev);
+ }
++
++void vkms_connector_set_requested_mode(
++	struct vkms_connector *connector,
++	const struct vibeshine_drm_requested_mode *mode)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&connector->requested_mode_lock, flags);
++	connector->requested_mode = *mode;
++	spin_unlock_irqrestore(&connector->requested_mode_lock, flags);
++}
+--- a/vkms_connector.h
++++ b/vkms_connector.h
+@@ -3,7 +3,10 @@
+ #ifndef _VKMS_CONNECTOR_H_
+ #define _VKMS_CONNECTOR_H_
+ 
++#include <linux/spinlock.h>
++
+ #include "vkms_drv.h"
++#include "vibeshine_drm_mode.h"
+ 
+ #define drm_connector_to_vkms_connector(target) \
+ 	container_of(target, struct vkms_connector, base)
+@@ -17,6 +20,8 @@
+ struct vkms_connector {
+ 	struct drm_connector base;
+ 	enum drm_connector_status status;
++	spinlock_t requested_mode_lock;
++	struct vibeshine_drm_requested_mode requested_mode;
+ };
+ 
+ /**
+@@ -43,4 +48,8 @@
+  */
+ void vkms_trigger_connector_hotplug(struct vkms_device *vkmsdev);
+ 
++void vkms_connector_set_requested_mode(
++	struct vkms_connector *connector,
++	const struct vibeshine_drm_requested_mode *mode);
++
+ #endif /* _VKMS_CONNECTOR_H_ */
+--- a/vkms_config.h
++++ b/vkms_config.h
+@@ -11,6 +11,7 @@
+ #include <drm/drm_connector.h>
+ 
+ #include "vkms_drv.h"
++#include "vibeshine_drm_mode.h"
+ 
+ /**
+  * struct vkms_config - General configuration for VKMS driver
+@@ -117,6 +118,7 @@
+ 	struct vkms_config *config;
+ 
+ 	enum drm_connector_status status;
++	struct vibeshine_drm_requested_mode requested_mode;
+ 	struct xarray possible_encoders;
+ 
+ 	/* Internal usage */
+--- a/vkms_configfs.c
++++ b/vkms_configfs.c
+@@ -565,8 +565,47 @@
+ 
+ CONFIGFS_ATTR(connector_, status);
+ 
++static ssize_t connector_requested_mode_show(struct config_item *item, char *page)
++{
++	struct vkms_configfs_connector *connector;
++	struct vibeshine_drm_requested_mode mode;
++
++	connector = connector_item_to_vkms_configfs_connector(item);
++	scoped_guard(mutex, &connector->dev->lock)
++		mode = connector->config->requested_mode;
++	return sprintf(page, "%u %u %u\n", mode.width, mode.height,
++		       mode.refresh_millihz);
++}
++
++static ssize_t connector_requested_mode_store(struct config_item *item,
++					      const char *page, size_t count)
++{
++	struct vkms_configfs_connector *connector;
++	struct vibeshine_drm_requested_mode mode;
++	char trailing;
++
++	if (!count || count > 64 ||
++	    sscanf(page, "%u %u %u %c", &mode.width, &mode.height,
++		   &mode.refresh_millihz, &trailing) != 3 ||
++	    !vibeshine_drm_requested_mode_valid(&mode))
++		return -EINVAL;
++	connector = connector_item_to_vkms_configfs_connector(item);
++	scoped_guard(mutex, &connector->dev->lock) {
++		connector->config->requested_mode = mode;
++		if (connector->dev->enabled) {
++			vkms_connector_set_requested_mode(connector->config->connector, &mode);
++			vkms_trigger_connector_hotplug(connector->dev->config->dev);
++		}
++	}
++	return count;
++}
++
++CONFIGFS_ATTR(connector_, requested_mode);
++
++
+ static struct configfs_attribute *connector_item_attrs[] = {
+ 	&connector_attr_status,
++	&connector_attr_requested_mode,
+ 	NULL,
+ };
+ 
+--- a/vkms_output.c
++++ b/vkms_output.c
+@@ -104,6 +104,9 @@
+ 			return PTR_ERR(connector_cfg->connector);
+ 		}
+ 
++		vkms_connector_set_requested_mode(connector_cfg->connector,
++					  &connector_cfg->requested_mode);
++
+ 		vkms_config_connector_for_each_possible_encoder(connector_cfg,
+ 								idx,
+ 								possible_encoder) {
+--- /dev/null
++++ b/vibeshine_drm_mode.h
+@@ -0,0 +1,34 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++#ifndef _VIBESHINE_DRM_MODE_H_
++#define _VIBESHINE_DRM_MODE_H_
++
++#include <linux/types.h>
++
++struct vibeshine_drm_requested_mode {
++	__u32 width;
++	__u32 height;
++	__u32 refresh_millihz;
++};
++
++static inline int vibeshine_drm_requested_mode_valid(
++	const struct vibeshine_drm_requested_mode *mode)
++{
++	return mode->width >= 64 && mode->width <= 8192 &&
++	       mode->height >= 64 && mode->height <= 8192 &&
++	       mode->refresh_millihz >= 1000 &&
++	       mode->refresh_millihz <= 1000000;
++}
++
++/* This virtual connector has no physical timing restriction. Fixed blanking
++ * preserves exact client dimensions, unlike CVT's width alignment. Round only
++ * the kHz pixel clock; the worst refresh error within the bounds is 0.021 Hz.
++ */
++static inline __u32 vibeshine_drm_requested_mode_clock_khz(
++	const struct vibeshine_drm_requested_mode *mode)
++{
++	__u64 pixels = (__u64)(mode->width + 160) * (mode->height + 45);
++
++	return (pixels * mode->refresh_millihz + 500000) / 1000000;
++}
++
++#endif

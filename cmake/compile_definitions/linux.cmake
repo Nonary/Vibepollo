@@ -368,6 +368,8 @@ list(APPEND PLATFORM_TARGET_FILES
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(APPEND PLATFORM_TARGET_FILES
             "${CMAKE_SOURCE_DIR}/src/platform/linux/private_display.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/private_display_mode_client.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/private_display_mode_client.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/private_display_restore_policy.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/private_display.cpp")
 endif()

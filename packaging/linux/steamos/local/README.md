@@ -119,11 +119,21 @@ code with exactly `cap_sys_admin=p`. It accepts fixed requests for the managed
 rejected. Frame and fence descriptors cross the process boundary with
 `SCM_RIGHTS`. Games retain the normal SteamOS execution environment.
 
-Build the module against the exact running kernel headers. Apply
-`0001-amd-private-display-modifiers.patch` to a private copy of the module
-source before building; the patch adds the uncompressed AMD layouts validated
-on this Deck. Build `linux/vkms_peercred.cpp` from libvirtualdisplay against
-the host ABI, then build and stage the capture helper:
+Build the module against the exact running kernel headers, using a compatible
+compiler and `pahole` when those headers enable module BTF. Apply these patches
+in order to a private copy of `libvirtualdisplay/linux/vibeshine-drm`:
+
+- `0001-amd-private-display-modifiers.patch` adds the validated uncompressed AMD layouts.
+- `0002-client-requested-display-mode.patch` adds each connector's atomic
+  `requested_mode` configfs attribute and publishes exact client dimensions and
+  fractional refresh through the DRM mode catalog.
+
+The second patch is required on KScreen 6.4, whose `kscreen-doctor` lacks
+`addCustomMode`. Its bounded virtual timings preserve resolutions such as
+3024×1890 and odd widths; pixel-clock rounding remains within the host's
+0.2 Hz matching tolerance. Generate `vibeshine_drm_version.h` as for the normal
+module build. Build `linux/vkms_peercred.cpp` against the host ABI, then build
+and stage the capture helper:
 
 ```bash
 python3 packaging/linux/steamos/local/build-capture-helper.py \
@@ -136,13 +146,21 @@ python3 packaging/linux/steamos/local/activate-private-display.py stage \
   --user deck --output /path/to/private-display-stage
 ```
 
-The staged manifest pins the kernel, module and all helper hashes. Installation
-uses `/opt` and additive `/etc/systemd/system` units; it does not modify `/usr`
-or disable SteamOS read-only protection. `install-root --stage DIR` installs
-only. `start-root --installed DIR` explicitly loads the module and creates the
-dormant pool; `enable-root --installed DIR` enables it for the next boot. Use
-the installation directory printed by staging. Run these root operations only
-when the user is ready for live display changes.
+Staging also includes `private-display-mode-broker`. The command
+`mode Virtual-N WIDTH HEIGHT REFRESH_MILLIHZ` requires an existing connected
+connector lease owned by the caller. It accepts dimensions 64–8192 and refresh
+1000–1000000 mHz, writes one atomic triple, and refreshes the mode catalog
+without disconnecting the output. The loader checks all four `requested_mode`
+attributes before accepting a pool for this feature.
+
+The manifest pins the kernel, module and all helper hashes. Installation uses
+`/opt` and additive `/etc/systemd/system` units; it does not modify `/usr` or
+disable SteamOS read-only protection. For a first installation,
+`install-root --stage DIR` installs and selects the bundle without loading it.
+`start-root --installed DIR` explicitly loads the module and creates the dormant
+pool; `enable-root --installed DIR` enables it for the next boot. Use the
+installation directory printed by staging. Start the pool only when the user
+is ready for display changes.
 
 After provisioning, update an existing host with:
 
@@ -161,6 +179,33 @@ the desktop and makes the stream output primary. Both SDR and HDR use completed
 DRM frames, avoiding KWin 6.4's SDR conversion and integer refresh rounding in
 its screencast path. Actual mode acceptance, GPU import and HDR capture must
 still be validated after activation on the target machine.
+
+When upgrading a loaded module, including a legacy pool without requested-mode
+support, run `install-root` with the new stage and `enable-root` with its printed
+destination. Installation retains the previous immutable release, loaded
+module, running pool and cached systemd commands; it selects the new files for
+the next boot. Do not use `start-root` to replace a module held by KWin. Prepare
+the host update for that same reboot:
+
+```bash
+bash packaging/linux/steamos/local/update-user.sh \
+  --payload /path/to/validated-payload --enable-private-display --defer-start
+```
+
+`--defer-start` requires an already enabled host service. It stops the old host,
+disconnecting streams, and leaves the updated host stopped until reboot.
+Successful staging does not verify startup or capture; perform those checks
+after reboot. The installer prints the retained release and its rollback
+command. To restore that boot selection, use:
+
+```bash
+sudo python3 -I packaging/linux/steamos/local/activate-private-display.py \
+  select-root --installed /opt/vibeshine-private-display/PREVIOUS-RELEASE
+```
+
+This restores the selected bundle and owned units without unloading the live
+module. Reboot to activate the selection. Retain the host updater's profile
+and release backup as well when reverting a coupled host/module upgrade.
 
 This pool is managed by KScreen in Desktop Mode. Gaming Mode uses the separate
 patched Gamescope compositor described above; independent private displays in

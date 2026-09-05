@@ -71,7 +71,7 @@ After=vibeshine-vkms.service
 [Service]
 Type=exec
 User=root
-ExecStart={helpers}/vibeshine-vkms-peercred {helpers}/vibeshine-vkms control
+ExecStart={helpers}/vibeshine-vkms-peercred {helpers}/private-display-mode-broker control
 StandardInput=socket
 StandardOutput=socket
 StandardError=journal
@@ -111,6 +111,7 @@ def stage(args):
               'loader': loader.digest(HERE / 'private-display-loader.py'),
               'installer': loader.digest(pathlib.Path(__file__)),
               'user': args.user, 'uid': account.pw_uid, 'gid': account.pw_gid}
+    inputs['requested_mode_broker'] = loader.digest(HERE / 'private-display-mode-broker')
     for name in ('vibeshine-vkms', 'vibeshine-vkms-quiesce'):
         inputs[name] = loader.digest(args.driver_source / 'linux/packaging' / name)
     if args.capture_helper:
@@ -125,7 +126,8 @@ def stage(args):
         shutil.copyfile(args.module, output / 'lib/vibeshine_drm.ko')
         shutil.copyfile(HERE / 'private-display-loader.py', output / 'libexec/private-display-loader.py')
         shutil.copyfile(args.peercred, output / 'libexec/vibeshine-vkms-peercred')
-        required = loader.REQUIRED_FILES.copy()
+        shutil.copyfile(HERE / 'private-display-mode-broker', output / loader.MODE_BROKER)
+        required = loader.REQUIRED_FILES | {loader.MODE_BROKER}
         if args.capture_helper:
             (output / 'bin').mkdir(mode=0o755)
             shutil.copyfile(args.capture_helper, output / loader.CAPTURE_HELPER)
@@ -142,6 +144,7 @@ def stage(args):
             'architecture': platform.machine(), 'install_root': str(install_root),
             'user': args.user, 'uid': account.pw_uid, 'gid': account.pw_gid,
             'bundle_id': bundle_id, 'capture_helper': args.capture_helper is not None,
+            'requested_mode_broker': True,
             'module_sha256': module_hash,
             'module_version': loader.modinfo(module, 'version'),
             'module_srcversion': loader.modinfo(module, 'srcversion'),
@@ -181,6 +184,93 @@ def check_units(root, allow_missing=False):
             raise RuntimeError(f'Another installation owns {installed}; retain it for rollback')
 
 
+def selected_release():
+    current = loader.INSTALL_PARENT / 'current'
+    if not current.exists() and not current.is_symlink():
+        return None
+    if not current.is_symlink() or current.lstat().st_uid != 0:
+        raise RuntimeError('Unsafe private-display release selection')
+    target = pathlib.Path(os.readlink(current))
+    if target.is_absolute() or len(target.parts) != 1 or target.name in ('.', '..'):
+        raise RuntimeError('Private-display selection must name a retained immutable release')
+    previous = loader.INSTALL_PARENT / target
+    loader.verify(previous, require_kernel=False)
+    return previous
+
+
+def write_atomic(path, content, mode=0o644):
+    descriptor, temporary = tempfile.mkstemp(prefix='.' + path.name + '-', dir=path.parent)
+    temporary = pathlib.Path(temporary)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(content)
+            os.fchmod(stream.fileno(), mode)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def select_link(destination):
+    current = loader.INSTALL_PARENT / 'current'
+    descriptor, temporary = tempfile.mkstemp(prefix='.current-', dir=loader.INSTALL_PARENT)
+    os.close(descriptor)
+    temporary = pathlib.Path(temporary)
+    temporary.unlink()
+    try:
+        temporary.symlink_to(destination.name)
+        temporary.replace(current)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def select_release(destination, previous):
+    """Publish the next boot selection, preserving every previous release."""
+    manifest = loader.verify(destination)
+    check_user(manifest)
+    if previous:
+        old_manifest = loader.verify(previous, require_kernel=False)
+        if any(old_manifest[key] != manifest[key] for key in ('user', 'uid', 'gid')):
+            raise RuntimeError('A different desktop user owns the selected display release')
+    check_units(previous or destination, allow_missing=previous is None)
+    # Running accepted socket connections must retain the old broker command
+    # until reboot. Reloading units here could mix a new broker and old module.
+    defer_reload = loader.MODULE_SYSFS.exists() or loader.POOL.exists()
+    originals = {}
+    current = loader.INSTALL_PARENT / 'current'
+    try:
+        for name in loader.UNIT_NAMES:
+            target = UNITS / name
+            data = (destination / 'units' / name).read_bytes()
+            if target.exists() and target.read_bytes() == data:
+                continue
+            originals[target] = ((target.read_bytes(), stat.S_IMODE(target.stat().st_mode))
+                                 if target.exists() else None)
+            write_atomic(target, data)
+        select_link(destination)
+        if not defer_reload:
+            loader.command(['/usr/bin/systemctl', 'daemon-reload'])
+    except BaseException:
+        for target, original in originals.items():
+            if original is None:
+                target.unlink(missing_ok=True)
+            else:
+                write_atomic(target, *original)
+        if previous:
+            select_link(previous)
+        else:
+            current.unlink(missing_ok=True)
+        if not defer_reload:
+            subprocess.run(['/usr/bin/systemctl', 'daemon-reload'], check=False)
+        raise
+    if previous and previous != destination:
+        print(f'Previous release retained: {previous}')
+        print(f'Rollback boot selection: sudo python3 -I {HERE / "activate-private-display.py"} select-root --installed {previous}')
+    if defer_reload:
+        print('Next-boot selection updated. The loaded module, running pool, and cached service commands were retained. Reboot to activate this release.')
+
+
 def install_root(args):
     require_root()
     source = args.stage.absolute()
@@ -195,11 +285,8 @@ def install_root(args):
     loader.safe_directory(UNITS)
     if any((VENDOR_UNITS / name).exists() for name in loader.UNIT_NAMES):
         raise RuntimeError('A system package already owns the managed-display units')
-    check_units(source, allow_missing=True)
-    current = loader.INSTALL_PARENT / 'current'
-    if current.exists() or current.is_symlink():
-        if not current.is_symlink() or current.lstat().st_uid != 0 or current.resolve() != destination:
-            raise RuntimeError('A different private-display release is selected; disable and retain it for rollback before replacing it')
+    previous = selected_release()
+    check_units(previous or source, allow_missing=previous is None)
     if destination.exists() or destination.is_symlink():
         if loader.verify(destination) != manifest:
             raise RuntimeError('Another candidate occupies the installation destination')
@@ -225,27 +312,7 @@ def install_root(args):
         finally:
             if temporary.exists():
                 shutil.rmtree(temporary)
-    # Each unit is additive and exclusively owned. Never overwrite an existing
-    # Linux package's unit or an administrator's changed local configuration.
-    added = []
-    try:
-        for name in loader.UNIT_NAMES:
-            target = UNITS / name
-            if target.exists():
-                continue
-            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
-            added.append(target)
-            with os.fdopen(fd, 'wb') as stream:
-                stream.write((destination / 'units' / name).read_bytes())
-                os.fchmod(stream.fileno(), 0o644)
-        loader.command(['/usr/bin/systemctl', 'daemon-reload'])
-        if not current.is_symlink():
-            current.symlink_to(destination.name)
-    except BaseException:
-        for target in added:
-            target.unlink()
-        subprocess.run(['/usr/bin/systemctl', 'daemon-reload'], check=False)
-        raise
+    select_release(destination, previous)
     print(f'Installed {destination}; no module was loaded and no service was enabled or started.')
 
 
@@ -254,11 +321,23 @@ def operate_root(args):
     root = args.installed.absolute()
     manifest = loader.verify(root, require_kernel=args.action not in ('disable-root', 'uninstall-root'))
     check_user(manifest)
+    if args.action == 'select-root':
+        loader.safe_directory(UNITS)
+        if any((VENDOR_UNITS / name).exists() for name in loader.UNIT_NAMES):
+            raise RuntimeError('A system package already owns the managed-display units')
+        select_release(root, selected_release())
+        print(f'Selected {root} for the next boot. No live service was changed.')
+        return
     check_units(root)
     if args.action == 'enable-root':
-        loader.command(['/usr/bin/systemctl', 'enable', 'vibeshine-vkms.service'])
+        command = ['/usr/bin/systemctl']
+        if loader.MODULE_SYSFS.exists() or loader.POOL.exists():
+            command.append('--no-reload')
+        loader.command(command + ['enable', 'vibeshine-vkms.service'])
         print('Managed outputs selected for next boot. The live session was not changed.')
     elif args.action == 'start-root':
+        loader.verify_loaded(manifest)
+        loader.verify_pool_features(manifest)
         loader.command(['/usr/bin/systemctl', 'start', 'vibeshine-vkms.service'])
         print('Managed output pool started. Outputs remain dormant until requested by a client.')
     elif args.action == 'disable-root':
@@ -294,7 +373,7 @@ def main():
     install_parser = subparsers.add_parser('install-root')
     install_parser.add_argument('--stage', required=True, type=pathlib.Path)
     install_parser.set_defaults(run=install_root)
-    for action in ('enable-root', 'start-root', 'disable-root', 'uninstall-root'):
+    for action in ('enable-root', 'start-root', 'disable-root', 'uninstall-root', 'select-root'):
         action_parser = subparsers.add_parser(action)
         action_parser.add_argument('--installed', required=True, type=pathlib.Path)
         action_parser.set_defaults(run=operate_root)

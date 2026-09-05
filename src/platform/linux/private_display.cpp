@@ -9,6 +9,7 @@
 #endif
 
 #include "hdr_policy.h"
+#include "private_display_mode_client.h"
 #include "private_display_mode_policy.h"
 #include "private_display_restore_policy.h"
 #include "private_display_resume_policy.h"
@@ -415,7 +416,8 @@ namespace platf::linux_private_display {
         return true;
       }
       const auto result = run_doctor(arguments, true);
-      if (!result.success) {
+      if (!result.success || mode_policy::doctor_reported_failure(result.stdout_text) ||
+          mode_policy::doctor_reported_failure(result.stderr_text)) {
         BOOST_LOG(error) << "Linux private display: KScreen " << operation << " failed: "
                          << (result.stderr_text.empty() ? result.stdout_text : result.stderr_text);
         return false;
@@ -496,6 +498,54 @@ namespace platf::linux_private_display {
           );
         }
       }
+      return false;
+    }
+
+    bool admit_requested_mode(
+      std::optional<json> &configuration,
+      const std::string &name,
+      const display_device::Resolution &resolution,
+      const display_device::FloatingPoint &refresh
+    ) {
+      const auto hz = floating_point(refresh);
+      if (!std::isfinite(hz) || hz < 1.0 || hz > 1000.0) {
+        BOOST_LOG(error) << "Linux private display: requested refresh is outside the managed display limits: " << hz;
+        return false;
+      }
+      const mode_policy::requested_mode_t request {
+        resolution.m_width, resolution.m_height,
+        static_cast<std::uint32_t>(std::lround(hz * 1000.0)),
+      };
+      BOOST_LOG(info) << "Linux private display: requesting " << request.width << 'x' << request.height
+                      << '@' << request.refresh_millihz << " mHz on " << name << '.';
+      {
+        std::shared_lock mutation_admission {topology_mutation_gate};
+        if (process_shutdown_preserve_requested()) return false;
+        const auto admitted = request_managed_mode(name, request);
+        if (!admitted.success) {
+          BOOST_LOG(error) << "Linux private display: " << admitted.detail;
+          return false;
+        }
+      }
+      // A mode catalog hotplug is asynchronous in KWin. Do not select a nearby
+      // preset or reuse a stale mode id while the exact request is publishing.
+      const auto deadline = std::chrono::steady_clock::now() + output_publication_timeout;
+      do {
+        if (process_shutdown_preserve_requested()) return false;
+        auto current = query_configuration();
+        const auto *output = current ? find_output(*current, name) : nullptr;
+        if (output && connected(*output)) {
+          const auto candidate = best_mode_id(*output, resolution, refresh);
+          if (!candidate.empty() && mode_matches_refresh(*output, candidate, refresh)) {
+            configuration = std::move(current);
+            return true;
+          }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds {50});
+      } while (std::chrono::steady_clock::now() < deadline);
+      BOOST_LOG(error) << "Linux private display: KScreen did not publish the admitted "
+                       << request.width << 'x' << request.height << '@' << request.refresh_millihz
+                       << " mHz mode on " << name << '.';
       return false;
     }
 
@@ -1040,16 +1090,7 @@ namespace platf::linux_private_display {
     const bool prefer_highest = refresh && floating_point(*refresh) >= 9999.0;
     if (resolution && refresh && !prefer_highest && is_managed_output(session.virtual_display_device_id) &&
         (mode_id.empty() || !mode_matches_refresh(*target_before, mode_id, *refresh))) {
-      const auto refresh_millihz = static_cast<unsigned int>(std::max(1.0, std::round(floating_point(*refresh) * 1000.0)));
-      const auto custom_mode = "output." + session.virtual_display_device_id + ".addCustomMode." +
-                               std::to_string(resolution->m_width) + "." +
-                               std::to_string(resolution->m_height) + "." +
-                               std::to_string(refresh_millihz) + ".reduced";
-      if (!execute_configuration({custom_mode}, "custom-mode creation")) {
-        return false;
-      }
-      configuration = query_configuration();
-      if (!configuration) {
+      if (!admit_requested_mode(configuration, session.virtual_display_device_id, *resolution, *refresh)) {
         return false;
       }
       target_before = find_output(*configuration, session.virtual_display_device_id);
@@ -1411,12 +1452,15 @@ namespace platf::linux_private_display {
       }
     }
 
-    std::vector<std::string> custom_modes;
     for (auto &entry : desired) {
       if (!entry.owned_client) {
         continue;
       }
       const auto *output = find_output(*configuration, entry.name);
+      if (!output || !connected(*output)) {
+        BOOST_LOG(error) << "Linux Remote Monitor: output disappeared during requested-mode admission: " << entry.name;
+        return false;
+      }
       const auto resolution = display_device::Resolution {
         static_cast<unsigned int>(std::max(1, entry.node.configured_mode.width)),
         static_cast<unsigned int>(std::max(1, entry.node.configured_mode.height)),
@@ -1428,41 +1472,11 @@ namespace platf::linux_private_display {
       entry.mode_id = best_mode_id(*output, resolution, refresh);
       if (is_managed_output(entry.name) &&
           (entry.mode_id.empty() || !mode_matches_refresh(*output, entry.mode_id, refresh))) {
-        entry.mode_id.clear();
-        custom_modes.push_back(
-          "output." + entry.name + ".addCustomMode." +
-          std::to_string(resolution.m_width) + "." +
-          std::to_string(resolution.m_height) + "." +
-          std::to_string(static_cast<unsigned int>(entry.node.configured_mode.refresh_hz * 1000)) +
-          ".reduced"
-        );
-      }
-    }
-
-    if (!custom_modes.empty()) {
-      if (!execute_configuration(custom_modes, "Remote Monitor custom-mode creation")) {
-        return false;
-      }
-      configuration = query_configuration();
-      if (!configuration) {
-        return false;
-      }
-      for (auto &entry : desired) {
-        if (!entry.owned_client || !entry.mode_id.empty()) {
-          continue;
-        }
-        const auto *output = find_output(*configuration, entry.name);
-        if (!output) {
+        if (!admit_requested_mode(configuration, entry.name, resolution, refresh)) {
           return false;
         }
-        const auto resolution = display_device::Resolution {
-          static_cast<unsigned int>(std::max(1, entry.node.configured_mode.width)),
-          static_cast<unsigned int>(std::max(1, entry.node.configured_mode.height)),
-        };
-        const display_device::FloatingPoint refresh = display_device::Rational {
-          static_cast<unsigned int>(std::max(1, entry.node.configured_mode.refresh_hz)),
-          1,
-        };
+        output = find_output(*configuration, entry.name);
+        if (!output) return false;
         entry.mode_id = best_mode_id(*output, resolution, refresh);
       }
     }
