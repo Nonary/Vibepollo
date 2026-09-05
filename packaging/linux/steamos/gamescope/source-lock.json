@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "upstream": "https://github.com/ValveSoftware/gamescope.git",
+  "tag": "3.16.23.5",
+  "commit": "1290cbc1a7ca625688bde8728d8e3b1e703d6a40",
+  "patch": "0001-hdr10-pipewire-capture.patch",
+  "patch_sha256": "617577f0c7e7912ab6ea23820d02b86c96d036b1761a4d6c880b5b6a6b54d302",
+  "protocol": "vibeshine_capture_v1",
+  "profile": 1
+}

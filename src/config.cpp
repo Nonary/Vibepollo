@@ -1013,8 +1013,12 @@ namespace config {
     std::chrono::duration<double> {1 / 24.9},  // key_repeat_period
 
     {
+#ifdef SUNSHINE_BUILD_STEAMOS
+      "xone",
+#else
       platf::supported_gamepads(nullptr).front().name.data(),
       platf::supported_gamepads(nullptr).front().name.size(),
+#endif
     },  // Default gamepad
     true,  // back as touchpad click enabled (manual DS4 only)
     true,  // client gamepads with motion events are emulated as DS4

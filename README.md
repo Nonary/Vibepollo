@@ -65,6 +65,13 @@ and prints whether a reboot is needed. Manual steps, verification, and troublesh
 [Linux install guide](docs/linux/install.md). AppImage, Flatpak, Debian, Fedora, and Docker builds
 are not part of this beta.
 
+SteamOS development uses a separate [user bundle](packaging/linux/steamos/README.md)
+which leaves the read-only operating system untouched. Its experimental Gaming
+Mode path supports stock Gamescope SDR capture and an optional
+[patched Gamescope HDR10 path](packaging/linux/steamos/gamescope/README.md).
+Independent Gaming Mode virtual displays remain unimplemented. See the [SteamOS audit](packaging/linux/steamos/AUDIT.md)
+for validation and remaining work.
+
 ## Does Vibepollo aim to replace Sunshine or Apollo?
 
 No. Vibepollo is intended as a **complementary fork**, not a replacement.

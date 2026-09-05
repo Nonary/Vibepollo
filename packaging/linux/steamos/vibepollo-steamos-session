@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+
+set -euo pipefail
+
+die() {
+  printf 'vibepollo-steamos-session: %s\n' "$*" >&2
+  exit 1
+}
+
+data_home=${XDG_DATA_HOME:-"$HOME/.local/share"}
+bundle_root="$data_home/vibepollo-steamos/current"
+host="$bundle_root/bin/vibepollo"
+
+[[ -f "$host" && -x "$host" && ! -L "$host" ]] || die "installed host is missing: $host"
+
+# gamescope-session deliberately publishes its compositor socket separately
+# from WAYLAND_DISPLAY. Import only that bounded socket identifier; never
+# source this file as shell code. DISPLAY remains owned by the user manager.
+runtime_dir=${XDG_RUNTIME_DIR:-}
+# The user manager can retain environment from the previous graphical mode.
+# Rebuild this private socket hint from the current session file only.
+unset GAMESCOPE_WAYLAND_DISPLAY
+if [[ -n "$runtime_dir" && "$runtime_dir" == /* && -d "$runtime_dir" && ! -L "$runtime_dir" ]]; then
+  runtime_uid=$(stat -Lc '%u' -- "$runtime_dir" 2>/dev/null || true)
+  env_file="$runtime_dir/gamescope-environment"
+  if [[ "$runtime_uid" == "$(id -u)" && -f "$env_file" && ! -L "$env_file" ]]; then
+    env_uid=$(stat -Lc '%u' -- "$env_file" 2>/dev/null || true)
+    env_size=$(stat -Lc '%s' -- "$env_file" 2>/dev/null || true)
+    if [[ "$env_uid" == "$(id -u)" && "$env_size" =~ ^[0-9]+$ && "$env_size" -le 16384 ]]; then
+      gamescope_display=
+      gamescope_display_assignments=0
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        case "$line" in
+          GAMESCOPE_WAYLAND_DISPLAY=*)
+            ((gamescope_display_assignments += 1))
+            value=${line#*=}
+            if [[ "$value" =~ ^[A-Za-z0-9_.-]{1,107}$ && "$value" != . && "$value" != .. ]]; then
+              gamescope_display=$value
+            fi
+            ;;
+        esac
+      done < "$env_file"
+      if [[ "$gamescope_display_assignments" -eq 1 && -n "$gamescope_display" ]]; then
+        export GAMESCOPE_WAYLAND_DISPLAY=$gamescope_display
+      fi
+    fi
+  fi
+fi
+
+cd -- "$bundle_root"
+exec "$host" "$@"

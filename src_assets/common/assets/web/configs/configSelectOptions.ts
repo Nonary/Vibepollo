@@ -208,6 +208,7 @@ export function getConfigSelectOptions(
         options.push(
           { label: 'NvFBC', value: 'nvfbc' },
           { label: 'KWin', value: 'kwin' },
+          { label: 'SteamOS / Gamescope', value: 'gamescope' },
           { label: 'wlroots', value: 'wlr' },
           { label: 'KMS', value: 'kms' },
           { label: 'X11', value: 'x11' },

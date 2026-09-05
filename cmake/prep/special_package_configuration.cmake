@@ -31,7 +31,7 @@ elseif(UNIX)
 
     # configure service
     configure_file(packaging/linux/app-${PROJECT_FQDN}.service.in app-${PROJECT_FQDN}.service @ONLY)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT SUNSHINE_BUILD_STEAMOS)
         # These files are executed/read by root. They intentionally do not
         # follow a user-selectable CMAKE_INSTALL_PREFIX.
         set(VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR "/usr/libexec/vibeshine")

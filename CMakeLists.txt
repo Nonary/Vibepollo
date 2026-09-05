@@ -65,8 +65,13 @@ include(${CMAKE_MODULE_PATH}/dependencies/libvirtualdisplay_source.cmake)
 
 # Native Linux package templates need this value before dependency targets are
 # added. Keep it in the cache so libvirtualdisplay sees the same decision.
-set(BUILD_VIBESHINE_KWIN_GPU_BRIDGE ON CACHE BOOL
+if(SUNSHINE_BUILD_STEAMOS)
+    set(BUILD_VIBESHINE_KWIN_GPU_BRIDGE OFF CACHE BOOL
+            "Build the Vibepollo KWin GPU-association bridge" FORCE)
+else()
+    set(BUILD_VIBESHINE_KWIN_GPU_BRIDGE ON CACHE BOOL
         "Build the Vibepollo KWin GPU-association bridge" FORCE)
+endif()
 
 # configure special package files, such as sunshine.desktop, Flatpak manifest, Portfile , etc.
 include(${CMAKE_MODULE_PATH}/prep/special_package_configuration.cmake)

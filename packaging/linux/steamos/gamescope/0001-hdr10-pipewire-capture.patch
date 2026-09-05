@@ -1,0 +1,277 @@
+diff --git a/protocol/meson.build b/protocol/meson.build
+index e93c353..1da9dcc 100644
+--- a/protocol/meson.build
++++ b/protocol/meson.build
+@@ -34,6 +34,7 @@ protocols = [
+ 	# Gamescope protocols
+ 	'gamescope-xwayland.xml',
+ 	'gamescope-pipewire.xml',
++	'vibeshine-capture-v1.xml',
+ 	'gamescope-input-method.xml',
+ 	'gamescope-control.xml',
+ 	'gamescope-reshade.xml',
+diff --git a/src/color_helpers.cpp b/src/color_helpers.cpp
+index 64430a5..230eff6 100644
+--- a/src/color_helpers.cpp
++++ b/src/color_helpers.cpp
+@@ -681,7 +681,14 @@ inline T applyShaper( const T & input, EOTF source, EOTF dest, const tonemapping
+     T flLinear = flGain * calcEOTFToLinear( input, source, tonemapping );
+     flLinear = tonemapping.apply( flLinear );
+ 
+-    return calcLinearToEOTF( flLinear, g_bUseSourceEOTFForShaper ? source : dest, tonemapping );
++    EOTF shaperEOTF = g_bUseSourceEOTFForShaper ? source : dest;
++    T shaped = calcLinearToEOTF( flLinear, shaperEOTF, tonemapping );
++    // Fill the 3D LUT domain for SDR -> HDR. Otherwise the SDR white point
++    // falls between a valid sample and a clamped inverse-shaper sample,
++    // reducing nominal 203-nit white to about 180 nits.
++    if ( tonemapping.bNormalizeShaper )
++        shaped /= calcLinearToEOTF( tonemapping.g22_luminance * flGain, shaperEOTF, tonemapping );
++    return shaped;
+ }
+ 
+ bool g_bHuePreservationWhenClipping = false;
+diff --git a/src/color_helpers.h b/src/color_helpers.h
+index cefa74e..18438ea 100644
+--- a/src/color_helpers.h
++++ b/src/color_helpers.h
+@@ -283,6 +283,7 @@ enum ETonemapOperator
+ struct tonemapping_t
+ {
+ 	bool bUseShaper = true;
++	bool bNormalizeShaper = false;
+ 	float g22_luminance = 1.f; // what luminance should be applied for g22 EOTF conversions?
+ 	ETonemapOperator eOperator = ETonemapOperator_None;
+ 	eetf_2390_t eetf2390;
+diff --git a/src/pipewire.cpp b/src/pipewire.cpp
+index 7a44c4e..a2943fc 100644
+--- a/src/pipewire.cpp
++++ b/src/pipewire.cpp
+@@ -89,6 +89,16 @@ static void calculate_capture_size()
+ 	}
+ }
+ 
++static void add_hdr_colorimetry(struct spa_pod_builder *builder, spa_video_format format)
++{
++	if (format != SPA_VIDEO_FORMAT_xBGR_210LE) return;
++	spa_pod_builder_add(builder,
++		SPA_FORMAT_VIDEO_colorPrimaries, SPA_POD_Id(SPA_VIDEO_COLOR_PRIMARIES_BT2020),
++		SPA_FORMAT_VIDEO_transferFunction, SPA_POD_Id(14), // ST 2084, also with older SPA headers
++		SPA_FORMAT_VIDEO_colorMatrix, SPA_POD_Id(SPA_VIDEO_COLOR_MATRIX_RGB),
++		SPA_FORMAT_VIDEO_colorRange, SPA_POD_Id(SPA_VIDEO_COLOR_RANGE_0_255), 0);
++}
++
+ static void build_format_params(struct spa_pod_builder *builder, spa_video_format format, std::vector<const struct spa_pod *> &params) {
+ 	struct spa_rectangle size = SPA_RECTANGLE(s_nCaptureWidth, s_nCaptureHeight);
+ 	struct spa_rectangle min_requested_size = { 0, 0 };
+@@ -107,6 +117,7 @@ static void build_format_params(struct spa_pod_builder *builder, spa_video_forma
+ 		SPA_FORMAT_VIDEO_requested_size, SPA_POD_CHOICE_RANGE_Rectangle( &min_requested_size, &min_requested_size, &max_requested_size ),
+ 		SPA_FORMAT_VIDEO_gamescope_focus_appid, SPA_POD_CHOICE_RANGE_Long( 0ll, INT64_MIN, INT64_MAX ),
+ 		0);
++	add_hdr_colorimetry(builder, format);
+ 	if (format == SPA_VIDEO_FORMAT_NV12) {
+ 		spa_pod_builder_add(builder,
+ 			SPA_FORMAT_VIDEO_colorMatrix, SPA_POD_CHOICE_ENUM_Id(3,
+@@ -136,6 +147,7 @@ static void build_format_params(struct spa_pod_builder *builder, spa_video_forma
+ 		SPA_FORMAT_VIDEO_requested_size, SPA_POD_CHOICE_RANGE_Rectangle( &min_requested_size, &min_requested_size, &max_requested_size ),
+ 		SPA_FORMAT_VIDEO_gamescope_focus_appid, SPA_POD_CHOICE_RANGE_Long( 0ll, INT64_MIN, INT64_MAX ),
+ 		0);
++	add_hdr_colorimetry(builder, format);
+ 	if (format == SPA_VIDEO_FORMAT_NV12) {
+ 		spa_pod_builder_add(builder,
+ 			SPA_FORMAT_VIDEO_colorMatrix, SPA_POD_CHOICE_ENUM_Id(3,
+@@ -161,6 +173,7 @@ static std::vector<const struct spa_pod *> build_format_params(struct spa_pod_bu
+ 
+ 	build_format_params(builder, SPA_VIDEO_FORMAT_BGRx, params);
+ 	build_format_params(builder, SPA_VIDEO_FORMAT_NV12, params);
++	build_format_params(builder, SPA_VIDEO_FORMAT_xBGR_210LE, params);
+ 
+ 	return params;
+ }
+@@ -444,6 +457,7 @@ uint32_t spa_format_to_drm(uint32_t spa_format)
+ {
+ 	switch (spa_format)
+ 	{
++		case SPA_VIDEO_FORMAT_xBGR_210LE: return DRM_FORMAT_XBGR2101010;
+ 		case SPA_VIDEO_FORMAT_NV12: return DRM_FORMAT_NV12;
+ 		default:
+ 		case SPA_VIDEO_FORMAT_BGR: return DRM_FORMAT_XRGB8888;
+diff --git a/src/steamcompmgr.cpp b/src/steamcompmgr.cpp
+index d98222f..d429441 100644
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -149,6 +149,7 @@ gamescope_color_mgmt_luts g_ColorMgmtLuts[ EOTF_Count ];
+ 
+ gamescope_color_mgmt_luts g_ScreenshotColorMgmtLuts[ EOTF_Count ];
+ gamescope_color_mgmt_luts g_ScreenshotColorMgmtLutsHDR[ EOTF_Count ];
++gamescope_color_mgmt_luts g_CaptureColorMgmtLutsHDR[ EOTF_Count ];
+ 
+ static lut1d_t g_tmpLut1d;
+ static lut3d_t g_tmpLut3d;
+@@ -320,7 +321,7 @@ static const gamescope_color_mgmt_t k_ScreenshotColorMgmtHDR =
+ // sudo cpupower frequency-set --governor performance
+ 
+ static void
+-create_color_mgmt_luts(const gamescope_color_mgmt_t& newColorMgmt, gamescope_color_mgmt_luts outColorMgmtLuts[ EOTF_Count ])
++create_color_mgmt_luts(const gamescope_color_mgmt_t& newColorMgmt, gamescope_color_mgmt_luts outColorMgmtLuts[ EOTF_Count ], bool bApplyUserLooks = true)
+ {
+ 	const displaycolorimetry_t& displayColorimetry = newColorMgmt.displayColorimetry;
+ 	const displaycolorimetry_t& outputEncodingColorimetry = newColorMgmt.outputEncodingColorimetry;
+@@ -333,7 +334,7 @@ create_color_mgmt_luts(const gamescope_color_mgmt_t& newColorMgmt, gamescope_col
+ 		if (!outColorMgmtLuts[nInputEOTF].vk_lut3d)
+ 			outColorMgmtLuts[nInputEOTF].vk_lut3d = vulkan_create_3d_lut(s_nLutEdgeSize3d, s_nLutEdgeSize3d, s_nLutEdgeSize3d);
+ 
+-		if ( g_ColorMgmtLutsOverride[nInputEOTF].HasLuts() )
++		if ( bApplyUserLooks && g_ColorMgmtLutsOverride[nInputEOTF].HasLuts() )
+ 		{
+ 			memcpy(g_ColorMgmtLuts[nInputEOTF].lut1d, g_ColorMgmtLutsOverride[nInputEOTF].lut1d, sizeof(g_ColorMgmtLutsOverride[nInputEOTF].lut1d));
+ 			memcpy(g_ColorMgmtLuts[nInputEOTF].lut3d, g_ColorMgmtLutsOverride[nInputEOTF].lut3d, sizeof(g_ColorMgmtLutsOverride[nInputEOTF].lut3d));
+@@ -349,7 +350,7 @@ create_color_mgmt_luts(const gamescope_color_mgmt_t& newColorMgmt, gamescope_col
+ 			EOTF inputEOTF = static_cast<EOTF>( nInputEOTF );
+ 			float flGain = 1.f;
+ 			std::shared_ptr<lut3d_t> pSharedLook = g_ColorMgmtLooks[ nInputEOTF ];
+-			lut3d_t * pLook = pSharedLook && pSharedLook->lutEdgeSize > 0 ? pSharedLook.get() : nullptr;
++			lut3d_t * pLook = bApplyUserLooks && pSharedLook && pSharedLook->lutEdgeSize > 0 ? pSharedLook.get() : nullptr;
+ 
+ 			if ( inputEOTF == EOTF_Gamma22 )
+ 			{
+@@ -364,6 +365,7 @@ create_color_mgmt_luts(const gamescope_color_mgmt_t& newColorMgmt, gamescope_col
+ 				{
+ 					// G22 -> PQ. SDR content going on an HDR output
+ 					tonemapping.g22_luminance = newColorMgmt.flSDROnHDRBrightness;
++					tonemapping.bNormalizeShaper = !bApplyUserLooks;
+ 					// xwm_log.infof("G22 -> PQ");
+ 				}
+ 
+@@ -527,6 +529,9 @@ update_screenshot_color_mgmt()
+ {
+ 	create_color_mgmt_luts(k_ScreenshotColorMgmt, g_ScreenshotColorMgmtLuts);
+ 	create_color_mgmt_luts(k_ScreenshotColorMgmtHDR, g_ScreenshotColorMgmtLutsHDR);
++	auto captureColorMgmt = k_ScreenshotColorMgmtHDR;
++	captureColorMgmt.sdrGamutWideness = 0.f;
++	create_color_mgmt_luts(captureColorMgmt, g_CaptureColorMgmtLutsHDR, false);
+ }
+ 
+ bool set_color_sdr_gamut_wideness( float flVal )
+@@ -2309,17 +2314,19 @@ static void paint_pipewire()
+ 	if ( !s_pPipewireBuffer || !s_pPipewireBuffer->texture )
+ 		return;
+ 
++	const bool bHDRCapture = s_pPipewireBuffer->video_info.format == SPA_VIDEO_FORMAT_xBGR_210LE;
+ 	struct FrameInfo_t frameInfo = {};
+ 	frameInfo.applyOutputColorMgmt = true;
+-	frameInfo.outputEncodingEOTF   = EOTF_Gamma22;
++	frameInfo.outputEncodingEOTF   = bHDRCapture ? EOTF_PQ : EOTF_Gamma22;
+ 	frameInfo.allowVRR             = false;
+ 	frameInfo.bFadingOut           = false;
+ 
+ 	// Apply screenshot-style color management.
+ 	for ( uint32_t nInputEOTF = 0; nInputEOTF < EOTF_Count; nInputEOTF++ )
+ 	{
+-		frameInfo.lut3D[nInputEOTF]     = g_ScreenshotColorMgmtLuts[nInputEOTF].vk_lut3d;
+-		frameInfo.shaperLut[nInputEOTF] = g_ScreenshotColorMgmtLuts[nInputEOTF].vk_lut1d;
++		auto &luts = bHDRCapture ? g_CaptureColorMgmtLutsHDR : g_ScreenshotColorMgmtLuts;
++		frameInfo.lut3D[nInputEOTF]     = luts[nInputEOTF].vk_lut3d;
++		frameInfo.shaperLut[nInputEOTF] = luts[nInputEOTF].vk_lut1d;
+ 	}
+ 
+ 	const uint64_t ulFocusAppId = s_pPipewireBuffer->gamescope_info.focus_appid;
+@@ -2361,14 +2368,18 @@ static void paint_pipewire()
+ 	// If the commits are the same as they were last time, don't repaint and don't push a new buffer on the stream.
+ 	static uint64_t s_ulLastFocusCommitId = 0;
+ 	static uint64_t s_ulLastOverrideCommitId = 0;
++	static uint64_t s_ulLastCaptureFormat = 0;
++	const uint64_t ulCaptureFormat = (uint64_t(s_pPipewireBuffer->video_info.format) << 48) |
++		(uint64_t(s_pPipewireBuffer->texture->width()) << 24) | s_pPipewireBuffer->texture->height();
+ 
+ 	uint64_t ulFocusCommitId = window_last_done_commit_id( pFocus->focusWindow );
+ 	uint64_t ulOverrideCommitId = window_last_done_commit_id( pFocus->overrideWindow );
+ 
+ 	if ( ulFocusCommitId == s_ulLastFocusCommitId &&
+-	     ulOverrideCommitId == s_ulLastOverrideCommitId )
++	     ulOverrideCommitId == s_ulLastOverrideCommitId && ulCaptureFormat == s_ulLastCaptureFormat )
+ 		return;
+ 
++	s_ulLastCaptureFormat = ulCaptureFormat;
+ 	s_ulLastFocusCommitId = ulFocusCommitId;
+ 	s_ulLastOverrideCommitId = ulOverrideCommitId;
+ 
+@@ -6544,6 +6555,7 @@ steamcompmgr_exit(void)
+ 	for ( auto &lut : g_ColorMgmtLutsOverride ) lut.shutdown();
+ 	for ( auto &lut : g_ScreenshotColorMgmtLuts ) lut.shutdown();
+ 	for ( auto &lut : g_ScreenshotColorMgmtLutsHDR ) lut.shutdown();
++	for ( auto &lut : g_CaptureColorMgmtLutsHDR ) lut.shutdown();
+ 
+ 	if ( statsThreadRun == true )
+ 	{
+diff --git a/src/wlserver.cpp b/src/wlserver.cpp
+index 6088a7f..488eaad 100644
+--- a/src/wlserver.cpp
++++ b/src/wlserver.cpp
+@@ -48,6 +48,7 @@
+ #include "wlr_end.hpp"
+ 
+ #include "gamescope-xwayland-protocol.h"
++#include "vibeshine-capture-v1-protocol.h"
+ #include "gamescope-pipewire-protocol.h"
+ #include "gamescope-control-protocol.h"
+ #include "gamescope-private-protocol.h"
+@@ -1074,10 +1075,23 @@ static void gamescope_pipewire_bind( struct wl_client *client, void *data, uint3
+ 	gamescope_pipewire_send_stream_node( resource, get_pipewire_stream_node_id() );
+ }
+ 
++static const struct vibeshine_capture_v1_interface vibeshine_capture_impl = {
++	.destroy = gamescope_pipewire_handle_destroy,
++};
++
++static void vibeshine_capture_bind( struct wl_client *client, void *, uint32_t version, uint32_t id )
++{
++	struct wl_resource *resource = wl_resource_create( client, &vibeshine_capture_v1_interface, version, id );
++	if ( !resource ) { wl_client_post_no_memory( client ); return; }
++	wl_resource_set_implementation( resource, &vibeshine_capture_impl, nullptr, nullptr );
++	vibeshine_capture_v1_send_hdr10_profile( resource, get_pipewire_stream_node_id(), 1 );
++}
++
+ static void create_gamescope_pipewire( void )
+ {
+ 	uint32_t version = 1;
+ 	wl_global_create( wlserver.display, &gamescope_pipewire_interface, version, NULL, gamescope_pipewire_bind );
++	wl_global_create( wlserver.display, &vibeshine_capture_v1_interface, 1, nullptr, vibeshine_capture_bind );
+ }
+ #endif
+ 
+diff --git a/protocol/vibeshine-capture-v1.xml b/protocol/vibeshine-capture-v1.xml
+new file mode 100644
+index 0000000..c211005
+--- /dev/null
++++ b/protocol/vibeshine-capture-v1.xml
+@@ -0,0 +1,30 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<protocol name="vibeshine_capture_v1">
++  <copyright>Copyright 2026 Vibeshine contributors. SPDX-License-Identifier: MIT</copyright>
++  <interface name="vibeshine_capture_v1" version="1">
++    <description summary="Versioned HDR capture contract for patched Gamescope">
++      This additive interface leaves gamescope_pipewire v1 unchanged. Its
++      profile event identifies the same PipeWire node and guarantees an optional
++      xBGR_210LE capture format containing full-range BT.2020 RGB with ST 2084
++      transfer, rendered before the physical output's SDR tone mapping. SDR
++      content is composited at 203 cd/m2 reference white. The capture reference
++      volume is BT.2020/D65, 0 to 10000 cd/m2; these are rendering-space bounds,
++      not measurements of a physical panel or source mastering metadata.
++      MaxCLL and MaxFALL are unknown. Frame delivery follows producer GPU
++      completion. No explicit fence or presentation timestamp is promised.
++      The node has one negotiated format; concurrent SDR and HDR consumers
++      require separate compositor instances. Clients must still verify the
++      negotiated pixel format and colorimetry before advertising HDR.
++    </description>
++    <request name="destroy" type="destructor"/>
++    <event name="hdr10_profile">
++      <description summary="Fixed HDR10 capture profile, sent once on bind">
++        The node must equal the gamescope_pipewire stream_node. Profile 1
++        denotes exactly the rendering contract described by this interface.
++        Unknown profiles must not enable HDR.
++      </description>
++      <arg name="node_id" type="uint"/>
++      <arg name="profile" type="uint"/>
++    </event>
++  </interface>
++</protocol>

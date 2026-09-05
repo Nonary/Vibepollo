@@ -244,6 +244,7 @@ const captureOptions = [
   option('ddx', 'ui.settings.options.capture.ddx'),
   option('kms', 'ui.settings.options.capture.kms'),
   option('kwin', 'ui.settings.options.capture.kwin'),
+  option('gamescope', 'ui.settings.options.capture.gamescope'),
   option('portal', 'ui.settings.options.capture.portal'),
   option('wlr', 'ui.settings.options.capture.wlr'),
   option('x11', 'ui.settings.options.capture.x11'),
@@ -255,7 +256,7 @@ export function captureOptionsForPlatform(platform: string): SettingsOption[] {
   const supportedValues = normalized.includes('windows')
     ? new Set(['', 'wgc', 'wgcc', 'ddx'])
     : normalized.includes('linux')
-      ? new Set(['', 'kms', 'kwin', 'portal', 'wlr', 'x11', 'nvfbc'])
+      ? new Set(['', 'kms', 'kwin', 'gamescope', 'portal', 'wlr', 'x11', 'nvfbc'])
       : new Set(['']);
   return captureOptions.filter((candidate) => supportedValues.has(candidate.value));
 }
