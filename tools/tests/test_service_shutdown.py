@@ -35,7 +35,7 @@ using LPTSTR = char *;
 using VOID = void;
 const auto INVALID_HANDLE_VALUE = reinterpret_cast<HANDLE>(static_cast<intptr_t>(-1));
 constexpr DWORD NO_ERROR=0, TRUE=1, FALSE=0, INFINITE=0xffffffff,
- WAIT_OBJECT_0=0, WAIT_TIMEOUT=258, SERVICE_STOPPED=1, SERVICE_START_PENDING=2,
+ WAIT_OBJECT_0=0, WAIT_TIMEOUT=258, WAIT_FAILED=0xffffffff, SERVICE_STOPPED=1, SERVICE_START_PENDING=2,
  SERVICE_RUNNING=4, SERVICE_WIN32_OWN_PROCESS=16, SERVICE_ACCEPT_STOP=1,
  SERVICE_ACCEPT_PRESHUTDOWN=256, SERVICE_ACCEPT_SESSIONCHANGE=128,
  STARTF_USESTDHANDLES=256, PROC_THREAD_ATTRIBUTE_HANDLE_LIST=1,
@@ -62,15 +62,21 @@ int scenario, event_count, last_error, stopped_count;
 bool stopping, child_alive, killed, attributes_live, attributes_deleted;
 void HandlerEx() {}
 HANDLE RegisterServiceCtrlHandlerEx(...) { return handle(100); }
-void ExitProcess(DWORD) { assert(false); }
+struct process_exit { DWORD code; };
+[[noreturn]] void ExitProcess(DWORD code) { throw process_exit{code}; }
 DWORD GetLastError() { return last_error; }
-bool CloseHandle(HANDLE h) { assert(handles.erase(h)==1); last_error=999; return true; }
+bool CloseHandle(HANDLE h) {
+ // HandlerEx may still be using these handles while ServiceMain tears down.
+ assert(h!=stop_event && h!=session_change_event);
+ assert(handles.erase(h)==1); last_error=999; return true;
+}
 bool SetServiceStatus(HANDLE, SERVICE_STATUS *s) {
  if (s->dwCurrentState==SERVICE_STOPPED) {
   // Model a replacement opening the log at the instant SCM can restart it.
   assert(!handles.count(handle(3)) && "old service still owns the exclusive log");
   assert(!child_alive && "child still owns its inherited log handle");
-  assert(handles.empty() && !attributes_live);
+  for (auto h : handles) assert(h==handle(1) || h==handle(2));
+  assert(!attributes_live);
   assert(s->dwWin32ExitCode==(scenario<=4 ? 123 : 0));
   assert(s->dwWaitHint==0 && s->dwCheckPoint==0 && s->dwControlsAccepted==0);
   assert(++stopped_count==1);
@@ -111,20 +117,43 @@ DWORD WaitForSingleObject(HANDLE h, DWORD ms) {
  }
  assert(h==handle(7));
  if (ms==20000 && scenario==7) return WAIT_TIMEOUT;
- if (ms==INFINITE) assert(killed);
+ if (ms==0) {
+  last_error=999; // do not lose the original termination error
+  return child_alive ? WAIT_TIMEOUT : WAIT_OBJECT_0;
+ }
+ if (ms==INFINITE) {
+  assert(killed || !child_alive);
+  if (scenario==11) { last_error=6; return WAIT_FAILED; }
+ }
  child_alive=false; return WAIT_OBJECT_0;
 }
 DWORD WaitForMultipleObjects(...) { stopping=true; return WAIT_OBJECT_0; }
-bool RunTerminationHelper(HANDLE, DWORD) { return scenario!=8; }
-bool TerminateProcess(HANDLE, DWORD) { killed=true; return true; } // asynchronous
+bool RunTerminationHelper(HANDLE, DWORD) { return scenario<8; }
+bool TerminateProcess(HANDLE, DWORD) {
+ if (scenario==9 || scenario==10) {
+  last_error=5;
+  if (scenario==10) child_alive=false; // exited before TerminateProcess
+  return false;
+ }
+ killed=true; return true; // asynchronous
+}
 bool GetExitCodeProcess(HANDLE, DWORD *code) { *code=0; return true; }
 bool SetEvent(HANDLE) { stopping=true; return true; }
 '''
 main = r'''
 int main(int argc, char **argv) {
  scenario=std::stoi(argv[1]);
- ServiceMain(0, nullptr);
- assert(stopped_count==1);
+ bool failed=false;
+ try {
+  ServiceMain(0, nullptr);
+ } catch (const process_exit &exit) {
+  failed=true;
+  assert(scenario==9 || scenario==11);
+  assert(exit.code==(scenario==9 ? 5 : 6));
+  assert(child_alive && stopped_count==0);
+ }
+ assert(failed==(scenario==9 || scenario==11));
+ if (!failed) assert(stopped_count==1);
  if (scenario==7 || scenario==8) assert(killed);
  std::cout << "scenario " << scenario << " passed\n";
 }
@@ -134,7 +163,7 @@ with tempfile.TemporaryDirectory(prefix="service-shutdown-test-") as tmp:
     exe = Path(tmp) / "lifecycle"
     cpp.write_text(fakes + production + main)
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", str(cpp), "-o", str(exe)], check=True)
-    results = [subprocess.run([str(exe), str(i)]).returncode for i in range(1, 9)]
+    results = [subprocess.run([str(exe), str(i)]).returncode for i in range(1, 12)]
     if any(results):
         sys.exit(1)
-print("All 8 service lifecycle scenarios passed")
+print("All 11 service lifecycle scenarios passed")
