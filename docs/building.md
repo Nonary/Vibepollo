@@ -21,6 +21,29 @@ It is recommended to use one of the following compilers:
 | Clang       | 17+     |
 | Apple Clang | 15+     |
 
+### Linux release CUDA compatibility
+
+Linux release packages pin CUDA Toolkit **12.9.1** (runfile build **575.57.08**)
+to retain Maxwell, Pascal (including GTX 1070), and Volta GPU targets. CUDA 13
+cannot compile those targets. Use GCC 14 as the CUDA host compiler; older
+supported builders may use GCC 13. The runfile installs only the toolkit,
+not a GPU driver.
+
+The shared Linux build script uses the pinned runfile in `build/cuda` by
+default, ignoring a newer system toolkit. It rejects an incompatible cached
+toolkit. Arch's PKGBUILD downloads architecture-specific, SHA-256-verified
+runfiles into its source directory and explicitly selects GCC 14. Arch CI
+installs the signed, versioned GCC 14 packages from the Arch Linux Archive,
+because rolling Arch repositories no longer provide them. Manual Arch package
+builds also need the `gcc14` build dependency installed.
+
+Release packaging enables `SUNSHINE_REQUIRE_CUDA_PASCAL=ON`, which requires
+CUDA 12.9 and the `sm_61` target. Flatpak retains its existing 12.9.1 pin.
+When changing toolchain versions, run
+`python3 tests/unit/test_cuda_release_policy.py` and build the affected
+packages locally before publishing. Developer builds can leave that option
+off to use newer CUDA toolkits with a reduced set of GPU targets.
+
 ### Dependencies
 
 #### FreeBSD

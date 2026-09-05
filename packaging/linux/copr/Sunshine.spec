@@ -113,11 +113,11 @@ BuildRequires: gcc14-c++
 %global cuda_version 12.9.1
 %global cuda_build 575.57.08
 %elif 0%{?fedora} >= 44
-BuildRequires: gcc15
-BuildRequires: gcc15-c++
-%global gcc_version 15
-%global cuda_version 13.1.1
-%global cuda_build 590.48.01
+BuildRequires: gcc14
+BuildRequires: gcc14-c++
+%global gcc_version 14
+%global cuda_version 12.9.1
+%global cuda_build 575.57.08
 %endif
 %endif
 
@@ -302,7 +302,7 @@ function install_cuda() {
 
 if [ -n "%{cuda_version}" ] && [[ " ${cuda_supported_architectures[@]} " =~ " ${architecture} " ]]; then
   install_cuda
-  cmake_args+=("-DSUNSHINE_ENABLE_CUDA=ON")
+  cmake_args+=("-DSUNSHINE_ENABLE_CUDA=ON" "-DSUNSHINE_REQUIRE_CUDA_PASCAL=ON")
   cmake_args+=("-DCMAKE_CUDA_COMPILER:PATH=%{cuda_dir}/bin/nvcc")
   cmake_args+=("-DCMAKE_CUDA_HOST_COMPILER=gcc-%{gcc_version}")
 else
