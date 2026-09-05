@@ -554,3 +554,100 @@ TEST(StateStoragePrimary, StorageReadFailureDoesNotRestoreOldAuthorization) {
     [&writes](const std::string &, const std::string &) { ++writes; return true; }, policy::valid_primary_state), policy::load_result_e::failed);
   EXPECT_EQ(writes, 0U);
 }
+
+namespace {
+  // Compose credential startup, authoritative host selection, then a later
+  // metadata save against the same durable files. A refused selection must be
+  // final at both call sites; neither may invent its own backup fallback.
+  bool save_running_host_metadata(memory_state_store_t &store, const std::string &identity, bool new_tls_profile = false) {
+    const auto read = [&store](const std::string &path) { return store.read(path); };
+    const auto write = [&store](const std::string &path, const std::string &contents) { return store.write(path, contents); };
+    pt::ptree saved;
+    const auto save_selected = policy::load_primary_state_for_update("shared.json", saved, read, write, policy::valid_primary_state);
+    if (save_selected != policy::load_result_e::loaded && !(new_tls_profile && save_selected == policy::load_result_e::missing)) return false;
+    saved.put("root.uniqueid", identity);
+    saved.put("root.display_helper_engine", "v2");
+    pt::ptree backup;
+    const auto backup_status = policy::load_json_for_read("shared.json.bak", backup, read);
+    if (!policy::primary_write_allowed(saved, backup_status, backup, policy::valid_primary_state)) return false;
+    write_atomic(store, "shared.json", saved);
+    write_atomic(store, "shared.json.bak", saved);
+    return true;
+  }
+
+  bool startup_then_save(memory_state_store_t &store, bool new_tls_profile) {
+    const auto read = [&store](const std::string &path) { return store.read(path); };
+    const auto write = [&store](const std::string &path, const std::string &contents) { return store.write(path, contents); };
+    if (policy::recover_credentials("shared.json", read, write, false) == policy::load_result_e::failed) return false;
+    pt::ptree startup;
+    const auto selected = policy::load_primary_state_for_update("shared.json", startup, read, write, policy::valid_primary_state);
+    if (selected == policy::load_result_e::failed) return false;
+    if (!policy::valid_primary_state(startup, false) && !new_tls_profile) return false;
+    const auto identity = startup.get<std::string>("root.uniqueid", "33333333-3333-3333-3333-333333333333");
+    return save_running_host_metadata(store, identity, new_tls_profile);
+  }
+}
+
+TEST(StateStorageComposedStartup, CurrentCredentialOnlyPrimaryNeverRollsBackToPairedBackup) {
+  memory_state_store_t store;
+  store.files["shared.json"] = R"({"username":"owner","password":"new-hash","salt":"new-salt"})";
+  store.files["shared.json.bak"] = paired_snapshot;
+  const auto original = store.files;
+  EXPECT_FALSE(startup_then_save(store, false));
+  EXPECT_EQ(store.files, original);
+  // Even an incorrectly broad first-run retry cannot override the refusal.
+  EXPECT_FALSE(startup_then_save(store, true));
+  EXPECT_EQ(store.files, original);
+}
+
+TEST(StateStorageComposedStartup, CredentialOrMetadataBootstrapWithoutPriorIdentityStillWorks) {
+  for (const auto initial : {R"({"username":"owner","password":"new-hash","salt":"new-salt"})", R"({"root":{"display_helper_engine":"v2"}})"}) {
+    memory_state_store_t store;
+    store.files["shared.json"] = initial;
+    EXPECT_TRUE(startup_then_save(store, true));
+    pt::ptree saved;
+    ASSERT_EQ(load_for_read(store, "shared.json", saved), policy::load_result_e::loaded);
+    EXPECT_EQ(saved.get<std::string>("root.uniqueid"), "33333333-3333-3333-3333-333333333333");
+  }
+  memory_state_store_t fresh;
+  EXPECT_TRUE(startup_then_save(fresh, true));
+}
+
+TEST(StateStorageComposedStartup, CorruptPrimaryRestoresIdentityAndCredentialsBeforeSavingMetadata) {
+  memory_state_store_t store;
+  store.files["shared.json"] = "broken";
+  store.files["shared.json.bak"] = paired_snapshot;
+  ASSERT_TRUE(startup_then_save(store, false));
+  pt::ptree saved;
+  ASSERT_EQ(load_for_read(store, "shared.json", saved), policy::load_result_e::loaded);
+  EXPECT_EQ(saved.get<std::string>("root.uniqueid"), "11111111-1111-1111-1111-111111111111");
+  EXPECT_EQ(saved.get<std::string>("password"), "hash");
+  EXPECT_FALSE(saved.get_child("root.named_devices").front().second.get<bool>("enabled"));
+  EXPECT_EQ(store.files["shared.json"], store.files["shared.json.bak"]);
+}
+
+TEST(StateStorageComposedStartup, ValidCurrentPasswordWinsAndRemainsCurrentAfterSave) {
+  memory_state_store_t store;
+  store.files["shared.json.bak"] = paired_snapshot;
+  pt::ptree changed;
+  ASSERT_EQ(load_for_read(store, "shared.json.bak", changed), policy::load_result_e::loaded);
+  changed.put("password", "new-hash");
+  changed.put("salt", "new-salt");
+  write_atomic(store, "shared.json", changed);
+  ASSERT_TRUE(startup_then_save(store, false));
+  pt::ptree saved;
+  ASSERT_EQ(load_for_read(store, "shared.json.bak", saved), policy::load_result_e::loaded);
+  EXPECT_EQ(saved.get<std::string>("password"), "new-hash");
+  EXPECT_EQ(saved.get<std::string>("salt"), "new-salt");
+}
+
+TEST(StateStorageComposedStartup, RunningHostSaveCannotRollBackChangedCredentialOnlyPrimary) {
+  memory_state_store_t store;
+  store.files["shared.json"] = paired_snapshot;
+  ASSERT_TRUE(startup_then_save(store, false));
+  // Credentials changed after the host loaded its in-memory client snapshot.
+  store.files["shared.json"] = R"({"username":"owner","password":"new-hash","salt":"new-salt"})";
+  const auto original = store.files;
+  EXPECT_FALSE(save_running_host_metadata(store, "11111111-1111-1111-1111-111111111111"));
+  EXPECT_EQ(store.files, original);
+}
