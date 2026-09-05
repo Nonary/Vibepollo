@@ -50,6 +50,7 @@
 #include "globals.h"
 #include "hdr_request_policy.h"
 #include "httpcommon.h"
+#include "http_pairing_policy.h"
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
@@ -2190,7 +2191,8 @@ namespace nvhttp {
       bool input_only,
       const args_t &args,
       const verified_client_t &verified_client,
-      const resolved_client_identity_t *resolved_client_identity
+      const resolved_client_identity_t *resolved_client_identity,
+      bool use_app_color_preference = true
     ) {
       auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
 
@@ -2474,7 +2476,7 @@ namespace nvhttp {
       }
       launch_session->prefer_sdr_10bit = rtsp_stream::hdr_request_policy::resolve_prefer_10bit_sdr(
         verified_client->prefer_10bit_sdr,
-        color_app_ctx ? color_app_ctx->prefer_10bit_sdr : std::nullopt
+        use_app_color_preference && color_app_ctx ? color_app_ctx->prefer_10bit_sdr : std::nullopt
       );
 #ifdef _WIN32
       {
@@ -3907,7 +3909,7 @@ namespace nvhttp {
           config::record_active_adapter_config();
         }
 
-        auto launch_session = make_launch_session_from_snapshot(false, false, args, verified_client, &request_client_identity);
+        auto launch_session = make_launch_session_from_snapshot(false, false, args, verified_client, &request_client_identity, false);
         launch_session->rtsp_source_address = request->remote_endpoint().address().to_string();
         launch_session->role_generation = launch_session->id;
         launch_session->role = synthetic_control == remote_session::control_e::input ? remote_session::role_e::input : remote_session::role_e::monitor;
