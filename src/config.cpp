@@ -33,6 +33,7 @@
 #include <nlohmann/json.hpp>
 
 // local includes
+#include "amf/amf_config_policy.h"
 #include "config.h"
 #include "config_key.h"
 #include "config_playnite.h"
@@ -880,6 +881,7 @@ namespace config {
       std::nullopt,  // high_motion_quality_boost (auto)
       std::nullopt,  // av1_screen_content (auto)
       std::nullopt,  // av1_latency_mode (auto)
+      0,  // av1_tiles (preserve client/preset behavior)
     },  // amd
 
     {
@@ -1822,6 +1824,11 @@ namespace config {
     int_f(vars, "amd_high_motion_quality_boost", video.amd.amd_high_motion_quality_boost, amd::tristate_from_view);
     int_f(vars, "amd_av1_screen_content", video.amd.amd_av1_screen_content, amd::tristate_from_view);
     int_f(vars, "amd_av1_latency_mode", video.amd.amd_av1_latency_mode, amd::av1_latency_from_view);
+    int_f(vars, "amd_av1_tiles", video.amd.amd_av1_tiles);
+    if (!amf::config_policy::valid_av1_tiles_override(video.amd.amd_av1_tiles)) {
+      BOOST_LOG(warning) << "config: amd_av1_tiles must be 0, 1, 2 or 4; using auto instead of "sv << video.amd.amd_av1_tiles;
+      video.amd.amd_av1_tiles = 0;
+    }
 
     int_f(vars, "vt_coder", video.vt.vt_coder, vt::coder_from_view);
     int_f(vars, "vt_software", video.vt.vt_allow_sw, vt::allow_software_from_view);

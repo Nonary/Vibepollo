@@ -2338,6 +2338,7 @@ namespace platf::dxgi {
       amf_cfg.high_motion_quality_boost_enable = amf_tristate(config::video.amd.amd_high_motion_quality_boost);
       amf_cfg.av1_screen_content_tools = amf_tristate(config::video.amd.amd_av1_screen_content);
       amf_cfg.av1_encoding_latency_mode = config::video.amd.amd_av1_latency_mode;
+      amf_cfg.av1_tiles = config::video.amd.amd_av1_tiles;
 
       const auto concurrent_feature_plan = ::amf::lifecycle::resolve_concurrent_session_features(
         active_encoder_count,

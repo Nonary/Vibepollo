@@ -4,6 +4,7 @@
  */
 
 #include "amf_d3d11.h"
+#include "amf_config_policy.h"
 
 #include <algorithm>
 #include <chrono>
@@ -466,35 +467,6 @@ namespace amf {
       return true;
     };
 
-    // Split-frame encoding spreads one frame across multiple VCN engines. AMF
-    // exposes no direct capability bit for it, only the instance count, and H.264
-    // has no such control at all. The driver default is already enabled on parts
-    // that support it, so read the current value first and only touch the
-    // property when this GPU actually reports more than one engine — that way a
-    // single-VCN part is never asked for something meaningless.
-    if (encoder_caps && video_format != 0) {
-      const wchar_t *instances_cap = video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_CAP_NUM_OF_HW_INSTANCES :
-                                                         AMF_VIDEO_ENCODER_AV1_CAP_NUM_OF_HW_INSTANCES;
-      const wchar_t *multi_instance_property = video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_MULTI_HW_INSTANCE_ENCODE :
-                                                                   AMF_VIDEO_ENCODER_AV1_MULTI_HW_INSTANCE_ENCODE;
-      amf_int64 hw_instances = 0;
-      if (encoder_caps->GetProperty(instances_cap, &hw_instances) == AMF_OK && hw_instances > 1) {
-        amf_bool current_multi_instance = false;
-        const bool have_current = encoder->GetProperty(multi_instance_property, &current_multi_instance) == AMF_OK;
-        if (have_current && current_multi_instance) {
-          BOOST_LOG(info) << "AMF: split-frame encoding already enabled by the driver across "
-                          << hw_instances << " VCN instances";
-        } else if (set_verified_bool(multi_instance_property, true, "split-frame encoding")) {
-          BOOST_LOG(info) << "AMF: enabled split-frame encoding across " << hw_instances << " VCN instances";
-        } else {
-          // Not fatal: the encoder is perfectly usable on a single instance.
-          BOOST_LOG(info) << "AMF: split-frame encoding unavailable on this driver; continuing on one VCN instance";
-        }
-      } else {
-        BOOST_LOG(debug) << "AMF: split-frame encoding not applicable (hw_instances=" << hw_instances << ')';
-      }
-    }
-
     if (video_format == 0) {
       // H.264
       if (config.usage && !set_verified_int64(AMF_VIDEO_ENCODER_USAGE, *config.usage, "H.264 usage preset")) return false;
@@ -805,9 +777,18 @@ namespace amf {
               "AV1 intra-refresh stripes")) return false;
       }
 
-      // Tiles per frame
-      if (client_config.slicesPerFrame > 1 &&
-          !set_verified_int64(AMF_VIDEO_ENCODER_AV1_TILES_PER_FRAME, client_config.slicesPerFrame, "AV1 tiles per frame")) return false;
+      const auto tiles = config_policy::av1_tiles_request(config.av1_tiles, client_config.slicesPerFrame);
+      if (tiles) {
+        // AMF may round tile counts to a supported layout. Unlike a strict enum
+        // setting, a different positive readback is not an application failure.
+        const auto tile_result = encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_TILES_PER_FRAME, static_cast<amf_int64>(*tiles));
+        if (tile_result != AMF_OK) {
+          BOOST_LOG(warning) << "AMF: failed to request AV1 tiles (requested=" << *tiles
+                             << ", result=" << tile_result << ')';
+          return false;
+        }
+        // Read back after Init, when the driver has the final frame dimensions.
+      }
 
       // Statistics feedback is applied per input surface in encode_frame().
     }
@@ -988,6 +969,26 @@ namespace amf {
       if (config.pa_activity_type && !set_verified_int64(AMF_PA_ACTIVITY_TYPE, *config.pa_activity_type, "PA activity type")) return false;
     }
 
+    // USAGE configures a parameter set, so request this hint only after usage,
+    // rate control and PA. Neither NUM_OF_HW_INSTANCES nor a true readback proves
+    // the codec/frame is being split; the driver decides using its own rules.
+    // https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/585
+    if (encoder_caps && video_format != 0) {
+      const wchar_t *instances_cap = video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_CAP_NUM_OF_HW_INSTANCES :
+                                                         AMF_VIDEO_ENCODER_AV1_CAP_NUM_OF_HW_INSTANCES;
+      const wchar_t *multi_instance_property = video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_MULTI_HW_INSTANCE_ENCODE :
+                                                                   AMF_VIDEO_ENCODER_AV1_MULTI_HW_INSTANCE_ENCODE;
+      amf_int64 hw_instances = 0;
+      if (encoder_caps->GetProperty(instances_cap, &hw_instances) == AMF_OK && hw_instances > 1) {
+        amf_bool current_hint = false;
+        if (encoder->GetProperty(multi_instance_property, &current_hint) != AMF_OK || !current_hint) {
+          if (!set_verified_bool(multi_instance_property, true, "split-frame hint")) {
+            BOOST_LOG(info) << "AMF: split-frame hint was not accepted; continuing with driver-selected scheduling";
+          }
+        }
+      }
+    }
+
     // NOTE: LOWLATENCY_MODE is intentionally NOT forced here.
     //
     // Previously this block hard-coded AMF_VIDEO_ENCODER_(HEVC_)LOWLATENCY_MODE = true
@@ -1094,6 +1095,39 @@ namespace amf {
 
       // Successfully created and initialized the encoder
       break;
+    }
+
+    if (video_format != 0) {
+      const wchar_t *multi_instance_property = video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_MULTI_HW_INSTANCE_ENCODE :
+                                                                   AMF_VIDEO_ENCODER_AV1_MULTI_HW_INSTANCE_ENCODE;
+      amf_bool applied_hint = false;
+      const auto hint_result = encoder->GetProperty(multi_instance_property, &applied_hint);
+      BOOST_LOG(info) << "AMF: split-frame hint after Init="
+                      << (hint_result == AMF_OK ? (applied_hint ? "true" : "false") : "unavailable")
+                      << "; active multi-engine encoding is not verified";
+    }
+    if (video_format == 2) {
+      const auto requested_tiles = config_policy::av1_tiles_request(config.av1_tiles, client_config.slicesPerFrame);
+      amf_int64 reported_tiles = 0;
+      const auto tile_result = encoder->GetProperty(AMF_VIDEO_ENCODER_AV1_TILES_PER_FRAME, &reported_tiles);
+      if (tile_result == AMF_OK && reported_tiles > 0) {
+        BOOST_LOG(info) << "AMF: AV1 tiles after Init (host_override=" << config.av1_tiles
+                        << ", client_slices=" << client_config.slicesPerFrame
+                        << ", requested=" << requested_tiles.value_or(0)
+                        << ", driver_reported=" << reported_tiles
+                        << "; requested=0 means preset default, not proof of multi-engine encoding)";
+        if (requested_tiles && reported_tiles != *requested_tiles) {
+          BOOST_LOG(warning) << "AMF: driver adjusted AV1 tile request from " << *requested_tiles
+                             << " to " << reported_tiles << "; this is not an exact tile-count comparison";
+        }
+      } else {
+        BOOST_LOG(warning) << "AMF: AV1 tile count unavailable after Init (result=" << tile_result
+                           << ", reported=" << reported_tiles << ')';
+        if (requested_tiles) {
+          // Do not silently label an unverifiable override as a successful trial.
+          return false;
+        }
+      }
     }
 
     // Some runtimes accept a property before Init but substitute a different
@@ -1375,7 +1409,7 @@ namespace amf {
                     << ", lookahead=" << preanalysis_lookahead_depth
                     << ", input_queue=" << encoder_input_queue_size
                     << ", input_surfaces=" << active_input_surface_count
-                    << ", slices=" << client_config.slicesPerFrame << ")";
+                    << ", client_slices=" << client_config.slicesPerFrame << ")";
     return true;
   }
 

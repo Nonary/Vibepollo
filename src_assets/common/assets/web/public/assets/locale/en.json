@@ -453,6 +453,8 @@
     "amd_smart_access_video": "AMD SmartAccess Video",
     "amd_smart_access_video_desc": "Controls SmartAccess Video for native AMF when the installed driver supports it. Auto leaves the driver default unchanged.",
     "amd_av1_latency_lowest": "lowest -- lowest latency (highest power)",
+    "amd_av1_tiles": "AMF AV1 Tiles (Experimental)",
+    "amd_av1_tiles_desc": "Native AMF AV1 only: 0 preserves client/preset behavior; 1, 2 or 4 requests a tile count. The driver may adjust it. More tiles do not prove multi-engine encoding or guarantee lower latency. Configure in sunshine.conf and reconnect to compare.",
     "amd_av1_latency_mode": "AMF AV1 Encoding Latency Mode",
     "amd_av1_latency_mode_desc": "Sets the AV1 encoding-latency tier on the native AMF encoder (amdvce). Lower tiers finish each frame faster at the cost of higher power draw. 'auto' leaves the driver default. AV1 only; only applies to the native amdvce encoder.",
     "amd_av1_latency_none": "none -- balance latency and power",

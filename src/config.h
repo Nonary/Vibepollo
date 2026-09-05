@@ -117,6 +117,7 @@ namespace config {
       std::optional<int> amd_high_motion_quality_boost;  // High-motion quality boost: 1=on, 0=off
       std::optional<int> amd_av1_screen_content;  // AV1 screen-content tools: 1=on, 0=off
       std::optional<int> amd_av1_latency_mode;  // AV1 encoding-latency mode (0-3)
+      int amd_av1_tiles;  // Native AV1 tile override (0=auto; experimental 1/2/4)
     } amd;
 
     struct {

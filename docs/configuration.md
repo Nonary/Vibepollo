@@ -3712,6 +3712,29 @@ runtime version is written to the log on every AMD HDR HEVC attempt (search for
     </tr>
 </table>
 
+### amd_av1_tiles
+
+Experimental AV1 tile-count override for the native `amdvce` encoder only. Set this in `sunshine.conf`.
+
+| Value | Behavior |
+| --- | --- |
+| `0` (default) | Preserve the client's tile/slice request and the usage-preset default. |
+| `1`, `2`, `4` | Request this many AV1 tiles, overriding the client request. |
+
+Example: `amd_av1_tiles = 2`. Reconnect the stream after changing this setting.
+Invalid values fall back to `0`. This does not affect H.264, HEVC or `amdvce_legacy`.
+
+AMF may adjust the requested tile count for its supported layout. The session log reports the request and
+the driver-reported count **after encoder initialization**; these are not a bitstream inspection or proof
+of multi-engine split-frame encoding. The split-frame hint is likewise only a driver recommendation.
+More tiles are not guaranteed to improve latency and can trade compression efficiency for parallelism.
+See [AMD's AV1 tile documentation](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/master/amf/doc/AMF_Video_Encode_AV1_API.md)
+and [AMD's split-frame explanation](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/585#issuecomment-3755732553).
+
+For a controlled comparison, repeat the same scene with `1`, `2` and `4` at identical resolution, FPS,
+bitrate and HDR settings. Check the reported tile count, image quality, dropped frames and latency
+distribution, not only a single maximum. Restore `0` if there is no repeatable benefit.
+
 ### amd_av1_latency_mode
 
 <table>

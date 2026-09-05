@@ -712,7 +712,8 @@ namespace video {
           << "|av1=" << config::video.av1_mode
           << "|amd_coder=" << config::video.amd.amd_coder
           << "|amd_ltr=" << config::video.amd.amd_ltr_frames
-          << "|amd_queue=" << config::video.amd.amd_input_queue_size;
+          << "|amd_queue=" << config::video.amd.amd_input_queue_size
+          << "|amd_av1_tiles=" << config::video.amd.amd_av1_tiles;
       append_optional("amd_usage_h264", config::video.amd.amd_usage_h264);
       append_optional("amd_usage_hevc", config::video.amd.amd_usage_hevc);
       append_optional("amd_usage_av1", config::video.amd.amd_usage_av1);

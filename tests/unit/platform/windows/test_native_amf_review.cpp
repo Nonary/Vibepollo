@@ -4,6 +4,7 @@
  */
 
 #include "src/amf/amf_lifecycle.h"
+#include "src/amf/amf_config_policy.h"
 #include "src/platform/windows/capture_gpu_policy.h"
 
 #include <array>
@@ -22,6 +23,27 @@
 using namespace std::chrono_literals;
 
 namespace {
+
+  bool av1_tiles_auto_preserves_client_and_preset_behavior() {
+    using amf::config_policy::av1_tiles_request;
+    return !av1_tiles_request(0, 0) && !av1_tiles_request(0, 1) &&
+           av1_tiles_request(0, 2) == 2 && av1_tiles_request(0, 8) == 8;
+  }
+
+  bool av1_tiles_override_includes_explicit_single_tile() {
+    using amf::config_policy::av1_tiles_request;
+    return av1_tiles_request(1, 4) == 1 && av1_tiles_request(2, 1) == 2 &&
+           av1_tiles_request(4, 1) == 4;
+  }
+
+  bool av1_tiles_rejects_invalid_host_overrides() {
+    using namespace amf::config_policy;
+    return valid_av1_tiles_override(0) && valid_av1_tiles_override(1) &&
+           valid_av1_tiles_override(2) && valid_av1_tiles_override(4) &&
+           !valid_av1_tiles_override(-1) && !valid_av1_tiles_override(3) &&
+           !valid_av1_tiles_override(8) && !av1_tiles_request(3, 1) &&
+           av1_tiles_request(-1, 8) == 8;
+  }
 
   bool fresh_cursor_capture_releases_output_before_caching_desktop() {
     std::vector<int> commands;
@@ -644,7 +666,10 @@ namespace {
 #ifdef SUNSHINE_AMF_LIFECYCLE_STANDALONE
 
 int main() {
-  return fresh_cursor_capture_releases_output_before_caching_desktop() &&
+  return av1_tiles_auto_preserves_client_and_preset_behavior() &&
+             av1_tiles_override_includes_explicit_single_tile() &&
+             av1_tiles_rejects_invalid_host_overrides() &&
+             fresh_cursor_capture_releases_output_before_caching_desktop() &&
              mouse_only_capture_uses_unmodified_cached_desktop() &&
              failed_capture_handoff_is_not_reported_as_a_valid_frame() &&
              synchronous_release_during_submit_is_reentrant_safe() &&
@@ -678,6 +703,18 @@ int main() {
 }
 
 #else
+
+TEST(SunshineNativeAmfReview, Av1TilesAutoPreservesClientAndPresetBehavior) {
+  EXPECT_TRUE(av1_tiles_auto_preserves_client_and_preset_behavior());
+}
+
+TEST(SunshineNativeAmfReview, Av1TilesOverrideIncludesExplicitSingleTile) {
+  EXPECT_TRUE(av1_tiles_override_includes_explicit_single_tile());
+}
+
+TEST(SunshineNativeAmfReview, Av1TilesRejectsInvalidHostOverrides) {
+  EXPECT_TRUE(av1_tiles_rejects_invalid_host_overrides());
+}
 
 TEST(WindowsCaptureGpuPolicy, FreshCursorFrameIsReleasedBeforeBackgroundCopy) {
   EXPECT_TRUE(fresh_cursor_capture_releases_output_before_caching_desktop());
