@@ -175,13 +175,19 @@ installation_started=yes
 "$steamos_dir/install-user.sh" --payload "$payload" --no-enable
 if [[ -n "$service_environment" ]]; then
   install -Dm600 -- "$backup/runtime.env" "$install_root/local-runtime.env"
+  # EnvironmentFile takes one unquoted path, including embedded spaces.
   # Escape systemd specifiers; quotes and newlines in this local path are refused.
   [[ "$install_root" != *[$'\n\r"\\']* ]] || die 'installation path cannot be represented in the service environment'
   env_path=${install_root//%/%%}/local-runtime.env
   install -d -- "$(dirname -- "$dropin")"
-  printf '[Service]\nEnvironmentFile="%s"\n' "$env_path" > "$dropin"
+  printf '[Service]\nEnvironmentFile=%s\n' "$env_path" > "$dropin"
 fi
 systemctl --user daemon-reload
+if [[ -n "$service_environment" ]]; then
+  loaded_environment=$(systemctl --user show "$vibepollo_unit" --property=EnvironmentFiles --value)
+  [[ "$loaded_environment" == "$install_root/local-runtime.env (ignore_errors=no)" ]] ||
+    die 'systemd did not load the private encoder environment file'
+fi
 cutover_started=yes
 systemctl --user disable --now "$sunshine_unit"
 systemctl --user is-active --quiet "$sunshine_unit" && die 'Sunshine did not stop'
@@ -189,9 +195,11 @@ systemctl --user is-active --quiet "$sunshine_unit" && die 'Sunshine did not sto
 # The source service is now stopped, so the backup includes its final pairing
 # state. Keep Sunshine's original directory untouched throughout the cutover.
 migration_started=yes
-python3 - "$source_config" "$target_config" "$backup/sunshine" <<'PY'
+python3 - "$source_config" "$target_config" "$backup/sunshine" "$steamos_dir/local" <<'PY'
 import json, os, pathlib, re, shutil, stat, sys
-source, target, backup = map(pathlib.Path, sys.argv[1:])
+source, target, backup = map(pathlib.Path, sys.argv[1:4])
+sys.path.insert(0, sys.argv[4])
+from pairing_migration import normalize_pairing_state
 count = size = 0
 for directory, dirs, files in os.walk(source, followlinks=False):
     for name in dirs + files:
@@ -213,6 +221,7 @@ if not old.is_file():
 path_keys = {'file_state', 'credentials_file', 'file_apps', 'pkey', 'cert', 'log_path', 'vibeshine_file_state'}
 lines = []
 apps = target / 'apps.json'
+pairing_state = target / 'sunshine_state.json'
 external_files = {}
 for line in old.read_text().splitlines(keepends=True):
     match = re.match(r'\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*$', line)
@@ -248,9 +257,17 @@ for line in old.read_text().splitlines(keepends=True):
             apps = pathlib.Path(migrated_value)
             if not apps.is_absolute():
                 apps = target / apps
+        if key == 'file_state' and value:
+            pairing_state = pathlib.Path(line.partition('=')[2].strip())
+            if not pairing_state.is_absolute():
+                pairing_state = target / pairing_state
     lines.append(line)
 (target / 'vibepollo.conf').write_text(''.join(lines))
 old.unlink()
+if pairing_state.is_file():
+    consolidated = normalize_pairing_state(pairing_state)
+    if consolidated:
+        print(f'Consolidated {consolidated} legacy pairing aliases; all distinct client certificates retained.')
 if apps.is_file():
     def remap(value):
         if isinstance(value, str):
@@ -266,26 +283,36 @@ if apps.is_file():
         apps.write_text(json.dumps(migrated, indent=2) + '\n')
 PY
 systemctl --user enable "$vibepollo_unit"
+service_started_at=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
 systemctl --user restart "$vibepollo_unit"
 expected_executable=$(readlink -f -- "$install_root/current/bin/vibepollo")
+gamestream_port=$((https_port - 1))
 ready_pid=
 ready_once() {
-  local main_pid executable listeners found=no
+  local main_pid executable listeners found port
   systemctl --user is-active --quiet "$vibepollo_unit" || return 1
   main_pid=$(systemctl --user show "$vibepollo_unit" --property=MainPID --value) || return 1
   [[ "$main_pid" =~ ^[1-9][0-9]*$ ]] || return 1
   executable=$(readlink -f -- "/proc/$main_pid/exe") || return 1
   [[ "$executable" == "$expected_executable" ]] || return 1
-  listeners=$(ss -H -ltnp "( sport = :$https_port )") || return 1
-  while [[ "$listeners" =~ pid=([0-9]+), ]]; do
-    [[ "${BASH_REMATCH[1]}" == "$main_pid" ]] || return 1
-    found=yes
-    listeners=${listeners#*"${BASH_REMATCH[0]}"}
+  # The config UI starts before encoder probing and pairing-state loading.
+  # GameStream opens only after those startup steps, so UI readiness alone
+  # could commit a cutover immediately before the host reports a fatal error.
+  for port in "$https_port" "$gamestream_port"; do
+    found=no
+    listeners=$(ss -H -ltnp "( sport = :$port )") || return 1
+    while [[ "$listeners" =~ pid=([0-9]+), ]]; do
+      [[ "${BASH_REMATCH[1]}" == "$main_pid" ]] || return 1
+      found=yes
+      listeners=${listeners#*"${BASH_REMATCH[0]}"}
+    done
+    [[ "$found" == yes ]] || return 1
   done
-  [[ "$found" == yes ]] || return 1
   ready_pid=$main_pid
-  curl --insecure --fail --silent --show-error --output /dev/null --connect-timeout 1 --max-time 2 \
-    "https://127.0.0.1:$https_port/" > /dev/null 2>&1
+  curl --noproxy '*' --insecure --fail --silent --show-error --output /dev/null --connect-timeout 1 --max-time 2 \
+    "https://127.0.0.1:$https_port/" > /dev/null 2>&1 || return 1
+  curl --noproxy '*' --fail --silent --show-error --output /dev/null --connect-timeout 1 --max-time 2 \
+    "http://127.0.0.1:$gamestream_port/serverinfo" > /dev/null 2>&1
 }
 ready=no
 deadline=$((SECONDS + 45))
@@ -304,7 +331,13 @@ while ((SECONDS < deadline)); do
   systemctl --user is-failed --quiet "$vibepollo_unit" && break
   sleep 1
 done
-[[ "$ready" == yes ]] || die 'Vibepollo service and HTTPS readiness check failed'
+if [[ "$ready" != yes ]]; then
+  systemctl --user status "$vibepollo_unit" --no-pager --full > "$backup/service-status.log" 2>&1 || true
+  if command -v journalctl >/dev/null; then
+    journalctl --user -u "$vibepollo_unit" --since "$service_started_at" --no-pager > "$backup/service-journal.log" 2>&1 || true
+  fi
+  die "Vibepollo service and HTTPS readiness check failed; diagnostics: $backup"
+fi
 success=yes
 printf 'Vibepollo is active at https://localhost:%s/. Sunshine settings and pairings were copied.\n' "$https_port"
 printf 'Sunshine is disabled; its original profile and private backup remain at %s.\n' "$backup"

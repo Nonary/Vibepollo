@@ -91,8 +91,10 @@ credentials. PipeWire and the physical display remain owned by the session.
 - Gaming Mode automatically uses Gamescope's compositor-owned PipeWire stream,
   negotiates GPU DMA-BUFs when the encoder can import them, and asks stock
   Gamescope to downscale to the client bounds without changing the panel mode.
-- Desktop Mode automatically falls through to the existing KWin, KMS, portal,
-  or X11 backends. The optional `vibeshine_drm` pool remains a Desktop Mode
+- Desktop Mode prefers native KWin capture before enumerating the portal, so
+  Automatic capture does not open a screen-selection dialog on Plasma. KMS,
+  portal, and X11 remain fallbacks when native compositor capture is unavailable.
+  The optional `vibeshine_drm` pool remains a Desktop Mode
   machine-package feature rather than a Gaming Mode dependency.
 - Local audio playback follows the Moonlight client's setting. Steam titles are handed to the Steam client
   already running in Gaming Mode instead of starting a second Steam/Proton
