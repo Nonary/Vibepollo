@@ -662,9 +662,30 @@ nvidia_gpu_present() {
   return 1
 }
 
+find_host_readiness_log() {
+  local host_log_directory=$1 expected_owner=$2
+  local candidate attributes count=0
+  local -n previous_logs=$3
+  host_log=''
+  [[ -d "$host_log_directory" && ! -L "$host_log_directory" ]] || return 1
+  for candidate in "$host_log_directory"/vibepollo-*.log; do
+    [[ -e "$candidate" || -L "$candidate" ]] || continue
+    [[ -z ${previous_logs[$candidate]:-} ]] || continue
+    ((count += 1))
+    ((count == 1)) || return 1
+    [[ "${candidate##*/}" =~ ^vibepollo-[0-9]{8}-[0-9]{6}-[0-9]{3}\.log$ &&
+       -f "$candidate" && ! -L "$candidate" ]] || return 1
+    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$candidate") || return 1
+    [[ "$attributes" == "${expected_owner}:600:regular file" ]] || return 1
+    host_log=$candidate
+  done
+  ((count == 1))
+}
+
 run_host() {
-  local host_capabilities host_log='' host_log_directory=/run/vibepollo/host/logs
-  local host_log_prefix host_pid readiness_attempt state status shutting_down=0
+  local host_capabilities host_log='' host_log_directory=$machine_profile/logs
+  local host_log_prefix candidate host_pid readiness_attempt state status shutting_down=0
+  local -A previous_host_logs=()
   # Linux private displays are capture-ready through the Vibeshine DRM/KMS
   # path.  Leaving desktop sessions to inherit a compositor capture setting
   # makes a newly reserved output disappear during KWin's topology refresh,
@@ -681,11 +702,24 @@ run_host() {
     fail 'could not inspect private machine-host capabilities'
   [[ "$host_capabilities" == "$machine_host_executable cap_sys_admin,cap_sys_nice=p" ]] ||
     fail 'private machine-host executable has unsafe capabilities'
-  host_log_prefix=/run/vibepollo/host/generation-$session_generation.log
+  # A stable basename lets the logger retain at most 30 launches across
+  # controller generations and boots, with up to 10 MiB per launch.
+  host_log_prefix=$machine_profile/vibepollo.log
   [[ -d /run/vibepollo/host && ! -L /run/vibepollo/host &&
      $(/usr/bin/stat -c '%U:%G:%a:%F' -- /run/vibepollo/host) == "${service_user}:${service_user}:700:directory" ]] ||
     fail 'host runtime directory is unsafe'
-  [[ ! -e "$host_log_directory" && ! -L "$host_log_directory" ]] || fail 'host readiness log directory is unsafe'
+  if [[ ! -e "$host_log_directory" && ! -L "$host_log_directory" ]]; then
+    /usr/bin/mkdir -m 700 -- "$host_log_directory"
+  fi
+  [[ -d "$host_log_directory" && ! -L "$host_log_directory" &&
+     $(/usr/bin/stat -c '%U:%G:%a:%F' -- "$host_log_directory") == "${service_user}:${service_user}:700:directory" ]] ||
+    fail 'host readiness log directory is unsafe'
+  # Retained logs may already contain readiness messages. Snapshot their names
+  # before launch so only a newly created session log can make this host ready.
+  for candidate in "$host_log_directory"/vibepollo-*.log; do
+    [[ -e "$candidate" || -L "$candidate" ]] || continue
+    previous_host_logs["$candidate"]=1
+  done
   overrides+=("log_path=$host_log_prefix")
   if [[ "$session_role" == greeter ]]; then
     # The greeter has no interactive fallback, so pin the proven NVENC path on
@@ -716,23 +750,6 @@ run_host() {
   # it is releasing encoder and DRM resources.
   trap mark_host_shutdown TERM INT HUP
 
-  find_host_readiness_log() {
-    local candidate attributes count=0
-    host_log=''
-    [[ -d "$host_log_directory" && ! -L "$host_log_directory" ]] || return 1
-    for candidate in "$host_log_directory"/"generation-${session_generation}-"*.log; do
-      [[ -e "$candidate" || -L "$candidate" ]] || continue
-      ((count += 1))
-      ((count == 1)) || return 1
-      [[ "$candidate" =~ ^/run/vibepollo/host/logs/generation-${session_generation}-[0-9]{8}-[0-9]{6}-[0-9]{3}\.log$ &&
-         -f "$candidate" && ! -L "$candidate" ]] || return 1
-      attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$candidate") || return 1
-      [[ "$attributes" == "${service_user}:${service_user}:600:regular file" ]] || return 1
-      host_log=$candidate
-    done
-    ((count == 1))
-  }
-
   for ((readiness_attempt=0; readiness_attempt<400; ++readiness_attempt)); do
     if ((shutting_down)); then break; fi
     if ! /usr/bin/kill -0 "$host_pid" 2>/dev/null; then
@@ -747,7 +764,7 @@ run_host() {
     # KMS capture is instantiated by the first stream and is verified after a
     # client connects; startup readiness proves the listener and the mandatory
     # H.264 encoder. HEVC and AV1 depend on the GPU generation and are optional.
-    if find_host_readiness_log &&
+    if find_host_readiness_log "$host_log_directory" "${service_user}:${service_user}" previous_host_logs &&
        /usr/bin/grep -Fq 'Configuration UI available at' "$host_log" &&
        /usr/bin/grep -Fq 'Found H.264 encoder:' "$host_log"; then
       local codecs=H.264

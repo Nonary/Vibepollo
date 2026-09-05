@@ -14,6 +14,10 @@ Vibepollo follows the normal machine-wide Linux layout:
   greeter users must not be able to change it.
 - `/var/lib/vibepollo` is persistent machine state, owned only by the
   unprivileged `vibepollo` service account and mode `0700`.
+- `/var/lib/vibepollo/logs/vibepollo-<timestamp>.log` contains persistent
+  host logs, owned by the service account with mode `0600` in a `0700`
+  directory. The logger retains at most 30 launches and 10 MiB per launch.
+  Startup readiness ignores logs that existed before the current host launch.
 - `/run/vibepollo` contains short-lived root-created coordination records.
 - User homes are neither the authoritative configuration store nor a runtime
   dependency after a one-time legacy migration.
