@@ -5608,6 +5608,11 @@ namespace video {
     }
 
     while (encode_session_ctx_queue.running()) {
+      // Admit queued peers before checking shutdown. A peer can disconnect
+      // while the first session is still waiting for its capture display.
+      while (auto pending_ctx = encode_session_ctx_queue.pop(0ms)) {
+        synced_session_ctxs.emplace_back(std::make_unique<sync_session_ctx_t>(std::move(*pending_ctx)));
+      }
       // Capture readiness may outlive the client. Release stopped sessions here
       // rather than waiting for a display before acknowledging their shutdown.
       std::erase_if(synced_session_ctxs, [](const auto &ctx) {
