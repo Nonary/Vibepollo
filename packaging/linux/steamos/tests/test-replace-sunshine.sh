@@ -108,17 +108,17 @@ assert_source_preserved
 cmp "$source_config/sunshine_state.json" "$target_config/sunshine_state.json"
 cmp "$source_config/credentials/cakey.pem" "$target_config/credentials/cakey.pem"
 cmp "$source_config/credentials/cacert.pem" "$target_config/credentials/cacert.pem"
-! rg -q '^(capture|output_name)\s*=' "$target_config/vibepollo.conf"
-rg -q '^encoder = vaapi$' "$target_config/vibepollo.conf"
-rg -Fq "file_state = $target_config/sunshine_state.json" "$target_config/vibepollo.conf"
-rg -Fq "pkey = $target_config/credentials/cakey.pem" "$target_config/vibepollo.conf"
-rg -Fq "$target_config/cover.png" "$target_config/apps.json"
+! grep -Eq '^(capture|output_name)[[:space:]]*=' "$target_config/vibepollo.conf"
+grep -Eq '^encoder = vaapi$' "$target_config/vibepollo.conf"
+grep -Fq "file_state = $target_config/sunshine_state.json" "$target_config/vibepollo.conf"
+grep -Fq "pkey = $target_config/credentials/cakey.pem" "$target_config/vibepollo.conf"
+grep -Fq "$target_config/cover.png" "$target_config/apps.json"
 [[ $(stat -c %a "$target_config") == 700 ]]
 backup_dirs=("$case_dir/home/data/"sunshine-before-vibepollo-*)
 [[ ${#backup_dirs[@]} == 1 && $(stat -c %a "${backup_dirs[0]}") == 700 ]]
 cmp "$case_dir/runtime.env" "$case_dir/home/data/vibepollo-steamos/local-runtime.env"
-rg -q 'EnvironmentFile=' "$case_dir/home/config/systemd/user/vibepollo-steamos.service.d/90-local-runtime.conf"
-rg -q 'sport = :48001' "$case_dir/calls"
+grep -Eq 'EnvironmentFile=' "$case_dir/home/config/systemd/user/vibepollo-steamos.service.d/90-local-runtime.conf"
+grep -Eq 'sport = :48001' "$case_dir/calls"
 
 # A profile must never be overwritten, even if it is empty.
 new_case existing
@@ -136,7 +136,7 @@ cp "$source_config/sunshine.conf" "$case_dir/original/sunshine.conf"
 run_replace
 assert_source_preserved
 cmp "$case_dir/external-state.json" "$target_config/imported-file_state.json"
-rg -Fq "credentials_file = $target_config/imported-file_state.json" "$target_config/vibepollo.conf"
+grep -Fq "credentials_file = $target_config/imported-file_state.json" "$target_config/vibepollo.conf"
 
 # Failed restart restores the pre-staged bundle and private driver environment.
 new_case rollback
@@ -152,7 +152,7 @@ if run_replace --service-environment "$case_dir/runtime.env"; then echo 'ERROR: 
 assert_rolled_back
 [[ $(readlink "$case_dir/home/data/vibepollo-steamos/current") == "$old_release" ]]
 cmp "$case_dir/old-launcher" "$case_dir/home/.local/bin/vibepollo-steamos-session"
-rg -q 'PREVIOUS=yes' "$case_dir/home/config/systemd/user/vibepollo-steamos.service.d/90-local-runtime.conf"
+grep -Eq 'PREVIOUS=yes' "$case_dir/home/config/systemd/user/vibepollo-steamos.service.d/90-local-runtime.conf"
 [[ $(cat "$case_dir/home/data/vibepollo-steamos/local-runtime.env") == previous ]]
 
 # Being active alone is insufficient: a failed HTTPS endpoint rolls back too.
@@ -167,7 +167,7 @@ new_case stale
 touch "$case_dir/stale-listener" "$case_dir/failed"
 if run_replace; then echo 'ERROR: old listener accepted as Vibepollo' >&2; exit 1; fi
 assert_rolled_back
-! rg -q 'HTTPS readiness' "$case_dir/calls"
+! grep -Eq 'HTTPS readiness' "$case_dir/calls"
 
 new_case disabled
 printf disabled > "$case_dir/sunshine.enabled"
@@ -183,18 +183,18 @@ mkdir -p "$case_dir/bad-payload"
 cp -a "$test_root/payload/." "$case_dir/bad-payload/"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$case_dir/bad-payload/bin/vibepollo"
 if env "${test_env[@]}" bash "$script" --payload "$case_dir/bad-payload"; then exit 1; fi
-! rg -q '(disable|stop|restart|start) ' "$case_dir/calls"
+! grep -Eq '(disable|stop|restart|start) ' "$case_dir/calls"
 assert_rolled_back
 
 new_case injection
 printf 'LD_LIBRARY_PATH=$(touch %s/injected)\n' "$case_dir" > "$case_dir/runtime.env"
 if run_replace --service-environment "$case_dir/runtime.env"; then exit 1; fi
 [[ ! -e "$case_dir/injected" ]]
-! rg -q '(disable|stop|restart|start) ' "$case_dir/calls"
+! grep -Eq '(disable|stop|restart|start) ' "$case_dir/calls"
 assert_rolled_back
 new_case marker
 printf 'LIBVA_DRIVERS_PATH=%s\n' "$case_dir/driver/lib/dri" > "$case_dir/runtime.env"
 if run_replace --service-environment "$case_dir/runtime.env"; then exit 1; fi
-! rg -q '(disable|stop|restart|start) ' "$case_dir/calls"
+! grep -Eq '(disable|stop|restart|start) ' "$case_dir/calls"
 assert_rolled_back
 printf 'Sunshine replacement migration and rollback tests passed\n'
