@@ -36,6 +36,7 @@ body {
   font-size: var(--vs-type-size-body, 0.9375rem);
   line-height: var(--vs-type-line-height-body, 1.4667);
   text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
 #app {
@@ -55,6 +56,7 @@ body {
   color: var(--vs-color-text-primary);
   font-weight: var(--vs-type-weight-semibold, 600);
   text-wrap: balance;
+  letter-spacing: -0.02em;
 }
 
 :where(ul, ol) {
@@ -158,6 +160,7 @@ hr {
   inline-size: min(100%, var(--vs-content-width-general, 80rem));
   margin-inline: auto;
   padding: var(--vs-page-padding-desktop, var(--vs-space-32));
+  padding-block-start: var(--vs-space-40);
 }
 
 .vs-page--settings,

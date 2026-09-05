@@ -6,6 +6,7 @@ import { UiIcon } from '@/components/ui';
 import { useSystemStore } from '@/stores/system';
 
 const system = useSystemStore();
+const baseUrl = import.meta.env.BASE_URL;
 const { t } = useI18n();
 const username = ref('');
 const password = ref('');
@@ -47,7 +48,7 @@ async function submit(): Promise<void> {
   <main id="main-content" class="auth-page">
     <section class="auth-panel" aria-labelledby="auth-title">
       <div class="auth-brand">
-        <img src="/images/logo-apollo-45.png" alt="" width="45" height="45" />
+        <img :src="`${baseUrl}images/logo-apollo-45.png`" alt="" width="45" height="45" />
         <span>Vibepollo</span>
       </div>
 
@@ -56,11 +57,7 @@ async function submit(): Promise<void> {
         <div>
           <h1 id="auth-title">{{ t(isSetup ? 'auth.create_first_user' : 'auth.login_title') }}</h1>
           <p>
-            {{
-              isSetup
-                ? t('ui.auth.setup_description')
-                : t('ui.auth.login_description')
-            }}
+            {{ isSetup ? t('ui.auth.setup_description') : t('ui.auth.login_description') }}
           </p>
         </div>
       </div>
@@ -114,7 +111,11 @@ async function submit(): Promise<void> {
         </label>
 
         <button class="button button--primary auth-submit" type="submit" :disabled="submitting">
-          <span>{{ submitting ? t('_common.loading') : t(isSetup ? 'auth.create_user' : 'auth.login_sign_in') }}</span>
+          <span>{{
+            submitting
+              ? t('_common.loading')
+              : t(isSetup ? 'auth.create_user' : 'auth.login_sign_in')
+          }}</span>
           <UiIcon name="chevron-right" />
         </button>
       </form>

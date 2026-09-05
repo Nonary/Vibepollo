@@ -80,7 +80,10 @@ export const useSystemStore = defineStore('system', () => {
         : theme.value;
     document.documentElement.dataset.theme = resolved;
     const themeMeta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
-    themeMeta?.setAttribute('content', resolved === 'dark' ? '#060a18' : '#fff8ee');
+    themeMeta?.setAttribute(
+      'content',
+      getComputedStyle(document.documentElement).getPropertyValue('--vs-color-bg-canvas').trim(),
+    );
   }
 
   function setTheme(value: ThemePreference): void {

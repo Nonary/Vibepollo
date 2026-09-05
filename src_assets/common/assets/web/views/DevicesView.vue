@@ -666,7 +666,7 @@ onBeforeUnmount(() => {
       <template #meta>
         <StatusBadge
           :label="t('ui.devices.count.streaming', { count: deviceCounts.streaming })"
-          tone="success"
+          :tone="deviceCounts.streaming ? 'success' : 'neutral'"
           compact
         />
         <StatusBadge
@@ -695,8 +695,6 @@ onBeforeUnmount(() => {
         </RouterLink>
       </template>
     </PageHeader>
-
-    <DisplayTopologyEditor />
 
     <div class="devices-stack">
       <InlineAlert
@@ -863,6 +861,18 @@ onBeforeUnmount(() => {
       </ul>
     </div>
 
+    <details class="devices-layout">
+      <summary>
+        <UiIcon name="devices" :size="20" />
+        <span
+          ><strong>{{ t('ui.devices.layout.title') }}</strong
+          ><span>{{ t('ui.devices.layout.description') }}</span></span
+        >
+        <UiIcon class="devices-layout__chevron" name="chevron-down" />
+      </summary>
+      <DisplayTopologyEditor />
+    </details>
+
     <section v-if="devices.length" class="devices-bulk-actions">
       <AppButton
         variant="tertiary"
@@ -902,6 +912,51 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.devices-layout {
+  border: 1px solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-card);
+  background: var(--vs-color-bg-surface);
+}
+.devices-layout > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--vs-space-16);
+  padding: var(--vs-space-20);
+  list-style: none;
+  cursor: pointer;
+  color: var(--vs-color-text-muted);
+  border-radius: inherit;
+}
+.devices-layout > summary::-webkit-details-marker {
+  display: none;
+}
+.devices-layout > summary:hover {
+  background: var(--vs-color-bg-subtle);
+}
+.devices-layout > summary > span {
+  flex: 1;
+  min-width: 0;
+}
+.devices-layout strong {
+  display: block;
+  color: var(--vs-color-text-primary);
+  font-size: var(--vs-type-size-control);
+  font-weight: var(--vs-type-weight-medium);
+}
+.devices-layout > summary > span > span {
+  display: block;
+  margin-top: var(--vs-space-4);
+  font-size: var(--vs-type-size-metadata);
+}
+.devices-layout[open] .devices-layout__chevron {
+  transform: rotate(180deg);
+}
+.devices-layout :deep(.topology-editor) {
+  border: 0;
+  border-top: 1px solid var(--vs-color-border-subtle);
+  border-radius: 0 0 var(--vs-radius-card) var(--vs-radius-card);
+}
+
 .devices-page,
 .devices-stack {
   display: grid;

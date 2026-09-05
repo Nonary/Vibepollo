@@ -69,7 +69,7 @@ test('Linux Everyday presents essentials and preserves unrelated values when sav
     dd_manual_resolution: '2560x1440',
   });
   await page.goto('/v2/settings');
-  await expect(page.getByText('Virtual screens, built for streaming')).toBeVisible();
+  await expect(page.getByText('Display readiness')).toBeVisible();
   await expect(page.getByText('Configured for direct capture')).toBeVisible();
   await expect(page.locator('#setting-virtual_display_mode option').first()).toHaveAttribute(
     'value',
@@ -100,7 +100,7 @@ test('Windows keeps automatic smoothness and platform-specific controls', async 
   await host(page, 'windows');
   await page.goto('/v2/settings');
   await expect(page.locator('#setting-frame_limiter_auto_virtual_framegen')).toBeVisible();
-  await expect(page.getByText('Virtual screens, built for streaming')).toHaveCount(0);
+  await expect(page.getByText('Display readiness')).toHaveCount(0);
   await page.goto('/v2/settings?category=display');
   await expect(page.locator('#setting-dd_use_sunshine_virtual_display_driver')).toBeVisible();
 });
@@ -372,4 +372,233 @@ test('MangoHud saves preserve later edits and report rejected requests', async (
   await expect.poll(() => calls).toBe(2);
   await expect(section.getByRole('button', { name: 'Apply', exact: true })).toBeEnabled();
   await expect(page.locator('#mangohud-fps-limit')).toHaveValue('120');
+});
+
+test('mobile navigation keeps hidden controls out of the tab order and releases the page on resize', async ({
+  page,
+}) => {
+  await host(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/v2/');
+  const menu = page.getByRole('button', { name: 'Open navigation' });
+  const navigation = page.locator('#app-navigation');
+  await menu.focus();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeFocused();
+  await menu.click();
+  const brand = navigation.getByRole('link', { name: 'Vibepollo overview' });
+  await expect(brand).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(navigation.getByRole('button', { name: 'Logout' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(brand).toBeFocused();
+  await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
+  await page.setViewportSize({ width: 1100, height: 844 });
+  await expect(navigation).not.toHaveAttribute('aria-modal', 'true');
+  await expect(page.locator('main')).not.toHaveAttribute('inert', '');
+  await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
+});
+
+test('appearance controls persist the chosen theme and follow system appearance', async ({
+  page,
+}) => {
+  await host(page);
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.goto('/v2/');
+  const appearance = page.getByRole('group', { name: 'Appearance' });
+  await appearance.getByRole('button', { name: 'Light', exact: true }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await page.reload();
+  await expect(appearance.getByRole('button', { name: 'Light', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await appearance.getByRole('button', { name: 'System', exact: true }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+});
+
+test('overview leads with readiness and keeps display guidance available on demand', async ({
+  page,
+}) => {
+  await host(page);
+  await page.goto('/v2/');
+  await expect(page.getByRole('heading', { name: 'Ready to stream' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Pair a device', exact: true })).toHaveAttribute(
+    'href',
+    '/v2/pair',
+  );
+  await expect(page.locator('.linux-capture')).not.toHaveAttribute('open', '');
+  await page.locator('.linux-capture > summary').click();
+  await expect(page.locator('.linux-capture__body')).toBeVisible();
+  await page.getByRole('link', { name: 'Pair a device', exact: true }).click();
+  await expect(page.locator('.nav-link[aria-current="page"]')).toHaveText('Devices');
+});
+
+test('overview shows repair guidance when display setup is unavailable', async ({ page }) => {
+  await host(page, 'linux', {}, false);
+  await page.goto('/v2/');
+  await expect(page.getByRole('heading', { name: 'Needs attention', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Review setup', exact: true })).toHaveAttribute(
+    'href',
+    '/v2/settings?category=display',
+  );
+  await expect(
+    page.getByRole('link', { name: 'Open Linux setup and troubleshooting' }),
+  ).toBeVisible();
+});
+
+test('unknown readiness and unavailable utilization do not render as successful measurements', async ({
+  page,
+}) => {
+  await host(page);
+  await page.route('**/api/metadata', (route) => route.fulfill({ json: { platform: 'linux' } }));
+  await page.route('**/api/host/stats', (route) =>
+    route.fulfill({ json: { cpu_percent: -1, gpu_percent: null } }),
+  );
+  await page.goto('/v2/');
+  await expect(page.locator('.readiness-panel')).toHaveAttribute('data-tone', 'neutral');
+  await expect(page.locator('.metric-grid dd')).toHaveText([
+    'Unavailable',
+    'Unavailable',
+    'Unavailable',
+    'Unavailable',
+  ]);
+  await expect(page.locator('.metric-footnote')).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Review setup', exact: true })).toBeVisible();
+});
+
+async function libraryWithMissingCovers(page: Page) {
+  await page.route('**/api/apps', (route) =>
+    route.fulfill({
+      json: {
+        apps: [
+          { uuid: 'one', name: 'Elden Ring', 'steam-id': '1245620', 'steam-managed': 'auto' },
+          { uuid: 'two', name: 'Dolphin Emulator', cmd: '/usr/bin/dolphin-emu' },
+          {
+            uuid: 'three',
+            name: 'An application with a very long localized name that should fit the available space',
+            cmd: '/some/long/path/to/a/game',
+          },
+        ],
+      },
+    }),
+  );
+  await page.route('**/api/apps/*/cover', (route) => route.fulfill({ status: 404, body: '' }));
+}
+
+test('library placeholders preserve search, keyboard selection, and list preferences', async ({
+  page,
+}) => {
+  await host(page);
+  await libraryWithMissingCovers(page);
+  await page.goto('/v2/library');
+  await expect(page.locator('.library-item__artwork-fallback')).toHaveCount(3);
+  await expect(
+    page.locator('.library-item__source').filter({ hasText: 'Steam managed' }),
+  ).toBeVisible();
+  await page.getByRole('searchbox', { name: 'Search applications' }).fill('dolphin');
+  await expect(page.locator('[data-library-item]')).toHaveCount(1);
+  await page.getByRole('option', { name: 'Dolphin Emulator' }).focus();
+  await page.keyboard.press('Space');
+  await expect(page.locator('.library-selection .vs-status-badge')).toContainText('1 selected');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.library-selection')).toHaveCount(0);
+  await page.getByRole('button', { name: 'List', exact: true }).click();
+  await expect(page).toHaveURL(/[?&]q=dolphin(?:&|$)/);
+  await page.reload();
+  await expect(page.locator('.library-collection')).toHaveClass(/library-collection--list/);
+  await expect(page.getByRole('searchbox', { name: 'Search applications' })).toHaveValue('dolphin');
+});
+
+for (const width of [320, 390, 768, 1100, 1440]) {
+  test(`main workflows reflow without horizontal scrolling at ${width}px`, async ({ page }) => {
+    await host(page);
+    await libraryWithMissingCovers(page);
+    await page.setViewportSize({ width, height: 900 });
+    for (const path of ['', 'library', 'library/new', 'devices']) {
+      await page.goto(`/v2/${path}`);
+      await expect(page.locator('main h1')).toBeVisible();
+      await expect(page.locator('.vs-loading-skeleton')).toHaveCount(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+        true,
+      );
+      await page.screenshot({
+        path: `/tmp/vibeshine-ui-results/${(path || 'overview').replaceAll('/', '-')}-${width}.png`,
+        fullPage: true,
+      });
+    }
+  });
+}
+
+test('a failed performance refresh retains the sample and visibly marks it as stale', async ({
+  page,
+}) => {
+  await host(page);
+  let unavailable = false;
+  await page.route('**/api/host/stats', (route) =>
+    unavailable
+      ? route.fulfill({ status: 503, json: { status: false } })
+      : route.fulfill({
+          json: { cpu_percent: 12, gpu_percent: 8, ram_percent: 24, vram_percent: 11 },
+        }),
+  );
+  await page.goto('/v2/');
+  await expect(page.locator('.metric-grid dd').first()).toHaveText('12%');
+  unavailable = true;
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(
+    page.getByText('Showing the last available sample. Refresh to try again.'),
+  ).toBeVisible();
+  await expect(page.locator('.metric-grid dd').first()).toHaveText('12%');
+  unavailable = false;
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.locator('.overview-stale')).toHaveCount(0);
+});
+
+for (const platform of ['linux', 'windows']) {
+  test(`application picker respects ${platform} integration availability`, async ({ page }) => {
+    await host(page, platform);
+    const playniteRequests: string[] = [];
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname.startsWith('/api/playnite/'))
+        playniteRequests.push(request.url());
+    });
+    await page.goto('/v2/library/new');
+    await page.locator('#app-name').fill('A new game');
+    await expect(
+      page.getByRole('button', { name: 'Browse Steam games', exact: true }),
+    ).toBeVisible();
+    const playnite = page.getByRole('button', { name: 'Browse Playnite games', exact: true });
+    if (platform === 'linux') {
+      await expect(playnite).toHaveCount(0);
+      await expect(
+        page.getByRole('button', { name: 'Browse Lutris games', exact: true }),
+      ).toBeVisible();
+      expect(playniteRequests).toEqual([]);
+    } else {
+      await expect(playnite).toBeVisible();
+    }
+  });
+}
+
+test('encoder failures direct the overview to diagnostics', async ({ page }) => {
+  await host(page, 'windows');
+  await page.route('**/api/metadata', (route) =>
+    route.fulfill({
+      json: {
+        platform: 'windows',
+        encoder_status: { state: 'failed', h264: false },
+      },
+    }),
+  );
+  await page.goto('/v2/');
+  await expect(page.getByRole('heading', { name: 'Needs attention', exact: true })).toBeVisible();
+  await expect(page.locator('.readiness-panel .button--primary')).toHaveAttribute(
+    'href',
+    '/v2/logs',
+  );
 });

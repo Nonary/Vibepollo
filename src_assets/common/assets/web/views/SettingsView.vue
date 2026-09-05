@@ -945,9 +945,6 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
 
         <template v-else-if="configLoaded">
           <header class="settings-category-heading" aria-live="polite" aria-atomic="true">
-            <span>{{
-              t(isSearching ? 'ui.settings.all_settings' : 'ui.settings.selected_category')
-            }}</span>
             <h2>
               {{ isSearching ? t('ui.settings.search_results') : categoryLabel(category.id) }}
             </h2>
@@ -1375,7 +1372,9 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
   display: grid;
   width: 176px;
   flex: 0 0 176px;
-  gap: var(--vs-space-2);
+  gap: var(--vs-space-4);
+  padding-right: var(--vs-space-16);
+  border-right: 1px solid var(--vs-color-border-subtle);
 }
 
 .settings-category-picker {
@@ -1383,8 +1382,10 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
 }
 
 .settings-nav button {
-  min-height: 36px;
-  padding: 0 var(--vs-space-12);
+  min-height: 40px;
+  padding: var(--vs-space-8) var(--vs-space-12);
+  font-size: var(--vs-type-size-metadata);
+  line-height: 20px;
   border: 0;
   border-radius: var(--vs-radius-control);
   color: var(--vs-color-text-secondary);
@@ -1392,10 +1393,14 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
   background: transparent;
 }
 
-.settings-nav button:hover,
-.settings-nav__item--active {
-  color: var(--vs-color-text-primary) !important;
-  background: var(--vs-color-bg-subtle) !important;
+.settings-nav button:hover {
+  color: var(--vs-color-text-primary);
+  background: var(--vs-color-bg-subtle);
+}
+.settings-nav button.settings-nav__item--active {
+  color: var(--vs-color-accent-default);
+  background: color-mix(in srgb, var(--vs-color-accent-default) 10%, transparent);
+  font-weight: var(--vs-type-weight-medium);
 }
 
 .settings-content {
@@ -1410,7 +1415,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
 
 .settings-category-heading > span,
 .settings-section__heading > span {
-  color: var(--vs-color-accent-primary);
+  color: var(--vs-color-accent-default);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -1419,8 +1424,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
 
 .settings-category-heading h2 {
   margin: var(--vs-space-4) 0 0;
-  font-size: 24px;
-  line-height: 32px;
+  font-size: var(--vs-type-size-panel);
+  line-height: var(--vs-type-line-height-panel);
 }
 
 .settings-category-heading p {
@@ -1446,7 +1451,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
 .settings-section__heading h3,
 .danger-zone h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
   line-height: 24px;
 }
 

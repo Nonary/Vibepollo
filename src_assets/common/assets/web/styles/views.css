@@ -1,11 +1,11 @@
 .page {
-  width: min(100%, 1280px);
+  width: min(100%, var(--vs-content-width-general));
   margin: 0 auto;
-  padding: var(--vs-space-32);
+  padding: var(--vs-space-40) var(--vs-page-padding-desktop);
 }
 
 .page--wide {
-  width: min(100%, 1440px);
+  width: min(100%, var(--vs-content-width-dashboard));
 }
 
 .page--fluid {
@@ -13,7 +13,7 @@
 }
 
 .page--narrow {
-  width: min(100%, 960px);
+  width: min(100%, var(--vs-content-width-settings));
 }
 
 .section-stack {

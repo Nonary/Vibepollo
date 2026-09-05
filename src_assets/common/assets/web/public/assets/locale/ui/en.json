@@ -483,7 +483,7 @@
         "updated": "{name} was updated."
       },
       "page": {
-        "description": "Manage the clients allowed to stream from this host. Connection state refreshes automatically.",
+        "description": "Pair your devices and control who can stream from this host.",
         "title": "Devices"
       },
       "status": {
@@ -495,6 +495,10 @@
         "title": "Unpair every device?",
         "description": "All paired devices will lose access and the running application will stop. Each device must be paired again before it can connect.",
         "success": "All devices were unpaired."
+      },
+      "layout": {
+        "title": "Arrange remote monitors",
+        "description": "Choose how remote monitors sit beside your other screens."
       }
     },
     "integrations": {
@@ -744,7 +748,8 @@
         "menuLabel": "Actions for {name}",
         "moreLabel": "More actions for {name}",
         "showMore": "Show more",
-        "tryAgain": "Try again"
+        "tryAgain": "Try again",
+        "sources": "Manage sources"
       },
       "alerts": {
         "unavailable": "Library unavailable"
@@ -761,7 +766,10 @@
       "cover": {
         "alt": "{name} cover",
         "unavailable": "Cover unavailable",
-        "unavailableLabel": "{name} cover unavailable"
+        "unavailableLabel": "{name} cover unavailable",
+        "fallbackLabel": "{name} placeholder artwork",
+        "application": "Application",
+        "desktop": "Desktop"
       },
       "delete": {
         "busy": "Deleting",
@@ -785,7 +793,7 @@
       },
       "loading": "Loading applications",
       "page": {
-        "description": "Manage the applications available to streaming clients.",
+        "description": "Your games and applications, ready for your next stream.",
         "title": "Library"
       },
       "progress": {
@@ -1181,7 +1189,9 @@
         "reportBug": "Report a bug",
         "startBrowserStream": "Start browser stream",
         "useLegacyWebUi": "Use legacy Web UI",
-        "viewAll": "View all"
+        "viewAll": "View all",
+        "reviewSetup": "Review setup",
+        "viewDetails": "View details"
       },
       "activeSessions": {
         "one": "{count} active session.",
@@ -1190,7 +1200,7 @@
       "additionalDataUnavailable": "Additional data is unavailable",
       "attention": "Attention",
       "currentApplication": "The current application",
-      "description": "Host readiness, active streaming, and the next useful action.",
+      "description": "Your streaming host, at a glance.",
       "devices": {
         "allowed": {
           "one": "{count} device allowed to connect",
@@ -1213,11 +1223,12 @@
       },
       "hardwareUnavailable": "Host hardware details unavailable",
       "hostLoad": {
-        "description": "Live CPU, GPU, memory, and VRAM utilization.",
+        "description": "Current resource usage. Updates every 10 seconds.",
         "memoryInUse": "{used} of {total} memory in use",
-        "title": "Current stats",
+        "title": "Host performance",
         "unavailableDescription": "Refresh to request a new host sample.",
-        "unavailableTitle": "Host metrics unavailable"
+        "unavailableTitle": "Host metrics unavailable",
+        "staleDescription": "Showing the last available sample. Refresh to try again."
       },
       "library": {
         "configured": {
@@ -1238,10 +1249,11 @@
       },
       "readiness": {
         "attention": "Needs attention",
-        "ready": "Ready for a stream",
-        "readyDetail": "The host is online and no immediate problems were detected.",
+        "ready": "Ready to stream",
+        "readyDetail": "Connect with Moonlight or start a stream in your browser.",
         "remoteSessionActive": "A remote session is active.",
-        "streaming": "Streaming now"
+        "streaming": "Streaming now",
+        "hostStatus": "Host status"
       },
       "refreshing": "Refreshing",
       "remoteStream": "Remote stream",
@@ -1277,7 +1289,21 @@
           "detail": "{app} has no connected stream.",
           "title": "Application is still running"
         }
-      }
+      },
+      "quickActions": {
+        "title": "Quick access",
+        "library": "Build your library",
+        "libraryDetail": "Choose the games and apps available to your devices.",
+        "devices": "Connect your devices",
+        "devicesDetail": "Pair a Moonlight client and manage access.",
+        "settings": "Fine-tune your stream",
+        "settingsDetail": "Set up your display, audio, and input."
+      },
+      "hostDetails": "Host details",
+      "processor": "Processor",
+      "graphics": "Graphics",
+      "installedVersion": "Installed version",
+      "support": "Help & updates"
     },
     "pair": {
       "action": {
@@ -1487,7 +1513,7 @@
       },
       "categories_label": "Settings categories",
       "dependency_inactive": "Currently inactive because “{setting}” is off or uses another mode.",
-      "description": "Start with the choices that shape every stream, then use the focused categories for less common configuration.",
+      "description": "Make this host work the way you stream.",
       "command_editor": {
         "empty": "No commands configured yet. Use Add to create one.",
         "remove": "Remove command {number}"
@@ -2133,9 +2159,9 @@
         "title": "Virtual displays are not ready on this host"
       },
       "linux": {
-        "title": "Virtual screens, built for streaming",
-        "recommendation": "Use a Vibepollo virtual screen for the lowest capture latency and smoothest frame delivery on supported Linux hosts.",
-        "explanation": "Vibepollo captures frames as the virtual screen presents them. Keep automatic resolution and refresh matching for a smooth experience without manual pacing setup.",
+        "title": "Display readiness",
+        "recommendation": "Virtual screens match your client's resolution and refresh rate automatically.",
+        "explanation": "A virtual screen provides smooth frame delivery and low capture latency. Automatic resolution and refresh matching keeps it in sync with your client.",
         "per_client": "Virtual screen per device",
         "shared": "One shared virtual screen",
         "states": {
@@ -2279,7 +2305,12 @@
       "theme": "Theme: {theme}",
       "theme_auto": "System",
       "theme_dark": "Dark",
-      "theme_light": "Light"
+      "theme_light": "Light",
+      "workspace": "Workspace",
+      "monitor": "Monitor",
+      "manage": "Manage",
+      "host_console": "Host console",
+      "classic_interface": "Classic interface"
     },
     "status": {
       "needs_attention": "Needs attention",

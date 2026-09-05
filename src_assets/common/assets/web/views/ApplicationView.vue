@@ -1926,7 +1926,7 @@ async function loadLutrisGames(): Promise<void> {
 }
 
 function openPlaynitePicker(): void {
-  if (!isNew.value) return;
+  if (!isNew.value || !isWindowsHost.value) return;
   cancelSteamClose();
   steamPickerOpen.value = false;
   steamActiveIndex.value = -1;
@@ -2889,7 +2889,7 @@ onBeforeUnmount(() => {
                 @keydown="handleNameKeydown"
               />
               <AppButton
-                v-if="isNew"
+                v-if="isNew && isWindowsHost"
                 size="compact"
                 icon="library"
                 :label="t('ui.application.playnite.browse')"
@@ -4084,10 +4084,6 @@ onBeforeUnmount(() => {
   padding-block-end: calc(var(--vs-space-80) * 1.5);
 }
 
-.application-page :deep(.vs-page-header) {
-  padding-block-end: 0;
-}
-
 .editor-form,
 .editor-loading {
   gap: var(--vs-space-32);
@@ -4263,10 +4259,14 @@ onBeforeUnmount(() => {
 }
 
 .editor-name-control {
+  flex-wrap: wrap;
   gap: var(--vs-space-8);
 }
 
-.editor-name-control .vs-input,
+.editor-name-control .vs-input {
+  flex: 1 1 14rem;
+}
+
 .editor-cover-control .vs-input {
   min-inline-size: 0;
   flex: 1;
@@ -5082,6 +5082,10 @@ onBeforeUnmount(() => {
   .editor-cover-control .vs-button,
   .framegen-health__heading .vs-button {
     align-self: flex-start;
+  }
+
+  .editor-name-control .vs-input {
+    flex-basis: auto;
   }
 
   .application-overrides__list :deep(.vs-setting-row__control),

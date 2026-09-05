@@ -84,8 +84,8 @@
 
 .vs-button--secondary,
 .button--secondary {
-  border-color: var(--vs-button-secondary-border, var(--vs-color-border-strong));
-  background: var(--vs-button-secondary-bg, transparent);
+  border-color: var(--vs-button-secondary-border, var(--vs-color-border-subtle));
+  background: var(--vs-button-secondary-bg, var(--vs-color-bg-surface));
   color: var(--vs-button-secondary-fg, var(--vs-color-text-primary));
 }
 
@@ -180,9 +180,9 @@
   align-items: center;
   gap: var(--vs-space-4);
   padding: var(--vs-space-2) var(--vs-space-8);
-  border: var(--vs-border-width) solid color-mix(in srgb, var(--vs-status-color) 52%, transparent);
+  border: var(--vs-border-width) solid color-mix(in srgb, var(--vs-status-color) 28%, transparent);
   border-radius: var(--vs-radius-pill);
-  background: color-mix(in srgb, var(--vs-status-color) 12%, transparent);
+  background: color-mix(in srgb, var(--vs-status-color) 8%, transparent);
   color: var(--vs-status-color);
   font-size: var(--vs-type-size-metadata);
   font-weight: var(--vs-type-weight-medium);
@@ -478,6 +478,7 @@
   justify-content: space-between;
   gap: var(--vs-space-24);
   padding-block-end: var(--vs-space-24);
+  border-block-end: var(--vs-border-width) solid var(--vs-color-border-subtle);
 }
 
 .vs-page-header--compact {
@@ -502,6 +503,7 @@
 .vs-page-header__title {
   font-size: var(--vs-type-size-page);
   line-height: var(--vs-type-line-height-page);
+  letter-spacing: -0.035em;
 }
 
 .vs-page-header--compact .vs-page-header__title {
@@ -510,7 +512,7 @@
 }
 
 .vs-page-header__description {
-  max-inline-size: 48rem;
+  max-inline-size: 40rem;
   color: var(--vs-color-text-secondary);
   font-size: var(--vs-type-size-body);
   line-height: var(--vs-type-line-height-body);
@@ -525,7 +527,7 @@
 }
 
 .vs-page-header__actions {
-  flex: none;
+  flex: 0 1 auto;
   justify-content: flex-end;
 }
 
