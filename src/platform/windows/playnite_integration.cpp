@@ -14,6 +14,7 @@
 #include "src/file_handler.h"
 #include "src/globals.h"
 #include "src/logging.h"
+#include "src/nvhttp.h"
 #include "src/platform/windows/frame_limiter.h"
 #include "src/platform/windows/image_convert.h"
 #include "src/platform/windows/ipc/misc_utils.h"
@@ -933,6 +934,8 @@ namespace platf::playnite {
           // Keep the session identity so a queued stale stop cannot terminate a
           // game that was launched after this status message was received.
           task_pool.push([expected_guard = std::move(guard)]() {
+            // A launch must not replace this session between validation and teardown.
+            std::unique_lock<std::mutex> lifecycle_lock {nvhttp::stream_lifecycle_mutex()};
             const auto current_guard = proc::proc.active_session_guard();
             if (!current_guard.has_active_app ||
                 !current_guard.uses_playnite ||
@@ -944,7 +947,7 @@ namespace platf::playnite {
             }
 
             BOOST_LOG(debug) << "Playnite: received gameStopped; terminating active process";
-            proc::proc.terminate();
+            proc::proc.terminate(false, true, false, true);
           });
         }
       } else {
