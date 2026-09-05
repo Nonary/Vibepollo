@@ -79,6 +79,33 @@ run_step_cmake
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn("incompatible toolkit", result.stderr)
 
+    def test_arch_selects_private_toolkit_even_with_system_cuda(self):
+        with tempfile.TemporaryDirectory() as directory:
+            # Execute the real PKGBUILD build function, stubbing only external
+            # tools, to observe the arguments passed to CMake.
+            script = '''
+set -e
+source "$REPO/packaging/linux/Arch/PKGBUILD"
+cmake() { printf '%s\\n' "$@"; }
+appstreamcli() { :; }
+appstream-util() { :; }
+desktop-file-validate() { :; }
+build
+'''
+            for enabled in ("true", "false"):
+                env = dict(os.environ, REPO=str(ROOT), srcdir=directory,
+                           _use_cuda=enabled, CUDA_PATH="/opt/cuda-13",
+                           NVCC_CCBIN="/usr/bin/g++-15")
+                result = subprocess.run(["bash", "-c", script], env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if enabled == "true":
+                    self.assertIn(f"-DCMAKE_CUDA_COMPILER={directory}/cuda/bin/nvcc", result.stdout)
+                    self.assertIn("-DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-14", result.stdout)
+                    self.assertIn("-DSUNSHINE_REQUIRE_CUDA_PASCAL=ON", result.stdout)
+                else:
+                    self.assertIn("-DSUNSHINE_ENABLE_CUDA=OFF", result.stdout)
+                    self.assertNotIn("-DCMAKE_CUDA_COMPILER=", result.stdout)
 
 
 if __name__ == "__main__":

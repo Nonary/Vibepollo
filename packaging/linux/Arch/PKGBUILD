@@ -15,8 +15,8 @@ url=@PROJECT_HOMEPAGE_URL@
 license=('GPL-3.0-only')
 install=vibepollo.install
 
-# this variable remains for future cases where we need an older version of gcc for cuda compatibility
-_gcc_version=15
+# CUDA 12.9 supports GCC through 14 and retains GTX 10-series support.
+_gcc_version=14
 _versioned_gcc=true
 
 _gcc_dep_suffix=""
@@ -102,6 +102,12 @@ if [[ "${_use_cuda::1}" == "d" ]] && pacman -Qi cuda &> /dev/null; then
 fi
 
 if [[ "${_use_cuda::1}" == "t" ]]; then
+  # Build-only toolkit: never follow Arch's rolling CUDA package (13+ drops Pascal).
+  source_x86_64=("cuda-x86_64.run::https://developer.download.nvidia.com/compute/cuda/12.9.1/local_installers/cuda_12.9.1_575.57.08_linux.run")
+  sha256sums_x86_64=('0f6d806ddd87230d2adbe8a6006a9d20144fdbda9de2d6acc677daa5d036417a')
+  source_aarch64=("cuda-aarch64.run::https://developer.download.nvidia.com/compute/cuda/12.9.1/local_installers/cuda_12.9.1_575.57.08_linux_sbsa.run")
+  sha256sums_aarch64=('64f47ab791a76b6889702425e0755385f5fa216c5a9f061875c7deed5f08cdb6')
+  noextract=('cuda-x86_64.run' 'cuda-aarch64.run')
   # NVENC and NvFBC are loaded at runtime from the driver's libnvidia-encode /
   # libnvidia-fbc, so the toolkit is a build-time need only.
   optdepends+=(
@@ -126,6 +132,13 @@ fi
 prepare() {
     cd "$pkgname"
     git submodule update --recursive --init
+    if [[ "${_use_cuda::1}" == "t" ]]; then
+      sh "${srcdir}/cuda-${CARCH}.run" --silent --toolkit --override \
+        --toolkitpath="${srcdir}/cuda" --no-opengl-libs --no-man-page --no-drm
+      # Match CUDA 12.9 headers to Arch's glibc 2.41+ declarations.
+      patch -p2 --forward --directory="${srcdir}/cuda" \
+        < "packaging/linux/patches/${CARCH}/cuda-12-math_functions.patch"
+    fi
 }
 
 build() {
@@ -159,19 +172,12 @@ build() {
     if [[ "${_use_cuda::1}" != "t" ]]; then
       _cmake_options+=(-DSUNSHINE_ENABLE_CUDA=OFF -DCUDA_FAIL_ON_MISSING=OFF)
     else
-      # If cuda has just been installed, its variables will not be available in the environment
-      # therefore, set them manually to the expected values on Arch Linux
-      if [ -z "${CUDA_PATH:-}" ] && pacman -Qi cuda &> /dev/null; then
-        local _cuda_gcc_version
-        _cuda_gcc_version="$(LC_ALL=C pacman -Si cuda | grep -Pom1 '^Depends On\s*:.*\bgcc\K[0-9]+\b' || true)"
-
-        export CUDA_PATH=/opt/cuda
-        if [ -n "$_cuda_gcc_version" ]; then
-          export NVCC_CCBIN="/usr/bin/g++-${_cuda_gcc_version}"
-        else
-          export NVCC_CCBIN="/usr/bin/g++"
-        fi
-      fi
+      _cmake_options+=(
+        -DSUNSHINE_ENABLE_CUDA=ON
+        -DSUNSHINE_REQUIRE_CUDA_PASCAL=ON
+        "-DCMAKE_CUDA_COMPILER=${srcdir}/cuda/bin/nvcc"
+        "-DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++${_gcc_env_suffix}"
+      )
     fi
 
     _cmake_options+=(-DBUILD_TESTS=ON)
@@ -189,6 +195,11 @@ build() {
 check() {
     cd "${srcdir}/build"
     ./vibepollo --version
+    if [[ "${_use_cuda::1}" == "t" ]]; then
+      # Verify the final binary actually contains native Pascal device code.
+      "${srcdir}/cuda/bin/cuobjdump" --list-elf ./vibepollo > cuda-device-code.txt
+      grep -q 'sm_61\.' cuda-device-code.txt
+    fi
     ctest --test-dir . --output-on-failure -j2
 }
 

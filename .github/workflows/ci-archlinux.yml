@@ -61,14 +61,34 @@ jobs:
           pacman -Syu --disable-download-timeout --needed --noconfirm \
             base-devel \
             cmake \
-            cuda \
+            curl \
             dkms \
             git \
             kmod \
             linux-headers \
             namcap \
-            openssl
+            openssl \
+            python
           pacman -Scc --noconfirm
+
+      - name: Install Pascal-compatible host compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GCC 14 is no longer in rolling Arch repos. Verify the archive's
+          # detached signatures before installing these versioned packages.
+          compiler_stage="$(mktemp -d)"
+          gcc14_version='14.3.1+r416+g44d5743651c4-2'
+          for package in gcc14-libs gcc14; do
+            archive="${package}-${gcc14_version}-x86_64.pkg.tar.zst"
+            url="https://archive.archlinux.org/packages/g/${package}/${archive}"
+            curl --fail --location --retry 3 "$url" -o "${compiler_stage}/${archive}"
+            curl --fail --location --retry 3 "${url}.sig" -o "${compiler_stage}/${archive}.sig"
+            pacman-key --verify "${compiler_stage}/${archive}.sig" "${compiler_stage}/${archive}"
+          done
+          pacman -U --needed --noconfirm "${compiler_stage}"/*.pkg.tar.zst
+          gcc-14 --version
+          g++-14 --version
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -76,6 +96,10 @@ jobs:
           ref: ${{ inputs.release_commit }}
           fetch-depth: 1
           submodules: recursive
+
+      - name: Verify CUDA release policy
+        shell: bash
+        run: python3 tests/unit/test_cuda_release_policy.py
 
       - name: Compile Vibepollo DRM against Arch kernel
         shell: bash
@@ -198,7 +222,7 @@ jobs:
 
           # Run makepkg as builder user
           cd pkg
-          sudo -u builder makepkg --printsrcinfo | tee .SRCINFO
+          sudo -u builder env _use_cuda="${_use_cuda}" makepkg --printsrcinfo | tee .SRCINFO
 
           # create a PKGBUILD archive
           cd ..
@@ -212,7 +236,7 @@ jobs:
           # Add problem matcher
           echo "::add-matcher::.github/matchers/gcc.json"
 
-          source /etc/profile  # ensure cuda is in the PATH
+          # PKGBUILD installs the pinned CUDA toolkit into its build directory.
 
           # Check PKGBUILD
           sudo -u builder namcap -i PKGBUILD
