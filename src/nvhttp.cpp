@@ -5730,6 +5730,14 @@ namespace nvhttp {
     }
 
     const bool has_running_app = proc::proc.running() > 0;
+    if (!has_running_app) {
+      // Natural app exit clears its owner before the client sends the final
+      // cancel request. Acknowledge the completed operation without touching
+      // another client's transports or a concurrently admitted application.
+      tree.put("root.cancel", 1);
+      tree.put("root.<xmlattr>.status_code", 200);
+      return;
+    }
     const auto active_session = proc::proc.active_session_guard();
     const remote_session::caller_t caller {.uuid = request_client_identity.uuid, .paired = true, .may_terminate = true};
     const remote_session::game_t game {
