@@ -58,6 +58,25 @@ namespace statefile::policy {
     boost::property_tree::ptree &tree,
     const read_file_t &read_file);
 
+  /** Read the auxiliary state, recovering and restoring a validated .bak snapshot.
+   * Both files missing means a new profile. Unrecoverable or inaccessible state
+   * fails closed so a metadata update cannot erase authentication state.
+   */
+  load_result_e load_vibeshine_state(
+    const std::string &path,
+    boost::property_tree::ptree &tree,
+    const read_file_t &read_file,
+    const write_file_t &write_file
+  );
+
+  /** Validate auxiliary state before publishing it and refreshing its backup. */
+  void write_vibeshine_state(
+    const std::string &path,
+    const boost::property_tree::ptree &tree,
+    const write_file_t &write_file,
+    const read_file_t &read_file
+  );
+
   /**
    * @brief Serializes, writes, and re-parses JSON through injected storage operations.
    */
