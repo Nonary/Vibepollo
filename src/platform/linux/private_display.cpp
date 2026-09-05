@@ -1708,6 +1708,10 @@ namespace platf::linux_private_display {
     return true;
   }
 
+  bool is_kernel_output(const std::string &output_name) {
+    return is_managed_output(output_name);
+  }
+
   bool is_private_output(const std::string &output_name) {
     return private_output_set().contains(output_name);
   }

@@ -80,7 +80,8 @@ if(${SUNSHINE_ENABLE_DRM} AND LIBDRM_FOUND AND LIBCAP_FOUND)
         list(APPEND PLATFORM_LIBRARIES ${LIBCAP_LIBRARIES})
     endif()
     list(APPEND PLATFORM_TARGET_FILES
-            "${CMAKE_SOURCE_DIR}/src/platform/linux/kmsgrab.cpp")
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/kmsgrab.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/kms_capture_client.cpp")
     list(APPEND SUNSHINE_DEFINITIONS EGL_NO_X11=1)
 endif()
 

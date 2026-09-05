@@ -1,0 +1,52 @@
+Subject: [PATCH] drm/vibeshine: allow validated uncompressed AMD scanout layouts
+
+Apply to a copied libvirtualdisplay/linux/vibeshine-drm source directory.
+The two layouts allocate and export as single-plane XR24/XB24/XR30/XB30
+buffers on the Steam Deck AMD render node. KWin can import these original
+GPU buffers into the virtual KMS device without a renderer identity bridge.
+Keep the existing NVIDIA formats and reject unvalidated AMD layouts/formats.
+
+--- a/vkms_plane.c
++++ b/vkms_plane.c
+@@ -64,7 +64,21 @@
+  * by nvidia-drm. The PRIME importer preserves the producer DMA-BUF, so the
+  * virtual device never needs to understand or touch the tiled pixels.
+  */
++/* Uncompressed, single-plane AMD layouts validated on the Steam Deck APU.
++ * DCC layouts have auxiliary-plane requirements and are deliberately omitted.
++ * These buffers follow the existing non-linear PRIME pass-through path.
++ */
++#define VIBESHINE_AMD_64K_R_X (AMD_FMT_MOD | \
++	AMD_FMT_MOD_SET(TILE_VERSION, AMD_FMT_MOD_TILE_VER_GFX10_RBPLUS) | \
++	AMD_FMT_MOD_SET(TILE, AMD_FMT_MOD_TILE_GFX9_64K_R_X) | \
++	AMD_FMT_MOD_SET(PIPE_XOR_BITS, 2) | AMD_FMT_MOD_SET(PACKERS, 1))
++#define VIBESHINE_AMD_64K_S (AMD_FMT_MOD | \
++	AMD_FMT_MOD_SET(TILE_VERSION, AMD_FMT_MOD_TILE_VER_GFX9) | \
++	AMD_FMT_MOD_SET(TILE, AMD_FMT_MOD_TILE_GFX9_64K_S))
++
+ static const u64 vkms_format_modifiers[] = {
++	VIBESHINE_AMD_64K_R_X,
++	VIBESHINE_AMD_64K_S,
+ 	DRM_FORMAT_MOD_NVIDIA_BLOCK_LINEAR_2D(0, 1, 2, 6, 5),
+ 	DRM_FORMAT_MOD_NVIDIA_BLOCK_LINEAR_2D(0, 1, 2, 6, 4),
+ 	DRM_FORMAT_MOD_NVIDIA_BLOCK_LINEAR_2D(0, 1, 2, 6, 3),
+@@ -80,6 +94,19 @@
+ {
+ 	if (modifier == DRM_FORMAT_MOD_LINEAR)
+ 		return true;
++
++	if (modifier == VIBESHINE_AMD_64K_R_X ||
++	    modifier == VIBESHINE_AMD_64K_S) {
++		switch (format) {
++		case DRM_FORMAT_XRGB8888:
++		case DRM_FORMAT_XBGR8888:
++		case DRM_FORMAT_XRGB2101010:
++		case DRM_FORMAT_XBGR2101010:
++			return true;
++		default:
++			return false;
++		}
++	}
+ 
+ 	switch (modifier) {
+ 	case DRM_FORMAT_MOD_NVIDIA_BLOCK_LINEAR_2D(0, 1, 2, 6, 5):

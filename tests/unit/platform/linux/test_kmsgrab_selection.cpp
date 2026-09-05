@@ -330,6 +330,24 @@ TEST(KmsgrabSelection, RejectsMissingOrAmbiguousDriverIdentities) {
   EXPECT_EQ(selection::normalize_driver_name("vibeshine_drm", 13), "vibeshine_drm");
 }
 
+TEST(KmsgrabSelection, PrivateDisplayEncodesOnTheSelectedPhysicalRenderer) {
+  EXPECT_EQ(selection::render_device_path("vibeshine_drm", "/dev/dri/card1", "", "/dev/dri/renderD128"), "/dev/dri/renderD128");
+  // A selected second GPU must survive enumeration of another renderer.
+  EXPECT_EQ(selection::render_device_path("vibeshine_drm", "/dev/dri/card2", "/dev/dri/renderD128", "/dev/dri/renderD129"), "/dev/dri/renderD129");
+  // An unresolved encoder never falls back to the display-only card.
+  EXPECT_TRUE(selection::render_device_path("vibeshine_drm", "/dev/dri/card1", "", "").empty());
+}
+
+TEST(KmsgrabSelection, OrdinaryCardsRetainTheirOwnRenderNodeAndPrimaryFallback) {
+  for (const auto driver : {"amdgpu", "i915", "nvidia-drm"}) {
+    EXPECT_EQ(selection::render_device_path(driver, "/dev/dri/card0", "/dev/dri/renderD128", "/dev/dri/renderD129"), "/dev/dri/renderD128");
+    EXPECT_EQ(selection::render_device_path(driver, "/dev/dri/card0", "", "/dev/dri/renderD129"), "/dev/dri/card0");
+  }
+  // An unrelated virtual driver cannot opt into the managed renderer route.
+  EXPECT_EQ(selection::render_device_path("vkms", "/dev/dri/card1", "", "/dev/dri/renderD128"), "/dev/dri/card1");
+  EXPECT_EQ(selection::render_device_path("vibeshine_drm-extra", "/dev/dri/card1", "", "/dev/dri/renderD128"), "/dev/dri/card1");
+}
+
 TEST(KmsgrabSelection, ParsesOnlyCompleteUnsignedNumericAliases) {
   EXPECT_EQ(selection::parse_numeric_alias("0"), 0u);
   EXPECT_EQ(selection::parse_numeric_alias("17"), 17u);

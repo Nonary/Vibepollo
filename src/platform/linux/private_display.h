@@ -75,6 +75,8 @@ namespace platf::linux_private_display {
 
   /** Inspect stable ownership while constructing the Remote Monitor baseline. */
   bool is_private_output(const std::string &output_name);
+  /** Identify an output backed by the managed kernel driver. */
+  bool is_kernel_output(const std::string &output_name);
   std::optional<std::string> output_for_client(const std::string &client_uuid);
 
   /** Restore the pre-stream topology and release all private-output reservations. */

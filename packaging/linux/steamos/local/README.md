@@ -104,3 +104,68 @@ next Gaming Mode entry. It keeps the `/opt` candidate for inspection or reuse.
 OS, Gamescope or session-script updates automatically select Valve's path via
 the launch checks. Sunshine's original profile is preserved by the cutover
 helper; its backup records the previous service and installation state.
+
+## Managed virtual displays in Desktop Mode
+
+The module, pool units, and restricted capture helper retain their shared
+Vibeshine DRM names and paths; the streaming host and its user profile use
+Vibepollo names.
+
+The native host must be built with `SUNSHINE_ENABLE_DRM=ON` for this path.
+It remains an ordinary capability-free user bundle. A separate C helper uses
+only system libc, libdrm and libcap, and is installed as immutable root-owned
+code with exactly `cap_sys_admin=p`. It accepts fixed requests for the managed
+`vibeshine_drm` device only; physical GPUs and arbitrary ioctl requests are
+rejected. Frame and fence descriptors cross the process boundary with
+`SCM_RIGHTS`. Games retain the normal SteamOS execution environment.
+
+Build the module against the exact running kernel headers. Apply
+`0001-amd-private-display-modifiers.patch` to a private copy of the module
+source before building; the patch adds the uncompressed AMD layouts validated
+on this Deck. Build `linux/vkms_peercred.cpp` from libvirtualdisplay against
+the host ABI, then build and stage the capture helper:
+
+```bash
+python3 packaging/linux/steamos/local/build-capture-helper.py \
+  --output /path/to/vibeshine-kms-capture
+python3 packaging/linux/steamos/local/activate-private-display.py stage \
+  --module /path/to/vibeshine_drm.ko \
+  --peercred /path/to/vibeshine-vkms-peercred \
+  --driver-source third-party/libvirtualdisplay \
+  --capture-helper /path/to/vibeshine-kms-capture \
+  --user deck --output /path/to/private-display-stage
+```
+
+The staged manifest pins the kernel, module and all helper hashes. Installation
+uses `/opt` and additive `/etc/systemd/system` units; it does not modify `/usr`
+or disable SteamOS read-only protection. `install-root --stage DIR` installs
+only. `start-root --installed DIR` explicitly loads the module and creates the
+dormant pool; `enable-root --installed DIR` enables it for the next boot. Use
+the installation directory printed by staging. Run these root operations only
+when the user is ready for live display changes.
+
+After provisioning, update an existing host with:
+
+```bash
+bash packaging/linux/steamos/local/update-user.sh \
+  --payload /path/to/validated-payload --check
+bash packaging/linux/steamos/local/update-user.sh \
+  --payload /path/to/validated-payload --enable-private-display
+```
+
+The update preserves the profile and pairings, restarts the host, and restores
+the previous release and profile if its startup check fails. Private displays
+use client-specific ownership and the existing request, mode, HDR, input and
+topology logic. An explicit layout choice is preserved; the default extends
+the desktop and makes the stream output primary. Both SDR and HDR use completed
+DRM frames, avoiding KWin 6.4's SDR conversion and integer refresh rounding in
+its screencast path. Actual mode acceptance, GPU import and HDR capture must
+still be validated after activation on the target machine.
+
+This pool is managed by KScreen in Desktop Mode. Gaming Mode uses the separate
+patched Gamescope compositor described above; independent private displays in
+Gaming Mode are not implemented by this pool. After a kernel upgrade, the
+loader stops with a clear version mismatch until the module is rebuilt.
+`disable-root` disables future loading. To remove the files, disable the pool,
+reboot, then use `uninstall-root`; the installer refuses to unload a module
+that a running compositor may still hold.
