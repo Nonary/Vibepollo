@@ -539,9 +539,8 @@ namespace platf {
 
   /**
    * @brief Chooses which controller the VHF driver should present.
-   * @details An explicit `vhf_ds4`/`vhf_ds5` selection is honoured as-is. Plain `vhf` reuses the
-   *          same client-type and motion/touchpad rules that already drive DualShock 4 selection
-   *          on ViGEm, so a PlayStation client gets a PlayStation pad without extra configuration.
+   * @details Explicit profile selections are honoured as-is. Plain `vhf` matches PlayStation and
+   *          Nintendo client types before applying the motion/touchpad preferences to other pads.
    * @param metadata The client's reported gamepad capabilities.
    * @return The profile to request.
    */
@@ -564,6 +563,9 @@ namespace platf {
 
     if (metadata.type == LI_CTYPE_PS) {
       return vhf_profile_e::dualsense;
+    }
+    if (metadata.type == LI_CTYPE_NINTENDO) {
+      return vhf_profile_e::switch_pro;
     }
     if (config::input.motion_as_ds4 && (metadata.capabilities & (LI_CCAP_ACCEL | LI_CCAP_GYRO))) {
       return vhf_profile_e::dualsense;
