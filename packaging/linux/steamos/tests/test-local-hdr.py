@@ -2,11 +2,14 @@
 """Local deployment guards; all fixtures are temporary and no service is touched."""
 import importlib.util
 import json
+import os
 import pathlib
 import platform
+import stat
 import tempfile
 import types
 import unittest
+from contextlib import contextmanager, ExitStack
 from unittest import mock
 
 source = pathlib.Path(__file__).resolve().parents[1] / 'local/gamescope-wrapper.py'
@@ -135,6 +138,112 @@ class LocalGamescopeGuards(unittest.TestCase):
             self.assertEqual(set(manifest['files']), {
                 str(path.relative_to(output)) for path in output.rglob('*')
                 if path.is_file() and path.name != 'local-manifest.json'})
+
+    @contextmanager
+    def privileged_install_fixture(self):
+        # Exercise the real installer and filesystem modes as an ordinary user.
+        # Ownership and capabilities are the only privileged operations faked.
+        with tempfile.TemporaryDirectory() as work:
+            fake_root = pathlib.Path(work)
+            opt = fake_root / 'opt'
+            opt.mkdir(mode=0o755)
+            opt.chmod(0o755)
+            parent = opt / 'vibepollo-gamescope/local'
+            destination = parent / 'test-release'
+            self.manifest['install_root'] = str(destination)
+            self.write_manifest()
+            for name in ('bin/gamescope', 'libexec/gamescope', 'libexec/gamescope-session'):
+                (self.root / name).chmod(0o755)
+            real_stat = pathlib.Path.stat
+            owners = {}
+
+            def root_owned_stat(path, *args, **kwargs):
+                info = real_stat(path, *args, **kwargs)
+                values = {key: getattr(info, key) for key in dir(info) if key.startswith('st_')}
+                values['st_uid'] = owners.get(path, 0)
+                # /tmp is normally writable; it stands outside this fake /opt.
+                # Keep fixture modes intact so new 0700 parents remain visible.
+                if path in opt.parents:
+                    values['st_mode'] &= ~0o022
+                    values['st_mode'] |= 0o001
+                return types.SimpleNamespace(**values)
+
+            def root_owned_lstat(path, *args, **kwargs):
+                return root_owned_stat(path, *args, follow_symlinks=False, **kwargs)
+
+            with ExitStack() as patches:
+                patches.enter_context(mock.patch.object(activation, 'INSTALL_PARENT', parent))
+                patches.enter_context(mock.patch.object(activation, 'wrapper', wrapper))
+                patches.enter_context(mock.patch.object(activation.os, 'geteuid', return_value=0))
+                patches.enter_context(mock.patch.object(activation.os, 'chown'))
+                patches.enter_context(mock.patch.object(pathlib.Path, 'stat', root_owned_stat))
+                patches.enter_context(mock.patch.object(pathlib.Path, 'lstat', root_owned_lstat))
+                patches.enter_context(mock.patch.object(wrapper, 'verify_capabilities'))
+                run = patches.enter_context(mock.patch.object(activation.subprocess, 'run'))
+                yield types.SimpleNamespace(parent=parent, destination=destination, opt=opt,
+                                            owners=owners, run=run,
+                                            args=types.SimpleNamespace(stage=self.root))
+
+    def assert_unprivileged_install_modes(self, fixture):
+        for path in [fixture.parent.parent, fixture.parent, fixture.destination,
+                     *fixture.destination.rglob('*')]:
+            mode = stat.S_IMODE(path.stat().st_mode)
+            if path.is_dir():
+                self.assertEqual(mode, 0o755, str(path))
+            elif path.relative_to(fixture.destination).as_posix() in (
+                    'bin/gamescope', 'libexec/gamescope', 'libexec/gamescope-session'):
+                self.assertEqual(mode, 0o755, str(path))
+            else:
+                self.assertEqual(mode, 0o644, str(path))
+        self.assertEqual(stat.S_IMODE(fixture.opt.stat().st_mode), 0o755)
+
+    def test_new_root_install_remains_accessible_with_private_umask(self):
+        with self.privileged_install_fixture() as fixture:
+            previous_umask = os.umask(0o077)
+            try:
+                activation.install_root(fixture.args)
+            finally:
+                os.umask(previous_umask)
+            self.assert_unprivileged_install_modes(fixture)
+            self.assertEqual((fixture.destination / 'libexec/gamescope').read_bytes(),
+                             (self.root / 'libexec/gamescope').read_bytes())
+            self.assertEqual(wrapper.verify(fixture.destination), self.manifest)
+            fixture.run.assert_called_once()
+            self.assertEqual(fixture.run.call_args.args[0][:2], ['/usr/bin/setcap', 'cap_sys_nice=eip'])
+
+    def test_existing_root_install_repairs_private_parent_modes_before_return(self):
+        with self.privileged_install_fixture() as fixture:
+            previous_umask = os.umask(0o077)
+            try:
+                activation.install_root(fixture.args)
+                fixture.parent.chmod(0o700)
+                fixture.parent.parent.chmod(0o700)
+                fixture.run.reset_mock()
+                activation.install_root(fixture.args)
+            finally:
+                os.umask(previous_umask)
+            self.assert_unprivileged_install_modes(fixture)
+            fixture.run.assert_not_called()
+
+    def test_unsafe_install_ancestors_are_rejected_before_chmod(self):
+        for unsafe in ('writable', 'symlink', 'non-root'):
+            with self.subTest(unsafe=unsafe), self.privileged_install_fixture() as fixture:
+                if unsafe == 'symlink':
+                    target = fixture.opt / 'other'
+                    target.mkdir(mode=0o755)
+                    fixture.parent.parent.symlink_to(target, target_is_directory=True)
+                else:
+                    fixture.parent.mkdir(parents=True)
+                    if unsafe == 'writable':
+                        fixture.parent.parent.chmod(0o775)
+                    else:
+                        fixture.owners[fixture.parent.parent] = 1000
+                with mock.patch.object(pathlib.Path, 'chmod', autospec=True) as chmod:
+                    with self.assertRaises(RuntimeError):
+                        activation.install_root(fixture.args)
+                    chmod.assert_not_called()
+                fixture.run.assert_not_called()
+                self.assertFalse(fixture.destination.exists())
 
 
 if __name__ == '__main__':

@@ -7,6 +7,7 @@ import os
 import pathlib
 import platform
 import shutil
+import stat
 import subprocess
 import tempfile
 
@@ -15,11 +16,30 @@ spec = importlib.util.spec_from_file_location('gamescope_wrapper', HERE / 'games
 wrapper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(wrapper)
 DROPIN_NAME = '90-vibepollo-local-hdr.conf'
+INSTALL_PARENT = pathlib.Path('/opt/vibepollo-gamescope/local')
 
 
 def files(root):
     return {str(path.relative_to(root)): wrapper.digest(path)
             for path in sorted(root.rglob('*')) if path.is_file() and path.name != 'local-manifest.json'}
+
+
+def prepare_install_parent(parent):
+    # sudo can inherit the activation wrapper's private umask. These two
+    # directories contain public runtime assets and must be traversable by the
+    # desktop user, including when repairing a previous root-only installation.
+    managed = (parent.parent, parent)
+    for path in reversed([parent, *parent.parents]):
+        if path in managed:
+            path.mkdir(mode=0o755, exist_ok=True)
+        info = path.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise RuntimeError(f'Unsafe privileged installation parent: {path}')
+        if path not in managed and not info.st_mode & 0o001:
+            raise RuntimeError(f'Installation ancestor is not traversable by desktop users: {path}')
+    # Only normalize the two application-owned directories, never /opt or /.
+    for path in managed:
+        path.chmod(0o755)
 
 
 def stage(args):
@@ -42,7 +62,7 @@ def stage(args):
         raise RuntimeError('Candidate was built for another SteamOS version')
     if args.output.exists():
         raise RuntimeError('Staging output must be a new directory')
-    install_root = pathlib.Path('/opt/vibepollo-gamescope/local') / (
+    install_root = INSTALL_PARENT / (
         identity['BUILD_ID'] + '-' + original['source']['patch_sha256'][:12])
     out = args.output.resolve()
     out.mkdir(parents=True)
@@ -80,20 +100,16 @@ def install_root(args):
     source = args.stage.resolve()
     manifest = wrapper.verify(source, privileged=False)
     destination = pathlib.Path(manifest['install_root'])
-    if destination.parent != pathlib.Path('/opt/vibepollo-gamescope/local'):
+    if destination.parent != INSTALL_PARENT:
         raise RuntimeError('Unexpected install destination')
     if any(path.is_symlink() for path in source.rglob('*')):
         raise RuntimeError('Symlinks are not accepted in the privileged candidate')
+    prepare_install_parent(destination.parent)
     if destination.exists():
         if wrapper.verify(destination) != manifest:
             raise RuntimeError('Another candidate already occupies this destination; retain it and stage a new local revision')
         print(f'Already installed: {destination}')
         return
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    for path in [destination.parent, *destination.parent.parents]:
-        info = path.stat()
-        if path.is_symlink() or info.st_uid != 0 or info.st_mode & 0o022:
-            raise RuntimeError(f'Unsafe privileged installation parent: {path}')
     temporary = pathlib.Path(tempfile.mkdtemp(prefix='.install-', dir=destination.parent))
     try:
         # Preserve the private 0700 temporary root until the copied contents
