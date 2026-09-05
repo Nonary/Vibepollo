@@ -299,7 +299,6 @@ namespace {
         return false;
       }
       _inited = true;
-      _shutdown = nvmlShutdown;
       if (nvmlDeviceGetHandleByIndex_v2(0, &_dev) != NVML_SUCCESS) {
         _dev = nullptr;
       }
@@ -320,8 +319,8 @@ namespace {
 
   private:
     void reset() {
-      if (_inited && _shutdown) {
-        _shutdown();
+      if (_inited && nvmlShutdown) {
+        nvmlShutdown();
       }
       if (_handle) {
         dlclose(_handle);
@@ -330,7 +329,7 @@ namespace {
       _dev = nullptr;
       _inited = false;
       nvmlInit_v2 = nullptr;
-      _shutdown = nullptr;
+      nvmlShutdown = nullptr;
       nvmlDeviceGetCount_v2 = nullptr;
       nvmlDeviceGetHandleByIndex_v2 = nullptr;
       nvmlDeviceGetUtilizationRates = nullptr;

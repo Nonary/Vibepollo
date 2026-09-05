@@ -1683,10 +1683,14 @@ namespace proc {
       _env[ENV_LOSSLESS_LEGACY_AUTO_DETECT] = "";
     };
 
+#ifdef _WIN32
     const bool lossless_scaling_enabled = playnite_launcher::lossless::policy::should_enable_runtime(
       _app.lossless_scaling_enabled,
       _app.lossless_scaling_framegen
     );
+#else
+    constexpr bool lossless_scaling_enabled = false;
+#endif
     _env["SUNSHINE_FRAME_GENERATION_PROVIDER"] =
       _app.frame_generation_enabled ? _app.frame_generation_provider : "";
 

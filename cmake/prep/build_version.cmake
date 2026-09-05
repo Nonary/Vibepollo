@@ -11,7 +11,7 @@ get_filename_component(SUNSHINE_VERSION_REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../
 if(DEFINED ENV{BRANCH})
     set(GITHUB_BRANCH $ENV{BRANCH})
 endif()
-if(DEFINED ENV{BUILD_VERSION})  # cmake-lint: disable=W0106
+if(DEFINED ENV{BUILD_VERSION} AND NOT "$ENV{BUILD_VERSION}" STREQUAL "")  # cmake-lint: disable=W0106
     set(BUILD_VERSION $ENV{BUILD_VERSION})
 endif()
 if(DEFINED ENV{CLONE_URL})
@@ -52,13 +52,13 @@ endif()
 # context and must not decide whether an explicit release version is honored.
 # In particular, later build targets may re-run CMake without inheriting a
 # step-local BRANCH value while retaining the job-wide BUILD_VERSION.
-if(DEFINED ENV{BUILD_VERSION} AND NOT "$ENV{BUILD_VERSION}" STREQUAL "")  # cmake-lint: disable=W0106
+if(DEFINED BUILD_VERSION AND NOT "${BUILD_VERSION}" STREQUAL "")  # cmake-lint: disable=W0106
     if(DEFINED ENV{BRANCH} AND NOT "$ENV{BRANCH}" STREQUAL "")
-        message("Got explicit build version '$ENV{BUILD_VERSION}' for '$ENV{BRANCH}'")
+        message("Got explicit build version '${BUILD_VERSION}' for '$ENV{BRANCH}'")
     else()
-        message("Got explicit build version '$ENV{BUILD_VERSION}'")
+        message("Got explicit build version '${BUILD_VERSION}'")
     endif()
-    set(PROJECT_VERSION "$ENV{BUILD_VERSION}")
+    set(PROJECT_VERSION "${BUILD_VERSION}")
     string(REGEX REPLACE "^v" "" PROJECT_VERSION "${PROJECT_VERSION}")  # remove the v prefix if it exists
     set(CMAKE_PROJECT_VERSION "${PROJECT_VERSION}")  # cpack will use this to set the binary versions
 else()

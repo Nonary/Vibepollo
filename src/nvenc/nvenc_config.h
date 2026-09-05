@@ -56,7 +56,7 @@ namespace nvenc {
     bool h264_cavlc = false;
 
     // Control split-frame encoding for supported HEVC/AV1 sessions
-    split_encode_mode split_encode_mode = split_encode_mode::auto_mode;
+    nvenc::split_encode_mode split_encode_mode = split_encode_mode::auto_mode;
 
     // Add filler data to encoded frames to stay at target bitrate, mainly for testing
     bool insert_filler_data = false;

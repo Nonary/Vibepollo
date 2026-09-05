@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 # This directory is also usable as a standalone entry point for focused test
 # work, and is included by the normal project build when BUILD_TESTS is enabled.
-project(VibeshineTests LANGUAGES C CXX)
+project(VibepolloTests LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -189,6 +189,10 @@ add_subdirectory("${GTEST_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/googletest")
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
 find_package(Boost CONFIG REQUIRED COMPONENTS asio log log_setup property_tree)
+set(SUNSHINE_TEST_SOCKET_LIBRARIES "")
+if(WIN32)
+    set(SUNSHINE_TEST_SOCKET_LIBRARIES ws2_32)
+endif()
 find_package(OpenSSL REQUIRED)
 
 # Header-only SDK boundaries are named targets rather than process-wide include
@@ -263,7 +267,7 @@ sunshine_add_test_target(
         "${CMAKE_CURRENT_LIST_DIR}/unit/test_thread_safe.cpp"
     PRODUCT_SOURCES
     DEFINITIONS
-    LINK_LIBRARIES GTest::gtest
+    LINK_LIBRARIES GTest::gtest nlohmann_json::nlohmann_json
     DEPENDENCIES
 )
 
@@ -352,11 +356,13 @@ sunshine_register_component(NAME test_component_remote_session TEST_SOURCE unit/
 sunshine_register_component(NAME test_component_rtsp_pending_policy TEST_SOURCE unit/test_rtsp_pending_policy.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/rtsp_pending_policy.cpp")
 sunshine_register_component(NAME test_component_remote_display_topology TEST_SOURCE unit/test_remote_display_topology.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/remote_display_topology.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/remote_display_topology.cpp"
+    LINK_LIBRARIES nlohmann_json::nlohmann_json)
 sunshine_register_component(NAME test_component_config_parse TEST_SOURCE unit/test_config_parse.cpp
     PRODUCT_SOURCES)
 sunshine_register_component(NAME test_component_config_playnite TEST_SOURCE test_config_playnite.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_playnite_parse.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_playnite_parse.cpp"
+    LINK_LIBRARIES nlohmann_json::nlohmann_json)
 sunshine_register_component(NAME test_component_file_handler TEST_SOURCE unit/test_file_handler.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/file_handler_core.cpp")
 sunshine_register_component(NAME test_component_state_storage TEST_SOURCE unit/test_state_storage.cpp
@@ -368,13 +374,13 @@ sunshine_register_component(NAME test_component_http_auth TEST_SOURCE unit/test_
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth_policy.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth_request_policy.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_http_policy.cpp"
-    LINK_LIBRARIES GTest::gmock sunshine_test_simple_web_headers Boost::property_tree ws2_32)
+    LINK_LIBRARIES GTest::gmock sunshine_test_simple_web_headers Boost::property_tree nlohmann_json::nlohmann_json ${SUNSHINE_TEST_SOCKET_LIBRARIES})
 sunshine_register_component(NAME test_component_http_policy TEST_SOURCE unit/test_httpcommon.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_policy.cpp"
     LINK_LIBRARIES Boost::property_tree)
 sunshine_register_component(NAME test_component_network_policy TEST_SOURCE unit/test_network.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/network_policy.cpp"
-    LINK_LIBRARIES ws2_32)
+    LINK_LIBRARIES ${SUNSHINE_TEST_SOCKET_LIBRARIES})
 sunshine_register_component(NAME test_component_input_validation TEST_SOURCE unit/test_input.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/input_validation_policy.cpp"
     LINK_LIBRARIES sunshine_test_moonlight_headers)
@@ -383,13 +389,14 @@ sunshine_register_component(NAME test_component_display_device_policy TEST_SOURC
 sunshine_register_component(NAME test_component_process_policy TEST_SOURCE unit/test_process.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/app_catalog_policy.cpp")
 sunshine_register_component(NAME test_component_process_framegen_json TEST_SOURCE unit/test_process_framegen_json.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/app_framegen_config.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/app_framegen_config.cpp"
+    LINK_LIBRARIES nlohmann_json::nlohmann_json)
 sunshine_register_component(NAME test_component_session_history TEST_SOURCE unit/test_session_history.cpp
     PRODUCT_SOURCES
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_storage.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_storage_diagnostics.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_policy.cpp"
-    LINK_LIBRARIES PkgConfig::SQLITE3)
+    LINK_LIBRARIES PkgConfig::SQLITE3 nlohmann_json::nlohmann_json)
 sunshine_register_component(NAME test_component_host_stats TEST_SOURCE unit/test_host_stats.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/host_stats_service.cpp")
 sunshine_register_component(NAME test_component_audio_policy TEST_SOURCE unit/test_audio.cpp
@@ -404,7 +411,7 @@ sunshine_register_component(NAME test_component_entry_metadata TEST_SOURCE unit/
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/entry_metadata.cpp")
 sunshine_register_component(NAME test_component_config_http_policy TEST_SOURCE unit/test_config_http_policy.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_http_policy.cpp"
-    LINK_LIBRARIES ws2_32)
+    LINK_LIBRARIES ${SUNSHINE_TEST_SOCKET_LIBRARIES})
 sunshine_register_component(NAME test_component_http_pairing_policy TEST_SOURCE unit/test_http_pairing.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_pairing_policy.cpp"
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/state_storage_policy.cpp"
@@ -416,7 +423,8 @@ sunshine_register_component(NAME test_component_encoder_probe_policy TEST_SOURCE
 sunshine_register_component(NAME test_component_resource_config_catalog TEST_SOURCE unit/test_config_catalog_contract.cpp
     INCLUDE_DIRECTORIES "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}")
 sunshine_register_component(NAME test_component_resource_locale_catalog TEST_SOURCE integration/test_locale_consistency.cpp
-    SUPPORT_SOURCES "${CMAKE_CURRENT_LIST_DIR}/support/file_handler_read_only.cpp")
+    SUPPORT_SOURCES "${CMAKE_CURRENT_LIST_DIR}/support/file_handler_read_only.cpp"
+    LINK_LIBRARIES nlohmann_json::nlohmann_json)
 sunshine_register_component(NAME test_component_external_command_policy TEST_SOURCE integration/test_external_commands.cpp)
 sunshine_register_component(NAME test_component_virtual_display_manifest TEST_SOURCE integration/test_virtual_display_packaging.cpp
     INCLUDE_DIRECTORIES "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}")
@@ -525,3 +533,45 @@ if(APPLE)
     sunshine_register_component(NAME test_component_av_audio_policy TEST_SOURCE unit/platform/macos/test_av_audio.mm
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/macos/av_audio_policy.cpp")
 endif()
+
+sunshine_register_component(NAME test_component_hdr_request TEST_SOURCE unit/test_hdr_request_policy.cpp)
+
+# Production-code regression harnesses exercise Windows policies on the native host.
+find_package(Python3 COMPONENTS Interpreter)
+find_program(SUNSHINE_TEST_GXX NAMES g++)
+if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
+    add_test(NAME regression_resume_color_policy
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_resume_color_policy.py")
+    add_test(NAME regression_delayed_mouse_release
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_delayed_mouse_release.py")
+    add_test(NAME regression_windows_absolute_mouse
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_windows_absolute_mouse.py")
+    add_test(NAME regression_windows_mouse_keys
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_windows_mouse_keys.py" --compiler "${SUNSHINE_TEST_GXX}")
+    add_test(NAME regression_frame_limiter_vsync
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_frame_limiter_vsync.py")
+    add_test(NAME regression_playnite_stop_callback
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_playnite_stop_callback.py")
+    add_test(NAME regression_rtss_profile_version
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_rtss_profile_version.py")
+    add_test(NAME regression_virtual_capture_readiness
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_virtual_capture_readiness.py")
+    add_test(NAME regression_virtual_display_scale_boundary
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_virtual_display_scale_boundary.py")
+    add_test(NAME regression_cancel_after_app_exit
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_cancel_after_app_exit.py")
+    add_test(NAME regression_display_policy_adapter
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_policy_adapter.py")
+    add_test(NAME regression_retained_resume_policy
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_retained_resume_policy.py")
+    add_test(NAME regression_terminate_lock
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_terminate_lock.py")
+endif()
+
+if(TARGET test_component_resource_locale_catalog)
+    set_tests_properties(test_component_resource_locale_catalog PROPERTIES
+        WORKING_DIRECTORY "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+endif()
+
+add_test(NAME build_version_contract
+    COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_LIST_DIR}/cmake/BuildVersionContract.cmake")

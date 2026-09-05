@@ -106,6 +106,19 @@ namespace video {
       }
     }
 
+    // Serializes destruction of encode sessions (and, on Windows, the async release of shared
+    // D3D capture surfaces). When two clients share one capture target, a capture reinit makes
+    // both video threads tear down their NVENC session + D3D11 device at the same instant. Both
+    // devices have the same shared capture textures open, and the NVIDIA UMD's cross-device
+    // shared-resource dependency cleanup (DestroyDriverInstance) is not safe against a concurrent
+    // teardown of the other device: it faults walking freed dependency entries. Funnel all
+    // encoder teardown through this mutex so only one device is ever mid-destruction.
+    std::mutex encode_session_teardown_mutex;
+    // A host restart is the recovery boundary after a vendor call times out.
+    // Detached watchdog workers can outlive ordinary static destruction during
+    // process shutdown. Deliberately give the runtime fence process lifetime.
+    auto &native_amf_lifecycle_gate = *new amf::lifecycle::native_runtime_gate_t();
+
 #ifdef _WIN32
     void wait_for_recent_display_apply_stability() {
       constexpr auto kFallbackSettleWindow = std::chrono::milliseconds(1500);
@@ -239,19 +252,6 @@ namespace video {
       return dynamic_cast<platf::dxgi::img_d3d_t *>(img.get()) != nullptr;
     }
 #endif
-
-    // Serializes destruction of encode sessions (and, on Windows, the async release of shared
-    // D3D capture surfaces). When two clients share one capture target, a capture reinit makes
-    // both video threads tear down their NVENC session + D3D11 device at the same instant. Both
-    // devices have the same shared capture textures open, and the NVIDIA UMD's cross-device
-    // shared-resource dependency cleanup (DestroyDriverInstance) is not safe against a concurrent
-    // teardown of the other device: it faults walking freed dependency entries. Funnel all
-    // encoder teardown through this mutex so only one device is ever mid-destruction.
-    std::mutex encode_session_teardown_mutex;
-    // A host restart is the recovery boundary after a vendor call times out.
-    // Detached watchdog workers can outlive ordinary static destruction during
-    // process shutdown. Deliberately give the runtime fence process lifetime.
-    auto &native_amf_lifecycle_gate = *new amf::lifecycle::native_runtime_gate_t();
 
 #ifdef _WIN32
     void release_d3d_capture_images_async(std::vector<std::shared_ptr<platf::img_t>> images) {
@@ -7078,6 +7078,8 @@ namespace video {
         return platf::mem_type_e::system;
       case AV_HWDEVICE_TYPE_VIDEOTOOLBOX:
         return platf::mem_type_e::videotoolbox;
+      case AV_HWDEVICE_TYPE_VULKAN:
+        return platf::mem_type_e::vulkan;
       default:
         return platf::mem_type_e::unknown;
     }
