@@ -113,6 +113,9 @@ namespace rtsp_stream {
     bool normal_vdd_identity_newly_reserved = false;
     std::uint64_t normal_vdd_identity_token = 0;
     uint32_t scale_factor = 100;
+    // Linux resumes retain the running app's display owner across TLS clients.
+    // client_uuid remains the authenticated transport identity.
+    std::string normal_vdd_owner_uuid;
     // Host/display resolution derived from a launch-time client override. The RTSP
     // negotiated viewport remains in width/height.
     std::optional<resolution_override_t> resolution_override;

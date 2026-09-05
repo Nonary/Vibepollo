@@ -63,6 +63,7 @@ namespace proc {
     bool uses_playnite {false};
     std::string playnite_id;
     std::string client_uuid;
+    std::uint64_t normal_vdd_identity_token {0};
     std::chrono::steady_clock::time_point launch_started_at {};
   };
 

@@ -3208,6 +3208,7 @@ namespace proc {
     guard.playnite_id = guard.has_active_app ? _app.playnite_id : std::string();
     guard.uses_playnite = guard.has_active_app && !_app.playnite_id.empty();
     guard.client_uuid = guard.has_active_app ? _active_client_uuid : std::string();
+    guard.normal_vdd_identity_token = guard.has_active_app ? _active_client_vdd_identity_token : 0;
     guard.launch_started_at = _app_launch_time;
     return guard;
   }
