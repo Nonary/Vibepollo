@@ -385,10 +385,13 @@ namespace video {
         BOOST_LOG(debug) << "Capture virtual display wait timed out after "
                          << std::chrono::duration_cast<std::chrono::milliseconds>(max_wait).count()
                          << "ms. desired='" << (pending_virtual_name.empty() ? std::string("(unresolved)") : pending_virtual_name)
-                         << "' active_output='" << config::get_active_output_name() << "'.";
+                         << "' active_output='" << config::get_active_output_name()
+                         << "'. Retrying without changing the capture target.";
         wait_start = {};
         pending_virtual_name.clear();
-        return true;
+        // A readiness timeout must not authorize capture of index zero (often
+        // a physical display). Return to the caller's cancellable retry loop.
+        return false;
       }
 
       return false;
@@ -5605,6 +5608,18 @@ namespace video {
     }
 
     while (encode_session_ctx_queue.running()) {
+      // Capture readiness may outlive the client. Release stopped sessions here
+      // rather than waiting for a display before acknowledging their shutdown.
+      std::erase_if(synced_session_ctxs, [](const auto &ctx) {
+        if (!ctx->shutdown_event->peek()) {
+          return false;
+        }
+        ctx->join_event->raise(true);
+        return true;
+      });
+      if (synced_session_ctxs.empty()) {
+        return encode_e::ok;
+      }
 #ifdef _WIN32
       wait_for_recent_display_apply_stability();
 #endif
