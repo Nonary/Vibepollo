@@ -172,6 +172,38 @@ mode switching and OS update/rollback behavior remain unvalidated.
 
 ## Upstream protocol references
 
+### Local native deployment validation, 2026-09-05
+
+The SteamOS work was merged with `vibe-test` revision `be846187`. The resulting
+host was rebuilt from `fe6f9437`; subsequent changes only adjust a shell test
+dependency and this audit. The staged bundle loads on SteamOS without missing
+libraries or unresolved symbols. Fourteen selected CTest suites and 24 browser
+UI checks pass, including dormant installation, Sunshine migration/rollback,
+private-driver child-environment isolation and compositor deployment guards.
+
+The [local deployment tools](local/README.md) build a private Mesa 26.1.7 VAAPI
+driver against the host's libva 1.22 API, math ABI and traditional GNU TLS.
+Its dependencies resolve from SteamOS. The host's Mesa package remains
+unchanged; the private driver fixes the native encoder failure recorded above
+for the Vibeshine process, without exporting its driver choice to launched games.
+
+Native hardware checks now pass with that private driver and the installed
+Vibeshine bundle's libraries: HDR and SDR-source patterns each produce 12
+verified 10-bit capture frames and 16 HEVC Main10 frames. Native software decode
+reports no errors, correct BT.2020/PQ signaling and expected decoded pixels.
+Stock Gamescope still rejects HDR while providing SDR capture. All test
+compositors were headless and stopped after validation.
+
+Vibeshine and its private encoder runtime are installed but inactive. The
+exact-host Gamescope candidate is staged for an additive, capability-preserving
+`/opt` installation. Sunshine and the active desktop remain running while the
+user streams. Root installation, live host replacement and Gaming Mode entry
+await the user's check-in. Actual Moonlight HDR playback remains unvalidated.
+Local build provenance and evidence are in `build/steamos-local-20260905/`.
+The upstream `libvirtualdisplay` gitlink `398590ce` is unavailable publicly;
+this build records use of its published predecessor `c1a087f`. The SteamOS
+profile excludes the managed virtual-display driver affected by that change.
+
 - [Valve Gamescope PipeWire protocol](https://github.com/ValveSoftware/gamescope/blob/master/protocol/gamescope-pipewire.xml)
 - [Valve Gamescope PipeWire producer](https://github.com/ValveSoftware/gamescope/blob/master/src/pipewire.cpp)
 - [Private requested-size property](https://github.com/ValveSoftware/gamescope/blob/master/src/pipewire_gamescope.hpp)
