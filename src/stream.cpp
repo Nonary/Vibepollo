@@ -2982,6 +2982,26 @@ namespace stream {
         lifecycle_lock.lock();
       }
 
+      // Client cleanup belongs to every disconnected transport, even while
+      // another client keeps the shared application running. Snapshot its
+      // environment before pause/finalization can change the process state.
+      if (!session.undo_cmds.empty()) {
+        auto exec_thread = std::thread([cmd_list = session.undo_cmds, env = proc::proc.get_env()]() mutable {
+          for (auto &cmd : cmd_list) {
+            std::error_code ec;
+            boost::filesystem::path working_dir = proc::find_working_directory(cmd.cmd, env);
+            auto child = platf::run_command(cmd.elevated, true, cmd.cmd, working_dir, env, nullptr, ec, nullptr);
+            BOOST_LOG(info) << "Spawning client undo command ["sv << cmd.cmd << "] in ["sv << working_dir << ']';
+            if (ec) {
+              BOOST_LOG(warning) << "Couldn't spawn ["sv << cmd.cmd << "]: System: "sv << ec.message();
+            } else {
+              child.detach();
+            }
+          }
+        });
+        exec_thread.detach();
+      }
+
       if (session.remote_role == remote_session::role_e::monitor && !session.device_uuid.empty()) {
         const bool client_disconnected = session.client_disconnected.load(std::memory_order_acquire);
         if (remote_session::disconnect_monitor_after_stream(
