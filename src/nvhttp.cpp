@@ -1741,14 +1741,7 @@ namespace nvhttp {
         };
 
         pt::ptree vibeshine_tree;
-        if (fs::exists(vibeshine_path)) {
-          try {
-            pt::read_json(vibeshine_path, vibeshine_tree);
-          } catch (const std::exception &e) {
-            BOOST_LOG(error) << "Couldn't read "sv << vibeshine_path << ": "sv << e.what();
-            return true;
-          }
-        }
+        if (!statefile::load_json_for_update(vibeshine_path, vibeshine_tree)) return true;
 
         auto &vibe_root = ensure_root(vibeshine_tree);
         vibe_root.put("last_notified_version", update::state.last_notified_version);
@@ -1918,11 +1911,13 @@ namespace nvhttp {
       http::uuid = uuid_util::uuid_t::parse(http::unique_id);
       if (share_state_file) {
         update::state.last_notified_version = root.value("last_notified_version", "");
-      } else if (fs::exists(vibeshine_path)) {
+      } else if (!vibeshine_path.empty()) {
 
         try {
           pt::ptree vibeshine_tree;
-          pt::read_json(vibeshine_path, vibeshine_tree);
+          if (statefile::load_json(vibeshine_path, vibeshine_tree) != statefile::json_load_result_e::loaded) {
+            throw std::runtime_error("notification state is unavailable");
+          }
           update::state.last_notified_version = vibeshine_tree.get("root.last_notified_version", "");
 #ifdef _WIN32
           http::shared_virtual_display_guid = vibeshine_tree.get("root.shared_virtual_display_guid", "");

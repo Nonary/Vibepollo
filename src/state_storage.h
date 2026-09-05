@@ -28,9 +28,10 @@ namespace statefile {
   /**
    * @brief Write a property-tree JSON file through a temporary file and atomic replace.
    *
-   * Callers that update shared state should still hold state_mutex() around
-   * their read/modify/write transaction; this helper only prevents partial
-   * on-disk writes from leaving malformed JSON behind.
+   * Callers that are updating shared Vibepollo state should still hold state_mutex()
+   * around their read/modify/write transaction; this helper only prevents partial or
+   * interleaved on-disk writes from leaving malformed JSON behind. Configured
+   * primary and auxiliary state writes also refresh their .bak recovery copy.
    */
   void write_json_atomic(const std::string &path, const boost::property_tree::ptree &tree);
 
@@ -51,7 +52,9 @@ namespace statefile {
    * @brief Read a state file while preserving enough detail for recovery.
    *
    * Malformed or blank content is reported without changing the source; failed
-   * inspection or reads are never treated as an empty state.
+   * inspection or reads are never treated as an empty state. The auxiliary state
+   * is validated and recovered from its .bak copy before returning; callers hold
+   * state_mutex() around reads as well as read/modify/write transactions.
    */
   json_load_result_e load_json(const std::string &path, boost::property_tree::ptree &tree);
   json_load_result_e load_json(const std::string &path, nlohmann::json &tree);
@@ -59,6 +62,8 @@ namespace statefile {
   /**
    * @brief Load an existing JSON file before a read/modify/write update.
    *
+   * Auxiliary state is recovered from its validated backup first and fails closed
+   * when damaged state has no usable snapshot. The rules below apply to other files.
    * Returns true (with @p tree populated, or empty when there is nothing usable to
    * preserve) when it is safe for the caller to proceed and rewrite the file:
    *   - Missing or blank files yield an empty tree.

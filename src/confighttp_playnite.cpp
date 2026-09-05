@@ -805,12 +805,11 @@ namespace confighttp {
       }
       std::lock_guard<std::mutex> lock(statefile::state_mutex());
       fs::path path(path_str);
-      if (!fs::exists(path)) {
-        return std::nullopt;
-      }
       pt::ptree tree;
       try {
-        pt::read_json(path.string(), tree);
+        if (statefile::load_json(path.string(), tree) != statefile::json_load_result_e::loaded) {
+          return std::nullopt;
+        }
       } catch (const std::exception &e) {
         BOOST_LOG(warning) << "Crash dismissal: failed to read state file: " << e.what();
         return std::nullopt;

@@ -7,6 +7,7 @@
 
 #include <boost/property_tree/json_parser.hpp>
 
+#include <cstdint>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -109,6 +110,133 @@ namespace statefile::policy {
       tree = {};
       return load_result_e::corrupt;
     }
+  }
+
+  namespace {
+    // Property-tree represents empty JSON arrays/objects as empty data nodes.
+    // Accept that historical representation, but reject scalar roots, duplicate
+    // object keys and malformed token containers before selecting a snapshot.
+    bool valid_vibeshine_tree(const pt::ptree &tree) {
+      const auto object = [](const pt::ptree &node) {
+        if (!node.data().empty()) {
+          return false;
+        }
+        for (const auto &[key, value] : node) {
+          if (key.empty() || node.count(key) != 1) {
+            return false;
+          }
+        }
+        return true;
+      };
+      const auto root = tree.get_child_optional("root");
+      if (!object(tree) || !root || !object(*root)) {
+        return false;
+      }
+      for (const auto key : {"api_tokens", "session_tokens"}) {
+        const auto tokens = root->get_child_optional(key);
+        if (!tokens) {
+          continue;
+        }
+        if (!tokens->data().empty()) {
+          return false;
+        }
+        for (const auto &[entry_key, token] : *tokens) {
+          const auto hash = token.get_child_optional("hash");
+          if (!entry_key.empty() || !object(token) || !hash || !hash->empty() || hash->data().empty()) {
+            return false;
+          }
+          for (const auto field : {"username", "refresh_token_hash", "rotation_id", "user_agent", "remote_address", "device_label"}) {
+            if (const auto value = token.get_child_optional(field); value && !value->empty()) {
+              return false;
+            }
+          }
+          for (const auto field : {"created_at", "expires_at", "refresh_expires_at", "last_seen"}) {
+            if (const auto value = token.get_child_optional(field); value && (!value->empty() || !value->get_value_optional<std::int64_t>())) {
+              return false;
+            }
+          }
+          if (const auto value = token.get_child_optional("remember_me"); value && (!value->empty() || !value->get_value_optional<bool>())) {
+            return false;
+          }
+          if (const auto scopes = token.get_child_optional("scopes")) {
+            if (!scopes->data().empty()) {
+              return false;
+            }
+            for (const auto &[scope_key, scope] : *scopes) {
+              const auto path = scope.get_child_optional("path");
+              const auto methods = scope.get_child_optional("methods");
+              if (!scope_key.empty() || !object(scope) || !path || !path->empty() || path->data().empty() || !methods || !methods->data().empty()) {
+                return false;
+              }
+              for (const auto &[method_key, method] : *methods) {
+                if (!method_key.empty() || !method.empty() || method.data().empty()) {
+                  return false;
+                }
+              }
+            }
+          }
+        }
+      }
+      return true;
+    }
+  }  // namespace
+
+  load_result_e load_vibeshine_state(
+    const std::string &path,
+    pt::ptree &tree,
+    const read_file_t &read_file,
+    const write_file_t &write_file
+  ) {
+    const auto primary = load_json_for_read(path, tree, read_file);
+    if (primary == load_result_e::failed) {
+      return load_result_e::failed;
+    }
+    pt::ptree backup_tree;
+    const auto backup = load_json_for_read(path + ".bak", backup_tree, read_file);
+    if (primary == load_result_e::loaded && valid_vibeshine_tree(tree)) {
+      // Seed recovery on upgrade as well as on writes. Never recover an older
+      // snapshot over a readable, valid primary (including token revocations).
+      if (backup != load_result_e::loaded || tree != backup_tree) {
+        if (backup == load_result_e::failed) {
+          return load_result_e::loaded;
+        }
+        try {
+          write_json_atomic(path + ".bak", tree, write_file, read_file);
+        } catch (...) {
+          // A valid primary remains usable even if backup storage is unavailable.
+        }
+      }
+      return load_result_e::loaded;
+    }
+    tree = {};
+    if (primary == load_result_e::missing && backup == load_result_e::missing) {
+      return load_result_e::missing;
+    }
+    if (backup != load_result_e::loaded || !valid_vibeshine_tree(backup_tree)) {
+      return load_result_e::failed;
+    }
+    try {
+      // Restore before consumers see recovered state. Do not rotate the damaged
+      // primary into the backup or destroy the only usable snapshot on failure.
+      write_json_atomic(path, backup_tree, write_file, read_file);
+    } catch (...) {
+      return load_result_e::failed;
+    }
+    tree = std::move(backup_tree);
+    return load_result_e::loaded;
+  }
+
+  void write_vibeshine_state(
+    const std::string &path,
+    const pt::ptree &tree,
+    const write_file_t &write_file,
+    const read_file_t &read_file
+  ) {
+    if (!valid_vibeshine_tree(tree)) {
+      throw std::runtime_error("refusing to write invalid auxiliary state");
+    }
+    write_json_atomic(path, tree, write_file, read_file);
+    write_json_atomic(path + ".bak", tree, write_file, read_file);
   }
 
   void write_json_atomic(

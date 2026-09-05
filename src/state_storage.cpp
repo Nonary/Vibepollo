@@ -119,7 +119,26 @@ namespace statefile {
       return {policy::read_status_e::loaded, std::move(contents)};
     }
 
+    bool is_auxiliary_state(const std::string &path) {
+      return !path.empty() && path == vibeshine_state_path() && !share_state_file();
+    }
+
+    policy_load_result_e load_auxiliary_state(const std::string &path, pt::ptree &out) {
+      const auto result = policy::load_vibeshine_state(
+        path, out, read_state_file,
+        [](const std::string &target, const std::string &contents) {
+          return file_handler::write_file(target.c_str(), contents) == 0;
+        });
+      if (result == policy::load_result_e::failed) {
+        BOOST_LOG(error) << "statefile: refusing to replace unavailable auxiliary state " << path;
+      }
+      return result;
+    }
+
     policy_load_result_e load_tree_for_update(const fs::path &path, pt::ptree &out) {
+      if (is_auxiliary_state(path.string())) {
+        return load_auxiliary_state(path.string(), out);
+      }
       return policy::load_json_for_update(
         path.string(),
         out,
@@ -132,6 +151,9 @@ namespace statefile {
     }
 
     bool load_tree_if_exists(const fs::path &path, pt::ptree &out) {
+      if (is_auxiliary_state(path.string())) {
+        return load_auxiliary_state(path.string(), out) == policy::load_result_e::loaded;
+      }
       if (!fs::exists(path)) {
         return false;
       }
@@ -432,6 +454,9 @@ namespace statefile {
 #endif
 
     policy_load_result_e load_tree_for_read(const fs::path &path, pt::ptree &out) {
+      if (is_auxiliary_state(path.string())) {
+        return load_auxiliary_state(path.string(), out);
+      }
       return policy::load_json_for_read(path.string(), out, read_state_file);
     }
   }  // namespace
@@ -447,6 +472,14 @@ namespace statefile {
     // writer so those updates refresh the recovery copy too.
     if (!path.empty() && path == sunshine_state_path()) {
       write_sunshine_state_atomic(tree);
+      return;
+    }
+    if (is_auxiliary_state(path)) {
+      policy::write_vibeshine_state(
+        path, tree,
+        [](const std::string &target, const std::string &contents) {
+          return file_handler::write_file(target.c_str(), contents) == 0;
+        }, read_state_file);
       return;
     }
     write_json_atomic_direct(path, tree);
@@ -753,12 +786,16 @@ namespace statefile {
     add_file_if_in_root(config_files, config_roots, config::stream.file_apps);
     add_file_if_in_root(config_files, config_roots, config::nvhttp.file_state);
     add_file_if_in_root(config_files, config_roots, config::nvhttp.vibeshine_file_state);
+    if (!config::nvhttp.vibeshine_file_state.empty()) {
+      add_file_if_in_root(config_files, config_roots, config::nvhttp.vibeshine_file_state + ".bak");
+    }
     add_file_if_in_root(config_files, config_roots, config::sunshine.credentials_file);
 
     static constexpr std::string_view known_config_files[] {
       "sunshine_state.json"sv,
       "sunshine_state.json.bak"sv,
       "vibeshine_state.json"sv,
+      "vibeshine_state.json.bak"sv,
       "sunshine.conf"sv,
       "apps.json"sv,
     };
