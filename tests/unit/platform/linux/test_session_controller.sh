@@ -570,4 +570,100 @@ for unsupported in plasmalogin-greeter sddm-greeter gdm-password lightdm login s
   fi
 done
 
+# Batched broker observations retain exact-unit, PID and cgroup proof while
+# reducing a pass over many old failed units to one systemctl invocation.
+(
+  batch_calls=$mock_app_state_directory/batch-calls
+  : >"$batch_calls"
+  batch_output=''
+  bounded_system_systemctl() {
+    /usr/bin/printf '%s\n' "$*" >>"$batch_calls"
+    /usr/bin/printf '%s' "$batch_output"
+  }
+  session_app_control_group_is_empty() { [[ "$1" != /test/populated ]]; }
+  declare -a batch_units=()
+  declare -A stopped=()
+  for ((i=1; i<=47; i++)); do
+    unit="vibepollo-session-exec@$i.service"
+    batch_units+=("$unit")
+    batch_output+="Id=$unit"$'\nLoadState=loaded\nActiveState=failed\nSubState=failed\nMainPID=0\nControlGroup=\n\n'
+  done
+  collect_stopped_broker_instances stopped "$((SECONDS + 5))" "${batch_units[@]}" ||
+    fail_test 'batched stopped brokers were rejected'
+  ((${#stopped[@]} == 47)) || fail_test 'batch omitted stopped brokers'
+  [[ $(/usr/bin/wc -l <"$batch_calls") == 1 ]] || fail_test 'broker batch made more than one query'
+
+  unit=${batch_units[0]}
+  for unsafe_properties in \
+    $'LoadState=loaded\nActiveState=failed\nSubState=failed\nMainPID=1234\nControlGroup=' \
+    $'LoadState=loaded\nActiveState=failed\nSubState=failed\nMainPID=0\nControlGroup=/test/populated' \
+    $'LoadState=loaded\nActiveState=inactive\nSubState=dead\nControlGroup=' \
+    $'LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0\nMainPID=1234\nControlGroup='; do
+    batch_output="Id=$unit"$'\n'"$unsafe_properties"
+    collect_stopped_broker_instances stopped "$((SECONDS + 5))" "$unit" ||
+      fail_test 'valid batch identity was not parsed'
+    ((${#stopped[@]} == 0)) || fail_test 'unsafe broker state counted as stopped'
+  done
+  record="Id=$unit"$'\n'"$stopped_host_properties"
+  for malformed_batch in \
+    '' \
+    "$record"$'\n\n'"$record" \
+    "Id=vibepollo-session-exec@unexpected.service"$'\n'"$stopped_host_properties" \
+    "$stopped_host_properties"; do
+    batch_output=$malformed_batch
+    if collect_stopped_broker_instances stopped "$((SECONDS + 5))" "$unit"; then
+      fail_test 'missing, duplicate or foreign batch identity was accepted'
+    fi
+  done
+  # An empty list needs no query and must clear results from a previous pass.
+  : >"$batch_calls"
+  stopped[$unit]=1
+  collect_stopped_broker_instances stopped "$((SECONDS + 5))" || fail_test 'empty batch failed'
+  [[ ! -s "$batch_calls" && ${#stopped[@]} == 0 ]] || fail_test 'empty batch retained stale results'
+
+  # A failed bulk query must use the existing per-unit absence proof.
+  bounded_system_systemctl() {
+    shift
+    case "$1" in show) return 1 ;; is-active) return 4 ;; *) return 1 ;; esac
+  }
+  collect_stopped_broker_instances stopped "$((SECONDS + 5))" "$unit" || fail_test 'vanished broker fallback failed'
+  [[ ${stopped[$unit]:-} == 1 ]] || fail_test 'proven absent broker was not collected'
+)
+
+# A late broker still resets the ten-pass clean window, and each pass queries
+# all observed units again instead of trusting an earlier stopped snapshot.
+(
+  broker_pass=0
+  broker_stops=0
+  first=vibepollo-session-exec@first.service
+  late=vibepollo-session-exec@late.service
+  enumerate_broker_instances() {
+    local -n listed=$1
+    ((broker_pass += 1))
+    listed=("$first")
+    ((broker_pass < 3)) || listed+=("$late")
+    return 0
+  }
+  bounded_system_systemctl() {
+    shift
+    if [[ "$1" == --no-block && "$2" == stop && "$3" == "$late" ]]; then
+      ((broker_stops += 1))
+      return 0
+    fi
+    [[ "$1" == show ]] || return 1
+    local item
+    for item in "$@"; do
+      [[ "$item" == vibepollo-session-exec@*.service ]] || continue
+      /usr/bin/printf 'Id=%s\n' "$item"
+      if [[ "$item" == "$late" && "$broker_stops" == 0 ]]; then
+        /usr/bin/printf '%s\n\n' $'LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=1234\nControlGroup='
+      else
+        /usr/bin/printf '%s\n\n' "$stopped_host_properties"
+      fi
+    done
+  }
+  stop_broker_instances "$((SECONDS + 5))" || fail_test 'late broker cleanup failed'
+  ((broker_pass == 13 && broker_stops == 1)) || fail_test 'late broker did not reset the clean window'
+)
+
 /usr/bin/printf 'PASS: deterministic machine-session controller transitions\n'
