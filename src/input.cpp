@@ -724,6 +724,12 @@ namespace input {
     auto release = util::endian::little(packet->header.magic) == MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5;
     auto button = util::endian::big(packet->button);
     if (button > 0 && button < mouse_press.size()) {
+      // An overlapping press from another client may have been ignored below.
+      // Its release must not change the accepted owner's logical state or
+      // leave that owner's delayed host release without a responsible timer.
+      if (release && mouse_press_owner[button] != input.get()) {
+        return;
+      }
       if (mouse_press[button] != release) {
         // button state is already what we want
         return;
