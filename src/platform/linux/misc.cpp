@@ -1469,9 +1469,19 @@ namespace platf {
       (void) gamescope_session::import_x11_display();
       BOOST_LOG(info) << "Using Gamescope compositor capture for the current session."sv;
     }
-    const bool gamescope_selected = sources[source::GAMESCOPE];
+    bool native_compositor_selected = sources[source::GAMESCOPE];
 #else
-    constexpr bool gamescope_selected = false;
+    bool native_compositor_selected = false;
+#endif
+#if defined(SUNSHINE_BUILD_STEAMOS) && defined(SUNSHINE_BUILD_KWIN)
+    // Desktop Mode provides KWin's native screencast interface. Select it
+    // before portal enumeration, which can open an interactive consent dialog.
+    // Gaming Mode keeps the Gamescope backend selected above.
+    if (config::video.capture.empty() && sources.none() && verify_kwin()) {
+      sources[source::KWIN] = true;
+      native_compositor_selected = true;
+      BOOST_LOG(info) << "Using KWin compositor capture for SteamOS Desktop Mode."sv;
+    }
 #endif
 #ifdef SUNSHINE_BUILD_CUDA
     if (((config::video.capture.empty() && sources.none()) || config::video.capture == "nvfbc") && verify_nvfbc()) {
@@ -1504,12 +1514,12 @@ namespace platf {
 #ifdef SUNSHINE_BUILD_X11
     // We enumerate this capture backend regardless of other suitable sources,
     // since it may be needed as a NvFBC fallback for software encoding on X11.
-    if (((config::video.capture.empty() && !gamescope_selected) || config::video.capture == "x11") && verify_x11()) {
+    if (((config::video.capture.empty() && !native_compositor_selected) || config::video.capture == "x11") && verify_x11()) {
       sources[source::X11] = true;
     }
 #endif
 #ifdef SUNSHINE_BUILD_PORTAL
-    if (((config::video.capture.empty() && !gamescope_selected) || config::video.capture == "portal") && verify_portal()) {
+    if (((config::video.capture.empty() && !native_compositor_selected) || config::video.capture == "portal") && verify_portal()) {
       sources[source::PORTAL] = true;
     }
 #endif

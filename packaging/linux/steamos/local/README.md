@@ -71,6 +71,12 @@ bash packaging/linux/steamos/local/replace-sunshine.sh \
   --service-environment /path/to/permanent-hdr-runtime/env.conf
 ```
 
+The copied profile consolidates legacy pairing aliases that share the exact
+client certificate and identical permissions/settings. It retains the first
+record's name and UUID, every distinct client certificate, the host identity,
+and web credentials. Conflicting duplicate permissions stop migration and
+restore Sunshine. The original profile and private backup remain unchanged.
+
 Gamescope's additive `/opt` installation needs root to retain Valve's scheduler
 capability. It does not replace `/usr/bin/gamescope` or disable SteamOS read-only
 protection. Use the concrete destination printed by the staging command:

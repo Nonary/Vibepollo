@@ -541,6 +541,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/steamos/tests/test-local-hdr.py")
         set_tests_properties(test_component_linux_steamos_local_hdr PROPERTIES LABELS "component")
+        add_test(NAME test_component_linux_steamos_pairing_migration
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/steamos/tests/test-pairing-migration.py")
+        set_tests_properties(test_component_linux_steamos_pairing_migration PROPERTIES LABELS "component")
     endif()
     sunshine_register_component(NAME test_component_linux_pipewire_cuda_policy TEST_SOURCE unit/platform/linux/test_pipewire_cuda_policy.cpp)
     sunshine_register_component(NAME test_component_linux_vulkan_encode_policy TEST_SOURCE unit/platform/linux/test_vulkan_encode_policy.cpp)
