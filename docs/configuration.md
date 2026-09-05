@@ -27,9 +27,15 @@ location by modifying the configuration file.
 |---------|-------------------------------------------------|
 | Docker  | @code{}/config@endcode                          |
 | FreeBSD | @code{}~/.config/sunshine@endcode               |
-| Linux   | @code{}~/.config/vibepollo@endcode              |
+| Linux (native package) | @code{}/var/lib/vibepollo@endcode |
+| Linux (standalone) | @code{}~/.config/vibepollo@endcode (or `$XDG_CONFIG_HOME/vibepollo`) |
 | macOS   | @code{}~/.config/sunshine@endcode               |
 | Windows | @code{}%ProgramFiles%\\Sunshine\\config@endcode |
+
+Native Linux packages share one machine profile across the login screen and desktop.
+Edit settings through the Web UI; use `vibepollo paths` to locate files and
+`sudo vibepollo logs` for diagnostics. Package upgrades import the selected desktop
+user's legacy `~/.config/vibepollo` profile once and preserve existing machine settings.
 
 Although it is recommended to use the configuration UI, it is possible manually configure Sunshine by
 editing the `conf` file in a text editor. Use the examples as reference.
@@ -1253,7 +1259,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Linux setup</td>
         <td colspan="2">@code{}
-            sudo /usr/libexec/vibeshine/vibeshine-drm-install install
+            sudo vibepollo driver install
             sudo systemctl enable --now vibeshine-vkms.service
             @endcode
             Native packages and <code>vibeshine-drm-setup.service</code> attempt this installation

@@ -69,7 +69,7 @@ layout, is [docs/linux/install.md](linux/install.md).
 - **A GPU with an H.264 hardware encoder.** NVIDIA uses NVENC from `nvidia-utils`; AMD and Intel
   use VAAPI (`libva-mesa-driver` or `intel-media-driver`). Pre-login streaming is NVIDIA-only.
 - **A single interactive desktop account**, or run
-  `sudo /usr/libexec/vibeshine/vibepollo-machine-host configure USER` once to choose the owner.
+  `sudo vibepollo configure USER` once to choose the owner.
 
 ##### Install
 
@@ -275,7 +275,7 @@ installer could not pick the desktop account automatically, choose it once and e
 controller:
 
 ```bash
-sudo /usr/libexec/vibeshine/vibepollo-machine-host configure USER
+sudo vibepollo configure USER
 sudo systemctl enable --now vibepollo-session-controller.service
 ```
 
@@ -465,7 +465,7 @@ Additional information:
   To retry the build by hand or inspect the installed module:
 
   ```bash
-  sudo /usr/libexec/vibeshine/vibeshine-drm-install install
+  sudo vibepollo driver install
   modinfo vibeshine_drm
   ```
 

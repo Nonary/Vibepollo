@@ -56,6 +56,7 @@
   #include "src/platform/windows/virtual_display_cleanup.h"
 #elif defined(__linux__)
   #include "src/platform/linux/capability_sanitizer.h"
+  #include "src/platform/linux/maintenance_cli.h"
   #include "src/platform/linux/private_display.h"
 
   #include <pthread.h>
@@ -272,6 +273,12 @@ WINAPI BOOL ConsoleCtrlHandler(DWORD type) {
 
 int main(int argc, char *argv[]) {
 #ifdef __linux__
+  // Maintenance never enters host initialization. In particular, sudo must
+  // reach the root-owned administrative helper before the host-only capability
+  // policy rejects a root process. No configuration or logging is parsed here.
+  if (const auto result = platf::linux_cli::dispatch(argc, argv)) {
+    return *result;
+  }
   if (!platf::linux_security::sanitize_startup_capabilities()) {
     const int error_number = errno ? errno : EPERM;
     std::fprintf(stderr, "Vibepollo: failed to sanitize Linux startup capabilities: %s\n",

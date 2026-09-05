@@ -924,9 +924,6 @@ do_install_prelogin() {
   systemctl daemon-reload
   [[ -x "$helper" ]] || return 0
   if "$helper" configure-auto; then
-    # Older hosts wrote world-readable credentials that the current profile
-    # check rejects; normalize ownership and modes before the host starts.
-    "$helper" repair-profile || echo 'warning: could not repair the machine profile permissions.' >&2
     if ! systemctl enable vibepollo-session-controller.service; then
       vibepollo_quiesce_or_abort || true
       echo 'error: could not enable the Vibepollo session controller safely.' >&2
@@ -943,8 +940,8 @@ do_install_prelogin() {
     # follow-up command below can actually start the host without a reboot.
     vibepollo_unmask_host_for_controller ||
       echo 'warning: the Vibepollo host units stay masked until the next reboot.' >&2
-    echo '==> ACTION REQUIRED: Vibepollo could not choose the desktop user who owns streaming on this machine.' >&2
-    echo "    Run:  sudo $helper configure USER" >&2
+    echo '==> ACTION REQUIRED: Vibepollo could not prepare the machine profile; review the preceding setup or migration error.' >&2
+    echo "    Run:  sudo vibepollo configure USER" >&2
     echo '    then: sudo systemctl enable --now vibepollo-session-controller.service' >&2
     return 1
   fi

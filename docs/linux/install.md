@@ -140,7 +140,7 @@ accounts the package prints an **ACTION REQUIRED** line instead. Choose the owne
 the controller:
 
 ```bash
-sudo /usr/libexec/vibeshine/vibepollo-machine-host configure USER
+sudo vibepollo configure USER
 sudo systemctl enable --now vibepollo-session-controller.service
 ```
 
@@ -149,7 +149,7 @@ sudo systemctl enable --now vibepollo-session-controller.service
 ```bash
 sudo systemctl status vibepollo-session-controller.service vibepollo.service
 sudo journalctl -u vibepollo-session-controller.service -u vibepollo.service -b
-sudo /usr/libexec/vibeshine/vibeshine-drm-install status
+sudo vibepollo driver status
 ```
 
 A healthy host logs `Screencasting with KMS`, `Using event-driven KMS capture for Vibepollo DRM
@@ -164,7 +164,7 @@ unit disconnects any client that is streaming.
 
 | Symptom | What to do |
 | --- | --- |
-| `kernel headers ... are missing` during install | Run the printed `sudo pacman -S --needed <kernel>-headers`, then `sudo /usr/libexec/vibeshine/vibeshine-drm-install install`. |
+| `kernel headers ... are missing` during install | Run the printed `sudo pacman -S --needed <kernel>-headers`, then `sudo vibepollo driver install`. |
 | Install says the running kernel still holds the old module | Reboot. `modinfo -F version vibeshine_drm` and `/sys/module/vibeshine_drm/version` must match. |
 | MOK enrollment queued | Reboot and approve it in MOK Manager. `mokutil --list-new` shows what is pending. |
 | Controller logs `unsupported-session` | You are not in a Plasma **Wayland** session started by SDDM or Plasma Login Manager. Pick "Plasma (Wayland)" at the login screen. |
@@ -190,6 +190,13 @@ Two things on the host machine will silently stop streaming:
 
 ## Where things live
 
+**Settings live in `/var/lib/vibepollo`**, including `vibepollo.conf`, credentials,
+pairings, applications, and imported covers. Use the Web UI for routine changes.
+Run `vibepollo paths` to list locations, `vibepollo status` for service status, or
+`sudo vibepollo logs` for recent logs. `vibepollo maintenance-help` lists all
+maintenance commands. Program files, administrator policy, and temporary session
+data retain their separate ownership and lifetimes:
+
 | Path | Purpose |
 | --- | --- |
 | `/usr/bin/vibepollo` | Public command-line client, unprivileged. |
@@ -202,7 +209,23 @@ Two things on the host machine will silently stop streaming:
 
 Repository installs upgrade with `sudo pacman -Syu`. Release-package installs upgrade with
 `sudo pacman -U` on the next package. The upgrade hook stops the running host, so finish any stream
-first. If the hook says the kernel still holds the old driver, reboot before streaming again.
+first. Upgrade hooks prepare the same profile for DEB, RPM, and Arch packages:
+
+- The selected user's `~/.config/vibepollo` is imported once into
+  `/var/lib/vibepollo`; the source copy is retained as a backup.
+- An existing marked machine profile takes precedence, so later upgrades never
+  replace newer credentials, pairings, settings, or applications with the old copy.
+- Old ownership and permissions are repaired before validation. Imported cover
+  paths are normalized, and existing command approvals are preserved.
+- Unsafe or failed imports stop setup instead of silently creating a fresh identity.
+  A nonempty, unmarked destination is not overwritten.
+
+For manual recovery after resolving a reported migration error, stop streaming and
+stop the controller and host before running `sudo vibepollo migrate`, then enable
+and start `vibepollo-session-controller.service` again. These service operations
+end active streams. The old helper paths remain available for existing scripts.
+
+If the hook says the kernel still holds the old driver, reboot before streaming again.
 
 ## Uninstall
 
@@ -212,4 +235,4 @@ sudo pacman -R vibepollo
 
 Removal stops the services and removes the DKMS module but keeps `/var/lib/vibepollo` and
 `/etc/vibepollo`. To wipe them as well, run
-`sudo /usr/libexec/vibeshine/vibepollo-machine-host reset` before removing the package.
+`sudo vibepollo reset` before removing the package.

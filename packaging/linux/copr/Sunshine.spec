@@ -1396,8 +1396,8 @@ if [ ! -x "$(command -v rpm-ostree)" ]; then
       exit 1
     fi
   else
-    echo "==> ACTION REQUIRED: Vibepollo could not choose the desktop user who owns streaming on this machine." >&2
-    echo "    Run:  sudo /usr/libexec/vibeshine/vibepollo-machine-host configure USER" >&2
+    echo "==> ACTION REQUIRED: Vibepollo could not prepare the machine profile; review the preceding setup or migration error." >&2
+    echo "    Run:  sudo vibepollo configure USER" >&2
     echo "    then: sudo systemctl enable --now vibepollo-session-controller.service" >&2
   fi
 else
