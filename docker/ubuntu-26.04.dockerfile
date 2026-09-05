@@ -16,6 +16,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Copy only the build script first for better layer caching
 WORKDIR /build/sunshine/
 COPY --link scripts/linux_build.sh ./scripts/linux_build.sh
+COPY --link packaging/linux/patches/ ./packaging/linux/patches/
 
 # Install dependencies first - this layer will be cached
 RUN <<_DEPS

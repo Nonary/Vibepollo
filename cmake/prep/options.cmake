@@ -27,6 +27,7 @@ else()
 endif()
 
 option(CUDA_FAIL_ON_MISSING "Fail the build if CUDA is not found." ON)
+option(SUNSHINE_REQUIRE_CUDA_PASCAL "Require Pascal-compatible CUDA for release packages" OFF)
 option(CUDA_INHERIT_COMPILE_OPTIONS
         "When building CUDA code, inherit compile options from the the main project. You may want to disable this if
         your IDE throws errors about unknown flags after running cmake." ON)

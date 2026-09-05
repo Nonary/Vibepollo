@@ -1,14 +1,15 @@
 #!/bin/bash
 set -e
 
+# Release CUDA stays on 12.9 to retain Maxwell/Pascal/Volta support.
 # Version requirements - centralized for easy maintenance
 cmake_min="3.25.0"
 target_cmake_version="3.30.1"
 doxygen_min="1.10.0"
 _doxygen_min="${doxygen_min//\./_}"  # Convert dots to underscores for URL
 doxygen_max="1.12.0"
-default_cuda_version="13.1.1"
-default_cuda_build="590.48.01"
+default_cuda_version="12.9.1"
+default_cuda_build="575.57.08"
 
 # Default value for arguments
 appimage_build=0
@@ -17,7 +18,7 @@ cuda_build="$default_cuda_build"
 cuda_patches=0
 cuda_system_package=0
 cuda_system_package_name=""
-force_cuda_runfile=0
+force_cuda_runfile=1
 num_processors=$(nproc)
 publisher_name="Third Party Publisher"
 publisher_website=""
@@ -36,7 +37,7 @@ DOXYGEN="doxygen"
 
 function setup_cuda_system_package_environment() {
   if [[ "$cuda_system_package" == 1 ]]; then
-    # Ubuntu CUDA 13 packages install nvcc here but do not add it to PATH.
+    # Versioned CUDA packages install nvcc here but do not add it to PATH.
     local cuda_bin_path
     cuda_bin_path="$(cuda_system_toolkit_path)/bin"
     if [[ ":${PATH}:" != *":${cuda_bin_path}:"* ]]; then
@@ -125,6 +126,15 @@ function apply_cuda_patches() {
   fi
 }
 
+# Reject stale cached toolkits before patching headers or configuring a release.
+function validate_cuda_toolkit() {
+  local nvcc_path=$1
+  if ! "$nvcc_path" --version | grep -Fq 'release 12.9,'; then
+    echo "Release builds require CUDA 12.9; incompatible toolkit at $nvcc_path" >&2
+    return 1
+  fi
+}
+
 # Reusable function to detect nvcc path
 function detect_nvcc_path() {
   local nvcc_path=""
@@ -163,7 +173,7 @@ Options:
   --cuda-patches           Apply cuda patches. Enabled automatically on Ubuntu 26.04.
   --cuda-runfile           Force CUDA installation from the NVIDIA runfile.
   --cuda-system-package=*  The CUDA package to install when system CUDA is enabled.
-                           Default for Ubuntu 26.04 is cuda-toolkit-13-1.
+                           Must provide CUDA 12.9; the pinned runfile is the default.
   --num-processors         The number of processors to use for compilation. Default is the value of 'nproc'.
   --publisher-name         The name of the publisher (not developer) of the application.
   --publisher-website      The URL of the publisher's website.
@@ -205,10 +215,13 @@ while getopts ":hs-:" opt; do
           cuda_patches=1
           ;;
         cuda-runfile)
+          cuda_system_package=0
           force_cuda_runfile=1
           ;;
         cuda-system-package=*)
           cuda_system_package_name="${OPTARG#*=}"
+          cuda_system_package=1
+          force_cuda_runfile=0
           ;;
         num-processors=*)
           num_processors="${OPTARG#*=}"
@@ -292,11 +305,7 @@ function add_arch_deps() {
     )
   fi
 
-  if [[ "$skip_cuda" == 0 ]]; then
-    dependencies+=(
-      "cuda"  # VA-API
-    )
-  fi
+  # CUDA is installed from the pinned runfile, not Arch's rolling toolkit.
   return 0
 }
 
@@ -453,9 +462,11 @@ function install_cuda() {
 
   # Check if CUDA is already available
   if [[ "$force_cuda_runfile" == 1 ]] && [[ -f "${build_dir}/cuda/bin/nvcc" ]]; then
+    validate_cuda_toolkit "${build_dir}/cuda/bin/nvcc"
     apply_cuda_patches "${build_dir}/cuda"
     return
   elif [[ "$force_cuda_runfile" == 0 ]] && detect_nvcc_path > /dev/null 2>&1; then
+    validate_cuda_toolkit "$(detect_nvcc_path)"
     if [[ "$cuda_system_package" == 1 ]]; then
       apply_cuda_patches "$(cuda_system_toolkit_path)"
     fi
@@ -506,6 +517,7 @@ function install_cuda() {
   "${build_dir}/cuda.run" --silent --toolkit --toolkitpath="${build_dir}/cuda" --no-opengl-libs --no-man-page --no-drm "$cuda_override_arg"
   rm "${build_dir}/cuda.run"
 
+  validate_cuda_toolkit "${build_dir}/cuda/bin/nvcc"
   apply_cuda_patches "${build_dir}/cuda"
   return 0
 }
@@ -626,11 +638,12 @@ function run_step_cmake() {
   # Detect CUDA path using the reusable function
   nvcc_path=""
   if [[ "$skip_cuda" == 0 ]]; then
-    if [[ "$force_cuda_runfile" == 1 ]] && [[ -f "${build_dir}/cuda/bin/nvcc" ]]; then
+    if [[ "$force_cuda_runfile" == 1 ]]; then
       nvcc_path="${build_dir}/cuda/bin/nvcc"
     else
       nvcc_path=$(detect_nvcc_path)
     fi
+    validate_cuda_toolkit "$nvcc_path"
   fi
 
   #set gcc version based on distros
@@ -677,7 +690,7 @@ function run_step_cmake() {
 
   # Handle CUDA
   if [[ "$skip_cuda" == 0 ]]; then
-    cmake_args+=("-DSUNSHINE_ENABLE_CUDA=ON")
+    cmake_args+=("-DSUNSHINE_ENABLE_CUDA=ON" "-DSUNSHINE_REQUIRE_CUDA_PASCAL=ON")
     if [[ -n "$nvcc_path" ]]; then
       cmake_args+=("-DCMAKE_CUDA_COMPILER:PATH=$nvcc_path")
       cmake_args+=("-DCMAKE_CUDA_HOST_COMPILER=gcc-${gcc_version}")
@@ -820,9 +833,7 @@ elif grep -q '^ID=fedora$' /etc/os-release && grep -q '^VERSION_ID=45$' /etc/os-
   version="45"
   package_update_command="${sudo_cmd} dnf update -y"
   package_install_command="${sudo_cmd} dnf install -y"
-  cuda_version="13.1.1"
-  cuda_build="590.48.01"
-  gcc_version="15"
+  gcc_version="14"
 elif grep -q "Ubuntu 22.04" /etc/os-release; then
   distro="ubuntu"
   version="22.04"
@@ -853,12 +864,6 @@ elif grep -q 'VERSION_ID="26.04"' /etc/os-release; then
   package_update_command="${sudo_cmd} apt-get update"
   package_install_command="${sudo_cmd} apt-get install -y"
   cuda_patches=1
-  if [[ "$force_cuda_runfile" == 0 ]]; then
-    cuda_system_package=1
-    if [[ -z "$cuda_system_package_name" ]]; then
-      cuda_system_package_name="cuda-toolkit-13-1"
-    fi
-  fi
   gcc_version="14"
 else
   echo "Unsupported Distro or Version"

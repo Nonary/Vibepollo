@@ -325,3 +325,13 @@ It may be beneficial to build remotely in some cases. This will enable easier bu
   <summary></summary>
   [TOC]
 </details>
+
+### CUDA compatibility for scripted Linux builds
+
+`scripts/linux_build.sh` pins CUDA 12.9.1 and a compatible host compiler to
+retain Maxwell, Pascal (including GTX 10-series), and Volta targets. It rejects
+incompatible cached toolkits before configuration. Direct CMake builds may
+still use newer CUDA with `SUNSHINE_REQUIRE_CUDA_PASCAL=OFF` (the default);
+CUDA 13 builds omit those older GPU targets. Set the option to `ON` when
+producing a Pascal-compatible build with CUDA 12.9. This does not enable Linux
+release publishing in Vibepollo's Windows release workflow.
