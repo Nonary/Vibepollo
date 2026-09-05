@@ -2465,8 +2465,12 @@ namespace nvhttp {
       launch_session->enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
       launch_session->client_vrr_requested = util::from_view(get_arg(args, "clientVrrRequested", "0"));
       auto color_app_ctx = launch_app_ctx;
-      if (!color_app_ctx && launch_session->appid <= 0 && launch_appuuid_arg.empty()) {
-        color_app_ctx = proc::proc.resolve_app(proc::proc.current_app_id());
+      const auto current_color_app_id = proc::proc.current_app_id();
+      const auto color_control = remote_session::identify(launch_session->appid, launch_appuuid_arg, current_color_app_id);
+      if (!color_app_ctx && ((launch_session->appid <= 0 && launch_appuuid_arg.empty()) ||
+                            color_control == remote_session::control_e::resume ||
+                            color_control == remote_session::control_e::running_game)) {
+        color_app_ctx = proc::proc.resolve_app(current_color_app_id);
       }
       launch_session->prefer_sdr_10bit = rtsp_stream::hdr_request_policy::resolve_prefer_10bit_sdr(
         verified_client->prefer_10bit_sdr,
