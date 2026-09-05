@@ -6444,6 +6444,16 @@ namespace video {
           return util::false_v<util::optional_t<int>>;
         }
         auto bounded_probe_teardown = util::fail_guard([&]() {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_VAAPI)
+          if (&encoder == &vaapi) {
+            // VAAPI's conversion device owns an EGL context current on this
+            // thread. Destroying it in the watchdog worker leaves the probe
+            // thread using a released Mesa context when the next codec starts.
+            std::lock_guard lock {encode_session_teardown_mutex};
+            session.reset();
+            return;
+          }
+#endif
 #ifdef _WIN32
           if (&encoder == &amdvce_ffmpeg) {
             destroy_legacy_amf_session_bounded(session, "probe"sv);
@@ -6774,7 +6784,7 @@ namespace video {
 
       const config_t generic_hdr_config = {1920, 1080, 60, 6000, 1000, 1, 0, 3, 1, 1, 0};
 
-      // A capture backend or driver can reject HDR entirely.
+      // A capture backend can reject HDR entirely (stock Gamescope is SDR).
       // Keep its successful SDR probes instead of failing the whole encoder
       // when constructing an unsupported HDR capture surface.
       if (disp->is_codec_supported(encoder.hevc.name, generic_hdr_config) ||

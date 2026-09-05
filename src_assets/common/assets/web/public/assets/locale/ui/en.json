@@ -1930,6 +1930,7 @@
           "ddx": "Desktop Duplication · Compatibility",
           "kms": "DRM/KMS",
           "kwin": "KDE/KWin screencasting",
+          "gamescope": "SteamOS / Gamescope",
           "nvfbc": "NVIDIA NvFBC",
           "portal": "XDG Desktop Portal",
           "wgc": "Windows Graphics Capture · Variable",

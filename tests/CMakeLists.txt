@@ -518,6 +518,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src_assets/linux/misc/vibepollo-mangohud")
     set_tests_properties(test_component_linux_mangohud_wrapper PROPERTIES LABELS "component")
     sunshine_register_component(NAME test_component_linux_smooth_motion_policy TEST_SOURCE unit/platform/linux/test_smooth_motion_policy.cpp)
+    sunshine_register_component(NAME test_component_linux_gamescope_session TEST_SOURCE unit/platform/linux/test_gamescope_session.cpp
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/linux/gamescope_session.cpp")
+    pkg_check_modules(TEST_WAYLAND QUIET IMPORTED_TARGET wayland-client)
+    if(TEST_WAYLAND_FOUND)
+        sunshine_register_component(NAME test_component_linux_wayland_roundtrip
+            TEST_SOURCE unit/platform/linux/test_wayland_roundtrip.cpp
+            LINK_LIBRARIES PkgConfig::TEST_WAYLAND)
+    endif()
+    add_test(NAME test_component_linux_steamos_install
+        COMMAND bash "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/steamos/tests/test-user-install.sh")
+    set_tests_properties(test_component_linux_steamos_install PROPERTIES LABELS "component")
+    add_test(NAME test_component_linux_steamos_profile
+        COMMAND bash "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/steamos/tests/test-profile.sh")
+    set_tests_properties(test_component_linux_steamos_profile PROPERTIES LABELS "component")
     sunshine_register_component(NAME test_component_linux_pipewire_cuda_policy TEST_SOURCE unit/platform/linux/test_pipewire_cuda_policy.cpp)
     sunshine_register_component(NAME test_component_linux_vulkan_encode_policy TEST_SOURCE unit/platform/linux/test_vulkan_encode_policy.cpp)
     sunshine_register_component(NAME test_component_linux_capture_status TEST_SOURCE unit/platform/linux/test_capture_status.cpp)
@@ -559,6 +573,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_capability_sanitizer.cpp")
     target_include_directories(test_linux_capability_sanitizer PRIVATE "${LIBCAP_INCLUDE_DIRS}")
     target_link_libraries(test_linux_capability_sanitizer PRIVATE "${LIBCAP_LIBRARIES}")
+    if(SUNSHINE_BUILD_STEAMOS)
+        target_compile_definitions(test_linux_capability_sanitizer PRIVATE SUNSHINE_BUILD_STEAMOS=1)
+    endif()
     add_test(NAME test_component_linux_capability_sanitizer COMMAND test_linux_capability_sanitizer)
     set_tests_properties(test_component_linux_capability_sanitizer PROPERTIES LABELS "component")
 
@@ -578,10 +595,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_app_supervisor.c")
     target_include_directories(test_linux_app_supervisor PRIVATE "${LIBCAP_INCLUDE_DIRS}")
     target_link_libraries(test_linux_app_supervisor PRIVATE "${LIBCAP_LIBRARIES}")
-    add_test(
-        NAME test_component_linux_app_supervisor
-        COMMAND test_linux_app_supervisor "$<TARGET_FILE:vibepollo_app_supervisor>")
-    set_tests_properties(test_component_linux_app_supervisor PROPERTIES LABELS "component")
+    if(TARGET vibepollo_app_supervisor)
+        add_test(
+            NAME test_component_linux_app_supervisor
+            COMMAND test_linux_app_supervisor "$<TARGET_FILE:vibepollo_app_supervisor>")
+        set_tests_properties(test_component_linux_app_supervisor PROPERTIES LABELS "component")
+    endif()
 
     add_executable(test_linux_session_exec_client
         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_session_exec_client.c")

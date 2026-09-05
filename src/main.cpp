@@ -306,6 +306,20 @@ int main(int argc, char *argv[]) {
 
   lifetime::argv = argv;
 
+#ifdef SUNSHINE_BUILD_STEAMOS
+  // Resolve assets from the executable's release, including launches outside
+  // the wrapper and upgrades which switch the "current" symlink underneath us.
+  std::error_code bundle_error;
+  const auto bundle_executable = std::filesystem::read_symlink("/proc/self/exe", bundle_error);
+  if (!bundle_error) {
+    std::filesystem::current_path(bundle_executable.parent_path().parent_path(), bundle_error);
+  }
+  if (bundle_error) {
+    std::fprintf(stderr, "Vibepollo: cannot resolve SteamOS bundle: %s\n", bundle_error.message().c_str());
+    return 1;
+  }
+#endif
+
 #ifdef _WIN32
   // Avoid searching the PATH in case a user has configured their system insecurely
   // by placing a user-writable directory in the system-wide PATH variable.

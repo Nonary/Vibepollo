@@ -67,6 +67,10 @@
   #include "src/steam_integration.h"
 #endif
 #include "vaapi.h"
+#ifdef SUNSHINE_BUILD_GAMESCOPE
+  #include "gamescope_session.h"
+  #include "gamescopegrab.h"
+#endif
 
 #ifdef __linux__
   #include <linux/rtnetlink.h>
@@ -1165,6 +1169,9 @@ namespace platf {
 
   namespace source {
     enum source_e : std::size_t {
+#ifdef SUNSHINE_BUILD_GAMESCOPE
+      GAMESCOPE,  ///< Gamescope compositor-owned PipeWire stream
+#endif
 #ifdef SUNSHINE_BUILD_CUDA
       NVFBC,  ///< NvFBC
 #endif
@@ -1188,6 +1195,12 @@ namespace platf {
   }  // namespace source
 
   static std::bitset<source::MAX_FLAGS> sources;
+
+#ifdef SUNSHINE_BUILD_GAMESCOPE
+  bool gamescope_capture_selected() {
+    return sources[source::GAMESCOPE];
+  }
+#endif
 
 #ifdef SUNSHINE_BUILD_CUDA
   std::vector<std::string> nvfbc_display_names();
@@ -1247,6 +1260,11 @@ namespace platf {
 #endif
 
   std::vector<std::string> display_names(mem_type_e hwdevice_type) {
+#ifdef SUNSHINE_BUILD_GAMESCOPE
+    if (sources[source::GAMESCOPE]) {
+      return gamescope_display_names();
+    }
+#endif
 #ifdef SUNSHINE_BUILD_CUDA
     // display using NvFBC only supports mem_type_e::cuda
     if (sources[source::NVFBC] && hwdevice_type == mem_type_e::cuda) {
@@ -1363,6 +1381,11 @@ namespace platf {
       }
     }
 
+#ifdef SUNSHINE_BUILD_GAMESCOPE
+    if (sources[source::GAMESCOPE]) {
+      return gamescope_display(hwdevice_type, display_name, config);
+    }
+#endif
 #ifdef SUNSHINE_BUILD_CUDA
     if (sources[source::NVFBC] && hwdevice_type == mem_type_e::cuda) {
       BOOST_LOG(info) << "Screencasting with NvFBC"sv;
@@ -1398,6 +1421,7 @@ namespace platf {
   }
 
   std::unique_ptr<deinit_t> init() {
+    sources.reset();
     // enable low latency mode for AMD
     // https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/30039
     set_env("AMD_DEBUG", "lowlatencyenc");
@@ -1424,6 +1448,18 @@ namespace platf {
     }
 #endif
 
+#ifdef SUNSHINE_BUILD_GAMESCOPE
+    if ((config::video.capture.empty() || config::video.capture == "gamescope") && gamescope_available()) {
+      sources[source::GAMESCOPE] = true;
+      // SteamOS publishes DISPLAY in gamescope-environment rather than in
+      // the user manager. Import it only after verifying the compositor.
+      (void) gamescope_session::import_x11_display();
+      BOOST_LOG(info) << "Using Gamescope compositor capture for the current session."sv;
+    }
+    const bool gamescope_selected = sources[source::GAMESCOPE];
+#else
+    constexpr bool gamescope_selected = false;
+#endif
 #ifdef SUNSHINE_BUILD_CUDA
     if (((config::video.capture.empty() && sources.none()) || config::video.capture == "nvfbc") && verify_nvfbc()) {
       sources[source::NVFBC] = true;
@@ -1455,12 +1491,12 @@ namespace platf {
 #ifdef SUNSHINE_BUILD_X11
     // We enumerate this capture backend regardless of other suitable sources,
     // since it may be needed as a NvFBC fallback for software encoding on X11.
-    if ((config::video.capture.empty() || config::video.capture == "x11") && verify_x11()) {
+    if (((config::video.capture.empty() && !gamescope_selected) || config::video.capture == "x11") && verify_x11()) {
       sources[source::X11] = true;
     }
 #endif
 #ifdef SUNSHINE_BUILD_PORTAL
-    if ((config::video.capture.empty() || config::video.capture == "portal") && verify_portal()) {
+    if (((config::video.capture.empty() && !gamescope_selected) || config::video.capture == "portal") && verify_portal()) {
       sources[source::PORTAL] = true;
     }
 #endif

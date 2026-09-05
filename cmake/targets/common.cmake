@@ -37,9 +37,12 @@ target_include_directories(sunshine SYSTEM BEFORE PRIVATE
         "${CMAKE_SOURCE_DIR}/third-party/nv-codec-headers/include")
 
 # Logging integration flags are provided via SUNSHINE_DEFINITIONS to avoid duplicates
-set_target_properties(sunshine PROPERTIES CXX_STANDARD 23
-        VERSION ${PROJECT_VERSION}
-        SOVERSION ${PROJECT_VERSION_MAJOR})
+set_target_properties(sunshine PROPERTIES CXX_STANDARD 23)
+if(NOT SUNSHINE_BUILD_STEAMOS)
+    set_target_properties(sunshine PROPERTIES
+            VERSION ${PROJECT_VERSION}
+            SOVERSION ${PROJECT_VERSION_MAJOR})
+endif()
 
 # CLion complains about unknown flags after running cmake, and cannot add symbols to the index for cuda files
 if(CUDA_INHERIT_COMPILE_OPTIONS)

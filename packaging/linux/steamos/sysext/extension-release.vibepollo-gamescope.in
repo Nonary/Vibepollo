@@ -1,0 +1,7 @@
+# This template must be rendered from the target host's /etc/os-release.
+# Exact matching is intentional: a Gamescope patch is not ABI-independent.
+ID=@HOST_ID@
+VERSION_ID=@HOST_VERSION_ID@
+ARCHITECTURE=@HOST_ARCHITECTURE@
+SYSEXT_ID=vibepollo-gamescope
+SYSEXT_VERSION_ID=@VIBESHINE_GAMESCOPE_BUNDLE_VERSION@

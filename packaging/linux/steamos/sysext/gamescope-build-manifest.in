@@ -1,0 +1,9 @@
+# Signed release metadata consumed by the future extension installer.
+# This is data, not shell syntax; values must be parsed, never sourced.
+host_build_id=@HOST_BUILD_ID@
+host_version_id=@HOST_VERSION_ID@
+architecture=@HOST_ARCHITECTURE@
+gamescope_package_version=@GAMESCOPE_PACKAGE_VERSION@
+gamescope_sha256=@GAMESCOPE_SHA256@
+patch_revision=@PATCH_REVISION@
+image_sha256=@IMAGE_SHA256@

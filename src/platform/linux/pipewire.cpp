@@ -34,7 +34,8 @@ constexpr int SPA_VIDEO_TRANSFER_SMPTE2084 = 14;
 
 namespace {
   // Buffer and limit constants
-  constexpr int SPA_POD_BUFFER_SIZE = 4096;
+  // Seven formats with up to 200 modifiers each exceed a 4 KiB pod builder.
+  constexpr int SPA_POD_BUFFER_SIZE = 32768;
   constexpr int MAX_PARAMS = 200;
   constexpr int MAX_DMABUF_FORMATS = 200;
   constexpr int MAX_DMABUF_MODIFIERS = 200;
@@ -43,6 +44,11 @@ namespace {
 using namespace std::literals;
 
 namespace pipewire {
+  struct image_t: egl::img_descriptor_t {
+    // CPU frames remain owned by the image until the encoder returns it.
+    std::vector<uint8_t> pixels;
+  };
+
   struct format_map_t {
     uint64_t fourcc;
     int32_t pw_format;
@@ -63,18 +69,22 @@ namespace pipewire {
     std::atomic<int> negotiated_height {0};
     std::atomic<int> color_primaries {0};
     std::atomic<int> transfer_function {0};
+    std::atomic<int> pixel_format {0};
+    std::atomic<int> color_range {0};
+    std::atomic<int> color_matrix {0};
     std::atomic<bool> stream_dead {false};
-    pw_stream_state previous_state;
-    pw_stream_state current_state;
+    std::atomic<bool> initializing {true};
+    pw_stream_state previous_state = PW_STREAM_STATE_UNCONNECTED;
+    pw_stream_state current_state = PW_STREAM_STATE_UNCONNECTED;
     std::string err_msg;
   };
 
   struct stream_data_t {
-    struct pw_stream *stream;
-    struct spa_hook stream_listener;
-    struct spa_video_info format;
-    struct pw_buffer *current_buffer;
-    uint64_t drm_format;
+    struct pw_stream *stream = nullptr;
+    struct spa_hook stream_listener {};
+    struct spa_video_info format {};
+    struct pw_buffer *current_buffer = nullptr;
+    uint64_t drm_format = 0;
     std::shared_ptr<shared_state_t> shared;
     std::mutex frame_mutex;
     std::condition_variable frame_cv;
@@ -104,10 +114,15 @@ namespace pipewire {
     pipewire_t():
         loop(pw_thread_loop_new("Pipewire thread", nullptr)) {
       BOOST_LOG(debug) << "[pipewire] Start PW thread loop"sv;
-      pw_thread_loop_start(loop);
+      if (loop) {
+        pw_thread_loop_start(loop);
+      }
     }
 
     ~pipewire_t() {
+      if (!loop) {
+        return;
+      }
       BOOST_LOG(debug) << "[pipewire] Destroying pipewire_t"sv;
       if (loop) {
         BOOST_LOG(debug) << "[pipewire] Stop PW thread loop"sv;
@@ -163,6 +178,12 @@ namespace pipewire {
     }
 
     int init(const int stream_fd, const uint32_t stream_node, const uint64_t stream_object_serial, std::shared_ptr<shared_state_t> shared_state) {
+      if (!loop) {
+        if (stream_fd >= 0) {
+          close(stream_fd);
+        }
+        return -1;
+      }
       fd = stream_fd;
       node = stream_node;
       object_serial = stream_object_serial;
@@ -258,6 +279,10 @@ namespace pipewire {
                                                  (mem_type == platf::mem_type_e::cuda && display_is_nvidia));
         if (use_dmabuf) {
           for (int i = 0; i < n_dmabuf_infos; i++) {
+            if ((force_sdr_formats_ && !is_sdr_format(dmabuf_infos[i].format)) ||
+                (force_hdr10_formats_ && dmabuf_infos[i].format != SPA_VIDEO_FORMAT_xBGR_210LE)) {
+              continue;
+            }
             auto format_param = build_format_parameter(&pod_builder, width, height, refresh_rate, dmabuf_infos[i].format, dmabuf_infos[i].modifiers, dmabuf_infos[i].n_modifiers);
             params[n_params] = format_param;
             n_params++;
@@ -266,12 +291,27 @@ namespace pipewire {
 
         // Add fallback for memptr
         for (const auto &fmt : format_map) {
+          if (force_hdr10_formats_) {
+            // The current CPU conversion path assumes 8-bit BGR pixels.
+            // HDR capture requires an importable 10-bit DMA-BUF.
+            break;
+          }
+          if ((force_sdr_formats_ && !is_sdr_format(fmt.pw_format)) ||
+              (force_hdr10_formats_ && fmt.pw_format != SPA_VIDEO_FORMAT_xBGR_210LE)) {
+            continue;
+          }
           auto format_param = build_format_parameter(&pod_builder, width, height, refresh_rate, fmt.pw_format, nullptr, 0);
           params[n_params] = format_param;
           n_params++;
         }
         BOOST_LOG(debug) << "[pipewire] Connect PW stream - fd: "sv << fd << " node: "sv << node << " object serial: "sv << object_serial;
-        pw_stream_connect(stream_data.stream, PW_DIRECTION_INPUT, node, (enum pw_stream_flags)(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS), params.data(), n_params);
+        if (n_params == 0 || std::any_of(params.begin(), params.begin() + n_params, [](const auto *param) {
+              return param == nullptr;
+            }) ||
+            pw_stream_connect(stream_data.stream, PW_DIRECTION_INPUT, node, (enum pw_stream_flags)(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS), params.data(), n_params) < 0) {
+          pw_thread_loop_unlock(loop);
+          return -1;
+        }
       }
       pw_thread_loop_unlock(loop);
       return 0;
@@ -343,7 +383,9 @@ namespace pipewire {
         if (buf->datas[0].type == SPA_DATA_DmaBuf) {
           fill_img_dmabuf(img_descriptor, buf, stream_data);
         } else {
-          img->data = stream_data.front_buffer->data();
+          auto *owned_image = static_cast<image_t *>(img);
+          owned_image->pixels.swap(*stream_data.front_buffer);
+          img->data = owned_image->pixels.data();
           img->row_pitch = stream_data.local_stride;
         }
       }
@@ -355,16 +397,34 @@ namespace pipewire {
       negotiate_maxframerate_ = negotiate_maxframerate;
     }
 
+    void set_gamescope_requested_size(bool enabled) {
+      gamescope_requested_size_ = enabled;
+    }
+
+    void set_force_hdr10_formats(bool enabled) {
+      force_hdr10_formats_ = enabled;
+    }
+
+    void set_force_sdr_formats(bool enabled) {
+      force_sdr_formats_ = enabled;
+    }
+
   private:
+    static bool is_sdr_format(int32_t format) {
+      return format == SPA_VIDEO_FORMAT_BGRA || format == SPA_VIDEO_FORMAT_BGRx;
+    }
     struct pw_thread_loop *loop;
-    struct pw_context *context;
-    struct pw_core *core;
-    struct spa_hook core_listener;
+    struct pw_context *context = nullptr;
+    struct pw_core *core = nullptr;
+    struct spa_hook core_listener {};
     struct stream_data_t stream_data;
-    int fd;
-    uint32_t node;
-    uint64_t object_serial;
+    int fd = -1;
+    uint32_t node = PW_ID_ANY;
+    uint64_t object_serial = SPA_ID_INVALID;
     bool negotiate_maxframerate_ = true;
+    bool gamescope_requested_size_ = false;
+    bool force_sdr_formats_ = false;
+    bool force_hdr10_formats_ = false;
 
     struct spa_pod *build_format_parameter(struct spa_pod_builder *b, uint32_t width, uint32_t height, uint32_t refresh_rate, int32_t format, uint64_t *modifiers, int n_modifiers) {
       struct spa_pod_frame object_frame;
@@ -380,11 +440,21 @@ namespace pipewire {
       spa_pod_builder_add(b, SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw), 0);
       spa_pod_builder_add(b, SPA_FORMAT_VIDEO_format, SPA_POD_Id(format), 0);
       spa_pod_builder_add(b, SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle(&sizes[0], &sizes[1], &sizes[2]), 0);
+      if (gamescope_requested_size_) {
+        // Valve's private SPA_FORMAT_VIDEO_requested_size property:
+        // gamescope/src/pipewire_gamescope.hpp. The ordinary size property
+        // still accepts the native aspect ratio chosen by the compositor.
+        spa_pod_builder_add(b, 0x70000, SPA_POD_Rectangle(&sizes[0]), 0);
+      }
       add_framerate_parameters(b, negotiate_maxframerate_);
 
       if (format == SPA_VIDEO_FORMAT_xBGR_210LE) {
         spa_pod_builder_add(b, SPA_FORMAT_VIDEO_colorPrimaries, SPA_POD_Id(SPA_VIDEO_COLOR_PRIMARIES_BT2020), 0);
         spa_pod_builder_add(b, SPA_FORMAT_VIDEO_transferFunction, SPA_POD_Id(SPA_VIDEO_TRANSFER_SMPTE2084), 0);
+        if (force_hdr10_formats_) {
+          spa_pod_builder_add(b, SPA_FORMAT_VIDEO_colorMatrix, SPA_POD_Id(SPA_VIDEO_COLOR_MATRIX_RGB), 0);
+          spa_pod_builder_add(b, SPA_FORMAT_VIDEO_colorRange, SPA_POD_Id(SPA_VIDEO_COLOR_RANGE_0_255), 0);
+        }
       }
 
       if (n_modifiers) {
@@ -425,7 +495,7 @@ namespace pipewire {
 
       switch (state) {
         case PW_STREAM_STATE_PAUSED:
-          if (d->shared && old == PW_STREAM_STATE_STREAMING) {
+          if (d->shared && old == PW_STREAM_STATE_STREAMING && !d->shared->initializing.load()) {
             {
               std::scoped_lock lock(d->frame_mutex);
               d->frame_ready = false;
@@ -443,7 +513,7 @@ namespace pipewire {
             std::scoped_lock lock(d->frame_mutex);
             d->shared->current_state = state;
             d->shared->previous_state = old;
-            d->shared->err_msg = std::string(err_msg);
+            d->shared->err_msg = err_msg ? err_msg : "PipeWire stream error";
           }
           [[fallthrough]];
         case PW_STREAM_STATE_UNCONNECTED:
@@ -473,6 +543,13 @@ namespace pipewire {
         return;
       }
 
+      if (!b->buffer || b->buffer->n_datas == 0 || !b->buffer->datas[0].chunk ||
+          b->buffer->datas[0].chunk->size == 0 ||
+          (b->buffer->datas[0].chunk->flags & SPA_CHUNK_FLAG_CORRUPTED)) {
+        pw_stream_queue_buffer(d->stream, b);
+        return;
+      }
+
       // 2. Fast Path: DMA-BUF
       if (b->buffer->datas[0].type == SPA_DATA_DmaBuf) {
         std::scoped_lock lock(d->frame_mutex);
@@ -484,17 +561,27 @@ namespace pipewire {
       }
       // 3. Optimized Path: Software/MemPtr
       else if (b->buffer->datas[0].data != nullptr) {
-        size_t size = b->buffer->datas[0].chunk->size;
+        const auto &data = b->buffer->datas[0];
+        const size_t size = data.chunk->size;
+        const size_t offset = data.chunk->offset;
+        if (offset > data.maxsize || size > data.maxsize - offset || data.chunk->stride <= 0 ||
+            static_cast<uint64_t>(data.chunk->stride) * d->format.info.raw.size.height > size) {
+          pw_stream_queue_buffer(d->stream, b);
+          return;
+        }
 
         // Perform the copy to the BACK buffer while NOT holding the lock
         if (d->back_buffer->size() < size) {
           d->back_buffer->resize(size);
         }
-        std::memcpy(d->back_buffer->data(), b->buffer->datas[0].data, size);
+        std::memcpy(d->back_buffer->data(), static_cast<const uint8_t *>(data.data) + offset, size);
 
         {
           // Lock only for the pointer swap and state update
           std::scoped_lock lock(d->frame_mutex);
+          if (d->current_buffer) {
+            pw_stream_queue_buffer(d->stream, d->current_buffer);
+          }
           std::swap(d->front_buffer, d->back_buffer);
 
           d->local_stride = b->buffer->datas[0].chunk->stride;
@@ -502,8 +589,10 @@ namespace pipewire {
           d->current_buffer = b;
         }
 
-        // Release the PW buffer immediately after copy
+        // Keep the producer's metadata valid until this frame is replaced.
+      } else {
         pw_stream_queue_buffer(d->stream, b);
+        return;
       }
 
       d->frame_cv.notify_one();
@@ -542,6 +631,9 @@ namespace pipewire {
       int physical_h = d->format.info.raw.size.height;
 
       if (d->shared) {
+        d->shared->pixel_format.store(d->format.info.raw.format);
+        d->shared->color_range.store(d->format.info.raw.color_range);
+        d->shared->color_matrix.store(d->format.info.raw.color_matrix);
         int old_w = d->shared->negotiated_width.load();
         int old_h = d->shared->negotiated_height.load();
         int old_color_primaries = d->shared->color_primaries.load();
@@ -572,7 +664,7 @@ namespace pipewire {
         buffer_types |= 1 << SPA_DATA_DmaBuf;
       } else {
         BOOST_LOG(info) << "[pipewire] using memory buffers"sv;
-        buffer_types |= 1 << SPA_DATA_MemPtr;
+        buffer_types |= (1 << SPA_DATA_MemPtr) | (1 << SPA_DATA_MemFd);
       }
 
       // Ack the buffer type and metadata
@@ -604,6 +696,12 @@ namespace pipewire {
 
   class pipewire_display_t: public platf::display_t {
   public:
+    ~pipewire_display_t() override {
+      for (int i = 0; i < n_dmabuf_infos; ++i) {
+        g_free(dmabuf_infos[i].modifiers);
+      }
+    }
+
     static bool init_pipewire_and_check_hwdevice_type(platf::mem_type_e hwdevice_type) {
       // Initialize pipewire to load necessary modules
       pw_init(nullptr, nullptr);
@@ -708,6 +806,7 @@ namespace pipewire {
       if (!shared_state) {
         shared_state = std::make_shared<shared_state_t>();
       } else {
+        shared_state->initializing.store(true);
         shared_state->stream_dead.store(false);
         shared_state->negotiated_width.store(0);
         shared_state->negotiated_height.store(0);
@@ -727,17 +826,35 @@ namespace pipewire {
       }
 
       // Wait for pipewire negotiation to finish so we have the proper negotiated dimensions
-      int timeout_ms = 1500;
+      const auto deadline = std::chrono::steady_clock::now() + 1500ms;
+      auto stable_since = std::chrono::steady_clock::now();
       int negotiated_w = 0;
       int negotiated_h = 0;
-      while (timeout_ms > 0) {
-        negotiated_w = shared_state->negotiated_width.load();
-        negotiated_h = shared_state->negotiated_height.load();
-        if (negotiated_w > 0 && negotiated_h > 0) {
+      bool negotiated = false;
+      while (std::chrono::steady_clock::now() < deadline && !shared_state->stream_dead.load()) {
+        const int new_w = shared_state->negotiated_width.load();
+        const int new_h = shared_state->negotiated_height.load();
+        if (new_w != negotiated_w || new_h != negotiated_h) {
+          negotiated_w = new_w;
+          negotiated_h = new_h;
+          stable_since = std::chrono::steady_clock::now();
+        }
+        if (negotiated_w > 0 && negotiated_h > 0 && negotiated_size_ready(negotiated_w, negotiated_h) &&
+            std::chrono::steady_clock::now() - stable_since >= negotiated_size_settle_time()) {
+          negotiated = true;
           break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        timeout_ms -= 10;
+      }
+      if (!negotiated && negotiated_w > 0 && negotiated_h > 0 && !shared_state->stream_dead.load()) {
+        // Older producers can ignore optional size requests. Keep their
+        // negotiated native size; the encoder can still scale that image.
+        BOOST_LOG(warning) << "[pipewire] Requested size did not settle; using the compositor's negotiated size."sv;
+        negotiated = true;
+      }
+      if (!negotiated) {
+        BOOST_LOG(error) << "[pipewire] Stream format negotiation did not complete."sv;
+        return -1;
       }
       // Set width and height to the values negotiated by pipewire
       if (negotiated_w > 0 && negotiated_h > 0 && (negotiated_w != width || negotiated_h != height)) {
@@ -755,6 +872,7 @@ namespace pipewire {
         verify_and_update_display_parameters();
       }
 
+      shared_state->initializing.store(false);
       return 0;
     }
 
@@ -774,7 +892,18 @@ namespace pipewire {
 
         auto *img_egl = static_cast<egl::img_descriptor_t *>(img_out.get());
         img_egl->reset();
+        img_egl->data = nullptr;
+        img_egl->pts.reset();
+        img_egl->seq.reset();
+        img_egl->pw_flags.reset();
         pipewire.fill_img(img_egl);
+
+        // A dock change or compositor downscale can renegotiate while capture
+        // is running. Recreate encoder surfaces before consuming that size.
+        if (!capture_format_valid() || shared_state->negotiated_width.load() != width ||
+            shared_state->negotiated_height.load() != height) {
+          return platf::capture_e::reinit;
+        }
 
         // Check if we got valid data (either DMA-BUF fd or memory pointer), then filter duplicates
         if ((img_egl->sd.fds[0] >= 0 || img_egl->data != nullptr) && !is_buffer_redundant(img_egl)) {
@@ -791,7 +920,7 @@ namespace pipewire {
 
     std::shared_ptr<platf::img_t> alloc_img() override {
       // Note: this img_t type is also used for memory buffers
-      auto img = std::make_shared<egl::img_descriptor_t>();
+      auto img = std::make_shared<image_t>();
 
       img->width = width;
       img->height = height;
@@ -910,8 +1039,9 @@ namespace pipewire {
         return -1;
       }
 
-      img->data = new std::uint8_t[img->height * img->row_pitch];
-      std::fill_n(img->data, img->height * img->row_pitch, 0);
+      auto &owned = static_cast<image_t &>(*img);
+      owned.pixels.assign(static_cast<std::size_t>(img->height) * img->row_pitch, 0);
+      img->data = owned.pixels.data();
       return 0;
     }
 
@@ -1033,7 +1163,7 @@ namespace pipewire {
     }
 
     int get_dmabuf_modifiers() {
-      if (wl_display.init() < 0) {
+      if (wl_display.init(wayland_display_name()) < 0) {
         return -1;
       }
 
@@ -1077,6 +1207,22 @@ namespace pipewire {
     uint32_t framerate;
 
   protected:
+    virtual bool capture_format_valid() {
+      return true;
+    }
+
+    virtual bool negotiated_size_ready(int, int) const {
+      return true;
+    }
+
+    virtual std::chrono::milliseconds negotiated_size_settle_time() const {
+      return 0ms;
+    }
+
+    virtual const char *wayland_display_name() const {
+      return nullptr;
+    }
+
     // Allow subclasses to access for pipewire requirements setup and stream dead checks
     pipewire_t pipewire;
     std::shared_ptr<shared_state_t> shared_state;

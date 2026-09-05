@@ -37,6 +37,53 @@ file(CREATE_LINK "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/assets/shaders"
 install(PROGRAMS "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/vibepollo-mangohud"
         DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
+if(SUNSHINE_BUILD_STEAMOS)
+    # Transitive application dependencies also resolve from the bundle. Keep
+    # the OS loader, C library and graphics/session drivers owned by SteamOS.
+    set_target_properties(sunshine PROPERTIES INSTALL_RPATH "$ORIGIN/../lib")
+    target_link_options(sunshine PRIVATE "LINKER:--disable-new-dtags")
+    install(CODE [[
+        file(GET_RUNTIME_DEPENDENCIES
+            EXECUTABLES "$<TARGET_FILE:sunshine>"
+            RESOLVED_DEPENDENCIES_VAR _steamos_libraries
+            UNRESOLVED_DEPENDENCIES_VAR _steamos_missing
+            PRE_EXCLUDE_REGEXES
+                "^linux-vdso" "^ld-linux"
+                "^lib(c|m|mvec|dl|pthread|rt|resolv|util|nss_[^.]+)\\.so"
+                "^lib(gio|glib|gmodule|gobject|gthread)-2\\.0\\.so"
+                "^lib(EGL|GL|GLX|GLdispatch|OpenGL|GLES[^.]*|glapi|gbm|drm[^.]*|vulkan|va[^.]*|wayland[^.]*|pipewire[^/]*|pulse[^/]*)\\.so")
+        if(_steamos_missing)
+            message(FATAL_ERROR "Unresolved SteamOS runtime dependencies: ${_steamos_missing}")
+        endif()
+        foreach(_steamos_library IN LISTS _steamos_libraries)
+            file(INSTALL "${_steamos_library}" DESTINATION "${CMAKE_INSTALL_PREFIX}/lib"
+                TYPE SHARED_LIBRARY FOLLOW_SYMLINK_CHAIN)
+        endforeach()
+    ]])
+    install(PROGRAMS
+            "${CMAKE_SOURCE_DIR}/packaging/linux/steamos/install-user.sh"
+            "${CMAKE_SOURCE_DIR}/packaging/linux/steamos/uninstall-user.sh"
+            "${CMAKE_SOURCE_DIR}/packaging/linux/steamos/check-host.sh"
+            "${CMAKE_SOURCE_DIR}/packaging/linux/steamos/vibepollo-steamos-session"
+            DESTINATION "share/vibepollo/steamos")
+    install(FILES
+            "${CMAKE_SOURCE_DIR}/packaging/linux/steamos/vibepollo-steamos.service"
+            "${CMAKE_SOURCE_DIR}/packaging/linux/steamos/README.md"
+            "${CMAKE_SOURCE_DIR}/packaging/linux/steamos/AUDIT.md"
+            DESTINATION "share/vibepollo/steamos")
+    install(FILES "${CMAKE_SOURCE_DIR}/LICENSE" "${CMAKE_SOURCE_DIR}/NOTICE"
+            DESTINATION "share/licenses/vibepollo")
+    install(DIRECTORY
+            "${CMAKE_SOURCE_DIR}/packaging/linux/steamos/gamescope"
+            "${CMAKE_SOURCE_DIR}/packaging/linux/steamos/sysext"
+            DESTINATION "share/vibepollo/steamos"
+            PATTERN "__pycache__" EXCLUDE)
+    set(CPACK_GENERATOR "TGZ")
+    set(CPACK_PACKAGE_FILE_NAME "Vibepollo-SteamOS-${PROJECT_VERSION_FULL}-${CMAKE_SYSTEM_PROCESSOR}")
+    # No machine services, udev rules, kernel modules or native package hooks.
+    return()
+endif()
+
 if(${SUNSHINE_BUILD_APPIMAGE} OR ${SUNSHINE_BUILD_FLATPAK})
     install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/60-sunshine.rules"
             DESTINATION "${SUNSHINE_ASSETS_DIR}/udev/rules.d")

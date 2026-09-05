@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="vibeshine_capture_v1">
+  <copyright>Copyright 2026 Vibeshine contributors. SPDX-License-Identifier: MIT</copyright>
+  <interface name="vibeshine_capture_v1" version="1">
+    <description summary="Versioned HDR capture contract for patched Gamescope">
+      This additive interface leaves gamescope_pipewire v1 unchanged. Its
+      profile event identifies the same PipeWire node and guarantees an optional
+      xBGR_210LE capture format containing full-range BT.2020 RGB with ST 2084
+      transfer, rendered before the physical output's SDR tone mapping. SDR
+      content is composited at 203 cd/m2 reference white. The capture reference
+      volume is BT.2020/D65, 0 to 10000 cd/m2; these are rendering-space bounds,
+      not measurements of a physical panel or source mastering metadata.
+      MaxCLL and MaxFALL are unknown. Frame delivery follows producer GPU
+      completion. No explicit fence or presentation timestamp is promised.
+      The node has one negotiated format; concurrent SDR and HDR consumers
+      require separate compositor instances. Clients must still verify the
+      negotiated pixel format and colorimetry before advertising HDR.
+    </description>
+    <request name="destroy" type="destructor"/>
+    <event name="hdr10_profile">
+      <description summary="Fixed HDR10 capture profile, sent once on bind">
+        The node must equal the gamescope_pipewire stream_node. Profile 1
+        denotes exactly the rendering contract described by this interface.
+        Unknown profiles must not enable HDR.
+      </description>
+      <arg name="node_id" type="uint"/>
+      <arg name="profile" type="uint"/>
+    </event>
+  </interface>
+</protocol>

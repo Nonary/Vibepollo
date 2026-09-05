@@ -43,6 +43,20 @@ if(APPLE)
     option(SUNSHINE_CONFIGURE_PORTFILE
             "Configure macOS Portfile. Recommended to use with SUNSHINE_CONFIGURE_ONLY" OFF)
 elseif(UNIX)  # Linux
+    option(SUNSHINE_BUILD_STEAMOS "Build a relocatable SteamOS user bundle." OFF)
+    if(SUNSHINE_BUILD_STEAMOS)
+        if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            message(FATAL_ERROR "The SteamOS bundle requires Linux")
+        endif()
+        if(SUNSHINE_BUILD_APPIMAGE OR SUNSHINE_BUILD_FLATPAK OR SUNSHINE_CONFIGURE_PKGBUILD)
+            message(FATAL_ERROR "The SteamOS bundle cannot be combined with other packaging profiles")
+        endif()
+        # These defaults apply only to a fresh build directory. An explicit
+        # backend choice remains available for other Gamescope hardware.
+        option(SUNSHINE_ENABLE_CUDA "Enable cuda specific code." OFF)
+        option(SUNSHINE_ENABLE_DRM "Enable KMS grab if available." OFF)
+        set(SUNSHINE_ASSETS_DIR "share/vibepollo")
+    endif()
     option(SUNSHINE_BUILD_APPIMAGE
             "Enable an AppImage build." OFF)
     option(SUNSHINE_BUILD_FLATPAK
@@ -69,4 +83,8 @@ elseif(UNIX)  # Linux
             "Enable KWin ScreenCast grab if available" ON)
     option(SUNSHINE_ENABLE_PORTAL
             "Enable XDG portal grab if available" ON)
+    option(SUNSHINE_ENABLE_GAMESCOPE "Enable Gamescope PipeWire capture" ${SUNSHINE_ENABLE_WAYLAND})
+    if(SUNSHINE_BUILD_STEAMOS AND NOT SUNSHINE_ENABLE_GAMESCOPE)
+        message(FATAL_ERROR "The SteamOS bundle requires Gamescope capture")
+    endif()
 endif()
