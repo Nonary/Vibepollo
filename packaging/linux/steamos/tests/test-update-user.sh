@@ -85,6 +85,10 @@ if [[ ${1:-} == - ]]; then
     [[ -f "$TEST_CASE/private-ready" ]]
     exit
   fi
+  if [[ -f "$TEST_CASE/fail-config" && "$code" == *"updates = {'virtual_display_mode': 'per_client'}"* ]]; then
+    /usr/bin/python3 "$@" <<< "$code"
+    exit 1
+  fi
   exec /usr/bin/python3 "$@" <<< "$code"
 fi
 exec /usr/bin/python3 "$@"
@@ -200,4 +204,32 @@ grep -Fx 'virtual_display_layout = extended_isolated' "$config/vibepollo.conf"
 grep -Fx 'dd_resolution_option = auto' "$config/vibepollo.conf"
 [[ $(grep -c '^virtual_display_mode =' "$config/vibepollo.conf") == 1 ]]
 grep -Fx 'virtual_display_mode = per_client' "$config/vibepollo.conf"
-printf 'SteamOS update transaction: 10 scenarios PASS\n'
+
+new_case deferred_private
+touch "$case_dir/private-ready"
+run_update --enable-private-display --defer-start > "$case_dir/result" 2>&1
+[[ $(readlink "$install_root/current") != releases/original ]]
+[[ $(cat "$case_dir/active") == no && $(cat "$case_dir/enabled") == enabled ]]
+grep -Fx 'virtual_display_mode = per_client' "$config/vibepollo.conf"
+cmp "$case_dir/original-profile/apps.json" "$config/apps.json"
+cmp "$case_dir/original-profile/pairings.json" "$config/pairings.json"
+[[ ! -e "$case_dir/http-calls" && ! -e "$case_dir/restarted" ]]
+if grep -Eq -- '--user (start|restart) ' "$case_dir/calls"; then exit 1; fi
+grep -q 'host remains stopped' "$case_dir/result"
+
+new_case deferred_disabled
+printf 'disabled\n' > "$case_dir/enabled"
+if run_update --defer-start > "$case_dir/result" 2>&1; then exit 1; fi
+[[ $(readlink "$install_root/current") == releases/original ]]
+[[ $(cat "$case_dir/active") == yes && $(cat "$case_dir/enabled") == disabled ]]
+if grep -Eq -- '--user (stop|start|restart|daemon-reload|enable|disable)' "$case_dir/calls"; then exit 1; fi
+diff -r "$case_dir/original-profile" "$config"
+grep -q 'persistently enabled' "$case_dir/result"
+
+new_case deferred_failed_config
+touch "$case_dir/private-ready" "$case_dir/fail-config"
+if run_update --enable-private-display --defer-start > "$case_dir/result" 2>&1; then exit 1; fi
+assert_rollback
+[[ ! -e "$case_dir/restarted" ]]
+grep -q -- '--user start vibepollo-steamos.service' "$case_dir/calls"
+printf 'SteamOS update transaction: 13 scenarios PASS\n'

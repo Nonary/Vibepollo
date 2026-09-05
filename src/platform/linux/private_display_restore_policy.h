@@ -8,10 +8,11 @@
 #include <optional>
 #include <span>
 #include <string>
-#include <string_view>
 
 namespace platf::linux_private_display::restore_policy {
   struct candidate_t {
+    // Candidates outlive the temporary names read while collecting outputs.
+    // Own the identifier until guard selection and activation lookup finish.
     std::string name;
     bool enabled {false};
     bool connected {false};
