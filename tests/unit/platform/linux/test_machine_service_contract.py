@@ -31,6 +31,7 @@ session_execution = launcher + "\n" + broker
 private_display = (root / "src/platform/linux/private_display.cpp").read_text()
 audio = (root / "src/platform/linux/audio.cpp").read_text()
 nvhttp = (root / "src/nvhttp.cpp").read_text()
+state_storage = (root / "src/state_storage.cpp").read_text()
 confighttp = (root / "src/confighttp.cpp").read_text()
 linux_misc = (root / "src/platform/linux/misc.cpp").read_text()
 main_source = (root / "src/main.cpp").read_text()
@@ -453,6 +454,22 @@ if not (
     < client_snapshot_position
 ):
     raise AssertionError("pairing persistence must lock state before taking the client snapshot")
+
+load_body = nvhttp.split("bool load_state()", 1)[1].split("bool add_authorized_client", 1)[0]
+require(load_body, "statefile::load_primary_state(tree)", "authoritative pairing-state recovery")
+require(load_body, "sunshine_state_backup_path", "durable pairing-state recovery")
+require(load_body, "primary == statefile::json_load_result_e::failed", "pairing recovery refusal")
+require(load_body, "refusing to create a replacement identity", "durable pairing-state recovery")
+require(load_body, "http::credentials_created_this_run", "durable fresh-profile detection")
+require(state_storage, "const auto old_load_result = load_tree_for_update", "validated primary-state migration")
+primary_update_body = state_storage.split("policy_load_result_e load_tree_for_update", 1)[1].split("bool load_tree_if_exists", 1)[0]
+require(primary_update_body, "policy::load_primary_state_for_update", "primary recovery before metadata migration")
+require(state_storage, "const auto new_load_result = load_tree_for_read", "non-destructive state migration")
+save_snapshot_body = nvhttp.split("bool save_state_snapshot_locked", 1)[1].split("bool load_state()", 1)[0]
+require(save_snapshot_body, "const auto primary = statefile::load_primary_state(root)", "authoritative pairing save recovery")
+require(save_snapshot_body, "Refusing to replace unavailable Vibepollo pairing state", "pairing save recovery refusal")
+require(save_body, "authorization_state_ready", "pairing persistence load gate")
+require(nvhttp, "durable pairing state could not be loaded", "pairing persistence load gate")
 
 add_client_body = nvhttp.split("bool add_authorized_client", 1)[1].split(
     "struct resolved_client_identity_t", 1
