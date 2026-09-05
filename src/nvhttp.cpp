@@ -4678,7 +4678,7 @@ namespace nvhttp {
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
       const bool should_apply_display_request =
-        allow_display_changes ||
+        allow_session_display_changes ||
         launch_session->virtual_display_recreated_on_demand ||
         launch_session->virtual_display_needs_resume_apply;
       if (should_apply_display_request) {
@@ -4688,7 +4688,7 @@ namespace nvhttp {
                                                           "resume virtual-display recreation" :
                                                           "resume virtual-display refresh"))
                          << " for client '" << launch_session->client_name << "'.";
-        revert_display_configuration = allow_display_changes || launch_session->virtual_display_failed;
+        revert_display_configuration = allow_session_display_changes || launch_session->virtual_display_failed;
 
 #ifdef _WIN32
         const bool helper_session_available = display_helper_session_available();
