@@ -191,6 +191,47 @@ int main(int argc, char **argv) {
   } else if (test == "reset_discards_buffered_packets") {
     a->input_queue.push_back(1); reset(a); task_pool.drain();
     assert(a->input_queue.empty());
+  } else if (test == "overlapping_client_releases_first") {
+    button(a, 1, false); button(b, 1, false); button(b, 1, true);
+    // Reproduce the old foreign timer running before the owner's release.
+    if (!task_pool.timers.empty()) task_pool.fire();
+    button(a, 1, true);
+    if (!task_pool.timers.empty()) task_pool.fire();
+    expect({{1, false}, {1, true}});
+    assert(mouse_press_owner[1] == nullptr && !mouse_press[1]);
+  } else if (test == "overlapping_client_disconnects_first") {
+    button(a, 1, false); button(b, 1, false); button(b, 1, true);
+    reset(b); task_pool.drain(); expect({{1, false}});
+    assert(mouse_press[1] && mouse_press_owner[1] == a.get());
+    button(a, 1, true); task_pool.fire(); expect({{1, false}, {1, true}});
+  } else if (test == "overlapping_owner_disconnects_first") {
+    button(a, 1, false); button(b, 1, false);
+    reset(a); task_pool.drain(); button(b, 1, true);
+    expect({{1, false}, {1, true}});
+    assert(task_pool.timers.empty() && mouse_press_owner[1] == nullptr);
+  } else if (test == "overlapping_owner_releases_first") {
+    button(a, 1, false); button(b, 1, false);
+    button(a, 1, true); button(b, 1, true); task_pool.fire();
+    expect({{1, false}, {1, true}});
+    assert(task_pool.timers.empty() && mouse_press_owner[1] == nullptr);
+  } else if (test == "foreign_release_after_newer_press") {
+    click(a); button(b, 1, false); button(a, 1, true);
+    task_pool.fire(); reset(a); task_pool.drain();
+    expect({{1, false}, {1, false}});
+    assert(mouse_press[1] && mouse_press_owner[1] == b.get());
+    button(b, 1, true); task_pool.fire();
+    expect({{1, false}, {1, false}, {1, true}});
+  } else if (test == "foreign_relative_release") {
+    relative_packet move {1, 0}; passthrough(a, &move); passthrough(b, &move);
+    button(a, 1, false); button(b, 1, false); button(b, 1, true);
+    expect({{1, false}});
+    button(a, 1, true); expect({{1, false}, {1, true}});
+    assert(task_pool.timers.empty());
+  } else if (test == "foreign_right_release") {
+    button(a, BUTTON_RIGHT, false); button(b, BUTTON_RIGHT, false);
+    button(b, BUTTON_RIGHT, true); expect({{3, false}});
+    reset(b); task_pool.drain(); expect({{3, false}});
+    button(a, BUTTON_RIGHT, true); expect({{3, false}, {3, true}});
   } else { return 2; }
 }
 '''
@@ -212,6 +253,10 @@ def main():
         'relative_right_press', 'newer_client_pending_release',
         'newer_client_press_reset', 'newer_client_press_timer', 'newer_press_timer',
         'reset_is_serialized', 'reset_discards_buffered_packets',
+        'overlapping_client_releases_first', 'overlapping_client_disconnects_first',
+        'overlapping_owner_disconnects_first', 'overlapping_owner_releases_first',
+        'foreign_release_after_newer_press', 'foreign_relative_release',
+        'foreign_right_release',
     ]
     failures = []
     with tempfile.TemporaryDirectory(prefix='delayed-mouse-release-') as temp:
