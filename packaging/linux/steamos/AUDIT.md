@@ -170,9 +170,7 @@ candidate with source/patch hashes and host metadata, not a signed sysext image.
 Privileged activation, Moonlight HDR playback, actual native/Proton HDR games,
 mode switching and OS update/rollback behavior remain unvalidated.
 
-## Upstream protocol references
-
-### Local native deployment validation, 2026-09-05
+## Local native deployment validation, 2026-09-05
 
 The SteamOS work was merged with `vibe-test` revision `be846187`. The resulting
 host was rebuilt from `fe6f9437`; subsequent changes only adjust a shell test
@@ -203,6 +201,8 @@ Local build provenance and evidence are in `build/steamos-local-20260905/`.
 The upstream `libvirtualdisplay` gitlink `398590ce` is unavailable publicly;
 this build records use of its published predecessor `c1a087f`. The SteamOS
 profile excludes the managed virtual-display driver affected by that change.
+
+## Upstream protocol references
 
 - [Valve Gamescope PipeWire protocol](https://github.com/ValveSoftware/gamescope/blob/master/protocol/gamescope-pipewire.xml)
 - [Valve Gamescope PipeWire producer](https://github.com/ValveSoftware/gamescope/blob/master/src/pipewire.cpp)
