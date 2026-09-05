@@ -182,14 +182,8 @@ void ReportServiceStopped(DWORD error, HANDLE log_file_handle = INVALID_HANDLE_V
   if (log_file_handle != INVALID_HANDLE_VALUE) {
     CloseHandle(log_file_handle);
   }
-  if (session_change_event != nullptr) {
-    CloseHandle(session_change_event);
-    session_change_event = nullptr;
-  }
-  if (stop_event != nullptr) {
-    CloseHandle(stop_event);
-    stop_event = nullptr;
-  }
+  // HandlerEx remains registered until process exit. Its event handles must
+  // stay valid for any control callback already in flight during cleanup.
   service_status.dwControlsAccepted = 0;
   service_status.dwCheckPoint = 0;
   service_status.dwWaitHint = 0;
@@ -319,10 +313,22 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
           if (!RunTerminationHelper(console_token, process_info.dwProcessId) ||
               WaitForSingleObject(process_info.hProcess, 20000) != WAIT_OBJECT_0) {
             // If it won't terminate gracefully, kill it now
-            TerminateProcess(process_info.hProcess, ERROR_PROCESS_ABORTED);
+            if (!TerminateProcess(process_info.hProcess, ERROR_PROCESS_ABORTED)) {
+              const auto termination_error = GetLastError();
+              // Termination can fail when the child has already exited. Otherwise
+              // fail the service instead of waiting forever or reporting success;
+              // process exit also closes our kill-on-close job as a last resort.
+              if (WaitForSingleObject(process_info.hProcess, 0) != WAIT_OBJECT_0) {
+                ExitProcess(termination_error);
+                return;
+              }
+            }
             // TerminateProcess is asynchronous. The inherited log handle stays
             // open until termination completes, so wait before allowing restart.
-            WaitForSingleObject(process_info.hProcess, INFINITE);
+            if (WaitForSingleObject(process_info.hProcess, INFINITE) != WAIT_OBJECT_0) {
+              ExitProcess(GetLastError());
+              return;
+            }
           }
           still_running = false;
           break;
