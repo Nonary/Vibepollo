@@ -54,11 +54,18 @@ test_env=(
   "STEAMOS_TEST_FAIL=$test_root/fail-restart"
 )
 
+# A dormant first install must not schedule a host alongside an existing service.
 env "${test_env[@]}" "$steamos_dir/install-user.sh" \
-  --payload "$test_root/payload" --no-start
+  --payload "$test_root/payload" --no-enable
 test -L "$test_root/home/data/vibepollo-steamos/current"
 test -x "$test_root/home/.local/bin/vibepollo-steamos-session"
 test -f "$test_root/home/config/systemd/user/vibepollo-steamos.service"
+! grep -Eq ' (enable|restart|start) ' "$test_root/systemctl.log"
+
+# --no-start retains its documented enable-on-next-session behavior.
+env "${test_env[@]}" "$steamos_dir/install-user.sh" \
+  --payload "$test_root/payload" --no-start
+grep -qx -- '--user enable vibepollo-steamos.service' "$test_root/systemctl.log"
 ! grep -q 'restart' "$test_root/systemctl.log"
 first_release=$(readlink "$test_root/home/data/vibepollo-steamos/current")
 

@@ -75,6 +75,7 @@ if(SUNSHINE_BUILD_STEAMOS)
             DESTINATION "share/licenses/vibepollo")
     install(DIRECTORY
             "${CMAKE_SOURCE_DIR}/packaging/linux/steamos/gamescope"
+            "${CMAKE_SOURCE_DIR}/packaging/linux/steamos/local"
             "${CMAKE_SOURCE_DIR}/packaging/linux/steamos/sysext"
             DESTINATION "share/vibepollo/steamos"
             PATTERN "__pycache__" EXCLUDE)
