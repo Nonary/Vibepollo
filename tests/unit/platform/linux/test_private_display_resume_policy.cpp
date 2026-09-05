@@ -52,3 +52,18 @@ TEST(LinuxPrivateDisplayResumePolicy, PreservesPhysicalDisplayApplyGate) {
   EXPECT_TRUE(policy::requires_session_apply(false, true, false, false));
   EXPECT_FALSE(policy::requires_session_apply(false, false, true, true));
 }
+
+TEST(LinuxPrivateDisplayResumePolicy, SoloLaunchAndRecreationUseOneVerifiedSessionApply) {
+  EXPECT_TRUE(policy::can_use_session_apply_only(false, true, false));
+  // Both new launches and recreated resumes still pass through session apply.
+  EXPECT_TRUE(policy::requires_session_apply(true, false, true, true));
+  EXPECT_TRUE(policy::requires_session_apply(true, false, false, true));
+}
+
+TEST(LinuxPrivateDisplayResumePolicy, SharedAndRemoteMonitorTopologiesStillCompose) {
+  EXPECT_FALSE(policy::can_use_session_apply_only(true, true, false));
+  EXPECT_FALSE(policy::can_use_session_apply_only(false, false, false));
+  // A Remote Monitor can share the normal game's identity, so count alone is insufficient.
+  EXPECT_FALSE(policy::can_use_session_apply_only(false, true, true));
+  EXPECT_FALSE(policy::can_use_session_apply_only(false, false, true));
+}
