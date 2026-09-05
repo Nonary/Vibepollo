@@ -214,3 +214,67 @@ TEST(SteamArtwork, RejectsInvalidRemoteFixture) {
   EXPECT_FALSE(fs::is_regular_file(platf::steam::artwork::remote_cache_path(root / "appdata", 9003)));
   fs::remove_all(root, ec);
 }
+
+TEST(SteamArtwork, SessionTransferCachesRefreshesAndPreservesCoverOnFailure) {
+#if defined(__linux__)
+  using namespace platf::steam::artwork;
+  const auto root = test_root();
+  const auto output = root / "covers/lutris_7.png";
+  const auto png = full_portrait_png();
+  int calls = 0;
+  auto fetch = [&](const std::string &request) -> std::optional<std::vector<std::uint8_t>> {
+    EXPECT_EQ(request, "provider-lutris-artwork:7");
+    ++calls;
+    return png;
+  };
+  EXPECT_EQ(session_cover("lutris", 7, "123", output, fetch), output);
+  EXPECT_EQ(calls, 1);
+  EXPECT_EQ(session_cover("lutris", 7, "123", output, fetch), output);
+  EXPECT_EQ(calls, 1);
+  auto broken = [&](const std::string &) -> std::optional<std::vector<std::uint8_t>> {
+    ++calls;
+    return std::vector<std::uint8_t> {'b', 'a', 'd'};
+  };
+  EXPECT_EQ(session_cover("lutris", 7, "124", output, broken), output);
+  EXPECT_EQ(session_cover("lutris", 7, "124", output, fetch), output);
+  EXPECT_EQ(calls, 3);  // Failed transfers never commit the new revision.
+  EXPECT_TRUE(session_cover("../../escape", 7, "124", output, fetch).empty());
+  EXPECT_TRUE(session_cover("lutris", 0, "124", output, fetch).empty());
+  EXPECT_EQ(calls, 3);
+  fs::remove_all(root);
+#endif
+}
+
+TEST(SteamArtwork, ImportedPngRejectsCorruptionWithoutReplacingExistingCover) {
+  using namespace platf::steam::artwork;
+  const auto root = test_root();
+  const auto output = root / "covers/steam_42.png";
+  auto png = full_portrait_png();
+  ASSERT_TRUE(import_png(png, output));
+  png[45] ^= 0xff;
+  EXPECT_FALSE(import_png(png, output));
+  const auto exported = export_png(output);
+  ASSERT_TRUE(exported);
+  EXPECT_FALSE(exported->empty());
+  EXPECT_FALSE(import_png(std::vector<std::uint8_t>(16U * 1024U * 1024U + 1), output));
+  fs::remove_all(root);
+}
+
+TEST(SteamArtwork, SessionCoverSurvivesUnavailableCdnWithoutUserPaths) {
+#if defined(__linux__)
+  using namespace platf::steam::artwork;
+  const auto root = test_root();
+  const auto local = root / "covers/steam_42_local.png";
+  const auto png = full_portrait_png();
+  ASSERT_EQ(session_cover("steam", 42, "123", local,
+                         [&](const std::string &) { return std::optional {png}; }), local);
+  platf::steam::game_t game;
+  game.app_id = 42;
+  game.session_artwork_revision = "123";
+  std::vector<platf::steam::game_t> games {game};
+  prepare(games, root, [](const std::string &) -> std::optional<std::vector<std::uint8_t>> { return std::nullopt; });
+  EXPECT_EQ(games[0].artwork_client_path, local);
+  EXPECT_TRUE(games[0].artwork_path.empty());
+  fs::remove_all(root);
+#endif
+}

@@ -55,6 +55,7 @@ namespace platf::steam::autosync {
         std::uint64_t previous_fingerprint = 0;
         std::uint64_t observed_epoch = 0;
         bool have_fingerprint = false;
+        auto next_artwork_retry = std::chrono::steady_clock::time_point {};
         while (true) {
           settings_t settings;
           std::uint64_t epoch;
@@ -79,7 +80,8 @@ namespace platf::steam::autosync {
               if (platf::steam::available()) {
                 auto catalog = platf::steam::discover_catalog();
                 const auto fingerprint = source_fingerprint(catalog);
-                if (!have_fingerprint || fingerprint != previous_fingerprint) {
+                if (!have_fingerprint || fingerprint != previous_fingerprint ||
+                    std::chrono::steady_clock::now() >= next_artwork_retry) {
                   auto games = platf::steam::sync::policy::select_games(
                     catalog,
                     settings.sync_all_installed,
@@ -104,6 +106,7 @@ namespace platf::steam::autosync {
                     } else {
                       previous_fingerprint = fingerprint;
                       have_fingerprint = true;
+                      next_artwork_retry = std::chrono::steady_clock::now() + std::chrono::minutes {5};
                     }
                   }
                 }

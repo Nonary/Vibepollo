@@ -30,6 +30,8 @@ namespace platf::steam {
 
   struct game_t {
     std::uint32_t app_id = 0;
+    // Opaque local-art revision supplied by the session-user scanner.
+    std::string session_artwork_revision;
     std::string stable_id;  // "steam:<appid>"
     std::string name;
     std::filesystem::path install_dir;

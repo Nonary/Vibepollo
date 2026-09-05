@@ -14,6 +14,16 @@
 
 namespace platf::steam::artwork {
 
+  // Scanner-side conversion; only the dropped session UID opens the source.
+  std::optional<std::vector<std::uint8_t>> export_png(const std::filesystem::path &source);
+
+  // Import bounded PNG bytes into a caller-selected service cache path.
+  bool import_png(const std::vector<std::uint8_t> &bytes, const std::filesystem::path &output);
+  using session_fetcher_t = std::function<std::optional<std::vector<std::uint8_t>>(const std::string &request)>;
+  std::filesystem::path session_cover(std::string_view provider, std::uint64_t id,
+                                     const std::string &revision, const std::filesystem::path &output,
+                                     session_fetcher_t fetcher = {});
+
   struct source_fingerprint_t {
     std::string path;
     std::uintmax_t size = 0;

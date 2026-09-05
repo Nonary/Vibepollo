@@ -248,6 +248,7 @@ namespace platf::lutris {
       hash_bytes(hash, game.service_id);
       hash_bytes(hash, game.directory.generic_string());
       hash_bytes(hash, game.config_path);
+      hash_bytes(hash, game.session_artwork_revision);
       hash_path(hash, game.artwork_path);
       hash_path(hash, game.icon_path);
     }

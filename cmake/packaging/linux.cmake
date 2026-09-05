@@ -77,7 +77,11 @@ else()
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-provider-scan.cpp"
                 "${CMAKE_SOURCE_DIR}/src/provider_scan_protocol.cpp"
                 "${CMAKE_SOURCE_DIR}/src/steam_integration.cpp"
-                "${CMAKE_SOURCE_DIR}/src/lutris_integration.cpp")
+                "${CMAKE_SOURCE_DIR}/src/lutris_integration.cpp"
+                "${CMAKE_SOURCE_DIR}/src/steam_artwork.cpp")
+        target_include_directories(vibepollo_provider_scan PRIVATE ${FFMPEG_INCLUDE_DIRS})
+        target_compile_definitions(vibepollo_provider_scan PRIVATE ${STEAM_ARTWORK_TEST_DEFINITIONS})
+        target_link_libraries(vibepollo_provider_scan PRIVATE ${FFMPEG_LIBRARIES} ${STEAM_ARTWORK_TEST_LIBRARIES})
         set_target_properties(vibepollo_provider_scan PROPERTIES OUTPUT_NAME "vibepollo-provider-scan")
         target_include_directories(vibepollo_provider_scan PRIVATE
                 "${CMAKE_SOURCE_DIR}"

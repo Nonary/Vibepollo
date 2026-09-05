@@ -203,6 +203,11 @@ static bool numeric_suffix(const char *value, const char *prefix) {
   return true;
 }
 
+static bool artwork_request_is_safe(const char *value, const char *prefix, unsigned long maximum) {
+  unsigned long id = 0;
+  return numeric_suffix(value, prefix) && parse_number(value + strlen(prefix), 1, maximum, &id);
+}
+
 static bool valid_xdisplay(const char *value) {
   if (!value || *value++ != ':' || !isdigit((unsigned char) *value)) return false;
   while (isdigit((unsigned char) *value)) ++value;
@@ -1178,7 +1183,7 @@ static int execute_request(int argc, char **argv,
   enum operation {
     DISPLAY_QUERY, DISPLAY_APPLY, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
     AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_DIRECT, LUTRIS,
-    PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, APP
+    PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, APP
   } operation;
   unsigned long first_number = 0, second_number = 0, third_number = 0;
   unsigned char channel_mapping[8] = {0};
@@ -1209,6 +1214,10 @@ static int execute_request(int argc, char **argv,
   else if (!strcmp(argv[1], "lutris") && argc == 3 && numeric_suffix(argv[2], "") && !strcmp(identity->role, "desktop")) operation = LUTRIS;
   else if (!strcmp(argv[1], "provider-steam-scan") && argc == 2 && !strcmp(identity->role, "desktop")) operation = PROVIDER_STEAM_SCAN;
   else if (!strcmp(argv[1], "provider-lutris-scan") && argc == 2 && !strcmp(identity->role, "desktop")) operation = PROVIDER_LUTRIS_SCAN;
+  else if (argc == 2 && !strcmp(identity->role, "desktop") &&
+           artwork_request_is_safe(argv[1], "provider-steam-artwork:", UINT32_MAX)) operation = PROVIDER_STEAM_ARTWORK;
+  else if (argc == 2 && !strcmp(identity->role, "desktop") &&
+           artwork_request_is_safe(argv[1], "provider-lutris-artwork:", INT64_MAX)) operation = PROVIDER_LUTRIS_ARTWORK;
   else if (!strcmp(argv[1], "app") && argc == 3 && !strcmp(identity->role, "desktop") &&
            command_is_authorized(identity->role, argv[2], service_gid,
                                  authorized_directory, sizeof(authorized_directory))) operation = APP;
@@ -1306,6 +1315,14 @@ static int execute_request(int argc, char **argv,
       if (snprintf(uri, sizeof(uri), "lutris:rungameid/%s", argv[2]) >= (int) sizeof(uri)) return 126;
       char *const arguments[] = {"/usr/bin/lutris", uri, NULL};
       return exec_user_service(identity, NULL, arguments, false);
+    }
+    case PROVIDER_STEAM_ARTWORK:
+    case PROVIDER_LUTRIS_ARTWORK: {
+      char *const arguments[] = {"vibepollo-provider-scan",
+                                 operation == PROVIDER_STEAM_ARTWORK ? "steam-artwork" : "lutris-artwork",
+                                 strchr(argv[1], ':') + 1, NULL};
+      execv("/usr/libexec/vibeshine/vibepollo-provider-scan", arguments);
+      break;
     }
     case PROVIDER_STEAM_SCAN: {
       char *const arguments[] = {"vibepollo-provider-scan", "steam", NULL};

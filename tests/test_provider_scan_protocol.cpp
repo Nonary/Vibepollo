@@ -170,3 +170,24 @@ namespace {
   }
 #endif
 }  // namespace
+
+TEST(ProviderScanArtwork, RevisionsAreBoundedPathFreeAndBackwardCompatible) {
+  platf::steam::game_t game;
+  game.app_id = 42;
+  const auto encoded = platf::provider_scan::encode_steam_catalog({true, {game}});
+  ASSERT_TRUE(encoded);
+  auto doc = nlohmann::json::parse(*encoded);
+  doc["games"][0]["artwork_revision"] = "123456";
+  const auto decoded = platf::provider_scan::decode_steam_catalog(doc.dump());
+  ASSERT_TRUE(decoded);
+  EXPECT_EQ(decoded->games[0].session_artwork_revision, "123456");
+  EXPECT_TRUE(decoded->games[0].artwork_path.empty());
+  for (const auto &value : {"/home/user/cover.png", "123\n", "123456789012345678901"}) {
+    doc["games"][0]["artwork_revision"] = value;
+    EXPECT_FALSE(platf::provider_scan::decode_steam_catalog(doc.dump()));
+  }
+  doc["games"][0].erase("artwork_revision");
+  EXPECT_TRUE(platf::provider_scan::decode_steam_catalog(doc.dump()));
+  doc["games"][0] = nullptr;
+  EXPECT_FALSE(platf::provider_scan::decode_steam_catalog(doc.dump()));
+}

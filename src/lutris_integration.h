@@ -11,6 +11,8 @@
 namespace platf::lutris {
   struct game_t {
     std::int64_t id = 0;
+    // Opaque local-art revision supplied by the session-user scanner.
+    std::string session_artwork_revision;
     std::string stable_id;  // lutris:<id>, or steam:<appid> for Steam-backed records
     std::string name;
     std::string slug;

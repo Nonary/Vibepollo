@@ -61,6 +61,8 @@ namespace platf::steam::autosync {
       mix_path(result, game.portrait_path);
       mix_path(result, game.boxart_path);
       mix_path(result, game.artwork_path);
+      mix(result, game.session_artwork_revision);
+      mix(result, separator);
       mix(result, game.artwork_format);
       mix(result, separator);
       mix_number(result, game.state_flags);

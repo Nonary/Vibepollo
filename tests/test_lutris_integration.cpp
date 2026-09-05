@@ -149,3 +149,12 @@ TEST(LutrisLaunch, BuildsValidatedUri) {
   EXPECT_TRUE(platf::lutris::launch_uri(0).empty());
   EXPECT_FALSE(platf::lutris::launch(0));
 }
+
+TEST(LutrisDiscovery, SessionArtworkChangesTriggerSynchronization) {
+  platf::lutris::game_t game;
+  game.id = 7;
+  game.session_artwork_revision = "123";
+  const auto before = platf::lutris::source_fingerprint({game});
+  game.session_artwork_revision = "124";
+  EXPECT_NE(before, platf::lutris::source_fingerprint({game}));
+}

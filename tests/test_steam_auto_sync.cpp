@@ -32,3 +32,12 @@ namespace {
               platf::steam::autosync::source_fingerprint({second}));
   }
 }  // namespace
+
+TEST(SteamAutoSyncPolicy, SessionArtworkChangesTriggerSynchronization) {
+  platf::steam::game_t game;
+  game.app_id = 42;
+  game.session_artwork_revision = "123";
+  const auto before = platf::steam::autosync::source_fingerprint({game});
+  game.session_artwork_revision = "124";
+  EXPECT_NE(before, platf::steam::autosync::source_fingerprint({game}));
+}

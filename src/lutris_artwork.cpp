@@ -15,6 +15,10 @@ namespace platf::lutris::artwork {
       game.image_path.clear();
       if (game.id <= 0) continue;
       const auto output = cache_path(appdata, game.id);
+      if (!game.session_artwork_revision.empty()) {
+        game.image_path = platf::steam::artwork::session_cover("lutris", game.id, game.session_artwork_revision, output);
+        continue;
+      }
       if (!game.artwork_path.empty()) {
         const auto result = platf::steam::artwork::sync_to(game.artwork_path, output);
         if (!result.client_path.empty()) game.image_path = result.client_path;

@@ -15,6 +15,11 @@ int vibepollo_session_broker_entrypoint(int argc, char **argv);
 } while (0)
 
 int main(void) {
+  CHECK(artwork_request_is_safe("provider-steam-artwork:42", "provider-steam-artwork:", UINT32_MAX));
+  CHECK(!artwork_request_is_safe("provider-steam-artwork:0", "provider-steam-artwork:", UINT32_MAX));
+  CHECK(!artwork_request_is_safe("provider-steam-artwork:4294967296", "provider-steam-artwork:", UINT32_MAX));
+  CHECK(!artwork_request_is_safe("provider-steam-artwork:42/../../etc/passwd", "provider-steam-artwork:", UINT32_MAX));
+  CHECK(!artwork_request_is_safe("provider-lutris-artwork:42", "provider-steam-artwork:", UINT32_MAX));
   unsigned long number = 0;
   CHECK(!parse_number(NULL, 1, 10, &number));
   CHECK(!parse_number("", 1, 10, &number));
