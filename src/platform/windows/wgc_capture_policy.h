@@ -7,6 +7,29 @@ namespace platf::dxgi::wgc_policy {
   inline constexpr std::uint32_t adaptive_max_buffer_size = 2;
   inline constexpr std::uint32_t helper_stop_timeout_ms = 3000;
 
+  /**
+   * Select only the requested monitor, allowing transient enumeration failures
+   * to settle. A missing explicit target must never turn into primary capture.
+   * The caller supplies the bounded wait and the platform monitor lookups.
+   */
+  template<class FindRequested, class FindPrimary, class WaitForRetry>
+  auto select_monitor(
+    const bool has_requested_monitor,
+    FindRequested find_requested,
+    FindPrimary find_primary,
+    WaitForRetry wait_for_retry
+  ) {
+    if (!has_requested_monitor) {
+      return find_primary();
+    }
+
+    auto monitor = find_requested();
+    while (!monitor && wait_for_retry()) {
+      monitor = find_requested();
+    }
+    return monitor;
+  }
+
   enum class capture_surface_format : std::uint8_t {
     bgra8,
     rgba16_float,
