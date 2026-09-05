@@ -129,6 +129,7 @@ using namespace std::literals;
 namespace platf {
   using adapteraddrs_t = util::c_ptr<IP_ADAPTER_ADDRESSES>;
 
+  std::mutex mouse_keys_mutex;
   bool enabled_mouse_keys = false;
   MOUSEKEYS previous_mouse_keys_state;
 
@@ -1594,6 +1595,14 @@ namespace platf {
   }
 
   void enable_mouse_keys() {
+    // Capture threads check every frame, including concurrent streams. Keep the
+    // original snapshot until restoration succeeds instead of saving our own
+    // temporary settings on the next check.
+    const auto lock = std::lock_guard(mouse_keys_mutex);
+    if (enabled_mouse_keys) {
+      return;
+    }
+
     // If there is no mouse connected, enable Mouse Keys to force the cursor to appear
     if (!GetSystemMetrics(SM_MOUSEPRESENT)) {
       BOOST_LOG(info) << "A mouse was not detected. Sunshine will enable Mouse Keys while streaming to force the mouse cursor to appear.";
@@ -1655,11 +1664,13 @@ namespace platf {
     }
 
     // Restore Mouse Keys back to the previous settings if we turned it on
+    const auto lock = std::lock_guard(mouse_keys_mutex);
     if (enabled_mouse_keys) {
-      enabled_mouse_keys = false;
       if (!SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &previous_mouse_keys_state, 0)) {
         auto winerr = GetLastError();
         BOOST_LOG(warning) << "Unable to restore original state of Mouse Keys: "sv << winerr;
+      } else {
+        enabled_mouse_keys = false;
       }
     }
   }
@@ -3020,4 +3031,3 @@ static int setClipboardData(const std::wstring &utf16Str) {
 
   return 0;
 }
-
