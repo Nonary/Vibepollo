@@ -640,56 +640,60 @@ public:
   /**
    * @brief Selects a monitor for capture based on the provided configuration.
    *
-   * If a display name is specified in the config, attempts to find and select the monitor matching that name.
-   * If not found, or if no display name is provided, falls back to selecting the primary monitor.
+   * If a display name is specified, waits briefly for that monitor to appear.
+   * Selects the primary monitor only when no display name is provided.
    *
    * @param config The configuration data containing the desired display name (if any).
    * @return true if a monitor was successfully selected; false if monitor selection failed.
    */
   bool select_monitor(const platf::dxgi::config_data_t &config) {
-    if (config.display_name[0] != L'\0') {
-      auto find_monitor_by_name = [&](const wchar_t *target_name) -> HMONITOR {
-        struct EnumData {
-          const wchar_t *target_name;
-          HMONITOR found_monitor;
-        };
-
-        EnumData enum_data = {target_name, nullptr};
-
-        auto enum_proc = +[](HMONITOR h_mon, HDC /*hdc*/, RECT * /*rc*/, LPARAM l_param) {
-          auto *data = static_cast<EnumData *>(reinterpret_cast<void *>(l_param));
-          if (MONITORINFOEXW m_info = {sizeof(MONITORINFOEXW)}; GetMonitorInfoW(h_mon, &m_info) && wcsncmp(m_info.szDevice, data->target_name, 32) == 0) {
-            data->found_monitor = h_mon;
-            return FALSE;  // Stop enumeration
-          }
-          return TRUE;
-        };
-
-        EnumDisplayMonitors(nullptr, nullptr, enum_proc, static_cast<LPARAM>(reinterpret_cast<std::uintptr_t>(&enum_data)));
-        return enum_data.found_monitor;
+    auto find_requested_monitor = [&]() -> HMONITOR {
+      struct EnumData {
+        const wchar_t *target_name;
+        HMONITOR found_monitor;
       };
 
-      _selected_monitor = find_monitor_by_name(config.display_name);
-      if (!_selected_monitor) {
-        // During virtual display topology transitions, monitor enumeration can lag briefly.
-        // Wait a short amount of time before falling back so we avoid capture bouncing.
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
-        while (!_selected_monitor && std::chrono::steady_clock::now() < deadline) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
-          _selected_monitor = find_monitor_by_name(config.display_name);
+      EnumData enum_data = {config.display_name, nullptr};
+
+      auto enum_proc = +[](HMONITOR h_mon, HDC /*hdc*/, RECT * /*rc*/, LPARAM l_param) {
+        auto *data = static_cast<EnumData *>(reinterpret_cast<void *>(l_param));
+        if (MONITORINFOEXW m_info = {sizeof(MONITORINFOEXW)}; GetMonitorInfoW(h_mon, &m_info) && wcsncmp(m_info.szDevice, data->target_name, 32) == 0) {
+          data->found_monitor = h_mon;
+          return FALSE;  // Stop enumeration
         }
+        return TRUE;
+      };
+
+      EnumDisplayMonitors(nullptr, nullptr, enum_proc, static_cast<LPARAM>(reinterpret_cast<std::uintptr_t>(&enum_data)));
+      return enum_data.found_monitor;
+    };
+
+    // Monitor enumeration can lag during virtual display topology transitions.
+    // If the bounded wait expires, let the host reinitialize capture instead of
+    // streaming another display with the intended target's input coordinates.
+    const bool has_requested_monitor = config.display_name[0] != L'\0';
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    _selected_monitor = platf::dxgi::wgc_policy::select_monitor(
+      has_requested_monitor,
+      find_requested_monitor,
+      [] { return MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY); },
+      [&] {
+        if (std::chrono::steady_clock::now() >= deadline) {
+          return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return true;
       }
-      if (!_selected_monitor) {
-        BOOST_LOG(warning) << "Could not find monitor with name '" << winrt::to_string(config.display_name) << "', falling back to primary.";
-      }
-    }
+    );
 
     if (!_selected_monitor) {
-      _selected_monitor = MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
-      if (!_selected_monitor) {
+      if (has_requested_monitor) {
+        BOOST_LOG(warning) << "Could not find requested monitor '" << winrt::to_string(config.display_name)
+                           << "'; capture must be reinitialized when the target is available.";
+      } else {
         BOOST_LOG(error) << "Failed to get primary monitor";
-        return false;
       }
+      return false;
     }
     return true;
   }
