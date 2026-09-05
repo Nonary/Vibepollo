@@ -526,6 +526,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME test_component_linux_steamos_profile
         COMMAND bash "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/steamos/tests/test-profile.sh")
     set_tests_properties(test_component_linux_steamos_profile PROPERTIES LABELS "component")
+    add_test(NAME test_component_linux_steamos_replace_sunshine
+        COMMAND bash "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/steamos/tests/test-replace-sunshine.sh")
+    set_tests_properties(test_component_linux_steamos_replace_sunshine PROPERTIES LABELS "component")
+    find_program(SUNSHINE_TEST_PYTHON_EXECUTABLE NAMES python3)
+    if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+        add_test(NAME test_component_linux_steamos_local_hdr
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/steamos/tests/test-local-hdr.py")
+        set_tests_properties(test_component_linux_steamos_local_hdr PROPERTIES LABELS "component")
+    endif()
     sunshine_register_component(NAME test_component_linux_pipewire_cuda_policy TEST_SOURCE unit/platform/linux/test_pipewire_cuda_policy.cpp)
     sunshine_register_component(NAME test_component_linux_vulkan_encode_policy TEST_SOURCE unit/platform/linux/test_vulkan_encode_policy.cpp)
     sunshine_register_component(NAME test_component_linux_capture_status TEST_SOURCE unit/platform/linux/test_capture_status.cpp)

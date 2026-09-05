@@ -67,6 +67,9 @@
   #include "src/steam_integration.h"
 #endif
 #include "vaapi.h"
+#ifdef SUNSHINE_BUILD_STEAMOS
+  #include "private_vaapi_environment.h"
+#endif
 #ifdef SUNSHINE_BUILD_GAMESCOPE
   #include "gamescope_session.h"
   #include "gamescopegrab.h"
@@ -458,7 +461,17 @@ namespace platf {
       stdio.err = nullptr;
     }
 
+#ifdef SUNSHINE_BUILD_STEAMOS
+    const auto child_env = linux_private_vaapi::child_environment(
+      env,
+      std::getenv("VIBEPOLLO_PRIVATE_VAAPI"),
+      std::getenv("LIBVA_DRIVERS_PATH"),
+      std::getenv("LIBVA_DRIVER_NAME")
+    );
+    auto env_init = child_env.to_process_environment();
+#else
     auto env_init = env.to_process_environment();
+#endif
     boost::asio::system_executor exec;
 
     try {

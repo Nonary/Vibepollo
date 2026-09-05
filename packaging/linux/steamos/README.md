@@ -71,6 +71,9 @@ Installation restarts the service, interrupting an active stream. A failed
 activation restores the previous release and launcher. Old release directories
 are retained for manual rollback. Pass `--no-start` to activate the files without
 restarting the host; a running user service manager is still required.
+Use `--no-enable` for a dormant first installation: it installs the bundle,
+launcher and unit without enabling or starting the service. It preserves any
+existing service enablement, so it does not pause an installation already enabled.
 
 The generated launcher preserves the installer's XDG data and configuration
 directories even when the user service manager has different environment values.

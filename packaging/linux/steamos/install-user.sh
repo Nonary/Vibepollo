@@ -6,11 +6,13 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: install-user.sh --payload DIR [--no-start]
+Usage: install-user.sh --payload DIR [--no-start | --no-enable]
 
 DIR must contain an executable bin/vibepollo and any runtime assets beside it.
 The payload is copied into the invoking user's XDG data directory and activated
 atomically. This script must not be run with sudo.
+--no-start enables the service without starting it.
+--no-enable installs the files without enabling or starting the service.
 EOF
 }
 
@@ -21,6 +23,7 @@ die() {
 
 payload=
 start=yes
+enable=yes
 while (($#)); do
   case "$1" in
     --payload)
@@ -29,6 +32,11 @@ while (($#)); do
       shift 2
       ;;
     --no-start)
+      start=no
+      shift
+      ;;
+    --no-enable)
+      enable=no
       start=no
       shift
       ;;
@@ -147,7 +155,7 @@ if [[ "$start" == yes ]]; then
   systemctl --user enable vibepollo-steamos.service
   # enable --now does not restart an already running host on upgrade.
   systemctl --user restart vibepollo-steamos.service
-else
+elif [[ "$enable" == yes ]]; then
   systemctl --user enable vibepollo-steamos.service
 fi
 
