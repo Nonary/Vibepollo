@@ -4272,7 +4272,7 @@ namespace nvhttp {
         launch_session->virtual_display_guid_bytes
       );
       if (!rtsp_stream::launch_session_raise(launch_session)) {
-        if (appid > 0) proc::proc.terminate();
+        if (appid > 0) proc::proc.terminate(false, true, false, true);
         tree.put("root.<xmlattr>.status_code", 409);
         tree.put("root.<xmlattr>.status_message", "RTSP pending session admission was rejected");
         tree.put("root.gamesession", 0);

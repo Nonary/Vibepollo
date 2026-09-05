@@ -28,6 +28,7 @@ def call_after(marker):
 calls = [
     call_after("if (decision.terminate)"),
     call_after("// Preserve Vibepollo's legacy Terminate control"),
+    call_after("if (appid > 0) proc::proc.terminate"),
 ]
 with tempfile.TemporaryDirectory(prefix="terminate-lock-test-") as directory:
     path = pathlib.Path(directory)
@@ -58,7 +59,7 @@ int main() {
   }
 ''' for call in calls) + r'''
   proc::proc.terminate();
-  assert(proc::cleanup_calls == 3);
+  assert(proc::cleanup_calls == 4);
 }
 '''
     (path / "test.cpp").write_text(source)
@@ -68,4 +69,4 @@ int main() {
         subprocess.run([str(executable)], timeout=3, check=True)
     except subprocess.TimeoutExpired:
         sys.exit("FAIL: Terminate reacquired the lifecycle mutex already held by /launch")
-print("PASS: synthetic and legacy Terminate transfer the held lock; ordinary termination acquires it")
+print("PASS: synthetic, legacy, and rejected-launch termination transfer the held lock; ordinary termination acquires it")
