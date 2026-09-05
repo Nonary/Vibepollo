@@ -1636,27 +1636,17 @@ namespace nvhttp {
 
     bool save_state_snapshot_locked(const client_t &client, bool allow_missing_state = false) {
       if (!authorization_state_ready.load(std::memory_order_acquire)) return false;
-      const auto &sunshine_path = statefile::sunshine_state_path();
       const auto &vibeshine_path = statefile::vibeshine_state_path();
       const bool share_state_file = statefile::share_state_file();
 
       nlohmann::json root;
-      const auto primary = statefile::load_json(sunshine_path, root);
-      if (primary != statefile::json_load_result_e::loaded || !state_policy::normalize_snapshot(root)) {
-        nlohmann::json backup;
-        const auto backup_status = statefile::load_json(statefile::sunshine_state_backup_path(), backup);
-        if (primary == statefile::json_load_result_e::failed) return false;
-        if (backup_status == statefile::json_load_result_e::loaded && state_policy::normalize_snapshot(backup)) {
-          root = std::move(backup);
-        } else if (allow_missing_state && primary_bootstrap(primary, root) && primary_bootstrap(backup_status, backup)) {
-          if (primary == statefile::json_load_result_e::missing) {
-            root = backup_status == statefile::json_load_result_e::loaded ? backup : nlohmann::json::object();
-          }
-          if (!root.contains("root")) root["root"] = nlohmann::json::object();
-        } else {
-          BOOST_LOG(error) << "Refusing to replace unavailable Vibepollo pairing state.";
-          return false;
-        }
+      // This selector is authoritative. A refusal must never be bypassed by
+      // independently choosing an older paired backup over changed credentials.
+      const auto primary = statefile::load_primary_state(root);
+      if (primary != statefile::json_load_result_e::loaded &&
+          !(allow_missing_state && primary == statefile::json_load_result_e::missing)) {
+        BOOST_LOG(error) << "Refusing to replace unavailable Vibepollo pairing state.";
+        return false;
       }
 
       root["root"]["uniqueid"] = http::unique_id;
@@ -1785,7 +1775,6 @@ namespace nvhttp {
 
     bool load_state() {
       statefile::migrate_recent_state_keys();
-      const auto &sunshine_path = statefile::sunshine_state_path();
       const auto &vibeshine_path = statefile::vibeshine_state_path();
       const bool share_state_file = statefile::share_state_file();
       std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
@@ -1888,18 +1877,11 @@ namespace nvhttp {
         }
       };
       nlohmann::json tree;
-      const auto primary = statefile::load_json(sunshine_path, tree);
+      const auto primary = statefile::load_primary_state(tree);
       if (primary == statefile::json_load_result_e::failed) return false;
       auto parsed = primary == statefile::json_load_result_e::loaded ? parse_state(tree) : std::nullopt;
-      bool recovered = false;
       if (!parsed) {
-        nlohmann::json backup;
-        const auto backup_status = statefile::load_json(statefile::sunshine_state_backup_path(), backup);
-        if (backup_status == statefile::json_load_result_e::loaded) parsed = parse_state(backup);
-        if (parsed) {
-          tree = std::move(backup);
-          recovered = true;
-        } else if (primary_bootstrap(primary, tree) && primary_bootstrap(backup_status, backup) && http::credentials_created_this_run) {
+        if (primary_bootstrap(primary, tree) && http::credentials_created_this_run) {
           http::uuid = uuid_util::uuid_t::generate();
           http::unique_id = http::uuid.string();
           authorization_state_ready.store(true, std::memory_order_release);
@@ -1909,14 +1891,13 @@ namespace nvhttp {
           }
           update::state.last_notified_version.clear();
           return true;
-        } else {
-          BOOST_LOG(error) << "No valid Vibepollo pairing snapshot; refusing to create a replacement identity.";
-          return false;
         }
+        BOOST_LOG(error) << "No valid Vibepollo pairing snapshot; refusing to create a replacement identity.";
+        return false;
       }
+      // Selection has already restored and validated any recovered snapshot.
       try {
-        if (recovered) statefile::write_sunshine_state_atomic(tree);
-        else statefile::write_json_atomic(statefile::sunshine_state_backup_path(), tree);
+        statefile::write_json_atomic(statefile::sunshine_state_backup_path(), tree);
       } catch (const std::exception &e) {
         BOOST_LOG(warning) << "Could not persist Vibepollo recovery snapshot: " << e.what();
       }

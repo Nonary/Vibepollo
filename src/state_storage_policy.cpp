@@ -251,7 +251,7 @@ namespace statefile::policy {
     if (!identity) {
       return allow_bootstrap && (!root || (!root->count("named_devices") && !root->count("devices")));
     }
-    if (!identity->empty() || identity->data().empty() || identity->data().size() > 64) return false;
+    if (!identity->empty() || identity->data().empty() || identity->data().size() > 128) return false;
     for (const unsigned char ch : identity->data()) {
       if (!std::isalnum(ch) && ch != '-' && ch != '_' && ch != '.') return false;
     }
@@ -268,7 +268,7 @@ namespace statefile::policy {
         const auto cert = device.get_child_optional("cert");
         const auto name = device.get_child_optional("name");
         if (!uuid || !uuid->empty() || uuid->data().size() != 36 || !uuids.insert(uuid->data()).second ||
-            !cert || !certificate(*cert) || !name || !name->empty()) return false;
+            !cert || !certificate(*cert) || !name || !name->empty() || name->data().size() > 1024) return false;
         for (std::size_t i = 0; i < uuid->data().size(); ++i) {
           const auto ch = static_cast<unsigned char>(uuid->data()[i]);
           if (i == 8 || i == 13 || i == 18 || i == 23) {

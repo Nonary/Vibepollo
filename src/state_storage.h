@@ -59,6 +59,10 @@ namespace statefile {
   json_load_result_e load_json(const std::string &path, boost::property_tree::ptree &tree);
   json_load_result_e load_json(const std::string &path, nlohmann::json &tree);
 
+  /** Authoritative primary snapshot selection for startup and saves. Caller holds state_mutex(). */
+  json_load_result_e load_primary_state(boost::property_tree::ptree &tree);
+  json_load_result_e load_primary_state(nlohmann::json &tree);
+
   /**
    * @brief Load an existing JSON file before a read/modify/write update.
    *
