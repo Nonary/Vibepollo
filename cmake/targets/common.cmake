@@ -28,6 +28,10 @@ endif()
 
 target_link_libraries(sunshine ${SUNSHINE_EXTERNAL_LIBRARIES} ${EXTRA_LIBS})
 target_compile_definitions(sunshine PUBLIC ${SUNSHINE_DEFINITIONS})
+# FFmpeg bundles may also ship ffnvcodec headers. The standalone encoder's
+# compatibility checks require the SDK revision pinned by this repository.
+target_include_directories(sunshine SYSTEM BEFORE PRIVATE
+        "${CMAKE_SOURCE_DIR}/third-party/nv-codec-headers/include")
 
 # Logging integration flags are provided via SUNSHINE_DEFINITIONS to avoid duplicates
 set_target_properties(sunshine PROPERTIES CXX_STANDARD 23

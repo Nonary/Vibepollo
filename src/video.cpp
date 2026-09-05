@@ -6491,60 +6491,72 @@ namespace video {
 
       const config_t generic_hdr_config = {1920, 1080, 60, 6000, 1000, 1, 0, 3, 1, 1, 0};
 
-      // Reset the synthetic surface since we're switching from SDR to HDR.
-      // The D3D adapter remains exact while the fake source format changes to
-      // FP16, exercising the real 10-bit encoder conversion path.
-      cached_probe_display.reset();
-      reset_probe_display(generic_hdr_config);
-      if (!disp) {
-        return false;
+      // A capture backend or driver can reject HDR entirely.
+      // Keep its successful SDR probes instead of failing the whole encoder
+      // when constructing an unsupported HDR capture surface.
+      if (disp->is_codec_supported(encoder.hevc.name, generic_hdr_config) ||
+          disp->is_codec_supported(encoder.av1.name, generic_hdr_config)) {
+        // Reset the synthetic surface since we're switching from SDR to HDR.
+        // The D3D adapter remains exact while the fake source format changes to
+        // FP16, exercising the real 10-bit encoder conversion path.
+        cached_probe_display.reset();
+        reset_probe_display(generic_hdr_config);
+        if (!disp) {
+          return false;
+        }
+        const auto hdr_probe_adapter = disp->capture_adapter_id();
+        if (required_adapter && (!hdr_probe_adapter || *hdr_probe_adapter != *required_adapter)) {
+          BOOST_LOG(error)
+            << "HDR encoder probe display did not initialize on its required adapter; refusing cross-adapter validation.";
+          return false;
+        }
+
+        auto test_hdr_and_yuv444 = [&](auto &flag_map, auto video_format) {
+          auto config = generic_hdr_config;
+          config.videoFormat = video_format;
+
+          if (!flag_map[encoder_t::PASSED]) {
+            return;
+          }
+
+          auto encoder_codec_name = encoder.codec_from_config(config).name;
+
+          flag_map[encoder_t::YUV444] = false;
+
+          // Test the mandatory HDR 4:2:0 path first. Some encoders support AV1/HEVC
+          // Main10 but reject optional 4:4:4, and that must not mask HDR support.
+          // Keep DYNAMIC_RANGE tentatively enabled while probing because validate_config()
+          // gates dynamicRange configs on the current codec capability bit.
+          config.chromaSamplingType = 0;
+          if (disp->is_codec_supported(encoder_codec_name, config) &&
+              validate_config(disp, encoder, config) >= 0) {
+            flag_map[encoder_t::DYNAMIC_RANGE] = true;
+          } else {
+            flag_map[encoder_t::DYNAMIC_RANGE] = false;
+            return;
+          }
+
+          // Test optional HDR 4:4:4 after 4:2:0 has already established HDR support.
+          config.chromaSamplingType = 1;
+          if ((encoder.flags & YUV444_SUPPORT) &&
+              disp->is_codec_supported(encoder_codec_name, config) &&
+              validate_config(disp, encoder, config) >= 0) {
+            flag_map[encoder_t::YUV444] = true;
+          }
+        };
+
+        // HDR is not supported with H.264. Don't bother even trying it.
+        encoder.h264[encoder_t::DYNAMIC_RANGE] = false;
+
+        test_hdr_and_yuv444(encoder.hevc, 1);
+        test_hdr_and_yuv444(encoder.av1, 2);
+      } else {
+        encoder.h264[encoder_t::DYNAMIC_RANGE] = false;
+        encoder.hevc[encoder_t::DYNAMIC_RANGE] = false;
+        encoder.av1[encoder_t::DYNAMIC_RANGE] = false;
+        encoder.hevc[encoder_t::YUV444] = false;
+        encoder.av1[encoder_t::YUV444] = false;
       }
-      const auto hdr_probe_adapter = disp->capture_adapter_id();
-      if (required_adapter && (!hdr_probe_adapter || *hdr_probe_adapter != *required_adapter)) {
-        BOOST_LOG(error)
-          << "HDR encoder probe display did not initialize on its required adapter; refusing cross-adapter validation.";
-        return false;
-      }
-
-      auto test_hdr_and_yuv444 = [&](auto &flag_map, auto video_format) {
-        auto config = generic_hdr_config;
-        config.videoFormat = video_format;
-
-        if (!flag_map[encoder_t::PASSED]) {
-          return;
-        }
-
-        auto encoder_codec_name = encoder.codec_from_config(config).name;
-
-        flag_map[encoder_t::YUV444] = false;
-
-        // Test the mandatory HDR 4:2:0 path first. Some encoders support AV1/HEVC
-        // Main10 but reject optional 4:4:4, and that must not mask HDR support.
-        // Keep DYNAMIC_RANGE tentatively enabled while probing because validate_config()
-        // gates dynamicRange configs on the current codec capability bit.
-        config.chromaSamplingType = 0;
-        if (disp->is_codec_supported(encoder_codec_name, config) &&
-            validate_config(disp, encoder, config) >= 0) {
-          flag_map[encoder_t::DYNAMIC_RANGE] = true;
-        } else {
-          flag_map[encoder_t::DYNAMIC_RANGE] = false;
-          return;
-        }
-
-        // Test optional HDR 4:4:4 after 4:2:0 has already established HDR support.
-        config.chromaSamplingType = 1;
-        if ((encoder.flags & YUV444_SUPPORT) &&
-            disp->is_codec_supported(encoder_codec_name, config) &&
-            validate_config(disp, encoder, config) >= 0) {
-          flag_map[encoder_t::YUV444] = true;
-        }
-      };
-
-      // HDR is not supported with H.264. Don't bother even trying it.
-      encoder.h264[encoder_t::DYNAMIC_RANGE] = false;
-
-      test_hdr_and_yuv444(encoder.hevc, 1);
-      test_hdr_and_yuv444(encoder.av1, 2);
     }
 
     encoder.h264[encoder_t::VUI_PARAMETERS] = encoder.h264[encoder_t::VUI_PARAMETERS] && !config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE];
