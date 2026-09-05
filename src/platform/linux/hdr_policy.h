@@ -45,6 +45,20 @@ namespace platf::linux_hdr {
     bool expected_enabled;
   };
 
+  /** Only HDR activation needs a separate transaction after the modeset. */
+  [[nodiscard]] constexpr bool requires_post_modeset_transaction(const std::optional<bool> command) noexcept {
+    return command.value_or(false);
+  }
+
+  /** Rearming may share the modeset, but both results must precede HDR activation. */
+  [[nodiscard]] constexpr bool ready_for_hdr_activation(
+    const bool mode_matches,
+    const bool rearm_required,
+    const bool hdr_enabled
+  ) noexcept {
+    return mode_matches && (!rearm_required || !hdr_enabled);
+  }
+
   /** Resolve a parsed display-device HDR action against connector capability. */
   [[nodiscard]] constexpr output_state_policy_t resolve_output_state(
     const std::optional<bool> parsed_state,

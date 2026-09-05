@@ -87,6 +87,18 @@ TEST(LinuxHdrPolicy, AutomaticDisplayHdrPolicyHonorsCapability) {
   EXPECT_FALSE(unsupported.expected_enabled);
 }
 
+TEST(LinuxHdrPolicy, OnlySupportedHdrActivationNeedsPostModesetTransaction) {
+  EXPECT_TRUE(hdr::requires_post_modeset_transaction(
+    hdr::resolve_output_state(true, true, false).command));
+  EXPECT_FALSE(hdr::requires_post_modeset_transaction(
+    hdr::resolve_output_state(false, true, true).command));
+  EXPECT_FALSE(hdr::requires_post_modeset_transaction(
+    hdr::resolve_output_state(true, false, false).command));
+  // Preserving an already-HDR desktop must not synthesize a new HDR command.
+  EXPECT_FALSE(hdr::requires_post_modeset_transaction(
+    hdr::resolve_output_state(std::nullopt, true, true).command));
+}
+
 TEST(LinuxHdrPolicy, OutputStateRequiresConsecutiveStableObservations) {
   hdr::output_state_stabilizer_t stabilizer;
 
@@ -97,6 +109,14 @@ TEST(LinuxHdrPolicy, OutputStateRequiresConsecutiveStableObservations) {
   EXPECT_FALSE(stabilizer.observe(true));
   EXPECT_TRUE(stabilizer.observe(true));
   EXPECT_TRUE(stabilizer.observe(true));
+}
+
+TEST(LinuxHdrPolicy, CombinedModesetAndRearmMustBothCompleteBeforeHdrActivation) {
+  EXPECT_FALSE(hdr::ready_for_hdr_activation(false, true, false));
+  EXPECT_FALSE(hdr::ready_for_hdr_activation(true, true, true));
+  EXPECT_TRUE(hdr::ready_for_hdr_activation(true, true, false));
+  EXPECT_TRUE(hdr::ready_for_hdr_activation(true, false, true));
+  EXPECT_FALSE(hdr::ready_for_hdr_activation(false, false, true));
 }
 
 TEST(LinuxHdrPolicy, OnlyNewlyConnectedHdrOutputsRequireRearm) {
