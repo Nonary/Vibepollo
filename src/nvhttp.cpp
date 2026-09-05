@@ -515,7 +515,22 @@ namespace nvhttp {
         launch_session->virtual_display_needs_resume_apply
       );
       if (reapply_topology) {
-        refresh_remote_monitor_baseline(has_stream_session_activity());
+        const bool stream_active = has_stream_session_activity();
+        refresh_remote_monitor_baseline(stream_active);
+        const auto managed_ids = remote_display_topology::instance().managed_client_identity_ids();
+        const auto monitor_ids = remote_display_topology::instance().protected_remote_monitor_client_ids();
+        if (platf::linux_private_display::resume_policy::can_use_session_apply_only(
+              stream_active,
+              managed_ids.size() == 1 && managed_ids.front() == owner_uuid,
+              !monitor_ids.empty()
+            )) {
+          // Launch/resume applies and verifies the parsed session configuration
+          // before admitting the stream. Composing its raw client mode first
+          // doubles KScreen/HDR setup and may immediately undo mode overrides.
+          launch_session->virtual_display_needs_resume_apply = true;
+          BOOST_LOG(debug) << "Linux private display: deferring the sole game output to the verified session apply.";
+          return linux_normal_identity_result_e::ready;
+        }
       } else {
         BOOST_LOG(debug) << "Linux private display: reusing the retained game topology without a resume modeset.";
       }

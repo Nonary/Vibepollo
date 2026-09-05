@@ -34,6 +34,15 @@ namespace platf::linux_private_display::resume_policy {
     return newly_reserved_identity || display_needs_apply;
   }
 
+  /** The session apply already configures a lone normal game's complete layout. */
+  constexpr bool can_use_session_apply_only(
+    const bool stream_active,
+    const bool sole_managed_identity,
+    const bool remote_monitor_reserved
+  ) {
+    return !stream_active && sole_managed_identity && !remote_monitor_reserved;
+  }
+
   /** Physical displays retain the legacy apply gate; ready private outputs do not need a modeset on resume. */
   constexpr bool requires_session_apply(
     const bool virtual_display,
