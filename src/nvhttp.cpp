@@ -3638,7 +3638,9 @@ namespace nvhttp {
           // and Remote Input, but it does not end the configured application.
           // Complete the same process/session lifecycle as /cancel while
           // transferring the stream-lifecycle lock already held by /launch.
-          proc::proc.terminate(false, true);
+          // Vibepollo keeps immediate/needs_refresh ahead of the shared
+          // display and lock flags in its terminate API.
+          proc::proc.terminate(false, true, false, true);
           tree.put("root.resume", 0);
           tree.put("root.gamesession", 0);
           if (!disconnected) {
