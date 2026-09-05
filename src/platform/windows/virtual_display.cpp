@@ -154,7 +154,7 @@ namespace {
     header.id = target.source_id;
   }
 
-  std::optional<std::size_t> scale_index(const std::int32_t index) {
+  std::optional<std::size_t> scale_index(const std::int64_t index) {
     if (index < 0 || static_cast<std::size_t>(index) >= kWindowsScalePercentages.size()) {
       return std::nullopt;
     }
@@ -347,24 +347,32 @@ namespace VDISPLAY {
     }
     result.queried = true;
 
-    const auto recommended_index = -get.min_scale_relative;
+    const auto recommended_index = -static_cast<std::int64_t>(get.min_scale_relative);
     const auto current_index = recommended_index + get.current_scale_relative;
     const auto recommended = scale_index(recommended_index);
     const auto current = scale_index(current_index);
-    if (!recommended || !current) {
+    if (!recommended) {
+      BOOST_LOG(warning) << "Virtual display scale: invalid Windows DPI range (min="
+                         << get.min_scale_relative << ", current=" << get.current_scale_relative
+                         << ", max=" << get.max_scale_relative << ").";
       result.status = ERROR_INVALID_DATA;
       return result;
     }
     result.recommended_percent = kWindowsScalePercentages[*recommended];
-    result.previous_percent = kWindowsScalePercentages[*current];
-    result.current_percent = result.previous_percent;
+    // Newly created displays can report an unknown current DPI (1234568).
+    // Only the recommendation is needed to calculate the write; leave the
+    // previous value unknown and apply the requested scale on this session.
+    if (current) {
+      result.previous_percent = kWindowsScalePercentages[*current];
+      result.current_percent = result.previous_percent;
+    }
 
     const auto desired_relative = desired_index - recommended_index;
     if (desired_relative < get.min_scale_relative || desired_relative > get.max_scale_relative) {
       result.status = ERROR_NOT_SUPPORTED;
       return result;
     }
-    if (current_index == desired_index) {
+    if (current && current_index == desired_index) {
       result.applied = true;
       result.status = ERROR_SUCCESS;
       return result;
@@ -372,7 +380,7 @@ namespace VDISPLAY {
 
     sunshine_displayconfig_set_dpi_scale_t set {};
     initialize_dpi_header(set.header, *target, kDisplayConfigSetDpiScale, sizeof(set));
-    set.scale_relative = desired_relative;
+    set.scale_relative = static_cast<std::int32_t>(desired_relative);
     result.status = DisplayConfigSetDeviceInfo(&set.header);
     if (result.status != ERROR_SUCCESS) {
       return result;
@@ -387,7 +395,7 @@ namespace VDISPLAY {
       if (DisplayConfigGetDeviceInfo(&get.header) != ERROR_SUCCESS) {
         continue;
       }
-      const auto verified_index = scale_index(-get.min_scale_relative + get.current_scale_relative);
+      const auto verified_index = scale_index(-static_cast<std::int64_t>(get.min_scale_relative) + get.current_scale_relative);
       if (verified_index) {
         result.current_percent = kWindowsScalePercentages[*verified_index];
       }
