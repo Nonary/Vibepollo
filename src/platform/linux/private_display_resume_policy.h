@@ -4,7 +4,19 @@
  */
 #pragma once
 
+#include <cstdint>
+#include <string_view>
+
 namespace platf::linux_private_display::resume_policy {
+  /** A resume attaches to the app's display lease, not a new client's identity. */
+  constexpr std::string_view reservation_owner(
+    const std::string_view requesting_client,
+    const std::string_view app_client,
+    const std::uint64_t app_display_token
+  ) {
+    return app_display_token != 0 && !app_client.empty() ? app_client : requesting_client;
+  }
+
   /** A newly hot-plugged output must be configured even if KWin auto-enabled it. */
   constexpr bool requires_apply(const bool newly_connected, const bool enabled) {
     return newly_connected || !enabled;

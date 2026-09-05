@@ -673,6 +673,9 @@ namespace platf::linux_private_display {
       if (shared) {
         return "shared";
       }
+      if (!session.normal_vdd_owner_uuid.empty()) {
+        return "client:" + session.normal_vdd_owner_uuid;
+      }
       if (!session.client_uuid.empty()) {
         return "client:" + session.client_uuid;
       }

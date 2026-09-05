@@ -8,6 +8,13 @@
 
 namespace policy = platf::linux_private_display::resume_policy;
 
+TEST(LinuxPrivateDisplayResumePolicy, OnlyAnAppWithADisplayLeaseOverridesTheRequestingOwner) {
+  EXPECT_EQ(policy::reservation_owner("mac", "deck", 12), "deck");
+  EXPECT_EQ(policy::reservation_owner("mac", "deck", 0), "mac");
+  EXPECT_EQ(policy::reservation_owner("mac", "", 12), "mac");
+  EXPECT_EQ(policy::reservation_owner("deck", "deck", 12), "deck");
+}
+
 TEST(LinuxPrivateDisplayResumePolicy, ReappliesNewlyConnectedEnabledOutput) {
   EXPECT_TRUE(policy::requires_apply(true, true));
 }

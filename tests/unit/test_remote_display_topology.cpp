@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "src/remote_display_topology.h"
+#include "src/platform/linux/private_display_resume_policy.h"
 
 namespace {
   using remote_display_topology::mode_t;
@@ -307,6 +308,37 @@ TEST(RemoteDisplayTopology, NormalReservationCanRecomposeThroughPlatformRuntime)
   EXPECT_EQ(composed.front().configured_mode.width, 2560);
   EXPECT_EQ(composed.front().configured_mode.height, 1440);
   EXPECT_EQ(composed.front().configured_mode.refresh_hz, 120);
+}
+
+TEST(RemoteDisplayTopology, LinuxCrossClientResumeRetainsOneAppOwnedDisplay) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<remote_display_topology::node_t> composed;
+  std::vector<std::string> removed;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [&](const auto &nodes) { composed = nodes; return true; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; },
+    .remove_owned_display = [&](const auto &uuid) { removed.push_back(uuid); return true; },
+  });
+  const auto app = coordinator.reserve_normal_game_identity("deck", "Deck", {2560, 1440, 120});
+  ASSERT_TRUE(app.accepted);
+  // Disconnecting the transport leaves the app and its display lease alive.
+  const std::string owner {platf::linux_private_display::resume_policy::reservation_owner("mac", "deck", app.token)};
+  const auto resumed = coordinator.reserve_normal_game_identity(owner, "Mac", {3024, 1890, 120});
+  ASSERT_TRUE(resumed.accepted);
+  EXPECT_FALSE(resumed.newly_reserved);
+  EXPECT_EQ(resumed.token, app.token);
+  ASSERT_TRUE(coordinator.reapply_composed_topology());
+  ASSERT_EQ(composed.size(), 1);
+  EXPECT_EQ(composed.front().id, "deck");
+
+  // Only an explicit Remote Monitor request adds the Mac's separate output.
+  ASSERT_TRUE(coordinator.activate_or_resume("mac", "Mac", {3024, 1890, 120}, 1).ready);
+  ASSERT_EQ(composed.size(), 2);
+  coordinator.release_normal_game_identity("deck", app.token);
+  ASSERT_EQ(composed.size(), 1);
+  EXPECT_EQ(composed.front().id, "mac");
+  EXPECT_EQ(removed, std::vector<std::string> {"deck"});
 }
 
 TEST(RemoteDisplayTopology, NormalReservationResolvesHdrCapabilityBeforeRecompose) {
