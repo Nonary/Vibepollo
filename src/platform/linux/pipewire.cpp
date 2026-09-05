@@ -17,6 +17,7 @@
 // local includes
 #include "cuda.h"
 #include "graphics.h"
+#include "pipewire_format.h"
 #include "src/main.h"
 #include "src/platform/common.h"
 #include "src/video.h"
@@ -366,25 +367,17 @@ namespace pipewire {
       struct spa_pod_frame object_frame;
       struct spa_pod_frame modifier_frame;
       std::array<struct spa_rectangle, 3> sizes;
-      std::array<struct spa_fraction, 3> framerates;
 
       sizes[0] = SPA_RECTANGLE(width, height);  // Preferred
       sizes[1] = SPA_RECTANGLE(1, 1);
       sizes[2] = SPA_RECTANGLE(8192, 4096);
-
-      framerates[0] = SPA_FRACTION(0, 1);  // default; we only want variable rate, thus bypassing compositor pacing
-      framerates[1] = SPA_FRACTION(0, 1);  // min
-      framerates[2] = SPA_FRACTION(0, 1);  // max
 
       spa_pod_builder_push_object(b, &object_frame, SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat);
       spa_pod_builder_add(b, SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video), 0);
       spa_pod_builder_add(b, SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw), 0);
       spa_pod_builder_add(b, SPA_FORMAT_VIDEO_format, SPA_POD_Id(format), 0);
       spa_pod_builder_add(b, SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle(&sizes[0], &sizes[1], &sizes[2]), 0);
-      spa_pod_builder_add(b, SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&framerates[0]), 0);
-      if (negotiate_maxframerate_) {
-        spa_pod_builder_add(b, SPA_FORMAT_VIDEO_maxFramerate, SPA_POD_CHOICE_RANGE_Fraction(&framerates[0], &framerates[1], &framerates[2]), 0);
-      }
+      add_framerate_parameters(b, negotiate_maxframerate_);
 
       if (format == SPA_VIDEO_FORMAT_xBGR_210LE) {
         spa_pod_builder_add(b, SPA_FORMAT_VIDEO_colorPrimaries, SPA_POD_Id(SPA_VIDEO_COLOR_PRIMARIES_BT2020), 0);

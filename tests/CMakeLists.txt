@@ -405,6 +405,14 @@ sunshine_register_component(NAME test_component_mouse_policy TEST_SOURCE unit/te
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/mouse_input.cpp")
 sunshine_register_component(NAME test_component_platform_common TEST_SOURCE unit/platform/test_common.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/common_services.cpp")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    pkg_check_modules(TEST_PIPEWIRE QUIET IMPORTED_TARGET libpipewire-0.3)
+    if(TEST_PIPEWIRE_FOUND)
+        sunshine_register_component(NAME test_component_linux_pipewire_format
+            TEST_SOURCE unit/platform/linux/test_pipewire_format.cpp
+            LINK_LIBRARIES PkgConfig::TEST_PIPEWIRE)
+    endif()
+endif()
 sunshine_register_component(NAME test_component_logging_policy TEST_SOURCE unit/test_logging.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/logging_policy.cpp")
 sunshine_register_component(NAME test_component_entry_metadata TEST_SOURCE unit/test_entry_handler.cpp
