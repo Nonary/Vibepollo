@@ -3,7 +3,12 @@
 This experimental profile supports stock Gamescope SDR capture and an optional
 [patched Gamescope HDR10 path](gamescope/README.md). See [AUDIT.md](AUDIT.md) for
 validation evidence, the SteamOS Mesa prerequisite and remaining release gates.
-Independent virtual-display support is not implemented.
+Gaming Mode routes normal game sessions to the existing Gamescope scene,
+including sessions configured for per-client/shared virtual displays or a
+Desktop Mode monitor. It preserves those settings for Desktop Mode and leaves
+Gaming Mode's physical layout alone. Independent Gaming Mode virtual monitors
+are not created. HDR is negotiated with the running compositor; selecting a
+virtual display does not force SDR.
 
 This packaging profile runs Vibepollo as the logged-in SteamOS user and leaves
 the read-only root filesystem untouched. It is separate from Vibepollo's

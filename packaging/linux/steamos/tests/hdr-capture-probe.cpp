@@ -6,6 +6,8 @@
 #include "src/platform/common.h"
 #include "src/platform/linux/gamescopegrab.h"
 #include "src/platform/linux/graphics.h"
+#include "src/platform/linux/display_backend.h"
+#include "src/rtsp.h"
 #include "src/video.h"
 
 #include <array>
@@ -36,29 +38,72 @@ int main(int argc, char **argv) {
   const bool sdr_source = argc > 1 && std::string_view(argv[1]) == "--sdr-source";
   auto log = logging::init(2, "/tmp/vibepollo-hdr-capture-probe.log");
   mail::man = std::make_shared<safe::mail_raw_t>();
-  config::video.capture = "gamescope";
+  config::video.capture.clear();
   const bool use_vulkan = std::getenv("VIBEPOLLO_HDR_ENCODER") && std::string_view(std::getenv("VIBEPOLLO_HDR_ENCODER")) == "vulkan";
   config::video.encoder = use_vulkan ? "vulkan" : "vaapi";
   const auto memory_type = use_vulkan ? platf::mem_type_e::vulkan : platf::mem_type_e::vaapi;
   const auto &encoder = use_vulkan ? video::vulkan : video::vaapi;
-  config::video.virtual_display_mode = config::video_t::virtual_display_mode_e::disabled;
+  config::video.virtual_display_mode = config::video_t::virtual_display_mode_e::per_client;
+  config::video.output_name = "Virtual-1";
   auto platform = platf::init();
   if (!platform || !platf::gamescope_capture_selected()) {
     return 2;
   }
+  // Exercise the real launch/resume preparation with Desktop Mode preferences
+  // still configured. No KScreen broker, connector lease, or SDR override is
+  // required for the Gamescope scene, on stock or patched compositors.
+  using mode_e = config::video_t::virtual_display_mode_e;
+  using layout_e = config::video_t::virtual_display_layout_e;
+  for (auto mode : {mode_e::disabled, mode_e::per_client, mode_e::shared}) {
+    for (auto layout : {layout_e::exclusive, layout_e::extended_primary}) {
+      for (bool resume : {false, true}) {
+        config::video.virtual_display_mode = mode;
+        config::video.virtual_display_layout = layout;
+        rtsp_stream::launch_session_t session {};
+        session.enable_hdr = true;
+        session.virtual_display = resume;
+        session.virtual_display_failed = resume;
+        session.virtual_display_device_id = "Virtual-1";
+        session.virtual_display_hdr_enabled = false;
+        session.virtual_display_recreated_on_demand = resume;
+        session.virtual_display_needs_resume_apply = resume;
+        session.client_requests_virtual_display = mode != mode_e::disabled;
+        session.client_virtual_display_override = mode != mode_e::disabled;
+        session.output_name_override = "DP-1";
+        const auto &backend = platf::linux_display::backend();
+        auto prepared = backend.prepare_session(session, !resume, !resume);
+        if (prepared.owns_output || !prepared.error.empty() ||
+            prepared.output_name != "gamescope" || session.output_name_override != "gamescope" ||
+            session.virtual_display || session.virtual_display_failed ||
+            !session.virtual_display_device_id.empty() || session.virtual_display_hdr_enabled ||
+            session.virtual_display_recreated_on_demand || session.virtual_display_needs_resume_apply ||
+            session.virtual_display_mode_override != mode_e::disabled ||
+            !rtsp_stream::effective_hdr_requested(session) ||
+            config::video.virtual_display_mode != mode || config::video.virtual_display_layout != layout ||
+            config::video.output_name != "Virtual-1" ||
+            !backend.initialize() || !backend.apply_session(session) || !backend.revert() ||
+            !backend.reset_persistence() || backend.capabilities().independent_outputs ||
+            backend.capture_target("Virtual-1") != "gamescope") {
+          std::cerr << "Gamescope launch/resume routing failed\n";
+          return 20;
+        }
+      }
+    }
+  }
+  std::cout << "Gamescope automatic capture and 12 launch/resume display-policy cases PASS\n";
   video::config_t requested {};
   requested.width = 1280;
   requested.height = 800;
   requested.framerate = 30;
   requested.dynamicRange = 1;
   requested.videoFormat = 1;
-  auto display = platf::gamescope_display(memory_type, "gamescope", requested);
+  auto display = platf::display(memory_type, "Virtual-1", requested);
   if (stock) {
     if (display) {
       return 3;
     }
     requested.dynamicRange = 0;
-    display = platf::gamescope_display(memory_type, "gamescope", requested);
+    display = platf::display(memory_type, "DP-1", requested);
     if (!display || display->is_hdr()) {
       return 4;
     }

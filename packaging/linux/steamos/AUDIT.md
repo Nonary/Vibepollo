@@ -31,7 +31,7 @@ parity is not established.
 | Desktop Mode | Existing Linux capture backends retained. Physical capture remains the user-bundle baseline. |
 | Input | SteamOS host permits `/dev/uinput` and GPU render access. Xbox One is the profile default. `/dev/uhid` is inaccessible to this user, so DualSense is not a stock-install guarantee. |
 | Audio and Steam | Existing PulseAudio/PipeWire path and `steam -applaunch` handoff retained. Local playback follows the client's request. Actual playback and game launch still require stream testing. |
-| HDR and virtual outputs | Stock path reports SDR only. The optional patch provides full-range 10-bit BT.2020/PQ capture with a defined reference volume; independent virtual outputs remain rejected. Managed KScreen initialization is skipped for Gamescope. |
+| HDR and virtual outputs | Stock path reports SDR only. The optional patch provides full-range 10-bit BT.2020/PQ capture with a defined reference volume. Normal game launch/resume requests use the existing Gamescope scene even when virtual display is selected; no independent output is created. Managed KScreen initialization is skipped for Gamescope. |
 
 ## Validation
 

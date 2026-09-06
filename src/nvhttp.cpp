@@ -72,6 +72,7 @@
   #include "platform/windows/virtual_display_cleanup.h"
 #elif defined(__linux__)
   #include "platform/linux/private_display.h"
+  #include "src/platform/linux/display_backend.h"
   #include "platform/linux/private_display_resume_policy.h"
 #endif
 
@@ -1784,7 +1785,7 @@ namespace nvhttp {
         if (stream::session::finalize_shared_runtime_if_idle("managed_display_owner_release")) {
           return;
         }
-        (void) platf::linux_private_display::revert();
+        (void) platf::linux_display::backend().revert();
       } catch (const std::exception &error) {
         BOOST_LOG(warning) << "Linux private-display cleanup failed: " << error.what();
       } catch (...) {
@@ -3695,9 +3696,11 @@ namespace nvhttp {
       tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK);
       tree.put("root.VirtualDisplayHDRCapable", true);
 #elif defined(__linux__)
-      tree.put("root.VirtualDisplayCapable", platf::linux_private_display::capable());
-      tree.put("root.VirtualDisplayDriverReady", platf::linux_private_display::ready());
-      tree.put("root.VirtualDisplayHDRCapable", platf::linux_private_display::hdr_capable());
+      // Independent monitor support is separate from compositor HDR capture.
+      const auto display_capabilities = platf::linux_display::backend().capabilities();
+      tree.put("root.VirtualDisplayCapable", display_capabilities.independent_outputs);
+      tree.put("root.VirtualDisplayDriverReady", display_capabilities.independent_outputs_ready);
+      tree.put("root.VirtualDisplayHDRCapable", display_capabilities.independent_outputs_hdr);
 #else
       tree.put("root.VirtualDisplayCapable", false);
       tree.put("root.VirtualDisplayDriverReady", false);
@@ -4817,22 +4820,24 @@ namespace nvhttp {
         return;
       }
 #elif defined(__linux__)
-      const auto linux_private_display = platf::linux_private_display::prepare_session(
-        *launch_session,
-        no_active_sessions,
-        allow_display_changes
-      );
-      if (!linux_private_display.active && linux_private_display.requested) {
-        tree.put("root.<xmlattr>.status_code", 503);
-        tree.put("root.<xmlattr>.status_message", linux_private_display.error);
-        tree.put("root.gamesession", 0);
-        return;
+      platf::linux_display::prepared_display_t prepared;
+      if (!launch_session->input_only) {
+        prepared = platf::linux_display::backend().prepare_session(
+          *launch_session, no_active_sessions, allow_display_changes
+        );
+        if (!prepared.error.empty()) {
+          tree.put("root.<xmlattr>.status_code", 503);
+          tree.put("root.<xmlattr>.status_message", prepared.error);
+          tree.put("root.gamesession", 0);
+          return;
+        }
       }
       auto virtual_display_teardown_guard = util::fail_guard([&]() {
+        stream::session::cleanup_reservation_t cleanup_reservation;
         if (!has_stream_session_activity() && launch_session->virtual_display) {
           if (remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
             BOOST_LOG(info) << "Launch aborted before session start; restoring Linux private display state.";
-            (void) platf::linux_private_display::revert();
+            (void) platf::linux_display::backend().revert();
           } else {
             BOOST_LOG(info) << "Launch aborted while another managed display identity remains; preserving its composed topology.";
           }
@@ -4841,22 +4846,21 @@ namespace nvhttp {
       auto normal_vdd_identity_guard = util::fail_guard([&] {
         rollback_linux_normal_display_identity(launch_session);
       });
-      const auto normal_identity = reserve_linux_normal_display_identity(launch_session);
-      if (normal_identity == linux_normal_identity_result_e::capacity_rejected) {
-        tree.put("root.<xmlattr>.status_code", 409);
-        tree.put("root.<xmlattr>.status_message", "Remote display capacity is four paired-client identities");
+      const auto normal_identity = !launch_session->input_only ?
+        reserve_linux_normal_display_identity(launch_session) : linux_normal_identity_result_e::not_needed;
+      if (normal_identity == linux_normal_identity_result_e::capacity_rejected ||
+          normal_identity == linux_normal_identity_result_e::topology_failed) {
+        const bool capacity_rejected = normal_identity == linux_normal_identity_result_e::capacity_rejected;
+        tree.put("root.<xmlattr>.status_code", capacity_rejected ? 409 : 503);
+        tree.put("root.<xmlattr>.status_message", capacity_rejected ?
+          "Remote display capacity is four paired-client identities" :
+          "Failed to compose the Linux private streaming displays");
         tree.put("root.gamesession", 0);
         return;
       }
-      if (normal_identity == linux_normal_identity_result_e::topology_failed) {
-        tree.put("root.<xmlattr>.status_code", 503);
-        tree.put("root.<xmlattr>.status_message", "Failed to compose the Linux private streaming displays");
-        tree.put("root.gamesession", 0);
-        return;
-      }
-      if (linux_private_display.active) {
-        config::set_runtime_output_name_override(linux_private_display.output_name);
-        pending_output_override = linux_private_display.output_name;
+      if (!prepared.output_name.empty()) {
+        config::set_runtime_output_name_override(prepared.output_name);
+        pending_output_override = prepared.output_name;
       }
 #endif
 
@@ -5085,7 +5089,7 @@ namespace nvhttp {
 #ifdef _WIN32
       tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK);
 #elif defined(__linux__)
-      tree.put("root.VirtualDisplayDriverReady", platf::linux_private_display::ready());
+      tree.put("root.VirtualDisplayDriverReady", platf::linux_display::backend().capabilities().independent_outputs_ready);
 #else
       tree.put("root.VirtualDisplayDriverReady", false);
 #endif
@@ -5461,22 +5465,24 @@ namespace nvhttp {
       return;
     }
 #elif defined(__linux__)
-    const auto linux_private_display = platf::linux_private_display::prepare_session(
-      *launch_session,
-      no_active_sessions,
-      allow_session_display_changes
-    );
-    if (!linux_private_display.active && linux_private_display.requested) {
-      tree.put("root.resume", 0);
-      tree.put("root.<xmlattr>.status_code", 503);
-      tree.put("root.<xmlattr>.status_message", linux_private_display.error);
-      return;
+    platf::linux_display::prepared_display_t prepared;
+    if (!joining_existing_game_output) {
+      prepared = platf::linux_display::backend().prepare_session(
+        *launch_session, no_active_sessions, allow_session_display_changes
+      );
+      if (!prepared.error.empty()) {
+        tree.put("root.resume", 0);
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", prepared.error);
+        return;
+      }
     }
     auto virtual_display_teardown_guard = util::fail_guard([&]() {
+      stream::session::cleanup_reservation_t cleanup_reservation;
       if (!has_stream_session_activity() && launch_session->virtual_display) {
         if (remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
           BOOST_LOG(info) << "Resume aborted before session start; restoring Linux private display state.";
-          (void) platf::linux_private_display::revert();
+          (void) platf::linux_display::backend().revert();
         } else {
           BOOST_LOG(info) << "Resume aborted while another managed display identity remains; preserving its composed topology.";
         }
@@ -5486,21 +5492,19 @@ namespace nvhttp {
       rollback_linux_normal_display_identity(launch_session);
     });
     const auto normal_identity = reserve_linux_normal_display_identity(launch_session);
-    if (normal_identity == linux_normal_identity_result_e::capacity_rejected) {
+    if (normal_identity == linux_normal_identity_result_e::capacity_rejected ||
+        normal_identity == linux_normal_identity_result_e::topology_failed) {
+      const bool capacity_rejected = normal_identity == linux_normal_identity_result_e::capacity_rejected;
       tree.put("root.resume", 0);
-      tree.put("root.<xmlattr>.status_code", 409);
-      tree.put("root.<xmlattr>.status_message", "Remote display capacity is four paired-client identities");
+      tree.put("root.<xmlattr>.status_code", capacity_rejected ? 409 : 503);
+      tree.put("root.<xmlattr>.status_message", capacity_rejected ?
+        "Remote display capacity is four paired-client identities" :
+        "Failed to compose the Linux private streaming displays");
       return;
     }
-    if (normal_identity == linux_normal_identity_result_e::topology_failed) {
-      tree.put("root.resume", 0);
-      tree.put("root.<xmlattr>.status_code", 503);
-      tree.put("root.<xmlattr>.status_message", "Failed to compose the Linux private streaming displays");
-      return;
-    }
-    if (linux_private_display.active) {
-      config::set_runtime_output_name_override(linux_private_display.output_name);
-      pending_output_override = linux_private_display.output_name;
+    if (!prepared.output_name.empty()) {
+      config::set_runtime_output_name_override(prepared.output_name);
+      pending_output_override = prepared.output_name;
     }
 #endif
 
@@ -5684,7 +5688,7 @@ namespace nvhttp {
 #ifdef _WIN32
     tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK);
 #elif defined(__linux__)
-    tree.put("root.VirtualDisplayDriverReady", platf::linux_private_display::ready());
+    tree.put("root.VirtualDisplayDriverReady", platf::linux_display::backend().capabilities().independent_outputs_ready);
 #else
     tree.put("root.VirtualDisplayDriverReady", false);
 #endif
