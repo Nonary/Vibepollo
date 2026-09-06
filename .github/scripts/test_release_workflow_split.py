@@ -58,7 +58,10 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         )
         self.assertIn('os.environ.get("GITHUB_REF") == "refs/heads/vibe-test"', workflow_text)
         self.assertIn("Linux branch candidate:", workflow_text)
+        self.assertIn("Linux branch snapshot:", workflow_text)
+        self.assertIn('snapshot_version = f"{release_version}+branch.{head_commit[:12]}"', workflow_text)
         self.assertIn("release_version=release_version", workflow_text)
+        self.assertIn("release_version=snapshot_version", workflow_text)
         self.assertIn("should_release=\"false\"", workflow_text)
         self.assertNotIn("def canonical_release_tag", workflow_text)
 
@@ -147,7 +150,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             "Managed virtual displays require Linux 6.16 or newer.", release_text
         )
         self.assertIn(
-            "https://github.com/${GITHUB_REPOSITORY}/blob/${TAG_NAME}/docs/getting_started.md#arch-linux-and-cachyos",
+            "https://github.com/${GITHUB_REPOSITORY}/blob/${TAG_NAME}/docs/linux/install.md",
             release_text,
         )
         self.assertIn("arch_package_version=${RELEASE_VERSION//-/}", release_text)
@@ -166,7 +169,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         )
         self.assertNotIn("vibepollo.pkg.tar.gz", getting_started)
         self.assertIn("vibepollo-*.pkg.tar.zst", getting_started)
-        self.assertIn("to guess a header package name", getting_started)
+        self.assertIn("without guessing a package name", getting_started)
 
     def test_prerelease_notes_do_not_claim_to_cover_stable_releases(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -239,7 +242,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertEqual(signing_inputs["require_signpath_signing"], "true")
         self.assertEqual(
             signing_inputs["signpath_wait_for_completion_timeout_in_seconds"],
-            "600",
+            "3600",
         )
         self.assertIn("release", jobs)
         self.assertEqual(

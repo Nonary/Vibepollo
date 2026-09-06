@@ -223,6 +223,24 @@ jobs:
                   release_commit=head_commit,
                 )
 
+              # Release notes may intentionally lag active prerelease work. Keep
+              # the branch package newer and uniquely identifiable without
+              # inventing the next release tag or allowing a 0.0.0 package.
+              published_prereleases = []
+              for release_tag in release_tags:
+                key = version_key(release_tag)
+                if key is not None and is_prerelease_key(key):
+                  release_version = release_tag[1:] if release_tag.startswith("v") else release_tag
+                  published_prereleases.append((key, release_version))
+              if published_prereleases:
+                _, release_version = max(published_prereleases, key=lambda item: item[0])
+                snapshot_version = f"{release_version}+branch.{head_commit[:12]}"
+                skip(
+                  f"Linux branch snapshot: {snapshot_version} ({head_commit}); no newer prerelease notes exist yet.",
+                  release_version=snapshot_version,
+                  release_commit=head_commit,
+                )
+
             skip("No unreleased newer tag with exact matching release notes was found.")
 
           _, tag_name, notes_file, release_commit = max(valid_candidates, key=lambda item: item[0])
