@@ -971,13 +971,20 @@ namespace platf::linux_private_display {
         result.output_name = *output_name;
         session.virtual_display = true;
         session.virtual_display_device_id = *output_name;
+        const auto capture_outputs = platf::display_names(platf::mem_type_e::unknown);
+        const bool capture_available = std::find(capture_outputs.begin(), capture_outputs.end(), *output_name) != capture_outputs.end();
         session.virtual_display_recreated_on_demand =
           resume_policy::requires_apply(
             manager.newly_connected_reservations.contains(identity),
-            enabled(*output)
+            enabled(*output),
+            capture_available
           );
         session.virtual_display_needs_resume_apply = session.virtual_display_recreated_on_demand;
-        if (enabled(*output) && (!allow_display_changes || shared)) {
+        if (enabled(*output) && !capture_available) {
+          BOOST_LOG(warning) << "Linux private display: " << *output_name
+                             << " is enabled in KScreen but unavailable to capture; requiring activation before resume.";
+        }
+        if (enabled(*output) && capture_available && (!allow_display_changes || shared)) {
           const bool requested_hdr = rtsp_stream::effective_hdr_requested(session);
           const bool current_hdr = output_hdr_capable(output, *output_name) && output->value("hdr", false);
           if (requested_hdr && !current_hdr) session.force_sdr = true;
@@ -1002,14 +1009,45 @@ namespace platf::linux_private_display {
       return true;
     }
 
+    const auto use_current_output = [&]() {
+      // Capture availability is authoritative. A failed KScreen query or
+      // preference verification must not veto a still-capturable output.
+      // Keep the leased target: another client's display is not a substitute.
+      if (!wait_for_capture_publication(session.virtual_display_device_id)) {
+        BOOST_LOG(error) << "Linux private display: no usable current capture output on "
+                         << session.virtual_display_device_id << '.';
+        return false;
+      }
+      const auto current = query_configuration();
+      const auto *output = current ? find_output(*current, session.virtual_display_device_id) : nullptr;
+      if (output) {
+        const bool current_hdr = output->value("hdr", false) &&
+                                 output_hdr_capable(nullptr, session.virtual_display_device_id);
+        if (rtsp_stream::effective_hdr_requested(session) && !current_hdr) {
+          session.force_sdr = true;
+        }
+        session.virtual_display_hdr_enabled = current_hdr;
+      } else {
+        // Unknown metadata is not proof of SDR. Let capture/encoder probing
+        // determine the usable format instead of claiming an applied HDR state.
+        session.virtual_display_hdr_enabled.reset();
+      }
+      session.virtual_display_ready_since = std::chrono::steady_clock::now();
+      session.virtual_display_recreated_on_demand = false;
+      session.virtual_display_needs_resume_apply = true;
+      BOOST_LOG(warning) << "Linux private display: continuing capture on " << session.virtual_display_device_id
+                         << " with its current settings after display configuration failed.";
+      return true;
+    };
+
     auto configuration = query_configuration();
     if (!configuration) {
-      return false;
+      return use_current_output();
     }
     const auto *target_before = find_output(*configuration, session.virtual_display_device_id);
     if (!target_before || !connected(*target_before)) {
       BOOST_LOG(error) << "Linux private display: reserved output disappeared: " << session.virtual_display_device_id;
-      return false;
+      return use_current_output();
     }
 
     auto &manager = state();
@@ -1032,65 +1070,6 @@ namespace platf::linux_private_display {
       }
     }
 
-    const auto use_current_output = [&]() {
-      // A rejected preference must not discard a usable stream. Observe a
-      // stable, real current mode and require the exact output in capture
-      // enumeration; a merely connected connector is not sufficient.
-      std::optional<json> previous;
-      bool current_hdr = false;
-      double current_scale = 1.0;
-      double current_refresh = 0.0;
-      std::pair<std::uint32_t, std::uint32_t> current_size;
-      const bool usable = wait_for_configuration([&](const json &current) {
-        const auto *output = find_output(current, session.virtual_display_device_id);
-        if (!output) {
-          previous.reset();
-          return false;
-        }
-        const auto current_id = output->value("currentModeId", std::string {});
-        // Do not use mode_size's geometry fallback for an unpublished mode.
-        const auto modes = output->value("modes", json::array());
-        const auto mode = std::find_if(modes.begin(), modes.end(), [&](const json &entry) {
-          return !current_id.empty() && entry.value("id", std::string {}) == current_id;
-        });
-        if (mode == modes.end()) {
-          previous.reset();
-          return false;
-        }
-        current_size = mode_size(*output, current_id);
-        current_refresh = output_refresh(*output);
-        current_scale = output->value("scale", 1.0);
-        current_hdr = output->value("hdr", false);
-        if (!configuration_policy::usable_current_mode(connected(*output), enabled(*output), current_size.first, current_size.second, current_refresh, current_scale)) {
-          previous.reset();
-          return false;
-        }
-        const json observed = {current_id, *mode, current_scale, current_hdr};
-        const bool unchanged = previous && *previous == observed;
-        previous = observed;
-        return unchanged;
-      },
-                                                 true);
-      if (!usable || !wait_for_capture_publication(session.virtual_display_device_id)) {
-        BOOST_LOG(error) << "Linux private display: no usable current capture output on "
-                         << session.virtual_display_device_id << '.';
-        return false;
-      }
-      current_hdr = current_hdr && output_hdr_capable(nullptr, session.virtual_display_device_id);
-      if (rtsp_stream::effective_hdr_requested(session) && !current_hdr) {
-        session.force_sdr = true;
-      }
-      session.virtual_display_hdr_enabled = current_hdr;
-      session.virtual_display_ready_since = std::chrono::steady_clock::now();
-      session.virtual_display_recreated_on_demand = false;
-      // Retry the preferred settings on resume, since this apply did not take.
-      session.virtual_display_needs_resume_apply = true;
-      BOOST_LOG(warning) << "Linux private display: continuing on " << session.virtual_display_device_id
-                         << " with existing " << current_size.first << 'x' << current_size.second
-                         << " at " << current_refresh << " Hz, " << current_scale * 100.0
-                         << "% scale, HDR " << (current_hdr ? "enabled" : "disabled") << '.';
-      return true;
-    };
 
     auto effective_video = config::video;
     effective_video.output_name = session.virtual_display_device_id;
@@ -1100,7 +1079,7 @@ namespace platf::linux_private_display {
     const auto parsed = display_device::parse_configuration(effective_video, session);
     if (std::holds_alternative<display_device::failed_to_parse_tag_t>(parsed)) {
       BOOST_LOG(error) << "Linux private display: failed to parse the requested display mode.";
-      return false;
+      return use_current_output();
     }
 
     std::optional<display_device::Resolution> resolution;
@@ -1129,7 +1108,7 @@ namespace platf::linux_private_display {
       }
       target_before = find_output(*configuration, session.virtual_display_device_id);
       if (!target_before) {
-        return false;
+        return use_current_output();
       }
       mode_id = best_mode_id(*target_before, resolution, refresh);
     }
@@ -1308,8 +1287,8 @@ namespace platf::linux_private_display {
       return true;
     }, require_hdr_stability);
 
-    if (!verified) {
-      BOOST_LOG(error) << "Linux private display: timed out verifying mode/HDR/scale state on "
+    if (!verified || !wait_for_capture_publication(session.virtual_display_device_id)) {
+      BOOST_LOG(error) << "Linux private display: timed out verifying mode/HDR/scale or capture state on "
                        << session.virtual_display_device_id << '.';
       return use_current_output();
     }

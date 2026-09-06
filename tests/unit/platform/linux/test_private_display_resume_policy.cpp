@@ -16,15 +16,22 @@ TEST(LinuxPrivateDisplayResumePolicy, OnlyAnAppWithADisplayLeaseOverridesTheRequ
 }
 
 TEST(LinuxPrivateDisplayResumePolicy, ReappliesNewlyConnectedEnabledOutput) {
-  EXPECT_TRUE(policy::requires_apply(true, true));
+  EXPECT_TRUE(policy::requires_apply(true, true, true));
 }
 
 TEST(LinuxPrivateDisplayResumePolicy, ReappliesDisabledExistingOutput) {
-  EXPECT_TRUE(policy::requires_apply(false, false));
+  EXPECT_TRUE(policy::requires_apply(false, false, false));
 }
 
 TEST(LinuxPrivateDisplayResumePolicy, ReusesConfiguredExistingOutput) {
-  EXPECT_FALSE(policy::requires_apply(false, true));
+  EXPECT_FALSE(policy::requires_apply(false, true, true));
+}
+
+TEST(LinuxPrivateDisplayResumePolicy, SuspendResumeCannotReuseEnabledOutputWithoutScanout) {
+  const bool needs_apply = policy::requires_apply(false, true, false);
+  EXPECT_TRUE(needs_apply);
+  EXPECT_TRUE(policy::requires_session_apply(true, false, false, needs_apply));
+  EXPECT_TRUE(policy::requires_topology_reapply(false, needs_apply));
 }
 
 TEST(LinuxPrivateDisplayResumePolicy, RecomposesNewNormalGameIdentity) {
