@@ -511,3 +511,90 @@ test('unmigrated Linux services are neither offered nor called', async ({ page }
   await expect(page.locator('.linux-capture')).toHaveCount(0);
   expect(providerRequests).toEqual([]);
 });
+
+for (const width of [390, 1440]) {
+  test(`app behavior edits preserve legacy values and unknown fields at ${width}px`, async ({
+    page,
+  }) => {
+    await host(page, 'windows');
+    await page.setViewportSize({ width, height: 1000 });
+    const uuid = '12345678-1234-4234-8234-123456789abc';
+    const original = {
+      uuid,
+      name: 'Compatibility test',
+      cmd: '',
+      'allow-client-commands': false,
+      'use-app-identity': 'false',
+      'per-client-app-identity': true,
+      'scale-factor': '125',
+      gamepad: 'legacy-custom-controller',
+      'state-cmd': [{ do: 'start', undo: 'stop', elevated: false, custom: { retained: true } }],
+      'custom-field': { retained: ['value'] },
+      'config-overrides': { rtx_hdr: 'disabled' },
+    };
+    let saved: Record<string, unknown> | undefined;
+    await page.route('**/api/apps', async (route) => {
+      if (route.request().method() === 'POST') {
+        saved = route.request().postDataJSON();
+        await route.fulfill({ json: { status: true } });
+      } else await route.fulfill({ json: { apps: [original] } });
+    });
+    await page.goto(`/v2/library/${uuid}`);
+    await expect(page.locator('#app-allow-client-commands')).toHaveValue('false');
+    await expect(page.locator('#app-use-app-identity')).toHaveValue('false');
+    await expect(page.locator('#app-gamepad')).toHaveValue('legacy-custom-controller');
+    await expect(page.locator('#app-scale-factor')).toHaveValue('125');
+    await expect(page.locator('#app-terminate-on-pause')).toHaveValue('');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+    await page
+      .locator('.app-compatibility')
+      .screenshot({ path: `/tmp/vibepollo-ui-results/app-behavior-${width}.png` });
+    await page.locator('#app-state-do-0').fill('new start');
+    await page.locator('#app-terminate-on-pause').selectOption('true');
+    await page.getByRole('button', { name: 'Save application', exact: true }).first().click();
+    await expect.poll(() => saved?.['terminate-on-pause']).toBe(true);
+    expect(saved?.['allow-client-commands']).toBe(false);
+    expect(saved?.['use-app-identity']).toBe('false');
+    expect(saved?.['per-client-app-identity']).toBe(true);
+    expect(saved?.['scale-factor']).toBe('125');
+    expect(saved?.gamepad).toBe('legacy-custom-controller');
+    expect(saved?.['exclude-global-state-cmd']).toBeUndefined();
+    expect(saved?.['custom-field']).toEqual(original['custom-field']);
+    expect(saved?.['state-cmd']).toEqual([{ ...original['state-cmd'][0], do: 'new start' }]);
+  });
+}
+
+test('app behavior validates edited scaling and can return explicit options to defaults', async ({
+  page,
+}) => {
+  await host(page, 'windows');
+  const uuid = '12345678-1234-4234-8234-123456789abc';
+  let saved: Record<string, unknown> | undefined;
+  await page.route('**/api/apps', async (route) => {
+    if (route.request().method() === 'POST') {
+      saved = route.request().postDataJSON();
+      await route.fulfill({ json: { status: true } });
+    } else
+      await route.fulfill({
+        json: { apps: [{ uuid, name: 'Defaults', cmd: '', 'allow-client-commands': false }] },
+      });
+  });
+  await page.goto(`/v2/library/${uuid}`);
+  await page.locator('#app-allow-client-commands').selectOption('');
+  await page.locator('#app-scale-factor').fill('0');
+  await page.getByRole('button', { name: 'Save application', exact: true }).first().click();
+  expect(saved).toBeUndefined();
+  expect(
+    await page
+      .locator('#app-scale-factor')
+      .evaluate((input: HTMLInputElement) => input.validity.rangeUnderflow),
+  ).toBe(true);
+  await page.locator('#app-scale-factor').fill('150');
+  await page.getByRole('button', { name: 'Save application', exact: true }).first().click();
+  await expect.poll(() => saved?.['scale-factor']).toBe(150);
+  expect(saved?.['allow-client-commands']).toBeUndefined();
+  expect(saved?.['state-cmd']).toBeUndefined();
+  expect(saved?.['use-app-identity']).toBeUndefined();
+});

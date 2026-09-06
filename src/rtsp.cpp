@@ -1848,7 +1848,9 @@ namespace rtsp_stream {
         return false;
       }
       config.monitor.framerate = normalized_framerate->capture_framerate;
-      config.monitor.encodingFramerate = normalized_framerate->encoding_framerate;
+      config.monitor.encodingFramerate = pending_policy::select_encoding_framerate(
+        *normalized_framerate, session->fps, config::video.limit_framerate
+      );
       config.monitor.framerateX100 = (int) util::from_view(args.at("x-nv-video[0].clientRefreshRateX100"sv));
       config.monitor.bitrate = (int) util::from_view(args.at("x-nv-vqos[0].bw.maximumBitrateKbps"sv));
       config.monitor.client_requested_bitrate = config.monitor.bitrate;
@@ -1948,35 +1950,15 @@ namespace rtsp_stream {
     }
     apply_rtx_hdr_stream_policy(config.monitor);
 
-    // If the client sent a configured bitrate, we will choose the actual bitrate ourselves
-    // by using FEC percentage and audio quality settings. If the calculated bitrate ends up
-    // too low, we'll allow it to exceed the limits rather than reducing the encoding bitrate
-    // down to nearly nothing.
-    if (configuredBitrateKbps) {
-      BOOST_LOG(debug) << "Client configured bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
-
-      // Preserve the original wire-bandwidth budget the client asked for so the
-      // UI can show it alongside the post-adjustment encoder bitrate.
-      config.monitor.client_requested_bitrate = static_cast<int>(configuredBitrateKbps);
-
-      // If the FEC percentage isn't too high, adjust the configured bitrate to ensure video
-      // traffic doesn't exceed the user's selected bitrate when the FEC shards are included.
-      if (config::stream.fec_percentage <= 80) {
-        configuredBitrateKbps /= 100.f / (100 - config::stream.fec_percentage);
-      }
-
-      // Adjust the bitrate to account for audio traffic bandwidth usage (capped at 20% reduction).
-      // The bitrate per channel is 256 Kbps for high quality mode and 96 Kbps for normal quality.
-      auto audioBitrateAdjustment = (config.audio.flags[audio::config_t::HIGH_QUALITY] ? 256 : 96) * config.audio.channels;
-      configuredBitrateKbps -= std::min((std::int64_t) audioBitrateAdjustment, configuredBitrateKbps / 5);
-
-      // Reduce it by another 500Kbps to account for A/V packet overhead and control data
-      // traffic (capped at 10% reduction).
-      configuredBitrateKbps -= std::min((std::int64_t) 500, configuredBitrateKbps / 10);
-
-      BOOST_LOG(debug) << "Final adjusted video encoding bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
-      config.monitor.bitrate = (int) configuredBitrateKbps;
-    }
+    const auto bitrate = pending_policy::negotiate_bitrate(
+      configuredBitrateKbps, config.monitor.bitrate, config::video.max_bitrate,
+      {config.monitor.framerate, config.monitor.encodingFramerate}, config::video.limit_framerate,
+      config::stream.fec_percentage, config.audio.channels, config.audio.flags[audio::config_t::HIGH_QUALITY]
+    );
+    config.monitor.client_requested_bitrate = bitrate.requested_kbps;
+    config.monitor.bitrate = bitrate.encoder_kbps;
+    BOOST_LOG(debug) << "Client requested bitrate is " << bitrate.requested_kbps
+                     << " Kbps; negotiated encoder bitrate is " << bitrate.encoder_kbps << " Kbps";
 
     if (config.monitor.videoFormat == 1 && video::active_hevc_mode == 1) {
       BOOST_LOG(warning) << "HEVC is disabled, yet the client requested HEVC"sv;

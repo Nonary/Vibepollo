@@ -85,3 +85,42 @@ TEST(RtspPendingPolicy, DisconnectCleanupDoesNotSelectPostRemovalInputGeneration
   EXPECT_FALSE(remembered_generations.contains(7));
   EXPECT_TRUE(remembered_generations.contains(8));
 }
+
+TEST(RtspPendingPolicy, ApolloCadenceKeepsValidationFractionalRatesAndOptOut) {
+  using namespace rtsp_stream::pending_policy;
+  const auto warp = *parse_requested_framerate("240");
+  EXPECT_EQ(select_encoding_framerate(warp, 60000, true), 60000);
+  EXPECT_EQ(select_encoding_framerate(warp, 60, true), 60000);
+  EXPECT_EQ(select_encoding_framerate(warp, 60000, false), 240000);
+  EXPECT_EQ(select_encoding_framerate(*parse_requested_framerate("59940"), 59940, true), 59940);
+  for (int invalid : {0, -1, std::numeric_limits<int>::max()}) {
+    EXPECT_EQ(select_encoding_framerate(warp, invalid, true), 240000);
+  }
+}
+
+TEST(RtspPendingPolicy, HostCeilingAppliesAfterWarpAndKeepsOriginalRequestedBudget) {
+  using namespace rtsp_stream::pending_policy;
+  const auto normal = negotiate_bitrate(100000, 100000, 20000, {60, 60000}, true, 20, 2, true);
+  EXPECT_EQ(normal.requested_kbps, 100000);
+  EXPECT_EQ(normal.encoder_kbps, 14988);
+  const auto warp = negotiate_bitrate(100000, 100000, 20000, {240, 60000}, true, 20, 2, true);
+  EXPECT_EQ(warp.encoder_kbps, normal.encoder_kbps);
+  EXPECT_EQ(warp.requested_kbps, 100000);
+  EXPECT_EQ(negotiate_bitrate(10000, 10000, 0, {240, 60000}, true, 20, 2, true).encoder_kbps, 30988);
+  EXPECT_EQ(negotiate_bitrate(10000, 10000, 0, {240, 240000}, false, 20, 2, true).encoder_kbps, 6988);
+}
+
+TEST(RtspPendingPolicy, BitratePolicyPreservesUncappedAndLegacyNegotiation) {
+  using namespace rtsp_stream::pending_policy;
+  EXPECT_EQ(negotiate_bitrate(100000, 100000, 0, {60, 60000}, true, 20, 2, true).encoder_kbps, 78988);
+  EXPECT_EQ(negotiate_bitrate(10000, 10000, 0, {60, 59940}, true, 20, 2, true).encoder_kbps, 6988);
+  EXPECT_EQ(negotiate_bitrate(0, 100000, 0, {60, 60000}, true, 20, 2, true).encoder_kbps, 100000);
+  EXPECT_EQ(negotiate_bitrate(0, 100000, 20000, {60, 60000}, true, 20, 2, true).encoder_kbps, 20000);
+  for (const auto request : {1LL, 20000LL, std::numeric_limits<long long>::max()}) {
+    const auto rate = negotiate_bitrate(request, 100000, 20000, {4000, 1}, true, 80, 8, true);
+    EXPECT_GT(rate.encoder_kbps, 0);
+    EXPECT_LE(rate.encoder_kbps, 20000);
+  }
+  const auto huge = negotiate_bitrate(std::numeric_limits<std::int64_t>::max(), 100000, 0, {4000, 1}, true, 0, 0, false);
+  EXPECT_LE(huge.encoder_kbps, std::numeric_limits<int>::max() / 1000);
+}

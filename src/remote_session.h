@@ -55,6 +55,7 @@ namespace remote_session {
     bool may_view {};
     bool may_launch {};
     bool may_terminate {};
+    bool input_enabled {true};
   };
 
   struct projection_t {
@@ -72,6 +73,8 @@ namespace remote_session {
     bool terminate {};
     bool already_complete {};
   };
+
+  bool allows_client_commands(role_e role, bool client_allows, bool app_allows);
 
   struct control_completion_t {
     int status_code {};

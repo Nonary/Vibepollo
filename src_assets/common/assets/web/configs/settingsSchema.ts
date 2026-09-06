@@ -972,7 +972,7 @@ export const settingsDefaults: Record<string, unknown> = {
   hide_tray_controls: 'disabled',
   keep_sink_default: 'enabled',
   auto_capture_sink: 'enabled',
-  enable_input_only_mode: 'disabled',
+  enable_input_only_mode: 'enabled',
   forward_rumble: 'enabled',
   limit_framerate: 'enabled',
   envvar_compatibility_mode: 'disabled',

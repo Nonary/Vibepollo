@@ -21,6 +21,18 @@ namespace rtsp_stream::pending_policy {
   std::optional<normalized_framerate_t> normalize_requested_framerate(std::int64_t requested_framerate);
   std::optional<normalized_framerate_t> parse_requested_framerate(std::string_view requested_framerate);
 
+  // Keep Apollo's launch cadence separate from the validated capture cadence.
+  int select_encoding_framerate(normalized_framerate_t requested, int launch_fps, bool limit_framerate);
+  struct negotiated_bitrate_t {
+    int requested_kbps;
+    int encoder_kbps;
+  };
+  negotiated_bitrate_t negotiate_bitrate(
+    std::int64_t configured_kbps, int announced_kbps, int host_ceiling_kbps,
+    normalized_framerate_t framerate, bool limit_framerate,
+    int fec_percentage, int audio_channels, bool high_quality_audio
+  );
+
   enum class initial_route_e { reject, plaintext, encrypted };
 
   struct pending_owner_t {

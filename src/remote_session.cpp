@@ -173,7 +173,7 @@ namespace remote_session {
     }
     if (!game.running && !remote_sessions_active && owner.role == role_e::none) {
       result.catalogue = std::move(visible_configured);
-      result.catalogue.push_back(synthetic(control_e::input));
+      if (caller.input_enabled) result.catalogue.push_back(synthetic(control_e::input));
       result.catalogue.push_back(synthetic(control_e::monitor));
       return result;
     }
@@ -181,7 +181,7 @@ namespace remote_session {
       result.free = false;
       result.current_game = game.app.id;
       result.catalogue = visible_configured;
-      if (owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
+      if (caller.input_enabled && owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
       result.catalogue.push_back(synthetic(control_e::monitor));
       return result;
     }
@@ -196,12 +196,12 @@ namespace remote_session {
         prioritized_secondary_control(control_e::terminate),
       };
       result.catalogue.insert(result.catalogue.end(), visible_configured.begin(), visible_configured.end());
-      if (owner.role != role_e::input) result.catalogue.push_back(prioritized_secondary_control(control_e::input));
+      if (caller.input_enabled && owner.role != role_e::input) result.catalogue.push_back(prioritized_secondary_control(control_e::input));
       result.catalogue.push_back(prioritized_secondary_control(control_e::monitor));
       return result;
     }
     result.catalogue = visible_configured;
-    if (owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
+    if (caller.input_enabled && owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
     result.catalogue.push_back(synthetic(control_e::monitor));
     return result;
   }
@@ -220,7 +220,7 @@ namespace remote_session {
         break;
       case control_e::input:
         result.permission = permission_e::launch;
-        result.allowed = caller.may_launch && owner.role == role_e::none;
+        result.allowed = caller.input_enabled && caller.may_launch && owner.role == role_e::none;
         break;
       case control_e::monitor:
         result.permission = permission_e::launch;
@@ -250,6 +250,10 @@ namespace remote_session {
       default: break;
     }
     return result;
+  }
+
+  bool allows_client_commands(const role_e role, const bool client_allows, const bool app_allows) {
+    return role != role_e::input && client_allows && app_allows;
   }
 
   bool joins_existing_game_output(

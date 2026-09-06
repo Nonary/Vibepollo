@@ -373,6 +373,14 @@
         "nameRequired": "Enter a name for this application.",
         "prepMissingCommand": "Preparation command {number} has preserved fields but no command. Add a command or remove the row.",
         "uuidInvalid": "The application UUID is missing or invalid."
+      },
+      "compatibility": {
+        "title": "Application behavior",
+        "description": "Control app state commands, disconnect behavior, and client preferences for this application.",
+        "default": "Use default",
+        "resume": "On stream resume",
+        "pause": "On stream pause",
+        "addState": "Add state command"
       }
     },
     "auth": {

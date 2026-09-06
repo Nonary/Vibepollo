@@ -114,7 +114,7 @@ const defaultGroups = [
       mouse: 'enabled',
       high_resolution_scrolling: 'enabled',
       native_pen_touch: 'enabled',
-      enable_input_only_mode: 'disabled',
+      enable_input_only_mode: 'enabled',
       forward_rumble: 'enabled',
       keybindings: '[0x10,0xA0,0x11,0xA2,0x12,0xA4]',
       ds5_inputtino_randomize_mac: true,

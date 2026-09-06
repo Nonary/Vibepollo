@@ -4432,7 +4432,7 @@ Controls whether Vibepollo advertises itself for local-network discovery.
 
 ### enable_input_only_mode
 
-Allows clients to connect in input-only mode without starting a video stream.
+Enables the Remote Input entry for new input-only sessions. Defaults to enabled when absent to preserve existing synthetic Remote Input access. Set `disabled` to hide the entry and reject cached Remote Input launches. Existing sessions can still disconnect; Remote Monitor and game sessions are unaffected.
 
 ### enable_pairing
 
@@ -4472,7 +4472,7 @@ Enables legacy application ordering for clients and integrations that require it
 
 ### limit_framerate
 
-Limits capture and encoding to the requested stream frame rate.
+When enabled, limits encoding to the launch-requested stream cadence while retaining the separately announced capture cadence used by Artemis Warp. Fractional frame rates are preserved. When disabled, encoding follows the announced cadence. Warp bitrate compensation remains subject to `max_bitrate`.
 
 ### nvenc_intra_refresh
 

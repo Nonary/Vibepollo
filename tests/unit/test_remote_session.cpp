@@ -468,3 +468,32 @@ TEST(RemoteSession, LayoutGraphRejectsInvalidAnchorsCyclesAndDuplicatePrimary) {
   EXPECT_FALSE(remote_session::validate_layout({{"a", "physical", "missing", "right", "center", 0, false}}, clients, physical, &error));
   EXPECT_FALSE(remote_session::validate_layout({{"a", "physical", "DISPLAY1", "right", "center", 0, true}, {"b", "physical", "DISPLAY1", "right", "center", 0, true}}, clients, physical, &error));
 }
+
+TEST(RemoteSession, DisabledInputHidesCatalogueAndRejectsCachedLaunchWithoutBlockingCleanup) {
+  auto disabled = caller("client");
+  disabled.input_enabled = false;
+  const std::vector<remote_session::app_t> configured {{42, "game", "Game", false}};
+  for (const auto active_game : {remote_session::game_t {}, game()}) {
+    for (bool active_peers : {false, true}) {
+      const auto projected = remote_session::project(disabled, active_game, {}, configured, active_peers);
+      for (const auto &entry : projected.catalogue) EXPECT_NE(entry.id, remote_session::input_id);
+    }
+  }
+  EXPECT_FALSE(remote_session::dispatch(disabled, {}, {}, remote_session::control_e::input).allowed);
+  EXPECT_TRUE(remote_session::dispatch(disabled, {}, {}, remote_session::control_e::monitor).allowed);
+  EXPECT_TRUE(remote_session::dispatch(disabled, game(), {}, remote_session::control_e::resume).allowed);
+  EXPECT_TRUE(remote_session::dispatch(disabled, {}, {.role = remote_session::role_e::input}, remote_session::control_e::disconnect_input).allowed);
+  EXPECT_TRUE(remote_session::dispatch(caller("client"), {}, {}, remote_session::control_e::input).allowed);
+  EXPECT_FALSE(remote_session::dispatch(caller("client", true, false), {}, {}, remote_session::control_e::input).allowed);
+}
+
+TEST(RemoteSession, MonitorCommandsHonorClientAndAppPolicyWithoutChangingInputIsolation) {
+  using remote_session::role_e;
+  for (bool client_allows : {false, true}) {
+    for (bool app_allows : {false, true}) {
+      EXPECT_FALSE(remote_session::allows_client_commands(role_e::input, client_allows, app_allows));
+      EXPECT_EQ(remote_session::allows_client_commands(role_e::monitor, client_allows, app_allows), client_allows && app_allows);
+      EXPECT_EQ(remote_session::allows_client_commands(role_e::game, client_allows, app_allows), client_allows && app_allows);
+    }
+  }
+}

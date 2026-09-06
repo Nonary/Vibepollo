@@ -1023,7 +1023,7 @@ namespace config {
     true,  // always send scancodes
     true,  // high resolution scrolling
     true,  // native pen/touch support
-    false,  // enable input only mode
+    true,  // enable input only mode (preserve synthetic Remote Input when unset)
     true,  // forward_rumble
   };
 

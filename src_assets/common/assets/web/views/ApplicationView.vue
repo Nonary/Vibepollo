@@ -6,6 +6,8 @@ import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
 
 import { ApiError, apiGet, apiPost } from '@/api/client';
+import AppCompatibilitySettings from '@/components/app-edit/AppCompatibilitySettings.vue';
+import { parseAppExtras } from '@/utils/appCompatibility';
 import AppEditCoverModal from '@/components/app-edit/AppEditCoverModal.vue';
 import type { CoverCandidate } from '@/components/app-edit/AppEditCoverModal.types';
 import {
@@ -1262,6 +1264,13 @@ function emptyForm(): EditorForm {
   };
 }
 
+const appCompatibility = computed({
+  get: () => parseAppExtras(form.advancedJson),
+  set: (value) => {
+    if (value) form.advancedJson = jsonText(value);
+  },
+});
+
 const routeId = computed(() => (typeof route.params.id === 'string' ? route.params.id : ''));
 const isNew = computed(() => route.name === 'application-new' || !routeId.value);
 const isRemoteSession = computed(() => {
@@ -1606,6 +1615,13 @@ function clearErrors(): void {
 
 async function validate(): Promise<boolean> {
   clearErrors();
+  const invalidCompatibilityInput = document.querySelector<HTMLInputElement>(
+    '.app-compatibility input[data-edited="true"]:invalid',
+  );
+  if (invalidCompatibilityInput) {
+    invalidCompatibilityInput.reportValidity();
+    return false;
+  }
   if (!form.name.trim()) errors.name = t('ui.application.validation.nameRequired');
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(form.uuid)) {
     errors.uuid = t('ui.application.validation.uuidInvalid');
@@ -3689,6 +3705,14 @@ onBeforeUnmount(() => {
           </template>
         </div>
       </section>
+
+      <AppCompatibilitySettings
+        v-if="!isRemoteSession && appCompatibility"
+        :key="form.uuid"
+        v-model="appCompatibility"
+        class="editor-section"
+        :platform="asString(overrideMetadata.platform)"
+      />
 
       <details class="editor-section editor-section--disclosure" :open="!isProviderLinked">
         <summary v-if="isProviderLinked" class="editor-section__summary">

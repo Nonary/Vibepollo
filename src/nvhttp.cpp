@@ -3575,6 +3575,7 @@ namespace nvhttp {
           .may_view = has_client_perm(verified_client, PERM::_allow_view),
           .may_launch = has_client_perm(verified_client, PERM::launch),
           .may_terminate = has_client_perm(verified_client, PERM::launch),
+          .input_enabled = config::input.enable_input_only_mode,
         };
         const remote_session::game_t game {
           .running = current_appid > 0,
@@ -3718,13 +3719,15 @@ namespace nvhttp {
           .may_view = has_client_perm(verified_client, PERM::_allow_view),
           .may_launch = has_client_perm(verified_client, PERM::launch),
           .may_terminate = has_client_perm(verified_client, PERM::launch),
+          .input_enabled = config::input.enable_input_only_mode,
         };
         const auto owner = remote_role_gate_snapshot_for_client(request_client_identity.uuid).owner;
         const auto decision = remote_session::dispatch(caller, game, owner, synthetic_control);
         if (!decision.allowed) {
+          const bool input_disabled = synthetic_control == remote_session::control_e::input && !caller.input_enabled;
           tree.put("root.resume", 0);
-          tree.put("root.<xmlattr>.status_code", 409);
-          tree.put("root.<xmlattr>.status_message", "Remote session action conflicts with this client's current session state");
+          tree.put("root.<xmlattr>.status_code", input_disabled ? 403 : 409);
+          tree.put("root.<xmlattr>.status_message", input_disabled ? "Remote Input is disabled in the host settings" : "Remote session action conflicts with this client's current session state");
           return;
         }
         remote_session::clear_app_replacement_confirmation(request_client_identity.uuid);
@@ -3915,7 +3918,9 @@ namespace nvhttp {
         launch_session->role = synthetic_control == remote_session::control_e::input ? remote_session::role_e::input : remote_session::role_e::monitor;
         launch_session->host_audio = remote_session::uses_host_audio(launch_session->role);
         launch_session->continuous_audio = false;
-        if (launch_session->role == remote_session::role_e::input) {
+        if (!remote_session::allows_client_commands(
+              launch_session->role, verified_client->allow_client_commands,
+              !runtime_app || runtime_app->allow_client_commands)) {
           launch_session->client_do_cmds.clear();
           launch_session->client_undo_cmds.clear();
         }
