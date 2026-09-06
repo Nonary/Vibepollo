@@ -517,6 +517,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     sunshine_register_component(NAME test_component_linux_smooth_motion_policy TEST_SOURCE unit/platform/linux/test_smooth_motion_policy.cpp)
     sunshine_register_component(NAME test_component_linux_gamescope_session TEST_SOURCE unit/platform/linux/test_gamescope_session.cpp
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/linux/gamescope_session.cpp")
+    sunshine_register_component(NAME test_component_linux_capture_fallback TEST_SOURCE unit/platform/linux/test_capture_fallback.cpp)
     pkg_check_modules(TEST_WAYLAND QUIET IMPORTED_TARGET wayland-client)
     if(TEST_WAYLAND_FOUND)
         sunshine_register_component(NAME test_component_linux_wayland_roundtrip

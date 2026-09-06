@@ -96,6 +96,9 @@ credentials. PipeWire and the physical display remain owned by the session.
 - Gaming Mode automatically uses Gamescope's compositor-owned PipeWire stream,
   negotiates GPU DMA-BUFs when the encoder can import them, and asks stock
   Gamescope to downscale to the client bounds without changing the panel mode.
+  If capture initialization fails, it tries regular KMS capture when built in,
+  then X11 for SDR. The fallback captures an existing output and keeps virtual
+  desktop preferences unchanged. HDR requests require an HDR-capable fallback.
 - Desktop Mode prefers native KWin capture before enumerating the portal, so
   Automatic capture does not open a screen-selection dialog on Plasma. KMS,
   portal, and X11 remain fallbacks when native compositor capture is unavailable.

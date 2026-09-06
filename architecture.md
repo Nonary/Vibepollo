@@ -238,6 +238,10 @@ The response includes:
 ownership of a display. RTSP launch/resume, WebRTC, display enumeration, and
 immediate/delayed cleanup use the selected `linux_display::backend_t`.
 Selection follows the verified capture backend for the current host session.
+If Gamescope capture initialization fails, capture tries regular KMS and then
+X11 (SDR only), using those APIs' enumerated existing outputs. This leaves the
+session's Gamescope display ownership unchanged and skips private connectors.
+HDR requests require an HDR-capable fallback; they do not silently become SDR.
 
 - The desktop implementation delegates connector reservation, mode application,
   and restoration to `linux_private_display` (KScreen and the private DRM pool).
