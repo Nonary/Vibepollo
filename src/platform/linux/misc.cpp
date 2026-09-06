@@ -72,6 +72,7 @@
   #include "private_vaapi_environment.h"
 #endif
 #ifdef SUNSHINE_BUILD_GAMESCOPE
+  #include "capture_fallback.h"
   #include "gamescope_session.h"
   #include "gamescopegrab.h"
 #endif
@@ -1276,7 +1277,9 @@ namespace platf {
   std::vector<std::string> display_names(mem_type_e hwdevice_type) {
 #ifdef SUNSHINE_BUILD_GAMESCOPE
     if (sources[source::GAMESCOPE]) {
-      return gamescope_display_names();
+      // Preserve the session's logical target even if Gamescope discovery now
+      // fails, so capture creation can reach the regular-display fallback.
+      return {"gamescope"};
     }
 #endif
 #ifdef SUNSHINE_BUILD_CUDA
@@ -1321,6 +1324,47 @@ namespace platf {
     // We don't track GPU state, so we will always reenumerate. Fortunately, it is fast on Linux.
     return true;
   }
+
+#ifdef SUNSHINE_BUILD_GAMESCOPE
+  static std::shared_ptr<display_t> gamescope_capture_fallback(mem_type_e hwdevice_type, const video::config_t &config) {
+    // Keep the Gamescope session's existing-scene ownership. Falling back in
+    // capture must not activate a saved Desktop Mode virtual connector.
+    const auto eligible = [](const std::string &name) {
+      // KMS qualifies duplicate connector names with their DRM card path.
+      const auto separator = name.find_last_of(':');
+      const auto connector = separator == std::string::npos ? name : name.substr(separator + 1);
+      return !linux_private_display::is_private_output(connector) &&
+             !linux_private_display::is_kernel_output(connector);
+    };
+    const bool hdr_required = config.dynamicRange && !config.force_sdr;
+    const auto try_backend = [&](const char *backend_name, auto enumerate, auto create_display) {
+      const auto capture = [&](const std::string &name) {
+        return create_display(hwdevice_type, name, config);
+      };
+      auto result = linux_capture::try_outputs(enumerate, capture, eligible, hdr_required);
+      if (result) {
+        BOOST_LOG(warning) << "Gamescope capture failed; using " << backend_name << " capture for the existing display.";
+      }
+      return result;
+    };
+#ifdef SUNSHINE_BUILD_DRM
+    if (auto result = try_backend("KMS", [&] { return kms_display_names(hwdevice_type); }, kms_display)) {
+      return result;
+    }
+#endif
+#ifdef SUNSHINE_BUILD_X11
+    // Verified Gamescope discovery imports its Xwayland DISPLAY at startup.
+    // X11 supplies the ordinary SDR path on rootless SteamOS installations.
+    if (!hdr_required && std::getenv("DISPLAY")) {
+      if (auto result = try_backend("X11", x11_display_names, x11_display)) {
+        return result;
+      }
+    }
+#endif
+    BOOST_LOG(error) << "Gamescope and regular display capture are unavailable for the requested format.";
+    return nullptr;
+  }
+#endif
 
   std::shared_ptr<display_t> display(
     mem_type_e hwdevice_type,
@@ -1387,18 +1431,21 @@ namespace platf {
     }
 #endif
 
-    // KMS capture was passed. Preserve CAP_SYS_ADMIN in the permitted set when
-    // the managed HDR pool is available, because a later private HDR session
-    // must still be able to raise it temporarily for direct KMS capture.
+    // Keep a permitted KMS capability when private HDR capture or a Gamescope
+    // fallback may need it later. Compositor capture runs with it ineffective.
     if (has_elevated_privileges(false)) {
-      if (platf::linux_private_display_capture::retain_kms_capability(
-            linux_private_display::kernel_hdr_pool_available()
-          )) {
+      bool retain_kms_capability = platf::linux_private_display_capture::retain_kms_capability(
+        linux_private_display::kernel_hdr_pool_available()
+      );
+#if defined(SUNSHINE_BUILD_GAMESCOPE) && defined(SUNSHINE_BUILD_DRM)
+      retain_kms_capability = retain_kms_capability || sources[source::GAMESCOPE];
+#endif
+      if (retain_kms_capability) {
         if (!drop_effective_elevated_privileges(false)) {
-          BOOST_LOG(error) << "Failed to clear effective CAP_SYS_ADMIN while retaining it for managed private HDR capture."sv;
+          BOOST_LOG(error) << "Failed to clear effective CAP_SYS_ADMIN while retaining it for KMS capture."sv;
           return nullptr;
         }
-        BOOST_LOG(debug) << "Retaining permitted CAP_SYS_ADMIN for managed private HDR KMS capture."sv;
+        BOOST_LOG(debug) << "Retaining permitted CAP_SYS_ADMIN for private HDR or Gamescope fallback KMS capture."sv;
       } else {
         if (!drop_elevated_privileges(false)) {
           BOOST_LOG(error) << "Failed to permanently drop CAP_SYS_ADMIN before compositor capture."sv;
@@ -1409,7 +1456,10 @@ namespace platf {
 
 #ifdef SUNSHINE_BUILD_GAMESCOPE
     if (sources[source::GAMESCOPE]) {
-      return gamescope_display(hwdevice_type, display_name, config);
+      if (auto result = gamescope_display(hwdevice_type, display_name, config)) {
+        return result;
+      }
+      return gamescope_capture_fallback(hwdevice_type, config);
     }
 #endif
 #ifdef SUNSHINE_BUILD_CUDA
