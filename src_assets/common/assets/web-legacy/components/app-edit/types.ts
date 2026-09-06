@@ -98,6 +98,7 @@ export interface AppForm {
   rtxHdrMiddleGray: number;
   rtxHdrContrast: number;
   rtxHdrSaturation: number;
+  providerFields?: Record<string, unknown>;
   playniteId?: string | undefined;
   playniteManaged?: 'manual' | string | undefined;
   ddConfigurationOption?:

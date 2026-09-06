@@ -285,6 +285,13 @@
         "unavailable": "Playnite game search is unavailable because its integration is not installed or active.",
         "useCustom": "Use a custom application"
       },
+      "gamePicker": {
+        "browse": "Browse games",
+        "resultsLabel": "Games from your libraries",
+        "loading": "Loading game libraries...",
+        "empty": "No matching games in your libraries.",
+        "library": "Launch with"
+      },
       "providers": {
         "managed": "{provider} managed"
       },

@@ -47,10 +47,10 @@
           </div>
           <div class="shrink-0">
             <span
-              v-if="isPlayniteManaged"
+              v-if="linkedLibraryLabel"
               class="inline-flex items-center px-2 py-0.5 rounded bg-primary/15 text-primary text-[11px] font-semibold"
             >
-              {{ t('apps.playnite_badge') }}
+              {{ linkedLibraryLabel }}
             </span>
             <span
               v-else
@@ -80,21 +80,17 @@
             v-model:form="form"
             v-model:cmd-text="cmdText"
             v-model:name-select-value="nameSelectValue"
-            v-model:selected-playnite-id="selectedPlayniteId"
             :is-playnite="isPlayniteManaged"
-            :show-playnite-picker="showPlaynitePicker"
-            :playnite-installed="playniteInstalled"
             :name-select-options="nameSelectOptions"
-            :games-loading="gamesLoading"
+            :games-loading="gamesLoading || otherGamesLoading"
+            :library-options="libraryOptions"
+            :selected-library-key="selectedLibraryKey"
+            :linked-library-label="linkedLibraryLabel"
+            @change-library="changeLibrary"
             :fallback-option="fallbackOption"
-            :playnite-options="playniteOptions"
-            :lock-playnite="lockPlaynite"
             @name-focus="onNameFocus"
             @name-search="onNameSearch"
             @name-picked="onNamePicked"
-            @load-playnite-games="loadPlayniteGames"
-            @pick-playnite="onPickPlaynite"
-            @unlock-playnite="unlockPlaynite"
             @open-cover-finder="openCoverFinder"
           />
 
@@ -105,9 +101,9 @@
             <n-checkbox v-if="!isPlayniteManaged" v-model:checked="form.autoDetach" size="small">
               {{ t('apps.auto_detach') }}
             </n-checkbox>
-            <n-checkbox v-if="!isPlayniteManaged" v-model:checked="form.waitAll" size="small"
-              >{{ t('apps.wait_all') }}</n-checkbox
-            >
+            <n-checkbox v-if="!isPlayniteManaged" v-model:checked="form.waitAll" size="small">{{
+              t('apps.wait_all')
+            }}</n-checkbox>
             <n-checkbox
               v-if="isWindows && !isPlayniteManaged"
               v-model:checked="form.elevated"
@@ -521,6 +517,8 @@
 </template>
 
 <script setup lang="ts">
+import { providerSupported } from '../../web/utils/providerCapabilities';
+import { groupLibraryGames, providerLabels, type GameProvider } from '../utils/libraryGames';
 import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { useMessage } from 'naive-ui';
 import { http } from '@/http';
@@ -1005,6 +1003,9 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     stateCmd: state,
     detached: Array.isArray(src.detached) ? src.detached.map((s) => String(s)) : [],
     virtualScreen,
+    providerFields: Object.fromEntries(
+      Object.entries(src).filter(([key]) => key.startsWith('steam-') || key.startsWith('lutris-')),
+    ),
     playniteId: src['playnite-id'] || undefined,
     playniteManaged: src['playnite-managed'] || undefined,
     frameGenerationProvider,
@@ -1091,6 +1092,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
   if (f.virtualDisplayLayout !== null && f.virtualDisplayLayout !== _globalVDLayout) {
     payload['virtual-display-layout'] = f.virtualDisplayLayout;
   }
+  Object.assign(payload, f.providerFields ?? {});
   if (f.playniteId) payload['playnite-id'] = f.playniteId;
   if (f.playniteManaged) payload['playnite-managed'] = f.playniteManaged;
   if (f.playniteIconPath) payload['playnite-icon-path'] = f.playniteIconPath;
@@ -1220,21 +1222,21 @@ const headerArtworkKey = computed(() => {
       '',
   );
   const appAny = props.app as any;
-  return `${identity}|${form.value.playniteIconPath || ''}|${appAny?.['playnite-icon-version'] || ''}`;
+  return `${identity}|${form.value.playniteIconPath || form.value.imagePath || ''}|${appAny?.['playnite-icon-version'] || appAny?.['image-version'] || ''}`;
 });
 const headerArtworkUrl = computed(() => {
   const uuid = String((props.app as ServerApp | null | undefined)?.uuid || '');
   if (!uuid) return '';
   const appAny = props.app as any;
-  const version = appAny?.['playnite-icon-version'];
-  const base = `/api/apps/${encodeURIComponent(uuid)}/icon`;
+  const icon = !!form.value.playniteIconPath;
+  const version = appAny?.[icon ? 'playnite-icon-version' : 'image-version'];
+  const base = `/api/apps/${encodeURIComponent(uuid)}/${icon ? 'icon' : 'cover'}`;
   return version ? `${base}?v=${version}` : base;
 });
 const hasHeaderArtwork = computed(
   () =>
-    isPlayniteManaged.value &&
     !!headerArtworkUrl.value &&
-    !!form.value.playniteIconPath &&
+    !!(form.value.playniteIconPath || form.value.imagePath) &&
     !headerArtworkFailed.value,
 );
 watch(headerArtworkKey, () => {
@@ -1700,64 +1702,193 @@ function resetActiveLosslessProfile(): void {
   overrides.anime4kSize = null;
   overrides.anime4kVrs = null;
 }
-// Unified name combobox state (supports Playnite suggestions + free-form)
-const nameSelectValue = ref<string>('');
-const nameOptions = ref<{ label: string; value: string }[]>([]);
-const fallbackOption = (value: unknown) => {
-  const v = String(value ?? '');
-  const label = String(form.value.name || '').trim() || v;
-  return { label, value: v };
+type LegacyLibraryEntry = {
+  provider: GameProvider;
+  id: string;
+  name: string;
+  game: Record<string, any>;
 };
+const otherLibraryGames = ref<LegacyLibraryEntry[]>([]);
+const otherGamesLoading = ref(false);
+const otherGamesLoaded = ref(false);
+const libraryEntries = computed<LegacyLibraryEntry[]>(() => [
+  ...playniteOptions.value.map((option) => ({
+    provider: 'playnite' as const,
+    id: option.value,
+    name: option.label,
+    game: {},
+  })),
+  ...otherLibraryGames.value,
+]);
+const nameSelectValue = ref<string>('');
 const nameSearchQuery = ref('');
+let selectedSteamCoverRequest: Promise<void> | undefined;
 const nameSelectOptions = computed(() => {
-  // Prefer dynamically built options (from search)
-  if (nameOptions.value.length) return nameOptions.value;
-  const list: { label: string; value: string }[] = [];
-  const cur = String(form.value.name || '').trim();
-  if (cur)
-    list.push({
-      label: t('apps.source_custom_named', { name: cur }),
-      value: `__custom__:${cur}`,
+  const groups = groupLibraryGames(libraryEntries.value, nameSearchQuery.value).slice(0, 100);
+  const options = groups.map((group) => ({
+    label:
+      group.name +
+      ' — ' +
+      [...new Set(group.entries.map((entry) => providerLabels[entry.provider]))].join(' · '),
+    value: '__library__:' + group.key,
+  }));
+  const custom = nameSearchQuery.value.trim() || form.value.name.trim();
+  if (custom)
+    options.push({
+      label: t('apps.source_custom_named', { name: custom }),
+      value: '__custom__:' + custom,
     });
-  if (playniteOptions.value.length) {
-    list.push(...playniteOptions.value.slice(0, 20));
-  }
-  return list;
+  return options;
 });
+const fallbackOption = (value: unknown) => ({
+  label: form.value.name || String(value ?? ''),
+  value: String(value ?? ''),
+});
+const selectedLibraryKey = computed(() =>
+  form.value.playniteId
+    ? 'playnite:' + form.value.playniteId
+    : form.value.providerFields?.['steam-id']
+      ? 'steam:' + form.value.providerFields['steam-id']
+      : form.value.providerFields?.['lutris-id']
+        ? 'lutris:' + form.value.providerFields['lutris-id']
+        : '',
+);
+const selectedLibraryAlternatives = computed(
+  () =>
+    groupLibraryGames(libraryEntries.value).find((group) =>
+      group.entries.some((entry) => entry.provider + ':' + entry.id === selectedLibraryKey.value),
+    )?.entries ?? [],
+);
+const libraryOptions = computed(() =>
+  selectedLibraryAlternatives.value.map((entry) => ({
+    label: providerLabels[entry.provider],
+    value: entry.provider + ':' + entry.id,
+  })),
+);
+const linkedLibraryLabel = computed(() =>
+  selectedLibraryKey.value
+    ? providerLabels[selectedLibraryKey.value.split(':')[0] as GameProvider]
+    : '',
+);
 
-// Populate suggestions immediately on focus so dropdown isn't empty
-async function onNameFocus() {
-  // Show a friendly placeholder immediately to avoid "No Data"
-  if (!playniteOptions.value.length) {
-    nameOptions.value = [
-      { label: t('apps.loading'), value: '__loading__', disabled: true } as any,
-    ];
+async function loadOtherLibraries() {
+  if (otherGamesLoading.value || otherGamesLoaded.value) return;
+  otherGamesLoading.value = true;
+  const providers = (['steam', 'lutris'] as GameProvider[]).filter((provider) => providerSupported(configStore.metadata, provider));
+  try {
+    const results = await Promise.allSettled(
+      providers.map(async (provider) => {
+        const response = await http.get('/api/' + provider + '/games');
+        if (response.data?.enabled === false) return [];
+        const games: Record<string, any>[] = Array.isArray(response.data)
+          ? response.data
+          : (response.data?.games ?? []);
+        return games
+          .filter((game) => !game['filtered'] && (provider !== 'steam' || game['installed']))
+          .map((game) => ({
+            provider,
+            id: String(game['steam_id'] ?? game['appid'] ?? game['lutris_id'] ?? game['id'] ?? ''),
+            name: String(game['name'] ?? ''),
+            game,
+          }))
+          .filter((entry) => entry.id && entry.name);
+      }),
+    );
+    otherLibraryGames.value = results.flatMap((result) =>
+      result.status === 'fulfilled' ? result.value : [],
+    );
+    otherGamesLoaded.value = results.every((result) => result.status === 'fulfilled');
+  } finally {
+    otherGamesLoading.value = false;
   }
-  // Kick off loading (don’t block the UI), then refresh list
-  loadPlayniteGames()
-    .catch(() => {})
-    .finally(() => {
-      onNameSearch(nameSearchQuery.value);
-    });
 }
-
+async function onNameFocus() {
+  await Promise.allSettled([loadPlayniteGames(), loadOtherLibraries()]);
+}
 function ensureNameSelectionFromForm() {
-  const currentName = String(form.value.name || '').trim();
-  const opts: { label: string; value: string }[] = [];
-  if (currentName) {
-    opts.push({
-      label: t('apps.source_custom_named', { name: currentName }),
-      value: `__custom__:${currentName}`,
-    });
+  const group = groupLibraryGames(libraryEntries.value).find((group) =>
+    group.entries.some((entry) => entry.provider + ':' + entry.id === selectedLibraryKey.value),
+  );
+  nameSelectValue.value = group
+    ? '__library__:' + group.key
+    : form.value.name
+      ? '__custom__:' + form.value.name
+      : '';
+}
+function clearLibraryLinks() {
+  form.value.playniteId = undefined;
+  form.value.playniteManaged = undefined;
+  form.value.playniteIconPath = '';
+  form.value.providerFields = {};
+}
+function selectLibraryEntry(entry: LegacyLibraryEntry) {
+  clearLibraryLinks();
+  form.value.name = entry.name;
+  form.value.cmd = '';
+  form.value.workingDir = '';
+  form.value.imagePath = '';
+  if (entry.provider === 'playnite') onPickPlaynite(entry.id);
+  else {
+    const game = entry.game;
+    const fields: Record<string, unknown> = {
+      [entry.provider + '-id']: entry.id,
+      [entry.provider + '-managed']: 'manual',
+    };
+    form.value.autoDetach = true;
+    form.value.waitAll = false;
+    if (entry.provider === 'steam') {
+      const uri = game['launch_uri'] || 'steam://rungameid/' + entry.id;
+      form.value.cmd = isWindows.value ? 'cmd /c start "" ' + uri : 'xdg-open ' + uri;
+      form.value.workingDir = game['install_dir'] || '';
+      form.value.imagePath = game['artwork_client_path'] || './assets/steam.png';
+      for (const key of [
+        'install_dir',
+        'library_path',
+        'icon_path',
+        'header_path',
+        'boxart_path',
+        'artwork_path',
+        'artwork_client_path',
+        'artwork_format',
+        'app_type',
+      ]) {
+        if (game[key]) fields['steam-' + key.replaceAll('_', '-')] = game[key];
+      }
+      fields['steam-source'] = 'installed';
+      if (game['artwork_client_path']) fields['steam-artwork-client-compatible'] = true;
+      else selectedSteamCoverRequest = loadSelectedSteamCover(entry.id);
+    } else {
+      form.value.cmd = 'lutris ' + (game['launch_uri'] || 'lutris:rungameid/' + entry.id);
+      form.value.workingDir = game['directory'] || '';
+      form.value.imagePath = game['image_path'] || './assets/box.png';
+      for (const key of ['slug', 'runner', 'platform', 'directory', 'service', 'service_id']) {
+        if (game[key]) fields['lutris-' + key.replaceAll('_', '-')] = game[key];
+      }
+    }
+    form.value.providerFields = fields;
   }
-  const pid = form.value.playniteId;
-  if (pid) {
-    const found = playniteOptions.value.find((o) => o.value === String(pid));
-    if (found) opts.push(found);
-    else if (currentName) opts.push({ label: currentName, value: String(pid) });
-  }
-  nameOptions.value = opts;
-  nameSelectValue.value = pid ? String(pid) : currentName ? `__custom__:${currentName}` : '';
+  ensureNameSelectionFromForm();
+}
+async function loadSelectedSteamCover(id: string) {
+  try {
+    const response = await http.get('/api/steam/games', { params: { appid: id } });
+    const game = response.data?.games?.[0];
+    if (
+      form.value.providerFields?.['steam-id'] !== id ||
+      form.value.imagePath !== './assets/steam.png' ||
+      !game?.artwork_client_path
+    )
+      return;
+    form.value.imagePath = game['artwork_client_path'];
+    form.value.providerFields['steam-artwork-client-path'] = game['artwork_client_path'];
+    form.value.providerFields['steam-artwork-client-compatible'] = true;
+  } catch {}
+}
+function changeLibrary(key: string) {
+  const entry = selectedLibraryAlternatives.value.find(
+    (entry) => entry.provider + ':' + entry.id === key,
+  );
+  if (entry) selectLibraryEntry(entry);
 }
 
 async function close(options: { rollbackLiveRtxHdr?: boolean } = {}) {
@@ -2287,9 +2418,6 @@ watch(open, (o) => {
       liveRtxHdrSuppress = false;
       formHydratingFromServer = false;
     });
-    selectedPlayniteId.value = '';
-    lockPlaynite.value = false;
-    newAppSource.value = 'custom';
     refreshPlayniteStatus().then(() => {
       if (playniteInstalled.value) void loadPlayniteGames();
     });
@@ -2718,9 +2846,12 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
                       hz: Math.round(highestSupported),
                     });
                   } else if (deltaSupported && highestSupported !== null) {
-                    displayMessage += ` ${t('apps.framegen.health_display_switch_when_stream_starts', {
-                      hz: Math.round(highestSupported),
-                    })}`;
+                    displayMessage += ` ${t(
+                      'apps.framegen.health_display_switch_when_stream_starts',
+                      {
+                        hz: Math.round(highestSupported),
+                      },
+                    )}`;
                   }
                 } else if (!hasActive && highestSupported !== null) {
                   displayMessage = t('apps.framegen.health_display_double_120', {
@@ -2906,19 +3037,11 @@ function handleEnableVirtualScreen() {
 }
 
 const playniteInstalled = ref(false);
-const APP_UUID_RE = /^[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$/;
 const isNew = computed(() => !form.value.uuid && form.value.index < 0);
-// New app source: 'custom' or 'playnite' (Windows only)
-const newAppSource = ref<'custom' | 'playnite'>('custom');
-const showPlaynitePicker = computed(
-  () => isNew.value && isWindows.value && newAppSource.value === 'playnite',
-);
-
+const APP_UUID_RE = /^[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$/;
 // Playnite picker state
 const gamesLoading = ref(false);
 const playniteOptions = ref<{ label: string; value: string }[]>([]);
-const selectedPlayniteId = ref('');
-const lockPlaynite = ref(false);
 
 function deleteTargetForForm(f: AppForm): string {
   const uuid = String(f.uuid || '').trim();
@@ -2953,6 +3076,7 @@ async function loadPlayniteGames() {
 }
 
 async function refreshPlayniteStatus() {
+  if (!isWindows.value) return;
   try {
     const r = await http.get('/api/playnite/status', { validateStatus: () => true });
     if (r.status === 200 && r.data && typeof r.data === 'object' && r.data !== null) {
@@ -2972,22 +3096,9 @@ function onPickPlaynite(id: string) {
   form.value.playniteManaged = 'manual';
   // clear command by default for Playnite managed entries
   if (!form.value.cmd) form.value.cmd = '';
-  lockPlaynite.value = true;
   // Reflect selection in unified combobox
   ensureNameSelectionFromForm();
 }
-function unlockPlaynite() {
-  lockPlaynite.value = false;
-}
-// When switching to custom source, clear Playnite-specific markers
-watch(newAppSource, (v) => {
-  if (v === 'custom') {
-    form.value.playniteId = undefined;
-    form.value.playniteManaged = undefined;
-    lockPlaynite.value = false;
-    selectedPlayniteId.value = '';
-  }
-});
 watch(
   () => displaySelection.value,
   (selection, prev) => {
@@ -3090,53 +3201,18 @@ onBeforeUnmount(() => {
   ro = null;
 });
 
-// Update name options while user searches
-function onNameSearch(q: string) {
-  nameSearchQuery.value = q || '';
-  const query = String(q || '')
-    .trim()
-    .toLowerCase();
-  const list: { label: string; value: string }[] = [];
-  if (query.length) {
-    list.push({ label: t('apps.source_custom_named', { name: q }), value: `__custom__:${q}` });
-  } else {
-    const cur = String(form.value.name || '').trim();
-    if (cur)
-      list.push({ label: t('apps.source_custom_named', { name: cur }), value: `__custom__:${cur}` });
-  }
-  if (playniteOptions.value.length) {
-    const filtered = (
-      query
-        ? playniteOptions.value.filter((o) => o.label.toLowerCase().includes(query))
-        : playniteOptions.value.slice(0, 100)
-    ).slice(0, 100);
-    list.push(...filtered);
-  }
-  nameOptions.value = list;
+function onNameSearch(query: string) {
+  nameSearchQuery.value = query || '';
 }
-
-// Handle picking either a Playnite game or a custom name
-function onNamePicked(val: string | null) {
-  const v = String(val || '');
-  if (!v) {
-    nameSelectValue.value = '';
-    form.value.name = '';
-    form.value.playniteId = undefined;
-    form.value.playniteManaged = undefined;
-    return;
-  }
-  if (v.startsWith('__custom__:')) {
-    const name = v.substring('__custom__:'.length).trim();
-    form.value.name = name;
-    form.value.playniteId = undefined;
-    form.value.playniteManaged = undefined;
-    return;
-  }
-  const opt = playniteOptions.value.find((o) => o.value === v);
-  if (opt) {
-    form.value.name = opt.label;
-    form.value.playniteId = v;
-    form.value.playniteManaged = 'manual';
+function onNamePicked(value: string | null) {
+  if (value?.startsWith('__library__:')) {
+    const group = groupLibraryGames(libraryEntries.value).find(
+      (group) => group.key === value.slice('__library__:'.length),
+    );
+    if (group?.entries[0]) selectLibraryEntry(group.entries[0]);
+  } else {
+    clearLibraryLinks();
+    form.value.name = value?.startsWith('__custom__:') ? value.slice('__custom__:'.length) : '';
   }
 }
 
@@ -3144,25 +3220,7 @@ function onNamePicked(val: string | null) {
 async function save() {
   saving.value = true;
   try {
-    // If on Windows and name exactly matches a Playnite game, auto-link it
-    try {
-      if (
-        isWindows.value &&
-        !form.value.playniteId &&
-        Array.isArray(playniteOptions.value) &&
-        playniteOptions.value.length &&
-        typeof form.value.name === 'string'
-      ) {
-        const target = String(form.value.name || '')
-          .trim()
-          .toLowerCase();
-        const exact = playniteOptions.value.find((o) => o.label.trim().toLowerCase() === target);
-        if (exact) {
-          form.value.playniteId = exact.value;
-          form.value.playniteManaged = 'manual';
-        }
-      }
-    } catch (_) {}
+    await selectedSteamCoverRequest;
     const payload = toServerPayload(form.value);
     const response = await http.post('./api/apps', payload, {
       headers: { 'Content-Type': 'application/json' },
@@ -3240,9 +3298,7 @@ async function del() {
           configStore.updateOption('playnite_fullscreen_entry_enabled', false);
         } catch {}
         try {
-          message?.info(
-            t('playnite.fullscreen_entry_removed'),
-          );
+          message?.info(t('playnite.fullscreen_entry_removed'));
         } catch {}
       }
     } catch {}
