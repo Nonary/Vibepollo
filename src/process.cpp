@@ -76,6 +76,7 @@
 
   #include <Psapi.h>
 #elif defined(__linux__)
+  #include "platform/linux/gamescopegrab.h"
   #include "platform/linux/mangohud_policy.h"
   #include "platform/linux/mangohud_state.h"
   #include "platform/linux/secure_open.h"
@@ -1726,11 +1727,31 @@ namespace proc {
       _app.frame_generation_provider,
       mangohud_policy.enabled && !proton_limiter
     );
-    bool inherited_steam_environment_ready = true;
+#ifdef SUNSHINE_BUILD_GAMESCOPE
+    const bool gamescope_steam_launch = !_app.steam_id.empty() && platf::gamescope_capture_selected();
+#else
+    const bool gamescope_steam_launch = false;
+#endif
+    if (gamescope_steam_launch) {
+      // Catalog commands may have been generated in Desktop Mode and contain
+      // a direct Proton launch. Resolve ownership at launch time so Steam can
+      // manage the game's window, focus and runtime in Gaming Mode.
+      _app.cmd = platf::steam::runtime_launch_command(_app.steam_id, _app.cmd, true);
+      if (_app.cmd.empty()) {
+        BOOST_LOG(error) << "Invalid Steam app ID for Gaming Mode launch: [" << _app.steam_id << "].";
+        return 400;
+      }
+      BOOST_LOG(info) << "Gaming Mode: handing Steam app " << _app.steam_id << " to the running Steam client.";
+      if (smooth_motion_policy.enabled) {
+        BOOST_LOG(warning) << "Smooth Motion cannot be injected through the running Gaming Mode Steam client.";
+      }
+    }
+    bool inherited_steam_environment_ready = !gamescope_steam_launch;
     bool session_steam_direct_launch = false;
     const bool effective_frame_limiter =
       mangohud_policy.enabled && (proton_limiter || mangohud_available);
     const bool direct_steam_launch_required =
+      !gamescope_steam_launch &&
       !_app.steam_id.empty() &&
       platf::steam::requires_direct_environment_launch(
         effective_frame_limiter,

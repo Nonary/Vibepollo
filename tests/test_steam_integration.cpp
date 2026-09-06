@@ -397,6 +397,16 @@ TEST(SteamLaunch, StreamOwnedEnvironmentFeaturesRequireDirectLaunch) {
   EXPECT_FALSE(requires_direct_environment_launch(false, false));
 }
 
+TEST(SteamLaunch, GamingModeReplacesCachedDesktopProtonCommand) {
+  const std::string cached = "/bin/sh -c 'old-release/vibepollo-mangohud --appid 1145350 -- proton waitforexitandrun Hades2.exe'";
+  EXPECT_EQ(runtime_launch_command("1145350", cached, true), launch_command(1145350));
+  EXPECT_EQ(runtime_launch_command("1145350", cached, false), cached);
+  EXPECT_EQ(runtime_launch_command("", "custom-game", true), "custom-game");
+  for (const auto invalid : {"0", "-1", "1145350; touch /tmp/unwanted", "4294967296"}) {
+    EXPECT_TRUE(runtime_launch_command(invalid, cached, true).empty());
+  }
+}
+
 #ifdef __linux__
 TEST(SteamLaunch, MachineClientFallbackUsesCanonicalSemanticArguments) {
   const std::string prefix = "/usr/libexec/vibeshine/vibepollo-session-exec steam ";

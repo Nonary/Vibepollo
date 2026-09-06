@@ -86,6 +86,10 @@ namespace platf::steam {
   std::string launch_uri(std::uint32_t app_id);
   std::string launch_command(std::uint32_t app_id);
 
+  // Re-resolve cached catalog commands for the active session. Gaming Mode
+  // requires Steam to own the launch; Desktop Mode retains the configured command.
+  std::string runtime_launch_command(std::string_view app_id, const std::string &configured_command, bool gamescope_session);
+
   // An already-running Steam broker cannot inherit environment changes from
   // a later `steam -applaunch` process. Features whose behavior is carried by
   // environment variables must therefore resolve a direct game command.

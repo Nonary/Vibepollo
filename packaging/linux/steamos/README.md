@@ -106,7 +106,10 @@ credentials. PipeWire and the physical display remain owned by the session.
   machine-package feature rather than a Gaming Mode dependency.
 - Local audio playback follows the Moonlight client's setting. Steam titles are handed to the Steam client
   already running in Gaming Mode instead of starting a second Steam/Proton
-  environment.
+  environment. This is resolved when launching, including catalog entries saved
+  in Desktop Mode with direct Proton commands. Vibepollo's environment-based
+  frame limiter and Smooth Motion injection are unavailable for these Steam
+  handoffs; Steam's own launch options still apply.
 - The SteamOS profile defaults to Xbox One controller emulation because stock
   SteamOS does not give this user access to `/dev/uhid`. DualSense requires that
   access; it is not enabled by this installer. Keyboard, mouse and Xbox input
