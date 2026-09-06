@@ -58,7 +58,10 @@ namespace display_helper_integration {
   // Clear any deferred APPLY request (used when sessions end).
   void clear_pending_apply();
 
-  // Launch the helper (if needed) and send REVERT.
+  // Once ownership permits REVERT, cancel virtual-display recovery before
+  // waiting for earlier APPLY/DISARM work, then launch the helper and send.
+  // Cancellation remains effective even if helper startup or dispatch fails;
+  // a later launch/resume may arm fresh recovery and supersede the restore.
   // Returns true if the helper accepted the command; false to allow fallback.
   // Terminal user actions may explicitly override managed display ownership.
   bool revert(

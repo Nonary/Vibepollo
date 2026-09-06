@@ -8,6 +8,22 @@ Feature: Recovery, events, watchdogs, and Windows platform safety
 
   Rule: A desktop that may have changed remains recoverable
 
+    Scenario: Accepted revert stops virtual display recreation before restoration
+      Given the host permits a revert of the session display configuration
+      And a virtual display recovery monitor may be recreating or reapplying that session
+      When the host schedules the revert
+      Then it cancels that recovery monitor before waiting for display command dispatch
+      And an already dispatched recovery Apply or disarm is ordered before the revert
+      And cancelled recovery cannot dispatch Apply or disarm after the revert
+      And recreation stays cancelled if helper startup or revert dispatch fails
+      And a fresh launch or resume may still supersede restoration and arm new recovery
+
+    Scenario: Another client's display ownership defers global recovery cancellation
+      Given another managed client still owns a display
+      When ordinary session cleanup requests a global revert
+      Then global restoration is deferred until ownership permits it
+      And the remaining client's virtual display recovery stays available
+
     Scenario: An explicit revert protects the desktop and restores it
       Given a session baseline or golden baseline is available
       And a stream configuration may have changed the desktop
