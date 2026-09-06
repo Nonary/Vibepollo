@@ -2,11 +2,18 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <optional>
 #include <vector>
+
+#ifdef VIBESHINE_STEAM_ARTWORK_IMAGE_LIBS
+extern "C" {
+#include <jpeglib.h>
+}
+#endif
 
 namespace fs = std::filesystem;
 
@@ -144,6 +151,58 @@ TEST(SteamArtwork, MissingSourceDoesNotClaimAClientCover) {
   std::error_code ec;
   fs::remove_all(root, ec);
 }
+
+TEST(SteamArtwork, ConvertsWebpCoverWithStaleJpegExtension) {
+  // A lossless red pixel, as stored in Steam's local artwork cache.
+  constexpr unsigned char webp[] {
+    0x52, 0x49, 0x46, 0x46, 0x1c, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+    0x56, 0x50, 0x38, 0x4c, 0x0f, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00,
+    0x00, 0x07, 0x10, 0xfd, 0x8f, 0xfe, 0x07, 0x22, 0xa2, 0xff, 0x01, 0x00,
+  };
+  const auto root = test_root();
+  fs::create_directories(root);
+  const auto source = root / "library_capsule.jpg";
+  std::ofstream(source, std::ios::binary).write(reinterpret_cast<const char *>(webp), sizeof(webp));
+  const auto result = platf::steam::artwork::sync(42, source, root / "appdata");
+  ASSERT_FALSE(result.client_path.empty());
+  EXPECT_EQ(png_size(result.client_path), std::make_pair(1U, 1U));
+  std::error_code ec;
+  fs::remove_all(root, ec);
+}
+
+#ifdef VIBESHINE_STEAM_ARTWORK_IMAGE_LIBS
+TEST(SteamArtwork, ConvertsJpegWithoutFFmpegImageCodecs) {
+  jpeg_compress_struct compressor {};
+  jpeg_error_mgr error {};
+  compressor.err = jpeg_std_error(&error);
+  jpeg_create_compress(&compressor);
+  unsigned char *bytes = nullptr;
+  unsigned long size = 0;
+  jpeg_mem_dest(&compressor, &bytes, &size);
+  compressor.image_width = 1;
+  compressor.image_height = 1;
+  compressor.input_components = 3;
+  compressor.in_color_space = JCS_RGB;
+  jpeg_set_defaults(&compressor);
+  jpeg_start_compress(&compressor, TRUE);
+  unsigned char pixel[] {255, 0, 0};
+  JSAMPROW row = pixel;
+  jpeg_write_scanlines(&compressor, &row, 1);
+  jpeg_finish_compress(&compressor);
+  jpeg_destroy_compress(&compressor);
+
+  const auto root = test_root();
+  fs::create_directories(root);
+  const auto source = root / "library_capsule.jpg";
+  std::ofstream(source, std::ios::binary).write(reinterpret_cast<const char *>(bytes), size);
+  std::free(bytes);
+  const auto result = platf::steam::artwork::sync(42, source, root / "appdata");
+  ASSERT_FALSE(result.client_path.empty());
+  EXPECT_EQ(png_size(result.client_path), std::make_pair(1U, 1U));
+  std::error_code ec;
+  fs::remove_all(root, ec);
+}
+#endif
 
 TEST(SteamArtwork, FetchesFullPortraitOnceAndReusesStableCache) {
   const auto root = test_root();

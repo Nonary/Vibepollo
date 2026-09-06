@@ -2,6 +2,29 @@
 
 #include <gtest/gtest.h>
 
+TEST(SteamConfig, DefaultsToOptInRecentSynchronizationOnBothPlatforms) {
+  std::unordered_map<std::string, std::string> vars;
+  const auto parsed = config::parse_steam(vars);
+  for (const bool linux_host : {false, true}) {
+    const auto result = config::normalize_steam_policy(parsed, linux_host);
+    EXPECT_FALSE(result.auto_sync);
+    EXPECT_FALSE(result.sync_all_installed);
+    EXPECT_EQ(result.recent_games, 10);
+    EXPECT_EQ(result.recent_max_age_days, 30);
+  }
+}
+
+TEST(SteamConfig, PreservesExplicitSyncOptIns) {
+  std::unordered_map<std::string, std::string> vars {
+    {"steam_auto_sync", "on"},
+    {"steam_sync_all_installed", "on"},
+  };
+  const auto result = config::parse_steam(vars);
+  EXPECT_TRUE(result.auto_sync);
+  EXPECT_TRUE(result.sync_all_installed);
+  EXPECT_TRUE(vars.empty());
+}
+
 TEST(SteamConfig, ParsesIndependentFlags) {
   std::unordered_map<std::string, std::string> vars {{"steam_enabled", "off"}, {"steam_auto_sync", "off"}};
   const auto result = config::parse_steam(vars);
