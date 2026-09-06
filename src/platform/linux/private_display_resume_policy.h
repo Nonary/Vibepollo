@@ -17,9 +17,9 @@ namespace platf::linux_private_display::resume_policy {
     return app_display_token != 0 && !app_client.empty() ? app_client : requesting_client;
   }
 
-  /** A newly hot-plugged output must be configured even if KWin auto-enabled it. */
-  constexpr bool requires_apply(const bool newly_connected, const bool enabled) {
-    return newly_connected || !enabled;
+  /** KScreen can retain enabled=true while scanout is unavailable after suspend. */
+  constexpr bool requires_apply(const bool newly_connected, const bool enabled, const bool capture_available) {
+    return newly_connected || !enabled || !capture_available;
   }
 
   /**
