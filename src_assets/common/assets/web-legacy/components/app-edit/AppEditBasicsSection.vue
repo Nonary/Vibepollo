@@ -19,36 +19,19 @@
           @update:value="(val) => emit('name-picked', val)"
         />
       </div>
-      <template v-if="showPlaynitePicker">
-        <div class="flex items-center gap-2">
-          <n-select
-            v-model:value="selectedPlayniteId"
-            :options="playniteOptions"
-            :loading="gamesLoading"
-            filterable
-            :disabled="lockPlaynite || !playniteInstalled"
-            :placeholder="
-              playniteInstalled
-                ? $t('apps.add_playnite_search')
-                : $t('playnite.diagnostic_not_installed')
-            "
-            class="flex-1"
-            @focus="emit('load-playnite-games')"
-            @update:value="(val) => emit('pick-playnite', String(val ?? ''))"
-          />
-          <n-button
-            v-if="lockPlaynite"
-            size="small"
-            type="default"
-            strong
-            @click="emit('unlock-playnite')"
-          >
-            {{ $t('_common.change') }}
-          </n-button>
-        </div>
-      </template>
+      <label v-if="libraryOptions.length > 1" class="block space-y-1">
+        <span class="text-xs font-semibold">Launch with</span>
+        <n-select
+          :value="selectedLibraryKey"
+          :options="libraryOptions"
+          @update:value="(value) => emit('change-library', value)"
+        />
+      </label>
       <div class="text-[11px] opacity-60">
-        {{ isPlaynite ? $t('apps.linked_to_playnite') : $t('apps.custom_application') }}
+        {{
+          linkedLibraryLabel ||
+          (isPlaynite ? $t('apps.linked_to_playnite') : $t('apps.custom_application'))
+        }}
       </div>
     </div>
 
@@ -177,33 +160,29 @@ import type { AppForm } from './types';
 import { NSelect, NButton, NInput, NInputNumber } from 'naive-ui';
 
 const rawProps = defineProps<{
+  libraryOptions: Array<{ label: string; value: string }>;
+  selectedLibraryKey: string;
+  linkedLibraryLabel: string;
   isPlaynite: boolean;
-  showPlaynitePicker: boolean;
-  playniteInstalled: boolean;
   nameSelectOptions: Array<{ label: string; value: string; disabled?: boolean }>;
   gamesLoading: boolean;
   fallbackOption: (value: unknown) => { label: string; value: string };
-  playniteOptions: Array<{ label: string; value: string }>;
-  lockPlaynite: boolean;
 }>();
 const {
+  libraryOptions,
+  selectedLibraryKey,
+  linkedLibraryLabel,
   isPlaynite,
-  showPlaynitePicker,
-  playniteInstalled,
   nameSelectOptions,
   gamesLoading,
   fallbackOption,
-  playniteOptions,
-  lockPlaynite,
 } = toRefs(rawProps);
 
 const emit = defineEmits<{
+  (e: 'change-library', value: string): void;
   (e: 'name-focus'): void;
   (e: 'name-search', query: string): void;
   (e: 'name-picked', value: string | null): void;
-  (e: 'load-playnite-games'): void;
-  (e: 'pick-playnite', id: string): void;
-  (e: 'unlock-playnite'): void;
   (e: 'open-cover-finder'): void;
 }>();
 
@@ -211,7 +190,6 @@ const emit = defineEmits<{
 const form = defineModel<AppForm>('form', { required: true });
 const cmdText = defineModel<string>('cmdText', { required: true });
 const nameSelectValue = defineModel<string>('nameSelectValue', { required: true });
-const selectedPlayniteId = defineModel<string>('selectedPlayniteId', { required: true });
 
 function addDetached() {
   form.value.detached.push('');

@@ -5,6 +5,7 @@ async function host(
   platform = 'linux',
   config: Record<string, unknown> = {},
   ready = true,
+  providers: Record<string, boolean> = {},
 ) {
   const patches: Record<string, unknown>[] = [];
   await page.route('**/api/**', async (route) => {
@@ -29,6 +30,7 @@ async function host(
     } else if (path === '/api/metadata')
       body = {
         platform,
+        providers,
         version: '1.0.0',
         encoder_status: { state: 'ready', h264: true },
         virtual_display: {
@@ -405,7 +407,9 @@ test('library placeholders preserve search, keyboard selection, and list prefere
 });
 
 for (const width of [320, 390, 768, 1100, 1440]) {
-  test(`main workflows reflow without horizontal scrolling at ${width}px`, async ({ page }) => {
+  test(`main workflows reflow without horizontal scrolling at ${width}px`, async ({
+    page,
+  }, testInfo) => {
     await host(page);
     await libraryWithMissingCovers(page);
     await page.setViewportSize({ width, height: 900 });
@@ -417,7 +421,7 @@ for (const width of [320, 390, 768, 1100, 1440]) {
         true,
       );
       await page.screenshot({
-        path: `/tmp/vibeshine-ui-results/${(path || 'overview').replaceAll('/', '-')}-${width}.png`,
+        path: testInfo.outputPath(`${(path || 'overview').replaceAll('/', '-')}-${width}.png`),
         fullPage: true,
       });
     }
@@ -452,28 +456,188 @@ test('a failed performance refresh retains the sample and visibly marks it as st
 for (const platform of ['linux', 'windows']) {
   test(`application picker respects ${platform} integration availability`, async ({ page }) => {
     await host(page, platform);
-    const playniteRequests: string[] = [];
+    const requests: string[] = [];
     page.on('request', (request) => {
-      if (new URL(request.url()).pathname.startsWith('/api/playnite/'))
-        playniteRequests.push(request.url());
+      requests.push(new URL(request.url()).pathname);
     });
     await page.goto('/v2/library/new');
     await page.locator('#app-name').fill('A new game');
-    await expect(page.getByRole('button', { name: 'Browse Steam games', exact: true })).toHaveCount(
-      0,
-    );
-    const playnite = page.getByRole('button', { name: 'Browse Playnite games', exact: true });
+    expect(requests.some((path) => /^\/api\/(steam|lutris)\//.test(path))).toBe(false);
     if (platform === 'linux') {
-      await expect(playnite).toHaveCount(0);
-      await expect(
-        page.getByRole('button', { name: 'Browse Lutris games', exact: true }),
-      ).toHaveCount(0);
-      expect(playniteRequests).toEqual([]);
+      await expect(page.getByRole('button', { name: 'Browse games', exact: true })).toHaveCount(0);
+      expect(requests.some((path) => path.startsWith('/api/playnite/'))).toBe(false);
     } else {
-      await expect(playnite).toBeVisible();
+      await expect.poll(() => requests.includes('/api/playnite/status')).toBe(true);
+      expect(requests.some((path) => path.startsWith('/api/lutris/'))).toBe(false);
     }
   });
 }
+
+for (const platform of ['windows', 'linux']) {
+  test(`game search groups sources and fills the selected ${platform} library`, async ({
+    page,
+  }) => {
+    await host(page, platform, {}, true, { steam: true, lutris: platform === 'linux' });
+    const saved: Record<string, unknown>[] = [];
+    await page.route('**/api/apps', (route) => {
+      if (route.request().method() === 'POST') {
+        saved.push(route.request().postDataJSON());
+        return route.fulfill({
+          status: 400,
+          json: { status: false, error: 'Keep editor open for assertions' },
+        });
+      }
+      return route.fulfill({ json: { apps: [] } });
+    });
+    await page.route('**/api/playnite/status', (route) =>
+      route.fulfill({ json: { installed: true, active: true } }),
+    );
+    await page.route('**/api/playnite/games', (route) =>
+      route.fulfill({ json: [{ id: 'playnite-portal', name: 'Portal', installed: true }] }),
+    );
+    await page.route('**/api/steam/games*', (route) =>
+      route.fulfill({
+        json: {
+          games: [
+            {
+              appid: 400,
+              name: 'Portal',
+              installed: true,
+              install_dir: 'C:/Steam/Portal',
+              artwork_client_path: 'C:/covers/steam_400.png',
+            },
+            {
+              appid: 620,
+              name: 'Portal 2',
+              installed: true,
+              install_dir: 'C:/Steam/Portal2',
+              artwork_client_path: 'C:/covers/steam_620.png',
+            },
+          ],
+        },
+      }),
+    );
+    await page.route('**/api/lutris/games', (route) =>
+      route.fulfill({
+        json: {
+          games: [
+            {
+              id: '9',
+              name: 'Portal',
+              runner: 'wine',
+              directory: '/games/portal',
+              image_path: '/covers/lutris_9.png',
+            },
+          ],
+        },
+      }),
+    );
+    await page.goto('/v2/library/new');
+    await page.locator('#app-name').fill('Portal');
+    const result = page.getByRole('option', {
+      name: platform === 'windows' ? 'Portal Playnite · Steam' : 'Portal Steam · Lutris',
+      exact: true,
+    });
+    await expect(result).toBeVisible();
+    await result.click();
+    const source = page.getByRole('combobox', { name: 'Launch with' });
+    await expect(source).toHaveValue(
+      platform === 'windows' ? 'playnite:playnite-portal' : 'steam:400',
+    );
+    await source.selectOption(platform === 'windows' ? 'steam:400' : 'lutris:9');
+    await page.getByRole('button', { name: 'Save application', exact: true }).first().click();
+    await expect.poll(() => saved.length).toBe(1);
+    expect(saved[0]).toMatchObject(
+      platform === 'windows'
+        ? {
+            'steam-id': '400',
+            cmd: 'cmd /c start "" steam://rungameid/400',
+            'image-path': 'C:/covers/steam_400.png',
+          }
+        : {
+            'lutris-id': '9',
+            cmd: 'lutris lutris:rungameid/9',
+            'image-path': '/covers/lutris_9.png',
+          },
+    );
+    expect(saved[0]).not.toHaveProperty('playnite-id');
+    await page.locator('#app-name').fill('Portal 2');
+    await page.locator('#app-name').press('ArrowDown');
+    await page.locator('#app-name').press('Enter');
+    await expect(source).toHaveCount(0);
+    await expect(page.locator('#app-name')).toHaveValue('Portal 2');
+    await page.getByRole('button', { name: 'Save application', exact: true }).first().click();
+    await expect.poll(() => saved.length).toBe(2);
+    expect(saved[1]).toMatchObject({ 'steam-id': '620', 'image-path': 'C:/covers/steam_620.png' });
+    expect(saved[1]).not.toHaveProperty('lutris-id');
+  });
+}
+
+test('game library setup supports multiple Windows libraries without enabling Steam by default', async ({
+  page,
+}, testInfo) => {
+  const patches = await host(page, 'windows', {}, true, { steam: true, playnite_toggle: true });
+  await page.route('**/api/playnite/status', (route) =>
+    route.fulfill({ json: { installed: true, active: true } }),
+  );
+  await page.goto('/v2/library');
+  await page.getByRole('button', { name: 'Setup Game Library Integration', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Setup Game Library Integration' });
+  await expect(dialog.getByText('Recommended on Windows')).toBeVisible();
+  await expect(dialog.getByRole('checkbox', { name: 'Playnite', exact: true })).toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: 'Steam', exact: true })).not.toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: 'Lutris', exact: true })).toHaveCount(0);
+  await dialog.getByRole('checkbox', { name: 'Steam', exact: true }).check();
+  await dialog.getByRole('button', { name: 'Save library choices' }).click();
+  await expect(dialog.getByRole('status')).toHaveText('Game library settings saved.');
+  expect(patches.at(-1)).toMatchObject({
+    playnite_enabled: true,
+    playnite_auto_sync: true,
+    steam_enabled: true,
+    steam_auto_sync: true,
+    steam_sync_all_installed: false,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('library-setup-mobile.png') });
+});
+
+test('saving a Steam selection waits for its prepared cover', async ({ page }) => {
+  await host(page, 'windows', {}, true, { steam: true });
+  const saved: Record<string, unknown>[] = [];
+  await page.route('**/api/steam/games*', async (route) => {
+    const selected = new URL(route.request().url()).searchParams.has('appid');
+    if (selected) await new Promise((resolve) => setTimeout(resolve, 350));
+    await route.fulfill({
+      json: {
+        games: [
+          {
+            appid: 400,
+            name: 'Portal',
+            installed: true,
+            ...(selected ? { artwork_client_path: 'C:/covers/steam_400.png' } : {}),
+          },
+        ],
+      },
+    });
+  });
+  await page.route('**/api/apps', (route) => {
+    if (route.request().method() === 'POST') saved.push(route.request().postDataJSON());
+    return route.fulfill({
+      json: route.request().method() === 'POST' ? { status: true } : { apps: [] },
+    });
+  });
+  await page.goto('/v2/library/new');
+  await page.locator('#app-name').fill('Portal');
+  await page.getByRole('option', { name: 'Portal Steam', exact: true }).click();
+  await page.getByRole('button', { name: 'Save application', exact: true }).first().click();
+  await expect.poll(() => saved.length).toBe(1);
+  expect(saved[0]).toMatchObject({
+    'steam-id': '400',
+    'image-path': 'C:/covers/steam_400.png',
+    'steam-artwork-client-compatible': true,
+  });
+});
 
 test('encoder failures direct the overview to diagnostics', async ({ page }) => {
   await host(page, 'windows');
@@ -504,6 +668,10 @@ test('unmigrated Linux services are neither offered nor called', async ({ page }
   await expect(
     page.locator('#integration-steam, #integration-lutris, #integration-mangohud'),
   ).toHaveCount(0);
+  await page.getByRole('button', { name: 'Setup Game Library Integration', exact: true }).click();
+  const setup = page.getByRole('dialog');
+  await expect(setup.getByRole('checkbox')).toHaveCount(0);
+  await setup.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.goto('/v2/settings');
   await expect(
     page.locator('#setting-virtual_display_mode, #setting-frame_limiter_provider'),
@@ -598,3 +766,107 @@ test('app behavior validates edited scaling and can return explicit options to d
   expect(saved?.['state-cmd']).toBeUndefined();
   expect(saved?.['use-app-identity']).toBeUndefined();
 });
+
+for (const platform of ['windows', 'linux']) {
+  test(`classic game library setup and search work on ${platform}`, async ({ page }) => {
+    const legacyUrl = process.env.VIBEPOLLO_LEGACY_TEST_URL;
+    test.skip(!legacyUrl, 'Set VIBEPOLLO_LEGACY_TEST_URL to a served classic UI build.');
+    const patches = await host(page, platform, {}, true, { steam: true, lutris: platform === 'linux' });
+    await page.route('**/api/playnite/status', (route) =>
+      route.fulfill({ json: { installed: true, active: true } }),
+    );
+    await page.route('**/api/playnite/games', (route) =>
+      route.fulfill({ json: [{ id: 'pn-portal', name: 'Portal', installed: true }] }),
+    );
+    await page.route('**/api/steam/games*', (route) =>
+      route.fulfill({
+        json: {
+          games: [
+            {
+              appid: 400,
+              name: 'Portal',
+              installed: true,
+              artwork_client_path: 'C:/covers/steam_400.png',
+            },
+          ],
+        },
+      }),
+    );
+    await page.route('**/api/lutris/games', (route) =>
+      route.fulfill({ json: { games: [{ id: 9, name: 'Portal', directory: '/games/portal' }] } }),
+    );
+    const saved: Record<string, unknown>[] = [];
+    await page.route('**/api/apps', (route) => {
+      if (route.request().method() === 'POST') saved.push(route.request().postDataJSON());
+      return route.fulfill({
+        json:
+          route.request().method() === 'POST'
+            ? { status: true }
+            : {
+                apps: saved.map((app) => ({
+                  ...app,
+                  uuid: '53544541-4d00-5000-8000-000000000190',
+                })),
+              },
+      });
+    });
+    await page.route('**/api/apps/*/cover*', (route) =>
+      route.fulfill({
+        contentType: 'image/png',
+        body: Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQI12P4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==',
+          'base64',
+        ),
+      }),
+    );
+    await page.goto(legacyUrl + '/applications');
+    await page
+      .getByRole('button', { name: /Setup Game Library Integration/ })
+      .first()
+      .click();
+    const setup = page.getByRole('dialog', { name: 'Setup Game Library Integration' });
+    await expect(setup.getByRole('checkbox', { name: 'Steam', exact: true })).not.toBeChecked();
+    await setup.getByRole('checkbox', { name: 'Steam', exact: true }).check();
+    await setup.getByRole('button', { name: 'Save library choices' }).click();
+    await expect(setup.getByRole('status')).toHaveText('Game library settings saved.');
+    expect(patches.at(-1)).toMatchObject({
+      steam_auto_sync: true,
+      [platform === 'windows' ? 'playnite_auto_sync' : 'lutris_auto_sync']: true,
+    });
+    await setup.getByRole('button', { name: 'Done', exact: true }).click();
+    await page
+      .getByRole('button', { name: /Add Application/ })
+      .first()
+      .click();
+    const editor = page.locator('.n-card.n-modal');
+    const search = editor.locator('.n-select').first();
+    await search.click();
+    await page
+      .getByText(platform === 'windows' ? 'Portal — Playnite · Steam' : 'Portal — Steam · Lutris', {
+        exact: true,
+      })
+      .click();
+    await expect(editor.getByText('Launch with', { exact: true })).toBeVisible();
+    await editor.locator('.n-select').nth(1).click();
+    await page
+      .locator('.n-base-select-option')
+      .filter({ hasText: platform === 'windows' ? /^Steam$/ : /^Lutris$/ })
+      .click();
+    await editor.getByRole('button', { name: /Save/ }).click();
+    await expect.poll(() => saved.length).toBe(1);
+    expect(saved[0]).toMatchObject(
+      platform === 'windows'
+        ? {
+            'steam-id': '400',
+            cmd: 'cmd /c start "" steam://rungameid/400',
+            'image-path': 'C:/covers/steam_400.png',
+          }
+        : { 'lutris-id': '9', cmd: 'lutris lutris:rungameid/9' },
+    );
+    expect(saved[0]).not.toHaveProperty('playnite-id');
+    await expect(page.locator('.apps-row__badge')).toHaveText(
+      platform === 'windows' ? 'Steam' : 'Lutris',
+    );
+    await expect(page.locator('.apps-row__icon')).toHaveAttribute('src', /\/cover/);
+  });
+}

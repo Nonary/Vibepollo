@@ -1,9 +1,11 @@
 <script setup lang="ts">
+import GameLibrarySetup from '../../web-legacy/components/GameLibrarySetup.vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
 
-import { ApiError } from '@/api/client';
+import { useSystemStore } from '@/stores/system';
+import { ApiError, apiGet, apiPatch, apiPost } from '@/api/client';
 import {
   AppButton,
   ConfirmDialog,
@@ -41,6 +43,7 @@ const validSortModes = new Set<SortMode>(['name', 'name-desc', 'source']);
 const route = useRoute();
 const router = useRouter();
 const { locale, t } = useI18n();
+const system = useSystemStore();
 const apps = ref<AppRecord[]>([]);
 const loading = ref(true);
 const error = ref('');
@@ -476,12 +479,36 @@ onBeforeUnmount(() => {
   observer?.disconnect();
   document.removeEventListener('pointerdown', onDocumentPointerDown);
 });
+const librarySetupOpen = ref(false);
+function libraryRequest(
+  method: 'GET' | 'POST' | 'PATCH',
+  path: string,
+  body?: Record<string, unknown>,
+): Promise<any> {
+  return method === 'GET'
+    ? apiGet(path)
+    : method === 'PATCH'
+      ? apiPatch(path, body ?? {})
+      : apiPost(path, body ?? {});
+}
 </script>
 
 <template>
   <div class="vs-page vs-page--dashboard library-page">
+    <GameLibrarySetup
+      v-model:open="librarySetupOpen"
+      :platform="system.metadata?.platform || ''"
+      :metadata="system.metadata"
+      :request="libraryRequest"
+      @saved="load()"
+    />
     <PageHeader :title="t('ui.library.page.title')" :description="t('ui.library.page.description')">
       <template #actions>
+        <AppButton
+          icon="integrations"
+          label="Setup Game Library Integration"
+          @click="librarySetupOpen = true"
+        />
         <RouterLink class="button button--secondary" to="/integrations"
           ><UiIcon name="integrations" />{{ t('ui.library.actions.sources') }}</RouterLink
         >

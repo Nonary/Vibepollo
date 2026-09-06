@@ -5,6 +5,7 @@ import { useUnsavedChanges } from '@/composables/useUnsavedChanges';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
 
+import { groupLibraryGames, providerLabels } from '@/utils/libraryGames';
 import { ApiError, apiGet, apiPost } from '@/api/client';
 import AppCompatibilitySettings from '@/components/app-edit/AppCompatibilitySettings.vue';
 import { parseAppExtras } from '@/utils/appCompatibility';
@@ -152,6 +153,8 @@ interface PlayniteStatus {
 }
 
 interface SteamGame {
+  installed: boolean;
+  filtered: boolean;
   appid: number | string;
   steamId: string;
   stableId: string;
@@ -311,27 +314,23 @@ const coverSearchQuery = ref('');
 const deleteOpen = ref(false);
 const deleteError = ref('');
 const errors = reactive<Record<string, string>>({});
-const playnitePickerOpen = ref(false);
+const gamePickerOpen = ref(false);
 const playniteGames = ref<PlayniteGame[]>([]);
 const playniteGamesLoaded = ref(false);
 const playniteGamesLoading = ref(false);
 const playniteGamesError = ref('');
 const playniteGamesUnavailable = ref(false);
-const playniteActiveIndex = ref(-1);
-const steamPickerOpen = ref(false);
+const gameActiveIndex = ref(-1);
 const steamGames = ref<SteamGame[]>([]);
 const steamGamesLoaded = ref(false);
 const steamGamesLoading = ref(false);
 const steamGamesError = ref('');
 const steamGamesUnavailable = ref(false);
-const steamActiveIndex = ref(-1);
-const lutrisPickerOpen = ref(false);
 const lutrisGames = ref<LutrisGame[]>([]);
 const lutrisGamesLoaded = ref(false);
 const lutrisGamesLoading = ref(false);
 const lutrisGamesError = ref('');
 const lutrisGamesUnavailable = ref(false);
-const lutrisActiveIndex = ref(-1);
 const frameGenHealth = ref<FrameGenHealth | null>(null);
 const frameGenHealthError = ref('');
 const frameGenHealthLoading = ref(false);
@@ -339,9 +338,8 @@ let frameGenHealthEpoch = 0;
 let frameGenHealthRequest: { epoch: number; promise: Promise<void> } | null = null;
 let formHydrating = false;
 let formHydrationEpoch = 0;
-let playniteCloseTimer: number | null = null;
-let steamCloseTimer: number | null = null;
-let lutrisCloseTimer: number | null = null;
+let gameCloseTimer: number | null = null;
+let selectedSteamArtworkRequest: Promise<void> | undefined;
 const form = reactive<EditorForm>(emptyForm());
 const overrideMetadata = ref<FrameGenMetadata>({});
 const originalRtxHdrLiveOverrides = ref<Record<string, unknown>>({});
@@ -516,22 +514,60 @@ const isProviderLinked = computed(
 function managedProviderLabel(provider: string, managed: string): string {
   return managed === 'auto' ? t('ui.application.providers.managed', { provider }) : provider;
 }
-const filteredPlayniteGames = computed(() => {
-  const query = form.name.trim().toLocaleLowerCase();
-  const games = playniteGames.value.filter((game) => game.installed !== false);
-  return query ? games.filter((game) => game.name.toLocaleLowerCase().includes(query)) : games;
-});
-const filteredSteamGames = computed(() => {
-  const query = form.name.trim().toLocaleLowerCase();
-  return query
-    ? steamGames.value.filter((game) => game.name.toLocaleLowerCase().includes(query))
-    : steamGames.value;
-});
-const filteredLutrisGames = computed(() => {
-  const query = form.name.trim().toLocaleLowerCase();
-  const games = lutrisGames.value.filter((game) => !game.filtered);
-  return query ? games.filter((game) => game.name.toLocaleLowerCase().includes(query)) : games;
-});
+const hasLibraryProvider = computed(() => isWindowsHost.value ||
+  providerSupported(overrideMetadata.value, 'steam') || providerSupported(overrideMetadata.value, 'lutris'));
+type LibraryEntry =
+  | { provider: 'playnite'; id: string; name: string; game: PlayniteGame }
+  | { provider: 'steam'; id: string; name: string; game: SteamGame }
+  | { provider: 'lutris'; id: string; name: string; game: LutrisGame };
+const libraryEntries = computed<LibraryEntry[]>(() => [
+  ...playniteGames.value
+    .filter((game) => game.installed !== false)
+    .map((game) => ({
+      provider: 'playnite' as const,
+      id: game.id,
+      name: game.name,
+      game,
+    })),
+  ...steamGames.value
+    .filter((game) => game.installed && !game.filtered)
+    .map((game) => ({
+      provider: 'steam' as const,
+      id: game.steamId,
+      name: game.name,
+      game,
+    })),
+  ...lutrisGames.value
+    .filter((game) => !game.filtered)
+    .map((game) => ({
+      provider: 'lutris' as const,
+      id: game.id,
+      name: game.name,
+      game,
+    })),
+]);
+const filteredLibraryGames = computed(() => groupLibraryGames(libraryEntries.value, form.name));
+const libraryGamesLoading = computed(
+  () => playniteGamesLoading.value || steamGamesLoading.value || lutrisGamesLoading.value,
+);
+const libraryGamesErrors = computed(() =>
+  [playniteGamesError.value, steamGamesError.value, lutrisGamesError.value].filter(Boolean),
+);
+const selectedLibraryKey = computed(() =>
+  form.playniteId
+    ? 'playnite:' + form.playniteId
+    : form.steamId
+      ? 'steam:' + form.steamId
+      : form.lutrisId
+        ? 'lutris:' + form.lutrisId
+        : '',
+);
+const selectedLibraryAlternatives = computed(
+  () =>
+    groupLibraryGames(libraryEntries.value).find((group) =>
+      group.entries.some((entry) => entry.provider + ':' + entry.id === selectedLibraryKey.value),
+    )?.entries ?? [],
+);
 const frameGenerationEnabled = computed(() => {
   if (form.frameGenerationMode === 'off') return false;
   return Boolean(form.frameGenerationMode);
@@ -1533,15 +1569,9 @@ function hydrate(app: AppRecord): void {
   coverPickerOpen.value = false;
   clearErrors();
   initialSnapshot.value = JSON.stringify(form);
-  cancelPlayniteClose();
-  playnitePickerOpen.value = false;
-  playniteActiveIndex.value = -1;
-  cancelSteamClose();
-  steamPickerOpen.value = false;
-  steamActiveIndex.value = -1;
-  cancelLutrisClose();
-  lutrisPickerOpen.value = false;
-  lutrisActiveIndex.value = -1;
+  cancelGameClose();
+  gamePickerOpen.value = false;
+  gameActiveIndex.value = -1;
   clearFrameGenHealth();
   liveRtxHdrSuppress = true;
   primeLiveRtxHdrState(app);
@@ -1562,15 +1592,9 @@ function hydrateNew(): void {
   coverPickerOpen.value = false;
   clearErrors();
   initialSnapshot.value = JSON.stringify(form);
-  cancelPlayniteClose();
-  playnitePickerOpen.value = false;
-  playniteActiveIndex.value = -1;
-  cancelSteamClose();
-  steamPickerOpen.value = false;
-  steamActiveIndex.value = -1;
-  cancelLutrisClose();
-  lutrisPickerOpen.value = false;
-  lutrisActiveIndex.value = -1;
+  cancelGameClose();
+  gamePickerOpen.value = false;
+  gameActiveIndex.value = -1;
   clearFrameGenHealth();
   liveRtxHdrSuppress = true;
   primeLiveRtxHdrState(null);
@@ -1771,22 +1795,10 @@ function clearLutrisLink(): void {
   form.lutrisServiceId = '';
 }
 
-function cancelPlayniteClose(): void {
-  if (playniteCloseTimer === null) return;
-  window.clearTimeout(playniteCloseTimer);
-  playniteCloseTimer = null;
-}
-
-function cancelSteamClose(): void {
-  if (steamCloseTimer === null) return;
-  window.clearTimeout(steamCloseTimer);
-  steamCloseTimer = null;
-}
-
-function cancelLutrisClose(): void {
-  if (lutrisCloseTimer === null) return;
-  window.clearTimeout(lutrisCloseTimer);
-  lutrisCloseTimer = null;
+function cancelGameClose(): void {
+  if (gameCloseTimer === null) return;
+  window.clearTimeout(gameCloseTimer);
+  gameCloseTimer = null;
 }
 
 function waitForPlaynite(milliseconds: number): Promise<void> {
@@ -1852,6 +1864,8 @@ function steamGame(value: unknown): SteamGame | null {
   return {
     appid,
     steamId,
+    installed: game.installed === undefined ? true : asBoolean(game.installed),
+    filtered: asBoolean(game.filtered),
     stableId: asString(game.stable_id),
     name,
     installDir: asString(game.install_dir),
@@ -1877,6 +1891,16 @@ async function loadSteamGames(): Promise<void> {
   steamGamesUnavailable.value = false;
   try {
     const payload = await apiGet<unknown>('/api/steam/games');
+    if (
+      payload &&
+      typeof payload === 'object' &&
+      'enabled' in payload &&
+      payload.enabled === false
+    ) {
+      steamGames.value = [];
+      steamGamesLoaded.value = true;
+      return;
+    }
     const rawGames =
       payload && typeof payload === 'object' && !Array.isArray(payload)
         ? (payload as { games?: unknown }).games
@@ -1923,6 +1947,16 @@ async function loadLutrisGames(): Promise<void> {
   lutrisGamesUnavailable.value = false;
   try {
     const payload = await apiGet<unknown>('/api/lutris/games');
+    if (
+      payload &&
+      typeof payload === 'object' &&
+      'enabled' in payload &&
+      payload.enabled === false
+    ) {
+      lutrisGames.value = [];
+      lutrisGamesLoaded.value = true;
+      return;
+    }
     const rawGames =
       payload && typeof payload === 'object' && !Array.isArray(payload)
         ? (payload as { games?: unknown }).games
@@ -1941,76 +1975,43 @@ async function loadLutrisGames(): Promise<void> {
   }
 }
 
-function openPlaynitePicker(): void {
-  if (!isNew.value || !isWindowsHost.value) return;
-  cancelSteamClose();
-  steamPickerOpen.value = false;
-  steamActiveIndex.value = -1;
-  cancelLutrisClose();
-  lutrisPickerOpen.value = false;
-  lutrisActiveIndex.value = -1;
-  cancelPlayniteClose();
+function openGamePicker(): void {
+  if (!isNew.value || !hasLibraryProvider.value) return;
+  cancelGameClose();
+  gamePickerOpen.value = true;
+  gameActiveIndex.value = -1;
   if (playniteGamesUnavailable.value) playniteGamesLoaded.value = false;
-  playnitePickerOpen.value = true;
-  playniteActiveIndex.value = -1;
-  void loadPlayniteGames();
-}
-
-function closePlaynitePicker(): void {
-  cancelPlayniteClose();
-  playniteCloseTimer = window.setTimeout(() => {
-    playnitePickerOpen.value = false;
-    playniteActiveIndex.value = -1;
-    playniteCloseTimer = null;
-  }, 120);
-}
-
-function openSteamPicker(): void {
-  if (!isNew.value || !providerSupported(overrideMetadata.value, 'steam')) return;
-  cancelPlayniteClose();
-  playnitePickerOpen.value = false;
-  playniteActiveIndex.value = -1;
-  cancelLutrisClose();
-  lutrisPickerOpen.value = false;
-  lutrisActiveIndex.value = -1;
-  cancelSteamClose();
   if (steamGamesUnavailable.value) steamGamesLoaded.value = false;
-  steamPickerOpen.value = true;
-  steamActiveIndex.value = -1;
-  void loadSteamGames();
-}
-
-function openLutrisPicker(): void {
-  if (!isNew.value || !providerSupported(overrideMetadata.value, 'lutris')) return;
-  cancelPlayniteClose();
-  playnitePickerOpen.value = false;
-  playniteActiveIndex.value = -1;
-  cancelSteamClose();
-  steamPickerOpen.value = false;
-  steamActiveIndex.value = -1;
-  cancelLutrisClose();
   if (lutrisGamesUnavailable.value) lutrisGamesLoaded.value = false;
-  lutrisPickerOpen.value = true;
-  lutrisActiveIndex.value = -1;
-  void loadLutrisGames();
+  if (isWindowsHost.value) void loadPlayniteGames();
+  if (providerSupported(overrideMetadata.value, 'steam')) void loadSteamGames();
+  if (providerSupported(overrideMetadata.value, 'lutris')) void loadLutrisGames();
 }
 
-function closeLutrisPicker(): void {
-  cancelLutrisClose();
-  lutrisCloseTimer = window.setTimeout(() => {
-    lutrisPickerOpen.value = false;
-    lutrisActiveIndex.value = -1;
-    lutrisCloseTimer = null;
+function closeGamePicker(): void {
+  cancelGameClose();
+  gameCloseTimer = window.setTimeout(() => {
+    gamePickerOpen.value = false;
+    gameActiveIndex.value = -1;
+    gameCloseTimer = null;
   }, 120);
 }
 
-function closeSteamPicker(): void {
-  cancelSteamClose();
-  steamCloseTimer = window.setTimeout(() => {
-    steamPickerOpen.value = false;
-    steamActiveIndex.value = -1;
-    steamCloseTimer = null;
-  }, 120);
+function selectLibraryGame(entry: LibraryEntry): void {
+  cancelGameClose();
+  if (entry.provider === 'playnite') selectPlayniteGame(entry.game);
+  else if (entry.provider === 'steam') selectSteamGame(entry.game);
+  else selectLutrisGame(entry.game);
+  gamePickerOpen.value = false;
+  gameActiveIndex.value = -1;
+}
+
+function changeLibrary(event: Event): void {
+  const key = (event.target as HTMLSelectElement).value;
+  const entry = selectedLibraryAlternatives.value.find(
+    (entry) => entry.provider + ':' + entry.id === key,
+  );
+  if (entry) selectLibraryGame(entry);
 }
 
 function steamCommand(uri: string): string {
@@ -2021,7 +2022,6 @@ function steamCommand(uri: string): string {
 }
 
 function selectSteamGame(game: SteamGame): void {
-  cancelSteamClose();
   clearPlayniteLink();
   clearLutrisLink();
   form.name = game.name;
@@ -2041,12 +2041,33 @@ function selectSteamGame(game: SteamGame): void {
   form.steamArtworkClientCompatible = game.artworkClientCompatible;
   form.playniteIconPath = '';
   form.cmd = steamCommand(game.launchUri);
+  form.autoDetach = true;
+  form.waitAll = false;
   form.workingDir = game.installDir;
   form.imagePath = game.artworkClientPath || './assets/steam.png';
+  if (!game.artworkClientPath) selectedSteamArtworkRequest = loadSelectedSteamArtwork(game.steamId);
   selectedCoverPreview.value = '';
   coverPickerOpen.value = false;
-  steamPickerOpen.value = false;
-  steamActiveIndex.value = -1;
+}
+
+async function loadSelectedSteamArtwork(steamId: string): Promise<void> {
+  try {
+    const payload = await apiGet<{ games?: unknown[] }>(
+      `/api/steam/games?appid=${encodeURIComponent(steamId)}`,
+    );
+    const game = steamGame(payload.games?.[0]);
+    if (
+      form.steamId !== steamId ||
+      form.imagePath !== './assets/steam.png' ||
+      !game?.artworkClientPath
+    )
+      return;
+    form.imagePath = game.artworkClientPath;
+    form.steamArtworkClientPath = game.artworkClientPath;
+    form.steamArtworkClientCompatible = true;
+  } catch {
+    // The built-in cover remains usable when Steam's cache/CDN is unavailable.
+  }
 }
 
 function canonicalLutrisUuid(lutrisId: string): string {
@@ -2059,7 +2080,6 @@ function canonicalLutrisUuid(lutrisId: string): string {
 }
 
 function selectLutrisGame(game: LutrisGame): void {
-  cancelLutrisClose();
   clearPlayniteLink();
   clearSteamLink();
   form.name = game.name;
@@ -2073,19 +2093,20 @@ function selectLutrisGame(game: LutrisGame): void {
   form.lutrisService = game.service;
   form.lutrisServiceId = game.serviceId;
   form.cmd = `lutris ${game.launchUri}`;
+  form.autoDetach = true;
+  form.waitAll = false;
   form.workingDir = game.directory;
   form.imagePath = game.imagePath || './assets/box.png';
   selectedCoverPreview.value = '';
   coverPickerOpen.value = false;
-  lutrisPickerOpen.value = false;
-  lutrisActiveIndex.value = -1;
 }
 
 function selectPlayniteGame(game: PlayniteGame): void {
-  cancelPlayniteClose();
+  cancelGameClose();
   clearSteamLink();
   clearLutrisLink();
   form.name = game.name;
+  form.uuid = newUuid();
   form.playniteId = game.id;
   form.playniteManaged = 'manual';
   form.cmd = '';
@@ -2094,8 +2115,8 @@ function selectPlayniteGame(game: PlayniteGame): void {
   selectedCoverPreview.value = '';
   coverPickerOpen.value = false;
   form.playniteIconPath = '';
-  playnitePickerOpen.value = false;
-  playniteActiveIndex.value = -1;
+  gamePickerOpen.value = false;
+  gameActiveIndex.value = -1;
 }
 
 async function openCoverPicker(): Promise<void> {
@@ -2146,85 +2167,43 @@ async function chooseCover(cover: CoverCandidate): Promise<void> {
 }
 
 function useCustomApplication(): void {
-  cancelPlayniteClose();
+  cancelGameClose();
   clearPlayniteLink();
-  playnitePickerOpen.value = false;
-  playniteActiveIndex.value = -1;
-  cancelSteamClose();
+  gamePickerOpen.value = false;
+  gameActiveIndex.value = -1;
   clearSteamLink();
   clearLutrisLink();
-  steamPickerOpen.value = false;
-  steamActiveIndex.value = -1;
-  cancelLutrisClose();
-  lutrisPickerOpen.value = false;
-  lutrisActiveIndex.value = -1;
 }
 
 function handleNameInput(): void {
-  const activePicker = steamPickerOpen.value
-    ? 'steam'
-    : lutrisPickerOpen.value
-      ? 'lutris'
-      : 'playnite';
   if (isPlayniteLinked.value) clearPlayniteLink();
   if (isSteamLinked.value) clearSteamLink();
   if (isLutrisLinked.value) clearLutrisLink();
-  if (!isNew.value) return;
-  playniteActiveIndex.value = -1;
-  openPlaynitePicker();
+  openGamePicker();
 }
 
-function movePlayniteActiveOption(delta: number): void {
-  const count = filteredPlayniteGames.value.length;
-  if (!count) return;
-  const current = playniteActiveIndex.value;
-  if (current < 0) {
-    playniteActiveIndex.value = delta < 0 ? count - 1 : 0;
-    return;
-  }
-  playniteActiveIndex.value = (current + delta + count) % count;
-}
 
 function handleNameKeydown(event: KeyboardEvent): void {
   if (!isNew.value) return;
-  const steamActive = steamPickerOpen.value;
-  const lutrisActive = lutrisPickerOpen.value;
-  const games = steamActive
-    ? filteredSteamGames.value
-    : lutrisActive
-      ? filteredLutrisGames.value
-      : filteredPlayniteGames.value;
-  const activeIndex = steamActive
-    ? steamActiveIndex
-    : lutrisActive
-      ? lutrisActiveIndex
-      : playniteActiveIndex;
-  const moveActiveOption = (delta: number) => {
-    if (!games.length) return;
-    activeIndex.value =
-      activeIndex.value < 0
-        ? delta < 0
-          ? games.length - 1
-          : 0
-        : (activeIndex.value + delta + games.length) % games.length;
-  };
-  if (event.key === 'ArrowDown') {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault();
-    if (!playnitePickerOpen.value) openPlaynitePicker();
-    movePlayniteActiveOption(1);
-  } else if (event.key === 'ArrowUp') {
+    if (!gamePickerOpen.value) openGamePicker();
+    const count = filteredLibraryGames.value.length;
+    if (!count) return;
+    const delta = event.key === 'ArrowDown' ? 1 : -1;
+    gameActiveIndex.value =
+      gameActiveIndex.value < 0
+        ? delta > 0
+          ? 0
+          : count - 1
+        : (gameActiveIndex.value + delta + count) % count;
+  } else if (event.key === 'Enter' && gamePickerOpen.value) {
     event.preventDefault();
-    if (!playnitePickerOpen.value) openPlaynitePicker();
-    movePlayniteActiveOption(-1);
-  } else if (event.key === 'Enter' && playnitePickerOpen.value) {
-    event.preventDefault();
-    const game = filteredPlayniteGames.value[playniteActiveIndex.value];
-    if (game) {
-      selectPlayniteGame(game);
-    }
+    const group = filteredLibraryGames.value[Math.max(0, gameActiveIndex.value)];
+    if (group?.entries[0]) selectLibraryGame(group.entries[0]);
   } else if (event.key === 'Escape') {
-    playnitePickerOpen.value = false;
-    playniteActiveIndex.value = -1;
+    gamePickerOpen.value = false;
+    gameActiveIndex.value = -1;
   }
 }
 
@@ -2674,6 +2653,7 @@ async function submit(): Promise<void> {
   if (!(await validate())) return;
   saving.value = true;
   try {
+    await selectedSteamArtworkRequest;
     const payload = buildPayload();
     await saveApp(payload);
     commitRtxHdrLiveState();
@@ -2889,47 +2869,26 @@ onBeforeUnmount(() => {
                 autocomplete="off"
                 required
                 :aria-autocomplete="isNew ? 'list' : undefined"
-                :aria-controls="isNew ? 'app-playnite-options' : undefined"
-                :aria-expanded="isNew ? playnitePickerOpen : undefined"
+                :aria-controls="isNew ? 'app-game-options' : undefined"
+                :aria-expanded="isNew ? gamePickerOpen : undefined"
                 :aria-activedescendant="
-                  isNew && playniteActiveIndex >= 0
-                    ? `app-playnite-option-${playniteActiveIndex}`
-                    : undefined
+                  isNew && gameActiveIndex >= 0 ? `app-game-option-${gameActiveIndex}` : undefined
                 "
                 :aria-invalid="Boolean(errors.name)"
                 :aria-describedby="errors.name ? 'app-name-error' : 'app-name-help'"
                 :readonly="isRemoteSession"
-                @focus="isNew && openPlaynitePicker()"
-                @blur="closePlaynitePicker"
+                @focus="isNew && openGamePicker()"
+                @blur="closeGamePicker"
                 @input="handleNameInput"
                 @keydown="handleNameKeydown"
               />
               <AppButton
-                v-if="isNew && isWindowsHost"
+                v-if="isNew && hasLibraryProvider"
                 size="compact"
                 icon="library"
-                :label="t('ui.application.playnite.browse')"
-                :aria-label="t('ui.application.playnite.browse')"
+                :label="t('ui.application.gamePicker.browse')"
                 @mousedown.prevent
-                @click="openPlaynitePicker"
-              />
-              <AppButton
-                v-if="isNew && providerSupported(overrideMetadata, 'steam')"
-                size="compact"
-                icon="gamepad"
-                :label="t('ui.application.steam.browse')"
-                :aria-label="t('ui.application.steam.browse')"
-                @mousedown.prevent
-                @click="openSteamPicker"
-              />
-              <AppButton
-                v-if="isNew && providerSupported(overrideMetadata, 'lutris')"
-                size="compact"
-                icon="library"
-                :label="t('ui.application.lutris.browse')"
-                :aria-label="t('ui.application.lutris.browse')"
-                @mousedown.prevent
-                @click="openLutrisPicker"
+                @click="openGamePicker"
               />
             </div>
             <span id="app-name-help" class="vs-field__helper">
@@ -2948,129 +2907,62 @@ onBeforeUnmount(() => {
             }}</span>
 
             <div
-              v-if="isNew && playnitePickerOpen"
-              id="app-playnite-options"
+              v-if="isNew && gamePickerOpen"
+              id="app-game-options"
               class="editor-playnite-picker"
               role="listbox"
-              :aria-label="t('ui.application.playnite.resultsLabel')"
+              :aria-label="t('ui.application.gamePicker.resultsLabel')"
             >
-              <p v-if="playniteGamesLoading" class="editor-playnite-picker__notice">
-                {{ t('ui.application.playnite.loading') }}
+              <p v-if="libraryGamesLoading" class="editor-playnite-picker__notice">
+                {{ t('ui.application.gamePicker.loading') }}
               </p>
-              <p v-else-if="playniteGamesError" class="editor-playnite-picker__notice">
-                {{ playniteGamesError }}
+              <p
+                v-for="error in libraryGamesErrors"
+                :key="error"
+                class="editor-playnite-picker__notice"
+              >
+                {{ error }}
               </p>
-              <p v-else-if="playniteGamesUnavailable" class="editor-playnite-picker__notice">
-                {{ t('ui.application.playnite.unavailable') }}
+              <button
+                v-for="(group, index) in filteredLibraryGames"
+                :id="'app-game-option-' + index"
+                :key="group.key"
+                class="editor-playnite-option"
+                :class="{ 'editor-playnite-option--active': gameActiveIndex === index }"
+                type="button"
+                role="option"
+                :aria-selected="gameActiveIndex === index"
+                @mousedown.prevent
+                @click="selectLibraryGame(group.entries[0]!)"
+                @mouseenter="gameActiveIndex = index"
+              >
+                <UiIcon name="gamepad" :size="16" aria-hidden="true" />
+                <span>{{ group.name }}</span>
+                <span class="editor-steam-option__path">{{
+                  [...new Set(group.entries.map((entry) => providerLabels[entry.provider]))].join(
+                    ' · ',
+                  )
+                }}</span>
+              </button>
+              <p
+                v-if="!libraryGamesLoading && !filteredLibraryGames.length"
+                class="editor-playnite-picker__notice"
+              >
+                {{ t('ui.application.gamePicker.empty') }}
               </p>
-              <template v-else>
-                <button
-                  v-for="(game, index) in filteredPlayniteGames"
-                  :id="`app-playnite-option-${index}`"
-                  :key="game.id"
-                  class="editor-playnite-option"
-                  :class="{ 'editor-playnite-option--active': playniteActiveIndex === index }"
-                  type="button"
-                  role="option"
-                  :aria-selected="playniteActiveIndex === index"
-                  @mousedown.prevent
-                  @click="selectPlayniteGame(game)"
-                  @mouseenter="playniteActiveIndex = index"
-                >
-                  <UiIcon name="library" :size="16" aria-hidden="true" />
-                  <span>{{ game.name }}</span>
-                </button>
-                <p v-if="!filteredPlayniteGames.length" class="editor-playnite-picker__notice">
-                  {{ t('ui.application.playnite.empty') }}
-                </p>
-              </template>
             </div>
-
-            <div
-              v-if="isNew && steamPickerOpen"
-              id="app-steam-options"
-              class="editor-playnite-picker"
-              role="listbox"
-              :aria-label="t('ui.application.steam.resultsLabel')"
-            >
-              <p v-if="steamGamesLoading" class="editor-playnite-picker__notice">
-                {{ t('ui.application.steam.loading') }}
-              </p>
-              <p v-else-if="steamGamesError" class="editor-playnite-picker__notice">
-                {{ steamGamesError }}
-              </p>
-              <p v-else-if="steamGamesUnavailable" class="editor-playnite-picker__notice">
-                {{ t('ui.application.steam.unavailable') }}
-              </p>
-              <template v-else>
-                <button
-                  v-for="(game, index) in filteredSteamGames"
-                  :id="`app-steam-option-${index}`"
-                  :key="game.steamId"
-                  class="editor-playnite-option"
-                  :class="{ 'editor-playnite-option--active': steamActiveIndex === index }"
-                  type="button"
-                  role="option"
-                  :aria-selected="steamActiveIndex === index"
-                  @mousedown.prevent
-                  @click="selectSteamGame(game)"
-                  @mouseenter="steamActiveIndex = index"
+            <label v-if="isNew && selectedLibraryAlternatives.length > 1" class="vs-field">
+              <span class="vs-field__label">{{ t('ui.application.gamePicker.library') }}</span>
+              <select class="vs-select" :value="selectedLibraryKey" @change="changeLibrary">
+                <option
+                  v-for="entry in selectedLibraryAlternatives"
+                  :key="entry.provider + ':' + entry.id"
+                  :value="entry.provider + ':' + entry.id"
                 >
-                  <UiIcon name="gamepad" :size="16" aria-hidden="true" />
-                  <span>{{ game.name }}</span>
-                  <span v-if="game.installDir" class="editor-steam-option__path">{{
-                    game.installDir
-                  }}</span>
-                </button>
-                <p v-if="!filteredSteamGames.length" class="editor-playnite-picker__notice">
-                  {{ t('ui.application.steam.empty') }}
-                </p>
-              </template>
-            </div>
-
-            <div
-              v-if="isNew && lutrisPickerOpen"
-              id="app-lutris-options"
-              class="editor-playnite-picker"
-              role="listbox"
-              :aria-label="t('ui.application.lutris.resultsLabel')"
-              @focusout="closeLutrisPicker"
-            >
-              <p v-if="lutrisGamesLoading" class="editor-playnite-picker__notice">
-                {{ t('ui.application.lutris.loading') }}
-              </p>
-              <p v-else-if="lutrisGamesError" class="editor-playnite-picker__notice">
-                {{ lutrisGamesError }}
-              </p>
-              <p v-else-if="lutrisGamesUnavailable" class="editor-playnite-picker__notice">
-                {{ t('ui.application.lutris.unavailable') }}
-              </p>
-              <template v-else>
-                <button
-                  v-for="(game, index) in filteredLutrisGames"
-                  :id="`app-lutris-option-${index}`"
-                  :key="game.id"
-                  class="editor-playnite-option"
-                  :class="{ 'editor-playnite-option--active': lutrisActiveIndex === index }"
-                  type="button"
-                  role="option"
-                  :aria-selected="lutrisActiveIndex === index"
-                  @mousedown.prevent
-                  @click="selectLutrisGame(game)"
-                  @mouseenter="lutrisActiveIndex = index"
-                >
-                  <UiIcon name="library" :size="16" aria-hidden="true" />
-                  <span>{{ game.name }}</span>
-                  <span v-if="game.runner" class="editor-steam-option__path">
-                    {{ game.runner }}
-                    <template v-if="game.platform"> · {{ game.platform }}</template>
-                  </span>
-                </button>
-                <p v-if="!filteredLutrisGames.length" class="editor-playnite-picker__notice">
-                  {{ t('ui.application.lutris.empty') }}
-                </p>
-              </template>
-            </div>
+                  {{ providerLabels[entry.provider] }}
+                </option>
+              </select>
+            </label>
 
             <div v-if="isPlayniteLinked" class="editor-playnite-link vs-cluster">
               <StatusBadge

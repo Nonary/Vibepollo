@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { providerSupported } from '@/utils/providerCapabilities';
+import GameLibrarySetup from '../../web-legacy/components/GameLibrarySetup.vue';
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges';
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
@@ -391,7 +392,7 @@ const mangoDirty = computed(
 );
 
 function steamAutoSyncEnabled(): boolean {
-  return steam.value?.auto_sync !== false;
+  return steam.value?.auto_sync === true;
 }
 
 function steamRemoveUninstalledEnabled(): boolean {
@@ -1154,12 +1155,36 @@ watch(
   },
 );
 onMounted(() => void load());
+const librarySetupOpen = ref(false);
+function libraryRequest(
+  method: 'GET' | 'POST' | 'PATCH',
+  path: string,
+  body?: Record<string, unknown>,
+): Promise<any> {
+  return method === 'GET'
+    ? apiGet(path)
+    : method === 'PATCH'
+      ? apiPatch(path, body ?? {})
+      : apiPost(path, body ?? {});
+}
 </script>
 
 <template>
   <div class="page page--narrow integrations-page">
+    <GameLibrarySetup
+      v-model:open="librarySetupOpen"
+      :platform="system.metadata?.platform || ''"
+      :metadata="system.metadata"
+      :request="libraryRequest"
+      @saved="load()"
+    />
     <PageHeader :title="t('ui.integrations.title')" :description="t('ui.integrations.description')">
       <template #actions>
+        <AppButton
+          icon="integrations"
+          label="Setup Game Library Integration"
+          @click="librarySetupOpen = true"
+        />
         <AppButton
           icon="refresh"
           :label="t('ui.integrations.actions.refreshStatus')"
