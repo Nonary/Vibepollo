@@ -58,6 +58,7 @@
   #include "src/platform/linux/capability_sanitizer.h"
   #include "src/platform/linux/maintenance_cli.h"
   #include "src/platform/linux/private_display.h"
+  #include "src/platform/linux/display_backend.h"
 
   #include <pthread.h>
 #endif
@@ -704,13 +705,13 @@ int main(int argc, char *argv[]) {
   }
 
 #ifdef __linux__
-  (void) platf::linux_private_display::initialize();
+  (void) platf::linux_display::backend().initialize();
   auto linux_private_display_guard = util::fail_guard([supervised_machine_host]() {
     if (supervised_machine_host) {
       platf::linux_private_display::request_process_shutdown_preserve();
       return;
     }
-    (void) platf::linux_private_display::revert();
+    (void) platf::linux_display::backend().revert();
   });
 #endif
 

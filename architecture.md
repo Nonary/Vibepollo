@@ -232,6 +232,27 @@ The response includes:
 - No classic session active (`rtsp_sessions_active` check).
 - A running app exists to “resume”, or an `app_id` is provided to launch.
 
+#### Linux session display backends
+
+`src/platform/linux/display_backend.h` separates a session's capture target from
+ownership of a display. RTSP launch/resume, WebRTC, display enumeration, and
+immediate/delayed cleanup use the selected `linux_display::backend_t`.
+Selection follows the verified capture backend for the current host session.
+
+- The desktop implementation delegates connector reservation, mode application,
+  and restoration to `linux_private_display` (KScreen and the private DRM pool).
+- The Gamescope implementation supplies the existing compositor scene, owns no
+  connector, and performs no topology restoration. Physical, per-client, and
+  shared display preferences all select that scene for normal game sessions.
+
+Preparation returns an output name, ownership flag, and any error. Capture also
+resolves its target through the backend, so startup encoder probing cannot
+mistake a saved Desktop Mode connector for a Gaming Mode capture source.
+Persistent display/layout preferences remain unchanged. Independent-monitor
+capabilities are separate from HDR capture: Gamescope's PipeWire backend still
+verifies the HDR extension and negotiated pixel format. This does not create
+an independent headless compositor or implement Remote Monitor topology there.
+
 #### Launch + display prep (Windows-specific heavy lifting)
 
 If an app must be launched, it uses the same process infrastructure as classic sessions (`proc::proc.execute(...)`). It also prepares the display environment (virtual display, display helper integration) before capture:

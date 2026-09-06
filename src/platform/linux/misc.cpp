@@ -61,6 +61,7 @@
 #include "src/platform/common.h"
 #include "src/video.h"
 #ifdef __linux__
+  #include "src/platform/linux/display_backend.h"
   #include "src/platform/linux/private_display_capture_policy.h"
   #include "src/platform/linux/private_display.h"
   #include "src/platform/linux/scoped_capability.h"
@@ -1323,11 +1324,15 @@ namespace platf {
 
   std::shared_ptr<display_t> display(
     mem_type_e hwdevice_type,
-    const std::string &display_name,
+    const std::string &requested_display_name,
     const video::config_t &config,
     const std::optional<adapter_id_t> &required_adapter
   ) {
     (void) required_adapter;
+    auto display_name = requested_display_name;
+#ifdef __linux__
+    display_name = linux_display::backend().capture_target(requested_display_name);
+#endif
     // Keep KMS as first element to check before dropping CAP_SYS_ADMIN
 #ifdef SUNSHINE_BUILD_DRM
     // SteamOS KWin rounds PipeWire refresh rates and converts capture to SDR.

@@ -69,7 +69,10 @@ SteamOS development uses a separate [user bundle](packaging/linux/steamos/README
 which leaves the read-only operating system untouched. Its experimental Gaming
 Mode path supports stock Gamescope SDR capture and an optional
 [patched Gamescope HDR10 path](packaging/linux/steamos/gamescope/README.md).
-Independent Gaming Mode virtual displays remain unimplemented. See the [SteamOS audit](packaging/linux/steamos/AUDIT.md)
+Gaming Mode automatically uses the existing Gamescope output even when virtual
+display is selected. Desktop display/layout preferences are preserved for the
+next Desktop Mode session; Gaming Mode does not create independent monitors.
+See the [SteamOS audit](packaging/linux/steamos/AUDIT.md)
 for validation and remaining work.
 
 ## Does Vibepollo aim to replace Sunshine or Apollo?

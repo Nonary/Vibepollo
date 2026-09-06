@@ -4,9 +4,6 @@
  */
 
 #include "private_display.h"
-#ifdef SUNSHINE_BUILD_GAMESCOPE
-  #include "gamescopegrab.h"
-#endif
 
 #include "hdr_policy.h"
 #include "private_display_mode_client.h"
@@ -839,11 +836,6 @@ namespace platf::linux_private_display {
   }  // namespace
 
   bool initialize() {
-#ifdef SUNSHINE_BUILD_GAMESCOPE
-    if (gamescope_capture_selected()) {
-      return false;
-    }
-#endif
     if (process_shutdown_preserve_requested()) {
       return false;
     }
@@ -953,13 +945,6 @@ namespace platf::linux_private_display {
     if (!result.requested) {
       return result;
     }
-#ifdef SUNSHINE_BUILD_GAMESCOPE
-    if (gamescope_capture_selected()) {
-      result.error = "Stock Gamescope cannot create an independent virtual display. Select the physical display for Gaming Mode.";
-      session.virtual_display_failed = true;
-      return result;
-    }
-#endif
 
     {
       auto &manager = state();
@@ -1881,20 +1866,10 @@ namespace platf::linux_private_display {
   }
 
   bool capable() {
-#ifdef SUNSHINE_BUILD_GAMESCOPE
-    if (gamescope_capture_selected()) {
-      return false;
-    }
-#endif
     return doctor_path().has_value() && !configured_outputs().empty();
   }
 
   bool ready() {
-#ifdef SUNSHINE_BUILD_GAMESCOPE
-    if (gamescope_capture_selected()) {
-      return false;
-    }
-#endif
     if (!doctor_path() || !broker_socket_ready()) {
       return false;
     }
@@ -1916,11 +1891,6 @@ namespace platf::linux_private_display {
   }
 
   bool hdr_capable() {
-#ifdef SUNSHINE_BUILD_GAMESCOPE
-    if (gamescope_capture_selected()) {
-      return false;
-    }
-#endif
     return std::ranges::any_of(configured_outputs(), connector_hdr_capable);
   }
 
@@ -1939,15 +1909,6 @@ namespace platf::linux_private_display {
   std::optional<display_device::EnumeratedDeviceList> enumerate_devices(
     const display_device::DeviceEnumerationDetail detail
   ) {
-#ifdef SUNSHINE_BUILD_GAMESCOPE
-    if (gamescope_capture_selected()) {
-      display_device::EnumeratedDevice device;
-      device.m_device_id = "gamescope";
-      device.m_display_name = "gamescope";
-      device.m_friendly_name = "Gamescope main output (SDR)";
-      return display_device::EnumeratedDeviceList {std::move(device)};
-    }
-#endif
     const auto configuration = query_configuration();
     if (!configuration) {
       return std::nullopt;

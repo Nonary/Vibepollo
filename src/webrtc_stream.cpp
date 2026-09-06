@@ -91,6 +91,7 @@
 #elif defined(__linux__)
   #include "src/display_helper_integration.h"
   #include "src/platform/linux/private_display.h"
+  #include "src/platform/linux/display_backend.h"
 #endif
 
 #ifdef __APPLE__
@@ -3162,7 +3163,7 @@ namespace webrtc_stream {
       bool linux_private_display_prepared = false;
       auto linux_private_display_guard = util::fail_guard([&]() {
         if (linux_private_display_prepared) {
-          (void) platf::linux_private_display::revert();
+          (void) platf::linux_display::backend().revert();
         }
       });
 #endif
@@ -3238,17 +3239,19 @@ namespace webrtc_stream {
           }
         }
 #elif defined(__linux__)
-        const auto linux_private_display = platf::linux_private_display::prepare_session(
+        const auto prepared_display = platf::linux_display::backend().prepare_session(
           *launch_session,
           !capture_already_active,
           allow_display_changes
         );
-        if (linux_private_display.active) {
-          linux_private_display_prepared = true;
+        if (!prepared_display.output_name.empty()) {
           pending_output_override_lease =
-            config::set_runtime_output_name_override_with_lease(linux_private_display.output_name);
-        } else if (linux_private_display.requested) {
-          return linux_private_display.error;
+            config::set_runtime_output_name_override_with_lease(prepared_display.output_name);
+        }
+        if (prepared_display.owns_output) {
+          linux_private_display_prepared = true;
+        } else if (!prepared_display.error.empty()) {
+          return prepared_display.error;
         }
         if (webrtc_capture.stream_start_params) {
           webrtc_capture.stream_start_params->uses_virtual_display = launch_session->virtual_display;
@@ -3256,7 +3259,7 @@ namespace webrtc_stream {
         if (launch_session->virtual_display &&
             (allow_display_changes || launch_session->virtual_display_recreated_on_demand ||
              launch_session->virtual_display_needs_resume_apply) &&
-            !platf::linux_private_display::apply_session(*launch_session)) {
+            !platf::linux_display::backend().apply_session(*launch_session)) {
           return std::string {"Failed to activate the Linux private streaming display."};
         }
         if (launch_session->virtual_display_hdr_enabled == false) {

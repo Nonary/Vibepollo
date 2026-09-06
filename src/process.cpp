@@ -3151,9 +3151,9 @@ namespace proc {
         display_helper_integration::stop_watchdog();
       }
 #elif defined(__linux__)
-      platf::linux_private_display::cancel_scheduled_revert();
+      platf::linux_display::backend().cancel_scheduled_revert();
       if (config::video.dd.config_revert_delay.count() > 0) {
-        platf::linux_private_display::schedule_revert(
+        platf::linux_display::backend().schedule_revert(
           config::video.dd.config_revert_delay,
           "app-end delay"
         );

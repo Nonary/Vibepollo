@@ -59,6 +59,10 @@
 #include "video.h"
 #include "webrtc_stream.h"
 
+#ifdef __linux__
+  #include "platform/linux/private_display.h"
+#endif
+
 #ifdef _WIN32
   #include "platform/windows/utils.h"
 

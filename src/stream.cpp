@@ -69,6 +69,7 @@ extern "C" {
   #include "platform/windows/virtual_display_cleanup.h"
 #elif defined(__linux__)
   #include "platform/linux/private_display.h"
+  #include "src/platform/linux/display_backend.h"
 #endif
 
 #define IDX_START_A 0
@@ -288,7 +289,7 @@ namespace stream {
 #ifdef _WIN32
     g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
 #elif defined(__linux__)
-    platf::linux_private_display::cancel_scheduled_revert();
+    platf::linux_display::backend().cancel_scheduled_revert();
 #endif
   }
 
@@ -2967,7 +2968,7 @@ namespace stream {
       if (delay_virtual_display_cleanup_due_to_pause) {
         BOOST_LOG(info) << "Linux private display: stream paused; scheduling output restore in "
                         << paused_timeout_secs << "s.";
-        platf::linux_private_display::schedule_revert(
+        platf::linux_display::backend().schedule_revert(
           std::chrono::seconds(paused_timeout_secs),
           "paused-session timeout"
         );
@@ -2975,12 +2976,12 @@ namespace stream {
         BOOST_LOG(debug) << "Linux private display: keeping the private output active for resume.";
       } else {
         if (config::video.dd.config_revert_delay.count() > 0) {
-          platf::linux_private_display::schedule_revert(
+          platf::linux_display::backend().schedule_revert(
             config::video.dd.config_revert_delay,
             "stream-end delay"
           );
         } else {
-          (void) platf::linux_private_display::revert();
+          (void) platf::linux_display::backend().revert();
         }
       }
 #else

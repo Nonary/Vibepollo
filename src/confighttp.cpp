@@ -76,6 +76,7 @@
 #elif defined(__linux__)
   #include "platform/linux/capture_status.h"
   #include "platform/linux/private_display.h"
+  #include "src/platform/linux/display_backend.h"
 #endif
 
 #include <nlohmann/json.hpp>
@@ -3117,13 +3118,14 @@ namespace confighttp {
       {"managed_event_driven", managed_active},
       {"virtual_display_configured", config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled},
     };
-    const bool virtual_capable = platf::linux_private_display::capable();
-    const bool virtual_ready = platf::linux_private_display::ready();
+    const auto display_capabilities = platf::linux_display::backend().capabilities();
+    const bool virtual_capable = display_capabilities.independent_outputs;
+    const bool virtual_ready = display_capabilities.independent_outputs_ready;
     output_tree["virtual_display"] = {
       {"capable", virtual_capable},
       {"ready", virtual_ready},
       {"reason", virtual_ready ? "" : virtual_capable ? "session_or_output_unavailable" : "driver_or_outputs_unavailable"},
-      {"backend", "kscreen-vkms"},
+      {"backend", display_capabilities.backend_name},
       {"modes", {"per_client", "shared"}},
       {"layouts", {"exclusive", "extended", "extended_primary", "extended_isolated", "extended_primary_isolated"}},
       {"display_enumeration", true},
