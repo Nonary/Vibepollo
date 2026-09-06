@@ -71,7 +71,8 @@ packaging/linux/steamos/install-user.sh --payload /path/to/payload
 
 The installer copies each build to
 `$XDG_DATA_HOME/vibepollo-steamos/releases/`, atomically changes `current`, and
-enables `vibepollo-steamos.service` in the user's graphical-session target.
+enables `vibepollo-steamos.service` in the user's graphical-session and
+gamescope-session targets.
 Installation restarts the service, interrupting an active stream. A failed
 activation restores the previous release and launcher. Old release directories
 are retained for manual rollback. Pass `--no-start` to activate the files without
@@ -86,10 +87,12 @@ directories even when the user service manager has different environment values.
 The launch wrapper reads only a bounded `GAMESCOPE_WAYLAND_DISPLAY` value from
 Gamescope's runtime environment file. It never evaluates that file. After
 verifying the compositor, the host also imports its matching local X11 display
-for application launches. The unit is
-bound to the standard `graphical-session.target`; SteamOS therefore stops it
-during a Game Mode/Desktop Mode transition and starts it with the new session's
-credentials. PipeWire and the physical display remain owned by the session.
+for application launches. The unit stops with `graphical-session.target` and
+is also enabled directly in `gamescope-session.target`: SteamOS can retain the
+shared graphical target while stopping its services during a mode transition.
+Gaming Mode explicitly starts the host after `gamescope-session.service` has
+published its compositor environment and reported ready. PipeWire and the
+physical display remain owned by the session.
 
 ## Current capability boundary
 
