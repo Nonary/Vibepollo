@@ -1570,8 +1570,16 @@ namespace platf {
     }
 #endif
 #ifdef SUNSHINE_BUILD_DRM
-    if (((config::video.capture.empty() && sources.none()) || config::video.capture == "kms") && verify_kms()) {
-      sources[source::KMS] = true;
+    if ((config::video.capture.empty() && sources.none()) || config::video.capture == "kms") {
+      const bool outputs_available = verify_kms();
+      sources[source::KMS] = linux_private_display_capture::enable_kms(config::video.capture == "kms", outputs_available);
+      if (sources[source::KMS] && !outputs_available) {
+        // A paused compositor or dormant virtual connector can have no active
+        // framebuffer at startup. Keep the explicit backend selected so each
+        // later enumeration retries KMS after scanout recovers. This does not
+        // declare an output ready; capture still requires a real framebuffer.
+        BOOST_LOG(warning) << "KMS has no active capture output yet; retaining the requested backend for recovery."sv;
+      }
     }
 #endif
 #ifdef SUNSHINE_BUILD_X11

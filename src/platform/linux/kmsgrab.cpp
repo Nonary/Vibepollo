@@ -30,6 +30,7 @@
 #include "kmsgrab_selection.h"
 #include "scoped_capability.h"
 #include "src/config.h"
+#include "src/drm_timing_trace.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/round_robin.h"
@@ -50,11 +51,23 @@ namespace platf {
   DRM_IOWR(DRM_COMMAND_BASE + DRM_VIBESHINE_WAIT_PRESENT, struct vibeshine_drm_wait_present)
 #define DRM_IOCTL_VIBESHINE_GET_FRAME \
   DRM_IOWR(DRM_COMMAND_BASE + DRM_VIBESHINE_GET_FRAME, struct vibeshine_drm_frame)
+#define DRM_IOCTL_VIBESHINE_GET_PRESENT_TRACE \
+  DRM_IOWR(DRM_COMMAND_BASE + DRM_VIBESHINE_GET_PRESENT_TRACE, struct vibeshine_drm_present_trace)
 
     static_assert(sizeof(vibeshine_drm_wait_present) == 48);
     static_assert(sizeof(vibeshine_drm_frame) == 152);
+    static_assert(sizeof(vibeshine_drm_present_trace) == 1088);
 
     constexpr auto PRESENT_WAIT_IDLE_TIMEOUT = std::chrono::milliseconds(16);
+
+    template<typename Duration>
+    std::int64_t timing_trace_ns(Duration value) {
+      return std::chrono::duration_cast<std::chrono::nanoseconds>(value).count();
+    }
+
+    std::int64_t timing_trace_ns(std::chrono::steady_clock::time_point value) {
+      return timing_trace_ns(value.time_since_epoch());
+    }
 
     void wait_until_capture_deadline(std::chrono::steady_clock::time_point deadline) {
       constexpr auto sleep_guard = 250us;
@@ -1543,10 +1556,111 @@ namespace platf {
         presentation_rate_limiter.reset();
         last_source_presentation_timestamp.reset();
         last_capture_delivery_timestamp.reset();
+        last_selected_presentation_sequence.reset();
         sleep_overshoot_logger.reset();
         presentation_latch.request_capture();
         presentation_pending = presentation_latch.capture_ready();
+        presentation_trace_sequence = presentation_sequence;
+        presentation_trace_available = true;
         BOOST_LOG(info) << "Using event-driven KMS capture for Vibeshine DRM CRTC ["sv << crtc_id << "]."sv;
+        if (drm_timing_trace::writer().available()) {
+          BOOST_LOG(info) << "Always-on DRM timing trace is buffered in "sv << drm_timing_trace::TRACE_PATH
+                          << " and bounded to two 128 MiB tmpfs files."sv;
+        } else {
+          BOOST_LOG(error) << "Cannot open always-on DRM timing trace ["sv << drm_timing_trace::TRACE_PATH << "]."sv;
+        }
+        const auto trace_start_timestamp = std::chrono::steady_clock::now();
+        const auto trace_start_wall_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                           std::chrono::system_clock::now().time_since_epoch()
+        ).count();
+        drm_timing_trace::write([&](auto &trace) {
+          trace << "kind=trace_start crtc=" << crtc_id
+                << " seq=" << presentation_sequence
+                << " raw_ns=" << timing_trace_ns(*presentation_timestamp)
+                << " mono_ns=" << timing_trace_ns(trace_start_timestamp)
+                << " wall_ns=" << trace_start_wall_ns
+                << " target_interval_ns=" << timing_trace_ns(delay);
+        });
+      }
+
+      void drain_presentation_trace() {
+        if (!presentation_trace_available) {
+          return;
+        }
+
+        while (true) {
+          vibeshine_drm_present_trace request {};
+          request.abi_version = VIBESHINE_DRM_TRACE_ABI_VERSION;
+          request.crtc_id = static_cast<std::uint32_t>(crtc_id);
+          request.after_sequence = presentation_trace_sequence;
+
+          int ioctl_error = 0;
+          {
+            linux_security::scoped_effective_capability admin {CAP_SYS_ADMIN};
+            if (!admin.active()) {
+              ioctl_error = admin.unavailable() ? EACCES : EPERM;
+            } else if (::ioctl(card.fd.el, DRM_IOCTL_VIBESHINE_GET_PRESENT_TRACE, &request) < 0) {
+              ioctl_error = errno;
+            }
+          }
+          if (ioctl_error != 0) {
+            drm_timing_trace::write([&](auto &trace) {
+              trace << "kind=trace_error crtc=" << crtc_id
+                    << " after_seq=" << presentation_trace_sequence
+                    << " errno=" << ioctl_error;
+            });
+            presentation_trace_available = false;
+            return;
+          }
+
+          bool valid = request.abi_version == VIBESHINE_DRM_TRACE_ABI_VERSION &&
+                       request.crtc_id == static_cast<std::uint32_t>(crtc_id) &&
+                       request.after_sequence == presentation_trace_sequence &&
+                       request.count <= VIBESHINE_DRM_TRACE_MAX_EVENTS &&
+                       (request.flags & ~VIBESHINE_DRM_TRACE_OVERFLOW) == 0 &&
+                       request.reserved[0] == 0 && request.reserved[1] == 0 &&
+                       request.reserved[2] == 0 && request.reserved[3] == 0;
+          std::uint64_t previous_sequence = presentation_trace_sequence;
+          for (std::uint32_t index = 0; valid && index < request.count; ++index) {
+            valid = request.events[index].sequence > previous_sequence &&
+                    request.events[index].sequence <= request.newest_sequence &&
+                    request.events[index].timestamp_ns != 0;
+            previous_sequence = request.events[index].sequence;
+          }
+          if (!valid) {
+            drm_timing_trace::write([&](auto &trace) {
+              trace << "kind=trace_error crtc=" << crtc_id
+                    << " after_seq=" << presentation_trace_sequence
+                    << " error=invalid_response";
+            });
+            presentation_trace_available = false;
+            return;
+          }
+
+          const auto receipt_timestamp = std::chrono::steady_clock::now();
+          if ((request.flags & VIBESHINE_DRM_TRACE_OVERFLOW) != 0) {
+            drm_timing_trace::write([&](auto &trace) {
+              trace << "kind=trace_overflow crtc=" << crtc_id
+                    << " after_seq=" << presentation_trace_sequence
+                    << " first_seq=" << (request.count ? request.events[0].sequence : 0)
+                    << " newest_seq=" << request.newest_sequence
+                    << " receipt_ns=" << timing_trace_ns(receipt_timestamp);
+            });
+          }
+          for (std::uint32_t index = 0; index < request.count; ++index) {
+            const auto &event = request.events[index];
+            drm_timing_trace::write([&](auto &trace) {
+              trace << "kind=drm_event crtc=" << crtc_id
+                    << " seq=" << event.sequence
+                    << " raw_ns=" << event.timestamp_ns
+                    << " receipt_ns=" << timing_trace_ns(receipt_timestamp);
+            });
+            presentation_trace_sequence = event.sequence;
+          }
+          if (request.count == 0 || presentation_trace_sequence >= request.newest_sequence) {
+            return;
+          }
+        }
       }
 
       presentation_wait_e wait_for_presentation(std::chrono::milliseconds timeout) {
@@ -1636,9 +1750,10 @@ namespace platf {
           )) {
             case pacing::presentation_response_e::changed:
               {
+                const auto receipt_timestamp = std::chrono::steady_clock::now();
                 auto timestamp = pacing::validate_timestamp(
                   request.timestamp_ns,
-                  std::chrono::steady_clock::now(),
+                  receipt_timestamp,
                   0ns,
                   last_presentation_timestamp
                 );
@@ -1646,9 +1761,22 @@ namespace platf {
                   presentation_mode.deactivate();
                   return presentation_wait_e::unsupported;
                 }
+                const auto missed = request.sequence > requested_sequence ?
+                                      request.sequence - requested_sequence - 1 :
+                                      0;
+                drm_timing_trace::write([&](auto &trace) {
+                  trace << "kind=wait_response crtc=" << crtc_id
+                        << " requested_seq=" << requested_sequence
+                        << " seq=" << request.sequence
+                        << " missed=" << missed
+                        << " raw_ns=" << request.timestamp_ns
+                        << " receipt_ns=" << timing_trace_ns(receipt_timestamp)
+                        << " pending=" << ((request.flags & VIBESHINE_DRM_PRESENT_PENDING) != 0 ? 1 : 0);
+                });
                 presentation_sequence = request.sequence;
                 presentation_timestamp = *timestamp;
                 last_presentation_timestamp = *timestamp;
+                drain_presentation_trace();
                 presentation_latch.observe_response(
                   pacing::presentation_response_e::changed,
                   (request.flags & VIBESHINE_DRM_PRESENT_PENDING) != 0,
@@ -1683,9 +1811,11 @@ namespace platf {
       ) {
         while (presentation_mode.event_capture_enabled()) {
           if (presentation_pending) {
-            const auto delivery_deadline = presentation_rate_limiter.next_delivery(
-              std::chrono::steady_clock::now()
-            );
+            const auto decision_timestamp = std::chrono::steady_clock::now();
+            const auto limiter_before = presentation_rate_limiter.diagnostic_state(decision_timestamp);
+            const auto delivery_deadline = limiter_before.next_delivery;
+            const auto sequence_at_decision = presentation_sequence;
+            const bool waited_for_credit = delivery_deadline > decision_timestamp;
             if (const auto now = std::chrono::steady_clock::now(); delivery_deadline > now) {
               wait_until_capture_deadline(delivery_deadline);
               sleep_overshoot_logger.first_point(delivery_deadline);
@@ -1721,6 +1851,7 @@ namespace platf {
             }
 
             const auto captured_timestamp = presentation_timestamp;
+            const auto captured_sequence = presentation_sequence;
             const auto captured_generation = presentation_latch.capture_generation();
             std::shared_ptr<platf::img_t> img_out;
             std::optional<std::chrono::steady_clock::time_point> capture_delivery_timestamp;
@@ -1790,24 +1921,55 @@ namespace platf {
                 }
                 break;
               case platf::capture_e::ok:
-                if (!captured_timestamp) {
-                  BOOST_LOG(error) << "Vibepollo DRM presentation is missing its validated timestamp."sv;
-                  return std::nullopt;
+                {
+                  if (!captured_timestamp) {
+                    BOOST_LOG(error) << "Vibepollo DRM presentation is missing its validated timestamp."sv;
+                    return std::nullopt;
+                  }
+                  if (!img_out || !img_out->host_processing_timestamp || !capture_delivery_timestamp) {
+                    BOOST_LOG(error) << "KMS capture is missing its actual delivery timestamp."sv;
+                    return std::nullopt;
+                  }
+                  presentation_rate_limiter.mark_delivered(*capture_delivery_timestamp);
+                  const auto limiter_after = presentation_rate_limiter.diagnostic_state(*capture_delivery_timestamp);
+                  const auto coalesced = last_selected_presentation_sequence &&
+                                             captured_sequence > *last_selected_presentation_sequence ?
+                                           captured_sequence - *last_selected_presentation_sequence - 1 :
+                                           0;
+                  const bool stall_reset = limiter_before.last_delivery &&
+                                           *capture_delivery_timestamp >= *limiter_before.last_delivery &&
+                                           *capture_delivery_timestamp - *limiter_before.last_delivery >=
+                                             limiter_before.interval + limiter_before.interval;
+                  drm_timing_trace::write([&](auto &trace) {
+                    trace << "kind=selection crtc=" << crtc_id
+                          << " decision_seq=" << sequence_at_decision
+                          << " selected_seq=" << captured_sequence
+                          << " coalesced=" << coalesced
+                          << " raw_ns=" << timing_trace_ns(*captured_timestamp)
+                          << " decision_ns=" << timing_trace_ns(decision_timestamp)
+                          << " target_interval_ns=" << timing_trace_ns(limiter_before.interval)
+                          << " stored_credit_before_ns=" << timing_trace_ns(limiter_before.stored_credit)
+                          << " available_credit_before_ns=" << timing_trace_ns(limiter_before.available_credit)
+                          << " deadline_ns=" << timing_trace_ns(delivery_deadline)
+                          << " delivery_ns=" << timing_trace_ns(*capture_delivery_timestamp)
+                          << " delivery_lateness_ns=" << timing_trace_ns(*capture_delivery_timestamp - delivery_deadline)
+                          << " stored_credit_after_ns=" << timing_trace_ns(limiter_after.stored_credit)
+                          << " available_credit_after_ns=" << timing_trace_ns(limiter_after.available_credit)
+                          << " waited=" << (waited_for_credit ? 1 : 0)
+                          << " stall_reset=" << (stall_reset ? 1 : 0)
+                          << " latch_generation=" << captured_generation;
+                  });
+                  last_selected_presentation_sequence = captured_sequence;
+                  presentation_latch.mark_delivered(captured_generation);
+                  presentation_pending = presentation_latch.capture_ready();
+                  if (!presentation_pending) {
+                    presentation_timestamp.reset();
+                  }
+                  if (!push_captured_image_cb(std::move(img_out), true)) {
+                    return platf::capture_e::ok;
+                  }
+                  break;
                 }
-                if (!img_out || !img_out->host_processing_timestamp || !capture_delivery_timestamp) {
-                  BOOST_LOG(error) << "KMS capture is missing its actual delivery timestamp."sv;
-                  return std::nullopt;
-                }
-                presentation_rate_limiter.mark_delivered(*capture_delivery_timestamp);
-                presentation_latch.mark_delivered(captured_generation);
-                presentation_pending = presentation_latch.capture_ready();
-                if (!presentation_pending) {
-                  presentation_timestamp.reset();
-                }
-                if (!push_captured_image_cb(std::move(img_out), true)) {
-                  return platf::capture_e::ok;
-                }
-                break;
               case platf::capture_e::reinit:
               case platf::capture_e::error:
               case platf::capture_e::interrupted:
@@ -1919,7 +2081,10 @@ namespace platf {
       std::optional<std::chrono::steady_clock::time_point> last_presentation_timestamp;
       std::optional<std::chrono::steady_clock::time_point> last_source_presentation_timestamp;
       std::optional<std::chrono::steady_clock::time_point> last_capture_delivery_timestamp;
+      std::optional<std::uint64_t> last_selected_presentation_sequence;
       std::optional<exported_frame_t> pending_exported_frame;
+      std::uint64_t presentation_trace_sequence {};
+      bool presentation_trace_available {false};
       logging::min_max_avg_periodic_logger<double> source_presentation_interval_logger {
         debug,
         "Vibepollo DRM source presentation interval",

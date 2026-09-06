@@ -68,6 +68,7 @@ extern "C" {
   #include "platform/windows/virtual_display.h"
   #include "platform/windows/virtual_display_cleanup.h"
 #elif defined(__linux__)
+  #include "drm_timing_trace.h"
   #include "platform/linux/private_display.h"
   #include "src/platform/linux/display_backend.h"
 #endif
@@ -2345,6 +2346,51 @@ namespace stream {
         session->video.lowseq = lowseq;
 
         const auto send_complete_timestamp = std::chrono::steady_clock::now();
+#ifdef __linux__
+        {
+          const auto timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                      packet->frame_timestamp->time_since_epoch()
+          ).count();
+          const auto send_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 send_complete_timestamp.time_since_epoch()
+          ).count();
+          const auto wall_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 std::chrono::system_clock::now().time_since_epoch()
+          ).count();
+          if (frame_is_dupe) {
+            drm_timing_trace::write([&](auto &trace) {
+              trace << "kind=rtp frame=" << packet->frame_index()
+                    << " timestamp_source=synthetic"
+                    << " synthetic_ns=" << timestamp_ns
+                    << " rtp=" << timestamp
+                    << " send_ns=" << send_ns
+                    << " wall_ns=" << wall_ns;
+            });
+          } else if (wire_timeline_state.previous_frame) {
+            drm_timing_trace::write([&](auto &trace) {
+              trace << "kind=rtp frame=" << packet->frame_index()
+                    << " timestamp_source=drm"
+                    << " raw_ns=" << timestamp_ns
+                    << " rtp=" << timestamp
+                    << " previous_rtp=" << wire_timeline_state.previous_frame->rtp_timestamp
+                    << " delta=" << static_cast<std::uint32_t>(timestamp - wire_timeline_state.previous_frame->rtp_timestamp)
+                    << " send_ns=" << send_ns
+                    << " wall_ns=" << wall_ns;
+            });
+          } else {
+            drm_timing_trace::write([&](auto &trace) {
+              trace << "kind=rtp frame=" << packet->frame_index()
+                    << " timestamp_source=drm"
+                    << " raw_ns=" << timestamp_ns
+                    << " rtp=" << timestamp
+                    << " previous_rtp=none"
+                    << " delta=none"
+                    << " send_ns=" << send_ns
+                    << " wall_ns=" << wall_ns;
+            });
+          }
+        }
+#endif
         if (!frame_is_dupe) {
           const wire_timeline_frame_t current_wire_frame {
             .frame_index = packet->frame_index(),

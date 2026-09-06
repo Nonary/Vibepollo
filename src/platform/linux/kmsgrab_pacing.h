@@ -70,6 +70,14 @@ namespace platf::kms::pacing {
 
   class presentation_rate_limiter_t {
   public:
+    struct diagnostic_state_t {
+      clock_t::duration interval {};
+      clock_t::duration stored_credit {};
+      clock_t::duration available_credit {};
+      std::optional<clock_t::time_point> last_delivery;
+      clock_t::time_point next_delivery {};
+    };
+
     void set_interval(clock_t::duration interval) {
       interval_ = interval;
       reset();
@@ -90,6 +98,24 @@ namespace platf::kms::pacing {
         return now;
       }
       return now + (interval_ - available_credit);
+    }
+
+    [[nodiscard]] diagnostic_state_t diagnostic_state(clock_t::time_point now) const {
+      diagnostic_state_t state {
+        .interval = interval_,
+        .stored_credit = credit_,
+        .last_delivery = last_delivery_,
+        .next_delivery = now,
+      };
+      if (!last_delivery_ || interval_ <= clock_t::duration::zero()) {
+        return state;
+      }
+
+      state.available_credit = replenished_credit(now);
+      if (state.available_credit < interval_) {
+        state.next_delivery = now + (interval_ - state.available_credit);
+      }
+      return state;
     }
 
     void mark_delivered(clock_t::time_point delivery) {

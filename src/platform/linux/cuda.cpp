@@ -24,6 +24,7 @@ extern "C" {
 
 // local includes
 #include "cuda.h"
+#include "cuda_interop.h"
 #include "graphics.h"
 #include "src/logging.h"
 #include "src/nvenc/nvenc_cuda.h"
@@ -328,29 +329,43 @@ namespace cuda {
   class gl_cuda_vram_t: public platf::avcodec_encode_device_t {
   public:
     ~gl_cuda_vram_t() override {
-      if (!y_res && !uv_res) {
+      if (!cuda_context) {
         return;
       }
 
+      // hwframe owns the FFmpeg reference keeping cuda_context alive. Drain
+      // and destroy our stream before that reference is released, with the
+      // owning context current even on partial initialization paths.
+      context_guard_t guard {cuda_context};
+      if (guard && stream) {
+        CU_CHECK_IGNORE(cdf->cuStreamSynchronize(stream.get()), "Couldn't finish CUDA conversion during teardown");
+      }
+
       const auto raw_context = std::get<1>(ctx.el);
-      if (eglGetCurrentContext() != raw_context) {
+      if (!guard || eglGetCurrentContext() != raw_context) {
         // Encoder probes can destroy this object from a different thread while
         // the worker still owns the GL context. EGL forbids stealing it; the
         // CUDA/EGL context teardown will reclaim its registered resources.
         (void) y_res.release();
         (void) uv_res.release();
-        return;
-      }
-
-      // NVIDIA requires both the registering OpenGL context and its CUDA
-      // interop context to be current while resources are unregistered.
-      context_guard_t guard {cuda_context};
-      if (guard) {
+      } else {
         y_res.reset();
         uv_res.reset();
+      }
+
+      if (guard) {
+        // FFmpeg borrows this stream; clear its pointer before freeing it.
+        if (stream && hwframe && hwframe->hw_frames_ctx) {
+          auto *frames = reinterpret_cast<AVHWFramesContext *>(hwframe->hw_frames_ctx->data);
+          auto *device = reinterpret_cast<AVCUDADeviceContext *>(frames->device_ctx->hwctx);
+          if (device->stream == stream.get()) {
+            device->stream = nullptr;
+          }
+        }
+        stream.reset();
       } else {
-        (void) y_res.release();
-        (void) uv_res.release();
+        // Do not pass a stream from an unavailable context to another one.
+        (void) stream.release();
       }
     }
 
@@ -470,6 +485,11 @@ namespace cuda {
      * @return 0 on success or -1 on failure.
      */
     int convert(platf::img_t &img) override {
+      context_guard_t context_guard {cuda_context};
+      if (!context_guard) {
+        return -1;
+      }
+
       auto &descriptor = (egl::img_descriptor_t &) img;
 
       if (descriptor.sequence == 0) {
@@ -495,13 +515,16 @@ namespace cuda {
       // Perform the color conversion and scaling in GL
       sws.load_vram(descriptor, offset_x, offset_y, rgb->tex[0]);
       sws.apply_output_lut(descriptor.crtc_gamma_lut, descriptor.crtc_gamma_lut_serial);
-      sws.convert(nv12->buf);
+      if (sws.convert(nv12->buf)) {
+        return -1;
+      }
 
       auto fmt_desc = av_pix_fmt_desc_get(sw_format);
 
       // Map the GL textures to read for CUDA
       CUgraphicsResource resources[2] = {y_res.get(), uv_res.get()};
-      CU_CHECK(cdf->cuGraphicsMapResources(2, resources, stream.get()), "Couldn't map GL textures in CUDA");
+      graphics_mapping_t mapping {*cdf, resources, 2, stream.get()};
+      CU_CHECK(mapping.map(), "Couldn't map GL textures in CUDA");
 
       // Copy from the GL textures to the target CUDA frame
       for (int i = 0; i < 2; i++) {
@@ -515,11 +538,11 @@ namespace cuda {
         cpy.WidthInBytes = (frame->width * fmt_desc->comp[i].step) >> (i ? fmt_desc->log2_chroma_w : 0);
         cpy.Height = frame->height >> (i ? fmt_desc->log2_chroma_h : 0);
 
-        CU_CHECK_IGNORE(cdf->cuMemcpy2DAsync(&cpy, stream.get()), "Couldn't copy texture to CUDA frame");
+        CU_CHECK(cdf->cuMemcpy2DAsync(&cpy, stream.get()), "Couldn't copy texture to CUDA frame");
       }
 
       // Unmap the textures to allow modification from GL again
-      CU_CHECK(cdf->cuGraphicsUnmapResources(2, resources, stream.get()), "Couldn't unmap GL textures from CUDA");
+      CU_CHECK(mapping.unmap(), "Couldn't unmap GL textures from CUDA");
       return 0;
     }
 
@@ -765,13 +788,8 @@ namespace cuda {
       }
 
       CUgraphicsResource resources[2] = {y_res.get(), uv_res.get()};
-      CU_CHECK(cdf->cuGraphicsMapResources(2, resources, stream), "Couldn't map native NVENC GL textures in CUDA");
-      auto unmap_guard = util::fail_guard([&] {
-        (void) check(
-          cdf->cuGraphicsUnmapResources(2, resources, stream),
-          "Couldn't unmap native NVENC GL textures after conversion failure: "sv
-        );
-      });
+      graphics_mapping_t mapping {*cdf, resources, 2, stream};
+      CU_CHECK(mapping.map(), "Couldn't map native NVENC GL textures in CUDA");
 
       const auto *format = av_pix_fmt_desc_get(sw_format);
       const auto input_buffer = native_encoder->input_buffer();
@@ -798,11 +816,7 @@ namespace cuda {
         CU_CHECK(cdf->cuMemcpy2DAsync(&copy, stream), "Couldn't copy converted frame into native NVENC input");
       }
 
-      const auto unmap_status = cdf->cuGraphicsUnmapResources(2, resources, stream);
-      if (unmap_status == CUDA_SUCCESS) {
-        unmap_guard.disable();
-      }
-      CU_CHECK(unmap_status, "Couldn't unmap native NVENC GL textures from CUDA");
+      CU_CHECK(mapping.unmap(), "Couldn't unmap native NVENC GL textures from CUDA");
       return 0;
     }
 

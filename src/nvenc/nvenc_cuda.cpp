@@ -100,6 +100,18 @@ namespace nvenc {
   }
 
   bool nvenc_cuda::prepare_to_destroy() {
+    // Conversion may have queued a copy before a later plane failed, without
+    // ever submitting the frame to NVENC. Destroying the encoder alone does
+    // not wait for that copy. Keep the complete device quarantined if CUDA
+    // cannot confirm completion, so its input buffer cannot be freed in use.
+    if (conversion_stream) {
+      cuda_context_guard_t context_guard {*this};
+      if (!context_guard ||
+          cuda_functions->cuStreamSynchronize(conversion_stream) != CUDA_SUCCESS) {
+        BOOST_LOG(error) << "NvEnc: couldn't finish CUDA conversion before teardown";
+        return false;
+      }
+    }
     return !encoder || destroy_encoder();
   }
 

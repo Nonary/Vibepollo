@@ -8,6 +8,13 @@
 
 namespace policy = platf::linux_private_display_capture;
 
+TEST(PrivateDisplayCapturePolicy, ExplicitKmsSurvivesDormantStartupAndRecovery) {
+  EXPECT_TRUE(policy::enable_kms(true, false));
+  EXPECT_TRUE(policy::enable_kms(true, true));
+  EXPECT_FALSE(policy::enable_kms(false, false));
+  EXPECT_TRUE(policy::enable_kms(false, true));
+}
+
 TEST(PrivateDisplayCapturePolicy, PrefersKmsOnlyForPrivateDynamicRangeSessions) {
   EXPECT_TRUE(policy::prefer_kms(1, false, false, true));
   EXPECT_TRUE(policy::prefer_kms(2, false, false, true));

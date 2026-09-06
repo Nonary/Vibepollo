@@ -7,6 +7,7 @@
 
 #include "hdr_policy.h"
 #include "private_display_mode_client.h"
+#include "private_display_configuration_policy.h"
 #include "private_display_mode_policy.h"
 #include "private_display_restore_policy.h"
 #include "private_display_resume_policy.h"
@@ -413,10 +414,11 @@ namespace platf::linux_private_display {
         return true;
       }
       const auto result = run_doctor(arguments, true);
-      if (!result.success || mode_policy::doctor_reported_failure(result.stdout_text) ||
+      if (!configuration_policy::command_succeeded(result.success, result.stdout_text, result.stderr_text) ||
+          mode_policy::doctor_reported_failure(result.stdout_text) ||
           mode_policy::doctor_reported_failure(result.stderr_text)) {
         BOOST_LOG(error) << "Linux private display: KScreen " << operation << " failed: "
-                         << (result.stderr_text.empty() ? result.stdout_text : result.stderr_text);
+                         << result.stdout_text << result.stderr_text;
         return false;
       }
       return true;
@@ -1030,6 +1032,66 @@ namespace platf::linux_private_display {
       }
     }
 
+    const auto use_current_output = [&]() {
+      // A rejected preference must not discard a usable stream. Observe a
+      // stable, real current mode and require the exact output in capture
+      // enumeration; a merely connected connector is not sufficient.
+      std::optional<json> previous;
+      bool current_hdr = false;
+      double current_scale = 1.0;
+      double current_refresh = 0.0;
+      std::pair<std::uint32_t, std::uint32_t> current_size;
+      const bool usable = wait_for_configuration([&](const json &current) {
+        const auto *output = find_output(current, session.virtual_display_device_id);
+        if (!output) {
+          previous.reset();
+          return false;
+        }
+        const auto current_id = output->value("currentModeId", std::string {});
+        // Do not use mode_size's geometry fallback for an unpublished mode.
+        const auto modes = output->value("modes", json::array());
+        const auto mode = std::find_if(modes.begin(), modes.end(), [&](const json &entry) {
+          return !current_id.empty() && entry.value("id", std::string {}) == current_id;
+        });
+        if (mode == modes.end()) {
+          previous.reset();
+          return false;
+        }
+        current_size = mode_size(*output, current_id);
+        current_refresh = output_refresh(*output);
+        current_scale = output->value("scale", 1.0);
+        current_hdr = output->value("hdr", false);
+        if (!configuration_policy::usable_current_mode(connected(*output), enabled(*output), current_size.first, current_size.second, current_refresh, current_scale)) {
+          previous.reset();
+          return false;
+        }
+        const json observed = {current_id, *mode, current_scale, current_hdr};
+        const bool unchanged = previous && *previous == observed;
+        previous = observed;
+        return unchanged;
+      },
+                                                 true);
+      if (!usable || !wait_for_capture_publication(session.virtual_display_device_id)) {
+        BOOST_LOG(error) << "Linux private display: no usable current capture output on "
+                         << session.virtual_display_device_id << '.';
+        return false;
+      }
+      current_hdr = current_hdr && output_hdr_capable(nullptr, session.virtual_display_device_id);
+      if (rtsp_stream::effective_hdr_requested(session) && !current_hdr) {
+        session.force_sdr = true;
+      }
+      session.virtual_display_hdr_enabled = current_hdr;
+      session.virtual_display_ready_since = std::chrono::steady_clock::now();
+      session.virtual_display_recreated_on_demand = false;
+      // Retry the preferred settings on resume, since this apply did not take.
+      session.virtual_display_needs_resume_apply = true;
+      BOOST_LOG(warning) << "Linux private display: continuing on " << session.virtual_display_device_id
+                         << " with existing " << current_size.first << 'x' << current_size.second
+                         << " at " << current_refresh << " Hz, " << current_scale * 100.0
+                         << "% scale, HDR " << (current_hdr ? "enabled" : "disabled") << '.';
+      return true;
+    };
+
     auto effective_video = config::video;
     effective_video.output_name = session.virtual_display_device_id;
     if (session.dd_config_option_override) {
@@ -1063,7 +1125,7 @@ namespace platf::linux_private_display {
     if (resolution && refresh && !prefer_highest && is_managed_output(session.virtual_display_device_id) &&
         (mode_id.empty() || !mode_matches_refresh(*target_before, mode_id, *refresh))) {
       if (!admit_requested_mode(configuration, session.virtual_display_device_id, *resolution, *refresh)) {
-        return false;
+        return use_current_output();
       }
       target_before = find_output(*configuration, session.virtual_display_device_id);
       if (!target_before) {
@@ -1074,7 +1136,7 @@ namespace platf::linux_private_display {
     if (mode_id.empty()) {
       BOOST_LOG(error) << "Linux private display: no compatible mode is available for "
                        << session.virtual_display_device_id;
-      return false;
+      return use_current_output();
     }
 
     const auto private_names = private_output_set();
@@ -1191,7 +1253,7 @@ namespace platf::linux_private_display {
 
     if (!execute_configuration(arguments, "apply")) {
       if (!isolated) {
-        return false;
+        return use_current_output();
       }
       BOOST_LOG(warning) << "Linux private display: compositor rejected isolated placement; using an adjacent private output.";
       arguments.erase(
@@ -1202,7 +1264,7 @@ namespace platf::linux_private_display {
       );
       arguments.push_back(target_prefix + "position." + std::to_string(right_edge) + ",0");
       if (!execute_configuration(arguments, "isolated-layout fallback")) {
-        return false;
+        return use_current_output();
       }
     }
 
@@ -1227,10 +1289,10 @@ namespace platf::linux_private_display {
         })) {
       BOOST_LOG(error) << "Linux private display: timed out stabilizing mode/scale state on "
                        << session.virtual_display_device_id << '.';
-      return false;
+      return use_current_output();
     }
     if (!execute_configuration(hdr_arguments, "HDR activation")) {
-      return false;
+      return use_current_output();
     }
 
     bool verified_hdr_enabled = false;
@@ -1249,7 +1311,7 @@ namespace platf::linux_private_display {
     if (!verified) {
       BOOST_LOG(error) << "Linux private display: timed out verifying mode/HDR/scale state on "
                        << session.virtual_display_device_id << '.';
-      return false;
+      return use_current_output();
     }
 
     if (hdr_requested && !verified_hdr_enabled) {

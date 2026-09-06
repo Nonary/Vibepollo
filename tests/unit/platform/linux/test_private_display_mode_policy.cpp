@@ -4,9 +4,30 @@
  */
 #include <gtest/gtest.h>
 #include <limits>
+#include <src/platform/linux/private_display_configuration_policy.h>
 #include <src/platform/linux/private_display_mode_policy.h>
 
 namespace policy = platf::linux_private_display::mode_policy;
+namespace configuration = platf::linux_private_display::configuration_policy;
+
+TEST(LinuxPrivateDisplayConfigurationPolicy, RejectsKScreenFailureWithSuccessfulExit) {
+  EXPECT_FALSE(configuration::command_succeeded(true, "applying config failed! The session is not active\n", "locale warning"));
+  EXPECT_FALSE(configuration::command_succeeded(true, "", "applying config failed! rejected"));
+  EXPECT_FALSE(configuration::command_succeeded(false, "", ""));
+  EXPECT_TRUE(configuration::command_succeeded(true, "Output 1 set mode 1", "locale warning"));
+}
+
+TEST(LinuxPrivateDisplayConfigurationPolicy, AllowsUsableExistingModeWithoutMatchingPreference) {
+  EXPECT_TRUE(configuration::usable_current_mode(true, true, 3840, 2160, 115.88, 2.5));
+  EXPECT_TRUE(configuration::usable_current_mode(true, true, 1920, 1080, 60, 1));
+  EXPECT_FALSE(configuration::usable_current_mode(false, true, 3840, 2160, 120, 1));
+  EXPECT_FALSE(configuration::usable_current_mode(true, false, 3840, 2160, 120, 1));
+  EXPECT_FALSE(configuration::usable_current_mode(true, true, 0, 2160, 120, 1));
+  EXPECT_FALSE(configuration::usable_current_mode(true, true, 3840, 0, 120, 1));
+  EXPECT_FALSE(configuration::usable_current_mode(true, true, 3840, 2160, 0, 1));
+  EXPECT_FALSE(configuration::usable_current_mode(true, true, 3840, 2160, 120, 0));
+  EXPECT_FALSE(configuration::usable_current_mode(true, true, 3840, 2160, std::numeric_limits<double>::quiet_NaN(), 1));
+}
 
 TEST(LinuxPrivateDisplayModePolicy, AcceptsFractionalEquivalentRefresh) {
   EXPECT_TRUE(policy::refresh_matches(59.95, 60.0));
