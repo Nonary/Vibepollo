@@ -5,6 +5,18 @@ scene. The patch is pinned to Valve Gamescope **3.16.23.5**, commit
 `1290cbc1a7ca625688bde8728d8e3b1e703d6a40`. `source-lock.json` records the patch
 checksum. It does not create an independent virtual output or change panel modes.
 
+The patch also tracks Steam overlay changes when deciding whether to capture a
+new frame, preventing overlay-only menu updates from waiting for a game commit.
+See [the virtual-display investigation](VIRTUAL-DISPLAY.md) for the Gaming Mode
+integration blockers and remaining capture issues. This source update requires
+a rebuilt compositor and has not yet been validated in a live Gaming Mode session.
+
+Test the repaint decision after applying the patch to the pinned source:
+
+```bash
+python3 packaging/linux/steamos/tests/test-gamescope-repaint.py /path/to/patched/gamescope
+```
+
 ## Capture contract
 
 The separate `vibeshine_capture_v1` Wayland global advertises profile 1 for the

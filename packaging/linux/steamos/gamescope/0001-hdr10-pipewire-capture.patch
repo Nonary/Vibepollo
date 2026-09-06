@@ -96,7 +96,7 @@ index 7a44c4e..a2943fc 100644
  		default:
  		case SPA_VIDEO_FORMAT_BGR: return DRM_FORMAT_XRGB8888;
 diff --git a/src/steamcompmgr.cpp b/src/steamcompmgr.cpp
-index d98222f..d429441 100644
+index d98222f..bc3c7dc 100644
 --- a/src/steamcompmgr.cpp
 +++ b/src/steamcompmgr.cpp
 @@ -149,6 +149,7 @@ gamescope_color_mgmt_luts g_ColorMgmtLuts[ EOTF_Count ];
@@ -175,27 +175,54 @@ index d98222f..d429441 100644
  	}
  
  	const uint64_t ulFocusAppId = s_pPipewireBuffer->gamescope_info.focus_appid;
-@@ -2361,14 +2368,18 @@ static void paint_pipewire()
- 	// If the commits are the same as they were last time, don't repaint and don't push a new buffer on the stream.
- 	static uint64_t s_ulLastFocusCommitId = 0;
- 	static uint64_t s_ulLastOverrideCommitId = 0;
-+	static uint64_t s_ulLastCaptureFormat = 0;
-+	const uint64_t ulCaptureFormat = (uint64_t(s_pPipewireBuffer->video_info.format) << 48) |
-+		(uint64_t(s_pPipewireBuffer->texture->width()) << 24) | s_pPipewireBuffer->texture->height();
- 
- 	uint64_t ulFocusCommitId = window_last_done_commit_id( pFocus->focusWindow );
- 	uint64_t ulOverrideCommitId = window_last_done_commit_id( pFocus->overrideWindow );
- 
- 	if ( ulFocusCommitId == s_ulLastFocusCommitId &&
--	     ulOverrideCommitId == s_ulLastOverrideCommitId )
-+	     ulOverrideCommitId == s_ulLastOverrideCommitId && ulCaptureFormat == s_ulLastCaptureFormat )
+@@ -2358,22 +2365,24 @@ static void paint_pipewire()
+ 	if ( !bAppIdMatches )
  		return;
  
-+	s_ulLastCaptureFormat = ulCaptureFormat;
- 	s_ulLastFocusCommitId = ulFocusCommitId;
- 	s_ulLastOverrideCommitId = ulOverrideCommitId;
+-	// If the commits are the same as they were last time, don't repaint and don't push a new buffer on the stream.
+-	static uint64_t s_ulLastFocusCommitId = 0;
+-	static uint64_t s_ulLastOverrideCommitId = 0;
+-
+-	uint64_t ulFocusCommitId = window_last_done_commit_id( pFocus->focusWindow );
+-	uint64_t ulOverrideCommitId = window_last_done_commit_id( pFocus->overrideWindow );
+-
+-	if ( ulFocusCommitId == s_ulLastFocusCommitId &&
+-	     ulOverrideCommitId == s_ulLastOverrideCommitId )
+-		return;
+-
+-	s_ulLastFocusCommitId = ulFocusCommitId;
+-	s_ulLastOverrideCommitId = ulOverrideCommitId;
+-
++	// Capture includes Steam's overlay, which can animate while the game is
++	// idle. Track every layer we actually paint, including visibility changes.
++	// Keep the last successfully delivered state so failed renders are retried.
++	static std::optional<std::array<uint64_t, 12>> s_LastPipewireState;
++	auto *pOverlay = !ulFocusAppId ? pFocus->overlayWindow : nullptr;
+ 	uint32_t uWidth = s_pPipewireBuffer->texture->width();
+ 	uint32_t uHeight = s_pPipewireBuffer->texture->height();
++	const std::array<uint64_t, 12> pipewireState = {
++		uintptr_t( pFocus->focusWindow ), window_last_done_commit_id( pFocus->focusWindow ),
++		pFocus->focusWindow->opacity,
++		uintptr_t( pFocus->overrideWindow ), window_last_done_commit_id( pFocus->overrideWindow ),
++		pFocus->overrideWindow ? pFocus->overrideWindow->opacity : 0,
++		uintptr_t( pOverlay ), window_last_done_commit_id( pOverlay ),
++		pOverlay ? pOverlay->opacity : 0,
++		uWidth, uHeight, uint64_t( s_pPipewireBuffer->video_info.format ),
++	};
++	if ( s_LastPipewireState && *s_LastPipewireState == pipewireState )
++		return;
  
-@@ -6544,6 +6555,7 @@ steamcompmgr_exit(void)
+ 	const uint32_t uCompositeDebugBackup = g_uCompositeDebug;
+ 	const uint32_t uBackupWidth = currentOutputWidth;
+@@ -2415,6 +2424,7 @@ static void paint_pipewire()
+ 	{
+ 		vulkan_wait( *oPipewireSequence, true );
+ 
++		s_LastPipewireState = pipewireState;
+ 		push_pipewire_buffer( s_pPipewireBuffer );
+ 		s_pPipewireBuffer = nullptr;
+ 	}
+@@ -6544,6 +6554,7 @@ steamcompmgr_exit(void)
  	for ( auto &lut : g_ColorMgmtLutsOverride ) lut.shutdown();
  	for ( auto &lut : g_ScreenshotColorMgmtLuts ) lut.shutdown();
  	for ( auto &lut : g_ScreenshotColorMgmtLutsHDR ) lut.shutdown();
