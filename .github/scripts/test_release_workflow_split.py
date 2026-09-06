@@ -559,6 +559,12 @@ class WindowsWorkflowEfficiencyTest(unittest.TestCase):
             bootstrapper,
         )
 
+    def test_windows_steam_artwork_dependencies(self) -> None:
+        workflow = load_workflow("ci-windows.yml")
+        steps = workflow["jobs"]["build_windows"]["steps"]
+        setup = next(step for step in steps if step["name"] == "Setup Dependencies Windows")
+        for package in ("libjpeg-turbo", "libpng", "libwebp"):
+            self.assertIn("mingw-w64-${{ matrix.toolchain }}-" + package, setup["with"]["install"])
 
 if __name__ == "__main__":
     unittest.main()

@@ -185,6 +185,9 @@ dependencies=(
   "mingw-w64-${TOOLCHAIN}-curl-winssl"
   "mingw-w64-${TOOLCHAIN}-doxygen"  # Optional, for docs... better to install official Doxygen
   "mingw-w64-${TOOLCHAIN}-graphviz"  # Optional, for docs
+  "mingw-w64-${TOOLCHAIN}-libjpeg-turbo"
+  "mingw-w64-${TOOLCHAIN}-libpng"
+  "mingw-w64-${TOOLCHAIN}-libwebp"
   "mingw-w64-${TOOLCHAIN}-miniupnpc"
   "mingw-w64-${TOOLCHAIN}-onevpl"
   "mingw-w64-${TOOLCHAIN}-openssl"

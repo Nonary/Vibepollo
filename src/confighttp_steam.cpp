@@ -92,6 +92,15 @@ namespace confighttp {
     try {
       nlohmann::json out {{"status", true}, {"enabled", config::steam.enabled}, {"games", nlohmann::json::array()}};
       auto games = platf::steam::discover_catalog();
+      // Prepare only the selected game's cover. Browsing a large library
+      // must not download or convert artwork for every search result.
+      const auto query = request->parse_query_string();
+      if (const auto selected = query.find("appid"); selected != query.end()) {
+        std::erase_if(games, [&](const auto &game) {
+          return std::to_string(game.app_id) != selected->second;
+        });
+        platf::steam::artwork::prepare(games, platf::appdata());
+      }
       for (const auto &game : games) {
         auto item = game_json(game);
         item["excluded"] = std::find_if(config::steam.exclude_games_meta.begin(), config::steam.exclude_games_meta.end(), [&game](const auto &entry) {

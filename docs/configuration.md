@@ -4412,14 +4412,14 @@ metadata, and artwork changes every 30 seconds while Vibepollo is running.
 Steam-managed entries use stable Steam IDs; manual and Playnite-managed entries
 are preserved.
 
-Default: `true`
+Default: `false`
 
 ### steam_sync_all_installed
 
 Synchronizes every installed Steam game. Disable this to use the recent-game
 count and age policy instead.
 
-Default: `true`
+Default: `false`
 
 ### steam_recent_games
 

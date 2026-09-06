@@ -233,12 +233,23 @@ include_directories(BEFORE "${CMAKE_SOURCE_DIR}")
 set(SUNSHINE_FFMPEG_INCLUDE_DIRS ${FFMPEG_INCLUDE_DIRS})
 
 # Minimal FFmpeg bundles used by Vibeshine intentionally omit still-image
-# codecs. These system codecs are only a fallback for Steam artwork; the
-# normal path remains FFmpeg/libswscale. Keep the feature optional so targets
-# on platforms without these development libraries still build.
-find_package(PNG QUIET)
-find_package(JPEG QUIET)
-find_library(STEAM_ARTWORK_WEBP_LIBRARY NAMES webp)
+# codecs. Windows packages must include the image libraries so Steam covers
+# can always be converted to client-compatible PNGs.
+if(WIN32)
+    # The Windows executable is linked statically; do not select DLL import
+    # libraries whose runtime DLLs are not part of the installer payload.
+    set(_steam_artwork_library_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+    set(CMAKE_FIND_LIBRARY_SUFFIXES .a .lib)
+    find_package(PNG REQUIRED)
+    find_package(JPEG REQUIRED)
+    find_library(STEAM_ARTWORK_WEBP_LIBRARY NAMES webp REQUIRED)
+    set(CMAKE_FIND_LIBRARY_SUFFIXES "${_steam_artwork_library_suffixes}")
+    unset(_steam_artwork_library_suffixes)
+else()
+    find_package(PNG QUIET)
+    find_package(JPEG QUIET)
+    find_library(STEAM_ARTWORK_WEBP_LIBRARY NAMES webp)
+endif()
 if(PNG_FOUND AND JPEG_FOUND AND STEAM_ARTWORK_WEBP_LIBRARY)
     list(APPEND SUNSHINE_DEFINITIONS VIBESHINE_STEAM_ARTWORK_IMAGE_LIBS=1)
     list(APPEND SUNSHINE_EXTERNAL_LIBRARIES PNG::PNG JPEG::JPEG ${STEAM_ARTWORK_WEBP_LIBRARY})

@@ -12,8 +12,8 @@
 namespace platf::steam::autosync {
   struct settings_t {
     bool enabled = true;
-    bool auto_sync = true;
-    bool sync_all_installed = true;
+    bool auto_sync = false;
+    bool sync_all_installed = false;
     int recent_games = 10;
     int recent_max_age_days = 30;
     bool remove_uninstalled = true;

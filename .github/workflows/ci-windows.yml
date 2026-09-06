@@ -389,6 +389,9 @@ jobs:
             mingw-w64-${{ matrix.toolchain }}-cppwinrt
             mingw-w64-${{ matrix.toolchain }}-curl-winssl
             mingw-w64-${{ matrix.toolchain }}-gcc
+            mingw-w64-${{ matrix.toolchain }}-libjpeg-turbo
+            mingw-w64-${{ matrix.toolchain }}-libpng
+            mingw-w64-${{ matrix.toolchain }}-libwebp
             mingw-w64-${{ matrix.toolchain }}-MinHook
             mingw-w64-${{ matrix.toolchain }}-miniupnpc
             mingw-w64-${{ matrix.toolchain }}-ninja
