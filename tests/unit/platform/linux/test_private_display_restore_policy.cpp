@@ -5,10 +5,109 @@
 #include <array>
 #include <gtest/gtest.h>
 #include <map>
+#include <nlohmann/json.hpp>
 #include <src/platform/linux/private_display_restore_policy.h>
 #include <vector>
 
 namespace policy = platf::linux_private_display::restore_policy;
+
+namespace {
+  using json = nlohmann::json;
+
+  json external_desktop() {
+    return {{"outputs", {
+      {{"name", "eDP-1"}, {"connected", true}, {"enabled", false}, {"rotation", 8}},
+      {{"name", "DP-1"}, {"connected", true}, {"enabled", true}, {"currentModeId", "25"},
+       {"priority", 1}, {"scale", 1.5}, {"rotation", 1}, {"hdr", true},
+       {"pos", {{"x", 0}, {"y", 0}}}, {"size", {{"width", 2560}, {"height", 1440}}}}
+    }}};
+  }
+}
+
+TEST(LinuxPrivateDisplayRestorePolicy, SavesDesktopBeforeHotplugCanEnablePanelAndExtendMonitor) {
+  auto desktop = external_desktop();
+  const auto original = desktop;
+  std::optional<json> snapshot;
+  ASSERT_TRUE(policy::connect_with_snapshot(snapshot, [&] { return std::make_optional(desktop); }, [&] {
+    desktop["outputs"][0]["enabled"] = true;
+    desktop["outputs"][1]["pos"]["x"] = 1280;
+    return true;
+  }));
+  ASSERT_TRUE(snapshot);
+  EXPECT_EQ(*snapshot, original);
+  EXPECT_NE(*snapshot, desktop);
+}
+
+TEST(LinuxPrivateDisplayRestorePolicy, ReconnectAndSecondClientKeepFirstSnapshot) {
+  std::optional<json> snapshot = external_desktop();
+  const auto original = *snapshot;
+  int queries = 0;
+  int connections = 0;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    EXPECT_TRUE(policy::connect_with_snapshot(snapshot, [&]() -> std::optional<json> {
+      ++queries;
+      return json {{"outputs", json::array()}};
+    }, [&] { ++connections; return true; }));
+  }
+  EXPECT_EQ(queries, 0);
+  EXPECT_EQ(connections, 2);
+  EXPECT_EQ(*snapshot, original);
+}
+
+TEST(LinuxPrivateDisplayRestorePolicy, FailedSnapshotPreventsConnection) {
+  std::optional<json> snapshot;
+  bool connected = false;
+  EXPECT_FALSE(policy::connect_with_snapshot(snapshot, []() -> std::optional<json> {
+    return std::nullopt;
+  }, [&] { connected = true; return true; }));
+  EXPECT_FALSE(connected);
+  EXPECT_FALSE(snapshot);
+}
+
+TEST(LinuxPrivateDisplayRestorePolicy, FailedConnectionRetainsOriginalForRollback) {
+  std::optional<json> snapshot;
+  EXPECT_FALSE(policy::connect_with_snapshot(snapshot, [] { return std::make_optional(external_desktop()); }, [] { return false; }));
+  ASSERT_TRUE(snapshot);
+  EXPECT_EQ(*snapshot, external_desktop());
+}
+
+TEST(LinuxPrivateDisplayRestorePolicy, FinalVerificationRejectsPanelReenabledByDisconnect) {
+  const auto snapshot = external_desktop();
+  auto current = snapshot;
+  current["outputs"][0]["enabled"] = true;
+  EXPECT_TRUE(policy::snapshot_matches(snapshot, current));
+  EXPECT_FALSE(policy::snapshot_matches(snapshot, current, true));
+  current["outputs"][0]["enabled"] = false;
+  EXPECT_TRUE(policy::snapshot_matches(snapshot, current, true));
+}
+
+TEST(LinuxPrivateDisplayRestorePolicy, FinalVerificationRejectsShiftedDesktopAndChangedPrimary) {
+  const auto snapshot = external_desktop();
+  auto current = snapshot;
+  current["outputs"][1]["pos"]["x"] = 1280;
+  EXPECT_FALSE(policy::snapshot_matches(snapshot, current, true));
+  current = snapshot;
+  current["outputs"][1]["priority"] = 2;
+  EXPECT_FALSE(policy::snapshot_matches(snapshot, current, true));
+}
+
+TEST(LinuxPrivateDisplayRestorePolicy, FinalVerificationRejectsChangedOrientationScaleAndHdr) {
+  const auto snapshot = external_desktop();
+  for (const auto &change : {json {{"rotation", 8}}, json {{"scale", 1.0}}, json {{"hdr", false}}}) {
+    auto current = snapshot;
+    current["outputs"][1].update(change);
+    EXPECT_FALSE(policy::snapshot_matches(snapshot, current, true));
+  }
+}
+
+TEST(LinuxPrivateDisplayRestorePolicy, DisabledSavedOutputMayDisappearButActiveOutputMustSurvive) {
+  const auto snapshot = external_desktop();
+  auto current = snapshot;
+  current["outputs"].erase(0);
+  EXPECT_TRUE(policy::snapshot_matches(snapshot, current, true));
+  current["outputs"] = json::array();
+  EXPECT_FALSE(policy::snapshot_matches(snapshot, current, true));
+}
 
 TEST(LinuxPrivateDisplayRestorePolicy, PrefersConnectedPhysicalGuard) {
   const std::array candidates {
