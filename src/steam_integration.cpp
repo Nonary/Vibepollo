@@ -1202,6 +1202,18 @@ namespace platf::steam {
   }
 #endif
 
+  std::string runtime_launch_command(std::string_view app_id, const std::string &configured_command, bool gamescope_session) {
+    if (!gamescope_session || app_id.empty()) {
+      return configured_command;
+    }
+    std::uint32_t id = 0;
+    const auto parsed = std::from_chars(app_id.data(), app_id.data() + app_id.size(), id);
+    if (parsed.ec != std::errc {} || parsed.ptr != app_id.data() + app_id.size() || id == 0) {
+      return {};
+    }
+    return launch_command(id);
+  }
+
   std::string launch_command(const game_t &game) {
 #ifdef __linux__
     if (game.app_id == 0 || game.launch_executable.empty()) {
