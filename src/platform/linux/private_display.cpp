@@ -576,6 +576,14 @@ namespace platf::linux_private_display {
       if (!mode.empty()) {
         arguments.push_back(prefix + "mode." + mode);
       }
+      // KScreen serializes Output::Rotation as flags, while the doctor takes names.
+      static const std::map<int, std::string> rotations {
+        {1, "none"}, {2, "left"}, {4, "inverted"}, {8, "right"},
+        {16, "flipped"}, {32, "flipped90"}, {64, "flipped180"}, {128, "flipped270"},
+      };
+      if (const auto rotation = rotations.find(saved.value("rotation", 1)); rotation != rotations.end()) {
+        arguments.push_back(prefix + "rotation." + rotation->second);
+      }
       arguments.push_back(prefix + "scale." + std::to_string(saved.value("scale", 1.0)));
       const auto pos = saved.value("pos", json::object());
       arguments.push_back(prefix + "position." + std::to_string(pos.value("x", 0)) + "," + std::to_string(pos.value("y", 0)));
@@ -669,46 +677,10 @@ namespace platf::linux_private_display {
       return result;
     }
 
-    bool wait_for_snapshot_activation(const json &snapshot) {
-      const auto deadline = std::chrono::steady_clock::now() + output_verification_timeout;
-      do {
-        if (const auto current = query_configuration()) {
-          const bool active = std::ranges::all_of(snapshot["outputs"], [&](const json &saved) {
-            if (!enabled(saved)) {
-              return true;
-            }
-            const auto *output = find_output(*current, saved.value("name", std::string {}));
-            if (!output || !connected(*output) || !enabled(*output)) {
-              return false;
-            }
-            const auto saved_mode = saved.value("currentModeId", std::string {});
-            const bool exact_mode_id = saved_mode.empty() ||
-              output->value("currentModeId", std::string {}) == saved_mode;
-            const auto saved_size = saved.value("size", json::object());
-            const auto current_size = output->value("size", json::object());
-            const bool equivalent_mode =
-              saved_size.value("width", 0) == current_size.value("width", 0) &&
-              saved_size.value("height", 0) == current_size.value("height", 0) &&
-              std::abs(output_refresh(saved) - output_refresh(*output)) < 0.2;
-            if (!exact_mode_id && !equivalent_mode) {
-              return false;
-            }
-
-            const auto saved_position = saved.value("pos", json::object());
-            const auto current_position = output->value("pos", json::object());
-            return std::abs(saved.value("scale", 1.0) - output->value("scale", 1.0)) < 0.01 &&
-              saved_position.value("x", 0) == current_position.value("x", 0) &&
-              saved_position.value("y", 0) == current_position.value("y", 0) &&
-              saved.value("priority", 0) == output->value("priority", 0) &&
-              (!saved.contains("hdr") || saved.value("hdr", false) == output->value("hdr", false));
-          });
-          if (active) {
-            return true;
-          }
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      } while (std::chrono::steady_clock::now() < deadline);
-      return false;
+    bool wait_for_snapshot_activation(const json &snapshot, const bool final = false) {
+      return wait_for_configuration([&](const json &current) {
+        return restore_policy::snapshot_matches(snapshot, current, final);
+      }, final);
     }
 
     bool wait_for_capture_publication(const std::string &name) {
@@ -772,10 +744,7 @@ namespace platf::linux_private_display {
       }
     }
 
-    void snapshot_configuration_if_needed(state_t &manager, const json &configuration) {
-      if (manager.snapshot) {
-        return;
-      }
+    json restorable_snapshot(const json &configuration) {
       auto snapshot = configuration;
       const auto private_names = private_output_set();
       const bool has_active_physical = std::ranges::any_of(snapshot["outputs"], [&](const json &output) {
@@ -789,7 +758,13 @@ namespace platf::linux_private_display {
           }
         }
       }
-      manager.snapshot = std::move(snapshot);
+      return snapshot;
+    }
+
+    void snapshot_configuration_if_needed(state_t &manager, const json &configuration) {
+      if (!manager.snapshot) {
+        manager.snapshot = restorable_snapshot(configuration);
+      }
     }
 
     std::optional<std::string> reserve_output(
@@ -798,13 +773,25 @@ namespace platf::linux_private_display {
       const bool no_active_sessions,
       const bool reuse_active_reservation = true
     ) {
+      const auto connect = [&](const std::string &name) {
+        return restore_policy::connect_with_snapshot(manager.snapshot, [&]() -> std::optional<json> {
+          const auto configuration = query_configuration();
+          if (!configuration) {
+            BOOST_LOG(error) << "Linux private display: cannot save the desktop before connecting " << name << '.';
+            return std::nullopt;
+          }
+          return restorable_snapshot(*configuration);
+        }, [&] {
+          return connect_managed_output(name);
+        });
+      };
       if (const auto existing = manager.reservations.find(identity); existing != manager.reservations.end()) {
         if (const auto configuration = query_configuration()) {
           if (const auto *output = find_output(*configuration, existing->second); output && connected(*output)) {
             return existing->second;
           }
         }
-        if (is_managed_output(existing->second) && connect_managed_output(existing->second)) {
+        if (is_managed_output(existing->second) && connect(existing->second)) {
           manager.newly_connected_reservations.insert(identity);
           return existing->second;
         }
@@ -833,7 +820,7 @@ namespace platf::linux_private_display {
           continue;
         }
         if (is_managed_output(candidate)) {
-          if (connect_managed_output(candidate)) {
+          if (connect(candidate)) {
             manager.reservations.emplace(identity, candidate);
             manager.newly_connected_reservations.insert(identity);
             return candidate;
@@ -1824,6 +1811,35 @@ namespace platf::linux_private_display {
     }
     if (!disconnected) {
       BOOST_LOG(error) << "Linux private display: restored topology but failed to disconnect one or more released outputs.";
+      return false;
+    }
+    // The broker acknowledgement precedes KWin's hotplug processing. Wait for
+    // removal before reapplying the baseline: KWin can load a different saved
+    // setup when the connected output set changes, including enabling a panel
+    // which was disabled before streaming.
+    if (!wait_for_configuration([&](const json &configuration) {
+          return std::ranges::all_of(reserved_outputs, [&](const auto &name) {
+            const auto *output = find_output(configuration, name);
+            return !output || !connected(*output);
+          });
+        }, true)) {
+      BOOST_LOG(error) << "Linux private display: timed out waiting for released outputs to disappear from KScreen.";
+      return false;
+    }
+    const auto settled = query_configuration();
+    if (!settled) {
+      return false;
+    }
+    if (!restore_policy::snapshot_matches(*manager.snapshot, *settled, true)) {
+      const auto final_arguments = restore_arguments(*manager.snapshot, *settled, reserved_outputs);
+      auto final_restore = final_arguments.deactivate;
+      final_restore.insert(final_restore.end(), final_arguments.activate.begin(), final_arguments.activate.end());
+      if (!execute_configuration(final_restore, "post-disconnect topology restore")) {
+        return false;
+      }
+    }
+    if (!wait_for_snapshot_activation(*manager.snapshot, true)) {
+      BOOST_LOG(error) << "Linux private display: the pre-stream topology did not stabilize after connector retirement.";
       return false;
     }
     manager.snapshot.reset();
