@@ -121,7 +121,7 @@ namespace {
     return state;
   }
 
-  // Serializes a claimed deferred APPLY with cancellation/revert. The pending
+  // Serializes APPLY and DISARM with cancellation/revert. The pending
   // state lock only protects the queue; this lock covers the actual IPC work.
   std::mutex &pending_apply_execution_mutex() {
     static std::mutex m;
@@ -1844,6 +1844,10 @@ namespace display_helper_integration {
       }
 
       if (request.action == DisplayApplyAction::Revert) {
+        // A configuration-disabled request also schedules restoration. Its
+        // caller already owns the execution gate; stop old recovery before
+        // dispatch so it cannot follow this REVERT with DISARM/APPLY.
+        VDISPLAY::cancel_all_virtual_display_recovery_monitors();
         invalidate_apply_verification();
         const bool helper_ready = ensure_helper_started(
           false,
@@ -2217,6 +2221,14 @@ namespace display_helper_integration {
       BOOST_LOG(warning) << "Display helper: overriding managed display ownership for terminal user-requested REVERT.";
     }
 
+    // Accepted restore intent ends recovery authority immediately, even if
+    // REVERT must wait behind an APPLY or helper startup fails. Request stop
+    // before taking the execution lock so a recovery worker waiting for that
+    // same lock can leave. Do not join here: recovery also owns driver locks.
+    // Any already-dispatched APPLY/DISARM finishes before our REVERT; a stopped
+    // worker cannot acquire the gate afterward and supersede this restore.
+    VDISPLAY::cancel_all_virtual_display_recovery_monitors();
+    BOOST_LOG(debug) << "Display helper: recovery monitors cancelled for accepted REVERT.";
     std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
     invalidate_apply_verification();
     clear_pending_apply_queue_locked();
@@ -2242,6 +2254,13 @@ namespace display_helper_integration {
     const std::chrono::steady_clock::time_point operation_deadline) {
     if ((cancellation_predicate && cancellation_predicate()) ||
         operation_deadline_expired(operation_deadline)) {
+      return false;
+    }
+    // Recovery sends DISARM before APPLY. Fence both against REVERT, including
+    // cancellation while waiting, so a stale DISARM cannot stop a newly queued
+    // restore even when its subsequent APPLY correctly observes cancellation.
+    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::defer_lock);
+    if (!lock_pending_apply_execution(execution_lock, cancellation_predicate, operation_deadline)) {
       return false;
     }
     invalidate_apply_verification();
