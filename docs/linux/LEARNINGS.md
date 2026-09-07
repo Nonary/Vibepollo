@@ -20,6 +20,35 @@ ends the greeter stream. The controller waits for the new compositor to become
 authoritative, writes a new generation record, and starts a fresh host. No
 stream or session credential is passed across the transition.
 
+### Display power after suspend
+
+An enabled KScreen output is not proof of active scanout. On 2026-09-06,
+Virtual-1 remained connected/enabled in KScreen while the kernel connector was
+disabled by DPMS. Waking it without holding a PowerDevil inhibitor allowed KDE
+to turn it off again before streaming. A successful fix must acquire inhibition
+before the Wayland DPMS wake, before topology preparation and encoder probing.
+
+Native pending launches and active RTSP/WebRTC capture share a generation-bound
+display-power lease. The capability-free `vibepollo-display-power` helper is
+exec'd by the session broker only after permanently dropping UID/capabilities;
+GIO is not linked into the privileged broker. It retries initial readiness
+within a hard deadline, reacquires inhibition after PowerDevil replacement,
+and wakes again after logind's resume notification. Subsequent launches issue
+a bounded wake against the existing lease. Retained virtual outputs, paused
+applications and input-only clients do not own the lease; teardown releases it
+after capture/display cleanup. Greeters can wake without a PowerDevil service.
+If the session/system bus itself disconnects, the next acquisition replaces
+the dead worker without dropping existing owners. An unreapable DPMS child
+terminates the lease instead of spawning repeated stuck children.
+
+Capture also drops accidental DRM master ownership on every primary node,
+including physical NVIDIA/i915 cards opened only for enumeration. Retaining
+master can interfere with logind/KWin reclaiming a GPU after suspend or VT
+changes. This prevents capture from causing that ownership conflict; it does
+not authorize VT switching, session activation or restarting an already-wedged
+compositor. A persistent KWin `The session is not active` error is distinct
+from DPMS-off and must not be disguised as successful recovery.
+
 The user manager's inherited environment is not proof that graphical clients
 can connect. KWin may generate a new Xwayland display and Xauthority file only
 after its service begins, leaving later D-Bus- or systemd-activated programs

@@ -186,6 +186,8 @@ namespace rtsp_stream {
   std::shared_ptr<launch_session_t> launch_session_t::clone_for_startup() const {
     auto snapshot = std::make_shared<launch_session_t>();
 
+    // Carry the pending display-power hold into active capture without a gap.
+    snapshot->display_power_guard = display_power_guard;
     snapshot->id = id;
     snapshot->role = role;
     snapshot->role_generation = role_generation;

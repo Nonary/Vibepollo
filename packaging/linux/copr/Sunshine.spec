@@ -1608,6 +1608,7 @@ fi
 
 %files
 # Executables
+%attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-display-power
 %{_bindir}/vibepollo
 %{_bindir}/vibepollo-mangohud
 %{_prefix}/libexec/vibeshine/vibeshine-drm-install

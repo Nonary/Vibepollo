@@ -1181,7 +1181,7 @@ static int execute_request(int argc, char **argv,
                            gid_t service_gid) {
   if (argc < 2) return 2;
   enum operation {
-    DISPLAY_QUERY, DISPLAY_APPLY, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
+    DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_POWER, DISPLAY_WAKE, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
     AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_DIRECT, LUTRIS,
     PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, APP
   } operation;
@@ -1190,6 +1190,8 @@ static int execute_request(int argc, char **argv,
   size_t audio_channel_count = 0;
   char authorized_directory[PATH_MAX] = {0};
   if (!strcmp(argv[1], "display-query") && argc == 2) operation = DISPLAY_QUERY;
+  else if (!strcmp(argv[1], "display-power") && argc == 2) operation = DISPLAY_POWER;
+  else if (!strcmp(argv[1], "display-wake") && argc == 2) operation = DISPLAY_WAKE;
   else if (!strcmp(argv[1], "display-apply") && argc >= 3 && argc <= 66) {
     operation = DISPLAY_APPLY;
     for (int index = 2; index < argc; ++index) if (!display_argument_is_safe(argv[index])) return 126;
@@ -1234,6 +1236,14 @@ static int execute_request(int argc, char **argv,
   }
 
   switch (operation) {
+    case DISPLAY_POWER:
+    case DISPLAY_WAKE: {
+      char *const arguments[] = {"vibepollo-display-power",
+        operation == DISPLAY_WAKE ? "wake" :
+        (!strcmp(identity->role, "desktop") ? "desktop" : "greeter"), NULL};
+      execv("/usr/libexec/vibeshine/vibepollo-display-power", arguments);
+      break;
+    }
     case DISPLAY_QUERY: {
       char *const arguments[] = {"kscreen-doctor", "-j", NULL};
       execv("/usr/bin/kscreen-doctor", arguments);

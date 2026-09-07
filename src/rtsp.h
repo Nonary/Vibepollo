@@ -40,6 +40,10 @@ namespace rtsp_stream {
   constexpr auto RTSP_SETUP_PORT = 21;
 
   struct launch_session_t {
+    // Pending Linux launches must keep the display awake before capture and
+    // until the active capture has acquired its own reference. Deliberately
+    // omitted from retained app/display-recovery snapshots.
+    std::shared_ptr<void> display_power_guard;
     struct resolution_override_t {
       int width;
       int height;

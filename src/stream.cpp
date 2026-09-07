@@ -556,6 +556,7 @@ namespace stream {
   };
 
   struct session_t {
+    std::shared_ptr<void> display_power_guard;
     config_t config;
     int stream_fps = 0;
     int stream_fps_scaled = 0;
@@ -3246,6 +3247,7 @@ namespace stream {
           session::finalize_shared_runtime_if_idle("rtsp_session_end", finalize_context);
       }
 
+      session.display_power_guard.reset();
       BOOST_LOG(info) << "Session ended"sv;
 
       // Record session end in persistent history (fires exactly once, after join)
@@ -3449,6 +3451,7 @@ namespace stream {
 
       session->shutdown_event = mail->event<bool>(mail::shutdown);
       session->launch_session_id = launch_session.id;
+      session->display_power_guard = launch_session.display_power_guard;
       session->device_name = launch_session.device_name;
       session->device_uuid = !launch_session.client_uuid.empty() ? launch_session.client_uuid : launch_session.unique_id;
       // Fresh history identifier per stream so each start/stop cycle produces
