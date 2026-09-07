@@ -92,9 +92,8 @@ namespace platf::steam::lifecycle {
     virtual std::optional<process_snapshot> snapshot() = 0;
   };
 
-  // Linux implementation reads /proc.  Other platforms provide an empty,
-  // successful snapshot so this boundary remains buildable until a native
-  // provider is added there.
+  // Linux reads /proc and Windows uses the Toolhelp process snapshot API.
+  // Other platforms provide an empty successful snapshot.
   std::optional<process_snapshot> snapshot_processes();
 
   class tracker {
@@ -156,8 +155,7 @@ namespace platf::steam::lifecycle {
                         process_controller &controller,
                         const stop_options &options = {});
 
-  // Native controller used by production integration.  It is deliberately a
-  // no-op on Windows until a Job Object based controller is wired in.
+  // Native controller used by production integration.
   std::shared_ptr<process_controller> native_process_controller();
 
 }  // namespace platf::steam::lifecycle

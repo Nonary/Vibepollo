@@ -16,6 +16,9 @@
   #include <csignal>
   #include <dirent.h>
   #include <unistd.h>
+#elif defined(_WIN32)
+  #include <windows.h>
+  #include <tlhelp32.h>
 #endif
 
 namespace platf::steam::lifecycle {
@@ -187,6 +190,74 @@ namespace {
     }
     return result;
   }
+#elif defined(_WIN32)
+  std::uint64_t file_time_ticks(const FILETIME &value) {
+    ULARGE_INTEGER ticks {};
+    ticks.LowPart = value.dwLowDateTime;
+    ticks.HighPart = value.dwHighDateTime;
+    return ticks.QuadPart;
+  }
+
+  std::optional<process_info> read_windows_process(const PROCESSENTRY32W &entry) {
+    process_info info;
+    info.pid = entry.th32ProcessID;
+    info.parent_pid = entry.th32ParentProcessID;
+    // Keep every enumerated PID in the baseline even when Windows denies a
+    // query handle. This prevents a temporarily inaccessible existing process
+    // from being mistaken for a process created by the game launch.
+    info.executable = entry.szExeFile;
+
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID);
+    if (!process) {
+      return info;
+    }
+
+    std::wstring image(32768, L'\0');
+    DWORD image_size = static_cast<DWORD>(image.size());
+    if (QueryFullProcessImageNameW(process, 0, image.data(), &image_size)) {
+      image.resize(image_size);
+      info.executable = image;
+    }
+
+    FILETIME creation {}, exit {}, kernel {}, user {};
+    if (GetProcessTimes(process, &creation, &exit, &kernel, &user)) {
+      info.start_time_ticks = file_time_ticks(creation);
+    }
+    CloseHandle(process);
+    return info;
+  }
+
+  bool process_has_window(process_id_t pid) {
+    struct state_t {
+      DWORD pid;
+      bool found;
+    } state {static_cast<DWORD>(pid), false};
+    EnumWindows([](HWND window, LPARAM parameter) -> BOOL {
+      auto &state = *reinterpret_cast<state_t *>(parameter);
+      DWORD owner = 0;
+      GetWindowThreadProcessId(window, &owner);
+      if (owner == state.pid) {
+        state.found = true;
+        PostMessageW(window, WM_CLOSE, 0, 0);
+      }
+      return TRUE;
+    }, reinterpret_cast<LPARAM>(&state));
+    return state.found;
+  }
+
+  std::optional<std::uint64_t> windows_process_start_time(process_id_t pid) {
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+    if (!process) {
+      return std::nullopt;
+    }
+    FILETIME creation {}, exit {}, kernel {}, user {};
+    const bool success = GetProcessTimes(process, &creation, &exit, &kernel, &user);
+    CloseHandle(process);
+    if (!success) {
+      return std::nullopt;
+    }
+    return file_time_ticks(creation);
+  }
 #endif
 
   class native_controller final : public process_controller {
@@ -195,6 +266,17 @@ namespace {
 #if defined(__linux__)
       const int value = kind == signal_kind::terminate ? SIGTERM : SIGKILL;
       return ::kill(static_cast<pid_t>(pid), value) == 0;
+#elif defined(_WIN32)
+      if (kind == signal_kind::terminate && process_has_window(pid)) {
+        return true;
+      }
+      HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, static_cast<DWORD>(pid));
+      if (!process) {
+        return false;
+      }
+      const bool stopped = TerminateProcess(process, 1) != FALSE;
+      CloseHandle(process);
+      return stopped;
 #else
       (void) pid;
       (void) kind;
@@ -208,6 +290,14 @@ namespace {
         return true;
       }
       return errno == EPERM;
+#elif defined(_WIN32)
+      HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(pid));
+      if (!process) {
+        return false;
+      }
+      const bool running = WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
+      CloseHandle(process);
+      return running;
 #else
       (void) pid;
       return false;
@@ -221,6 +311,14 @@ namespace {
       }
       const auto current = read_proc_stat(pid);
       return current && current->start_time_ticks == expected.start_time_ticks;
+#elif defined(_WIN32)
+      // Creation time is stable for the lifetime of a Windows process and
+      // protects the delayed force-stop path from signalling a reused PID.
+      if (expected.start_time_ticks == 0) {
+        return false;
+      }
+      const auto current = windows_process_start_time(pid);
+      return current && *current == expected.start_time_ticks;
 #else
       (void) pid;
       (void) expected;
@@ -380,9 +478,30 @@ std::optional<process_snapshot> snapshot_processes() {
     result.processes.emplace(*pid, std::move(info));
   }
   ::closedir(directory);
+#elif defined(_WIN32)
+  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snapshot == INVALID_HANDLE_VALUE) {
+    return std::nullopt;
+  }
+  PROCESSENTRY32W entry {};
+  entry.dwSize = sizeof(entry);
+  if (!Process32FirstW(snapshot, &entry)) {
+    CloseHandle(snapshot);
+    return std::nullopt;
+  }
+  do {
+    if (entry.th32ProcessID == 0) {
+      continue;
+    }
+    auto info = read_windows_process(entry);
+    if (info) {
+      result.processes.emplace(info->pid, std::move(*info));
+    }
+  } while (Process32NextW(snapshot, &entry));
+  CloseHandle(snapshot);
 #else
-  // Keep the provider usable on Windows/macOS while native enumeration is
-  // added at their platform seams.  No fabricated process is ever returned.
+  // Keep the provider usable on unsupported platforms. No fabricated process
+  // is ever returned.
 #endif
   return result;
 }
