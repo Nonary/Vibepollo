@@ -32,6 +32,11 @@ broker = (linux / "vibepollo-session-broker.c").read_text()
 steam_launcher = (linux / "vibepollo-steam-launch.cpp").read_text()
 session_execution = launcher + "\n" + broker
 private_display = (root / "src/platform/linux/private_display.cpp").read_text()
+display_power = (linux / "vibepollo-display-power.h").read_text()
+display_power_client = (root / "src/platform/linux/display_power.cpp").read_text()
+rtsp = (root / "src/rtsp.cpp").read_text()
+stream = (root / "src/stream.cpp").read_text()
+kmsgrab = (root / "src/platform/linux/kmsgrab.cpp").read_text()
 audio = (root / "src/platform/linux/audio.cpp").read_text()
 nvhttp = (root / "src/nvhttp.cpp").read_text()
 confighttp = (root / "src/confighttp.cpp").read_text()
@@ -407,6 +412,34 @@ initialize_body = private_display.split("\n  bool initialize() {", 1)[1].split(
     "\n  prepare_result_t prepare_session", 1
 )[0]
 require(initialize_body, "process_shutdown_preserve_requested()", "private-display startup shutdown fence")
+
+# Capture must not steal modesetting ownership from KWin during resume, on
+# either physical primary nodes or the virtual DRM card.
+require(kmsgrab, "if (drmIsMaster(fd.el) && drmDropMaster(fd.el) != 0)", "all-GPU capture master release")
+forbid(kmsgrab, 'driver_name == "vibeshine_drm" && drmIsMaster', "physical GPU resume ownership")
+require(broker, '!strcmp(argv[1], "display-power") && argc == 2', "fixed power operation")
+execute_request = broker.split("static int execute_request(", 1)[1]
+if execute_request.index("drop_to_session(identity)") > execute_request.index('execv("/usr/libexec/vibeshine/vibepollo-display-power"'):
+    raise AssertionError("display power must execute only after permanent capability/UID drop")
+for forbidden in ("chvt", "ActivateSession", "SwitchTo", "RestartUnit", "SetBrightness"):
+    forbid(display_power, forbidden, "passive display power recovery")
+require(display_power, 'setenv("QT_QPA_PLATFORM", "wayland", 1)', "Wayland DPMS transport")
+require(display_power, 'write(STDOUT_FILENO, "R", 1)', "power readiness handshake")
+require(display_power_client, 'token == \'R\'', "power readiness consumption")
+require(display_power_client, "std::chrono::seconds(8)", "bounded power readiness")
+require(display_power_client, "std::weak_ptr<lease_t> shared_lease", "shared power broker admission")
+require(display_power_client, 'start_ready("display-wake")', "new launch wakes retained display")
+require(packaging, "vibepollo_steam_launch vibepollo_display_power", "capability-free power helper installation")
+require(rpm, "%attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-display-power", "COPR power helper payload")
+prepare = private_display.split("prepare_result_t prepare_session(", 1)[1]
+if prepare.index("display_power::acquire()") > prepare.index("session.virtual_display = false"):
+    raise AssertionError("power recovery must precede display topology preparation")
+if prepare.index("return result;") > prepare.index("cancel_scheduled_revert()"):
+    raise AssertionError("failed power admission must preserve scheduled display cleanup")
+require(rtsp, "snapshot->display_power_guard = source.display_power_guard", "pending-to-startup power handoff")
+require(stream, "session->display_power_guard = launch_session.display_power_guard", "active capture power ownership")
+require(stream, "session.display_power_guard.reset()", "capture teardown releases display power")
+forbid(linux_misc, "display_power::acquire()", "retained shared runtime must not inhibit sleep")
 
 require(host, "readonly machine_profile=/var/lib/vibepollo", "machine host")
 require(host, '"HOME=$machine_profile"', "machine host HOME isolation")

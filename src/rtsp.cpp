@@ -184,6 +184,9 @@ namespace rtsp_stream {
   std::shared_ptr<launch_session_t> make_startup_launch_session_snapshot(const launch_session_t &source) {
     auto snapshot = std::make_shared<launch_session_t>();
 
+    // This snapshot feeds stream::session::alloc, so carry the pending hold
+    // across the handoff to active capture without an uninhibited gap.
+    snapshot->display_power_guard = source.display_power_guard;
     snapshot->id = source.id;
     snapshot->role = source.role;
     snapshot->role_generation = source.role_generation;

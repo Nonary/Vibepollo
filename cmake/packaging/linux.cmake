@@ -107,6 +107,11 @@ else()
         set_target_properties(vibepollo_session_broker PROPERTIES OUTPUT_NAME "vibepollo-session-broker")
         target_include_directories(vibepollo_session_broker PRIVATE "${LIBCAP_INCLUDE_DIRS}")
         target_link_libraries(vibepollo_session_broker PRIVATE "${LIBCAP_LIBRARIES}")
+        add_executable(vibepollo_display_power
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-display-power.c")
+        set_target_properties(vibepollo_display_power PROPERTIES OUTPUT_NAME "vibepollo-display-power")
+        target_include_directories(vibepollo_display_power PRIVATE ${GIO_INCLUDE_DIRS})
+        target_link_libraries(vibepollo_display_power PRIVATE ${GIO_LIBRARIES})
         add_executable(vibepollo_app_supervisor
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-app-supervisor.c")
         set_target_properties(vibepollo_app_supervisor PROPERTIES OUTPUT_NAME "vibepollo-app-supervisor")
@@ -162,7 +167,7 @@ else()
                 DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
         install(TARGETS vibepollo_session_exec vibepollo_app_supervisor
                 vibepollo_profile_import vibepollo_kwin_session_environment
-                vibepollo_provider_scan vibepollo_steam_launch
+                vibepollo_provider_scan vibepollo_steam_launch vibepollo_display_power
                 RUNTIME DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
         install(TARGETS vibepollo_session_broker
                 RUNTIME DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}"
@@ -289,6 +294,7 @@ endif()
 # cannot silently reattach the obsolete public/client capabilities.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CPACK_RPM_USER_FILELIST
+            "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-display-power"
             "%attr(0755,root,root) ${CMAKE_INSTALL_FULL_BINDIR}/vibepollo"
             "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-session-exec"
             "%attr(0700,root,root) %caps(cap_kill,cap_setgid,cap_setuid+p) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-session-broker"

@@ -371,10 +371,12 @@ namespace platf {
           return -1;
         }
         driver_name = std::move(*validated_driver_name);
-        // Opening a dormant card before KWin can make this fd DRM master.
-        // Its original opener may drop that role without CAP_SYS_ADMIN.
-        if (driver_name == "vibeshine_drm" && drmIsMaster(fd.el) && drmDropMaster(fd.el) != 0) {
-          BOOST_LOG(error) << "Cannot release private-display modesetting ownership to the compositor."sv;
+        // Opening any dormant primary node can make capture DRM master, even
+        // when we only opened a physical GPU to enumerate its outputs. Never
+        // retain that role: logind/KWin must be able to reclaim every GPU on
+        // resume. GETFB uses the narrowly raised capability, not DRM master.
+        if (drmIsMaster(fd.el) && drmDropMaster(fd.el) != 0) {
+          BOOST_LOG(error) << "Cannot release capture modesetting ownership on "sv << path;
           return -1;
         }
         if (!admin.active()) {

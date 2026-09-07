@@ -92,6 +92,7 @@
   #include "src/display_helper_integration.h"
   #include "src/platform/linux/private_display.h"
   #include "src/platform/linux/display_backend.h"
+  #include "src/platform/linux/display_power.h"
 #endif
 
 #ifdef __APPLE__
@@ -3151,6 +3152,15 @@ namespace webrtc_stream {
       webrtc_capture.stream_start_params = std::move(stream_start_params);
       auto launch_session = build_launch_session(options, effective_app_id, audio_channels, prefer_10bit_sdr);
 
+#ifdef __linux__
+      // WebRTC can share capture with RTSP and then outlive it. Own a lease
+      // even when that path skips private-display topology preparation.
+      launch_session->display_power_guard = platf::display_power::acquire();
+      if (!launch_session->display_power_guard) {
+        return std::string {"The desktop display could not be woken for streaming"};
+      }
+#endif
+
 #if defined(_WIN32) || defined(__linux__)
       std::optional<config::runtime_output_override_lease_t> pending_output_override_lease;
       auto output_override_guard = util::fail_guard([&]() {
@@ -3488,7 +3498,6 @@ namespace webrtc_stream {
         std::unique_lock<std::mutex> capture_lock(webrtc_capture.mutex);
         webrtc_capture.feedback_queue.reset();
         webrtc_capture.mail.reset();
-        webrtc_capture.launch_session.reset();
         webrtc_capture.app_id.reset();
         webrtc_capture.config_key.reset();
         webrtc_capture.stream_start_params.reset();
@@ -3531,6 +3540,7 @@ namespace webrtc_stream {
           "webrtc_capture_stop",
           finalize_context
         );
+        webrtc_capture.launch_session.reset();
         if (finalized_shared_runtime) {
           // The centralized finalizer invalidates any output override lease.
 #if defined(_WIN32) || defined(__linux__)

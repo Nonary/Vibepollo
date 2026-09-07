@@ -4,6 +4,7 @@
  */
 
 #include "private_display.h"
+#include "display_power.h"
 
 #include "hdr_policy.h"
 #include "private_display_mode_client.h"
@@ -924,8 +925,19 @@ namespace platf::linux_private_display {
     const bool no_active_sessions,
     const bool allow_display_changes
   ) {
-    cancel_scheduled_revert();
     prepare_result_t result;
+
+    if (!session.display_power_guard) {
+      session.display_power_guard = display_power::acquire();
+    }
+    if (!session.display_power_guard) {
+      result.requested = true;
+      result.error = "The desktop display could not be woken for streaming";
+      session.virtual_display_failed = true;
+      return result;
+    }
+    // Failed admission must not cancel cleanup of an earlier idle display.
+    cancel_scheduled_revert();
 
     const auto mode = session.virtual_display_mode_override.value_or(config::video.virtual_display_mode);
     const bool config_requests_virtual = mode != config::video_t::virtual_display_mode_e::disabled;

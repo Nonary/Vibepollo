@@ -610,10 +610,29 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
 
     add_executable(test_linux_session_exec_policy
         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_session_exec_policy.c")
+    pkg_check_modules(TEST_GIO REQUIRED IMPORTED_TARGET gio-2.0 gio-unix-2.0)
     target_include_directories(test_linux_session_exec_policy PRIVATE "${LIBCAP_INCLUDE_DIRS}")
     target_link_libraries(test_linux_session_exec_policy PRIVATE "${LIBCAP_LIBRARIES}")
     add_test(NAME test_component_linux_session_exec_policy COMMAND test_linux_session_exec_policy)
     set_tests_properties(test_component_linux_session_exec_policy PROPERTIES LABELS "component")
+
+    add_executable(test_linux_display_power
+        "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_display_power.c")
+    target_link_libraries(test_linux_display_power PRIVATE PkgConfig::TEST_GIO)
+    add_test(NAME test_component_linux_display_power COMMAND test_linux_display_power)
+    set_tests_properties(test_component_linux_display_power PROPERTIES LABELS "component" TIMEOUT 30)
+
+    add_executable(test_linux_display_power_command
+        "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_display_power_command.c")
+    target_link_libraries(test_linux_display_power_command PRIVATE PkgConfig::TEST_GIO)
+    add_test(NAME test_component_linux_display_power_command COMMAND test_linux_display_power_command)
+    set_tests_properties(test_component_linux_display_power_command PROPERTIES LABELS "component" TIMEOUT 5)
+
+    add_executable(test_linux_display_power_lease
+        "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_display_power_lease.cpp")
+    target_link_libraries(test_linux_display_power_lease PRIVATE PkgConfig::TEST_GIO Threads::Threads)
+    add_test(NAME test_component_linux_display_power_lease COMMAND test_linux_display_power_lease)
+    set_tests_properties(test_component_linux_display_power_lease PROPERTIES LABELS "component" TIMEOUT 15)
 
     add_executable(test_linux_app_supervisor
         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_app_supervisor.c")
@@ -706,6 +725,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
                 "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_machine_service_contract.py"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}")
         set_tests_properties(test_component_linux_machine_service_contract PROPERTIES LABELS "component")
+        add_test(NAME test_component_linux_local_deploy
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_local_deploy.py")
+        set_tests_properties(test_component_linux_local_deploy PROPERTIES LABELS "component" TIMEOUT 30)
         add_test(
             NAME test_component_linux_vkms_peercred
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"

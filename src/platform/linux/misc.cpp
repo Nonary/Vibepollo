@@ -631,11 +631,11 @@ namespace platf {
   }
 
   void streaming_will_start() {
-    // Nothing to do
+    // Display power is owned by pending/active capture, not retained topology.
   }
 
   void streaming_will_stop() {
-    // Nothing to do
+    // Display power is released with the last pending/active capture lease.
   }
 
   void restart_on_exit() {

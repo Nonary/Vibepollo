@@ -71,6 +71,7 @@
 #elif defined(__linux__)
   #include "platform/linux/private_display.h"
   #include "src/platform/linux/display_backend.h"
+  #include "platform/linux/display_power.h"
   #include "platform/linux/private_display_resume_policy.h"
 #endif
 #include "process.h"
@@ -4328,6 +4329,15 @@ namespace nvhttp {
           launch_session->client_undo_cmds.clear();
         }
         if (launch_session->role == remote_session::role_e::monitor) {
+#ifdef __linux__
+          launch_session->display_power_guard = platf::display_power::acquire();
+          if (!launch_session->display_power_guard) {
+            tree.put("root.resume", 0);
+            tree.put("root.<xmlattr>.status_code", 503);
+            tree.put("root.<xmlattr>.status_message", "The desktop display could not be woken for streaming");
+            return;
+          }
+#endif
           const auto mode = remote_session::monitor_mode_from_session_fps(
             launch_session->width,
             launch_session->height,
