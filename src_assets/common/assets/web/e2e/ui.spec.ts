@@ -581,14 +581,18 @@ test('game library setup supports multiple Windows libraries without enabling St
     route.fulfill({ json: { installed: true, active: true } }),
   );
   await page.goto('/v2/library');
-  await page.getByRole('button', { name: 'Setup Game Library Integration', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Setup Game Library Integration' });
+  await page.getByRole('button', { name: 'Library manager settings', exact: true }).click();
+  const dialog = page.getByRole('dialog', {
+    name: /Setup Game Library Integration|Library manager settings/,
+  });
   await expect(dialog.getByText('Recommended on Windows')).toBeVisible();
   await expect(dialog.getByRole('checkbox', { name: 'Playnite', exact: true })).toBeChecked();
   await expect(dialog.getByRole('checkbox', { name: 'Steam', exact: true })).not.toBeChecked();
   await expect(dialog.getByRole('checkbox', { name: 'Lutris', exact: true })).toHaveCount(0);
   await dialog.getByRole('checkbox', { name: 'Steam', exact: true }).check();
-  await dialog.getByRole('button', { name: 'Save library choices' }).click();
+  await dialog.getByRole('button', { name: 'Next: Library settings' }).click();
+  await dialog.getByRole('spinbutton', { name: 'Recent games', exact: true }).last().fill('7');
+  await dialog.getByRole('button', { name: 'Save settings', exact: true }).click();
   await expect(dialog.getByRole('status')).toHaveText('Game library settings saved.');
   expect(patches.at(-1)).toMatchObject({
     playnite_enabled: true,
@@ -596,6 +600,7 @@ test('game library setup supports multiple Windows libraries without enabling St
     steam_enabled: true,
     steam_auto_sync: true,
     steam_sync_all_installed: false,
+    steam_recent_games: 7,
   });
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -821,13 +826,16 @@ for (const platform of ['windows', 'linux']) {
     );
     await page.goto(legacyUrl + '/applications');
     await page
-      .getByRole('button', { name: /Setup Game Library Integration/ })
+      .getByRole('button', { name: /Setup Game Library Integration|Library manager settings/ })
       .first()
       .click();
-    const setup = page.getByRole('dialog', { name: 'Setup Game Library Integration' });
+    const setup = page.getByRole('dialog', {
+      name: /Setup Game Library Integration|Library manager settings/,
+    });
     await expect(setup.getByRole('checkbox', { name: 'Steam', exact: true })).not.toBeChecked();
     await setup.getByRole('checkbox', { name: 'Steam', exact: true }).check();
-    await setup.getByRole('button', { name: 'Save library choices' }).click();
+    await setup.getByRole('button', { name: 'Next: Library settings' }).click();
+    await setup.getByRole('button', { name: 'Save settings', exact: true }).click();
     await expect(setup.getByRole('status')).toHaveText('Game library settings saved.');
     expect(patches.at(-1)).toMatchObject({
       steam_auto_sync: true,
@@ -870,3 +878,30 @@ for (const platform of ['windows', 'linux']) {
     await expect(page.locator('.apps-row__icon')).toHaveAttribute('src', /\/cover/);
   });
 }
+
+test('initial library setup refreshes apps and persists editable settings', async ({ page }) => {
+  await host(page, 'windows', {}, true, { steam: true });
+  await page.route('**/api/playnite/status', route => route.fulfill({ json: { installed: false } }));
+  let synced = false;
+  await page.route('**/api/steam/force_sync', route => {
+    synced = true;
+    return route.fulfill({ json: { status: true } });
+  });
+  await page.route('**/api/apps', route => route.fulfill({ json: {
+    apps: synced ? [{ name: 'Synced Steam game', uuid: 'steam-test', 'steam-id': '42' }] : [],
+  } }));
+  await page.goto('/v2/library');
+  await page.getByRole('button', { name: 'Setup Game Library Integration', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('checkbox', { name: 'Steam', exact: true }).check();
+  await dialog.getByRole('button', { name: 'Next: Library settings' }).click();
+  await dialog.getByRole('spinbutton', { name: 'Recent games', exact: true }).fill('6');
+  await dialog.getByRole('button', { name: 'Save settings', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(page.getByText('Synced Steam game', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Setup Game Library Integration', exact: true })).toHaveCount(0);
+  await page.reload();
+  await page.getByRole('button', { name: 'Library manager settings', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Next: Library settings' }).click();
+  await expect(dialog.getByRole('spinbutton', { name: 'Recent games', exact: true })).toHaveValue('6');
+});
