@@ -133,6 +133,13 @@ int main(void) {
   CHECK(!steam_launch_retry_is_safe(0, true, 0, 2));
   termination_signal = SIGTERM;
   CHECK(!steam_launch_retry_is_safe(126, true, 0, 2));
+  // Model cancellation after retry admission, during its delay: the next
+  // supervision must not clear the signal or start a new systemd-run worker.
+  bool cancelled_cleanup = true;
+  char *const cancelled_arguments[] = {NULL};
+  CHECK(supervise_user_service("cancelled-retry", cancelled_arguments,
+                               &cancelled_cleanup) == 128 + SIGTERM);
+  CHECK(!cancelled_cleanup);
   termination_signal = 0;
   CHECK(application_unit_name_is_safe("vibepollo-app-7-1-2.service"));
   CHECK(!application_unit_name_is_safe("vibepollo-app-7.service"));

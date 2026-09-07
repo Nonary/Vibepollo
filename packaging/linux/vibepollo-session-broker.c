@@ -992,7 +992,9 @@ static bool steam_launch_retry_is_safe(int result, bool cleanup_verified,
 
 static int supervise_user_service(const char *unit, char *const arguments[], bool *cleanup_verified) {
   *cleanup_verified = false;
-  termination_signal = 0;
+  // A cancellation received during the retry delay belongs to this request,
+  // not just the previous attempt. Never clear it on entry to supervision.
+  if (termination_signal) return 128 + termination_signal;
   if (!set_termination_handlers(request_user_service_stop)) return 126;
   if (termination_signal) return 128 + termination_signal;
 
