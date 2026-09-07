@@ -77,7 +77,7 @@ namespace {
       proc::catalog::asset_path(assets, "steam.png"));
   }
 
-  TEST(ProcessCatalog, FirstSeenUuidSeedsStableUuidOnlyId) {
+  TEST(ProcessCatalog, FirstSeenUuidVersionsArtworkAndRetainsLegacyLaunchId) {
     app_identity_t app {"Game", "11111111-1111-1111-1111-111111111111", "ignored-cover", "sha256:first"};
     std::set<std::string> ids;
     std::set<std::string> active;
@@ -85,9 +85,9 @@ namespace {
     bool changed = false;
 
     proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
-    EXPECT_EQ(app.id, std::get<0>(proc::catalog::calculate_ids(app.name, app.uuid, {}, 0)));
+    EXPECT_EQ(app.id, std::get<0>(proc::catalog::calculate_versioned_ids(app.uuid, app.art_version, 0)));
     EXPECT_EQ(app.art_version, "sha256:first");
-    EXPECT_TRUE(app.aliases.empty());
+    EXPECT_EQ(app.aliases, std::vector<std::string> {std::get<0>(proc::catalog::calculate_ids(app.name, app.uuid, {}, 0))});
     EXPECT_TRUE(changed);
   }
 
@@ -108,6 +108,40 @@ namespace {
     EXPECT_NE(second.id, first.id);
     EXPECT_NE(std::find(second.aliases.begin(), second.aliases.end(), first.id), second.aliases.end());
     EXPECT_TRUE(changed);
+  }
+
+  TEST(ProcessCatalog, ExistingUuidOnlyCoverMigratesOnce) {
+    app_identity_t app {"Steam game", "steam-uuid", {}, "sha256:cover"};
+    const auto legacy = std::get<0>(proc::catalog::calculate_ids(app.name, app.uuid, {}, 0));
+    std::map<std::string, alias_state_t> state {{app.uuid, {legacy, app.art_version, {}}}};
+    std::set<std::string> ids, active;
+    bool changed = false;
+    proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
+    EXPECT_NE(app.id, legacy);
+    EXPECT_EQ(proc::catalog::resolve_app({app}, legacy), 0u);
+    EXPECT_TRUE(changed);
+    const auto migrated = app.id;
+    ids.clear();
+    changed = false;
+    proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
+    EXPECT_EQ(app.id, migrated);
+    EXPECT_FALSE(changed);
+  }
+
+  TEST(ProcessCatalog, ReaddedGameDoesNotReusePlaceholderCacheId) {
+    std::map<std::string, alias_state_t> state;
+    std::set<std::string> ids, active;
+    bool changed = false;
+    app_identity_t app {"Steam game", "steam-uuid", {}, "sha256:steam-placeholder"};
+    proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
+    const auto placeholder_id = app.id;
+    std::vector<app_identity_t> empty;
+    proc::catalog::prune_and_filter_aliases(empty, state, {}, changed);
+    ASSERT_TRUE(state.empty());
+    ids.clear();
+    app.art_version = "sha256:real-cover";
+    proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
+    EXPECT_NE(app.id, placeholder_id);
   }
 
   TEST(ProcessCatalog, DeletedAppsAndConflictingAliasesArePruned) {
