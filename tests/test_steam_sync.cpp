@@ -2,6 +2,26 @@
 
 #include <gtest/gtest.h>
 
+TEST(SteamSync, RepairsManualFallbackCoverWithoutChangingLaunchSettings) {
+  nlohmann::json manual = {{"name", "My game"}, {"steam-id", "42"},
+                            {"steam-managed", "manual"}, {"cmd", "custom launch"},
+                            {"image-path", "./assets/steam.png"}};
+  nlohmann::json root = {{"apps", nlohmann::json::array({manual})}};
+  platf::steam::game_t game;
+  game.app_id = 42;
+  game.artwork_client_path = "covers/steam_42.png";
+  EXPECT_TRUE(platf::steam::sync::policy::reconcile(root, {game}));
+  manual["image-path"] = "covers/steam_42.png";
+  manual["steam-artwork-client-path"] = "covers/steam_42.png";
+  manual["steam-artwork-client-compatible"] = true;
+  EXPECT_EQ(root["apps"][0], manual);
+  EXPECT_FALSE(platf::steam::sync::policy::reconcile(root, {game}));
+  root["apps"][0]["image-path"] = "custom.png";
+  game.artwork_client_path = "covers/new.png";
+  EXPECT_FALSE(platf::steam::sync::policy::reconcile(root, {game}));
+  EXPECT_EQ(root["apps"][0]["image-path"], "custom.png");
+}
+
 TEST(SteamSync, PreservesManualAndPlayniteEntries) {
   nlohmann::json root = {{"apps", nlohmann::json::array({
                                     nlohmann::json {{"name", "Manual"}},
