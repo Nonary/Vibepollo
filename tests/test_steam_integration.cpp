@@ -393,6 +393,18 @@ TEST(SteamLaunch, StreamOwnedEnvironmentFeaturesRequireDirectLaunch) {
 }
 
 #ifdef __linux__
+TEST(SteamLaunch, MachineClientFallbackUsesCanonicalSemanticArguments) {
+  const std::string prefix = "/usr/libexec/vibeshine/vibepollo-session-exec steam ";
+  const auto arguments = session_launch_arguments(prefix + "1182900");
+  ASSERT_TRUE(arguments);
+  EXPECT_EQ(*arguments, (std::vector<std::string> {"steam", "1182900"}));
+  for (const auto suffix : {"0", "-1", "4294967296", "01182900", "1182900 ",
+                            "1182900 trailing", "1182900;id", "1182900\n", ""}) {
+    EXPECT_FALSE(session_launch_arguments(prefix + suffix)) << suffix;
+  }
+  EXPECT_FALSE(session_launch_arguments("/tmp/vibepollo-session-exec steam 1182900"));
+}
+
 TEST(SteamLaunch, MachineSessionLaunchUsesCanonicalSemanticArguments) {
   session_launch_policy_t policy {
     .provider = "mangohud-proton",

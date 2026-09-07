@@ -1174,6 +1174,17 @@ namespace platf::steam {
       }
       offset = separator + 1;
     }
+    // The client fallback is also semantic. Otherwise run_command would
+    // wrap this trusted helper invocation in the generic app verb.
+    if (tokens.size() == 3 && tokens[0] == session_exec_path && tokens[1] == "steam") {
+      std::uint32_t app_id = 0;
+      if (!parse_u32_token(tokens[2], app_id) || app_id == 0 ||
+          command != std::string(session_exec_path) + " steam " + std::to_string(app_id)) {
+        return std::nullopt;
+      }
+      tokens.erase(tokens.begin());
+      return tokens;
+    }
     if (tokens.size() != 10 || tokens[0] != session_exec_path ||
         tokens[1] != "steam-direct") {
       return std::nullopt;
