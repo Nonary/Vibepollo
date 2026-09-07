@@ -165,6 +165,9 @@ namespace pipewire {
       stream_data.shared = std::move(shared_state);
 
       pw_thread_loop_lock(loop);
+      auto unlock_loop = util::fail_guard([&]() {
+        pw_thread_loop_unlock(loop);
+      });
       BOOST_LOG(debug) << "[pipewire] Setup PW context"sv;
       context = pw_context_new(pw_thread_loop_get_loop(loop), nullptr, 0);
       if (context) {
@@ -185,7 +188,6 @@ namespace pipewire {
         return -1;
       }
 
-      pw_thread_loop_unlock(loop);
       return 0;
     }
 
