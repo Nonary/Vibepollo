@@ -219,6 +219,8 @@ class Files:
 
     def parents(self, path, create=False):
         relative = path.relative_to(self.root)
+        public_assets = relative.parts[:3] in (
+            ('usr', 'share', 'vibepollo'), ('usr', 'lib', 'vibepollo'))
         cursor = self.root
         for part in relative.parts[:-1]:
             cursor /= part
@@ -234,6 +236,8 @@ class Files:
                 info = cursor.lstat()
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != self.owner or info.st_mode & 0o022:
                 raise DeployError(f'Unsafe installation parent: {cursor}')
+            if public_assets and not info.st_mode & 0o001:
+                raise DeployError(f'Public asset directory is not traversable by the service account: {cursor}')
 
     def snapshot(self, names):
         saved = {}
@@ -329,13 +333,16 @@ class Files:
             sync_path(target.parent, directory=True)
 
 
-def should_rollback(policy, phase, baseline):
-    # A partial installation must never be retained, even with --rollback never.
-    if phase == 'mutating':
-        return True
-    if policy == 'never':
-        return False
-    return policy == 'always' or baseline != 'unhealthy'
+def retain_failed_install(directory, manifest, phase, detail):
+    manifest['failure'] = detail
+    manifest['status'] = 'UNHEALTHY' if phase == 'readiness' else 'MUTATING'
+    write_json(directory / 'transaction.json', manifest)
+    if phase != 'readiness':
+        # A partial payload stays stopped until explicitly recovered.
+        quiesce()
+    print('Installation retained for diagnosis; no files were reverted.\n'
+          'Retry readiness: vibepollo-install --part2 (complete payloads only).\n'
+          'Restore the previous installation: vibepollo-install --recover', file=sys.stderr)
 
 
 def unit_properties(unit):
@@ -761,6 +768,12 @@ def driver_command(command):
             raise DriverBusy(process.pid)
     try:
         code = process.wait(timeout=900)
+        # DKMS kills its progress shell but its current `sleep 3` may still
+        # be exiting. Allow bounded natural completion before treating the
+        # group as leaked; no later install or rollback may run meanwhile.
+        deadline = time.monotonic() + 5
+        while not driver_group_empty(process.pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
     except BaseException:
         drain()
         raise
@@ -817,7 +830,7 @@ def rollback(directory, manifest):
         print(f'Transaction {directory.name} is already restored/aborted.')
         return
     if manifest['status'] == 'ROLLBACK_REBOOT_REQUIRED':
-        raise DeployError('Previous files already restored; reboot and use finalize')
+        raise DeployError('Previous files already restored; reboot and run vibepollo-install --part2')
     if not manifest.get('payload_mutated', True):
         quiesce()
         start_controller(manifest['controller_active'])
@@ -869,7 +882,7 @@ def rollback(directory, manifest):
                 driver['after'] = driver_state()
                 write_json(directory / 'transaction.json', manifest)
                 print(f'Previous files/driver restored. Reboot, then run:\n'
-                      f'python3 {Path(__file__).resolve()} finalize {directory.name}', flush=True)
+                      'vibepollo-install --part2', flush=True)
                 return
         for name, record in manifest['before'].items():
             target = Path('/') / name
@@ -964,7 +977,6 @@ def root_install(args):
                 'units_before': previous, 'before': files.snapshot(names), 'after': {}, 'intended_metadata': {}}
     print('Backing up existing DRM sources, installed modules and DKMS state.', flush=True)
     manifest['driver'] = backup_driver(directory)
-    manifest['rollback_policy'] = args.rollback
     manifest['timeout'] = args.timeout
     for name in names:
         member = members.get(name)
@@ -1025,10 +1037,10 @@ def root_install(args):
             run('systemctl', 'daemon-reload')
             print(f'Installed {args.version}, including the new DRM driver. KWin still holds the old module.\n'
                   'Reboot required; services remain stopped until reboot. No automatic reboot was requested.\n'
-                  f'After reboot: python3 {Path(__file__).resolve()} finalize {identifier}', flush=True)
+                  'After reboot: vibepollo-install --part2', flush=True)
             return 0
-        start_controller()
         phase = 'readiness'
+        start_controller()
         print(f'Checking startup readiness (up to {args.timeout}s).', flush=True)
         result, detail = readiness(args.timeout)
         if result not in ('healthy', 'waiting-session'):
@@ -1037,7 +1049,7 @@ def root_install(args):
         write_json(directory / 'transaction.json', manifest)
         print(f'Installed {args.version}: {detail}.\n'
               'These checks do not prove client video delivery or suspend/resume.\n'
-              f'Rollback: python3 {Path(__file__).resolve()} rollback {identifier}')
+              'Recovery: vibepollo-install --recover')
         return 0
     except BaseException as error:
         print(f'Deployment failed during {phase}: {error}', file=sys.stderr, flush=True)
@@ -1057,13 +1069,8 @@ def root_install(args):
                               '--no-pager', '-n', '150', check=False).stdout
             (directory / 'failure.log').write_text(diagnostics)
             print(f'Diagnostics: {directory / "failure.log"}', file=sys.stderr)
-        if phase in ('mutating', 'readiness') and should_rollback(args.rollback, phase, baseline):
-            rollback(directory, manifest)
-        elif phase == 'readiness':
-            manifest['status'] = 'UNHEALTHY'
-            write_json(directory / 'transaction.json', manifest)
-            print('New installation retained (rollback policy/baseline). The host is NOT validated.\n'
-                  f'Manual rollback: python3 {Path(__file__).resolve()} rollback {identifier}', file=sys.stderr)
+        if phase in ('mutating', 'readiness'):
+            retain_failed_install(directory, manifest, phase, str(error))
         else:
             # No files were replaced. In particular, do not restore a stale
             # snapshot when another package/manual update caused preflight drift.
@@ -1084,10 +1091,13 @@ def root_install(args):
 
 def finalize(directory, manifest):
     status = manifest['status']
-    if status not in ('REBOOT_REQUIRED', 'ROLLBACK_REBOOT_REQUIRED'):
-        raise DeployError('This transaction is not waiting for a reboot')
+    if status in ('COMMITTED', 'ROLLED_BACK', 'ABORTED'):
+        print(f'Latest transaction is already {status.lower()}.')
+        return
+    if status not in ('REBOOT_REQUIRED', 'ROLLBACK_REBOOT_REQUIRED', 'UNHEALTHY'):
+        raise DeployError('Installation is incomplete; use vibepollo-install --recover')
     previous_boot = manifest.get('rollback_boot_id') if status == 'ROLLBACK_REBOOT_REQUIRED' else manifest['driver']['boot_id']
-    if Path('/proc/sys/kernel/random/boot_id').read_text().strip() == previous_boot:
+    if status != 'UNHEALTHY' and Path('/proc/sys/kernel/random/boot_id').read_text().strip() == previous_boot:
         raise DeployError('Reboot first; restarting the host does not replace the loaded driver')
     if os.uname().release not in manifest['driver']['kernels']:
         raise DeployError('Boot a kernel whose driver was built by this transaction')
@@ -1114,16 +1124,26 @@ def finalize(directory, manifest):
         result, detail = readiness(manifest['timeout'])
         if result not in ('healthy', 'waiting-session'):
             print(f'Post-reboot readiness failed: {detail}', flush=True)
-            if should_rollback(manifest['rollback_policy'], 'readiness', manifest['baseline']):
-                rollback(directory, manifest)
-            else:
-                manifest['status'] = 'UNHEALTHY'
-                write_json(directory / 'transaction.json', manifest)
+            retain_failed_install(directory, manifest, 'readiness', detail)
             raise DeployError(detail)
         manifest['status'] = 'COMMITTED'
         print(detail, flush=True)
     write_json(directory / 'transaction.json', manifest)
     print(f'Transaction {directory.name}: {manifest["status"]}', flush=True)
+
+
+def resume_latest(command, identifier, latest):
+    if not latest:
+        raise DeployError('No installation transaction is available to resume or recover')
+    if identifier and identifier != latest:
+        raise DeployError('Only the latest transaction can be resumed or recovered')
+    directory = transaction_path(latest)
+    manifest = json.loads((directory / 'transaction.json').read_text())
+    if command == 'rollback' and manifest['status'] != 'ROLLBACK_REBOOT_REQUIRED':
+        rollback(directory, manifest)
+    else:
+        finalize(directory, manifest)
+    return 0
 
 
 def verify_payload(directory, manifest, members):
@@ -1251,6 +1271,29 @@ def configure_command(args, build, cache):
     return command
 
 
+def confirm_install():
+    # GNU readline keeps editing within the answer, rather than letting the
+    # terminal's erase/kill handling overwrite the printed prompt.
+    import readline  # noqa: F401 -- installs Python's interactive input editor
+    import termios
+
+    if not sys.stdin.isatty():
+        raise DeployError('Installation confirmation needs a terminal; use --yes for noninteractive installation')
+    while True:
+        # Keystrokes entered while build output was scrolling are not consent.
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        try:
+            answer = input('Install this build (including driver upgrades)? [y/N] ').strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if answer in ('y', 'yes'):
+            return True
+        if answer in ('', 'n', 'no'):
+            return False
+        print('Please enter y to install or n to cancel.')
+
+
 def build_install(args):
     if os.geteuid() == 0:
         raise DeployError('Run build/install as your desktop user, without sudo; only installation elevates')
@@ -1314,17 +1357,23 @@ def build_install(args):
             return 0
         driver_preflight(work / 'stage', args.version)
         print('Installation will disconnect streams. Backups are root-private; configuration/pairing state is preserved.')
-        if not args.yes and input('Install this build (including driver upgrades)? [y/N] ').strip().lower() != 'y':
+        if not args.yes and not confirm_install():
             raise DeployError('Installation cancelled')
         return subprocess.call(['sudo', '/usr/bin/python3', '-I', str(Path(__file__).resolve()),
                                 '_install', str(archive_path), digest(archive_path), '--version', args.version,
-                                '--rollback', args.rollback, '--timeout', str(args.timeout)])
+                                '--timeout', str(args.timeout)])
 
 
-def main():
+def parse_arguments(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ('--part2', '--recover'):
+        argv.insert(0, 'install')
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     install = commands.add_parser('install', help='Build, stage, back up and install (run without sudo)')
+    action = install.add_mutually_exclusive_group()
+    action.add_argument('--part2', action='store_true', help='Resume/validate the latest installation after reboot or a readiness failure')
+    action.add_argument('--recover', action='store_true', help='Restore the previous installation from the latest transaction')
     install.add_argument('--version', help='Explicit version; otherwise BUILD_VERSION, cached version, or exact HEAD tag')
     install.add_argument('--jobs', type=int, default=min(10, os.cpu_count() or 1), help='Build/test parallelism (default: up to 10 CPUs)')
     install.add_argument('--cc', help='C compiler executable; otherwise CC, build cache, or CMake default')
@@ -1341,13 +1390,22 @@ def main():
     internal.add_argument('sha256')
     internal.add_argument('--version', required=True)
     for command in (install, internal):
-        command.add_argument('--rollback', choices=('auto', 'always', 'never'), default='auto')
         command.add_argument('--timeout', type=int, default=90)
     undo = commands.add_parser('rollback', help='Restore the latest transaction (run without sudo)')
-    undo.add_argument('transaction')
+    undo.add_argument('transaction', nargs='?', help='Defaults to the latest transaction')
     finish = commands.add_parser('finalize', help='Validate a driver installation/rollback after reboot')
-    finish.add_argument('transaction')
-    args = parser.parse_args()
+    finish.add_argument('transaction', nargs='?', help='Defaults to the latest transaction')
+    args = parser.parse_args(argv)
+    if args.command == 'install' and (args.part2 or args.recover):
+        if len(argv) != 2:
+            parser.error('--part2/--recover cannot be combined with build/install options')
+        args.command = 'finalize' if args.part2 else 'rollback'
+        args.transaction = None
+    return args
+
+
+def main():
+    args = parse_arguments()
     os.environ['LC_ALL'] = 'C.UTF-8'
     platform_preflight(native=False)
     if args.command == 'install':
@@ -1355,7 +1413,7 @@ def main():
     if args.command in ('rollback', 'finalize') and os.geteuid() != 0:
         print('This operation may disconnect streams while restoring/validating services.', flush=True)
         return subprocess.call(['sudo', '/usr/bin/python3', '-I', str(Path(__file__).resolve()),
-                                args.command, args.transaction])
+                                args.command] + ([args.transaction] if args.transaction else []))
     if os.geteuid() != 0:
         raise DeployError('Internal installation phase requires root')
     # Do not let caller-provided bus addresses, systemd overrides, or loader
@@ -1374,20 +1432,15 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         latest = json.loads((STATE / 'latest.json').read_text())['id'] if (STATE / 'latest.json').exists() else None
         if args.command in ('rollback', 'finalize'):
-            if args.transaction != latest:
-                raise DeployError('Only the latest transaction can be rolled back')
-            directory = transaction_path(args.transaction)
-            manifest = json.loads((directory / 'transaction.json').read_text())
-            (rollback if args.command == 'rollback' else finalize)(directory, manifest)
-            return 0
+            return resume_latest(args.command, args.transaction, latest)
         if not VERSION.fullmatch(args.version) or not re.fullmatch('[0-9a-f]{64}', args.sha256):
             raise DeployError('Invalid candidate version/hash')
         if not 10 <= args.timeout <= 300:
             raise DeployError('Readiness timeout must be 10..300 seconds')
         if latest:
             manifest = json.loads((transaction_path(latest) / 'transaction.json').read_text())
-            if manifest['status'] in ('PREPARED', 'MUTATING', 'ROLLBACK_FAILED', 'REBOOT_REQUIRED', 'ROLLBACK_REBOOT_REQUIRED'):
-                raise DeployError(f'Incomplete transaction {latest}; use finalize/rollback before another installation')
+            if manifest['status'] in ('PREPARED', 'MUTATING', 'ROLLBACK_FAILED', 'REBOOT_REQUIRED', 'ROLLBACK_REBOOT_REQUIRED', 'UNHEALTHY'):
+                raise DeployError('Latest installation is unfinished; use vibepollo-install --part2 or --recover')
         def interrupted(signum, _frame):
             raise DeployError(f'Interrupted by signal {signum}')
         signal.signal(signal.SIGTERM, interrupted)
