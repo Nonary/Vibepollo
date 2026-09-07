@@ -169,7 +169,12 @@ namespace proc::catalog {
       state.cover_fingerprint = app.art_version;
       state_changed = true;
     }
-    if (state.cover_fingerprint != app.art_version) {
+    // A UUID-only ID may already be cached with placeholder artwork on a
+    // client, including after removal pruned our previous fingerprint.
+    // Version first-seen and existing UUID-only entries too, so re-adding
+    // an app cannot resurrect that stale client cache.
+    if (state.cover_fingerprint != app.art_version ||
+        (!app.art_version.empty() && state.current_id == std::get<0>(legacy_ids))) {
       const auto previous = state.current_id;
       const auto versioned = calculate_versioned_ids(app.uuid, app.art_version, index);
       state.current_id = occupied_ids.contains(std::get<0>(versioned)) ? std::get<1>(versioned) : std::get<0>(versioned);
