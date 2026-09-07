@@ -16,6 +16,7 @@
 
 #ifdef SUNSHINE_STEAM_ARTWORK_NETWORK
   #include <curl/curl.h>
+  #include "httpcommon.h"
 #endif
 
 extern "C" {
@@ -585,6 +586,10 @@ namespace {
   std::optional<std::vector<std::uint8_t>> fetch_remote(const std::string &url) {
     CURL *curl = curl_easy_init();
     if (!curl) return std::nullopt;
+    if (!http::configure_curl_tls(curl)) {
+      curl_easy_cleanup(curl);
+      return std::nullopt;
+    }
     curl_buffer_t buffer;
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
@@ -764,6 +769,11 @@ namespace platf::steam::artwork {
       if (source.empty() || !full_portrait(source)) {
         const auto remote = obtain_remote_portrait(game.app_id, appdata, fetcher);
         if (!remote.empty()) effective_source = remote;
+      }
+      // Keep the last converted cover through transient Steam cache/CDN failures.
+      const auto cached = cache_path(appdata, game.app_id);
+      if (regular(cached) && valid_png_bytes(read_bytes(cached))) {
+        game.artwork_client_path = cached;
       }
       if (effective_source.empty()) continue;
       if (!game.session_artwork_revision.empty() && effective_source == source) {

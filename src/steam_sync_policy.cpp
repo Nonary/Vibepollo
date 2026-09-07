@@ -294,6 +294,21 @@ namespace platf::steam::sync::policy {
       const bool legacy_managed = !app.contains("steam-managed") && parsed_id &&
                                   has_canonical_steam_identity(app, *parsed_id);
       if (steam_id.empty() || (!managed && !legacy_managed)) {
+        // A manually added game may have been saved while artwork was offline.
+        // Repair only provider-owned covers; leave its launch settings intact.
+        if (const auto found = by_id.find(steam_id); found != by_id.end() &&
+            !found->second->artwork_client_path.empty()) {
+          const auto image = app.value("image-path", std::string {});
+          const auto previous = app.value("steam-artwork-client-path", std::string {});
+          if (image.empty() || image == "./assets/steam.png" || (!previous.empty() && image == previous)) {
+            const auto before = app;
+            const auto path = found->second->artwork_client_path.generic_string();
+            app["image-path"] = path;
+            app["steam-artwork-client-path"] = path;
+            app["steam-artwork-client-compatible"] = true;
+            changed = changed || app != before;
+          }
+        }
         ++it;
         continue;
       }

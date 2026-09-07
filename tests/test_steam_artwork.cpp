@@ -337,3 +337,17 @@ TEST(SteamArtwork, SessionCoverSurvivesUnavailableCdnWithoutUserPaths) {
   fs::remove_all(root);
 #endif
 }
+
+TEST(SteamArtwork, PreparedCoverSurvivesMissingSourceAndOfflineCdn) {
+  using namespace platf::steam::artwork;
+  const auto root = test_root();
+  const auto cached = cache_path(root, 42);
+  ASSERT_TRUE(import_png(full_portrait_png(), cached));
+  platf::steam::game_t game;
+  game.app_id = 42;
+  game.artwork_path = root / "missing.jpg";
+  std::vector<platf::steam::game_t> games {game};
+  prepare(games, root, [](const std::string &) -> std::optional<std::vector<std::uint8_t>> { return std::nullopt; });
+  EXPECT_EQ(games[0].artwork_client_path, cached);
+  fs::remove_all(root);
+}
