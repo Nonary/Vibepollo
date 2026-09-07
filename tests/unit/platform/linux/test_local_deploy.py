@@ -3,6 +3,7 @@
 
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import stat
@@ -94,6 +95,42 @@ class ArchiveTests(unittest.TestCase):
 
 
 class SharedBuildTests(unittest.TestCase):
+    def test_resume_flags_select_actions_without_transaction_ids(self):
+        for prefix in ([], ['install']):
+            for flag, command in [('--part2', 'finalize'), ('--recover', 'rollback')]:
+                args = deploy.parse_arguments(prefix + [flag])
+                self.assertEqual(args.command, command)
+                self.assertIsNone(args.transaction)
+        for command in ('finalize', 'rollback'):
+            self.assertIsNone(deploy.parse_arguments([command]).transaction)
+
+    def test_resume_flags_reject_conflicting_or_ignored_options(self):
+        for args in (['install', '--part2', '--recover'],
+                     ['install', '--part2', '--version', VERSION],
+                     ['install', '--rollback', 'always']):
+            with mock.patch.object(deploy.sys, 'stderr', io.StringIO()), self.assertRaises(SystemExit):
+                deploy.parse_arguments(args)
+
+    def test_confirmation_discards_typeahead_and_reprompts_for_junk(self):
+        with mock.patch.object(deploy.sys.stdin, 'isatty', return_value=True), \
+                mock.patch.object(deploy.sys.stdin, 'fileno', return_value=99), \
+                mock.patch('termios.tcflush') as flush, \
+                mock.patch('builtins.input', side_effect=['top', '\x1b[Z', 'YES']):
+            self.assertTrue(deploy.confirm_install())
+        self.assertEqual(flush.call_count, 3)
+
+    def test_confirmation_decline_and_eof_cancel(self):
+        for value in ('', 'n', 'no', EOFError()):
+            with mock.patch.object(deploy.sys.stdin, 'isatty', return_value=True), \
+                    mock.patch.object(deploy.sys.stdin, 'fileno', return_value=99), \
+                    mock.patch('termios.tcflush'), mock.patch('builtins.input', side_effect=[value]):
+                self.assertFalse(deploy.confirm_install())
+
+    def test_confirmation_rejects_noninteractive_stdin(self):
+        with mock.patch.object(deploy.sys.stdin, 'isatty', return_value=False):
+            with self.assertRaisesRegex(deploy.DeployError, 'needs a terminal'):
+                deploy.confirm_install()
+
     def args(self, **values):
         return SimpleNamespace(**dict(dict(version=VERSION, jobs=4, cc=None, cxx=None,
                                            cuda='auto', cuda_root=None, cuda_host_compiler=None), **values))
@@ -232,6 +269,22 @@ class FilesTests(unittest.TestCase):
         with self.assertRaises(deploy.DeployError):
             self.files.snapshot(['usr/bin/vibepollo'])
 
+    def test_private_public_asset_parent_is_rejected_before_install(self):
+        name = 'usr/share/vibeshine/prelogin/apps.json'
+        target = self.place(name)
+        target.parent.chmod(0o700)
+        with self.assertRaisesRegex(deploy.DeployError, 'not traversable'):
+            self.files.snapshot([name])
+        self.assertEqual(stat.S_IMODE(target.parent.stat().st_mode), 0o700)
+        self.assertEqual(target.read_bytes(), b'old')
+
+    def test_private_driver_state_parent_remains_allowed(self):
+        name = 'var/lib/vibeshine-drm/source-marker'
+        target = self.place(name)
+        target.parent.chmod(0o700)
+        files = deploy.Files(self.transaction, self.root, os.getuid(), validator=lambda _: True)
+        self.assertIsNotNone(files.snapshot([name])[name])
+
     def test_new_dirs_remain_traversable_under_private_umask(self):
         source = self.base / 'source'
         source.write_bytes(b'code')
@@ -290,6 +343,67 @@ class FilesTests(unittest.TestCase):
 
 
 class PolicyTests(unittest.TestCase):
+    def test_latest_transaction_is_resolved_without_an_id(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for command, status, expected in [('finalize', 'UNHEALTHY', 'finalize'),
+                                               ('rollback', 'UNHEALTHY', 'rollback'),
+                                               ('rollback', 'ROLLBACK_REBOOT_REQUIRED', 'finalize')]:
+                (directory / 'transaction.json').write_text(json.dumps({'status': status}))
+                with mock.patch.object(deploy, 'transaction_path', return_value=directory) as resolve, \
+                        mock.patch.object(deploy, 'rollback') as undo, \
+                        mock.patch.object(deploy, 'finalize') as finish:
+                    deploy.resume_latest(command, None, 'latest-id')
+                resolve.assert_called_once_with('latest-id')
+                self.assertEqual(undo.call_count, int(expected == 'rollback'))
+                self.assertEqual(finish.call_count, int(expected == 'finalize'))
+
+    def test_missing_or_stale_transaction_does_not_run_recovery(self):
+        for identifier, latest in [(None, None), ('older', 'latest')]:
+            with mock.patch.object(deploy, 'transaction_path') as resolve:
+                with self.assertRaises(deploy.DeployError):
+                    deploy.resume_latest('rollback', identifier, latest)
+                resolve.assert_not_called()
+
+    def test_unhealthy_candidate_can_retry_same_boot_without_auto_rollback(self):
+        manifest = {'status': 'UNHEALTHY', 'rollback_policy': 'always', 'baseline': 'healthy',
+                    'timeout': 90, 'after': {}, 'driver': {'boot_id': 'same-boot',
+                    'kernels': [os.uname().release], 'after': {}}}
+        with mock.patch.object(Path, 'read_text', return_value='same-boot'), \
+                mock.patch.object(deploy, 'driver_needs_reboot', return_value=False), \
+                mock.patch.object(deploy, 'driver_state', return_value={}), \
+                mock.patch.object(deploy, 'run'), mock.patch.object(deploy, 'start_controller'), \
+                mock.patch.object(deploy, 'write_json'), mock.patch.object(deploy, 'rollback') as undo, \
+                mock.patch.object(deploy, 'readiness', side_effect=[('unhealthy', 'not ready'),
+                                                                  ('healthy', 'ready')]):
+            with self.assertRaisesRegex(deploy.DeployError, 'not ready'):
+                deploy.finalize(Path('/unused'), manifest)
+            self.assertEqual(manifest['status'], 'UNHEALTHY')
+            undo.assert_not_called()
+            deploy.finalize(Path('/unused'), manifest)
+            self.assertEqual(manifest['status'], 'COMMITTED')
+
+    def test_driver_waits_for_naturally_exiting_descendant(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / 'finished'
+            command = ['/usr/bin/bash', '-c',
+                       '(sleep 0.2; printf done > "$1") & exit 4',
+                       'driver-fixture', str(marker)]
+            self.assertEqual(deploy.driver_command(command), 4)
+            self.assertEqual(marker.read_text(), 'done')
+
+    def test_driver_persistent_descendant_still_forces_cleanup_and_failure(self):
+        process = mock.Mock(pid=123)
+        process.wait.return_value = 0
+        with mock.patch.object(deploy.subprocess, 'Popen', return_value=process), \
+                mock.patch.object(os, 'killpg') as kill, \
+                mock.patch.object(deploy, 'driver_group_empty', side_effect=[False, False, True, True]), \
+                mock.patch.object(deploy.time, 'monotonic', side_effect=[0, 6, 6]):
+            with self.assertRaisesRegex(deploy.DeployError, 'left descendants running'):
+                deploy.driver_command(['unused'])
+        kill.assert_any_call(123, deploy.signal.SIGTERM)
+        kill.assert_any_call(123, deploy.signal.SIGKILL)
+
     def test_synthetic_encoder_probe_does_not_require_future_client_capture_logs(self):
         with mock.patch.object(deploy, 'unit_properties', return_value={
                 'ActiveState': 'active', 'ControlGroup': '/system.slice/vibepollo.service', 'InvocationID': 'a' * 32}), \
@@ -345,17 +459,18 @@ class PolicyTests(unittest.TestCase):
             output.write_text('enabled\n')
             self.assertTrue(deploy.scanout_active(drm))
 
-    def test_partial_mutations_always_rollback(self):
-        for policy in ('auto', 'always', 'never'):
-            for baseline in ('healthy', 'unhealthy', 'unknown'):
-                self.assertTrue(deploy.should_rollback(policy, 'mutating', baseline))
+    def test_failed_install_is_retained_until_explicit_recovery(self):
+        for phase, status in [('mutating', 'MUTATING'), ('readiness', 'UNHEALTHY')]:
+            manifest = {'rollback_policy': 'always'}
+            with mock.patch.object(deploy, 'write_json'), \
+                    mock.patch.object(deploy, 'quiesce') as stop, \
+                    mock.patch.object(deploy, 'rollback') as undo:
+                deploy.retain_failed_install(Path('/unused'), manifest, phase, 'failure')
+            self.assertEqual(manifest['status'], status)
+            self.assertEqual(manifest['failure'], 'failure')
+            self.assertEqual(stop.call_count, int(phase == 'mutating'))
+            undo.assert_not_called()
 
-    def test_readiness_uses_prior_health_without_hiding_unknown(self):
-        self.assertTrue(deploy.should_rollback('auto', 'readiness', 'healthy'))
-        self.assertTrue(deploy.should_rollback('auto', 'readiness', 'unknown'))
-        self.assertFalse(deploy.should_rollback('auto', 'readiness', 'unhealthy'))
-        self.assertTrue(deploy.should_rollback('always', 'readiness', 'unhealthy'))
-        self.assertFalse(deploy.should_rollback('never', 'readiness', 'healthy'))
 
     def test_tests_are_skipped_unless_enforced(self):
         with mock.patch.object(deploy.subprocess, 'run') as run:

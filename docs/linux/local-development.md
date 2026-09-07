@@ -111,30 +111,40 @@ encoder probes can succeed before a client starts actual KMS capture.
 With no active Wayland seat0 session, an active controller
 can report “waiting for session” instead of pretending a stream was tested.
 
-## Rollback policy
+## Resume and explicit recovery
 
-- `--rollback auto` (default): roll back a partial install/start failure. For a
-  completed installation that fails readiness, roll back if the previous host
-  was healthy or its health could not be determined. If it was already
-  demonstrably unhealthy, retain the new installation and report failure.
-- `--rollback always`: also restore an already-broken previous installation
-  when the new one fails readiness.
-- `--rollback never`: retain a **complete** new installation on readiness
-  failure. This never permits leaving partially replaced files behind.
+Installation failures retain the candidate and diagnostics. The helper never
+reverts application or driver files automatically, including on readiness
+failure after reboot. A partially replaced payload stays stopped until you
+explicitly recover it. A complete candidate that fails readiness can be retried
+without rebuilding or rebooting again when the loaded driver already matches.
 
-Root-private backups and transaction records remain under
-`/var/lib/vibepollo-local-deploy`. The command prints the transaction ID and
-manual rollback command:
+Resume the latest transaction or retry its readiness check:
 
 ```bash
-python3 scripts/linux_local_deploy.py rollback TRANSACTION_ID
+python3 scripts/linux_local_deploy.py install --part2
 ```
 
-Only the latest transaction can be restored. An incomplete transaction blocks
-another installation until it is recovered; changed installed files or corrupt
-backups stop rollback rather than overwriting a later/manual upgrade. Failed
-rollback keeps admission closed. Existing enabled/masked unit policy is not
-rewritten; pre-existing administrative masks are rejected.
+Restore the previous installation only when requested:
+
+```bash
+python3 scripts/linux_local_deploy.py install --recover
+```
+
+On hosts with the `vibepollo-install` alias, use `vibepollo-install --part2`
+and `vibepollo-install --recover`. Both select the latest transaction under the
+root-owned deployment lock; no transaction ID is needed. The flags cannot be
+combined with build options. The legacy `finalize [TRANSACTION_ID]` and
+`rollback [TRANSACTION_ID]` commands remain available for explicit operations.
+Old transactions' automatic rollback policies are no longer used.
+
+Backups and transaction records remain under `/var/lib/vibepollo-local-deploy`.
+An unfinished transaction blocks another installation until it is validated or
+recovered. Changed installed files or corrupt backups stop recovery rather than
+overwriting a later/manual upgrade. Failed recovery keeps admission closed.
+Existing enabled/masked unit policy is not rewritten; pre-existing administrative
+masks are rejected. Repeating `--recover` after a recovery reboot finishes that
+recovery; `--part2` can finish it as well.
 
 ## Useful options and limits
 
@@ -144,7 +154,9 @@ overrides. Combine with `--enforce` to test an existing `BUILD_TESTS=ON` build;
 disabled or undiscovered tests cannot pass the enforced gate.
 `--stage-only` produces `build/local-deploy-candidate.tar.gz` without sudo or
 service changes. `--yes` skips the switchover confirmation, not sudo
-authentication. `--timeout 120` extends the readiness deadline (10–300 seconds).
+authentication. Interactive confirmation clears queued build-time keystrokes,
+uses readline editing to protect the prompt, and repeats on unrecognized input.
+Noninteractive stdin requires `--yes`. `--timeout 120` extends the readiness deadline (10–300 seconds).
 
 To opt into the full test gate (there are no test-failure exception flags):
 
@@ -166,13 +178,13 @@ If KWin holds an older module, installation succeeds as `REBOOT_REQUIRED`, leave
 the host stopped, and prints this command to run after you reboot:
 
 ```bash
-python3 scripts/linux_local_deploy.py finalize TRANSACTION_ID
+python3 scripts/linux_local_deploy.py install --part2
 ```
 
 Finalization checks the boot changed, the selected kernel was built, and both
 module version and source version match the installed candidate. A rollback
 after the new module has loaded may itself require another reboot, followed by
-`finalize`; restoring disk files cannot replace a module held by KWin.
+`--part2` (or `--recover`); restoring disk files cannot replace a module held by KWin.
 
 ## Signing follows the native installer
 
