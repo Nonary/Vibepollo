@@ -78,7 +78,7 @@ running kernel, installs the package from the signed repository (or the latest G
 the repository is unavailable), opens firewalld or ufw, and tells you whether to reboot:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/Nonary/Vibepollo/master/scripts/linux_install.sh
+curl -fsSLO https://raw.githubusercontent.com/Nonary/Vibepollo/vibe-test/scripts/linux_install.sh
 sudo bash linux_install.sh
 ```
 

@@ -26,7 +26,7 @@ The installer checks the requirements above, installs the kernel headers for you
 installs the package, opens the firewall if one is active, and tells you whether a reboot is needed.
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/Nonary/Vibepollo/master/scripts/linux_install.sh
+curl -fsSLO https://raw.githubusercontent.com/Nonary/Vibepollo/vibe-test/scripts/linux_install.sh
 less linux_install.sh            # optional: read what it does
 sudo bash linux_install.sh
 ```
@@ -149,7 +149,9 @@ The build takes a while: it compiles the web interface with `npm`, runs the test
 The package prints its remaining steps at the end of the pacman transaction. On a typical machine
 there are four.
 
-1. **Reboot if asked.** A kernel that still holds an older driver, or a pending Secure Boot key
+1. **Reboot after the first installation.** The login screen and desktop must restart to load
+   the new display and session integration, even if the driver is already loaded. On updates, reboot
+   if asked. A kernel that still holds an older driver, or a pending Secure Boot key
    enrollment, needs one reboot. On the Secure Boot path the firmware shows the blue MOK Manager
    screen: choose **Enroll MOK**, continue, and enter the password you typed during installation.
 2. **Log in to Plasma (Wayland) and pair.** Open <https://localhost:47990> on the machine, create

@@ -56,7 +56,7 @@ kernel headers, a Plasma Wayland session started by SDDM or Plasma Login Manager
 hardware H.264 encoder. Pre-login streaming is NVIDIA-only.
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/Nonary/Vibepollo/master/scripts/linux_install.sh
+curl -fsSLO https://raw.githubusercontent.com/Nonary/Vibepollo/vibe-test/scripts/linux_install.sh
 sudo bash linux_install.sh
 ```
 

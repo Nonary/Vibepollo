@@ -205,3 +205,18 @@ printf 'Driver installation is required; genuine build failures cannot report in
   if kernel_package_for 7.2.3-1-cachyos "$modules_root"; then exit 1; fi
 )
 printf 'Retired running kernels require a reboot, not mismatched header installation.\n'
+
+# First install must request a reboot even if driver status later reports loaded.
+(
+  pacman() { [[ "$*" == '-Q vibepollo' ]] && return "$package_status"; }
+  package_status=1; reboot_required=0
+  check_session_restart
+  [[ $reboot_required == 1 ]]
+  package_status=0
+  check_session_restart
+  [[ $reboot_required == 1 ]]
+  reboot_required=0
+  check_session_restart
+  [[ $reboot_required == 0 ]]
+)
+printf 'Fresh installs require a compositor restart even when the driver loads immediately.\n'
