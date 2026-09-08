@@ -92,12 +92,22 @@ verifies that the public binary has no capabilities. Install through the Arch pa
 staged-install recipe in `AGENTS.md`) rather than running a capability-patched build directly.
 
 ##### CUDA Toolkit
-Sunshine requires CUDA Toolkit for NVFBC capture. There are two caveats to CUDA:
+CUDA-enabled builds require CUDA Toolkit **12.0 or newer**. The native
+[local build/deploy script](linux/local-development.md#build-settings) uses an
+installed toolkit and compiler; it does not pin CUDA 13 or GCC 15. Choose a
+host compiler supported by that toolkit and a C++ compiler/standard library
+that meets the project's C++23 requirements.
 
-1. The version installed depends on the version of GCC.
-2. The version of CUDA you use will determine compatibility with various GPU generations.
-   At the time of writing, the recommended version to use is CUDA ~13.1.
-   See [CUDA compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/index.html) for more info.
+The selected toolkit determines which GPU generations can be targeted. Release
+packages deliberately use **CUDA 12.9.1 with GCC 14**, as described above, to
+cover both older and newer GPUs. This release pin is not the minimum for local
+builds. CUDA 13 removes compilation support for Maxwell, Pascal, and Volta;
+upgrading the toolkit can therefore reduce GPU compatibility. See NVIDIA's
+[CUDA 13 release notes](https://docs.nvidia.com/cuda/archive/13.0.0/cuda-toolkit-release-notes/index.html)
+and [CUDA compatibility guide](https://docs.nvidia.com/deploy/cuda-compatibility/index.html).
+
+The native Arch/CachyOS release package uses a private build-time toolkit and
+does not require users to install the CUDA toolkit to run Vibepollo.
 
 > [!NOTE]
 > To install older versions, select the appropriate run file based on your desired CUDA version and architecture
