@@ -1,9 +1,11 @@
 # Shared native Linux build/install helper (experimental)
 
-This developer tool updates an **already-configured native Vibepollo host**.
-It is not a first-install wizard, a dependency installer, or a general-purpose
-cross-platform package manager. Run from the checkout as your normal user,
-not with `sudo`:
+On **Arch Linux and CachyOS**, this tool builds a native package from the local
+checkout and installs it through `linux_install.sh --package`. It supports first
+installation, replaces conflicting Sunshine/Vibeshine packages through pacman,
+and reuses the package account, machine-profile, signing, driver and firewall setup. The
+native installer can update system packages and install matching kernel headers.
+Run from the checkout as your normal user, not with `sudo`:
 
 ```bash
 python3 scripts/linux_local_deploy.py install --version 1.19.0-beta.5
@@ -17,9 +19,11 @@ The command configures an incremental Ninja/RelWithDebInfo `/usr` build, builds
 both web interfaces and the host, stages a SHA-256-pinned payload, and
 prompts before elevating for installation. Tests are skipped by default;
 `--enforce` runs the full suite and blocks installation on **any** failure.
-Archive, ownership, rollback, driver and startup safety checks always apply.
-It does not install system packages, fetch a prebuilt Vibepollo release, commit,
-push, or delete itself. The normal CMake/npm build may download its declared
+Archive, ownership, driver and startup checks always apply. Arch installations
+retain a local `build/vibepollo-*.pkg.tar.gz` and a SHA-256-verified root-private
+copy. Pacman performs the installation and conflict removal in one transaction;
+no prebuilt host release is downloaded. This tool does not commit, push, or
+delete itself. The normal CMake/npm build may download its declared
 build dependencies.
 
 ## Supported scope and caveats
@@ -29,11 +33,17 @@ build dependencies.
 - Live deployment requires systemd, cgroup v2, Linux 6.16+, and a merged module
   layout where `/lib/modules` resolves to `/usr/lib/modules`. It requires the
   existing Vibepollo service account, machine configuration, shared state,
-  controller/socket architecture, and managed virtual-display setup.
+  controller/socket architecture, and managed virtual-display setup **only for
+  the file updater on non-Arch systems**. On Arch/CachyOS the native package
+  lifecycle creates these prerequisites.
 - Runtime operation targets the native controller's KDE/Wayland seat0 desktop
-  or greeter sessions. It does not migrate an obsolete per-user service or
-  support arbitrary compositors, Windows, macOS, live deployment inside
-  containers, or cross-compiling. `--stage-only` can be used in Linux build
+  or greeter sessions. On Arch, confirmed installation disables the invoking
+  user's obsolete Sunshine/Vibeshine/Vibepollo service and imports the selected
+  desktop profile into service-owned state. Original profiles remain intact. Multiple
+  source profiles require explicit selection through the native installer
+  (`--source-profile`) or `vibepollo configure USER SOURCE` before retrying setup.
+  It does not support arbitrary compositors, Windows, macOS, live deployment
+  inside containers, or cross-compiling. `--stage-only` can be used in Linux build
   containers: it skips the live-host requirements and does not elevate.
 - The development baseline is an Arch-family KDE/NVIDIA host. Other compatible
   machines and GPU/toolchain combinations are **not end-to-end certified**.
@@ -91,6 +101,21 @@ python3 scripts/linux_local_deploy.py install
 ```
 
 ## Installation and readiness
+
+On Arch/CachyOS, package hooks create service accounts before setting private
+host permissions, import configuration and pairings without modifying the
+original desktop profile, install the driver, and enable the session controller.
+A successful pacman exit alone is insufficient: the helper verifies the exact
+installed payload, permissions and capabilities, then checks startup readiness.
+If the loaded driver needs replacement, reboot and run `--part2`. The same
+command retries readiness after resolving a package setup error.
+
+**Package recovery uses pacman**, for example
+`sudo pacman -U /path/to/previous.pkg.tar.zst`, with the previous package from
+`/var/cache/pacman/pkg` or your retained local builds. `--recover` reports this
+requirement; it never applies a file rollback over the package database. Package
+hooks and system updates are not covered by the file updater's rollback journal.
+The following file-journal behavior applies only to non-Arch configured hosts.
 
 Installation disconnects streams. The root phase closes and temporarily masks
 broker admission, quiesces the controller/host/brokers, verifies empty cgroups,
