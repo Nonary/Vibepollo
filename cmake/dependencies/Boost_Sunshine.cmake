@@ -23,6 +23,7 @@ if(BUILD_TESTS)
             algorithm
             asio
             crc
+            format
             function
             log_setup
             property_tree

@@ -191,6 +191,7 @@ pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
 if(NOT TARGET Boost::algorithm OR
    NOT TARGET Boost::asio OR
    NOT TARGET Boost::crc OR
+   NOT TARGET Boost::format OR
    NOT TARGET Boost::function OR
    NOT TARGET Boost::log OR
    NOT TARGET Boost::log_setup OR
@@ -200,6 +201,7 @@ if(NOT TARGET Boost::algorithm OR
         algorithm
         asio
         crc
+        format
         function
         log
         log_setup
@@ -634,7 +636,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
 
     add_executable(test_linux_display_power_lease
         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_display_power_lease.cpp")
-    target_link_libraries(test_linux_display_power_lease PRIVATE PkgConfig::TEST_GIO Threads::Threads)
+    target_link_libraries(test_linux_display_power_lease PRIVATE
+        PkgConfig::TEST_GIO Threads::Threads Boost::log Boost::format)
     add_test(NAME test_component_linux_display_power_lease COMMAND test_linux_display_power_lease)
     set_tests_properties(test_component_linux_display_power_lease PROPERTIES LABELS "component" TIMEOUT 15)
 
