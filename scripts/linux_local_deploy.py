@@ -359,13 +359,30 @@ def capture_logs(invocation):
                'Screencasting with KMS|CLIENT CONNECTED|Error:', check=False).stdout
 
 
-def scanout_active(drm=Path('/sys/class/drm')):
-    for path in drm.glob('card*-Virtual-*/enabled'):
-        card = path.parent.name.split('-')[0]
-        if ((drm / card / 'device').resolve().name == 'vibeshine' and
-                path.read_text().strip() == 'enabled'):
-            return True
-    return False
+def managed_pool_state(drm=Path('/sys/class/drm'), control=Path('/run/vibeshine/vkms-control.sock')):
+    try:
+        attributes = control.lstat()
+        # Match native private_display::ready(): dormant connectors require
+        # the trusted control endpoint that will connect them during launch.
+        if (not stat.S_ISSOCK(attributes.st_mode) or attributes.st_uid != 0 or
+                attributes.st_mode & 0o007):
+            return None
+        state = None
+        for path in drm.glob('card*-Virtual-*/enabled'):
+            card = path.parent.name.split('-')[0]
+            try:
+                if (drm / card / 'device').resolve(strict=True).name != 'vibeshine':
+                    continue
+                enabled = path.read_text().strip()
+            except OSError:
+                continue
+            if enabled == 'enabled':
+                return 'active'
+            if enabled == 'disabled':
+                state = 'idle'
+        return state
+    except OSError:
+        return None
 
 
 def health():
@@ -383,12 +400,15 @@ def health():
         logs = capture_logs(units[HOST].get('InvocationID', ''))
         if 'Found H.264 encoder:' not in logs:
             return 'unknown', 'No H.264 readiness evidence for the current invocation'
-        if not scanout_active():
-            return 'unhealthy', 'No active Vibepollo virtual kernel scanout'
+        pool = managed_pool_state()
+        if pool is None:
+            return 'unhealthy', 'Managed virtual display pool or trusted control endpoint is unavailable'
         # Encoder probing can be synthetic when startup precedes DPMS wake.
-        # Capture messages appear only once a real capture session is created;
-        # never require that future client activity as a startup condition.
-        return 'healthy', 'Startup ready: current host listener, H.264 and managed scanout; client capture untested'
+        # Startup intentionally disconnects the idle pool when physical scanout
+        # exists. Only a client launch connects/enables its private output;
+        # neither virtual scanout nor capture is an idle startup requirement.
+        display = 'active managed scanout' if pool == 'active' else 'dormant managed pool (idle)'
+        return 'healthy', f'Startup ready: current host listener, H.264 and {display}; client capture untested'
     except (OSError, DeployError, subprocess.SubprocessError) as error:
         return 'unknown', str(error)
 

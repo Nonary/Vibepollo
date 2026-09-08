@@ -14,6 +14,7 @@
 #include <glad/gl.h>
 
 // local includes
+#include "dmabuf_surface.h"
 #include "misc.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -235,17 +236,6 @@ namespace egl {
     }
   });
 
-  struct surface_descriptor_t {
-    int width;
-    int height;
-    int fds[4];
-    std::uint32_t fourcc;
-    std::uint64_t modifier;
-    std::uint32_t pitches[4];
-    std::uint32_t offsets[4];
-    bool direct_import_required {};
-  };
-
   /** Load the process-wide EGL dispatch table when platform initialization did not. */
   bool ensure_loader();
 
@@ -303,13 +293,7 @@ namespace egl {
     }
 
     void reset() {
-      for (auto x = 0; x < 4; ++x) {
-        if (sd.fds[x] >= 0) {
-          close(sd.fds[x]);
-
-          sd.fds[x] = -1;
-        }
-      }
+      reset_surface(sd);
     }
 
     surface_descriptor_t sd;

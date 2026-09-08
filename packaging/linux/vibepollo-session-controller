@@ -191,6 +191,21 @@ observe_active_session() {
   [[ "$candidate_groups" =~ ^[0-9]+(,[0-9]+)*$ ]]
 }
 
+session_command_bounded() {
+  local timeout_seconds=$1 uid=$2 gid=$3
+  shift 3
+  [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ && timeout_seconds -le command_timeout &&
+     "$uid" =~ ^[1-9][0-9]*$ && "$gid" =~ ^[0-9]+$ ]] || return 1
+  # The root controller has SETUID/SETGID, but deliberately no CAP_KILL.
+  # Its timeout cannot signal a client after setpriv changes UID. Run the
+  # client monitor as that same user so a wedged compositor cannot strand a
+  # new query process on every reconciliation. The outer deadline bounds
+  # identity setup and leaves the user monitor time to TERM, KILL and reap.
+  /usr/bin/timeout --signal=KILL "$((timeout_seconds + 2))" \
+    /usr/bin/setpriv --reuid "$uid" --regid "$gid" --init-groups --no-new-privs -- \
+      /usr/bin/timeout --signal=TERM --kill-after=1 "$timeout_seconds" "$@"
+}
+
 user_systemctl() {
   local user=$1 uid=$2 gid=$3 runtime=$4
   local bounded_timeout=${user_systemctl_timeout:-$command_timeout}
@@ -200,9 +215,8 @@ user_systemctl() {
     /usr/bin/test -S "$runtime/bus" || return 1
   /usr/bin/setpriv --reuid "$uid" --regid "$gid" --init-groups --no-new-privs -- \
     /usr/bin/test ! -L "$runtime/bus" || return 1
-  /usr/bin/timeout --signal=KILL "$bounded_timeout" \
-    /usr/bin/setpriv --reuid "$uid" --regid "$gid" --init-groups --no-new-privs -- \
-      /usr/bin/env -i "XDG_RUNTIME_DIR=$runtime" \
+  session_command_bounded "$bounded_timeout" "$uid" "$gid" \
+    /usr/bin/env -i "XDG_RUNTIME_DIR=$runtime" \
         "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/bus" \
         /usr/bin/systemctl --user "$@"
 }
@@ -266,16 +280,14 @@ read_user_environment() {
 }
 
 probe_wayland() {
-  /usr/bin/timeout --signal=KILL "$command_timeout" \
-    /usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
-      /usr/bin/env -i "HOME=$candidate_home" "USER=$candidate_user" "LOGNAME=$candidate_user" \
+  session_command_bounded "$command_timeout" "$candidate_uid" "$candidate_gid" \
+    /usr/bin/env -i "HOME=$candidate_home" "USER=$candidate_user" "LOGNAME=$candidate_user" \
         "PATH=/usr/bin" "XDG_RUNTIME_DIR=$candidate_runtime" \
         "WAYLAND_DISPLAY=$candidate_display" /usr/bin/wayland-info >/dev/null 2>&1 || return 1
   # KScreen output is controlled by the session account. Bound both its size
   # and execution time, and keep JSON parsing below the UID boundary.
-  /usr/bin/timeout --signal=TERM --kill-after=1 "$command_timeout" \
-    /usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
-      /usr/bin/env -i "HOME=$candidate_home" "USER=$candidate_user" "LOGNAME=$candidate_user" \
+  session_command_bounded "$command_timeout" "$candidate_uid" "$candidate_gid" \
+    /usr/bin/env -i "HOME=$candidate_home" "USER=$candidate_user" "LOGNAME=$candidate_user" \
         "PATH=/usr/bin" "XDG_RUNTIME_DIR=$candidate_runtime" \
         "DBUS_SESSION_BUS_ADDRESS=unix:path=$candidate_runtime/bus" \
         "WAYLAND_DISPLAY=$candidate_display" /usr/bin/bash -c '
@@ -296,9 +308,8 @@ probe_wayland() {
 
 probe_x11() {
   [[ "$candidate_role" == desktop ]] || return 0
-  /usr/bin/timeout --signal=KILL "$command_timeout" \
-    /usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
-      /usr/bin/env -i "HOME=$candidate_home" "USER=$candidate_user" "LOGNAME=$candidate_user" \
+  session_command_bounded "$command_timeout" "$candidate_uid" "$candidate_gid" \
+    /usr/bin/env -i "HOME=$candidate_home" "USER=$candidate_user" "LOGNAME=$candidate_user" \
         "PATH=/usr/bin" "XDG_RUNTIME_DIR=$candidate_runtime" "DISPLAY=$candidate_xdisplay" \
         "XAUTHORITY=$candidate_xauthority" /usr/bin/xdpyinfo >/dev/null 2>&1
 }
