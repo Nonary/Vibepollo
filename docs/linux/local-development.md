@@ -3,8 +3,11 @@
 On **Arch Linux and CachyOS**, this tool builds a native package from the local
 checkout and installs it through `linux_install.sh --package`. It supports first
 installation, replaces conflicting Sunshine/Vibeshine packages through pacman,
-and reuses the package account, machine-profile, signing, driver and firewall setup. The
-native installer can update system packages and install matching kernel headers.
+and reuses the package account, machine profile, signing, driver and firewall
+setup. The native installer installs required dependencies and matching kernel
+headers without a full system upgrade. Local packages must contain driver sources
+and the build helper; installation verifies the driver for the running kernel.
+Reboot and key enrollment states are reported separately from build failures.
 Run from the checkout as your normal user, not with `sudo`:
 
 ```bash
@@ -114,7 +117,7 @@ command retries readiness after resolving a package setup error.
 `sudo pacman -U /path/to/previous.pkg.tar.zst`, with the previous package from
 `/var/cache/pacman/pkg` or your retained local builds. `--recover` reports this
 requirement; it never applies a file rollback over the package database. Package
-hooks and system updates are not covered by the file updater's rollback journal.
+hooks and dependency changes are not covered by the file updater's rollback journal.
 The following file-journal behavior applies only to non-Arch configured hosts.
 
 Installation disconnects streams. The root phase closes and temporarily masks

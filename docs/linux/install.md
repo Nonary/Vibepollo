@@ -43,6 +43,21 @@ downloads the newest release package from GitHub and installs it with `pacman -U
 | `--yes` | Answer pacman prompts automatically. |
 
 Re-running the script is safe. It only installs what is missing and repeats the checks.
+The script does not run a full system upgrade. Local packages use `pacman -U`;
+repository installs use existing metadata to install Vibeshine and its dependencies.
+If the host repository has not been cached yet, the script uses a release package
+instead of refreshing system databases automatically.
+Maintain the rest of your Arch system separately. Matching headers for the
+running kernel are required: installing headers for a newer kernel is not enough.
+The script verifies the virtual-display module after package installation and
+builds it if necessary; a missing module or build failure stops installation.
+
+### Legacy driver-source leftovers
+
+Unowned driver-source files left by earlier local updates inside a host-package-owned
+`/usr/src/vibeshine-drm-*` directory are backed up under
+`/var/tmp/vibeshine-driver-backup.*` before exact-path replacement. Backups remain
+available if pacman fails. Other packages' files and symlinks are not overwritten.
 
 ## Install manually
 
