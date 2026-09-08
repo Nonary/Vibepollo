@@ -33,6 +33,12 @@ int main() {
   check({"vibepollo", "configure"}, {});
   check({"vibepollo", "configure", "alice", "bob"}, {});
   check({"vibepollo", "migrate"}, {helper, "configure-auto"});
+  for (const auto source : {"vibepollo", "vibeshine", "sunshine", "machine-vibeshine"}) {
+    check({"vibepollo", "migrate", source}, {helper, "configure-auto", source});
+  }
+  check({"vibepollo", "migrate", "--help"}, {});
+  check({"vibepollo", "migrate", "/tmp/profile"}, {});
+  check({"vibepollo", "migrate", "sunshine", "extra"}, {});
   check({"vibepollo", "reset"}, {helper, "reset"});
   check({"vibepollo", "reset", "anything"}, {});
   check({"vibepollo", "authorize-commands"}, {helper, "authorize-commands"});

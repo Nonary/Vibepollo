@@ -22,6 +22,8 @@
 #   --no-repo             Skip the signed pacman repository and use GitHub releases.
 #   --skip-checks         Continue past failed requirement checks (not recommended).
 #   --yes                 Answer yes to pacman prompts.
+#   --source-profile HOST Choose vibepollo, vibeshine, sunshine, or machine-vibeshine
+#                         when more than one legacy profile exists.
 #   -h, --help            Show this help.
 #
 # Re-running the script is safe; it only installs what is missing.
@@ -46,6 +48,7 @@ allow_prerelease=1
 use_repo=1
 skip_checks=0
 pacman_confirm=()
+replacement_confirm=()
 check_failures=0
 warnings=()
 workdir=''
@@ -83,7 +86,18 @@ parse_args() {
       --stable) allow_prerelease=0; shift ;;
       --no-repo) use_repo=0; shift ;;
       --skip-checks) skip_checks=1; shift ;;
-      --yes) pacman_confirm=(--noconfirm); shift ;;
+      --yes)
+        pacman_confirm=(--noconfirm)
+        # libalpm ALPM_QUESTION_CONFLICT_PKG is 1 << 2. With --noconfirm,
+        # pacman normally rejects removal of conflicting installed hosts.
+        # Invert that answer only for the explicit Vibepollo transaction.
+        replacement_confirm=(--noconfirm --ask=4)
+        shift ;;
+      --source-profile)
+        [[ $# -ge 2 ]] || die '--source-profile requires a host'
+        case "$2" in vibepollo|vibeshine|sunshine|machine-vibeshine) ;; *) die 'invalid --source-profile host' ;; esac
+        export VIBEPOLLO_IMPORT_SOURCE=$2
+        shift 2 ;;
       -h | --help) usage; exit 0 ;;
       *) die "unknown option: $1 (see --help)" ;;
     esac
@@ -298,9 +312,9 @@ install_from_repo() {
   if [[ -n "$requested_version" ]]; then
     local arch_version="${requested_version//-/}"
     arch_version="${arch_version//+/.}"
-    pacman -Syu "${pacman_confirm[@]}" "vibepollo=${arch_version}-1"
+    pacman -Syu "${replacement_confirm[@]}" "vibepollo=${arch_version}-1"
   else
-    pacman -Syu "${pacman_confirm[@]}" vibepollo
+    pacman -Syu "${replacement_confirm[@]}" vibepollo
   fi
 }
 
@@ -353,14 +367,20 @@ download_release_package() {
 
 install_from_package() {
   [[ -f "$local_package" ]] || die "package file not found: ${local_package}"
+  local identity
+  identity=$(pacman -Qp -- "$local_package") || die 'could not inspect the local package'
+  [[ "$identity" == 'vibepollo '* && "$identity" != *$'\n'* ]] || die 'local package is not Vibepollo'
   log "Installing ${local_package##*/} with pacman"
   # Keep the system consistent first: a partial upgrade against an old
   # library set is the most common reason a fresh pacman -U fails to start.
   pacman -Syu "${pacman_confirm[@]}"
-  pacman -U "${pacman_confirm[@]}" "$local_package"
+  pacman -U "${replacement_confirm[@]}" -- "$local_package"
 }
 
 install_vibepollo() {
+  log 'Vibepollo replaces conflicting Sunshine and Vibeshine packages in the same package transaction.'
+  log 'Original legacy profiles are retained. Migration preserves identity, credentials, pairings and applications.'
+  log 'Active streams disconnect during replacement; no existing host is removed before its replacement is available.'
   workdir=$(mktemp -d)
   if [[ -n "$local_package" ]]; then
     install_from_package
@@ -462,4 +482,4 @@ main() {
   print_summary
 }
 
-main "$@"
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

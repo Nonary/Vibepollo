@@ -20,7 +20,8 @@ namespace platf::linux_cli {
     "  vibepollo status                   Show machine service status\n"
     "  sudo vibepollo logs                 Show recent service logs\n"
     "  sudo vibepollo configure USER       Select the desktop owner and migrate settings\n"
-    "  sudo vibepollo migrate              Prepare existing settings after an upgrade\n"
+    "  sudo vibepollo migrate [HOST]       Prepare settings; optionally select a legacy host\n"
+    "    HOST: vibepollo, vibeshine, sunshine, or machine-vibeshine\n"
     "  sudo vibepollo authorize-commands   Approve commands in the application list\n"
     "  sudo vibepollo driver install       Install/update the virtual-display driver\n"
     "  sudo vibepollo driver status        Show virtual-display driver status\n"
@@ -39,9 +40,19 @@ namespace platf::linux_cli {
       if (argc == 3 && argv[2][0] != '\0' && argv[2][0] != '-') {
         return std::vector<const char *> {machine, "configure", argv[2]};
       }
-    } else if (name == "migrate" || name == "authorize-commands" || name == "reset") {
+    } else if (name == "migrate") {
       if (argc == 2) {
-        return std::vector<const char *> {machine, name == "migrate" ? "configure-auto" : argv[1]};
+        return std::vector<const char *> {machine, "configure-auto"};
+      }
+      if (argc == 3) {
+        const std::string_view source {argv[2]};
+        if (source == "vibepollo" || source == "vibeshine" || source == "sunshine" || source == "machine-vibeshine") {
+          return std::vector<const char *> {machine, "configure-auto", argv[2]};
+        }
+      }
+    } else if (name == "authorize-commands" || name == "reset") {
+      if (argc == 2) {
+        return std::vector<const char *> {machine, argv[1]};
       }
     } else if (name == "driver") {
       if (argc == 3 && (std::string_view {argv[2]} == "install" || std::string_view {argv[2]} == "status")) {
@@ -78,7 +89,8 @@ namespace platf::linux_cli {
                 "  Programs: /usr/bin/vibepollo, /usr/libexec/vibeshine\n"
                 "  Assets: /usr/share/vibepollo\n"
                 "  Logs: sudo vibepollo logs\n"
-                "  Legacy user settings (imported once): ~/.config/vibepollo");
+                "  Legacy user settings (imported once): ~/.config/{vibepollo,vibeshine,sunshine}\n"
+                "  Legacy machine settings (imported once): /var/lib/vibeshine");
       return 0;
     }
     if (argc == 2 && std::string_view {argv[1]} == "maintenance-help") {

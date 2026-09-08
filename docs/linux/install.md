@@ -41,8 +41,34 @@ downloads the newest release package from GitHub and installs it with `pacman -U
 | `--package ./vibepollo-*.pkg.tar.zst` | Install a package you already downloaded. |
 | `--no-repo` | Skip the pacman repository and use GitHub releases. |
 | `--yes` | Answer pacman prompts automatically. |
+| `--source-profile HOST` | Select `vibepollo`, `vibeshine`, `sunshine`, or `machine-vibeshine` when profile selection is ambiguous. |
 
 Re-running the script is safe. It only installs what is missing and repeats the checks.
+
+### Replacing Sunshine or Vibeshine
+
+The package conflicts with and replaces both Sunshine and Vibeshine. The installer
+lets pacman perform replacement in one transaction, including with `--yes`; it
+does not uninstall the old host before the new package is available. Active
+streams disconnect during replacement.
+
+The existing Vibepollo machine profile wins on upgrades. Otherwise, a retained
+`/var/lib/vibeshine` machine profile takes precedence over stale desktop copies.
+For desktop profiles, the importer considers `.config/vibepollo`,
+`.config/vibeshine` and `.config/sunshine`, and refuses to choose between multiple
+profiles without `--source-profile`. Original profiles remain untouched; the
+confined copy preserves credentials, pairing identities, configuration and apps.
+External credential/state files must first be placed inside the source profile;
+the importer will not read arbitrary paths as root or share live legacy state.
+If package setup already stopped on ambiguous profiles, retry with
+`sudo vibepollo migrate sunshine` (or `vibeshine`, `vibepollo`, or
+`machine-vibeshine`) to explicitly select the source without reinstalling.
+
+For the separate SteamOS user bundle, use
+`packaging/linux/steamos/local/replace-sunshine.sh --payload DIR`. Despite its
+historical filename, it handles both Sunshine and Vibeshine, disables both hosts'
+known user services, and rolls them back if the new host fails readiness checks.
+Use `--source sunshine` or `--source vibeshine` when both profiles exist.
 
 ## Install manually
 

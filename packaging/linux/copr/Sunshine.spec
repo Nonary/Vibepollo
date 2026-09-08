@@ -147,6 +147,7 @@ Requires: miniupnpc >= 2.2.4
 Requires: kmod
 Requires: iproute
 Requires: jq
+Requires: python3
 Requires: /usr/bin/pactl
 Requires: /usr/bin/parec
 Requires: /usr/bin/wayland-info
@@ -1616,6 +1617,8 @@ fi
 %{_prefix}/libexec/vibeshine/vibepollo-provider-scan
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-steam-launch
 %{_prefix}/libexec/vibeshine/vibepollo-profile-import
+%{_prefix}/libexec/vibeshine/vibepollo-profile-normalize.py
+%{_prefix}/libexec/vibeshine/pairing_migration.py
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-app-supervisor
 %{_prefix}/libexec/vibeshine/vibepollo-machine-host
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-kwin-session-environment

@@ -15,6 +15,8 @@ readonly command_manifest=/etc/vibepollo/session-commands
 readonly command_manifest_header='# vibepollo-session-commands-v2'
 readonly session_controller=/usr/libexec/vibeshine/vibepollo-session-controller
 readonly profile_importer=/usr/libexec/vibeshine/vibepollo-profile-import
+readonly profile_normalizer=/usr/libexec/vibeshine/vibepollo-profile-normalize.py
+import_source=${VIBEPOLLO_IMPORT_SOURCE:-auto}
 readonly machine_host=/usr/libexec/vibeshine/vibepollo-machine-host
 readonly machine_host_executable=/usr/libexec/vibeshine/vibepollo-host
 readonly maximum_environment_entries=128
@@ -486,7 +488,21 @@ remove_root_staging() {
 }
 
 publish_migrated_profile() (
-  local staging incoming attributes unsafe
+  local staging incoming attributes unsafe import_user=$desktop_user import_uid=$desktop_uid import_gid=$desktop_gid
+  local selected_source=$import_source entry account_name account_home
+  if [[ "$selected_source" == auto && ( -e /var/lib/vibeshine || -L /var/lib/vibeshine ) ]]; then
+    # The machine profile is authoritative after an earlier one-time migration;
+    # an old desktop copy must not replace its newer pairings/settings.
+    selected_source=machine-vibeshine
+  fi
+  if [[ "$selected_source" == machine-vibeshine ]]; then
+    entry=$(/usr/bin/getent passwd vibeshine) || exit 1
+    IFS=: read -r import_user _ import_uid import_gid _ _ _ <<<"$entry"
+    [[ "$import_user" == vibeshine && "$import_uid" =~ ^[0-9]+$ && "$import_uid" -gt 0 ]] || exit 1
+  fi
+  entry=$(/usr/bin/getent passwd "$desktop_user") || exit 1
+  IFS=: read -r account_name _ _ _ _ account_home _ <<<"$entry"
+  [[ "$account_name" == "$desktop_user" && "$account_home" == /* ]] || exit 1
   staging=$(/usr/bin/mktemp -d --tmpdir=/var/lib .vibepollo-profile.XXXXXX) || exit 1
   trap '[[ -z ${staging:-} ]] || remove_root_staging "$staging"' EXIT HUP INT TERM
   attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$staging") || exit 1
@@ -498,9 +514,9 @@ publish_migrated_profile() (
   # this root-inaccessible staging parent. Root never traverses the live user
   # pathname, so a rename/symlink race cannot disclose privileged files.
   incoming=$staging/incoming
-  /usr/bin/install -d -o "$desktop_uid" -g "$desktop_gid" -m 0700 "$incoming" || exit 1
+  /usr/bin/install -d -o "$import_uid" -g "$import_gid" -m 0700 "$incoming" || exit 1
   [[ -x "$profile_importer" && ! -L "$profile_importer" ]] || exit 1
-  /usr/bin/timeout --signal=KILL 65 "$profile_importer" "$desktop_user" "$incoming" || exit 1
+  /usr/bin/timeout --signal=KILL 65 "$profile_importer" "$import_user" "$incoming" "$selected_source" || exit 1
 
   # Revoke the importer's ownership at the top before root validates or mutates
   # any descendants. The staging parent has remained root:root 0700 throughout.
@@ -511,6 +527,8 @@ publish_migrated_profile() (
   /usr/bin/find "$incoming" -xdev -mindepth 1 -type d -exec /usr/bin/chmod 0700 '{}' +
   /usr/bin/find "$incoming" -xdev -mindepth 1 -type f -exec /usr/bin/chown root:root '{}' +
   /usr/bin/find "$incoming" -xdev -mindepth 1 -type f -exec /usr/bin/chmod 0600 '{}' +
+  [[ -f "$profile_normalizer" && ! -L "$profile_normalizer" ]] || exit 1
+  /usr/bin/timeout --signal=KILL 30 /usr/bin/python3 -I "$profile_normalizer" "$incoming" "$account_home" "$selected_source" || exit 1
   /usr/bin/printf 'source_user=%s\n' "$desktop_user" >"$incoming/.machine-profile"
   /usr/bin/chown root:root "$incoming/.machine-profile"
   /usr/bin/chmod 0600 "$incoming/.machine-profile"
@@ -539,6 +557,7 @@ publish_migrated_profile() (
 
 migrate_profile() {
   require_root migrate-profile || return 1
+  case "$import_source" in auto|vibepollo|vibeshine|sunshine|machine-vibeshine) ;; *) fail 'invalid migration source'; return 1 ;; esac
   load_settings || return 1
   /usr/bin/getent passwd "$service_user" >/dev/null || { fail "missing system account: $service_user"; return 1; }
   if [[ -f "$profile_marker" && ! -L "$profile_marker" ]]; then
@@ -566,7 +585,7 @@ configure_automatically() {
       valid_user "$user" || continue
       case "$shell" in */nologin|*/false|'') continue ;; esac
       accounts+=("$user")
-      for state in "$home/.config/vibepollo/vibeshine_state.json" "$home/.config/vibepollo/sunshine_state.json"; do
+      for state in "$home/.config/"{vibepollo,vibeshine,sunshine}/{vibeshine_state,sunshine_state}.json; do
         if user_exec "$user" /usr/bin/test -f "$state" && ! user_exec "$user" /usr/bin/test -L "$state"; then
           candidates+=("$user")
           break
@@ -992,9 +1011,17 @@ reset_machine() {
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   case "${1:-}" in
     configure) [[ $# == 2 ]] || exit 2; shift; write_settings "$@"; prepare_upgrade_profile ;;
-    configure-auto) [[ $# == 1 ]] || exit 2; configure_automatically ;;
+    configure-auto)
+      [[ $# -le 2 ]] || exit 2
+      import_source=${2:-$import_source}
+      case "$import_source" in auto|vibepollo|vibeshine|sunshine|machine-vibeshine) ;; *) exit 2 ;; esac
+      configure_automatically ;;
     authorize-commands) [[ $# == 1 ]] || exit 2; authorize_commands ;;
-    migrate-profile) [[ $# == 1 ]] || exit 2; migrate_profile ;;
+    migrate-profile)
+      [[ $# -le 2 ]] || exit 2
+      import_source=${2:-auto}
+      case "$import_source" in auto|vibepollo|vibeshine|sunshine|machine-vibeshine) ;; *) exit 2 ;; esac
+      migrate_profile ;;
     prepare-profile) [[ $# == 1 ]] || exit 2; prepare_service_profile ;;
     repair-profile) [[ $# == 1 ]] || exit 2; repair_profile_tree ;;
     run) [[ $# == 1 ]] || exit 2; run_host ;;

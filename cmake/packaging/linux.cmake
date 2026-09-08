@@ -155,6 +155,8 @@ else()
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms"
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms-quiesce"
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-machine-host"
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-profile-normalize.py"
+                "${CMAKE_SOURCE_DIR}/packaging/linux/steamos/local/pairing_migration.py"
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-controller"
                 "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-install"
                 DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
@@ -338,6 +340,7 @@ set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
             libopus0, \
             libpulse0, \
             pulseaudio-utils, \
+            python3, \
             libva2, \
             libva-drm2, \
             libwayland-client0, \
@@ -372,6 +375,7 @@ set(CPACK_RPM_PACKAGE_REQUIRES "\
             numactl-libs >= 2.0.14, \
             openssl >= 3.0.2, \
             pulseaudio-libs >= 10.0, \
+            python3, \
             socat, \
             util-linux")
 set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "dkms")

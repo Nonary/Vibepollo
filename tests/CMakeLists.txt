@@ -677,8 +677,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
     endif()
 
     find_program(SUNSHINE_TEST_PYTHON_EXECUTABLE NAMES python3)
+    add_executable(test_linux_profile_sources
+        "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_profile_sources.c")
+    target_include_directories(test_linux_profile_sources PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+    target_link_libraries(test_linux_profile_sources PRIVATE cap)
+    target_compile_options(test_linux_profile_sources PRIVATE -UNDEBUG)
+    add_test(NAME test_component_linux_profile_sources COMMAND test_linux_profile_sources)
+    set_tests_properties(test_component_linux_profile_sources PROPERTIES LABELS "component")
     if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+        add_test(NAME test_component_linux_profile_normalize
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_profile_normalize.py")
+        set_tests_properties(test_component_linux_profile_normalize PROPERTIES LABELS "component")
         if(SUNSHINE_TEST_BASH_EXECUTABLE)
+            add_test(NAME test_component_linux_installer
+                COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
+                    "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_linux_installer.sh")
+            set_tests_properties(test_component_linux_installer PROPERTIES LABELS "component")
             add_test(NAME test_component_linux_profile_upgrade
                 COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                     "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_profile_upgrade.py"

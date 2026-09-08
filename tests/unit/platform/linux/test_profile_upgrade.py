@@ -41,6 +41,7 @@ fixture_stat() {
   else printf 'root:root:600:regular file\n'; fi
 }
 service_user=vibepollo
+import_source=auto
 machine_host=/usr/libexec/vibeshine/vibepollo-machine-host
 machine_profile=$PWD/machine
 profile_marker=$machine_profile/.machine-profile

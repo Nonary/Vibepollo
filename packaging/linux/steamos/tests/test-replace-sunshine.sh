@@ -22,7 +22,14 @@ printf '%s\n' "$*" >> "$TEST_CASE/calls"
 shift
 action=$1
 shift
-if [[ "$*" == *app-dev.lizardbyte.app.Sunshine.service* ]]; then name=sunshine; else name=vibepollo; fi
+case "$*" in
+  *app-dev.lizardbyte.app.Sunshine.service*) name=sunshine ;;
+  *vibeshine-steamos.service*) name=vibeshine ;;
+  *app-io.github.Nonary.vibeshine.service*) name=vibeshine_canonical ;;
+  *sunshine.service*|*vibeshine.service*) [[ "$action" != is-enabled ]] || echo not-found; exit 1 ;;
+  *) name=vibepollo ;;
+esac
+[[ -e "$TEST_CASE/$name.enabled" ]] || { [[ "$action" != is-enabled ]] || echo not-found; exit 1; }
 case "$action" in
   is-enabled) cat "$TEST_CASE/$name.enabled"; [[ $(cat "$TEST_CASE/$name.enabled") == enabled ]] ;;
   is-active) [[ $(cat "$TEST_CASE/$name.active") == yes ]] ;;
@@ -38,14 +45,18 @@ if dropin.exists():
         if line.startswith('EnvironmentFile=/'):
             print(line.partition('=')[2].replace('%%', '%') + ' (ignore_errors=no)')
 PY
+    elif [[ "$*" == *--property=ActiveState* ]]; then
+      if [[ $(cat "$TEST_CASE/$name.active") == yes ]]; then echo active; else echo inactive; fi
     else
-      echo 4242
+      if [[ $(cat "$TEST_CASE/$name.active") == yes ]]; then echo 4242; else echo 0; fi
     fi ;;
   enable) echo enabled > "$TEST_CASE/$name.enabled" ;;
   disable)
     echo disabled > "$TEST_CASE/$name.enabled"
     if [[ "$*" == *--now* ]]; then echo no > "$TEST_CASE/$name.active"; fi ;;
-  stop) echo no > "$TEST_CASE/$name.active" ;;
+  stop)
+    if [[ "$name" == vibepollo && -e "$TEST_CASE/fail-stop" ]]; then exit 1; fi
+    echo no > "$TEST_CASE/$name.active" ;;
   start|restart)
     echo yes > "$TEST_CASE/$name.active"
     if [[ "$name" == vibepollo && -e "$TEST_CASE/fail-restart" ]]; then exit 1; fi ;;
@@ -358,4 +369,55 @@ printf 'LIBVA_DRIVERS_PATH=%s\n' "$case_dir/driver/lib/dri" > "$case_dir/runtime
 if run_replace --service-environment "$case_dir/runtime.env"; then exit 1; fi
 ! grep -Eq '(disable|stop|restart|start) ' "$case_dir/calls"
 assert_rolled_back
-printf 'Sunshine replacement migration and rollback tests passed\n'
+new_case both_ambiguous
+mkdir "$case_dir/home/config/vibeshine"
+if run_replace; then exit 1; fi
+[[ ! -e "$case_dir/calls" ]]
+assert_rolled_back
+
+new_case vibeshine_success
+mv "$source_config" "$case_dir/home/config/vibeshine"
+source_config="$case_dir/home/config/vibeshine"
+mv "$source_config/sunshine.conf" "$source_config/vibeshine.conf"
+python3 - "$source_config/vibeshine.conf" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(path.read_text().replace('/sunshine/', '/vibeshine/'))
+PY
+cp -a "$source_config/." "$case_dir/original-vibeshine"
+printf enabled > "$case_dir/vibeshine.enabled"
+printf yes > "$case_dir/vibeshine.active"
+run_replace
+[[ $(cat "$case_dir/sunshine.active") == no && $(cat "$case_dir/vibeshine.active") == no ]]
+[[ $(cat "$case_dir/vibeshine.enabled") == disabled ]]
+[[ -f "$target_config/vibepollo.conf" && ! -e "$target_config/vibeshine.conf" ]]
+cmp "$source_config/sunshine_state.json" "$target_config/sunshine_state.json"
+diff -r "$case_dir/original-vibeshine" "$source_config"
+
+new_case both_rollback
+mkdir "$case_dir/home/config/vibeshine"
+printf enabled > "$case_dir/vibeshine.enabled"
+printf yes > "$case_dir/vibeshine.active"
+touch "$case_dir/fail-restart"
+if run_replace --source sunshine; then exit 1; fi
+assert_rolled_back
+[[ $(cat "$case_dir/vibeshine.active") == yes && $(cat "$case_dir/vibeshine.enabled") == enabled ]]
+new_case failed_stop_retains_data
+touch "$case_dir/fail-restart" "$case_dir/fail-stop"
+if run_replace; then exit 1; fi
+[[ -f "$target_config/vibepollo.conf" && -f "$target_config/sunshine_state.json" ]]
+[[ $(cat "$case_dir/vibepollo.active") == yes && $(cat "$case_dir/sunshine.active") == no ]]
+assert_source_preserved
+
+new_case canonical_vibeshine
+printf enabled > "$case_dir/vibeshine_canonical.enabled"
+printf yes > "$case_dir/vibeshine_canonical.active"
+run_replace
+[[ $(cat "$case_dir/vibeshine_canonical.active") == no && $(cat "$case_dir/vibeshine_canonical.enabled") == disabled ]]
+
+new_case masked_active
+printf masked > "$case_dir/vibeshine.enabled"
+printf yes > "$case_dir/vibeshine.active"
+if run_replace; then exit 1; fi
+[[ ! -e "$target_config" && $(cat "$case_dir/sunshine.active") == yes && $(cat "$case_dir/vibeshine.active") == yes ]]
+printf 'Sunshine and Vibeshine replacement migration and rollback tests passed\n'

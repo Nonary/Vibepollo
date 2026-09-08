@@ -262,8 +262,8 @@ forbid(controller, '[[ -S "$candidate_runtime/bus" ]]', "capability-bounded runt
 require(sysusers, 'u vibepollo - "Vibepollo machine host" /var/lib/vibepollo /usr/bin/nologin', "machine account")
 require(sysusers, "g vibepollo-uinput - -", "virtual input group the host unit joins")
 require(host_unit, "SupplementaryGroups=video render vibepollo-uinput vibeshine-vkms", "restricted virtual input membership")
-require(host, '"$home/.config/vibepollo/vibeshine_state.json"', "existing Vibepollo pairing profile discovery")
-require(host, '"$home/.config/vibepollo/sunshine_state.json"', "legacy pairing profile discovery")
+require(host, '"$home/.config/"{vibepollo,vibeshine,sunshine}/{vibeshine_state,sunshine_state}.json',
+        "pairing profile discovery across all three host names")
 require(controller, 'desktop_service_supported() { [[ "$1" =~ ^(plasmalogin|plasmalogin-autologin|sddm|sddm-autologin)$ ]]; }',
         "SDDM and Plasma Login Manager desktop sessions")
 uinput_rules = (linux / "70-vibepollo-uinput.rules").read_text()
