@@ -273,12 +273,19 @@ WINAPI BOOL ConsoleCtrlHandler(DWORD type) {
 
 int main(int argc, char *argv[]) {
 #ifdef __linux__
+  #ifdef SUNSHINE_BUILD_STEAMOS
+  if (platf::linux_cli::command(argc, argv)) {
+    std::fputs("Vibepollo: native Linux maintenance commands are unavailable in the SteamOS user bundle.\n", stderr);
+    return 2;
+  }
+  #else
   // Maintenance never enters host initialization. In particular, sudo must
   // reach the root-owned administrative helper before the host-only capability
   // policy rejects a root process. No configuration or logging is parsed here.
   if (const auto result = platf::linux_cli::dispatch(argc, argv)) {
     return *result;
   }
+  #endif
   if (!platf::linux_security::sanitize_startup_capabilities()) {
     const int error_number = errno ? errno : EPERM;
     std::fprintf(stderr, "Vibepollo: failed to sanitize Linux startup capabilities: %s\n",
