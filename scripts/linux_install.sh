@@ -49,6 +49,7 @@ use_repo=1
 skip_checks=0
 pacman_confirm=()
 replacement_confirm=()
+driver_overwrite=()
 check_failures=0
 warnings=()
 workdir=''
@@ -179,15 +180,14 @@ install_kernel_headers() {
     return
   fi
   if [[ -z "$headers_package" ]]; then
-    fail "Kernel headers for ${kernel_release} are missing and the package name could not be determined."
-    return
+    die "Kernel headers for ${kernel_release} are missing and the package name could not be determined. Install matching headers before retrying."
   fi
   log "Installing ${headers_package} so DKMS can build the virtual-display driver"
   pacman -S --needed "${pacman_confirm[@]}" "$headers_package"
   if [[ -f "${build_dir}/Makefile" ]]; then
     ok "Kernel headers installed."
   else
-    warn "${headers_package} was installed but ${build_dir} is still missing. The installed headers may target a newer kernel than the one running; reboot into the newest kernel after installation."
+    die "${headers_package} does not provide headers for the running kernel ${kernel_release}. Install matching headers, or reboot into the kernel matching the installed headers, then retry. No system upgrade was requested."
   fi
 }
 
@@ -308,13 +308,20 @@ EOF
 
 install_from_repo() {
   configure_pacman_repo
-  log 'Installing Vibepollo (this also applies pending system updates, as Arch requires)'
+  if ! pacman -Si vibepollo >/dev/null 2>&1; then
+    warn 'Vibepollo repository metadata is unavailable locally; using a release package without refreshing system databases.'
+    download_release_package
+    install_from_package
+    return
+  fi
+  prepare_driver_replacement
+  log 'Installing Vibepollo and its dependencies; no full system upgrade is requested'
   if [[ -n "$requested_version" ]]; then
     local arch_version="${requested_version//-/}"
     arch_version="${arch_version//+/.}"
-    pacman -Syu "${replacement_confirm[@]}" "vibepollo=${arch_version}-1"
+    pacman -S "${replacement_confirm[@]}" "${driver_overwrite[@]}" "vibepollo=${arch_version}-1"
   else
-    pacman -Syu "${replacement_confirm[@]}" vibepollo
+    pacman -S "${replacement_confirm[@]}" "${driver_overwrite[@]}" vibepollo
   fi
 }
 
@@ -365,16 +372,64 @@ download_release_package() {
   fi
 }
 
+# Local driver updates can add source files that the installed package does not
+# own. Pacman cannot remove those files when replacing that package. Preserve
+# them before allowing exact-path replacement; never disable conflict checking
+# for the whole driver tree (or for files another package owns).
+prepare_driver_replacement() {
+  # Optional roots are for isolated fixtures; production callers use no args.
+  local source_root=${1:-/usr/src} backup_root=${2:-/var/tmp}
+  local directory file owner attributes cursor status backup='' relative
+  driver_overwrite=()
+  for directory in "$source_root"/vibeshine-drm-*; do
+    [[ ${directory##*/} =~ ^vibeshine-drm-[1-9][0-9]*\.[0-9]+\.[0-9]+$ ]] || continue
+    [[ -d "$directory" && ! -L "$directory" ]] || continue
+    # Require the directory itself to belong to a known host package. This is
+    # not permission to adopt arbitrary files elsewhere in /usr/src.
+    owner=$(LC_ALL=C pacman -Qoq -- "$directory" 2>/dev/null) || continue
+    case "$owner" in sunshine|vibeshine|vibepollo) ;; *) continue ;; esac
+    cursor=$directory
+    while [[ "$cursor" != / ]]; do
+      [[ -d "$cursor" && ! -L "$cursor" ]] || die "unsafe driver source parent: $cursor"
+      attributes=$(stat -c '%u %a' -- "$cursor") || die "cannot inspect $cursor"
+      read -r owner status <<<"$attributes"
+      [[ "$owner" == "$EUID" && "$status" =~ ^[0-7]{3,4}$ ]] &&
+        (( (8#$status & 0022) == 0 )) || die "untrusted driver source parent: $cursor"
+      cursor=${cursor%/*}; [[ -n "$cursor" ]] || cursor=/
+    done
+    for file in "$directory"/*; do
+      [[ ${file##*/} =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || continue
+      [[ -f "$file" && ! -L "$file" ]] || continue
+      if owner=$(LC_ALL=C pacman -Qoq -- "$file" 2>"$workdir/driver-owner-error"); then
+        continue
+      else
+        status=$?
+        [[ $status == 1 ]] && grep -Fxq -- "error: No package owns $file" "$workdir/driver-owner-error" ||
+          die "could not establish package ownership of $file; refusing overwrite"
+      fi
+      if [[ -z "$backup" ]]; then
+        backup=$(mktemp -d "$backup_root/vibepollo-driver-backup.XXXXXXXX") || die 'cannot create driver backup'
+        chmod 700 "$backup" || die 'cannot protect driver backup'
+        log "Preserving unowned legacy driver sources in $backup (retained even if installation fails)"
+      fi
+      relative="${directory##*/}/${file##*/}"
+      mkdir -p -m 700 -- "$backup/${directory##*/}" || die 'cannot create driver backup directory'
+      cp -a -- "$file" "$backup/$relative" || die "cannot back up $file"
+      cmp -s -- "$file" "$backup/$relative" || die "driver source changed during backup: $file"
+      driver_overwrite+=(--overwrite "usr/src/$relative")
+    done
+  done
+}
+
 install_from_package() {
   [[ -f "$local_package" ]] || die "package file not found: ${local_package}"
   local identity
   identity=$(pacman -Qp -- "$local_package") || die 'could not inspect the local package'
   [[ "$identity" == 'vibepollo '* && "$identity" != *$'\n'* ]] || die 'local package is not Vibepollo'
+  prepare_driver_replacement
   log "Installing ${local_package##*/} with pacman"
-  # Keep the system consistent first: a partial upgrade against an old
-  # library set is the most common reason a fresh pacman -U fails to start.
-  pacman -Syu "${pacman_confirm[@]}"
-  pacman -U "${replacement_confirm[@]}" -- "$local_package"
+  # Installing a local build must not also upgrade the operating system.
+  pacman -U "${replacement_confirm[@]}" "${driver_overwrite[@]}" -- "$local_package"
 }
 
 install_vibepollo() {
@@ -413,6 +468,28 @@ open_firewall() {
 }
 
 reboot_required=0
+
+install_virtual_driver() {
+  local helper=${1:-$DRM_INSTALL} result=0 installed
+  [[ -x "$helper" ]] || die "the package is missing the virtual-display installer: $helper"
+  # Package hooks cannot reliably fail the package transaction. Check their
+  # result here and repair a missing/stale module instead of only warning.
+  if "$helper" status; then result=0; else result=$?; fi
+  if [[ $result != 0 && $result != 4 ]]; then
+    install_kernel_headers
+    log "Installing the virtual-display driver for ${kernel_release}"
+    if "$helper" install-package; then result=0; else result=$?; fi
+  fi
+  case "$result" in
+    0) ;;
+    4) reboot_required=1; warn 'The virtual-display driver is installed; reboot to use the updated module.' ;;
+    5) reboot_required=1; warn 'The virtual-display driver is installed; reboot and approve its pending Secure Boot key enrollment.' ;;
+    *) die "virtual-display driver installation failed for ${kernel_release} (status $result). See the driver error above; installation is not complete." ;;
+  esac
+  installed=$(modinfo -k "$kernel_release" -F version vibeshine_drm 2>/dev/null) && [[ -n "$installed" ]] ||
+    die "the virtual-display driver is still missing for ${kernel_release}; installation is not complete"
+  ok "Virtual-display driver ${installed} is installed for ${kernel_release}."
+}
 
 check_driver_state() {
   local installed loaded
@@ -476,6 +553,7 @@ main() {
   run_checks
   install_kernel_headers
   install_vibepollo
+  install_virtual_driver
   open_firewall
   check_driver_state
   check_services

@@ -44,6 +44,14 @@ downloads the newest release package from GitHub and installs it with `pacman -U
 | `--source-profile HOST` | Select `vibepollo`, `vibeshine`, `sunshine`, or `machine-vibeshine` when profile selection is ambiguous. |
 
 Re-running the script is safe. It only installs what is missing and repeats the checks.
+The script does not run a full system upgrade. Local packages use `pacman -U`;
+repository installs use existing metadata to install Vibepollo and its dependencies.
+If the host repository has not been cached yet, the script uses a release package
+instead of refreshing system databases automatically.
+Maintain the rest of your Arch system separately. Matching headers for the
+running kernel are required: installing headers for a newer kernel is not enough.
+The script verifies the virtual-display module after package installation and
+builds it if necessary; a missing module or build failure stops installation.
 
 ### Replacing Sunshine or Vibeshine
 
@@ -51,6 +59,10 @@ The package conflicts with and replaces both Sunshine and Vibeshine. The install
 lets pacman perform replacement in one transaction, including with `--yes`; it
 does not uninstall the old host before the new package is available. Active
 streams disconnect during replacement.
+Unowned driver-source files left by earlier local updates inside a host-package-owned
+`/usr/src/vibeshine-drm-*` directory are backed up under
+`/var/tmp/vibepollo-driver-backup.*` before exact-path replacement. Backups remain
+available if pacman fails. Other packages' files and symlinks are not overwritten.
 
 The existing Vibepollo machine profile wins on upgrades. Otherwise, a retained
 `/var/lib/vibeshine` machine profile takes precedence over stale desktop copies.

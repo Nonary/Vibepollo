@@ -28,6 +28,9 @@ def package(extra=(), omit=()):
         'usr/share/vibepollo/web/v2/index.html',
         'usr/src/vibeshine-drm-1.19.0/vibeshine_drm_version.h',
     }
+    names.update('usr/src/vibeshine-drm-1.19.0/' + name for name in
+                 ('Makefile', 'build-module', 'dkms.conf', 'vkms_drv.c',
+                  'vibeshine_drm_uapi.h', 'vibeshine_drm_vrr.h'))
     with tarfile.open(fileobj=stream, mode='w:gz') as archive:
         for name in sorted(names - set(omit)):
             entry = tarfile.TarInfo(name)
@@ -45,6 +48,15 @@ def package(extra=(), omit=()):
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_local_package_must_include_driver_helper_and_build_sources(self):
+        for missing in ('usr/libexec/vibeshine/vibeshine-drm-install',
+                        'usr/src/vibeshine-drm-1.19.0/Makefile',
+                        'usr/src/vibeshine-drm-1.19.0/build-module',
+                        'usr/src/vibeshine-drm-1.19.0/vibeshine_drm_vrr.h'):
+            with self.subTest(missing=missing), package(omit=[missing]) as archive:
+                with self.assertRaisesRegex(deploy.DeployError, 'Missing artifacts'):
+                    deploy.inspect_archive(archive, VERSION)
+
     def test_release_version_allowlist(self):
         for version in ('1.19.0', '1.19.0-stable.1', '1.19.0-alpha.2', VERSION, '1.19.0-rc.1'):
             self.assertIsNotNone(deploy.VERSION.fullmatch(version))
@@ -273,6 +285,7 @@ class NativePackageTests(unittest.TestCase):
                     mock.patch.object(deploy.pwd, 'getpwnam', side_effect=KeyError):
                 self.assertEqual(deploy.root_package_install(args), 0)
             command = install.call_args.args[0]
+            self.assertEqual(command[:2], ['/usr/bin/bash', str(ROOT / 'scripts/linux_install.sh')])
             retained = Path(command[command.index('--package') + 1])
             self.assertEqual(retained.read_bytes(), source.read_bytes())
             self.assertIn('--yes', command)
