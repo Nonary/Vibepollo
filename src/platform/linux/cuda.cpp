@@ -6,8 +6,6 @@
 #include <algorithm>
 #include <bitset>
 #include <chrono>
-#include <fcntl.h>
-#include <filesystem>
 #include <limits>
 #include <mutex>
 #include <thread>
@@ -25,6 +23,7 @@ extern "C" {
 // local includes
 #include "cuda.h"
 #include "cuda_interop.h"
+#include "cuda_render_device.h"
 #include "graphics.h"
 #include "src/logging.h"
 #include "src/nvenc/nvenc_cuda.h"
@@ -42,8 +41,6 @@ extern "C" {
 
 #define CU_CHECK_IGNORE(x, y) \
   check((x), SUNSHINE_STRINGVIEW(y ": "))
-
-namespace fs = std::filesystem;
 
 using namespace std::literals;
 
@@ -281,7 +278,7 @@ namespace cuda {
   };
 
   /**
-   * @brief Opens the DRM device associated with the CUDA device index.
+   * @brief Opens the DRM render node associated with the CUDA device index.
    * @param index CUDA device index to open.
    * @return File descriptor or -1 on failure.
    */
@@ -291,39 +288,16 @@ namespace cuda {
 
     // There's no way to directly go from CUDA to a DRM device, so we'll
     // use sysfs to look up the DRM device name from the PCI ID.
-    std::array<char, 13> pci_bus_id;
+    std::array<char, 13> pci_bus_id {};
     CU_CHECK(cdf->cuDeviceGetPCIBusId(pci_bus_id.data(), pci_bus_id.size(), device), "Couldn't get CUDA device PCI bus ID");
     BOOST_LOG(debug) << "Found CUDA device with PCI bus ID: "sv << pci_bus_id.data();
 
-    // Linux uses lowercase hexadecimal while CUDA uses uppercase
-    std::transform(pci_bus_id.begin(), pci_bus_id.end(), pci_bus_id.begin(), [](char c) {
-      return std::tolower(c);
-    });
-
-    // Look for the name of the primary node in sysfs
-    try {
-      char sysfs_path[PATH_MAX];
-      std::snprintf(sysfs_path, sizeof(sysfs_path), "/sys/bus/pci/devices/%s/drm", pci_bus_id.data());
-      fs::path sysfs_dir {sysfs_path};
-      for (auto &entry : fs::directory_iterator {sysfs_dir}) {
-        auto file = entry.path().filename();
-        auto filestring = file.generic_string();
-        if (std::string_view {filestring}.substr(0, 4) != "card"sv) {
-          continue;
-        }
-
-        BOOST_LOG(debug) << "Found DRM primary node: "sv << filestring;
-
-        fs::path dri_path {"/dev/dri"sv};
-        auto device_path = dri_path / file;
-        return open(device_path.c_str(), O_RDWR);
-      }
-    } catch (const std::filesystem::filesystem_error &err) {
-      BOOST_LOG(error) << "Failed to read sysfs: "sv << err.what();
+    const int render_fd = open_render_node_for_pci_device(pci_bus_id.data());
+    if (render_fd < 0) {
+      BOOST_LOG(error) << "Unable to open the DRM render node for CUDA device "sv
+                       << pci_bus_id.data() << ": "sv << strerror(errno);
     }
-
-    BOOST_LOG(error) << "Unable to find DRM device with PCI bus ID: "sv << pci_bus_id.data();
-    return -1;
+    return render_fd;
   }
 
   class gl_cuda_vram_t: public platf::avcodec_encode_device_t {

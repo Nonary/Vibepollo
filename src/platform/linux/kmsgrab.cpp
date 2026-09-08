@@ -1309,7 +1309,8 @@ namespace platf {
         }
       }
 
-      inline capture_e refresh(file_t *file, egl::surface_descriptor_t *sd, std::optional<std::chrono::steady_clock::time_point> &frame_timestamp) {
+      inline capture_e refresh(egl::owned_surface_t &surface, std::optional<std::chrono::steady_clock::time_point> &frame_timestamp) {
+        auto *sd = &surface.sd;
         // Check for a change in HDR metadata
         if (connector_id) {
           auto connector_props = card.connector_props(*connector_id);
@@ -1326,8 +1327,7 @@ namespace platf {
 
           std::fill_n(sd->fds, VIBESHINE_DRM_FRAME_MAX_PLANES, -1);
           for (std::uint32_t plane = 0; plane < frame.plane_count; ++plane) {
-            file[plane] = std::move(exported.dma_buf_fds[plane]);
-            sd->fds[plane] = file[plane].el;
+            sd->fds[plane] = exported.dma_buf_fds[plane].release();
             sd->offsets[plane] = frame.offsets[plane];
             sd->pitches[plane] = frame.pitches[plane];
           }
@@ -1379,13 +1379,13 @@ namespace platf {
             continue;
           }
 
-          file[y] = card.handleFD(fb->handles[y]);
-          if (file[y].el < 0) {
+          auto fd = card.handleFD(fb->handles[y]);
+          if (fd.el < 0) {
             BOOST_LOG(error) << "Couldn't get primary file descriptor for Framebuffer ["sv << fb->fb_id << "]: "sv << strerror(errno);
             return capture_e::error;
           }
 
-          sd->fds[y] = file[y].el;
+          sd->fds[y] = fd.release();
           sd->offsets[y] = fb->offsets[y];
           sd->pitches[y] = fb->pitches[y];
         }
@@ -2214,20 +2214,18 @@ namespace platf {
 
       capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor) override {
         const auto host_processing_timestamp = std::chrono::steady_clock::now();
-        file_t fb_fd[4];
-
-        egl::surface_descriptor_t sd;
+        egl::owned_surface_t surface;
 
         std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
-        auto status = refresh(fb_fd, &sd, frame_timestamp);
+        auto status = refresh(surface, frame_timestamp);
         if (status != capture_e::ok) {
           return status;
         }
 
-        auto rgb_opt = egl::import_source(display.get(), sd);
+        auto rgb_opt = egl::import_source(display.get(), surface.sd);
 
         if (!rgb_opt) {
-          rgb_opt = egl::upload_source(display.get(), sd);
+          rgb_opt = egl::upload_source(display.get(), surface.sd);
           if (!rgb_opt) {
             return capture_e::error;
           }
@@ -2340,7 +2338,7 @@ namespace platf {
 
       capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds /* timeout */, bool cursor) override {
         const auto host_processing_timestamp = std::chrono::steady_clock::now();
-        file_t fb_fd[4];
+        egl::owned_surface_t surface;
 
         if (!pull_free_image_cb(img_out)) {
           return platf::capture_e::interrupted;
@@ -2348,11 +2346,14 @@ namespace platf {
         auto img = (egl::img_descriptor_t *) img_out.get();
         img->reset();
 
-        auto status = refresh(fb_fd, &img->sd, img->frame_timestamp);
+        auto status = refresh(surface, img->frame_timestamp);
         if (status != capture_e::ok) {
           return status;
         }
 
+        // Transfer ownership before any later operation can throw. Failed
+        // refreshes leave the image empty and only the local surface cleans up.
+        img->sd = surface.release();
         update_crtc_gamma_lut(*img);
         img->host_processing_timestamp = host_processing_timestamp;
         img->sequence = ++sequence;
@@ -2377,9 +2378,6 @@ namespace platf {
           img->data = nullptr;
         }
 
-        for (auto x = 0; x < 4; ++x) {
-          fb_fd[x].release();
-        }
         return capture_e::ok;
       }
 

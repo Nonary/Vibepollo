@@ -666,4 +666,7 @@ done
   ((broker_pass == 13 && broker_stops == 1)) || fail_test 'late broker did not reset the clean window'
 )
 
+/usr/bin/bash "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/test_session_command_timeout.sh" \
+  "$controller_source" || fail_test 'session command timeout regression'
+
 /usr/bin/printf 'PASS: deterministic machine-session controller transitions\n'

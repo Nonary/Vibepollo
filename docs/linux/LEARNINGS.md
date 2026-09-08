@@ -49,6 +49,22 @@ not authorize VT switching, session activation or restarting an already-wedged
 compositor. A persistent KWin `The session is not active` error is distinct
 from DPMS-off and must not be disguised as successful recovery.
 
+On 2026-09-07, another display-wake 503 followed NVIDIA Xid 109 in a game's
+`GameThread`, then Xid 119 and a GSP heartbeat timeout. Both KWin and a host
+thread were blocked in the NVIDIA kernel driver's `os_acquire_rwlock_read`.
+This failure needs GPU reset/reboot recovery; display wake retries cannot
+repair that kernel state. Preserve the first GPU fault and blocked stacks
+before recovery rather than treating the later 503 as the original fault.
+
+The same incident exposed orphaned controller probes. The controller has
+`CAP_SETUID`/`CAP_SETGID`, but no `CAP_KILL`: a root `timeout` cannot signal a
+Wayland/X11/systemctl client after `setpriv` drops its UID. Run the cancellation
+monitor under the target UID as well. A later outer watchdog bounds the caller
+if identity setup stalls. The final session command can use up to two seconds
+of cancellation grace after its operation deadline; the 30-second quiesce
+budget plus this grace fits the unit's 35-second stop timeout. Tests must cover
+the restricted root capability set, not only an unrestricted root shell.
+
 The user manager's inherited environment is not proof that graphical clients
 can connect. KWin may generate a new Xwayland display and Xauthority file only
 after its service begins, leaving later D-Bus- or systemd-activated programs

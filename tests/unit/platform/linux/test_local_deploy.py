@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import socket
 import stat
 import tarfile
 import tempfile
@@ -270,7 +271,7 @@ class FilesTests(unittest.TestCase):
             self.files.snapshot(['usr/bin/vibepollo'])
 
     def test_private_public_asset_parent_is_rejected_before_install(self):
-        name = 'usr/share/vibeshine/prelogin/apps.json'
+        name = 'usr/share/vibepollo/prelogin/apps.json'
         target = self.place(name)
         target.parent.chmod(0o700)
         with self.assertRaisesRegex(deploy.DeployError, 'not traversable'):
@@ -410,7 +411,7 @@ class PolicyTests(unittest.TestCase):
                 mock.patch.object(Path, 'read_text', return_value='123\n'), \
                 mock.patch.object(deploy, 'run', return_value=mock.Mock(stdout='users:(("host",pid=123,fd=1))')), \
                 mock.patch.object(deploy, 'capture_logs', return_value='Found H.264 encoder: h264_nvenc [nvenc]'), \
-                mock.patch.object(deploy, 'scanout_active', return_value=True):
+                mock.patch.object(deploy, 'managed_pool_state', return_value='active'):
             status, detail = deploy.health()
         self.assertEqual(status, 'healthy')
         self.assertIn('capture untested', detail)
@@ -445,20 +446,6 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaisesRegex(deploy.DeployError, 'Reboot first'):
                 deploy.finalize(Path('/unused'), manifest)
         start.assert_not_called()
-    def test_physical_scanout_cannot_hide_disabled_managed_virtual_output(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            drm = Path(temporary)
-            (drm / 'card0-HDMI-A-1').mkdir()
-            (drm / 'card0-HDMI-A-1/enabled').write_text('enabled\n')
-            (drm / 'card2-Virtual-1').mkdir()
-            output = drm / 'card2-Virtual-1/enabled'
-            output.write_text('disabled\n')
-            (drm / 'card2').mkdir()
-            (drm / 'card2/device').symlink_to(drm / 'vibeshine')
-            self.assertFalse(deploy.scanout_active(drm))
-            output.write_text('enabled\n')
-            self.assertTrue(deploy.scanout_active(drm))
-
     def test_failed_install_is_retained_until_explicit_recovery(self):
         for phase, status in [('mutating', 'MUTATING'), ('readiness', 'UNHEALTHY')]:
             manifest = {'rollback_policy': 'always'}
@@ -542,6 +529,112 @@ class PolicyTests(unittest.TestCase):
                 mock.patch.object(Path, 'exists', return_value=False), \
                 mock.patch.object(deploy, 'unit_properties', return_value={'ActiveState': 'active'}):
             self.assertEqual(deploy.readiness(10)[0], 'waiting-session')
+
+
+class ManagedPoolReadinessTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.drm = self.root / 'drm'
+        self.output = self.drm / 'card2-Virtual-1/enabled'
+        self.output.parent.mkdir(parents=True)
+        self.output.write_text('disabled\n')
+        (self.output.parent / 'status').write_text('disconnected\n')
+        self.device = self.root / 'devices/faux/vibeshine'
+        self.device.mkdir(parents=True)
+        (self.drm / 'card2').mkdir()
+        (self.drm / 'card2/device').symlink_to(self.device)
+        (self.drm / 'card0-HDMI-A-1').mkdir()
+        (self.drm / 'card0-HDMI-A-1/enabled').write_text('enabled\n')
+        self.control = self.root / 'control.sock'
+        self.socket = socket.socket(socket.AF_UNIX)
+        self.addCleanup(self.socket.close)
+        self.socket.bind(str(self.control))
+        self.control.chmod(0o660)
+        # Exercise real inode types/modes while simulating root ownership.
+        original_lstat = Path.lstat
+        self.socket_uid = 0
+
+        def owned_lstat(path):
+            info = original_lstat(path)
+            if path == self.control:
+                return SimpleNamespace(st_mode=info.st_mode, st_uid=self.socket_uid)
+            return info
+
+        self.lstat = mock.patch.object(Path, 'lstat', owned_lstat)
+        self.lstat.start()
+        self.addCleanup(self.lstat.stop)
+
+    def pool_state(self):
+        return deploy.managed_pool_state(self.drm, self.control)
+
+    def test_idle_greeter_pool_passes_without_client_capture_or_virtual_scanout(self):
+        original_state = deploy.managed_pool_state
+        original_read = Path.read_text
+
+        def read_text(path, *args, **kwargs):
+            if str(path) == '/sys/fs/cgroup/system.slice/vibepollo.service/cgroup.procs':
+                return '123\n'
+            return original_read(path, *args, **kwargs)
+
+        with mock.patch.object(deploy, 'unit_properties', return_value={
+                'ActiveState': 'active', 'ControlGroup': '/system.slice/vibepollo.service',
+                'InvocationID': 'a' * 32}), \
+                mock.patch.object(Path, 'read_text', read_text), \
+                mock.patch.object(deploy, 'run', return_value=mock.Mock(stdout='users:(("host",pid=123,fd=1))')), \
+                mock.patch.object(deploy, 'capture_logs', return_value='Found H.264 encoder: h264_nvenc [nvenc]'), \
+                mock.patch.object(deploy, 'managed_pool_state', side_effect=lambda: original_state(self.drm, self.control)):
+            status, detail = deploy.health()
+        self.assertEqual(status, 'healthy')
+        self.assertIn('dormant managed pool (idle)', detail)
+        self.assertIn('client capture untested', detail)
+        self.assertEqual(self.output.read_text(), 'disabled\n')
+
+    def test_active_pool_is_distinct_from_dormant_pool(self):
+        self.assertEqual(self.pool_state(), 'idle')
+        self.output.write_text('enabled\n')
+        self.assertEqual(self.pool_state(), 'active')
+
+    def test_missing_driver_target_is_not_hidden_by_physical_scanout(self):
+        self.device.rmdir()
+        self.assertIsNone(self.pool_state())
+
+    def test_unrelated_driver_is_not_a_managed_pool(self):
+        (self.drm / 'card2/device').unlink()
+        (self.drm / 'card2/device').symlink_to(self.drm)
+        self.assertIsNone(self.pool_state())
+
+    def test_missing_or_invalid_connector_state_is_not_ready(self):
+        self.output.write_text('unknown\n')
+        self.assertIsNone(self.pool_state())
+        self.output.unlink()
+        self.assertIsNone(self.pool_state())
+
+    def test_missing_control_endpoint_is_not_ready(self):
+        self.control.unlink()
+        self.assertIsNone(self.pool_state())
+
+    def test_untrusted_control_socket_is_rejected_for_idle_and_active_pool(self):
+        for enabled in ('disabled', 'enabled'):
+            self.output.write_text(enabled + '\n')
+            with self.subTest(enabled=enabled, reason='owner'):
+                self.socket_uid = 1000
+                self.assertIsNone(self.pool_state())
+                self.socket_uid = 0
+            with self.subTest(enabled=enabled, reason='permissions'):
+                self.control.chmod(0o666)
+                self.assertIsNone(self.pool_state())
+                self.control.chmod(0o660)
+
+    def test_regular_file_and_symlink_are_not_control_sockets(self):
+        saved_socket = self.root / 'saved.sock'
+        self.control.rename(saved_socket)
+        self.control.write_text('not a socket')
+        self.assertIsNone(self.pool_state())
+        self.control.unlink()
+        self.control.symlink_to(saved_socket)
+        self.assertIsNone(self.pool_state())
 
 
 class RollbackTests(unittest.TestCase):
