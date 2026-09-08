@@ -792,7 +792,7 @@ namespace logging {
   }
 
   void print_help(const char *name) {
-#ifdef __linux__
+#if defined(__linux__) && !defined(SUNSHINE_BUILD_STEAMOS)
     std::cout << platf::linux_cli::help << std::endl;
 #endif
     std::cout
