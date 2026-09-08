@@ -224,6 +224,39 @@ class SharedBuildTests(unittest.TestCase):
                                                      ['try_sign_modules=not_in_chroot']))
 
 
+class NativeInstallationPreflightTests(unittest.TestCase):
+    def test_missing_account_is_actionable_before_build_or_root_staging(self):
+        with mock.patch.object(deploy.pwd, 'getpwnam', side_effect=KeyError('vibepollo')), \
+                mock.patch.object(deploy, 'platform_preflight'), \
+                mock.patch.object(deploy.os, 'geteuid', return_value=1000), \
+                mock.patch.object(deploy, 'snapshot_archive') as snapshot, \
+                mock.patch.object(deploy, 'run') as run:
+            for action in (deploy.build_install, deploy.root_install):
+                with self.subTest(action=action.__name__), \
+                        self.assertRaisesRegex(deploy.DeployError, 'Missing service account.*--stage-only'):
+                    action(SimpleNamespace(stage_only=False))
+            snapshot.assert_not_called()
+            run.assert_not_called()
+
+    def test_missing_configuration_and_unsafe_metadata_are_rejected(self):
+        account = SimpleNamespace(pw_uid=123, pw_gid=456)
+        with mock.patch.object(deploy.pwd, 'getpwnam', return_value=account), \
+                mock.patch.object(deploy.Files, 'parents'), \
+                mock.patch.object(deploy.Path, 'lstat') as lstat:
+            lstat.side_effect = FileNotFoundError()
+            with self.assertRaisesRegex(deploy.DeployError, 'Missing native installation prerequisite'):
+                deploy.native_installation_preflight()
+            lstat.side_effect = None
+            lstat.return_value = SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0, st_gid=0)
+            with self.assertRaisesRegex(deploy.DeployError, 'ownership/mode'):
+                deploy.native_installation_preflight()
+            lstat.side_effect = [
+                SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=0, st_gid=0),
+                SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=123, st_gid=456),
+            ]
+            self.assertIs(deploy.native_installation_preflight(), account)
+
+
 class FilesTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='vibepollo-deploy-test-')

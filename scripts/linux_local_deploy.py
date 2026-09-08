@@ -933,7 +933,31 @@ def rollback(directory, manifest):
     print(f'Restored transaction {directory.name}; configuration and pairing state were not changed.')
 
 
+def native_installation_preflight():
+    """Check updater prerequisites without reading or changing shared state."""
+    guidance = ('This local-build helper updates an already-configured native Vibepollo host; '
+                'complete the native package installation and machine setup first. '
+                'Use --stage-only to build without installing.')
+    try:
+        account = pwd.getpwnam('vibepollo')
+    except KeyError as error:
+        raise DeployError('Missing service account vibepollo. ' + guidance) from error
+    for path, kind, uid, gid, mode in (
+        (Path('/etc/vibepollo/machine.conf'), stat.S_ISREG, 0, 0, 0o600),
+        (Path('/var/lib/vibepollo'), stat.S_ISDIR, account.pw_uid, account.pw_gid, 0o700),
+    ):
+        Files(STATE).parents(path)
+        try:
+            info = path.lstat()
+        except FileNotFoundError as error:
+            raise DeployError(f'Missing native installation prerequisite: {path}. ' + guidance) from error
+        if not kind(info.st_mode) or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (uid, gid, mode):
+            raise DeployError(f'Unexpected existing native installation ownership/mode: {path}')
+    return account
+
+
 def root_install(args):
+    account = native_installation_preflight()
     identifier = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-' + uuid.uuid4().hex[:8]
     directory = STATE / identifier
     directory.mkdir(mode=0o700)
@@ -955,16 +979,6 @@ def root_install(args):
         raise DeployError('Staged public/private host binaries are from different builds')
     driver_preflight(candidate, args.version)
     driver_transaction_preflight()
-    # Existing configured hosts only: never silently migrate/repair shared state.
-    account = pwd.getpwnam('vibepollo')
-    for path, kind, uid, gid, mode in (
-        (Path('/etc/vibepollo/machine.conf'), stat.S_ISREG, 0, 0, 0o600),
-        (Path('/var/lib/vibepollo'), stat.S_ISDIR, account.pw_uid, account.pw_gid, 0o700),
-    ):
-        Files(directory).parents(path)
-        info = path.lstat()
-        if not kind(info.st_mode) or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (uid, gid, mode):
-            raise DeployError(f'Unexpected existing native installation ownership/mode: {path}')
     previous = {unit: unit_properties(unit) for unit in (HOST, CONTROLLER, SOCKET)}
     if any('masked' in props.get('UnitFileState', '') for props in previous.values()):
         raise DeployError('A native unit is administratively masked; refusing to override it')
@@ -1325,6 +1339,8 @@ def build_install(args):
     if os.geteuid() == 0:
         raise DeployError('Run build/install as your desktop user, without sudo; only installation elevates')
     platform_preflight(native=not args.stage_only)
+    if not args.stage_only:
+        native_installation_preflight()
     if not 1 <= args.jobs <= 1024 or not 10 <= args.timeout <= 300:
         raise DeployError('Use --jobs 1..1024 and --timeout 10..300')
     if args.skip_build and any((args.cc, args.cxx, args.cuda_root, args.cuda_host_compiler, args.cuda != 'auto')):
