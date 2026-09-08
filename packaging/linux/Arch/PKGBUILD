@@ -102,6 +102,8 @@ if [[ "${_use_cuda::1}" == "d" ]] && pacman -Qi cuda &> /dev/null; then
 fi
 
 if [[ "${_use_cuda::1}" == "t" ]]; then
+  # The pinned CUDA installer requires the libxml2.so.2 ABI.
+  makedepends+=('libxml2-legacy')
   # Build-only toolkit: never follow Arch's rolling CUDA package (13+ drops Pascal).
   source_x86_64=("cuda-x86_64.run::https://developer.download.nvidia.com/compute/cuda/12.9.1/local_installers/cuda_12.9.1_575.57.08_linux.run")
   sha256sums_x86_64=('0f6d806ddd87230d2adbe8a6006a9d20144fdbda9de2d6acc677daa5d036417a')
