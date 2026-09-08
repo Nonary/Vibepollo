@@ -62,6 +62,7 @@
 #include "paired_state_policy.h"
 #include "state_storage_policy.h"
 #include "update.h"
+#include "single_flight.h"
 #include "state_storage_policy.h"
 #ifdef _WIN32
   #include "platform/windows/display.h"
@@ -6216,8 +6217,24 @@ namespace nvhttp {
       });
     };
 
-    auto run_blocking_nvhttp = [&blocking_route_pool, run_on_blocking_pool](auto task) {
-      run_on_blocking_pool(blocking_route_pool, std::move(task));
+    // Reserve before enqueueing, not on the FIFO worker: a GPU ioctl can
+    // remain stuck in the kernel even after SIGKILL. Later requests must get
+    // a response and must never execute stale mutations after a client timeout.
+    auto mutation_admission = std::make_shared<single_flight::admission_t>();
+    auto run_blocking_nvhttp = [&blocking_route_pool, run_on_blocking_pool, mutation_admission](auto response, const char *operation, auto task) {
+      if (mutation_admission->try_submit([&](auto admitted) {
+            run_on_blocking_pool(blocking_route_pool, std::move(admitted));
+          }, std::move(task))) {
+        return;
+      }
+      pt::ptree tree;
+      tree.put(std::string("root.") + operation, 0);
+      tree.put("root.<xmlattr>.status_code", 503);
+      tree.put("root.<xmlattr>.status_message", "Another stream operation is still running. Retry after it completes; if this persists, check the host GPU and system-sleep logs.");
+      std::ostringstream data;
+      pt::write_xml(data, tree);
+      response->close_connection_after_response = true;
+      response->write(data.str());
     };
 
     auto run_discovery_nvhttp = [&discovery_route_pool, run_on_blocking_pool](auto task) {
@@ -6242,10 +6259,8 @@ namespace nvhttp {
     };
     https_server.resource["^/appasset$"]["GET"] = appasset;
     https_server.resource["^/launch$"]["GET"] = [&host_audio, run_blocking_nvhttp](auto resp, auto req) {
-      run_blocking_nvhttp([&host_audio, resp = std::move(resp), req = std::move(req)]() mutable {
-        // Remote teardown bypasses the outer lifecycle gate so a joining stream
-        // worker can take it during cleanup. Retain Vibepollo's request-ordering
-        // fence until the later teardown-aware start handoff is available.
+      run_blocking_nvhttp(resp, "launch", [&host_audio, resp, req = std::move(req)]() mutable {
+        // Preserve request ordering until the teardown-aware handoff is available.
         std::lock_guard launch_lock {launch_request_mutex};
         (void) proc::proc.running();
         const auto args = req->parse_query_string();
@@ -6272,9 +6287,8 @@ namespace nvhttp {
       });
     };
     https_server.resource["^/resume$"]["GET"] = [&host_audio, run_blocking_nvhttp](auto resp, auto req) {
-      run_blocking_nvhttp([&host_audio, resp = std::move(resp), req = std::move(req)]() mutable {
-        // Keep resume ordered with teardown for the same lifecycle reason as
-        // /launch above; normal app transitions also take their narrower gate.
+      run_blocking_nvhttp(resp, "resume", [&host_audio, resp, req = std::move(req)]() mutable {
+        // Keep resume ordered with teardown and normal app transitions.
         std::lock_guard launch_lock {launch_request_mutex};
         (void) proc::proc.running();
         auto lifecycle_lock = acquire_stream_start_lifecycle_lock();
@@ -6283,7 +6297,7 @@ namespace nvhttp {
       });
     };
     https_server.resource["^/cancel$"]["GET"] = [run_blocking_nvhttp](auto resp, auto req) {
-      run_blocking_nvhttp([resp = std::move(resp), req = std::move(req)]() mutable {
+      run_blocking_nvhttp(resp, "cancel", [resp, req = std::move(req)]() mutable {
         std::lock_guard lock {launch_request_mutex};
         cancel(std::move(resp), std::move(req));
       });
