@@ -326,6 +326,11 @@ namespace safe {
       }
 
       while (_queue.empty()) {
+        // A zero-duration condition-variable wait can still yield to the
+        // scheduler on Windows. Keep nonblocking capture polls out of it.
+        if (delay <= decltype(delay)::zero()) {
+          return util::false_v<status_t>;
+        }
         if (!_continue || _cv.wait_for(ul, delay) == std::cv_status::timeout) {
           return util::false_v<status_t>;
         }
