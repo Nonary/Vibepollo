@@ -171,3 +171,36 @@ install_kernel_headers() { die 'fixture: matching headers unavailable'; }
 if (install_virtual_driver "$driver_helper"); then exit 1; fi
 [[ $(<"$driver_calls") == status ]]
 printf 'Driver installation is required; genuine build failures cannot report installer success.\n'
+
+# Reproduce an upgraded kernel package while the removed old kernel still runs.
+(
+  modules_root="$workdir/modules"
+  mkdir -p "$modules_root/7.2.3-1-cachyos/build"
+  touch "$modules_root/7.2.3-1-cachyos/pkgbase" "$modules_root/7.2.3-1-cachyos/build/Makefile"
+  uname() { printf '7.2.2-1-cachyos\n'; }
+  pacman() {
+    printf '%s\n' "$*" >> "$calls"
+    [[ "$1" == -Qqo && "${!#}" == "$modules_root/7.2.3-1-cachyos/pkgbase" ]] || return 1
+    printf 'linux-cachyos\n'
+  }
+  : > "$calls"
+  if (check_kernel "$modules_root") > "$workdir/kernel-error" 2>&1; then exit 1; fi
+  grep -F 'Reboot required: running kernel 7.2.2-1-cachyos' "$workdir/kernel-error"
+  grep -F '7.2.3-1-cachyos (linux-cachyos)' "$workdir/kernel-error"
+  ! grep -Eq -- '^-S|^-U' "$calls"
+
+  # A relocated image still maps through package-owned pkgbase metadata.
+  uname() { printf '7.2.3-1-cachyos\n'; }
+  check_kernel "$modules_root"
+  [[ "$kernel_package" == linux-cachyos && "$headers_package" == linux-cachyos-headers ]]
+
+  # Unknown/orphan directories are not evidence of an installed boot target.
+  pacman() { return 1; }
+  kernel_release=7.2.2-1-cachyos
+  check_retired_kernel "$modules_root"
+  if kernel_package_for 7.2.3-1-cachyos "$modules_root"; then exit 1; fi
+  # Reject ambiguous ownership instead of constructing an invalid package name.
+  pacman() { printf 'linux-cachyos\nother-package\n'; }
+  if kernel_package_for 7.2.3-1-cachyos "$modules_root"; then exit 1; fi
+)
+printf 'Retired running kernels require a reboot, not mismatched header installation.\n'
