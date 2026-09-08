@@ -532,13 +532,39 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(manifest['status'], 'COMMITTED')
 
     def test_driver_waits_for_naturally_exiting_descendant(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            marker = Path(temporary) / 'finished'
-            command = ['/usr/bin/bash', '-c',
-                       '(sleep 0.2; printf done > "$1") & exit 4',
-                       'driver-fixture', str(marker)]
-            self.assertEqual(deploy.driver_command(command), 4)
-            self.assertEqual(marker.read_text(), 'done')
+        import ctypes
+
+        # Container PID 1 need not reap the intentionally orphaned fixture.
+        # Adopt it locally and supply the reaping a normal host init performs;
+        # keep the real process-group probe and the production rollback guard.
+        libc = ctypes.CDLL(None, use_errno=True)
+        previous = ctypes.c_int()
+        self.assertEqual(libc.prctl(37, ctypes.byref(previous), 0, 0, 0), 0)  # PR_GET_CHILD_SUBREAPER
+        self.assertEqual(libc.prctl(36, 1, 0, 0, 0), 0)  # PR_SET_CHILD_SUBREAPER
+        group_empty = deploy.driver_group_empty
+
+        def reap_and_probe(group):
+            # driver_command already waited for its direct child before probing.
+            while True:
+                try:
+                    child, _ = os.waitpid(-group, os.WNOHANG)
+                except ChildProcessError:
+                    break
+                if child == 0:
+                    break
+            return group_empty(group)
+
+        try:
+            with tempfile.TemporaryDirectory() as temporary, \
+                    mock.patch.object(deploy, 'driver_group_empty', side_effect=reap_and_probe):
+                marker = Path(temporary) / 'finished'
+                command = ['/usr/bin/bash', '-c',
+                           '(sleep 0.2; printf done > "$1") & exit 4',
+                           'driver-fixture', str(marker)]
+                self.assertEqual(deploy.driver_command(command), 4)
+                self.assertEqual(marker.read_text(), 'done')
+        finally:
+            self.assertEqual(libc.prctl(36, previous.value, 0, 0, 0), 0)
 
     def test_driver_persistent_descendant_still_forces_cleanup_and_failure(self):
         process = mock.Mock(pid=123)
