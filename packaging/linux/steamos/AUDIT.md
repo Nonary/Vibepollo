@@ -1,5 +1,9 @@
 # SteamOS support audit
 
+Migration note: the validation results below describe the source Vibeshine
+implementation. They are historical evidence, not a claim that this Vibepollo
+migration has been tested on a live SteamOS host.
+
 Audit date: 2026-09-04. Starting revision: `017cc604` plus the existing
 untracked SteamOS packaging and Gamescope source files.
 
@@ -211,6 +215,3 @@ profile excludes the managed virtual-display driver affected by that change.
 The installed SteamOS `gamescope-session.service`, `gamescope-session.target`,
 `steam-launcher.service` and `/usr/lib/steamos/gamescope-session` were also inspected
 to verify graphical-session ownership and how the environment file is published.
-# Migration note: the validation results below describe the source Vibeshine
-# implementation. They are historical evidence, not a claim that this Vibepollo
-# migration has been tested on a live SteamOS host.
