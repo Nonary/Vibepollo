@@ -224,10 +224,103 @@ class SharedBuildTests(unittest.TestCase):
                                                      ['try_sign_modules=not_in_chroot']))
 
 
+class NativePackageTests(unittest.TestCase):
+    def test_package_metadata_payload_modes_and_maintained_hooks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            candidate = base / 'candidate.tar.gz'
+            with package() as fixture, tarfile.open(candidate, 'w:gz') as output:
+                for member in fixture:
+                    output.addfile(member, fixture.extractfile(member) if member.isfile() else None)
+            destination = base / 'candidate.pkg.tar.gz'
+            deploy.build_native_package(candidate, destination, VERSION)
+            with tarfile.open(destination) as result:
+                info = result.extractfile('.PKGINFO').read().decode()
+                self.assertIn('pkgname = vibepollo\n', info)
+                self.assertIn('pkgver = 1.19.0.beta.5-1\n', info)
+                self.assertIn('depend = dkms\n', info)
+                self.assertIn('conflict = sunshine\n', info)
+                self.assertEqual(result.extractfile('.INSTALL').read(),
+                                 (ROOT / 'packaging/linux/Arch/vibepollo.install').read_bytes())
+                self.assertEqual(result.getmember('usr/libexec/vibeshine/vibepollo-host').mode, 0o750)
+                self.assertEqual(result.getmember('usr/share/vibepollo').mode, 0o755)
+                for member in result:
+                    self.assertEqual((member.uid, member.gid), (0, 0))
+                self.assertEqual(result.getmember('usr/bin/vibepollo').linkname, f'vibepollo-{VERSION}')
+            if deploy.shutil.which('pacman'):
+                self.assertEqual(deploy.run('pacman', '-Qp', '--', destination, stderr=deploy.subprocess.PIPE).stdout.strip(),
+                                 'vibepollo ' + deploy.arch_package_version(VERSION))
+
+    def test_package_metadata_rejects_shell_expansion_and_missing_arrays(self):
+        for recipe in ('depends=("$(id)")', 'depends=("${extra}")', ''):
+            with self.assertRaises(deploy.DeployError):
+                deploy.package_array(recipe, 'depends')
+
+    def test_package_phase_does_not_require_existing_account(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = base / 'input.pkg.tar.gz'
+            source.write_bytes(b'fixture')
+            state = base / 'state'
+            state.mkdir()
+            args = SimpleNamespace(archive=source, sha256=deploy.digest(source), version=VERSION,
+                                   timeout=30, yes=True)
+            with mock.patch.object(deploy, 'STATE', state), \
+                    mock.patch.object(deploy, 'run', return_value=SimpleNamespace(
+                        stdout='vibepollo ' + deploy.arch_package_version(VERSION))), \
+                    mock.patch.object(deploy.subprocess, 'call', return_value=0) as install, \
+                    mock.patch.object(deploy, 'package_readiness', return_value=0), \
+                    mock.patch.object(deploy.pwd, 'getpwnam', side_effect=KeyError):
+                self.assertEqual(deploy.root_package_install(args), 0)
+            command = install.call_args.args[0]
+            retained = Path(command[command.index('--package') + 1])
+            self.assertEqual(retained.read_bytes(), source.read_bytes())
+            self.assertIn('--yes', command)
+            latest = json.loads((state / 'latest.json').read_text())['id']
+            manifest = json.loads((state / latest / 'transaction.json').read_text())
+            self.assertEqual(manifest['backend'], 'pacman')
+            self.assertEqual(manifest['status'], 'PACKAGE_INSTALLED')
+
+    def test_changed_retained_package_cannot_finalize_an_old_build(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / 'candidate.pkg.tar.gz').write_bytes(b'changed')
+            with mock.patch.object(deploy, 'verify_payload') as verify:
+                with self.assertRaisesRegex(deploy.DeployError, 'Retained package changed'):
+                    deploy.verify_package_payload(directory, {'sha256': '0' * 64})
+                verify.assert_not_called()
+
+    def test_only_active_or_enabled_legacy_user_units_are_disabled(self):
+        results = [SimpleNamespace(returncode=0), SimpleNamespace(returncode=1),
+                   SimpleNamespace(returncode=0), SimpleNamespace(returncode=1),
+                   SimpleNamespace(returncode=1), SimpleNamespace(returncode=1),
+                   SimpleNamespace(returncode=1)]
+        with mock.patch.object(deploy, 'run', side_effect=results) as run:
+            deploy.stop_legacy_user_hosts()
+        self.assertIn(mock.call('systemctl', '--user', 'disable', '--now', 'sunshine.service'),
+                      run.call_args_list)
+        self.assertNotIn(mock.call('systemctl', '--user', 'disable', '--now', deploy.HOST),
+                         run.call_args_list)
+
+    def test_package_resume_never_calls_file_rollback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / 'transaction.json').write_text(json.dumps({'backend': 'pacman'}))
+            with mock.patch.object(deploy, 'transaction_path', return_value=directory), \
+                    mock.patch.object(deploy, 'rollback') as rollback, \
+                    mock.patch.object(deploy, 'package_readiness', return_value=0) as readiness:
+                with self.assertRaisesRegex(deploy.DeployError, 'managed by pacman'):
+                    deploy.resume_latest('rollback', None, 'latest')
+                self.assertEqual(deploy.resume_latest('finalize', None, 'latest'), 0)
+                rollback.assert_not_called()
+                readiness.assert_called_once()
+
+
 class NativeInstallationPreflightTests(unittest.TestCase):
     def test_missing_account_is_actionable_before_build_or_root_staging(self):
         with mock.patch.object(deploy.pwd, 'getpwnam', side_effect=KeyError('vibepollo')), \
                 mock.patch.object(deploy, 'platform_preflight'), \
+                mock.patch.object(deploy.shutil, 'which', return_value=None), \
                 mock.patch.object(deploy.os, 'geteuid', return_value=1000), \
                 mock.patch.object(deploy, 'snapshot_archive') as snapshot, \
                 mock.patch.object(deploy, 'run') as run:

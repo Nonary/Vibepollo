@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Experimental shared build/install helper for configured native Linux hosts.
+"""Experimental shared native Linux build/install helper.
 
 Includes the native payload and DRM/DKMS upgrades. Tests are opt-in (--enforce).
 Never unloads a live display driver, restarts the compositor, or reboots itself.
@@ -11,12 +11,14 @@ import base64
 import contextlib
 import fcntl
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
 import pwd
 import re
 import selectors
+import shlex
 import shutil
 import signal
 import stat
@@ -95,7 +97,7 @@ def run(*args, check=True, timeout=60, **kwargs):
             str(args[0]).endswith('vibepollo-session-controller')):
         print('+ ' + ' '.join(str(arg) for arg in args), flush=True)
     result = subprocess.run([str(arg) for arg in args], text=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            stdout=subprocess.PIPE, stderr=kwargs.pop('stderr', subprocess.STDOUT),
                             timeout=timeout, **kwargs)
     if check and result.returncode:
         raise DeployError(f'{args[0]} failed ({result.returncode}):\n{result.stdout}')
@@ -933,6 +935,150 @@ def rollback(directory, manifest):
     print(f'Restored transaction {directory.name}; configuration and pairing state were not changed.')
 
 
+def stop_legacy_user_hosts():
+    # Run as the invoking desktop user, only after installation confirmation.
+    for unit in ('sunshine.service', 'vibeshine.service', HOST):
+        active = run('systemctl', '--user', 'is-active', '--quiet', unit, check=False).returncode == 0
+        enabled = run('systemctl', '--user', 'is-enabled', '--quiet', unit, check=False).returncode == 0
+        if active or enabled:
+            run('systemctl', '--user', 'disable', '--now', unit)
+
+
+def arch_package_version(version):
+    if not VERSION.fullmatch(version):
+        raise DeployError('Invalid local package version')
+    return version.replace('-', '.') + '-1'
+
+
+def package_array(recipe, name):
+    # Read only literal metadata; never execute a PKGBUILD to discover it.
+    match = re.search(r'^' + name + r'=\((.*?)\)', recipe, re.M | re.S)
+    if not match:
+        raise DeployError(f'Missing Arch package metadata: {name}')
+    try:
+        values = shlex.split(match[1], comments=True)
+    except ValueError as error:
+        raise DeployError(f'Invalid Arch package metadata: {name}') from error
+    if any(not re.fullmatch(r'[A-Za-z0-9@._+:/<>=-]+', value) for value in values):
+        raise DeployError(f'Nonliteral Arch package metadata: {name}')
+    return values
+
+
+def build_native_package(archive_path, destination, version):
+    """Package the exact validated local stage with the maintained Arch hooks."""
+    recipe = (REPO / 'packaging/linux/Arch/PKGBUILD').read_text()
+    fields = [('pkgname', 'vibepollo'), ('pkgbase', 'vibepollo'),
+              ('pkgver', arch_package_version(version)), ('pkgdesc', 'Local Vibepollo build'),
+              ('arch', 'x86_64'), ('builddate', str(int(time.time())))]
+    for array, field in (('depends', 'depend'), ('provides', 'provides'),
+                         ('conflicts', 'conflict'), ('license', 'license')):
+        fields.extend((field, value) for value in package_array(recipe, array))
+    with tarfile.open(archive_path, 'r:gz') as source:
+        members = inspect_archive(source, version)
+        fields.append(('size', str(sum(member.size for member in members.values()))))
+        with tarfile.open(destination, 'w:gz', format=tarfile.PAX_FORMAT) as package:
+            metadata_files = {
+                '.PKGINFO': ''.join(f'{key} = {value}\n' for key, value in fields).encode(),
+                '.INSTALL': (REPO / 'packaging/linux/Arch/vibepollo.install').read_bytes(),
+            }
+            for name, data in metadata_files.items():
+                entry = tarfile.TarInfo(name)
+                entry.mode = 0o644
+                entry.size = len(data)
+                package.addfile(entry, io.BytesIO(data))
+            # Include parents with public modes: the build runs under the user's
+            # umask, which must not determine accessibility of installed assets.
+            parents = {str(parent) for name in members for parent in PurePosixPath(name).parents
+                       if str(parent) != '.'}
+            for name in sorted(parents):
+                entry = tarfile.TarInfo(name)
+                entry.type, entry.mode = tarfile.DIRTYPE, 0o755
+                package.addfile(entry)
+            for name, member in sorted(members.items()):
+                entry = tarfile.TarInfo(name)
+                entry.mode = 0o777 if member.issym() else install_mode(name)
+                if member.issym():
+                    entry.type, entry.linkname = tarfile.SYMTYPE, member.linkname
+                    package.addfile(entry)
+                else:
+                    entry.size = member.size
+                    with source.extractfile(member) as data:
+                        package.addfile(entry, data)
+    return destination
+
+
+def verify_package_payload(directory, manifest):
+    package_path = directory / 'candidate.pkg.tar.gz'
+    if digest(package_path) != manifest['sha256']:
+        raise DeployError('Retained package changed; refusing package finalization')
+    with tarfile.open(package_path, 'r:gz') as package:
+        members = inspect_archive([member for member in package
+                                   if member.name not in ('.PKGINFO', '.INSTALL')], manifest['version'])
+        expected = {}
+        for name, member in members.items():
+            if member.issym():
+                expected[name] = {'link': member.linkname}
+            else:
+                with package.extractfile(member) as data:
+                    expected[name] = {'sha256': hashlib.file_digest(data, 'sha256').hexdigest()}
+        verify_payload(directory, {'after': expected}, members)
+
+
+def package_readiness(directory, manifest):
+    expected = 'vibepollo ' + arch_package_version(manifest['version'])
+    if run('pacman', '-Q', 'vibepollo', stderr=subprocess.PIPE).stdout.strip() != expected:
+        raise DeployError('Installed package differs from this transaction; use pacman to recover')
+    native_installation_preflight()
+    verify_package_payload(directory, manifest)
+    if driver_needs_reboot():
+        manifest['status'] = 'PACKAGE_REBOOT_REQUIRED'
+        write_json(directory / 'transaction.json', manifest)
+        print('Package installed. Reboot, then run vibepollo-install --part2.')
+        return 0
+    result, detail = readiness(manifest['timeout'])
+    if result not in ('healthy', 'waiting-session'):
+        raise DeployError(f'Package installed but startup is not ready: {detail}; '
+                          'review package setup output, then retry --part2')
+    manifest['status'] = 'PACKAGE_COMMITTED'
+    write_json(directory / 'transaction.json', manifest)
+    print(f'Installed local package: {detail}. Original profiles are retained.')
+    return 0
+
+
+def root_package_install(args):
+    identifier = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-' + uuid.uuid4().hex[:8]
+    directory = STATE / identifier
+    directory.mkdir(mode=0o700)
+    package = directory / 'candidate.pkg.tar.gz'
+    snapshot_archive(args.archive, args.sha256, package)
+    expected = 'vibepollo ' + arch_package_version(args.version)
+    if run('pacman', '-Qp', '--', package, stderr=subprocess.PIPE).stdout.strip() != expected:
+        raise DeployError('Local package identity does not match the requested build')
+    manifest = {'backend': 'pacman', 'status': 'PACKAGE_INSTALLING',
+                'version': args.version, 'timeout': args.timeout, 'sha256': args.sha256}
+    write_json(directory / 'transaction.json', manifest)
+    write_json(STATE / 'latest.json', {'id': identifier})
+    print(f'Root-private candidate retained at {package}.\n'
+          'Pacman owns this installation; recovery uses pacman and its cached packages.\n'
+          'The native installer may update system packages and install kernel headers.', flush=True)
+    command = ['/usr/bin/bash', str(REPO / 'scripts/linux_install.sh'), '--package', str(package)]
+    if args.yes:
+        command.append('--yes')
+    try:
+        result = subprocess.call(command)
+        if result:
+            raise DeployError(f'Native package installation failed ({result}); inspect pacman output. '
+                              f'The candidate remains at {package}')
+        manifest['status'] = 'PACKAGE_INSTALLED'
+        write_json(directory / 'transaction.json', manifest)
+        return package_readiness(directory, manifest)
+    except BaseException:
+        if manifest['status'] == 'PACKAGE_INSTALLING':
+            manifest['status'] = 'PACKAGE_FAILED'
+        write_json(directory / 'transaction.json', manifest)
+        raise
+
+
 def native_installation_preflight():
     """Check updater prerequisites without reading or changing shared state."""
     guidance = ('This local-build helper updates an already-configured native Vibepollo host; '
@@ -1173,6 +1319,12 @@ def resume_latest(command, identifier, latest):
         raise DeployError('Only the latest transaction can be resumed or recovered')
     directory = transaction_path(latest)
     manifest = json.loads((directory / 'transaction.json').read_text())
+    if manifest.get('backend') == 'pacman':
+        if command == 'rollback':
+            raise DeployError('This installation is managed by pacman. Reinstall the previous package '
+                              'with sudo pacman -U /path/to/previous.pkg.tar.zst; original profiles '
+                              'are retained. File rollback cannot reverse package transactions.')
+        return package_readiness(directory, manifest)
     if command == 'rollback' and manifest['status'] != 'ROLLBACK_REBOOT_REQUIRED':
         rollback(directory, manifest)
     else:
@@ -1339,7 +1491,8 @@ def build_install(args):
     if os.geteuid() == 0:
         raise DeployError('Run build/install as your desktop user, without sudo; only installation elevates')
     platform_preflight(native=not args.stage_only)
-    if not args.stage_only:
+    package_install = not args.stage_only and bool(shutil.which('pacman', path=TRUSTED_PATH))
+    if not args.stage_only and not package_install:
         native_installation_preflight()
     if not 1 <= args.jobs <= 1024 or not 10 <= args.timeout <= 300:
         raise DeployError('Use --jobs 1..1024 and --timeout 10..300')
@@ -1353,7 +1506,7 @@ def build_install(args):
     missing = [name for name in required if not shutil.which(name)]
     if missing:
         raise DeployError('Missing build tools: ' + ', '.join(missing))
-    if not args.stage_only and run('systemctl', '--user', 'is-active', '--quiet', HOST, check=False).returncode == 0:
+    if not args.stage_only and not package_install and run('systemctl', '--user', 'is-active', '--quiet', HOST, check=False).returncode == 0:
         raise DeployError('The obsolete user host is active; migrate to the native controller first')
     build = REPO / 'build'
     build.mkdir(exist_ok=True)
@@ -1398,7 +1551,24 @@ def build_install(args):
             shutil.copyfile(archive_path, destination)
             print(f'Validated candidate: {destination}\nSHA256: {digest(destination)}\nNo system files or services changed.')
             return 0
-        driver_preflight(work / 'stage', args.version)
+        if not package_install:
+            driver_preflight(work / 'stage', args.version)
+        if package_install:
+            package = build / f'vibepollo-{arch_package_version(args.version)}-x86_64.pkg.tar.gz'
+            build_native_package(archive_path, package, args.version)
+            print(f'Local package: {package}\n'
+                  'Installation replaces conflicting host packages and preserves original profiles.\n'
+                  'The native installer may update system packages and install kernel headers.\n'
+                  'Recovery uses pacman, not the file rollback journal. Streams will disconnect.')
+            if not args.yes and not confirm_install():
+                raise DeployError('Installation cancelled; the local package was retained')
+            stop_legacy_user_hosts()
+            command = ['sudo', '/usr/bin/python3', '-I', str(Path(__file__).resolve()),
+                       '_package_install', str(package), digest(package), '--version', args.version,
+                       '--timeout', str(args.timeout)]
+            if args.yes:
+                command.append('--yes')
+            return subprocess.call(command)
         print('Installation will disconnect streams. Backups are root-private; configuration/pairing state is preserved.')
         if not args.yes and not confirm_install():
             raise DeployError('Installation cancelled')
@@ -1432,7 +1602,12 @@ def parse_arguments(argv=None):
     internal.add_argument('archive', type=Path)
     internal.add_argument('sha256')
     internal.add_argument('--version', required=True)
-    for command in (install, internal):
+    package_internal = commands.add_parser('_package_install', help=argparse.SUPPRESS)
+    package_internal.add_argument('archive', type=Path)
+    package_internal.add_argument('sha256')
+    package_internal.add_argument('--version', required=True)
+    package_internal.add_argument('--yes', action='store_true')
+    for command in (install, internal, package_internal):
         command.add_argument('--timeout', type=int, default=90)
     undo = commands.add_parser('rollback', help='Restore the latest transaction (run without sudo)')
     undo.add_argument('transaction', nargs='?', help='Defaults to the latest transaction')
@@ -1488,6 +1663,8 @@ def main():
             raise DeployError(f'Interrupted by signal {signum}')
         signal.signal(signal.SIGTERM, interrupted)
         signal.signal(signal.SIGINT, interrupted)
+        if args.command == '_package_install':
+            return root_package_install(args)
         return root_install(args)
 
 
