@@ -7,7 +7,7 @@ import tempfile
 root = Path(__file__).resolve().parents[2]
 source = (Path(sys.argv[1]) if len(sys.argv) > 1 else root / 'src/nvhttp.cpp').read_text()
 start = source.index('      auto color_app_ctx = launch_app_ctx;')
-end = source.index('#ifdef _WIN32', start)
+end = source.index(';', source.index('launch_session->prefer_sdr_10bit =', start)) + 1
 selection = source[start:end]
 start = source.index('make_launch_session_from_snapshot(false, false, args, verified_client, &request_client_identity')
 call = source[start:source.index(';', start)]

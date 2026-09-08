@@ -1314,6 +1314,13 @@ def confirm_install():
         print('Please enter y to install or n to cancel.')
 
 
+def version_probe_environment(work):
+    environment = dict(os.environ, XDG_CONFIG_HOME=str(work / 'version-config'),
+                       VIBEPOLLO_MIGRATE_CONFIG='0')
+    environment.pop('CONFIGURATION_DIRECTORY', None)
+    return environment
+
+
 def build_install(args):
     if os.geteuid() == 0:
         raise DeployError('Run build/install as your desktop user, without sudo; only installation elevates')
@@ -1354,7 +1361,7 @@ def build_install(args):
         enforce_tests(build, args.enforce, args.jobs)
         environment = dict(os.environ, DESTDIR=str(work / 'stage'))
         subprocess.run(['cmake', '--install', str(build)], env=environment, check=True)
-        version_environment = dict(os.environ, XDG_CONFIG_HOME=str(work / 'version-config'))
+        version_environment = version_probe_environment(work)
         # Vibepollo parses defaults before --version. Seed only this isolated
         # probe profile from the staged payload, never an installed host's data.
         probe_profile = work / 'version-config' / 'vibepollo'

@@ -96,6 +96,14 @@ class ArchiveTests(unittest.TestCase):
 
 
 class SharedBuildTests(unittest.TestCase):
+    def test_version_probe_cannot_use_or_migrate_the_installed_profile(self):
+        with mock.patch.dict(os.environ, {'CONFIGURATION_DIRECTORY': '/var/lib',
+                                          'VIBEPOLLO_MIGRATE_CONFIG': '1'}):
+            environment = deploy.version_probe_environment(Path('/tmp/probe'))
+        self.assertNotIn('CONFIGURATION_DIRECTORY', environment)
+        self.assertEqual(environment['XDG_CONFIG_HOME'], '/tmp/probe/version-config')
+        self.assertEqual(environment['VIBEPOLLO_MIGRATE_CONFIG'], '0')
+
     def test_resume_flags_select_actions_without_transaction_ids(self):
         for prefix in ([], ['install']):
             for flag, command in [('--part2', 'finalize'), ('--recover', 'rollback')]:
