@@ -148,9 +148,39 @@ kernel_release=''
 kernel_package=''
 headers_package=''
 
+kernel_package_for() {
+  local release=$1 modules_root=${2:-/usr/lib/modules} path owner
+  # Some kernel packages move the image to /boot. Ask pacman about other
+  # kernel-owned metadata instead of guessing a package from uname's suffix.
+  for path in "$modules_root/$release/vmlinuz" "$modules_root/$release/pkgbase"; do
+    if owner=$(pacman -Qqo -- "$path" 2>/dev/null) &&
+       [[ "$owner" =~ ^[A-Za-z0-9@._+:-]+$ ]]; then
+      printf '%s\n' "$owner"
+      return 0
+    fi
+  done
+  return 1
+}
+
+check_retired_kernel() {
+  local modules_root=${1:-/usr/lib/modules} directory release owner installed=''
+  [[ ! -d "$modules_root/$kernel_release" ]] || return 0
+  for directory in "$modules_root"/*; do
+    [[ -d "$directory" ]] || continue
+    release=${directory##*/}
+    [[ "$release" != "$kernel_release" ]] || continue
+    owner=$(kernel_package_for "$release" "$modules_root") || continue
+    installed+=" ${release} (${owner})"
+  done
+  if [[ -n "$installed" ]]; then
+    die "Reboot required: running kernel ${kernel_release} no longer has its module tree installed. Installed kernels:${installed}. Reboot into an installed kernel, then retry this installer. Do not install newer headers for the old running kernel; no system upgrade or reboot was performed."
+  fi
+}
+
 check_kernel() {
-  local major minor
+  local major minor modules_root=${1:-/usr/lib/modules}
   kernel_release=$(uname -r)
+  kernel_package=''; headers_package=''
   if [[ "$kernel_release" =~ ^([0-9]+)\.([0-9]+) ]]; then
     major=${BASH_REMATCH[1]}
     minor=${BASH_REMATCH[2]}
@@ -164,8 +194,8 @@ check_kernel() {
     fail "Linux ${kernel_release} is older than ${MIN_KERNEL_MAJOR}.${MIN_KERNEL_MINOR}; the virtual-display driver will not build."
   fi
 
-  if kernel_package=$(pacman -Qqo "/usr/lib/modules/${kernel_release}/vmlinuz" 2>/dev/null) &&
-     [[ "$kernel_package" =~ ^[A-Za-z0-9@._+:-]+$ ]]; then
+  check_retired_kernel "$modules_root"
+  if kernel_package=$(kernel_package_for "$kernel_release" "$modules_root"); then
     headers_package="${kernel_package}-headers"
     ok "Running kernel package: ${kernel_package} (headers: ${headers_package})"
   else
@@ -179,6 +209,7 @@ install_kernel_headers() {
     ok "Kernel headers for ${kernel_release} are already installed."
     return
   fi
+  check_retired_kernel
   if [[ -z "$headers_package" ]]; then
     die "Kernel headers for ${kernel_release} are missing and the package name could not be determined. Install matching headers before retrying."
   fi
