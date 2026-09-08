@@ -53,6 +53,7 @@
 // local includes
 #include "graphics.h"
 #include "misc.h"
+#include "render_device.h"
 #include "src/platform/common_services.h"
 #include "src/boost_process_shim.h"
 #include "src/config.h"
@@ -1640,7 +1641,11 @@ namespace platf {
   }
 
   std::string find_render_node_with_display() {
-#ifdef SUNSHINE_BUILD_DRM
+#if defined(SUNSHINE_BUILD_DRM) && defined(__linux__)
+    // Renderer discovery is metadata-only. Opening a primary node and forcing
+    // drmModeGetConnector can enter a wedged GPU driver after system resume.
+    return drm_topology::find_render_node_with_display();
+#elif defined(SUNSHINE_BUILD_DRM)
     auto *dir = opendir("/dev/dri");
     if (!dir) {
       return {};

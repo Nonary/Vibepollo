@@ -392,42 +392,7 @@ namespace platf {
           }
         }
         BOOST_LOG(info) << path << " -> "sv << driver_name << " "sv
-                        << ver->version_major << '.' << ver->version_minor << '.' << ver->version_patchlevel;
-
-        // Display-only Vibeshine cards export the physical renderer's buffers;
-        // their own node cannot initialize an encoder. Keep the capture fd on
-        // the virtual card and use the selected GPU only for VAAPI/Vulkan.
-        const bool separate_renderer_required = selection::driver_requires_direct_import(driver_name);
-        const auto selected_render_node = separate_renderer_required ? resolve_render_device() : std::string {};
-        char *rendernode_path = drmGetRenderDeviceNameFromFd(fd.el);
-        const auto renderer_path = selection::render_device_path(
-          driver_name,
-          path,
-          rendernode_path ? rendernode_path : "",
-          selected_render_node
-        );
-        free(rendernode_path);
-        if (separate_renderer_required || renderer_path != path) {
-          BOOST_LOG(debug) << "Opening render node: "sv << renderer_path;
-          render_fd.el = open(renderer_path.c_str(), O_RDWR | O_CLOEXEC);
-          if (render_fd.el < 0) {
-            if (separate_renderer_required) {
-              BOOST_LOG(error) << "Cannot encode the private display using render node "sv
-                               << renderer_path << ": "sv << strerror(errno);
-              return -1;
-            }
-            BOOST_LOG(warning) << "Couldn't open render node: "sv << renderer_path << ": "sv << strerror(errno);
-            render_fd.el = dup(fd.el);
-          }
-          if (separate_renderer_required && drmGetNodeTypeFromFd(render_fd.el) != DRM_NODE_RENDER) {
-            BOOST_LOG(error) << "The private display requires a physical GPU render node; selected "sv << renderer_path;
-            return -1;
-          }
-          vulkan_device_path = renderer_path;
-        } else {
-          BOOST_LOG(warning) << "No render device name for: "sv << path;
-          render_fd.el = dup(fd.el);
-        }
+                         << ver->version_major << '.' << ver->version_minor << '.' << ver->version_patchlevel;
 
         if (drmSetClientCap(fd.el, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1)) {
           BOOST_LOG(error) << "GPU driver doesn't support universal planes: "sv << path;
@@ -510,6 +475,45 @@ namespace platf {
         return nullptr;
       }
 
+      int init_renderer(const char *path) {
+        // Display-only Vibeshine cards export the physical renderer's buffers;
+        // their own node cannot initialize an encoder. Keep the capture fd on
+        // the virtual card and use the selected GPU only for VAAPI/Vulkan.
+        const bool separate_renderer_required = selection::driver_requires_direct_import(driver_name);
+        const auto selected_render_node = separate_renderer_required ? resolve_render_device() : std::string {};
+        char *rendernode_path = drmGetRenderDeviceNameFromFd(fd.el);
+        const auto renderer_path = selection::render_device_path(
+          driver_name,
+          path,
+          rendernode_path ? rendernode_path : "",
+          selected_render_node
+        );
+        free(rendernode_path);
+        if (separate_renderer_required || renderer_path != path) {
+          BOOST_LOG(debug) << "Opening render node: "sv << renderer_path;
+          render_fd.el = open(renderer_path.c_str(), O_RDWR | O_CLOEXEC);
+          if (render_fd.el < 0) {
+            if (separate_renderer_required) {
+              BOOST_LOG(error) << "Cannot encode the private display using render node "sv
+                               << renderer_path << ": "sv << strerror(errno);
+              return -1;
+            }
+            BOOST_LOG(warning) << "Couldn't open render node: "sv << renderer_path << ": "sv << strerror(errno);
+            render_fd.el = dup(fd.el);
+          }
+          if (separate_renderer_required && drmGetNodeTypeFromFd(render_fd.el) != DRM_NODE_RENDER) {
+            BOOST_LOG(error) << "The private display requires a physical GPU render node; selected "sv << renderer_path;
+            return -1;
+          }
+          vulkan_device_path = renderer_path;
+        } else {
+          BOOST_LOG(warning) << "No render device name for: "sv << path;
+          render_fd.el = dup(fd.el);
+        }
+
+        return 0;
+      }
+
       crtc_t crtc(std::uint32_t id) {
         return drmModeGetCrtc(fd.el, id);
       }
@@ -584,7 +588,10 @@ namespace platf {
       }
 
       connector_interal_t connector(std::uint32_t id) {
-        return drmModeGetConnector(fd.el, id);
+        // Observe the topology published by the compositor/DRM hotplug path.
+        // drmModeGetConnector forces a hardware reprobe when called by master;
+        // capture discovery must not modeset or wake a sleeping physical GPU.
+        return drmModeGetConnectorCurrent(fd.el, id);
       }
 
       std::vector<connector_t> monitors() {
@@ -891,6 +898,12 @@ namespace platf {
             if (!crtc) {
               BOOST_LOG(error) << "Couldn't get CRTC info: "sv << strerror(errno);
               continue;
+            }
+
+            // Only an actual capture needs the renderer. Output discovery and
+            // resume readiness must not open a second GPU as a side effect.
+            if (card.init_renderer(entry.path().c_str())) {
+              return -1;
             }
 
             BOOST_LOG(info) << "Found monitor for DRM screencasting"sv;
