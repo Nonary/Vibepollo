@@ -465,6 +465,8 @@ jobs:
             -DBUILD_VIRTUALDISPLAY_VULKAN_LAYER=OFF \
             -DBUILD_DOCS=OFF \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -g -gdwarf-4" \
+            -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -g -gdwarf-4" \
             -DSUNSHINE_ENABLE_WEBRTC=ON \
             -DWEBRTC_ROOT="$(cygpath -u "${WEBRTC_ROOT}")" \
             -DWEBRTC_INCLUDE_DIR="$(cygpath -u "${WEBRTC_ROOT}")/include" \
@@ -539,6 +541,13 @@ jobs:
           foreach ($exe in $executables) {
             if (Test-Path -LiteralPath $exe) {
               & cv2pdb64.exe $exe
+              if ($LASTEXITCODE -ne 0) {
+                throw "PDB conversion failed for $exe (exit code $LASTEXITCODE)."
+              }
+              $pdb = [System.IO.Path]::ChangeExtension($exe, '.pdb')
+              if (-not (Test-Path -LiteralPath $pdb)) {
+                throw "PDB conversion produced no symbols for $exe."
+              }
             }
           }
 
