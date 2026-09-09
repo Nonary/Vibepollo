@@ -60,6 +60,20 @@ TEST(MangoHudPolicy, UsesStreamRateAndPreservesFractionalLimits) {
   EXPECT_EQ(policy.limit, "117.5");
 }
 
+TEST(MangoHudPolicy, NormalizesLaunchRefreshWithoutDisplayModeOverride) {
+  for (const auto *provider : {"mangohud", "proton", "mangohud-proton"}) {
+    for (const int refresh : {116, 116000, 59940}) {
+      framegen::stream_start_policy_input_t input;
+      input.fps = refresh;
+      const auto stream_policy = framegen::make_stream_start_policy(input);
+      const auto policy = mangohud::make_launch_policy(provider, true, false, stream_policy, 0);
+      ASSERT_TRUE(policy.enabled);
+      EXPECT_EQ(policy.limit_millihz, refresh == 59940 ? 59940u : 116000u);
+      EXPECT_EQ(policy.limit, refresh == 59940 ? "59.94" : "116");
+    }
+  }
+}
+
 TEST(MangoHudPolicy, AddsAndRemovesOnlyItsOpenGlPreload) {
   const std::string existing = "/opt/lib/first.so:/opt/lib/second.so";
   const auto enabled = mangohud::with_preload(existing);
