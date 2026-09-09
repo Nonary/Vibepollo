@@ -874,6 +874,7 @@ namespace webrtc_stream {
 #endif
       std::shared_ptr<safe::mail_raw_t> mail;
       std::shared_ptr<rtsp_stream::launch_session_t> launch_session;
+      std::shared_ptr<void> normal_display_capture;
       std::thread video_thread;
       std::thread audio_thread;
       std::thread feedback_thread;
@@ -3079,6 +3080,13 @@ namespace webrtc_stream {
       // the desktop (0) so the launch session and capture key stay well-formed.
       const int effective_app_id = requested_app_id > 0 ? requested_app_id : std::max(current_app_id, 0);
       const bool capture_already_active = webrtc_capture.active.load(std::memory_order_acquire);
+#ifdef __linux__
+      // A fresh desktop capture can inherit RTSP's output after its app exits.
+      // It must not attach to an ended generation while that output drains.
+      if (!capture_already_active && remote_display_topology::instance().normal_game_release_pending()) {
+        return std::string {"The previous app's display is still being released; retry after its capture stops"};
+      }
+#endif
 
       std::unordered_map<std::string, std::string> requested_runtime_overrides;
       if (effective_app_id > 0) {
@@ -3353,7 +3361,21 @@ namespace webrtc_stream {
         }
       }
 
+      std::shared_ptr<void> normal_display_capture;
+#ifdef __linux__
+      const auto app = proc::proc.active_session_guard();
+      if (app.normal_vdd_identity_token != 0) {
+        normal_display_capture = remote_display_topology::instance().retain_normal_game_capture(
+          app.client_uuid,
+          app.normal_vdd_identity_token
+        );
+        if (!normal_display_capture) {
+          return std::string {"The app's display ownership ended before capture could start"};
+        }
+      }
+#endif
       auto mail = std::make_shared<safe::mail_raw_t>();
+      webrtc_capture.normal_display_capture = std::move(normal_display_capture);
       webrtc_capture.mail = mail;
       webrtc_capture.launch_session = launch_session;
       webrtc_capture.app_id = effective_app_id > 0 ? std::optional<int> {effective_app_id} : std::nullopt;
@@ -3501,6 +3523,7 @@ namespace webrtc_stream {
       bool finalized_shared_runtime = false;
       {
         std::unique_lock<std::mutex> capture_lock(webrtc_capture.mutex);
+        webrtc_capture.normal_display_capture.reset();
         webrtc_capture.feedback_queue.reset();
         webrtc_capture.mail.reset();
         webrtc_capture.app_id.reset();

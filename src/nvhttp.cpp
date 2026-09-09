@@ -540,12 +540,12 @@ namespace nvhttp {
       }
       if (reapply_topology && !remote_display_topology::instance().reapply_composed_topology()) {
         if (reservation.newly_reserved) {
-          remote_display_topology::instance().rollback_normal_game_identity(
+          const bool can_retire = remote_display_topology::instance().rollback_normal_game_identity(
             owner_uuid,
             reservation.token
           );
           const auto protected_clients = remote_display_topology::instance().protected_remote_monitor_client_ids();
-          const bool topology_restored = remote_display_topology::instance().reapply_composed_topology();
+          const bool topology_restored = can_retire && remote_display_topology::instance().reapply_composed_topology();
           if (topology_restored && std::find(protected_clients.begin(), protected_clients.end(), owner_uuid) == protected_clients.end()) {
             (void) platf::linux_private_display::remote_remove_owned_display(owner_uuid);
           }
@@ -558,11 +558,11 @@ namespace nvhttp {
       if (!platf::linux_private_display::publish_current_session_state(*launch_session)) {
         BOOST_LOG(error) << "Linux private display: composed output did not publish verified session state.";
         if (reservation.newly_reserved) {
-          remote_display_topology::instance().rollback_normal_game_identity(
+          const bool can_retire = remote_display_topology::instance().rollback_normal_game_identity(
             owner_uuid,
             reservation.token
           );
-          if (remote_display_topology::instance().reapply_composed_topology()) {
+          if (can_retire && remote_display_topology::instance().reapply_composed_topology()) {
             (void) platf::linux_private_display::remote_remove_owned_display(owner_uuid);
           }
         }
@@ -582,12 +582,12 @@ namespace nvhttp {
       if (!launch_session->normal_vdd_identity_newly_reserved) {
         return;
       }
-      remote_display_topology::instance().rollback_normal_game_identity(
+      const bool can_retire = remote_display_topology::instance().rollback_normal_game_identity(
         owner_uuid,
         launch_session->normal_vdd_identity_token
       );
       const auto protected_clients = remote_display_topology::instance().protected_remote_monitor_client_ids();
-      const bool topology_restored = remote_display_topology::instance().reapply_composed_topology();
+      const bool topology_restored = can_retire && remote_display_topology::instance().reapply_composed_topology();
       if (topology_restored && std::find(protected_clients.begin(), protected_clients.end(), owner_uuid) == protected_clients.end()) {
         (void) platf::linux_private_display::remote_remove_owned_display(owner_uuid);
       }

@@ -1176,6 +1176,7 @@ namespace video {
     YUV444_SUPPORT = 1 << 10,  ///< Encoder may support 4:4:4 chroma sampling depending on hardware
     ASYNC_TEARDOWN = 1 << 11,  ///< Encoder supports async teardown on a different thread
     FIXED_GOP_SIZE = 1 << 12,  ///< Use fixed small GOP size (encoder doesn't support on-demand IDR frames)
+    OWNER_THREAD_TEARDOWN = 1 << 13,  ///< Conversion resources require their current graphics context during destruction
   };
 
   class avcodec_encode_session_t: public encode_session_t {
@@ -2026,6 +2027,9 @@ namespace video {
       "h264_nvenc"s,
     },
     PARALLEL_ENCODING
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+      | OWNER_THREAD_TEARDOWN
+#endif
   };
 #endif
 
@@ -2050,7 +2054,7 @@ namespace video {
     {
       {}, {}, {}, {}, {}, {}, "h264_nvenc"s,
     },
-    PARALLEL_ENCODING | REF_FRAMES_INVALIDATION
+    PARALLEL_ENCODING | REF_FRAMES_INVALIDATION | OWNER_THREAD_TEARDOWN
   };
 #endif
 
@@ -2542,6 +2546,9 @@ namespace video {
     },
     // RC buffer size will be set in platform code if supported
     LIMITED_GOP_SIZE | PARALLEL_ENCODING | NO_RC_BUF_LIMIT
+#if defined(__linux__) && defined(SUNSHINE_BUILD_VAAPI)
+      | OWNER_THREAD_TEARDOWN
+#endif
   };
 #endif
 
@@ -4984,6 +4991,14 @@ namespace video {
     // hang occurs, this thread may probably never exit, but it will allow
     // streaming to continue without requiring a full restart of Sunshine.
     auto fail_guard = util::fail_guard([session_encoder_flags, legacy_amf_session, &session, &force_sync_teardown, &reinit_event, shutdown_event] {
+      if (session_encoder_flags & OWNER_THREAD_TEARDOWN) {
+        // Linux GL conversion devices keep EGL current on this encoding
+        // thread. A watchdog worker cannot unregister their CUDA resources or
+        // delete their GL objects, even if we wait for that worker to finish.
+        std::lock_guard lock {encode_session_teardown_mutex};
+        session.reset();
+        return;
+      }
       const bool shutdown_teardown = shutdown_event && shutdown_event->peek();
       // A display reinit (resolution/HDR/colorspace change, e.g. alt-tabbing a game on a
       // virtual display) frees the shared capture surfaces this encoder's device has open.
@@ -6435,30 +6450,16 @@ namespace video {
           return util::false_v<util::optional_t<int>>;
         }
         auto bounded_probe_teardown = util::fail_guard([&]() {
-#if defined(__linux__) && defined(SUNSHINE_BUILD_VAAPI)
-          if (&encoder == &vaapi) {
-            // VAAPI's conversion device owns an EGL context current on this
-            // thread. Destroying it in the watchdog worker leaves the probe
-            // thread using a released Mesa context when the next codec starts.
+          if (encoder.flags & OWNER_THREAD_TEARDOWN) {
+            // Apply the same context ownership rule during probes and live
+            // capture, including the FFmpeg CUDA and VAAPI conversion devices.
             std::lock_guard lock {encode_session_teardown_mutex};
             session.reset();
             return;
           }
-#endif
 #ifdef _WIN32
           if (&encoder == &amdvce_ffmpeg) {
             destroy_legacy_amf_session_bounded(session, "probe"sv);
-            return;
-          }
-#endif
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-          if (&encoder == &nvenc) {
-            // The native CUDA device owns an EGL context made current on this
-            // probe thread. EGL contexts cannot be handed to the generic
-            // bounded teardown worker while still current here, so release all
-            // GL/CUDA/NVENC resources synchronously on their owning thread.
-            std::lock_guard lock {encode_session_teardown_mutex};
-            session.reset();
             return;
           }
 #endif

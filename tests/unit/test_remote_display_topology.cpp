@@ -350,6 +350,185 @@ TEST(RemoteDisplayTopology, SharedNormalAndMonitorIdentityCountsOnceAndReleasesI
   EXPECT_EQ(coordinator.snapshot({})["capacity"]["used"], 0);
 }
 
+TEST(RemoteDisplayTopology, AppExitWaitsForEveryCaptureBeforeMutatingTopology) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> operations;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [&](const auto &) {
+      operations.emplace_back("apply");
+      return true;
+    },
+    .remove_owned_display = [&](const auto &uuid) {
+      operations.push_back("remove:" + uuid);
+      return true;
+    },
+  });
+  const auto app = coordinator.reserve_normal_game_identity("game", "Game", {});
+  auto rtsp = coordinator.retain_normal_game_capture("game", app.token);
+  auto webrtc = coordinator.retain_normal_game_capture("game", app.token);
+  ASSERT_TRUE(rtsp);
+  ASSERT_TRUE(webrtc);
+  EXPECT_FALSE(coordinator.normal_game_release_pending());
+
+  coordinator.release_normal_game_identity("game", app.token);
+  EXPECT_TRUE(coordinator.normal_game_release_pending());
+  EXPECT_FALSE(coordinator.retain_normal_game_capture("game", app.token));
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_TRUE(operations.empty());
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+
+  rtsp.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_TRUE(operations.empty());
+  webrtc.reset();
+  // A reference destructor may run on the video thread or a failed startup
+  // path. Only the caller holding the lifecycle gate may change the display.
+  EXPECT_TRUE(operations.empty());
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(operations, (std::vector<std::string> {"apply", "remove:game"}));
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 0u);
+  EXPECT_FALSE(coordinator.normal_game_release_pending());
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(operations.size(), 2u);
+}
+
+TEST(RemoteDisplayTopology, OldCaptureDrainCannotReleaseSuccessorAppIdentity) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> removed;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [](const auto &) {
+      return true;
+    },
+    .remove_owned_display = [&](const auto &uuid) {
+      removed.push_back(uuid);
+      return true;
+    },
+  });
+  const auto old_app = coordinator.reserve_normal_game_identity("game", "Game", {});
+  auto old_capture = coordinator.retain_normal_game_capture("game", old_app.token);
+  coordinator.release_normal_game_identity("game", old_app.token);
+  const auto new_app = coordinator.reserve_normal_game_identity("game", "Game", {2560, 1440, 120});
+  ASSERT_TRUE(new_app.accepted);
+  ASSERT_NE(new_app.token, old_app.token);
+  EXPECT_FALSE(coordinator.normal_game_release_pending());
+  auto new_capture = coordinator.retain_normal_game_capture("game", new_app.token);
+  ASSERT_TRUE(new_capture);
+  coordinator.release_normal_game_identity("game", old_app.token);
+  old_capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_TRUE(removed.empty());
+
+  coordinator.release_normal_game_identity("game", new_app.token);
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_TRUE(removed.empty());
+  new_capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(removed, (std::vector<std::string> {"game"}));
+}
+
+TEST(RemoteDisplayTopology, DrainedGameRetiresWhileIndependentMonitorRemainsOwned) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> removed;
+  std::vector<remote_display_topology::node_t> composed;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) {
+      return true;
+    },
+    .apply_composed_topology = [&](const auto &nodes) {
+      composed = nodes;
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+    .remove_owned_display = [&](const auto &uuid) {
+      removed.push_back(uuid);
+      return true;
+    },
+  });
+  const auto app = coordinator.reserve_normal_game_identity("game", "Game", {});
+  auto capture = coordinator.retain_normal_game_capture("game", app.token);
+  ASSERT_TRUE(coordinator.activate_or_resume("monitor", "Monitor", {}, 1).ready);
+  coordinator.release_normal_game_identity("game", app.token);
+  ASSERT_EQ(composed.size(), 2u);
+  capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(removed, (std::vector<std::string> {"game"}));
+  ASSERT_EQ(composed.size(), 1u);
+  EXPECT_EQ(composed.front().id, "monitor");
+  EXPECT_TRUE(coordinator.is_ready("monitor", 1));
+}
+
+TEST(RemoteDisplayTopology, FailedSuccessorRollbackCannotRemovePredecessorCapture) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> removed;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [](const auto &) {
+      return true;
+    },
+    .remove_owned_display = [&](const auto &uuid) {
+      removed.push_back(uuid);
+      return true;
+    },
+  });
+  const auto old_app = coordinator.reserve_normal_game_identity("game", "Game", {});
+  auto old_capture = coordinator.retain_normal_game_capture("game", old_app.token);
+  coordinator.release_normal_game_identity("game", old_app.token);
+  const auto successor = coordinator.reserve_normal_game_identity("game", "Game", {});
+  ASSERT_NE(successor.token, old_app.token);
+  EXPECT_FALSE(coordinator.rollback_normal_game_identity("game", old_app.token));
+  EXPECT_FALSE(coordinator.rollback_normal_game_identity("game", successor.token));
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_TRUE(removed.empty());
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+  old_capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(removed, (std::vector<std::string> {"game"}));
+  EXPECT_FALSE(coordinator.retain_normal_game_capture("game", successor.token));
+}
+
+TEST(RemoteDisplayTopology, SharedMonitorSurvivesDeferredNormalReleaseAndFailedRestoreRetries) {
+  remote_display_topology::coordinator_t coordinator;
+  bool allow_apply = true;
+  std::vector<std::string> removed;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) {
+      return true;
+    },
+    .apply_composed_topology = [&](const auto &) {
+      return allow_apply;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+    .remove_owned_display = [&](const auto &uuid) {
+      removed.push_back(uuid);
+      return true;
+    },
+  });
+  const auto shared = coordinator.reserve_normal_game_identity("shared", "Shared", {});
+  auto shared_capture = coordinator.retain_normal_game_capture("shared", shared.token);
+  ASSERT_TRUE(coordinator.activate_or_resume("shared", "Shared", {}, 1).ready);
+  coordinator.release_normal_game_identity("shared", shared.token);
+  shared_capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_TRUE(removed.empty());
+  EXPECT_TRUE(coordinator.is_ready("shared", 1));
+
+  const auto app = coordinator.reserve_normal_game_identity("game", "Game", {});
+  auto capture = coordinator.retain_normal_game_capture("game", app.token);
+  coordinator.release_normal_game_identity("game", app.token);
+  capture.reset();
+  allow_apply = false;
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_TRUE(removed.empty());
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 2u);
+  allow_apply = true;
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(removed, (std::vector<std::string> {"game"}));
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+}
+
 TEST(RemoteDisplayTopology, TransportLossDefersGlobalCleanupAndExplicitReleasePreservesPeers) {
   remote_display_topology::coordinator_t coordinator;
   std::vector<std::string> removals;

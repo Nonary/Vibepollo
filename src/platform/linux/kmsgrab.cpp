@@ -26,6 +26,7 @@
 #include "graphics.h"
 #include "hdr_policy.h"
 #include "kms_capture_client.h"
+#include "kmsgrab_framebuffer.h"
 #include "kmsgrab_pacing.h"
 #include "kmsgrab_selection.h"
 #include "scoped_capability.h"
@@ -117,13 +118,11 @@ namespace platf {
       }
 
       ~wrapper_fb() {
-        std::ranges::for_each(handles, [&](auto &handle) {
-          if (handle) {
-            struct drm_gem_close close_args = {};
-            close_args.handle = handle;
+        close_framebuffer_handles(handles, [&](std::uint32_t handle) {
+          struct drm_gem_close close_args = {};
+          close_args.handle = handle;
 
-            drmIoctl(card_fd, DRM_IOCTL_GEM_CLOSE, &close_args);
-          }
+          drmIoctl(card_fd, DRM_IOCTL_GEM_CLOSE, &close_args);
         });
 
         if (fb) {

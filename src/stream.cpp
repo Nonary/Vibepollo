@@ -559,6 +559,7 @@ namespace stream {
 
   struct session_t {
     std::shared_ptr<void> display_power_guard;
+    std::shared_ptr<void> normal_display_capture;
     config_t config;
     int stream_fps = 0;
     int stream_fps_scaled = 0;
@@ -2890,7 +2891,7 @@ namespace stream {
       cleanup_reservations.fetch_sub(1, std::memory_order_acq_rel);
     }
 
-    bool has_shared_runtime_owner(const shared_runtime_finalize_context_t &context) {
+    bool has_capture_runtime_owner(const shared_runtime_finalize_context_t &context) {
       const auto rtsp_teardown_count = teardown_sessions.load(std::memory_order_acquire);
       const auto webrtc_teardown_count = webrtc_stream::teardown_session_count();
       const bool other_rtsp_teardown =
@@ -2904,7 +2905,11 @@ namespace stream {
              other_rtsp_teardown ||
              webrtc_stream::has_active_or_pending_sessions() ||
              webrtc_stream::has_capture_active() ||
-             other_webrtc_teardown ||
+             other_webrtc_teardown;
+    }
+
+    bool has_shared_runtime_owner(const shared_runtime_finalize_context_t &context) {
+      return has_capture_runtime_owner(context) ||
              remote_display_topology::instance().managed_client_identity_count() != 0;
     }
 
@@ -2939,6 +2944,7 @@ namespace stream {
       const std::string_view reason,
       const shared_runtime_finalize_context_t &context
     ) {
+      remote_display_topology::instance().release_drained_normal_game_identities();
       if (!shared_runtime_cleanup_armed) {
         return false;
       }
@@ -3234,6 +3240,11 @@ namespace stream {
         });
         exec_thread.detach();
       }
+
+      // The app may already have exited, but its output must survive until
+      // this capture has joined and released every encoder/conversion import.
+      session.normal_display_capture.reset();
+      remote_display_topology::instance().release_drained_normal_game_identities();
 
       if (session.remote_role == remote_session::role_e::monitor && !session.device_uuid.empty()) {
         const bool client_disconnected = session.client_disconnected.load(std::memory_order_acquire);
@@ -3543,6 +3554,25 @@ namespace stream {
       session->client_display_refresh_millihz = launch_session.client_display_refresh_millihz;
       session->remote_role = launch_session.role;
       session->remote_role_generation = launch_session.role_generation;
+#ifdef __linux__
+      if (launch_session.role == remote_session::role_e::game) {
+        const auto app = proc::proc.active_session_guard();
+        const auto token = launch_session.normal_vdd_identity_token != 0 ?
+                             launch_session.normal_vdd_identity_token :
+                             app.normal_vdd_identity_token;
+        const auto owner = launch_session.normal_vdd_identity_token != 0 ?
+                             (launch_session.normal_vdd_owner_uuid.empty() ? session->device_uuid : launch_session.normal_vdd_owner_uuid) :
+                             app.client_uuid;
+        if (token != 0) {
+          session->normal_display_capture = remote_display_topology::instance().retain_normal_game_capture(owner, token);
+          if (!session->normal_display_capture) {
+            throw std::runtime_error("The app's display ownership ended before capture could start");
+          }
+        } else if (remote_display_topology::instance().normal_game_release_pending()) {
+          throw std::runtime_error("The previous app's display is still being released");
+        }
+      }
+#endif
       session->input_only = launch_session.role == remote_session::role_e::input;
       session->audio_disabled = !remote_session::uses_audio(
         launch_session.role,

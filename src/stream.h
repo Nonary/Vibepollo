@@ -100,6 +100,7 @@ namespace stream {
     /**
      * These helpers require nvhttp::stream_lifecycle_mutex() to be held.
      */
+    bool has_capture_runtime_owner(const shared_runtime_finalize_context_t &context = {});
     bool has_shared_runtime_owner(const shared_runtime_finalize_context_t &context = {});
     void arm_shared_runtime_cleanup(
       std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes = std::nullopt

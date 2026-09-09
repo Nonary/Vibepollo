@@ -7,6 +7,7 @@
 #include "display_power.h"
 
 #include "hdr_policy.h"
+#include "private_display_cleanup_policy.h"
 #include "private_display_mode_client.h"
 #include "private_display_configuration_policy.h"
 #include "private_display_mode_policy.h"
@@ -16,9 +17,12 @@
 #include "src/display_device.h"
 #include "src/framegen_policy.h"
 #include "src/logging.h"
+#include "src/nvhttp.h"
 #include "src/platform/common.h"
+#include "src/remote_display_topology.h"
 #include "src/rtsp.h"
 #include "src/state_storage.h"
+#include "src/stream.h"
 #include "src/virtual_display_scale.h"
 
 #include <algorithm>
@@ -1361,6 +1365,9 @@ namespace platf::linux_private_display {
     }
     auto &manager = state();
     std::lock_guard lock {manager.mutex};
+    // Remote Monitor bypasses prepare_session(). Invalidate an earlier idle
+    // restore under the same lock which publishes its connector reservation.
+    manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
     const auto output = reserve_output(
       manager,
       client_reservation_identity(client_uuid),
@@ -1433,6 +1440,7 @@ namespace platf::linux_private_display {
 
     auto &manager = state();
     std::lock_guard lock {manager.mutex};
+    manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
     snapshot_configuration_if_needed(manager, *configuration);
 
     std::vector<desired_output_t> desired;
@@ -1757,13 +1765,10 @@ namespace platf::linux_private_display {
     return reservation == manager.reservations.end() ? std::nullopt : std::make_optional(reservation->second);
   }
 
-  bool revert() {
-    cancel_scheduled_revert();
+  static bool revert_locked(state_t &manager) {
     if (process_shutdown_preserve_requested()) {
       return true;
     }
-    auto &manager = state();
-    std::lock_guard lock {manager.mutex};
     std::set<std::string> reserved_outputs;
     for (const auto &[_, output_name] : manager.reservations) {
       reserved_outputs.insert(output_name);
@@ -1887,6 +1892,16 @@ namespace platf::linux_private_display {
     return true;
   }
 
+  bool revert() {
+    cancel_scheduled_revert();
+    if (process_shutdown_preserve_requested()) {
+      return true;
+    }
+    auto &manager = state();
+    std::lock_guard lock {manager.mutex};
+    return revert_locked(manager);
+  }
+
   bool reset_persistence() {
     if (!revert()) {
       return false;
@@ -1906,11 +1921,24 @@ namespace platf::linux_private_display {
     const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
     std::thread([delay, generation, reason = std::move(reason)]() {
       std::this_thread::sleep_for(delay);
+      stream::session::cleanup_reservation_t cleanup_reservation;
       auto &delayed_manager = state();
-      if (delayed_manager.cleanup_generation.load(std::memory_order_acquire) == generation) {
-        BOOST_LOG(info) << "Linux private display: " << reason << " elapsed; restoring outputs.";
-        (void) revert();
-      }
+      (void) cleanup_policy::run_delayed_restore(
+        nvhttp::stream_lifecycle_mutex(),
+        delayed_manager.mutex,
+        delayed_manager.cleanup_generation,
+        generation,
+        [] {
+          // A paused normal app may intentionally reach its display timeout.
+          // Retained Remote Monitors remain owners even without a transport.
+          return stream::session::has_capture_runtime_owner() ||
+                 !remote_display_topology::instance().protected_remote_monitor_client_ids().empty();
+        },
+        [&] {
+          BOOST_LOG(info) << "Linux private display: " << reason << " elapsed; restoring outputs.";
+          return revert_locked(delayed_manager);
+        }
+      );
     }).detach();
   }
 

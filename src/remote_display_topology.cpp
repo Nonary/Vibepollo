@@ -114,6 +114,14 @@ namespace remote_display_topology {
     }
     return ids;
   }
+
+  bool coordinator_t::normal_game_release_pending() const {
+    std::lock_guard lock(mutex_);
+    return std::any_of(clients_.begin(), clients_.end(), [](const auto &entry) {
+      return entry.second.normal_release_pending;
+    });
+  }
+
   std::size_t coordinator_t::managed_client_identity_count() const {
     std::lock_guard lock(mutex_);
     return static_cast<std::size_t>(std::count_if(clients_.begin(), clients_.end(), [](const auto &entry) {
@@ -152,11 +160,14 @@ namespace remote_display_topology {
     auto [state_it, inserted] = clients_.try_emplace(client_uuid);
     auto &state = state_it->second;
     if (inserted) state.placement_order = ++next_placement_order_;
-    if (state.normal_game) return {true, false, state.normal_game_token};
+    if (state.normal_game && !state.normal_release_pending) {
+      return {true, false, state.normal_game_token};
+    }
     state.label = label;
     state.normal_requested_mode = mode;
     if (!state.remote_monitor) state.effective_mode = mode;
     state.normal_game = true;
+    state.normal_release_pending = false;
     state.normal_game_token = ++next_normal_game_token_;
     return {true, true, state.normal_game_token};
   }
@@ -181,14 +192,25 @@ namespace remote_display_topology {
     return callbacks_.apply_composed_topology(compose_locked(ignored));
   }
 
-  void coordinator_t::rollback_normal_game_identity(const std::string &client_uuid, const std::uint64_t token) {
+  bool coordinator_t::rollback_normal_game_identity(const std::string &client_uuid, const std::uint64_t token) {
     std::lock_guard lock(mutex_);
     const auto it = clients_.find(client_uuid);
-    if (it == clients_.end() || !it->second.normal_game || it->second.normal_game_token != token) return;
+    if (it == clients_.end() || !it->second.normal_game || it->second.normal_game_token != token) {
+      return false;
+    }
+    if (!it->second.normal_capture_references.empty()) {
+      it->second.normal_release_pending = true;
+      return false;
+    }
     it->second.normal_game = false;
     it->second.normal_requested_mode.reset();
     it->second.normal_game_token = 0;
-    if (!it->second.remote_monitor) clients_.erase(it);
+    it->second.normal_release_pending = false;
+    if (it->second.remote_monitor) {
+      return false;
+    }
+    clients_.erase(it);
+    return true;
   }
 
   void coordinator_t::release_normal_game_identity(const std::string &client_uuid, const std::uint64_t token) {
@@ -196,11 +218,71 @@ namespace remote_display_topology {
     const auto it = clients_.find(client_uuid);
     if (it == clients_.end() || !it->second.normal_game || token == 0 || it->second.normal_game_token != token) return;
     auto &state = it->second;
+    state.normal_release_pending = true;
+    if (!state.normal_capture_references.empty()) {
+      return;
+    }
+    release_normal_game_identity_locked(client_uuid, state);
+  }
+
+  struct coordinator_t::capture_reference_t {
+    coordinator_t &owner;
+    std::string client_uuid;
+    std::uint64_t token;
+    bool held = false;
+
+    capture_reference_t(coordinator_t &owner, const std::string &client_uuid, const std::uint64_t token):
+        owner(owner),
+        client_uuid(client_uuid),
+        token(token) {}
+
+    ~capture_reference_t() {
+      if (!held) {
+        return;
+      }
+      std::lock_guard lock(owner.mutex_);
+      const auto client = owner.clients_.find(client_uuid);
+      if (client == owner.clients_.end()) {
+        return;
+      }
+      auto &references = client->second.normal_capture_references;
+      const auto reference = references.find(token);
+      if (reference != references.end() && --reference->second == 0) {
+        references.erase(reference);
+      }
+    }
+  };
+
+  std::shared_ptr<void> coordinator_t::retain_normal_game_capture(const std::string &client_uuid, const std::uint64_t token) {
+    auto reference = std::make_shared<capture_reference_t>(*this, client_uuid, token);
+    std::lock_guard lock(mutex_);
+    const auto client = clients_.find(client_uuid);
+    if (client == clients_.end() || !client->second.normal_game || token == 0 || client->second.normal_game_token != token || client->second.normal_release_pending) {
+      return {};
+    }
+    ++client->second.normal_capture_references[token];
+    reference->held = true;
+    return reference;
+  }
+
+  void coordinator_t::release_drained_normal_game_identities() {
+    std::lock_guard lock(mutex_);
+    for (auto it = clients_.begin(); it != clients_.end();) {
+      auto current = it++;
+      if (current->second.normal_release_pending && current->second.normal_capture_references.empty()) {
+        release_normal_game_identity_locked(current->first, current->second);
+      }
+    }
+  }
+
+  void coordinator_t::release_normal_game_identity_locked(const std::string &client_uuid, client_state_t &state) {
     const auto requested_mode = state.normal_requested_mode;
+    const auto token = state.normal_game_token;
     state.normal_game = false;
     state.normal_requested_mode.reset();
     state.normal_game_token = 0;
     if (state.remote_monitor) {
+      state.normal_release_pending = false;
       return;
     }
 
@@ -229,7 +311,7 @@ namespace remote_display_topology {
       (void) callbacks_.apply_composed_topology(compose_locked(ignored));
       return;
     }
-    clients_.erase(it);
+    clients_.erase(client_uuid);
   }
 
   activation_result_t coordinator_t::activate_remote_monitor(const std::string &client_uuid, const std::string &label, mode_t mode) {
