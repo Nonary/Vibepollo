@@ -1048,6 +1048,19 @@ def package_readiness(directory, manifest):
     return 0
 
 
+def logged_install(command, log_path):
+    """Keep native installer diagnostics while showing progress in the terminal."""
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as log:
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, encoding='utf-8', errors='replace') as process:
+            for line in process.stdout:
+                log.write(line)
+                log.flush()
+                print(line, end='', flush=True)
+            return process.wait()
+
+
 def root_package_install(args):
     identifier = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-' + uuid.uuid4().hex[:8]
     directory = STATE / identifier
@@ -1067,10 +1080,12 @@ def root_package_install(args):
     command = ['/usr/bin/bash', str(REPO / 'scripts/linux_install.sh'), '--package', str(package)]
     if args.yes:
         command.append('--yes')
+    log_path = directory / 'install.log'
+    print(f'Installer output: {log_path}', flush=True)
     try:
-        result = subprocess.call(command)
+        result = logged_install(command, log_path)
         if result:
-            raise DeployError(f'Native package installation failed ({result}); inspect pacman output. '
+            raise DeployError(f'Native package installation failed ({result}); see {log_path}. '
                               f'The candidate remains at {package}')
         manifest['status'] = 'PACKAGE_INSTALLED'
         write_json(directory / 'transaction.json', manifest)
@@ -1483,6 +1498,19 @@ def confirm_install():
         print('Please enter y to install or n to cancel.')
 
 
+def install_confirmed_package(package, args):
+    if not args.yes and not confirm_install():
+        raise DeployError('Installation cancelled; the local package was retained')
+    stop_legacy_user_hosts()
+    # Consent above covers this exact package and conflicting host replacement.
+    # Carry it through sudo so pacman does not ask a second time.
+    return subprocess.call([
+        'sudo', '/usr/bin/python3', '-I', str(Path(__file__).resolve()),
+        '_package_install', str(package), digest(package), '--version', args.version,
+        '--timeout', str(args.timeout), '--yes',
+    ])
+
+
 def version_probe_environment(work):
     environment = dict(os.environ, XDG_CONFIG_HOME=str(work / 'version-config'),
                        VIBEPOLLO_MIGRATE_CONFIG='0')
@@ -1563,15 +1591,7 @@ def build_install(args):
                   'Installation replaces conflicting host packages and preserves original profiles.\n'
                   'The native installer installs dependencies and matching kernel headers, not a full system upgrade.\n'
                   'Recovery uses pacman, not the file rollback journal. Streams will disconnect.')
-            if not args.yes and not confirm_install():
-                raise DeployError('Installation cancelled; the local package was retained')
-            stop_legacy_user_hosts()
-            command = ['sudo', '/usr/bin/python3', '-I', str(Path(__file__).resolve()),
-                       '_package_install', str(package), digest(package), '--version', args.version,
-                       '--timeout', str(args.timeout)]
-            if args.yes:
-                command.append('--yes')
-            return subprocess.call(command)
+            return install_confirmed_package(package, args)
         print('Installation will disconnect streams. Backups are root-private; configuration/pairing state is preserved.')
         if not args.yes and not confirm_install():
             raise DeployError('Installation cancelled')

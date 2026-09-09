@@ -237,6 +237,39 @@ class SharedBuildTests(unittest.TestCase):
 
 
 class NativePackageTests(unittest.TestCase):
+    def test_confirmation_is_forwarded_and_decline_does_not_mutate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = Path(temporary) / 'candidate.pkg.tar.gz'
+            candidate.write_bytes(b'fixture')
+            args = SimpleNamespace(yes=False, version=VERSION, timeout=30)
+            with mock.patch.object(deploy, 'confirm_install', return_value=False), \
+                    mock.patch.object(deploy, 'stop_legacy_user_hosts') as stop, \
+                    mock.patch.object(deploy.subprocess, 'call', return_value=0) as install:
+                with self.assertRaisesRegex(deploy.DeployError, 'cancelled'):
+                    deploy.install_confirmed_package(candidate, args)
+                stop.assert_not_called()
+                install.assert_not_called()
+            for assume_yes in (False, True):
+                args.yes = assume_yes
+                with mock.patch.object(deploy, 'confirm_install', return_value=True) as confirm, \
+                        mock.patch.object(deploy, 'stop_legacy_user_hosts'), \
+                        mock.patch.object(deploy.subprocess, 'call', return_value=0) as install:
+                    self.assertEqual(deploy.install_confirmed_package(candidate, args), 0)
+                    self.assertEqual(confirm.call_count, 0 if assume_yes else 1)
+                    self.assertIn('--yes', install.call_args.args[0])
+
+    def test_installer_output_and_failure_status_are_retained(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / 'install.log'
+            command = [deploy.sys.executable, '-c',
+                       'import sys; print("progress", flush=True); '
+                       'print("package error", file=sys.stderr); sys.exit(7)']
+            with mock.patch.object(deploy.sys, 'stdout', new_callable=io.StringIO) as output:
+                self.assertEqual(deploy.logged_install(command, log), 7)
+            self.assertEqual(log.read_text(), 'progress\npackage error\n')
+            self.assertEqual(output.getvalue(), log.read_text())
+            self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
+
     def test_package_metadata_payload_modes_and_maintained_hooks(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -280,7 +313,7 @@ class NativePackageTests(unittest.TestCase):
             with mock.patch.object(deploy, 'STATE', state), \
                     mock.patch.object(deploy, 'run', return_value=SimpleNamespace(
                         stdout='vibepollo ' + deploy.arch_package_version(VERSION))), \
-                    mock.patch.object(deploy.subprocess, 'call', return_value=0) as install, \
+                    mock.patch.object(deploy, 'logged_install', return_value=0) as install, \
                     mock.patch.object(deploy, 'package_readiness', return_value=0), \
                     mock.patch.object(deploy.pwd, 'getpwnam', side_effect=KeyError):
                 self.assertEqual(deploy.root_package_install(args), 0)
