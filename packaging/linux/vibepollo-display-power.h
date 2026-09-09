@@ -20,9 +20,12 @@ struct display_power_state {
   bool stopping;
 };
 
-static const char power_service[] = "org.freedesktop.PowerManagement";
-static const char power_path[] = "/org/freedesktop/PowerManagement/Inhibit";
-static const char power_interface[] = "org.freedesktop.PowerManagement.Inhibit";
+static const char power_service[] = "org.kde.Solid.PowerManagement.PolicyAgent";
+static const char power_path[] = "/org/kde/Solid/PowerManagement/PolicyAgent";
+static const char power_interface[] = "org.kde.Solid.PowerManagement.PolicyAgent";
+// PowerDevil's freedesktop Inhibit API only blocks session interruption.
+// Capture also needs ChangeScreenSettings (4) to prevent idle DPMS shutdown.
+static const guint power_inhibition_policies = 1u | 4u;
 
 static bool display_power_wake(void) {
   char *const arguments[] = {
@@ -36,7 +39,7 @@ static bool display_power_wake(void) {
 static void display_power_release(struct display_power_state *state) {
   if (state->inhibited) {
     GVariant *reply = g_dbus_connection_call_sync(
-      state->bus, state->owner, power_path, power_interface, "UnInhibit",
+      state->bus, state->owner, power_path, power_interface, "ReleaseInhibition",
       g_variant_new("(u)", state->cookie), NULL,
       G_DBUS_CALL_FLAGS_NO_AUTO_START, 1000, NULL, NULL);
     if (reply) g_variant_unref(reply);
@@ -68,8 +71,8 @@ static bool display_power_inhibit(struct display_power_state *state) {
   // Address the unique owner, so a replacement service cannot receive an old
   // cookie or impersonate a successful acquisition in the same transaction.
   reply = g_dbus_connection_call_sync(
-    state->bus, new_owner, power_path, power_interface, "Inhibit",
-    g_variant_new("(ss)", "Vibepollo", "Active remote display"),
+    state->bus, new_owner, power_path, power_interface, "AddInhibition",
+    g_variant_new("(uss)", power_inhibition_policies, "Vibepollo", "Active remote display"),
     G_VARIANT_TYPE("(u)"), G_DBUS_CALL_FLAGS_NONE, 1500, NULL, &error);
   if (!reply) {
     g_clear_error(&error);

@@ -38,6 +38,7 @@ struct provider {
   GMainContext *context;
   GMainLoop *loop;
   GThread *thread;
+  GHashTable *cookies;
   GMutex mutex;
   GCond condition;
   bool ready;
@@ -51,26 +52,32 @@ static void power_call(GDBusConnection *bus, const char *sender, const char *pat
                        const char *interface, const char *method,
                        GVariant *parameters, GDBusMethodInvocation *invocation,
                        gpointer data) {
-  (void) bus; (void) sender; (void) path; (void) interface;
+  (void) bus; (void) sender;
+  g_assert_cmpstr(path, ==, "/org/kde/Solid/PowerManagement/PolicyAgent");
+  g_assert_cmpstr(interface, ==, "org.kde.Solid.PowerManagement.PolicyAgent");
   struct provider *provider = data;
-  if (!strcmp(method, "Inhibit")) {
+  if (!strcmp(method, "AddInhibition")) {
+    guint policies;
+    const char *app, *reason;
+    g_variant_get(parameters, "(u&s&s)", &policies, &app, &reason);
+    // A suspend-only inhibitor still lets DPMS remove capture's scanout.
+    // Require both InterruptSession (1) and ChangeScreenSettings (4).
+    g_assert_cmpuint(policies, ==, 5u);
+    g_assert_cmpstr(app, ==, "Vibepollo");
+    g_assert_cmpstr(reason, ==, "Active remote display");
     if (g_atomic_int_get(&provider->reject)) {
       g_dbus_method_invocation_return_dbus_error(invocation, "org.test.Unavailable", "restarting");
       return;
     }
-    const char *app, *reason;
-    g_variant_get(parameters, "(&s&s)", &app, &reason);
-    g_assert_cmpstr(app, ==, "Vibepollo");
-    g_assert_cmpstr(reason, ==, "Active remote display");
     const guint cookie = g_atomic_int_add(&provider->acquired, 1) + 1;
+    g_assert_true(g_hash_table_add(provider->cookies, GUINT_TO_POINTER(cookie)));
     g_atomic_int_inc(&active_inhibitors);
     g_dbus_method_invocation_return_value(invocation, g_variant_new("(u)", cookie));
   } else {
-    g_assert_cmpstr(method, ==, "UnInhibit");
+    g_assert_cmpstr(method, ==, "ReleaseInhibition");
     guint cookie;
     g_variant_get(parameters, "(u)", &cookie);
-    g_assert_cmpuint(cookie, >, 0);
-    g_assert_cmpuint(cookie, <=, g_atomic_int_get(&provider->acquired));
+    g_assert_true(g_hash_table_remove(provider->cookies, GUINT_TO_POINTER(cookie)));
     g_atomic_int_inc(&provider->released);
     g_atomic_int_add(&active_inhibitors, -1);
     g_dbus_method_invocation_return_value(invocation, NULL);
@@ -82,23 +89,25 @@ static gpointer serve_power(gpointer data) {
   provider->context = g_main_context_new();
   g_main_context_push_thread_default(provider->context);
   provider->loop = g_main_loop_new(provider->context, FALSE);
+  provider->cookies = g_hash_table_new(g_direct_hash, g_direct_equal);
   GDBusConnection *bus = g_dbus_connection_new_for_address_sync(
     provider->address, G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT |
     G_DBUS_CONNECTION_FLAGS_MESSAGE_BUS_CONNECTION, NULL, NULL, NULL);
   g_assert_nonnull(bus);
   GDBusNodeInfo *info = g_dbus_node_info_new_for_xml(
-    "<node><interface name='org.freedesktop.PowerManagement.Inhibit'>"
-    "<method name='Inhibit'><arg type='s' direction='in'/><arg type='s' direction='in'/>"
+    "<node><interface name='org.kde.Solid.PowerManagement.PolicyAgent'>"
+    "<method name='AddInhibition'><arg type='u' direction='in'/>"
+    "<arg type='s' direction='in'/><arg type='s' direction='in'/>"
     "<arg type='u' direction='out'/></method>"
-    "<method name='UnInhibit'><arg type='u' direction='in'/></method>"
+    "<method name='ReleaseInhibition'><arg type='u' direction='in'/></method>"
     "</interface></node>", NULL);
   const GDBusInterfaceVTable vtable = {.method_call = power_call};
   const guint object = g_dbus_connection_register_object(
-    bus, power_path, info->interfaces[0], &vtable, provider, NULL, NULL);
+    bus, "/org/kde/Solid/PowerManagement/PolicyAgent", info->interfaces[0], &vtable, provider, NULL, NULL);
   g_assert_cmpuint(object, >, 0);
   GVariant *reply = g_dbus_connection_call_sync(
     bus, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
-    "RequestName", g_variant_new("(su)", power_service, provider->flags),
+    "RequestName", g_variant_new("(su)", "org.kde.Solid.PowerManagement.PolicyAgent", provider->flags),
     G_VARIANT_TYPE("(u)"), G_DBUS_CALL_FLAGS_NONE, 1000, NULL, NULL);
   g_assert_nonnull(reply);
   g_variant_unref(reply);
@@ -107,6 +116,8 @@ static gpointer serve_power(gpointer data) {
   g_cond_signal(&provider->condition);
   g_mutex_unlock(&provider->mutex);
   g_main_loop_run(provider->loop);
+  g_assert_cmpuint(g_hash_table_size(provider->cookies), ==, 0);
+  g_hash_table_unref(provider->cookies);
   g_dbus_connection_unregister_object(bus, object);
   g_dbus_node_info_unref(info);
   g_dbus_connection_close_sync(bus, NULL, NULL);
@@ -207,7 +218,7 @@ int main(int argc, char **argv) {
   g_assert_cmpint(g_atomic_int_get(&active_inhibitors), ==, 1);
 
   // A service restart gets a fresh cookie; failure keeps the old hold until
-  // the replacement can acquire one. UnInhibit targets the old unique owner.
+  // the replacement can acquire one. ReleaseInhibition targets the old unique owner.
   struct provider replacement = {.reject = 1};
   start_provider(&replacement, address, 6);
   g_assert_false(display_power_prepare(&state));
