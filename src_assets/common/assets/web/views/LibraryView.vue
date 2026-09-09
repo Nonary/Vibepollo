@@ -63,6 +63,9 @@ const deleteTarget = ref<AppRecord | null>(null);
 const deleteOpen = ref(false);
 const deleteBusy = ref(false);
 const deleteError = ref('');
+const purgePlayniteOpen = ref(false);
+const purgePlayniteBusy = ref(false);
+const purgePlayniteError = ref('');
 let queryTimer: number | undefined;
 let observer: IntersectionObserver | undefined;
 
@@ -112,6 +115,32 @@ function providerInfo(app: AppRecord): ProviderInfo | null {
   }
   return null;
 }
+
+const isWindows = computed(() =>
+  String(system.metadata?.platform ?? '')
+    .toLocaleLowerCase()
+    .includes('windows'),
+);
+
+function isPlayniteFullscreenEntry(app: AppRecord): boolean {
+  if (app['playnite-fullscreen'] === true) return true;
+  if (app.name === 'Playnite (Fullscreen)') return true;
+  const command = Array.isArray(app.cmd)
+    ? app.cmd.filter((part): part is string => typeof part === 'string').join(' ')
+    : typeof app.cmd === 'string'
+      ? app.cmd
+      : '';
+  const normalized = command.toLocaleLowerCase();
+  return normalized.includes('playnite-launcher') && normalized.includes('--fullscreen');
+}
+
+function isPlayniteEntry(app: AppRecord): boolean {
+  return providerInfo(app)?.id === 'playnite' || isPlayniteFullscreenEntry(app);
+}
+
+const purgeablePlayniteEntries = computed(() =>
+  apps.value.filter((app) => isPlayniteEntry(app) && Boolean(appUuid(app))),
+);
 
 function providerLabel(app: AppRecord): string {
   const provider = providerInfo(app);
@@ -430,6 +459,35 @@ async function confirmDelete(): Promise<void> {
   }
 }
 
+function requestPurgePlaynite(): void {
+  if (!isWindows.value || purgePlayniteBusy.value || !purgeablePlayniteEntries.value.length) return;
+  purgePlayniteError.value = '';
+  purgePlayniteOpen.value = true;
+}
+
+async function confirmPurgePlaynite(): Promise<void> {
+  if (purgePlayniteBusy.value) return;
+  const targets = [...purgeablePlayniteEntries.value];
+  if (!targets.length) {
+    purgePlayniteOpen.value = false;
+    return;
+  }
+  purgePlayniteBusy.value = true;
+  purgePlayniteError.value = '';
+  try {
+    for (const app of targets) {
+      const result = await deleteApp(appUuid(app));
+      if (result.status === false) throw new Error(t('ui.library.purgePlaynite.failed'));
+    }
+    purgePlayniteOpen.value = false;
+    await load();
+  } catch (cause) {
+    purgePlayniteError.value = serviceError(cause, 'ui.library.purgePlaynite.failed');
+  } finally {
+    purgePlayniteBusy.value = false;
+  }
+}
+
 function loadMore(): void {
   renderLimit.value = Math.min(renderLimit.value + PAGE_SIZE, filteredApps.value.length);
 }
@@ -523,6 +581,13 @@ function libraryRequest(
         <RouterLink class="button button--secondary" to="/integrations"
           ><UiIcon name="integrations" />{{ t('ui.library.actions.sources') }}</RouterLink
         >
+        <AppButton
+          v-if="isWindows && purgeablePlayniteEntries.length"
+          icon="trash"
+          variant="tertiary"
+          :label="t('ui.library.actions.removePlaynite')"
+          @click="requestPurgePlaynite"
+        />
         <AppButton
           icon="plus"
           variant="primary"
@@ -852,6 +917,35 @@ function libraryRequest(
         announce="assertive"
       >
         {{ deleteError }}
+      </InlineAlert>
+    </ConfirmDialog>
+
+    <ConfirmDialog
+      v-model:open="purgePlayniteOpen"
+      :title="t('ui.library.purgePlaynite.title')"
+      :description="
+        t(
+          purgeablePlayniteEntries.length === 1
+            ? 'ui.library.purgePlaynite.descriptionOne'
+            : 'ui.library.purgePlaynite.descriptionOther',
+          { count: purgeablePlayniteEntries.length },
+        )
+      "
+      :confirm-label="t('ui.library.purgePlaynite.confirm')"
+      :cancel-label="t('_common.cancel')"
+      :busy-label="t('ui.library.purgePlaynite.busy')"
+      tone="danger"
+      :busy="purgePlayniteBusy"
+      :close-on-confirm="false"
+      @confirm="confirmPurgePlaynite"
+    >
+      <InlineAlert
+        v-if="purgePlayniteError"
+        tone="danger"
+        :title="t('ui.library.purgePlaynite.errorTitle')"
+        announce="assertive"
+      >
+        {{ purgePlayniteError }}
       </InlineAlert>
     </ConfirmDialog>
   </div>

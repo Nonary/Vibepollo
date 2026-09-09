@@ -1,5 +1,5 @@
 import { ApiError, apiDelete, apiGet, apiPost } from '@/api/client';
-import type { EncodingType, StreamConfig } from '@/types/webrtc';
+import type { EncodingType, StreamConfig, WebRtcStatsSnapshot } from '@/types/webrtc';
 
 export interface WebRtcCodecCapability {
   supported: boolean;
@@ -36,7 +36,9 @@ export interface BrowserVideoCapabilities {
 export interface WebRtcConnectionCallbacks {
   onConnectionState?: (state: RTCPeerConnectionState) => void;
   onInputState?: (state: RTCDataChannelState) => void;
+  onInputMessage?: (message: Record<string, unknown>) => void;
   onRemoteStream?: (stream: MediaStream) => void;
+  onStats?: (stats: WebRtcStatsSnapshot) => void;
   onVideoPlayoutDelay?: (delayMs: number | undefined) => void;
 }
 
@@ -44,6 +46,20 @@ interface VideoJitterStatsState {
   delay?: number;
   emitted?: number;
   id?: string;
+}
+
+interface VideoStatsState extends VideoJitterStatsState {
+  audioBytes?: number;
+  audioJitterBufferDelay?: number;
+  audioJitterBufferEmitted?: number;
+  audioId?: string;
+  lastTimestampMs?: number;
+  videoBytes?: number;
+  videoFramesDecoded?: number;
+  videoFramesDropped?: number;
+  videoFramesReceived?: number;
+  videoId?: string;
+  videoTotalDecodeTime?: number;
 }
 
 interface WebRtcSessionResponse {
@@ -105,6 +121,32 @@ function normalizedLatencyTargetMs(value: number | undefined, fallback: number):
   return typeof value === 'number' && Number.isFinite(value)
     ? Math.max(0, Math.min(100, value))
     : fallback;
+}
+
+const videoMaxFrameAgeMinMs = 5;
+const videoMaxFrameAgeMaxMs = 100;
+
+/** Convert the user-facing frame count to the host API's millisecond field. */
+export function resolveVideoMaxFrameAgeMs(config: StreamConfig): number | undefined {
+  const fps =
+    typeof config.fps === 'number' && Number.isFinite(config.fps) && config.fps > 0
+      ? config.fps
+      : 60;
+  if (
+    typeof config.videoMaxFrameAgeFrames === 'number' &&
+    Number.isFinite(config.videoMaxFrameAgeFrames) &&
+    config.videoMaxFrameAgeFrames > 0
+  ) {
+    const computed = Math.round((1000 / fps) * Math.round(config.videoMaxFrameAgeFrames));
+    return Math.min(videoMaxFrameAgeMaxMs, Math.max(videoMaxFrameAgeMinMs, computed));
+  }
+  if (typeof config.videoMaxFrameAgeMs === 'number' && Number.isFinite(config.videoMaxFrameAgeMs)) {
+    return Math.min(
+      videoMaxFrameAgeMaxMs,
+      Math.max(videoMaxFrameAgeMinMs, Math.round(config.videoMaxFrameAgeMs)),
+    );
+  }
+  return undefined;
 }
 
 function applyReceiverLatencyHints(receiver: RTCRtpReceiver | undefined, targetMs: number): void {
@@ -437,6 +479,7 @@ function preferredCodecs(encoding: EncodingType, hdr: boolean): RTCRtpCodec[] {
 
 async function createSession(config: StreamConfig): Promise<CreatedWebRtcSession> {
   try {
+    const videoMaxFrameAgeMs = resolveVideoMaxFrameAgeMs(config);
     const payload = await apiPost<WebRtcSessionResponse>('/api/webrtc/sessions', {
       app_id: config.appId,
       audio: true,
@@ -452,7 +495,7 @@ async function createSession(config: StreamConfig): Promise<CreatedWebRtcSession
       profile: config.profile,
       resume: config.resume === true,
       video: true,
-      video_max_frame_age_ms: config.videoMaxFrameAgeMs,
+      video_max_frame_age_ms: videoMaxFrameAgeMs,
       video_pacing_mode: config.videoPacingMode,
       video_pacing_slack_ms: config.videoPacingSlackMs,
       width: config.width,
@@ -513,6 +556,7 @@ export class BrowserWebRtcSession {
   private remoteStream: MediaStream | null = null;
   private sessionId = '';
   private videoJitterStats: VideoJitterStatsState = {};
+  private videoStatsState: VideoStatsState = {};
   private videoLatencyTargetMs = 0;
   private videoStatsTimer: number | undefined;
   private peerConnection: RTCPeerConnection | null = null;
@@ -554,8 +598,9 @@ export class BrowserWebRtcSession {
     }
     this.sessionId = session.id;
     this.activeGeneration = generation;
+    const videoMaxFrameAgeMs = resolveVideoMaxFrameAgeMs(config);
     this.videoLatencyTargetMs = normalizedLatencyTargetMs(
-      config.videoMaxFrameAgeMs,
+      videoMaxFrameAgeMs,
       Math.max(5, Math.min(100, 1000 / Math.max(1, config.fps))),
     );
     try {
@@ -601,6 +646,15 @@ export class BrowserWebRtcSession {
       };
       this.dataChannel.onerror = () => {
         if (this.isActiveGeneration(generation)) callbacks.onInputState?.('closing');
+      };
+      this.dataChannel.onmessage = (event) => {
+        if (!this.isActiveGeneration(generation) || typeof event.data !== 'string') return;
+        try {
+          const message = JSON.parse(event.data) as Record<string, unknown>;
+          if (message?.type === 'gamepad_feedback') callbacks.onInputMessage?.(message);
+        } catch {
+          // Host feedback is optional; malformed input-channel messages are ignored.
+        }
       };
 
       connection.onconnectionstatechange = () => {
@@ -721,6 +775,7 @@ export class BrowserWebRtcSession {
     this.remoteStream?.getTracks().forEach((track) => track.stop());
     this.remoteStream = null;
     this.videoJitterStats = {};
+    this.videoStatsState = {};
     this.sessionId = '';
     this.activeGeneration = 0;
     await deleteSessionQuietly(sessionId);
@@ -751,46 +806,214 @@ export class BrowserWebRtcSession {
       if (this.peerConnection !== connection || !this.isActiveGeneration(generation)) return;
       try {
         const report = await connection.getStats();
-        let inbound: RTCStats | undefined;
+        if (this.peerConnection !== connection || !this.isActiveGeneration(generation)) return;
+        type BrowserStats = RTCStats & { [key: string]: unknown };
+        const videoInbound: BrowserStats[] = [];
+        const audioInbound: BrowserStats[] = [];
+        const candidates = new Map<string, BrowserStats>();
+        let selectedPair: BrowserStats | undefined;
         report.forEach((entry) => {
-          const candidate = entry as RTCStats & {
-            isRemote?: boolean;
-            kind?: string;
-            mediaType?: string;
-          };
+          const candidate = entry as BrowserStats;
+          const kind = candidate.kind ?? candidate.mediaType;
+          if (candidate.type === 'inbound-rtp' && candidate.isRemote !== true) {
+            if (kind === 'video') videoInbound.push(candidate);
+            if (kind === 'audio') audioInbound.push(candidate);
+          }
+          if (candidate.type === 'local-candidate' || candidate.type === 'remote-candidate') {
+            const id = candidate.id;
+            if (typeof id === 'string') candidates.set(id, candidate);
+          }
           if (
-            candidate.type === 'inbound-rtp' &&
-            candidate.isRemote !== true &&
-            (candidate.kind === 'video' || candidate.mediaType === 'video')
+            candidate.type === 'candidate-pair' &&
+            candidate.state === 'succeeded' &&
+            (candidate.selected === true || candidate.nominated === true || !selectedPair)
           ) {
-            inbound = candidate;
+            selectedPair = candidate;
           }
         });
 
-        const sample = inbound as
-          | (RTCStats & {
-              jitterBufferDelay?: number;
-              jitterBufferEmittedCount?: number;
-            })
-          | undefined;
-        const delay = sample?.jitterBufferDelay;
-        const emitted = sample?.jitterBufferEmittedCount;
-        const previous = this.videoJitterStats;
-        let delayMs: number | undefined;
+        const pickInbound = (entries: BrowserStats[]): BrowserStats | undefined => {
+          if (!entries.length) return undefined;
+          return [...entries].sort((left, right) => {
+            const leftDecoded = Number(left.framesDecoded) || 0;
+            const rightDecoded = Number(right.framesDecoded) || 0;
+            if (leftDecoded !== rightDecoded) return rightDecoded - leftDecoded;
+            return (Number(right.bytesReceived) || 0) - (Number(left.bytesReceived) || 0);
+          })[0];
+        };
+        const sample = pickInbound(videoInbound);
+        const audio = pickInbound(audioInbound);
+        const previous = this.videoStatsState;
+        const timestampMs = performance.now();
+        const deltaMs =
+          typeof previous.lastTimestampMs === 'number'
+            ? Math.max(1, timestampMs - previous.lastTimestampMs)
+            : 0;
+        const sameVideo = Boolean(sample?.id && sample.id === previous.videoId);
+        const sameAudio = Boolean(audio?.id && audio.id === previous.audioId);
+        const numberValue = (entry: BrowserStats | undefined, key: string): number | undefined => {
+          const value = entry?.[key];
+          return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+        };
+        const videoBytes = numberValue(sample, 'bytesReceived');
+        const audioBytes = numberValue(audio, 'bytesReceived');
+        const videoFramesDecoded = numberValue(sample, 'framesDecoded');
+        const videoFramesDropped = numberValue(sample, 'framesDropped');
+        const videoFramesReceived = numberValue(sample, 'framesReceived');
+        const videoDecodeTime = numberValue(sample, 'totalDecodeTime');
+        const videoJitterBufferDelay = numberValue(sample, 'jitterBufferDelay');
+        const videoJitterBufferEmitted = numberValue(sample, 'jitterBufferEmittedCount');
+        const audioJitterBufferDelay = numberValue(audio, 'jitterBufferDelay');
+        const audioJitterBufferEmitted = numberValue(audio, 'jitterBufferEmittedCount');
+        const rate = (value: number | undefined, old: number | undefined, valid: boolean) => {
+          if (value === undefined || old === undefined || !deltaMs || !valid) return undefined;
+          const delta = value - old;
+          return delta >= 0 ? Math.max(0, Math.round((delta * 8) / deltaMs)) : undefined;
+        };
+        const fps = (value: number | undefined, old: number | undefined, valid: boolean) => {
+          if (value === undefined || old === undefined || !deltaMs || !valid) return undefined;
+          const delta = value - old;
+          return delta > 0 ? (delta * 1000) / deltaMs : undefined;
+        };
+        const averageDelta = (
+          value: number | undefined,
+          emitted: number | undefined,
+          oldValue: number | undefined,
+          oldEmitted: number | undefined,
+          valid: boolean,
+        ): number | undefined => {
+          if (
+            value === undefined ||
+            emitted === undefined ||
+            oldValue === undefined ||
+            oldEmitted === undefined ||
+            !valid
+          )
+            return undefined;
+          const delayDelta = value - oldValue;
+          const emittedDelta = emitted - oldEmitted;
+          return delayDelta >= 0 && emittedDelta > 0
+            ? (delayDelta / emittedDelta) * 1000
+            : undefined;
+        };
+        const videoBitrate = rate(videoBytes, previous.videoBytes, sameVideo);
+        const audioBitrate = rate(audioBytes, previous.audioBytes, sameAudio);
+        const droppedCounterReset =
+          videoFramesDropped !== undefined &&
+          previous.videoFramesDropped !== undefined &&
+          (!sameVideo || videoFramesDropped < previous.videoFramesDropped);
+        const videoFps =
+          fps(videoFramesDecoded, previous.videoFramesDecoded, sameVideo) ??
+          fps(videoFramesReceived, previous.videoFramesReceived, sameVideo) ??
+          numberValue(sample, 'framesPerSecond');
+        const videoJitterBufferMs = averageDelta(
+          videoJitterBufferDelay,
+          videoJitterBufferEmitted,
+          previous.delay,
+          previous.emitted,
+          sameVideo,
+        );
+        const audioJitterBufferMs = averageDelta(
+          audioJitterBufferDelay,
+          audioJitterBufferEmitted,
+          previous.audioJitterBufferDelay,
+          previous.audioJitterBufferEmitted,
+          sameAudio,
+        );
+        let videoDecodeMs: number | undefined;
         if (
-          sample &&
-          previous.id === sample.id &&
-          typeof delay === 'number' &&
-          typeof emitted === 'number' &&
-          typeof previous.delay === 'number' &&
-          typeof previous.emitted === 'number'
+          sameVideo &&
+          videoDecodeTime !== undefined &&
+          previous.videoTotalDecodeTime !== undefined &&
+          videoFramesDecoded !== undefined
         ) {
-          const deltaDelay = delay - previous.delay;
-          const deltaEmitted = emitted - previous.emitted;
-          if (deltaDelay >= 0 && deltaEmitted > 0) delayMs = (deltaDelay / deltaEmitted) * 1000;
+          const decodeDelta = videoDecodeTime - previous.videoTotalDecodeTime;
+          const frameDelta = videoFramesDecoded - (previous.videoFramesDecoded ?? 0);
+          if (decodeDelta >= 0 && frameDelta > 0) videoDecodeMs = (decodeDelta / frameDelta) * 1000;
         }
-        this.videoJitterStats = { delay, emitted, id: sample?.id };
-        callbacks.onVideoPlayoutDelay?.(delayMs);
+        const roundTripSeconds = numberValue(selectedPair, 'currentRoundTripTime');
+        const videoCodecId = sample?.codecId;
+        const codec =
+          typeof videoCodecId === 'string'
+            ? (report.get(videoCodecId) as BrowserStats | undefined)
+            : undefined;
+        const candidatePair = selectedPair
+          ? {
+              state: typeof selectedPair.state === 'string' ? selectedPair.state : undefined,
+              protocol:
+                typeof selectedPair.protocol === 'string' ? selectedPair.protocol : undefined,
+              localAddress: candidates.get(String(selectedPair.localCandidateId))?.address as
+                | string
+                | undefined,
+              localPort: candidates.get(String(selectedPair.localCandidateId))?.port as
+                | number
+                | undefined,
+              localType: candidates.get(String(selectedPair.localCandidateId))?.candidateType as
+                | string
+                | undefined,
+              remoteAddress: candidates.get(String(selectedPair.remoteCandidateId))?.address as
+                | string
+                | undefined,
+              remotePort: candidates.get(String(selectedPair.remoteCandidateId))?.port as
+                | number
+                | undefined,
+              remoteType: candidates.get(String(selectedPair.remoteCandidateId))?.candidateType as
+                | string
+                | undefined,
+            }
+          : undefined;
+        const snapshot: WebRtcStatsSnapshot = {
+          videoBitrateKbps: videoBitrate,
+          audioBitrateKbps: audioBitrate,
+          videoFps,
+          packetsLost: numberValue(sample, 'packetsLost') ?? numberValue(audio, 'packetsLost'),
+          roundTripTimeMs: roundTripSeconds !== undefined ? roundTripSeconds * 1000 : undefined,
+          videoBytesReceived: videoBytes,
+          audioBytesReceived: audioBytes,
+          videoPacketsReceived: numberValue(sample, 'packetsReceived'),
+          audioPacketsReceived: numberValue(audio, 'packetsReceived'),
+          videoFramesReceived,
+          videoFramesDecoded,
+          // A reset counter is unavailable for this sample; exposing the new
+          // cumulative value would make a reset look like a real improvement.
+          videoFramesDropped: droppedCounterReset ? undefined : videoFramesDropped,
+          videoDecodeMs,
+          videoJitterMs:
+            numberValue(sample, 'jitter') !== undefined
+              ? Number(numberValue(sample, 'jitter')) * 1000
+              : undefined,
+          audioJitterMs:
+            numberValue(audio, 'jitter') !== undefined
+              ? Number(numberValue(audio, 'jitter')) * 1000
+              : undefined,
+          videoJitterBufferMs,
+          audioJitterBufferMs,
+          videoCodec: typeof codec?.mimeType === 'string' ? codec.mimeType : undefined,
+          candidatePair,
+        };
+        this.videoStatsState = {
+          audioBytes,
+          audioJitterBufferDelay,
+          audioJitterBufferEmitted,
+          audioId: audio?.id,
+          delay: videoJitterBufferDelay,
+          emitted: videoJitterBufferEmitted,
+          id: sample?.id,
+          lastTimestampMs: timestampMs,
+          videoBytes,
+          videoFramesDecoded,
+          videoFramesDropped,
+          videoFramesReceived,
+          videoId: sample?.id,
+          videoTotalDecodeTime: videoDecodeTime,
+        };
+        this.videoJitterStats = {
+          delay: videoJitterBufferDelay,
+          emitted: videoJitterBufferEmitted,
+          id: sample?.id,
+        };
+        callbacks.onStats?.(snapshot);
+        callbacks.onVideoPlayoutDelay?.(videoJitterBufferMs);
       } catch {
         // Stats are diagnostic input only; streaming must continue without them.
       }

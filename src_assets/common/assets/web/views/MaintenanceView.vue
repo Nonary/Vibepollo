@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import ReleaseNotes from '@/components/settings/ReleaseNotes.vue';
@@ -18,6 +18,12 @@ import {
 } from '@/components/ui';
 import { useSystemStore, type HostMetadata } from '@/stores/system';
 import { formatBytes } from '@/utils/format';
+import {
+  crashBundlePartPath,
+  parseContentDispositionFilename,
+  parseCrashBundleManifest,
+  type CrashBundlePart,
+} from '@/utils/maintenanceCrashBundle';
 
 interface CrashDumpStatus {
   available?: boolean;
@@ -81,6 +87,11 @@ type PendingAction =
   | { kind: 'revoke-session'; session: BrowserSession }
   | { kind: 'restart' };
 
+type CrashBundlePartState = CrashBundlePart & {
+  state: 'pending' | 'downloading' | 'ready' | 'failed';
+  error?: string;
+};
+
 const { locale, t } = useI18n();
 const system = useSystemStore();
 const metadata = ref<HostMetadata | null>(system.metadata);
@@ -92,6 +103,12 @@ const refreshing = ref(false);
 const actionBusy = ref(false);
 const passwordBusy = ref(false);
 const dismissingCrash = ref(false);
+const crashBundleParts = ref<CrashBundlePartState[]>([]);
+const crashBundleLoading = ref(false);
+const crashBundleDownloading = ref(false);
+const crashBundleLegacy = ref(false);
+const crashBundleError = ref('');
+const crashBundleObjectUrls = new Set<string>();
 const loadErrors = ref<string[]>([]);
 const notice = ref('');
 const actionError = ref('');
@@ -113,6 +130,133 @@ const isWindows = computed(() =>
 
 function message(cause: unknown, fallback: string): string {
   return cause instanceof ApiError ? fallback : cause instanceof Error ? cause.message : fallback;
+}
+
+function crashBundlePartName(part: CrashBundlePart): string {
+  return part.filename || `vibepollo_crashbundle-part${part.index}.zip`;
+}
+
+function triggerBlobDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  crashBundleObjectUrls.add(url);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.rel = 'noopener';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  // Keep the URL alive long enough for Chromium and WebKit to start the save.
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+    crashBundleObjectUrls.delete(url);
+  }, 1000);
+}
+
+async function fetchCrashBundleManifest(): Promise<CrashBundlePart[]> {
+  try {
+    const response = await fetch('/api/logs/export_crash/manifest', {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+    });
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    if (!response.ok) {
+      // The manifest route was added after the original part-1 endpoint. Keep
+      // the old host useful only when the route itself is absent.
+      if (response.status === 404 || response.status === 405) {
+        crashBundleLegacy.value = true;
+        return [{ index: 1 }];
+      }
+      throw new Error(t('ui.maintenance.errors.crashManifest'));
+    }
+    const manifest = parseCrashBundleManifest(payload);
+    if (!manifest) throw new Error(t('ui.maintenance.errors.crashManifest'));
+    crashBundleLegacy.value = false;
+    return manifest.parts;
+  } catch (cause) {
+    if (cause instanceof Error && cause.message === t('ui.maintenance.errors.crashManifest')) {
+      throw cause;
+    }
+    throw new Error(t('ui.maintenance.errors.crashManifest'));
+  }
+}
+
+async function prepareCrashBundle(): Promise<void> {
+  if (crashBundleLoading.value || crashBundleDownloading.value) return;
+  crashBundleLoading.value = true;
+  crashBundleError.value = '';
+  crashBundleParts.value = [];
+  try {
+    const parts = await fetchCrashBundleManifest();
+    crashBundleParts.value = parts.map((part) => ({ ...part, state: 'pending' }));
+  } catch (cause) {
+    crashBundleError.value = message(cause, t('ui.maintenance.errors.crashManifest'));
+  } finally {
+    crashBundleLoading.value = false;
+  }
+}
+
+async function downloadCrashBundlePart(part: CrashBundlePartState): Promise<boolean> {
+  if (part.state === 'downloading') return false;
+  part.state = 'downloading';
+  part.error = undefined;
+  try {
+    const response = await fetch(crashBundlePartPath(part.index), {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/zip' },
+    });
+    if (!response.ok) throw new Error(t('ui.maintenance.errors.crashPart'));
+    const blob = await response.blob();
+    if (!blob.size) throw new Error(t('ui.maintenance.errors.crashPart'));
+    const filename =
+      part.filename || parseContentDispositionFilename(response.headers.get('content-disposition'));
+    if (filename) part.filename = filename;
+    triggerBlobDownload(blob, crashBundlePartName(part));
+    part.state = 'ready';
+    return true;
+  } catch (cause) {
+    part.state = 'failed';
+    part.error = message(cause, t('ui.maintenance.errors.crashPart'));
+    return false;
+  }
+}
+
+async function downloadAllCrashBundleParts(): Promise<void> {
+  if (crashBundleDownloading.value) return;
+  if (!crashBundleParts.value.length) await prepareCrashBundle();
+  if (!crashBundleParts.value.length || crashBundleError.value) return;
+  crashBundleDownloading.value = true;
+  crashBundleError.value = '';
+  notice.value = '';
+  try {
+    for (const part of crashBundleParts.value) {
+      if (part.state !== 'ready') await downloadCrashBundlePart(part);
+    }
+    const failed = crashBundleParts.value.filter((part) => part.state === 'failed');
+    if (failed.length) {
+      crashBundleError.value = t('ui.maintenance.errors.crashPartsFailed', {
+        parts: failed.map((part) => part.index).join(', '),
+      });
+      return;
+    }
+    notice.value = t('ui.maintenance.notices.crashBundleStarted');
+  } finally {
+    crashBundleDownloading.value = false;
+  }
+}
+
+async function retryCrashBundlePart(part: CrashBundlePartState): Promise<void> {
+  if (crashBundleDownloading.value) return;
+  crashBundleError.value = '';
+  const ok = await downloadCrashBundlePart(part);
+  if (ok && crashBundleParts.value.every((candidate) => candidate.state === 'ready')) {
+    notice.value = t('ui.maintenance.notices.crashBundleStarted');
+  }
 }
 
 function reconcileSessions(
@@ -475,6 +619,11 @@ async function changePassword(): Promise<void> {
 }
 
 onMounted(() => void load());
+
+onBeforeUnmount(() => {
+  for (const url of crashBundleObjectUrls) URL.revokeObjectURL(url);
+  crashBundleObjectUrls.clear();
+});
 </script>
 
 <template>
@@ -590,15 +739,87 @@ onMounted(() => void load());
             <UiIcon name="download" aria-hidden="true" />
             {{ t('ui.maintenance.support.downloadLogs') }}
           </a>
-          <a
+          <AppButton
             v-if="crashDump?.available"
-            class="button button--secondary"
-            href="/api/logs/export_crash"
-            download
+            icon="download"
+            :label="t('ui.maintenance.support.downloadCrash')"
+            variant="secondary"
+            :busy="crashBundleLoading || crashBundleDownloading"
+            :busy-label="
+              t(
+                crashBundleLoading
+                  ? 'ui.maintenance.support.preparingCrash'
+                  : 'ui.maintenance.support.downloadingBundle',
+              )
+            "
+            @click="downloadAllCrashBundleParts"
+          />
+        </div>
+        <div
+          v-if="crashDump?.available && (crashBundleParts.length || crashBundleError)"
+          class="crash-bundle"
+        >
+          <div class="crash-bundle__heading">
+            <div>
+              <strong>{{ t('ui.maintenance.support.crashPartsTitle') }}</strong>
+              <p>{{ t('ui.maintenance.support.crashPartsDescription') }}</p>
+            </div>
+            <StatusBadge
+              v-if="crashBundleLegacy"
+              :label="t('ui.maintenance.support.legacyHost')"
+              tone="neutral"
+              compact
+            />
+          </div>
+          <InlineAlert
+            v-if="crashBundleError"
+            tone="danger"
+            :title="t('ui.maintenance.support.crashDownloadFailed')"
           >
-            <UiIcon name="download" aria-hidden="true" />
-            {{ t('ui.maintenance.support.downloadCrash') }}
-          </a>
+            {{ crashBundleError }}
+          </InlineAlert>
+          <p class="crash-bundle__browser-note">
+            {{ t('ui.maintenance.support.multipleDownloadHint') }}
+          </p>
+          <div class="crash-bundle__parts">
+            <div v-for="part in crashBundleParts" :key="part.index" class="crash-bundle__part">
+              <div class="crash-bundle__part-copy">
+                <strong>{{ t('ui.maintenance.support.crashPart', { index: part.index }) }}</strong>
+                <span class="monospace">{{ crashBundlePartName(part) }}</span>
+                <span v-if="part.estimatedSizeBytes !== undefined">
+                  {{ formatBytes(part.estimatedSizeBytes, locale) }}
+                </span>
+                <span v-if="part.state === 'ready'" class="crash-bundle__part-started">
+                  {{ t('ui.maintenance.support.partStarted') }}
+                </span>
+                <span v-if="part.state === 'failed'" class="crash-bundle__part-error">
+                  {{ part.error }}
+                </span>
+              </div>
+              <AppButton
+                :label="
+                  part.state === 'failed'
+                    ? t('ui.maintenance.support.retryPart')
+                    : part.state === 'ready'
+                      ? t('ui.maintenance.support.downloadAgain')
+                      : t('ui.maintenance.support.downloadPart')
+                "
+                :busy="part.state === 'downloading'"
+                :busy-label="t('ui.maintenance.support.downloadingPart')"
+                variant="tertiary"
+                size="compact"
+                :disabled="crashBundleDownloading && part.state !== 'downloading'"
+                @click="retryCrashBundlePart(part)"
+              />
+              <a
+                class="button button--tertiary button--compact"
+                :href="crashBundlePartPath(part.index)"
+                :download="crashBundlePartName(part)"
+              >
+                {{ t('ui.maintenance.support.directPartLink') }}
+              </a>
+            </div>
+          </div>
         </div>
         <div v-if="crashDump?.available" class="crash-summary">
           <div>
@@ -943,6 +1164,61 @@ onMounted(() => void load());
   font-size: var(--vs-type-size-helper);
 }
 
+.crash-bundle {
+  display: grid;
+  gap: var(--vs-space-12);
+  padding: var(--vs-space-12);
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-subtle);
+}
+
+.crash-bundle__heading,
+.crash-bundle__part {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vs-space-12);
+}
+
+.crash-bundle__heading p,
+.crash-bundle__browser-note,
+.crash-bundle__part-copy span {
+  margin: var(--vs-space-2) 0 0;
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+  line-height: var(--vs-type-line-height-metadata);
+}
+
+.crash-bundle__browser-note {
+  margin: 0;
+}
+
+.crash-bundle__parts {
+  display: grid;
+  gap: var(--vs-space-8);
+}
+
+.crash-bundle__part {
+  padding: var(--vs-space-8) var(--vs-space-12);
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-surface);
+}
+
+.crash-bundle__part-copy {
+  display: grid;
+  min-width: 0;
+}
+
+.crash-bundle__part-copy .monospace {
+  overflow-wrap: anywhere;
+}
+
+.crash-bundle__part-error {
+  color: var(--vs-color-status-danger) !important;
+}
+
 .session-identity {
   min-width: 13rem;
 }
@@ -996,14 +1272,25 @@ onMounted(() => void load());
   }
 
   .support-actions > .button,
+  .support-actions > .vs-button,
+  .crash-bundle__part > .vs-button,
+  .crash-bundle__part > .button,
   .danger-zone > .vs-button {
     width: 100%;
+  }
+
+  .crash-bundle__heading,
+  .crash-bundle__part {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 
 @media (forced-colors: active) {
   .maintenance-section,
   .crash-summary,
+  .crash-bundle,
+  .crash-bundle__part,
   .danger-zone {
     border: var(--vs-border-width) solid CanvasText;
   }

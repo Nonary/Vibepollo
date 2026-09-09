@@ -21,25 +21,77 @@ const series = [
 ] as const;
 
 const peak = computed(() => hostHistoryPeaks(props.points));
+const timeDomain = computed(() => {
+  const timestamps = props.points
+    .map((point) => point.timestamp)
+    .filter((timestamp) => Number.isFinite(timestamp));
+  const minimum = timestamps.length ? Math.min(...timestamps) : 0;
+  const maximum = timestamps.length ? Math.max(...timestamps) : minimum + 1;
+  return { minimum, maximum: maximum === minimum ? minimum + 1 : maximum };
+});
+const gapThreshold = computed(() => {
+  const deltas = props.points
+    .slice(1)
+    .map((point, index) => point.timestamp - (props.points[index]?.timestamp ?? point.timestamp))
+    .filter((delta) => delta > 0 && Number.isFinite(delta))
+    .sort((left, right) => left - right);
+  if (!deltas.length) return Number.POSITIVE_INFINITY;
+  const median = deltas[Math.floor(deltas.length / 2)] ?? 0;
+  return Math.max(15_000, median * 3);
+});
+
+function valueFor(point: HostHistoryPoint, key: (typeof series)[number]['key']): number | null {
+  const value = Number(point[`${key}_percent` as keyof HostHistoryPoint]);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function xFor(timestamp: number): number {
+  const span = timeDomain.value.maximum - timeDomain.value.minimum;
+  return padding + ((timestamp - timeDomain.value.minimum) / span) * (width - padding * 2);
+}
+
 const seriesPoints = computed(() =>
   series.map((entry) => {
-    const values = props.points.map((point) =>
-      Number(point[`${entry.key}_percent` as keyof HostHistoryPoint]),
-    );
-    const finite = values.map((value) => (Number.isFinite(value) ? value : 0));
-    const points = finite.map((value, index) => {
-      const x =
-        padding +
-        (finite.length <= 1
-          ? width - padding * 2
-          : (index / (finite.length - 1)) * (width - padding * 2));
-      const y =
-        height - padding - (Math.max(0, Math.min(100, value)) / 100) * (height - padding * 2);
-      return `${x.toFixed(2)},${y.toFixed(2)}`;
-    });
-    return { ...entry, points: points.join(' ') };
+    const segments: string[] = [];
+    let current: string[] = [];
+    let previousTimestamp: number | undefined;
+    for (const point of props.points) {
+      const value = valueFor(point, entry.key);
+      const gap =
+        previousTimestamp != null && point.timestamp - previousTimestamp > gapThreshold.value;
+      if (value == null || gap) {
+        if (current.length) segments.push(current.join(' '));
+        current = [];
+      }
+      if (value != null) {
+        const x = xFor(point.timestamp);
+        const y =
+          height - padding - (Math.max(0, Math.min(100, value)) / 100) * (height - padding * 2);
+        current.push(`${x.toFixed(2)},${y.toFixed(2)}`);
+      }
+      previousTimestamp = point.timestamp;
+    }
+    if (current.length) segments.push(current.join(' '));
+    return { ...entry, segments };
   }),
 );
+
+const axisLabels = computed(() => {
+  const domain = timeDomain.value;
+  return [0, 0.5, 1].map((fraction) => {
+    const timestamp = domain.minimum + (domain.maximum - domain.minimum) * fraction;
+    return { x: xFor(timestamp), label: formatTimestamp(timestamp) };
+  });
+});
+
+function formatTimestamp(timestamp: number): string {
+  if (timestamp < 100_000_000) return `#${Math.round(timestamp) + 1}`;
+  return new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(new Date(timestamp));
+}
 
 function value(value: number | null | undefined): string {
   return value == null || !Number.isFinite(value) ? '--' : `${Math.round(value)}%`;
@@ -74,14 +126,26 @@ function value(value: number | null | undefined): string {
       />
       <text x="4" y="14" class="host-compute-chart__axis">100%</text>
       <text x="4" y="120" class="host-compute-chart__axis">0%</text>
-      <polyline
-        v-for="entry in seriesPoints"
-        :key="entry.key"
-        :points="entry.points"
-        fill="none"
-        :stroke="entry.color"
-        class="host-compute-chart__line"
-      />
+      <template v-for="entry in seriesPoints" :key="entry.key">
+        <polyline
+          v-for="segment in entry.segments"
+          :key="`${entry.key}:${segment}`"
+          :points="segment"
+          fill="none"
+          :stroke="entry.color"
+          class="host-compute-chart__line"
+        />
+      </template>
+      <text
+        v-for="axis in axisLabels"
+        :key="axis.label"
+        :x="axis.x"
+        y="123"
+        text-anchor="middle"
+        class="host-compute-chart__axis"
+      >
+        {{ axis.label }}
+      </text>
     </svg>
     <footer class="host-compute-chart__footer">
       <span

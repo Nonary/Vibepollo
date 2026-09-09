@@ -2,23 +2,30 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 
-import { apiGet } from '@/api/client';
-import { AppButton, InlineAlert, LoadingSkeleton, StatusBadge, UiIcon } from '@/components/ui';
-import type { SessionDetail, SessionSample, SessionSummary } from '@/types/sessions';
+import { apiDelete, apiGet } from '@/api/client';
+import {
+  AppButton,
+  ConfirmDialog,
+  InlineAlert,
+  LoadingSkeleton,
+  StatusBadge,
+} from '@/components/ui';
+import type { SessionDetail, SessionSummary } from '@/types/sessions';
 import { formatBitrate, formatDuration } from '@/utils/format';
 
-import MetricChart from './MetricChart.vue';
+import { mergeSessionDetails, samplesToPerformancePoints } from './historyUtils';
 import SessionPerformanceCharts from './SessionPerformanceCharts.vue';
 import type { PerformancePoint } from './types';
 
 const props = defineProps<{
   open: boolean;
   summary: SessionSummary | null;
+  members?: SessionSummary[];
 }>();
 
 const emit = defineEmits<{
   'update:open': [value: boolean];
-  delete: [summary: SessionSummary];
+  deleted: [uuid: string];
 }>();
 
 const { locale, t } = useI18n();
@@ -27,53 +34,25 @@ const panel = ref<HTMLElement | null>(null);
 const detail = ref<SessionDetail | null>(null);
 const loading = ref(false);
 const error = ref('');
+const exportBusy = ref(false);
+const deleteBusy = ref(false);
+const deleteConfirmOpen = ref(false);
 let requestGeneration = 0;
 let restoreFocusTo: HTMLElement | null = null;
 
+const selectedMembers = computed(() =>
+  (props.members?.length ?? 0) > 1 ? (props.members ?? []) : props.summary ? [props.summary] : [],
+);
+const isGroup = computed(() => selectedMembers.value.length > 1);
+
 const performancePoints = computed<PerformancePoint[]>(() => {
-  const samples = detail.value?.samples ?? [];
-  const isWebRtc = detail.value?.protocol?.toLocaleLowerCase() === 'webrtc';
-  return samples.map((sample, index) => {
-    const previous = samples[index - 1];
-    const qualityEvents = previous
-      ? isWebRtc
-        ? Math.max(0, sample.video_dropped - previous.video_dropped) +
-          Math.max(0, sample.audio_dropped - previous.audio_dropped)
-        : Math.max(0, sample.client_reported_losses - previous.client_reported_losses) +
-          Math.max(0, sample.idr_requests - previous.idr_requests) +
-          Math.max(0, sample.ref_invalidations - previous.ref_invalidations)
-      : 0;
-    return {
-      timestamp: sample.timestamp_unix * 1000,
-      latencyMs: Number.isFinite(sample.encode_latency_ms) ? sample.encode_latency_ms : null,
-      throughputMbps: Math.max(0, sample.actual_bitrate_kbps / 1000),
-      qualityEvents,
-      fps: Math.max(0, sample.actual_fps),
-    };
-  });
+  return detail.value
+    ? samplesToPerformancePoints(detail.value.samples ?? [], detail.value.protocol)
+    : [];
 });
-
-function sampleValues(field: keyof SessionSample): number[] {
-  return (detail.value?.samples ?? []).flatMap((sample) => {
-    const value = sample[field];
-    return typeof value === 'number' && Number.isFinite(value) ? [value] : [];
-  });
-}
-
-function latestValue(field: keyof SessionSample, suffix = '%'): string {
-  const values = sampleValues(field);
-  const value = values.at(-1);
-  return value == null
-    ? '—'
-    : `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}${suffix}`;
-}
 
 function close(): void {
   emit('update:open', false);
-}
-
-function requestDelete(): void {
-  if (props.summary) emit('delete', props.summary);
 }
 
 function onCancel(event: Event): void {
@@ -85,16 +64,38 @@ function onBackdrop(event: MouseEvent): void {
   if (event.target === dialog.value) close();
 }
 
+async function fetchDetails(uuids: string[]): Promise<SessionDetail[]> {
+  const details: SessionDetail[] = [];
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < uuids.length) {
+      const index = next++;
+      const uuid = uuids[index];
+      if (!uuid) continue;
+      const result = await apiGet<SessionDetail>(
+        `/api/history/sessions/${encodeURIComponent(uuid)}?full=1`,
+      );
+      details.push({ ...result, samples: result.samples ?? [], events: result.events ?? [] });
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, uuids.length) }, () => worker()));
+  return details;
+}
+
 async function load(uuid: string): Promise<void> {
   const generation = ++requestGeneration;
   detail.value = null;
   error.value = '';
   loading.value = true;
   try {
-    const result = await apiGet<SessionDetail>(
-      `/api/history/sessions/${encodeURIComponent(uuid)}?full=1`,
-    );
-    if (generation === requestGeneration) detail.value = result;
+    const members = selectedMembers.value;
+    const results =
+      members.length > 1
+        ? await fetchDetails(members.map((member) => member.uuid))
+        : await fetchDetails([uuid]);
+    if (generation === requestGeneration && results.length) {
+      detail.value = results.length > 1 ? mergeSessionDetails(results) : (results[0] ?? null);
+    }
   } catch {
     if (generation === requestGeneration)
       error.value = t('ui.sessions.error.source_load', {
@@ -102,6 +103,69 @@ async function load(uuid: string): Promise<void> {
       });
   } finally {
     if (generation === requestGeneration) loading.value = false;
+  }
+}
+
+function buildExportFilename(source: SessionDetail): string {
+  const safeName = (source.app_name || source.client_name || 'session')
+    .replace(/[^a-z0-9_-]+/gi, '_')
+    .slice(0, 40);
+  const timestamp = new Date((source.start_time_unix || Date.now() / 1000) * 1000)
+    .toISOString()
+    .replace(/[:.]/g, '-')
+    .slice(0, 19);
+  return `vibepollo-session-${safeName}-${timestamp}.json`;
+}
+
+async function exportJson(): Promise<void> {
+  if (!detail.value || exportBusy.value) return;
+  exportBusy.value = true;
+  error.value = '';
+  let url = '';
+  try {
+    const members = selectedMembers.value;
+    const results =
+      members.length > 1
+        ? await fetchDetails(members.map((member) => member.uuid))
+        : await fetchDetails([detail.value.uuid]);
+    if (!results.length) throw new Error('No session data was returned');
+    const exportDetail = results.length > 1 ? mergeSessionDetails(results) : results[0]!;
+    const payload =
+      members.length > 1
+        ? { ...exportDetail, session_members: members.map((member) => member.uuid) }
+        : exportDetail;
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = buildExportFilename(exportDetail);
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  } catch {
+    error.value = t('ui.sessions.error.source_load', {
+      source: t('sessions.history_export_json'),
+    });
+  } finally {
+    if (url) URL.revokeObjectURL(url);
+    exportBusy.value = false;
+  }
+}
+
+async function confirmDelete(): Promise<void> {
+  const uuid = props.summary?.uuid;
+  if (!uuid || isGroup.value || deleteBusy.value) return;
+  deleteBusy.value = true;
+  error.value = '';
+  try {
+    await apiDelete(`/api/history/sessions/${encodeURIComponent(uuid)}`);
+    deleteConfirmOpen.value = false;
+    emit('deleted', uuid);
+    close();
+  } catch {
+    error.value = t('ui.sessions.error.action');
+  } finally {
+    deleteBusy.value = false;
   }
 }
 
@@ -148,7 +212,11 @@ onBeforeUnmount(() => {
             <div class="stats-detail-dialog__eyebrow">
               <StatusBadge
                 v-if="summary"
-                :label="(summary.protocol || t('_common.unknown')).toUpperCase()"
+                :label="
+                  isGroup
+                    ? t('sessions.history_group_title', { count: selectedMembers.length })
+                    : (summary.protocol || t('_common.unknown')).toUpperCase()
+                "
                 tone="info"
                 compact
               />
@@ -175,14 +243,24 @@ onBeforeUnmount(() => {
             </p>
           </div>
           <div class="stats-detail-dialog__actions">
-            <AppButton
-              :label="t('ui.sessions.action.delete_record')"
-              icon="trash"
-              variant="tertiary"
-              size="compact"
-              :disabled="!summary"
-              @click="requestDelete"
-            />
+            <template v-if="detail">
+              <AppButton
+                :label="t('sessions.history_export_json')"
+                icon="download"
+                variant="secondary"
+                :busy="exportBusy"
+                :busy-label="t('_common.loading')"
+                @click="exportJson"
+              />
+              <AppButton
+                v-if="!isGroup"
+                :label="t('sessions.history_delete')"
+                icon="trash"
+                variant="danger"
+                :disabled="deleteBusy"
+                @click="deleteConfirmOpen = true"
+              />
+            </template>
             <AppButton
               :label="t('_common.close')"
               :aria-label="t('ui.stats.close_detail')"
@@ -254,7 +332,7 @@ onBeforeUnmount(() => {
             <section class="detail-section">
               <div class="detail-section__heading">
                 <div>
-                  <h3>{{ t('sessions.active_unified') }}</h3>
+                  <h3>{{ t('sessions.history_performance_title', 'Session performance') }}</h3>
                   <p>{{ t('stats.subtitle') }}</p>
                 </div>
                 <span>{{
@@ -270,51 +348,11 @@ onBeforeUnmount(() => {
                 :points="performancePoints"
                 :protocol="detail.protocol"
                 :target-fps="detail.target_fps"
+                :host-samples="detail.samples"
+                :events="detail.events"
+                mode="history"
               />
               <p v-else class="detail-empty">{{ t('sessions.history_no_samples') }}</p>
-            </section>
-
-            <section v-if="detail.samples.length" class="detail-section">
-              <div class="detail-section__heading">
-                <div>
-                  <h3>{{ t('sessions.chart_host_compute') }}</h3>
-                  <p>{{ t('sessions.tip_chart_host_compute') }}</p>
-                </div>
-              </div>
-              <div class="host-detail-charts">
-                <MetricChart
-                  :title="t('sessions.chart_host_cpu')"
-                  :value="latestValue('host_cpu_percent')"
-                  :values="sampleValues('host_cpu_percent')"
-                  unit="%"
-                  :ceiling="100"
-                  color="var(--vs-color-status-info)"
-                />
-                <MetricChart
-                  :title="t('sessions.chart_host_gpu')"
-                  :value="latestValue('host_gpu_percent')"
-                  :values="sampleValues('host_gpu_percent')"
-                  unit="%"
-                  :ceiling="100"
-                  color="var(--vs-color-status-success)"
-                />
-                <MetricChart
-                  :title="t('sessions.chart_host_ram')"
-                  :value="latestValue('host_ram_percent')"
-                  :values="sampleValues('host_ram_percent')"
-                  unit="%"
-                  :ceiling="100"
-                  color="var(--vs-color-status-warning)"
-                />
-                <MetricChart
-                  :title="t('sessions.chart_host_vram')"
-                  :value="latestValue('host_vram_percent')"
-                  :values="sampleValues('host_vram_percent')"
-                  unit="%"
-                  :ceiling="100"
-                  color="var(--vs-color-data-accent)"
-                />
-              </div>
             </section>
 
             <section class="detail-section">
@@ -343,6 +381,17 @@ onBeforeUnmount(() => {
       </section>
     </dialog>
   </Teleport>
+  <ConfirmDialog
+    v-model:open="deleteConfirmOpen"
+    :title="t('sessions.history_delete')"
+    :description="t('sessions.history_delete_confirm')"
+    :confirm-label="t('sessions.history_delete_confirm_yes')"
+    :cancel-label="t('sessions.history_delete_confirm_no')"
+    tone="danger"
+    :busy="deleteBusy"
+    :close-on-confirm="false"
+    @confirm="confirmDelete"
+  />
 </template>
 
 <style scoped>
@@ -393,14 +442,17 @@ onBeforeUnmount(() => {
   color: var(--vs-color-text-secondary);
 }
 
-.stats-detail-dialog__eyebrow {
-  display: flex;
-  gap: var(--vs-space-8);
-}
-
 .stats-detail-dialog__actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
+  gap: var(--vs-space-8);
+  margin-left: auto;
+}
+
+.stats-detail-dialog__eyebrow {
+  display: flex;
   gap: var(--vs-space-8);
 }
 
@@ -468,12 +520,6 @@ onBeforeUnmount(() => {
   font-size: var(--vs-type-size-metadata);
 }
 
-.host-detail-charts {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--vs-space-12);
-}
-
 .event-list {
   display: grid;
   gap: 0;
@@ -528,7 +574,6 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1023px) {
-  .host-detail-charts,
   .detail-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -556,7 +601,6 @@ onBeforeUnmount(() => {
     padding: var(--vs-space-16);
   }
 
-  .host-detail-charts,
   .detail-summary {
     grid-template-columns: minmax(0, 1fr);
   }
