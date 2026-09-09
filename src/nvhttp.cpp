@@ -5637,10 +5637,26 @@ namespace nvhttp {
       return;
     }
     const auto active_session = proc::proc.active_session_guard();
-    if (!has_running_app || active_session.client_uuid != identity.uuid) {
+    const remote_session::caller_t caller {
+      .uuid = identity.uuid,
+      .paired = !identity.uuid.empty(),
+      .may_terminate = has_client_perm(verified_client, PERM::launch),
+    };
+    const remote_session::game_t game {
+      .running = has_running_app,
+      .owner_uuid = active_session.client_uuid,
+      .generation = active_session_generation(active_session),
+    };
+    const bool remote_sessions_active = remote_role_gate_snapshot_for_client(identity.uuid).active;
+    if (!remote_session::allows_normal_game_cancel(caller, game, remote_sessions_active)) {
       tree.put("root.cancel", 0);
       tree.put("root.<xmlattr>.status_code", 403);
-      tree.put("root.<xmlattr>.status_message", "Only the configured running-game owner may cancel this game");
+      tree.put(
+        "root.<xmlattr>.status_message",
+        remote_sessions_active ?
+          "Only the configured running-game owner may cancel this game while Remote Input or Remote Monitor is active" :
+          "No running app is available to cancel"
+      );
       return;
     }
 

@@ -18,12 +18,10 @@ body = body[:a] + body[b:]
 body = body.replace("resp_https_t response", "resp_https_t /*response*/")
 body += "    ++authorized_teardowns;\n  }\n"
 downstream = "has_client_perm(verified_client" in body
-policy = ""
-if not downstream:
-    remote = (root / "src/remote_session.cpp").read_text()
-    a = remote.index("  bool allows_normal_game_cancel(")
-    b = remote.index("\n  }", a) + 4
-    policy = "namespace remote_session {" + remote[a:b] + "}"
+remote = (root / "src/remote_session.cpp").read_text()
+a = remote.index("  bool allows_normal_game_cancel(")
+b = remote.index("\n  }", a) + 4
+policy = "namespace remote_session {" + remote[a:b] + "}"
 program = r'''
 #include <cassert>
 #include <cstdint>
@@ -94,9 +92,10 @@ int main() {
   check(true, false, true, false, false, 403, false);
 '''
 if downstream:
-    program += "check(false, true, false, false, false, 403, false);\ncheck(true, true, false, false, false, 403, false);\ncheck(true, true, true, true, false, 403, false);\ncheck(true, true, true, true, true, 403, false);\n"
-else:
-    program += "check(true, true, true, true, false, 200, true);\ncheck(true, true, true, true, true, 403, false);\n"
+    program += "check(false, true, false, false, false, 403, false);\ncheck(true, true, false, false, false, 403, false);\ncheck(true, true, false, true, false, 403, false);\n"
+# A permitted secondary client can cancel an ordinary game. Special session
+# ownership still blocks that client's generic cancel from tearing down peers.
+program += "check(true, true, true, true, false, 200, true);\ncheck(true, true, true, true, true, 403, false);\n"
 program += "}\n"
 with tempfile.TemporaryDirectory(prefix="cancel-after-exit-") as directory:
     src = pathlib.Path(directory) / "test.cpp"
