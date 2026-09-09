@@ -2948,11 +2948,11 @@ They appear in the Frame Limiter section of the settings UI.
     </tr>
     <tr>
         <td>mangohud-proton</td>
-        <td>Use Proton's DXVK/VKD3D limiter for managed Steam games and keep the MangoHUD overlay visible. This limiter supports frame-generated output.</td>
+        <td>Use Proton's DXVK/VKD3D limiter for managed Steam games and external Proton launches and keep the MangoHUD overlay visible. This limiter supports frame-generated output.</td>
     </tr>
     <tr>
         <td>proton</td>
-        <td>Use Proton's DXVK/VKD3D limiter for managed Steam games without presenting MangoHUD. This limiter supports frame-generated output.</td>
+        <td>Use Proton's DXVK/VKD3D limiter for managed Steam games and external Proton launches without presenting MangoHUD. This limiter supports frame-generated output.</td>
     </tr>
     <tr>
         <td>rtss</td>
@@ -2967,6 +2967,21 @@ They appear in the Frame Limiter section of the settings UI.
         <td>Disable all frame limiter providers.</td>
     </tr>
 </table>
+
+On native Linux, an active stream also prepares launch hooks in writable Proton
+installations discovered through Steam. This applies the selected Proton or
+MangoHUD provider to games started from Steam or another launcher, even when the
+game is not a Vibepollo application. Existing `user_settings.py` code and file
+permissions are preserved. The hook is inert when no stream is active and after
+host shutdown; it does not persist an FPS limit in Proton's configuration.
+
+These are launch-time renderer settings: start the game after the stream connects.
+A game already running retains its previous settings until restarted, including
+when the stream ends. Read-only Proton installations, native Linux games launched
+outside Vibepollo, and containers with a separate network namespace are not
+covered by this Proton hook. Native games launched by Vibepollo retain the
+existing MangoHUD integration. Newly installed Proton versions in known libraries
+are detected during the stream. The host log reports hook readiness or failure.
 
 ### frame_limiter_fps_limit
 

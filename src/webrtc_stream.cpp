@@ -89,6 +89,7 @@
     #define SUNSHINE_SHADERS_DIR SUNSHINE_ASSETS_DIR "/shaders/directx"
   #endif
 #elif defined(__linux__)
+  #include "src/platform/linux/frame_limiter.h"
   #include "src/display_helper_integration.h"
   #include "src/platform/linux/private_display.h"
   #include "src/platform/linux/display_backend.h"
@@ -2972,7 +2973,7 @@ namespace webrtc_stream {
       return key;
     }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     void acquire_webrtc_frame_limiter_locked(const WebRtcStreamStartParams &start_params) {
       const auto saturating_millihz = [](int fps) -> int {
         if (fps <= 0) {
@@ -2994,7 +2995,11 @@ namespace webrtc_stream {
         .frame_generation_provider = start_params.frame_generation_provider,
         .uses_virtual_display = start_params.uses_virtual_display,
         .capture_mode = config::video.capture,
+#ifdef _WIN32
         .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
+#else
+        .auto_capture_uses_wgc = false,
+#endif
         .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
         .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
       });
@@ -3134,7 +3139,7 @@ namespace webrtc_stream {
         webrtc_capture.config_key &&
         *webrtc_capture.config_key == desired_key
       ) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
         acquire_webrtc_frame_limiter_locked(stream_start_params);
 #endif
         webrtc_capture.pending_session_creations.fetch_add(1, std::memory_order_release);
@@ -3379,7 +3384,7 @@ namespace webrtc_stream {
         audio::capture(mail, audio_config, nullptr);
       });
       keep_runtime_overrides = true;
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
       acquire_webrtc_frame_limiter_locked(*webrtc_capture.stream_start_params);
 #endif
       stream::session::arm_shared_runtime_cleanup(
@@ -3522,6 +3527,8 @@ namespace webrtc_stream {
             platf::frame_limiter_owner::webrtc,
             keep_rtss_running
           );
+#elif defined(__linux__)
+          platf::frame_limiter_streaming_stop(platf::frame_limiter_owner::webrtc);
 #endif
         }
 

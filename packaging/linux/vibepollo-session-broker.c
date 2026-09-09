@@ -621,6 +621,13 @@ static bool steam_direct_arguments_are_safe(int argc, char **argv) {
          (limited || strcmp(argv[8], "0"));
 }
 
+static bool global_limiter_arguments_are_safe(int argc, char **argv) {
+  if (argc != 7 || !argv) return false;
+  char *validation[] = {"broker", "steam-direct", "1", argv[2], argv[3],
+                        argv[4], argv[5], argv[6], "0", "0"};
+  return steam_direct_arguments_are_safe(10, validation);
+}
+
 static bool parse_channel_mapping(const char *value, size_t channels,
                                   unsigned char mapping[8]) {
   if (!value || !mapping || channels < 1 || channels > 8) return false;
@@ -1182,7 +1189,7 @@ static int execute_request(int argc, char **argv,
   if (argc < 2) return 2;
   enum operation {
     DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_POWER, DISPLAY_WAKE, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
-    AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_DIRECT, LUTRIS,
+    AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS,
     PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, APP
   } operation;
   unsigned long first_number = 0, second_number = 0, third_number = 0;
@@ -1210,6 +1217,9 @@ static int execute_request(int argc, char **argv,
            parse_number(argv[4], 1, 8192, &third_number) &&
            parse_channel_mapping(argv[5], second_number, channel_mapping)) operation = AUDIO_CAPTURE;
   else if (!strcmp(argv[1], "steam") && argc == 3 && numeric_suffix(argv[2], "") && !strcmp(identity->role, "desktop")) operation = STEAM;
+  else if (!strcmp(argv[1], "global-limiter") &&
+           global_limiter_arguments_are_safe(argc, argv) &&
+           !strcmp(identity->role, "desktop")) operation = GLOBAL_LIMITER;
   else if (!strcmp(argv[1], "steam-direct") &&
            steam_direct_arguments_are_safe(argc, argv) &&
            !strcmp(identity->role, "desktop")) operation = STEAM_DIRECT;
@@ -1311,6 +1321,13 @@ static int execute_request(int argc, char **argv,
       char *const arguments[] = {"/usr/bin/steam", "-applaunch", argv[2], NULL};
       execv("/usr/bin/steam", arguments);
       break;
+    }
+    case GLOBAL_LIMITER: {
+      char *const arguments[] = {
+        (char *) steam_launch_path, "--global", argv[2], argv[3], argv[4],
+        argv[5], argv[6], "0", "0", NULL
+      };
+      return exec_user_service(identity, NULL, arguments, false);
     }
     case STEAM_DIRECT: {
       char *const arguments[] = {

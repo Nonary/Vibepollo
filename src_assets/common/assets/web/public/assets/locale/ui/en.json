@@ -632,7 +632,7 @@
         "presetHorizontal": "Horizontal",
         "provider": "Limiter provider",
         "providerAuto": "Automatic — Proton limiter + MangoHUD overlay",
-        "providerDescription": "Automatic uses Proton's built-in DXVK or vkd3d-proton limiter for managed Steam games and keeps the MangoHUD overlay visible. Proton also limits frame-generated output. Choose MangoHUD to use its limiter with selectable early or late timing.",
+        "providerDescription": "Automatic uses Proton's built-in DXVK or vkd3d-proton limiter and keeps the MangoHUD overlay visible. On native Linux, games started through supported Proton installations while streaming are also covered when launched outside Vibepollo. Start the stream before the game; running games retain their launch-time limit. Proton supports frame-generated output. Choose MangoHUD for early or late limiter timing.",
         "providerMangoHud": "MangoHUD",
         "providerMangoHudProton": "MangoHUD + Proton",
         "providerProton": "Proton DXVK/VKD3D",

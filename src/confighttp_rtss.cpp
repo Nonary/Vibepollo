@@ -397,9 +397,9 @@ namespace confighttp {
       {"resolved_path", path.string()},
       {"message", proton_overlay_selected ?
                     (available ?
-                       "The MangoHUD overlay and Proton DXVK/VKD3D limiter are ready for managed Steam games." :
+                       "The MangoHUD overlay and Proton DXVK/VKD3D limiter are available for managed Steam games and supported external Proton launches during a stream." :
                        "The Proton DXVK/VKD3D limiter is ready, but MangoHUD was not found in PATH; the overlay will be unavailable.") : proton_selected ?
-                    "The Proton DXVK/VKD3D frame limiter is selected for managed Steam D3D9-12 games." : available ?
+                    "The Proton DXVK/VKD3D frame limiter is selected for managed Steam games and supported external Proton D3D9-12 launches during a stream." : available ?
                     "MangoHUD is installed and ready for launched games." :
                     "MangoHUD was not found in PATH; install it to enable Linux frame limiting."}
     });

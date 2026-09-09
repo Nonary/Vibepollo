@@ -64,6 +64,22 @@ int main(void) {
   valid_steam_direct[2] = "0";
   CHECK(!steam_direct_arguments_are_safe(10, valid_steam_direct));
 
+  char *global_limiter[] = {
+    "vibeshine-session-broker", "global-limiter", "proton", "59940", "custom", "0", "late", NULL
+  };
+  CHECK(global_limiter_arguments_are_safe(7, global_limiter));
+  CHECK(!global_limiter_arguments_are_safe(6, global_limiter));
+  global_limiter[2] = "mangohud";
+  global_limiter[6] = "early";
+  CHECK(global_limiter_arguments_are_safe(7, global_limiter));
+  global_limiter[3] = "59940;touch /tmp/untrusted";
+  CHECK(!global_limiter_arguments_are_safe(7, global_limiter));
+  global_limiter[3] = "0";
+  CHECK(!global_limiter_arguments_are_safe(7, global_limiter));
+  global_limiter[3] = "59940";
+  global_limiter[4] = "/tmp/preset";
+  CHECK(!global_limiter_arguments_are_safe(7, global_limiter));
+
   CHECK(xauthority_mode_is_safe(0600));
   CHECK(xauthority_mode_is_safe(0400));
   CHECK(!xauthority_mode_is_safe(0620));

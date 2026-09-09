@@ -51,13 +51,15 @@ proton=$(
   MANGOHUD=1 \
   MANGOHUD_CONFIG='fps_limit=30' \
   MANGOHUD_FPS_LIMIT=30 \
+  DXVK_FRAME_RATE=30 \
   DXVK_CONFIG='dxgi.maxFrameRate = 30' \
   LD_PRELOAD='/usr/$LIB/mangohud/libMangoHud_shim.so' \
     "$wrapper" --appid 480 -- /bin/sh -c \
-      'printf "vkd3d=%s\ndxvk=%s\nmango=%s\nconfig=%s\npreload=%s" "$VKD3D_FRAME_RATE" "$DXVK_CONFIG" "${MANGOHUD-UNSET}" "${MANGOHUD_CONFIG-UNSET}" "${LD_PRELOAD-UNSET}"'
+      'printf "vkd3d=%s\ndxvk=%s\nlegacy=%s\nmango=%s\nconfig=%s\npreload=%s" "$VKD3D_FRAME_RATE" "$DXVK_CONFIG" "$DXVK_FRAME_RATE" "${MANGOHUD-UNSET}" "${MANGOHUD_CONFIG-UNSET}" "${LD_PRELOAD-UNSET}"'
 )
 expected_proton='vkd3d=116
 dxvk=dxgi.maxFrameRate = 30; dxvk.maxFrameRate = 116; dxgi.maxFrameRate = 116; d3d9.maxFrameRate = 116
+legacy=116
 mango=UNSET
 config=UNSET
 preload=UNSET'

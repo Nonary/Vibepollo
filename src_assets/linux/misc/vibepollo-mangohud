@@ -67,6 +67,14 @@ if { [ "$version" != 1 ] && [ "$version" != 2 ]; } || [ "$expires" -lt "$now" ] 
   exec "$@"
 fi
 
+# A managed per-application policy takes precedence over the global launch hook.
+case "$provider" in
+  proton|mangohud-proton|mangohud)
+    VIBEPOLLO_LIMITER_MANAGED=1
+    export VIBEPOLLO_LIMITER_MANAGED
+    ;;
+esac
+
 if [ "$provider" = proton ] || [ "$provider" = mangohud-proton ]; then
   # Apply the built-in renderer limits after Steam Launch Options so stale
   # user values cannot win. vkd3d-proton owns D3D12; DXVK owns D3D9-11.
@@ -84,6 +92,10 @@ if [ "$provider" = proton ] || [ "$provider" = mangohud-proton ]; then
       esac
       ;;
   esac
+  # Older DXVK and GE protonfixes read this before DXVK_CONFIG. Override
+  # stale Launch Options here as well as the newer configuration keys.
+  DXVK_FRAME_RATE=$dxvk_limit
+  export DXVK_FRAME_RATE
   dxvk_override="dxvk.maxFrameRate = $dxvk_limit; dxgi.maxFrameRate = $dxvk_limit; d3d9.maxFrameRate = $dxvk_limit"
   if [ -n "${DXVK_CONFIG-}" ]; then
     DXVK_CONFIG="$DXVK_CONFIG; $dxvk_override"
