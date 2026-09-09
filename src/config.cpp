@@ -1015,6 +1015,7 @@ namespace config {
     true,  // always send scancodes
     true,  // high resolution scrolling
     true,  // native pen/touch support
+    true,  // touch cursor isolation
     false,  // enable input only mode
     true,  // forward_rumble
   };
@@ -2123,6 +2124,7 @@ namespace config {
 
     bool_f(vars, "high_resolution_scrolling", input.high_resolution_scrolling);
     bool_f(vars, "native_pen_touch", input.native_pen_touch);
+    bool_f(vars, "touch_cursor_isolation", input.touch_cursor_isolation);
     bool_f(vars, "enable_input_only_mode", input.enable_input_only_mode);
 
     bool_f(vars, "system_tray", sunshine.system_tray);
@@ -2556,6 +2558,7 @@ namespace config {
         "mouse",
         "high_resolution_scrolling",
         "native_pen_touch",
+        "touch_cursor_isolation",
         "keybindings",
         "ds5_inputtino_randomize_mac",
 

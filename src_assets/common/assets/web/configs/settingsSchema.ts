@@ -62,6 +62,7 @@ export const clientOverrideableKeys = new Set([
   'mouse',
   'high_resolution_scrolling',
   'native_pen_touch',
+  'touch_cursor_isolation',
   'keybindings',
   'ds5_inputtino_randomize_mac',
   'audio_sink',
@@ -610,6 +611,7 @@ export const settingsCategories: SettingsCategory[] = [
           boolean('always_send_scancodes'),
           boolean('high_resolution_scrolling'),
           boolean('native_pen_touch'),
+          boolean('touch_cursor_isolation'),
         ],
       },
       {
@@ -840,6 +842,7 @@ export const settingsDefaults: Record<string, unknown> = {
   always_send_scancodes: true,
   high_resolution_scrolling: true,
   native_pen_touch: true,
+  touch_cursor_isolation: true,
   key_repeat_delay: 500,
   key_repeat_frequency: 24.9,
   install_steam_audio_drivers: true,

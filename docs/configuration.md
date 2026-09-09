@@ -690,6 +690,35 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### touch_cursor_isolation
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            When enabled, touch and pen input aimed at a Vibepollo virtual display no longer moves or hides the host
+            mouse cursor, so the streamed panel behaves like an independent touch surface.
+            <br>
+            Windows normally turns touch into mouse input for applications that do not handle it natively. Those
+            applications stop responding to touch on the isolated display while this is enabled.
+            <br>
+            Has no effect when streaming a physical display, and none on a physical touchscreen.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            touch_cursor_isolation = enabled
+            @endcode</td>
+    </tr>
+</table>
+
 ### keybindings
 
 <table>
