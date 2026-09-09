@@ -2352,6 +2352,12 @@ namespace stream {
           const auto timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                       packet->frame_timestamp->time_since_epoch()
           ).count();
+          // Legacy sources may normalize frame_timestamp. Keep their original
+          // capture time separate so raw_ns still joins capture selections.
+          const auto source_timestamp = packet->capture_timestamp.value_or(*packet->frame_timestamp);
+          const auto source_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                   source_timestamp.time_since_epoch()
+          ).count();
           const auto send_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                  send_complete_timestamp.time_since_epoch()
           ).count();
@@ -2363,6 +2369,7 @@ namespace stream {
               trace << "kind=rtp frame=" << packet->frame_index()
                     << " timestamp_source=synthetic"
                     << " synthetic_ns=" << timestamp_ns
+                    << " wire_ns=" << timestamp_ns
                     << " rtp=" << timestamp
                     << " send_ns=" << send_ns
                     << " wall_ns=" << wall_ns;
@@ -2371,7 +2378,8 @@ namespace stream {
             drm_timing_trace::write([&](auto &trace) {
               trace << "kind=rtp frame=" << packet->frame_index()
                     << " timestamp_source=drm"
-                    << " raw_ns=" << timestamp_ns
+                    << " raw_ns=" << source_ns
+                    << " wire_ns=" << timestamp_ns
                     << " rtp=" << timestamp
                     << " previous_rtp=" << wire_timeline_state.previous_frame->rtp_timestamp
                     << " delta=" << static_cast<std::uint32_t>(timestamp - wire_timeline_state.previous_frame->rtp_timestamp)
@@ -2382,7 +2390,8 @@ namespace stream {
             drm_timing_trace::write([&](auto &trace) {
               trace << "kind=rtp frame=" << packet->frame_index()
                     << " timestamp_source=drm"
-                    << " raw_ns=" << timestamp_ns
+                    << " raw_ns=" << source_ns
+                    << " wire_ns=" << timestamp_ns
                     << " rtp=" << timestamp
                     << " previous_rtp=none"
                     << " delta=none"
@@ -2396,7 +2405,7 @@ namespace stream {
           const wire_timeline_frame_t current_wire_frame {
             .frame_index = packet->frame_index(),
             .rtp_timestamp = timestamp,
-            .source_timestamp = *packet->frame_timestamp,
+            .source_timestamp = packet->capture_timestamp.value_or(*packet->frame_timestamp),
             .host_processing_timestamp = packet->host_processing_timestamp,
             .packet_enqueue_timestamp = packet->packet_enqueue_timestamp,
             .packet_pop_timestamp = packet_pop_timestamp,

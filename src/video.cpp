@@ -50,6 +50,7 @@ extern "C" {
 #include "video.h"
 #include "video_encoder_probe_policy.h"
 #include "video_policy.h"
+#include "video_timestamp_policy.h"
 #include "webrtc_stream.h"
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
@@ -5156,7 +5157,11 @@ namespace video {
     double minimum_fps_target = (config::video.minimum_fps_target > 0.0) ? config::video.minimum_fps_target * 1000 : std::max(config.encodingFramerate / 5, 10000);
     auto max_frametime = std::chrono::nanoseconds(1000ms) * 1000 / minimum_fps_target;
     auto encode_frame_threshold = std::chrono::nanoseconds(1000ms) * 1000 / config.encodingFramerate;
-    auto frame_variation_threshold = encode_frame_threshold / 4;
+    encode_timestamp_policy_t timestamp_policy {
+      disp->preserves_source_presentation_timestamps() ?
+        source_timestamp_policy_e::preserve : source_timestamp_policy_e::normalize,
+      encode_frame_threshold,
+    };
     BOOST_LOG(info) << "Minimum FPS target set to ~"sv << (minimum_fps_target / 2000) << "fps ("sv << max_frametime * 2 << ")"sv;
     BOOST_LOG(info) << "Encoding Frame threshold: "sv << encode_frame_threshold;
 
@@ -5241,7 +5246,6 @@ namespace video {
       }
     }
 
-    std::optional<std::chrono::steady_clock::time_point> encode_frame_timestamp;
     encode_bootstrap_state_t bootstrap_state {.allow_placeholder_before_first_real = frame_nr <= 1};
 
     // Per-session encode-loop accounting. When several clients share one capture target, a
@@ -5441,20 +5445,7 @@ namespace video {
 
           if (!placeholder_input) {
             bootstrap_state.real_frame_seen = true;
-            if (!encode_frame_timestamp) {
-              encode_frame_timestamp = *frame_timestamp;
-            }
-
-            const auto time_diff = (*frame_timestamp > *encode_frame_timestamp)
-              ? (*frame_timestamp - *encode_frame_timestamp)
-              : (*encode_frame_timestamp - *frame_timestamp);
-            if (time_diff < frame_variation_threshold) {
-              *frame_timestamp = *encode_frame_timestamp;
-            } else {
-              *encode_frame_timestamp = *frame_timestamp;
-            }
-
-            *encode_frame_timestamp += encode_frame_threshold;
+            frame_timestamp = timestamp_policy.apply(frame_timestamp);
           } else {
             frame_timestamp.reset();
             host_processing_timestamp.reset();

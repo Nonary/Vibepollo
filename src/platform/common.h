@@ -647,6 +647,16 @@ namespace platf {
       return false;
     }
 
+    /**
+     * @brief Whether source timestamps must reach the client without normalization.
+     * @details Initialized before publishing this display and immutable for its
+     *          lifetime, including after capture fails. Encoder threads may read
+     *          this independently of mutable capture delivery state.
+     */
+    [[nodiscard]] virtual bool preserves_source_presentation_timestamps() const {
+      return false;
+    }
+
     virtual bool get_hdr_metadata(SS_HDR_METADATA &metadata) {
       std::memset(&metadata, 0, sizeof(metadata));
       return false;

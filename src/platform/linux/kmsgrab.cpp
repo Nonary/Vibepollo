@@ -1069,6 +1069,10 @@ namespace platf {
         return presentation_mode.event_capture_enabled();
       }
 
+      [[nodiscard]] bool preserves_source_presentation_timestamps() const override {
+        return presentation_timestamps_validated;
+      }
+
       bool is_hdr() {
         if (!hdr_metadata_blob_id || *hdr_metadata_blob_id == 0) {
           return false;
@@ -1568,6 +1572,10 @@ namespace platf {
         }
 
         presentation_mode.activate();
+        // Latched only after both presentation ABIs validate, before this
+        // display is published. Capture errors must not change encoder policy
+        // for images already queued from this generation.
+        presentation_timestamps_validated = true;
         presentation_rate_limiter.reset();
         last_source_presentation_timestamp.reset();
         last_capture_delivery_timestamp.reset();
@@ -1922,9 +1930,9 @@ namespace platf {
                 ).count()
               );
 
-              // Presentation time remains source metadata. Actual pacing is
-              // controlled by capture delivery, because GameStream clients do
-              // not schedule frame display from this RTP timestamp.
+              // Keep presentation time for timestamp-aware client playout.
+              // The host delivery ceiling uses actual capture delivery time,
+              // independently of the source timestamp carried in RTP.
               img_out->frame_timestamp = captured_timestamp;
               img_out->capture_pacing_timestamp = capture_delivery_timestamp;
             }
@@ -2088,6 +2096,7 @@ namespace platf {
       std::optional<uint64_t> hdr_metadata_blob_id;
       bool direct_import_required {false};
       pacing::presentation_mode_t presentation_mode;
+      bool presentation_timestamps_validated {false};
       pacing::presentation_rate_limiter_t presentation_rate_limiter;
       bool presentation_pending {false};
       pacing::presentation_latch_t presentation_latch;
