@@ -497,6 +497,10 @@ jobs:
             -o build/native-amf-lifecycle-test.exe
           ./build/native-amf-lifecycle-test.exe
 
+      - name: Run Windows regression tests
+        if: inputs.build_tests
+        run: ctest --test-dir build/tests --output-on-failure --parallel 2 --timeout 120
+
       - name: Install cv2pdb
         if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
         shell: pwsh
