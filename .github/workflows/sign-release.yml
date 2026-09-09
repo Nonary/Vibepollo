@@ -680,7 +680,8 @@ jobs:
           done
 
       - name: Close fixed issues for release
-        if: inputs.release_draft == false
+        # Stable backports do not necessarily contain every issue labeled fixed.
+        if: inputs.release_draft == false && !contains(inputs.release_tag, '-stable')
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ steps.create-release.outputs.release_id }}
