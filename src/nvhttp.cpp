@@ -71,6 +71,7 @@
   #include "platform/windows/virtual_display_cleanup.h"
 #elif defined(__linux__)
   #include "platform/linux/private_display.h"
+  #include "platform/linux/mangohud_policy.h"
   #include "src/platform/linux/display_backend.h"
   #include "platform/linux/display_power.h"
   #include "platform/linux/private_display_resume_policy.h"
@@ -3635,6 +3636,34 @@ namespace nvhttp {
       tree.put("root.uniqueid", http::unique_id);
       tree.put("root.HttpsPort", net::map_port(PORT_HTTPS));
       tree.put("root.ExternalPort", net::map_port(PORT_HTTP));
+
+      // Optional Moonlight extension. These describe integration/configuration,
+      // not proof that a particular game's limiter was successfully applied.
+      // Virtual-display limiting is independent of the manual limiter switch.
+      // Report the configured default display path; app/client overrides and
+      // per-game provider success are resolved later at launch.
+      const bool automatic_virtual_limiter =
+        config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled &&
+        config::frame_limiter.virtual_display_limiter_enabled();
+#ifdef _WIN32
+      tree.put("root.FrameLimiterSupported", 1);
+      tree.put("root.FrameLimiterEnabled", automatic_virtual_limiter || (config::frame_limiter.enable &&
+        !boost::iequals(config::frame_limiter.provider, "none") &&
+        !boost::iequals(config::frame_limiter.provider, "disabled")) ? 1 : 0);
+      tree.put("root.VirtualDisplayFrameLimiterEnabled", config::frame_limiter.virtual_display_limiter_enabled() ? 1 : 0);
+      tree.put("root.FrameLimiterFpsLimitMilliHz", config::frame_limiter.fps_limit_millihz);
+#elif defined(__linux__)
+      const bool limiter_provider_selected = platf::mangohud::linux_provider_selected(config::frame_limiter.provider);
+      tree.put("root.FrameLimiterSupported", 1);
+      tree.put("root.FrameLimiterEnabled", limiter_provider_selected && (config::frame_limiter.enable || automatic_virtual_limiter) ? 1 : 0);
+      tree.put("root.VirtualDisplayFrameLimiterEnabled", limiter_provider_selected && config::frame_limiter.virtual_display_limiter_enabled() ? 1 : 0);
+      tree.put("root.FrameLimiterFpsLimitMilliHz", config::frame_limiter.fps_limit_millihz);
+#else
+      tree.put("root.FrameLimiterSupported", 0);
+      tree.put("root.FrameLimiterEnabled", 0);
+      tree.put("root.VirtualDisplayFrameLimiterEnabled", 0);
+      tree.put("root.FrameLimiterFpsLimitMilliHz", 0);
+#endif
 #ifdef _WIN32
       // Artemis checks /serverinfo before it offers virtual-display launches.
       // Publish the Windows capability and its current driver state for both
