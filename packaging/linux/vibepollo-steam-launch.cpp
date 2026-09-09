@@ -23,6 +23,7 @@
 #include <iterator>
 #include <iostream>
 #include <optional>
+#include <set>
 #include <pwd.h>
 #include <string>
 #include <string_view>
@@ -160,9 +161,11 @@ namespace {
     char **argv,
     std::uint32_t &app_id
   ) {
-    if (argc != 9 || !parse_u32(argv[1], app_id) || app_id == 0) {
+    if (argc != 9 || (std::string_view(argv[1]) != "--global" &&
+                      (!parse_u32(argv[1], app_id) || app_id == 0))) {
       return std::nullopt;
     }
+    if (std::string_view(argv[1]) == "--global") app_id = 1;
     platf::steam::session_launch_policy_t policy;
     policy.provider = argv[2];
     if (!parse_u32(argv[3], policy.limit_millihz)) {
@@ -362,6 +365,37 @@ namespace {
                           std::to_string(ready_timeout_ms / 1000) + " s; launching anyway");
   }
 
+  int global_limiter(char **argv) {
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
+        !install_clean_environment()) return 126;
+    std::set<std::string> roots;
+    try {
+      scoped_metadata_limits limits;
+      if (!limits.armed()) return 126;
+      const auto libraries = platf::steam::default_library_roots();
+      for (const auto &root : libraries) roots.insert(root.string());
+      for (const auto &game : platf::steam::discover(libraries)) {
+        if (!game.library_path.empty()) roots.insert(game.library_path.string());
+        if (!game.proton_path.empty()) roots.insert(game.proton_path.string());
+      }
+    } catch (...) {
+      report(LOG_ERR, "could not discover Proton installations for global limiting");
+      return 1;
+    }
+    std::vector<std::string> arguments {
+      "/usr/bin/python3", "-I",
+      "/usr/libexec/vibeshine/vibepollo-global-limiter.py",
+      argv[2], argv[3], argv[4], argv[5], argv[6]
+    };
+    arguments.insert(arguments.end(), roots.begin(), roots.end());
+    std::vector<char *> pointers;
+    for (auto &argument : arguments) pointers.push_back(argument.data());
+    pointers.push_back(nullptr);
+    execv(pointers.front(), pointers.data());
+    report(LOG_ERR, "could not execute the global Proton limiter helper");
+    return 126;
+  }
+
   int launch(std::uint32_t app_id,
              const platf::steam::session_launch_policy_t &policy) {
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
@@ -445,5 +479,6 @@ int main(int argc, char **argv) {
                  "PRESET GRAPH METHOD SMOOTH QUEUE\n";
     return 2;
   }
+  if (std::string_view(argv[1]) == "--global") return global_limiter(argv);
   return launch(app_id, *policy);
 }

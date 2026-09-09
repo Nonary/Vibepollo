@@ -161,6 +161,7 @@ else()
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms-quiesce"
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-machine-host"
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-controller"
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-global-limiter.py"
                 "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-install"
                 DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
         install(TARGETS vibepollo_session_exec vibepollo_app_supervisor
@@ -352,6 +353,7 @@ set(CPACK_RPM_PACKAGE_REQUIRES "\
             ${CPACK_RPM_PLATFORM_PACKAGE_REQUIRES} \
             /usr/bin/pactl, \
             /usr/bin/parec, \
+            /usr/bin/python3, \
             /usr/bin/wayland-info, \
             /usr/bin/xdpyinfo, \
             libcap >= 2.22, \
