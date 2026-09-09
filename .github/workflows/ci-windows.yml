@@ -452,7 +452,7 @@ jobs:
           fi
 
           mkdir -p build
-          # Release tag builds omit test targets; ordinary reusable-workflow calls retain them.
+          # The caller controls regression-test targets for both branch and release builds.
           cmake \
             -B build \
             -G Ninja \
