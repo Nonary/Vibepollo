@@ -927,3 +927,50 @@ for (const platform of ['linux', 'windows'] as const) {
     expect((await download).suggestedFilename()).toBe('vibepollo_logs.zip');
   });
 }
+
+test('Linux shows an automatic update notice across pages and retries failed checks', async ({
+  page,
+}) => {
+  await host(page);
+  let unavailable = true;
+  await page.route('https://api.github.com/repos/Nonary/Vibepollo/releases', async (route) => {
+    await route.fulfill(
+      unavailable
+        ? { status: 403, json: { message: 'API rate limit exceeded' } }
+        : {
+            json: [
+              {
+                tag_name: 'v1.1.0',
+                prerelease: false,
+                html_url: 'https://github.com/Nonary/Vibepollo/releases/tag/v1.1.0',
+              },
+            ],
+          },
+    );
+  });
+  await page.goto('/v2/');
+  const notice = page.locator('.update-notice');
+  await expect(
+    notice.getByText('Release information is unavailable. Try again later.'),
+  ).toBeVisible();
+  unavailable = false;
+  await notice.getByRole('button', { name: 'Check for updates' }).click();
+  await expect(notice.getByText('Vibepollo 1.1.0 is available')).toBeVisible();
+  await expect(notice.getByRole('link', { name: 'Read release notes' })).toHaveAttribute(
+    'href',
+    'https://github.com/Nonary/Vibepollo/releases/tag/v1.1.0',
+  );
+  await page.getByRole('link', { name: 'Library', exact: true }).click();
+  await expect(notice.getByText('Vibepollo 1.1.0 is available')).toBeVisible();
+});
+
+test('Linux stable install does not advertise a prerelease without opt-in', async ({ page }) => {
+  await host(page);
+  await page.route('https://api.github.com/repos/Nonary/Vibepollo/releases', async (route) => {
+    await route.fulfill({ json: [{ tag_name: 'v2.0.0-beta.1', prerelease: true }] });
+  });
+  const response = page.waitForResponse('https://api.github.com/repos/Nonary/Vibepollo/releases');
+  await page.goto('/v2/');
+  await response;
+  await expect(page.locator('.update-notice')).toHaveCount(0);
+});

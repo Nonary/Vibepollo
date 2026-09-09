@@ -1082,6 +1082,9 @@
         "loading": "Checking releases…"
       }
     },
+    "updates": {
+      "available": "Vibepollo {version} is available"
+    },
     "nav": {
       "api_tokens": "API tokens",
       "browser_stream": "Browser stream",
