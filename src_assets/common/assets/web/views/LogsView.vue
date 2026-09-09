@@ -439,23 +439,8 @@ async function copyVisible(): Promise<void> {
   }
 }
 
-function downloadVisible(): void {
-  error.value = '';
-  const blob = new Blob([exportedText()], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  anchor.href = url;
-  anchor.download = `vibepollo-${source.value}-${timestamp}.log`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-  notice.value = t(
-    'ui.logs.notice.downloaded',
-    { count: filteredLines.value.length.toLocaleString(locale.value || undefined) },
-    filteredLines.value.length,
-  );
+function downloadLogs(): void {
+  window.location.assign('/api/logs/export');
 }
 
 watch(source, () => {
@@ -674,11 +659,10 @@ onBeforeUnmount(() => {
               @click="copyVisible"
             />
             <AppButton
-              :label="t('ui.logs.action.download_text')"
+              :label="t('ui.maintenance.support.downloadLogs')"
               icon="download"
               size="compact"
-              :disabled="!filteredLines.length"
-              @click="downloadVisible"
+              @click="downloadLogs"
             />
           </div>
         </div>
