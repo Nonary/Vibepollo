@@ -1,14 +1,14 @@
 #pragma once
 
-#include <functional>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 namespace remote_display_topology {
 
@@ -96,6 +96,7 @@ namespace remote_display_topology {
     // transport-less Remote Monitor remains protected until an explicit owner
     // release, and a normal game may share the same stable client identity.
     std::size_t managed_client_identity_count() const;
+    bool normal_game_release_pending() const;
     std::vector<std::string> managed_client_identity_ids() const;
     std::vector<std::string> protected_remote_monitor_client_ids() const;
     bool generic_virtual_display_cleanup_allowed() const;
@@ -109,8 +110,15 @@ namespace remote_display_topology {
     activation_result_t resume_remote_monitor(const std::string &client_uuid);
     normal_game_reservation_t reserve_normal_game_identity(const std::string &client_uuid, const std::string &label, mode_t mode);
     bool reapply_composed_topology();
-    void rollback_normal_game_identity(const std::string &client_uuid, std::uint64_t token);
+    // True only when the caller may retire the platform output. Capture or
+    // Remote Monitor ownership, and stale tokens, must preserve it.
+    bool rollback_normal_game_identity(const std::string &client_uuid, std::uint64_t token);
     void release_normal_game_identity(const std::string &client_uuid, std::uint64_t token);
+    // Capture references outlive the app and retain its output through GPU
+    // teardown. Drop them after joining capture; finalize under the stream
+    // lifecycle gate so their destructors never perform topology mutations.
+    std::shared_ptr<void> retain_normal_game_capture(const std::string &client_uuid, std::uint64_t token);
+    void release_drained_normal_game_identities();
     void note_lease_lost(const std::string &client_uuid);
     void disconnect_monitor(const std::string &client_uuid);
     void unpair_client(const std::string &client_uuid);
@@ -129,6 +137,8 @@ namespace remote_display_topology {
       mode_t effective_mode;
       bool normal_game = false;
       std::uint64_t normal_game_token = 0;
+      bool normal_release_pending = false;
+      std::unordered_map<std::uint64_t, std::size_t> normal_capture_references;
       bool remote_monitor = false;
       bool lease_held = false;
       uint64_t generation = 0;
@@ -142,6 +152,8 @@ namespace remote_display_topology {
     };
 
     activation_result_t activate_locked(const std::string &client_uuid, client_state_t &state);
+    struct capture_reference_t;
+    void release_normal_game_identity_locked(const std::string &client_uuid, client_state_t &state);
     void release_locked(const std::string &client_uuid, client_state_t &state, const std::string &reason);
     static mode_t desired_mode(const client_state_t &state);
     void resolve_effective_mode_locked(const std::string &client_uuid, client_state_t &state);

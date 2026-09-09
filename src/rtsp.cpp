@@ -215,6 +215,8 @@ namespace rtsp_stream {
     snapshot->client_do_cmds = client_do_cmds;
     snapshot->client_undo_cmds = client_undo_cmds;
     snapshot->virtual_display = virtual_display;
+    snapshot->normal_vdd_identity_token = normal_vdd_identity_token;
+    snapshot->normal_vdd_owner_uuid = normal_vdd_owner_uuid;
     snapshot->virtual_display_guid_bytes = virtual_display_guid_bytes;
     snapshot->gen1_framegen_fix = gen1_framegen_fix;
     snapshot->gen2_framegen_fix = gen2_framegen_fix;

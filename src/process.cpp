@@ -3117,9 +3117,10 @@ namespace proc {
     _pipe.reset();
 
 #if defined(_WIN32) || defined(__linux__)
-    // Clear the normal role before cleanup admission. The coordinator removes
-    // only this stable identity when it has no retained Remote Monitor role;
-    // otherwise the shared display remains protected for Resume.
+    // Release only this app's normal-display role before deciding whether the
+    // process-wide display restore is now allowed. The coordinator keeps that
+    // display protected while capture references drain or a retained Remote
+    // Monitor still owns the same client identity.
     if (!_active_client_uuid.empty() && _active_client_vdd_identity_token != 0) {
       remote_display_topology::instance().release_normal_game_identity(
         _active_client_uuid,
@@ -3128,9 +3129,8 @@ namespace proc {
     }
 #endif
 
-    // Sample ownership after releasing this app's normal-display role. A
-    // retained Remote Monitor (including one sharing this client's identity)
-    // keeps cleanup and REVERT pending, while the final owner permits them.
+    // A draining normal capture or retained Remote Monitor keeps cleanup and
+    // REVERT pending until the final capture reference has been released.
     const bool other_streaming_session_active =
       stream::session::has_shared_runtime_owner();
 
