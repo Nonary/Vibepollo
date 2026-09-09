@@ -77,7 +77,10 @@ for validation and remaining work.
 
 ## Does Vibepollo aim to replace Sunshine or Apollo?
 
-No. Vibepollo is intended as a **complementary fork**, not a replacement.
+Yes. Vibepollo replaces Sunshine or Apollo as your streaming host. On Linux,
+use one host installation at a time: replace an existing Sunshine, Vibeshine,
+or Vibepollo installation when installing Vibepollo, and preserve your
+configuration and pairing data during the transition.
 
 
 ## Will Vibepollo’s features merge back into Sunshine or Apollo?
