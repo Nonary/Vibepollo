@@ -141,6 +141,13 @@ interface VulkanStatus {
 interface MutationResult {
   status?: boolean;
   error?: string;
+  removed?: number;
+}
+
+interface LibraryApp {
+  uuid?: string;
+  name?: string;
+  'playnite-managed'?: string;
 }
 
 type IntegrationId =
@@ -156,6 +163,7 @@ type SteamGameFilter = 'all' | 'included' | 'excluded';
 type PendingAction =
   | 'playnite-install'
   | 'playnite-uninstall'
+  | 'playnite-purge-autosync'
   | 'vigem-install'
   | 'vulkan-register';
 
@@ -171,6 +179,9 @@ interface IntegrationSummary {
 const { t } = useI18n();
 const system = useSystemStore();
 const playnite = ref<PlayniteStatus | null>(null);
+const libraryApps = ref<LibraryApp[]>([]);
+const libraryAppsLoaded = ref(false);
+const playniteLaunching = ref(false);
 const steam = ref<SteamStatus | null>(null);
 const steamGames = ref<SteamGame[]>([]);
 const steamGamesLoading = ref(false);
@@ -213,6 +224,10 @@ const notice = ref('');
 const confirmOpen = ref(false);
 const pendingAction = ref<PendingAction | null>(null);
 
+const playniteAutoSyncCount = computed(
+  () => libraryApps.value.filter((app) => app['playnite-managed'] === 'auto').length,
+);
+
 const isWindows = computed(() =>
   String(system.metadata?.platform ?? '')
     .toLocaleLowerCase()
@@ -247,6 +262,16 @@ function lutrisGameName(game: LutrisGame): string {
   return (
     String(game.name ?? '').trim() ||
     t('ui.integrations.lutris.unknownGame', { id: lutrisGameId(game) })
+  );
+}
+
+function parseLibraryApps(payload: unknown): LibraryApp[] {
+  const raw =
+    payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? (payload as { apps?: unknown }).apps
+      : payload;
+  return (Array.isArray(raw) ? raw : []).filter((app): app is LibraryApp =>
+    Boolean(app && typeof app === 'object' && !Array.isArray(app)),
   );
 }
 
@@ -489,9 +514,11 @@ async function load(preserveNotice = false): Promise<void> {
         apiGet<LosslessStatus>('/api/lossless_scaling/status'),
         apiGet<VigemStatus>('/api/vigembus/status'),
         apiGet<VulkanStatus>('/api/health/vulkan-hdr-layer'),
+        apiGet<unknown>('/api/apps'),
       ])
     : [];
-  const [playniteResult, rtssResult, losslessResult, vigemResult, vulkanResult] = windowsResults;
+  const [playniteResult, rtssResult, losslessResult, vigemResult, vulkanResult, appsResult] =
+    windowsResults;
 
   if (steamResult?.status === 'fulfilled') steam.value = steamResult.value;
   else if (steamResult)
@@ -533,6 +560,14 @@ async function load(preserveNotice = false): Promise<void> {
   if (vulkanResult?.status === 'fulfilled') vulkan.value = vulkanResult.value;
   else if (vulkanResult)
     nextErrors.vulkan = message(vulkanResult.reason, t('ui.integrations.errors.vulkanStatus'));
+
+  if (appsResult?.status === 'fulfilled') {
+    libraryApps.value = parseLibraryApps(appsResult.value);
+    libraryAppsLoaded.value = true;
+  } else if (appsResult) {
+    libraryAppsLoaded.value = false;
+    nextErrors.playnite = message(appsResult.reason, t('ui.integrations.errors.playniteApps'));
+  }
 
   if (steamResult?.status === 'fulfilled') await loadSteamGames();
   if (lutrisResult?.status === 'fulfilled') await loadLutrisGames();
@@ -898,6 +933,20 @@ const dialogCopy = computed(() => {
         confirm: t('ui.integrations.actions.removeExtension'),
         tone: 'danger' as const,
       };
+    case 'playnite-purge-autosync': {
+      const count = playniteAutoSyncCount.value;
+      return {
+        title: t('ui.integrations.confirm.playnitePurgeAutosyncTitle'),
+        description: t(
+          count === 1
+            ? 'ui.integrations.confirm.playnitePurgeAutosyncDescriptionOne'
+            : 'ui.integrations.confirm.playnitePurgeAutosyncDescriptionOther',
+          { count },
+        ),
+        confirm: t('ui.integrations.actions.purgeAutosync'),
+        tone: 'danger' as const,
+      };
+    }
     case 'vigem-install':
       return {
         title: vigem.value?.installed
@@ -949,6 +998,15 @@ async function runConfirmedAction(): Promise<void> {
     } else if (action === 'playnite-uninstall') {
       result = await apiPost<MutationResult>('/api/playnite/uninstall', { restart: false });
       notice.value = t('ui.integrations.notices.playniteRemoved');
+    } else if (action === 'playnite-purge-autosync') {
+      result = await apiPost<MutationResult>('/api/apps/purge_autosync', {});
+      const removed = result.removed ?? playniteAutoSyncCount.value;
+      notice.value = t(
+        removed === 1
+          ? 'ui.integrations.notices.playniteAutosyncPurgedOne'
+          : 'ui.integrations.notices.playniteAutosyncPurgedOther',
+        { count: removed },
+      );
     } else if (action === 'vigem-install') {
       result = await apiPost<MutationResult>('/api/vigembus/install', {});
       notice.value = t('ui.integrations.notices.vigemCompleted');
@@ -968,12 +1026,56 @@ async function runConfirmedAction(): Promise<void> {
         ? 'playnite'
         : action.startsWith('vigem')
           ? 'vigem'
-          : 'vulkan']: message(cause, t('ui.integrations.errors.actionFailed')),
+          : 'vulkan']: message(
+        cause,
+        action === 'playnite-purge-autosync'
+          ? t('ui.integrations.errors.playnitePurgeFailed')
+          : t('ui.integrations.errors.actionFailed'),
+      ),
     };
   } finally {
     actionBusy.value = false;
     pendingAction.value = null;
   }
+}
+
+async function launchPlaynite(): Promise<void> {
+  const status = playnite.value;
+  if (
+    !isWindows.value ||
+    playniteLaunching.value ||
+    !status ||
+    status.enabled === false ||
+    status.installed !== true ||
+    !status.extensions_dir ||
+    status.active
+  )
+    return;
+  playniteLaunching.value = true;
+  delete errors.value.playnite;
+  notice.value = '';
+  try {
+    const result = await apiPost<MutationResult>('/api/playnite/launch', {});
+    if (result.status === false) {
+      throw new Error(result.error || t('ui.integrations.errors.playniteLaunchRejected'));
+    }
+    notice.value = t('ui.integrations.notices.playniteLaunched');
+    window.setTimeout(() => void load(true), 1000);
+  } catch (cause) {
+    errors.value = {
+      ...errors.value,
+      playnite: message(cause, t('ui.integrations.errors.playniteLaunchFailed')),
+    };
+  } finally {
+    playniteLaunching.value = false;
+  }
+}
+
+function requestPurgeAutoSync(): void {
+  if (!isWindows.value || actionBusy.value || !libraryAppsLoaded.value) return;
+  if (!playniteAutoSyncCount.value) return;
+  pendingAction.value = 'playnite-purge-autosync';
+  confirmOpen.value = true;
 }
 
 async function syncPlaynite(): Promise<void> {
@@ -1992,6 +2094,21 @@ function libraryRequest(
           </template>
           <template v-else-if="summary.id === 'playnite'">
             <AppButton
+              v-if="
+                playnite?.enabled !== false &&
+                playnite?.installed === true &&
+                Boolean(playnite?.extensions_dir) &&
+                !playnite?.active
+              "
+              icon="play"
+              :label="t('ui.integrations.actions.launchPlaynite')"
+              variant="primary"
+              size="compact"
+              :busy="playniteLaunching"
+              :busy-label="t('ui.integrations.actions.launchingPlaynite')"
+              @click="launchPlaynite"
+            />
+            <AppButton
               v-if="providerSupported(system.metadata, 'playnite_toggle')"
               :label="
                 playnite?.enabled === false
@@ -2034,6 +2151,15 @@ function libraryRequest(
               variant="tertiary"
               size="compact"
               @click="requestAction('playnite-uninstall')"
+            />
+            <AppButton
+              v-if="libraryAppsLoaded && playniteAutoSyncCount > 0"
+              class="integration-action--danger"
+              :label="t('ui.integrations.actions.purgeAutosync')"
+              variant="tertiary"
+              size="compact"
+              :disabled="actionBusy"
+              @click="requestPurgeAutoSync"
             />
           </template>
           <AppButton

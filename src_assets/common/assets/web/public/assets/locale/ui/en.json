@@ -522,7 +522,10 @@
         "install": "Install",
         "installDriver": "Install driver",
         "installExtension": "Install extension",
+        "launchPlaynite": "Launch Playnite",
+        "launchingPlaynite": "Launching Playnite",
         "enable": "Enable",
+        "purgeAutosync": "Remove auto-synced apps",
         "refreshStatus": "Refresh status",
         "registerLayer": "Register layer",
         "removeExtension": "Remove extension",
@@ -541,6 +544,9 @@
         "playniteInstallTitle": "Install the Playnite extension?",
         "playniteRemoveDescription": "Playnite library synchronization will stop until the extension is installed again.",
         "playniteRemoveTitle": "Remove the Playnite extension?",
+        "playnitePurgeAutosyncDescriptionOne": "There is currently {count} Playnite-managed auto-synced application entry. Confirm to remove auto-synced entries only; manually added apps and other providers are kept.",
+        "playnitePurgeAutosyncDescriptionOther": "There are currently {count} Playnite-managed auto-synced application entries. Confirm to remove auto-synced entries only; manually added apps and other providers are kept.",
+        "playnitePurgeAutosyncTitle": "Remove auto-synced Playnite apps?",
         "playniteUpdateTitle": "Update the Playnite extension?",
         "vigemDescription": "The bundled elevated installer will modify the virtual controller driver on this host.",
         "vigemInstallTitle": "Install ViGEmBus?",
@@ -564,6 +570,10 @@
         "lutrisSyncFailed": "Unable to synchronize Lutris.",
         "lutrisSyncRejected": "Lutris did not accept the synchronization request.",
         "playniteStatus": "Playnite status is unavailable.",
+        "playniteApps": "The application library could not be loaded for a safe purge.",
+        "playniteLaunchFailed": "Unable to launch Playnite.",
+        "playniteLaunchRejected": "Playnite did not accept the launch request.",
+        "playnitePurgeFailed": "Unable to remove auto-synced Playnite apps.",
         "playniteSyncFailed": "Unable to synchronize Playnite.",
         "playniteSyncRejected": "Playnite did not accept the synchronization request.",
         "providerUpdateFailed": "Unable to update integration settings.",
@@ -591,7 +601,10 @@
         "shortDescription": "Scaling and frame-generation launch support."
       },
       "notices": {
+        "playniteAutosyncPurgedOne": "Removed {count} Playnite-managed auto-synced application entry.",
+        "playniteAutosyncPurgedOther": "Removed {count} Playnite-managed auto-synced application entries.",
         "playniteInstalled": "The Playnite extension was installed.",
+        "playniteLaunched": "Playnite launch requested.",
         "playniteRemoved": "The Playnite extension was removed.",
         "playniteSynced": "Playnite synchronization completed.",
         "mangohudUpdated": "MangoHUD settings updated.",
@@ -770,6 +783,7 @@
         "editLabel": "Edit {name}",
         "menuLabel": "Actions for {name}",
         "moreLabel": "More actions for {name}",
+        "removePlaynite": "Remove Playnite entries",
         "showMore": "Show more",
         "tryAgain": "Try again",
         "sources": "Manage sources"
@@ -818,6 +832,15 @@
       "page": {
         "description": "Your games and applications, ready for your next stream.",
         "title": "Library"
+      },
+      "purgePlaynite": {
+        "busy": "Removing Playnite entries",
+        "confirm": "Remove Playnite entries",
+        "descriptionOne": "There is currently {count} Playnite-linked application entry. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept.",
+        "descriptionOther": "There are currently {count} Playnite-linked application entries. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept.",
+        "errorTitle": "Playnite removal failed",
+        "failed": "One or more Playnite entries could not be removed.",
+        "title": "Remove Playnite entries?"
       },
       "progress": {
         "shown": "{visible} of {total} shown"
@@ -979,6 +1002,9 @@
       "description": "Version details, support artifacts, recovery state, and administrative access.",
       "errors": {
         "actionFailed": "The maintenance action failed.",
+        "crashManifest": "The crash bundle manifest could not be loaded. No download was started.",
+        "crashPart": "This crash bundle part could not be downloaded.",
+        "crashPartsFailed": "Crash bundle parts {parts} failed. Retry those parts individually.",
         "crashDismiss": "Unable to dismiss the crash notice.",
         "crashStatus": "Crash-dump status is unavailable.",
         "metadata": "Installed version metadata is unavailable.",
@@ -992,6 +1018,7 @@
       },
       "notices": {
         "crashAcknowledged": "The crash notice was acknowledged.",
+        "crashBundleStarted": "Crash bundle downloads started. If your browser blocked multiple downloads, use the individual part buttons below.",
         "credentialsUpdated": "Web UI credentials were updated.",
         "restartRequested": "Restart requested. Reconnect after the Vibepollo service comes back online.",
         "sessionRevoked": "{browser} was revoked.",
@@ -1040,9 +1067,23 @@
         "windowsOnly": "Windows only"
       },
       "support": {
+        "crashDownloadFailed": "Crash bundle download failed",
+        "crashPart": "Part {index}",
+        "crashPartsDescription": "Each part is downloaded separately so large bundles do not need to be held in the browser at once.",
+        "crashPartsTitle": "Crash bundle parts",
         "description": "Download local diagnostics before changing recovery or integration state.",
+        "downloadAgain": "Download again",
         "downloadCrash": "Download crash bundle",
+        "downloadPart": "Download part",
+        "downloadingBundle": "Downloading bundle",
+        "downloadingPart": "Downloading",
+        "directPartLink": "Direct link",
         "downloadLogs": "Download logs bundle",
+        "legacyHost": "Older host",
+        "multipleDownloadHint": "Browsers may block automatic multiple downloads. Allow them for this host or download each part below.",
+        "partStarted": "Download started",
+        "preparingCrash": "Preparing bundle",
+        "retryPart": "Retry part",
         "title": "Support bundles",
         "windowsUnavailable": "Windows support-bundle endpoints are not available on this platform."
       },
@@ -1113,9 +1154,10 @@
       },
       "connecting_detail": "Negotiating a direct WebRTC stream with this host.",
       "controls": {
-        "description": "Send mouse, keyboard, and wheel input only while the stream surface has focus.",
+        "description": "Focus the stream for mouse, keyboard, and wheel input. Connected gamepads forward while input is enabled and this window is focused and visible.",
         "input": "Forward browser input",
-        "input_help": "Click the stream, then use its mouse and keyboard controls.",
+        "input_help": "Click the stream, then use its mouse, keyboard, and wheel controls.",
+        "performance_overlay_help": "Show connection, decoder, and frame pacing details while streaming.",
         "title": "Browser controls"
       },
       "desktop": "Desktop",
@@ -1163,7 +1205,10 @@
         "host_unverified": "The selected capture adapter has not completed encoder validation.",
         "invalid_bitrate": "Bitrate must be an integer between {min} and {max} Kbps.",
         "invalid_dimensions": "Width and height must be even values between {min} and {max}.",
-        "invalid_fps": "Frame rate must be an integer between {min} and {max}."
+        "invalid_fps": "Frame rate must be an integer between {min} and {max}.",
+        "invalid_frame_age": "Maximum frame age must be an integer between {min} and {max} frames for this frame rate.",
+        "invalid_pacing_mode": "Choose a valid browser pacing mode.",
+        "invalid_pacing_slack": "Pacing slack must be an integer between {min} and {max} milliseconds."
       },
       "refreshing": "Refreshing browser stream readiness",
       "settings": {
@@ -1173,6 +1218,7 @@
         "codec": "Video codec",
         "description": "Unavailable options stay disabled instead of silently falling back to another codec or SDR.",
         "fps": "Frame rate",
+        "frame_age_help": "Frames older than {milliseconds} ms at {fps} FPS are discarded before playback.",
         "hdr": "Use HDR",
         "hdr_forced_off": "HDR is disabled by the host display policy.",
         "hdr_forced_on": "HDR is required by the host display policy. Choose a confirmed HDR-capable codec.",
@@ -1431,10 +1477,12 @@
       "history": {
         "actions": "Actions",
         "client_and_game": "Client and game",
-        "description": "The latest 50 completed sessions stored by this host.",
+        "description": "Browse completed sessions retained by this host.",
         "empty_description": "Completed streams will appear here when session history is available.",
         "empty_title": "No session history",
+        "next_page": "Next page",
         "outcome": "Outcome",
+        "previous_page": "Previous page",
         "stream": "Stream",
         "table_caption": "Recent completed streaming sessions"
       },
@@ -1721,6 +1769,20 @@
       },
       "integrations": {
         "automatic_path_hint": "This path was detected on the host. It is not saved until you choose “Save detected path”; leaving it this way keeps automatic detection.",
+        "browse_computer": "This PC",
+        "browse_description": "Choose an executable from the host filesystem. Use the selection to update this draft, then save settings to apply it.",
+        "browse_empty": "This folder has no executable files or folders.",
+        "browse_entries": "Host filesystem entries",
+        "browse_executable": "Executable",
+        "browse_failed": "The host folder could not be read.",
+        "browse_folder": "Folder",
+        "browse_host": "Browse host",
+        "browse_host_hint": "Choose LosslessScaling.exe from the host. Browser-local files are not used.",
+        "browse_loading": "Reading host folder…",
+        "browse_parent": "Parent folder",
+        "browse_path": "Host folder",
+        "browse_selected": "Selected executable: {path}",
+        "browse_title": "Choose Lossless Scaling executable",
         "browse_detected": "Browse detected paths",
         "checking": "Checking…",
         "checking_description": "Checking the host for a usable installation.",
@@ -2369,5 +2431,8 @@
       "host_status_unavailable": "Host status is temporarily unavailable.",
       "unreachable": "Unable to reach Vibepollo."
     }
+  },
+  "sessions": {
+    "history_performance_title": "Session performance"
   }
 }
