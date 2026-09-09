@@ -5369,7 +5369,6 @@ VDISPLAY_SUDOVDA::ensure_display_result VDISPLAY_SUDOVDA::ensure_display(
     1,
     false,
     true,
-    false,
     false
   );
   if (!display_info) {
