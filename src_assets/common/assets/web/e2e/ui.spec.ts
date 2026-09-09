@@ -905,3 +905,25 @@ test('initial library setup refreshes apps and persists editable settings', asyn
   await dialog.getByRole('button', { name: 'Next: Library settings' }).click();
   await expect(dialog.getByRole('spinbutton', { name: 'Recent games', exact: true })).toHaveValue('6');
 });
+
+for (const platform of ['linux', 'windows'] as const) {
+  test(`${platform} logs download requests the retained bundle even with an empty viewer`, async ({
+    page,
+  }) => {
+    await host(page, platform, {});
+    await page.route('**/api/logs?*', (route) =>
+      route.fulfill({ body: '', contentType: 'text/plain' }),
+    );
+    await page.route('**/api/logs/export', (route) =>
+      route.fulfill({
+        body: 'test bundle',
+        contentType: 'application/zip',
+        headers: { 'Content-Disposition': 'attachment; filename="vibepollo_logs.zip"' },
+      }),
+    );
+    await page.goto('/v2/logs');
+    const download = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Download logs bundle' }).click();
+    expect((await download).suggestedFilename()).toBe('vibepollo_logs.zip');
+  });
+}
