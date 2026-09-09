@@ -3327,14 +3327,21 @@ TEST(DisplayHelperV2StateMachine, TickDrivesScheduledRestoreRetries) {
   harness.state_machine.handle_tick();
   EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 1);
 
-  // A generic event from the failed restore cannot reopen the exhausted
-  // window or bypass the existing event/backoff admission rule.
+  // Once the bounded window and feedback quiet period expire, a generic
+  // display change is new topology evidence and opens one retry opportunity.
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
     display_helper::v2::DisplayEvent::DisplayChange,
     harness.cancellation.current_generation()});
-  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 1);
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 2);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Recovery);
 
-  // Identity-bearing evidence re-opens an event window and retries immediately.
+  // Further evidence cannot dispatch a second worker while recovery is active.
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange,
+    harness.cancellation.current_generation()});
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 2);
+
+  // Identity-bearing evidence also preserves the in-flight recovery worker.
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
     display_helper::v2::DisplayEvent::DeviceArrival,
     harness.cancellation.current_generation()});
