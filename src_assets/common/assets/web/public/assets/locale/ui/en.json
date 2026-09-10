@@ -480,7 +480,8 @@
         "aria_label": "Device filters",
         "result_count": "{shown} of {total} device | {shown} of {total} devices",
         "search_label": "Search devices",
-        "search_placeholder": "Name or device ID"
+        "search_placeholder": "Name or device ID",
+        "status_all": "All devices"
       },
       "last_seen": {
         "active_now": "Active now",
@@ -1163,6 +1164,8 @@
       "desktop": "Desktop",
       "description": "Start and control a WebRTC stream directly in this browser.",
       "disconnect": "Disconnect stream",
+      "collapse": "Minimize stream",
+      "expand": "Expand stream",
       "errors": {
         "connect": "Unable to start browser stream",
         "connection_failed": "The browser stream connection failed.",
@@ -1178,6 +1181,7 @@
       "exit_fullscreen_swipe_hint": "Swipe down to exit",
       "fullscreen": "Fullscreen",
       "host_not_ready": "Browser streaming is not ready yet",
+      "input_paused": "Input forwarding pauses while the stream is minimized",
       "input_ready": "Input forwarding is ready",
       "input_unavailable": "Input forwarding is unavailable",
       "install": {

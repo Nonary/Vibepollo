@@ -43,6 +43,32 @@ import {
   type SettingsField,
   type SettingsOption,
 } from '@/configs/settingsSchema';
+import type {
+  Anime4kSize,
+  LosslessProfileKey,
+  LosslessProfileOverrides,
+  LosslessScalingMode,
+} from '@/components/app-edit/types';
+import {
+  LOSSLESS_ANIME_SIZES,
+  LOSSLESS_FLOW_MAX,
+  LOSSLESS_FLOW_MIN,
+  LOSSLESS_PROFILE_DEFAULTS,
+  LOSSLESS_RESOLUTION_MAX,
+  LOSSLESS_RESOLUTION_MIN,
+  LOSSLESS_SCALING_OPTIONS,
+  LOSSLESS_SCALING_SHARPENING,
+  LOSSLESS_SHARPNESS_MAX,
+  LOSSLESS_SHARPNESS_MIN,
+  clampFlow,
+  clampResolution,
+  clampSharpness,
+  defaultRtssFromTarget,
+  emptyLosslessProfileState,
+  parseNumeric,
+  parseLosslessOverrides,
+  parseLosslessProfileKey,
+} from '@/components/app-edit/lossless';
 
 interface PrepEntry {
   do: string;
@@ -102,7 +128,10 @@ interface EditorForm {
   losslessScalingFramegen: boolean;
   losslessScalingTargetFps: string;
   losslessScalingRtssLimit: string;
+  losslessScalingRtssTouched: boolean;
   losslessScalingProfile: string;
+  losslessScalingProfiles: Record<LosslessProfileKey, LosslessProfileOverrides>;
+  losslessProfileExtras: Record<LosslessProfileKey, Record<string, unknown>>;
   losslessScalingLaunchDelay: string;
   rtxHdrMode: RtxHdrMode;
   rtxHdrValuesOverride: boolean;
@@ -343,6 +372,7 @@ let formHydrationEpoch = 0;
 let gameCloseTimer: number | null = null;
 let selectedSteamArtworkRequest: Promise<void> | undefined;
 const form = reactive<EditorForm>(emptyForm());
+const resolutionInputMode = ref<'factor' | 'percent'>('factor');
 const overrideMetadata = ref<FrameGenMetadata>({});
 const originalRtxHdrLiveOverrides = ref<Record<string, unknown>>({});
 const liveRtxHdrStatus = ref<RtxHdrLiveStatus>('idle');
@@ -1217,6 +1247,8 @@ const editableKeys = new Set([
   'lossless-scaling-target-fps',
   'lossless-scaling-rtss-limit',
   'lossless-scaling-profile',
+  'lossless-scaling-recommended',
+  'lossless-scaling-custom',
   'lossless-scaling-launch-delay',
   'prep-cmd',
   'detached',
@@ -1232,6 +1264,23 @@ const transientKeys = new Set([
 
 function newUuid(): string {
   return crypto.randomUUID();
+}
+
+const LOSSLESS_PROFILE_OVERRIDE_KEYS = new Set([
+  'performance-mode',
+  'flow-scale',
+  'resolution-scale',
+  'scaling-type',
+  'sharpening',
+  'anime4k-size',
+  'anime4k-vrs',
+]);
+
+function losslessProfileExtras(input: unknown): Record<string, unknown> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  return Object.fromEntries(
+    Object.entries(input).filter(([key]) => !LOSSLESS_PROFILE_OVERRIDE_KEYS.has(key)),
+  );
 }
 
 function emptyForm(): EditorForm {
@@ -1268,10 +1317,10 @@ function emptyForm(): EditorForm {
     lutrisService: '',
     lutrisServiceId: '',
     elevated: false,
-    autoDetach: false,
-    waitAll: false,
+    autoDetach: true,
+    waitAll: true,
     excludeGlobalPrepCmd: false,
-    exitTimeout: '',
+    exitTimeout: '5',
     virtualScreen: false,
     virtualDisplayMode: '',
     virtualDisplayLayout: '',
@@ -1286,7 +1335,10 @@ function emptyForm(): EditorForm {
     losslessScalingFramegen: false,
     losslessScalingTargetFps: '',
     losslessScalingRtssLimit: '',
-    losslessScalingProfile: '',
+    losslessScalingRtssTouched: false,
+    losslessScalingProfile: 'recommended',
+    losslessScalingProfiles: emptyLosslessProfileState(),
+    losslessProfileExtras: { recommended: {}, custom: {} },
     losslessScalingLaunchDelay: '',
     rtxHdrMode: 'inherit',
     rtxHdrValuesOverride: false,
@@ -1349,6 +1401,170 @@ function asBoolean(value: unknown): boolean {
 
 function asNumberText(value: unknown): string {
   return typeof value === 'number' || typeof value === 'string' ? String(value) : '';
+}
+
+const activeLosslessProfile = computed<LosslessProfileKey>({
+  get: () => parseLosslessProfileKey(form.losslessScalingProfile),
+  set: (value) => {
+    form.losslessScalingProfile = value;
+  },
+});
+
+const activeLosslessOverrides = computed(
+  () => form.losslessScalingProfiles[activeLosslessProfile.value],
+);
+
+function losslessProfileValue<K extends keyof LosslessProfileOverrides>(
+  key: K,
+): LosslessProfileOverrides[K] | (typeof LOSSLESS_PROFILE_DEFAULTS)[LosslessProfileKey][K] {
+  const override = activeLosslessOverrides.value[key];
+  return override === null ? LOSSLESS_PROFILE_DEFAULTS[activeLosslessProfile.value][key] : override;
+}
+
+function setLosslessProfileValue<K extends keyof LosslessProfileOverrides>(
+  key: K,
+  value: LosslessProfileOverrides[K],
+): void {
+  const profile = activeLosslessProfile.value;
+  const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
+  const overrides = form.losslessScalingProfiles[profile];
+  overrides[key] = (value === defaults[key] ? null : value) as LosslessProfileOverrides[K];
+  if (key === 'scalingMode') {
+    const mode = value as LosslessScalingMode;
+    if (!LOSSLESS_SCALING_SHARPENING.has(mode)) overrides.sharpening = null;
+    if (mode !== 'anime4k') {
+      overrides.anime4kSize = null;
+      overrides.anime4kVrs = null;
+    }
+    if (mode === 'off') overrides.resolutionScale = null;
+  }
+}
+
+const losslessPerformanceModeModel = computed<boolean>({
+  get: () => Boolean(losslessProfileValue('performanceMode')),
+  set: (value) => setLosslessProfileValue('performanceMode', value),
+});
+const losslessFlowScaleModel = computed<number | null>({
+  get: () => Number(losslessProfileValue('flowScale')),
+  set: (value) => setLosslessProfileValue('flowScale', clampFlow(value)),
+});
+const losslessScalingModeModel = computed<LosslessScalingMode>({
+  get: () => (losslessProfileValue('scalingMode') ?? 'off') as LosslessScalingMode,
+  set: (value) => setLosslessProfileValue('scalingMode', value),
+});
+const losslessResolutionPercentModel = computed<number | null>({
+  get: () => Number(losslessProfileValue('resolutionScale')),
+  set: (value) => setLosslessProfileValue('resolutionScale', clampResolution(value)),
+});
+const losslessResolutionFactorModel = computed<number | null>({
+  get: () => Number((100 / Number(losslessResolutionPercentModel.value ?? 100)).toFixed(2)),
+  set: (value) => {
+    const normalized = Math.min(10, Math.max(1, Number(value) || 1));
+    const currentPercent = Number(losslessResolutionPercentModel.value ?? 100);
+    const currentFactor = Number((100 / currentPercent).toFixed(2));
+    const basePercent = 100 / normalized;
+    const clampToRange = (candidate: number) =>
+      Math.max(LOSSLESS_RESOLUTION_MIN, Math.min(LOSSLESS_RESOLUTION_MAX, candidate));
+    const snapDown = (candidate: number) => clampToRange(Math.floor(candidate / 5) * 5);
+    const snapUp = (candidate: number) => clampToRange(Math.ceil(candidate / 5) * 5);
+    const snapNearest = (candidate: number) => clampToRange(Math.round(candidate / 5) * 5);
+    const epsilon = 1e-3;
+
+    let nextPercent: number;
+    if (normalized > currentFactor + epsilon) {
+      nextPercent = snapDown(basePercent);
+    } else if (normalized < currentFactor - epsilon) {
+      nextPercent = snapUp(basePercent);
+    } else {
+      nextPercent = snapNearest(basePercent);
+    }
+
+    if (nextPercent === currentPercent) {
+      if (normalized > currentFactor + epsilon && currentPercent > LOSSLESS_RESOLUTION_MIN) {
+        nextPercent = clampToRange(currentPercent - 5);
+      } else if (normalized < currentFactor - epsilon && currentPercent < LOSSLESS_RESOLUTION_MAX) {
+        nextPercent = clampToRange(currentPercent + 5);
+      }
+    }
+    losslessResolutionPercentModel.value = nextPercent;
+  },
+});
+const losslessResolutionPercentDisplay = computed(() =>
+  Number(losslessResolutionPercentModel.value ?? 100).toFixed(0),
+);
+const losslessResolutionFactorDisplay = computed(() =>
+  Number(losslessResolutionFactorModel.value ?? 1).toFixed(2),
+);
+const losslessSharpeningModel = computed<number | null>({
+  get: () => Number(losslessProfileValue('sharpening')),
+  set: (value) => setLosslessProfileValue('sharpening', clampSharpness(value)),
+});
+const losslessAnimeSizeModel = computed<Anime4kSize>({
+  get: () => (losslessProfileValue('anime4kSize') ?? 'M') as Anime4kSize,
+  set: (value) => setLosslessProfileValue('anime4kSize', value),
+});
+const losslessAnimeVrsModel = computed<boolean>({
+  get: () => Boolean(losslessProfileValue('anime4kVrs')),
+  set: (value) => setLosslessProfileValue('anime4kVrs', value),
+});
+const losslessTargetModel = computed<number | null>({
+  get: () => parseNumeric(form.losslessScalingTargetFps),
+  set: (value) => {
+    form.losslessScalingTargetFps = value === null ? '' : String(value);
+    if (!form.losslessScalingRtssTouched && form.frameGenerationMode === 'lossless-scaling') {
+      const target = parseNumeric(value);
+      const defaultLimit = defaultRtssFromTarget(target);
+      form.losslessScalingRtssLimit = defaultLimit === null ? '' : String(defaultLimit);
+    }
+  },
+});
+const losslessRtssModel = computed<number | null>({
+  get: () => parseNumeric(form.losslessScalingRtssLimit),
+  set: (value) => {
+    const parsed = parseNumeric(value);
+    if (parsed === null) {
+      form.losslessScalingRtssTouched = false;
+      form.losslessScalingRtssLimit = '';
+      return;
+    }
+    form.losslessScalingRtssTouched = true;
+    form.losslessScalingRtssLimit = String(Math.min(360, Math.max(1, Math.round(parsed))));
+  },
+});
+const hasActiveLosslessOverrides = computed(() =>
+  Object.values(activeLosslessOverrides.value).some((value) => value !== null),
+);
+const showLosslessPanel = computed(
+  () => form.losslessScalingEnabled || form.frameGenerationMode === 'lossless-scaling',
+);
+const showLosslessResolution = computed(() => losslessScalingModeModel.value !== 'off');
+const showLosslessSharpening = computed(() =>
+  LOSSLESS_SCALING_SHARPENING.has(losslessScalingModeModel.value),
+);
+const showLosslessAnimeOptions = computed(() => losslessScalingModeModel.value === 'anime4k');
+const losslessScalingOptions = computed(() =>
+  LOSSLESS_SCALING_OPTIONS.map((option) => ({
+    value: option.value,
+    label: option.labelKey ? t(option.labelKey) : (option.label ?? String(option.value)),
+  })),
+);
+const losslessAnimeSizes = computed(() =>
+  LOSSLESS_ANIME_SIZES.map((option) => ({
+    value: option.value,
+    label: option.labelKey ? t(option.labelKey) : (option.label ?? String(option.value)),
+  })),
+);
+
+function resetActiveLosslessProfile(): void {
+  form.losslessScalingProfiles[activeLosslessProfile.value] = {
+    performanceMode: null,
+    flowScale: null,
+    resolutionScale: null,
+    scalingMode: null,
+    sharpening: null,
+    anime4kSize: null,
+    anime4kVrs: null,
+  };
 }
 
 function localizedError(cause: unknown, fallbackKey: string): string {
@@ -1441,12 +1657,16 @@ function frameGenerationModeFor(app: AppRecord): string {
   const configured = normalizeFrameGenerationMode(asString(app['frame-generation-mode']));
   if (configured) return configured;
 
+  const legacyLosslessConfigured =
+    asBoolean(app['lossless-scaling-framegen']) ||
+    parseNumeric(app['lossless-scaling-target-fps']) !== null ||
+    parseNumeric(app['lossless-scaling-rtss-limit']) !== null;
   const provider = normalizeFrameGenerationMode(asString(app['frame-generation-provider']));
-  if (provider === 'lossless-scaling' && asBoolean(app['lossless-scaling-framegen'])) {
+  if (provider === 'lossless-scaling' && legacyLosslessConfigured) {
     return provider;
   }
   if (['nvidia-smooth-motion', 'game-provided'].includes(provider)) return provider;
-  return asBoolean(app['lossless-scaling-framegen']) ? 'lossless-scaling' : '';
+  return legacyLosslessConfigured ? 'lossless-scaling' : '';
 }
 
 function clearFrameGenHealth(): void {
@@ -1495,6 +1715,23 @@ function hydrate(app: AppRecord): void {
     Object.entries(app).filter(([key]) => !editableKeys.has(key) && !transientKeys.has(key)),
   );
   const rtxHdrOverrides = extractRtxHdrOverrides(clonePlainRecord(app['config-overrides']));
+  const frameGenerationMode = frameGenerationModeFor(app);
+  const hasExplicitAutoDetach = Object.prototype.hasOwnProperty.call(app, 'auto-detach');
+  const hasExplicitWaitAll = Object.prototype.hasOwnProperty.call(app, 'wait-all');
+  const hasExplicitExitTimeout = Object.prototype.hasOwnProperty.call(app, 'exit-timeout');
+  const hasExplicitLosslessEnabled = Object.prototype.hasOwnProperty.call(
+    app,
+    'lossless-scaling-enabled',
+  );
+  const legacyLosslessFrameGen = asBoolean(app['lossless-scaling-framegen']);
+  const losslessProfiles = emptyLosslessProfileState();
+  losslessProfiles.recommended = parseLosslessOverrides(app['lossless-scaling-recommended']);
+  losslessProfiles.custom = parseLosslessOverrides(app['lossless-scaling-custom']);
+  const profileExtras = {
+    recommended: losslessProfileExtras(app['lossless-scaling-recommended']),
+    custom: losslessProfileExtras(app['lossless-scaling-custom']),
+  };
+  resolutionInputMode.value = 'factor';
 
   Object.assign(form, {
     uuid: appUuid(app),
@@ -1532,25 +1769,34 @@ function hydrate(app: AppRecord): void {
     lutrisService: asString(app['lutris-service']),
     lutrisServiceId: asString(app['lutris-service-id']),
     elevated: asBoolean(app.elevated),
-    autoDetach: asBoolean(app['auto-detach']),
-    waitAll: asBoolean(app['wait-all']),
+    autoDetach: hasExplicitAutoDetach ? asBoolean(app['auto-detach']) : true,
+    waitAll: hasExplicitWaitAll ? asBoolean(app['wait-all']) : true,
     excludeGlobalPrepCmd: asBoolean(app['exclude-global-prep-cmd']),
-    exitTimeout: asNumberText(app['exit-timeout']),
+    exitTimeout: hasExplicitExitTimeout
+      ? asNumberText(app['exit-timeout'])
+      : app['playnite-id']
+        ? '10'
+        : '5',
     virtualScreen: asBoolean(app['virtual-screen']),
     virtualDisplayMode: asString(app['virtual-display-mode']),
     virtualDisplayLayout: asString(app['virtual-display-layout']),
     prefer10BitSdr: app['prefer-10bit-sdr'] == null ? null : asBoolean(app['prefer-10bit-sdr']),
     ddConfigurationOption: asString(app['dd-configuration-option']),
     frameGenerationProvider: asString(app['frame-generation-provider']),
-    frameGenerationMode: frameGenerationModeFor(app),
+    frameGenerationMode,
     gen1FramegenFix: asBoolean(app['gen1-framegen-fix']),
     gen2FramegenFix: asBoolean(app['gen2-framegen-fix']),
     frameGenLimiterFix: asBoolean(app['frame-gen-limiter-fix']),
-    losslessScalingEnabled: asBoolean(app['lossless-scaling-enabled']),
-    losslessScalingFramegen: asBoolean(app['lossless-scaling-framegen']),
+    losslessScalingEnabled: hasExplicitLosslessEnabled
+      ? asBoolean(app['lossless-scaling-enabled'])
+      : frameGenerationMode !== 'lossless-scaling' && legacyLosslessFrameGen,
+    losslessScalingFramegen: frameGenerationMode === 'lossless-scaling' || legacyLosslessFrameGen,
     losslessScalingTargetFps: asNumberText(app['lossless-scaling-target-fps']),
     losslessScalingRtssLimit: asNumberText(app['lossless-scaling-rtss-limit']),
-    losslessScalingProfile: asString(app['lossless-scaling-profile']),
+    losslessScalingRtssTouched: parseNumeric(app['lossless-scaling-rtss-limit']) !== null,
+    losslessScalingProfile: parseLosslessProfileKey(app['lossless-scaling-profile']),
+    losslessScalingProfiles: losslessProfiles,
+    losslessProfileExtras: profileExtras,
     losslessScalingLaunchDelay: asNumberText(app['lossless-scaling-launch-delay']),
     rtxHdrMode: rtxHdrOverrides.mode,
     rtxHdrValuesOverride: rtxHdrOverrides.valuesOverride,
@@ -1587,6 +1833,7 @@ function hydrateNew(): void {
   const synchronizationEpoch = beginFormSynchronizationDeferral();
   const next = emptyForm();
   Object.assign(form, next);
+  resolutionInputMode.value = 'factor';
   sourceApp.value = null;
   commandWasArray.value = false;
   coverFailed.value = true;
@@ -1660,20 +1907,41 @@ async function validate(): Promise<boolean> {
   return false;
 }
 
-function setOptionalString(payload: AppRecord, key: string, value: string): void {
-  const normalized = value.trim();
+function setOptionalString(payload: AppRecord, key: string, value: unknown): void {
+  const normalized = value == null ? '' : String(value).trim();
   if (normalized) payload[key] = normalized;
   else delete payload[key];
 }
 
-function setOptionalInteger(payload: AppRecord, key: string, value: string): void {
-  if (value.trim()) payload[key] = Number(value);
+function setOptionalInteger(payload: AppRecord, key: string, value: unknown): void {
+  const normalized = value == null ? '' : String(value).trim();
+  if (normalized === '') {
+    delete payload[key];
+    return;
+  }
+  const parsed = Number(normalized);
+  if (Number.isFinite(parsed)) payload[key] = parsed;
   else delete payload[key];
 }
 
 function setOptionalBoolean(payload: AppRecord, key: string, value: boolean | null): void {
   if (value === null) delete payload[key];
   else payload[key] = value;
+}
+
+function losslessProfilePayload(
+  profile: LosslessProfileOverrides,
+  extras: Record<string, unknown>,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { ...extras };
+  if (profile.performanceMode !== null) payload['performance-mode'] = profile.performanceMode;
+  if (profile.flowScale !== null) payload['flow-scale'] = profile.flowScale;
+  if (profile.resolutionScale !== null) payload['resolution-scale'] = profile.resolutionScale;
+  if (profile.scalingMode !== null) payload['scaling-type'] = profile.scalingMode;
+  if (profile.sharpening !== null) payload.sharpening = profile.sharpening;
+  if (profile.anime4kSize !== null) payload['anime4k-size'] = profile.anime4kSize;
+  if (profile.anime4kVrs !== null) payload['anime4k-vrs'] = profile.anime4kVrs;
+  return payload;
 }
 
 function buildPayload(): AppRecord {
@@ -1712,6 +1980,18 @@ function buildPayload(): AppRecord {
       .filter(Boolean),
     'config-overrides': configOverrides,
   };
+  const recommendedProfile = losslessProfilePayload(
+    form.losslessScalingProfiles.recommended,
+    form.losslessProfileExtras.recommended,
+  );
+  const customProfile = losslessProfilePayload(
+    form.losslessScalingProfiles.custom,
+    form.losslessProfileExtras.custom,
+  );
+  if (Object.keys(recommendedProfile).length) {
+    payload['lossless-scaling-recommended'] = recommendedProfile;
+  }
+  if (Object.keys(customProfile).length) payload['lossless-scaling-custom'] = customProfile;
 
   setOptionalString(payload, 'output', form.output);
   setOptionalString(payload, 'display-output', form.displayOutput);
@@ -1749,9 +2029,18 @@ function buildPayload(): AppRecord {
   setOptionalString(payload, 'frame-generation-mode', form.frameGenerationMode);
   setOptionalString(payload, 'lossless-scaling-profile', form.losslessScalingProfile);
   setOptionalInteger(payload, 'exit-timeout', form.exitTimeout);
-  setOptionalInteger(payload, 'lossless-scaling-target-fps', form.losslessScalingTargetFps);
-  setOptionalInteger(payload, 'lossless-scaling-rtss-limit', form.losslessScalingRtssLimit);
-  setOptionalInteger(payload, 'lossless-scaling-launch-delay', form.losslessScalingLaunchDelay);
+  if (form.frameGenerationMode === 'lossless-scaling') {
+    setOptionalInteger(payload, 'lossless-scaling-target-fps', form.losslessScalingTargetFps);
+    setOptionalInteger(payload, 'lossless-scaling-rtss-limit', form.losslessScalingRtssLimit);
+  } else {
+    delete payload['lossless-scaling-target-fps'];
+    delete payload['lossless-scaling-rtss-limit'];
+  }
+  if (form.losslessScalingEnabled || form.frameGenerationMode === 'lossless-scaling') {
+    setOptionalInteger(payload, 'lossless-scaling-launch-delay', form.losslessScalingLaunchDelay);
+  } else {
+    delete payload['lossless-scaling-launch-delay'];
+  }
   return payload;
 }
 
@@ -2722,7 +3011,19 @@ watch(
       form.frameGenerationProvider = mode;
     }
     form.losslessScalingFramegen = mode === 'lossless-scaling';
+    if (mode === 'lossless-scaling' && !form.losslessScalingRtssTouched) {
+      const defaultLimit = defaultRtssFromTarget(parseNumeric(form.losslessScalingTargetFps));
+      form.losslessScalingRtssLimit = defaultLimit === null ? '' : String(defaultLimit);
+    }
     void refreshFrameGenHealth();
+  },
+);
+
+watch(
+  () => form.playniteId,
+  (playniteId) => {
+    if (formHydrating || !playniteId) return;
+    if (form.exitTimeout === '5') form.exitTimeout = '10';
   },
 );
 
@@ -3191,6 +3492,77 @@ onBeforeUnmount(() => {
             </InlineAlert>
           </div>
         </div>
+        <div v-if="!isRemoteSession" class="vs-settings-group application-launch-settings">
+          <SettingRow
+            v-if="!isPlayniteLinked"
+            :label="t('apps.auto_detach')"
+            :description="t('apps.auto_detach_desc')"
+            control-id="app-auto-detach"
+          >
+            <label class="vs-switch">
+              <input id="app-auto-detach" v-model="form.autoDetach" type="checkbox" />
+              <span class="vs-switch__track" aria-hidden="true" />
+              <span class="vs-sr-only">{{ t('apps.auto_detach') }}</span>
+            </label>
+          </SettingRow>
+          <SettingRow
+            v-if="!isPlayniteLinked"
+            :label="t('apps.wait_all')"
+            :description="t('apps.wait_all_desc')"
+            control-id="app-wait-all"
+          >
+            <label class="vs-switch">
+              <input id="app-wait-all" v-model="form.waitAll" type="checkbox" />
+              <span class="vs-switch__track" aria-hidden="true" />
+              <span class="vs-sr-only">{{ t('apps.wait_all') }}</span>
+            </label>
+          </SettingRow>
+          <SettingRow
+            :label="t('apps.exclude_global_prep')"
+            :description="t('apps.global_prep_desc')"
+            control-id="app-exclude-global-prep"
+          >
+            <label class="vs-switch">
+              <input
+                id="app-exclude-global-prep"
+                v-model="form.excludeGlobalPrepCmd"
+                type="checkbox"
+              />
+              <span class="vs-switch__track" aria-hidden="true" />
+              <span class="vs-sr-only">{{ t('apps.exclude_global_prep') }}</span>
+            </label>
+          </SettingRow>
+          <SettingRow
+            :label="t('apps.exit_timeout')"
+            :description="t('apps.exit_timeout_desc')"
+            control-id="app-exit-timeout"
+          >
+            <div class="application-number-control">
+              <input
+                id="app-exit-timeout"
+                v-model="form.exitTimeout"
+                class="vs-input"
+                type="number"
+                min="0"
+                step="1"
+                inputmode="numeric"
+              />
+              <span class="application-number-control__unit">{{ t('_common.seconds') }}</span>
+            </div>
+          </SettingRow>
+          <SettingRow
+            v-if="isWindowsHost && !isPlayniteLinked"
+            :label="t('ui.application.fields.elevated.label')"
+            :description="t('ui.application.fields.elevated.description')"
+            control-id="app-elevated"
+          >
+            <label class="vs-switch">
+              <input id="app-elevated" v-model="form.elevated" type="checkbox" />
+              <span class="vs-switch__track" aria-hidden="true" />
+              <span class="vs-sr-only">{{ t('ui.application.fields.elevated.label') }}</span>
+            </label>
+          </SettingRow>
+        </div>
       </section>
 
       <section class="editor-section" aria-labelledby="frame-generation-heading">
@@ -3219,6 +3591,355 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </label>
+
+          <div v-if="isWindowsHost" class="lossless-editor editor-field--full">
+            <div class="lossless-editor__heading">
+              <div>
+                <h3>{{ t('ui.application.options.frameMode.lossless') }}</h3>
+                <p>{{ t('ui.integrations.lossless.shortDescription') }}</p>
+              </div>
+              <StatusBadge
+                v-if="
+                  form.losslessScalingEnabled || form.frameGenerationMode === 'lossless-scaling'
+                "
+                :label="t('apps.framegen.tag_lossless_active')"
+                tone="info"
+                compact
+              />
+            </div>
+
+            <SettingRow
+              :label="t('ui.application.fields.losslessEnabled.label')"
+              :description="t('ui.application.fields.losslessEnabled.description')"
+              control-id="app-lossless-enabled"
+            >
+              <label class="vs-switch">
+                <input
+                  id="app-lossless-enabled"
+                  v-model="form.losslessScalingEnabled"
+                  type="checkbox"
+                />
+                <span class="vs-switch__track" aria-hidden="true" />
+                <span class="vs-sr-only">{{
+                  t('ui.application.fields.losslessEnabled.label')
+                }}</span>
+              </label>
+            </SettingRow>
+
+            <div v-if="showLosslessPanel" class="lossless-editor__body">
+              <InlineAlert
+                v-if="!isPlayniteLinked"
+                tone="warning"
+                :title="t('ui.application.options.frameMode.lossless')"
+              >
+                {{ t('apps.framegen.lossless_unmanaged_warning') }}
+              </InlineAlert>
+
+              <fieldset class="lossless-profile-fieldset">
+                <legend>{{ t('apps.framegen.profile_label') }}</legend>
+                <p class="lossless-profile-fieldset__hint">
+                  {{ t('apps.framegen.profile_hint') }}
+                </p>
+                <div class="lossless-profile-grid">
+                  <label
+                    class="lossless-profile-option"
+                    :class="{
+                      'lossless-profile-option--active': activeLosslessProfile === 'recommended',
+                    }"
+                  >
+                    <input v-model="activeLosslessProfile" type="radio" value="recommended" />
+                    <span>
+                      <strong>{{ t('apps.framegen.profile_recommended') }}</strong>
+                    </span>
+                  </label>
+                  <label
+                    class="lossless-profile-option"
+                    :class="{
+                      'lossless-profile-option--active': activeLosslessProfile === 'custom',
+                    }"
+                  >
+                    <input v-model="activeLosslessProfile" type="radio" value="custom" />
+                    <span>
+                      <strong>{{ t('apps.framegen.profile_custom') }}</strong>
+                    </span>
+                  </label>
+                </div>
+                <AppButton
+                  v-if="hasActiveLosslessOverrides"
+                  size="compact"
+                  variant="tertiary"
+                  icon="refresh"
+                  :label="t('apps.framegen.reset_profile')"
+                  @click="resetActiveLosslessProfile"
+                />
+              </fieldset>
+
+              <section class="lossless-editor__group" aria-labelledby="lossless-frame-heading">
+                <div class="lossless-editor__group-heading">
+                  <div>
+                    <h4 id="lossless-frame-heading">
+                      {{ t('apps.framegen.frame_targets_label') }}
+                    </h4>
+                    <p>{{ t('apps.framegen.frame_targets_hint') }}</p>
+                  </div>
+                  <StatusBadge
+                    v-if="form.frameGenerationMode === 'lossless-scaling'"
+                    :label="t('apps.framegen.tag_lossless_active')"
+                    tone="info"
+                    compact
+                  />
+                </div>
+                <div v-if="form.frameGenerationMode === 'lossless-scaling'" class="editor-grid">
+                  <label class="vs-field editor-field" for="app-lossless-target-fps">
+                    <span class="vs-field__label">{{ t('apps.framegen.target_fps_label') }}</span>
+                    <input
+                      id="app-lossless-target-fps"
+                      v-model.number="losslessTargetModel"
+                      class="vs-input"
+                      type="number"
+                      min="1"
+                      max="360"
+                      step="1"
+                      placeholder="120"
+                      inputmode="numeric"
+                    />
+                    <span class="vs-field__helper">{{ t('apps.framegen.target_fps_hint') }}</span>
+                  </label>
+                  <label class="vs-field editor-field" for="app-lossless-rtss-limit">
+                    <span class="vs-field__label">{{ t('apps.framegen.rtss_limit_label') }}</span>
+                    <input
+                      id="app-lossless-rtss-limit"
+                      v-model.number="losslessRtssModel"
+                      class="vs-input"
+                      type="number"
+                      min="1"
+                      max="360"
+                      step="1"
+                      placeholder="60"
+                      inputmode="numeric"
+                    />
+                    <span class="vs-field__helper">{{ t('apps.framegen.rtss_limit_hint') }}</span>
+                  </label>
+                  <label class="vs-field editor-field" for="app-lossless-flow-scale">
+                    <span class="vs-field__label">{{ t('apps.framegen.flow_scale_label') }}</span>
+                    <input
+                      id="app-lossless-flow-scale"
+                      v-model.number="losslessFlowScaleModel"
+                      class="vs-input"
+                      type="number"
+                      :min="LOSSLESS_FLOW_MIN"
+                      :max="LOSSLESS_FLOW_MAX"
+                      step="1"
+                      placeholder="50"
+                      inputmode="numeric"
+                    />
+                    <span class="vs-field__helper">{{ t('apps.framegen.flow_scale_hint') }}</span>
+                  </label>
+                </div>
+                <InlineAlert v-else tone="info" :title="t('apps.framegen.kind_label')">
+                  {{ t('apps.framegen.kind_hint') }}
+                </InlineAlert>
+              </section>
+
+              <section class="lossless-editor__group" aria-labelledby="lossless-upscale-heading">
+                <div class="lossless-editor__group-heading">
+                  <div>
+                    <h4 id="lossless-upscale-heading">{{ t('apps.framegen.upscaling_filter') }}</h4>
+                    <p>{{ t('apps.framegen.upscaling_filter_hint') }}</p>
+                  </div>
+                </div>
+                <div class="editor-grid">
+                  <label class="vs-field editor-field" for="app-lossless-scaling-mode">
+                    <span class="vs-field__label">{{ t('apps.framegen.upscaling_filter') }}</span>
+                    <select
+                      id="app-lossless-scaling-mode"
+                      v-model="losslessScalingModeModel"
+                      class="vs-select"
+                    >
+                      <option
+                        v-for="option in losslessScalingOptions"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <div v-if="showLosslessResolution" class="vs-field editor-field">
+                    <span class="vs-field__label">{{ t('apps.framegen.resolution_scale') }}</span>
+                    <div class="lossless-resolution-control">
+                      <div
+                        class="lossless-resolution-control__modes"
+                        role="group"
+                        :aria-label="t('apps.framegen.resolution_scale')"
+                      >
+                        <button
+                          type="button"
+                          class="vs-button vs-button--tertiary vs-button--compact"
+                          :class="{
+                            'lossless-resolution-control__mode--active':
+                              resolutionInputMode === 'factor',
+                          }"
+                          :aria-pressed="resolutionInputMode === 'factor'"
+                          @click="resolutionInputMode = 'factor'"
+                        >
+                          {{ t('apps.framegen.scale_factor') }}
+                        </button>
+                        <button
+                          type="button"
+                          class="vs-button vs-button--tertiary vs-button--compact"
+                          :class="{
+                            'lossless-resolution-control__mode--active':
+                              resolutionInputMode === 'percent',
+                          }"
+                          :aria-pressed="resolutionInputMode === 'percent'"
+                          @click="resolutionInputMode = 'percent'"
+                        >
+                          {{ t('apps.framegen.percent') }}
+                        </button>
+                      </div>
+                      <input
+                        v-if="resolutionInputMode === 'factor'"
+                        id="app-lossless-resolution-factor"
+                        v-model.number="losslessResolutionFactorModel"
+                        class="vs-input"
+                        type="number"
+                        min="1"
+                        max="10"
+                        step="0.05"
+                        placeholder="1.00"
+                        inputmode="decimal"
+                      />
+                      <input
+                        v-else
+                        id="app-lossless-resolution-percent"
+                        v-model.number="losslessResolutionPercentModel"
+                        class="vs-input"
+                        type="number"
+                        :min="LOSSLESS_RESOLUTION_MIN"
+                        :max="LOSSLESS_RESOLUTION_MAX"
+                        step="5"
+                        placeholder="100"
+                        inputmode="numeric"
+                      />
+                      <span class="vs-field__helper">
+                        {{ losslessResolutionPercentDisplay }}% ·
+                        {{ losslessResolutionFactorDisplay }}x
+                      </span>
+                    </div>
+                  </div>
+                  <SettingRow
+                    :label="t('apps.framegen.performance_mode')"
+                    :description="t('apps.framegen.performance_mode_hint')"
+                    control-id="app-lossless-performance"
+                  >
+                    <label class="vs-switch">
+                      <input
+                        id="app-lossless-performance"
+                        v-model="losslessPerformanceModeModel"
+                        type="checkbox"
+                      />
+                      <span class="vs-switch__track" aria-hidden="true" />
+                      <span class="vs-sr-only">{{ t('apps.framegen.performance_mode') }}</span>
+                    </label>
+                  </SettingRow>
+                  <label
+                    v-if="showLosslessSharpening"
+                    class="vs-field editor-field"
+                    for="app-lossless-sharpening"
+                  >
+                    <span class="vs-field__label">{{ t('apps.framegen.sharpening') }}</span>
+                    <input
+                      id="app-lossless-sharpening"
+                      v-model.number="losslessSharpeningModel"
+                      class="vs-input"
+                      type="number"
+                      :min="LOSSLESS_SHARPNESS_MIN"
+                      :max="LOSSLESS_SHARPNESS_MAX"
+                      step="1"
+                      inputmode="numeric"
+                    />
+                    <span class="vs-field__helper">
+                      {{
+                        t('apps.framegen.sharpening_hint', {
+                          filter: losslessScalingModeModel.toUpperCase(),
+                        })
+                      }}
+                    </span>
+                  </label>
+                  <label
+                    v-if="showLosslessAnimeOptions"
+                    class="vs-field editor-field"
+                    for="app-lossless-anime-size"
+                  >
+                    <span class="vs-field__label">{{ t('apps.framegen.anime4k_size') }}</span>
+                    <select
+                      id="app-lossless-anime-size"
+                      v-model="losslessAnimeSizeModel"
+                      class="vs-select"
+                    >
+                      <option
+                        v-for="option in losslessAnimeSizes"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <SettingRow
+                    v-if="showLosslessAnimeOptions"
+                    :label="t('apps.framegen.vrs')"
+                    :description="t('apps.framegen.vrs_hint')"
+                    control-id="app-lossless-anime-vrs"
+                  >
+                    <label class="vs-switch">
+                      <input
+                        id="app-lossless-anime-vrs"
+                        v-model="losslessAnimeVrsModel"
+                        type="checkbox"
+                      />
+                      <span class="vs-switch__track" aria-hidden="true" />
+                      <span class="vs-sr-only">{{ t('apps.framegen.vrs') }}</span>
+                    </label>
+                  </SettingRow>
+                </div>
+                <InlineAlert
+                  v-if="losslessScalingModeModel !== 'off'"
+                  tone="warning"
+                  :title="t('apps.framegen.performance_note')"
+                >
+                  {{ t('apps.framegen.performance_note_desc') }}
+                </InlineAlert>
+              </section>
+
+              <section class="lossless-editor__group" aria-labelledby="lossless-launch-heading">
+                <div class="lossless-editor__group-heading">
+                  <div>
+                    <h4 id="lossless-launch-heading">{{ t('apps.framegen.advanced_launch') }}</h4>
+                    <p>{{ t('apps.framegen.launch_delay_hint') }}</p>
+                  </div>
+                </div>
+                <label class="vs-field editor-field" for="app-lossless-launch-delay">
+                  <span class="vs-field__label">{{ t('apps.framegen.launch_delay_label') }}</span>
+                  <div class="application-number-control">
+                    <input
+                      id="app-lossless-launch-delay"
+                      v-model="form.losslessScalingLaunchDelay"
+                      class="vs-input"
+                      type="number"
+                      min="0"
+                      max="600"
+                      step="1"
+                      placeholder="8"
+                      inputmode="numeric"
+                    />
+                    <span class="application-number-control__unit">{{ t('_common.seconds') }}</span>
+                  </div>
+                </label>
+              </section>
+            </div>
+          </div>
 
           <div v-if="frameGenerationEnabled" class="framegen-health editor-field--full">
             <div class="framegen-health__heading">
@@ -4284,6 +5005,26 @@ onBeforeUnmount(() => {
   background: transparent;
 }
 
+.application-launch-settings {
+  display: grid;
+  gap: var(--vs-space-4);
+}
+
+.application-number-control {
+  display: flex;
+  align-items: center;
+  gap: var(--vs-space-8);
+}
+
+.application-number-control .vs-input {
+  inline-size: min(100%, 10rem);
+}
+
+.application-number-control__unit {
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+}
+
 .editor-artwork {
   aspect-ratio: 2 / 3;
   overflow: hidden;
@@ -4317,6 +5058,125 @@ onBeforeUnmount(() => {
   border: var(--vs-border-width) solid var(--vs-color-border-subtle);
   border-radius: var(--vs-radius-control);
   background: var(--vs-color-bg-subtle);
+}
+
+.lossless-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--vs-space-16);
+  min-inline-size: 0;
+  padding: var(--vs-space-16);
+  border: var(--vs-border-width) solid
+    color-mix(in srgb, var(--vs-color-accent-default) 30%, var(--vs-color-border-subtle));
+  border-radius: var(--vs-radius-control);
+  background: color-mix(in srgb, var(--vs-color-accent-default) 5%, var(--vs-color-bg-subtle));
+}
+
+.lossless-editor__heading,
+.lossless-editor__group-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--vs-space-16);
+}
+
+.lossless-editor__heading h3,
+.lossless-editor__group-heading h4 {
+  color: var(--vs-color-text-primary);
+  font-size: var(--vs-type-size-control);
+  font-weight: var(--vs-type-weight-semibold);
+}
+
+.lossless-editor__heading p,
+.lossless-editor__group-heading p {
+  margin-block-start: var(--vs-space-4);
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+}
+
+.lossless-editor__body,
+.lossless-editor__group {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--vs-space-16);
+  min-inline-size: 0;
+}
+
+.lossless-editor__group {
+  padding: var(--vs-space-16);
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-surface);
+}
+
+.lossless-profile-fieldset {
+  display: grid;
+  gap: var(--vs-space-12);
+  min-inline-size: 0;
+  padding: 0;
+  border: 0;
+}
+
+.lossless-profile-fieldset legend {
+  color: var(--vs-color-text-primary);
+  font-size: var(--vs-type-size-control);
+  font-weight: var(--vs-type-weight-semibold);
+}
+
+.lossless-profile-fieldset__hint {
+  margin: calc(var(--vs-space-8) * -1) 0 0;
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+  line-height: var(--vs-type-line-height-metadata);
+}
+
+.lossless-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--vs-space-12);
+}
+
+.lossless-profile-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--vs-space-8);
+  min-block-size: 4rem;
+  padding: var(--vs-space-12);
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-raised);
+  cursor: pointer;
+}
+
+.lossless-profile-option--active {
+  border-color: var(--vs-color-accent-default);
+  background: color-mix(in srgb, var(--vs-color-accent-default) 8%, var(--vs-color-bg-raised));
+}
+
+.lossless-profile-option span {
+  display: grid;
+  gap: var(--vs-space-4);
+}
+
+.lossless-profile-option strong {
+  color: var(--vs-color-text-primary);
+  font-size: var(--vs-type-size-control);
+}
+
+.lossless-resolution-control {
+  display: grid;
+  gap: var(--vs-space-8);
+}
+
+.lossless-resolution-control__modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vs-space-4);
+}
+
+.lossless-resolution-control__mode--active {
+  border-color: var(--vs-color-accent-default);
+  color: var(--vs-color-accent-default);
 }
 
 .framegen-health__heading {
@@ -4973,7 +5833,8 @@ onBeforeUnmount(() => {
   .editor-grid,
   .prep-entry,
   .editor-execution-layout,
-  .app-display-routing__choices {
+  .app-display-routing__choices,
+  .lossless-profile-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -4991,7 +5852,9 @@ onBeforeUnmount(() => {
   .editor-name-control,
   .editor-cover-control,
   .framegen-health__heading,
-  .rtx-hdr__calibration-heading {
+  .rtx-hdr__calibration-heading,
+  .lossless-editor__heading,
+  .lossless-editor__group-heading {
     align-items: stretch;
     flex-direction: column;
   }
