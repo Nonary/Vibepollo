@@ -803,7 +803,7 @@ jobs:
       - release_artifacts
     if: always() && !cancelled() && inputs.build_only == false && needs.release_artifacts.result == 'success'
     runs-on: windows-2022
-    timeout-minutes: 20
+    timeout-minutes: 70
     outputs:
       signed_msi_artifact_id: ${{ steps.upload-signed-msi.outputs.artifact-id }}
     env:
@@ -1018,7 +1018,7 @@ jobs:
       - package_windows
     if: always() && !cancelled() && needs.package_windows.result == 'success'
     runs-on: windows-2022
-    timeout-minutes: 20
+    timeout-minutes: 70
     outputs:
       signed_installer_artifact_id: ${{ steps.upload-signed-installer.outputs.artifact-id }}
     env:
