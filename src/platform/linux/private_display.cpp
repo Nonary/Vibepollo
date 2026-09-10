@@ -1117,8 +1117,12 @@ namespace platf::linux_private_display {
 
     auto mode_id = best_mode_id(*target_before, resolution, refresh);
     const bool prefer_highest = refresh && floating_point(*refresh) >= 9999.0;
-    if (resolution && refresh && !prefer_highest && is_managed_output(session.virtual_display_device_id) &&
-        (mode_id.empty() || !mode_matches_refresh(*target_before, mode_id, *refresh))) {
+    if (mode_policy::should_admit_requested_mode(
+          resolution.has_value(),
+          refresh.has_value(),
+          prefer_highest,
+          is_managed_output(session.virtual_display_device_id)
+        )) {
       if (!admit_requested_mode(configuration, session.virtual_display_device_id, *resolution, *refresh)) {
         return use_current_output();
       }

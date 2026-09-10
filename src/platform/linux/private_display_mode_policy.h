@@ -26,6 +26,15 @@ namespace platf::linux_private_display::mode_policy {
     return name == "Virtual-1" || name == "Virtual-2" || name == "Virtual-3" || name == "Virtual-4";
   }
 
+  [[nodiscard]] inline bool should_admit_requested_mode(
+    const bool has_resolution,
+    const bool has_refresh,
+    const bool prefer_highest,
+    const bool managed_output
+  ) noexcept {
+    return has_resolution && has_refresh && !prefer_highest && managed_output;
+  }
+
   // KScreen 6.4 can report a parse/apply failure and still exit successfully.
   [[nodiscard]] inline bool doctor_reported_failure(const std::string_view output) noexcept {
     return output.find("Unable to parse arguments:") != std::string_view::npos ||

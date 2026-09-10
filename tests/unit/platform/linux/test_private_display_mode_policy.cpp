@@ -45,13 +45,23 @@ TEST(LinuxPrivateDisplayModePolicy, RejectsInvalidAndToleranceBoundary) {
 }
 
 TEST(LinuxPrivateDisplayModePolicy, PreservesExactClientModeIncludingFractionalRefresh) {
+  const policy::requested_mode_t ninety_hz {3024, 1890, 90000};
   const policy::requested_mode_t mac {3024, 1890, 120000};
   const policy::requested_mode_t custom {3025, 1891, 119880};
+  EXPECT_TRUE(ninety_hz.valid());
   EXPECT_TRUE(mac.valid());
   EXPECT_TRUE(custom.valid());
   EXPECT_EQ(custom.width, 3025u);
   EXPECT_EQ(custom.height, 1891u);
   EXPECT_EQ(custom.refresh_millihz, 119880u);
+}
+
+TEST(LinuxPrivateDisplayModePolicy, RefreshesManagedCatalogForEveryExactSessionRequest) {
+  EXPECT_TRUE(policy::should_admit_requested_mode(true, true, false, true));
+  EXPECT_FALSE(policy::should_admit_requested_mode(false, true, false, true));
+  EXPECT_FALSE(policy::should_admit_requested_mode(true, false, false, true));
+  EXPECT_FALSE(policy::should_admit_requested_mode(true, true, true, true));
+  EXPECT_FALSE(policy::should_admit_requested_mode(true, true, false, false));
 }
 
 TEST(LinuxPrivateDisplayModePolicy, RejectsModesOutsideDriverLimits) {
