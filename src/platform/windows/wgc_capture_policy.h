@@ -7,6 +7,49 @@ namespace platf::dxgi::wgc_policy {
   inline constexpr std::uint32_t adaptive_max_buffer_size = 2;
   inline constexpr std::uint32_t helper_stop_timeout_ms = 3000;
 
+  // Absolute input uses the whole virtual desktop, not just the captured
+  // monitor. A neighbouring monitor can change these values without moving
+  // or resizing the capture target itself.
+  struct input_geometry_t {
+    int offset_x;
+    int offset_y;
+    int desktop_width;
+    int desktop_height;
+
+    constexpr bool operator==(const input_geometry_t &) const = default;
+  };
+
+  struct desktop_bounds_t {
+    int origin_x;
+    int origin_y;
+    int width;
+    int height;
+  };
+
+  enum class input_geometry_change_e {
+    unchanged,
+    changed,
+    unavailable,
+  };
+
+  constexpr input_geometry_change_e assess_input_geometry(
+    const input_geometry_t &captured,
+    const int monitor_x,
+    const int monitor_y,
+    const desktop_bounds_t &current
+  ) noexcept {
+    // GetSystemMetrics returns zero on failure. Preserve capture while the
+    // desktop is temporarily unavailable, as with other DXGI settle retries.
+    if (current.width <= 0 || current.height <= 0) {
+      return input_geometry_change_e::unavailable;
+    }
+    const bool unchanged =
+      captured.offset_x == static_cast<std::int64_t>(monitor_x) - current.origin_x &&
+      captured.offset_y == static_cast<std::int64_t>(monitor_y) - current.origin_y &&
+      captured.desktop_width == current.width && captured.desktop_height == current.height;
+    return unchanged ? input_geometry_change_e::unchanged : input_geometry_change_e::changed;
+  }
+
   /**
    * Select only the requested monitor, allowing transient enumeration failures
    * to settle. A missing explicit target must never turn into primary capture.

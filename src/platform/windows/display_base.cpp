@@ -43,6 +43,7 @@ typedef enum _D3DKMT_GPU_PREFERENCE_QUERY_STATE : DWORD {
 #include "src/platform/common.h"
 #include "src/video.h"
 #include "utf_utils.h"
+#include "wgc_capture_policy.h"
 
 namespace platf {
   using namespace std::literals;
@@ -51,6 +52,21 @@ namespace platf {
 namespace platf::dxgi {
   namespace {
     constexpr std::uint32_t WINDOWS_23H2_BUILD = 22631;
+
+    wgc_policy::input_geometry_change_e current_input_geometry_change(const display_base_t &display) {
+      const auto &rect = display.captured_output_desc.DesktopCoordinates;
+      return wgc_policy::assess_input_geometry(
+        {display.offset_x, display.offset_y, display.env_width, display.env_height},
+        static_cast<int>(rect.left),
+        static_cast<int>(rect.top),
+        {
+          GetSystemMetrics(SM_XVIRTUALSCREEN),
+          GetSystemMetrics(SM_YVIRTUALSCREEN),
+          GetSystemMetrics(SM_CXVIRTUALSCREEN),
+          GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        }
+      );
+    }
 
     std::mutex g_adapter_luid_mutex;
     std::optional<wgc_adapter_identity_t> g_last_wgc_adapter_identity;
@@ -444,6 +460,14 @@ namespace platf::dxgi {
     bool output_refresh_deferred = false;
 
     while (true) {
+      // Moving another monitor can change absolute-input normalization even
+      // while WGC's capture item and DXGI factory remain usable. Recreate the
+      // display so make_port() publishes fresh geometry to every stream.
+      if (refresh_only_changes_supported && current_input_geometry_change(*this) == wgc_policy::input_geometry_change_e::changed) {
+        BOOST_LOG(info) << "WGC capture reinitializing because desktop input geometry changed";
+        return platf::capture_e::reinit;
+      }
+
       // A stale factory can mean either a harmless refresh-only change or a
       // structural display/GPU change. WGC can keep its capture item for the
       // former. Never wait for a display mode-set on this thread: WGC remains
@@ -707,12 +731,16 @@ namespace platf::dxgi {
 
     const auto &old_rect = captured_output_desc.DesktopCoordinates;
     const auto &new_rect = replacement_desc.DesktopCoordinates;
-    const bool geometry_unchanged = replacement_desc.AttachedToDesktop &&
+    const auto input_geometry_change = current_input_geometry_change(*this);
+    if (input_geometry_change == wgc_policy::input_geometry_change_e::unavailable) {
+      return output_refresh_e::retry_later;
+    }
+    const bool geometry_unchanged = input_geometry_change == wgc_policy::input_geometry_change_e::unchanged && replacement_desc.AttachedToDesktop &&
                                     replacement_desc.Rotation == captured_output_desc.Rotation &&
                                     old_rect.left == new_rect.left && old_rect.top == new_rect.top &&
                                     old_rect.right == new_rect.right && old_rect.bottom == new_rect.bottom;
     if (!geometry_unchanged) {
-      BOOST_LOG(info) << "WGC capture continuation rejected because output geometry changed";
+      BOOST_LOG(info) << "WGC capture continuation rejected because output or desktop input geometry changed";
       return output_refresh_e::structural_change;
     }
 
