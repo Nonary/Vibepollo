@@ -1,6 +1,7 @@
 #include "src/provider_scan_protocol.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -156,6 +157,78 @@ namespace {
   }
 
 #if defined(__linux__)
+  class scoped_environment final {
+  public:
+    scoped_environment(const char *name, const char *value):
+        name_ {name} {
+      if (const auto *previous = std::getenv(name)) {
+        previous_ = previous;
+      }
+      if (value) {
+        setenv(name, value, 1);
+      } else {
+        unsetenv(name);
+      }
+    }
+
+    ~scoped_environment() {
+      if (previous_) {
+        setenv(name_.c_str(), previous_->c_str(), 1);
+      } else {
+        unsetenv(name_.c_str());
+      }
+    }
+
+  private:
+    std::string name_;
+    std::optional<std::string> previous_;
+  };
+
+  TEST(ProviderScanProtocol, RepeatedGreeterPollsDoNotSpawnAndDesktopRequestsResume) {
+    using platf::provider_scan::detail::capture_command;
+    scoped_environment machine {"VIBESHINE_MACHINE_HOST", "1"};
+    char directory[] = "/tmp/vibeshine-provider-XXXXXX";
+    ASSERT_NE(mkdtemp(directory), nullptr);
+    const auto marker = std::filesystem::path(directory) / "spawned";
+
+    struct cleanup_t {
+      std::filesystem::path path;
+
+      ~cleanup_t() {
+        std::error_code error;
+        std::filesystem::remove_all(path, error);
+      }
+    } cleanup {directory};
+
+    {
+      scoped_environment role {"VIBESHINE_SESSION_ROLE", "greeter"};
+      // Reproduce more rejected polls than the controller can inventory.
+      for (int request = 0; request < 775; ++request) {
+        ASSERT_FALSE(capture_command("/usr/bin/touch", marker.string(), {500ms, 64}));
+      }
+      EXPECT_FALSE(std::filesystem::exists(marker));
+    }
+    const char *role_values[] {nullptr, "", "unknown"};
+    for (const auto *role_value : role_values) {
+      scoped_environment role {"VIBESHINE_SESSION_ROLE", role_value};
+      EXPECT_FALSE(capture_command("/usr/bin/touch", marker.string(), {500ms, 64}));
+      EXPECT_FALSE(std::filesystem::exists(marker));
+    }
+    {
+      scoped_environment role {"VIBESHINE_SESSION_ROLE", "desktop"};
+      EXPECT_TRUE(capture_command("/usr/bin/touch", marker.string(), {500ms, 64}));
+      EXPECT_TRUE(std::filesystem::exists(marker));
+    }
+  }
+
+  TEST(ProviderScanProtocol, NonMachineCaptureDoesNotRequireSessionRole) {
+    scoped_environment machine {"VIBESHINE_MACHINE_HOST", nullptr};
+    scoped_environment role {"VIBESHINE_SESSION_ROLE", nullptr};
+    const auto result = platf::provider_scan::detail::capture_command("/bin/echo", "catalog", {500ms, 64});
+    ASSERT_TRUE(result);
+    EXPECT_EQ(*result, "catalog\n");
+  }
+
   TEST(ProviderScanProtocol, CaptureRequiresSuccessAndHonorsByteAndTimeLimits) {
     using platf::provider_scan::detail::capture_command;
     const auto echoed = capture_command("/bin/echo", "catalog", {500ms, 64});

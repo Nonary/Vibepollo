@@ -6,6 +6,9 @@ After=vibepollo-session-controller.service
 # first so an admitted KScreen transaction can complete and report before its
 # root broker connection is torn down.
 Before=vibepollo.service
+# Rejected requests are complete, not live work for the next session handoff.
+# Retaining them as failed units can exhaust the controller's bounded inventory.
+CollectMode=inactive-or-failed
 
 [Service]
 Type=exec

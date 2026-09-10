@@ -295,6 +295,8 @@ for unit_text, label in (
     require(unit_text, "Before=vibepollo.service", f"{label} shutdown drain ordering")
     forbid(unit_text, "BindsTo=vibepollo-session-controller.service", f"{label} ordered controller cleanup")
     forbid(unit_text, "PartOf=vibepollo-session-controller.service", f"{label} ordered controller cleanup")
+require(broker_unit.split("[Service]", 1)[0], "CollectMode=inactive-or-failed",
+        "completed rejected broker requests must not exhaust handoff inventory")
 require(host_unit, "KillMode=control-group", "machine host process-tree shutdown")
 require(host_unit, "SendSIGKILL=no", "GPU-owner graceful shutdown")
 require(host_unit, "Type=notify", "encoder-gated machine host readiness")
