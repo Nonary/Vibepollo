@@ -83,6 +83,14 @@ capability-free `/usr/libexec/vibeshine/vibepollo-steam-launch`. Only that
 unprivileged helper reads Steam paths or launch options; incomplete metadata
 must fail instead of falling back to the already-running Steam process.
 
+The default Steam Big Picture open/close commands are fixed broker actions.
+Their exact shipped command strings map to fixed Steam URIs after desktop
+identity and endpoint validation, without a shell or command-manifest entry.
+Fresh installations can have an empty administrator command manifest before
+the host creates its default application catalog. Arbitrary application
+commands still require administrator authorization; upgrades preserve that
+policy rather than automatically trusting newly saved commands.
+
 ## Legacy profile migration
 
 Migration is one-time and fail-closed. Root creates a private staging parent,
