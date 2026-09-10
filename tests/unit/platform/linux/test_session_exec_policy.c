@@ -15,6 +15,21 @@ int vibepollo_session_broker_entrypoint(int argc, char **argv);
 } while (0)
 
 int main(void) {
+  CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://open/bigpicture"), "steam://open/bigpicture"));
+  CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://close/bigpicture"), "steam://close/bigpicture"));
+  CHECK(!steam_big_picture_uri(NULL));
+  CHECK(!steam_big_picture_uri("setsid steam steam://open/bigpicture; touch /tmp/untrusted"));
+  CHECK(!steam_big_picture_uri("setsid steam steam://open/bigpicture\n/bin/true"));
+  CHECK(!steam_big_picture_uri("setsid steam steam://open/bigpicture --extra"));
+  CHECK(!steam_big_picture_uri("setsid steam steam://run/42"));
+  CHECK(!steam_big_picture_uri("/tmp/steam steam://open/bigpicture"));
+  struct session_identity greeter_identity = {0};
+  strcpy(greeter_identity.role, "greeter");
+  char *big_picture_request[] = {"broker", "app", "setsid steam steam://open/bigpicture", NULL};
+  CHECK(execute_request(3, big_picture_request, &greeter_identity, getgid()) == 126);
+  big_picture_request[2] = "setsid steam steam://close/bigpicture";
+  CHECK(execute_request(3, big_picture_request, &greeter_identity, getgid()) == 126);
+
   CHECK(artwork_request_is_safe("provider-steam-artwork:42", "provider-steam-artwork:", UINT32_MAX));
   CHECK(!artwork_request_is_safe("provider-steam-artwork:0", "provider-steam-artwork:", UINT32_MAX));
   CHECK(!artwork_request_is_safe("provider-steam-artwork:4294967296", "provider-steam-artwork:", UINT32_MAX));
