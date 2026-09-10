@@ -9,7 +9,13 @@ import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router';
 import { useSystemStore, type HostMetadata } from '@/stores/system';
 import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
+import NetworkPortDetails from '@/components/settings/NetworkPortDetails.vue';
 import { acknowledgeSettings, configBoolean, settingError } from '@/utils/settings';
+import WindowsDisplayStatus from '@/components/settings/WindowsDisplayStatus.vue';
+import {
+  applyDummyPlugVsyncChange,
+  dummyPlugVsyncState,
+} from '@/utils/displayHealth';
 
 import { ApiError, apiGet, apiPatch, apiPost } from '@/api/client';
 import DisplayModeOverrides from '@/components/settings/DisplayModeOverrides.vue';
@@ -122,6 +128,10 @@ const displayDevicesLoading = ref(false);
 const displayDevicesLoaded = ref(false);
 const displayDevicesError = ref('');
 const metadataUnavailable = ref(false);
+const displayStatusRefreshing = ref(false);
+const displayStatusError = ref('');
+const dummyPlugUnderlyingVsync = ref(false);
+const dummyPlugForcedVsync = ref(false);
 
 function cloneSettings(value: Record<string, unknown>): Record<string, unknown> {
   return structuredClone(toRaw(value));
@@ -225,6 +235,13 @@ const virtualDisplayUnavailable = computed(
 );
 const supportsDisplayDeviceEnumeration = computed(
   () => isWindowsHost.value || supportsManagedLinuxDisplay(hostMetadata.value),
+);
+
+const dummyPlugVsync = computed(() =>
+  dummyPlugVsyncState(values.dd_wa_dummy_plug_hdr10, values.frame_limiter_disable_vsync),
+);
+const selectedWindowsDisplayDriver = computed(() =>
+  configBoolean(values.dd_use_sunshine_virtual_display_driver) ? 'vibeshine' : 'sudovda',
 );
 
 const physicalDisplaySelected = computed(
@@ -566,8 +583,18 @@ function fieldDescriptionIds(field: SettingsField): string | undefined {
     fieldDescription(field) ? `setting-${field.key}-description` : '',
     fieldWarningIsVisible(field) ? `setting-${field.key}-warning` : '',
     dependencyHint(field) ? `setting-${field.key}-dependency` : '',
+    field.key === 'frame_limiter_disable_vsync' && dummyPlugVsync.value.active
+      ? `setting-${field.key}-dummy-plug-dependency`
+      : '',
   ].filter(Boolean);
   return ids.length ? ids.join(' ') : undefined;
+}
+
+function syncDummyPlugTracking(source: Record<string, unknown>): void {
+  const dummyPlugEnabled = configBoolean(source.dd_wa_dummy_plug_hdr10);
+  const vsyncDisabled = configBoolean(source.frame_limiter_disable_vsync);
+  dummyPlugUnderlyingVsync.value = vsyncDisabled;
+  dummyPlugForcedVsync.value = dummyPlugEnabled && !vsyncDisabled;
 }
 
 function selectCategory(id: string): void {
@@ -581,7 +608,22 @@ function updateCategory(event: Event): void {
 }
 
 function updateBoolean(key: string, event: Event): void {
-  values[key] = (event.target as HTMLInputElement).checked;
+  const checked = (event.target as HTMLInputElement).checked;
+  if (key === 'dd_wa_dummy_plug_hdr10') {
+    const wasActive = dummyPlugVsync.value.active;
+    const wasForced = dummyPlugForcedVsync.value;
+    Object.assign(values, applyDummyPlugVsyncChange(values, checked));
+    if (!checked && wasActive && wasForced) {
+      values.frame_limiter_disable_vsync = dummyPlugUnderlyingVsync.value;
+    }
+    dummyPlugForcedVsync.value = checked && !dummyPlugUnderlyingVsync.value;
+    return;
+  }
+  values[key] = checked;
+  if (key === 'frame_limiter_disable_vsync' && !dummyPlugVsync.value.active) {
+    dummyPlugUnderlyingVsync.value = checked;
+    dummyPlugForcedVsync.value = false;
+  }
 }
 
 function updateValue(key: string, event: Event, field?: SettingsField): void {
@@ -697,6 +739,7 @@ async function load(): Promise<void> {
     Object.keys(values).forEach((key) => delete values[key]);
     Object.assign(values, normalized);
     original.value = cloneSettings(normalized);
+    syncDummyPlugTracking(normalized);
     configLoaded.value = true;
   } catch {
     error.value = t('ui.settings.errors.load');
@@ -723,8 +766,27 @@ async function loadDisplayDevices(force = false): Promise<void> {
   }
 }
 
+async function refreshDisplayStatus(): Promise<void> {
+  if (displayStatusRefreshing.value) return;
+  displayStatusRefreshing.value = true;
+  displayStatusError.value = '';
+  try {
+    const metadata = await apiGet<MetadataResponse>('/api/metadata');
+    hostMetadata.value = metadata;
+    system.metadata = metadata;
+  } catch {
+    displayStatusError.value = t('ui.settings.windows_display.error_body');
+  } finally {
+    displayStatusRefreshing.value = false;
+  }
+}
+
+function fieldDependencyLocked(field: SettingsField): boolean {
+  return field.key === 'frame_limiter_disable_vsync' && dummyPlugVsync.value.locked;
+}
+
 async function save(): Promise<void> {
-  if (!isDirty.value || saving.value || !saveAllowed.value || !form.value?.reportValidity()) return;
+  if (!isDirty.value || saving.value || !saveAllowed.value) return;
   const invalid = dirtyKeys.value
     .map((key) => ({ key, error: settingError(settingsFields.get(key), values[key]) }))
     .find((item) => item.error);
@@ -732,6 +794,7 @@ async function save(): Promise<void> {
     error.value = `${fieldLabel(settingsFields.get(invalid.key)!)}: ${t(invalid.error!)}`;
     return;
   }
+  if (!form.value?.reportValidity()) return;
   saving.value = true;
   error.value = '';
   notice.value = '';
@@ -743,6 +806,7 @@ async function save(): Promise<void> {
     const result = await apiPatch<SaveResult>('/api/config', patch);
     if (result.status === false) throw new Error('save-rejected');
     original.value = acknowledgeSettings(original.value, submitted);
+    syncDummyPlugTracking(original.value);
     restartAvailable.value ||= Boolean(result.restartRequired);
     notice.value = restartAvailable.value
       ? t('ui.settings.notices.saved_restart')
@@ -762,6 +826,7 @@ function discard(): void {
     if (!(key in restored)) delete values[key];
   }
   Object.assign(values, restored);
+  syncDummyPlugTracking(restored);
   notice.value = '';
 }
 
@@ -997,6 +1062,15 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
             :metadata="hostMetadata"
             :virtual-mode="String(values.virtual_display_mode ?? '')"
           />
+          <WindowsDisplayStatus
+            v-if="isWindowsHost && !isSearching && ['everyday', 'display'].includes(activeCategory)"
+            :metadata="hostMetadata"
+            :selected-driver="selectedWindowsDisplayDriver"
+            :loading="loading"
+            :refreshing="displayStatusRefreshing"
+            :error="displayStatusError"
+            @refresh="refreshDisplayStatus"
+          />
 
           <section
             v-for="group in filteredGroups"
@@ -1036,7 +1110,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                   :label="fieldLabel(field)"
                   :control-id="`setting-${field.key}`"
                   :stacked="field.stacked || field.kind === 'display-recovery'"
-                  :disabled="fieldIsInactive(field)"
+                  :disabled="fieldIsInactive(field) || fieldDependencyLocked(field)"
                   :restart-required="field.restartRequired"
                 >
                   <template #label>
@@ -1055,14 +1129,24 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                     <span v-if="dependencyHint(field)" :id="`setting-${field.key}-dependency`">{{
                       dependencyHint(field)
                     }}</span>
+                    <span
+                      v-if="field.key === 'frame_limiter_disable_vsync' && dummyPlugVsync.active"
+                      id="setting-frame_limiter_disable_vsync-dummy-plug-dependency"
+                      class="settings-row__warning"
+                      >{{ t('ui.settings.windows_display.vsync_forced') }}</span
+                    >
                   </template>
 
                   <label v-if="field.kind === 'boolean'" class="vs-switch">
                     <input
                       :id="`setting-${field.key}`"
                       type="checkbox"
-                      :checked="isTrue(values[field.key])"
-                      :disabled="fieldIsInactive(field)"
+                      :checked="
+                        field.key === 'frame_limiter_disable_vsync'
+                          ? dummyPlugVsync.effectiveVsyncDisabled
+                          : isTrue(values[field.key])
+                      "
+                      :disabled="fieldIsInactive(field) || fieldDependencyLocked(field)"
                       :aria-labelledby="`setting-${field.key}-label`"
                       :aria-describedby="fieldDescriptionIds(field)"
                       @change="updateBoolean(field.key, $event)"
@@ -1076,7 +1160,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                     class="vs-select"
                     :value="controlValue(field)"
                     :title="optionLabel(field.key, '')"
-                    :disabled="fieldIsInactive(field)"
+                    :disabled="fieldIsInactive(field) || fieldDependencyLocked(field)"
                     :aria-labelledby="`setting-${field.key}-label`"
                     :aria-describedby="fieldDescriptionIds(field)"
                     @change="updateValue(field.key, $event, field)"
@@ -1100,7 +1184,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                         : String(values[field.key] ?? '')
                     "
                     :placeholder="field.placeholderKey ? t(field.placeholderKey) : undefined"
-                    :disabled="fieldIsInactive(field)"
+                    :disabled="fieldIsInactive(field) || fieldDependencyLocked(field)"
                     :aria-labelledby="`setting-${field.key}-label`"
                     :aria-describedby="fieldDescriptionIds(field)"
                     rows="4"
@@ -1149,6 +1233,16 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                     @update:model-value="values[field.key] = $event"
                   />
 
+                  <NetworkPortDetails
+                    v-else-if="field.key === 'port'"
+                    :input-id="`setting-${field.key}`"
+                    :label-id="`setting-${field.key}-label`"
+                    :described-by="fieldDescriptionIds(field)"
+                    :model-value="values[field.key]"
+                    :origin-web-ui-allowed="values.origin_web_ui_allowed"
+                    :disabled="fieldIsInactive(field) || fieldDependencyLocked(field)"
+                    @update:model-value="values[field.key] = $event"
+                  />
                   <input
                     v-else
                     :id="`setting-${field.key}`"
@@ -1163,13 +1257,22 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                         : String(values[field.key] ?? '')
                     "
                     :placeholder="field.placeholderKey ? t(field.placeholderKey) : undefined"
-                    :disabled="fieldIsInactive(field)"
+                    :disabled="fieldIsInactive(field) || fieldDependencyLocked(field)"
                     :aria-labelledby="`setting-${field.key}-label`"
                     :aria-describedby="fieldDescriptionIds(field)"
                     @input="updateValue(field.key, $event, field)"
                   />
                 </SettingRow>
               </div>
+              <InlineAlert
+                v-if="group.id === 'display_driver' && isWindowsHost && dummyPlugVsync.active"
+                class="settings-section__alert"
+                tone="warning"
+                announce="polite"
+                :title="t('ui.settings.windows_display.dummy_plug_title')"
+              >
+                {{ t('ui.settings.windows_display.dummy_plug_description') }}
+              </InlineAlert>
               <div
                 v-if="
                   activeCategory === 'everyday' &&

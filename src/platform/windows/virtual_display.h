@@ -87,6 +87,16 @@ namespace VDISPLAY {
     WATCHDOG_FAILED = -3
   };
 
+  // Identifies the driver whose status was most recently observed by the
+  // runtime. This is deliberately separate from the current config choice:
+  // changing the setting does not retroactively change an already-observed
+  // probe result.
+  enum class DRIVER_SELECTION {
+    UNKNOWN,
+    VIBESHINE,
+    SUDOVDA,
+  };
+
   extern HANDLE VIRTUAL_DISPLAY_DRIVER_HANDLE;
 
   void closeVDisplayDevice();

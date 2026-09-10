@@ -59,9 +59,21 @@ function makeDetail(summary: ReturnType<typeof makeSummary>) {
         event_type: 'stall',
         payload: 'fixture event',
       },
+      ...[
+        ['recovery', 'recovered'],
+        ['first_drop', 'first loss'],
+        ['drop_burst', 'loss burst'],
+        ['stream_started', 'stream began'],
+        ['stream_ended', 'stream ended'],
+      ].map(([event_type, payload], index) => ({
+        session_uuid: summary.uuid,
+        timestamp_unix: summary.start_time_unix + 46 + index,
+        event_type,
+        payload,
+      })),
     ],
     total_samples: samples.length,
-    total_events: 1,
+    total_events: 6,
     samples_truncated: false,
     events_truncated: false,
   };
@@ -88,6 +100,7 @@ async function installStatsFixture(page: Page) {
   ];
   const deleted = new Set<string>();
   const requests: string[] = [];
+  let hostStatsRequestCount = 0;
   await page.route('**/api/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -114,7 +127,7 @@ async function installStatsFixture(page: Page) {
         realtime_stats_pause_when_hidden: true,
         realtime_stats_show_active_sessions: false,
         realtime_stats_show_host_stats: false,
-        realtime_stats_show_host_charts: false,
+        realtime_stats_show_host_charts: true,
         realtime_stats_show_session_history: true,
       };
     } else if (path === '/api/metadata') {
@@ -124,18 +137,19 @@ async function installStatsFixture(page: Page) {
     } else if (path === '/api/rtsp/sessions' || path === '/api/webrtc/sessions') {
       body = { sessions: [] };
     } else if (path === '/api/host/stats') {
+      const sampleIndex = hostStatsRequestCount++;
       body = {
         cpu_percent: 10,
         cpu_temp_c: 40,
         ram_used_bytes: 1,
         ram_total_bytes: 2,
-        ram_percent: 50,
+        ram_percent: sampleIndex === 1 ? null : 42 + sampleIndex * 6,
         gpu_percent: 20,
         gpu_encoder_percent: 30,
         gpu_temp_c: 45,
         vram_used_bytes: 1,
         vram_total_bytes: 2,
-        vram_percent: 50,
+        vram_percent: 64 + sampleIndex * 7,
         net_rx_bps: 2_000_000,
         net_tx_bps: 4_000_000,
       };
@@ -174,15 +188,54 @@ test('history pagination, grouped details, full export, deletion, and chart zoom
   await page.goto('/v2/stats');
 
   await expect(page.getByRole('heading', { name: 'Session History' })).toBeVisible();
+  await expect(page.getByText('Host RAM / VRAM Usage', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.screenshot({ path: '/tmp/vibeshine-stats-host-memory-1440.png', fullPage: true });
   await expect(page.getByText('Grouped Session (2 streams)', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: /Grouped Session \(2 streams\)/ }).click();
   const detailDialog = page.locator('dialog.stats-detail-dialog[open]');
   await expect(detailDialog.getByRole('button', { name: 'Export JSON' })).toBeVisible();
-  await expect(page.getByText('fixture event')).toHaveCount(2);
+  await expect(detailDialog.locator('.event-list').getByText('fixture event')).toHaveCount(2);
 
-  await page.getByRole('button', { name: 'Open chart in larger view' }).first().click();
+  await detailDialog.getByRole('button', { name: 'Open chart in larger view' }).first().click();
   const chartDialog = page.locator('dialog.metric-chart__dialog[open]');
   await expect(chartDialog).toBeVisible();
+  await expect(chartDialog.locator('.metric-chart__event')).toHaveCount(12);
+  await expect(chartDialog.getByRole('button', { name: /stall/ }).first()).toBeAttached();
+  const plot = chartDialog.locator('.metric-chart__dialog-plot svg');
+  const readRange = async () => [
+    Number(await plot.getAttribute('data-view-start')),
+    Number(await plot.getAttribute('data-view-end')),
+  ];
+  const fullRange = await readRange();
+  await page.screenshot({
+    path: '/tmp/vibeshine-stats-chart-dense-events-1440.png',
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 1000 });
+  await expect(chartDialog.locator('.metric-chart__event')).toHaveCount(12);
+  const narrowDialogBox = await chartDialog.boundingBox();
+  const narrowToolbar = chartDialog.locator('.metric-chart__zoom-actions');
+  const narrowToolbarBox = await narrowToolbar.boundingBox();
+  expect(narrowDialogBox).not.toBeNull();
+  expect(narrowToolbarBox).not.toBeNull();
+  expect(narrowDialogBox!.x).toBeGreaterThanOrEqual(0);
+  expect(narrowDialogBox!.x + narrowDialogBox!.width).toBeLessThanOrEqual(390);
+  expect(narrowToolbarBox!.x).toBeGreaterThanOrEqual(narrowDialogBox!.x);
+  expect(narrowToolbarBox!.x + narrowToolbarBox!.width).toBeLessThanOrEqual(
+    narrowDialogBox!.x + narrowDialogBox!.width,
+  );
+  for (const label of ['Zoom out', 'Zoom in', 'Reset zoom']) {
+    await expect(narrowToolbar.getByRole('button', { name: label })).toBeVisible();
+  }
+  await page.screenshot({
+    path: '/tmp/vibeshine-stats-chart-dense-events-390.png',
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await chartDialog.locator('.metric-chart__event').first().focus();
+  await expect(chartDialog.locator('.metric-chart__event-inspection')).toContainText('stall');
   await chartDialog.locator('circle').first().focus();
   await expect(chartDialog.locator('.metric-chart__inspection')).toContainText(':');
   await page.screenshot({
@@ -190,6 +243,66 @@ test('history pagination, grouped details, full export, deletion, and chart zoom
     fullPage: true,
   });
   await chartDialog.getByRole('button', { name: 'Zoom in' }).click();
+  await expect(chartDialog.getByRole('button', { name: 'Reset zoom' })).not.toBeDisabled();
+  const afterButtonZoom = await readRange();
+  expect(afterButtonZoom[1] - afterButtonZoom[0]).toBeLessThan(fullRange[1] - fullRange[0]);
+  const plotBox = await plot.boundingBox();
+  if (!plotBox) throw new Error('expanded chart plot has no layout box');
+  await page.keyboard.down('Shift');
+  await page.mouse.move(plotBox.x + plotBox.width * 0.65, plotBox.y + plotBox.height * 0.5);
+  await page.mouse.down();
+  await page.mouse.move(plotBox.x + plotBox.width * 0.45, plotBox.y + plotBox.height * 0.5);
+  await page.mouse.up();
+  await page.keyboard.up('Shift');
+  const afterPan = await readRange();
+  expect(afterPan).not.toEqual(afterButtonZoom);
+  await plot.dispatchEvent('wheel', { deltaY: -120, bubbles: true });
+  const afterWheel = await readRange();
+  expect(afterWheel[1] - afterWheel[0]).toBeLessThan(afterPan[1] - afterPan[0]);
+  await plot.dispatchEvent('pointerdown', {
+    pointerId: 101,
+    pointerType: 'touch',
+    clientX: plotBox.x + plotBox.width * 0.35,
+    clientY: plotBox.y + plotBox.height * 0.5,
+    bubbles: true,
+  });
+  await plot.dispatchEvent('pointerdown', {
+    pointerId: 102,
+    pointerType: 'touch',
+    clientX: plotBox.x + plotBox.width * 0.55,
+    clientY: plotBox.y + plotBox.height * 0.5,
+    bubbles: true,
+  });
+  await plot.dispatchEvent('pointermove', {
+    pointerId: 102,
+    pointerType: 'touch',
+    clientX: plotBox.x + plotBox.width * 0.7,
+    clientY: plotBox.y + plotBox.height * 0.5,
+    bubbles: true,
+  });
+  await plot.dispatchEvent('pointerup', {
+    pointerId: 101,
+    pointerType: 'touch',
+    clientX: plotBox.x + plotBox.width * 0.35,
+    clientY: plotBox.y + plotBox.height * 0.5,
+    bubbles: true,
+  });
+  await plot.dispatchEvent('pointerup', {
+    pointerId: 102,
+    pointerType: 'touch',
+    clientX: plotBox.x + plotBox.width * 0.7,
+    clientY: plotBox.y + plotBox.height * 0.5,
+    bubbles: true,
+  });
+  const afterPinch = await readRange();
+  expect(afterPinch[1] - afterPinch[0]).toBeLessThan(afterWheel[1] - afterWheel[0]);
+  await expect(plot).toHaveCSS('touch-action', 'pan-y');
+  await page.screenshot({
+    path: '/tmp/vibeshine-stats-chart-gestures-1440.png',
+    fullPage: true,
+  });
+  await chartDialog.getByRole('button', { name: 'Reset zoom' }).click();
+  expect(await readRange()).toEqual(fullRange);
   await chartDialog.getByRole('button', { name: 'Close' }).click();
 
   const downloadPromise = page.waitForEvent('download');
@@ -207,6 +320,7 @@ test('history pagination, grouped details, full export, deletion, and chart zoom
 
   await page.setViewportSize({ width: 390, height: 900 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: '/tmp/vibeshine-stats-narrow-390.png', fullPage: true });
   await page.screenshot({ path: testInfo.outputPath('stats-page-390.png'), fullPage: true });
 
   await page

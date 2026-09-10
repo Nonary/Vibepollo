@@ -22,6 +22,12 @@ export interface MetaInfo {
   windows_build_number?: number;
   windows_major_version?: number;
   windows_minor_version?: number;
+  virtual_display_driver?: {
+    configured?: string;
+    active?: string | null;
+    status?: string;
+    status_code?: number;
+  };
 }
 
 export type ConfigState = { platform: string } & Record<string, any>;

@@ -4,6 +4,13 @@ import { useI18n } from 'vue-i18n';
 
 import { AppButton } from '@/components/ui';
 
+import type { ChartEvent } from './eventUtils';
+import {
+  clampChartRange,
+  panChartRange,
+  zoomChartRange,
+  type ChartTimeRange,
+} from './chartViewport';
 import type { ChartValuePoint } from './types';
 
 const props = withDefaults(
@@ -17,6 +24,7 @@ const props = withDefaults(
     color?: string;
     ceiling?: number;
     target?: number;
+    events?: ChartEvent[];
     expandable?: boolean;
     rangeLabel?: string;
   }>(),
@@ -25,6 +33,7 @@ const props = withDefaults(
     unit: '',
     description: '',
     color: 'var(--vs-color-accent-default)',
+    events: () => [],
     expandable: true,
     rangeLabel: '',
   },
@@ -38,8 +47,26 @@ const uid = useId().replace(/:/g, '');
 const { t, locale } = useI18n();
 const expanded = ref(false);
 const dialog = ref<HTMLDialogElement | null>(null);
-const zoom = ref(1);
 const focusedIndex = ref<number | null>(null);
+const focusedEventId = ref<string | null>(null);
+const viewRange = ref<{ start: number; end: number } | null>(null);
+let restoreFocusTo: HTMLElement | null = null;
+const activePointers = new Map<number, { x: number; y: number }>();
+let panState:
+  | {
+      pointerId: number;
+      startX: number;
+      startRange: { start: number; end: number };
+      moved: boolean;
+    }
+  | undefined;
+let pinchState:
+  | {
+      startDistance: number;
+      startRange: { start: number; end: number };
+    }
+  | undefined;
+let suppressClickUntil = 0;
 
 const sourcePoints = computed<ChartValuePoint[]>(() => {
   if (props.points?.length) return props.points;
@@ -49,13 +76,39 @@ const sourcePoints = computed<ChartValuePoint[]>(() => {
   }));
 });
 
+const fullTimeDomain = computed(() => {
+  const timestamps = sourcePoints.value
+    .map((point) => point.timestamp)
+    .filter((timestamp) => Number.isFinite(timestamp));
+  timestamps.push(
+    ...props.events
+      .map((event) => event.timestamp)
+      .filter((timestamp) => Number.isFinite(timestamp)),
+  );
+  const minimum = timestamps.length ? Math.min(...timestamps) : 0;
+  const maximum = timestamps.length ? Math.max(...timestamps) : minimum + 1;
+  return { start: minimum, end: maximum === minimum ? minimum + 1 : maximum };
+});
+
+function clampRange(range: ChartTimeRange): ChartTimeRange {
+  return clampChartRange(fullTimeDomain.value, range);
+}
+
+const timeDomain = computed(() => clampRange(viewRange.value ?? fullTimeDomain.value));
+const zoom = computed(() => {
+  const full = fullTimeDomain.value;
+  const visible = timeDomain.value;
+  return Math.max(1, Math.min(12, (full.end - full.start) / (visible.end - visible.start)));
+});
+
 const visiblePoints = computed(() => {
-  const points = sourcePoints.value;
-  if (zoom.value <= 1 || points.length < 3) return points;
-  const count = Math.max(3, Math.ceil(points.length / zoom.value));
-  const focus = focusedIndex.value == null ? points.length - 1 : focusedIndex.value;
-  const start = Math.max(0, Math.min(points.length - count, focus - Math.floor(count / 2)));
-  return points.slice(start, start + count);
+  const domain = timeDomain.value;
+  return sourcePoints.value.filter(
+    (point) =>
+      Number.isFinite(point.timestamp) &&
+      point.timestamp >= domain.start &&
+      point.timestamp <= domain.end,
+  );
 });
 
 const finiteVisiblePoints = computed(() =>
@@ -75,20 +128,12 @@ const upperBound = computed(() => {
   return largest * 1.12;
 });
 
-const timeDomain = computed(() => {
-  // Keep missing-value timestamps in the domain. A null sample is a gap in
-  // telemetry, not permission to compress the remaining values together.
-  const timestamps = visiblePoints.value
-    .map((point) => point.timestamp)
-    .filter((timestamp) => Number.isFinite(timestamp));
-  const minimum = timestamps.length ? Math.min(...timestamps) : 0;
-  const maximum = timestamps.length ? Math.max(...timestamps) : minimum + 1;
-  return { minimum, maximum: maximum === minimum ? minimum + 1 : maximum };
-});
-
 const gapThreshold = computed(() => {
   const deltas: number[] = [];
-  const points = visiblePoints.value;
+  // Derive cadence from the complete source. A zoomed window may contain two
+  // samples on either side of a long outage; deriving the median from just
+  // those points would make the outage look like a continuous line.
+  const points = sourcePoints.value;
   for (let index = 1; index < points.length; index += 1) {
     const previous = points[index - 1];
     const current = points[index];
@@ -103,8 +148,8 @@ const gapThreshold = computed(() => {
 });
 
 function xFor(timestamp: number): number {
-  const span = timeDomain.value.maximum - timeDomain.value.minimum;
-  return paddingX + ((timestamp - timeDomain.value.minimum) / span) * (chartWidth - paddingX * 2);
+  const span = timeDomain.value.end - timeDomain.value.start;
+  return paddingX + ((timestamp - timeDomain.value.start) / span) * (chartWidth - paddingX * 2);
 }
 
 function yFor(value: number): number {
@@ -158,7 +203,7 @@ function linePath(segment: Array<{ x: number; y: number }>): string {
 const axisLabels = computed(() => {
   const domain = timeDomain.value;
   return [0, 0.5, 1].map((fraction) => {
-    const timestamp = domain.minimum + (domain.maximum - domain.minimum) * fraction;
+    const timestamp = domain.start + (domain.end - domain.start) * fraction;
     return { x: xFor(timestamp), label: formatTimestamp(timestamp) };
   });
 });
@@ -172,8 +217,24 @@ function formatTimestamp(timestamp: number): string {
   }).format(new Date(timestamp));
 }
 
+function axisLabelStyle(axis: { x: number }, index: number): Record<string, string> {
+  const left = `${(axis.x / chartWidth) * 100}%`;
+  if (index === 0) return { left, textAlign: 'left' };
+  if (index === 2) return { left, transform: 'translateX(-100%)', textAlign: 'right' };
+  return { left, transform: 'translateX(-50%)', textAlign: 'center' };
+}
+
+function eventLabelStyle(marker: { x: number }): Record<string, string> {
+  const left = `${(marker.x / chartWidth) * 100}%`;
+  if (marker.x <= paddingX + 24) return { left, textAlign: 'left' };
+  if (marker.x >= chartWidth - paddingX - 24)
+    return { left, transform: 'translateX(-100%)', textAlign: 'right' };
+  return { left, transform: 'translateX(-50%)', textAlign: 'center' };
+}
+
 function inspect(point: ChartValuePoint, index: number): void {
   focusedIndex.value = index;
+  focusedEventId.value = null;
   if (point.value == null || !Number.isFinite(point.value)) return;
 }
 
@@ -192,29 +253,192 @@ const inspectedPoint = computed(() => {
   return point && point.value != null && Number.isFinite(point.value) ? point : null;
 });
 
-function zoomIn(): void {
-  zoom.value = Math.min(12, Math.round(zoom.value * 1.35 * 100) / 100);
+const eventMarkers = computed(() => {
+  const domain = timeDomain.value;
+  const visible = props.events.filter(
+    (event) => event.timestamp >= domain.start && event.timestamp <= domain.end,
+  );
+  const ordered = [...visible].sort((a, b) => a.timestamp - b.timestamp);
+  let lastX = -Infinity;
+  return ordered.map((event) => {
+    const x = xFor(event.timestamp);
+    const showLabel = x - lastX >= 34;
+    if (showLabel) lastX = x;
+    return { event, x, showLabel };
+  });
+});
+
+const inspectedEvent = computed(
+  () => props.events.find((event) => event.id === focusedEventId.value) ?? null,
+);
+
+function eventLabel(event: ChartEvent): string {
+  const timestamp = formatTimestamp(event.timestamp);
+  const type = event.eventType.replace(/_/g, ' ');
+  return event.payload ? `${timestamp}: ${type} — ${event.payload}` : `${timestamp}: ${type}`;
 }
 
-function zoomOut(): void {
-  zoom.value = Math.max(1, Math.round((zoom.value / 1.35) * 100) / 100);
-}
-
-function zoomReset(): void {
-  zoom.value = 1;
+function inspectEvent(event: ChartEvent): void {
+  focusedEventId.value = event.id;
   focusedIndex.value = null;
 }
 
+function rangeZoomedAround(
+  range: { start: number; end: number },
+  timestamp: number,
+  factor: number,
+): { start: number; end: number } {
+  return zoomChartRange(fullTimeDomain.value, range, timestamp, factor);
+}
+
+function zoomAround(timestamp: number, factor: number): void {
+  setViewRange(rangeZoomedAround(timeDomain.value, timestamp, factor));
+}
+
+function setViewRange(next: ChartTimeRange): void {
+  viewRange.value =
+    next.start === fullTimeDomain.value.start && next.end === fullTimeDomain.value.end
+      ? null
+      : next;
+}
+
+function zoomIn(): void {
+  zoomAround((timeDomain.value.start + timeDomain.value.end) / 2, 1.35);
+}
+
+function zoomOut(): void {
+  zoomAround((timeDomain.value.start + timeDomain.value.end) / 2, 1 / 1.35);
+}
+
+function zoomReset(): void {
+  viewRange.value = null;
+  focusedIndex.value = null;
+  focusedEventId.value = null;
+}
+
+function timestampForClientX(clientX: number, element: SVGSVGElement): number {
+  const rect = element.getBoundingClientRect();
+  const fraction = rect.width ? Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) : 0.5;
+  const x = fraction * chartWidth;
+  return (
+    timeDomain.value.start +
+    ((x - paddingX) / (chartWidth - paddingX * 2)) * (timeDomain.value.end - timeDomain.value.start)
+  );
+}
+
+function pointerDistance(): number {
+  const pointers = [...activePointers.values()];
+  const first = pointers[0];
+  const second = pointers[1];
+  if (!first || !second) return 0;
+  return Math.hypot(second.x - first.x, second.y - first.y);
+}
+
+function pointerCenterX(): number {
+  const pointers = [...activePointers.values()];
+  return pointers.reduce((sum, pointer) => sum + pointer.x, 0) / Math.max(1, pointers.length);
+}
+
+function onPlotPointerDown(event: PointerEvent): void {
+  const svg = event.currentTarget as SVGSVGElement;
+  if (event.pointerType === 'touch') {
+    activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (activePointers.size === 2) {
+      pinchState = {
+        startDistance: Math.max(1, pointerDistance()),
+        startRange: { ...timeDomain.value },
+      };
+      event.preventDefault();
+    }
+    return;
+  }
+  if (event.button !== 0 || !event.shiftKey) return;
+  panState = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startRange: { ...timeDomain.value },
+    moved: false,
+  };
+  svg.setPointerCapture?.(event.pointerId);
+  event.preventDefault();
+}
+
+function onPlotPointerMove(event: PointerEvent): void {
+  if (event.pointerType === 'touch') {
+    if (!activePointers.has(event.pointerId)) return;
+    activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (!pinchState || activePointers.size < 2) return;
+    const distance = Math.max(1, pointerDistance());
+    const factor = distance / pinchState.startDistance;
+    const svg = event.currentTarget as SVGSVGElement;
+    const anchor = timestampForClientX(pointerCenterX(), svg);
+    setViewRange(rangeZoomedAround(pinchState.startRange, anchor, factor));
+    event.preventDefault();
+    return;
+  }
+  if (!panState || panState.pointerId !== event.pointerId) return;
+  const svg = event.currentTarget as SVGSVGElement;
+  const rect = svg.getBoundingClientRect();
+  const pixels = rect.width ? rect.width : chartWidth;
+  const delta =
+    ((event.clientX - panState.startX) / pixels) *
+    (panState.startRange.end - panState.startRange.start);
+  const next = panChartRange(fullTimeDomain.value, panState.startRange, -delta);
+  panState.moved ||= Math.abs(event.clientX - panState.startX) > 3;
+  setViewRange(next);
+  event.preventDefault();
+}
+
+function onPlotPointerUp(event: PointerEvent): void {
+  if (event.pointerType === 'touch') {
+    activePointers.delete(event.pointerId);
+    if (activePointers.size < 2) pinchState = undefined;
+    return;
+  }
+  if (panState?.pointerId !== event.pointerId) return;
+  if (panState.moved) suppressClickUntil = performance.now() + 150;
+  (event.currentTarget as SVGSVGElement).releasePointerCapture?.(event.pointerId);
+  panState = undefined;
+}
+
+function onPlotPointerCancel(event: PointerEvent): void {
+  if (event.pointerType === 'touch') {
+    activePointers.delete(event.pointerId);
+    pinchState = undefined;
+  } else if (panState?.pointerId === event.pointerId) {
+    panState = undefined;
+  }
+}
+
+function onPlotWheel(event: WheelEvent): void {
+  if (!event.deltaY) return;
+  const svg = event.currentTarget as SVGSVGElement;
+  zoomAround(timestampForClientX(event.clientX, svg), event.deltaY < 0 ? 1.2 : 1 / 1.2);
+  event.preventDefault();
+}
+
+function inspectOnClick(point: ChartValuePoint, index: number): void {
+  if (performance.now() < suppressClickUntil) return;
+  inspect(point, index);
+}
+
 async function openExpanded(): Promise<void> {
+  if (document.activeElement instanceof HTMLElement) restoreFocusTo = document.activeElement;
   expanded.value = true;
   await nextTick();
-  if (dialog.value && !dialog.value.open) dialog.value.showModal();
+  if (dialog.value && !dialog.value.open) {
+    dialog.value.showModal();
+    dialog.value.querySelector<HTMLElement>('button')?.focus();
+  }
 }
 
 function closeExpanded(): void {
   if (dialog.value?.open) dialog.value.close();
   expanded.value = false;
   zoomReset();
+  const restore = restoreFocusTo;
+  restoreFocusTo = null;
+  nextTick(() => restore?.focus());
 }
 
 function onNativeCancel(event: Event): void {
@@ -224,6 +448,9 @@ function onNativeCancel(event: Event): void {
 
 onBeforeUnmount(() => {
   if (dialog.value?.open) dialog.value.close();
+  activePointers.clear();
+  panState = undefined;
+  pinchState = undefined;
 });
 </script>
 
@@ -250,77 +477,116 @@ onBeforeUnmount(() => {
     </header>
 
     <div class="metric-chart__plot">
-      <svg
-        viewBox="0 0 640 220"
-        preserveAspectRatio="none"
-        role="img"
-        :aria-label="`${title}: ${value}`"
-      >
-        <line
-          v-for="grid in [62, 112, 162]"
-          :key="grid"
-          x1="42"
-          :y1="grid"
-          x2="638"
-          :y2="grid"
-          class="metric-chart__grid"
-        />
-        <text x="4" y="22" class="metric-chart__axis">
-          {{ upperBound.toLocaleString(locale, { maximumFractionDigits: 1 }) }}{{ unit }}
-        </text>
-        <text x="4" y="210" class="metric-chart__axis">0{{ unit }}</text>
-        <line
-          v-if="target != null"
-          x1="42"
-          :y1="yFor(target)"
-          x2="638"
-          :y2="yFor(target)"
-          class="metric-chart__target"
-        />
-        <path
-          v-for="(segment, index) in lineSegments"
-          :key="index"
-          :d="linePath(segment)"
-          class="metric-chart__line"
-        />
-        <circle
-          v-for="entry in pointCoordinates"
-          :key="`${entry.point.timestamp}:${entry.index}`"
-          :cx="entry.x"
-          :cy="entry.y"
-          r="5"
-          class="metric-chart__point"
-          tabindex="0"
-          role="button"
-          :aria-label="pointLabel(entry.point)"
-          @focus="inspect(entry.point, entry.index)"
-          @pointerdown="inspect(entry.point, entry.index)"
-          @keydown.enter.prevent="inspect(entry.point, entry.index)"
-          @keydown.space.prevent="inspect(entry.point, entry.index)"
-        />
-        <line
-          v-if="!pointCoordinates.length"
-          x1="42"
-          y1="162"
-          x2="638"
-          y2="162"
-          class="metric-chart__empty-line"
-        />
-        <text
-          v-for="axis in axisLabels"
-          :key="axis.label"
-          :x="axis.x"
-          y="218"
-          text-anchor="middle"
-          class="metric-chart__axis"
+      <div class="metric-chart__surface">
+        <svg
+          viewBox="0 0 640 220"
+          preserveAspectRatio="none"
+          role="img"
+          class="metric-chart__svg"
+          :aria-label="`${title}: ${value}`"
+          :data-view-start="timeDomain.start"
+          :data-view-end="timeDomain.end"
+          @wheel="onPlotWheel"
+          @pointerdown="onPlotPointerDown"
+          @pointermove="onPlotPointerMove"
+          @pointerup="onPlotPointerUp"
+          @pointercancel="onPlotPointerCancel"
         >
-          {{ axis.label }}
-        </text>
-      </svg>
+          <line
+            v-for="grid in [62, 112, 162]"
+            :key="grid"
+            x1="42"
+            :y1="grid"
+            x2="638"
+            :y2="grid"
+            class="metric-chart__grid"
+          />
+          <line
+            v-if="target != null"
+            x1="42"
+            :y1="yFor(target)"
+            x2="638"
+            :y2="yFor(target)"
+            class="metric-chart__target"
+          />
+          <g
+            v-for="marker in eventMarkers"
+            :key="`event-${marker.event.id}`"
+            class="metric-chart__event"
+            role="button"
+            tabindex="0"
+            :aria-label="eventLabel(marker.event)"
+            @click.stop="inspectEvent(marker.event)"
+            @focus="inspectEvent(marker.event)"
+            @keydown.enter.prevent="inspectEvent(marker.event)"
+            @keydown.space.prevent="inspectEvent(marker.event)"
+          >
+            <title>{{ eventLabel(marker.event) }}</title>
+            <line :x1="marker.x" y1="18" :x2="marker.x" y2="202" />
+          </g>
+          <path
+            v-for="(segment, index) in lineSegments"
+            :key="index"
+            :d="linePath(segment)"
+            class="metric-chart__line"
+          />
+          <circle
+            v-for="entry in pointCoordinates"
+            :key="`${entry.point.timestamp}:${entry.index}`"
+            :cx="entry.x"
+            :cy="entry.y"
+            r="5"
+            class="metric-chart__point"
+            tabindex="0"
+            role="button"
+            :aria-label="pointLabel(entry.point)"
+            @focus="inspect(entry.point, entry.index)"
+            @click="inspectOnClick(entry.point, entry.index)"
+            @keydown.enter.prevent="inspect(entry.point, entry.index)"
+            @keydown.space.prevent="inspect(entry.point, entry.index)"
+          />
+          <line
+            v-if="!pointCoordinates.length"
+            x1="42"
+            y1="162"
+            x2="638"
+            y2="162"
+            class="metric-chart__empty-line"
+          />
+        </svg>
+        <span class="metric-chart__y-axis metric-chart__y-axis--top" aria-hidden="true">
+          {{ upperBound.toLocaleString(locale, { maximumFractionDigits: 1 }) }}{{ unit }}
+        </span>
+        <span class="metric-chart__y-axis metric-chart__y-axis--bottom" aria-hidden="true">
+          0{{ unit }}
+        </span>
+        <div class="metric-chart__event-labels" aria-hidden="true">
+          <span
+            v-for="marker in eventMarkers"
+            v-show="marker.showLabel"
+            :key="`event-label-${marker.event.id}`"
+            class="metric-chart__event-label"
+            :style="eventLabelStyle(marker)"
+            >{{ marker.event.eventType.replace(/_/g, ' ') }}</span
+          >
+        </div>
+      </div>
+      <div class="metric-chart__axis-row" aria-hidden="true">
+        <span
+          v-for="(axis, index) in axisLabels"
+          :key="axis.label"
+          class="metric-chart__axis"
+          :style="axisLabelStyle(axis, index)"
+          >{{ axis.label }}</span
+        >
+      </div>
     </div>
 
     <div v-if="inspectedPoint" class="metric-chart__inspection" aria-live="polite">
       {{ pointLabel(inspectedPoint) }}
+    </div>
+    <div v-if="inspectedEvent" class="metric-chart__event-inspection" aria-live="polite">
+      {{ eventLabel(inspectedEvent) }}
     </div>
     <footer class="metric-chart__footer">
       <span>{{
@@ -388,62 +654,110 @@ onBeforeUnmount(() => {
               :disabled="zoom === 1"
               @click="zoomReset"
             />
+            <span class="metric-chart__zoom-hint">{{ t('sessions.chart_zoom_hint') }}</span>
           </div>
           <div class="metric-chart__dialog-plot">
-            <svg
-              viewBox="0 0 640 220"
-              preserveAspectRatio="none"
-              role="img"
-              :aria-label="`${title}: ${value}`"
-            >
-              <line
-                v-for="grid in [62, 112, 162]"
-                :key="grid"
-                x1="42"
-                :y1="grid"
-                x2="638"
-                :y2="grid"
-                class="metric-chart__grid"
-              />
-              <text x="4" y="22" class="metric-chart__axis">
-                {{ upperBound.toLocaleString(locale, { maximumFractionDigits: 1 }) }}{{ unit }}
-              </text>
-              <text x="4" y="210" class="metric-chart__axis">0{{ unit }}</text>
-              <path
-                v-for="(segment, index) in lineSegments"
-                :key="index"
-                :d="linePath(segment)"
-                class="metric-chart__line"
-              />
-              <circle
-                v-for="entry in pointCoordinates"
-                :key="`${entry.point.timestamp}:${entry.index}`"
-                :cx="entry.x"
-                :cy="entry.y"
-                r="5"
-                class="metric-chart__point"
-                tabindex="0"
-                role="button"
-                :aria-label="pointLabel(entry.point)"
-                @focus="inspect(entry.point, entry.index)"
-                @pointerdown="inspect(entry.point, entry.index)"
-                @keydown.enter.prevent="inspect(entry.point, entry.index)"
-                @keydown.space.prevent="inspect(entry.point, entry.index)"
-              />
-              <text
-                v-for="axis in axisLabels"
-                :key="axis.label"
-                :x="axis.x"
-                y="218"
-                text-anchor="middle"
-                class="metric-chart__axis"
+            <div class="metric-chart__surface">
+              <svg
+                viewBox="0 0 640 220"
+                preserveAspectRatio="none"
+                role="img"
+                class="metric-chart__svg"
+                :aria-label="`${title}: ${value}`"
+                :data-view-start="timeDomain.start"
+                :data-view-end="timeDomain.end"
+                @wheel="onPlotWheel"
+                @pointerdown="onPlotPointerDown"
+                @pointermove="onPlotPointerMove"
+                @pointerup="onPlotPointerUp"
+                @pointercancel="onPlotPointerCancel"
               >
-                {{ axis.label }}
-              </text>
-            </svg>
+                <line
+                  v-for="grid in [62, 112, 162]"
+                  :key="grid"
+                  x1="42"
+                  :y1="grid"
+                  x2="638"
+                  :y2="grid"
+                  class="metric-chart__grid"
+                />
+                <line
+                  v-if="target != null"
+                  x1="42"
+                  :y1="yFor(target)"
+                  x2="638"
+                  :y2="yFor(target)"
+                  class="metric-chart__target"
+                />
+                <g
+                  v-for="marker in eventMarkers"
+                  :key="`dialog-event-${marker.event.id}`"
+                  class="metric-chart__event"
+                  role="button"
+                  tabindex="0"
+                  :aria-label="eventLabel(marker.event)"
+                  @click.stop="inspectEvent(marker.event)"
+                  @focus="inspectEvent(marker.event)"
+                  @keydown.enter.prevent="inspectEvent(marker.event)"
+                  @keydown.space.prevent="inspectEvent(marker.event)"
+                >
+                  <title>{{ eventLabel(marker.event) }}</title>
+                  <line :x1="marker.x" y1="18" :x2="marker.x" y2="202" />
+                </g>
+                <path
+                  v-for="(segment, index) in lineSegments"
+                  :key="index"
+                  :d="linePath(segment)"
+                  class="metric-chart__line"
+                />
+                <circle
+                  v-for="entry in pointCoordinates"
+                  :key="`${entry.point.timestamp}:${entry.index}`"
+                  :cx="entry.x"
+                  :cy="entry.y"
+                  r="5"
+                  class="metric-chart__point"
+                  tabindex="0"
+                  role="button"
+                  :aria-label="pointLabel(entry.point)"
+                  @focus="inspect(entry.point, entry.index)"
+                  @click="inspectOnClick(entry.point, entry.index)"
+                  @keydown.enter.prevent="inspect(entry.point, entry.index)"
+                  @keydown.space.prevent="inspect(entry.point, entry.index)"
+                />
+              </svg>
+              <span class="metric-chart__y-axis metric-chart__y-axis--top" aria-hidden="true">
+                {{ upperBound.toLocaleString(locale, { maximumFractionDigits: 1 }) }}{{ unit }}
+              </span>
+              <span class="metric-chart__y-axis metric-chart__y-axis--bottom" aria-hidden="true">
+                0{{ unit }}
+              </span>
+              <div class="metric-chart__event-labels" aria-hidden="true">
+                <span
+                  v-for="marker in eventMarkers"
+                  v-show="marker.showLabel"
+                  :key="`dialog-event-label-${marker.event.id}`"
+                  class="metric-chart__event-label"
+                  :style="eventLabelStyle(marker)"
+                  >{{ marker.event.eventType.replace(/_/g, ' ') }}</span
+                >
+              </div>
+            </div>
+            <div class="metric-chart__axis-row" aria-hidden="true">
+              <span
+                v-for="(axis, index) in axisLabels"
+                :key="axis.label"
+                class="metric-chart__axis"
+                :style="axisLabelStyle(axis, index)"
+                >{{ axis.label }}</span
+              >
+            </div>
           </div>
           <div v-if="inspectedPoint" class="metric-chart__inspection" aria-live="polite">
             {{ pointLabel(inspectedPoint) }}
+          </div>
+          <div v-if="inspectedEvent" class="metric-chart__event-inspection" aria-live="polite">
+            {{ eventLabel(inspectedEvent) }}
           </div>
         </section>
       </dialog>
@@ -513,18 +827,28 @@ onBeforeUnmount(() => {
 }
 .metric-chart__plot,
 .metric-chart__dialog-plot {
-  height: 10rem;
+  display: flex;
+  flex-direction: column;
+  height: 11.5rem;
   padding: 0 var(--vs-space-12);
 }
 .metric-chart__dialog-plot {
   height: min(60vh, 32rem);
   min-height: 18rem;
 }
+.metric-chart__surface {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
 .metric-chart__plot svg,
 .metric-chart__dialog-plot svg {
+  display: block;
   width: 100%;
   height: 100%;
   overflow: visible;
+  touch-action: pan-y;
+  user-select: none;
 }
 .metric-chart__grid {
   stroke: var(--vs-color-border-subtle);
@@ -558,9 +882,92 @@ onBeforeUnmount(() => {
   stroke: var(--vs-color-focus-ring, var(--metric-color));
   stroke-width: 4;
 }
+.metric-chart__event {
+  cursor: pointer;
+  outline: none;
+}
+.metric-chart__event line {
+  stroke: var(--vs-color-status-warning);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+  opacity: 0.78;
+  vector-effect: non-scaling-stroke;
+}
+.metric-chart__event:hover line,
+.metric-chart__event:focus line {
+  stroke: var(--vs-color-focus-ring, var(--vs-color-status-warning));
+  stroke-width: 2.5;
+  opacity: 1;
+}
+.metric-chart__event:focus-visible {
+  outline: var(--vs-focus-width) solid var(--vs-focus-ring);
+  outline-offset: 2px;
+}
+.metric-chart__event-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.metric-chart__event-label {
+  fill: var(--vs-color-text-secondary);
+  font-size: 9px;
+  pointer-events: none;
+}
+.metric-chart__event-labels .metric-chart__event-label {
+  position: absolute;
+  top: 0.25rem;
+  max-width: 9rem;
+  overflow: hidden;
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.metric-chart__event-inspection {
+  margin: 0 var(--vs-space-16);
+  padding: var(--vs-space-6) var(--vs-space-8);
+  border-radius: var(--vs-radius-control);
+  background: color-mix(in srgb, var(--vs-color-status-warning) 10%, transparent);
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+  font-variant-numeric: tabular-nums;
+}
 .metric-chart__axis {
   fill: var(--vs-color-text-muted);
-  font-size: 10px;
+  font-size: 13px;
+}
+.metric-chart__y-axis {
+  position: absolute;
+  left: 0;
+  color: var(--vs-color-text-muted);
+  font-size: var(--vs-type-size-helper);
+  line-height: 1;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.metric-chart__y-axis--top {
+  top: 0.15rem;
+}
+.metric-chart__y-axis--bottom {
+  bottom: 0.15rem;
+}
+.metric-chart__axis-row {
+  position: relative;
+  flex: none;
+  height: 1.5rem;
+  color: var(--vs-color-text-muted);
+  font-size: var(--vs-type-size-helper);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25rem;
+  white-space: nowrap;
+}
+.metric-chart__axis-row .metric-chart__axis {
+  position: absolute;
+  top: 0;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
 }
 .metric-chart__empty-line {
   stroke: var(--vs-color-border-strong);
@@ -625,9 +1032,14 @@ onBeforeUnmount(() => {
   color: var(--vs-color-text-muted);
   font-size: var(--vs-type-size-helper);
 }
+.metric-chart__zoom-hint {
+  margin-left: auto;
+  color: var(--vs-color-text-muted);
+  font-size: var(--vs-type-size-helper);
+}
 @media (max-width: 639px) {
   .metric-chart__plot {
-    height: 9rem;
+    height: 10.5rem;
   }
   .metric-chart__dialog {
     width: 100vw;
@@ -642,6 +1054,15 @@ onBeforeUnmount(() => {
   .metric-chart__dialog-plot {
     height: 42vh;
     min-height: 14rem;
+  }
+  .metric-chart__zoom-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+  .metric-chart__zoom-hint {
+    flex-basis: 100%;
+    margin-left: 0;
+    text-align: left;
   }
   .metric-chart__header {
     padding-inline: var(--vs-space-12);

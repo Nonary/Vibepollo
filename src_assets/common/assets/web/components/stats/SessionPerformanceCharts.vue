@@ -12,6 +12,7 @@ import {
   samplesToPerformancePoints,
   type HostChartSeries,
 } from './historyUtils';
+import { eventsForChart } from './eventUtils';
 import type { ChartValuePoint, PerformancePoint } from './types';
 
 const props = withDefaults(
@@ -66,6 +67,25 @@ const sourcePoints = computed<PerformancePoint[]>(() => {
 const sourceHostSamples = computed(() =>
   props.hostSamples.length ? props.hostSamples : retainedSamples.value,
 );
+const sourceEvents = computed<SessionEvent[]>(() => {
+  const retained = isLive.value ? retainedEvents.value : [];
+  if (!retained.length) return props.events;
+  const known = new Set(
+    retained.map(
+      (event) =>
+        `${event.session_uuid}:${event.timestamp_unix}:${event.event_type}:${event.payload || ''}`,
+    ),
+  );
+  return [
+    ...retained,
+    ...props.events.filter(
+      (event) =>
+        !known.has(
+          `${event.session_uuid}:${event.timestamp_unix}:${event.event_type}:${event.payload || ''}`,
+        ),
+    ),
+  ];
+});
 const hostSeries = computed<HostChartSeries>(() => samplesToHostSeries(sourceHostSamples.value));
 const latestTimestamp = computed(() => {
   const points = [
@@ -91,6 +111,7 @@ const displayHostSeries = computed<HostChartSeries>(() => {
     tx: filter(hostSeries.value.tx),
   };
 });
+const displayEvents = computed(() => eventsForChart(sourceEvents.value, displayPoints.value));
 
 const latest = computed(() => displayPoints.value.at(-1));
 const qualityLabel = computed(() => t('sessions.chart_quality'));
@@ -249,6 +270,7 @@ onBeforeUnmount(() => {
       :description="t('sessions.tip_chart_encode_latency')"
       :value="decimal(latest?.latencyMs, ' ms')"
       :points="values(displayPoints, (point) => point.latencyMs)"
+      :events="displayEvents"
       unit=" ms"
       color="var(--vs-color-status-info)"
       :target="16"
@@ -259,6 +281,7 @@ onBeforeUnmount(() => {
       :description="t('sessions.tip_chart_throughput')"
       :value="decimal(latest?.throughputMbps, ' Mbps', 2)"
       :points="values(displayPoints, (point) => point.throughputMbps)"
+      :events="displayEvents"
       unit=" Mbps"
       color="var(--vs-color-status-success)"
       :range-label="rangeLabel()"
@@ -268,6 +291,7 @@ onBeforeUnmount(() => {
       :description="t('sessions.tip_chart_quality')"
       :value="decimal(latest?.qualityEvents, '', 0)"
       :points="values(displayPoints, (point) => point.qualityEvents)"
+      :events="displayEvents"
       color="var(--vs-color-status-warning)"
       :range-label="rangeLabel()"
     />
@@ -276,6 +300,7 @@ onBeforeUnmount(() => {
         :title="t('sessions.video_dropped')"
         :value="decimal(latest?.videoDropped, '', 0)"
         :points="values(displayPoints, (point) => point.videoDropped ?? null)"
+        :events="displayEvents"
         unit=" events"
         color="var(--vs-color-status-danger)"
         :range-label="rangeLabel()"
@@ -284,6 +309,7 @@ onBeforeUnmount(() => {
         :title="t('sessions.audio_dropped')"
         :value="decimal(latest?.audioDropped, '', 0)"
         :points="values(displayPoints, (point) => point.audioDropped ?? null)"
+        :events="displayEvents"
         unit=" events"
         color="var(--vs-color-status-warning)"
         :range-label="rangeLabel()"
@@ -294,6 +320,7 @@ onBeforeUnmount(() => {
       :description="t('sessions.tip_chart_framerate')"
       :value="decimal(latest?.fps, ' fps')"
       :points="values(displayPoints, (point) => point.fps)"
+      :events="displayEvents"
       unit=" fps"
       color="var(--vs-color-data-accent)"
       :target="targetFps || undefined"
@@ -306,6 +333,7 @@ onBeforeUnmount(() => {
         :title="t('sessions.chart_host_cpu')"
         :value="decimal(displayHostSeries.cpu.at(-1)?.value, '%', 1)"
         :points="displayHostSeries.cpu"
+        :events="displayEvents"
         unit="%"
         :ceiling="100"
         color="var(--vs-color-status-info)"
@@ -316,6 +344,7 @@ onBeforeUnmount(() => {
         :title="t('sessions.chart_host_gpu')"
         :value="decimal(displayHostSeries.gpu.at(-1)?.value, '%', 1)"
         :points="displayHostSeries.gpu"
+        :events="displayEvents"
         unit="%"
         :ceiling="100"
         color="var(--vs-color-status-success)"
@@ -326,6 +355,7 @@ onBeforeUnmount(() => {
         :title="t('sessions.chart_host_gpu_encoder')"
         :value="decimal(displayHostSeries.encoder.at(-1)?.value, '%', 1)"
         :points="displayHostSeries.encoder"
+        :events="displayEvents"
         unit="%"
         :ceiling="100"
         color="var(--vs-color-data-accent)"
@@ -336,6 +366,7 @@ onBeforeUnmount(() => {
         :title="t('sessions.chart_host_ram')"
         :value="decimal(displayHostSeries.ram.at(-1)?.value, '%', 1)"
         :points="displayHostSeries.ram"
+        :events="displayEvents"
         unit="%"
         :ceiling="100"
         color="var(--vs-color-status-warning)"
@@ -346,6 +377,7 @@ onBeforeUnmount(() => {
         :title="t('sessions.chart_host_vram')"
         :value="decimal(displayHostSeries.vram.at(-1)?.value, '%', 1)"
         :points="displayHostSeries.vram"
+        :events="displayEvents"
         unit="%"
         :ceiling="100"
         color="var(--vs-color-data-accent)"
@@ -356,6 +388,7 @@ onBeforeUnmount(() => {
         :title="t('sessions.chart_host_net_rx')"
         :value="decimal(displayHostSeries.rx.at(-1)?.value, ' Mbps', 2)"
         :points="displayHostSeries.rx"
+        :events="displayEvents"
         unit=" Mbps"
         color="var(--vs-color-status-success)"
         :range-label="rangeLabel()"
@@ -365,6 +398,7 @@ onBeforeUnmount(() => {
         :title="t('sessions.chart_host_net_tx')"
         :value="decimal(displayHostSeries.tx.at(-1)?.value, ' Mbps', 2)"
         :points="displayHostSeries.tx"
+        :events="displayEvents"
         unit=" Mbps"
         color="var(--vs-color-status-info)"
         :range-label="rangeLabel()"

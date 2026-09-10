@@ -161,6 +161,7 @@ namespace VDISPLAY_SUDOVDA {
     bool allow_reinstall = true
   );
   static DRIVER_STATUS open_vdisplay_device_impl(std::stop_token stop_token, bool allow_reinstall = true);
+  static DRIVER_STATUS open_vdisplay_device_with_status(std::stop_token stop_token, bool allow_reinstall = true);
   static bool start_ping_thread_impl(std::function<void()> fail_cb, std::stop_token stop_token);
   static std::optional<VirtualDisplayCreationResult> create_virtual_display_with_stop(
     const char *s_client_uid,
@@ -2794,6 +2795,10 @@ namespace VDISPLAY_SUDOVDA {
       if (!lock_recovery_operation(operation_lock, state, stop_token)) {
         return false;
       }
+      proc::setVDisplayDriverStatus(
+        DRIVER_STATUS::UNKNOWN,
+        VDISPLAY::DRIVER_SELECTION::UNKNOWN
+      );
       if (!ensure_driver_is_ready_impl(RestartCooldownBehavior::skip, stop_token, false)) {
         BOOST_LOG(warning) << "Virtual display recovery: driver not ready for " << state.describe_target();
         return false;
@@ -2802,7 +2807,7 @@ namespace VDISPLAY_SUDOVDA {
         return false;
       }
 
-      proc::vDisplayDriverStatus.store(open_vdisplay_device_impl(stop_token, false), std::memory_order_release);
+      open_vdisplay_device_with_status(stop_token, false);
       const auto driver_status = proc::vDisplayDriverStatus.load(std::memory_order_acquire);
       if (driver_status != DRIVER_STATUS::OK) {
         BOOST_LOG(warning) << "Virtual display recovery: failed to reopen driver (status="
@@ -3338,8 +3343,15 @@ namespace VDISPLAY_SUDOVDA {
     return DRIVER_STATUS::OK;
   }
 
+  static DRIVER_STATUS open_vdisplay_device_with_status(std::stop_token stop_token, bool allow_reinstall) {
+    proc::setVDisplayDriverStatus(DRIVER_STATUS::UNKNOWN, VDISPLAY::DRIVER_SELECTION::UNKNOWN);
+    const auto status = open_vdisplay_device_impl(stop_token, allow_reinstall);
+    proc::setVDisplayDriverStatus(status, VDISPLAY::DRIVER_SELECTION::SUDOVDA);
+    return status;
+  }
+
   DRIVER_STATUS openVDisplayDevice() {
-    return open_vdisplay_device_impl({});
+    return open_vdisplay_device_with_status({});
   }
 
   static bool ensure_driver_is_ready_impl(
@@ -4430,7 +4442,7 @@ namespace VDISPLAY_SUDOVDA {
         return std::nullopt;
       }
       if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
-        if (open_vdisplay_device_impl(stop_token, allow_reinstall) != DRIVER_STATUS::OK) {
+        if (open_vdisplay_device_with_status(stop_token, allow_reinstall) != DRIVER_STATUS::OK) {
           BOOST_LOG(warning) << "Unable to open SudoVDA driver handle for virtual display creation.";
           return std::nullopt;
         }
@@ -4476,7 +4488,7 @@ namespace VDISPLAY_SUDOVDA {
           return std::nullopt;
         }
 
-        if (open_vdisplay_device_impl(stop_token, allow_reinstall) != DRIVER_STATUS::OK) {
+        if (open_vdisplay_device_with_status(stop_token, allow_reinstall) != DRIVER_STATUS::OK) {
           BOOST_LOG(warning) << "Failed to re-open SudoVDA driver after recovery.";
           return std::nullopt;
         }
@@ -4587,7 +4599,7 @@ namespace VDISPLAY_SUDOVDA {
         return std::nullopt;
       }
 
-      if (open_vdisplay_device_impl(stop_token, allow_reinstall) != DRIVER_STATUS::OK) {
+      if (open_vdisplay_device_with_status(stop_token, allow_reinstall) != DRIVER_STATUS::OK) {
         BOOST_LOG(warning) << "Failed to re-open SudoVDA driver after recovery.";
         return std::nullopt;
       }
@@ -4720,7 +4732,7 @@ namespace VDISPLAY_SUDOVDA {
         return true;
       }
       if ((cancel_recovery_monitor && stop_token.stop_requested()) ||
-          open_vdisplay_device_impl(reopen_stop_token, allow_reinstall) != DRIVER_STATUS::OK) {
+          open_vdisplay_device_with_status(reopen_stop_token, allow_reinstall) != DRIVER_STATUS::OK) {
         printf("[SUDOVDA] Failed to open driver while removing virtual display.\n");
         return false;
       }
@@ -4750,7 +4762,7 @@ namespace VDISPLAY_SUDOVDA {
       printf("[SUDOVDA] Driver handle became invalid while removing virtual display; retrying.\n");
       closeVDisplayDevice();
       if ((!cancel_recovery_monitor || !stop_token.stop_requested()) &&
-          open_vdisplay_device_impl(reopen_stop_token, allow_reinstall) == DRIVER_STATUS::OK) {
+          open_vdisplay_device_with_status(reopen_stop_token, allow_reinstall) == DRIVER_STATUS::OK) {
         opened_handle = true;
         auto retry_result = perform_remove();
         removed = retry_result.first;

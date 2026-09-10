@@ -36,6 +36,7 @@
 
 namespace VDISPLAY {
   enum class DRIVER_STATUS;
+  enum class DRIVER_SELECTION;
 }
 
 #endif
@@ -51,6 +52,14 @@ namespace proc {
 
 #ifdef _WIN32
   extern std::atomic<VDISPLAY::DRIVER_STATUS> vDisplayDriverStatus;
+  extern std::atomic<VDISPLAY::DRIVER_SELECTION> vDisplayDriverSelection;
+  struct vdisplay_driver_status_snapshot_t {
+    VDISPLAY::DRIVER_STATUS status;
+    VDISPLAY::DRIVER_SELECTION selection;
+  };
+  vdisplay_driver_status_snapshot_t vDisplayDriverStatusSnapshot();
+  void setVDisplayDriverStatus(VDISPLAY::DRIVER_STATUS status);
+  void setVDisplayDriverStatus(VDISPLAY::DRIVER_STATUS status, VDISPLAY::DRIVER_SELECTION selection);
   void initVDisplayDriver();
 #endif
 

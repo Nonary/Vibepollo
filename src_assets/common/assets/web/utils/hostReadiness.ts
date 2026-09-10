@@ -20,6 +20,12 @@ export interface ReadinessMetadata {
     modes?: string[];
     layouts?: string[];
   };
+  virtual_display_driver?: {
+    configured?: string;
+    active?: string | null;
+    status?: string;
+    status_code?: number;
+  };
   linux?: { session_role?: 'desktop' | 'greeter' | 'unknown' };
 }
 

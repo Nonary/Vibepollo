@@ -4,7 +4,7 @@ import { computed } from 'vue';
 const props = withDefaults(
   defineProps<{
     label: string;
-    value: number;
+    value: number | null | undefined;
     detail?: string;
     color?: string;
   }>(),
@@ -14,10 +14,15 @@ const props = withDefaults(
   },
 );
 
-const bounded = computed(() =>
-  Math.max(0, Math.min(100, Number.isFinite(props.value) ? props.value : 0)),
+const bounded = computed(() => {
+  const value = typeof props.value === 'number' && Number.isFinite(props.value) ? props.value : 0;
+  return Math.max(0, Math.min(100, value));
+});
+const display = computed(() =>
+  typeof props.value === 'number' && Number.isFinite(props.value)
+    ? `${Math.round(bounded.value)}%`
+    : '—',
 );
-const display = computed(() => `${Math.round(bounded.value)}%`);
 </script>
 
 <template>

@@ -1745,6 +1745,9 @@
         "output_name": {
           "description": "Leave blank to let Vibepollo choose the display. Otherwise use an exact device name."
         },
+        "port": {
+          "description": "Choose the base TCP and UDP port for Moonlight and the Web UI. WAN access exposes the Web UI to the internet."
+        },
         "rtss_frame_limit_type": {
           "description": "This mode applies to physical-display streams. Virtual displays use NVIDIA Reflex unless the opt-in virtual-display override is enabled.",
           "label": "RTSS SyncLimiter mode"
@@ -1980,6 +1983,10 @@
         "title": "Some host details are unavailable"
       },
       "no_results": "No settings match “{query}”.",
+      "network": {
+        "listener_hint": "The base port determines the TCP and UDP listeners below. Keep the full range available through your firewall.",
+        "table_caption": "Vibepollo network listeners"
+      },
       "notices": {
         "display_state_cleared": "Saved display-device state was cleared.",
         "restarting": "Vibepollo is restarting. This page will reconnect when the host is ready.",
@@ -2272,6 +2279,55 @@
         "description": "Choose a physical display or finish installing the Linux virtual-display module before streaming.",
         "title": "Virtual displays are not ready on this host"
       },
+      "windows_display": {
+        "title": "Virtual-display driver status",
+        "description": "Reports the driver observed by the host after its most recent runtime check.",
+        "error_title": "Display status unavailable",
+        "error_body": "The host could not refresh virtual-display status. The last observation is still shown.",
+        "drivers": {
+          "unknown": "Unknown driver"
+        },
+        "states": {
+          "failed": "Unavailable"
+        },
+        "messages": {
+          "ready": {
+            "title": "Driver responded",
+            "description": "{driver} responded to the latest runtime check and is ready for virtual-display use."
+          },
+          "failed": {
+            "title": "Driver is unavailable",
+            "description": "{driver} did not respond to the latest runtime check. Repair or reinstall the selected driver before using a virtual display."
+          },
+          "uninitialized": {
+            "title": "Driver has not been initialized",
+            "description": "The host has not initialized a virtual-display driver yet. Start a stream or restart Vibepollo, then check this status again."
+          },
+          "version_incompatible": {
+            "title": "Driver version mismatch",
+            "description": "{driver} reported an incompatible protocol version. Repair or reinstall the driver to match this Vibepollo build."
+          },
+          "watchdog_failed": {
+            "title": "Driver watchdog failed",
+            "description": "{driver} stopped responding to its watchdog. Repair or reinstall the driver before starting another virtual-display stream."
+          },
+          "unknown": {
+            "title": "Driver status is unknown",
+            "description": "The host has not reported a valid virtual-display driver observation. Check the host service and try again."
+          }
+        },
+        "configured": "Configured selection: {driver}",
+        "observed": "Observed by host: {driver}",
+        "observed_unknown": "Observed by host: no driver result yet",
+        "configured_mismatch": "Settings select {configured}, while the latest runtime observation was {observed}. Save the selection and restart Vibepollo before relying on its status.",
+        "status_code": "Runtime status code: {code}",
+        "refresh": "Refresh status",
+        "refreshing": "Refreshing status",
+        "dummy_plug_title": "The Disable VSYNC override is required for the dummy-plug HDR workaround",
+        "dummy_plug_description": "While this workaround is enabled, Vibepollo forces the Disable VSYNC override on and locks it. Disabling the workaround leaves your saved VSYNC choice unchanged.",
+        "vsync_forced": "Required by the active physical dummy-plug HDR workaround. The Disable VSYNC override is shown as enabled and cannot be changed until the workaround is disabled.",
+        "next_step": "Select a driver in Display settings, save, and start a stream to produce a fresh runtime check."
+      },
       "linux": {
         "title": "Display readiness",
         "recommendation": "Virtual screens match your client's resolution and refresh rate automatically.",
@@ -2310,6 +2366,11 @@
       "audio_summary": "Use automatic audio routing, or open Audio to select a specific device.",
       "validation": {
         "number": "Enter a number within the allowed range.",
+        "port_required": "Enter a base port.",
+        "port_integer": "Enter a whole number for the base port.",
+        "port_dependent_low": "This base port would place the TCP listener at base − 5 below 1024. Choose a base port of at least 1029.",
+        "port_dependent_high": "This base port would place the TCP listener at base + 21 above 65535. Choose a base port of at most 65514.",
+        "port_range": "Choose a base port from 1029 through 65514 so all dependent listeners remain valid.",
         "resolution": "Enter a resolution such as 2560x1440.",
         "array": "Enter a JSON array; leave empty to use the default."
       }

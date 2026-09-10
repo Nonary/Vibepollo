@@ -954,6 +954,8 @@ namespace proc {
 
 #ifdef _WIN32
   std::atomic<VDISPLAY::DRIVER_STATUS> vDisplayDriverStatus {VDISPLAY::DRIVER_STATUS::UNKNOWN};
+  std::atomic<VDISPLAY::DRIVER_SELECTION> vDisplayDriverSelection {VDISPLAY::DRIVER_SELECTION::UNKNOWN};
+  std::mutex vdisplay_driver_status_mutex;
 
   namespace {
     lifecycle::deferred_action_t deferred_display_revert;
@@ -971,18 +973,44 @@ namespace proc {
     deferred_display_revert.clear();
   }
 
+  vdisplay_driver_status_snapshot_t vDisplayDriverStatusSnapshot() {
+    std::lock_guard<std::mutex> lock(vdisplay_driver_status_mutex);
+    return {
+      vDisplayDriverStatus.load(std::memory_order_acquire),
+      vDisplayDriverSelection.load(std::memory_order_acquire),
+    };
+  }
+
+  void setVDisplayDriverStatus(const VDISPLAY::DRIVER_STATUS status) {
+    std::lock_guard<std::mutex> lock(vdisplay_driver_status_mutex);
+    vDisplayDriverStatus.store(status, std::memory_order_release);
+  }
+
+  void setVDisplayDriverStatus(
+    const VDISPLAY::DRIVER_STATUS status,
+    const VDISPLAY::DRIVER_SELECTION selection
+  ) {
+    std::lock_guard<std::mutex> lock(vdisplay_driver_status_mutex);
+    vDisplayDriverSelection.store(selection, std::memory_order_release);
+    vDisplayDriverStatus.store(status, std::memory_order_release);
+  }
+
   void onVDisplayWatchdogFailed() {
-    vDisplayDriverStatus.store(VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED, std::memory_order_release);
+    setVDisplayDriverStatus(VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED);
     VDISPLAY::closeVDisplayDevice();
   }
 
   void initVDisplayDriver() {
     VDISPLAY::ensureVirtualDisplayRegistryDefaults();
+    setVDisplayDriverStatus(
+      VDISPLAY::DRIVER_STATUS::UNKNOWN,
+      VDISPLAY::DRIVER_SELECTION::UNKNOWN
+    );
     if (!VDISPLAY::ensure_driver_is_ready()) {
       BOOST_LOG(warning) << "Sunshine virtual display driver reported unavailable during initialization; attempting to continue.";
     }
-    vDisplayDriverStatus.store(VDISPLAY::openVDisplayDevice(), std::memory_order_release);
-    if (vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK) {
+    const auto status = VDISPLAY::openVDisplayDevice();
+    if (status == VDISPLAY::DRIVER_STATUS::OK) {
       if (!VDISPLAY::startPingThread(onVDisplayWatchdogFailed)) {
         onVDisplayWatchdogFailed();
         return;

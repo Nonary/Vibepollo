@@ -1,4 +1,5 @@
 import type { SettingsField } from '../configs/settingsSchema.ts';
+import { networkPortError, networkPortErrorKey } from './network.ts';
 
 export function acknowledgeSettings(
   original: Record<string, unknown>,
@@ -8,7 +9,9 @@ export function acknowledgeSettings(
 }
 
 export function settingError(field: SettingsField | undefined, value: unknown): string | undefined {
-  if (!field || value === '' || value == null) return;
+  if (!field) return;
+  if (field.key === 'port') return networkPortErrorKey(networkPortError(value));
+  if (value === '' || value == null) return;
   if (field.kind === 'number' || field.kind === 'duration') {
     const number = Number(value);
     if (

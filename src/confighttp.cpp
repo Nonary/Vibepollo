@@ -74,6 +74,7 @@
 
 #ifdef _WIN32
   #include "platform/windows/virtual_display_cleanup.h"
+  #include "platform/windows/virtual_display.h"
 #elif defined(__linux__)
   #include "platform/linux/capture_status.h"
   #include "platform/linux/private_display.h"
@@ -3138,6 +3139,49 @@ namespace confighttp {
 #endif
 #if defined(_WIN32)
     output_tree["providers"]["playnite_toggle"] = true;
+    const auto driver_snapshot = proc::vDisplayDriverStatusSnapshot();
+    const auto driver_status = driver_snapshot.status;
+    const auto active_driver = driver_snapshot.selection;
+    const auto driver_status_name = [](const VDISPLAY::DRIVER_STATUS status) {
+      switch (status) {
+        case VDISPLAY::DRIVER_STATUS::OK:
+          return "ready";
+        case VDISPLAY::DRIVER_STATUS::FAILED:
+          return "failed";
+        case VDISPLAY::DRIVER_STATUS::VERSION_INCOMPATIBLE:
+          return "version_incompatible";
+        case VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED:
+          return "watchdog_failed";
+        case VDISPLAY::DRIVER_STATUS::UNKNOWN:
+        default:
+          return "unknown";
+      }
+    };
+    const auto driver_selection_name = [](const VDISPLAY::DRIVER_SELECTION selection) -> const char * {
+      switch (selection) {
+        case VDISPLAY::DRIVER_SELECTION::VIBESHINE:
+          return "vibeshine";
+        case VDISPLAY::DRIVER_SELECTION::SUDOVDA:
+          return "sudovda";
+        case VDISPLAY::DRIVER_SELECTION::UNKNOWN:
+        default:
+          return nullptr;
+      }
+    };
+    const auto configured_driver = config::video.dd.use_sunshine_virtual_display_driver
+                                     ? "vibeshine"
+                                     : "sudovda";
+    nlohmann::json driver_metadata = {
+      {"configured", configured_driver},
+      {"status", driver_status_name(driver_status)},
+      {"status_code", static_cast<int>(driver_status)},
+    };
+    if (const auto active_name = driver_selection_name(active_driver)) {
+      driver_metadata["active"] = active_name;
+    } else {
+      driver_metadata["active"] = nullptr;
+    }
+    output_tree["virtual_display_driver"] = std::move(driver_metadata);
     try {
       const auto gpus = platf::enumerate_gpus();
       if (!gpus.empty()) {

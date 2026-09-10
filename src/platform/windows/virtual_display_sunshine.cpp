@@ -159,6 +159,7 @@ namespace VDISPLAY_SUNSHINE {
 
   static bool ensure_driver_is_ready_impl(RestartCooldownBehavior cooldown_behavior, std::stop_token stop_token = {});
   static DRIVER_STATUS open_vdisplay_device_impl(std::stop_token stop_token, OpenRecoveryBehavior recovery_behavior);
+  static DRIVER_STATUS open_vdisplay_device_with_status(std::stop_token stop_token, OpenRecoveryBehavior recovery_behavior);
   static bool start_ping_thread_impl(
     std::function<void()> fail_cb,
     std::stop_token stop_token,
@@ -4631,6 +4632,10 @@ namespace VDISPLAY_SUNSHINE {
       if (!lock_recovery_operation(operation_lock, state, stop_token)) {
         return false;
       }
+      proc::setVDisplayDriverStatus(
+        DRIVER_STATUS::UNKNOWN,
+        VDISPLAY::DRIVER_SELECTION::UNKNOWN
+      );
       if (!ensure_driver_is_ready_impl(RestartCooldownBehavior::skip, stop_token)) {
         BOOST_LOG(warning) << "Virtual display recovery: driver not ready for " << state.describe_target();
         return false;
@@ -4639,10 +4644,7 @@ namespace VDISPLAY_SUNSHINE {
         return false;
       }
 
-      proc::vDisplayDriverStatus.store(
-        open_vdisplay_device_impl(stop_token, OpenRecoveryBehavior::transport_only),
-        std::memory_order_release
-      );
+      open_vdisplay_device_with_status(stop_token, OpenRecoveryBehavior::transport_only);
       const auto driver_status = proc::vDisplayDriverStatus.load(std::memory_order_acquire);
       if (driver_status != DRIVER_STATUS::OK) {
         BOOST_LOG(warning) << "Virtual display recovery: failed to reopen driver (status="
@@ -5234,7 +5236,7 @@ namespace VDISPLAY_SUNSHINE {
       closeVDisplayDevice();
     }
 
-    const auto status = open_vdisplay_device_impl(stop_token, recovery_behavior);
+    const auto status = open_vdisplay_device_with_status(stop_token, recovery_behavior);
     if (status != DRIVER_STATUS::OK) {
       BOOST_LOG(warning) << operation << ": failed to open Sunshine virtual display driver transport (status="
                          << static_cast<int>(status) << ").";
@@ -5344,11 +5346,21 @@ namespace VDISPLAY_SUNSHINE {
     return DRIVER_STATUS::OK;
   }
 
+  static DRIVER_STATUS open_vdisplay_device_with_status(
+    std::stop_token stop_token,
+    OpenRecoveryBehavior recovery_behavior
+  ) {
+    proc::setVDisplayDriverStatus(VDISPLAY::DRIVER_STATUS::UNKNOWN, VDISPLAY::DRIVER_SELECTION::UNKNOWN);
+    const auto status = open_vdisplay_device_impl(stop_token, recovery_behavior);
+    proc::setVDisplayDriverStatus(status, VDISPLAY::DRIVER_SELECTION::VIBESHINE);
+    return status;
+  }
+
   DRIVER_STATUS openVDisplayDevice() {
     // proc::initVDisplayDriver() probes/restarts the adapter immediately before
     // this call. Limit this phase to opening the transport so one initialization
     // attempt cannot enter a second PnP recovery cycle.
-    return open_vdisplay_device_impl({}, OpenRecoveryBehavior::transport_only);
+    return open_vdisplay_device_with_status({}, OpenRecoveryBehavior::transport_only);
   }
 
   static bool ensure_driver_is_ready_impl(RestartCooldownBehavior cooldown_behavior, std::stop_token stop_token) {
@@ -7293,7 +7305,7 @@ namespace VDISPLAY_SUNSHINE {
           return std::nullopt;
         }
 
-        if (open_vdisplay_device_impl(stop_token, OpenRecoveryBehavior::transport_only) != DRIVER_STATUS::OK) {
+        if (open_vdisplay_device_with_status(stop_token, OpenRecoveryBehavior::transport_only) != DRIVER_STATUS::OK) {
           BOOST_LOG(warning) << "Failed to re-open Sunshine virtual display driver after recovery.";
           return std::nullopt;
         }
@@ -7465,7 +7477,7 @@ namespace VDISPLAY_SUNSHINE {
         return std::nullopt;
       }
 
-      if (open_vdisplay_device_impl(stop_token, OpenRecoveryBehavior::transport_only) != DRIVER_STATUS::OK) {
+      if (open_vdisplay_device_with_status(stop_token, OpenRecoveryBehavior::transport_only) != DRIVER_STATUS::OK) {
         BOOST_LOG(warning) << "Failed to re-open Sunshine virtual display driver after recovery.";
         return std::nullopt;
       }
@@ -7623,7 +7635,7 @@ namespace VDISPLAY_SUNSHINE {
         closeVDisplayDevice();
       }
 
-      if (open_vdisplay_device_impl(reopen_stop_token, reopen_recovery_behavior) != DRIVER_STATUS::OK) {
+      if (open_vdisplay_device_with_status(reopen_stop_token, reopen_recovery_behavior) != DRIVER_STATUS::OK) {
         printf("[SunshineVirtualDisplay] Failed to open driver while removing virtual display.\n");
         return false;
       }
@@ -7719,7 +7731,7 @@ namespace VDISPLAY_SUNSHINE {
       printf("[SunshineVirtualDisplay] Driver transport became invalid while removing virtual display; retrying.\n");
       closeVDisplayDevice();
       if ((!cancel_recovery_monitor || !stop_token.stop_requested()) &&
-          open_vdisplay_device_impl(reopen_stop_token, reopen_recovery_behavior) == DRIVER_STATUS::OK) {
+          open_vdisplay_device_with_status(reopen_stop_token, reopen_recovery_behavior) == DRIVER_STATUS::OK) {
         opened_handle = true;
         transport = control_transport_snapshot();
         auto retry_result = perform_remove();
