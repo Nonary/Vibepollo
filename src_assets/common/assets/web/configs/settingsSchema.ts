@@ -848,7 +848,7 @@ export const settingsDefaults: Record<string, unknown> = {
   encoder: '',
   nvenc_preset: 1,
   qsv_preset: 'medium',
-  amd_quality: 'balanced',
+  amd_quality: 'speed',
   wgc_pacing_smoothing: true,
   hevc_mode: 0,
   av1_mode: 0,

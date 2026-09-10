@@ -421,7 +421,7 @@
     "amd_preanalysis_desc": "이렇게 하면 속도 제어 사전 분석이 가능하므로 인코딩 지연 시간이 증가하는 대신 품질이 향상될 수 있습니다.",
     "amd_quality": "AMF 품질",
     "amd_quality_balanced": "balanced -- 속도와 품질의 균형",
-    "amd_quality_desc": "이 설정은 인코딩 속도와 품질 사이의 균형을 조절합니다. 기본값은 'balanced'입니다. 'auto'를 선택하면 속성을 설정하지 않은 상태로 두어 선택한 AMF 사용 프리셋이 값을 결정할 수 있습니다.",
+    "amd_quality_desc": "이 설정은 인코딩 속도와 품질 사이의 균형을 조절합니다. 기본값은 'speed'입니다. 'auto'를 선택하면 속성을 설정하지 않은 상태로 두어 선택한 AMF 사용 프리셋이 값을 결정할 수 있습니다.",
     "amd_quality_group": "AMF 품질 설정(네이티브 + FFmpeg)",
     "amd_quality_quality": "품질 - 품질 선호",
     "amd_quality_speed": "속도 - 속도 선호",

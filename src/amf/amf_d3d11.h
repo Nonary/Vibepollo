@@ -98,6 +98,32 @@ namespace amf {
     amf_encoded_frame
     extract_encoded_frame(const ::amf::AMFDataPtr &output_data);
 
+    enum class output_query_kind_e {
+      produced,
+      no_output,
+      eof,
+      failure,
+    };
+
+    struct output_query_outcome_t {
+      output_query_kind_e kind = output_query_kind_e::no_output;
+      AMF_RESULT result = AMF_OK;
+      bool poll_disarmed = false;
+      bool latency_waiter_active = false;
+      bool fatal = false;
+    };
+
+    output_query_outcome_t
+    query_output_once();
+
+    std::optional<output_query_outcome_t>
+    try_query_output_until(
+      uint64_t required_frame_index,
+      std::chrono::steady_clock::time_point deadline) noexcept;
+
+    output_query_outcome_t
+    query_output_once_locked();
+
     void
     output_pump(std::stop_token stop_token) noexcept;
 
@@ -172,10 +198,14 @@ namespace amf {
     std::array<bool, MAX_LTR_SLOTS> ltr_slots_valid {};
     std::array<uint64_t, MAX_LTR_SLOTS> ltr_slot_frame_index {};  // Frame index when each LTR slot was marked
 
-    // QueryOutput is owned by a dedicated pump. This keeps AMF driver completion work
-    // off Sunshine's latency-critical encode thread and gives input-slot ownership one
-    // synchronization boundary.
+    // QueryOutput normally belongs to the dedicated pump. A serialized encode-thread
+    // fast loop takes ownership with a non-blocking try-lock in the common no-PA case,
+    // avoiding a thread wakeup. Publication is ordered behind SubmitInput's accepted-
+    // frame bookkeeping so a synchronously completed frame cannot outrun its timestamp
+    // and recovery metadata.
     std::mutex state_mutex;
+    std::mutex output_query_mutex;
+    std::mutex submission_publication_mutex;
     std::condition_variable state_cv;
     std::jthread output_thread;
     std::deque<amf_encoded_frame> completed_outputs;
@@ -194,6 +224,7 @@ namespace amf {
     std::size_t input_surfaces_in_flight = 0;
     uint64_t accepted_input_count = 0;
     uint64_t completed_output_count = 0;
+    std::optional<std::size_t> low_latency_pipeline_depth;
     std::deque<uint64_t> accepted_frame_indices;
     bool preanalysis_enabled = false;
     int preanalysis_lookahead_depth = 0;
@@ -220,6 +251,7 @@ namespace amf {
     int consecutive_output_failures = 0;
     // Consecutive submissions whose bounded coalescing target was not reached.
     int consecutive_catchup_misses = 0;
+    uint64_t latency_backpressure_drop_count = 0;
     uint64_t catchup_batch_count = 0;
     int max_consecutive_failures = 60;  // Set to ~1s of frames in create_encoder()
     std::chrono::steady_clock::time_point last_output_progress {};

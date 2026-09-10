@@ -4,6 +4,7 @@
  */
 
 #include "amf_d3d11.h"
+#include "amf_config_policy.h"
 
 #include <algorithm>
 #include <chrono>
@@ -466,35 +467,6 @@ namespace amf {
       return true;
     };
 
-    // Split-frame encoding spreads one frame across multiple VCN engines. AMF
-    // exposes no direct capability bit for it, only the instance count, and H.264
-    // has no such control at all. The driver default is already enabled on parts
-    // that support it, so read the current value first and only touch the
-    // property when this GPU actually reports more than one engine — that way a
-    // single-VCN part is never asked for something meaningless.
-    if (encoder_caps && video_format != 0) {
-      const wchar_t *instances_cap = video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_CAP_NUM_OF_HW_INSTANCES :
-                                                         AMF_VIDEO_ENCODER_AV1_CAP_NUM_OF_HW_INSTANCES;
-      const wchar_t *multi_instance_property = video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_MULTI_HW_INSTANCE_ENCODE :
-                                                                   AMF_VIDEO_ENCODER_AV1_MULTI_HW_INSTANCE_ENCODE;
-      amf_int64 hw_instances = 0;
-      if (encoder_caps->GetProperty(instances_cap, &hw_instances) == AMF_OK && hw_instances > 1) {
-        amf_bool current_multi_instance = false;
-        const bool have_current = encoder->GetProperty(multi_instance_property, &current_multi_instance) == AMF_OK;
-        if (have_current && current_multi_instance) {
-          BOOST_LOG(info) << "AMF: split-frame encoding already enabled by the driver across "
-                          << hw_instances << " VCN instances";
-        } else if (set_verified_bool(multi_instance_property, true, "split-frame encoding")) {
-          BOOST_LOG(info) << "AMF: enabled split-frame encoding across " << hw_instances << " VCN instances";
-        } else {
-          // Not fatal: the encoder is perfectly usable on a single instance.
-          BOOST_LOG(info) << "AMF: split-frame encoding unavailable on this driver; continuing on one VCN instance";
-        }
-      } else {
-        BOOST_LOG(debug) << "AMF: split-frame encoding not applicable (hw_instances=" << hw_instances << ')';
-      }
-    }
-
     if (video_format == 0) {
       // H.264
       if (config.usage && !set_verified_int64(AMF_VIDEO_ENCODER_USAGE, *config.usage, "H.264 usage preset")) return false;
@@ -805,9 +777,18 @@ namespace amf {
               "AV1 intra-refresh stripes")) return false;
       }
 
-      // Tiles per frame
-      if (client_config.slicesPerFrame > 1 &&
-          !set_verified_int64(AMF_VIDEO_ENCODER_AV1_TILES_PER_FRAME, client_config.slicesPerFrame, "AV1 tiles per frame")) return false;
+      const auto tiles = config_policy::av1_tiles_request(config.av1_tiles, client_config.slicesPerFrame);
+      if (tiles) {
+        // AMF may round tile counts to a supported layout. Unlike a strict enum
+        // setting, a different positive readback is not an application failure.
+        const auto tile_result = encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_TILES_PER_FRAME, static_cast<amf_int64>(*tiles));
+        if (tile_result != AMF_OK) {
+          BOOST_LOG(warning) << "AMF: failed to request AV1 tiles (requested=" << *tiles
+                             << ", result=" << tile_result << ')';
+          return false;
+        }
+        // Read back after Init, when the driver has the final frame dimensions.
+      }
 
       // Statistics feedback is applied per input surface in encode_frame().
     }
@@ -988,6 +969,26 @@ namespace amf {
       if (config.pa_activity_type && !set_verified_int64(AMF_PA_ACTIVITY_TYPE, *config.pa_activity_type, "PA activity type")) return false;
     }
 
+    // USAGE configures a parameter set, so request this hint only after usage,
+    // rate control and PA. Neither NUM_OF_HW_INSTANCES nor a true readback proves
+    // the codec/frame is being split; the driver decides using its own rules.
+    // https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/585
+    if (encoder_caps && video_format != 0) {
+      const wchar_t *instances_cap = video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_CAP_NUM_OF_HW_INSTANCES :
+                                                         AMF_VIDEO_ENCODER_AV1_CAP_NUM_OF_HW_INSTANCES;
+      const wchar_t *multi_instance_property = video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_MULTI_HW_INSTANCE_ENCODE :
+                                                                   AMF_VIDEO_ENCODER_AV1_MULTI_HW_INSTANCE_ENCODE;
+      amf_int64 hw_instances = 0;
+      if (encoder_caps->GetProperty(instances_cap, &hw_instances) == AMF_OK && hw_instances > 1) {
+        amf_bool current_hint = false;
+        if (encoder->GetProperty(multi_instance_property, &current_hint) != AMF_OK || !current_hint) {
+          if (!set_verified_bool(multi_instance_property, true, "split-frame hint")) {
+            BOOST_LOG(info) << "AMF: split-frame hint was not accepted; continuing with driver-selected scheduling";
+          }
+        }
+      }
+    }
+
     // NOTE: LOWLATENCY_MODE is intentionally NOT forced here.
     //
     // Previously this block hard-coded AMF_VIDEO_ENCODER_(HEVC_)LOWLATENCY_MODE = true
@@ -1094,6 +1095,39 @@ namespace amf {
 
       // Successfully created and initialized the encoder
       break;
+    }
+
+    if (video_format != 0) {
+      const wchar_t *multi_instance_property = video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_MULTI_HW_INSTANCE_ENCODE :
+                                                                   AMF_VIDEO_ENCODER_AV1_MULTI_HW_INSTANCE_ENCODE;
+      amf_bool applied_hint = false;
+      const auto hint_result = encoder->GetProperty(multi_instance_property, &applied_hint);
+      BOOST_LOG(info) << "AMF: split-frame hint after Init="
+                      << (hint_result == AMF_OK ? (applied_hint ? "true" : "false") : "unavailable")
+                      << "; active multi-engine encoding is not verified";
+    }
+    if (video_format == 2) {
+      const auto requested_tiles = config_policy::av1_tiles_request(config.av1_tiles, client_config.slicesPerFrame);
+      amf_int64 reported_tiles = 0;
+      const auto tile_result = encoder->GetProperty(AMF_VIDEO_ENCODER_AV1_TILES_PER_FRAME, &reported_tiles);
+      if (tile_result == AMF_OK && reported_tiles > 0) {
+        BOOST_LOG(info) << "AMF: AV1 tiles after Init (host_override=" << config.av1_tiles
+                        << ", client_slices=" << client_config.slicesPerFrame
+                        << ", requested=" << requested_tiles.value_or(0)
+                        << ", driver_reported=" << reported_tiles
+                        << "; requested=0 means preset default, not proof of multi-engine encoding)";
+        if (requested_tiles && reported_tiles != *requested_tiles) {
+          BOOST_LOG(warning) << "AMF: driver adjusted AV1 tile request from " << *requested_tiles
+                             << " to " << reported_tiles << "; this is not an exact tile-count comparison";
+        }
+      } else {
+        BOOST_LOG(warning) << "AMF: AV1 tile count unavailable after Init (result=" << tile_result
+                           << ", reported=" << reported_tiles << ')';
+        if (requested_tiles) {
+          // Do not silently label an unverifiable override as a successful trial.
+          return false;
+        }
+      }
     }
 
     // Some runtimes accept a property before Init but substitute a different
@@ -1340,12 +1374,14 @@ namespace amf {
     input_surfaces_in_flight = 0;
     accepted_input_count = 0;
     completed_output_count = 0;
+    low_latency_pipeline_depth.reset();
     accepted_frame_indices.clear();
     consecutive_submit_failures = 0;
     consecutive_surface_failures = 0;
     consecutive_query_failures = 0;
     consecutive_output_failures = 0;
     consecutive_catchup_misses = 0;
+    latency_backpressure_drop_count = 0;
     last_output_progress = std::chrono::steady_clock::now();
     submit_backpressure_started = {};
     completed_outputs.clear();
@@ -1373,7 +1409,7 @@ namespace amf {
                     << ", lookahead=" << preanalysis_lookahead_depth
                     << ", input_queue=" << encoder_input_queue_size
                     << ", input_surfaces=" << active_input_surface_count
-                    << ", slices=" << client_config.slicesPerFrame << ")";
+                    << ", client_slices=" << client_config.slicesPerFrame << ")";
     return true;
   }
 
@@ -1414,6 +1450,7 @@ namespace amf {
       input_surfaces_in_flight = 0;
       accepted_input_count = 0;
       completed_output_count = 0;
+      low_latency_pipeline_depth.reset();
       accepted_frame_indices.clear();
       last_completed_frame_index = 0;
       last_submitted_frame_index = 0;
@@ -1422,6 +1459,7 @@ namespace amf {
       drain_complete = false;
       output_poll_requested = false;
       active_output_poll_waiters = 0;
+      latency_backpressure_drop_count = 0;
       catchup_batch_count = 0;
       consecutive_output_failures = 0;
     }
@@ -1519,9 +1557,216 @@ namespace amf {
     return result;
   }
 
+  amf_d3d11::output_query_outcome_t
+  amf_d3d11::query_output_once_locked() {
+    output_query_outcome_t outcome;
+    uint64_t queried_through_input = 0;
+    {
+      std::lock_guard lock(state_mutex);
+      queried_through_input = accepted_input_count;
+    }
+
+    ::amf::AMFDataPtr output_data;
+    outcome.result = encoder ? encoder->QueryOutput(&output_data) : AMF_FAIL;
+
+    if (output_data) {
+      outcome.kind = output_query_kind_e::produced;
+      // Keep the multi-MB bitstream copy outside state_mutex. output_query_mutex
+      // remains held so a direct encode-thread query cannot publish frame N+1
+      // before this frame has been copied and queued.
+      auto encoded_frame = extract_encoded_frame(output_data);
+      // SubmitInput and QueryOutput are allowed to run concurrently, but packet
+      // publication must follow the accepted frame's counter/timestamp/RFI commit.
+      // The submit side releases this mutex before attempting the direct query.
+      std::lock_guard publication_lock(submission_publication_mutex);
+      {
+        std::lock_guard lock(state_mutex);
+        if (encoded_frame.data.empty()) {
+          if (++consecutive_output_failures >= max_consecutive_failures) {
+            BOOST_LOG(error) << "AMF: encoder repeatedly returned invalid output; signaling reinit";
+            output_fatal = true;
+          }
+        } else if (completed_outputs.size() >= lifecycle::maximum_input_surface_count) {
+          // A healthy strict-depth pipeline can never accumulate this many ready
+          // packets. Fail closed instead of allowing unbounded host allocation if
+          // the consumer or driver violates that contract.
+          BOOST_LOG(error) << "AMF: completed-output queue exceeded its bounded capacity; signaling reinit";
+          output_fatal = true;
+        } else {
+          auto rfi_flag = frame_rfi_flags.find(encoded_frame.frame_index);
+          if (rfi_flag != frame_rfi_flags.end()) {
+            encoded_frame.after_ref_frame_invalidation = rfi_flag->second;
+            frame_rfi_flags.erase(rfi_flag);
+          }
+          while (frame_rfi_flags.size() > 256) {
+            frame_rfi_flags.erase(frame_rfi_flags.begin());
+          }
+          consecutive_output_failures = 0;
+          ++completed_output_count;
+          low_latency_pipeline_depth = lifecycle::refine_low_latency_pipeline_depth(
+            low_latency_pipeline_depth,
+            accepted_input_count,
+            completed_output_count,
+            preanalysis_enabled ? preanalysis_lookahead_depth : 0);
+          last_completed_frame_index = std::max(last_completed_frame_index, encoded_frame.frame_index);
+          last_output_progress = std::chrono::steady_clock::now();
+          consecutive_query_failures = 0;
+          completed_outputs.emplace_back(std::move(encoded_frame));
+          if (!preanalysis_enabled && !drain_requested &&
+              completed_output_count >= accepted_input_count) {
+            // All submitted frames have output. Park the pump without another
+            // potentially blocking QueryOutput call, which would compete with
+            // the next encode-thread query. Surface ownership still belongs to
+            // the release observers, independently of this polling decision.
+            output_poll_requested = false;
+          }
+        }
+        outcome.fatal = output_fatal;
+      }
+      state_cv.notify_all();
+      return outcome;
+    }
+
+    if (outcome.result == AMF_EOF) {
+      outcome.kind = output_query_kind_e::eof;
+      {
+        std::lock_guard lock(state_mutex);
+        const bool expected_eof = drain_requested;
+        if (!expected_eof) {
+          BOOST_LOG(error) << "AMF: output query reached EOF without a drain request";
+          output_fatal = true;
+        }
+        drain_complete = expected_eof && !output_fatal;
+        outcome.fatal = output_fatal;
+      }
+      state_cv.notify_all();
+      return outcome;
+    }
+
+    const bool no_output_available = outcome.result == AMF_OK ||
+                                     outcome.result == AMF_REPEAT ||
+                                     outcome.result == AMF_NEED_MORE_INPUT;
+    if (no_output_available) {
+      outcome.kind = output_query_kind_e::no_output;
+      {
+        std::lock_guard lock(state_mutex);
+        consecutive_query_failures = 0;
+        outcome.latency_waiter_active = active_output_poll_waiters != 0;
+        if (lifecycle::should_disarm_output_poll(
+              queried_through_input,
+              accepted_input_count,
+              drain_requested,
+              active_output_poll_waiters)) {
+          // No bounded waiter remains for this accepted generation. Sleep until
+          // a new input explicitly re-arms polling; do not clear a re-arm from a
+          // SubmitInput that raced this query.
+          output_poll_requested = false;
+          outcome.poll_disarmed = true;
+        }
+      }
+      return outcome;
+    }
+
+    outcome.kind = output_query_kind_e::failure;
+    {
+      std::lock_guard lock(state_mutex);
+      const auto removed_reason = device ? device->GetDeviceRemovedReason() : S_OK;
+      if (removed_reason != S_OK) {
+        BOOST_LOG(error) << "AMF: output query detected D3D11 device loss, reason: 0x"
+                         << util::hex(removed_reason).to_string_view();
+        output_fatal = true;
+      } else if (++consecutive_query_failures >= max_consecutive_failures && !output_fatal) {
+        BOOST_LOG(error) << "AMF: repeated QueryOutput failures (error="
+                         << outcome.result << "); signaling reinit";
+        output_fatal = true;
+      }
+      outcome.fatal = output_fatal;
+    }
+    if (outcome.fatal) {
+      state_cv.notify_all();
+    }
+    return outcome;
+  }
+
+  amf_d3d11::output_query_outcome_t
+  amf_d3d11::query_output_once() {
+    std::lock_guard query_lock(output_query_mutex);
+    {
+      std::lock_guard lock(state_mutex);
+      // A direct query may have completed the work while the pump waited for
+      // output_query_mutex. Recheck its wakeup under query ownership so a stale
+      // request cannot enter the driver after the direct path has parked it.
+      if (output_fatal || (!output_poll_requested && !drain_requested)) {
+        output_query_outcome_t outcome;
+        outcome.poll_disarmed = true;
+        outcome.fatal = output_fatal;
+        return outcome;
+      }
+    }
+    return query_output_once_locked();
+  }
+
+  std::optional<amf_d3d11::output_query_outcome_t>
+  amf_d3d11::try_query_output_until(
+    uint64_t required_frame_index,
+    std::chrono::steady_clock::time_point deadline) noexcept {
+    try {
+      std::unique_lock query_lock(output_query_mutex, std::try_to_lock);
+      if (!query_lock.owns_lock()) {
+        return std::nullopt;
+      }
+
+      output_query_outcome_t outcome;
+      do {
+        {
+          std::lock_guard lock(state_mutex);
+          // The pump can publish output between the caller's snapshot and this
+          // try-lock. Return any ready packet immediately, including an older
+          // frame from a retaining driver, instead of waiting for a newer one.
+          // Check the deadline before entering a potentially blocking query.
+          if (output_fatal || !completed_outputs.empty() ||
+              last_completed_frame_index >= required_frame_index ||
+              std::chrono::steady_clock::now() >= deadline) {
+            outcome.fatal = output_fatal;
+            return outcome;
+          }
+        }
+        outcome = query_output_once_locked();
+        if (outcome.fatal ||
+            outcome.kind == output_query_kind_e::eof ||
+            outcome.kind == output_query_kind_e::failure) {
+          return outcome;
+        }
+
+        if (outcome.kind == output_query_kind_e::no_output && !query_timeout_supported) {
+          // FFmpeg spins QueryOutput while async_depth is saturated. Yield only
+          // for runtimes that cannot block inside QueryOutput themselves.
+          std::this_thread::yield();
+        }
+      } while (true);
+    } catch (const std::exception &ex) {
+      BOOST_LOG(error) << "AMF: direct output query failed: " << ex.what();
+    } catch (...) {
+      BOOST_LOG(error) << "AMF: direct output query failed with an unknown exception";
+    }
+    std::lock_guard lock(state_mutex);
+    output_fatal = true;
+    state_cv.notify_all();
+    return output_query_outcome_t {
+      output_query_kind_e::failure,
+      AMF_FAIL,
+      false,
+      true,
+      true,
+    };
+  }
+
   void
   amf_d3d11::output_pump(std::stop_token stop_token) noexcept {
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    // Match Sunshine's encode thread. This is the highest priority in the normal
+    // process class, not realtime, and avoids paying a lower-priority wakeup on
+    // every completed frame.
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 
     try {
       while (!stop_token.stop_requested()) {
@@ -1535,96 +1780,30 @@ namespace amf {
           }
         }
 
-        uint64_t queried_through_input = 0;
-        {
-          std::lock_guard lock(state_mutex);
-          queried_through_input = accepted_input_count;
-        }
-
-        ::amf::AMFDataPtr output_data;
-        const auto query_result = encoder ? encoder->QueryOutput(&output_data) : AMF_FAIL;
-        if (stop_token.stop_requested()) {
+        const auto outcome = query_output_once();
+        if (stop_token.stop_requested() || outcome.fatal) {
           break;
         }
 
-        if (output_data) {
-          // Extract outside state_mutex: the bitstream assign() is multi-MB on
-          // high-bitrate IDR frames and encode_frame takes this same mutex as
-          // its first action — copying under the lock adds submit-path jitter.
-          auto encoded_frame = extract_encoded_frame(output_data);
-          {
-            std::lock_guard lock(state_mutex);
-            if (encoded_frame.data.empty()) {
-              if (++consecutive_output_failures >= max_consecutive_failures) {
-                BOOST_LOG(error) << "AMF: encoder repeatedly returned invalid output; signaling reinit";
-                output_fatal = true;
-              }
-            } else {
-              auto rfi_flag = frame_rfi_flags.find(encoded_frame.frame_index);
-              if (rfi_flag != frame_rfi_flags.end()) {
-                encoded_frame.after_ref_frame_invalidation = rfi_flag->second;
-                frame_rfi_flags.erase(rfi_flag);
-              }
-              while (frame_rfi_flags.size() > 256) {
-                frame_rfi_flags.erase(frame_rfi_flags.begin());
-              }
-              consecutive_output_failures = 0;
-              ++completed_output_count;
-              last_completed_frame_index = std::max(last_completed_frame_index, encoded_frame.frame_index);
-              last_output_progress = std::chrono::steady_clock::now();
-              consecutive_query_failures = 0;
-              completed_outputs.emplace_back(std::move(encoded_frame));
-            }
-          }
-          state_cv.notify_all();
+        if (outcome.kind == output_query_kind_e::produced) {
           continue;
         }
-
-        if (query_result == AMF_EOF) {
-          bool expected_eof = false;
-          {
-            std::lock_guard lock(state_mutex);
-            expected_eof = drain_requested;
-            if (!expected_eof) {
-              BOOST_LOG(error) << "AMF: output pump reached EOF without a drain request";
-              output_fatal = true;
-            }
-            drain_complete = expected_eof && !output_fatal;
-          }
-          state_cv.notify_all();
+        if (outcome.kind == output_query_kind_e::eof) {
           break;
         }
-
-        const bool no_output_available = query_result == AMF_OK ||
-                                         query_result == AMF_REPEAT ||
-                                         query_result == AMF_NEED_MORE_INPUT;
-        if (no_output_available) {
-          bool poll_disarmed = false;
-          {
-            std::lock_guard lock(state_mutex);
-            consecutive_query_failures = 0;
-            if (lifecycle::should_disarm_output_poll(
-                  queried_through_input,
-                  accepted_input_count,
-                  drain_requested,
-                  active_output_poll_waiters)) {
-              // No bounded waiter remains for this accepted generation. Sleep
-              // until a new input explicitly re-arms polling; an output that
-              // legitimately never arrives must not leave a permanent poll loop.
-              // Do not clear a re-arm from SubmitInput that raced this query.
-              output_poll_requested = false;
-              poll_disarmed = true;
-            }
-          }
-          if (!poll_disarmed) {
-            // Drain, an active waiter, or a concurrent submission keeps polling
-            // armed. QUERY_TIMEOUT-backed OK/REPEAT calls already blocked for up
-            // to 1 ms. Some runtimes return NEED_MORE_INPUT immediately even from
-            // QueryOutput, so pace that defensive compatibility case rather
-            // than hot-spinning an above-normal-priority thread — but stay
-            // interruptible so stop/drain/new-input wake the pump immediately
-            // instead of eating the remainder of a fixed sleep quantum.
-            if (query_result == AMF_NEED_MORE_INPUT || !query_timeout_supported) {
+        if (outcome.kind == output_query_kind_e::no_output) {
+          if (!outcome.poll_disarmed) {
+            if (outcome.latency_waiter_active) {
+              // A blocking QueryOutput already let the runtime make progress.
+              // Match the direct path and re-query immediately in that case;
+              // yield only for runtimes/results that return without waiting.
+              if (!query_timeout_supported || outcome.result == AMF_NEED_MORE_INPUT) {
+                std::this_thread::yield();
+              }
+            } else if (lifecycle::output_poll_requires_fixed_backoff(
+                         outcome.latency_waiter_active ? 1 : 0,
+                         outcome.result == AMF_NEED_MORE_INPUT,
+                         query_timeout_supported)) {
               std::unique_lock lock(state_mutex);
               state_cv.wait_for(lock, std::chrono::milliseconds(1), [&]() {
                 return stop_token.stop_requested() || output_fatal || drain_requested;
@@ -1634,34 +1813,12 @@ namespace amf {
           continue;
         }
 
-        {
-          bool fatal = false;
-          {
-            std::lock_guard lock(state_mutex);
-            const auto removed_reason = device ? device->GetDeviceRemovedReason() : S_OK;
-            if (removed_reason != S_OK) {
-              BOOST_LOG(error) << "AMF: output pump detected D3D11 device loss, reason: 0x"
-                               << util::hex(removed_reason).to_string_view();
-              output_fatal = true;
-              fatal = true;
-            } else if (++consecutive_query_failures >= max_consecutive_failures && !output_fatal) {
-              BOOST_LOG(error) << "AMF: output pump observed repeated QueryOutput failures (error="
-                               << query_result << "); signaling reinit";
-              output_fatal = true;
-              fatal = true;
-            }
-          }
-          if (fatal) {
-            state_cv.notify_all();
-            break;
-          }
-          // Interruptible failure backoff — stop requests must not wait out
-          // the sleep quantum.
-          std::unique_lock lock(state_mutex);
-          state_cv.wait_for(lock, std::chrono::milliseconds(1), [&]() {
-            return stop_token.stop_requested() || output_fatal;
-          });
-        }
+        // Interruptible failure backoff — stop requests must not wait out the
+        // sleep quantum.
+        std::unique_lock lock(state_mutex);
+        state_cv.wait_for(lock, std::chrono::milliseconds(1), [&]() {
+          return stop_token.stop_requested() || output_fatal;
+        });
       }
     } catch (const std::exception &ex) {
       BOOST_LOG(error) << "AMF: output pump failed: " << ex.what();
@@ -1680,11 +1837,26 @@ namespace amf {
   amf_d3d11::encode_frame(uint64_t frame_index, bool force_idr) {
     amf_encode_result result;
     auto &results = result.frames;
+    const int effective_lookahead_depth = preanalysis_enabled ? preanalysis_lookahead_depth : 0;
+    const auto encode_deadline = std::chrono::steady_clock::now() +
+                                 lifecycle::output_coalesce_budget(current_config.framerate);
     auto drain_completed_outputs_locked = [&]() {
       while (!completed_outputs.empty()) {
         results.emplace_back(std::move(completed_outputs.front()));
         completed_outputs.pop_front();
       }
+    };
+    auto release_prepared_input_locked = [&]() {
+      if (!prepared_input_surface_slot) {
+        return;
+      }
+      auto &slot = input_surface_ring[*prepared_input_surface_slot];
+      if (slot.state == input_surface_state_e::reserved) {
+        slot.state = input_surface_state_e::free;
+        slot.frame_index = 0;
+      }
+      prepared_input_surface_slot.reset();
+      state_cv.notify_all();
     };
 
     if (!encoder) {
@@ -1698,11 +1870,76 @@ namespace amf {
     {
       std::unique_lock lock(state_mutex);
       drain_completed_outputs_locked();
-      completed_before_submission = completed_output_count;
       if (output_fatal) {
         result.fatal = true;
         return result;
       }
+      if (!results.empty()) {
+        // A packet that completed between capture iterations is already the oldest
+        // work in the real-time pipeline. Return it immediately and discard this
+        // prepared capture instead of submitting a newer frame and permanently
+        // carrying a one-frame encoder backlog after a transient miss.
+        release_prepared_input_locked();
+        return result;
+      }
+
+      const auto cold_start_submission_limit = lifecycle::initial_input_surface_count(effective_lookahead_depth);
+      auto low_latency_capacity_available = [&]() {
+        return lifecycle::low_latency_submit_capacity_available(
+          accepted_input_count,
+          completed_output_count,
+          effective_lookahead_depth,
+          cold_start_submission_limit,
+          low_latency_pipeline_depth);
+      };
+      if (!low_latency_capacity_available()) {
+        // If a ready packet was found, return it immediately instead of holding
+        // it behind another driver wait. The already-converted input is stale by
+        // definition while an older accepted frame is still outstanding.
+        if (results.empty()) {
+          ++active_output_poll_waiters;
+          output_poll_requested = true;
+          state_cv.notify_all();
+          state_cv.wait_until(lock, encode_deadline, [&]() {
+            return output_fatal || !completed_outputs.empty() || low_latency_capacity_available();
+          });
+          --active_output_poll_waiters;
+          state_cv.notify_all();
+          drain_completed_outputs_locked();
+        }
+
+        if (output_fatal) {
+          result.fatal = true;
+          release_prepared_input_locked();
+          return result;
+        }
+        if (!results.empty()) {
+          // The completion that released capacity wins over this newer capture.
+          // Its next encode attempt will use a fresh converted image.
+          release_prepared_input_locked();
+          return result;
+        }
+        if (!low_latency_capacity_available()) {
+          release_prepared_input_locked();
+          ++latency_backpressure_drop_count;
+          if (latency_backpressure_drop_count == 1 ||
+              latency_backpressure_drop_count % static_cast<uint64_t>(max_consecutive_failures) == 0) {
+            BOOST_LOG(debug) << "AMF: dropped stale input instead of increasing encoder latency"
+                             << " (drops=" << latency_backpressure_drop_count
+                             << ", accepted=" << accepted_input_count
+                             << ", outputs=" << completed_output_count
+                             << ", lookahead=" << effective_lookahead_depth << ')';
+          }
+          if (last_output_progress.time_since_epoch().count() != 0 &&
+              std::chrono::steady_clock::now() - last_output_progress >= std::chrono::seconds(2)) {
+            BOOST_LOG(error) << "AMF: strict-depth wait made no output progress for 2 seconds; signaling reinit";
+            result.fatal = true;
+          }
+          return result;
+        }
+      }
+
+      completed_before_submission = completed_output_count;
 
       if (prepared_input_surface_slot) {
         slot_index = *prepared_input_surface_slot;
@@ -1745,14 +1982,21 @@ namespace amf {
           }
         }
         if (!repeat_slot) {
-          state_cv.wait_for(lock, lifecycle::driver_wait_budget(current_config.framerate), [&]() {
-            return output_fatal || find_repeat_slot().has_value();
+          const auto repeat_deadline = std::min(
+            encode_deadline,
+            std::chrono::steady_clock::now() + lifecycle::driver_wait_budget(current_config.framerate));
+          state_cv.wait_until(lock, repeat_deadline, [&]() {
+            return output_fatal || !completed_outputs.empty() || find_repeat_slot().has_value();
           });
           repeat_slot = find_repeat_slot();
         }
         drain_completed_outputs_locked();
         if (output_fatal) {
           result.fatal = true;
+          return result;
+        }
+        if (!results.empty()) {
+          // Deliver completed output before reserving a surface for a duplicate.
           return result;
         }
         if (!repeat_slot) {
@@ -1980,8 +2224,7 @@ namespace amf {
     // more inputs than its configured queue. Check known ownership before entering
     // the driver so probe/runtime deadlines remain enforceable even on a stalled
     // encoder. The reserved wrapper is released by release_reserved_slot on return.
-    const auto submission_deadline = std::chrono::steady_clock::now() +
-                                     lifecycle::driver_wait_budget(current_config.framerate);
+    const auto submission_deadline = encode_deadline;
     {
       std::unique_lock lock(state_mutex);
       auto capacity_available = [&]() {
@@ -1991,20 +2234,28 @@ namespace amf {
       };
       if (!capacity_available()) {
         drain_completed_outputs_locked();
+        if (output_fatal || !results.empty()) {
+          result.fatal = output_fatal;
+          return result;
+        }
         ++active_output_poll_waiters;
         output_poll_requested = true;
         state_cv.notify_all();
         state_cv.wait_until(lock, submission_deadline, [&]() {
-          // QueryOutput completion and AMFSurfaceObserver release are separate
-          // events. Keep the remaining budget after an output arrives; only an
-          // actual ownership release makes SubmitInput safe again.
-          return lifecycle::saturation_wait_should_finish(output_fatal, capacity_available());
+          // An output packet is deliverable even if AMF still owns its input
+          // surface. Wake to return that packet; only a release permits another
+          // SubmitInput, and the ready-output branch below skips that submission.
+          return !completed_outputs.empty() ||
+                 lifecycle::saturation_wait_should_finish(output_fatal, capacity_available());
         });
         --active_output_poll_waiters;
         state_cv.notify_all();
         drain_completed_outputs_locked();
         if (output_fatal) {
           result.fatal = true;
+          return result;
+        }
+        if (!results.empty()) {
           return result;
         }
         if (!capacity_available()) {
@@ -2049,13 +2300,33 @@ namespace amf {
     auto retryable_submit = [](AMF_RESULT value) {
       return value == AMF_INPUT_FULL || value == AMF_DECODER_NO_FREE_SURFACES;
     };
+    if (std::chrono::steady_clock::now() >= submission_deadline) {
+      // Surface preparation used the entire latency budget. Returning the ready
+      // batch and dropping this now-stale reservation is preferable to admitting
+      // another late frame into AMF.
+      return result;
+    }
+    std::unique_lock<std::mutex> accepted_input_publication_lock;
     res = lifecycle::submit_with_bounded_retry(
       [&]() {
-        return encoder->SubmitInput(surface);
+        accepted_input_publication_lock = std::unique_lock(submission_publication_mutex);
+        const auto submit_result = encoder->SubmitInput(surface);
+        if (retryable_submit(submit_result)) {
+          // Output publication must be able to report the progress needed by the
+          // retry wait. Retain the lock only when this attempt was consumed and
+          // therefore has accepted-frame metadata to commit.
+          accepted_input_publication_lock.unlock();
+        }
+        return submit_result;
       },
       [&]() {
         std::unique_lock lock(state_mutex);
-        if (std::chrono::steady_clock::now() >= submission_deadline) return true;
+        // This input was not consumed. Deliver an older ready packet instead
+        // of holding it behind retries for this now-stale capture.
+        if (output_fatal || !completed_outputs.empty() ||
+            std::chrono::steady_clock::now() >= submission_deadline) {
+          return true;
+        }
         const auto completion_generation = completed_output_count;
         const auto owned_surface_generation = input_surfaces_in_flight;
         // QueryOutput may have disarmed itself after AMF_NEED_MORE_INPUT. A full
@@ -2067,13 +2338,14 @@ namespace amf {
         state_cv.wait_until(lock, std::min(
           submission_deadline,
           std::chrono::steady_clock::now() + std::chrono::milliseconds(1)), [&]() {
-          return output_fatal ||
+          return output_fatal || !completed_outputs.empty() ||
                  completed_output_count > completion_generation ||
                  input_surfaces_in_flight < owned_surface_generation;
         });
         --active_output_poll_waiters;
         state_cv.notify_all();
-        return output_fatal || std::chrono::steady_clock::now() >= submission_deadline;
+        return output_fatal || !completed_outputs.empty() ||
+               std::chrono::steady_clock::now() >= submission_deadline;
       },
       retryable_submit,
       20);
@@ -2084,6 +2356,10 @@ namespace amf {
         drain_completed_outputs_locked();
         if (output_fatal) {
           result.fatal = true;
+          return result;
+        }
+        if (!results.empty()) {
+          // Ready-output cancellation is progress, not an exhausted retry error.
           return result;
         }
         in_flight = static_cast<int>(input_surfaces_in_flight);
@@ -2120,6 +2396,9 @@ namespace amf {
       res = AMF_OK;
     }
     if (res != AMF_OK) {
+      if (accepted_input_publication_lock.owns_lock()) {
+        accepted_input_publication_lock.unlock();
+      }
       BOOST_LOG(error) << "AMF: SubmitInput failed, error: " << res;
       // Check if the D3D11 device is lost (TDR, driver crash, etc.)
       if (device) {
@@ -2151,7 +2430,6 @@ namespace amf {
     result.input_accepted_at = input_accepted_at;
     const bool synchronously_released = lifecycle::on_input_accepted(input_slot, frame_index);
     last_submitted_frame_index = std::max(last_submitted_frame_index, frame_index);
-    const int effective_lookahead_depth = preanalysis_enabled ? preanalysis_lookahead_depth : 0;
     ++accepted_input_count;
     const auto required_output_frame_index = lifecycle::record_accepted_frame(
       accepted_frame_indices,
@@ -2160,7 +2438,6 @@ namespace amf {
     if (!synchronously_released) {
       ++input_surfaces_in_flight;
     }
-    output_poll_requested = true;
     if (synchronously_released) {
       state_cv.notify_all();
     }
@@ -2177,8 +2454,6 @@ namespace amf {
       // intentional lookahead interval as an encoder stall.
       last_output_progress = std::chrono::steady_clock::now();
     }
-    state_cv.notify_all();
-
     lifecycle::commit_recovery_state(
       result.input_accepted,
       effective_ltr_slots,
@@ -2196,41 +2471,68 @@ namespace amf {
       [&](uint64_t recovered_frame_index) {
         frame_rfi_flags.emplace(recovered_frame_index, true);
       });
+    accepted_input_publication_lock.unlock();
 
-    // AMD's sample and FFmpeg both submit while a separate thread polls output.
-    // Keep that poller alive for this short coalescing window: an early
-    // AMF_NEED_MORE_INPUT is only a point-in-time result and must not disarm the
-    // pump underneath the waiter. With no PA lookahead, wait through any older
-    // queued output until this submission completes; otherwise one initial miss
-    // becomes a permanent one-frame backlog.
-    const auto output_wait_budget = lifecycle::output_coalesce_budget(current_config.framerate);
+    // FFmpeg's depth-one path calls QueryOutput synchronously until it gets the
+    // due packet. Give the native no-PA path the same zero-wakeup loop when the
+    // pump is idle, while serializing all AMF output calls through
+    // output_query_mutex. If another query already owns AMF, the dedicated pump
+    // retains ownership for the bounded follow-up wait.
     drain_completed_outputs_locked();
     bool coalesce_target_reached = required_output_frame_index && lifecycle::output_coalesce_target_reached(
       *required_output_frame_index,
       completed_before_submission,
       completed_output_count,
       last_completed_frame_index);
-    // Capacity handling and SubmitInput retries can drain an older packet after
-    // the initial snapshot. Re-check the live result here so a send-ready packet
-    // is never held while coalescing output for this newer generation.
-    if (output_is_expected && !coalesce_target_reached && results.empty()) {
+    const bool direct_query_candidate = !preanalysis_enabled && output_is_expected &&
+                                        !coalesce_target_reached && results.empty();
+    bool poll_lease_held = false;
+    if (direct_query_candidate) {
       ++active_output_poll_waiters;
-      output_poll_requested = true;
-      state_cv.notify_all();
-      state_cv.wait_for(state_lock, output_wait_budget, [&]() {
-        return output_fatal || lifecycle::output_coalesce_target_reached(
-                                 *required_output_frame_index,
-                                 completed_before_submission,
-                                 completed_output_count,
-                                 last_completed_frame_index);
-      });
-      --active_output_poll_waiters;
-      state_cv.notify_all();
+      poll_lease_held = true;
+      state_lock.unlock();
+      (void) try_query_output_until(*required_output_frame_index, encode_deadline);
+      state_lock.lock();
+      drain_completed_outputs_locked();
       coalesce_target_reached = lifecycle::output_coalesce_target_reached(
         *required_output_frame_index,
         completed_before_submission,
         completed_output_count,
         last_completed_frame_index);
+    }
+
+    // PA priming and any direct-query miss are completed by the pump. Register a
+    // polling lease before arming it so an immediate AMF_NEED_MORE_INPUT cannot
+    // disarm the generation underneath this waiter.
+    if (!coalesce_target_reached) {
+      output_poll_requested = true;
+      state_cv.notify_all();
+    }
+    // Capacity handling and SubmitInput retries can drain an older packet after
+    // the initial snapshot. Re-check the live result here so a send-ready packet
+    // is never held while coalescing output for this newer generation.
+    if (output_is_expected && !coalesce_target_reached && results.empty()) {
+      if (!poll_lease_held) {
+        ++active_output_poll_waiters;
+        poll_lease_held = true;
+        state_cv.notify_all();
+      }
+      state_cv.wait_until(state_lock, encode_deadline, [&]() {
+        return output_fatal || !completed_outputs.empty() || lifecycle::output_coalesce_target_reached(
+                                 *required_output_frame_index,
+                                 completed_before_submission,
+                                 completed_output_count,
+                                 last_completed_frame_index);
+      });
+      coalesce_target_reached = lifecycle::output_coalesce_target_reached(
+        *required_output_frame_index,
+        completed_before_submission,
+        completed_output_count,
+        last_completed_frame_index);
+    }
+    if (poll_lease_held) {
+      --active_output_poll_waiters;
+      state_cv.notify_all();
     }
     while (!completed_outputs.empty()) {
       results.emplace_back(std::move(completed_outputs.front()));
@@ -2272,14 +2574,25 @@ namespace amf {
   amf_d3d11::drain_output(std::chrono::milliseconds timeout) {
     amf_encode_result result;
     std::unique_lock lock(state_mutex);
-    ++active_output_poll_waiters;
-    output_poll_requested = true;
-    state_cv.notify_all();
-    state_cv.wait_for(lock, timeout, [&]() {
-      return output_fatal || drain_complete || !completed_outputs.empty();
-    });
-    --active_output_poll_waiters;
-    state_cv.notify_all();
+    // Never wait while packets are ready, or rearm an encoder with no work.
+    // Remaining accepted inputs still need polling even when this call returns
+    // an older packet. An explicit drain must also poll through EOF without input.
+    if (!output_fatal && !drain_complete &&
+        (drain_requested || accepted_input_count > completed_output_count)) {
+      const bool start_poll = !output_poll_requested;
+      output_poll_requested = true;
+      if (completed_outputs.empty() && timeout > std::chrono::milliseconds::zero()) {
+        ++active_output_poll_waiters;
+        state_cv.notify_all();
+        state_cv.wait_for(lock, timeout, [&]() {
+          return output_fatal || drain_complete || !completed_outputs.empty();
+        });
+        --active_output_poll_waiters;
+        state_cv.notify_all();
+      } else if (start_poll) {
+        state_cv.notify_all();
+      }
+    }
     while (!completed_outputs.empty()) {
       result.frames.emplace_back(std::move(completed_outputs.front()));
       completed_outputs.pop_front();

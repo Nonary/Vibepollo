@@ -421,7 +421,7 @@
     "amd_preanalysis_desc": "Ez engedélyezi a bitráta szabályozás előelemzését, ami javíthatja a minőséget a megnövekedett kódolási késleltetés árán.",
     "amd_quality": "AMF minőség",
     "amd_quality_balanced": "balanced -- a sebesség és a minőség egyensúlya",
-    "amd_quality_desc": "Ez szabályozza a kódolási sebesség és a minőség közötti egyensúlyt. Az alapértelmezett érték a Balanced. Az Auto nem állítja be a tulajdonságot, így a kiválasztott AMF használati profil választhatja ki az értéket.",
+    "amd_quality_desc": "Ez szabályozza a kódolási sebesség és a minőség közötti egyensúlyt. Az alapértelmezett érték a speed. Az Auto nem állítja be a tulajdonságot, így a kiválasztott AMF használati profil választhatja ki az értéket.",
     "amd_quality_group": "AMF minőségi beállítások (natív + FFmpeg)",
     "amd_quality_quality": "minőség -- a minőség előnyben részesítése",
     "amd_quality_speed": "sebesség -- a sebesség előnyben részesítése",
