@@ -9,6 +9,13 @@ import {
   parseHistoryPage,
   samplesToPerformancePoints,
 } from '../components/stats/historyUtils.ts';
+import { eventsForChart, eventTimestampMs } from '../components/stats/eventUtils.ts';
+import {
+  clampChartRange,
+  panChartRange,
+  zoomChartRange,
+} from '../components/stats/chartViewport.ts';
+import { downsampleHostHistory, hostHistoryPeaks } from '../utils/v2Parity.ts';
 
 function summary(uuid: string, start: number, end: number, extra: Record<string, unknown> = {}) {
   return {
@@ -136,4 +143,95 @@ test('counter deltas never turn a reset into a large positive spike', () => {
   assert.equal(counterDelta(12, 10), 2);
   assert.equal(counterDelta(2, 10), 0);
   assert.equal(counterDelta(Number.NaN, 10), 0);
+});
+
+test('event seconds are converted once and remain aligned to irregular millisecond samples', () => {
+  assert.equal(eventTimestampMs(1_700_000_123), 1_700_000_123_000);
+  assert.equal(eventTimestampMs(1_700_000_123_000), 1_700_000_123_000);
+  const points = [
+    { timestamp: 1_700_000_000_000, value: 1, segment: 'first' },
+    { timestamp: 1_700_000_002_000, value: 2, segment: 'first' },
+    { timestamp: 1_700_000_020_000, value: 3, segment: 'first' },
+  ];
+  const events = eventsForChart(
+    [
+      {
+        session_uuid: 'first',
+        timestamp_unix: 1_700_000_002,
+        event_type: 'stall',
+        payload: 'two seconds',
+      },
+      {
+        session_uuid: 'first',
+        timestamp_unix: 1_700_000_100,
+        event_type: 'outside-gap',
+        payload: '',
+      },
+      {
+        session_uuid: 'first',
+        timestamp_unix: 1_700_000_025,
+        event_type: 'stream_ended',
+        payload: 'five seconds after last sample',
+      },
+    ],
+    points,
+  );
+  assert.equal(events.length, 2);
+  assert.equal(events[0]?.timestamp, 1_700_000_002_000);
+  assert.equal(events[0]?.eventType, 'stall');
+  assert.equal(events[1]?.timestamp, 1_700_000_025_000);
+});
+
+test('grouped-session event markers stay on their source segment', () => {
+  const points = [
+    { timestamp: 1_000_000, value: 1, segment: 'first' },
+    { timestamp: 1_010_000, value: 2, segment: 'first' },
+    { timestamp: 1_200_000, value: 3, segment: 'second' },
+    { timestamp: 1_210_000, value: 4, segment: 'second' },
+  ];
+  const events = eventsForChart(
+    [
+      { session_uuid: 'first', timestamp_unix: 1_005, event_type: 'stall', payload: '' },
+      { session_uuid: 'second', timestamp_unix: 1_205, event_type: 'recovery', payload: '' },
+      { session_uuid: 'missing', timestamp_unix: 1_205, event_type: 'leak', payload: '' },
+    ],
+    points,
+  );
+  assert.deepEqual(
+    events.map((event) => [event.sessionId, event.timestamp]),
+    [
+      ['first', 1_005_000],
+      ['second', 1_205_000],
+    ],
+  );
+});
+
+test('time-domain zoom and pan clamp to the full irregular history bounds', () => {
+  const full = { start: 1000, end: 10_000 };
+  const zoomed = zoomChartRange(full, full, 8_000, 2);
+  assert.equal(zoomed.end - zoomed.start, 4_500);
+  assert.deepEqual(zoomed, { start: 4500, end: 9000 });
+  assert.deepEqual(panChartRange(full, zoomed, 100_000), { start: 5500, end: 10_000 });
+  assert.deepEqual(panChartRange(full, zoomed, -100_000), { start: 1000, end: 5500 });
+  assert.deepEqual(clampChartRange(full, { start: -5, end: 20_000 }), full);
+  assert.deepEqual(zoomChartRange(full, zoomed, 5_500, 0.25), full);
+});
+
+test('downsampling retains null telemetry boundaries and missing peaks stay unavailable', () => {
+  const points = Array.from({ length: 8 }, (_, index) => ({
+    timestamp: index,
+    cpu_percent: 20,
+    gpu_percent: 30,
+    gpu_encoder_percent: 40,
+    ram_percent: index === 4 ? null : 60,
+    vram_percent: index === 4 ? null : 70,
+  }));
+  const reduced = downsampleHostHistory(points, 4);
+  assert.ok(reduced.some((point) => point.ram_percent == null));
+  assert.deepEqual(hostHistoryPeaks([{ timestamp: 1, ram_percent: null, vram_percent: null }]), {
+    cpu: null,
+    gpu: null,
+    encoder: null,
+    networkMbps: null,
+  });
 });

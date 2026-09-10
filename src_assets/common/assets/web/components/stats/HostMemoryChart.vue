@@ -2,12 +2,12 @@
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 
-import { hostHistoryPeaks, type HostHistoryPoint } from '@/utils/v2Parity';
+import type { HostHistoryPoint } from '@/utils/v2Parity';
 
 const props = defineProps<{
   title: string;
   points: HostHistoryPoint[];
-  current: { cpu: number | null; gpu: number | null; encoder: number | null };
+  current: { ram: number | null; vram: number | null };
 }>();
 
 const { t } = useI18n();
@@ -15,12 +15,32 @@ const width = 320;
 const height = 124;
 const padding = 8;
 const series = [
-  { key: 'cpu', label: 'CPU', color: 'var(--vs-color-status-info)' },
-  { key: 'gpu', label: 'GPU', color: 'var(--vs-color-status-success)' },
-  { key: 'encoder', label: 'GPU encoder', color: 'var(--vs-color-data-accent)' },
+  { key: 'ram', label: 'RAM', color: 'var(--vs-color-status-warning)' },
+  { key: 'vram', label: 'VRAM', color: 'var(--vs-color-data-accent)' },
 ] as const;
 
-const peak = computed(() => hostHistoryPeaks(props.points));
+function validPercent(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.min(100, value)
+    : null;
+}
+
+const peaks = computed(() => ({
+  ram: max(props.points.map((point) => validPercent(point.ram_percent))),
+  vram: max(props.points.map((point) => validPercent(point.vram_percent))),
+}));
+
+const hasValues = computed(() =>
+  props.points.some(
+    (point) => validPercent(point.ram_percent) != null || validPercent(point.vram_percent) != null,
+  ),
+);
+
+function max(values: Array<number | null>): number | null {
+  const finite = values.filter((value): value is number => value != null);
+  return finite.length ? Math.max(...finite) : null;
+}
+
 const timeDomain = computed(() => {
   const timestamps = props.points
     .map((point) => point.timestamp)
@@ -29,6 +49,7 @@ const timeDomain = computed(() => {
   const maximum = timestamps.length ? Math.max(...timestamps) : minimum + 1;
   return { minimum, maximum: maximum === minimum ? minimum + 1 : maximum };
 });
+
 const gapThreshold = computed(() => {
   const deltas = props.points
     .slice(1)
@@ -41,10 +62,7 @@ const gapThreshold = computed(() => {
 });
 
 function valueFor(point: HostHistoryPoint, key: (typeof series)[number]['key']): number | null {
-  const raw = point[`${key}_percent` as keyof HostHistoryPoint];
-  if (raw == null) return null;
-  const value = Number(raw);
-  return Number.isFinite(value) && value >= 0 ? Math.min(100, value) : null;
+  return validPercent(point[`${key}_percent` as keyof HostHistoryPoint]);
 }
 
 function xFor(timestamp: number): number {
@@ -110,22 +128,23 @@ function axisLabelStyle(axis: { x: number }, index: number): Record<string, stri
 }
 
 function value(value: number | null | undefined): string {
-  return value == null || !Number.isFinite(value) ? '--' : `${Math.round(value)}%`;
+  const valid = validPercent(value);
+  return valid == null ? '—' : `${Math.round(valid)}%`;
 }
 </script>
 
 <template>
-  <article class="host-compute-chart">
-    <header class="host-compute-chart__header">
+  <article class="host-memory-chart">
+    <header class="host-memory-chart__header">
       <h4>{{ title }}</h4>
-      <div class="host-compute-chart__legend" aria-label="Compute history legend">
-        <span v-for="entry in series" :key="entry.key" class="host-compute-chart__legend-item">
+      <div class="host-memory-chart__legend" :aria-label="title">
+        <span v-for="entry in series" :key="entry.key" class="host-memory-chart__legend-item">
           <i :style="{ background: entry.color }" aria-hidden="true" />{{ entry.label }}
         </span>
       </div>
     </header>
-    <div class="host-compute-chart__plot">
-      <div class="host-compute-chart__surface">
+    <div class="host-memory-chart__plot">
+      <div class="host-memory-chart__surface">
         <svg viewBox="0 0 320 124" preserveAspectRatio="none" role="img" :aria-label="title">
           <line
             v-for="grid in [32, 62, 92]"
@@ -134,7 +153,7 @@ function value(value: number | null | undefined): string {
             :y1="grid"
             x2="320"
             :y2="grid"
-            class="host-compute-chart__grid"
+            class="host-memory-chart__grid"
           />
           <template v-for="entry in seriesPoints" :key="entry.key">
             <polyline
@@ -143,108 +162,105 @@ function value(value: number | null | undefined): string {
               :points="segment"
               fill="none"
               :stroke="entry.color"
-              class="host-compute-chart__line"
+              class="host-memory-chart__line"
             />
           </template>
         </svg>
-        <span class="host-compute-chart__y-axis host-compute-chart__y-axis--top" aria-hidden="true"
+        <span class="host-memory-chart__y-axis host-memory-chart__y-axis--top" aria-hidden="true"
           >100%</span
         >
-        <span
-          class="host-compute-chart__y-axis host-compute-chart__y-axis--bottom"
-          aria-hidden="true"
+        <span class="host-memory-chart__y-axis host-memory-chart__y-axis--bottom" aria-hidden="true"
           >0%</span
         >
+        <span v-if="!hasValues" class="host-memory-chart__empty" aria-hidden="true">
+          {{ t('sessions.history_no_samples') }}
+        </span>
       </div>
-      <div class="host-compute-chart__axis-row" aria-hidden="true">
+      <div class="host-memory-chart__axis-row" aria-hidden="true">
         <template v-for="(axis, index) in axisLabels" :key="`${axis.label}:${index}`">
           <span
             v-if="axis.show"
-            class="host-compute-chart__axis"
+            class="host-memory-chart__axis"
             :style="axisLabelStyle(axis, index)"
             >{{ axis.label }}</span
           >
         </template>
       </div>
     </div>
-    <footer class="host-compute-chart__footer">
+    <footer class="host-memory-chart__footer">
       <span
-        >CPU · {{ t('stats.current') }} {{ value(current.cpu) }} · {{ t('stats.peak') }}
-        {{ value(peak.cpu) }}</span
+        >RAM · {{ t('stats.current') }} {{ value(current.ram) }} · {{ t('stats.peak') }}
+        {{ value(peaks.ram) }}</span
       >
       <span
-        >GPU · {{ t('stats.current') }} {{ value(current.gpu) }} · {{ t('stats.peak') }}
-        {{ value(peak.gpu) }}</span
-      >
-      <span
-        >ENC · {{ t('stats.current') }} {{ value(current.encoder) }} · {{ t('stats.peak') }}
-        {{ value(peak.encoder) }}</span
+        >VRAM · {{ t('stats.current') }} {{ value(current.vram) }} · {{ t('stats.peak') }}
+        {{ value(peaks.vram) }}</span
       >
     </footer>
   </article>
 </template>
 
 <style scoped>
-.host-compute-chart {
+.host-memory-chart {
   overflow: hidden;
   border: 1px solid var(--vs-color-border-subtle);
   border-radius: var(--vs-radius-card);
   background: var(--vs-color-bg-surface);
 }
-.host-compute-chart__header {
+.host-memory-chart__header {
   display: grid;
   gap: var(--vs-space-8);
   padding: var(--vs-space-16) var(--vs-space-16) var(--vs-space-8);
 }
-.host-compute-chart h4 {
+.host-memory-chart h4 {
   color: var(--vs-color-text-secondary);
   font-size: var(--vs-type-size-control);
   font-weight: var(--vs-type-weight-semibold);
 }
-.host-compute-chart__legend {
+.host-memory-chart__legend {
   display: flex;
   flex-wrap: wrap;
   gap: var(--vs-space-12);
   color: var(--vs-color-text-muted);
   font-size: var(--vs-type-size-helper);
 }
-.host-compute-chart__legend-item {
+.host-memory-chart__legend-item {
   display: inline-flex;
   align-items: center;
   gap: var(--vs-space-4);
 }
-.host-compute-chart__legend-item i {
+.host-memory-chart__legend-item i {
   width: 0.55rem;
   height: 0.55rem;
   border-radius: 50%;
 }
-.host-compute-chart__plot {
+.host-memory-chart__plot {
   display: flex;
   flex-direction: column;
   width: 100%;
   height: 10.5rem;
   padding: 0 var(--vs-space-12);
 }
-.host-compute-chart__surface {
+.host-memory-chart__surface {
   position: relative;
   flex: 1;
   min-height: 0;
 }
-.host-compute-chart__surface svg {
+.host-memory-chart__surface svg {
   display: block;
   width: 100%;
   height: 100%;
 }
-.host-compute-chart__grid {
+.host-memory-chart__grid {
   stroke: var(--vs-color-border-subtle);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
-.host-compute-chart__axis {
+.host-memory-chart__axis {
   fill: var(--vs-color-text-muted);
   font-size: 11px;
 }
-.host-compute-chart__y-axis {
+.host-memory-chart__y-axis {
   position: absolute;
   left: 0;
   color: var(--vs-color-text-muted);
@@ -253,13 +269,13 @@ function value(value: number | null | undefined): string {
   pointer-events: none;
   white-space: nowrap;
 }
-.host-compute-chart__y-axis--top {
+.host-memory-chart__y-axis--top {
   top: 0.15rem;
 }
-.host-compute-chart__y-axis--bottom {
+.host-memory-chart__y-axis--bottom {
   bottom: 0.15rem;
 }
-.host-compute-chart__axis-row {
+.host-memory-chart__axis-row {
   position: relative;
   flex: none;
   height: 1.5rem;
@@ -269,33 +285,36 @@ function value(value: number | null | undefined): string {
   line-height: 1.25rem;
   white-space: nowrap;
 }
-.host-compute-chart__axis-row .host-compute-chart__axis {
+.host-memory-chart__axis-row .host-memory-chart__axis {
   position: absolute;
   top: 0;
   color: inherit;
   font-size: inherit;
   line-height: inherit;
 }
-.host-compute-chart__line {
+.host-memory-chart__empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  color: var(--vs-color-text-muted);
+  font-size: var(--vs-type-size-helper);
+  transform: translate(-50%, -50%);
+  white-space: nowrap;
+}
+.host-memory-chart__line {
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
 }
-.host-compute-chart__footer {
+.host-memory-chart__footer {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
   gap: var(--vs-space-8);
-  padding: var(--vs-space-8) var(--vs-space-16) 0;
+  padding: var(--vs-space-8) var(--vs-space-16) var(--vs-space-12);
   color: var(--vs-color-text-secondary);
   font-size: var(--vs-type-size-helper);
   font-variant-numeric: tabular-nums;
-}
-.host-compute-chart small {
-  display: block;
-  padding: var(--vs-space-4) var(--vs-space-16) var(--vs-space-12);
-  color: var(--vs-color-text-muted);
-  font-size: var(--vs-type-size-helper);
 }
 </style>

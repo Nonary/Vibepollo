@@ -18,6 +18,7 @@ import MetricGauge from '@/components/stats/MetricGauge.vue';
 import SessionDetailDialog from '@/components/stats/SessionDetailDialog.vue';
 import SessionPerformanceCharts from '@/components/stats/SessionPerformanceCharts.vue';
 import HostComputeChart from '@/components/stats/HostComputeChart.vue';
+import HostMemoryChart from '@/components/stats/HostMemoryChart.vue';
 import {
   groupSessionSummaries,
   parseHistoryPage,
@@ -222,9 +223,13 @@ const historyCountLabel = computed(() => {
   return historyHasMore.value ? `${count}+` : String(count);
 });
 const hostCurrent = computed(() => ({
-  cpu: hostStats.value?.cpu_percent ?? null,
-  gpu: hostStats.value?.gpu_percent ?? null,
-  encoder: hostStats.value?.gpu_encoder_percent ?? null,
+  cpu: percentValue(hostStats.value?.cpu_percent),
+  gpu: percentValue(hostStats.value?.gpu_percent),
+  encoder: percentValue(hostStats.value?.gpu_encoder_percent),
+}));
+const hostMemoryCurrent = computed(() => ({
+  ram: percentValue(hostStats.value?.ram_percent),
+  vram: percentValue(hostStats.value?.vram_percent),
 }));
 
 watch(statsEnabled, (enabled) => {
@@ -238,8 +243,25 @@ watch(statsEnabled, (enabled) => {
   counterSnapshots.clear();
 });
 
-function percent(value: number | undefined): string {
-  return Number.isFinite(value) ? `${Math.round(value ?? 0)}%` : '—';
+function percentValue(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.min(100, value)
+    : null;
+}
+
+function bytes(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? formatBytes(value, locale.value)
+    : '—';
+}
+
+function memoryDetail(used: unknown, total: unknown): string {
+  return `${bytes(used)} / ${bytes(total)}`;
+}
+
+function networkMbps(value: unknown): string {
+  const number = typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+  return number == null ? '—' : `${(number / 1_000_000).toFixed(2)} Mbps`;
 }
 
 function temperature(value: number | undefined): string {
@@ -628,13 +650,13 @@ onBeforeUnmount(() => {
           <MetricGauge
             :label="t('ui.stats.host_ram')"
             :value="hostStats.ram_percent"
-            :detail="`${formatBytes(hostStats.ram_used_bytes, locale)} / ${formatBytes(hostStats.ram_total_bytes, locale)}`"
+            :detail="memoryDetail(hostStats.ram_used_bytes, hostStats.ram_total_bytes)"
             color="var(--vs-color-status-warning)"
           />
           <MetricGauge
             :label="t('ui.stats.host_vram')"
             :value="hostStats.vram_percent"
-            :detail="`${formatBytes(hostStats.vram_used_bytes, locale)} / ${formatBytes(hostStats.vram_total_bytes, locale)}`"
+            :detail="memoryDetail(hostStats.vram_used_bytes, hostStats.vram_total_bytes)"
             color="var(--vs-color-data-accent)"
           />
         </div>
@@ -660,24 +682,21 @@ onBeforeUnmount(() => {
             :points="comparableHostHistory"
             :current="hostCurrent"
           />
+          <HostMemoryChart
+            :title="t('sessions.chart_host_memory')"
+            :points="comparableHostHistory"
+            :current="hostMemoryCurrent"
+          />
           <MetricChart
             :title="t('sessions.chart_host_net_rx')"
-            :value="
-              hostStats?.net_rx_bps == null
-                ? '—'
-                : `${(hostStats.net_rx_bps / 1_000_000).toFixed(2)} Mbps`
-            "
+            :value="networkMbps(hostStats?.net_rx_bps)"
             :points="networkRxPoints"
             unit=" Mbps"
             color="var(--vs-color-status-success)"
           />
           <MetricChart
             :title="t('sessions.chart_host_net_tx')"
-            :value="
-              hostStats?.net_tx_bps == null
-                ? '—'
-                : `${(hostStats.net_tx_bps / 1_000_000).toFixed(2)} Mbps`
-            "
+            :value="networkMbps(hostStats?.net_tx_bps)"
             :points="networkTxPoints"
             unit=" Mbps"
             color="var(--vs-color-status-info)"
