@@ -76,6 +76,10 @@ namespace platf {
    */
   void restore_screen_saver_state();
 
+  // Register a pause worker before restoring immediately. Invoke the returned
+  // completion once it exits, or if it cannot start; active resumes are kept.
+  std::function<void()> deferred_screen_saver_restore();
+
   /**
    * @brief Launch a process with user impersonation (for use when running as SYSTEM).
    * @param elevated Specify whether to elevate the process.

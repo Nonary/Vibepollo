@@ -2749,9 +2749,12 @@ namespace proc {
     BOOST_LOG(info) << "Session resuming for app [" << _app_name << "].";
 
 #ifdef _WIN32
-    // pause() consumes the prior snapshot after restoring it. Capture a new
-    // baseline before any resume command can change the setting again.
-    platf::cache_screen_saver_state();
+    // Capture a fresh baseline after a completed pause, or retain the original
+    // while an older pause command could still change the setting. Processless
+    // Remote Monitor/Input sessions must not claim application ownership.
+    if (current_app_id() > 0) {
+      platf::cache_screen_saver_state();
+    }
 #endif
 
     if (!_app.state_cmds.empty()) {
@@ -2810,8 +2813,25 @@ namespace proc {
 
     BOOST_LOG(info) << "Session pausing for app [" << _app_name << "].";
 
+    std::function<void()> finish_screen_saver_restore = [] {};
+#ifdef _WIN32
     if (!_app.state_cmds.empty()) {
-      auto exec_thread = std::thread([cmd_list = _app.state_cmds, app_working_dir = _app.working_dir, _env = _env]() mutable {
+      finish_screen_saver_restore = platf::deferred_screen_saver_restore();
+    }
+#endif
+    // Release the registered worker if copying commands or starting its thread
+    // fails. After successful launch the worker owns this completion instead.
+    auto restore_on_launch_failure = util::fail_guard(finish_screen_saver_restore);
+
+#ifdef _WIN32
+    // Preserve immediate restoration even if a pause command runs indefinitely.
+    // The registered worker retains the baseline for a later reassertion.
+    platf::restore_screen_saver_state();
+#endif
+
+    if (!_app.state_cmds.empty()) {
+      auto exec_thread = std::thread([cmd_list = _app.state_cmds, app_working_dir = _app.working_dir, _env = _env, finish_screen_saver_restore]() mutable {
+        auto restore_guard = util::fail_guard(finish_screen_saver_restore);
         _env["APOLLO_APP_STATUS"] = "PAUSING";
 
         std::error_code ec;
@@ -2836,7 +2856,11 @@ namespace proc {
             break;
           }
 
-          child.wait();
+          child.wait(ec);
+          if (ec) {
+            BOOST_LOG(error) << '[' << cmd.undo_cmd << "] wait failed with error code ["sv << ec << ']';
+            break;
+          }
 
           auto ret = child.exit_code();
           if (ret != 0 && ec != std::errc::permission_denied) {
@@ -2847,16 +2871,11 @@ namespace proc {
       });
 
       exec_thread.detach();
+      restore_on_launch_failure.disable();
     }
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
     system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
-#endif
-
-#ifdef _WIN32
-    // A paused app can remain alive for session resume, so restore this global
-    // user setting even when normal application termination does not run.
-    platf::restore_screen_saver_state();
 #endif
   }
 
