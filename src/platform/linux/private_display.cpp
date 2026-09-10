@@ -761,9 +761,69 @@ namespace platf::linux_private_display {
       return snapshot;
     }
 
+    std::filesystem::path golden_snapshot_path() {
+      const auto &state_path = statefile::vibeshine_state_path();
+      if (state_path.empty()) {
+        return {};
+      }
+      const auto directory = std::filesystem::path(state_path).parent_path();
+      if (directory.empty()) {
+        return {};
+      }
+      return directory / "golden_display_topology.json";
+    }
+
+    void persist_snapshot(const state_t &manager, const json &snapshot) {
+      const auto path = golden_snapshot_path();
+      if (path.empty()) {
+        return;
+      }
+      std::error_code fs_ec;
+      std::filesystem::create_directories(path.parent_path(), fs_ec);
+      const auto temporary = path.parent_path() / (path.filename().string() + ".tmp");
+      {
+        std::ofstream out {temporary, std::ios::binary | std::ios::trunc};
+        if (!out) {
+          BOOST_LOG(warning) << "Linux private display: could not write the golden desktop snapshot to " << temporary << '.';
+          return;
+        }
+        out << snapshot.dump();
+      }
+      std::filesystem::rename(temporary, path, fs_ec);
+      if (fs_ec) {
+        BOOST_LOG(warning) << "Linux private display: could not persist the golden desktop snapshot: " << fs_ec.message();
+      }
+    }
+
+    void load_persisted_snapshot(state_t &manager) {
+      if (manager.snapshot) {
+        return;
+      }
+      const auto path = golden_snapshot_path();
+      if (path.empty()) {
+        return;
+      }
+      std::ifstream in {path, std::ios::binary};
+      if (!in) {
+        return;
+      }
+      const std::string contents {(std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()};
+      try {
+        auto snapshot = json::parse(contents);
+        if (!snapshot.contains("outputs") || !snapshot["outputs"].is_array() || snapshot["outputs"].empty()) {
+          return;
+        }
+        manager.snapshot = std::move(snapshot);
+        BOOST_LOG(info) << "Linux private display: loaded the persisted desktop snapshot from " << path << '.';
+      } catch (const json::exception &error) {
+        BOOST_LOG(warning) << "Linux private display: ignoring an unreadable persisted desktop snapshot: " << error.what();
+      }
+    }
+
     void snapshot_configuration_if_needed(state_t &manager, const json &configuration) {
       if (!manager.snapshot) {
         manager.snapshot = restorable_snapshot(configuration);
+        persist_snapshot(manager, *manager.snapshot);
       }
     }
 
@@ -787,6 +847,10 @@ namespace platf::linux_private_display {
       };
       if (const auto existing = manager.reservations.find(identity); existing != manager.reservations.end()) {
         if (const auto configuration = query_configuration()) {
+          // Snapshot before any reuse as well: a reservation can outlive the
+          // in-memory snapshot (for example after a failed restore), and
+          // reverting later must still have the physical desktop topology.
+          snapshot_configuration_if_needed(manager, *configuration);
           if (const auto *output = find_output(*configuration, existing->second); output && connected(*output)) {
             return existing->second;
           }
@@ -853,9 +917,33 @@ namespace platf::linux_private_display {
       return false;
     }
 
+    // Adopt a persisted golden snapshot from an earlier host generation so a
+    // crashed host can still restore a topology it never managed to save.
+    {
+      auto &manager = state();
+      std::lock_guard lock {manager.mutex};
+      load_persisted_snapshot(manager);
+      // The live physical desktop is itself the recovery path; snapshot it
+      // before any topology decision below.
+      snapshot_configuration_if_needed(manager, *configuration);
+    }
+
+    bool desktop_has_active_physical = false;
+    for (const auto &output : (*configuration)["outputs"]) {
+      if (connected(output) && enabled(output) && !private_names.contains(output.value("name", std::string {}))) {
+        desktop_has_active_physical = true;
+        break;
+      }
+    }
+
     // A normal idle pool is dormant, but a restart may follow a failed
     // compositor handoff. Never hot-unplug the last framebuffer that the
-    // selected capture backend can actually enumerate.
+    // selected capture backend can actually enumerate. When the desktop
+    // itself is alive (a connected, enabled physical output), a preserved
+    // private scanout is stale state from an earlier host generation:
+    // keeping it enabled strands the desktop on the virtual display after
+    // the next stream ends, because the restore guard then finds no distinct
+    // saved output.
     const auto capture_outputs = platf::display_names(platf::mem_type_e::unknown);
     const std::set<std::string> capture_names {capture_outputs.begin(), capture_outputs.end()};
     const bool capture_ready_physical = std::ranges::any_of((*configuration)["outputs"], [&](const json &output) {
@@ -871,7 +959,8 @@ namespace platf::linux_private_display {
       const bool capture_ready_private =
         output && connected(*output) && enabled(*output) && capture_names.contains(name);
       const bool active_private = output && connected(*output) && enabled(*output);
-      if (restore_policy::preserve_private_scanout(capture_ready_physical, capture_ready_private) || (!capture_ready_physical && active_private)) {
+      if (!desktop_has_active_physical &&
+          (restore_policy::preserve_private_scanout(capture_ready_physical, capture_ready_private) || (!capture_ready_physical && active_private))) {
         preserved_private_outputs.insert(name);
         BOOST_LOG(warning) << "Linux private display: preserving capture-ready " << name
                            << " during startup because no physical capture output is ready"
@@ -1783,18 +1872,49 @@ namespace platf::linux_private_display {
     if (!current) {
       return false;
     }
-    const auto arguments = restore_arguments(*manager.snapshot, *current, reserved_outputs);
+    bool fail_open_restore = false;
+    auto arguments = restore_arguments(*manager.snapshot, *current, reserved_outputs);
     if (!arguments.guard_output) {
       // A headless saved baseline, or a saved private output which is itself
       // being retired, cannot authorize removing the compositor's last live
-      // scanout. Release only process-local client ownership; startup can
-      // retire the preserved connector after a distinct physical capture
-      // source exists.
-      BOOST_LOG(warning) << "Linux private display: no distinct connected saved output can guard topology restore; preserving the current private scanout.";
-      manager.snapshot.reset();
-      manager.reservations.clear();
-      manager.newly_connected_reservations.clear();
-      return true;
+      // scanout. Fail open before giving up: rebuild the restore target from
+      // the live desktop (every connected physical output enabled, private
+      // outputs disabled) so a missing or unusable snapshot after a host
+      // crash can never strand the user on the private-only topology. Only a
+      // genuinely headless desktop (no connected physical output) keeps the
+      // conservative behavior.
+      json synthetic_snapshot = *current;
+      bool connected_physical = false;
+      for (auto &output : synthetic_snapshot["outputs"]) {
+        const auto name = output.value("name", std::string {});
+        if (private_output_set().contains(name)) {
+          output["enabled"] = false;
+          continue;
+        }
+        if (!connected(output)) {
+          continue;
+        }
+        connected_physical = true;
+        output["enabled"] = true;
+      }
+      if (connected_physical) {
+        BOOST_LOG(warning) << "Linux private display: no usable saved topology; failing open to the live desktop before releasing the private scanout.";
+        arguments = restore_arguments(synthetic_snapshot, *current, reserved_outputs);
+        if (arguments.guard_output) {
+          // Adopt the live desktop as the restore target for the rest of this
+          // revert and persist it for later host generations.
+          manager.snapshot = synthetic_snapshot;
+          persist_snapshot(manager, *manager.snapshot);
+          fail_open_restore = true;
+        }
+      }
+      if (!arguments.guard_output) {
+        BOOST_LOG(warning) << "Linux private display: no distinct connected saved output can guard topology restore; preserving the current private scanout.";
+        manager.snapshot.reset();
+        manager.reservations.clear();
+        manager.newly_connected_reservations.clear();
+        return true;
+      }
     }
     if (!execute_configuration(arguments.guard_activate, "topology restore guard activation")) {
       return false;
@@ -1806,9 +1926,14 @@ namespace platf::linux_private_display {
       return false;
     }
     if (!wait_for_capture_publication(*arguments.guard_output)) {
-      BOOST_LOG(error) << "Linux private display: saved output " << *arguments.guard_output
-                       << " activated in KScreen but did not publish to the capture backend; preserving the current private scanout.";
-      return false;
+      if (fail_open_restore) {
+        BOOST_LOG(warning) << "Linux private display: fail-open restore guard " << *arguments.guard_output
+                           << " did not publish to the capture backend; continuing the restore anyway.";
+      } else {
+        BOOST_LOG(error) << "Linux private display: saved output " << *arguments.guard_output
+                         << " activated in KScreen but did not publish to the capture backend; preserving the current private scanout.";
+        return false;
+      }
     }
     BOOST_LOG(debug) << "Linux private display: capture-ready restore guard "
                      << *arguments.guard_output << " is active.";
@@ -1839,9 +1964,14 @@ namespace platf::linux_private_display {
       return false;
     }
     if (!wait_for_capture_publication(*arguments.guard_output)) {
-      BOOST_LOG(error) << "Linux private display: restore guard " << *arguments.guard_output
-                       << " lost capture publication before connector retirement; preserving the current private scanout.";
-      return false;
+      if (fail_open_restore) {
+        BOOST_LOG(warning) << "Linux private display: fail-open restore guard " << *arguments.guard_output
+                           << " lost capture publication before connector retirement; continuing the restore anyway.";
+      } else {
+        BOOST_LOG(error) << "Linux private display: restore guard " << *arguments.guard_output
+                         << " lost capture publication before connector retirement; preserving the current private scanout.";
+        return false;
+      }
     }
     bool disconnected = true;
     for (const auto &output_name : reserved_outputs) {
@@ -1909,7 +2039,11 @@ namespace platf::linux_private_display {
       auto &delayed_manager = state();
       if (delayed_manager.cleanup_generation.load(std::memory_order_acquire) == generation) {
         BOOST_LOG(info) << "Linux private display: " << reason << " elapsed; restoring outputs.";
-        (void) revert();
+        if (revert()) {
+          BOOST_LOG(info) << "Linux private display: scheduled restore completed.";
+        } else {
+          BOOST_LOG(error) << "Linux private display: scheduled restore FAILED; the display topology may need manual recovery (see earlier log lines for the reason).";
+        }
       }
     }).detach();
   }

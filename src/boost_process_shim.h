@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <boost/filesystem/path.hpp>
 #include <boost/system/error_code.hpp>
+#include <boost/system/system_error.hpp>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -302,7 +303,16 @@ namespace boost_process_shim {
       if (!_proc) {
         return false;
       }
-      return _proc->running();
+      try {
+        return _proc->running();
+      } catch (const boost::system::system_error &) {
+        // Concurrent zombie reapers (proc_t::running()'s waitpid(-1) sweep and
+        // platf::process_group_running()'s group wait) may collect our child
+        // before we do. boost::process::v2 then throws ECHILD; treat an
+        // already-reaped child as exited instead of aborting the host from a
+        // session thread via std::terminate.
+        return false;
+      }
     }
 
     bool running(std::error_code &ec) {
@@ -329,7 +339,15 @@ namespace boost_process_shim {
 
     int wait() {
       if (_proc) {
-        return _proc->wait();
+        try {
+          return _proc->wait();
+        } catch (const boost::system::system_error &) {
+          // Same reaper race as running(): the exit status was already
+          // collected elsewhere. The code is unknowable here; treat the
+          // child as completed so teardown (and its display restore)
+          // continues instead of terminating the process.
+          return 0;
+        }
       }
       return 0;
     }
