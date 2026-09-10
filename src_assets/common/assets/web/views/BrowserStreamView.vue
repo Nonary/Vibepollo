@@ -175,6 +175,8 @@ const nativeFullscreen = ref(false);
 const nativeVideoFullscreen = ref(false);
 const playbackBlocked = ref(false);
 const pseudoFullscreen = ref(false);
+const autoFullscreen = ref(true);
+const streamCollapsed = ref(false);
 const refreshError = ref('');
 const sessionActionError = ref('');
 const sessionActionPending = ref(false);
@@ -208,6 +210,9 @@ let videoRenderOverloadedSince: number | null = null;
 let videoLatencyResetAt: number | null = null;
 let videoPlaybackStream: MediaStream | null = null;
 let gamepadCapture: BrowserGamepadCapture | null = null;
+let autoFullscreenAttempt = 0;
+let preserveAutoFullscreenDuringRestart = false;
+let streamSurfaceFocusedBeforeCollapse = false;
 
 const form = reactive<StreamLaunchForm>({
   appId: '',
@@ -272,6 +277,7 @@ function loadSavedForm(): void {
       width:
         typeof saved.width === 'number' && Number.isFinite(saved.width) ? saved.width : form.width,
     });
+    if (typeof saved.autoFullscreen === 'boolean') autoFullscreen.value = saved.autoFullscreen;
   } catch {
     // Settings are a convenience; malformed or unavailable storage uses defaults.
   }
@@ -282,7 +288,11 @@ function persistForm(): void {
   try {
     window.localStorage.setItem(
       browserStreamSettingsStorageKey,
-      JSON.stringify({ ...form, videoMaxFrameAgeMs: undefined }),
+      JSON.stringify({
+        ...form,
+        autoFullscreen: autoFullscreen.value,
+        videoMaxFrameAgeMs: undefined,
+      }),
     );
   } catch {
     // Private browsing and storage quotas should not block starting a stream.
@@ -410,8 +420,19 @@ const connectionPending = computed(
     isConnecting.value || connectionState.value === 'new' || connectionState.value === 'connecting',
 );
 const inputReady = computed(
-  () => isConnected.value && inputForwarding.value && inputChannelState.value === 'open',
+  () =>
+    !streamCollapsed.value &&
+    isConnected.value &&
+    inputForwarding.value &&
+    inputChannelState.value === 'open',
 );
+
+const inputStatusLabel = computed(() => {
+  if (streamCollapsed.value) return t('ui.browser_stream.input_paused');
+  return inputReady.value
+    ? t('ui.browser_stream.input_ready')
+    : t('ui.browser_stream.input_unavailable');
+});
 
 const connectionLabel = computed(() => {
   if (isConnected.value) return t('ui.browser_stream.status.connected');
@@ -914,6 +935,7 @@ async function connect(resume: boolean): Promise<void> {
           streamError.value = t('ui.browser_stream.errors.connection_failed');
         }
         if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+          cancelAutoFullscreen();
           // A peer can disappear without delivering a data-channel close
           // first. Clear browser-side pressed state and controller state on
           // the connection transition as well.
@@ -936,9 +958,11 @@ async function connect(resume: boolean): Promise<void> {
     });
   } catch (error) {
     if (error instanceof WebRtcConnectionCanceledError) {
+      cancelAutoFullscreen();
       connectionState.value = 'idle';
       return;
     }
+    cancelAutoFullscreen();
     connectionState.value = 'failed';
     streamError.value = messageFromError(error, t('ui.browser_stream.errors.connect'));
   } finally {
@@ -948,11 +972,16 @@ async function connect(resume: boolean): Promise<void> {
 }
 
 async function requestPrimaryAction(): Promise<void> {
+  if (startDisabled.value) {
+    streamError.value = validationError.value || t('ui.browser_stream.errors.unavailable');
+    return;
+  }
   if (selectedAppId.value !== undefined && hasRunningSession.value) {
     startAfterTerminate.value = true;
     terminateOpen.value = true;
     return;
   }
+  requestAutoFullscreen();
   await connect(resumeAvailable.value);
 }
 
@@ -967,6 +996,13 @@ async function confirmTerminate(): Promise<void> {
   sessionActionPending.value = true;
   sessionActionError.value = '';
   const shouldStart = startAfterTerminate.value;
+  if (shouldStart) {
+    // The confirmation click is the last trusted activation before the close
+    // request. Keep the resulting fullscreen state through the intentional
+    // disconnect/reconnect handoff below.
+    preserveAutoFullscreenDuringRestart = true;
+    requestAutoFullscreen();
+  }
   try {
     const response = await apiPost<MutationResponse>('/api/apps/close', {});
     if (response.status !== true) {
@@ -978,16 +1014,23 @@ async function confirmTerminate(): Promise<void> {
     await fetchSessionStatus();
     if (shouldStart) {
       sessionActionPending.value = false;
+      preserveAutoFullscreenDuringRestart = false;
       await connect(false);
     }
   } catch (error) {
+    if (shouldStart) {
+      preserveAutoFullscreenDuringRestart = false;
+      cancelAutoFullscreen();
+    }
     sessionActionError.value = messageFromError(error, t('webrtc.termination_failed_desc'));
   } finally {
+    preserveAutoFullscreenDuringRestart = false;
     sessionActionPending.value = false;
   }
 }
 
 async function disconnect(restartStatusPolling = true): Promise<void> {
+  cancelAutoFullscreen();
   releaseForwardedInput();
   stopGamepadCapture();
   stopVideoFrameLatencyMonitoring();
@@ -1366,6 +1409,85 @@ function onVisibilityChange(): void {
   }
 }
 
+function requestAutoFullscreen(): void {
+  if (!autoFullscreen.value || fullscreenActive.value) return;
+
+  // The fullscreen request must start in the click/submit event. Clearing the
+  // collapsed presentation synchronously keeps the surface available to the
+  // browser before enterFullscreen reaches its first await.
+  revealStreamSurfaceForFullscreen();
+  const attempt = ++autoFullscreenAttempt;
+  void enterFullscreen()
+    .then(() => {
+      // A failed or cancelled connection must not leave a pseudo/fullscreen
+      // surface behind. The token check also handles a rejected native request
+      // that resolves after disconnect has already started.
+      if (
+        !preserveAutoFullscreenDuringRestart &&
+        (attempt !== autoFullscreenAttempt ||
+          connectionState.value === 'failed' ||
+          connectionState.value === 'disconnected' ||
+          connectionState.value === 'closed' ||
+          connectionState.value === 'idle')
+      ) {
+        return exitFullscreen();
+      }
+    })
+    .catch(() => {
+      // Fullscreen is an enhancement; connection startup still proceeds.
+    });
+}
+
+function cancelAutoFullscreen(): void {
+  if (preserveAutoFullscreenDuringRestart) return;
+  autoFullscreenAttempt += 1;
+  if (fullscreenActive.value) void exitFullscreen();
+}
+
+function toggleStreamCollapsed(): void {
+  if (fullscreenActive.value) return;
+
+  const collapsed = !streamCollapsed.value;
+  if (collapsed) {
+    streamSurfaceFocusedBeforeCollapse = document.activeElement === streamSurface.value;
+    // Collapsing a live stream is a presentation change. Release all held
+    // input and stop the gamepad poller while the surface is unavailable, but
+    // leave the media elements and WebRTC session mounted and running.
+    releaseForwardedInput();
+    stopGamepadCapture();
+    if (document.activeElement === streamSurface.value) streamSurface.value?.blur();
+  }
+  streamCollapsed.value = collapsed;
+
+  if (!collapsed && streamSurfaceFocusedBeforeCollapse && isConnected.value) {
+    window.requestAnimationFrame(() => {
+      if (!streamCollapsed.value && inputReady.value) {
+        try {
+          streamSurface.value?.focus({ preventScroll: true });
+        } catch {
+          streamSurface.value?.focus();
+        }
+      }
+    });
+  }
+}
+
+function requestManualFullscreen(): void {
+  if (fullscreenActive.value) return;
+  // Keep the request in the button's trusted activation. Vue will apply the
+  // v-show update after this handler, while the element is still requestable.
+  revealStreamSurfaceForFullscreen();
+  void enterFullscreen();
+}
+
+function revealStreamSurfaceForFullscreen(): void {
+  streamCollapsed.value = false;
+  // v-show applies its display update after the current event handler. Clear
+  // the previous hidden inline style now so a manual fullscreen request made
+  // from the collapsed state still sees a rendered element.
+  if (streamSurface.value) streamSurface.value.style.display = '';
+}
+
 async function enterFullscreen(): Promise<void> {
   const surface = streamSurface.value;
   const video = videoEl.value;
@@ -1434,6 +1556,13 @@ function releaseFullscreenKeyboardLock(): void {
 
 function onFullscreenChange(): void {
   nativeFullscreen.value = Boolean(currentFullscreenElement());
+  if (
+    nativeFullscreen.value &&
+    ['idle', 'failed', 'disconnected', 'closed'].includes(String(connectionState.value))
+  ) {
+    void exitFullscreen();
+    return;
+  }
   if (nativeFullscreen.value) {
     void requestFullscreenKeyboardLock();
   } else {
@@ -1445,6 +1574,9 @@ function onFullscreenChange(): void {
 
 function onNativeVideoFullscreenBegin(): void {
   nativeVideoFullscreen.value = true;
+  if (['idle', 'failed', 'disconnected', 'closed'].includes(String(connectionState.value))) {
+    void exitFullscreen();
+  }
 }
 
 function onNativeVideoFullscreenEnd(): void {
@@ -1534,7 +1666,7 @@ watch(
     );
   },
 );
-watch(form, persistForm, { deep: true });
+watch([form, autoFullscreen], persistForm, { deep: true });
 
 onMounted(() => {
   loadSavedForm();
@@ -1741,18 +1873,34 @@ onBeforeUnmount(() => {
           <h2 id="browser-stream-stage-title">{{ selectedAppName }}</h2>
           <p>{{ t('ui.browser_stream.stage_description') }}</p>
         </div>
-        <StatusBadge :label="connectionLabel" :tone="connectionTone" announce="polite" />
+        <div class="stream-stage__heading-actions">
+          <StatusBadge :label="connectionLabel" :tone="connectionTone" announce="polite" />
+          <AppButton
+            v-if="!fullscreenActive"
+            icon="chevron-down"
+            :label="
+              streamCollapsed ? t('ui.browser_stream.expand') : t('ui.browser_stream.collapse')
+            "
+            variant="tertiary"
+            :aria-expanded="!streamCollapsed"
+            aria-controls="browser-stream-surface"
+            @click="toggleStreamCollapsed"
+          />
+        </div>
       </div>
 
       <div
         ref="streamSurface"
+        id="browser-stream-surface"
         class="stream-surface"
+        v-show="!streamCollapsed"
         :class="{
           'stream-surface--interactive': inputReady,
           'stream-surface--pseudo-fullscreen': pseudoFullscreen,
           'stream-surface--touch-exit': showFullscreenSwipeExit,
         }"
-        tabindex="0"
+        :tabindex="streamCollapsed ? -1 : 0"
+        :aria-hidden="streamCollapsed ? 'true' : undefined"
         :aria-label="t('ui.browser_stream.stream_surface')"
         @keydown="sendKey($event, 'key_down')"
         @keyup="sendKey($event, 'key_up')"
@@ -1864,7 +2012,7 @@ onBeforeUnmount(() => {
           :label="t('ui.browser_stream.fullscreen')"
           variant="secondary"
           :disabled="!isConnected"
-          @click="enterFullscreen"
+          @click="requestManualFullscreen"
         />
         <AppButton
           v-if="showInstallWebAppAction"
@@ -1875,11 +2023,7 @@ onBeforeUnmount(() => {
         />
         <span class="stream-stage__input-status" :data-ready="inputReady">
           <UiIcon :name="inputReady ? 'check-circle' : 'info'" :size="16" />
-          {{
-            inputReady
-              ? t('ui.browser_stream.input_ready')
-              : t('ui.browser_stream.input_unavailable')
-          }}
+          {{ inputStatusLabel }}
         </span>
       </div>
     </section>
@@ -2093,6 +2237,14 @@ onBeforeUnmount(() => {
           <span>
             <strong>{{ t('webrtc.show_performance_overlay') }}</strong>
             <small>{{ t('ui.browser_stream.controls.performance_overlay_help') }}</small>
+          </span>
+        </label>
+
+        <label class="stream-form__check">
+          <input v-model="autoFullscreen" type="checkbox" />
+          <span>
+            <strong>{{ t('webrtc.auto_fullscreen') }}</strong>
+            <small>{{ t('webrtc.auto_fullscreen_desc') }}</small>
           </span>
         </label>
 
@@ -2314,6 +2466,24 @@ onBeforeUnmount(() => {
 
 .stream-stage__heading {
   margin-bottom: 0;
+}
+
+.stream-stage__heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--vs-space-8);
+}
+
+.stream-stage__heading-actions [aria-controls='browser-stream-surface'] .vs-button__icon {
+  transition: transform 160ms ease;
+}
+
+.stream-stage__heading-actions
+  [aria-controls='browser-stream-surface'][aria-expanded='true']
+  .vs-button__icon {
+  transform: rotate(180deg);
 }
 
 .stream-surface {

@@ -15,7 +15,7 @@ import {
 } from '@/components/ui';
 import type { HostInfo, HostStatsSnapshot } from '@/types/host';
 import type { SessionStatus } from '@/types/sessions';
-import { useSystemStore } from '@/stores/system';
+import { useSystemStore, type HostMetadata } from '@/stores/system';
 import { formatBytes } from '@/utils/format';
 
 interface OverviewWarning {
@@ -26,12 +26,22 @@ interface OverviewWarning {
   action: string;
 }
 
+interface VigemHealth {
+  status?: unknown;
+  installed?: unknown;
+  version?: unknown;
+}
+
 const { locale, t } = useI18n();
 const system = useSystemStore();
 const session = ref<SessionStatus | null>(null);
 const hostStats = ref<HostStatsSnapshot | null>(null);
 const statsStale = ref(false);
 const hostInfo = ref<HostInfo | null>(null);
+const hostPlatform = ref('');
+const vigemInstalled = ref<boolean | null>(null);
+const vigemVersion = ref('');
+const controllerEnabled = ref<boolean | null>(null);
 const loading = ref(true);
 const refreshing = ref(false);
 const fetchErrors = ref<string[]>([]);
@@ -40,6 +50,60 @@ let pollTimer: number | undefined;
 
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof ApiError ? fallback : cause instanceof Error ? cause.message : fallback;
+}
+
+function isWindowsPlatform(value: unknown): boolean {
+  const platform = String(value ?? '')
+    .trim()
+    .toLocaleLowerCase();
+  return platform === 'windows' || platform.startsWith('win');
+}
+
+function enabledValue(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLocaleLowerCase();
+    return ['1', 'true', 'yes', 'on', 'enabled'].includes(normalized);
+  }
+  return false;
+}
+
+async function refreshVigem(platform: string): Promise<void> {
+  // ViGEm is Windows-only. Do not request its endpoint on another host.
+  if (!isWindowsPlatform(platform)) {
+    controllerEnabled.value = null;
+    vigemInstalled.value = null;
+    vigemVersion.value = '';
+    return;
+  }
+
+  try {
+    const config = await apiGet<Record<string, unknown>>('/api/config');
+    if (config.status === false) throw new Error('vigem-config-rejected');
+    const enabled = enabledValue(config.controller);
+    controllerEnabled.value = enabled;
+    if (!enabled) {
+      vigemInstalled.value = null;
+      vigemVersion.value = '';
+      return;
+    }
+
+    const health = await apiGet<VigemHealth>('/api/health/vigem');
+    // Only a successful, explicit boolean false means the driver is absent.
+    // Auth, network, malformed, and unknown responses remain unknown.
+    if (health && health.status !== false && typeof health.installed === 'boolean') {
+      vigemInstalled.value = health.installed;
+      vigemVersion.value = typeof health.version === 'string' ? health.version : '';
+    } else {
+      vigemInstalled.value = null;
+      vigemVersion.value = '';
+    }
+  } catch {
+    controllerEnabled.value = null;
+    vigemInstalled.value = null;
+    vigemVersion.value = '';
+  }
 }
 
 async function refresh(silent = false): Promise<void> {
@@ -52,10 +116,11 @@ async function refresh(silent = false): Promise<void> {
     apiGet<SessionStatus>('/api/session/status'),
     apiGet<HostStatsSnapshot>('/api/host/stats'),
     apiGet<HostInfo>('/api/host/info'),
+    apiGet<Pick<HostMetadata, 'platform'>>('/api/metadata'),
   ]);
 
   const nextErrors: string[] = [];
-  const [sessionResult, statsResult, infoResult] = results;
+  const [sessionResult, statsResult, infoResult, metadataResult] = results;
 
   if (sessionResult.status === 'fulfilled') {
     session.value = sessionResult.value;
@@ -76,6 +141,11 @@ async function refresh(silent = false): Promise<void> {
   } else {
     nextErrors.push(errorMessage(infoResult.reason, t('ui.overview.errors.hostInfo')));
   }
+
+  if (metadataResult.status === 'fulfilled') {
+    hostPlatform.value = metadataResult.value.platform ?? '';
+  }
+  await refreshVigem(hostPlatform.value || system.metadata?.platform || '');
 
   fetchErrors.value = [...new Set(nextErrors)];
   lastUpdatedAt.value = Date.now();
@@ -133,6 +203,13 @@ const warnings = computed<OverviewWarning[]>(() => {
   }
   return result;
 });
+
+const showVigemBanner = computed(
+  () =>
+    isWindowsPlatform(hostPlatform.value || system.metadata?.platform) &&
+    controllerEnabled.value === true &&
+    vigemInstalled.value === false,
+);
 
 const readiness = computed<{ label: string; detail: string; tone: StatusTone }>(() => {
   if (isStreaming.value) {
@@ -302,7 +379,23 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <div v-if="warnings.length" class="overview-notices">
+      <div v-if="showVigemBanner || warnings.length" class="overview-notices">
+        <InlineAlert v-if="showVigemBanner" tone="warning" :title="t('config.vigem_missing_title')">
+          {{ t('config.vigem_missing_desc') }}
+          <span v-if="vigemVersion" class="overview-vigem-version">
+            ({{ t('config.vigem_detected_version') }}: {{ vigemVersion }})
+          </span>
+          <template #actions>
+            <a
+              href="https://github.com/nefarius/ViGEmBus/releases/latest"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {{ t('config.vigem_install') }}
+              <UiIcon name="external-link" :size="14" aria-hidden="true" />
+            </a>
+          </template>
+        </InlineAlert>
         <InlineAlert
           v-for="warning in warnings"
           :key="warning.key"
@@ -527,6 +620,9 @@ onBeforeUnmount(() => {
 .overview-notices {
   display: grid;
   gap: var(--vs-space-12);
+}
+.overview-vigem-version {
+  color: var(--vs-color-text-muted);
 }
 .overview-detail-grid {
   display: grid;

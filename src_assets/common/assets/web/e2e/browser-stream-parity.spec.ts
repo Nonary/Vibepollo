@@ -2,9 +2,53 @@ import { test, expect, type Page } from '@playwright/test';
 
 type SessionPayload = Record<string, unknown>;
 
-async function installBrowserStreamFixtures(page: Page): Promise<SessionPayload[]> {
-  const sessions: SessionPayload[] = [];
+interface BrowserStreamFixtureOptions {
+  delayTerminateMs?: number;
+  failConnection?: boolean;
+  includeApp?: boolean;
+  rejectFullscreen?: boolean;
+  runningSession?: boolean;
+}
 
+async function installBrowserStreamFixtures(
+  page: Page,
+  options: BrowserStreamFixtureOptions = {},
+): Promise<SessionPayload[]> {
+  const sessions: SessionPayload[] = [];
+  let sessionRunning = options.runningSession === true;
+
+  await page.addInitScript(
+    ({ rejectFullscreen }) => {
+      const fullscreenCalls: string[] = [];
+      Object.defineProperty(Element.prototype, 'requestFullscreen', {
+        configurable: true,
+        value: function requestFullscreen() {
+          fullscreenCalls.push((this as HTMLElement).id || this.tagName.toLocaleLowerCase());
+          return rejectFullscreen
+            ? Promise.reject(new Error('Fullscreen request rejected'))
+            : Promise.resolve();
+        },
+      });
+      if (rejectFullscreen) {
+        // Chromium exposes prefixed request methods alongside the standard
+        // method. Remove every native path so this fixture reaches the
+        // component's pseudo-fullscreen fallback deterministically.
+        for (const prototype of [Element.prototype, HTMLVideoElement.prototype]) {
+          for (const method of ['webkitRequestFullscreen', 'webkitRequestFullScreen']) {
+            Object.defineProperty(prototype, method, { configurable: true, value: undefined });
+          }
+        }
+        for (const method of ['webkitEnterFullscreen', 'webkitEnterFullScreen']) {
+          Object.defineProperty(HTMLVideoElement.prototype, method, {
+            configurable: true,
+            value: undefined,
+          });
+        }
+      }
+      Object.assign(window, { __browserStreamFullscreenCalls: fullscreenCalls });
+    },
+    { rejectFullscreen: options.rejectFullscreen === true },
+  );
   await page.addInitScript(() => {
     const inputMessages: unknown[] = [];
     const hapticEffects: unknown[] = [];
@@ -169,9 +213,17 @@ async function installBrowserStreamFixtures(page: Page): Promise<SessionPayload[
     } else if (path === '/api/csrf-token') {
       body = { csrf_token: 'browser-stream-test' };
     } else if (path === '/api/apps') {
-      body = { apps: [] };
+      body = options.includeApp
+        ? { apps: [{ index: 1, name: 'Test Game', uuid: 'browser-stream-test-app' }] }
+        : { apps: [] };
     } else if (path === '/api/session/status') {
-      body = { status: true, activeSessions: 0, appRunning: false };
+      body = { status: true, activeSessions: sessionRunning ? 1 : 0, appRunning: sessionRunning };
+    } else if (path === '/api/apps/close' && request.method() === 'POST') {
+      if (options.delayTerminateMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.delayTerminateMs));
+      }
+      sessionRunning = false;
+      body = { status: true };
     } else if (path === '/api/webrtc/capabilities') {
       body = {
         enabled: true,
@@ -194,7 +246,9 @@ async function installBrowserStreamFixtures(page: Page): Promise<SessionPayload[
       };
     } else if (path === '/api/webrtc/sessions' && request.method() === 'POST') {
       sessions.push(request.postDataJSON() as SessionPayload);
-      body = { status: true, session: { id: 'browser-stream-test' }, ice_servers: [] };
+      body = options.failConnection
+        ? { status: false, error: 'Browser stream fixture rejected the session.' }
+        : { status: true, session: { id: 'browser-stream-test' }, ice_servers: [] };
     } else if (path.endsWith('/offer') && request.method() === 'POST') {
       body = {
         status: true,
@@ -243,6 +297,39 @@ for (const width of [1440, 390]) {
     await page.reload();
     await expect(page.locator('#browser-stream-pacing-slack')).toHaveValue('4');
     await expect(page.locator('#browser-stream-max-frame-age')).toHaveValue('3');
+    const autoFullscreen = page.getByRole('checkbox', { name: 'Auto Fullscreen' });
+    await expect(autoFullscreen).toBeChecked();
+    await page.screenshot({
+      path: `/tmp/vibeshine-ui-results/browser-stream-${width}-expanded.png`,
+      fullPage: true,
+    });
+    const streamToggle = page.locator('[aria-controls="browser-stream-surface"]');
+    await streamToggle.click();
+    await expect(streamToggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('#browser-stream-surface')).toBeHidden();
+    await expect(page.locator('#browser-stream-surface video')).toHaveCount(1);
+    await page.screenshot({
+      path: `/tmp/vibeshine-ui-results/browser-stream-${width}-collapsed.png`,
+      fullPage: true,
+    });
+    await streamToggle.click();
+    await expect(streamToggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('#browser-stream-surface')).toBeVisible();
+    await autoFullscreen.uncheck();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            JSON.parse(localStorage.getItem('sunshine.webrtc.session_config') ?? '{}')
+              .autoFullscreen,
+        ),
+      )
+      .toBe(false);
+    await page.screenshot({
+      path: `/tmp/vibeshine-ui-results/browser-stream-${width}-preferences.png`,
+      fullPage: true,
+    });
+    await autoFullscreen.check();
     await page.locator('#browser-stream-fps').fill('20');
     await expect(page.locator('#browser-stream-max-frame-age')).toHaveValue('2');
     await page.locator('#browser-stream-fps').fill('60');
@@ -255,6 +342,29 @@ for (const width of [1440, 390]) {
     await page.getByRole('button', { name: 'Start browser stream' }).click();
     await expect(page.getByText('Connected', { exact: true })).toBeVisible();
     await expect.poll(() => sessions.length).toBe(1);
+    await streamToggle.scrollIntoViewIfNeeded();
+    await streamToggle.click();
+    await expect(streamToggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(
+      page.getByText('Input forwarding pauses while the stream is minimized'),
+    ).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Disconnect stream' })).toBeVisible();
+    await streamToggle.focus();
+    await page.screenshot({
+      path: `/tmp/vibeshine-ui-results/browser-stream-${width}-active-collapsed.png`,
+      fullPage: false,
+    });
+    await streamToggle.click();
+    await expect(streamToggle).toHaveAttribute('aria-expanded', 'true');
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as typeof window & { __browserStreamFullscreenCalls?: string[] })
+              .__browserStreamFullscreenCalls?.length ?? 0,
+        ),
+      )
+      .toBeGreaterThan(0);
     expect(sessions[0]).toMatchObject({
       video_pacing_mode: 'smoothness',
       video_pacing_slack_ms: 4,
@@ -495,3 +605,117 @@ for (const width of [1440, 390]) {
     });
   });
 }
+
+test('browser stream auto fullscreen respects opt-out and retains collapsed state on reconnect', async ({
+  page,
+}) => {
+  await installBrowserStreamFixtures(page);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto('/v2/stream');
+
+  const autoFullscreen = page.getByRole('checkbox', { name: 'Auto Fullscreen' });
+  await autoFullscreen.uncheck();
+  await page.getByRole('button', { name: 'Start browser stream' }).click();
+  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __browserStreamFullscreenCalls?: string[] })
+            .__browserStreamFullscreenCalls?.length ?? 0,
+      ),
+    )
+    .toBe(0);
+
+  const streamToggle = page.locator('[aria-controls="browser-stream-surface"]');
+  await streamToggle.click();
+  await expect(page.locator('#browser-stream-surface')).toBeHidden();
+  await expect(page.locator('#browser-stream-surface video')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Disconnect stream' })).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: 'Forward browser input' })).toBeChecked();
+
+  await page.getByRole('button', { name: 'Disconnect stream' }).click();
+  await expect(page.getByRole('button', { name: 'Start browser stream' })).toBeVisible();
+  await expect(page.locator('#browser-stream-surface')).toBeHidden();
+
+  await page.getByRole('button', { name: 'Start browser stream' }).click();
+  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  await expect(page.locator('#browser-stream-surface')).toBeHidden();
+  await expect(streamToggle).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('browser stream falls back when the browser rejects native fullscreen', async ({ page }) => {
+  await installBrowserStreamFixtures(page, { rejectFullscreen: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto('/v2/stream');
+  await page.getByRole('button', { name: 'Start browser stream' }).click();
+  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  await expect(page.locator('.stream-surface--pseudo-fullscreen')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Exit fullscreen' }).click();
+  await expect(page.locator('.stream-surface--pseudo-fullscreen')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Disconnect stream' }).click();
+  await expect(page.locator('.stream-surface--pseudo-fullscreen')).toHaveCount(0);
+});
+
+test('browser stream requests fullscreen from the terminate confirmation gesture', async ({
+  page,
+}) => {
+  await installBrowserStreamFixtures(page, {
+    delayTerminateMs: 300,
+    includeApp: true,
+    runningSession: true,
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto('/v2/stream');
+
+  const streamToggle = page.locator('[aria-controls="browser-stream-surface"]');
+  await streamToggle.click();
+  await expect(page.getByRole('button', { name: 'Terminate' })).toBeVisible();
+  await streamToggle.click();
+  await page.getByRole('option', { name: 'Test Game' }).click();
+  await page.getByRole('button', { name: 'Start browser stream' }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __browserStreamFullscreenCalls?: string[] })
+            .__browserStreamFullscreenCalls?.length ?? 0,
+      ),
+    )
+    .toBe(0);
+
+  await page.getByRole('button', { name: 'Terminate & Start' }).click();
+  // The close request is intentionally delayed. A fullscreen call observed
+  // while it is pending proves it began in the trusted confirmation event.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __browserStreamFullscreenCalls?: string[] })
+            .__browserStreamFullscreenCalls?.length ?? 0,
+      ),
+    )
+    .toBeGreaterThan(0);
+  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+});
+
+test('browser stream exits auto fullscreen when connection startup fails', async ({ page }) => {
+  await installBrowserStreamFixtures(page, { failConnection: true, rejectFullscreen: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto('/v2/stream');
+  await page.getByRole('button', { name: 'Start browser stream' }).click();
+
+  await expect(page.getByText(/WebRTC session identifier/)).toBeVisible();
+  await expect(page.locator('.stream-surface--pseudo-fullscreen')).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __browserStreamFullscreenCalls?: string[] })
+            .__browserStreamFullscreenCalls?.length ?? 0,
+      ),
+    )
+    .toBeGreaterThan(0);
+});
