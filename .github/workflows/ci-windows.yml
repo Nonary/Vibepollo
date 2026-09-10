@@ -1217,7 +1217,7 @@ jobs:
             throw "Administrative MSI extraction failed (exit $($proc.ExitCode))."
           }
 
-          $virtualDisplayRoot = Join-Path $extractDir 'Sunshine\drivers\sunshine'
+          $virtualDisplayRoot = Join-Path $extractDir 'Apollo\drivers\sunshine'
           $virtualDisplayCatalog = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.cat'
           $virtualDisplayInf = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.inf'
           $virtualDisplayDll = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.dll'

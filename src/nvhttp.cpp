@@ -228,6 +228,16 @@ namespace nvhttp {
       );
     }
 
+    bool has_any_active_display() {
+      if (VDISPLAY::has_active_physical_display()) {
+        return true;
+      }
+      if (VDISPLAY::has_retained_ensure_display()) {
+        return true;
+      }
+      return has_active_virtual_display();
+    }
+
     bool has_stream_session_activity();
     bool has_active_or_stopping_stream_session();
 

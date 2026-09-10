@@ -87,15 +87,13 @@ invalidates the catalog hash and **breaks driver installation**. These must be
 **excluded** from the `msi-file-apollo` deep-sign:
 
 - `Apollo\drivers\sudovda\SudoVDA.dll`, `Apollo\drivers\sudovda\nefconc.exe` (CN=sudovda / Nefarius)
-- `Apollo\drivers\sunshine\SunshineVirtualDisplayDriver.dll` (+ `.cat`),
-  `Apollo\drivers\sunshine\virtualdisplay_probe.exe`,
-  `Apollo\drivers\sunshine\nefconc.exe`,
-  `Apollo\drivers\sunshine\vulkan-layer\VkLayer_sunshine_hdr.dll`
-  (libvirtualdisplay release, origin-signed upstream)
+- `Apollo\drivers\sunshine\SunshineVirtualDisplayDriver.dll` (catalog-bound)
+- `Apollo\drivers\sunshine\nefconc.exe` (Nefarius)
 - `nvngx_truehdr.dll` (NVIDIA RTX Video SDK runtime, downloaded from the pinned TrueHDR runtime release)
 
-The recommended config signs the Sunshine catalog and explicitly excludes the
-catalog-bound DLL and third-party binaries above.
+The recommended config signs the Sunshine catalog, `virtualdisplay_probe.exe`,
+and `VkLayer_sunshine_hdr.dll`. It excludes the catalog-bound DLL and third-party
+binaries above.
 
 ## First-party PEs that MUST be signed
 
