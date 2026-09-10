@@ -1,0 +1,219 @@
+---
+name: Publish signed Arch repository
+permissions: {}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published v-less Vibepollo release tag, for example 1.19.0
+        required: true
+        type: string
+      allow_draft:
+        description: Publish the package from a draft release. Only for a first release whose assets were reviewed by hand.
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: arch-repository
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Sign and publish Arch package
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux/archlinux:base-devel
+    permissions:
+      actions: write
+      contents: write
+    environment: arch-repository
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_FINGERPRINT: ${{ vars.ARCH_REPO_GPG_FINGERPRINT }}
+    steps:
+      - name: Install publication tools
+        shell: bash
+        run: pacman -Syu --needed --noconfirm archlinux-keyring git github-cli gnupg jq
+
+      - name: Checkout publication workflow
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Download and verify published Arch package
+        id: release
+        shell: bash
+        env:
+          ALLOW_DRAFT: ${{ inputs.allow_draft }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          source_tag="${REQUESTED_TAG#refs/tags/}"
+          source_tag="${source_tag#v}"
+          release_version="${source_tag}"
+          if [[ ! "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Unsupported release tag '${REQUESTED_TAG}'."
+            exit 1
+          fi
+
+          # The tags endpoint only resolves published releases. A draft has no tag
+          # ref yet, so with allow_draft fall back to matching tag_name in the list.
+          # gh api prints the error body on stdout, so drop it when the lookup fails.
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${source_tag}" 2>/dev/null)" || release_json=""
+          if [[ -z "${release_json}" && "${ALLOW_DRAFT}" == "true" ]]; then
+            release_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              | jq -cs --arg tag "${source_tag}" '[.[][] | select(.tag_name == $tag and .draft == true)] | first // empty')"
+          fi
+          if [[ -z "${release_json}" ]]; then
+            echo "::error::No release found for tag ${source_tag}."
+            exit 1
+          fi
+          if [[ "$(jq -r '.draft' <<<"${release_json}")" != false ]]; then
+            if [[ "${ALLOW_DRAFT}" != "true" ]]; then
+              echo "::error::Release ${source_tag} is still a draft."
+              exit 1
+            fi
+            echo "::warning::Publishing the Arch package from draft release ${source_tag} because allow_draft was set."
+          fi
+
+          mapfile -t package_assets < <(
+            jq -r '.assets[] | .name as $name | select(($name | test("^vibepollo-.+\\.pkg\\.tar\\.zst$")) and (($name | contains("-debug-")) | not)) | [.id, .name] | @tsv' <<<"${release_json}"
+          )
+          if (( ${#package_assets[@]} != 1 )); then
+            echo "::error::Expected exactly one non-debug Vibepollo Arch package on release ${source_tag}."
+            jq -r '.assets[].name' <<<"${release_json}" >&2
+            exit 1
+          fi
+
+          IFS=$'\t' read -r asset_id package_name <<<"${package_assets[0]}"
+          mkdir -p incoming
+          gh api -H 'Accept: application/octet-stream' \
+            "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" >"incoming/${package_name}"
+
+          package_info="$(bsdtar -xOf "incoming/${package_name}" .PKGINFO)"
+          grep -qx 'pkgname = vibepollo' <<<"${package_info}"
+          # Keep this aligned with special_package_configuration.cmake: Arch
+          # pkgver strips SemVer's prerelease separator.
+          arch_package_version=${release_version//-/}
+          arch_package_version=${arch_package_version//+/.}
+          grep -qx "pkgver = ${arch_package_version}-1" <<<"${package_info}"
+          grep -qx 'arch = x86_64' <<<"${package_info}"
+
+          echo "package_name=${package_name}" >>"${GITHUB_OUTPUT}"
+          echo "release_version=${release_version}" >>"${GITHUB_OUTPUT}"
+
+      - name: Import and verify repository signing key
+        id: signing-key
+        shell: bash
+        env:
+          SIGNING_PRIVATE_KEY: ${{ secrets.ARCH_REPO_GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SIGNING_PRIVATE_KEY}" || -z "${EXPECTED_FINGERPRINT}" ]]; then
+            echo '::error::ARCH_REPO_GPG_PRIVATE_KEY and ARCH_REPO_GPG_FINGERPRINT must be configured in the arch-repository environment.'
+            exit 1
+          fi
+
+          printf '%s' "${SIGNING_PRIVATE_KEY}" | gpg --batch --import
+          mapfile -t fingerprints < <(
+            gpg --batch --with-colons --list-secret-keys |
+              awk -F: '$1 == "sec" { primary = 1; next } primary && $1 == "fpr" { print toupper($10); primary = 0 }'
+          )
+          if (( ${#fingerprints[@]} != 1 )); then
+            echo "::error::Expected exactly one secret signing key, found ${#fingerprints[@]}."
+            exit 1
+          fi
+
+          fingerprint="${fingerprints[0]}"
+          expected="${EXPECTED_FINGERPRINT//[[:space:]]/}"
+          if [[ "${fingerprint}" != "${expected^^}" ]]; then
+            echo "::error::Imported signing key fingerprint does not match ARCH_REPO_GPG_FINGERPRINT."
+            exit 1
+          fi
+          echo "fingerprint=${fingerprint}" >>"${GITHUB_OUTPUT}"
+
+      - name: Sign package and export public key
+        shell: bash
+        env:
+          FINGERPRINT: ${{ steps.signing-key.outputs.fingerprint }}
+          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+          SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SIGNING_PASSPHRASE}" ]]; then
+            echo '::error::ARCH_REPO_GPG_PASSPHRASE is not configured in the arch-repository environment.'
+            exit 1
+          fi
+          printf '%s' "${SIGNING_PASSPHRASE}" | gpg \
+            --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
+            --local-user "${FINGERPRINT}" --detach-sign "incoming/${PACKAGE_NAME}"
+          gpg --batch --export "${FINGERPRINT}" >incoming/nonary-vibepollo.gpg
+          gpg --batch --armor --export "${FINGERPRINT}" >incoming/nonary-vibepollo.asc
+          printf '%s\n' "${FINGERPRINT}" >incoming/nonary-vibepollo-fingerprint.txt
+          gpg --batch --verify "incoming/${PACKAGE_NAME}.sig" "incoming/${PACKAGE_NAME}"
+
+      - name: Update repository database
+        shell: bash
+        env:
+          FINGERPRINT: ${{ steps.signing-key.outputs.fingerprint }}
+          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+          SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          # The checkout is owned by a different uid than the container user.
+          git config --global --add safe.directory '*'
+          publication_dir="${RUNNER_TEMP}/arch-repo"
+          if git fetch --depth=1 origin refs/heads/arch-repo:refs/remotes/origin/arch-repo; then
+            git worktree add "${publication_dir}" refs/remotes/origin/arch-repo
+          else
+            git worktree add --detach "${publication_dir}" HEAD
+            git -C "${publication_dir}" switch --orphan arch-repo
+          fi
+
+          mkdir -p "${publication_dir}/x86_64"
+          cp "incoming/${PACKAGE_NAME}" "incoming/${PACKAGE_NAME}.sig" \
+            incoming/nonary-vibepollo.gpg incoming/nonary-vibepollo.asc \
+            incoming/nonary-vibepollo-fingerprint.txt \
+            "${publication_dir}/x86_64/"
+
+          cd "${publication_dir}/x86_64"
+          rm -f vibepollo.db vibepollo.db.sig vibepollo.db.tar.gz.sig \
+            vibepollo.files vibepollo.files.sig vibepollo.files.tar.gz.sig
+          repo-add --remove vibepollo.db.tar.gz ./*.pkg.tar.zst
+          printf '%s' "${SIGNING_PASSPHRASE}" | gpg \
+            --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
+            --local-user "${FINGERPRINT}" --detach-sign vibepollo.db.tar.gz
+          printf '%s' "${SIGNING_PASSPHRASE}" | gpg \
+            --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
+            --local-user "${FINGERPRINT}" --detach-sign vibepollo.files.tar.gz
+
+          rm -f vibepollo.db vibepollo.db.sig vibepollo.files vibepollo.files.sig
+          cp vibepollo.db.tar.gz vibepollo.db
+          cp vibepollo.db.tar.gz.sig vibepollo.db.sig
+          cp vibepollo.files.tar.gz vibepollo.files
+          cp vibepollo.files.tar.gz.sig vibepollo.files.sig
+
+      - name: Commit published repository
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          # The checkout is owned by a different uid than the container user.
+          git config --global --add safe.directory '*'
+          publication_dir="${RUNNER_TEMP}/arch-repo"
+          git -C "${publication_dir}" config user.name 'Nonary release automation'
+          git -C "${publication_dir}" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C "${publication_dir}" add --all
+          if git -C "${publication_dir}" diff --cached --quiet; then
+            echo 'Repository already contains this exact signed release.'
+            exit 0
+          fi
+          git -C "${publication_dir}" commit -m "Publish Vibepollo ${RELEASE_VERSION} for Arch Linux"
+          git -C "${publication_dir}" push origin HEAD:arch-repo
+
+      - name: Deploy updated repository through Pages
+        shell: bash
+        run: gh workflow run update-pages.yml --ref master
