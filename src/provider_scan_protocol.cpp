@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <set>
@@ -331,8 +332,18 @@ namespace platf::provider_scan {
   namespace detail {
     std::optional<std::string> capture_command(const fs::path &executable, std::string_view verb,
                                                capture_limits_t limits) {
-      if (!executable.is_absolute() || verb.empty() || verb.size() > 64 || limits.timeout.count() <= 0 ||
-          limits.maximum_bytes == 0 || limits.maximum_bytes > max_payload_bytes) return std::nullopt;
+      // Provider scans and artwork belong to the desktop session. Avoid
+      // spawning rejected broker requests on every greeter poll. The broker
+      // still independently validates the authoritative session identity.
+      const auto *machine_host = std::getenv("VIBESHINE_MACHINE_HOST");
+      const auto *session_role = std::getenv("VIBESHINE_SESSION_ROLE");
+      if (machine_host && *machine_host && (!session_role || std::string_view {session_role} != "desktop")) {
+        return std::nullopt;
+      }
+
+      if (!executable.is_absolute() || verb.empty() || verb.size() > 64 || limits.timeout.count() <= 0 || limits.maximum_bytes == 0 || limits.maximum_bytes > max_payload_bytes) {
+        return std::nullopt;
+      }
       std::string verb_string {verb};
       if (!safe_text(verb_string, 64, false)) return std::nullopt;
 
