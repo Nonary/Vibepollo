@@ -4764,6 +4764,17 @@ namespace video {
     std::optional<std::chrono::steady_clock::time_point> encode_frame_timestamp;
     encode_bootstrap_state_t bootstrap_state {.allow_placeholder_before_first_real = frame_nr <= 1};
 
+    auto deliver_ready_amf_output = [&]() {
+      if (!amf::lifecycle::deliver_ready_output(native_session, [&](auto &frames) {
+            deliver_amf_frames(frame_nr, *native_session, frames, packets, channel_data);
+          })) {
+        BOOST_LOG(error) << "AMF failed while delivering ready output"sv;
+        native_amf_runtime_failed = true;
+        return false;
+      }
+      return true;
+    };
+
     // Per-session encode-loop accounting. When several clients share one capture target, a
     // single client can freeze while the others stream fine, and nothing else in the log
     // distinguishes a session that is encoding live frames from one that is starved or gated.
@@ -4847,6 +4858,12 @@ namespace video {
       std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
       bool placeholder_input = bootstrap_state.current_input_placeholder;
 
+      // Also service ready output on zero-wait bootstrap and requested-IDR
+      // iterations, which can bypass the normal capture wait entirely.
+      if (!deliver_ready_amf_output()) {
+        break;
+      }
+
       // Encode at a minimum FPS to avoid image quality issues with static content
       if (!requested_idr_frame || images->peek()) {
         auto image_wait_budget = max_frametime;
@@ -4859,20 +4876,6 @@ namespace video {
         const auto image_wait_started = std::chrono::steady_clock::now();
         if (auto *amf_session = native_session;
             amf_session && image_wait_budget > decltype(max_frametime)::zero()) {
-          // Never hold an already-completed packet behind conversion/submission
-          // of a newer image. This zero-wait drain also runs during continuous
-          // motion, where images->peek() remains true and the sparse loop below
-          // intentionally yields immediately.
-          if (amf_session->has_completed_output()) {
-            auto ready = amf_session->drain_frames(0ms);
-            if (ready.fatal || std::any_of(ready.frames.begin(), ready.frames.end(), [](const auto &frame) { return frame.fatal; })) {
-              BOOST_LOG(error) << "AMF failed while delivering ready output"sv;
-              native_amf_runtime_failed = true;
-              break;
-            }
-            deliver_amf_frames(frame_nr, *amf_session, ready.frames, packets, channel_data);
-          }
-
           // Wait for either the next capture or output that became due with the
           // previous native submission. This preserves high-refresh pipelining
           // when another image arrives, while delivering the final moving frame
@@ -4921,7 +4924,15 @@ namespace video {
           image_wait_budget = std::min(image_wait_budget, remaining_tail_budget);
         }
 
-        if (auto img = images->pop(image_wait_budget)) {
+        auto img = images->pop(image_wait_budget);
+        // Completion can race the pre-wait drain, including when capture and
+        // output become ready together. Send the older packet before acquiring
+        // the next image's GPU mutex or reserving/converting its input surface.
+        // This is zero-wait and leaves the captured image and frame index intact.
+        if (!deliver_ready_amf_output()) {
+          break;
+        }
+        if (img) {
           placeholder_input = is_placeholder_capture_image(*img);
           if (placeholder_input) {
             ++loop_stats.popped_placeholder;

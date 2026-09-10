@@ -24,6 +24,56 @@ using namespace std::chrono_literals;
 
 namespace {
 
+  struct ready_output_session_t {
+    struct frame_t {
+      int index;
+      bool fatal = false;
+    };
+    struct result_t {
+      std::vector<frame_t> frames;
+      bool fatal = false;
+    } queued;
+    int drains = 0;
+    std::chrono::milliseconds timeout {99};
+
+    bool has_completed_output() const {
+      return !queued.frames.empty();
+    }
+    result_t drain_frames(std::chrono::milliseconds wait) {
+      ++drains;
+      timeout = wait;
+      return std::exchange(queued, {});
+    }
+  };
+
+  bool capture_wait_completion_is_delivered_before_conversion() {
+    ready_output_session_t session;
+    std::vector<int> events;
+    auto deliver = [&](auto &frames) {
+      for (auto &frame : frames) events.push_back(frame.index);
+    };
+    if (!amf::lifecycle::deliver_ready_output(&session, deliver) || session.drains != 0) return false;
+    // Output arrives during capture's wait; a catch-up batch must retain order.
+    session.queued.frames = {{41}, {42}};
+    if (!amf::lifecycle::deliver_ready_output(&session, deliver)) return false;
+    events.push_back(43);  // Convert the newly captured image only after delivery.
+    if (!amf::lifecycle::deliver_ready_output(&session, deliver)) return false;
+    return events == std::vector<int> {41, 42, 43} && session.drains == 1 && session.timeout == 0ms;
+  }
+
+  bool ready_output_drain_is_optional_and_propagates_failures() {
+    bool delivered = false;
+    auto deliver = [&](auto &) { delivered = true; };
+    if (!amf::lifecycle::deliver_ready_output<ready_output_session_t>(nullptr, deliver)) return false;
+    for (bool batch_fatal : {false, true}) {
+      ready_output_session_t session;
+      session.queued = {{{41, !batch_fatal}}, batch_fatal};
+      if (amf::lifecycle::deliver_ready_output(&session, deliver) || delivered ||
+          session.drains != 1 || session.timeout != 0ms) return false;
+    }
+    return !delivered;
+  }
+
   bool av1_tiles_auto_preserves_client_and_preset_behavior() {
     using amf::config_policy::av1_tiles_request;
     return !av1_tiles_request(0, 0) && !av1_tiles_request(0, 1) &&
@@ -666,7 +716,9 @@ namespace {
 #ifdef SUNSHINE_AMF_LIFECYCLE_STANDALONE
 
 int main() {
-  return av1_tiles_auto_preserves_client_and_preset_behavior() &&
+  return capture_wait_completion_is_delivered_before_conversion() &&
+             ready_output_drain_is_optional_and_propagates_failures() &&
+             av1_tiles_auto_preserves_client_and_preset_behavior() &&
              av1_tiles_override_includes_explicit_single_tile() &&
              av1_tiles_rejects_invalid_host_overrides() &&
              fresh_cursor_capture_releases_output_before_caching_desktop() &&
@@ -703,6 +755,14 @@ int main() {
 }
 
 #else
+
+TEST(SunshineNativeAmfReview, CaptureWaitCompletionIsDeliveredBeforeConversion) {
+  EXPECT_TRUE(capture_wait_completion_is_delivered_before_conversion());
+}
+
+TEST(SunshineNativeAmfReview, ReadyOutputDrainIsOptionalAndPropagatesFailures) {
+  EXPECT_TRUE(ready_output_drain_is_optional_and_propagates_failures());
+}
 
 TEST(SunshineNativeAmfReview, Av1TilesAutoPreservesClientAndPresetBehavior) {
   EXPECT_TRUE(av1_tiles_auto_preserves_client_and_preset_behavior());

@@ -541,6 +541,22 @@ namespace amf::lifecycle {
            queried_through_input == accepted_input_count;
   }
 
+  // Service only output that is already queued. Call at both sides of a capture
+  // wait: the output pump may finish the previous frame while capture is waking.
+  // In particular, never add a driver wait before converting the next image.
+  template<class Session, class Deliver>
+  bool deliver_ready_output(Session *session, Deliver &&deliver) {
+    if (!session || !session->has_completed_output()) {
+      return true;
+    }
+    auto ready = session->drain_frames(std::chrono::milliseconds::zero());
+    if (ready.fatal || std::any_of(ready.frames.begin(), ready.frames.end(), [](const auto &frame) { return frame.fatal; })) {
+      return false;
+    }
+    deliver(ready.frames);
+    return true;
+  }
+
   inline constexpr bool output_poll_requires_fixed_backoff(
     std::size_t active_poll_waiters,
     bool immediate_no_output_result,
