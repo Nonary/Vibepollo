@@ -7,6 +7,8 @@
 #include <cmath>
 #include <format>
 #include <src/display_device_policy.h>
+#include <src/hdr_request_policy.h>
+#include <src/rtsp.h>
 
 namespace {
   using namespace std::string_literals;
@@ -123,35 +125,45 @@ TEST_P(ParseHdrOption, IntegrationTest) {
   EXPECT_EQ(std::get<policy::configuration_t>(result).m_hdr_state, expected_value);
 }
 
-TEST(HdrRequestPolicy, ExplicitClientHdrWinsOver10BitSdrPreference) {
-  policy::session_t session {};
-  session.enable_hdr = true;
-  session.prefer_sdr_10bit = true;
+// Exercise the actual request override and streaming helpers, so extracting
+// display policy cannot silently bring back the superseded HDR preference.
+TEST(HdrRequestPolicy, DisplayMatchesStreamAfterRequestOverrides) {
+  using override_e = config::video_t::dd_t::hdr_request_override_e;
+  for (const bool client_hdr : {false, true}) {
+    for (const bool prefer_sdr : {false, true}) {
+      for (const bool force_sdr : {false, true}) {
+        for (const auto override : {override_e::automatic, override_e::force_on, override_e::force_off}) {
+          SCOPED_TRACE(::testing::Message() << client_hdr << "," << prefer_sdr << "," << force_sdr << "," << static_cast<int>(override));
+          const auto state = rtsp_stream::hdr_request_policy::apply({client_hdr, prefer_sdr, force_sdr}, override);
+          policy::session_t session {};
+          session.enable_hdr = state.enable_hdr;
+          session.prefer_sdr_10bit = state.prefer_sdr_10bit;
+          session.force_sdr = state.force_sdr;
+          const bool hdr = rtsp_stream::effective_hdr_requested(state.enable_hdr, state.prefer_sdr_10bit, state.force_sdr);
+          EXPECT_EQ(policy::effective_hdr_requested(session), hdr);
+          EXPECT_EQ(policy::effective_10bit_sdr_requested(session),
+                    rtsp_stream::effective_10bit_sdr_requested(state.prefer_sdr_10bit, state.enable_hdr, state.force_sdr));
 
-  EXPECT_TRUE(policy::effective_hdr_requested(session));
-  EXPECT_FALSE(policy::effective_10bit_sdr_requested(session));
+          policy::video_config_t video_config {};
+          video_config.dd.configuration_option = config_option_e::verify_only;
+          video_config.dd.hdr_option = hdr_option_e::automatic;
+          const auto result = policy::parse_configuration(video_config, session);
+          const auto *parsed = std::get_if<policy::configuration_t>(&result);
+          ASSERT_NE(parsed, nullptr);
+          EXPECT_EQ(parsed->m_hdr_state, hdr ? hdr_state_e::Enabled : hdr_state_e::Disabled);
+
+          // Deferred display helpers carry normalized HDR intent, rather than
+          // the raw client decoder request. Reapplying policy is idempotent.
+          policy::session_t normalized {};
+          normalized.enable_hdr = hdr;
+          EXPECT_EQ(policy::effective_hdr_requested(normalized), hdr);
+        }
+      }
+    }
+  }
 }
 
-TEST(HdrRequestPolicy, SdrClientUses10BitSdrPreference) {
-  policy::session_t session {};
-  session.enable_hdr = false;
-  session.prefer_sdr_10bit = true;
-
-  EXPECT_FALSE(policy::effective_hdr_requested(session));
-  EXPECT_TRUE(policy::effective_10bit_sdr_requested(session));
-}
-
-TEST(HdrRequestPolicy, ExplicitForceSdrOverridesClientHdrAndKeeps10BitPreference) {
-  policy::session_t session {};
-  session.enable_hdr = true;
-  session.prefer_sdr_10bit = true;
-  session.force_sdr = true;
-
-  EXPECT_FALSE(policy::effective_hdr_requested(session));
-  EXPECT_TRUE(policy::effective_10bit_sdr_requested(session));
-}
-
-TEST(DisplayDeviceConfig, ExplicitClientHdrEnablesDisplayDespite10BitSdrPreference) {
+TEST(DisplayDeviceConfig, TenBitSdrPreferenceDisablesHostHdr) {
   policy::video_config_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.dd.hdr_option = hdr_option_e::automatic;
@@ -163,7 +175,7 @@ TEST(DisplayDeviceConfig, ExplicitClientHdrEnablesDisplayDespite10BitSdrPreferen
   const auto result {policy::parse_configuration(video_config, session)};
   const auto hdr_state = std::get<policy::configuration_t>(result).m_hdr_state;
   ASSERT_TRUE(hdr_state.has_value());
-  EXPECT_EQ(*hdr_state, hdr_state_e::Enabled);
+  EXPECT_EQ(*hdr_state, hdr_state_e::Disabled);
 }
 
 TEST(DisplayDeviceConfig, ExplicitForceSdrDisablesDisplayDespiteClientHdr) {
