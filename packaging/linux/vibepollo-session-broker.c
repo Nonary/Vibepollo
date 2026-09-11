@@ -1337,10 +1337,10 @@ static int execute_request(int argc, char **argv,
       break;
     }
     case STEAM_BIG_PICTURE: {
-      // Like STEAM, hand the fixed URI to the desktop client only after the
-      // identity drop and endpoint validation above. No shell or setsid child.
-      char *const arguments[] = {"/usr/bin/steam", (char *) big_picture_uri, NULL};
-      execv("/usr/bin/steam", arguments);
+      // Capture/consume the game baseline as the desktop user, after the
+      // identity drop and endpoint validation. Never parse it in the broker.
+      char *const arguments[] = {(char *) steam_launch_path, "--big-picture", (char *) big_picture_uri, NULL};
+      execv(steam_launch_path, arguments);
       break;
     }
     case GLOBAL_LIMITER: {

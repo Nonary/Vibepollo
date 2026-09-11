@@ -1,4 +1,5 @@
 #include "src/steam_process_tracker.h"
+#include "src/steam_big_picture_policy.h"
 
 #include <gtest/gtest.h>
 
@@ -59,15 +60,24 @@ namespace {
     return result;
   }
 
+  lifecycle::process_info steam_process(std::uint64_t pid, std::uint64_t parent,
+                                       const char *exe, std::uint32_t app_id) {
+    auto result = process(pid, parent, exe);
+    result.steam_app_id = app_id;
+    result.start_time_ticks = pid * 100;
+    return result;
+  }
+
   class fake_controller final : public lifecycle::process_controller {
   public:
     std::map<lifecycle::process_id_t, bool> living;
     std::vector<std::pair<lifecycle::process_id_t, lifecycle::signal_kind>> signals;
     bool identity_ok = true;
+    bool exits_on_term = false;
 
     bool signal(lifecycle::process_id_t pid, lifecycle::signal_kind kind) override {
       signals.emplace_back(pid, kind);
-      if (kind == lifecycle::signal_kind::kill) {
+      if (kind == lifecycle::signal_kind::kill || exits_on_term) {
         living[pid] = false;
       }
       return true;
@@ -83,6 +93,86 @@ namespace {
   };
 
 }  // namespace
+
+TEST(SteamBigPicture, ExistingGamesAndTheirLaterChildrenAreExcluded) {
+  const auto before = snapshot({steam_process(10, 1, "/games/old/game", 41), process(2, 1, "/usr/bin/steam")});
+  const auto after = snapshot({steam_process(10, 1, "/games/old/game", 41),
+                              steam_process(11, 10, "/games/old/renderer", 41),
+                              steam_process(20, 2, "/games/new/game", 42),
+                              steam_process(21, 20, "/usr/bin/steamwebhelper", 42),
+                              steam_process(22, 20, "/outside/renderer", 42),
+                              process(30, 1, "/unrelated/game")});
+  const auto tree = lifecycle::big_picture_tree(before, after);
+  ASSERT_EQ(tree.processes.size(), 2U);
+  EXPECT_TRUE(tree.processes.contains(20));
+  EXPECT_TRUE(tree.processes.contains(22));
+}
+
+TEST(SteamBigPicture, IncompleteBaselineDisablesCleanup) {
+  auto before = snapshot({});
+  before.complete = false;
+  EXPECT_TRUE(lifecycle::big_picture_tree(before, snapshot({steam_process(20, 1, "/game", 42)})).empty());
+}
+
+TEST(SteamBigPicture, ParsesOnlyCompleteNumericSteamAppIdEnvironmentEntries) {
+  using namespace std::literals;
+  EXPECT_EQ(lifecycle::big_picture_app_id("OTHER=42\0SteamAppId=123\0SECRET=ignored\0"sv), 123U);
+  EXPECT_EQ(lifecycle::big_picture_app_id("SteamAppId=0\0"sv), 0U);
+  EXPECT_EQ(lifecycle::big_picture_app_id("SteamAppId=123"sv), 0U);
+  EXPECT_EQ(lifecycle::big_picture_app_id("SteamAppId=123junk\0"sv), 0U);
+  EXPECT_EQ(lifecycle::big_picture_app_id("SteamAppId=-1\0"sv), 0U);
+  EXPECT_EQ(lifecycle::big_picture_app_id("SteamAppId=4294967296\0"sv), 0U);
+  EXPECT_EQ(lifecycle::big_picture_app_id("NotSteamAppId=123\0"sv), 0U);
+}
+
+TEST(SteamBigPicture, MultipleGamesShareOneGracePeriodAndProtectSteam) {
+  const auto before = snapshot({process(2, 1, "/usr/bin/steam")});
+  const auto after = snapshot({process(2, 1, "/usr/bin/steam"),
+                              steam_process(20, 2, "/games/one/game", 42),
+                              steam_process(30, 2, "/games/two/game", 43)});
+  const auto tree = lifecycle::big_picture_tree(before, after);
+  fake_controller controller;
+  controller.living = {{2, true}, {20, true}, {30, true}};
+  const auto result = lifecycle::stop_tree(tree, controller);
+  EXPECT_EQ(result.terminate_sent, 2U);
+  EXPECT_EQ(result.kill_sent, 2U);
+  EXPECT_TRUE(controller.living[2]);
+  EXPECT_TRUE(result.complete);
+}
+
+TEST(SteamBigPicture, BaselinePidReuseAndExitedGamesAreNotClaimed) {
+  const auto before = snapshot({process(20, 1, "/unrelated/program")});
+  const auto after = snapshot({steam_process(20, 1, "/games/new/game", 42)});
+  EXPECT_TRUE(lifecycle::big_picture_tree(before, after).empty());
+  EXPECT_TRUE(lifecycle::big_picture_tree(before, snapshot({})).empty());
+}
+
+TEST(SteamBigPicture, CooperativeGameExitsWithoutForceKill) {
+  const auto tree = lifecycle::big_picture_tree(snapshot({}), snapshot({steam_process(20, 1, "/game", 42)}));
+  fake_controller controller;
+  controller.living = {{20, true}};
+  controller.exits_on_term = true;
+  const auto result = lifecycle::stop_tree(tree, controller);
+  EXPECT_EQ(result.terminate_sent, 1U);
+  EXPECT_EQ(result.kill_sent, 0U);
+  EXPECT_TRUE(result.complete);
+}
+
+TEST(SteamBigPicture, MissingProcessIdentityDisablesSignalling) {
+  auto game = steam_process(20, 1, "/game", 42);
+  game.start_time_ticks = 0;
+  EXPECT_TRUE(lifecycle::big_picture_tree(snapshot({}), snapshot({game})).empty());
+}
+
+TEST(SteamBigPicture, SharedToolsDoNotClaimExistingGameOrUntaggedProcesses) {
+  const auto before = snapshot({steam_process(10, 1, "/games/old/game", 41)});
+  const auto after = snapshot({steam_process(20, 1, "/tools/proton/wine", 41),
+                              steam_process(30, 1, "/tools/proton/wine", 42),
+                              process(40, 1, "/tools/proton/updater")});
+  const auto tree = lifecycle::big_picture_tree(before, after);
+  ASSERT_EQ(tree.processes.size(), 1U);
+  EXPECT_TRUE(tree.processes.contains(30));
+}
 
 TEST(SteamProcessTracker, AssociatesOnlyNewInstallProcesses) {
   const auto root = std::filesystem::path("/tmp/steam/library/steamapps/common/Game");
