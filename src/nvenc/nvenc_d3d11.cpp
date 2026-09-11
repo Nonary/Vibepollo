@@ -49,7 +49,9 @@ namespace nvenc {
       return true;
     }
 
-  #ifdef _WIN64
+  #if defined(_M_ARM64) || defined(__aarch64__)
+    constexpr auto dll_name = "nvEncodeAPIa64.dll";
+  #elif defined(_WIN64)
     constexpr auto dll_name = "nvEncodeAPI64.dll";
   #else
     constexpr auto dll_name = "nvEncodeAPI.dll";
