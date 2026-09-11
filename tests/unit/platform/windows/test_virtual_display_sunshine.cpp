@@ -67,6 +67,77 @@ TEST(SunshineVirtualDisplay, ConfiguredScalePreservesAutomaticAndExactValues) {
   EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(200, 1920, 1080), 200u);
 }
 
+TEST(SunshineVirtualDisplay, MeasuredClientImageWidthDrivesTheRecommendedScale) {
+  // Alienware m16 R2: 344.68 x 215.42 mm of active area at 2560x1600, so 188.65 PPI.
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 2560, 1600, 345), 200u);
+  // Galaxy Z Fold8 Ultra inner panel, landscape: 150.97 x 136.01 mm at 2504x2256, so 421.3 PPI.
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 2504, 2256, 151), 450u);
+}
+
+TEST(SunshineVirtualDisplay, ResolutionHeuristicRunsOnlyWithoutAMeasuredImageWidth) {
+  // The same two modes without a measurement. A pixel count cannot separate a phone panel from
+  // a laptop panel, so the heuristic lands far from the density either client really has.
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 2560, 1600, 0), 175u);
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 2504, 2256, 0), 250u);
+}
+
+TEST(SunshineVirtualDisplay, OutOfRangeImageWidthFallsBackToTheResolutionHeuristic) {
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 2560, 1600, 5), 175u);
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 2560, 1600, 5000), 175u);
+}
+
+TEST(SunshineVirtualDisplay, ExplicitScaleOutranksAMeasuredImageWidth) {
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(150, 2560, 1600, 345), 150u);
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(0, 2560, 1600, 345), 0u);
+}
+
+TEST(SunshineVirtualDisplay, PhysicalSizeFollowsTheModePixelAspect) {
+  const auto laptop = VDISPLAY::virtual_display_physical_size_mm(345, 2560, 1600);
+  ASSERT_TRUE(laptop.has_value());
+  EXPECT_EQ(laptop->width_mm, 345u);
+  EXPECT_EQ(laptop->height_mm, 216u);  // 215.42 mm on the datasheet.
+
+  const auto foldable = VDISPLAY::virtual_display_physical_size_mm(151, 2504, 2256);
+  ASSERT_TRUE(foldable.has_value());
+  EXPECT_EQ(foldable->width_mm, 151u);
+  EXPECT_EQ(foldable->height_mm, 136u);  // 136.01 mm on the datasheet.
+}
+
+TEST(SunshineVirtualDisplay, PhysicalSizeIsAbsentWithoutAUsableImageWidth) {
+  EXPECT_FALSE(VDISPLAY::virtual_display_physical_size_mm(0, 2560, 1600).has_value());
+  EXPECT_FALSE(VDISPLAY::virtual_display_physical_size_mm(-345, 2560, 1600).has_value());
+  EXPECT_FALSE(VDISPLAY::virtual_display_physical_size_mm(5000, 2560, 1600).has_value());
+  EXPECT_FALSE(VDISPLAY::virtual_display_physical_size_mm(345, 0, 1600).has_value());
+  EXPECT_FALSE(VDISPLAY::virtual_display_physical_size_mm(345, 2560, 0).has_value());
+}
+
+TEST(SunshineVirtualDisplay, MeasuredImageWidthResolvesIdempotently) {
+  // Every reconnect re-runs this against a display that already carries the previous answer.
+  // Both halves have to be pure functions of the configuration; if either read back what it
+  // wrote last time, reconnecting would walk the EDID and the Windows scale a step further
+  // from the measurement each time.
+  const auto first_size = VDISPLAY::virtual_display_physical_size_mm(151, 2504, 2256);
+  const auto second_size = VDISPLAY::virtual_display_physical_size_mm(151, 2504, 2256);
+  ASSERT_TRUE(first_size.has_value());
+  ASSERT_TRUE(second_size.has_value());
+  EXPECT_EQ(first_size->width_mm, second_size->width_mm);
+  EXPECT_EQ(first_size->height_mm, second_size->height_mm);
+
+  const auto first_scale = VDISPLAY::effective_virtual_display_scale_percent(-1, 2504, 2256, 151);
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 2504, 2256, 151), first_scale);
+
+  // Feeding the derived scale back in as an explicit setting has to settle on the same value
+  // and leave the advertised size alone, rather than compounding on itself.
+  EXPECT_EQ(
+    VDISPLAY::effective_virtual_display_scale_percent(static_cast<int>(first_scale), 2504, 2256, 151),
+    first_scale
+  );
+  const auto size_after = VDISPLAY::virtual_display_physical_size_mm(151, 2504, 2256);
+  ASSERT_TRUE(size_after.has_value());
+  EXPECT_EQ(size_after->width_mm, first_size->width_mm);
+  EXPECT_EQ(size_after->height_mm, first_size->height_mm);
+}
+
 TEST(SunshineVirtualDisplay, PerClientDisplayIdsDifferByClientUuid) {
   EXPECT_NE(
     VDISPLAY::client_uuid_to_virtual_display_id(kClientGuid),

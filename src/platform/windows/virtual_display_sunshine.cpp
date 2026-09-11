@@ -6560,8 +6560,15 @@ namespace VDISPLAY_SUNSHINE {
       }
       const auto dpi_settings_prefix = virtual_display_dpi_settings_prefix(display_id);
       const auto configured_scale = config::video.dd.virtual_display_scale_percent;
+      const auto configured_image_width_mm = config::video.dd.virtual_display_image_width_mm;
       const auto effective_scale = VDISPLAY::effective_virtual_display_scale_percent(
         configured_scale,
+        width,
+        height,
+        configured_image_width_mm
+      );
+      const auto measured_image_size = VDISPLAY::virtual_display_physical_size_mm(
+        configured_image_width_mm,
         width,
         height
       );
@@ -6574,8 +6581,22 @@ namespace VDISPLAY_SUNSHINE {
       create_request.display_id = display_id;
       create_request.width = width;
       create_request.height = height;
-      if (effective_scale > 0) {
-        const auto dpi = 96.0 * static_cast<double>(effective_scale) / 100.0;
+      if (measured_image_size) {
+        // A measured image area is reported verbatim. Windows derives DPI from the EDID, so
+        // handing it the client's real dimensions makes on-screen elements come out at their
+        // true physical size instead of a size implied by a picked scale.
+        create_request.physical_width_mm = std::clamp(
+          measured_image_size->width_mm,
+          sunshine_driver::kMinPhysicalSizeMillimeters,
+          sunshine_driver::kMaxPhysicalSizeMillimeters
+        );
+        create_request.physical_height_mm = std::clamp(
+          measured_image_size->height_mm,
+          sunshine_driver::kMinPhysicalSizeMillimeters,
+          sunshine_driver::kMaxPhysicalSizeMillimeters
+        );
+      } else if (effective_scale > 0) {
+        const auto dpi = VDISPLAY::kWindowsReferenceDpi * static_cast<double>(effective_scale) / 100.0;
         create_request.physical_width_mm = std::clamp(
           static_cast<std::uint32_t>(std::lround(static_cast<double>(width) * 25.4 / dpi)),
           sunshine_driver::kMinPhysicalSizeMillimeters,
@@ -6600,7 +6621,9 @@ namespace VDISPLAY_SUNSHINE {
                        << ", HDR peak=" << create_request.hdr_max_luminance_nits << " nits"
                        << ", scale=" << effective_scale << "%"
                        << ", physical=" << create_request.physical_width_mm << 'x'
-                       << create_request.physical_height_mm << " mm).";
+                       << create_request.physical_height_mm << " mm"
+                       << ", physical source=" << (measured_image_size ? "measured client image" : "scale")
+                       << ").";
       sunshine_driver::ControlResult<sunshine_driver::CreateTemporaryDisplayResult> create_result;
       if (reclaimed_for_reuse) {
         // Ownership is already established in-place. Enter the existing-display
@@ -7215,7 +7238,8 @@ namespace VDISPLAY_SUNSHINE {
         const auto scale_percent = VDISPLAY::effective_virtual_display_scale_percent(
           config::video.dd.virtual_display_scale_percent,
           width,
-          height
+          height,
+          config::video.dd.virtual_display_image_width_mm
         );
         if (scale_percent > 0) {
 

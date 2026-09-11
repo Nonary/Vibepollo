@@ -4441,7 +4441,8 @@ namespace VDISPLAY_SUDOVDA {
         const auto scale_percent = VDISPLAY::effective_virtual_display_scale_percent(
           config::video.dd.virtual_display_scale_percent,
           width,
-          height
+          height,
+          config::video.dd.virtual_display_image_width_mm
         );
         if (scale_percent > 0) {
           const bool has_virtual_target_identity =

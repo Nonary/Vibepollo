@@ -939,6 +939,7 @@ namespace config {
       true,  // use_sunshine_virtual_display_driver
       false,  // activate_virtual_display
       -1,  // virtual_display_scale_percent
+      0,  // virtual_display_image_width_mm
       0,  // virtual_display_permanent_count
       false,  // virtual_display_permanent_count_configured
       {},  // snapshot_exclude_devices
@@ -1901,6 +1902,18 @@ namespace config {
                            << "%; use -1 (recommended), 0, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, or 500.";
       }
     }
+    {
+      int value = video.dd.virtual_display_image_width_mm;
+      int_f(vars, "dd_virtual_display_image_width_mm", value);
+      // Mirrors VDISPLAY::kMinImageWidthMillimeters/kMaxImageWidthMillimeters, which live in a
+      // Windows-only header this platform-neutral parser cannot include.
+      if (value == 0 || (value >= 10 && value <= 2000)) {
+        video.dd.virtual_display_image_width_mm = value;
+      } else {
+        BOOST_LOG(warning) << "Ignoring out-of-range virtual display image width " << value
+                           << " mm; use 0 to disable, or 10-2000.";
+      }
+    }
     bool_f(vars, "vulkan_hdr_layer", video.dd.vulkan_hdr_layer);
     {
       auto it = vars.find("dd_virtual_display_permanent_count");
@@ -2583,6 +2596,7 @@ namespace config {
         "dd_use_sunshine_virtual_display_driver",
         "dd_activate_virtual_display",
         "dd_virtual_display_scale",
+        "dd_virtual_display_image_width_mm",
         "dd_virtual_display_permanent_count",
         "dd_mode_remapping",
         "dd_wa_dummy_plug_hdr10",
@@ -3087,6 +3101,7 @@ namespace config {
       const auto prev_dd_use_sunshine_virtual_display_driver = video.dd.use_sunshine_virtual_display_driver;
       const auto prev_dd_activate_virtual_display = video.dd.activate_virtual_display;
       const auto prev_dd_virtual_display_scale_percent = video.dd.virtual_display_scale_percent;
+      const auto prev_dd_virtual_display_image_width_mm = video.dd.virtual_display_image_width_mm;
       const auto prev_dd_virtual_display_permanent_count = video.dd.virtual_display_permanent_count;
       const auto prev_dd_virtual_display_permanent_count_configured = video.dd.virtual_display_permanent_count_configured;
       const auto prev_dd_snapshot_exclude_devices = video.dd.snapshot_exclude_devices;
@@ -3161,6 +3176,7 @@ namespace config {
                                      (prev_dd_use_sunshine_virtual_display_driver != video.dd.use_sunshine_virtual_display_driver) ||
                                      (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
                                      (prev_dd_virtual_display_scale_percent != video.dd.virtual_display_scale_percent) ||
+                                     (prev_dd_virtual_display_image_width_mm != video.dd.virtual_display_image_width_mm) ||
                                      (prev_dd_virtual_display_permanent_count != video.dd.virtual_display_permanent_count) ||
                                      (prev_dd_virtual_display_permanent_count_configured != video.dd.virtual_display_permanent_count_configured) ||
                                      (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||

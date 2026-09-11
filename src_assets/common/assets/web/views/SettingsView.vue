@@ -924,8 +924,17 @@ onMounted(() => void load());
                     :step="field.step"
                     :value="String(values[field.key] ?? '')"
                     :placeholder="field.placeholderKey ? t(field.placeholderKey) : undefined"
+                    :list="field.presets?.length ? `setting-${field.key}-presets` : undefined"
                     @input="updateValue(field.key, $event, field)"
                   />
+                  <datalist v-if="field.presets?.length" :id="`setting-${field.key}-presets`">
+                    <option
+                      v-for="preset in field.presets"
+                      :key="preset.value"
+                      :value="preset.value"
+                      :label="preset.label"
+                    />
+                  </datalist>
                 </div>
               </div>
               <div

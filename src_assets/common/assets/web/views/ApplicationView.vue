@@ -527,6 +527,7 @@ const virtualDisplayOnlyOverrideKeys = new Set([
   'virtual_display_mode',
   'virtual_display_layout',
   'dd_virtual_display_scale',
+  'dd_virtual_display_image_width_mm',
   'dd_activate_virtual_display',
   'dd_virtual_display_permanent_count',
   'dd_paused_virtual_display_timeout_secs',
@@ -3244,9 +3245,25 @@ onBeforeUnmount(() => {
                           :step="overrideField(key)?.step"
                           :value="String(overrideValue(key) ?? '')"
                           :placeholder="overridePlaceholder(key)"
+                          :list="
+                            overrideField(key)?.presets?.length
+                              ? `app-override-${key}-presets`
+                              : undefined
+                          "
                           :aria-describedby="descriptionId"
                           @input="updateOverrideFromEvent(key, overrideField(key), $event)"
                         />
+                        <datalist
+                          v-if="overrideField(key)?.presets?.length"
+                          :id="`app-override-${key}-presets`"
+                        >
+                          <option
+                            v-for="preset in overrideField(key)!.presets"
+                            :key="preset.value"
+                            :value="preset.value"
+                            :label="preset.label"
+                          />
+                        </datalist>
                         <AppButton
                           variant="tertiary"
                           size="compact"

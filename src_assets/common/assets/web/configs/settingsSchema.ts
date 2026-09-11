@@ -1,3 +1,5 @@
+import { clientImageWidthPresets } from './clientImageWidthPresets.ts';
+
 export type SettingsFieldKind =
   | 'boolean'
   | 'number'
@@ -15,6 +17,16 @@ export interface SettingsOption {
   value: string;
 }
 
+/**
+ * A suggested value for a field, offered alongside free entry rather than replacing it.
+ * Unlike SettingsOption the label is literal text: these name real-world things such as
+ * device models, which are not translated.
+ */
+export interface SettingsPreset {
+  label: string;
+  value: string;
+}
+
 export interface SettingsVisibility {
   key: string;
   equals?: string | boolean;
@@ -28,6 +40,7 @@ export interface SettingsField {
   descriptionKey?: string;
   warningKey?: string;
   options?: SettingsOption[];
+  presets?: SettingsPreset[];
   min?: number;
   max?: number;
   step?: number;
@@ -87,6 +100,7 @@ export const clientOverrideableKeys = new Set([
   'dd_use_sunshine_virtual_display_driver',
   'dd_activate_virtual_display',
   'dd_virtual_display_scale',
+  'dd_virtual_display_image_width_mm',
   'dd_virtual_display_permanent_count',
   'dd_mode_remapping',
   'dd_wa_dummy_plug_hdr10',
@@ -351,6 +365,18 @@ const virtualDisplayCustomizationFields = (): SettingsField[] => [
   select('dd_virtual_display_scale', virtualScaleOptions, {
     labelKey: 'ui.settings.fields.dd_virtual_display_scale.label',
     descriptionKey: 'ui.settings.fields.dd_virtual_display_scale.description',
+    visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
+  }),
+  number('dd_virtual_display_image_width_mm', {
+    labelKey: 'ui.settings.fields.dd_virtual_display_image_width_mm.label',
+    descriptionKey: 'ui.settings.fields.dd_virtual_display_image_width_mm.description',
+    min: 0,
+    max: 2000,
+    step: 1,
+    presets: clientImageWidthPresets.map((preset) => ({
+      label: `${preset.label} - ${preset.mode}`,
+      value: String(preset.widthMm),
+    })),
     visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
   }),
 ];
@@ -796,6 +822,7 @@ export const settingsDefaults: Record<string, unknown> = {
   virtual_display_mode: 'per_client',
   virtual_display_layout: 'exclusive',
   dd_virtual_display_scale: -1,
+  dd_virtual_display_image_width_mm: 0,
   frame_limiter_enable: false,
   frame_limiter_provider: 'auto',
   frame_limiter_fps_limit: 0,
