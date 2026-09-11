@@ -11,6 +11,7 @@
 
   #include <atomic>
   #include <chrono>
+  #include <cstdlib>
   #include <mutex>
   #include <thread>
 
@@ -86,45 +87,64 @@ namespace local_input_monitor {
     // is zero, i.e. no Apollo-managed virtual pad could currently be
     // attached. Callers of locally_active()/time_since_local_input() get
     // this applied transparently; there's no separate trust flag to check.
-    XINPUT_STATE g_last_pad_state[XUSER_MAX_COUNT] {};
-    bool g_have_pad_baseline[XUSER_MAX_COUNT] {};
-
+    //
+    // Detection is based on the CURRENT raw state exceeding standard XInput
+    // deadzone/threshold constants - not on whether dwPacketNumber changed
+    // at all. An earlier version used packet-number-changed as the signal,
+    // which was too sensitive: XInput bumps the packet number on essentially
+    // any state read that differs from the last one even slightly, including
+    // things no human caused - analog stick potentiometer/hall-sensor noise
+    // around center, trigger sensor jitter, and wireless-pad telemetry
+    // updates (battery level, connection quality) all change the reported
+    // state without anyone touching the controller. That produced false
+    // "someone's playing" positives within seconds of the monitor starting,
+    // even with a controller just sitting nearby untouched. Comparing
+    // against Microsoft's own documented deadzone constants (the same ones
+    // games are supposed to use) filters that noise out, since it's an order
+    // of magnitude smaller than the deadzone thresholds.
     void
       poll_controllers_once() {
-      // A ViGEm virtual pad from an already-active session would also show
-      // up as packet-number churn on some XInput slot, and there is no
+      // A ViGEm virtual pad from an already-active session has no
       // injected-flag equivalent to filter it the way the keyboard/mouse
-      // hooks do. So: only let controller activity count as "physical" when
+      // hooks do, so controller activity only counts as "physical" when
       // nothing could currently be occupying a slot with virtual input. This
       // check has to happen per-poll (not just once at start) since a
       // session can start or end at any time while this loop is running.
       if (rtsp_stream::session_count() != 0) {
-        // Still refresh the baseline so we don't get a false "activity"
-        // packet-number jump the moment the session ends and trust resumes.
-        for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
-          XINPUT_STATE state {};
-          if (XInputGetState(i, &state) == ERROR_SUCCESS) {
-            g_last_pad_state[i] = state;
-            g_have_pad_baseline[i] = true;
-          } else {
-            g_have_pad_baseline[i] = false;
-          }
-        }
         return;
       }
 
       for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
         XINPUT_STATE state {};
         if (XInputGetState(i, &state) != ERROR_SUCCESS) {
-          g_have_pad_baseline[i] = false;
           continue;
         }
-        if (g_have_pad_baseline[i] &&
-            state.dwPacketNumber != g_last_pad_state[i].dwPacketNumber) {
+
+        const XINPUT_GAMEPAD &pad = state.Gamepad;
+
+        // Buttons are discrete (pressed or not) - any bit set is a genuine
+        // press, no noise floor to worry about here.
+        bool active = pad.wButtons != 0;
+
+        // Sticks and triggers are analog and genuinely noisy at rest, so use
+        // the same deadzone/threshold constants Microsoft documents for
+        // XInput and expects games themselves to apply - not a bespoke
+        // number picked for this file.
+        if (!active) {
+          auto beyond_deadzone = [](SHORT axis, SHORT deadzone) {
+            return std::abs(static_cast<int>(axis)) > deadzone;
+          };
+          active = beyond_deadzone(pad.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) ||
+                   beyond_deadzone(pad.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) ||
+                   beyond_deadzone(pad.sThumbRX, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE) ||
+                   beyond_deadzone(pad.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE) ||
+                   pad.bLeftTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD ||
+                   pad.bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD;
+        }
+
+        if (active) {
           mark_physical_input();
         }
-        g_last_pad_state[i] = state;
-        g_have_pad_baseline[i] = true;
       }
     }
 
@@ -208,9 +228,6 @@ namespace local_input_monitor {
     }
     g_stop.store(false, std::memory_order_release);
     g_last_physical_input.store(clock::time_point::min(), std::memory_order_relaxed);
-    for (auto &has_baseline : g_have_pad_baseline) {
-      has_baseline = false;
-    }
     g_hook_thread = std::thread(hook_thread_main);
     BOOST_LOG(info) << "local_input_monitor: started";
     return std::make_unique<deinit_t>();
