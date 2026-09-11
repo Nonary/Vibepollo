@@ -30,6 +30,9 @@ namespace platf::steam::lifecycle {
     // Linux /proc start-time ticks provide PID identity across PID reuse.
     // Zero means the platform provider has no identity value.
     std::uint64_t start_time_ticks = 0;
+    // Filled only by the desktop Big Picture helper from the process's
+    // SteamAppId environment; ordinary provider tracking does not need it.
+    std::uint32_t steam_app_id = 0;
   };
 
   struct process_snapshot {
