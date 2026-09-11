@@ -827,6 +827,24 @@ namespace platf::linux_private_display {
       }
     }
 
+    void snapshot_configuration_refresh_if_idle(state_t &manager, const json &configuration) {
+      // The golden snapshot must track the user's idle desktop preference, not
+      // a layout they have since changed: a stale snapshot would make the
+      // end-of-stream restore fight their own configuration (for example
+      // re-enabling a panel they deliberately disabled) and lose the race
+      // against the compositor's stored setup. Refresh only when the desktop
+      // is genuinely idle - no private output is connected. Mid-stream and
+      // crash-recovery states keep the existing snapshot so the physical
+      // topology is never lost.
+      for (const auto &output : configuration["outputs"]) {
+        if (is_private_output(output.value("name", std::string {})) && connected(output)) {
+          return;
+        }
+      }
+      manager.snapshot = restorable_snapshot(configuration);
+      persist_snapshot(manager, *manager.snapshot);
+    }
+
     std::optional<std::string> reserve_output(
       state_t &manager,
       const std::string &identity,
@@ -839,6 +857,10 @@ namespace platf::linux_private_display {
           if (!configuration) {
             BOOST_LOG(error) << "Linux private display: cannot save the desktop before connecting " << name << '.';
             return std::nullopt;
+          }
+          snapshot_configuration_refresh_if_idle(manager, *configuration);
+          if (manager.snapshot) {
+            return *manager.snapshot;
           }
           return restorable_snapshot(*configuration);
         }, [&] {
@@ -923,9 +945,11 @@ namespace platf::linux_private_display {
       auto &manager = state();
       std::lock_guard lock {manager.mutex};
       load_persisted_snapshot(manager);
-      // The live physical desktop is itself the recovery path; snapshot it
-      // before any topology decision below.
-      snapshot_configuration_if_needed(manager, *configuration);
+      // The live physical desktop is itself the recovery path, and it carries
+      // the user's latest layout preference; refresh the snapshot when the
+      // desktop is idle. A connected private output keeps the loaded snapshot
+      // (mid-stream or crash-recovery state).
+      snapshot_configuration_refresh_if_idle(manager, *configuration);
     }
 
     bool desktop_has_active_physical = false;
