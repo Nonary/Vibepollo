@@ -9,7 +9,7 @@
 
 namespace config {
   struct steam_t {
-    bool enabled = true;
+    bool enabled = false;
     bool auto_sync = false;
     bool sync_all_installed = false;
     int recent_games = 10;
@@ -24,8 +24,7 @@ namespace config {
 
   extern steam_t steam;
 
-  // Parse provider settings without changing global state. Linux policy is
-  // deliberately applied here so all callers (config/API/tests) agree.
+  // Parse provider settings without changing global state.
   steam_t parse_steam(std::unordered_map<std::string, std::string> &vars);
   void apply_steam(std::unordered_map<std::string, std::string> &vars);
   steam_t normalize_steam_policy(steam_t value, bool linux_host);

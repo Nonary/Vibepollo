@@ -4437,9 +4437,9 @@ runtime version is written to the log on every AMD HDR HEVC attempt (search for
 
 ### steam_enabled
 
-Enables local Steam library discovery, synchronization, and launch support. This setting is always enabled on Linux. On other platforms it can be combined with `playnite_enabled` or used by itself.
+Enables local Steam library discovery, synchronization, and launch support. Disabled by default on all platforms; it can be combined with `playnite_enabled` or used by itself.
 
-Default: `true`
+Default: `false`
 
 ### steam_auto_sync
 
@@ -4462,7 +4462,8 @@ Default: `false`
 
 Maximum number of installed games to synchronize, ordered by Steam's local
 `LastPlayed` timestamp, when `steam_sync_all_installed` is disabled. Set to `0`
-to disable recent-game synchronization.
+to disable recent-game synchronization. Exclusions and tool filtering apply
+before the limit.
 
 Default: `10`
 

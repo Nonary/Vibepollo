@@ -86,7 +86,9 @@ namespace platf::steam::autosync {
                     catalog,
                     settings.sync_all_installed,
                     settings.recent_games,
-                    settings.recent_max_age_days
+                    settings.recent_max_age_days,
+                    settings.exclusions,
+                    settings.include_tools
                   );
                   platf::steam::artwork::prepare(games, platf::appdata());
                   std::lock_guard apps_lock {confighttp::apps_file_mutex()};

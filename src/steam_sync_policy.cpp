@@ -234,13 +234,11 @@ namespace platf::steam::sync::policy {
     return result;
   }
 
-  std::vector<game_t> select_games(const std::vector<game_t> &games, bool sync_all_installed, int recent_games, int recent_max_age_days, std::uint64_t now) {
-    std::vector<game_t> selected;
-    for (const auto &game : games) {
-      if (game.installed && (sync_all_installed || game.last_played > 0)) {
-        selected.push_back(game);
-      }
-    }
+  std::vector<game_t> select_games(const std::vector<game_t> &games, bool sync_all_installed, int recent_games, int recent_max_age_days, const std::vector<config::id_name_t> &exclusions, bool include_tools, std::uint64_t now) {
+    auto selected = filter_games(games, exclusions, include_tools);
+    std::erase_if(selected, [sync_all_installed](const auto &game) {
+      return !game.installed || (!sync_all_installed && game.last_played == 0);
+    });
     if (sync_all_installed) {
       return selected;
     }

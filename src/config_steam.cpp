@@ -46,7 +46,10 @@ namespace config {
     void consume(std::unordered_map<std::string, std::string> &vars, const char *key, int &result) {
       if (const auto it = vars.find(key); it != vars.end()) {
         try {
-          result = std::max(0, std::stoi(it->second));
+          const auto parsed = std::stoi(it->second);
+          if (parsed >= 0) {
+            result = parsed;
+          }
         } catch (...) {
         }
         vars.erase(it);
@@ -105,9 +108,7 @@ namespace config {
   }  // namespace
 
   steam_t normalize_steam_policy(steam_t value, bool linux_host) {
-    if (linux_host) {
-      value.enabled = true;
-    }
+    (void) linux_host;
     return value;
   }
 
@@ -163,7 +164,9 @@ namespace config {
         catalog,
         steam.sync_all_installed,
         steam.recent_games,
-        steam.recent_max_age_days
+        steam.recent_max_age_days,
+        steam.exclude_games_meta,
+        steam.include_tools
       );
       platf::steam::artwork::prepare(games, platf::appdata());
       const bool remove_missing = !steam.sync_all_installed || steam.autosync_remove_uninstalled;

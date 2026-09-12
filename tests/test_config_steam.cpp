@@ -7,6 +7,7 @@ TEST(SteamConfig, DefaultsToOptInRecentSynchronizationOnBothPlatforms) {
   const auto parsed = config::parse_steam(vars);
   for (const bool linux_host : {false, true}) {
     const auto result = config::normalize_steam_policy(parsed, linux_host);
+    EXPECT_FALSE(result.enabled);
     EXPECT_FALSE(result.auto_sync);
     EXPECT_FALSE(result.sync_all_installed);
     EXPECT_EQ(result.recent_games, 10);
@@ -28,22 +29,17 @@ TEST(SteamConfig, PreservesExplicitSyncOptIns) {
 TEST(SteamConfig, ParsesIndependentFlags) {
   std::unordered_map<std::string, std::string> vars {{"steam_enabled", "off"}, {"steam_auto_sync", "off"}};
   const auto result = config::parse_steam(vars);
-#if defined(__linux__)
-  EXPECT_TRUE(result.enabled);
-  EXPECT_FALSE(result.auto_sync);
-#else
   EXPECT_FALSE(result.enabled);
   EXPECT_FALSE(result.auto_sync);
-#endif
   EXPECT_TRUE(vars.empty());
 }
 
-TEST(SteamConfig, LinuxPolicyForcesSteamOn) {
+TEST(SteamConfig, LinuxPolicyHonorsOptOut) {
   config::steam_t value;
   value.enabled = false;
   value.auto_sync = false;
   const auto result = config::normalize_steam_policy(value, true);
-  EXPECT_TRUE(result.enabled);
+  EXPECT_FALSE(result.enabled);
   EXPECT_FALSE(result.auto_sync);
 }
 
@@ -74,4 +70,7 @@ TEST(SteamConfig, ParsesRecentSynchronizationPolicy) {
   EXPECT_EQ(result.recent_games, 15);
   EXPECT_EQ(result.recent_max_age_days, 45);
   EXPECT_TRUE(vars.empty());
+
+  vars = {{"steam_recent_games", "-1"}};
+  EXPECT_EQ(config::parse_steam(vars).recent_games, 10);
 }

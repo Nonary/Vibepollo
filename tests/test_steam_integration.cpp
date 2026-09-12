@@ -200,7 +200,7 @@ TEST(SteamDiscovery, ReadsManifestsAndLibraryFolders) {
   fs::create_directories(base / "library" / "steamapps" / "common" / "Example", ec);
   {
     std::ofstream out(base / "steamapps/libraryfolders.vdf");
-    out << R"VDF("libraryfolders" { "0" { "path" ")VDF" << (base / "library").string() << R"VDF(" } })VDF";
+    out << R"VDF("libraryfolders" { "0" { "path" ")VDF" << (base / "library").generic_string() << R"VDF(" } })VDF";
   }
   {
     std::ofstream out(base / "library/steamapps/appmanifest_42.acf");
@@ -225,7 +225,7 @@ TEST(SteamDiscovery, FindsModernCentralPortraitForExternalLibrary) {
   fs::create_directories(base / "userdata/123/config/grid", ec);
   {
     std::ofstream out(base / "steamapps/libraryfolders.vdf");
-    out << R"VDF("libraryfolders" { "0" { "path" ")VDF" << library.string() << R"VDF(" } })VDF";
+    out << R"VDF("libraryfolders" { "0" { "path" ")VDF" << library.generic_string() << R"VDF(" } })VDF";
   }
   {
     std::ofstream out(library / "steamapps/appmanifest_42.acf");
@@ -571,3 +571,19 @@ TEST(SteamLaunch, FallsBackToBrokerWhenRequiredRuntimeIsUnavailable) {
   EXPECT_EQ(launch_command(game), "steam -applaunch 480");
 }
 #endif
+
+TEST(SteamDiscovery, ReadsLastPlayedFromLocalUserData) {
+  const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+  const auto base = fs::temp_directory_path() / ("vibeshine-steam-recent-test-" + std::to_string(nonce));
+  fs::create_directories(base / "steamapps/common/Game");
+  fs::create_directories(base / "userdata/123/config");
+  { std::ofstream out(base / "steamapps/appmanifest_42.acf");
+    out << R"("AppState" { "appid" "42" "name" "Game" "installdir" "Game" "LastUpdated" "999" })"; }
+  { std::ofstream out(base / "userdata/123/config/localconfig.vdf");
+    out << R"("UserLocalConfigStore" { "Software" { "Valve" { "Steam" { "apps" { "42" { "LastPlayed" "123456" } } } } } })"; }
+  const auto games = platf::steam::discover({base});
+  ASSERT_EQ(games.size(), 1);
+  EXPECT_EQ(games[0].last_played, 123456);
+  EXPECT_EQ(games[0].last_updated, 999);
+  fs::remove_all(base);
+}

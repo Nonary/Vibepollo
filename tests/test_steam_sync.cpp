@@ -165,12 +165,14 @@ TEST(SteamSync, SelectsMostRecentInstalledGamesWithinAgeLimit) {
     false,
     2,
     1,
+    {},
+    false,
     200000
   );
   ASSERT_EQ(selected.size(), 2U);
   EXPECT_EQ(selected[0].app_id, 10U);
   EXPECT_EQ(selected[1].app_id, 11U);
-  EXPECT_EQ(platf::steam::sync::policy::select_games({newest}, false, 0, 0, 200000).size(), 0U);
+  EXPECT_EQ(platf::steam::sync::policy::select_games({newest}, false, 0, 0, {}, false, 200000).size(), 0U);
 }
 
 TEST(SteamSync, RemovesExcludedStaleAutoEntryButPreservesManualEntry) {
@@ -286,4 +288,41 @@ TEST(SteamSync, KeepsOneDuplicateStaleEntryWhenRemovalDisabled) {
   ASSERT_EQ(root["apps"].size(), 1U);
   EXPECT_EQ(root["apps"][0]["steam-id"], "110");
   EXPECT_FALSE(platf::steam::sync::policy::reconcile(root, {}, false));
+}
+
+TEST(SteamSync, RecentSelectionRotatesWithoutRemovingManualEntries) {
+  platf::steam::game_t older, newer, unplayed;
+  older.app_id = 1; older.name = "Older"; older.installed = true; older.last_played = 100;
+  newer.app_id = 2; newer.name = "Newer"; newer.installed = true; newer.last_played = 200;
+  unplayed.app_id = 3; unplayed.name = "Unplayed"; unplayed.installed = true;
+  nlohmann::json root = {{"apps", nlohmann::json::array({{{"name", "Manual"}}})}};
+  auto reconcile = [&] {
+    const auto selected = platf::steam::sync::policy::select_games({older, newer, unplayed}, false, 1, 0);
+    return platf::steam::sync::policy::reconcile(root, selected, true, {}, false, "recent");
+  };
+  EXPECT_TRUE(reconcile());
+  ASSERT_EQ(root["apps"].size(), 2);
+  EXPECT_EQ(root["apps"][1]["steam-id"], "2");
+  older.last_played = 300;
+  EXPECT_TRUE(reconcile());
+  ASSERT_EQ(root["apps"].size(), 2);
+  EXPECT_EQ(root["apps"][0]["name"], "Manual");
+  EXPECT_EQ(root["apps"][1]["steam-id"], "1");
+  EXPECT_FALSE(reconcile());
+  const auto installed = platf::steam::sync::policy::select_games({older, newer, unplayed}, true, 0, 0);
+  EXPECT_TRUE(platf::steam::sync::policy::reconcile(root, installed, true, {}, false, "installed"));
+  EXPECT_EQ(root["apps"].size(), 4);
+}
+
+TEST(SteamSync, RecentLimitAppliesAfterExclusionsAndToolFiltering) {
+  platf::steam::game_t excluded, tool, first, second, unplayed;
+  excluded.app_id = 1; excluded.installed = true; excluded.last_played = 500;
+  tool.app_id = 2; tool.installed = true; tool.app_type = "tool"; tool.last_played = 400;
+  first.app_id = 3; first.installed = true; first.last_played = 300;
+  second.app_id = 4; second.installed = true; second.last_played = 300;
+  unplayed.app_id = 5; unplayed.installed = true;
+  const auto selected = platf::steam::sync::policy::select_games(
+    {excluded, tool, second, first, unplayed}, false, 1, 0, {{"1", ""}}, false);
+  ASSERT_EQ(selected.size(), 1);
+  EXPECT_EQ(selected[0].app_id, 3);
 }

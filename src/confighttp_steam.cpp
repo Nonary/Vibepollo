@@ -63,7 +63,9 @@ namespace confighttp {
         found,
         config::steam.sync_all_installed,
         config::steam.recent_games,
-        config::steam.recent_max_age_days
+        config::steam.recent_max_age_days,
+        config::steam.exclude_games_meta,
+        config::steam.include_tools
       );
       const auto selected_importable = platf::steam::sync::policy::filter_games(selected, {}, config::steam.include_tools);
       const auto filtered = platf::steam::sync::policy::filter_games(selected, config::steam.exclude_games_meta, config::steam.include_tools);
@@ -74,7 +76,6 @@ namespace confighttp {
       }
       nlohmann::json out {{"status", true}, {"provider", "steam"}, {"enabled", config::steam.enabled}, {"forced", false}, {"available", provider_available}, {"game_count", found.size()}, {"importable_game_count", filtered.size()}, {"tool_game_count", found.size() - all_importable.size()}, {"excluded_game_count", all_importable.size() - all_filtered.size()}, {"selected_game_count", selected_importable.size()}, {"exclude_games", std::move(exclusions)}, {"auto_sync", config::steam.auto_sync}, {"sync_all_installed", config::steam.sync_all_installed}, {"recent_games", config::steam.recent_games}, {"recent_max_age_days", config::steam.recent_max_age_days}, {"autosync_remove_uninstalled", config::steam.autosync_remove_uninstalled}, {"include_tools", config::steam.include_tools}};
 #if defined(__linux__)
-      out["forced"] = true;
       out["playnite_available"] = false;
 #else
       out["playnite_available"] = true;
@@ -137,7 +138,9 @@ namespace confighttp {
         catalog,
         config::steam.sync_all_installed,
         config::steam.recent_games,
-        config::steam.recent_max_age_days
+        config::steam.recent_max_age_days,
+        config::steam.exclude_games_meta,
+        config::steam.include_tools
       );
       platf::steam::artwork::prepare(found, platf::appdata());
       std::lock_guard apps_lock {apps_file_mutex()};
