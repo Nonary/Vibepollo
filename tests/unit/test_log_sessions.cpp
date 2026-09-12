@@ -57,6 +57,7 @@ TEST_F(LogSessionsTest, RotatesAtTwoMiBAndKeepsFourRollovers) {
 
 TEST(LogExportTest, ZipPreservesMultipleFilesAndSanitizesConsistently) {
   EXPECT_EQ(log_export::support_bundle_filename, "vibepollo_logs.zip");
+  EXPECT_EQ(log_export::crash_bundle_prefix, "vibepollo_crashbundle");
 
   log_export::export_log_sanitizer_t sanitizer;
   std::vector<log_export::ZipDataEntry> entries;

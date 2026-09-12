@@ -3137,6 +3137,7 @@ namespace confighttp {
     };
 #endif
 #if defined(_WIN32)
+    output_tree["providers"]["playnite_toggle"] = true;
     try {
       const auto gpus = platf::enumerate_gpus();
       if (!gpus.empty()) {

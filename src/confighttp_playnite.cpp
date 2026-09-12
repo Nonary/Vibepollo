@@ -1688,7 +1688,7 @@ namespace confighttp {
     std::time_t tt = std::time(nullptr);
     std::tm tm {};
     localtime_s(&tm, &tt);
-    std::snprintf(fname, sizeof(fname), "sunshine_crashbundle-%04d%02d%02d-%02d%02d%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    std::snprintf(fname, sizeof(fname), "%.*s-%04d%02d%02d-%02d%02d%02d", static_cast<int>(crash_bundle_prefix.size()), crash_bundle_prefix.data(), tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
     return std::string(fname);
   }
 
