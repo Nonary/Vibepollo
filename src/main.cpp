@@ -314,6 +314,13 @@ int main(int argc, char *argv[]) {
 
   lifetime::argv = argv;
 
+  // Staged packages must report their version before assets or a user profile
+  // exist. Keep this query independent of configuration and host startup.
+  if (argc == 2 && argv[1] == "--version"sv) {
+    std::printf("%s version: %s commit: %s\n", PROJECT_NAME, PROJECT_VERSION, PROJECT_VERSION_COMMIT);
+    return 0;
+  }
+
 #ifdef SUNSHINE_BUILD_STEAMOS
   // Resolve assets from the executable's release, including launches outside
   // the wrapper and upgrades which switch the "current" symlink underneath us.
