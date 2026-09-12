@@ -17,11 +17,14 @@
 #include <optional>
 #include <regex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 #include <zlib.h>
 
 namespace log_export {
+  inline constexpr std::string_view support_bundle_filename = "vibepollo_logs.zip";
+
   static inline void write_le16(std::string &out, uint16_t v) {
     out.push_back(static_cast<char>(v & 0xFF));
     out.push_back(static_cast<char>((v >> 8) & 0xFF));

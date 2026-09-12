@@ -1155,15 +1155,9 @@ namespace confighttp {
       auto entries = collect_support_logs();
       std::string zip = build_zip_from_entries(entries);
 
-      char fname[64];
-      std::time_t tt = std::time(nullptr);
-      std::tm tm {};
-      localtime_s(&tm, &tt);
-      std::snprintf(fname, sizeof(fname), "vibeshine_logs-%04d%02d%02d-%02d%02d%02d.zip", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
-
       SimpleWeb::CaseInsensitiveMultimap headers;
       headers.emplace("Content-Type", "application/zip");
-      std::string cd = std::string("attachment; filename=\"") + fname + "\"";
+      std::string cd = std::string("attachment; filename=\"") + std::string {support_bundle_filename} + "\"";
       headers.emplace("Content-Disposition", cd);
       headers.emplace("X-Frame-Options", "DENY");
       headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");

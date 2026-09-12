@@ -4572,7 +4572,7 @@ namespace confighttp {
       }
       SimpleWeb::CaseInsensitiveMultimap headers;
       headers.emplace("Content-Type", "application/zip");
-      headers.emplace("Content-Disposition", "attachment; filename=\"vibepollo_logs.zip\"");
+      headers.emplace("Content-Disposition", std::string {"attachment; filename=\""} + std::string {log_export::support_bundle_filename} + "\"");
       headers.emplace("Cache-Control", "no-store");
       headers.emplace("X-Frame-Options", "DENY");
       headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
