@@ -99,11 +99,12 @@ TEST(LutrisDiscovery, ReadsInstalledGamesAndClassifiesSteam) {
   const auto lutris_data = base / "lutris";
   fs::create_directories(lutris_data / "coverart");
   fs::create_directories(base / "icons/hicolor/128x128/apps");
-  const auto path = lutris_data / "pga.db";
+  const auto path = lutris_data / fs::path(u8"pga-\u00e9-\u65e5\u672c.db");
+  const auto path_utf8 = path.u8string();
   std::ofstream(lutris_data / "coverart/battlenet.jpg").put('x');
   std::ofstream(base / "icons/hicolor/128x128/apps/lutris_battlenet.png").put('x');
   sqlite3 *database = nullptr;
-  ASSERT_EQ(sqlite3_open(path.string().c_str(), &database), SQLITE_OK);
+  ASSERT_EQ(sqlite3_open(reinterpret_cast<const char *>(path_utf8.c_str()), &database), SQLITE_OK);
   const char *schema =
     "CREATE TABLE games(id INTEGER, name TEXT, slug TEXT, runner TEXT, platform TEXT, directory TEXT, "
     "configpath TEXT, service TEXT, service_id TEXT, lastplayed INTEGER, playtime REAL, installed INTEGER);"
