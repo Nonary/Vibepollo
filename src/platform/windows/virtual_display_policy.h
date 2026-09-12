@@ -406,10 +406,10 @@ namespace VDISPLAY::policy {
   }
 
   constexpr bool should_reset_hdr_state_for_stream(
-    const bool hdr_requested,
+    const std::optional<bool> hdr_requested,
     const bool hdr_enabled
   ) noexcept {
-    return !hdr_requested && hdr_enabled;
+    return hdr_requested == false && hdr_enabled;
   }
 
   enum class hdr_activation_failure_action : std::uint8_t {

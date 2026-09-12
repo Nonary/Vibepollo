@@ -491,7 +491,7 @@ namespace VDISPLAY_SUNSHINE {
     uint32_t base_fps_millihz,
     bool framegen_refresh_active,
     int framegen_refresh_multiplier,
-    bool hdr_requested,
+    std::optional<bool> hdr_requested,
     bool allow_pending_enumeration,
     bool replace_existing,
     bool preserve_peer_displays
@@ -565,7 +565,7 @@ namespace VDISPLAY_SUDOVDA {
     uint32_t base_fps_millihz,
     bool framegen_refresh_active,
     int framegen_refresh_multiplier,
-    bool hdr_requested,
+    std::optional<bool> hdr_requested,
     bool allow_pending_enumeration,
     bool replace_existing,
     bool preserve_peer_displays
@@ -744,7 +744,7 @@ namespace VDISPLAY {
     uint32_t base_fps_millihz,
     bool framegen_refresh_active,
     int framegen_refresh_multiplier,
-    bool hdr_requested,
+    std::optional<bool> hdr_requested,
     bool allow_pending_enumeration,
     bool replace_existing,
     bool preserve_peer_displays

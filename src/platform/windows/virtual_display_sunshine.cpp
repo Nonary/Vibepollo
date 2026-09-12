@@ -114,7 +114,7 @@ namespace VDISPLAY_SUNSHINE {
     uint32_t base_fps_millihz = 0,
     bool framegen_refresh_active = false,
     int framegen_refresh_multiplier = 1,
-    bool hdr_requested = false,
+    std::optional<bool> hdr_requested = std::nullopt,
     bool allow_pending_enumeration = false,
     bool replace_existing = true,
     bool preserve_peer_displays = false
@@ -176,7 +176,7 @@ namespace VDISPLAY_SUNSHINE {
     uint32_t base_fps_millihz,
     bool framegen_refresh_active,
     int framegen_refresh_multiplier,
-    bool hdr_requested,
+    std::optional<bool> hdr_requested,
     bool allow_pending_enumeration,
     bool replace_existing,
     bool preserve_peer_displays,
@@ -3047,7 +3047,10 @@ namespace VDISPLAY_SUNSHINE {
       return false;
     }
 
-    bool reset_hdr_state_for_sdr(const DisplayConfigTarget &output, std::stop_token stop_token = {}) {
+    bool reset_hdr_state_for_sdr(const DisplayConfigTarget &output, std::optional<bool> hdr_requested, std::stop_token stop_token = {}) {
+      if (!VDISPLAY::policy::should_reset_hdr_state_for_stream(hdr_requested, true)) {
+        return false;
+      }
       if (stop_token.stop_requested()) {
         return false;
       }
@@ -3062,7 +3065,7 @@ namespace VDISPLAY_SUNSHINE {
                          << " active_color_mode=" << info->active_color_mode
                          << " color_encoding=" << static_cast<unsigned int>(info->color_encoding)
                          << " bits_per_color_channel=" << info->bits_per_color_channel;
-        if (!VDISPLAY::policy::should_reset_hdr_state_for_stream(false, info->hdr_enabled)) {
+        if (!VDISPLAY::policy::should_reset_hdr_state_for_stream(hdr_requested, info->hdr_enabled)) {
           return true;
         }
       }
@@ -6414,7 +6417,7 @@ namespace VDISPLAY_SUNSHINE {
       uint32_t base_fps_millihz,
       bool framegen_refresh_active,
       int framegen_refresh_multiplier,
-      bool hdr_requested,
+      std::optional<bool> hdr_requested,
       bool allow_pending_enumeration,
       bool replace_existing,
       bool preserve_peer_displays,
@@ -6439,7 +6442,7 @@ namespace VDISPLAY_SUNSHINE {
                        << "' client_name='" << (s_client_name ? s_client_name : "(null)")
                        << "' hdr_profile='" << (s_hdr_profile ? s_hdr_profile : "(null)")
                        << "' width=" << width << " height=" << height << " fps=" << fps
-                       << " hdr_requested=" << hdr_requested
+                       << " hdr_requested=" << (hdr_requested ? (*hdr_requested ? "enabled" : "disabled") : "unchanged")
                        << " guid=" << requested_uuid.string();
 
       if (VDISPLAY::policy::should_teardown_conflicting_virtual_displays(preserve_peer_displays) &&
@@ -7088,9 +7091,9 @@ namespace VDISPLAY_SUNSHINE {
       }
 
       std::optional<bool> effective_hdr_enabled;
-      if (hdr_requested) {
+      if (hdr_requested == true) {
         const bool hdr_enabled = request_hdr10_advanced_color(output, stop_token);
-        switch (VDISPLAY::policy::hdr_failure_action(hdr_requested, hdr_enabled, confirmed_active)) {
+        switch (VDISPLAY::policy::hdr_failure_action(true, hdr_enabled, confirmed_active)) {
           case VDISPLAY::policy::hdr_activation_failure_action::none:
             effective_hdr_enabled = true;
             break;
@@ -7109,7 +7112,7 @@ namespace VDISPLAY_SUNSHINE {
             }
             break;
         }
-      } else if (reset_hdr_state_for_sdr(output, stop_token)) {
+      } else if (reset_hdr_state_for_sdr(output, hdr_requested, stop_token)) {
         // A stable virtual-display identity can retain Windows' per-monitor HDR
         // user setting from an earlier HDR stream. Confirm the SDR state before
         // the session helper snapshots it, so its APPLY stays a no-op.
@@ -7221,7 +7224,7 @@ namespace VDISPLAY_SUNSHINE {
     uint32_t base_fps_millihz,
     bool framegen_refresh_active,
     int framegen_refresh_multiplier,
-    bool hdr_requested,
+    std::optional<bool> hdr_requested,
     bool allow_pending_enumeration,
     bool replace_existing,
     bool preserve_peer_displays,
@@ -7501,7 +7504,7 @@ namespace VDISPLAY_SUNSHINE {
     uint32_t base_fps_millihz,
     bool framegen_refresh_active,
     int framegen_refresh_multiplier,
-    bool hdr_requested,
+    std::optional<bool> hdr_requested,
     bool allow_pending_enumeration,
     bool replace_existing,
     bool preserve_peer_displays

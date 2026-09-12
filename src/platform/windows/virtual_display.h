@@ -146,7 +146,9 @@ namespace VDISPLAY {
     uint32_t base_fps_millihz = 0;
     bool framegen_refresh_active = false;
     int framegen_refresh_multiplier = 1;
-    bool hdr_requested = false;
+    // Unset preserves Windows' HDR setting, including during recovery.
+    // Explicit true/false requests HDR/SDR respectively.
+    std::optional<bool> hdr_requested = std::nullopt;
     std::string client_uid;
     std::string client_name;
     std::optional<std::string> hdr_profile;
@@ -163,6 +165,7 @@ namespace VDISPLAY {
     std::function<bool()> should_abort;
   };
 
+  // hdr_requested: nullopt leaves HDR unchanged; true enables it; false disables it.
   std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
     const char *s_client_uid,
     const char *s_client_name,
@@ -174,7 +177,7 @@ namespace VDISPLAY {
     uint32_t base_fps_millihz = 0,
     bool framegen_refresh_active = false,
     int framegen_refresh_multiplier = 1,
-    bool hdr_requested = false,
+    std::optional<bool> hdr_requested = std::nullopt,
     bool allow_pending_enumeration = false,
     bool replace_existing = true,
     bool preserve_peer_displays = false

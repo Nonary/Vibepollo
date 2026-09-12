@@ -350,6 +350,11 @@ TEST(SunshineVirtualDisplay, SdrRequestResetsPersistedHdrStateBeforeTheHelperRun
   EXPECT_FALSE(VDISPLAY::policy::should_reset_hdr_state_for_stream(true, true));
 }
 
+TEST(SunshineVirtualDisplay, UnmanagedHdrPreservesBothWindowsStates) {
+  EXPECT_FALSE(VDISPLAY::policy::should_reset_hdr_state_for_stream(std::nullopt, true));
+  EXPECT_FALSE(VDISPLAY::policy::should_reset_hdr_state_for_stream(std::nullopt, false));
+}
+
 TEST(SunshineVirtualDisplay, AvailabilityChecksStayPassive) {
   EXPECT_TRUE(VDISPLAY::policy::passive_install_status(true));
   EXPECT_FALSE(VDISPLAY::policy::passive_install_status(false));
