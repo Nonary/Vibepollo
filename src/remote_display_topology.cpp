@@ -312,6 +312,19 @@ namespace remote_display_topology {
     clients_.erase(client_uuid);
   }
 
+  void coordinator_t::release_all_normal_game_identities() {
+    std::vector<std::pair<std::string, std::uint64_t>> owners;
+    {
+      std::lock_guard lock(mutex_);
+      for (const auto &[uuid, state] : clients_) {
+        if (state.normal_game) owners.emplace_back(uuid, state.normal_game_token);
+      }
+    }
+    for (const auto &[uuid, token] : owners) {
+      release_normal_game_identity(uuid, token);
+    }
+  }
+
   activation_result_t coordinator_t::activate_remote_monitor(const std::string &client_uuid, const std::string &label, mode_t mode) {
     const auto result = activate_or_resume(client_uuid, label, mode, 0);
     return {result.accepted, result.ready, result.error};

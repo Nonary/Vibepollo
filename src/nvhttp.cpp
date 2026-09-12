@@ -4342,6 +4342,7 @@ namespace nvhttp {
                             << (caller_owns_active_game ? " (active-game owner)." : " (configured first-request mode).");
           }
           const bool disconnected = rtsp_stream::disconnect_game_sessions(false);
+          stream::session::release_terminated_game_displays();
           proc::proc.terminate(false, true);
           tree.put("root.resume", 0);
           tree.put("root.gamesession", 0);

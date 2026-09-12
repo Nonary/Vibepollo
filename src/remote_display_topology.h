@@ -119,6 +119,7 @@ namespace remote_display_topology {
     // lifecycle gate so their destructors never perform topology mutations.
     std::shared_ptr<void> retain_normal_game_capture(const std::string &client_uuid, std::uint64_t token);
     void release_drained_normal_game_identities();
+    void release_all_normal_game_identities();
     void note_lease_lost(const std::string &client_uuid);
     void disconnect_monitor(const std::string &client_uuid);
     void unpair_client(const std::string &client_uuid);

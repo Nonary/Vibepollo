@@ -566,6 +566,35 @@ TEST(RemoteDisplayTopology, SharedMonitorSurvivesDeferredNormalReleaseAndFailedR
   EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
 }
 
+TEST(RemoteDisplayTopology, TerminateReleasesAllGameDisplaysAndRetainsMonitorRoles) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> removals;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; },
+    .remove_owned_display = [&removals](const auto &uuid) { removals.push_back(uuid); },
+  });
+  ASSERT_TRUE(coordinator.reserve_normal_game_identity("original", "Original", {}).accepted);
+  ASSERT_TRUE(coordinator.reserve_normal_game_identity("resumed", "Resumed", {}).accepted);
+  ASSERT_TRUE(coordinator.reserve_normal_game_identity("shared", "Shared", {}).accepted);
+  ASSERT_TRUE(coordinator.activate_or_resume("shared", "Shared", {}, 7).ready);
+  ASSERT_TRUE(coordinator.activate_or_resume("monitor", "Monitor", {}, 8).ready);
+  coordinator.transport_lost("monitor", 8);
+
+  coordinator.release_all_normal_game_identities();
+
+  EXPECT_EQ(removals.size(), 2u);
+  EXPECT_NE(std::find(removals.begin(), removals.end(), "original"), removals.end());
+  EXPECT_NE(std::find(removals.begin(), removals.end(), "resumed"), removals.end());
+  EXPECT_TRUE(coordinator.snapshot("shared", 7).ready);
+  EXPECT_TRUE(coordinator.snapshot("monitor", 8).accepted);
+  EXPECT_FALSE(coordinator.generic_virtual_display_cleanup_allowed());
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 2u);
+  coordinator.release_all_normal_game_identities();
+  EXPECT_EQ(removals.size(), 2u);
+}
+
 TEST(RemoteDisplayTopology, TransportLossDefersGlobalCleanupAndExplicitReleasePreservesPeers) {
   remote_display_topology::coordinator_t coordinator;
   std::vector<std::string> removals;
