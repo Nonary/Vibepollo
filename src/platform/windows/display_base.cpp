@@ -458,6 +458,12 @@ namespace platf::dxgi {
 
     auto next_output_refresh_attempt = std::chrono::steady_clock::time_point::min();
     bool output_refresh_deferred = false;
+    // DXGI can report a stale factory while an HDR transition is settling. The
+    // continuation path below may therefore accept a replacement output while
+    // it still reports the old colorspace. Re-enumerate the output periodically
+    // so a transition missed during that window still tears down the fixed
+    // capture resources and recreates them with the correct HDR state.
+    auto next_hdr_state_check = std::chrono::steady_clock::time_point::min();
 
     while (true) {
       // Moving another monitor can change absolute-input normalization even
@@ -501,6 +507,19 @@ namespace platf::dxgi {
 
             case output_refresh_e::structural_change:
               return platf::capture_e::reinit;
+          }
+        }
+      }
+
+      if (refresh_only_changes_supported && captured_hdr_state_valid) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_hdr_state_check) {
+          next_hdr_state_check = now + 1s;
+
+          const auto refresh_result = refresh_output_after_nonstructural_change();
+          if (refresh_result == output_refresh_e::structural_change) {
+            BOOST_LOG(info) << "Display state changed during periodic WGC validation; requesting reinitialization";
+            return platf::capture_e::reinit;
           }
         }
       }
