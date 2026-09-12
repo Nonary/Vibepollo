@@ -234,11 +234,11 @@ namespace log_export {
     std::size_t next_id = 1;
   };
 
-  static ZipDataEntry make_export_log_entry(export_log_sanitizer_t &sanitizer, std::string name, std::string data, std::optional<std::filesystem::file_time_type> write_time) {
+  [[maybe_unused]] static ZipDataEntry make_export_log_entry(export_log_sanitizer_t &sanitizer, std::string name, std::string data, std::optional<std::filesystem::file_time_type> write_time) {
     return ZipDataEntry {std::move(name), sanitizer.sanitize(data), write_time};
   }
 
-  static std::string build_zip_from_entries(const std::vector<ZipDataEntry> &entries) {
+  [[maybe_unused]] static std::string build_zip_from_entries(const std::vector<ZipDataEntry> &entries) {
     std::string out;
 
     struct CdEnt {
