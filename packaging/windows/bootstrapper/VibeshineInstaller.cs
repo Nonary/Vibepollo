@@ -193,16 +193,20 @@ namespace VibepolloInstaller {
       var useCompactUpdateLayout = !BuildFlavor.IsUninstallOnly && _installedProduct != null && !showInstallOptions;
       var displayVersion = GetTargetVersionText();
       Title = (BuildFlavor.IsUninstallOnly ? "Vibepollo Uninstaller v" : "Vibepollo Installer v") + displayVersion;
-      Width = 720;
-      Height = _showInstallVirtualGamepadOption ? 700 : showInstallOptions ? 620 : useCompactUpdateLayout ? 430 : 500;
-      MinWidth = 690;
-      MinHeight = _showInstallVirtualGamepadOption ? 660 : showInstallOptions ? 580 : useCompactUpdateLayout ? 410 : 470;
+      // WorkArea and WPF window dimensions are both device-independent units.
+      // Keep the initial window on screen even with a large display scale.
+      var workArea = SystemParameters.WorkArea;
+      Width = Math.Min(720, workArea.Width);
+      Height = Math.Min(showInstallOptions ? 640 : useCompactUpdateLayout ? 430 : 500, workArea.Height);
+      MinWidth = Math.Min(480, workArea.Width);
+      MinHeight = Math.Min(320, workArea.Height);
       WindowStartupLocation = WindowStartupLocation.CenterScreen;
-      ResizeMode = ResizeMode.CanMinimize;
+      ResizeMode = ResizeMode.CanResizeWithGrip;
       WindowStyle = WindowStyle.None;
       AllowsTransparency = false;
       Background = CreateBackgroundBrush();
       FontFamily = new FontFamily("Segoe UI");
+      UseLayoutRounding = true;
 
       var root = new Grid {
         Background = new SolidColorBrush(Color.FromRgb(6, 10, 24))
@@ -276,12 +280,12 @@ namespace VibepolloInstaller {
 
       var card = new Border {
         CornerRadius = new CornerRadius(18),
-        Margin = new Thickness(20, 10, 20, 12),
-        Padding = new Thickness(20),
+        Margin = new Thickness(12, 10, 12, 12),
+        Padding = new Thickness(12),
         Background = new SolidColorBrush(Color.FromArgb(238, 14, 20, 36)),
         BorderBrush = new SolidColorBrush(Color.FromArgb(145, 99, 102, 241)),
         BorderThickness = new Thickness(1.2),
-        VerticalAlignment = VerticalAlignment.Top
+        VerticalAlignment = VerticalAlignment.Stretch
       };
       Grid.SetRow(card, 1);
       root.Children.Add(card);
@@ -300,9 +304,10 @@ namespace VibepolloInstaller {
         Background = new SolidColorBrush(Color.FromRgb(10, 16, 32)),
         BorderBrush = new SolidColorBrush(Color.FromRgb(86, 102, 146)),
         BorderThickness = new Thickness(1.2),
-        HorizontalAlignment = HorizontalAlignment.Center,
+        HorizontalAlignment = HorizontalAlignment.Stretch,
         VerticalAlignment = VerticalAlignment.Center,
-        Width = 540,
+        Margin = new Thickness(16),
+        MaxWidth = 540,
         MaxHeight = 390
       };
       _overlayGrid.Children.Add(overlayCard);
@@ -422,15 +427,22 @@ namespace VibepolloInstaller {
       overlayButtons.Children.Add(_overlayPrimaryButton);
 
       var cardGrid = new Grid();
-      cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+      cardGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
       cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
       card.Child = cardGrid;
 
+      // Only the body scrolls. The actions always receive their full height.
+      var contentScroll = new ScrollViewer {
+        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        Padding = new Thickness(0, 0, 8, 0)
+      };
+      Grid.SetRow(contentScroll, 0);
+      cardGrid.Children.Add(contentScroll);
       var contentStack = new StackPanel {
         Orientation = Orientation.Vertical
       };
-      Grid.SetRow(contentStack, 0);
-      cardGrid.Children.Add(contentStack);
+      contentScroll.Content = contentStack;
 
       _installSection = new Border {
         CornerRadius = new CornerRadius(10),
@@ -566,15 +578,23 @@ namespace VibepolloInstaller {
         TextWrapping = TextWrapping.Wrap
       });
 
-      tipsStack.Children.Add(new TextBlock {
-        Text = "You can also install from an SSH session on this host (run in an elevated shell):",
+      var sshDetails = new Expander {
+        Header = "Install from SSH",
+        Foreground = new SolidColorBrush(Color.FromRgb(203, 219, 241)),
+        FontSize = 12.5
+      };
+      tipsStack.Children.Add(sshDetails);
+      var sshStack = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
+      sshDetails.Content = sshStack;
+      sshStack.Children.Add(new TextBlock {
+        Text = "Run in an elevated shell on this host:",
         FontSize = 13,
         Foreground = new SolidColorBrush(Color.FromRgb(203, 219, 241)),
         Margin = new Thickness(0, 0, 0, 6),
         TextWrapping = TextWrapping.Wrap
       });
 
-      tipsStack.Children.Add(new TextBox {
+      sshStack.Children.Add(new TextBox {
         Text = "VibepolloSetup.exe /qn /norestart",
         IsReadOnly = true,
         FontFamily = new FontFamily("Consolas"),
@@ -585,14 +605,6 @@ namespace VibepolloInstaller {
         Foreground = new SolidColorBrush(Color.FromRgb(226, 235, 250)),
         BorderBrush = new SolidColorBrush(Color.FromRgb(82, 96, 141)),
         CaretBrush = new SolidColorBrush(Color.FromRgb(226, 235, 250))
-      });
-
-      tipsStack.Children.Add(new TextBlock {
-        Text = "Click the buttons below to proceed.",
-        FontSize = 12.5,
-        Foreground = new SolidColorBrush(Color.FromRgb(211, 220, 246)),
-        Margin = new Thickness(0, 0, 0, 0),
-        TextWrapping = TextWrapping.Wrap
       });
 
       _installVirtualDisplaySection = new Border {
@@ -655,7 +667,6 @@ namespace VibepolloInstaller {
         Fill = new SolidColorBrush(Color.FromArgb(120, 88, 104, 124)),
         Margin = new Thickness(0, 0, 0, 10)
       };
-      contentStack.Children.Add(divider);
 
       var statusCard = new Border {
         CornerRadius = new CornerRadius(10),
@@ -698,12 +709,14 @@ namespace VibepolloInstaller {
       statusStack.Children.Add(_statusDetailText);
 
       var footerGrid = new Grid {
-        Margin = new Thickness(0)
+        Margin = new Thickness(0, 8, 0, 0)
       };
+      footerGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
       footerGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
       footerGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
       Grid.SetRow(footerGrid, 1);
       cardGrid.Children.Add(footerGrid);
+      footerGrid.Children.Add(divider);
 
       _progressBar = new ProgressBar {
         Height = 4,
@@ -712,33 +725,20 @@ namespace VibepolloInstaller {
         Foreground = new SolidColorBrush(Color.FromRgb(99, 102, 241)),
         Margin = new Thickness(8, 4, 8, 8)
       };
-      Grid.SetRow(_progressBar, 0);
+      Grid.SetRow(_progressBar, 1);
       footerGrid.Children.Add(_progressBar);
 
-      var buttonRow = new Grid();
-      buttonRow.ColumnDefinitions.Add(new ColumnDefinition());
-      buttonRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-      buttonRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-      buttonRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-      buttonRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-      Grid.SetRow(buttonRow, 1);
-      footerGrid.Children.Add(buttonRow);
-
-      var buttonHint = new TextBlock {
-        Text = "",
-        Foreground = new SolidColorBrush(Color.FromRgb(195, 209, 232)),
-        FontSize = 12,
-        TextWrapping = TextWrapping.Wrap,
-        Margin = new Thickness(0, 0, 8, 0),
-        VerticalAlignment = VerticalAlignment.Center
+      var buttonRow = new WrapPanel {
+        HorizontalAlignment = HorizontalAlignment.Right
       };
-      buttonRow.Children.Add(buttonHint);
+      Grid.SetRow(buttonRow, 2);
+      footerGrid.Children.Add(buttonRow);
 
       _continueButton = new Button {
         Content = "Next",
         Height = 40,
         MinWidth = 136,
-        Margin = new Thickness(10, 0, 0, 0),
+        Margin = new Thickness(8, 4, 0, 0),
         Padding = new Thickness(16, 0, 16, 0),
         FontWeight = FontWeights.SemiBold,
         Background = new SolidColorBrush(Color.FromRgb(99, 102, 241)),
@@ -752,14 +752,13 @@ namespace VibepolloInstaller {
       _continueButton.MouseLeave += ContinueButtonMouseLeave;
       _continueButton.Click += ContinueClicked;
       ApplyFlatButtonTemplate(_continueButton, 8);
-      Grid.SetColumn(_continueButton, 1);
       buttonRow.Children.Add(_continueButton);
 
       _uninstallButton = new Button {
         Content = "Uninstall Vibepollo",
         Height = 40,
         MinWidth = 152,
-        Margin = new Thickness(10, 0, 0, 0),
+        Margin = new Thickness(8, 4, 0, 0),
         Padding = new Thickness(16, 0, 16, 0),
         FontWeight = FontWeights.SemiBold,
         Background = new SolidColorBrush(Color.FromRgb(225, 29, 72)),
@@ -772,14 +771,13 @@ namespace VibepolloInstaller {
       _uninstallButton.MouseLeave += UninstallButtonMouseLeave;
       _uninstallButton.Click += UninstallNowClicked;
       ApplyFlatButtonTemplate(_uninstallButton, 8);
-      Grid.SetColumn(_uninstallButton, 2);
       buttonRow.Children.Add(_uninstallButton);
 
       _licenseButton = new Button {
         Content = "_License",
         Height = 40,
         MinWidth = 102,
-        Margin = new Thickness(10, 0, 0, 0),
+        Margin = new Thickness(8, 4, 0, 0),
         Padding = new Thickness(16, 0, 16, 0),
         FontWeight = FontWeights.SemiBold,
         Background = new SolidColorBrush(Color.FromRgb(16, 24, 42)),
@@ -789,14 +787,13 @@ namespace VibepolloInstaller {
       };
       _licenseButton.Click += LicenseClicked;
       ApplyFlatButtonTemplate(_licenseButton, 8);
-      Grid.SetColumn(_licenseButton, 3);
       buttonRow.Children.Add(_licenseButton);
 
       _closeButton = new Button {
         Content = "Cl_ose",
         Height = 40,
         MinWidth = 102,
-        Margin = new Thickness(10, 0, 0, 0),
+        Margin = new Thickness(8, 4, 0, 0),
         Padding = new Thickness(16, 0, 16, 0),
         FontWeight = FontWeights.SemiBold,
         Background = new SolidColorBrush(Color.FromRgb(16, 24, 42)),
@@ -807,7 +804,6 @@ namespace VibepolloInstaller {
       };
       _closeButton.Click += (sender, eventArgs) => Close();
       ApplyFlatButtonTemplate(_closeButton, 8);
-      Grid.SetColumn(_closeButton, 4);
       buttonRow.Children.Add(_closeButton);
 
       _continueButton.Content = BuildFlavor.IsUninstallOnly ? "Uninstall Vibepollo" : BuildInstallButtonLabel();
