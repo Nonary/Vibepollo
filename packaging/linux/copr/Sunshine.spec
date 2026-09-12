@@ -1616,6 +1616,7 @@ fi
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-session-exec
 %attr(0700,root,root) %caps(cap_kill,cap_setgid,cap_setuid+p) %{_prefix}/libexec/vibeshine/vibepollo-session-broker
 %{_prefix}/libexec/vibeshine/vibepollo-provider-scan
+%{_prefix}/libexec/vibeshine/vibepollo-global-limiter.py
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-steam-launch
 %{_prefix}/libexec/vibeshine/vibepollo-profile-import
 %{_prefix}/libexec/vibeshine/vibepollo-profile-normalize.py

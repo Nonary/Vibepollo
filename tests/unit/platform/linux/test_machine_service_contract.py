@@ -668,6 +668,7 @@ require(
     "desktop and greeter KWin environment packaging",
 )
 require(packaging, "vibepollo-session-controller.service", "native packaging")
+require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-global-limiter.py"', "native packaging")
 require(packaging, "install(TARGETS vibepollo_session_broker", "native packaging")
 require(packaging, "set(CPACK_DEB_COMPONENT_INSTALL OFF)", "monolithic native DEB")
 for deb_arch_contract in (
@@ -974,6 +975,7 @@ for unsafe_stop in (
 require(rpm, "%{_bindir}/vibepollo-mangohud", "RPM deterministic manifest")
 require(rpm, "%attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-app-supervisor", "RPM deterministic manifest")
 require(rpm, "%attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-steam-launch", "RPM deterministic manifest")
+require(rpm, "%{_prefix}/libexec/vibeshine/vibepollo-global-limiter.py", "RPM deterministic manifest")
 require(rpm, "%attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-kwin-session-environment", "RPM deterministic manifest")
 require(rpm, "%attr(0750,root,vibepollo) %caps(cap_sys_admin,cap_sys_nice+p) %{_prefix}/libexec/vibeshine/vibepollo-host", "RPM deterministic manifest")
 require(rpm, "%attr(0700,root,root) %caps(cap_kill,cap_setgid,cap_setuid+p) %{_prefix}/libexec/vibeshine/vibepollo-session-broker", "RPM deterministic manifest")
