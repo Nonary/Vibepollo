@@ -49,6 +49,7 @@ def package(extra=(), omit=()):
 
 class ArchiveTests(unittest.TestCase):
     def test_local_package_must_include_driver_helper_and_build_sources(self):
+        self.assertNotIn('usr/libexec/vibeshine/vibepollo-drm-install', deploy.FIXED)
         for missing in ('usr/libexec/vibeshine/vibeshine-drm-install',
                         'usr/libexec/vibeshine/vibepollo-global-limiter.py',
                         'usr/src/vibeshine-drm-1.19.0/Makefile',
