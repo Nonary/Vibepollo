@@ -30,6 +30,7 @@ broker_socket_unit = (linux / "vibepollo-session-exec.socket").read_text()
 launcher = (linux / "vibepollo-session-exec.c").read_text()
 broker = (linux / "vibepollo-session-broker.c").read_text()
 steam_launcher = (linux / "vibepollo-steam-launch.cpp").read_text()
+provider_scan_protocol = (root / "src/provider_scan_protocol.cpp").read_text()
 session_execution = launcher + "\n" + broker
 private_display = (root / "src/platform/linux/private_display.cpp").read_text()
 display_power = (linux / "vibepollo-display-power.h").read_text()
@@ -321,6 +322,12 @@ for forbidden in (
 require(host, "trap mark_host_shutdown TERM INT HUP", "single service signal delivery")
 forbid(host, "trap 'forward_host_signal", "duplicate service signal delivery")
 require(host, "((shutting_down)) || terminate_host", "single child termination request")
+
+for variable in ("VIBEPOLLO_MACHINE_HOST", "VIBEPOLLO_SESSION_ROLE"):
+    require(host, variable, "machine-host provider scan environment")
+    require(provider_scan_protocol, f'std::getenv("{variable}")', "provider scan machine-session guard")
+for variable in ("VIBESHINE_MACHINE_HOST", "VIBESHINE_SESSION_ROLE"):
+    forbid(provider_scan_protocol, variable, "provider scan source-only environment")
 
 # API restart of the private child exits back to the readiness-gating wrapper.
 # Ordinary Linux launches retain the historical atexit self-reexec path.

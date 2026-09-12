@@ -335,8 +335,8 @@ namespace platf::provider_scan {
       // Provider scans and artwork belong to the desktop session. Avoid
       // spawning rejected broker requests on every greeter poll. The broker
       // still independently validates the authoritative session identity.
-      const auto *machine_host = std::getenv("VIBESHINE_MACHINE_HOST");
-      const auto *session_role = std::getenv("VIBESHINE_SESSION_ROLE");
+      const auto *machine_host = std::getenv("VIBEPOLLO_MACHINE_HOST");
+      const auto *session_role = std::getenv("VIBEPOLLO_SESSION_ROLE");
       if (machine_host && *machine_host && (!session_role || std::string_view {session_role} != "desktop")) {
         return std::nullopt;
       }

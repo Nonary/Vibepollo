@@ -186,8 +186,8 @@ namespace {
 
   TEST(ProviderScanProtocol, RepeatedGreeterPollsDoNotSpawnAndDesktopRequestsResume) {
     using platf::provider_scan::detail::capture_command;
-    scoped_environment machine {"VIBESHINE_MACHINE_HOST", "1"};
-    char directory[] = "/tmp/vibeshine-provider-XXXXXX";
+    scoped_environment machine {"VIBEPOLLO_MACHINE_HOST", "1"};
+    char directory[] = "/tmp/vibepollo-provider-XXXXXX";
     ASSERT_NE(mkdtemp(directory), nullptr);
     const auto marker = std::filesystem::path(directory) / "spawned";
 
@@ -201,7 +201,7 @@ namespace {
     } cleanup {directory};
 
     {
-      scoped_environment role {"VIBESHINE_SESSION_ROLE", "greeter"};
+      scoped_environment role {"VIBEPOLLO_SESSION_ROLE", "greeter"};
       // Reproduce more rejected polls than the controller can inventory.
       for (int request = 0; request < 775; ++request) {
         ASSERT_FALSE(capture_command("/usr/bin/touch", marker.string(), {500ms, 64}));
@@ -210,20 +210,20 @@ namespace {
     }
     const char *role_values[] {nullptr, "", "unknown"};
     for (const auto *role_value : role_values) {
-      scoped_environment role {"VIBESHINE_SESSION_ROLE", role_value};
+      scoped_environment role {"VIBEPOLLO_SESSION_ROLE", role_value};
       EXPECT_FALSE(capture_command("/usr/bin/touch", marker.string(), {500ms, 64}));
       EXPECT_FALSE(std::filesystem::exists(marker));
     }
     {
-      scoped_environment role {"VIBESHINE_SESSION_ROLE", "desktop"};
+      scoped_environment role {"VIBEPOLLO_SESSION_ROLE", "desktop"};
       EXPECT_TRUE(capture_command("/usr/bin/touch", marker.string(), {500ms, 64}));
       EXPECT_TRUE(std::filesystem::exists(marker));
     }
   }
 
   TEST(ProviderScanProtocol, NonMachineCaptureDoesNotRequireSessionRole) {
-    scoped_environment machine {"VIBESHINE_MACHINE_HOST", nullptr};
-    scoped_environment role {"VIBESHINE_SESSION_ROLE", nullptr};
+    scoped_environment machine {"VIBEPOLLO_MACHINE_HOST", nullptr};
+    scoped_environment role {"VIBEPOLLO_SESSION_ROLE", nullptr};
     const auto result = platf::provider_scan::detail::capture_command("/bin/echo", "catalog", {500ms, 64});
     ASSERT_TRUE(result);
     EXPECT_EQ(*result, "catalog\n");
