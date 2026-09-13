@@ -129,8 +129,8 @@ def main():
     helpers = '\n'.join(function(source, signature) for signature in (
         'std::shared_ptr<BrowserInput> current_input_context(std::string_view session_id)',
         'void reset_session_input(std::string_view session_id)',
-        'void suspend_session_input(std::string_view session_id)',
-        'void resume_session_input(std::string_view session_id)',
+        '[[maybe_unused]] void suspend_session_input(std::string_view session_id)',
+        '[[maybe_unused]] void resume_session_input(std::string_view session_id)',
         '[[maybe_unused]] void reset_input_context()',
     ))
     input_source = (ROOT / 'src/input.cpp').read_text()
@@ -143,6 +143,14 @@ def main():
         cpp.write_text(PRELUDE + peer_enum + '\nnamespace input {\n' + port_helper + '\n}\n' + definitions + helpers + CALLBACK_STUBS + callback + TESTS)
         subprocess.run(['c++', '-std=c++20', '-Wall', '-Wextra', str(cpp), '-o', str(binary)], check=True)
         subprocess.run([str(binary)], check=True)
+        # Arch disables WebRTC, leaving these anonymous-namespace helpers
+        # without callback callers. Keep that configuration warning-clean.
+        disabled_helpers = helpers
+        for name in ('suspend_session_input', 'resume_session_input'):
+            helper = function(source, f'[[maybe_unused]] void {name}(std::string_view session_id)')
+            disabled_helpers = disabled_helpers.replace(helper, '\nnamespace {\n' + helper + '\n}\n')
+        cpp.write_text(PRELUDE + '\nnamespace input {\n' + port_helper + '\n}\n' + definitions + disabled_helpers)
+        subprocess.run(['c++', '-std=c++20', '-Wall', '-Wextra', '-Werror=unused-function', '-c', str(cpp), '-o', str(Path(temp) / 'disabled.o')], check=True)
 
 
 if __name__ == '__main__':

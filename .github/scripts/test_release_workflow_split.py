@@ -20,6 +20,23 @@ def load_workflow(name: str) -> dict:
 
 
 class ReleaseWorkflowSplitTest(unittest.TestCase):
+    def test_package_compilers_have_bounded_parallelism(self) -> None:
+        for workflow_name in ('ci-windows.yml', 'ci-archlinux.yml'):
+            workflow = load_workflow(workflow_name)
+            build = next(job for job in workflow['jobs'].values()
+                         if 'CMAKE_BUILD_PARALLEL_LEVEL' in job.get('env', {}))
+            self.assertEqual(build['env']['CMAKE_BUILD_PARALLEL_LEVEL'], '6')
+            scripts = '\n'.join(step.get('run', '') for step in build['steps'])
+            self.assertNotIn('$(nproc)', scripts)
+            if workflow_name == 'ci-archlinux.yml':
+                package = next(step for step in build['steps'] if step.get('name') == 'Build PKGBUILD')
+                self.assertIn('CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL}"', package['run'])
+            else:
+                commands = [line for line in scripts.splitlines() if 'cmake --build ' in line]
+                self.assertEqual(len(commands), 2)
+                for command in commands:
+                    self.assertIn('--parallel "$CMAKE_BUILD_PARALLEL_LEVEL"', command)
+
     def test_tag_ci_builds_without_publishing(self) -> None:
         workflow = load_workflow("ci.yml")
         jobs = workflow["jobs"]

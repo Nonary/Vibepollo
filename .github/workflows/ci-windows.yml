@@ -273,6 +273,8 @@ jobs:
       versioninfo_artifact_id: ${{ steps.upload-windows-version-metadata.outputs.artifact-id }}
     env:
       NODE_VERSION: 22.22.2
+      # Leave memory for the other release runners sharing this host.
+      CMAKE_BUILD_PARALLEL_LEVEL: 6
       SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
       SIGNPATH_ORGANIZATION_ID: ${{ inputs.signpath_organization_id }}
       SIGNPATH_PROJECT_SLUG: ${{ inputs.signpath_project_slug }}
@@ -624,7 +626,7 @@ jobs:
             "${vhf_gamepad_package_arg[@]}" \
             "${truehdr_runtime_arg[@]}"
           echo "::add-matcher::.github/matchers/gcc.json"
-          cmake --build build --target all -j "$(nproc)"
+          cmake --build build --target all --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
           echo "::remove-matcher owner=gcc::"
 
       - name: Test native AMF lifecycle behavior
@@ -804,7 +806,7 @@ jobs:
           # Build only the MSI first. SignPath credentials stay out of this
           # step so the MSI is signed from a GitHub artifact with origin
           # verification, including nested files such as uninstall.exe.
-          cmake --build . --target package_msi -j "$(nproc)"
+          cmake --build . --target package_msi --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
 
           msi_path=$(ls -t ./cpack_artifacts/*.msi 2>/dev/null | head -n 1 || true)
           if [[ -z "${msi_path}" ]]; then

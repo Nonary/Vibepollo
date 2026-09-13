@@ -1092,7 +1092,7 @@ namespace webrtc_stream {
       }
     }
 
-    void suspend_session_input(std::string_view session_id) {
+    [[maybe_unused]] void suspend_session_input(std::string_view session_id) {
       std::lock_guard lg {input_mutex};
       auto it = browser_inputs.find(std::string {session_id});
       if (it == browser_inputs.end()) {
@@ -1105,7 +1105,7 @@ namespace webrtc_stream {
       }
     }
 
-    void resume_session_input(std::string_view session_id) {
+    [[maybe_unused]] void resume_session_input(std::string_view session_id) {
       std::lock_guard lg {input_mutex};
       suspended_browser_inputs.erase(std::string {session_id});
     }

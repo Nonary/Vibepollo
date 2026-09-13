@@ -25,6 +25,8 @@ jobs:
     name: Archlinux
     env:
       _use_cuda: true
+      # Ninja does not honor MAKEFLAGS; bound both CMake and make builds.
+      CMAKE_BUILD_PARALLEL_LEVEL: 6
       BRANCH: ${{ github.head_ref || github.ref_name }}
       BUILD_VERSION: ${{ inputs.release_version }}
       CLONE_URL: ${{ github.event.repository.clone_url }}
@@ -58,8 +60,7 @@ jobs:
       - name: Patch build flags
         shell: bash
         run: |
-          # shellcheck disable=SC2016
-          sed -i 's,#MAKEFLAGS="-j2",MAKEFLAGS="-j$(nproc)",g' /etc/makepkg.conf
+          echo "MAKEFLAGS=\"-j${CMAKE_BUILD_PARALLEL_LEVEL}\"" >> /etc/makepkg.conf
 
       - name: Install dependencies
         shell: bash
@@ -133,7 +134,7 @@ jobs:
           module_build_dir="${RUNNER_TEMP}/vibeshine-drm-${kernel_release}"
           cp -a third-party/libvirtualdisplay/linux/vibeshine-drm "${module_build_dir}"
           write_drm_version_header "${module_build_dir}" "0.0.0"
-          MAKEFLAGS="-j$(nproc)" \
+          MAKEFLAGS="-j${CMAKE_BUILD_PARALLEL_LEVEL}" \
             "${module_build_dir}/build-module" "${kernel_release}" "${module_build_dir}"
           test -s "${module_build_dir}/vibeshine_drm.ko"
 
@@ -163,7 +164,7 @@ jobs:
             "${dkms_source}/dkms.conf.in" >"${dkms_source}/dkms.conf"
           printf 'try_sign_modules=true\n' >/etc/dkms/framework.conf.d/vibeshine-ci.conf
           dkms add -m vibeshine-drm -v "${dkms_ci_version}"
-          MAKEFLAGS="-j$(nproc)" dkms build \
+          MAKEFLAGS="-j${CMAKE_BUILD_PARALLEL_LEVEL}" dkms build \
             -m vibeshine-drm -v "${dkms_ci_version}" -k "${kernel_release}"
           dkms install -m vibeshine-drm -v "${dkms_ci_version}" -k "${kernel_release}"
 
@@ -257,6 +258,7 @@ jobs:
           sudo -u builder env \
             _use_cuda="${_use_cuda}" \
             _build_tests="${_build_tests}" \
+            CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL}" \
             makepkg -si --noconfirm
 
           # Remove debug package
