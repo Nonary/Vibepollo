@@ -27,7 +27,9 @@ jobs:
       COMMIT: ${{ inputs.release_commit }}
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    # AMBIDEX-Linux runs trusted builds in the existing Arch container.
+    # Pull requests and forks continue to use disposable GitHub-hosted runners.
+    runs-on: ${{ github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Linux", "X64", "linux-release"]') || fromJSON('["ubuntu-latest"]') }}
     container:
       image: archlinux/archlinux:base-devel
       options: --cpus 4 --memory 8g
@@ -363,3 +365,12 @@ jobs:
           path: artifacts/
           if-no-files-found: error
           retention-days: ${{ inputs.artifact_retention_days }}
+
+      - name: Restore self-hosted workspace ownership
+        if: always() && runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          # The container writes as root and builder, but the persistent runner
+          # must be able to clean its workspace and temporary files after a job.
+          runner_owner="$(stat -c '%u:%g' "${RUNNER_TEMP}/..")"
+          chown -R "${runner_owner}" "${GITHUB_WORKSPACE}" "${RUNNER_TEMP}"
