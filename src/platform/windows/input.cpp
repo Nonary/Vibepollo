@@ -25,6 +25,7 @@
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "vhf_gamepad.h"
+#include "vhf_gamepad_policy.h"
 
 #ifdef __MINGW32__
 // DECLARE_HANDLE(HSYNTHETICPOINTERDEVICE);
@@ -222,10 +223,17 @@ namespace platf {
   }
 
   class vigem_t {
+  private:
+    bool driver_available {false};
+
   public:
     // Set before init() so the ViGEmBus diagnostics can tell "no gamepad support at all" from
     // "a different driver is providing it".
     bool vhf_gamepad_available {false};
+
+    [[nodiscard]] bool available() const noexcept {
+      return driver_available;
+    }
 
     int init() {
       // Probe ViGEm during startup to see if we can successfully attach gamepads. The web UI exposes a
@@ -237,11 +245,12 @@ namespace platf {
         // present, ViGEmBus is simply not in use, and warning about it sends people chasing a
         // dependency they no longer need.
         if (vhf_gamepad_available) {
-          BOOST_LOG(info) << "ViGEmBus is not installed; gamepad emulation will use the Vibepollo virtual gamepad driver."sv;
+          BOOST_LOG(info) << "ViGEmBus is not installed; the Vibepollo virtual gamepad driver is available."sv;
         } else {
           BOOST_LOG(warning) << "ViGEmBus is not installed or running; gamepad emulation will be unavailable until installed."sv;
         }
       } else {
+        driver_available = true;
         vigem_disconnect(client.get());
       }
 
@@ -1323,13 +1332,28 @@ namespace platf {
       return -1;
     }
 
-    if (vhf_gamepad_selected()) {
-      const auto desired = vhf_desired_profile(metadata);
-      BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will use the Vibepollo virtual gamepad driver"sv;
+    const bool vigem_available = raw->vigem != nullptr && raw->vigem->available();
+    const bool vhf_available = raw->vhf != nullptr && raw->vhf->available();
+    const bool automatic_vhf_fallback =
+      config::input.gamepad == "auto"sv &&
+      vhf_gamepad::select_automatic_backend(vigem_available, vhf_available) == vhf_gamepad::backend_e::vhf;
 
-      if (raw->vhf && raw->vhf->alloc(id, feedback_queue, desired) == 0) {
-        raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vhf;
-        return 0;
+    if (vhf_gamepad_selected() || automatic_vhf_fallback) {
+      const auto desired = vhf_desired_profile(metadata);
+
+      if (vhf_available) {
+        BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will use the Vibepollo virtual gamepad driver"sv
+                        << (automatic_vhf_fallback ? " (automatic fallback)"sv : ""sv);
+
+        if (raw->vhf->alloc(id, feedback_queue, desired) == 0) {
+          raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vhf;
+          return 0;
+        }
+      }
+
+      if (automatic_vhf_fallback) {
+        BOOST_LOG(error) << "Gamepad " << id.globalIndex << " could not be created on the Vibepollo virtual gamepad driver"sv;
+        return -1;
       }
 
       // An explicit profile must not be replaced by an automatic/client-selected profile or by
@@ -1995,7 +2019,7 @@ namespace platf {
     }
 
     auto raw = (input_raw_t *) input;
-    auto enabled = raw->vigem != nullptr;
+    auto enabled = raw->vigem != nullptr && raw->vigem->available();
     auto reason = enabled ? "" : "gamepads.vigem-not-available";
 
     auto vhf_enabled = raw->vhf != nullptr && raw->vhf->available();
@@ -2003,7 +2027,7 @@ namespace platf {
 
     // ds4 == ps4
     static std::vector gps {
-      supported_gamepad_t {"auto", true, reason},
+      supported_gamepad_t {"auto", enabled || vhf_enabled, enabled || vhf_enabled ? "" : reason},
       supported_gamepad_t {"x360", enabled, reason},
       supported_gamepad_t {"ds4", enabled, reason},
       supported_gamepad_t {"vhf", vhf_enabled, vhf_reason},

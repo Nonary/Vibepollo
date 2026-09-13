@@ -29,6 +29,7 @@ interface OverviewWarning {
 interface VigemHealth {
   status?: unknown;
   installed?: unknown;
+  required?: unknown;
   version?: unknown;
 }
 
@@ -40,6 +41,7 @@ const statsStale = ref(false);
 const hostInfo = ref<HostInfo | null>(null);
 const hostPlatform = ref('');
 const vigemInstalled = ref<boolean | null>(null);
+const vigemRequired = ref<boolean | null>(null);
 const vigemVersion = ref('');
 const controllerEnabled = ref<boolean | null>(null);
 const loading = ref(true);
@@ -74,6 +76,7 @@ async function refreshVigem(platform: string): Promise<void> {
   if (!isWindowsPlatform(platform)) {
     controllerEnabled.value = null;
     vigemInstalled.value = null;
+    vigemRequired.value = null;
     vigemVersion.value = '';
     return;
   }
@@ -85,6 +88,7 @@ async function refreshVigem(platform: string): Promise<void> {
     controllerEnabled.value = enabled;
     if (!enabled) {
       vigemInstalled.value = null;
+      vigemRequired.value = null;
       vigemVersion.value = '';
       return;
     }
@@ -94,14 +98,17 @@ async function refreshVigem(platform: string): Promise<void> {
     // Auth, network, malformed, and unknown responses remain unknown.
     if (health && health.status !== false && typeof health.installed === 'boolean') {
       vigemInstalled.value = health.installed;
+      vigemRequired.value = typeof health.required === 'boolean' ? health.required : null;
       vigemVersion.value = typeof health.version === 'string' ? health.version : '';
     } else {
       vigemInstalled.value = null;
+      vigemRequired.value = null;
       vigemVersion.value = '';
     }
   } catch {
     controllerEnabled.value = null;
     vigemInstalled.value = null;
+    vigemRequired.value = null;
     vigemVersion.value = '';
   }
 }
@@ -208,7 +215,8 @@ const showVigemBanner = computed(
   () =>
     isWindowsPlatform(hostPlatform.value || system.metadata?.platform) &&
     controllerEnabled.value === true &&
-    vigemInstalled.value === false,
+    vigemInstalled.value === false &&
+    vigemRequired.value !== false,
 );
 
 const readiness = computed<{ label: string; detail: string; tone: StatusTone }>(() => {

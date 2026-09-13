@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 type FixtureOptions = {
   platform?: 'windows' | 'linux' | 'macos';
   vigem?:
-    | { status?: unknown; installed?: unknown; version?: string }
+    | { status?: unknown; installed?: unknown; required?: unknown; version?: string }
     | 'error'
     | 'status-false'
     | 'malformed';
@@ -236,6 +236,19 @@ test('Linux overview never probes or displays the Windows ViGEm diagnostic', asy
   await expect(page.getByRole('heading', { name: 'Ready to stream', exact: true })).toBeVisible();
   await expect(page.getByText('Virtual Gamepad Driver (ViGEm) not installed')).toHaveCount(0);
   expect(calls.vigem).toBe(0);
+});
+
+test('Windows overview hides the ViGEm warning when the Vibepollo driver covers it', async ({
+  page,
+}) => {
+  const calls = await installFixture(page, {
+    platform: 'windows',
+    vigem: { installed: false, required: false },
+  });
+  await page.goto('/v2/');
+  await expect(page.getByRole('heading', { name: 'Ready to stream', exact: true })).toBeVisible();
+  await expect(page.getByText('Virtual Gamepad Driver (ViGEm) not installed')).toHaveCount(0);
+  expect(calls.vigem).toBeGreaterThan(0);
 });
 
 test('ViGEm diagnostic failure remains silent and controller false strings disable the probe', async ({
