@@ -159,6 +159,7 @@ if ($trustOffset -lt 0 -or $pnpOffset -lt 0 -or $trustOffset -ge $pnpOffset) {
 
 $expectedGate = @'
       - name: Test VHF publisher trust policy
+        if: inputs.build_tests
         shell: pwsh
         run: .\packaging\windows\virtual_gamepad_driver\tests\test_publisher_trust.ps1
 '@

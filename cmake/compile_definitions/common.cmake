@@ -240,6 +240,17 @@ if(WIN32)
     # libraries whose runtime DLLs are not part of the installer payload.
     set(_steam_artwork_library_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
     set(CMAKE_FIND_LIBRARY_SUFFIXES .a .lib)
+    # Existing build trees may still cache the DLL import libraries selected
+    # before static linking was required. find_package does not re-search them.
+    foreach(_artwork_library_cache IN ITEMS
+            PNG_LIBRARY_RELEASE PNG_LIBRARY_DEBUG
+            JPEG_LIBRARY_RELEASE JPEG_LIBRARY_DEBUG STEAM_ARTWORK_WEBP_LIBRARY)
+        if("${${_artwork_library_cache}}" MATCHES "\\.dll\\.a$")
+            unset(${_artwork_library_cache} CACHE)
+            unset(${_artwork_library_cache})
+        endif()
+    endforeach()
+    unset(_artwork_library_cache)
     find_package(PNG REQUIRED)
     find_package(JPEG REQUIRED)
     find_library(STEAM_ARTWORK_WEBP_LIBRARY NAMES webp REQUIRED)

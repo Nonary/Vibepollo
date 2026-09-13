@@ -24,6 +24,11 @@ PRELUDE = r'''
 #include <functional>
 #include <utility>
 using namespace std::literals;
+#ifdef _WIN32
+constexpr int SM_CXVIRTUALSCREEN = 78;
+constexpr int SM_CYVIRTUALSCREEN = 79;
+int GetSystemMetrics(int metric) { return metric == SM_CXVIRTUALSCREEN ? 1920 : 1080; }
+#endif
 #define BOOST_LOG(level) std::clog
 namespace input {
   struct touch_port_t {

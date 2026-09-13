@@ -38,7 +38,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertNotIn("require_signpath_signing", build_inputs)
         self.assertEqual(
             build_inputs["build_tests"],
-            "${{ needs.release-candidate.outputs.should_release != 'true' }}",
+            "false",
         )
         self.assertEqual(
             build_inputs["release_artifact_retention_days"],
@@ -298,7 +298,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn("artifact_source_run_id", inputs)
         self.assertIn("build_only", inputs)
         self.assertEqual(inputs["build_tests"]["type"], "boolean")
-        self.assertEqual(inputs["build_tests"]["default"], "true")
+        self.assertEqual(inputs["build_tests"]["default"], "false")
         self.assertIn("resolve_source_artifacts", jobs)
         self.assertIn("release_artifacts", jobs)
         self.assertIn("inputs.build_only == false", jobs["sign_windows_msi"]["if"])

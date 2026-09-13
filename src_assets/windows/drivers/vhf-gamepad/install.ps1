@@ -26,11 +26,11 @@ $manifestPayload = @(
 )
 $localTestCertificate = 'driver/VibeshineVhfGamepad.cer'
 $expectedProducerRepository = 'Nonary/libvirtualgamepad'
-$expectedProducerTag = 'v0.1.0-beta.2'
-$expectedProducerAsset = 'libvirtualgamepad-0.1.0-beta.2-windows-x64.zip'
-$expectedProducerArchiveSha256 = '354c11239a91fd9fb2f52d45449de8409d96a4e4ed998f2794b5465eaec2434b'
-$expectedProducerSourceRevision = '52cbb8f27cbeb18baec53ca5d7b88081f0787a06'
-$expectedDriverVer = '08/21/2026,0.1.0.30'
+$expectedProducerTag = 'v0.1.0-beta.4'
+$expectedProducerAsset = 'libvirtualgamepad-0.1.0-beta.4-windows-x64.zip'
+$expectedProducerArchiveSha256 = '7830a91ba281c44ae9d01e92e9086f72384a07ca1b35ee87150592f8f960361a'
+$expectedProducerSourceRevision = '0b3970e1a8c839f14f20a7c8eaf48ff59b8c1986'
+$expectedDriverVer = '09/13/2026,0.1.0.34'
 $expectedProtocolVersion = 2
 $expectedSignPathFoundationSignerSubject = 'CN=SignPath Foundation, O=SignPath Foundation, L=Lewes, S=Delaware, C=US'
 
@@ -93,8 +93,8 @@ function Get-Sha256 {
 
 function Assert-ExactList {
     param(
-        [Parameter(Mandatory = $true)][object[]] $Actual,
-        [Parameter(Mandatory = $true)][object[]] $Expected,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]] $Actual,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]] $Expected,
         [Parameter(Mandatory = $true)][string] $Name
     )
 

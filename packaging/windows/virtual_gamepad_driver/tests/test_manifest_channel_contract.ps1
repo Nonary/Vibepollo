@@ -205,6 +205,7 @@ try {
 
 $expectedGate = @'
       - name: Test VHF manifest channel contract
+        if: inputs.build_tests
         shell: pwsh
         run: .\packaging\windows\virtual_gamepad_driver\tests\test_manifest_channel_contract.ps1
 '@

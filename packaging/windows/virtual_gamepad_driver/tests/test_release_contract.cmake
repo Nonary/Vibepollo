@@ -3,6 +3,23 @@ cmake_minimum_required(VERSION 3.25)
 get_filename_component(repository_root "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
 include("${repository_root}/cmake/packaging/windows_virtual_gamepad_contract.cmake")
 
+# The runtime installer independently validates the producer identity. A
+# packaging-only pin update otherwise builds successfully but fails at install.
+file(READ "${repository_root}/src_assets/windows/drivers/vhf-gamepad/install.ps1" installer_script)
+string(REGEX REPLACE "^v" "" producer_version "${SUNSHINE_VHF_GAMEPAD_RELEASE_TAG}")
+foreach(expected_assignment IN ITEMS
+    "$expectedProducerTag = '${SUNSHINE_VHF_GAMEPAD_RELEASE_TAG}'"
+    "$expectedProducerAsset = 'libvirtualgamepad-${producer_version}-windows-x64.zip'"
+    "$expectedProducerArchiveSha256 = '${SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256}'"
+    "$expectedProducerSourceRevision = '${SUNSHINE_VHF_GAMEPAD_SOURCE_REVISION}'"
+    "$expectedDriverVer = '${SUNSHINE_VHF_GAMEPAD_DRIVER_VER}'"
+    "$expectedProtocolVersion = ${SUNSHINE_VHF_GAMEPAD_PROTOCOL_VERSION}")
+    string(FIND "${installer_script}" "${expected_assignment}" assignment_offset)
+    if(assignment_offset EQUAL -1)
+        message(FATAL_ERROR "Runtime installer producer pin differs from packaging: ${expected_assignment}")
+    endif()
+endforeach()
+
 function(assert_fixed_hex_accepted case_name value expected_length)
     sunshine_vhf_is_fixed_length_hex(case_accepted "${value}" "${expected_length}")
     if(NOT case_accepted)

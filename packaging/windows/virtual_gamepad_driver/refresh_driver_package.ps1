@@ -124,8 +124,8 @@ function Get-Sha256 {
 
 function Assert-ExactList {
     param(
-        [Parameter(Mandatory = $true)][object[]] $Actual,
-        [Parameter(Mandatory = $true)][object[]] $Expected,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]] $Actual,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]] $Expected,
         [Parameter(Mandatory = $true)][string] $Name
     )
 
