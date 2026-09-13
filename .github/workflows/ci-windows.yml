@@ -5,6 +5,10 @@ permissions: {}
 on:
   workflow_call:
     inputs:
+      use_self_hosted:
+        required: false
+        type: boolean
+        default: false
       release_commit:
         required: true
         type: string
@@ -259,7 +263,7 @@ jobs:
     needs:
       - fetch_vhf_gamepad_release
     if: inputs.artifact_source_run_id == '' && needs.fetch_vhf_gamepad_release.result == 'success'
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ inputs.use_self_hosted && github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Windows", "X64", "windows-release"]') || fromJSON('["windows-2022"]') }}
     outputs:
       msi_name: ${{ steps.package-windows-msi.outputs.msi_name }}
       symbol_pack_name: ${{ steps.package-windows-symbols.outputs.symbol_pack_name }}
@@ -294,6 +298,22 @@ jobs:
             msystem: ucrt64
             toolchain: ucrt-x86_64
     steps:
+
+      - name: Prepare self-hosted build tools
+        if: runner.environment == 'self-hosted'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($tool in @('git', 'cmake', '7z')) {
+            Get-Command $tool -ErrorAction Stop | Out-Null
+          }
+          "DOTNET_INSTALL_DIR=$(Join-Path $env:RUNNER_TEMP 'dotnet')" >> $env:GITHUB_ENV
+          $wixRoot = Join-Path ${env:ProgramFiles(x86)} 'WiX Toolset v3.14'
+          if (-not (Test-Path (Join-Path $wixRoot 'bin\candle.exe'))) {
+            throw 'Install WiX 3.14 on the self-hosted runner before building.'
+          }
+          "WIX=$wixRoot\" >> $env:GITHUB_ENV
+          (Join-Path $wixRoot 'bin') >> $env:GITHUB_PATH
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -425,6 +445,7 @@ jobs:
           "nodejs-path=$nodePath"
 
       - name: Install WiX Toolset
+        if: runner.environment != 'self-hosted'
         shell: pwsh
         run: |
           choco install wixtoolset -y

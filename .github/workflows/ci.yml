@@ -9,6 +9,10 @@ on:
         description: Tag to publish, for example v1.16.0-alpha.4
         required: false
         type: string
+      use_self_hosted:
+        description: Use the local Windows release runner
+        type: boolean
+        default: true
   push:
     branches:
       - '**'
@@ -247,6 +251,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/ci-windows.yml
     with:
+      use_self_hosted: ${{ needs.release-candidate.outputs.should_release == 'true' || (github.event_name == 'workflow_dispatch' && inputs.use_self_hosted) }}
       build_only: ${{ needs.release-candidate.outputs.should_release == 'true' }}
       build_tests: ${{ needs.release-candidate.outputs.should_release != 'true' }}
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
