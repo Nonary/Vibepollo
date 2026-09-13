@@ -1,8 +1,10 @@
+import io
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import yaml
@@ -31,9 +33,6 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn("build-archlinux", jobs)
         self.assertIn("awaiting-signing", jobs)
         self.assertIn("build-archlinux", awaiting_signing["needs"])
-        self.assertIn(
-            "github.ref == 'refs/heads/vibe-test'", jobs["build-archlinux"]["if"]
-        )
         self.assertIn("should_release", build_inputs["build_only"])
         self.assertNotIn("require_signpath_signing", build_inputs)
         self.assertEqual(
@@ -61,6 +60,52 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn("release_version=release_version", workflow_text)
         self.assertIn("should_release=\"false\"", workflow_text)
         self.assertNotIn("def canonical_release_tag", workflow_text)
+
+    def test_branch_selection_skips_without_git_or_release_api_calls(self) -> None:
+        steps = load_workflow("ci.yml")["jobs"]["release-candidate"]["steps"]
+        step = next(step for step in steps if step.get("id") == "release-candidate")
+        script = step["run"].split("python <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            environment = {
+                "EVENT_NAME": "push",
+                "GITHUB_REF_TYPE": "branch",
+                "GITHUB_REF": "refs/heads/vibe-test",
+                "GITHUB_REPOSITORY": "Nonary/test",
+                "GITHUB_OUTPUT": str(output),
+            }
+            with patch.dict(os.environ, environment, clear=True), patch(
+                "subprocess.run", side_effect=AssertionError("branch selection invoked a command")
+            ), patch("sys.stdout", new=io.StringIO()), self.assertRaises(SystemExit) as stopped:
+                exec(compile(script, "ci-release-selection", "exec"), {})
+            self.assertEqual(stopped.exception.code, 0)
+            self.assertIn("should_release=false", output.read_text())
+            self.assertIn("tag_name=\n", output.read_text())
+
+    def test_package_builds_wait_for_tag_push(self) -> None:
+        jobs = load_workflow("ci.yml")["jobs"]
+        cases = (
+            ("push", "branch", "false", False),
+            # Even when a branch HEAD already has a release tag, only its tag event builds.
+            ("push", "branch", "true", False),
+            ("push", "tag", "true", True),
+            ("push", "tag", "false", False),
+            ("workflow_dispatch", "branch", "false", True),
+            ("pull_request", "branch", "false", True),
+        )
+        for job in ("build-windows", "build-archlinux"):
+            for event, ref_type, release, expected in cases:
+                with self.subTest(job=job, event=event, ref_type=ref_type, release=release):
+                    expression = jobs[job]["if"].strip().removeprefix("${{").removesuffix("}}")
+                    for name, value in (
+                        ("github.event_name", event),
+                        ("github.ref_type", ref_type),
+                        ("needs.release-candidate.outputs.should_release", release),
+                    ):
+                        expression = expression.replace(name, repr(value))
+                    expression = expression.replace("||", "or").replace("&&", "and")
+                    expression = " ".join(expression.split())
+                    self.assertEqual(eval(expression, {"__builtins__": {}}), expected)
 
     def test_arch_package_is_built_and_carried_into_release(self) -> None:
         ci_workflow = load_workflow("ci.yml")
