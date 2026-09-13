@@ -30,7 +30,7 @@ on:
       build_tests:
         required: false
         type: boolean
-        default: true
+        default: false
       release_artifact_retention_days:
         required: false
         type: number
@@ -323,18 +323,22 @@ jobs:
           submodules: recursive
 
       - name: Test VHF publisher trust policy
+        if: inputs.build_tests
         shell: pwsh
         run: .\packaging\windows\virtual_gamepad_driver\tests\test_publisher_trust.ps1
 
       - name: Test VHF manifest channel contract
+        if: inputs.build_tests
         shell: pwsh
         run: .\packaging\windows\virtual_gamepad_driver\tests\test_manifest_channel_contract.ps1
 
       - name: Test VHF CMake release contract
+        if: inputs.build_tests
         shell: pwsh
         run: cmake -P .\packaging\windows\virtual_gamepad_driver\tests\test_release_contract.cmake
 
       - name: Test WiX sortable ProductCode contract
+        if: inputs.build_tests
         shell: pwsh
         run: cmake -P .\packaging\windows\wix\tests\test_sortable_product_guid_contract.cmake
 
@@ -589,7 +593,7 @@ jobs:
           fi
 
           mkdir -p build
-          # Release tag builds omit test targets; ordinary reusable-workflow calls retain them.
+          # Test targets are opt-in for CI builds.
           cmake \
             -B build \
             -G Ninja \

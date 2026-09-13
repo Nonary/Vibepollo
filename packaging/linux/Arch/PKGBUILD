@@ -182,7 +182,7 @@ build() {
       )
     fi
 
-    _cmake_options+=(-DBUILD_TESTS=ON)
+    _cmake_options+=(-DBUILD_TESTS="${_build_tests:-ON}")
 
     cmake "${_cmake_options[@]}"
 
@@ -202,7 +202,9 @@ check() {
       "${srcdir}/cuda/bin/cuobjdump" --list-elf ./vibepollo > cuda-device-code.txt
       grep -q 'sm_61\.' cuda-device-code.txt
     fi
-    ctest --test-dir . --output-on-failure -j2
+    if [[ "${_build_tests:-ON}" != "OFF" ]]; then
+      ctest --test-dir . --output-on-failure -j2
+    fi
 }
 
 package() {

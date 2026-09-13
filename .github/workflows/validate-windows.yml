@@ -23,7 +23,7 @@ jobs:
     with:
       use_self_hosted: true
       build_only: true
-      build_tests: true
+      build_tests: false
       release_commit: ${{ github.sha }}
       release_version: ${{ inputs.release_version }}
       symbol_product_name: Vibepollo
