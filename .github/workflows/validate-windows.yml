@@ -1,0 +1,25 @@
+---
+name: Validate Windows runner
+permissions: {}
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: windows-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/ci-windows.yml
+    with:
+      use_self_hosted: true
+      build_only: true
+      build_tests: true
+      release_commit: ${{ github.sha }}
+      release_version: '0.0.0'
+      symbol_product_name: Vibepollo
+      symbol_release_prefix: pollo
