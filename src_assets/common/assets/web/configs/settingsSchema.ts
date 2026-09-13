@@ -990,7 +990,7 @@ export const settingsDefaults: Record<string, unknown> = {
   remote_monitor_disconnect_on_client_disconnect: false,
   remote_monitor_terminate_on_first_request: false,
   remote_monitor_confirm_app_replacement: true,
-  dd_virtual_display_scale: -1,
+  dd_virtual_display_scale: 0,
   frame_limiter_enable: false,
   frame_limiter_provider: 'auto',
   frame_limiter_fps_limit: 0,

@@ -6648,19 +6648,9 @@ namespace VDISPLAY_SUNSHINE {
       create_request.display_id = display_id;
       create_request.width = width;
       create_request.height = height;
-      if (effective_scale > 0) {
-        const auto dpi = 96.0 * static_cast<double>(effective_scale) / 100.0;
-        create_request.physical_width_mm = std::clamp(
-          static_cast<std::uint32_t>(std::lround(static_cast<double>(width) * 25.4 / dpi)),
-          sunshine_driver::kMinPhysicalSizeMillimeters,
-          sunshine_driver::kMaxPhysicalSizeMillimeters
-        );
-        create_request.physical_height_mm = std::clamp(
-          static_cast<std::uint32_t>(std::lround(static_cast<double>(height) * 25.4 / dpi)),
-          sunshine_driver::kMinPhysicalSizeMillimeters,
-          sunshine_driver::kMaxPhysicalSizeMillimeters
-        );
-      }
+      // Keep the driver's normal monitor dimensions. Encoding DPI in the
+      // physical size can make Windows classify the display as a handheld.
+      // Apply requested scaling through set_display_scale_percent after activation.
       create_request.refresh_rate_millihz = descriptor_fps;
       create_request.requested_timeout_ms = DRIVER_LEASE_TIMEOUT_MS;
       create_request.hdr_max_luminance_nits = static_cast<std::uint32_t>(

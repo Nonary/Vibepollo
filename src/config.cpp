@@ -952,7 +952,7 @@ namespace config {
 #endif
       true,  // use_sunshine_virtual_display_driver
       false,  // activate_virtual_display
-      -1,  // virtual_display_scale_percent
+      0,  // virtual_display_scale_percent
       0,  // virtual_display_permanent_count
       false,  // virtual_display_permanent_count_configured
       {},  // virtual_display_outputs (Linux; empty auto-discovers Vibepollo VKMS connectors)

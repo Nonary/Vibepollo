@@ -4674,7 +4674,7 @@ Sets how long a paused virtual display may remain ready before the display helpe
 
 ### dd_virtual_display_scale
 
-Sets the virtual-display scale override. Leave it unset or at the automatic setting to use the recommended scale for the requested display mode.
+Sets the virtual-display scale override. The default, `0` (Retain), keeps your chosen scale for future streams. On Windows, connect to the virtual display and choose **Scale** in **Settings > System > Display**; subsequent streams using that virtual display retain your choice. Choose an explicit percentage to change desktop scaling without changing the requested pixel resolution. On Windows, scaling is applied through the DPI setter without changing the virtual monitor's reported physical size. The optional `-1` setting chooses a scale based on resolution.
 
 ### dd_wa_hdr_toggle
 

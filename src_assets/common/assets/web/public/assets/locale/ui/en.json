@@ -1661,8 +1661,8 @@
           "label": "Always-available virtual displays"
         },
         "dd_virtual_display_scale": {
-          "description": "Adjust interface size without changing the resolution requested by the client.",
-          "label": "Display scaling"
+          "description": "@:config.virtual_display_scale_desc",
+          "label": "@:config.virtual_display_scale_label"
         },
         "virtual_display_outputs": {
           "description": "Optional comma-separated DRM connector names reserved for private streams. Leave empty to use the four-output managed pool. On Linux 7.1+, Vibepollo provides GPU-attached HDR10 and 10-bit output; HDR uses direct KMS capture, KWin is recommended for SDR, and managed display creation fails if the custom driver is unavailable.",
@@ -2144,8 +2144,8 @@
         },
         "virtual_scale": {
           "percent": "{value}%",
-          "preserve": "Preserve the current desktop choice",
-          "recommended": "Recommended for the resolution"
+          "preserve": "@:config.virtual_display_scale_auto",
+          "recommended": "@:config.virtual_display_scale_recommended"
         }
       },
       "placeholders": {
@@ -2348,7 +2348,7 @@
           "virtual_display_layout": "Choose what happens to your local monitors during streaming. Using only the virtual screen turns off the other displays until the desktop is restored.",
           "capture": "The supported Linux machine host uses KMS for direct virtual-screen capture. Other backends are compatibility overrides and may not support unattended streaming.",
           "adapter_name": "Leave empty for automatic GPU selection. To select a render device explicitly, enter its Linux path, such as /dev/dri/renderD128.",
-          "dd_virtual_display_scale": "Adjust text and interface size on the virtual screen. Automatic follows the supported display policy.",
+          "dd_virtual_display_scale": "@:config.virtual_display_scale_desc",
           "virtual_display_outputs": "Leave empty to use the managed virtual-screen pool. Explicit DRM connector names are an advanced override."
         }
       },

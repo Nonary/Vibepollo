@@ -157,7 +157,7 @@ const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
 const virtualDisplayScale = computed<number>({
   get() {
     const value = Number(config.value?.['dd_virtual_display_scale']);
-    return Number.isFinite(value) ? value : -1;
+    return Number.isFinite(value) ? value : 0;
   },
   set(value) {
     if (!config.value) return;

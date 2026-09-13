@@ -201,8 +201,8 @@ const globalVirtualDisplayLayoutLabel = computed(() =>
 );
 
 const globalVirtualDisplayScale = computed(() => {
-  const value = Number(props.commonSettings.dd_virtual_display_scale ?? -1);
-  return Number.isFinite(value) ? value : -1;
+  const value = Number(props.commonSettings.dd_virtual_display_scale ?? 0);
+  return Number.isFinite(value) ? value : 0;
 });
 
 const globalVirtualDisplayScaleLabel = computed(() => {
