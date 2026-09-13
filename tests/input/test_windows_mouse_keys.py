@@ -43,14 +43,14 @@ constexpr unsigned SM_MOUSEPRESENT = 1, SPI_GETMOUSEKEYS = 2,
 std::mutex desktop_mutex;
 MOUSEKEYS desktop;
 bool mouse_present = false, fail_get = false, fail_set = false;
-unsigned gets = 0, sets = 0;
+unsigned get_calls = 0, sets = 0;
 int GetSystemMetrics(unsigned) { return mouse_present; }
 int GetLastError() { return 5; }
 int SystemParametersInfoW(unsigned action, unsigned, void *data, unsigned) {
   std::lock_guard lock(desktop_mutex);
   auto state = static_cast<MOUSEKEYS *>(data);
   if (action == SPI_GETMOUSEKEYS) {
-    ++gets;
+    ++get_calls;
     if (fail_get) return 0;
     *state = desktop;
   } else {
@@ -71,7 +71,7 @@ void check(bool ok, const char *name) {
 const MOUSEKEYS original {sizeof(MOUSEKEYS), 0x40, 77, 3000, 5, 0, 0};
 void reset(MOUSEKEYS initial = original) {
   desktop = initial;
-  gets = sets = 0;
+  get_calls = sets = 0;
   mouse_present = fail_get = fail_set = false;
   enabled_mouse_keys = false;
   previous_mouse_keys_state = {};
@@ -79,7 +79,7 @@ void reset(MOUSEKEYS initial = original) {
 int main() {
   reset(); mouse_present = true;
   enable_mouse_keys(); restore_mouse_keys();
-  check(desktop == original && gets == 0 && sets == 0,
+  check(desktop == original && get_calls == 0 && sets == 0,
         "connected mouse leaves settings untouched");
 
   reset();
@@ -92,7 +92,7 @@ int main() {
   reset();
   for (int i = 0; i != 1200; ++i) enable_mouse_keys();
   restore_mouse_keys();
-  check(desktop == original && gets == 1 && sets == 2,
+  check(desktop == original && get_calls == 1 && sets == 2,
         "per-frame checks preserve original baseline");
 
   reset();
@@ -102,7 +102,7 @@ int main() {
   }
   for (auto &worker : workers) worker.join();
   restore_mouse_keys();
-  check(desktop == original && gets == 1 && sets == 2,
+  check(desktop == original && get_calls == 1 && sets == 2,
         "concurrent capture checks share one original snapshot");
 
   reset();
@@ -146,7 +146,7 @@ int main() {
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, default=ROOT / 'src/platform/windows/misc.cpp')
-    parser.add_argument('--compiler', default='/usr/bin/g++-15')
+    parser.add_argument('--compiler', default='c++')
     args = parser.parse_args()
     source = args.source.read_text()
     start = source.index(';', source.index('using adapteraddrs_t =')) + 1

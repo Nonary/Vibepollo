@@ -25,6 +25,7 @@ def function(source, signature):
 PRELUDE = r'''
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <memory>
@@ -43,6 +44,7 @@ struct port_t {
 struct event_t {
   bool peek() const { return false; }
   std::optional<port_t> pop() const { return std::nullopt; }
+  std::optional<port_t> view(std::chrono::milliseconds) const { return std::nullopt; }
 };
 struct input_t {
   std::shared_ptr<event_t> touch_port_event = std::make_shared<event_t>();
