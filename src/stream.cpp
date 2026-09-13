@@ -1829,6 +1829,7 @@ namespace stream {
       // We may not have gotten far enough to have an ENet connection yet.
       send_termination(session);
 
+      input::reset(session->input);
       session->shutdown_event->raise(true);
       session->controlEnd.raise(true);
     }
@@ -3079,6 +3080,7 @@ namespace stream {
         return;
       }
 
+      input::reset(session.input);
       session.shutdown_event->raise(true);
     }
 
@@ -3124,6 +3126,9 @@ namespace stream {
         }
       });
 
+      // Release input before any potentially hung capture joins.
+      input::reset(session.input);
+
       // Current Nvidia drivers have a bug where NVENC can deadlock the encoder thread with hardware-accelerated
       // GPU scheduling enabled. If this happens, we will terminate ourselves and the service can restart.
       // The alternative is that Sunshine can never start another session until it's manually restarted.
@@ -3155,15 +3160,17 @@ namespace stream {
       // Trapping on any of that is a false positive that would kill every other
       // live stream.
 
-      // Reset input on session stop to avoid stuck repeated keys
-      BOOST_LOG(debug) << "Resetting Input..."sv;
-      input::reset(session.input);
+      // Serialize client cleanup and shared runtime finalization with lifecycle transitions.
+      std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex(), std::defer_lock);
+      if (!lifecycle_lock_held) {
+        lifecycle_lock.lock();
+      }
+      // Snapshot the app environment before pause or finalization can change it.
 
       if (!session.undo_cmds.empty()) {
-        auto exec_thread = std::thread([cmd_list = session.undo_cmds] {
+        auto exec_thread = std::thread([cmd_list = session.undo_cmds, env = proc::proc.get_env()]() mutable {
           for (auto &cmd : cmd_list) {
             std::error_code ec;
-            auto env = proc::proc.get_env();
             boost::filesystem::path working_dir = proc::find_working_directory(cmd.cmd, env);
             auto child = platf::run_command(cmd.elevated, true, cmd.cmd, working_dir, env, nullptr, ec, nullptr);
             BOOST_LOG(info) << "Spawning client undo command ["sv << cmd.cmd << "] in ["sv << working_dir << ']';
@@ -3178,15 +3185,6 @@ namespace stream {
         exec_thread.detach();
       }
 
-      // Serialize the ownership transition and shared cleanup. Normal session
-      // reaping acquires the lifecycle gate only after the blocking joins
-      // above. A synchronous NVHTTP disconnect already owns that gate, so it
-      // explicitly transfers the ownership contract instead of reacquiring
-      // this non-recursive mutex.
-      std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex(), std::defer_lock);
-      if (!lifecycle_lock_held) {
-        lifecycle_lock.lock();
-      }
       // The app may already have exited, but its output must survive until
       // this capture has joined and released every encoder/conversion import.
       session.normal_display_capture.reset();
@@ -3435,7 +3433,6 @@ namespace stream {
         auto exec_thread = std::thread([cmd_list = session.do_cmds] {
           for (auto &cmd : cmd_list) {
             std::error_code ec;
-            auto env = proc::proc.get_env();
             boost::filesystem::path working_dir = proc::find_working_directory(cmd.cmd, env);
             auto child = platf::run_command(cmd.elevated, true, cmd.cmd, working_dir, env, nullptr, ec, nullptr);
             BOOST_LOG(info) << "Spawning client do command ["sv << cmd.cmd << "] in ["sv << working_dir << ']';

@@ -1015,35 +1015,39 @@ namespace webrtc_stream {
       return *pool;
     }
 
+    struct BrowserInput {
+      std::shared_ptr<safe::mail_raw_t> mail;
+      std::shared_ptr<input::input_t> context;
+      std::mutex gamepad_mutex;
+      std::bitset<16> gamepads;
+    };
     std::mutex input_mutex;
-    std::shared_ptr<safe::mail_raw_t> input_mail;
-    std::shared_ptr<input::input_t> input_context;
-    std::mutex gamepad_mutex;
-    std::bitset<16> webrtc_gamepads;
+    // Entries are registered with sessions; a late callback cannot recreate a
+    // disconnected session's input context.
+    std::unordered_map<std::string, std::shared_ptr<BrowserInput>> browser_inputs;
+    std::unordered_set<std::string> suspended_browser_inputs;
 
     std::shared_ptr<safe::mail_raw_t> current_capture_mail();
 
-    std::shared_ptr<input::input_t> current_input_context() {
+    std::shared_ptr<BrowserInput> current_input_context(std::string_view session_id) {
       auto capture_mail = current_capture_mail();
       std::lock_guard lg {input_mutex};
-      if (capture_mail && input_mail != capture_mail) {
-        if (input_context) {
-          input::reset(input_context);
-        }
-        input_context.reset();
-        input_mail.reset();
-        {
-          std::lock_guard lg {gamepad_mutex};
-          webrtc_gamepads.reset();
-        }
+      auto it = browser_inputs.find(std::string {session_id});
+      if (it == browser_inputs.end() || suspended_browser_inputs.contains(it->first)) {
+        return {};
       }
-      if (!input_context) {
-        input_mail = capture_mail ? capture_mail : std::make_shared<safe::mail_raw_t>();
-        input_context = input::alloc(input_mail);
-
+      auto &state = it->second;
+      if (state && capture_mail && state->mail != capture_mail) {
+        input::reset(state->context);
+        state.reset();
+      }
+      if (!state) {
+        state = std::make_shared<BrowserInput>();
+        state->mail = capture_mail ? capture_mail : std::make_shared<safe::mail_raw_t>();
+        state->context = input::alloc(state->mail);
         // Set up a default touch port for WebRTC input when capture mail isn't available.
         if (!capture_mail) {
-          auto touch_port_event = input_mail->event<input::touch_port_t>(mail::touch_port);
+          auto touch_port_event = state->mail->event<input::touch_port_t>(mail::touch_port);
 #ifdef _WIN32
           int screen_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
           int screen_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
@@ -1073,19 +1077,46 @@ namespace webrtc_stream {
           touch_port_event->raise(port);
         }
       }
-      return input_context;
+      return state;
+    }
+
+    void reset_session_input(std::string_view session_id) {
+      std::lock_guard lg {input_mutex};
+      auto it = browser_inputs.find(std::string {session_id});
+      if (it != browser_inputs.end()) {
+        if (it->second) {
+          input::reset(it->second->context);
+        }
+        suspended_browser_inputs.erase(it->first);
+        browser_inputs.erase(it);
+      }
+    }
+
+    void suspend_session_input(std::string_view session_id) {
+      std::lock_guard lg {input_mutex};
+      auto it = browser_inputs.find(std::string {session_id});
+      if (it == browser_inputs.end()) {
+        return;
+      }
+      suspended_browser_inputs.insert(it->first);
+      if (it->second) {
+        input::reset(it->second->context);
+        it->second.reset();
+      }
+    }
+
+    void resume_session_input(std::string_view session_id) {
+      std::lock_guard lg {input_mutex};
+      suspended_browser_inputs.erase(std::string {session_id});
     }
 
     [[maybe_unused]] void reset_input_context() {
       std::lock_guard lg {input_mutex};
-      if (input_context) {
-        input::reset(input_context);
-      }
-      input_context.reset();
-      input_mail.reset();
-      {
-        std::lock_guard gamepad_lock {gamepad_mutex};
-        webrtc_gamepads.reset();
+      for (auto &[id, state] : browser_inputs) {
+        if (state) {
+          input::reset(state->context);
+          state.reset();
+        }
       }
     }
 
@@ -1514,11 +1545,14 @@ namespace webrtc_stream {
       }
 #endif
 
-      auto input_ctx = current_input_context();
-      if (!input_ctx) {
+      auto input_state = current_input_context(session_id);
+      if (!input_state) {
         return;
       }
       const auto input_permission = crypto::PERM::_all_inputs;
+      auto input_ctx = input_state->context;
+      auto &gamepad_mutex = input_state->gamepad_mutex;
+      auto &webrtc_gamepads = input_state->gamepads;
 
       if (type == "mouse_move") {
         const double x = message.value("x", 0.0);
@@ -3506,10 +3540,10 @@ namespace webrtc_stream {
 
       lifecycle_lock.unlock();
 #ifdef SUNSHINE_ENABLE_WEBRTC
+      reset_input_context();
       if (teardown.media_thread.joinable()) {
         teardown.media_thread.join();
       }
-      reset_input_context();
 #endif
       if (teardown.feedback_thread.joinable()) {
         teardown.feedback_thread.join();
@@ -3654,11 +3688,12 @@ namespace webrtc_stream {
         return;
       }
 
-      auto input_ctx = current_input_context();
-      if (!input_ctx) {
+      auto input_state = current_input_context(ctx->id);
+      if (!input_state) {
         return;
       }
       const auto input_permission = crypto::PERM::_all_inputs;
+      auto input_ctx = input_state->context;
 
       const auto type = buffer[0];
       if (type != kInputBinaryMouseMove || length < kInputBinaryMouseMoveSize) {
@@ -3720,6 +3755,25 @@ namespace webrtc_stream {
       );
     }
 
+    void on_peer_state(void *user, int state) {
+      auto *ctx = static_cast<SessionDataChannelContext *>(user);
+      if (!ctx || !ctx->active.load(std::memory_order_acquire)) {
+        return;
+      }
+      if (state == LWRTC_PEER_DISCONNECTED) {
+        // ICE can recover without closing SCTP. Release held input now, then
+        // allocate a fresh context only after the connection recovers.
+        suspend_session_input(ctx->id);
+      } else if (state == LWRTC_PEER_CONNECTED) {
+        resume_session_input(ctx->id);
+      } else if (state == LWRTC_PEER_FAILED || state == LWRTC_PEER_CLOSED) {
+        reset_session_input(ctx->id);
+        task_pool.push([session_id = ctx->id]() {
+          close_session(session_id);
+        });
+      }
+    }
+
     void on_data_channel_state(void *user, int state) {
       auto *ctx = static_cast<SessionDataChannelContext *>(user);
       if (!ctx || !ctx->active.load(std::memory_order_acquire) ||
@@ -3728,6 +3782,7 @@ namespace webrtc_stream {
       }
 
       auto session_id = ctx->id;
+      reset_session_input(session_id);
       BOOST_LOG(debug) << "WebRTC: input data channel closed; scheduling session teardown id=" << session_id;
       task_pool.push([session_id = std::move(session_id)]() {
         close_session(session_id);
@@ -5584,6 +5639,10 @@ namespace webrtc_stream {
       }
       {
         std::lock_guard lg {session_mutex};
+        {
+          std::lock_guard input_lock {input_mutex};
+          browser_inputs.emplace(snapshot.id, nullptr);
+        }
         sessions.emplace(snapshot.id, std::move(session));
         first_session = active_sessions.fetch_add(1, std::memory_order_relaxed) == 0;
       }
@@ -5620,6 +5679,9 @@ namespace webrtc_stream {
   }
 
   bool close_session(std::string_view id) {
+    // Input release must not wait for the lifecycle gate, peer teardown or
+    // the last browser viewer to disconnect.
+    reset_session_input(id);
     bool teardown_reserved = false;
     auto teardown_reservation = util::fail_guard([&]() {
       if (!teardown_reserved) {
@@ -6137,6 +6199,11 @@ namespace webrtc_stream {
         data_context->id = session_id;
         it->second.data_channel_context = std::move(data_context);
       }
+      lwrtc_peer_register_state_callback(
+        it->second.peer,
+        &on_peer_state,
+        it->second.data_channel_context.get()
+      );
       BOOST_LOG(debug) << "WebRTC: registering data channel id=" << session_id;
       lwrtc_peer_register_data_channel(
         it->second.peer,

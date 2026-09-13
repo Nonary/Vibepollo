@@ -25,6 +25,9 @@ def function(source, signature):
 
 PRELUDE = r'''
 #include <array>
+#include <bitset>
+#include <atomic>
+#include <thread>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -46,9 +49,11 @@ struct worker_t {
   std::map<task_id_t, std::function<void()>> timers;
   std::uintptr_t next_id = 10;
   void push(std::function<void()> f) { tasks.push_back(std::move(f)); }
-  template<class Duration> timer_t pushDelayed(std::function<void()> f, Duration) {
+  template<class Function, class Duration, class... Args>
+  timer_t pushDelayed(Function f, Duration, Args... args) {
+    std::function<void()> callback = [=] { f(args...); };
     auto id = reinterpret_cast<task_id_t>(++next_id);
-    timers.emplace(id, std::move(f));
+    timers.emplace(id, std::move(callback));
     return {id};
   }
   bool cancel(task_id_t id) { return timers.erase(id) != 0; }
@@ -64,11 +69,58 @@ struct worker_t {
   void fire() { take_timer()(); }
 } task_pool;
 namespace thread_pool_util { using ThreadPool = worker_t; }
+namespace task_pool_util { using TaskPool = worker_t; }
 #define DISABLE_LEFT_BUTTON_DELAY ((worker_t::task_id_t) 0x01)
 #define ENABLE_LEFT_BUTTON_DELAY nullptr
-constexpr int BUTTON_LEFT = 1, BUTTON_RIGHT = 3;
+constexpr int BUTTON_LEFT = 1, BUTTON_RIGHT = 3, BUTTON_X2 = 5;
 constexpr int MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5 = 1;
-namespace config { struct { bool mouse = true; } input; }
+namespace config { struct {
+  bool mouse = true, keyboard = true, controller = true;
+  std::chrono::milliseconds key_repeat_delay {0}, key_repeat_period {10}, back_button_timeout {1000};
+  std::unordered_map<short, short> keybindings;
+} input; }
+#define BOOST_LOG(level) std::clog
+constexpr int LI_TOUCH_EVENT_CANCEL_ALL = 4;
+constexpr int KEY_UP_EVENT_MAGIC = 2;
+constexpr int MODIFIER_SHIFT = 1, MODIFIER_CTRL = 2, MODIFIER_ALT = 4;
+constexpr int VKEY_SHIFT = 0x10, VKEY_LSHIFT = 0xA0, VKEY_RSHIFT = 0xA1;
+constexpr int VKEY_CONTROL = 0x11, VKEY_LCONTROL = 0xA2, VKEY_RCONTROL = 0xA3;
+constexpr int VKEY_MENU = 0x12, VKEY_LMENU = 0xA4, VKEY_RMENU = 0xA5;
+struct keyboard_packet { struct { int magic; } header; char flags; short keyCode; char modifiers; };
+using PNV_KEYBOARD_PACKET = keyboard_packet *;
+int apply_shortcut(short key) { return key == 0x70; }
+struct held_key_t { uint16_t host_key; uint8_t flags; uint8_t modifiers; };
+struct host_key_t { unsigned owners = 0; uint16_t key = 0; uint8_t flags = 0; };
+std::unordered_map<uint16_t, host_key_t> host_keys;
+namespace platf {
+  using input_t = int;
+  struct gamepad_state_t {
+    uint32_t buttonFlags = 0;
+    uint8_t lt = 0, rt = 0;
+    int16_t lsX = 0, lsY = 0, rsX = 0, rsY = 0;
+  };
+  constexpr int BACK = 0x20, HOME = 0x400;
+  struct client_input_t { static inline int destroyed = 0; ~client_input_t() { ++destroyed; } };
+  struct touch_input_t { int eventType = 0; };
+  struct pen_input_t { int eventType = 0; };
+  struct touch_port_t {};
+  int touch_cancels = 0, pen_cancels = 0;
+  void touch_update(client_input_t *, touch_port_t, touch_input_t t) { assert(t.eventType == LI_TOUCH_EVENT_CANCEL_ALL); ++touch_cancels; }
+  void pen_update(client_input_t *, touch_port_t, pen_input_t p) { assert(p.eventType == LI_TOUCH_EVENT_CANCEL_ALL); ++pen_cancels; }
+  std::vector<int> freed_gamepads;
+  std::vector<std::pair<int, gamepad_state_t>> gamepad_events;
+  void gamepad_update(int, int id, gamepad_state_t state) { gamepad_events.emplace_back(id, state); }
+  void free_gamepad(int, int id) { freed_gamepads.push_back(id); }
+}
+std::bitset<16> gamepadMask;
+void free_id(std::bitset<16> &mask, int id) { mask[id] = false; }
+enum class button_state_e { NONE, DOWN, UP };
+struct gamepad_t {
+  int id = -1;
+  worker_t::task_id_t back_timeout_id = nullptr;
+  platf::gamepad_state_t gamepad_state;
+  button_state_e back_button_state = button_state_e::NONE;
+};
 namespace util::endian {
   template<class T> T big(T value) { return value; }
   template<class T> T little(T value) { return value; }
@@ -82,13 +134,22 @@ struct controller_t {
 } controller;
 auto mouse_controller = &controller;
 struct input_t {
+  enum { CTRL = 1, ALT = 2, SHIFT = 4, SHORTCUT = 7 };
+  int shortcutFlags = 0;
+  std::unordered_map<uint16_t, held_key_t> keys;
+  worker_t::task_id_t key_press_repeat_id = nullptr;
+  uint16_t repeating_key = 0;
+  bool input_closed = false;
+  std::vector<gamepad_t> gamepads {16};
+  std::unique_ptr<platf::client_input_t> client_context;
+  int accumulated_vscroll_delta = 0, accumulated_hscroll_delta = 0;
   worker_t::task_id_t mouse_left_button_timeout = nullptr;
   bool mouse_left_button_delay = true;
   std::mutex input_queue_lock;
   std::list<int> input_queue;
 };
-std::array<std::uint8_t, 5> mouse_press {};
-std::array<input_t *, 5> mouse_press_owner {};
+std::array<std::uint8_t, BUTTON_X2 + 1> mouse_press {};
+std::array<input_t *, BUTTON_X2 + 1> mouse_press_owner {};
 worker_t::task_id_t key_press_repeat_id {};
 std::unordered_map<int, bool> key_press;
 int platf_input;
@@ -101,9 +162,23 @@ struct event_t {
 std::vector<event_t> events;
 namespace platf {
   void button_mouse(int, int button, bool release) { events.push_back({button, release}); }
-  void keyboard_update(int, int, bool, int) {}
+  struct keyboard_event_t { int key; bool release; int flags; bool operator==(const keyboard_event_t &) const = default; };
+  std::vector<keyboard_event_t> keyboard_events;
+  void keyboard_update(int, int key, bool release, int flags) { keyboard_events.push_back({key, release, flags}); }
 }
 '''
+
+def production_prelude(source):
+    """Use the actual production tracking arrays, including their bounds."""
+    import re
+    prelude = PRELUDE
+    for name in ('mouse_press', 'mouse_press_owner'):
+        pattern = rf'(?:static )?std::array<[^;]+> {name} {{}};'
+        declaration = re.search(pattern, source)
+        if declaration:
+            prelude = re.sub(pattern, declaration.group(), prelude)
+    return prelude
+
 
 TESTS = r'''
 void button(std::shared_ptr<input_t> &input, int code, bool release) {
@@ -245,8 +320,12 @@ def main():
     handlers = '\n'.join(function(source, signature) for signature in (
         'void passthrough(std::shared_ptr<input_t> &input, PNV_REL_MOUSE_MOVE_PACKET packet)',
         'void passthrough(std::shared_ptr<input_t> &input, PNV_MOUSE_BUTTON_PACKET packet)',
+        'uint16_t host_keycode(uint16_t key)',
+        'void release_key(const held_key_t &key)',
+        'void free_gamepad(platf::input_t &platf_input, int id)',
+        'void reset_gamepad(gamepad_t &gamepad)',
         'void reset(std::shared_ptr<input_t> &input)',
-    ))
+    ) if signature in source)
     cases = [
         'cancelled_release', 'completed_release', 'running_release', 'queued_release',
         'relative_move_pending', 'relative_release_immediate', 'right_click_order',
@@ -262,8 +341,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix='delayed-mouse-release-') as temp:
         cpp = Path(temp) / 'test.cpp'
         binary = Path(temp) / 'test'
-        cpp.write_text(PRELUDE + handlers + TESTS)
-        subprocess.run(['c++', '-std=c++20', '-Wall', '-Wextra', '-Wno-sign-compare',
+        cpp.write_text(production_prelude(source) + handlers + TESTS)
+        subprocess.run(['c++', '-std=c++20', '-Wall', '-Wextra', '-Wno-sign-compare', '-Wno-unused-const-variable',
                         str(cpp), '-o', str(binary)], check=True)
         for case in cases:
             result = subprocess.run([str(binary), case], capture_output=True, text=True)
