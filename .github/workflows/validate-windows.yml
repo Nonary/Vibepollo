@@ -4,6 +4,11 @@ permissions: {}
 
 on:
   workflow_dispatch:
+    inputs:
+      release_version:
+        description: Nonzero package version for this validation build
+        required: true
+        type: string
 
 concurrency:
   group: windows-validation-${{ github.ref }}
@@ -20,6 +25,6 @@ jobs:
       build_only: true
       build_tests: true
       release_commit: ${{ github.sha }}
-      release_version: '0.0.0'
+      release_version: ${{ inputs.release_version }}
       symbol_product_name: Vibepollo
-      symbol_release_prefix: pollo
+      symbol_release_prefix: polo
