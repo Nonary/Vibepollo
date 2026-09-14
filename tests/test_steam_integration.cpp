@@ -391,10 +391,11 @@ TEST(SteamLaunch, RejectsZeroAndBuildsValidatedUri) {
 }
 
 TEST(SteamLaunch, StreamOwnedEnvironmentFeaturesRequireDirectLaunch) {
-  EXPECT_TRUE(requires_direct_environment_launch(true, false));
-  EXPECT_TRUE(requires_direct_environment_launch(false, true));
-  EXPECT_TRUE(requires_direct_environment_launch(true, true));
-  EXPECT_FALSE(requires_direct_environment_launch(false, false));
+  EXPECT_TRUE(requires_direct_environment_launch(true, false, false));
+  EXPECT_TRUE(requires_direct_environment_launch(false, true, false));
+  EXPECT_TRUE(requires_direct_environment_launch(false, false, true));
+  EXPECT_TRUE(requires_direct_environment_launch(true, true, true));
+  EXPECT_FALSE(requires_direct_environment_launch(false, false, false));
 }
 
 TEST(SteamLaunch, GamingModeReplacesCachedDesktopProtonCommand) {
@@ -417,12 +418,13 @@ TEST(SteamLaunch, MachineSessionLaunchUsesCanonicalSemanticArguments) {
     .limiter_method = "late",
     .smooth_motion = true,
     .smooth_motion_graphics_queue = true,
+    .hdr = true,
   };
   const auto command = session_launch_command(1182900, policy);
   EXPECT_EQ(
     command,
     "/usr/libexec/vibeshine/vibepollo-session-exec steam-direct "
-    "1182900 mangohud-proton 116000 3 1 late 1 1"
+    "1182900 mangohud-proton 116000 3 1 late 1 1 1"
   );
   const auto arguments = session_launch_arguments(command);
   ASSERT_TRUE(arguments);
@@ -430,7 +432,7 @@ TEST(SteamLaunch, MachineSessionLaunchUsesCanonicalSemanticArguments) {
     *arguments,
     (std::vector<std::string> {
       "steam-direct", "1182900", "mangohud-proton", "116000", "3",
-      "1", "late", "1", "1"
+      "1", "late", "1", "1", "1"
     })
   );
 
@@ -451,7 +453,7 @@ TEST(SteamLaunch, MachineSessionLaunchUsesCanonicalSemanticArguments) {
   EXPECT_FALSE(session_launch_arguments(command + " trailing"));
   EXPECT_FALSE(session_launch_arguments(
     "/usr/libexec/vibeshine/vibepollo-session-exec steam-direct "
-    "1182900 proton 116000 custom 1 late 0 0"
+    "1182900 proton 116000 custom 1 late 0 0 0"
   ));
 }
 

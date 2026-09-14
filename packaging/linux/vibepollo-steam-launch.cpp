@@ -165,11 +165,12 @@ namespace {
     char **argv,
     std::uint32_t &app_id
   ) {
-    if (argc != 9 || (std::string_view(argv[1]) != "--global" &&
+    const bool global = std::string_view(argv[1]) == "--global";
+    if ((global ? argc != 9 : argc != 10) || (!global &&
                       (!parse_u32(argv[1], app_id) || app_id == 0))) {
       return std::nullopt;
     }
-    if (std::string_view(argv[1]) == "--global") app_id = 1;
+    if (global) app_id = 1;
     platf::steam::session_launch_policy_t policy;
     policy.provider = argv[2];
     if (!parse_u32(argv[3], policy.limit_millihz)) {
@@ -178,13 +179,15 @@ namespace {
     policy.preset = argv[4];
     if ((std::string_view(argv[5]) != "0" && std::string_view(argv[5]) != "1") ||
         (std::string_view(argv[7]) != "0" && std::string_view(argv[7]) != "1") ||
-        (std::string_view(argv[8]) != "0" && std::string_view(argv[8]) != "1")) {
+        (std::string_view(argv[8]) != "0" && std::string_view(argv[8]) != "1") ||
+        (!global && std::string_view(argv[9]) != "0" && std::string_view(argv[9]) != "1")) {
       return std::nullopt;
     }
     policy.always_show_graph = std::string_view(argv[5]) == "1";
     policy.limiter_method = argv[6];
     policy.smooth_motion = std::string_view(argv[7]) == "1";
     policy.smooth_motion_graphics_queue = std::string_view(argv[8]) == "1";
+    policy.hdr = !global && std::string_view(argv[9]) == "1";
     if (platf::steam::session_launch_command(app_id, policy).empty()) {
       return std::nullopt;
     }
@@ -459,7 +462,9 @@ namespace {
 
     if (setenv("NVPRESENT_ENABLE_SMOOTH_MOTION", policy.smooth_motion ? "1" : "", 1) != 0 ||
         setenv("NVPRESENT_QUEUE_FAMILY",
-               policy.smooth_motion_graphics_queue ? "1" : "", 1) != 0) {
+               policy.smooth_motion_graphics_queue ? "1" : "", 1) != 0 ||
+        setenv("PROTON_ENABLE_HDR", policy.hdr ? "1" : "0", 1) != 0 ||
+        setenv("DXVK_HDR", policy.hdr ? "1" : "0", 1) != 0) {
       report(LOG_ERR, "could not install launch policy");
       return 1;
     }
@@ -578,7 +583,7 @@ int main(int argc, char **argv) {
   const auto policy = parse_policy(argc, argv, app_id);
   if (!policy) {
     std::cerr << "usage: vibepollo-steam-launch APPID PROVIDER LIMIT_MILLIHZ "
-                 "PRESET GRAPH METHOD SMOOTH QUEUE\n";
+                 "PRESET GRAPH METHOD SMOOTH QUEUE HDR\n";
     return 2;
   }
   if (std::string_view(argv[1]) == "--global") return global_limiter(argv);

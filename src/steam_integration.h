@@ -93,8 +93,8 @@ namespace platf::steam {
   // An already-running Steam broker cannot inherit environment changes from
   // a later `steam -applaunch` process. Features whose behavior is carried by
   // environment variables must therefore resolve a direct game command.
-  inline bool requires_direct_environment_launch(bool frame_limiter_enabled, bool smooth_motion_enabled) {
-    return frame_limiter_enabled || smooth_motion_enabled;
+  inline bool requires_direct_environment_launch(bool frame_limiter_enabled, bool smooth_motion_enabled, bool hdr_enabled) {
+    return frame_limiter_enabled || smooth_motion_enabled || hdr_enabled;
   }
 
 #ifdef __linux__
@@ -106,6 +106,7 @@ namespace platf::steam {
     std::string limiter_method = "late";
     bool smooth_motion = false;
     bool smooth_motion_graphics_queue = false;
+    bool hdr = false;
   };
 
   // Build and recognize the one canonical machine-host command that delegates

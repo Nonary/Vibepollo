@@ -1128,7 +1128,7 @@ namespace platf::steam {
           (!policy.smooth_motion && policy.smooth_motion_graphics_queue)) {
         return false;
       }
-      return limited || policy.smooth_motion;
+      return limited || policy.smooth_motion || policy.hdr;
     }
 
     bool parse_u32_token(std::string_view token, std::uint32_t &value) {
@@ -1150,7 +1150,8 @@ namespace platf::steam {
            std::to_string(policy.limit_millihz) + " " + policy.preset + " " +
            (policy.always_show_graph ? "1" : "0") + " " +
            policy.limiter_method + " " + (policy.smooth_motion ? "1" : "0") +
-           " " + (policy.smooth_motion_graphics_queue ? "1" : "0");
+           " " + (policy.smooth_motion_graphics_queue ? "1" : "0") +
+           " " + (policy.hdr ? "1" : "0");
   }
 
   std::optional<std::vector<std::string>> session_launch_arguments(
@@ -1185,7 +1186,7 @@ namespace platf::steam {
       tokens.erase(tokens.begin());
       return tokens;
     }
-    if (tokens.size() != 10 || tokens[0] != session_exec_path ||
+    if (tokens.size() != 11 || tokens[0] != session_exec_path ||
         tokens[1] != "steam-direct") {
       return std::nullopt;
     }
@@ -1196,7 +1197,8 @@ namespace platf::steam {
         !parse_u32_token(tokens[4], policy.limit_millihz) ||
         (tokens[6] != "0" && tokens[6] != "1") ||
         (tokens[8] != "0" && tokens[8] != "1") ||
-        (tokens[9] != "0" && tokens[9] != "1")) {
+        (tokens[9] != "0" && tokens[9] != "1") ||
+        (tokens[10] != "0" && tokens[10] != "1")) {
       return std::nullopt;
     }
     policy.provider = tokens[3];
@@ -1205,6 +1207,7 @@ namespace platf::steam {
     policy.limiter_method = tokens[7];
     policy.smooth_motion = tokens[8] == "1";
     policy.smooth_motion_graphics_queue = tokens[9] == "1";
+    policy.hdr = tokens[10] == "1";
     if (session_launch_command(app_id, policy) != command) {
       return std::nullopt;
     }

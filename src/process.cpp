@@ -1721,7 +1721,15 @@ namespace proc {
     _env["SUNSHINE_CLIENT_WIDTH"] = std::to_string(render_width);
     _env["SUNSHINE_CLIENT_HEIGHT"] = std::to_string(render_height);
     _env["SUNSHINE_CLIENT_FPS"] = config::sunshine.envvar_compatibility_mode ? std::to_string(std::round((float) launch_session->fps / 1000.0f)) : fps_str;
-    _env["SUNSHINE_CLIENT_HDR"] = rtsp_stream::effective_hdr_requested(*launch_session) ? "true" : "false";
+    const bool stream_hdr = rtsp_stream::effective_hdr_requested(*launch_session);
+    _env["SUNSHINE_CLIENT_HDR"] = stream_hdr ? "true" : "false";
+#ifdef __linux__
+    // DXVK implements Windows' DXGI HDR switch and cannot infer that state
+    // through Xwayland. Report the stream's effective HDR state to Proton for
+    // every directly launched game, just as Gamescope does for an HDR session.
+    _env["PROTON_ENABLE_HDR"] = stream_hdr ? "1" : "0";
+    _env["DXVK_HDR"] = stream_hdr ? "1" : "0";
+#endif
     _env["SUNSHINE_CLIENT_GCMAP"] = std::to_string(launch_session->gcmap);
     _env["SUNSHINE_CLIENT_HOST_AUDIO"] = launch_session->host_audio ? "true" : "false";
     _env["SUNSHINE_CLIENT_ENABLE_SOPS"] = launch_session->enable_sops ? "true" : "false";
@@ -1799,7 +1807,8 @@ namespace proc {
       !_app.steam_id.empty() &&
       platf::steam::requires_direct_environment_launch(
         effective_frame_limiter,
-        smooth_motion_policy.enabled
+        smooth_motion_policy.enabled,
+        stream_hdr
       );
     if (direct_steam_launch_required) {
       inherited_steam_environment_ready = false;
@@ -1835,6 +1844,7 @@ namespace proc {
               .smooth_motion = smooth_motion_policy.enabled,
               .smooth_motion_graphics_queue = smooth_motion_policy.enabled &&
                                               smooth_motion_policy.use_graphics_queue,
+              .hdr = stream_hdr,
             };
             const bool overlay = policy.provider == "mangohud" ||
                                  policy.provider == "mangohud-proton";

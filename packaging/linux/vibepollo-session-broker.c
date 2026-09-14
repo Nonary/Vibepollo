@@ -594,7 +594,7 @@ static bool sink_name_is_safe(const char *name) {
 }
 
 static bool steam_direct_arguments_are_safe(int argc, char **argv) {
-  if (argc != 10 || !argv) return false;
+  if (argc != 11 || !argv) return false;
   unsigned long app_id = 0, limit_millihz = 0;
   if (!parse_number(argv[2], 1, UINT32_MAX, &app_id) ||
       !parse_number(argv[4], 0, 1000000, &limit_millihz)) return false;
@@ -613,19 +613,20 @@ static bool steam_direct_arguments_are_safe(int argc, char **argv) {
   const bool method = !strcmp(argv[7], "early") || !strcmp(argv[7], "late");
   const bool smooth = !strcmp(argv[8], "0") || !strcmp(argv[8], "1");
   const bool queue = !strcmp(argv[9], "0") || !strcmp(argv[9], "1");
-  return (limited || disabled) && preset && graph && method && smooth && queue &&
+  const bool hdr = !strcmp(argv[10], "0") || !strcmp(argv[10], "1");
+  return (limited || disabled) && preset && graph && method && smooth && queue && hdr &&
          ((limited && limit_millihz >= 1000) || (disabled && !limit_millihz)) &&
          (overlay || (!strcmp(argv[5], "custom") && !strcmp(argv[6], "0"))) &&
          (mangohud || !strcmp(argv[7], "late")) &&
          (strcmp(argv[8], "0") || !strcmp(argv[9], "0")) &&
-         (limited || strcmp(argv[8], "0"));
+         (limited || strcmp(argv[8], "0") || strcmp(argv[10], "0"));
 }
 
 static bool global_limiter_arguments_are_safe(int argc, char **argv) {
   if (argc != 7 || !argv) return false;
   char *validation[] = {"broker", "steam-direct", "1", argv[2], argv[3],
-                        argv[4], argv[5], argv[6], "0", "0"};
-  return steam_direct_arguments_are_safe(10, validation);
+                        argv[4], argv[5], argv[6], "0", "0", "0"};
+  return steam_direct_arguments_are_safe(11, validation);
 }
 
 static bool parse_channel_mapping(const char *value, size_t channels,
@@ -1353,7 +1354,7 @@ static int execute_request(int argc, char **argv,
     case STEAM_DIRECT: {
       char *const arguments[] = {
         (char *) steam_launch_path, argv[2], argv[3], argv[4], argv[5],
-        argv[6], argv[7], argv[8], argv[9], NULL
+        argv[6], argv[7], argv[8], argv[9], argv[10], NULL
       };
       return exec_user_service(identity, NULL, arguments, false);
     }
