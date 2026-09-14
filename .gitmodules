@@ -23,8 +23,8 @@
 	branch = main
 [submodule "third-party/inputtino"]
 	path = third-party/inputtino
-	url = https://github.com/games-on-whales/inputtino.git
-	branch = stable
+	url = https://github.com/Nonary/inputtino.git
+	branch = vibeshine
 [submodule "third-party/libdisplaydevice"]
 	path = third-party/libdisplaydevice
 	url = https://github.com/Nonary/libdisplaydevice.git

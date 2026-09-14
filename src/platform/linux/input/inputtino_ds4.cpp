@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <inputtino/ds4_usb.hpp>
 #include <linux/input.h>
 #include <linux/uhid.h>
 #include <mutex>
@@ -155,127 +156,10 @@ namespace platf::gamepad {
 
     // USB DualShock 4 report descriptor. The Linux hid-playstation driver uses the
     // feature reports declared here for calibration, pairing, and firmware data.
-    constexpr char ds4_usb_report_descriptor[] =
-      "\x05\x01\x09\x05\xa1\x01\x85\x01\x09\x30\x09\x31\x09\x32\x09\x35\x15\x00\x26\xff\x00\x75\x08\x95"
-      "\x04\x81\x02\x09\x39\x15\x00\x25\x07\x35\x00\x46\x3b\x01\x65\x14\x75\x04\x95\x01\x81\x42\x65\x00"
-      "\x05\x09\x19\x01\x29\x0e\x15\x00\x25\x01\x75\x01\x95\x0e\x81\x02\x06\x00\xff\x09\x20\x75\x06\x95"
-      "\x01\x15\x00\x25\x7f\x81\x02\x05\x01\x09\x33\x09\x34\x15\x00\x26\xff\x00\x75\x08\x95\x02\x81\x02"
-      "\x06\x00\xff\x09\x21\x95\x36\x81\x02\x85\x05\x09\x22\x95\x1f\x91\x02\x85\x04\x09\x23\x95\x24\xb1"
-      "\x02\x85\x02\x09\x24\x95\x24\xb1\x02\x85\x08\x09\x25\x95\x03\xb1\x02\x85\x10\x09\x26\x95\x04\xb1"
-      "\x02\x85\x11\x09\x27\x95\x02\xb1\x02\x85\x12\x06\x02\xff\x09\x21\x95\x0f\xb1\x02\x85\x13\x09\x22"
-      "\x95\x16\xb1\x02\x85\x14\x06\x05\xff\x09\x20\x95\x10\xb1\x02\x85\x15\x09\x21\x95\x2c\xb1\x02\x06"
-      "\x80\xff\x85\x80\x09\x20\x95\x06\xb1\x02\x85\x81\x09\x21\x95\x06\xb1\x02\x85\x82\x09\x22\x95\x05"
-      "\xb1\x02\x85\x83\x09\x23\x95\x01\xb1\x02\x85\x84\x09\x24\x95\x04\xb1\x02\x85\x85\x09\x25\x95\x06"
-      "\xb1\x02\x85\x86\x09\x26\x95\x06\xb1\x02\x85\x87\x09\x27\x95\x23\xb1\x02\x85\x88\x09\x28\x95\x3f"
-      "\xb1\x02\x85\x89\x09\x29\x95\x02\xb1\x02\x85\x90\x09\x30\x95\x05\xb1\x02\x85\x91\x09\x31\x95\x03"
-      "\xb1\x02\x85\x92\x09\x32\x95\x03\xb1\x02\x85\x93\x09\x33\x95\x0c\xb1\x02\x85\x94\x09\x34\x95\x3f"
-      "\xb1\x02\x85\xa0\x09\x40\x95\x06\xb1\x02\x85\xa1\x09\x41\x95\x01\xb1\x02\x85\xa2\x09\x42\x95\x01"
-      "\xb1\x02\x85\xa3\x09\x43\x95\x30\xb1\x02\x85\xa4\x09\x44\x95\x0d\xb1\x02\x85\xf0\x09\x47\x95\x3f"
-      "\xb1\x02\x85\xf1\x09\x48\x95\x3f\xb1\x02\x85\xf2\x09\x49\x95\x0f\xb1\x02\x85\xa7\x09\x4a\x95\x01"
-      "\xb1\x02\x85\xa8\x09\x4b\x95\x01\xb1\x02\x85\xa9\x09\x4c\x95\x08\xb1\x02\x85\xaa\x09\x4e\x95\x01"
-      "\xb1\x02\x85\xab\x09\x4f\x95\x39\xb1\x02\x85\xac\x09\x50\x95\x39\xb1\x02\x85\xad\x09\x51\x95\x0b"
-      "\xb1\x02\x85\xae\x09\x52\x95\x01\xb1\x02\x85\xaf\x09\x53\x95\x02\xb1\x02\x85\xb0\x09\x54\x95\x3f"
-      "\xb1\x02\x85\xe0\x09\x57\x95\x02\xb1\x02\x85\xb3\x09\x55\x95\x3f\xb1\x02\x85\xb4\x09\x55\x95\x3f"
-      "\xb1\x02\x85\xb5\x09\x56\x95\x3f\xb1\x02\x85\xd0\x09\x58\x95\x3f\xb1\x02\x85\xd4\x09\x59\x95\x3f"
-      "\xb1\x02\xc0";
-
-    constexpr std::array<std::uint8_t, 37> ds4_calibration_report {
-      0x02,
-      0x1e,
-      0x00,
-      0x05,
-      0x00,
-      0xe2,
-      0xff,
-      0xf2,
-      0x22,
-      0x4f,
-      0xdd,
-      0xbe,
-      0x22,
-      0x4d,
-      0xdd,
-      0x8d,
-      0x22,
-      0x39,
-      0xdd,
-      0x1c,
-      0x02,
-      0x1c,
-      0x02,
-      0xe3,
-      0x1f,
-      0x8b,
-      0xdf,
-      0x8c,
-      0x1e,
-      0xb4,
-      0xde,
-      0x30,
-      0x20,
-      0x71,
-      0xe0,
-      0x10,
-      0x00,
-    };
-
-    constexpr std::array<std::uint8_t, 49> ds4_firmware_report {
-      0xa3,
-      0x41,
-      0x70,
-      0x72,
-      0x20,
-      0x20,
-      0x38,
-      0x20,
-      0x32,
-      0x30,
-      0x31,
-      0x34,
-      0x00,
-      0x00,
-      0x00,
-      0x00,
-      0x00,
-      0x30,
-      0x39,
-      0x3a,
-      0x34,
-      0x36,
-      0x3a,
-      0x30,
-      0x36,
-      0x00,
-      0x00,
-      0x00,
-      0x00,
-      0x00,
-      0x00,
-      0x00,
-      0x00,
-      0x00,
-      0x01,
-      0x00,
-      0x43,
-      0x03,
-      0x00,
-      0x00,
-      0x00,
-      0x51,
-      0x00,
-      0x05,
-      0x00,
-      0x00,
-      0x80,
-      0x03,
-      0x00,
-    };
+    constexpr auto &ds4_usb_report_descriptor = inputtino::ds4_usb::report_descriptor;
 
     constexpr std::uint8_t ds4_report_input = 0x01;
     constexpr std::uint8_t ds4_report_output = 0x05;
-    constexpr std::uint8_t ds4_feature_calibration = 0x02;
-    constexpr std::uint8_t ds4_feature_pairing = 0x12;
-    constexpr std::uint8_t ds4_feature_firmware = 0xa3;
     constexpr std::uint8_t ds4_output_valid_motor = 0x01;
     constexpr std::uint8_t ds4_output_valid_led = 0x02;
     constexpr float standard_gravity = 9.80665f;
@@ -404,6 +288,7 @@ namespace platf::gamepad {
     std::unique_ptr<uhid_device_t> device;
     std::array<std::uint8_t, 6> mac {};
     std::string uniq;
+    inputtino::ds4_usb::feature_state features;
     ds4_input_report_t report {};
     std::uint8_t last_touch_id {};
     std::uint8_t touch_timestamp {};
@@ -466,23 +351,14 @@ namespace platf::gamepad {
       reply.type = UHID_GET_REPORT_REPLY;
       reply.u.get_report_reply.id = request.u.get_report.id;
 
-      switch (request.u.get_report.rnum) {
-        case ds4_feature_calibration:
-          std::ranges::copy(ds4_calibration_report, reply.u.get_report_reply.data);
-          reply.u.get_report_reply.size = ds4_calibration_report.size();
-          break;
-        case ds4_feature_pairing:
-          reply.u.get_report_reply.size = 16;
-          reply.u.get_report_reply.data[0] = ds4_feature_pairing;
-          std::reverse_copy(state->mac.begin(), state->mac.end(), reply.u.get_report_reply.data + 1);
-          break;
-        case ds4_feature_firmware:
-          std::ranges::copy(ds4_firmware_report, reply.u.get_report_reply.data);
-          reply.u.get_report_reply.size = ds4_firmware_report.size();
-          break;
-        default:
-          reply.u.get_report_reply.err = EINVAL;
-          break;
+      std::reverse_copy(state->mac.begin(), state->mac.end(), state->features.address.begin());
+      if (request.u.get_report.rtype == UHID_FEATURE_REPORT) {
+        reply.u.get_report_reply.size = inputtino::ds4_usb::get_feature(
+          request.u.get_report.rnum, reply.u.get_report_reply.data,
+          sizeof(reply.u.get_report_reply.data), state->features);
+      }
+      if (!reply.u.get_report_reply.size) {
+        reply.u.get_report_reply.err = EINVAL;
       }
 
       write_uhid_event(fd, reply);
@@ -497,11 +373,22 @@ namespace platf::gamepad {
           process_output_report(state, event.u.output.data, event.u.output.size);
           break;
         case UHID_SET_REPORT:
-          process_output_report(state, event.u.set_report.data, event.u.set_report.size);
           {
             uhid_event reply {};
             reply.type = UHID_SET_REPORT_REPLY;
             reply.u.set_report_reply.id = event.u.set_report.id;
+            if (event.u.set_report.rtype == UHID_FEATURE_REPORT) {
+              if (!inputtino::ds4_usb::set_feature(event.u.set_report.rnum, event.u.set_report.data,
+                                                event.u.set_report.size, state->features)) {
+                reply.u.set_report_reply.err = EINVAL;
+              }
+            } else if (event.u.set_report.rtype == UHID_OUTPUT_REPORT &&
+                       event.u.set_report.rnum == ds4_report_output &&
+                       event.u.set_report.size >= sizeof(ds4_output_report_t)) {
+              process_output_report(state, event.u.set_report.data, event.u.set_report.size);
+            } else {
+              reply.u.set_report_reply.err = EINVAL;
+            }
             write_uhid_event(fd, reply);
           }
           break;
@@ -732,18 +619,9 @@ namespace platf::gamepad {
       const auto value = std::isfinite(values[index]) ? values[index] : 0.0f;
       int raw = 0;
       if (type == motion_type_e::acceleration) {
-        constexpr std::array<int, 3> bias {-73, -352, 81};
-        constexpr std::array<int, 3> numerator {16384, 16384, 16384};
-        constexpr std::array<int, 3> denominator {16472, 16344, 16319};
-        const auto calibrated = value / standard_gravity * 8192.0f;
-        raw = static_cast<int>(std::lround(calibrated * denominator[index] / numerator[index] + bias[index]));
+        raw = static_cast<int>(std::lround(std::clamp(value / standard_gravity * 8192.0f, -32768.0f, 32767.0f)));
       } else {
-        constexpr std::array<int, 3> numerator {1105920, 1105920, 1105920};
-        constexpr std::array<int, 3> denominator {17827, 17777, 17748};
-        // hid-playstation exposes gyroscope values at 1024 units per degree/s.
-        // Apply the inverse of the calibration data advertised in report 0x02.
-        const auto calibrated = value * 1024.0f;
-        raw = static_cast<int>(std::lround(calibrated * denominator[index] / numerator[index]));
+        raw = static_cast<int>(std::lround(std::clamp(value * 16.0f, -32768.0f, 32767.0f)));
       }
       target[index] = signed_to_little_endian(raw);
     }
