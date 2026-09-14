@@ -3417,7 +3417,16 @@ namespace stream {
             session::start_shared_platform_if_needed();
           }
 #else
-          platf::frame_limiter_streaming_start(platf::frame_limiter_owner::rtsp, policy);
+          const auto color_mode = session.config.monitor.dynamicRange != 0 &&
+                                    !session.config.monitor.prefer_sdr_10bit &&
+                                    !session.config.monitor.force_sdr ?
+                                    platf::proton_color_mode::hdr :
+                                  session.config.monitor.dynamicRange != 0 &&
+                                    session.config.monitor.prefer_sdr_10bit &&
+                                    !session.config.monitor.force_sdr ?
+                                    platf::proton_color_mode::sdr10 :
+                                    platf::proton_color_mode::sdr;
+          platf::frame_limiter_streaming_start(platf::frame_limiter_owner::rtsp, policy, color_mode);
           session::start_shared_platform_if_needed();
 #endif
         } else {

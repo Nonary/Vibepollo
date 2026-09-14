@@ -861,6 +861,8 @@ namespace webrtc_stream {
       std::string frame_generation_provider = "lossless-scaling";
       bool uses_virtual_display = false;
       bool smooth_motion = false;
+      bool hdr = false;
+      bool prefer_sdr_10bit = false;
     };
 
     struct WebRtcCaptureState {
@@ -3038,10 +3040,18 @@ namespace webrtc_stream {
         .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
         .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
       });
+#ifdef _WIN32
+      platf::frame_limiter_streaming_start(platf::frame_limiter_owner::webrtc, policy);
+#else
+      const auto color_mode = start_params.hdr ? platf::proton_color_mode::hdr :
+                              start_params.prefer_sdr_10bit ? platf::proton_color_mode::sdr10 :
+                                                             platf::proton_color_mode::sdr;
       platf::frame_limiter_streaming_start(
         platf::frame_limiter_owner::webrtc,
-        policy
+        policy,
+        color_mode
       );
+#endif
     }
 #endif
 
@@ -3174,6 +3184,12 @@ namespace webrtc_stream {
       auto audio_config = build_audio_config(options);
       apply_rtsp_video_overrides(video_config, rtsp_config);
       apply_rtx_hdr_stream_policy(video_config);
+      stream_start_params.hdr = video_config.dynamicRange != 0 &&
+                                !video_config.prefer_sdr_10bit &&
+                                !video_config.force_sdr;
+      stream_start_params.prefer_sdr_10bit = video_config.dynamicRange != 0 &&
+                                             video_config.prefer_sdr_10bit &&
+                                             !video_config.force_sdr;
       auto desired_key = build_capture_config_key(effective_app_id, video_config, options);
 
       if (
@@ -3378,6 +3394,12 @@ namespace webrtc_stream {
                                    !video_config.force_sdr;
       launch_session->prefer_sdr_10bit = video_config.prefer_sdr_10bit;
       launch_session->force_sdr = video_config.force_sdr;
+      if (webrtc_capture.stream_start_params) {
+        webrtc_capture.stream_start_params->hdr = launch_session->enable_hdr;
+        webrtc_capture.stream_start_params->prefer_sdr_10bit =
+          video_config.dynamicRange != 0 && video_config.prefer_sdr_10bit &&
+          !video_config.force_sdr;
+      }
 
       // Do not launch an application until the selected adapter has proven it
       // can satisfy the requested codec and dynamic range. Otherwise a bad

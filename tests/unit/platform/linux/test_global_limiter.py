@@ -32,15 +32,15 @@ g_session.env = dict(os.environ)
 import user_settings
 for key, value in user_settings.user_settings.items():
     g_session.env.setdefault(key, value)
-print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK", "VKD3D", "MANGOHUD", "KEEP_"))}))
+print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK", "VKD3D", "MANGOHUD", "PROTON_", "KEEP_"))}))
 ''')
         self.original = b'user_settings = {"KEEP_SETTING": "yes", "DXVK_CONFIG": "dxvk.hud = fps"}\n'
         self.settings = self.tool / "user_settings.py"
         self.settings.write_bytes(self.original)
         self.settings.chmod(0o640)
 
-    def server(self, provider="proton", millihz=59940):
-        child = subprocess.Popen([sys.executable, "-I", str(self.source), provider, str(millihz), "custom", "0", "late", str(self.tool)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    def server(self, provider="proton", millihz=59940, color_mode="sdr"):
+        child = subprocess.Popen([sys.executable, "-I", str(self.source), provider, str(millihz), "custom", "0", "late", color_mode, str(self.tool)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         def stop():
             if child.poll() is None:
                 child.terminate()
@@ -54,7 +54,7 @@ print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK"
         return child
 
     def launch(self, **overrides):
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("DXVK", "VKD3D", "MANGOHUD", "LD_PRELOAD"))}
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("DXVK", "VKD3D", "MANGOHUD", "PROTON_ENABLE_HDR", "LD_PRELOAD"))}
         env.update(overrides)
         return json.loads(subprocess.check_output([sys.executable, str(self.tool / "proton")], env=env, text=True))
 
@@ -66,6 +66,8 @@ print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK"
         self.assertIn("dxvk.hud = fps", active["DXVK_CONFIG"])
         self.assertIn("dxgi.maxFrameRate = 60", active["DXVK_CONFIG"])
         self.assertNotIn("MANGOHUD", active)
+        self.assertEqual(active["PROTON_ENABLE_HDR"], "0")
+        self.assertEqual(active["DXVK_HDR"], "0")
         self.assertEqual(active["KEEP_ENV"], "untouched")
         self.assertEqual(active["KEEP_SETTING"], "yes")
         managed = self.launch(VIBEPOLLO_LIMITER_MANAGED="1", VKD3D_FRAME_RATE="45")
@@ -78,6 +80,19 @@ print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK"
         self.assertEqual(inactive["DXVK_FRAME_RATE"], "30")
         self.assertNotIn("VKD3D_FRAME_RATE", inactive)
         self.assertEqual(inactive["DXVK_CONFIG"], "dxvk.hud = fps")
+
+    def test_stream_color_modes_without_limiter(self):
+        child = self.server("disabled", 0, "hdr")
+        hdr = self.launch(PROTON_ENABLE_HDR="0", DXVK_HDR="0")
+        self.assertEqual(hdr["PROTON_ENABLE_HDR"], "1")
+        self.assertEqual(hdr["DXVK_HDR"], "1")
+        child.terminate()
+        child.wait(timeout=8)
+
+        self.server("disabled", 0, "sdr10")
+        sdr10 = self.launch(PROTON_ENABLE_HDR="1", DXVK_HDR="1")
+        self.assertEqual(sdr10["PROTON_ENABLE_HDR"], "0")
+        self.assertEqual(sdr10["DXVK_HDR"], "0")
 
     def test_crash_leaves_inert_hook(self):
         child = self.server()
@@ -112,9 +127,21 @@ print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK"
             limiter.install(self.tool, self.source.read_bytes())
         self.assertEqual(other.read_bytes(), self.original)
 
+    def test_old_hook_is_migrated(self):
+        self.settings.write_bytes(self.original + limiter.OLD_BLOCK)
+        limiter.install(self.tool, self.source.read_bytes())
+        self.assertEqual(self.settings.read_bytes(), self.original + limiter.BLOCK)
+
     def test_discovery_and_validation(self):
         self.assertEqual(limiter.tools_in([self.tool, self.tool]), {self.tool})
-        for invalid in (["proton", 0, "custom", False, "late"], ["bogus", 60000, "custom", False, "late"], ["proton", 60000, "custom", False, "late", "extra"]):
+        for invalid in (
+            ["proton", 0, "custom", False, "late", "sdr"],
+            ["bogus", 60000, "custom", False, "late", "sdr"],
+            ["proton", 60000, "custom", False, "late", "invalid"],
+            ["disabled", 60000, "custom", False, "late", "hdr"],
+            ["disabled", 0, "1", False, "late", "hdr"],
+            ["proton", 60000, "custom", False, "late", "sdr", "extra"],
+        ):
             with self.assertRaises(ValueError):
                 limiter.environment(invalid, {})
 

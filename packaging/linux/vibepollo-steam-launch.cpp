@@ -166,7 +166,7 @@ namespace {
     std::uint32_t &app_id
   ) {
     const bool global = std::string_view(argv[1]) == "--global";
-    if ((global ? argc != 9 : argc != 10) || (!global &&
+    if (argc != 10 || (!global &&
                       (!parse_u32(argv[1], app_id) || app_id == 0))) {
       return std::nullopt;
     }
@@ -180,15 +180,25 @@ namespace {
     if ((std::string_view(argv[5]) != "0" && std::string_view(argv[5]) != "1") ||
         (std::string_view(argv[7]) != "0" && std::string_view(argv[7]) != "1") ||
         (std::string_view(argv[8]) != "0" && std::string_view(argv[8]) != "1") ||
-        (!global && std::string_view(argv[9]) != "0" && std::string_view(argv[9]) != "1")) {
+        (!global && std::string_view(argv[9]) != "0" && std::string_view(argv[9]) != "1") ||
+        (global && std::string_view(argv[9]) != "sdr" &&
+                   std::string_view(argv[9]) != "sdr10" &&
+                   std::string_view(argv[9]) != "hdr")) {
       return std::nullopt;
     }
     policy.always_show_graph = std::string_view(argv[5]) == "1";
     policy.limiter_method = argv[6];
     policy.smooth_motion = std::string_view(argv[7]) == "1";
     policy.smooth_motion_graphics_queue = std::string_view(argv[8]) == "1";
-    policy.hdr = !global && std::string_view(argv[9]) == "1";
-    if (platf::steam::session_launch_command(app_id, policy).empty()) {
+    policy.hdr = global ? std::string_view(argv[9]) == "hdr" : std::string_view(argv[9]) == "1";
+    auto validation_policy = policy;
+    if (global) {
+      // A global SDR policy still needs the hook even when no limiter is
+      // active. Use HDR solely to exercise the direct policy validator's
+      // feature-presence requirement; the helper receives argv[9] verbatim.
+      validation_policy.hdr = true;
+    }
+    if (platf::steam::session_launch_command(app_id, validation_policy).empty()) {
       return std::nullopt;
     }
     return policy;
@@ -392,7 +402,7 @@ namespace {
     std::vector<std::string> arguments {
       "/usr/bin/python3", "-I",
       "/usr/libexec/vibeshine/vibepollo-global-limiter.py",
-      argv[2], argv[3], argv[4], argv[5], argv[6]
+      argv[2], argv[3], argv[4], argv[5], argv[6], argv[9]
     };
     arguments.insert(arguments.end(), roots.begin(), roots.end());
     std::vector<char *> pointers;
@@ -583,7 +593,9 @@ int main(int argc, char **argv) {
   const auto policy = parse_policy(argc, argv, app_id);
   if (!policy) {
     std::cerr << "usage: vibepollo-steam-launch APPID PROVIDER LIMIT_MILLIHZ "
-                 "PRESET GRAPH METHOD SMOOTH QUEUE HDR\n";
+                 "PRESET GRAPH METHOD SMOOTH QUEUE HDR\n"
+                 "       vibepollo-steam-launch --global PROVIDER LIMIT_MILLIHZ "
+                 "PRESET GRAPH METHOD 0 0 COLOR_MODE\n";
     return 2;
   }
   if (std::string_view(argv[1]) == "--global") return global_limiter(argv);

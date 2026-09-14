@@ -13,7 +13,8 @@ import tempfile
 import time
 
 MODULE = "_vibepollo_frame_limiter.py"
-BLOCK = b'''\n# BEGIN Vibepollo stream limiter\ntry:\n    from _vibepollo_frame_limiter import apply as _vibepollo_apply_limiter\n    _vibepollo_apply_limiter(globals())\nexcept Exception:\n    pass  # A missing host must never prevent a game from starting.\n# END Vibepollo stream limiter\n'''
+OLD_BLOCK = b'''\n# BEGIN Vibepollo stream limiter\ntry:\n    from _vibepollo_frame_limiter import apply as _vibepollo_apply_limiter\n    _vibepollo_apply_limiter(globals())\nexcept Exception:\n    pass  # A missing host must never prevent a game from starting.\n# END Vibepollo stream limiter\n'''
+BLOCK = b'''\n# BEGIN Vibepollo stream limiter\nuser_settings = globals().get("user_settings", {})\ntry:\n    from _vibepollo_frame_limiter import apply as _vibepollo_apply_limiter\n    _vibepollo_apply_limiter(globals())\nexcept Exception:\n    pass  # A missing host must never prevent a game from starting.\n# END Vibepollo stream limiter\n'''
 SHIM = "/usr/$LIB/mangohud/libMangoHud_shim.so"
 
 
@@ -22,17 +23,37 @@ def address():
 
 
 def environment(policy, inherited):
-    provider, millihz, preset, graph, method = policy
-    if provider not in ("proton", "mangohud-proton", "mangohud"):
+    if not isinstance(policy, list) or len(policy) != 6:
+        raise ValueError("policy")
+    provider, millihz, preset, graph, method, color_mode = policy
+    if provider not in ("disabled", "proton", "mangohud-proton", "mangohud"):
         raise ValueError("provider")
-    if type(millihz) is not int or not 1000 <= millihz <= 1000000:
+    if type(millihz) is not int or not 0 <= millihz <= 1000000:
         raise ValueError("limit")
     if preset not in ("custom", "1", "2", "3", "4") or type(graph) is not bool:
         raise ValueError("overlay")
     if method not in ("early", "late"):
         raise ValueError("method")
+    if color_mode not in ("sdr", "sdr10", "hdr"):
+        raise ValueError("color mode")
+    if provider == "disabled":
+        if millihz != 0 or preset != "custom" or graph or method != "late":
+            raise ValueError("disabled policy")
+    elif millihz < 1000:
+        raise ValueError("limit")
+
+    hdr = color_mode == "hdr"
+    # DXVK reports a 10-bit DXGI output descriptor in both SDR modes. Keep its
+    # color space at SDR for sdr10; Vibepollo separately preserves Main10 on
+    # the capture/encode path without falsely exposing PQ/BT.2020 to the game.
+    result = {
+        "PROTON_ENABLE_HDR": "1" if hdr else "0",
+        "DXVK_HDR": "1" if hdr else "0",
+    }
+    if provider == "disabled":
+        return result
+
     limit = (str(millihz // 1000) + "." + str(millihz % 1000).zfill(3)).rstrip("0").rstrip(".")
-    result = {}
     overlay = provider != "proton"
     if provider != "mangohud":
         rounded = str((millihz + 500) // 1000)
@@ -68,6 +89,11 @@ def environment(policy, inherited):
 def apply(namespace):
     """Called from Proton's supported user_settings.py entry point."""
     try:
+        # Proton requires this attribute even when no Vibepollo stream is
+        # active and the session socket is consequently absent.
+        settings = namespace.setdefault("user_settings", {})
+        if not isinstance(settings, dict):
+            return
         session = getattr(sys.modules.get("__main__"), "g_session", None)
         inherited = getattr(session, "env", None)
         launch_env = inherited if isinstance(inherited, dict) else os.environ
@@ -87,9 +113,6 @@ def apply(namespace):
                 data.extend(chunk)
             if len(data) > 1024:
                 return
-        settings = namespace.setdefault("user_settings", {})
-        if not isinstance(settings, dict):
-            return
         merged = dict(settings)
         merged.update(inherited if isinstance(inherited, dict) else os.environ)
         overrides = environment(json.loads(data), merged)
@@ -162,6 +185,11 @@ def install(tool, module):
     except FileNotFoundError:
         contents, info = b"", None
     if BLOCK in contents:
+        return
+    if OLD_BLOCK in contents:
+        updated = contents.replace(OLD_BLOCK, BLOCK, 1)
+        compile(updated, str(settings), "exec")
+        replace_owned(settings, updated, info)
         return
     if b"# BEGIN Vibepollo stream limiter" in contents:
         raise ValueError("modified limiter hook")
@@ -244,4 +272,4 @@ def serve(policy, roots):
 
 
 if __name__ == "__main__":
-    serve([sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4] == "1", sys.argv[5]], sys.argv[6:])
+    serve([sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4] == "1", sys.argv[5], sys.argv[6]], sys.argv[7:])

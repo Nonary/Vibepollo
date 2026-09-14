@@ -34,6 +34,8 @@ session_execution = launcher + "\n" + broker
 private_display = (root / "src/platform/linux/private_display.cpp").read_text()
 display_power = (linux / "vibepollo-display-power.h").read_text()
 display_power_client = (root / "src/platform/linux/display_power.cpp").read_text()
+frame_limiter = (root / "src/platform/linux/frame_limiter.cpp").read_text()
+provider_scan_protocol = (root / "src/provider_scan_protocol.cpp").read_text()
 rtsp = (root / "src/rtsp.cpp").read_text()
 stream = (root / "src/stream.cpp").read_text()
 kmsgrab = (root / "src/platform/linux/kmsgrab.cpp").read_text()
@@ -322,6 +324,16 @@ for forbidden in (
 require(host, "trap mark_host_shutdown TERM INT HUP", "single service signal delivery")
 forbid(host, "trap 'forward_host_signal", "duplicate service signal delivery")
 require(host, "((shutting_down)) || terminate_host", "single child termination request")
+
+for variable in ("VIBEPOLLO_MACHINE_HOST", "VIBEPOLLO_SESSION_ROLE"):
+    require(host, variable, "machine-host provider scan environment")
+    require(provider_scan_protocol, f'std::getenv("{variable}")', "provider scan machine-session guard")
+for variable in ("VIBESHINE_MACHINE_HOST", "VIBESHINE_SESSION_ROLE"):
+    forbid(provider_scan_protocol, variable, "provider scan source-only environment")
+require(frame_limiter, 'std::getenv("VIBEPOLLO_MACHINE_HOST")', "machine-host global limiter routing")
+require(frame_limiter, '"/usr/libexec/vibeshine/vibepollo-session-exec", "global-limiter"',
+        "machine-host global limiter broker")
+forbid(frame_limiter, "VIBESHINE_MACHINE_HOST", "global limiter source-only environment")
 
 # API restart of the private child exits back to the readiness-gating wrapper.
 # Ordinary Linux launches retain the historical atexit self-reexec path.

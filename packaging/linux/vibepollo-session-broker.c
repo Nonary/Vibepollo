@@ -623,9 +623,15 @@ static bool steam_direct_arguments_are_safe(int argc, char **argv) {
 }
 
 static bool global_limiter_arguments_are_safe(int argc, char **argv) {
-  if (argc != 7 || !argv) return false;
+  if (argc != 8 || !argv) return false;
+  const bool color_mode = !strcmp(argv[7], "sdr") || !strcmp(argv[7], "sdr10") ||
+                          !strcmp(argv[7], "hdr");
+  if (!color_mode) return false;
+  // Reuse the stricter direct-launch validator. Its final HDR bit is only a
+  // feature-presence sentinel here; argv[7] remains the validated mode passed
+  // to the global hook.
   char *validation[] = {"broker", "steam-direct", "1", argv[2], argv[3],
-                        argv[4], argv[5], argv[6], "0", "0", "0"};
+                        argv[4], argv[5], argv[6], "0", "0", "1"};
   return steam_direct_arguments_are_safe(11, validation);
 }
 
@@ -1347,7 +1353,7 @@ static int execute_request(int argc, char **argv,
     case GLOBAL_LIMITER: {
       char *const arguments[] = {
         (char *) steam_launch_path, "--global", argv[2], argv[3], argv[4],
-        argv[5], argv[6], "0", "0", NULL
+        argv[5], argv[6], "0", "0", argv[7], NULL
       };
       return exec_user_service(identity, NULL, arguments, false);
     }
