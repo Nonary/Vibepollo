@@ -290,6 +290,7 @@ namespace platf::gamepad {
     std::string uniq;
     inputtino::ds4_usb::feature_state features;
     ds4_input_report_t report {};
+    std::uint8_t report_counter {};
     std::uint8_t last_touch_id {};
     std::uint8_t touch_timestamp {};
     std::mutex report_mutex;
@@ -308,6 +309,11 @@ namespace platf::gamepad {
         return;
       }
 
+      // The upper six bits share a byte with PS/touchpad buttons. Keep the
+      // counter independently so button updates cannot reset report ordering.
+      state->report_counter = (state->report_counter + 1) & 0x3f;
+      state->report.common.buttons[2] =
+        (state->report.common.buttons[2] & 0x03) | (state->report_counter << 2);
       state->report.common.sensor_timestamp = htole16(
         static_cast<std::uint16_t>(le16toh(state->report.common.sensor_timestamp) + 750)
       );

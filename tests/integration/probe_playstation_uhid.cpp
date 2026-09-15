@@ -105,7 +105,9 @@ static void probe(int profile) {
   report[0] = 0x7c;
   require(ioctl(fd.value, HIDIOCGFEATURE(report.size()), report.data()) < 0, "unknown feature accepted");
 
-  pad->set_pressed_buttons(inputtino::Joypad::A);
+  const auto pressed = inputtino::Joypad::A |
+    (profile == 4 ? inputtino::Joypad::HOME | inputtino::Joypad::TOUCHPAD_FLAG : 0);
+  pad->set_pressed_buttons(pressed);
   if (profile == 4) {
     auto &ds4 = static_cast<platf::gamepad::ds4_joypad_t &>(*pad);
     ds4.set_motion(platf::gamepad::ds4_joypad_t::motion_type_e::gyroscope, 1, 0, 0);
@@ -116,6 +118,8 @@ static void probe(int profile) {
     ds5.set_motion(inputtino::PS5Joypad::ACCELERATION, 9.80665f, 0, 0);
   }
   bool seen = false;
+  int previous_counter = -1;
+  int sequenced_reports = 0;
   auto deadline = std::chrono::steady_clock::now() + 2s;
   while (std::chrono::steady_clock::now() < deadline) {
     pollfd event{fd.value, POLLIN, 0};
@@ -126,11 +130,23 @@ static void probe(int profile) {
     if (size == 64 && report[0] == 1 && (report[profile == 4 ? 5 : 8] & 0x20) &&
         report[gyro] == 16 && report[gyro + 1] == 0 && report[accel] == 0 && report[accel + 1] == 0x20) {
       seen = true;
+      if (profile == 4) {
+        require((report[7] & 3) == 3, "DS4 counter overwrote PS/touchpad buttons");
+        const int counter = report[7] >> 2;
+        if (previous_counter >= 0) {
+          require(counter == ((previous_counter + 1) & 63), "DS4 report counter stalled, reset, or skipped");
+        }
+        previous_counter = counter;
+        // Exercise two wraps while button writes race the repeating reports.
+        pad->set_pressed_buttons(pressed);
+        if (++sequenced_reports < 130) continue;
+      }
       break;
     }
   }
   pad->set_pressed_buttons(0);
   require(seen, "USB Cross/motion input report missing or incorrectly scaled");
+  require(profile != 4 || sequenced_reports == 130, "insufficient DS4 reports to verify counter wraparound");
   std::printf("DS%d live USB descriptor, firmware, pairing, sensor initialization, rejection, Cross and motion: PASS\n", profile);
 }
 
