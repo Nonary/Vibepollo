@@ -166,7 +166,7 @@ namespace {
     std::uint32_t &app_id
   ) {
     const bool global = std::string_view(argv[1]) == "--global";
-    if (argc != 10 || (!global &&
+    if (argc != 11 || (!global &&
                       (!parse_u32(argv[1], app_id) || app_id == 0))) {
       return std::nullopt;
     }
@@ -183,7 +183,8 @@ namespace {
         (!global && std::string_view(argv[9]) != "0" && std::string_view(argv[9]) != "1") ||
         (global && std::string_view(argv[9]) != "sdr" &&
                    std::string_view(argv[9]) != "sdr10" &&
-                   std::string_view(argv[9]) != "hdr")) {
+                   std::string_view(argv[9]) != "hdr") ||
+        (std::string_view(argv[10]) != "0" && std::string_view(argv[10]) != "1")) {
       return std::nullopt;
     }
     policy.always_show_graph = std::string_view(argv[5]) == "1";
@@ -191,6 +192,10 @@ namespace {
     policy.smooth_motion = std::string_view(argv[7]) == "1";
     policy.smooth_motion_graphics_queue = std::string_view(argv[8]) == "1";
     policy.hdr = global ? std::string_view(argv[9]) == "hdr" : std::string_view(argv[9]) == "1";
+    policy.wayland_hdr_compatibility = std::string_view(argv[10]) == "1";
+    if (policy.wayland_hdr_compatibility && !policy.hdr) {
+      return std::nullopt;
+    }
     auto validation_policy = policy;
     if (global) {
       // A global SDR policy still needs the hook even when no limiter is
@@ -402,7 +407,7 @@ namespace {
     std::vector<std::string> arguments {
       "/usr/bin/python3", "-I",
       "/usr/libexec/vibeshine/vibepollo-global-limiter.py",
-      argv[2], argv[3], argv[4], argv[5], argv[6], argv[9]
+      argv[2], argv[3], argv[4], argv[5], argv[6], argv[9], argv[10]
     };
     arguments.insert(arguments.end(), roots.begin(), roots.end());
     std::vector<char *> pointers;
@@ -470,13 +475,21 @@ namespace {
       }
     }
 
+    const bool proton_wayland_hdr_compatibility =
+      policy.wayland_hdr_compatibility && game->launch_os == "windows";
     if (setenv("NVPRESENT_ENABLE_SMOOTH_MOTION", policy.smooth_motion ? "1" : "", 1) != 0 ||
         setenv("NVPRESENT_QUEUE_FAMILY",
                policy.smooth_motion_graphics_queue ? "1" : "", 1) != 0 ||
         setenv("PROTON_ENABLE_HDR", policy.hdr ? "1" : "0", 1) != 0 ||
-        setenv("DXVK_HDR", policy.hdr ? "1" : "0", 1) != 0) {
+        setenv("DXVK_HDR", policy.hdr ? "1" : "0", 1) != 0 ||
+        (proton_wayland_hdr_compatibility &&
+         (setenv("ENABLE_HDR_WSI", "1", 1) != 0 ||
+          setenv("PROTON_ENABLE_WAYLAND", "1", 1) != 0))) {
       report(LOG_ERR, "could not install launch policy");
       return 1;
+    }
+    if (proton_wayland_hdr_compatibility) {
+      report(LOG_INFO, "Wayland HDR compatibility enabled for direct Proton launch");
     }
 
     ensure_steam_client();
@@ -593,9 +606,9 @@ int main(int argc, char **argv) {
   const auto policy = parse_policy(argc, argv, app_id);
   if (!policy) {
     std::cerr << "usage: vibepollo-steam-launch APPID PROVIDER LIMIT_MILLIHZ "
-                 "PRESET GRAPH METHOD SMOOTH QUEUE HDR\n"
+                 "PRESET GRAPH METHOD SMOOTH QUEUE HDR WAYLAND_HDR_COMPATIBILITY\n"
                  "       vibepollo-steam-launch --global PROVIDER LIMIT_MILLIHZ "
-                 "PRESET GRAPH METHOD 0 0 COLOR_MODE\n";
+                 "PRESET GRAPH METHOD 0 0 COLOR_MODE WAYLAND_HDR_COMPATIBILITY\n";
     return 2;
   }
   if (std::string_view(argv[1]) == "--global") return global_limiter(argv);

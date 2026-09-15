@@ -90,10 +90,12 @@
   #endif
 #elif defined(__linux__)
   #include "src/platform/linux/frame_limiter.h"
+  #include "src/platform/linux/misc.h"
   #include "src/display_helper_integration.h"
   #include "src/platform/linux/private_display.h"
   #include "src/platform/linux/display_backend.h"
   #include "src/platform/linux/display_power.h"
+  #include "src/platform/linux/wayland_hdr_compatibility.h"
 #endif
 
 #ifdef __APPLE__
@@ -3046,10 +3048,30 @@ namespace webrtc_stream {
       const auto color_mode = start_params.hdr ? platf::proton_color_mode::hdr :
                               start_params.prefer_sdr_10bit ? platf::proton_color_mode::sdr10 :
                                                              platf::proton_color_mode::sdr;
+      const auto wayland_hdr_compatibility = platf::wayland_hdr_compatibility::resolve(
+        config::video.dd.wayland_hdr_compatibility,
+        platf::wayland_hdr_compatibility::selected_session_is_wayland(
+          window_system == window_system_e::WAYLAND
+        ),
+        color_mode == platf::proton_color_mode::hdr
+      );
+      if (config::video.dd.wayland_hdr_compatibility && !wayland_hdr_compatibility.enabled) {
+        if (color_mode == platf::proton_color_mode::sdr10) {
+          BOOST_LOG(debug) << "Wayland HDR compatibility skipped: 10-bit SDR preferred.";
+        } else if (start_params.prefer_sdr_10bit) {
+          BOOST_LOG(debug) << "Wayland HDR compatibility skipped: session resolved to SDR.";
+        } else if (wayland_hdr_compatibility.suppression_reason ==
+                   platf::wayland_hdr_compatibility::suppression_reason_e::not_wayland) {
+          BOOST_LOG(debug) << "Wayland HDR compatibility skipped: the active session is not Wayland.";
+        } else {
+          BOOST_LOG(debug) << "Wayland HDR compatibility skipped: session resolved to SDR.";
+        }
+      }
       platf::frame_limiter_streaming_start(
         platf::frame_limiter_owner::webrtc,
         policy,
-        color_mode
+        {.color_mode = color_mode,
+         .wayland_hdr_compatibility = wayland_hdr_compatibility.enabled}
       );
 #endif
     }

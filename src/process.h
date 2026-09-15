@@ -277,6 +277,9 @@ namespace proc {
     bp::environment _env;
     std::shared_ptr<rtsp_stream::launch_session_t> _launch_session;
     std::shared_ptr<config::input_t> _saved_input_config;
+    // Entries inserted by a prior stream must not leak into a later launch,
+    // while values loaded from apps.json remain explicit user configuration.
+    std::unordered_set<std::string> _stream_owned_environment_keys;
     std::vector<ctx_t> _apps;
     ctx_t _app;
     std::chrono::steady_clock::time_point _app_launch_time;

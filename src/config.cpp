@@ -959,7 +959,8 @@ namespace config {
       {},  // snapshot_exclude_devices
       {},  // mode_remapping
       {false},  // wa
-      true  // vulkan_hdr_layer
+      true,  // vulkan_hdr_layer
+      false  // wayland_hdr_compatibility
     },  // display_device
 
     0,  // max_bitrate
@@ -1958,6 +1959,7 @@ namespace config {
       }
     }
     bool_f(vars, "vulkan_hdr_layer", video.dd.vulkan_hdr_layer);
+    bool_f(vars, "wayland_hdr_compatibility", video.dd.wayland_hdr_compatibility);
     {
       auto it = vars.find("dd_virtual_display_permanent_count");
       if (it == std::end(vars)) {

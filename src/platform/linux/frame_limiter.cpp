@@ -43,11 +43,12 @@ namespace platf {
 
     struct owner_policy_t {
       framegen::stream_start_policy_t stream;
-      proton_color_mode color_mode = proton_color_mode::sdr;
+      proton_launch_environment_t environment;
     };
 
     std::mutex limiter_mutex;
-    std::array<std::optional<owner_policy_t>, 2> owners {};
+    std::array<std::optional<owner_policy_t>,
+               static_cast<std::size_t>(frame_limiter_owner::application) + 1> owners {};
     std::unique_ptr<limiter_lease> lease;
     std::string active_signature;
 
@@ -64,7 +65,7 @@ namespace platf {
 
     std::unique_ptr<limiter_lease> start(
       const mangohud::launch_policy_t &policy,
-      proton_color_mode color_mode
+      const proton_launch_environment_t environment
     ) {
       const bool proton = mangohud::proton_provider_selected(config::frame_limiter.provider);
       gchar *mangohud_path = g_find_program_in_path("mangohud");
@@ -88,9 +89,9 @@ namespace platf {
       auto result = std::make_unique<limiter_lease>();
       GError *error = nullptr;
       if (std::getenv("VIBEPOLLO_MACHINE_HOST")) {
-        result->process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE, &error, "/usr/libexec/vibeshine/vibepollo-session-exec", "global-limiter", provider, limit.c_str(), preset, graph, method, color_mode_name(color_mode), nullptr);
+        result->process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE, &error, "/usr/libexec/vibeshine/vibepollo-session-exec", "global-limiter", provider, limit.c_str(), preset, graph, method, color_mode_name(environment.color_mode), environment.wayland_hdr_compatibility ? "1" : "0", nullptr);
       } else {
-        result->process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE, &error, "/usr/libexec/vibeshine/vibepollo-steam-launch", "--global", provider, limit.c_str(), preset, graph, method, "0", "0", color_mode_name(color_mode), nullptr);
+        result->process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE, &error, "/usr/libexec/vibeshine/vibepollo-steam-launch", "--global", provider, limit.c_str(), preset, graph, method, "0", "0", color_mode_name(environment.color_mode), environment.wayland_hdr_compatibility ? "1" : "0", nullptr);
       }
       if (!result->process) {
         BOOST_LOG(warning) << "Global Linux limiter: " << (error ? error->message : "helper unavailable");
@@ -118,10 +119,14 @@ namespace platf {
         }
         if (token == '\n') {
           if (ready_line.starts_with("READY ")) {
-            BOOST_LOG(info) << "Global Linux Proton stream policy ready in " << color_mode_name(color_mode)
+            BOOST_LOG(info) << "Global Linux Proton stream policy ready in " << color_mode_name(environment.color_mode)
                             << " mode" << (limiter_available ? " with " + std::string(provider) +
                                                                " limiting at " + policy.limit + " FPS" : "")
                             << " for external launches (" << ready_line.substr(6) << " installations).";
+            if (environment.wayland_hdr_compatibility) {
+              BOOST_LOG(info) << "Wayland HDR compatibility enabled for external Proton application launches.";
+              BOOST_LOG(debug) << "Wayland HDR compatibility flags applied through the session-owned Proton hook.";
+            }
             return result;
           }
           break;
@@ -135,18 +140,27 @@ namespace platf {
       return {};
     }
 
-    proton_color_mode aggregate_color_mode() {
+    proton_launch_environment_t aggregate_environment() {
       bool sdr10 = false;
+      bool hdr = false;
+      bool wayland_hdr_compatibility = false;
       for (const auto &owner : owners) {
         if (!owner) {
           continue;
         }
-        if (owner->color_mode == proton_color_mode::hdr) {
-          return proton_color_mode::hdr;
+        if (owner->environment.color_mode == proton_color_mode::hdr) {
+          hdr = true;
+          wayland_hdr_compatibility |= owner->environment.wayland_hdr_compatibility;
+          continue;
         }
-        sdr10 |= owner->color_mode == proton_color_mode::sdr10;
+        sdr10 |= owner->environment.color_mode == proton_color_mode::sdr10;
       }
-      return sdr10 ? proton_color_mode::sdr10 : proton_color_mode::sdr;
+      if (hdr) {
+        return {.color_mode = proton_color_mode::hdr,
+                .wayland_hdr_compatibility = wayland_hdr_compatibility};
+      }
+      return {.color_mode = sdr10 ? proton_color_mode::sdr10 : proton_color_mode::sdr,
+              .wayland_hdr_compatibility = false};
     }
 
     void reconcile() {
@@ -166,8 +180,9 @@ namespace platf {
         (*selected)->stream,
         config::frame_limiter.fps_limit_millihz
       );
-      const auto color_mode = aggregate_color_mode();
-      const std::string signature = std::string(color_mode_name(color_mode)) + "|" +
+      const auto environment = aggregate_environment();
+      const std::string signature = std::string(color_mode_name(environment.color_mode)) + "|" +
+                                    (environment.wayland_hdr_compatibility ? "1|" : "0|") +
                                     (policy.enabled ? "1|" + std::to_string(policy.limit_millihz) : "0") + "|" +
                                     config::frame_limiter.provider + "|" +
                                     config::frame_limiter.mangohud_preset + "|" +
@@ -178,7 +193,7 @@ namespace platf {
       }
       lease.reset();
       active_signature.clear();
-      lease = start(policy, color_mode);
+      lease = start(policy, environment);
       if (lease) {
         active_signature = signature;
       }
@@ -188,10 +203,10 @@ namespace platf {
   void frame_limiter_streaming_start(
     frame_limiter_owner owner,
     const framegen::stream_start_policy_t &stream_policy,
-    proton_color_mode color_mode
+    proton_launch_environment_t environment
   ) {
     std::lock_guard lock(limiter_mutex);
-    owners[static_cast<std::size_t>(owner)] = owner_policy_t {stream_policy, color_mode};
+    owners[static_cast<std::size_t>(owner)] = owner_policy_t {stream_policy, environment};
     reconcile();
   }
 

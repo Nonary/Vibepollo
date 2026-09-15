@@ -400,6 +400,12 @@ const virtualDisplayCustomizationFields = (): SettingsField[] => [
     platform: ['windows', 'linux'],
     visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
   }),
+  boolean('wayland_hdr_compatibility', {
+    platform: 'linux',
+    labelKey: 'ui.settings.fields.wayland_hdr_compatibility.label',
+    descriptionKey: 'ui.settings.fields.wayland_hdr_compatibility.description',
+    visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
+  }),
 ];
 
 const remoteMonitorFields = (): SettingsField[] => [
@@ -1027,6 +1033,7 @@ export const settingsDefaults: Record<string, unknown> = {
   dd_display_helper_engine: 'auto',
   vulkan_hdr_layer: true,
   dd_wa_dummy_plug_hdr10: false,
+  wayland_hdr_compatibility: false,
   dd_config_revert_on_disconnect: false,
   dd_config_revert_delay: 3000,
   dd_always_restore_from_golden: true,

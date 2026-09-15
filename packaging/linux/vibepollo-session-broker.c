@@ -594,7 +594,7 @@ static bool sink_name_is_safe(const char *name) {
 }
 
 static bool steam_direct_arguments_are_safe(int argc, char **argv) {
-  if (argc != 11 || !argv) return false;
+  if (argc != 12 || !argv) return false;
   unsigned long app_id = 0, limit_millihz = 0;
   if (!parse_number(argv[2], 1, UINT32_MAX, &app_id) ||
       !parse_number(argv[4], 0, 1000000, &limit_millihz)) return false;
@@ -614,25 +614,29 @@ static bool steam_direct_arguments_are_safe(int argc, char **argv) {
   const bool smooth = !strcmp(argv[8], "0") || !strcmp(argv[8], "1");
   const bool queue = !strcmp(argv[9], "0") || !strcmp(argv[9], "1");
   const bool hdr = !strcmp(argv[10], "0") || !strcmp(argv[10], "1");
-  return (limited || disabled) && preset && graph && method && smooth && queue && hdr &&
+  const bool wayland_hdr_compatibility = !strcmp(argv[11], "0") || !strcmp(argv[11], "1");
+  return (limited || disabled) && preset && graph && method && smooth && queue && hdr && wayland_hdr_compatibility &&
          ((limited && limit_millihz >= 1000) || (disabled && !limit_millihz)) &&
          (overlay || (!strcmp(argv[5], "custom") && !strcmp(argv[6], "0"))) &&
          (mangohud || !strcmp(argv[7], "late")) &&
          (strcmp(argv[8], "0") || !strcmp(argv[9], "0")) &&
-         (limited || strcmp(argv[8], "0") || strcmp(argv[10], "0"));
+         (limited || strcmp(argv[8], "0") || strcmp(argv[10], "0")) &&
+         (!strcmp(argv[11], "0") || !strcmp(argv[10], "1"));
 }
 
 static bool global_limiter_arguments_are_safe(int argc, char **argv) {
-  if (argc != 8 || !argv) return false;
+  if (argc != 9 || !argv) return false;
   const bool color_mode = !strcmp(argv[7], "sdr") || !strcmp(argv[7], "sdr10") ||
                           !strcmp(argv[7], "hdr");
-  if (!color_mode) return false;
+  const bool wayland_hdr_compatibility = !strcmp(argv[8], "0") || !strcmp(argv[8], "1");
+  if (!color_mode || !wayland_hdr_compatibility ||
+      (!strcmp(argv[8], "1") && strcmp(argv[7], "hdr"))) return false;
   // Reuse the stricter direct-launch validator. Its final HDR bit is only a
   // feature-presence sentinel here; argv[7] remains the validated mode passed
   // to the global hook.
   char *validation[] = {"broker", "steam-direct", "1", argv[2], argv[3],
-                        argv[4], argv[5], argv[6], "0", "0", "1"};
-  return steam_direct_arguments_are_safe(11, validation);
+                        argv[4], argv[5], argv[6], "0", "0", "1", argv[8]};
+  return steam_direct_arguments_are_safe(12, validation);
 }
 
 static bool parse_channel_mapping(const char *value, size_t channels,
@@ -1087,7 +1091,8 @@ static int supervise_user_service(const char *unit, char *const arguments[], boo
 }
 
 static int exec_user_service(const struct session_identity *identity, const char *directory,
-                             char *const command_argv[], bool recover_steam_launch) {
+                             char *const command_argv[], bool recover_steam_launch,
+                             bool wayland_hdr_compatibility) {
   char unit[192], environment_home[PATH_MAX + 16], environment_user[80], environment_logname[80];
   char environment_runtime[PATH_MAX + 32], environment_config[PATH_MAX + 32];
   char environment_data[PATH_MAX + 32], environment_pipewire[PATH_MAX + 32];
@@ -1156,6 +1161,12 @@ static int exec_user_service(const struct session_identity *identity, const char
     arguments[index++] = "XDG_SESSION_TYPE=wayland";
     arguments[index++] = "--setenv";
     arguments[index++] = environment_wayland;
+    if (wayland_hdr_compatibility) {
+      // This is a fixed broker policy, never a caller-selected environment
+      // value.  The regular APP path remains a clean desktop-session launch.
+      arguments[index++] = "--setenv";
+      arguments[index++] = "ENABLE_HDR_WSI=1";
+    }
     if (identity->x_display[0]) {
       arguments[index++] = "--setenv";
       arguments[index++] = environment_display;
@@ -1208,7 +1219,7 @@ static int execute_request(int argc, char **argv,
   enum operation {
     DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_POWER, DISPLAY_WAKE, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
     AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS,
-    PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, APP
+    PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, APP, APP_WAYLAND_HDR
   } operation;
   unsigned long first_number = 0, second_number = 0, third_number = 0;
   unsigned char channel_mapping[8] = {0};
@@ -1254,6 +1265,9 @@ static int execute_request(int argc, char **argv,
   else if (!strcmp(argv[1], "app") && argc == 3 && !strcmp(identity->role, "desktop") &&
            command_is_authorized(identity->role, argv[2], service_gid,
                                  authorized_directory, sizeof(authorized_directory))) operation = APP;
+  else if (!strcmp(argv[1], "app-wayland-hdr") && argc == 3 && !strcmp(identity->role, "desktop") &&
+           command_is_authorized(identity->role, argv[2], service_gid,
+                                 authorized_directory, sizeof(authorized_directory))) operation = APP_WAYLAND_HDR;
   else {
     fprintf(stderr, "vibepollo-session-broker: rejected request '%s' (argc=%d, role=%s)\n",
             argv[1], argc, identity->role);
@@ -1353,23 +1367,23 @@ static int execute_request(int argc, char **argv,
     case GLOBAL_LIMITER: {
       char *const arguments[] = {
         (char *) steam_launch_path, "--global", argv[2], argv[3], argv[4],
-        argv[5], argv[6], "0", "0", argv[7], NULL
+        argv[5], argv[6], "0", "0", argv[7], argv[8], NULL
       };
-      return exec_user_service(identity, NULL, arguments, false);
+      return exec_user_service(identity, NULL, arguments, false, false);
     }
     case STEAM_DIRECT: {
       char *const arguments[] = {
         (char *) steam_launch_path, argv[2], argv[3], argv[4], argv[5],
-        argv[6], argv[7], argv[8], argv[9], argv[10], NULL
+        argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], NULL
       };
-      return exec_user_service(identity, NULL, arguments, false);
+      return exec_user_service(identity, NULL, arguments, false, false);
     }
     case LUTRIS: {
       // Apply the same ownership boundary to an already-running Lutris daemon.
       char uri[160];
       if (snprintf(uri, sizeof(uri), "lutris:rungameid/%s", argv[2]) >= (int) sizeof(uri)) return 126;
       char *const arguments[] = {"/usr/bin/lutris", uri, NULL};
-      return exec_user_service(identity, NULL, arguments, false);
+      return exec_user_service(identity, NULL, arguments, false, false);
     }
     case PROVIDER_STEAM_ARTWORK:
     case PROVIDER_LUTRIS_ARTWORK: {
@@ -1389,9 +1403,11 @@ static int execute_request(int argc, char **argv,
       execv("/usr/libexec/vibeshine/vibepollo-provider-scan", arguments);
       break;
     }
-    case APP: {
+    case APP:
+    case APP_WAYLAND_HDR: {
       char *const arguments[] = {"/bin/sh", "-c", argv[2], "--", NULL};
-      return exec_user_service(identity, authorized_directory, arguments, false);
+      return exec_user_service(identity, authorized_directory, arguments, false,
+                               operation == APP_WAYLAND_HDR);
     }
   }
   perror("vibepollo-session-broker");

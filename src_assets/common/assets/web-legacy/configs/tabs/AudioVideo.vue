@@ -613,6 +613,23 @@ function selectVirtualDisplayLayout(v: unknown) {
                   </n-checkbox>
                 </div>
               </template>
+              <template #linux>
+                <div
+                  v-if="virtualDisplayMode !== 'disabled'"
+                  class="mt-4 border-t border-dark/5 pt-4 dark:border-light/5"
+                >
+                  <n-checkbox v-model:checked="config.wayland_hdr_compatibility">
+                    <div class="flex flex-col">
+                      <span class="text-sm font-medium">
+                        {{ $t('config.wayland_hdr_compatibility') }}
+                      </span>
+                      <span class="mt-1 text-[11px] leading-snug opacity-70">
+                        {{ $t('config.wayland_hdr_compatibility_desc') }}
+                      </span>
+                    </div>
+                  </n-checkbox>
+                </div>
+              </template>
             </PlatformLayout>
           </section>
 

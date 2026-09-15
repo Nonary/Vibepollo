@@ -107,6 +107,7 @@ namespace platf::steam {
     bool smooth_motion = false;
     bool smooth_motion_graphics_queue = false;
     bool hdr = false;
+    bool wayland_hdr_compatibility = false;
   };
 
   // Build and recognize the one canonical machine-host command that delegates

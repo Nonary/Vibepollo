@@ -604,6 +604,8 @@
     "dd_use_sunshine_virtual_display_driver_desc": "Switch back to SudoVDA for virtual displays. The Vibepollo Display Driver remains installed and can be restored by clearing this option.",
     "vulkan_hdr_layer": "Vulkan HDR layer for virtual displays",
     "vulkan_hdr_layer_desc": "Registers a system-wide Vulkan layer that exposes HDR surface formats on virtual displays. Disable this if Vulkan games or apps crash with an access violation after the display driver is installed.",
+    "wayland_hdr_compatibility": "Enable KDE Wayland HDR compatibility",
+    "wayland_hdr_compatibility_desc": "Enables additional environment variables for games launched during a resolved HDR stream on KDE Plasma Wayland. This can help Proton, DXVK, and Vulkan games detect HDR without Steam launch options. It never forces HDR: 10-bit SDR, Force HDR off, and other SDR outcomes continue to take priority.",
     "virtual_display_hdr_tip": "HDR Tip: Run Windows HDR Calibration while streaming and save the profile. Then open the Clients tab and click HDR Color Profile for the client to choose the saved profile.",
     "virtual_display_scale_label": "Virtual display scale",
     "virtual_display_scale_desc": "Retain existing (default) preserves your current scale for future streams. On Windows, connect to the virtual display and set Scale in Settings > System > Display. In Vibepollo, you can also select an explicit percentage or Recommended (resolution-based) without changing the client resolution.",

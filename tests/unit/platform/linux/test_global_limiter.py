@@ -32,15 +32,15 @@ g_session.env = dict(os.environ)
 import user_settings
 for key, value in user_settings.user_settings.items():
     g_session.env.setdefault(key, value)
-print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK", "VKD3D", "MANGOHUD", "PROTON_", "KEEP_"))}))
+print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK", "VKD3D", "MANGOHUD", "PROTON_", "ENABLE_HDR_WSI", "KEEP_"))}))
 ''')
         self.original = b'user_settings = {"KEEP_SETTING": "yes", "DXVK_CONFIG": "dxvk.hud = fps"}\n'
         self.settings = self.tool / "user_settings.py"
         self.settings.write_bytes(self.original)
         self.settings.chmod(0o640)
 
-    def server(self, provider="proton", millihz=59940, color_mode="sdr"):
-        child = subprocess.Popen([sys.executable, "-I", str(self.source), provider, str(millihz), "custom", "0", "late", color_mode, str(self.tool)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    def server(self, provider="proton", millihz=59940, color_mode="sdr", wayland_hdr_compatibility=False):
+        child = subprocess.Popen([sys.executable, "-I", str(self.source), provider, str(millihz), "custom", "0", "late", color_mode, "1" if wayland_hdr_compatibility else "0", str(self.tool)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         def stop():
             if child.poll() is None:
                 child.terminate()
@@ -54,7 +54,7 @@ print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK"
         return child
 
     def launch(self, **overrides):
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("DXVK", "VKD3D", "MANGOHUD", "PROTON_ENABLE_HDR", "LD_PRELOAD"))}
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("DXVK", "VKD3D", "MANGOHUD", "PROTON_ENABLE_HDR", "PROTON_ENABLE_WAYLAND", "ENABLE_HDR_WSI", "LD_PRELOAD"))}
         env.update(overrides)
         return json.loads(subprocess.check_output([sys.executable, str(self.tool / "proton")], env=env, text=True))
 
@@ -83,16 +83,63 @@ print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK"
 
     def test_stream_color_modes_without_limiter(self):
         child = self.server("disabled", 0, "hdr")
-        hdr = self.launch(PROTON_ENABLE_HDR="0", DXVK_HDR="0")
+        hdr = self.launch()
         self.assertEqual(hdr["PROTON_ENABLE_HDR"], "1")
         self.assertEqual(hdr["DXVK_HDR"], "1")
+        self.assertNotIn("ENABLE_HDR_WSI", hdr)
+        self.assertNotIn("PROTON_ENABLE_WAYLAND", hdr)
+        explicit = self.launch(PROTON_ENABLE_HDR="0", DXVK_HDR="0")
+        self.assertEqual(explicit["PROTON_ENABLE_HDR"], "0")
+        self.assertEqual(explicit["DXVK_HDR"], "0")
         child.terminate()
         child.wait(timeout=8)
 
         self.server("disabled", 0, "sdr10")
-        sdr10 = self.launch(PROTON_ENABLE_HDR="1", DXVK_HDR="1")
+        sdr10 = self.launch()
         self.assertEqual(sdr10["PROTON_ENABLE_HDR"], "0")
         self.assertEqual(sdr10["DXVK_HDR"], "0")
+
+    def test_wayland_hdr_compatibility_is_hdr_only_and_preserves_explicit_values(self):
+        child = self.server("disabled", 0, "hdr", True)
+        active = self.launch()
+        self.assertEqual(active["ENABLE_HDR_WSI"], "1")
+        self.assertEqual(active["PROTON_ENABLE_WAYLAND"], "1")
+        self.assertEqual(active["PROTON_ENABLE_HDR"], "1")
+        self.assertEqual(active["DXVK_HDR"], "1")
+        explicit = self.launch(
+            ENABLE_HDR_WSI="0",
+            PROTON_ENABLE_WAYLAND="0",
+            PROTON_ENABLE_HDR="0",
+            DXVK_HDR="0",
+        )
+        self.assertEqual(explicit["ENABLE_HDR_WSI"], "0")
+        self.assertEqual(explicit["PROTON_ENABLE_WAYLAND"], "0")
+        self.assertEqual(explicit["PROTON_ENABLE_HDR"], "0")
+        self.assertEqual(explicit["DXVK_HDR"], "0")
+        child.terminate()
+        child.wait(timeout=8)
+
+    def test_managed_limiter_still_receives_wayland_hdr_flags(self):
+        child = self.server("mangohud-proton", 120000, "hdr", True)
+        managed = self.launch(
+            VIBEPOLLO_LIMITER_MANAGED="1",
+            VKD3D_FRAME_RATE="120",
+            MANGOHUD="1",
+            MANGOHUD_CONFIG="read_cfg,fps_limit=0",
+        )
+        self.assertEqual(managed["ENABLE_HDR_WSI"], "1")
+        self.assertEqual(managed["PROTON_ENABLE_WAYLAND"], "1")
+        self.assertEqual(managed["PROTON_ENABLE_HDR"], "1")
+        self.assertEqual(managed["DXVK_HDR"], "1")
+        self.assertEqual(managed["VKD3D_FRAME_RATE"], "120")
+        self.assertEqual(managed["MANGOHUD_CONFIG"], "read_cfg,fps_limit=0")
+        child.terminate()
+        child.wait(timeout=8)
+
+        self.server("disabled", 0, "sdr")
+        sdr = self.launch()
+        self.assertNotIn("ENABLE_HDR_WSI", sdr)
+        self.assertNotIn("PROTON_ENABLE_WAYLAND", sdr)
 
     def test_crash_leaves_inert_hook(self):
         child = self.server()
@@ -135,12 +182,13 @@ print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK"
     def test_discovery_and_validation(self):
         self.assertEqual(limiter.tools_in([self.tool, self.tool]), {self.tool})
         for invalid in (
-            ["proton", 0, "custom", False, "late", "sdr"],
-            ["bogus", 60000, "custom", False, "late", "sdr"],
-            ["proton", 60000, "custom", False, "late", "invalid"],
-            ["disabled", 60000, "custom", False, "late", "hdr"],
-            ["disabled", 0, "1", False, "late", "hdr"],
-            ["proton", 60000, "custom", False, "late", "sdr", "extra"],
+            ["proton", 0, "custom", False, "late", "sdr", False],
+            ["bogus", 60000, "custom", False, "late", "sdr", False],
+            ["proton", 60000, "custom", False, "late", "invalid", False],
+            ["disabled", 60000, "custom", False, "late", "hdr", False],
+            ["disabled", 0, "1", False, "late", "hdr", False],
+            ["proton", 60000, "custom", False, "late", "sdr", True],
+            ["proton", 60000, "custom", False, "late", "sdr", False, "extra"],
         ):
             with self.assertRaises(ValueError):
                 limiter.environment(invalid, {})

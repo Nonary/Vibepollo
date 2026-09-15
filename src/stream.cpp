@@ -69,8 +69,10 @@ extern "C" {
   #include "platform/windows/virtual_display_cleanup.h"
 #elif defined(__linux__)
   #include "platform/linux/frame_limiter.h"
+  #include "platform/linux/misc.h"
   #include "drm_timing_trace.h"
   #include "platform/linux/private_display.h"
+  #include "platform/linux/wayland_hdr_compatibility.h"
   #include "src/platform/linux/display_backend.h"
 #endif
 
@@ -3426,7 +3428,31 @@ namespace stream {
                                     !session.config.monitor.force_sdr ?
                                     platf::proton_color_mode::sdr10 :
                                     platf::proton_color_mode::sdr;
-          platf::frame_limiter_streaming_start(platf::frame_limiter_owner::rtsp, policy, color_mode);
+          const auto wayland_hdr_compatibility = platf::wayland_hdr_compatibility::resolve(
+            config::video.dd.wayland_hdr_compatibility,
+            platf::wayland_hdr_compatibility::selected_session_is_wayland(
+              window_system == window_system_e::WAYLAND
+            ),
+            color_mode == platf::proton_color_mode::hdr
+          );
+          if (config::video.dd.wayland_hdr_compatibility && !wayland_hdr_compatibility.enabled) {
+            if (color_mode == platf::proton_color_mode::sdr10) {
+              BOOST_LOG(debug) << "Wayland HDR compatibility skipped: 10-bit SDR preferred.";
+            } else if (session.config.monitor.force_sdr) {
+              BOOST_LOG(debug) << "Wayland HDR compatibility skipped: HDR disabled by the final session/display policy.";
+            } else if (wayland_hdr_compatibility.suppression_reason ==
+                       platf::wayland_hdr_compatibility::suppression_reason_e::not_wayland) {
+              BOOST_LOG(debug) << "Wayland HDR compatibility skipped: the active session is not Wayland.";
+            } else {
+              BOOST_LOG(debug) << "Wayland HDR compatibility skipped: session resolved to SDR.";
+            }
+          }
+          platf::frame_limiter_streaming_start(
+            platf::frame_limiter_owner::rtsp,
+            policy,
+            {.color_mode = color_mode,
+             .wayland_hdr_compatibility = wayland_hdr_compatibility.enabled}
+          );
           session::start_shared_platform_if_needed();
 #endif
         } else {

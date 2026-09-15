@@ -245,6 +245,7 @@ namespace config {
       mode_remapping_t mode_remapping;
       workarounds_t wa;
       bool vulkan_hdr_layer;  ///< Register the Vulkan HDR implicit layer that exposes HDR surface formats on virtual displays. Disable to recover from Vulkan access violations in third-party apps.
+      bool wayland_hdr_compatibility;  ///< Opt in to native KDE/Wayland HDR launch environment compatibility for resolved HDR streams.
     } dd;
 
     int max_bitrate;  // Maximum bitrate, sets ceiling in kbps for bitrate requested from client

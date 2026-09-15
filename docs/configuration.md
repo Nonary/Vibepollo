@@ -4740,6 +4740,10 @@ Sets the maximum on-disk size, in MiB, of the session-history database before ol
 
 Enables the Vulkan HDR layer used by the display stack when HDR Vulkan capture support is available.
 
+### wayland_hdr_compatibility
+
+Enables KDE Plasma Wayland HDR environment compatibility for games launched during a resolved HDR stream. This does not force HDR and does not override SDR stream outcomes.
+
 ### wgc_pacing_smoothing
 
 Enables WGC pacing smoothing so capture re-anchors to the pacing grid instead of raw frame-arrival timing.

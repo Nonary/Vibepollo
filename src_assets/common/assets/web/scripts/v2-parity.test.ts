@@ -204,6 +204,20 @@ test('Linux virtual-display pacing uses Linux-specific copy', () => {
   }
 });
 
+test('Wayland HDR compatibility appears in both Linux settings UIs', () => {
+  assert.equal(settingsFields.get('wayland_hdr_compatibility')?.platform, 'linux');
+  const legacyAudioVideo = readFileSync(
+    new URL('../../web-legacy/configs/tabs/AudioVideo.vue', import.meta.url),
+    'utf8',
+  );
+  const legacyStore = readFileSync(
+    new URL('../../web-legacy/stores/config.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(legacyAudioVideo, /v-model:checked="config\.wayland_hdr_compatibility"/);
+  assert.match(legacyStore, /wayland_hdr_compatibility:\s*false/);
+});
+
 test('Linux Proton and MangoHUD limiter choices stay aligned with legacy UI', () => {
   assert.equal(settingsDefaults.frame_limiter_provider, 'auto');
   assert.equal(settingsDefaults.mangohud_limiter_method, 'late');

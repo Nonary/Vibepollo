@@ -9,6 +9,7 @@
 #endif
 
 // standard includes
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
@@ -431,7 +432,16 @@ namespace platf {
         // The capability-bearing helper resolves the administrator-authorized
         // working directory. The network host supplies only the exact command
         // to match, never a caller-selected filesystem location.
-        args = {"app", cmd};
+        const auto environment_value = [&env](std::string_view name) {
+          const auto it = std::find_if(env.cbegin(), env.cend(), [name](const auto &entry) {
+            return entry.get_name() == name;
+          });
+          return it == env.cend() ? std::string {} : it->to_string();
+        };
+        const bool wayland_hdr_compatibility =
+          environment_value("SUNSHINE_CLIENT_HDR") == "true" &&
+          environment_value("ENABLE_HDR_WSI") == "1";
+        args = {wayland_hdr_compatibility ? "app-wayland-hdr" : "app", cmd};
       }
     } else {
       std::vector<std::string> parts;

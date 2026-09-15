@@ -76,10 +76,13 @@
   #include <Psapi.h>
 #elif defined(__linux__)
   #include "platform/linux/gamescopegrab.h"
+  #include "platform/linux/frame_limiter.h"
   #include "platform/linux/mangohud_policy.h"
   #include "platform/linux/mangohud_state.h"
+  #include "platform/linux/misc.h"
   #include "platform/linux/secure_open.h"
   #include "platform/linux/smooth_motion_policy.h"
+  #include "platform/linux/wayland_hdr_compatibility.h"
   #include "steam_integration.h"
 
   #include <fcntl.h>
@@ -1024,6 +1027,7 @@ namespace proc {
   proc_t::proc_t(proc_t &&other) noexcept:
       _app_id(other._app_id.load(std::memory_order_acquire)),
       _env(std::move(other._env)),
+      _stream_owned_environment_keys(std::move(other._stream_owned_environment_keys)),
       _apps(std::move(other._apps)),
       _app(std::move(other._app)),
       _app_launch_time(other._app_launch_time),
@@ -1069,6 +1073,7 @@ namespace proc {
 #endif
       _app_id.store(other._app_id.load(std::memory_order_acquire), std::memory_order_release);
       _env = std::move(other._env);
+      _stream_owned_environment_keys = std::move(other._stream_owned_environment_keys);
       _apps = std::move(other._apps);
       _app = std::move(other._app);
       _app_launch_time = other._app_launch_time;
@@ -1366,6 +1371,15 @@ namespace proc {
       const bool skip_display_revert = launch_session && launch_session->display_config_preapplied;
       terminate(false, false, skip_display_revert, true);
     }
+
+#ifdef __linux__
+    // proc_t retains its parsed environment across launches. Remove only the
+    // values that a prior stream supplied; never erase an apps.json value.
+    for (const auto &key : _stream_owned_environment_keys) {
+      _env[key] = "";
+    }
+    _stream_owned_environment_keys.clear();
+#endif
 
     _app = app;
     _app_id = util::from_view(app.id);
@@ -1724,11 +1738,37 @@ namespace proc {
     const bool stream_hdr = rtsp_stream::effective_hdr_requested(*launch_session);
     _env["SUNSHINE_CLIENT_HDR"] = stream_hdr ? "true" : "false";
 #ifdef __linux__
-    // DXVK implements Windows' DXGI HDR switch and cannot infer that state
-    // through Xwayland. Report the stream's effective HDR state to Proton for
-    // every directly launched game, just as Gamescope does for an HDR session.
-    _env["PROTON_ENABLE_HDR"] = stream_hdr ? "1" : "0";
-    _env["DXVK_HDR"] = stream_hdr ? "1" : "0";
+    const auto wayland_hdr_compatibility = platf::wayland_hdr_compatibility::resolve(
+      config::video.dd.wayland_hdr_compatibility,
+      platf::wayland_hdr_compatibility::selected_session_is_wayland(
+        window_system == window_system_e::WAYLAND
+      ),
+      stream_hdr
+    );
+    auto set_stream_environment_default = [&](const char *key, const char *value) {
+      if (!_env[key].to_string().empty()) {
+        return false;
+      }
+      _env[key] = value;
+      _stream_owned_environment_keys.emplace(key);
+      return true;
+    };
+    if (wayland_hdr_compatibility.enabled) {
+      (void) set_stream_environment_default("ENABLE_HDR_WSI", "1");
+      BOOST_LOG(info) << "Wayland HDR compatibility enabled for application launch.";
+      BOOST_LOG(debug) << "Wayland HDR compatibility applied ENABLE_HDR_WSI to the launch environment.";
+    } else if (config::video.dd.wayland_hdr_compatibility) {
+      if (launch_session->prefer_sdr_10bit) {
+        BOOST_LOG(debug) << "Wayland HDR compatibility skipped: 10-bit SDR preferred.";
+      } else if (launch_session->force_sdr) {
+        BOOST_LOG(debug) << "Wayland HDR compatibility skipped: HDR disabled by the final session/display policy.";
+      } else if (wayland_hdr_compatibility.suppression_reason ==
+                 platf::wayland_hdr_compatibility::suppression_reason_e::not_wayland) {
+        BOOST_LOG(debug) << "Wayland HDR compatibility skipped: the active session is not Wayland.";
+      } else {
+        BOOST_LOG(debug) << "Wayland HDR compatibility skipped: session resolved to SDR.";
+      }
+    }
 #endif
     _env["SUNSHINE_CLIENT_GCMAP"] = std::to_string(launch_session->gcmap);
     _env["SUNSHINE_CLIENT_HOST_AUDIO"] = launch_session->host_audio ? "true" : "false";
@@ -1800,6 +1840,7 @@ namespace proc {
     }
     bool inherited_steam_environment_ready = !gamescope_steam_launch;
     bool session_steam_direct_launch = false;
+    bool steam_proton_launch = false;
     const bool effective_frame_limiter =
       mangohud_policy.enabled && (proton_limiter || mangohud_available);
     const bool direct_steam_launch_required =
@@ -1822,6 +1863,7 @@ namespace proc {
           return candidate.app_id == steam_app_id && candidate.installed;
         });
         if (game != games.end()) {
+          steam_proton_launch = game->launch_os == "windows";
           if (std::getenv("VIBEPOLLO_MACHINE_HOST")) {
             const bool proton_overlay_enabled =
               effective_frame_limiter && proton_limiter &&
@@ -1845,6 +1887,12 @@ namespace proc {
               .smooth_motion_graphics_queue = smooth_motion_policy.enabled &&
                                               smooth_motion_policy.use_graphics_queue,
               .hdr = stream_hdr,
+              // The machine-side Steam catalog intentionally omits desktop
+              // Proton metadata. The session helper re-discovers the app and
+              // applies this policy only when its launch is actually Proton;
+              // carrying the resolved Wayland/HDR bit here is therefore
+              // required for the brokered direct launch to receive it.
+              .wayland_hdr_compatibility = wayland_hdr_compatibility.enabled,
             };
             const bool overlay = policy.provider == "mangohud" ||
                                  policy.provider == "mangohud-proton";
@@ -1908,6 +1956,16 @@ namespace proc {
         BOOST_LOG(error)
           << "Stream-owned launch features cannot activate because the managed Steam app ID is invalid: ["
           << _app.steam_id << "].";
+      }
+    }
+    if (steam_proton_launch) {
+      // Steam metadata is the reliable Proton discriminator. Native Steam and
+      // arbitrary direct executables receive only ENABLE_HDR_WSI above.
+      (void) set_stream_environment_default("PROTON_ENABLE_HDR", stream_hdr ? "1" : "0");
+      (void) set_stream_environment_default("DXVK_HDR", stream_hdr ? "1" : "0");
+      if (wayland_hdr_compatibility.enabled) {
+        (void) set_stream_environment_default("PROTON_ENABLE_WAYLAND", "1");
+        BOOST_LOG(debug) << "Wayland HDR compatibility applied Proton/DXVK launch flags.";
       }
     }
     const bool smooth_motion_launch_ready = smooth_motion_policy.enabled && inherited_steam_environment_ready;
@@ -2267,6 +2325,21 @@ namespace proc {
       BOOST_LOG(info) << "No active user session; deferring app launch until sign-in.";
       _deferred_launch = true;
       return 0;
+    }
+#endif
+
+#ifdef __linux__
+    if (gamescope_steam_launch && wayland_hdr_compatibility.enabled) {
+      // A Steam URI is only a handoff to its already-running daemon. Prepare
+      // the session-owned Proton hook before its launch commands run, or the
+      // daemon would spawn the game with its old environment.
+      platf::frame_limiter_streaming_start(
+        platf::frame_limiter_owner::application,
+        mangohud_stream_policy,
+        {.color_mode = platf::proton_color_mode::hdr,
+         .wayland_hdr_compatibility = true}
+      );
+      BOOST_LOG(debug) << "Wayland HDR compatibility hook prepared before the running Steam handoff.";
     }
 #endif
 
@@ -2999,6 +3072,11 @@ namespace proc {
     bool skip_display_revert,
     bool stream_lifecycle_lock_held
   ) {
+#ifdef __linux__
+    // This owner represents a running-Steam handoff. Dropping it when the
+    // app ends also prevents a later SDR launch from retaining HDR policy.
+    platf::frame_limiter_streaming_stop(platf::frame_limiter_owner::application);
+#endif
     std::unique_lock<std::mutex> stream_lifecycle_lock;
     if (!stream_lifecycle_lock_held) {
       stream_lifecycle_lock =
@@ -4729,6 +4807,7 @@ namespace proc {
       _apps = std::move(apps);
       if (!app_was_running) {
         _env = std::move(env);
+        _stream_owned_environment_keys.clear();
       }
     }
   }

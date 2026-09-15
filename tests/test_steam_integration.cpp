@@ -419,12 +419,13 @@ TEST(SteamLaunch, MachineSessionLaunchUsesCanonicalSemanticArguments) {
     .smooth_motion = true,
     .smooth_motion_graphics_queue = true,
     .hdr = true,
+    .wayland_hdr_compatibility = true,
   };
   const auto command = session_launch_command(1182900, policy);
   EXPECT_EQ(
     command,
     "/usr/libexec/vibeshine/vibepollo-session-exec steam-direct "
-    "1182900 mangohud-proton 116000 3 1 late 1 1 1"
+    "1182900 mangohud-proton 116000 3 1 late 1 1 1 1"
   );
   const auto arguments = session_launch_arguments(command);
   ASSERT_TRUE(arguments);
@@ -432,7 +433,7 @@ TEST(SteamLaunch, MachineSessionLaunchUsesCanonicalSemanticArguments) {
     *arguments,
     (std::vector<std::string> {
       "steam-direct", "1182900", "mangohud-proton", "116000", "3",
-      "1", "late", "1", "1", "1"
+      "1", "late", "1", "1", "1", "1"
     })
   );
 
