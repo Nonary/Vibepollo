@@ -20,6 +20,7 @@ namespace platf::linux_security {
     const int entry_errno = errno;
     cap_t original = cap_get_proc();
     cap_t sanitized = cap_init();
+    cap_t entry_without_inheritable = nullptr;
     cap_t verified = nullptr;
     auto fail = [&](int error_number, const char *operation) {
       if (verified) {
@@ -27,6 +28,9 @@ namespace platf::linux_security {
       }
       if (sanitized) {
         cap_free(sanitized);
+      }
+      if (entry_without_inheritable) {
+        cap_free(entry_without_inheritable);
       }
       if (original) {
         cap_free(original);
@@ -39,27 +43,43 @@ namespace platf::linux_security {
       return fail(errno, "allocating the capability sets");
     }
 
-#ifdef SUNSHINE_BUILD_STEAMOS
-    // SteamOS' user manager passes CAP_WAKE_ALARM in the inheritable set.
-    // The user bundle needs no capabilities, and must retain ordinary Steam
-    // and pressure-vessel launch behavior. Require empty P/E sets, then drop
-    // inherited bits without imposing no_new_privs on child applications.
-    if (cap_clear_flag(original, CAP_INHERITABLE) != 0) {
-      return fail(errno, "checking the unprivileged SteamOS entry context");
+    // User managers may pass capabilities such as CAP_WAKE_ALARM in the
+    // inheritable set even though the process has no permitted or effective
+    // privilege. Ambient capabilities require a matching permitted bit, so an
+    // otherwise-empty entry context is still unprivileged. Clear inherited
+    // bits without imposing no_new_privs on ordinary child applications.
+    entry_without_inheritable = cap_dup(original);
+    if (!entry_without_inheritable ||
+        cap_clear_flag(entry_without_inheritable, CAP_INHERITABLE) != 0) {
+      return fail(errno, "checking the unprivileged entry context");
     }
-    const int unprivileged_comparison = cap_compare(original, sanitized);
+    const int unprivileged_comparison = cap_compare(entry_without_inheritable, sanitized);
     if (unprivileged_comparison != 0) {
-      return fail(unprivileged_comparison < 0 ? errno : EPERM, "requiring an unprivileged SteamOS launch");
+      if (unprivileged_comparison < 0) {
+        return fail(errno, "comparing the unprivileged entry context");
+      }
+    } else {
+      cap_free(entry_without_inheritable);
+      entry_without_inheritable = nullptr;
+      if (cap_set_proc(sanitized) != 0) {
+        return fail(errno, "clearing inherited unprivileged capabilities");
+      }
+      verified = cap_get_proc();
+      if (!verified) {
+        return fail(errno, "reading back the unprivileged capability set");
+      }
+      const int comparison = cap_compare(sanitized, verified);
+      if (comparison != 0) {
+        return fail(comparison < 0 ? errno : EPERM, "verifying the unprivileged capability set");
+      }
+      cap_free(verified);
+      cap_free(sanitized);
+      cap_free(original);
+      errno = entry_errno;
+      return true;
     }
-    if (cap_set_proc(sanitized) != 0) {
-      return fail(errno, "clearing inherited SteamOS capabilities");
-    }
-    cap_free(original);
-    original = cap_get_proc();
-    if (!original) {
-      return fail(errno, "reading back the SteamOS capability set");
-    }
-#endif
+    cap_free(entry_without_inheritable);
+    entry_without_inheritable = nullptr;
 
     const int initial_comparison = cap_compare(original, sanitized);
     if (initial_comparison < 0) {
