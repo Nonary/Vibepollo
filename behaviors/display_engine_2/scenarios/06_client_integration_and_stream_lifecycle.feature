@@ -1526,12 +1526,21 @@ Feature: Display engine v2 client integration and stream lifecycle
       And revert on disconnect is disabled
       When paused virtual-display timeout is <timeout>
       Then Sunshine <result>
+      And it disengages virtual-display crash recovery before keep-alive or delayed removal
       And a delayed removal does not restore physical display configuration
 
       Examples:
         | timeout             | result                                                        |
         | zero                | keeps the virtual display alive for resume                     |
         | a positive duration | schedules removal after that duration without restoration       |
+
+    Scenario: An ended or paused final stream cannot recreate its virtual display
+      Given the last RTSP or WebRTC runtime owner ends or enters pause
+      And a virtual display recovery monitor may still be recreating that session
+      When Sunshine finalizes shared display ownership
+      Then it cancels that recovery monitor before restore, keep-alive, delayed removal, or teardown
+      And an ended or paused session cannot recreate a virtual display
+      And a later launch or resume may still arm a new recovery monitor
 
     Scenario: A newer lifecycle owner cancels delayed paused cleanup
       Given paused virtual-display removal is waiting for its configured delay
@@ -1542,13 +1551,15 @@ Feature: Display engine v2 client integration and stream lifecycle
     Scenario: Requested final restore keeps the virtual display alive
       Given the final stream requires restore because revert-on-disconnect, deferred application revert, or forced idle cleanup is active
       When Sunshine dispatches Revert
-      Then it keeps the virtual display alive while restoration is requested
+      Then recovery is already cancelled for the ended stream
+      And it keeps the virtual display alive while restoration is requested
       And failed dispatch also leaves that display available rather than forcing remove-before-restore
 
     Scenario: Nonpaused final ownership without restore removes only virtual displays
       Given the final stream is not paused and no restore condition applies
       When Sunshine finalizes display ownership
-      Then it removes the owned virtual display without restoring the physical database
+      Then it cancels virtual-display crash recovery before removal
+      And it removes the owned virtual display without restoring the physical database
       And it later completes ordinary shared platform shutdown
 
     Scenario: Stream platform start begins helper supervision

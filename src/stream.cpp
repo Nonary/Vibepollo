@@ -279,7 +279,7 @@ namespace stream {
           platf::virtual_display_cleanup::revert_order_t::remove_before_restore,
           true,
           virtual_display_guid_bytes,
-          platf::virtual_display_cleanup::recovery_monitor_policy_t::disengage_before_admission
+          platf::virtual_display_cleanup::idle_stream_cleanup_recovery_policy()
         );
         if (cleanup.helper_revert_dispatched) {
           display_helper_integration::stop_watchdog();
@@ -2937,6 +2937,18 @@ namespace stream {
         is_paused && !display_restore_requested && paused_timeout_secs == 0;
 
 #ifdef _WIN32
+      // This path only runs once no shared runtime owner remains, so the
+      // stream has ended or entered pause/suspend. Crash recovery must not
+      // recreate a virtual display for that idle session, even when the
+      // display itself is kept for restore or later resume. Cancellation
+      // does not remove the VDD or latch shutdown; a later launch or resume
+      // arms a fresh worker.
+      static_assert(platf::virtual_display_cleanup::idle_stream_disengages_recovery_monitor(true));
+      VDISPLAY::cancel_all_virtual_display_recovery_monitors();
+      BOOST_LOG(info) << "Virtual display recovery: disengaged after final "
+                      << (is_paused ? "paused" : "ended")
+                      << " stream (reason=" << reason << ").";
+
       if (delay_virtual_display_cleanup_due_to_pause) {
         BOOST_LOG(info) << "Display cleanup: shared stream runtime paused with revert-on-disconnect disabled; "
                         << "scheduling virtual display removal without display restore in " << paused_timeout_secs << "s.";
@@ -2950,11 +2962,6 @@ namespace stream {
         BOOST_LOG(debug) << "Display cleanup: shared stream runtime is paused; keeping virtual display alive "
                             "(config_revert_on_disconnect=false, paused timeout disabled).";
       } else if (display_restore_requested) {
-        // The final owner is gone, so no recovery worker may legitimately
-        // recreate or reapply this ended session while REVERT intentionally
-        // deactivates its retained virtual display. Cancellation does not
-        // remove the VDD or latch shutdown; a later session arms fresh workers.
-        VDISPLAY::cancel_all_virtual_display_recovery_monitors();
         BOOST_LOG(info) << "Display restore: final stream ended; dispatching restore while keeping virtual display alive.";
         if (!display_helper_integration::revert(true)) {
           BOOST_LOG(debug) << "Display helper: restore dispatch failed after final stream; virtual display remains active.";
@@ -2968,7 +2975,8 @@ namespace stream {
           false,
           platf::virtual_display_cleanup::revert_order_t::remove_before_restore,
           true,
-          shared_runtime_virtual_display_guid_bytes
+          shared_runtime_virtual_display_guid_bytes,
+          platf::virtual_display_cleanup::idle_stream_cleanup_recovery_policy()
         );
         if (is_paused) {
           BOOST_LOG(info) << "Display cleanup: shared stream runtime paused with revert-on-disconnect disabled; "

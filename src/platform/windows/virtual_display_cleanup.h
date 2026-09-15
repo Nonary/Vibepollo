@@ -17,10 +17,25 @@ namespace platf::virtual_display_cleanup {
     // Ordinary speculative cleanup keeps managed-session recovery alive when
     // ownership admission defers the cleanup.
     preserve_if_deferred,
-    // A terminal lease/restore boundary cancels recovery before admission, so
-    // an ownership deferral cannot revive an intentionally ended display.
+    // A terminal lease, restore, ended-stream, or paused-stream boundary
+    // cancels recovery before admission, so an ownership deferral cannot
+    // revive an intentionally idle display.
     disengage_before_admission,
   };
+
+  // Crash recovery exists to keep a live capture's virtual display present.
+  // Once the last shared runtime owner is gone, the stream has ended or
+  // entered pause/suspend; recreating that display would fight restore,
+  // delayed teardown, or resume keep-alive.
+  constexpr bool idle_stream_disengages_recovery_monitor(
+    const bool last_shared_runtime_owner_gone
+  ) noexcept {
+    return last_shared_runtime_owner_gone;
+  }
+
+  constexpr recovery_monitor_policy_t idle_stream_cleanup_recovery_policy() noexcept {
+    return recovery_monitor_policy_t::disengage_before_admission;
+  }
 
   enum class cleanup_admission_policy_t {
     respect_managed_owners,

@@ -61,6 +61,19 @@ TEST(VirtualDisplayCleanupPolicy, OnlyTerminalUserActionOverridesManagedOwnershi
   EXPECT_TRUE(cleanup_admitted(false, cleanup_admission_policy_t::override_managed_owners));
 }
 
+TEST(VirtualDisplayCleanupPolicy, IdleEndedOrPausedStreamDisengagesRecoveryMonitor) {
+  using platf::virtual_display_cleanup::idle_stream_cleanup_recovery_policy;
+  using platf::virtual_display_cleanup::idle_stream_disengages_recovery_monitor;
+  using platf::virtual_display_cleanup::recovery_monitor_policy_t;
+
+  EXPECT_TRUE(idle_stream_disengages_recovery_monitor(true));
+  EXPECT_FALSE(idle_stream_disengages_recovery_monitor(false));
+  EXPECT_EQ(
+    idle_stream_cleanup_recovery_policy(),
+    recovery_monitor_policy_t::disengage_before_admission
+  );
+}
+
 TEST(VirtualDisplayCleanupPolicy, SunshineLeaseOwnedGuidSurvivesMissingWindowsEnumeration) {
   EXPECT_FALSE(VDISPLAY::policy::retained_target_is_owned(false, false));
   EXPECT_TRUE(VDISPLAY::policy::retained_target_is_owned(false, true));
