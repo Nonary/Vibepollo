@@ -15,6 +15,8 @@
 #if defined(__linux__)
   #include <csignal>
   #include <dirent.h>
+  #include <sys/stat.h>
+  #include <sys/types.h>
   #include <unistd.h>
 #elif defined(_WIN32)
   #include <windows.h>
@@ -458,9 +460,18 @@ std::optional<process_snapshot> snapshot_processes() {
   if (!directory) {
     return std::nullopt;
   }
+  const uid_t self = ::getuid();
   while (const auto *entry = ::readdir(directory)) {
     const auto pid = parse_pid(entry->d_name);
     if (!pid) {
+      continue;
+    }
+    struct stat pid_attributes {};
+    const auto pid_directory = "/proc/" + std::to_string(*pid);
+    if (::lstat(pid_directory.c_str(), &pid_attributes) != 0 ||
+        !S_ISDIR(pid_attributes.st_mode) || pid_attributes.st_uid != self) {
+      // A PID that disappeared during enumeration is gone, not missing. Other
+      // users' processes cannot be games this helper is allowed to stop.
       continue;
     }
     const auto parent = read_proc_stat(*pid);

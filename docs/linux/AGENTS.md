@@ -82,8 +82,12 @@ must fail instead of falling back to the already-running Steam process.
 The default Steam Big Picture open/close commands are fixed broker actions.
 Their exact shipped command strings map to fixed Steam URIs after desktop
 identity and endpoint validation, without a shell or command-manifest entry.
-Fresh installations can have an empty administrator command manifest before
-the host creates its default application catalog. Arbitrary application
+HDR streams use the `app-wayland-hdr` verb for the same catalog commands; Big
+Picture still maps those two strings to the same helper. The helper runs in
+the selected desktop session, matching other application launches: the broker
+namespace cannot start Steam, write the session baseline, or see the user's
+games. Fresh installations can have an empty administrator command manifest
+before the host creates its default application catalog. Arbitrary application
 commands still require administrator authorization; upgrades preserve that
 policy rather than automatically trusting newly saved commands.
 

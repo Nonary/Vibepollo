@@ -1212,6 +1212,13 @@ static const char *steam_big_picture_uri(const char *command) {
   return NULL;
 }
 
+static bool steam_big_picture_request(const char *operation, const char *command) {
+  // HDR streams send app-wayland-hdr for the same catalog commands. Big Picture
+  // is still a fixed Steam URI, not an HDR WSI launch, so both verbs map here.
+  return operation && (!strcmp(operation, "app") || !strcmp(operation, "app-wayland-hdr")) &&
+         steam_big_picture_uri(command);
+}
+
 static int execute_request(int argc, char **argv,
                            const struct session_identity *identity,
                            gid_t service_gid) {
@@ -1260,7 +1267,8 @@ static int execute_request(int argc, char **argv,
            artwork_request_is_safe(argv[1], "provider-steam-artwork:", UINT32_MAX)) operation = PROVIDER_STEAM_ARTWORK;
   else if (argc == 2 && !strcmp(identity->role, "desktop") &&
            artwork_request_is_safe(argv[1], "provider-lutris-artwork:", INT64_MAX)) operation = PROVIDER_LUTRIS_ARTWORK;
-  else if (!strcmp(argv[1], "app") && argc == 3 && !strcmp(identity->role, "desktop") &&
+  else if (argc == 3 && !strcmp(identity->role, "desktop") &&
+           steam_big_picture_request(argv[1], argv[2]) &&
            (big_picture_uri = steam_big_picture_uri(argv[2]))) operation = STEAM_BIG_PICTURE;
   else if (!strcmp(argv[1], "app") && argc == 3 && !strcmp(identity->role, "desktop") &&
            command_is_authorized(identity->role, argv[2], service_gid,
@@ -1358,11 +1366,12 @@ static int execute_request(int argc, char **argv,
       break;
     }
     case STEAM_BIG_PICTURE: {
-      // Capture/consume the game baseline as the desktop user, after the
-      // identity drop and endpoint validation. Never parse it in the broker.
+      // The broker's hardened namespace cannot start Steam or write the
+      // session baseline (ProtectHome, ProtectProc, TasksMax). Run the helper
+      // in the desktop session like other application launches. It captures
+      // the game baseline there and never returns that state to the broker.
       char *const arguments[] = {(char *) steam_launch_path, "--big-picture", (char *) big_picture_uri, NULL};
-      execv(steam_launch_path, arguments);
-      break;
+      return exec_user_service(identity, NULL, arguments, false, false);
     }
     case GLOBAL_LIMITER: {
       char *const arguments[] = {

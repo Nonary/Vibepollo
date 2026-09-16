@@ -6,6 +6,9 @@
  * helper. User-owned Steam metadata is therefore never parsed by the
  * capability-bearing machine host or broker.
  */
+#ifndef _GNU_SOURCE
+  #define _GNU_SOURCE
+#endif
 #include "src/platform/linux/mangohud_policy.h"
 #include "src/platform/linux/mangohud_state.h"
 #include "src/steam_integration.h"
@@ -517,42 +520,93 @@ namespace {
     return result;
   }
 
+  std::uint64_t current_boot_ticks() {
+    const long ticks_per_sec = sysconf(_SC_CLK_TCK);
+    if (ticks_per_sec <= 0) return 0;
+    timespec boot {};
+    if (clock_gettime(CLOCK_BOOTTIME, &boot) != 0) return 0;
+    return static_cast<std::uint64_t>(boot.tv_sec) * static_cast<std::uint64_t>(ticks_per_sec) +
+           static_cast<std::uint64_t>(boot.tv_nsec) *
+             static_cast<std::uint64_t>(ticks_per_sec) / 1000000000ULL;
+  }
+
+  int lock_big_picture_state(const char *path) {
+    const int state = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
+    if (state < 0) return -1;
+    struct stat attributes {};
+    if (fchmod(state, 0600) != 0 || fstat(state, &attributes) != 0 ||
+        !S_ISREG(attributes.st_mode) || attributes.st_uid != getuid() ||
+        (attributes.st_mode & 0777) != 0600 || attributes.st_nlink != 1 ||
+        flock(state, LOCK_EX | LOCK_NB) != 0) {
+      close(state);
+      return -1;
+    }
+    return state;
+  }
+
   // Runs as the selected desktop user. The machine host cannot inspect or
   // signal that user's games, and must never parse this user-owned state.
   int big_picture(std::string_view uri) {
-    if (!install_clean_environment()) return 126;
-    const bool opening = uri == "steam://open/bigpicture";
-    const auto state_path = fs::path(std::getenv("XDG_RUNTIME_DIR")) / "vibepollo-big-picture.json";
-    const int state = open(state_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
-    struct stat attributes {};
-    if (state < 0) return 126;
-    if (fstat(state, &attributes) != 0 || !S_ISREG(attributes.st_mode) ||
-        attributes.st_uid != getuid() || (attributes.st_mode & 0777) != 0600 ||
-        attributes.st_nlink != 1 || flock(state, LOCK_EX | LOCK_NB) != 0) {
-      close(state);
-      return 126;
+    const bool env_ok = install_clean_environment();
+    if (!env_ok) {
+      syslog(LOG_WARNING, "Big Picture environment sanitization failed; handing off to Steam without cleanup state");
     }
+    const bool opening = uri == "steam://open/bigpicture";
+    // The URI is delivered to an already-running client. Start that client in
+    // its own user unit first, or a cold host never reaches Big Picture.
+    if (opening) ensure_steam_client();
+
+    int state = -1;
+    struct stat attributes {};
+    if (env_ok) {
+      if (const char *runtime = std::getenv("XDG_RUNTIME_DIR")) {
+        const auto state_path = fs::path(runtime) / "vibepollo-big-picture.json";
+        state = lock_big_picture_state(state_path.c_str());
+      }
+      if (state >= 0) {
+        if (fstat(state, &attributes) != 0) {
+          close(state);
+          state = -1;
+        }
+      } else {
+        syslog(LOG_WARNING, "Big Picture game cleanup unavailable: cannot lock session state");
+      }
+    }
+
     try {
-      if (opening) {
+      if (state >= 0 && opening) {
         // Invalidate a previous session even if configuration or sampling fails.
         if (ftruncate(state, 0) != 0) throw std::runtime_error("cannot reset baseline");
         bool close_games = true;
-        std::ifstream settings(fs::path(std::getenv("XDG_CONFIG_HOME")) / "vibepollo/steam-big-picture.json");
-        if (settings) {
-          const auto config = nlohmann::json::parse(settings);
-          close_games = config.value("close-games", true);
+        if (const char *config_home = std::getenv("XDG_CONFIG_HOME")) {
+          std::ifstream settings(fs::path(config_home) / "vibepollo/steam-big-picture.json");
+          if (settings) {
+            const auto config = nlohmann::json::parse(settings);
+            close_games = config.value("close-games", true);
+          }
         }
         if (close_games) {
+          const auto started_after_ticks = current_boot_ticks();
           const auto baseline = big_picture_snapshot();
-          if (!baseline || !baseline->complete) throw std::runtime_error("complete baseline unavailable");
-          nlohmann::json saved = {{"version", 1}, {"pids", nlohmann::json::array()}};
-          for (const auto &[pid, process] : baseline->processes) saved["pids"].push_back({pid, process.steam_app_id});
+          if (!baseline) throw std::runtime_error("baseline unavailable");
+          if (!started_after_ticks && !baseline->complete) {
+            throw std::runtime_error("complete baseline unavailable");
+          }
+          nlohmann::json saved = {
+            {"version", 2},
+            {"started_after_ticks", started_after_ticks},
+            {"pids", nlohmann::json::array()}
+          };
+          for (const auto &[pid, process] : baseline->processes) {
+            saved["pids"].push_back({pid, process.steam_app_id});
+          }
           const auto bytes = saved.dump();
-          if (bytes.size() > 4 * 1024 * 1024 || write(state, bytes.data(), bytes.size()) != static_cast<ssize_t>(bytes.size())) {
+          if (bytes.size() > 4 * 1024 * 1024 ||
+              write(state, bytes.data(), bytes.size()) != static_cast<ssize_t>(bytes.size())) {
             throw std::runtime_error("cannot write baseline");
           }
         }
-      } else {
+      } else if (state >= 0) {
         // Consume once before signalling; repeated Quit requests cannot reuse
         // a baseline to claim a later game. Missing state means close UI only.
         std::string bytes;
@@ -563,15 +617,19 @@ namespace {
         if (ftruncate(state, 0) != 0) throw std::runtime_error("cannot consume baseline");
         if (!bytes.empty()) {
           const auto saved = nlohmann::json::parse(bytes);
-          if (saved.at("version").get<int>() != 1) throw std::runtime_error("unknown baseline version");
+          const auto version = saved.at("version").get<int>();
+          if (version != 1 && version != 2) throw std::runtime_error("unknown baseline version");
           platf::steam::lifecycle::process_snapshot baseline;
           for (const auto &value : saved.at("pids")) {
             const auto pid = value.at(0).get<platf::steam::lifecycle::process_id_t>();
             baseline.processes[pid].pid = pid;
             baseline.processes[pid].steam_app_id = value.at(1).get<std::uint32_t>();
           }
+          const auto started_after_ticks = version == 2 ?
+            saved.at("started_after_ticks").get<std::uint64_t>() : 0;
           if (const auto current = big_picture_snapshot()) {
-            const auto tree = platf::steam::lifecycle::big_picture_tree(baseline, *current);
+            const auto tree = platf::steam::lifecycle::big_picture_tree(
+              baseline, *current, started_after_ticks);
             auto controller = platf::steam::lifecycle::native_process_controller();
             platf::steam::lifecycle::stop_options options;
             options.grace_period = std::chrono::seconds(5);
@@ -582,15 +640,17 @@ namespace {
         }
       }
     } catch (const std::exception &error) {
-      (void) ftruncate(state, 0);
+      if (state >= 0) (void) ftruncate(state, 0);
       syslog(LOG_WARNING, "Big Picture game cleanup unavailable: %s", error.what());
     }
     // Keep the lock until the fixed Steam handoff replaces this process.
     // Ordinary stream disconnects never execute the app's undo command.
     const std::string target(uri);
     execl("/usr/bin/steam", "/usr/bin/steam", target.c_str(), nullptr);
-    (void) ftruncate(state, 0);
-    close(state);
+    if (state >= 0) {
+      (void) ftruncate(state, 0);
+      close(state);
+    }
     return 126;
   }
 }

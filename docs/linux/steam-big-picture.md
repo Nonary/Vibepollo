@@ -22,11 +22,15 @@ This preference is read when a new Big Picture session opens. Remove the file
 or set `close-games` to `true` to restore cleanup.
 
 The existing default application's open and undo commands require no changes.
-The broker passes these fixed actions to the unprivileged desktop Steam helper.
-It records process IDs and Steam game IDs under the user's runtime directory;
-the machine host never reads that state or receives additional capabilities.
-The cleanup baseline is consumed once when the undo command runs. Missing,
-invalid, or incomplete state leaves games alone and still closes Big Picture.
+The broker passes these fixed actions to the unprivileged desktop Steam helper
+in the selected user session, not inside the hardened broker namespace. The
+helper starts the Steam client if needed, then delivers the open or close URI.
+It records process IDs, Steam game IDs, and a boot-tick watermark under the
+user's runtime directory; the machine host never reads that state or receives
+additional capabilities. The cleanup baseline is consumed once when the undo
+command runs. Missing or invalid state leaves games alone and still closes
+Big Picture. A `/proc` entry that disappears during enumeration does not
+disable cleanup: games that started after the watermark are still stopped.
 
 Identification uses readable `SteamAppId` process environment entries. Games
 or launchers that remove that identifier cannot be cleaned up reliably and are

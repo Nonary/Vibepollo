@@ -25,10 +25,14 @@ namespace platf::steam::lifecycle {
 
   inline tracked_tree big_picture_tree(
     const process_snapshot &baseline,
-    const process_snapshot &current
+    const process_snapshot &current,
+    std::uint64_t started_after_ticks = 0
   ) {
     tracked_tree result;
-    if (!baseline.complete) return result;
+    // A vanished /proc entry during enumeration is not a missing game. The
+    // boot-tick watermark is what keeps a pre-existing game from being claimed
+    // when the baseline is incomplete. Without that watermark, refuse cleanup.
+    if (!baseline.complete && started_after_ticks == 0) return result;
     std::set<std::uint32_t> existing_apps;
     for (const auto &[pid, process] : baseline.processes) {
       if (process.steam_app_id) existing_apps.insert(process.steam_app_id);
@@ -37,6 +41,7 @@ namespace platf::steam::lifecycle {
       // A game that predates Big Picture owns its later children too. Steam
       // and untagged processes are never selected, including shared runtimes.
       if (!baseline.processes.contains(pid) && process.start_time_ticks && process.steam_app_id &&
+          (started_after_ticks == 0 || process.start_time_ticks > started_after_ticks) &&
           !existing_apps.contains(process.steam_app_id) &&
           !is_protected_steam_process(process)) {
         result.processes.emplace(pid, tracked_process {process, false});
