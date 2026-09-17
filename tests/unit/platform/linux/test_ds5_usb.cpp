@@ -75,6 +75,7 @@ int main() {
   }
   get_feature(0x20, buffer.data(), buffer.size(), state);
   check((buffer[28] | (buffer[29] << 8) | (buffer[30] << 16) | (buffer[31] << 24)) >= 0x1003e, "native USB firmware revision accepted");
+  check((buffer[44] | (buffer[45] << 8)) >= 0x0390, "libScePad DualSense update version accepted");
   check(get_feature(0x7c, buffer.data(), buffer.size(), state) == 0, "unknown features are not fabricated");
   check(get_feature(5, nullptr, 64, state) == 0, "null feature destination rejected");
 
