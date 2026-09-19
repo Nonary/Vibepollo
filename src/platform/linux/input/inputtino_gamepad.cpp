@@ -9,6 +9,7 @@
 
 // local includes
 #include "inputtino_common.h"
+#include "ds5_haptics.h"
 #include "inputtino_gamepad.h"
 #include "inputtino_seat.h"
 #include "src/config.h"
@@ -191,6 +192,21 @@ namespace platf::gamepad {
           auto ds5 = create_ds5(id.globalIndex);
           if (ds5) {
             (*ds5).set_on_rumble(on_rumble_fn);
+            if (metadata.capabilities & LI_CCAP_HAPTICS_PCM) {
+              auto packetizer = std::make_shared<ds5_haptics_packetizer>();
+              (*ds5).set_on_haptics([feedback_queue, idx = id.clientRelativeIndex, packetizer](const unsigned char *pcm, std::size_t bytes) {
+                packetizer->push(pcm, bytes, [&](std::uint32_t sequence, const auto &samples) {
+                  gamepad_feedback_msg_t msg {};
+                  msg.type = gamepad_feedback_e::haptics_pcm;
+                  msg.id = idx;
+                  msg.data.haptics.sequence = sequence;
+                  msg.data.haptics.samples = samples;
+                  // PCM may be dropped under load; never purge queued trigger,
+                  // LED, or stop-rumble messages to make room for audio.
+                  feedback_queue->try_raise(std::move(msg));
+                });
+              });
+            }
             (*ds5).set_on_led([feedback_queue, idx = id.clientRelativeIndex, gamepad](int r, int g, int b) {
               // Don't resend duplicate LED data
               if (gamepad->last_rgb_led.type == platf::gamepad_feedback_e::set_rgb_led && gamepad->last_rgb_led.data.rgb_led.r == r && gamepad->last_rgb_led.data.rgb_led.g == g && gamepad->last_rgb_led.data.rgb_led.b == b) {

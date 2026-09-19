@@ -1,3 +1,4 @@
+#include "third-party/moonlight-common-c/src/ControllerHaptics.h"
 /**
  * @file src/stream.cpp
  * @brief Definitions for the streaming protocols.
@@ -510,9 +511,10 @@ namespace stream {
       _map_type_cb.emplace(type, std::move(cb));
     }
 
-    int send(const std::string_view &payload, net::peer_t peer) {
-      auto packet = enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
-      if (enet_peer_send(peer, 0, packet)) {
+    int send(const std::string_view &payload, net::peer_t peer, bool haptics = false) {
+      auto packet = enet_packet_create(payload.data(), payload.size(), haptics ? 0 : ENET_PACKET_FLAG_RELIABLE);
+      if (!packet) return -1;
+      if (enet_peer_send(peer, haptics ? ML_HAPTICS_CHANNEL : 0, packet)) {
         enet_packet_destroy(packet);
 
         return -1;
@@ -1226,7 +1228,21 @@ namespace stream {
     }
 
     std::string payload;
-    if (msg.type == platf::gamepad_feedback_e::rumble) {
+    if (msg.type == platf::gamepad_feedback_e::haptics_pcm) {
+      if (!(session->config.mlFeatureFlags & ML_FF_HAPTICS_PCM)) return 0;
+      std::array<std::uint8_t, sizeof(control_header_v2) + ML_HAPTICS_MAX_PAYLOAD> plaintext {};
+      auto *bytes = plaintext.data();
+      MlHapticsWrite16(bytes, ML_HAPTICS_PACKET_TYPE);
+      MlHapticsWrite16(bytes + 2, ML_HAPTICS_MAX_PAYLOAD);
+      bytes += sizeof(control_header_v2);
+      bytes[0] = bytes[1] = 1;
+      MlHapticsWrite16(bytes + 2, msg.id);
+      MlHapticsWrite32(bytes + 4, msg.data.haptics.sequence);
+      MlHapticsWrite16(bytes + 8, ML_HAPTICS_MAX_FRAMES);
+      std::memcpy(bytes + ML_HAPTICS_HEADER_SIZE, msg.data.haptics.samples.data(), msg.data.haptics.samples.size());
+      std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size> encrypted_payload;
+      payload = encode_control(session, std::string_view(reinterpret_cast<const char *>(plaintext.data()), plaintext.size()), encrypted_payload);
+    } else if (msg.type == platf::gamepad_feedback_e::rumble) {
       control_rumble_t plaintext;
       plaintext.header.type = packetTypes[IDX_RUMBLE_DATA];
       plaintext.header.payloadLength = sizeof(plaintext) - sizeof(control_header_v2);
@@ -1313,7 +1329,7 @@ namespace stream {
       return -1;
     }
 
-    if (session->broadcast_ref->control_server.send(payload, session->control.peer)) {
+    if (session->broadcast_ref->control_server.send(payload, session->control.peer, msg.type == platf::gamepad_feedback_e::haptics_pcm)) {
       TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
       BOOST_LOG(warning) << "Couldn't send gamepad feedback to ["sv << addr << ':' << port << ']';
 
@@ -1687,6 +1703,7 @@ namespace stream {
       const bool launch_or_startup_pending = rtsp_stream::has_pending_launch_or_startup();
       const bool game_runtime_active = proc::proc.current_app_id() > 0 || launch_or_startup_pending;
       bool has_processless_live_session = false;
+      bool haptics_client = false;
       bool has_game_session_pending_or_draining = false;
 
       {
@@ -1706,6 +1723,7 @@ namespace stream {
           }
 
           auto session = *pos;
+          haptics_client |= (session->config.mlFeatureFlags & ML_FF_HAPTICS_PCM) != 0;
 
           if (now > session->pingTimeout) {
             auto address = session->control.peer ? platf::from_sockaddr((sockaddr *) &session->control.peer->address.address) : session->control.expected_peer_address;
@@ -1820,7 +1838,8 @@ namespace stream {
         break;
       }
 
-      server->iterate(150ms);
+      // Haptic samples must keep flowing even when the player is not moving.
+      server->iterate(haptics_client ? 5ms : 150ms);
     }
 
     // Let all remaining connections know the server is shutting down
