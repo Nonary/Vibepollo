@@ -77,6 +77,7 @@ namespace rtsp_stream {
     int height;
     int fps;
     int gcmap;
+    int playstation_gamepad_mask {};
 
     struct app_metadata_t {
       std::string id;

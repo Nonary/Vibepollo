@@ -1898,6 +1898,7 @@ namespace proc {
               // required for the brokered direct launch to receive it.
               .wayland_hdr_compatibility = wayland_hdr_compatibility.enabled,
               .proton_dualsense_compatibility = config::input.proton_dualsense_compatibility,
+              .playstation_controller_attached = launch_session->playstation_gamepad_mask != 0,
             };
             const bool overlay = policy.provider == "mangohud" ||
                                  policy.provider == "mangohud-proton";

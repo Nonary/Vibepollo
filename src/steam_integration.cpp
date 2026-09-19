@@ -1112,7 +1112,8 @@ namespace platf::steam {
       const bool overlay = policy.provider == "mangohud" ||
                            policy.provider == "mangohud-proton";
       const bool limited = overlay || policy.provider == "proton";
-      if ((!limited && policy.provider != "disabled") ||
+      if ((policy.playstation_controller_attached && !policy.proton_dualsense_compatibility) ||
+          (!limited && policy.provider != "disabled") ||
           (limited && (policy.limit_millihz < 1000 ||
                        policy.limit_millihz > 1000000)) ||
           (!limited && policy.limit_millihz != 0) ||
@@ -1154,7 +1155,8 @@ namespace platf::steam {
            " " + (policy.smooth_motion_graphics_queue ? "1" : "0") +
            " " + (policy.hdr ? "1" : "0") +
            " " + (policy.wayland_hdr_compatibility ? "1" : "0") +
-           " " + (policy.proton_dualsense_compatibility ? "1" : "0");
+           " " + (policy.proton_dualsense_compatibility ? "1" : "0") +
+           " " + (policy.playstation_controller_attached ? "1" : "0");
   }
 
   std::optional<std::vector<std::string>> session_launch_arguments(
@@ -1189,7 +1191,7 @@ namespace platf::steam {
       tokens.erase(tokens.begin());
       return tokens;
     }
-    if (tokens.size() != 13 || tokens[0] != session_exec_path ||
+    if (tokens.size() != 14 || tokens[0] != session_exec_path ||
         tokens[1] != "steam-direct") {
       return std::nullopt;
     }
@@ -1203,7 +1205,8 @@ namespace platf::steam {
         (tokens[9] != "0" && tokens[9] != "1") ||
         (tokens[10] != "0" && tokens[10] != "1") ||
         (tokens[11] != "0" && tokens[11] != "1") ||
-        (tokens[12] != "0" && tokens[12] != "1")) {
+        (tokens[12] != "0" && tokens[12] != "1") ||
+        (tokens[13] != "0" && tokens[13] != "1")) {
       return std::nullopt;
     }
     policy.provider = tokens[3];
@@ -1215,6 +1218,7 @@ namespace platf::steam {
     policy.hdr = tokens[10] == "1";
     policy.wayland_hdr_compatibility = tokens[11] == "1";
     policy.proton_dualsense_compatibility = tokens[12] == "1";
+    policy.playstation_controller_attached = tokens[13] == "1";
     if (session_launch_command(app_id, policy) != command) {
       return std::nullopt;
     }

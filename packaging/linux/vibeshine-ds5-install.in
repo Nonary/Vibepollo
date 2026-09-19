@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install Vibeshine's virtual DualSense USB module. DKMS is preferred;
+# Install the shared virtual DualSense USB module. DKMS is preferred;
 # a current-kernel direct build is the fallback.
 set -uo pipefail
 umask 022

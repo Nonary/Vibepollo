@@ -109,6 +109,7 @@ namespace platf::steam {
     bool hdr = false;
     bool wayland_hdr_compatibility = false;
     bool proton_dualsense_compatibility = false;
+    bool playstation_controller_attached = false;
   };
 
   // Build and recognize the one canonical machine-host command that delegates

@@ -25,7 +25,7 @@ the firmware reply with an older hardware capture can regress this field
 even when FirmwareVersion at offset 28 remains valid.
 
 The machine service needs both `DeviceAllow=/dev/vibeshine-ds5 rw` and the
-`vibeshine-uinput` group on that device. An `InaccessiblePaths` recovery
+`vibepollo-uinput` group on that device. An `InaccessiblePaths` recovery
 override still blocks it even when those permissions are correct. Compare
 the loaded `/sys/module/vibeshine_ds5/srcversion` with
 `modinfo -F srcversion vibeshine_ds5` after updating the module; installing
@@ -40,7 +40,7 @@ command returns 0 for matching installed/loaded source revisions, 4 when a
 reboot is required, and a failure for a missing or unloaded module. To repair
 an existing installation, run `sudo /usr/libexec/vibeshine/vibeshine-ds5-install install`.
 After first loading the module, restart the session controller and reconnect
-the stream so systemd grants the newly created device and Vibeshine creates
+the stream so systemd grants the newly created device and Vibepollo creates
 a composite controller. Restarting disconnects the stream and its game.
 
 The wire calibration is zero bias, 16 gyro counts per degree/second, and 8192
@@ -80,11 +80,11 @@ game-specific translation by Steam or Proton is a separate layer.
 The coordinated Moonlight fork can advertise `LI_CCAP_HAPTICS_PCM` (`0x8000`) for
 a controller with a waveform renderer and SDP `ML_FF_HAPTICS_PCM` (`0x04`) for
 the connection. With the controller capability present, Inputtino passes the
-virtual USB audio samples to Vibeshine instead of reducing PCM to rumble RMS.
+virtual USB audio samples to Vibepollo instead of reducing PCM to rumble RMS.
 Normal HID rumble and adaptive-trigger callbacks remain separate. Clients that
 do not advertise the capability keep the existing PCM-to-rumble fallback.
 
-Vibeshine extracts only actuator channels 3/4, preserving their signed S16LE
+Vibepollo extracts only actuator channels 3/4, preserving their signed S16LE
 samples, and batches 240 stereo frames (5 ms at 48 kHz). Control type `0x5601`
 contains a versioned payload defined in `ControllerHaptics.h` in both copies of
 moonlight-common-c. It uses the existing encrypted control connection and
@@ -97,7 +97,7 @@ The initial client renderer supports Linux Bluetooth DualSense and DualSense
 Edge through hidraw and the MPL-2.0 SAxense packet format. The client repository
 retains the pinned upstream source/license, adaptations and credits, and embeds
 them in the binary (`moonlight --haptics-license`). No SAxense code is linked into
-Vibeshine or Inputtino. USB/other clients retain rumble fallback; speaker and
+Vibepollo or Inputtino. USB/other clients retain rumble fallback; speaker and
 microphone transport are outside this extension.
 
 Test channel extraction/packet validation with `test_ds5_haptics`, and test the
@@ -141,6 +141,13 @@ settings. Reconnect the stream and relaunch the game after changing the option.
 Without an active stream the installed Proton hook is inert. Existing game
 processes keep their launch environment. The controller speaker is not made the
 system's default audio output.
+
+Vibepollo-aware Moonlight clients also include a PlayStation-controller bitmap
+in the launch request. A direct Proton launch with compatibility enabled waits
+up to two seconds for the matching virtual DualSense and its audio playback
+endpoint to enumerate before Steam starts the game. This prevents one-time
+Sony/Wwise initialization from racing the controller and its audio endpoint.
+Older clients omit the hint and retain the previous launch ordering.
 
 The game must implement native haptics/adaptive triggers. Test the actual Proton
 build and game, especially controller reconnects. The initial 007-only diagnostic

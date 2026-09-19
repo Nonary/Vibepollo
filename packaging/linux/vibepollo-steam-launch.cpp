@@ -170,8 +170,8 @@ namespace {
   ) {
     if (argc < 2) return std::nullopt;
     const bool global = std::string_view(argv[1]) == "--global";
-    if (argc != 12 || (!global &&
-                      (!parse_u32(argv[1], app_id) || app_id == 0))) {
+    if ((global && argc != 12) ||
+        (!global && (argc != 13 || !parse_u32(argv[1], app_id) || app_id == 0))) {
       return std::nullopt;
     }
     if (global) app_id = 1;
@@ -189,7 +189,8 @@ namespace {
                    std::string_view(argv[9]) != "sdr10" &&
                    std::string_view(argv[9]) != "hdr") ||
         (std::string_view(argv[10]) != "0" && std::string_view(argv[10]) != "1") ||
-        (std::string_view(argv[11]) != "0" && std::string_view(argv[11]) != "1")) {
+        (std::string_view(argv[11]) != "0" && std::string_view(argv[11]) != "1") ||
+        (!global && std::string_view(argv[12]) != "0" && std::string_view(argv[12]) != "1")) {
       return std::nullopt;
     }
     policy.always_show_graph = std::string_view(argv[5]) == "1";
@@ -199,6 +200,10 @@ namespace {
     policy.hdr = global ? std::string_view(argv[9]) == "hdr" : std::string_view(argv[9]) == "1";
     policy.wayland_hdr_compatibility = std::string_view(argv[10]) == "1";
     policy.proton_dualsense_compatibility = std::string_view(argv[11]) == "1";
+    policy.playstation_controller_attached = !global && std::string_view(argv[12]) == "1";
+    if (policy.playstation_controller_attached && !policy.proton_dualsense_compatibility) {
+      return std::nullopt;
+    }
     if (policy.wayland_hdr_compatibility && !policy.hdr) {
       return std::nullopt;
     }
@@ -393,6 +398,72 @@ namespace {
                           std::to_string(ready_timeout_ms / 1000) + " s; launching anyway");
   }
 
+  bool virtual_dualsense_ready() {
+    std::error_code error;
+    const fs::path usb_devices = "/sys/bus/usb/devices";
+    for (fs::directory_iterator entry(usb_devices, error), end;
+         !error && entry != end;
+         entry.increment(error)) {
+      const auto canonical = fs::weakly_canonical(entry->path(), error);
+      if (error) {
+        error.clear();
+        continue;
+      }
+      if (canonical.string().find("/devices/platform/vibeshine_ds5_hcd.") == std::string::npos) {
+        continue;
+      }
+      std::ifstream vendor(entry->path() / "idVendor");
+      std::ifstream product(entry->path() / "idProduct");
+      std::string vendor_id;
+      std::string product_id;
+      if (vendor >> vendor_id && product >> product_id &&
+          vendor_id == "054c" && product_id == "0ce6") {
+        const auto interface_prefix = entry->path().filename().string() + ":";
+        std::error_code interface_error;
+        for (fs::directory_iterator interface(usb_devices, interface_error), interface_end;
+             !interface_error && interface != interface_end;
+             interface.increment(interface_error)) {
+          if (!interface->path().filename().string().starts_with(interface_prefix)) {
+            continue;
+          }
+          const auto sound_root = interface->path() / "sound";
+          std::error_code card_error;
+          for (fs::directory_iterator card(sound_root, card_error), card_end;
+               !card_error && card != card_end;
+               card.increment(card_error)) {
+            std::error_code pcm_error;
+            for (fs::directory_iterator pcm(card->path(), pcm_error), pcm_end;
+                 !pcm_error && pcm != pcm_end;
+                 pcm.increment(pcm_error)) {
+              const auto name = pcm->path().filename().string();
+              if (name.starts_with("pcm") && name.ends_with("p")) {
+                return true;
+              }
+            }
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  void wait_for_virtual_dualsense() {
+    if (virtual_dualsense_ready()) {
+      return;
+    }
+    report(LOG_INFO, "PlayStation controller attached; waiting for the virtual DualSense before Proton launch");
+    constexpr int ready_timeout_ms = 2000;
+    constexpr int poll_ms = 25;
+    for (int waited = 0; waited < ready_timeout_ms; waited += poll_ms) {
+      sleep_milliseconds(poll_ms);
+      if (virtual_dualsense_ready()) {
+        report(LOG_INFO, "Virtual DualSense ready after " + std::to_string(waited + poll_ms) + " ms");
+        return;
+      }
+    }
+    report(LOG_WARNING, "Virtual DualSense did not enumerate within 2 s; launching anyway");
+  }
+
   int global_limiter(char **argv) {
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
         !install_clean_environment()) return 126;
@@ -506,6 +577,10 @@ namespace {
     }
 
     ensure_steam_client();
+    if (policy.proton_dualsense_compatibility &&
+        policy.playstation_controller_attached && game->launch_os == "windows") {
+      wait_for_virtual_dualsense();
+    }
 
     // Steam Launch Options are user-authored shell expressions. They are
     // interpreted only here, after irreversible transition to that same UID.

@@ -594,7 +594,7 @@ static bool sink_name_is_safe(const char *name) {
 }
 
 static bool steam_direct_arguments_are_safe(int argc, char **argv) {
-  if (argc != 13 || !argv) return false;
+  if (argc != 14 || !argv) return false;
   unsigned long app_id = 0, limit_millihz = 0;
   if (!parse_number(argv[2], 1, UINT32_MAX, &app_id) ||
       !parse_number(argv[4], 0, 1000000, &limit_millihz)) return false;
@@ -616,13 +616,15 @@ static bool steam_direct_arguments_are_safe(int argc, char **argv) {
   const bool hdr = !strcmp(argv[10], "0") || !strcmp(argv[10], "1");
   const bool wayland_hdr_compatibility = !strcmp(argv[11], "0") || !strcmp(argv[11], "1");
   const bool dualsense = !strcmp(argv[12], "0") || !strcmp(argv[12], "1");
-  return (limited || disabled) && preset && graph && method && smooth && queue && hdr && wayland_hdr_compatibility && dualsense &&
+  const bool playstation_controller = !strcmp(argv[13], "0") || !strcmp(argv[13], "1");
+  return (limited || disabled) && preset && graph && method && smooth && queue && hdr && wayland_hdr_compatibility && dualsense && playstation_controller &&
          ((limited && limit_millihz >= 1000) || (disabled && !limit_millihz)) &&
          (overlay || (!strcmp(argv[5], "custom") && !strcmp(argv[6], "0"))) &&
          (mangohud || !strcmp(argv[7], "late")) &&
          (strcmp(argv[8], "0") || !strcmp(argv[9], "0")) &&
          (limited || strcmp(argv[8], "0") || strcmp(argv[10], "0") || strcmp(argv[12], "0")) &&
-         (!strcmp(argv[11], "0") || !strcmp(argv[10], "1"));
+         (!strcmp(argv[11], "0") || !strcmp(argv[10], "1")) &&
+         (!strcmp(argv[13], "0") || !strcmp(argv[12], "1"));
 }
 
 static bool global_limiter_arguments_are_safe(int argc, char **argv) {
@@ -636,8 +638,8 @@ static bool global_limiter_arguments_are_safe(int argc, char **argv) {
   // feature-presence sentinel here; argv[7] remains the validated mode passed
   // to the global hook.
   char *validation[] = {"broker", "steam-direct", "1", argv[2], argv[3],
-                        argv[4], argv[5], argv[6], "0", "0", "1", argv[8], argv[9]};
-  return steam_direct_arguments_are_safe(13, validation);
+                        argv[4], argv[5], argv[6], "0", "0", "1", argv[8], argv[9], "0"};
+  return steam_direct_arguments_are_safe(14, validation);
 }
 
 static bool parse_channel_mapping(const char *value, size_t channels,
@@ -1384,7 +1386,7 @@ static int execute_request(int argc, char **argv,
     case STEAM_DIRECT: {
       char *const arguments[] = {
         (char *) steam_launch_path, argv[2], argv[3], argv[4], argv[5],
-        argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], NULL
+        argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], argv[13], NULL
       };
       return exec_user_service(identity, NULL, arguments, false, false);
     }

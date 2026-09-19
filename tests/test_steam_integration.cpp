@@ -421,12 +421,13 @@ TEST(SteamLaunch, MachineSessionLaunchUsesCanonicalSemanticArguments) {
     .hdr = true,
     .wayland_hdr_compatibility = true,
     .proton_dualsense_compatibility = true,
+    .playstation_controller_attached = true,
   };
   const auto command = session_launch_command(1182900, policy);
   EXPECT_EQ(
     command,
     "/usr/libexec/vibeshine/vibepollo-session-exec steam-direct "
-    "1182900 mangohud-proton 116000 3 1 late 1 1 1 1 1"
+    "1182900 mangohud-proton 116000 3 1 late 1 1 1 1 1 1"
   );
   const auto arguments = session_launch_arguments(command);
   ASSERT_TRUE(arguments);
@@ -434,7 +435,7 @@ TEST(SteamLaunch, MachineSessionLaunchUsesCanonicalSemanticArguments) {
     *arguments,
     (std::vector<std::string> {
       "steam-direct", "1182900", "mangohud-proton", "116000", "3",
-      "1", "late", "1", "1", "1", "1", "1"
+      "1", "late", "1", "1", "1", "1", "1", "1"
     })
   );
 
@@ -465,10 +466,14 @@ TEST(SteamLaunch, DualSenseOnlyPolicyRoundTripsWithoutHdrOrLimiter) {
   const auto command = session_launch_command(3768760, policy);
   ASSERT_FALSE(command.empty());
   ASSERT_TRUE(session_launch_arguments(command));
-  EXPECT_TRUE(command.ends_with(" 0 0 0 0 1"));
+  EXPECT_TRUE(command.ends_with(" 0 0 0 0 1 0"));
   auto invalid = command;
-  invalid.back() = '2';
+  invalid[invalid.size() - 2] = '2';
   EXPECT_FALSE(session_launch_arguments(invalid));
+  policy.playstation_controller_attached = true;
+  const auto attached = session_launch_command(3768760, policy);
+  EXPECT_TRUE(attached.ends_with(" 0 0 0 0 1 1"));
+  EXPECT_TRUE(session_launch_arguments(attached));
   policy.proton_dualsense_compatibility = false;
   EXPECT_TRUE(session_launch_command(3768760, policy).empty());
 }
