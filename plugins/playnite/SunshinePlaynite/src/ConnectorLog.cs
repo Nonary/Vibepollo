@@ -23,7 +23,7 @@ namespace SunshinePlaynite
             Directory.CreateDirectory(directory);
             path = Path.Combine(directory, "sunshine_playnite-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + ".log");
             Purge(directory);
-            Info("=== Sunshine Playnite Connector starting ===");
+            Info("=== Vibepollo Playnite Connector starting ===");
         }
 
         public void Debug(string message)

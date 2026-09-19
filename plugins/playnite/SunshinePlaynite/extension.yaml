@@ -1,8 +1,8 @@
 Id: Sunshine.Playnite.Integration
-Name: Sunshine Playnite Connector
+Name: Vibepollo Playnite Connector
 Author: Nonary / Noklef
 Version: 0.5.0
-Module: SunshinePlaynite.dll
+Module: VibepolloPlaynite.dll
 Type: GenericPlugin
 Icon: icon.png
-Description: Adds two-way communication between Vibeshine and Playnite, allowing you to launch games from Playnite and have Sunshine automatically start streaming them.
+Description: Adds two-way communication between Vibepollo and Playnite, allowing you to launch games from Playnite and have Apollo automatically start streaming them.

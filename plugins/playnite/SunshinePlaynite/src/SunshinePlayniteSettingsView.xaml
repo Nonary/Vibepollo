@@ -9,7 +9,7 @@
                        Text="{Binding SettingsTitle, Mode=OneTime}" />
             <TextBlock Margin="0,5,0,18"
                        Opacity="0.72"
-                       Text="Control how Playnite communicates with Vibeshine on this computer."
+                       Text="Control how Playnite communicates with Vibepollo on this computer."
                        TextWrapping="Wrap" />
 
             <TextBlock FontWeight="SemiBold" Text="Connector" />
@@ -18,14 +18,14 @@
                       IsChecked="{Binding ConnectorEnabled}" />
             <TextBlock Margin="24,3,0,10"
                        Opacity="0.68"
-                       Text="Accept local Vibeshine connections and report game activity."
+                       Text="Accept local Vibepollo connections and report game activity."
                        TextWrapping="Wrap" />
 
-            <CheckBox Content="Notify Vibeshine when the Playnite library changes"
+            <CheckBox Content="Notify Vibepollo when the Playnite library changes"
                       IsChecked="{Binding NotifyLibraryChanges}" />
             <TextBlock Margin="24,3,0,10"
                        Opacity="0.68"
-                       Text="Send an updated library snapshot after games or metadata change. Vibeshine controls which games are imported."
+                       Text="Send an updated library snapshot after games or metadata change. Vibepollo controls which games are imported."
                        TextWrapping="Wrap" />
 
             <Separator Margin="0,10,0,16" />
@@ -36,7 +36,7 @@
                       IsChecked="{Binding EnableDebugLogging}" />
             <TextBlock Margin="24,3,0,10"
                        Opacity="0.68"
-                       Text="Write additional diagnostic messages to the Sunshine log folder. Enable this only while troubleshooting."
+                       Text="Write additional diagnostic messages to the connector log folder. Enable this only while troubleshooting."
                        TextWrapping="Wrap" />
 
             <Border Margin="0,12,0,0"
@@ -48,7 +48,7 @@
                     <TextBlock FontWeight="SemiBold" Text="Connection details" />
                     <TextBlock Margin="0,5,0,0"
                                Opacity="0.72"
-                               Text="Vibeshine connects automatically over the local Sunshine.PlayniteExtension named pipe. No address, port, or credentials are required."
+                               Text="Vibepollo connects automatically over a secured local named pipe. No address, port, or credentials are required."
                                TextWrapping="Wrap" />
                 </StackPanel>
             </Border>

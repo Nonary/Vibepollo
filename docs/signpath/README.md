@@ -202,6 +202,7 @@ stripped in CI and never signed on the runner). The `msi-file-apollo` config is 
 | `dxgi-info.exe` | `Apollo\tools\` |
 | `audio-info.exe` | `Apollo\tools\` |
 | `playnite-launcher.exe` | `Apollo\tools\` |
+| `VibepolloPlaynite.dll` | `Apollo\plugins\playnite\SunshinePlaynite\` |
 | `sunshine_wgc_capture.exe` | `Apollo\tools\` |
 | `sunshine_display_helper.exe` | `Apollo\tools\` |
 | `SunshineVirtualDisplayDriver.cat` | `Apollo\drivers\sunshine\` |

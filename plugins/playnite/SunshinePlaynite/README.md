@@ -1,4 +1,4 @@
-# Sunshine Playnite Connector
+# Vibepollo Playnite Connector
 
 This is the compiled Playnite 10 replacement for the retired PowerShell script extension.
 Playnite 11 uses a separate, incompatible SDK and will require its own connector port after release.
@@ -18,6 +18,6 @@ For local testing, add `bin/Release/net462` as a developer plugin in Playnite's
 testing or installing this compiled replacement.
 
 The connector settings are available in Playnite Desktop Mode under
-`Add-ons -> Extension settings -> Generic -> Sunshine Playnite Connector`.
+`Add-ons -> Extension settings -> Generic -> Vibepollo Playnite Connector`.
 Settings control whether the connector runs, whether library changes notify
-Vibeshine, and whether verbose diagnostic logging is enabled.
+Vibepollo, and whether verbose diagnostic logging is enabled.

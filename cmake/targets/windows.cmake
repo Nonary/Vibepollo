@@ -16,24 +16,63 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         Mscms.lib
         version.lib)
 
-# Copy Playnite plugin sources into build output (for packaging/installers)
-## Copy Playnite plugin sources into build output (for packaging/installers)
-## Make the copy step incremental: only re-run when source files change.
-file(GLOB_RECURSE SUNSHINE_PLAYNITE_PLUGIN_SOURCES
-        CONFIGURE_DEPENDS
-        "${CMAKE_SOURCE_DIR}/plugins/playnite/*")
-set(SUNSHINE_PLAYNITE_PLUGIN_STAMP "${CMAKE_BINARY_DIR}/plugins/playnite/.copy_stamp")
+# Build the Playnite 10 .NET plugin into the runtime/package layout. Do not copy
+# the SDK or project sources into the installer; Playnite supplies Playnite.SDK.
+set(SUNSHINE_DOTNET_EXECUTABLE "" CACHE FILEPATH
+        "Path to dotnet used to build the Playnite plugin")
+if(NOT SUNSHINE_DOTNET_EXECUTABLE)
+    find_program(SUNSHINE_DOTNET_EXECUTABLE
+            NAMES dotnet dotnet.exe
+            HINTS "$ENV{DOTNET_ROOT}" "$ENV{ProgramFiles}/dotnet")
+endif()
+if(NOT SUNSHINE_DOTNET_EXECUTABLE)
+    message(FATAL_ERROR
+            "dotnet was not found. Install the .NET SDK or set SUNSHINE_DOTNET_EXECUTABLE.")
+endif()
+set(SUNSHINE_PLAYNITE_PLUGIN_SOURCE_DIR
+        "${CMAKE_SOURCE_DIR}/plugins/playnite/SunshinePlaynite")
+set(SUNSHINE_PLAYNITE_PLUGIN_OUTPUT_DIR
+        "${CMAKE_BINARY_DIR}/plugins/playnite/SunshinePlaynite")
+set(SUNSHINE_PLAYNITE_PLUGIN_DLL
+        "${SUNSHINE_PLAYNITE_PLUGIN_OUTPUT_DIR}/VibepolloPlaynite.dll")
+set(SUNSHINE_PLAYNITE_PLUGIN_ICON
+        "${CMAKE_SOURCE_DIR}/src_assets/common/assets/web/public/images/logo-apollo-45.png")
+set(SUNSHINE_PLAYNITE_PLUGIN_OUTPUT_FILES
+        "${SUNSHINE_PLAYNITE_PLUGIN_DLL}"
+        "${SUNSHINE_PLAYNITE_PLUGIN_OUTPUT_DIR}/extension.yaml"
+        "${SUNSHINE_PLAYNITE_PLUGIN_OUTPUT_DIR}/icon.png")
+file(GLOB SUNSHINE_PLAYNITE_PLUGIN_SOURCES CONFIGURE_DEPENDS
+        "${SUNSHINE_PLAYNITE_PLUGIN_SOURCE_DIR}/*.csproj"
+        "${SUNSHINE_PLAYNITE_PLUGIN_SOURCE_DIR}/*.props"
+        "${SUNSHINE_PLAYNITE_PLUGIN_SOURCE_DIR}/*.targets"
+        "${SUNSHINE_PLAYNITE_PLUGIN_SOURCE_DIR}/extension.yaml")
+file(GLOB_RECURSE SUNSHINE_PLAYNITE_PLUGIN_CODE CONFIGURE_DEPENDS
+        "${SUNSHINE_PLAYNITE_PLUGIN_SOURCE_DIR}/src/*.cs"
+        "${SUNSHINE_PLAYNITE_PLUGIN_SOURCE_DIR}/src/*.resx"
+        "${SUNSHINE_PLAYNITE_PLUGIN_SOURCE_DIR}/src/*.xaml")
+list(APPEND SUNSHINE_PLAYNITE_PLUGIN_SOURCES
+        ${SUNSHINE_PLAYNITE_PLUGIN_CODE})
 
 add_custom_command(
-        OUTPUT ${SUNSHINE_PLAYNITE_PLUGIN_STAMP}
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/plugins/playnite"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/playnite" "${CMAKE_BINARY_DIR}/plugins/playnite"
-        COMMAND ${CMAKE_COMMAND} -E touch ${SUNSHINE_PLAYNITE_PLUGIN_STAMP}
-        DEPENDS ${SUNSHINE_PLAYNITE_PLUGIN_SOURCES}
-        COMMENT "Copying Playnite plugin sources"
+        OUTPUT ${SUNSHINE_PLAYNITE_PLUGIN_OUTPUT_FILES}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${SUNSHINE_PLAYNITE_PLUGIN_OUTPUT_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E rm -f
+                "${SUNSHINE_PLAYNITE_PLUGIN_OUTPUT_DIR}/SunshinePlaynite.dll"
+                "${SUNSHINE_PLAYNITE_PLUGIN_OUTPUT_DIR}/SunshinePlaynite.pdb"
+                "${SUNSHINE_PLAYNITE_PLUGIN_OUTPUT_DIR}/VibeshinePlaynite.dll"
+                "${SUNSHINE_PLAYNITE_PLUGIN_OUTPUT_DIR}/VibeshinePlaynite.pdb"
+        COMMAND "${SUNSHINE_DOTNET_EXECUTABLE}" build
+                "${SUNSHINE_PLAYNITE_PLUGIN_SOURCE_DIR}/SunshinePlaynite.csproj"
+                --configuration Release
+                --output "${SUNSHINE_PLAYNITE_PLUGIN_OUTPUT_DIR}"
+                --nologo
+                -p:ContinuousIntegrationBuild=true
+        DEPENDS ${SUNSHINE_PLAYNITE_PLUGIN_SOURCES} "${SUNSHINE_PLAYNITE_PLUGIN_ICON}"
+        COMMENT "Building Vibepollo Playnite plugin"
+        VERBATIM
 )
-add_custom_target(copy_playnite_plugin DEPENDS ${SUNSHINE_PLAYNITE_PLUGIN_STAMP})
-add_dependencies(sunshine copy_playnite_plugin)
+add_custom_target(build_playnite_plugin DEPENDS ${SUNSHINE_PLAYNITE_PLUGIN_OUTPUT_FILES})
+add_dependencies(sunshine build_playnite_plugin)
 
 # Ensure the Windows display helper is built and staged under the Sunshine tools
 # directory so the runtime launcher can find it reliably.
@@ -86,7 +125,7 @@ endforeach()
 # Convenience target to build MSI via CPack (WiX)
 add_custom_target(package_msi
     COMMAND "${CMAKE_CPACK_COMMAND}" -G WIX -C "$<IF:$<CONFIG:>,${CMAKE_BUILD_TYPE},$<CONFIG>>"
-    DEPENDS ${SUNSHINE_WINDOWS_PACKAGED_TARGETS} copy_playnite_plugin build_uninstall_ui web_ui
+    DEPENDS ${SUNSHINE_WINDOWS_PACKAGED_TARGETS} build_playnite_plugin build_uninstall_ui web_ui
     COMMENT "Building MSI installer via CPack (WiX)"
 )
 

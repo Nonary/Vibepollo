@@ -280,7 +280,8 @@ If you cannot use the helper script, the underlying steps are:
 8. Configure Sunshine with `-DSUNSHINE_ENABLE_WEBRTC=ON`. If CMake still fails to find libwebrtc, pass
    `WEBRTC_INCLUDE_DIR` and `WEBRTC_LIBRARY` explicitly.
 
-To create a WiX installer, you also need to install [.NET](https://dotnet.microsoft.com/download).
+The Windows build requires the [.NET SDK](https://dotnet.microsoft.com/download)
+to compile the bundled Playnite plugin. It is also used when creating a WiX installer.
 
 ### Clone
 Ensure [git](https://git-scm.com) is installed on your system, then clone the repository using the following command:

@@ -94,8 +94,7 @@ namespace SunshinePlaynite
             var executable = GetProcessExecutableName(actualPid);
             var validExecutable = string.Equals(role, "launcher", StringComparison.OrdinalIgnoreCase)
                 ? string.Equals(executable, "playnite-launcher.exe", StringComparison.OrdinalIgnoreCase)
-                : string.Equals(executable, "sunshine.exe", StringComparison.OrdinalIgnoreCase) ||
-                  string.Equals(executable, "vibeshine.exe", StringComparison.OrdinalIgnoreCase);
+                : string.Equals(executable, "sunshine.exe", StringComparison.OrdinalIgnoreCase);
             if (!validExecutable)
                 throw new UnauthorizedAccessException("Client executable does not match its declared role");
 
