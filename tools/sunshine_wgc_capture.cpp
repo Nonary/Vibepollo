@@ -1106,7 +1106,8 @@ private:
   uint64_t _last_diagnostics_slow_copy = 0;
   uint64_t _last_diagnostics_activity_rate_limited = 0;
   uint32_t _activity_admission_generation = 0;
-  std::chrono::steady_clock::time_point _last_activity_admitted {};
+  std::mutex _activity_admission_mutex;
+  platf::dxgi::wgc_policy::activity_frame_limiter_t _activity_frame_limiter;
   std::mutex _delivery_mutex;
   std::condition_variable _delivery_cv;
   std::jthread _delivery_thread;
@@ -1493,10 +1494,14 @@ private:
   }
 
   bool admit_activity_frame() {
+    // CreateFreeThreaded may dispatch overlapping FrameArrived callbacks. Keep
+    // the credit clock and its observed config generation as one ordered state.
+    std::lock_guard lock(_activity_admission_mutex);
+
     const auto generation = g_activity_admission_generation.load(std::memory_order_acquire);
     if (generation != _activity_admission_generation) {
       _activity_admission_generation = generation;
-      _last_activity_admitted = {};
+      _activity_frame_limiter.reset(g_activity_admission_fps.load(std::memory_order_relaxed));
     }
 
     const auto admission_fps = g_activity_admission_fps.load(std::memory_order_relaxed);
@@ -1504,15 +1509,11 @@ private:
       return true;
     }
 
-    const auto now = std::chrono::steady_clock::now();
-    const auto minimum_interval = std::chrono::nanoseconds(std::chrono::seconds(1)) / admission_fps;
-    if (_last_activity_admitted.time_since_epoch().count() != 0 &&
-        now - _last_activity_admitted < minimum_interval) {
+    if (!_activity_frame_limiter.admit(std::chrono::steady_clock::now())) {
       _activity_rate_limited_frames.fetch_add(1, std::memory_order_relaxed);
       return false;
     }
 
-    _last_activity_admitted = now;
     return true;
   }
 
