@@ -108,7 +108,9 @@ namespace config {
   }  // namespace
 
   steam_t normalize_steam_policy(steam_t value, bool linux_host) {
-    (void) linux_host;
+    if (linux_host) {
+      value.enabled = true;
+    }
     return value;
   }
 
