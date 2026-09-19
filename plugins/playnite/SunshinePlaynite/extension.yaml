@@ -1,7 +1,8 @@
-Id: Sunshine.Playnite.PowerShell
+Id: Sunshine.Playnite.Integration
 Name: Sunshine Playnite Connector
-Author: Nonary
-Version: 0.4.14
-Module: SunshinePlaynite.psm1
-Type: Script
-Description: Adds two-way communication between Vibepollo and Playnite, allowing you to launch games from Playnite and have Vibepollo automatically start streaming them.
+Author: Nonary / Noklef
+Version: 0.5.0
+Module: SunshinePlaynite.dll
+Type: GenericPlugin
+Icon: icon.png
+Description: Adds two-way communication between Vibeshine and Playnite, allowing you to launch games from Playnite and have Sunshine automatically start streaming them.
