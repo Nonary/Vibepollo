@@ -206,6 +206,13 @@ namespace {
       return static_cast<float>(total);
     }
 
+    void
+      reset_rate_baseline() {
+      if (_query) {
+        PdhCollectQueryData(_query);
+      }
+    }
+
   private:
     std::wstring _path;
     PDH_HQUERY _query {};
@@ -1113,6 +1120,18 @@ namespace {
       i.net_interface = _net_iface_name;
       i.net_link_speed_mbps = _net_link_speed_mbps;
       return i;
+    }
+
+    void
+      reset_rate_baselines() override {
+      _have_cpu_baseline = false;
+      _have_net_baseline = false;
+      if (_have_gpu_3d) {
+        _gpu_3d.reset_rate_baseline();
+      }
+      if (_have_gpu_enc) {
+        _gpu_enc.reset_rate_baseline();
+      }
     }
 
   private:

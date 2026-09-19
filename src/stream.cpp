@@ -42,6 +42,7 @@ extern "C" {
 #include "display_device.h"
 #include "display_helper_integration.h"
 #include "globals.h"
+#include "host_stats.h"
 #include "input.h"
 #include "logging.h"
 #include "network.h"
@@ -3227,6 +3228,7 @@ namespace stream {
       teardown_reservation.disable();
 
       const bool last_rtsp_session = --running_sessions == 0;
+      host_stats::rtsp_session_ended();
       bool finalized_shared_runtime = false;
       if (last_rtsp_session) {
         webrtc_stream::set_rtsp_sessions_active(false);
@@ -3370,7 +3372,9 @@ namespace stream {
       }
 
       // If this is the first session, invoke the platform callbacks
-      if (++running_sessions == 1) {
+      const bool first_rtsp_session = ++running_sessions == 1;
+      host_stats::rtsp_session_started();
+      if (first_rtsp_session) {
         if (!webrtc_stream::has_active_or_pending_sessions()) {
           webrtc_stream::set_rtsp_capture_config(session.config.monitor, session.config.audio);
         }

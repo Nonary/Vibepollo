@@ -38,5 +38,7 @@ namespace platf {
     virtual ~host_stats_provider_t() = default;
     virtual host_stats_t sample() = 0;
     virtual host_info_t info() = 0;
+    /// Discard rate-counter state before sampling resumes after an idle gap.
+    virtual void reset_rate_baselines() {}
   };
 }  // namespace platf

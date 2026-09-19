@@ -392,6 +392,11 @@ namespace {
       return out;
     }
 
+    void reset_rate_baselines() override {
+      _have_cpu_baseline = false;
+      _have_net_baseline = false;
+    }
+
   private:
     void sample_cpu(platf::host_stats_t &out) {
       auto j = read_cpu_jiffies();

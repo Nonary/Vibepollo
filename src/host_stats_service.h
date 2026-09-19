@@ -17,6 +17,7 @@ namespace host_stats {
     using provider_factory_t = std::function<std::unique_ptr<platf::host_stats_provider_t>()>;
     using enabled_provider_t = std::function<bool()>;
     using interval_provider_t = std::function<std::chrono::milliseconds()>;
+    using consumer_grace_provider_t = std::function<std::chrono::milliseconds()>;
     using diagnostic_t = std::function<void(std::string_view)>;
 
     class guard_t {
@@ -37,7 +38,8 @@ namespace host_stats {
     service_t(provider_factory_t provider_factory,
               enabled_provider_t enabled_provider,
               interval_provider_t interval_provider,
-              diagnostic_t diagnostic = {});
+              diagnostic_t diagnostic = {},
+              consumer_grace_provider_t consumer_grace_provider = {});
     ~service_t();
 
     service_t(const service_t &) = delete;
@@ -45,8 +47,11 @@ namespace host_stats {
 
     std::unique_ptr<guard_t> start();
     platf::host_stats_t latest() const;
+    platf::host_stats_t latest_for_consumer();
     const platf::host_info_t &info() const;
     bool is_running() const;
+    void set_streaming(bool active);
+    void configuration_changed();
 
   private:
     class impl_t;

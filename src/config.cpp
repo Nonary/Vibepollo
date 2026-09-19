@@ -45,6 +45,7 @@
 #include "entry_handler.h"
 #include "file_handler.h"
 #include "globals.h"
+#include "host_stats.h"
 #include "httpcommon.h"
 #include "logging.h"
 #include "nvhttp.h"
@@ -3201,6 +3202,8 @@ namespace config {
       const auto prev_rtx_hdr_peak_brightness = video.rtx_hdr.peak_brightness;
 #endif
       const auto prev_session_history_enabled = sunshine.session_history_enabled;
+      const auto prev_realtime_stats_enabled = sunshine.realtime_stats_enabled;
+      const auto prev_realtime_stats_poll_interval_ms = sunshine.realtime_stats_poll_interval_ms;
 
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
       merge_config_overrides(vars, command_line_overrides);
@@ -3219,6 +3222,10 @@ namespace config {
         BOOST_LOG(info) << "Hot-apply: deferring session history enablement change until active sessions end.";
         sunshine.session_history_enabled = prev_session_history_enabled;
         g_deferred_reload.store(true, std::memory_order_release);
+      }
+      if (sunshine.realtime_stats_enabled != prev_realtime_stats_enabled ||
+          sunshine.realtime_stats_poll_interval_ms != prev_realtime_stats_poll_interval_ms) {
+        host_stats::configuration_changed();
       }
       session_history::reload_settings();
 
