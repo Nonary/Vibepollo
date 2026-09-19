@@ -682,6 +682,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
 
     find_program(SUNSHINE_TEST_BASH_EXECUTABLE bash)
     if(SUNSHINE_TEST_BASH_EXECUTABLE)
+        add_test(NAME test_component_linux_vibeshine_ds5_install
+            COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_ds5_install.sh"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/vibeshine-ds5-install.in")
+        set_tests_properties(test_component_linux_vibeshine_ds5_install PROPERTIES LABELS "component")
         add_test(
             NAME test_component_linux_vkms_setup
             COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"

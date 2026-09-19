@@ -48,6 +48,7 @@ FIXED = {
     'usr/bin/vibepollo', 'usr/bin/vibepollo-mangohud',
     'usr/lib/libvibeshine-kwin-gpu.so',
     'usr/lib/modules-load.d/60-sunshine.conf',
+    'usr/lib/modules-load.d/70-vibeshine-ds5.conf',
     'usr/lib/udev/rules.d/60-sunshine.rules',
     'usr/lib/udev/rules.d/70-vibepollo-uinput.rules',
     'usr/lib/sysusers.d/vibepollo.conf', 'usr/lib/sysusers.d/vibeshine-vkms.conf',
@@ -57,7 +58,7 @@ FIXED = {
 }
 FIXED.update(f'usr/libexec/vibeshine/vibepollo-{name}' for name in HELPERS)
 FIXED.update(f'usr/libexec/vibeshine/vibeshine-{name}' for name in
-             ('drm-install', 'vkms', 'vkms-peercred', 'vkms-quiesce'))
+             ('drm-install', 'ds5-install', 'vkms', 'vkms-peercred', 'vkms-quiesce'))
 FIXED.update(f'usr/libexec/vibeshine/{name}' for name in
              ('vibepollo-profile-normalize.py', 'pairing_migration.py'))
 FIXED.update(f'usr/lib/systemd/system/{name}' for name in UNITS)
@@ -120,7 +121,7 @@ def allowed(name):
         name in FIXED or name in OPTIONAL or (name.startswith('usr/bin/vibepollo-') and
                          VERSION.fullmatch(name.removeprefix('usr/bin/vibepollo-')) is not None) or
         name.startswith(('usr/share/vibepollo/', 'usr/lib/vibepollo/')) or
-        re.fullmatch(r'usr/src/vibeshine-drm-[1-9][0-9]*\.[0-9]+\.[0-9]+/[^/]+', name) is not None
+        re.fullmatch(r'usr/src/vibeshine-(?:drm|ds5)-[1-9][0-9]*\.[0-9]+\.[0-9]+/[^/]+', name) is not None
     )
 
 
@@ -149,6 +150,10 @@ def inspect_archive(archive, version):
     required.update(f'usr/src/vibeshine-drm-{version.split("-")[0]}/{name}' for name in
                     ('Makefile', 'build-module', 'dkms.conf', 'vkms_drv.c',
                      'vibeshine_drm_uapi.h', 'vibeshine_drm_version.h', 'vibeshine_drm_vrr.h'))
+    required.update(f'usr/src/vibeshine-ds5-{version.split("-")[0]}/{name}' for name in
+                    ('Makefile', 'build-module', 'dkms.conf', 'vibeshine_ds5_main.c',
+                     'vibeshine_ds5_gadget.c', 'vibeshine_ds5_udc.c',
+                     'vibeshine_ds5.h', 'vibeshine_ds5_uapi.h'))
     if required - members.keys():
         raise DeployError(f'Missing artifacts: {sorted(required - members.keys())}')
     for name in required:
@@ -161,8 +166,8 @@ def inspect_archive(archive, version):
         raise DeployError('Expected exactly one versioned public executable')
     drivers = {name.split('/')[2] for name in members if name.startswith('usr/src/') and
                not members[name].isdir()}
-    if drivers != {f'vibeshine-drm-{version.split("-")[0]}'}:
-        raise DeployError('Expected exactly one matching versioned DRM source tree')
+    if drivers != {f'vibeshine-{kind}-{version.split("-")[0]}' for kind in ("drm", "ds5")}:
+        raise DeployError('Expected exactly one matching versioned source tree for each driver')
     # No file may be used as another member's parent (including the public symlink).
     for name in members:
         for parent in PurePosixPath(name).parents:
@@ -536,7 +541,7 @@ def install_mode(name, _source_mode=0):
     if name == 'usr/lib/libvibeshine-kwin-gpu.so':
         return 0o4755
     if (name.startswith('usr/bin/') or name.startswith('usr/libexec/vibeshine/') or
-            re.fullmatch(r'usr/src/vibeshine-drm-[0-9.]+/build-module', name)):
+            re.fullmatch(r'usr/src/vibeshine-(?:drm|ds5)-[0-9.]+/build-module', name)):
         return 0o755
     return 0o644
 
@@ -554,16 +559,18 @@ def driver_preflight(candidate, version):
 
 def driver_allowed(name):
     return safe_name(name) and bool(re.fullmatch(
-        r'(?:usr/src/vibeshine-drm-[0-9][A-Za-z0-9._+-]*(?:/.*)?|'
-        r'var/lib/(?:dkms/vibeshine-drm|vibeshine-drm)(?:/.*)?|'
-        r'usr/lib/modules/[A-Za-z0-9._+-]+/(?:[^/]+/)*vibeshine_drm\.ko(?:\.(?:zst|xz|gz))?)', name))
+        r'(?:usr/src/vibeshine-(?:drm|ds5)-[0-9][A-Za-z0-9._+-]*(?:/.*)?|'
+        r'var/lib/(?:dkms/vibeshine-(?:drm|ds5)|vibeshine-drm)(?:/.*)?|'
+        r'usr/lib/modules/[A-Za-z0-9._+-]+/(?:[^/]+/)*vibeshine_(?:drm|ds5)\.ko(?:\.(?:zst|xz|gz))?)', name))
 
 
 def driver_inventory(root=Path('/'), owner=0):
     """Only this module's state; never follow DKMS build/source symlinks."""
     files, directories = set(), {}
-    roots = list((root / 'usr/src').glob('vibeshine-drm-*'))
-    roots += [root / 'var/lib/dkms/vibeshine-drm', root / 'var/lib/vibeshine-drm']
+    roots = [path for kind in ('drm', 'ds5')
+             for path in (root / 'usr/src').glob(f'vibeshine-{kind}-*')]
+    roots += [root / 'var/lib/dkms/vibeshine-drm', root / 'var/lib/dkms/vibeshine-ds5',
+              root / 'var/lib/vibeshine-drm']
     guard = Files(root, root=root, owner=owner, validator=driver_allowed)
     def visit(path):
         name = str(path.relative_to(root))
@@ -596,8 +603,9 @@ def driver_inventory(root=Path('/'), owner=0):
             if path.is_symlink():
                 raise DeployError(f'Driver state root is a symlink: {path}')
             visit(path)
-    for path in (root / 'usr/lib/modules').glob('*/**/vibeshine_drm.ko*'):
-        visit(path)
+    for kind in ('drm', 'ds5'):
+        for path in (root / 'usr/lib/modules').glob(f'*/**/vibeshine_{kind}.ko*'):
+            visit(path)
     return files, directories
 
 

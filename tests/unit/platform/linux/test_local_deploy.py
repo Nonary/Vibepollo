@@ -32,6 +32,10 @@ def package(extra=(), omit=()):
     names.update('usr/src/vibeshine-drm-1.19.0/' + name for name in
                  ('Makefile', 'build-module', 'dkms.conf', 'vkms_drv.c',
                   'vibeshine_drm_uapi.h', 'vibeshine_drm_vrr.h'))
+    names.update('usr/src/vibeshine-ds5-1.19.0/' + name for name in
+                 ('Makefile', 'build-module', 'dkms.conf', 'vibeshine_ds5_main.c',
+                  'vibeshine_ds5_gadget.c', 'vibeshine_ds5_udc.c',
+                  'vibeshine_ds5.h', 'vibeshine_ds5_uapi.h'))
     with tarfile.open(fileobj=stream, mode='w:gz') as archive:
         for name in sorted(names - set(omit)):
             entry = tarfile.TarInfo(name)
@@ -58,7 +62,14 @@ class InstallerShellTests(unittest.TestCase):
 
 class ArchiveTests(unittest.TestCase):
     def test_local_package_must_include_driver_helper_and_build_sources(self):
-        for missing in ('usr/libexec/vibeshine/vibeshine-drm-install',
+        self.assertNotIn('usr/libexec/vibeshine/vibepollo-drm-install', deploy.FIXED)
+        self.assertNotIn('usr/libexec/vibeshine/vibepollo-ds5-install', deploy.FIXED)
+        for missing in ('usr/libexec/vibeshine/vibeshine-ds5-install',
+                        'usr/lib/modules-load.d/70-vibeshine-ds5.conf',
+                        'usr/src/vibeshine-ds5-1.19.0/vibeshine_ds5_gadget.c',
+                        'usr/src/vibeshine-ds5-1.19.0/dkms.conf',
+                        'usr/libexec/vibeshine/vibeshine-drm-install',
+                        'usr/libexec/vibeshine/vibepollo-global-limiter.py',
                         'usr/src/vibeshine-drm-1.19.0/Makefile',
                         'usr/src/vibeshine-drm-1.19.0/build-module',
                         'usr/src/vibeshine-drm-1.19.0/vibeshine_drm_vrr.h'):

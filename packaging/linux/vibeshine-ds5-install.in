@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Install Vibeshine's virtual DualSense USB module. DKMS is preferred;
+# a current-kernel direct build is the fallback.
+set -uo pipefail
+umask 022
+
+PROGRAM_NAME="vibeshine-ds5-install"
+DKMS_NAME="vibeshine-ds5"
+MODULE_NAME="vibeshine_ds5"
+MODULE_VERSION="@PROJECT_VERSION_NUMERIC@"
+SOURCE_DIR="@VIBESHINE_DS5_SOURCE_INSTALL_DIR@"
+MODULES_ROOT="/lib/modules"
+SYS_MODULE_ROOT="/sys/module"
+MOK_SIGNING_KEY="/var/lib/dkms/mok.key"
+MOK_CERTIFICATE="/var/lib/dkms/mok.pub"
+
+log() { printf '%s: %s\n' "$PROGRAM_NAME" "$*"; }
+error() { printf '%s: error: %s\n' "$PROGRAM_NAME" "$*" >&2; }
+
+require_root() {
+  if ((EUID != 0)); then
+    error "this action must be run as root"
+    return 1
+  fi
+}
+
+current_kernel_release() { uname -r; }
+
+validate_source_tree() {
+  local required
+  if [[ ! -d "$SOURCE_DIR" || -L "$SOURCE_DIR" ]]; then
+    error "module source directory is unavailable: ${SOURCE_DIR}"
+    return 1
+  fi
+  for required in Makefile build-module dkms.conf vibeshine_ds5_uapi.h \
+                  vibeshine_ds5.h vibeshine_ds5_udc.c vibeshine_ds5_gadget.c \
+                  vibeshine_ds5_main.c; do
+    if [[ ! -f "$SOURCE_DIR/$required" || -L "$SOURCE_DIR/$required" ]]; then
+      error "missing module source: ${SOURCE_DIR}/${required}"
+      return 1
+    fi
+  done
+  if [[ ! -x "$SOURCE_DIR/build-module" ]]; then
+    error "build-module is not executable"
+    return 1
+  fi
+}
+
+sign_module_file() {
+  local kernel_release=$1
+  local module_file=$2
+  local sign_file="$MODULES_ROOT/$kernel_release/build/scripts/sign-file"
+  if [[ ! -f "$MOK_SIGNING_KEY" || ! -f "$MOK_CERTIFICATE" ]]; then
+    return 0
+  fi
+  if [[ ! -x "$sign_file" ]]; then
+    error "kernel sign-file helper is missing for ${kernel_release}"
+    return 1
+  fi
+  "$sign_file" sha512 "$MOK_SIGNING_KEY" "$MOK_CERTIFICATE" "$module_file"
+}
+
+dkms_registered() {
+  dkms status -m "$DKMS_NAME" -v "$MODULE_VERSION" 2>/dev/null | grep -q .
+}
+
+dkms_installed_for() {
+  local kernel_release=$1
+  dkms status -m "$DKMS_NAME" -v "$MODULE_VERSION" -k "$kernel_release" 2>/dev/null |
+    grep -q ': installed'
+}
+
+install_with_dkms() {
+  local kernel_release=$1
+  if ! dkms_registered; then
+    log "registering ${DKMS_NAME}/${MODULE_VERSION} with DKMS"
+    dkms add -m "$DKMS_NAME" -v "$MODULE_VERSION" || return 1
+  fi
+  log "building ${DKMS_NAME}/${MODULE_VERSION} for ${kernel_release}"
+  dkms build -m "$DKMS_NAME" -v "$MODULE_VERSION" -k "$kernel_release" --force || return 1
+  dkms install -m "$DKMS_NAME" -v "$MODULE_VERSION" -k "$kernel_release" --force || return 1
+  dkms_installed_for "$kernel_release"
+}
+
+install_direct() {
+  local kernel_release=$1
+  local work destination
+  destination="$MODULES_ROOT/$kernel_release/updates/dkms/${MODULE_NAME}.ko"
+  work=$(mktemp -d /var/tmp/vibeshine-ds5-build.XXXXXX) || return 1
+  cp -a -- "$SOURCE_DIR/." "$work/" || { rm -rf -- "$work"; return 1; }
+  log "building ${MODULE_NAME} directly for ${kernel_release}"
+  if ! "$work/build-module" "$kernel_release" "$work"; then
+    rm -rf -- "$work"
+    return 1
+  fi
+  sign_module_file "$kernel_release" "$work/${MODULE_NAME}.ko" || {
+    rm -rf -- "$work"
+    return 1
+  }
+  install -D -m 0644 -- "$work/${MODULE_NAME}.ko" "$destination" || {
+    rm -rf -- "$work"
+    return 1
+  }
+  rm -rf -- "$work"
+  depmod -a "$kernel_release"
+}
+
+load_module() {
+  if ! modprobe "$MODULE_NAME"; then
+    error "DualSense USB module could not load; haptics are unavailable"
+    return 1
+  fi
+  module_status
+}
+
+module_status() {
+  local installed loaded
+  installed=$(modinfo -F srcversion "$MODULE_NAME") && [[ -n "$installed" ]] || return 1
+  [[ -r "$SYS_MODULE_ROOT/$MODULE_NAME/srcversion" ]] || return 1
+  loaded=$(cat "$SYS_MODULE_ROOT/$MODULE_NAME/srcversion") || return 1
+  if [[ "$installed" != "$loaded" ]]; then
+    error "DualSense USB module was updated but the loaded copy is stale; reboot before testing haptics"
+    return 4
+  fi
+}
+
+install_module() {
+  local kernel_release
+  kernel_release=$(current_kernel_release) || return 1
+  validate_source_tree || return 1
+  if command -v dkms >/dev/null 2>&1; then
+    if install_with_dkms "$kernel_release"; then
+      load_module || return $?
+      log "installed DualSense USB module with DKMS for ${kernel_release}"
+      return 0
+    fi
+    log "DKMS installation failed; attempting a current-kernel direct build"
+  fi
+  install_direct "$kernel_release" || return 1
+  load_module || return $?
+  log "installed DualSense USB module for ${kernel_release}"
+}
+
+remove_module() {
+  local kernel_release
+  kernel_release=$(current_kernel_release) || true
+  if [[ -d "$SYS_MODULE_ROOT/$MODULE_NAME" ]]; then
+    modprobe -r "$MODULE_NAME" || return 1
+  fi
+  if command -v dkms >/dev/null 2>&1 && dkms_registered; then
+    dkms remove -m "$DKMS_NAME" -v "$MODULE_VERSION" --all || return 1
+  fi
+  if [[ -n "$kernel_release" ]]; then
+    rm -f -- "$MODULES_ROOT/$kernel_release/updates/dkms/${MODULE_NAME}.ko"
+    depmod -a "$kernel_release" || true
+  fi
+}
+
+usage() {
+  printf 'Usage: %s {install|status|remove}\n' "$PROGRAM_NAME" >&2
+}
+
+main() {
+  case "${1:-}" in
+    status)
+      module_status
+      ;;
+    install)
+      require_root || return 1
+      install_module
+      ;;
+    remove)
+      require_root || return 1
+      remove_module
+      ;;
+    *)
+      usage
+      return 2
+      ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi

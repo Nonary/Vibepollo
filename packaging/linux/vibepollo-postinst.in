@@ -414,6 +414,10 @@ if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" ]; th
   fi
 fi
 
+if ! "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-ds5-install" install; then
+  echo "warning: DualSense USB haptics are unavailable or require a reboot; see the module error above." >&2
+fi
+
 if [ "$vibepollo_machine_configured" -eq 1 ]; then
   if ! systemctl enable vibepollo-session-controller.service; then
     vibepollo_quiesce_machine_host || true

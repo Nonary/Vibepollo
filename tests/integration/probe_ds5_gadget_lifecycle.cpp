@@ -80,7 +80,7 @@ int main() {
         char identity[18];
         std::snprintf(identity, sizeof(identity), "02:76:05:00:%02x:03", iteration);
         auto pad = inputtino::PS5Joypad::create({
-          .name = "Vibeshine DS5 lifecycle probe", .vendor_id = 0x054c,
+          .name = "Vibepollo DS5 lifecycle probe", .vendor_id = 0x054c,
           .product_id = 0x0ce6, .version = 0x8111,
           .device_uniq = identity});
         require(static_cast<bool>(pad), "controller creation failed");

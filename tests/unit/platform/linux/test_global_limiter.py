@@ -145,7 +145,7 @@ print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK"
         child = self.server("disabled", 0, "sdr")
         for app_id in ("3768760", "1182900"):
             for managed in ("0", "1"):
-                active = self.launch(SteamAppId=app_id, VIBESHINE_LIMITER_MANAGED=managed)
+                active = self.launch(SteamAppId=app_id, VIBEPOLLO_LIMITER_MANAGED=managed)
                 self.assertEqual(active["PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE"], "1")
                 self.assertEqual(active["PROTON_SONY_WINDOWS_DEVICE_NAMES"], "1")
                 self.assertNotIn("VKD3D_FRAME_RATE", active)

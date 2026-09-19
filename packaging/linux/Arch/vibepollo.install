@@ -849,6 +849,13 @@ do_install_vibeshine_drm() {
   esac
 }
 
+do_install_vibeshine_ds5() {
+  /usr/libexec/vibeshine/vibeshine-ds5-install install || {
+    echo "==> ACTION REQUIRED: DualSense USB haptics are unavailable or require a reboot; see the module error above." >&2
+    echo "    Retry: sudo /usr/libexec/vibeshine/vibeshine-ds5-install install" >&2
+  }
+}
+
 do_print_next_steps() {
   cat <<'NEXT_STEPS'
 ==> Vibepollo next steps
@@ -966,6 +973,7 @@ post_install() {
   do_udev_reload
   do_restore_kwin_capability
   do_install_vibeshine_drm
+  do_install_vibeshine_ds5
   do_install_prelogin || true
   do_print_next_steps
 }
@@ -976,6 +984,7 @@ post_upgrade() {
   do_udev_reload
   do_restore_kwin_capability
   do_install_vibeshine_drm
+  do_install_vibeshine_ds5
   do_install_prelogin || true
   do_print_next_steps
 }
@@ -987,6 +996,8 @@ pre_remove() {
   systemctl stop vibeshine-vkms.service 2>/dev/null || true
   systemctl stop vibeshine-drm-setup.service 2>/dev/null || true
   do_restore_kwin_capability || true
+  /usr/libexec/vibeshine/vibeshine-ds5-install remove || \
+    echo "warning: could not remove the DualSense USB module cleanly."
   /usr/libexec/vibeshine/vibeshine-drm-install remove || \
     echo "warning: could not remove the Vibepollo HDR DRM module cleanly."
 }

@@ -30,7 +30,7 @@ int main() {
   std::atomic<unsigned> matched {0}, malformed {0}, discontinuities {0};
   int next_frame = -1;
   // Counters outlive the joypad; destruction joins its callback thread.
-  auto pad = inputtino::PS5Joypad::create({.name = "Vibeshine DS5 PCM validation",
+  auto pad = inputtino::PS5Joypad::create({.name = "Vibepollo DS5 PCM validation",
     .vendor_id = 0x054c, .product_id = 0x0ce6, .version = 0x0100,
     .device_uniq = "02:76:05:09:21:03"});
   if (!pad) return 1;

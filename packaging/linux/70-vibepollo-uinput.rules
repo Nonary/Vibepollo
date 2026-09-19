@@ -3,3 +3,4 @@
 # the broad "input" group, which would also expose every physical input event.
 KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="vibepollo-uinput", MODE="0660", OPTIONS+="static_node=uinput", TAG+="uaccess"
 KERNEL=="uhid", SUBSYSTEM=="misc", GROUP="vibepollo-uinput", MODE="0660", OPTIONS+="static_node=uhid", TAG+="uaccess"
+KERNEL=="vibeshine-ds5", SUBSYSTEM=="misc", GROUP="vibepollo-uinput", MODE="0660", TAG+="uaccess"

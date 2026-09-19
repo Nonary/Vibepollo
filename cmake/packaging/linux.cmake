@@ -164,6 +164,7 @@ else()
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-controller"
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-global-limiter.py"
                 "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-install"
+                "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-ds5-install"
                 DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
         install(TARGETS vibepollo_session_exec vibepollo_app_supervisor
                 vibepollo_profile_import vibepollo_kwin_session_environment
@@ -207,6 +208,16 @@ else()
         install(FILES "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-dkms.conf"
                 DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}"
                 RENAME dkms.conf)
+        install(DIRECTORY "${VIBESHINE_DS5_SOURCE_DIR}/"
+                DESTINATION "${VIBESHINE_DS5_SOURCE_INSTALL_DIR}"
+                FILES_MATCHING PATTERN "*.c" PATTERN "*.mod.c" EXCLUDE
+                PATTERN "*.h" PATTERN "Makefile" PATTERN "README*" PATTERN "LICENSE*")
+        install(PROGRAMS "${VIBESHINE_DS5_SOURCE_DIR}/build-module"
+                DESTINATION "${VIBESHINE_DS5_SOURCE_INSTALL_DIR}")
+        install(FILES "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-ds5-dkms.conf"
+                DESTINATION "${VIBESHINE_DS5_SOURCE_INSTALL_DIR}" RENAME dkms.conf)
+        install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/70-vibeshine-ds5.conf"
+                DESTINATION "/usr/lib/modules-load.d")
     endif()
 
     if(UDEV_FOUND)

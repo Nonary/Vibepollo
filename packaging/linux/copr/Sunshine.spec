@@ -1392,6 +1392,9 @@ if [ ! -x "$(command -v rpm-ostree)" ]; then
       echo "warning: Vibepollo DRM installation failed; managed virtual displays are unavailable."
     fi
   fi
+  if ! %{_prefix}/libexec/vibeshine/vibeshine-ds5-install install; then
+    echo "warning: DualSense USB haptics are unavailable or require a reboot; see the module error above." >&2
+  fi
   vibepollo_machine_helper=%{_prefix}/libexec/vibeshine/vibepollo-machine-host
   vibepollo_privileged_helper_is_safe "$vibepollo_machine_helper" || {
     echo "error: installed Vibepollo machine helper is unsafe." >&2
@@ -1622,6 +1625,8 @@ if [ "$1" -eq 0 ]; then
   }
   timeout --signal=KILL 30 systemctl stop vibeshine-vkms.service 2>/dev/null || true
   timeout --signal=KILL 30 systemctl stop vibeshine-drm-setup.service 2>/dev/null || true
+  %{_prefix}/libexec/vibeshine/vibeshine-ds5-install remove || \
+    echo "warning: could not remove the DualSense USB module cleanly."
   %{_prefix}/libexec/vibeshine/vibeshine-drm-install remove || \
     echo "warning: could not remove the Vibepollo HDR DRM module cleanly."
 fi
@@ -1632,6 +1637,7 @@ fi
 %{_bindir}/vibepollo
 %{_bindir}/vibepollo-mangohud
 %{_prefix}/libexec/vibeshine/vibeshine-drm-install
+%{_prefix}/libexec/vibeshine/vibeshine-ds5-install
 %{_prefix}/libexec/vibeshine/vibeshine-vkms
 %{_prefix}/libexec/vibeshine/vibeshine-vkms-quiesce
 %{_prefix}/libexec/vibeshine/vibeshine-vkms-peercred
@@ -1654,6 +1660,7 @@ fi
 
 # Versioned DKMS/direct-build source tree
 /usr/src/vibeshine-drm-*
+/usr/src/vibeshine-ds5-*
 
 # KWin user-unit drop-ins; Linux does not install the generic app service.
 %{_userunitdir}/plasma-kwin_wayland.service.d/vibeshine-kwin-gpu.conf
@@ -1682,6 +1689,7 @@ fi
 
 # Modules-load configuration
 %{_modulesloaddir}/*-sunshine.conf
+%{_modulesloaddir}/70-vibeshine-ds5.conf
 
 # Desktop entries
 %{_datadir}/applications/*.desktop

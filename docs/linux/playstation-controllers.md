@@ -43,7 +43,7 @@ game-specific translation by Steam or Proton is a separate layer.
 ## Global Proton DualSense compatibility
 
 On Linux, **Input → DualSense compatibility for Proton games** defaults to on
-(`proton_dualsense_compatibility = enabled`). During a stream, Vibeshine supplies
+(`proton_dualsense_compatibility = enabled`). During a stream, Vibepollo supplies
 `PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE=1` and
 `PROTON_SONY_WINDOWS_DEVICE_NAMES=1` to Proton game launches.
 

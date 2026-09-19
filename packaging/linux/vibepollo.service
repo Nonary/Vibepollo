@@ -47,6 +47,7 @@ DeviceAllow=char-nvidia-uvm rw
 DeviceAllow=char-nvidia-caps r
 DeviceAllow=/dev/uinput rw
 DeviceAllow=/dev/uhid rw
+DeviceAllow=/dev/vibeshine-ds5 rw
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes

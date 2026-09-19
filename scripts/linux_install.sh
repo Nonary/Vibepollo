@@ -38,6 +38,7 @@ readonly PACMAN_REPO_CONF='/etc/pacman.d/vibepollo.conf'
 readonly MIN_KERNEL_MAJOR=6
 readonly MIN_KERNEL_MINOR=16
 readonly DRM_INSTALL='/usr/libexec/vibeshine/vibeshine-drm-install'
+readonly DS5_INSTALL='/usr/libexec/vibeshine/vibeshine-ds5-install'
 readonly MACHINE_HOST='/usr/libexec/vibeshine/vibepollo-machine-host'
 
 requested_version=''
@@ -396,16 +397,26 @@ download_release_package() {
 # for the whole driver tree (or for files another package owns).
 prepare_driver_replacement() {
   # Optional roots are for isolated fixtures; production callers use no args.
-  local source_root=${1:-/usr/src} backup_root=${2:-/var/tmp}
-  local directory file owner attributes cursor status backup='' relative
+  local source_root=${1:-/usr/src} backup_root=${2:-/var/tmp} install_root=${3:-/}
+  local directory file owner attributes cursor status backup='' relative parent
+  local -a package_files=(
+    usr/lib/modules-load.d/70-vibeshine-ds5.conf
+    usr/libexec/vibeshine/vibeshine-ds5-install
+  )
   driver_overwrite=()
-  for directory in "$source_root"/vibeshine-drm-*; do
-    [[ ${directory##*/} =~ ^vibeshine-drm-[1-9][0-9]*\.[0-9]+\.[0-9]+$ ]] || continue
+  for directory in "$source_root"/vibeshine-drm-* "$source_root"/vibeshine-ds5-*; do
+    [[ ${directory##*/} =~ ^vibeshine-(drm|ds5)-[1-9][0-9]*\.[0-9]+\.[0-9]+$ ]] || continue
     [[ -d "$directory" && ! -L "$directory" ]] || continue
-    # Require the directory itself to belong to a known host package. This is
-    # not permission to adopt arbitrary files elsewhere in /usr/src.
-    owner=$(LC_ALL=C pacman -Qoq -- "$directory" 2>/dev/null) || continue
-    case "$owner" in sunshine|vibeshine|vibepollo) ;; *) continue ;; esac
+    # A manual driver repair can precede the first package containing it.
+    # Accept a known host package or an explicitly unowned exact driver tree;
+    # both still require trusted ancestry and per-file ownership checks below.
+    if owner=$(LC_ALL=C pacman -Qoq -- "$directory" 2>"$workdir/driver-owner-error"); then
+      case "$owner" in sunshine|vibeshine|vibepollo) ;; *) continue ;; esac
+    else
+      status=$?
+      [[ $status == 1 ]] && grep -Fxq -- "error: No package owns $directory" "$workdir/driver-owner-error" ||
+        die "could not establish package ownership of $directory; refusing overwrite"
+    fi
     cursor=$directory
     while [[ "$cursor" != / ]]; do
       [[ -d "$cursor" && ! -L "$cursor" ]] || die "unsafe driver source parent: $cursor"
@@ -436,6 +447,40 @@ prepare_driver_replacement() {
       cmp -s -- "$file" "$backup/$relative" || die "driver source changed during backup: $file"
       driver_overwrite+=(--overwrite "usr/src/$relative")
     done
+  done
+  # Early DS5 development installs placed these package payloads manually.
+  # Adopt only the two exact paths introduced by the native package, subject to
+  # the same ownership, ancestry, backup, and byte-verification checks above.
+  for relative in "${package_files[@]}"; do
+    file="${install_root%/}/$relative"
+    [[ -e "$file" || -L "$file" ]] || continue
+    [[ -f "$file" && ! -L "$file" ]] || die "unsafe package replacement target: $file"
+    if owner=$(LC_ALL=C pacman -Qoq -- "$file" 2>"$workdir/driver-owner-error"); then
+      continue
+    else
+      status=$?
+      [[ $status == 1 ]] && grep -Fxq -- "error: No package owns $file" "$workdir/driver-owner-error" ||
+        die "could not establish package ownership of $file; refusing overwrite"
+    fi
+    cursor=${file%/*}
+    while [[ "$cursor" != / ]]; do
+      [[ -d "$cursor" && ! -L "$cursor" ]] || die "unsafe package replacement parent: $cursor"
+      attributes=$(stat -c '%u %a' -- "$cursor") || die "cannot inspect $cursor"
+      read -r owner status <<<"$attributes"
+      [[ "$owner" == "$EUID" && "$status" =~ ^[0-7]{3,4}$ ]] &&
+        (( (8#$status & 0022) == 0 )) || die "untrusted package replacement parent: $cursor"
+      cursor=${cursor%/*}; [[ -n "$cursor" ]] || cursor=/
+    done
+    if [[ -z "$backup" ]]; then
+      backup=$(mktemp -d "$backup_root/vibeshine-driver-backup.XXXXXXXX") || die 'cannot create driver backup'
+      chmod 700 "$backup" || die 'cannot protect driver backup'
+      log "Preserving unowned legacy install files in $backup (retained even if installation fails)"
+    fi
+    parent=${relative%/*}
+    mkdir -p -m 700 -- "$backup/$parent" || die 'cannot create package-file backup directory'
+    cp -a -- "$file" "$backup/$relative" || die "cannot back up $file"
+    cmp -s -- "$file" "$backup/$relative" || die "package file changed during backup: $file"
+    driver_overwrite+=(--overwrite "$relative")
   done
 }
 
@@ -504,6 +549,22 @@ install_virtual_driver() {
   installed=$(modinfo -k "$kernel_release" -F version vibeshine_drm 2>/dev/null) && [[ -n "$installed" ]] ||
     die "the virtual-display driver is still missing for ${kernel_release}; installation is not complete"
   ok "Virtual-display driver ${installed} is installed for ${kernel_release}."
+}
+
+install_dualsense_driver() {
+  local helper=${1:-$DS5_INSTALL} result=0
+  [[ -x "$helper" ]] || die "the package is missing the DualSense USB installer: $helper"
+  if "$helper" status; then result=0; else result=$?; fi
+  if [[ $result != 0 && $result != 4 ]]; then
+    install_kernel_headers
+    log "Installing the DualSense USB driver for ${kernel_release}"
+    if "$helper" install; then result=0; else result=$?; fi
+  fi
+  case "$result" in
+    0) ok 'DualSense USB driver is installed and loaded.' ;;
+    4) reboot_required=1; warn 'The DualSense USB driver is installed; reboot to use the updated module.' ;;
+    *) die "DualSense USB driver installation failed (status $result); installation is not complete." ;;
+  esac
 }
 
 check_driver_state() {
@@ -579,6 +640,7 @@ main() {
   check_session_restart
   install_vibepollo
   install_virtual_driver
+  install_dualsense_driver
   open_firewall
   check_driver_state
   check_services

@@ -8,10 +8,11 @@ touch "$local_package"
 calls="$workdir/calls"
 source_root="$workdir/usr/src"
 backup_root="$workdir/backups"
-mkdir -p "$source_root" "$backup_root"
+install_root="$workdir/root"
+mkdir -p "$source_root" "$backup_root" "$install_root"
 # Route only the fixture through alternate roots; never inspect real driver files.
 eval "$(declare -f prepare_driver_replacement | sed '1s/prepare_driver_replacement/prepare_driver_replacement_fixture/')"
-prepare_driver_replacement() { prepare_driver_replacement_fixture "$source_root" "$backup_root"; }
+prepare_driver_replacement() { prepare_driver_replacement_fixture "$source_root" "$backup_root" "$install_root"; }
 stat() {
   # The production /usr/src ancestry is root-owned and not world-writable.
   # Our fixture's /tmp ancestor is intentionally the only mocked metadata.
@@ -28,6 +29,10 @@ pacman() {
   if [[ "$1" == -Qoq ]]; then
     local path=${!#}
     if [[ -d "$path" ]]; then
+      if [[ $directory_owner == unowned ]]; then
+        printf 'error: No package owns %s\n' "$path" >&2
+        return 1
+      fi
       printf '%s\n' "$directory_owner"
     elif [[ ${path##*/} == owned.h ]]; then
       printf 'unrelated-driver\n'
@@ -126,6 +131,32 @@ if (install_from_package); then exit 1; fi
 unset -f cp
 printf 'Legacy driver leftovers are backed up and narrowly adopted without changing owned files.\n'
 
+# Exact unowned DS5 package files from a manual development install are adopted.
+mkdir -p "$install_root/usr/lib/modules-load.d" "$install_root/usr/libexec/vibeshine"
+printf 'vibeshine_ds5\n' > "$install_root/usr/lib/modules-load.d/70-vibeshine-ds5.conf"
+printf '#!/usr/bin/env bash\n' > "$install_root/usr/libexec/vibeshine/vibeshine-ds5-install"
+prepare_driver_replacement
+for relative in usr/lib/modules-load.d/70-vibeshine-ds5.conf \
+  usr/libexec/vibeshine/vibeshine-ds5-install; do
+  [[ " ${driver_overwrite[*]} " == *" $relative "* ]]
+  package_backups=("$backup_root"/vibeshine-driver-backup.*/"$relative")
+  [[ ${#package_backups[@]} == 1 ]]
+  cmp "$install_root/$relative" "${package_backups[0]}"
+done
+
+# A manually installed DS5 tree must be adoptable by its first native package.
+(
+  directory="$source_root/vibeshine-ds5-2.0.0"
+  mkdir "$directory"
+  printf 'manual DS5 source\n' > "$directory/vibeshine_ds5_main.c"
+  directory_owner=unowned
+  prepare_driver_replacement
+  [[ " ${driver_overwrite[*]} " == *" usr/src/vibeshine-ds5-2.0.0/vibeshine_ds5_main.c "* ]]
+  ds5_backups=("$backup_root"/vibeshine-driver-backup.*/vibeshine-ds5-2.0.0/vibeshine_ds5_main.c)
+  [[ ${#ds5_backups[@]} == 1 ]]
+  cmp "$directory/vibeshine_ds5_main.c" "${ds5_backups[0]}"
+)
+
 # Check the installed driver's status and build it if the package hook failed.
 driver_calls="$workdir/driver-calls"
 driver_helper="$workdir/driver-helper"
@@ -171,6 +202,30 @@ install_kernel_headers() { die 'fixture: matching headers unavailable'; }
 if (install_virtual_driver "$driver_helper"); then exit 1; fi
 [[ $(<"$driver_calls") == status ]]
 printf 'Driver installation is required; genuine build failures cannot report installer success.\n'
+
+# DualSense package-hook failures must not be silently accepted either.
+(
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" >> "$driver_calls"' \
+    'if [[ "$1" == status ]]; then exit "$driver_status"; fi' \
+    '[[ "$1" == install ]] || exit 99' 'exit "$driver_install_status"' > "$driver_helper"
+  install_kernel_headers() { printf 'headers\n' >> "$driver_calls"; }
+  driver_status=1; driver_install_status=0
+  : > "$driver_calls"
+  install_dualsense_driver "$driver_helper"
+  [[ $(<"$driver_calls") == $'status\nheaders\ninstall' ]]
+  driver_install_status=1
+  if (install_dualsense_driver "$driver_helper"); then exit 1; fi
+  driver_install_status=4; reboot_required=0
+  install_dualsense_driver "$driver_helper"
+  [[ $reboot_required == 1 ]]
+  for driver_status in 0 4; do
+    : > "$driver_calls"
+    install_dualsense_driver "$driver_helper"
+    [[ $(<"$driver_calls") == status ]]
+  done
+  if (install_dualsense_driver "$workdir/missing-ds5-helper"); then exit 1; fi
+)
+printf 'DualSense installation failures cannot report installer success.\n'
 
 # Reproduce an upgraded kernel package while the removed old kernel still runs.
 (
