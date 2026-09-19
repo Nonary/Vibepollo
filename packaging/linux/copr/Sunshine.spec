@@ -149,6 +149,7 @@ Requires: jq
 Requires: /usr/bin/python3
 Requires: /usr/bin/pactl
 Requires: /usr/bin/parec
+Requires: /usr/bin/python3
 Requires: /usr/bin/wayland-info
 Requires: /usr/bin/xdpyinfo
 Requires: socat
@@ -160,6 +161,7 @@ Recommends: make
 
 %if 0%{?fedora}
 # Fedora runtime requirements
+Requires: python3 >= 3.9
 Requires: libayatana-appindicator3 >= 0.5.3
 Requires: libcap >= 2.22
 Requires: libcurl >= 7.0
@@ -178,6 +180,7 @@ Requires: vulkan-loader
 
 %if 0%{?suse_version}
 # OpenSUSE runtime requirements
+Requires: python311
 Requires: libappindicator3-1
 Requires: libcap2
 Requires: libcurl4
@@ -655,7 +658,9 @@ vibepollo_select_upgrade_kill_mode() {
     return 0
   fi
   vibepollo_privileged_helper_is_safe "$vibepollo_legacy_host" || return 1
-  if grep -Fqx '  trap mark_host_shutdown TERM INT HUP' "$vibepollo_legacy_host"; then
+  if grep -Fqx '  trap request_host_shutdown TERM INT HUP' "$vibepollo_legacy_host"; then
+    vibepollo_upgrade_kill_mode=mixed
+  elif grep -Fqx '  trap mark_host_shutdown TERM INT HUP' "$vibepollo_legacy_host"; then
     vibepollo_upgrade_kill_mode=control-group
   elif grep -Fqx "  trap 'forward_host_signal TERM' TERM" "$vibepollo_legacy_host" && \
        grep -Fqx "  trap 'forward_host_signal INT' INT" "$vibepollo_legacy_host" && \
@@ -673,7 +678,7 @@ vibepollo_prepare_host_upgrade_fence() (
     '0:0:755:directory' ] || exit 1
   vibepollo_upgrade_temporary=$(mktemp /run/vibepollo-host-upgrade.XXXXXX) || exit 1
   trap 'rm -f -- "$vibepollo_upgrade_temporary"' 0
-  case "$vibepollo_upgrade_kill_mode" in process | control-group) ;; *) exit 1 ;; esac
+  case "$vibepollo_upgrade_kill_mode" in mixed | process | control-group) ;; *) exit 1 ;; esac
   printf '[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=%%s\nSendSIGKILL=no\n' \
     "$vibepollo_upgrade_kill_mode" >"$vibepollo_upgrade_temporary" || exit 1
   chmod 0600 -- "$vibepollo_upgrade_temporary" || exit 1
@@ -1039,6 +1044,12 @@ RefuseManualStart=yes
 
 [Service]
 KillMode=control-group
+SendSIGKILL=no' | \
+      '[Unit]
+RefuseManualStart=yes
+
+[Service]
+KillMode=mixed
 SendSIGKILL=no') ;;
       *) return 1 ;;
     esac
@@ -1051,7 +1062,7 @@ SendSIGKILL=no') ;;
   vibepollo_new_host_properties=$(timeout --signal=KILL 5 systemctl show vibepollo.service \
     --property=RefuseManualStart --property=KillMode --property=SendSIGKILL 2>/dev/null) || return 1
   printf '%%s\n' "$vibepollo_new_host_properties" | grep -qx 'RefuseManualStart=no' && \
-    printf '%%s\n' "$vibepollo_new_host_properties" | grep -qx 'KillMode=control-group' && \
+    printf '%%s\n' "$vibepollo_new_host_properties" | grep -qx 'KillMode=mixed' && \
     printf '%%s\n' "$vibepollo_new_host_properties" | grep -qx 'SendSIGKILL=no' || return 1
   timeout --signal=KILL 15 systemctl unmask --runtime vibeshine-vkms-control.socket 2>/dev/null || return 1
   systemctl start vibeshine-vkms-control.socket || return 1
@@ -1210,6 +1221,8 @@ vibepollo_quiesce_machine_host() {
   vibepollo_unit_is_masked vibepollo-session-exec.socket || return 1
   vibepollo_stop_exact_unit vibepollo-session-exec.socket
   vibepollo_unit_is_quiescent vibepollo-session-exec.socket || return 1
+  vibepollo_stop_exact_unit vibepollo.service
+  vibepollo_unit_is_quiescent vibepollo.service || return 1
   vibepollo_stop_brokers || return 1
   for vibepollo_unit in vibepollo-session-controller.service vibepollo.service \
     vibepollo-prelogin.service vibepollo-machine-prepare.service; do
@@ -1226,6 +1239,8 @@ vibepollo_quiesce_machine_host() {
   vibepollo_unit_is_masked vibepollo.service || return 1
   vibepollo_unit_is_masked vibepollo-session-exec.socket || return 1
   vibepollo_stop_exact_unit vibepollo-session-exec.socket
+  vibepollo_stop_exact_unit vibepollo.service
+  vibepollo_unit_is_quiescent vibepollo.service || return 1
   vibepollo_stop_brokers || return 1
   for vibepollo_unit in vibepollo-session-exec.socket vibepollo-session-controller.service \
     vibepollo.service vibepollo-prelogin.service vibepollo-machine-prepare.service; do
@@ -1560,6 +1575,8 @@ vibepollo_preun_quiesce() {
     vibepollo_preun_unit_is_masked vibepollo-session-exec.socket || return 1
     vibepollo_preun_stop_exact_unit vibepollo-session-exec.socket
     vibepollo_preun_unit_is_quiescent vibepollo-session-exec.socket || return 1
+    vibepollo_preun_stop_exact_unit vibepollo.service
+    vibepollo_preun_unit_is_quiescent vibepollo.service || return 1
     vibepollo_preun_stop_brokers || return 1
     for vibepollo_unit in vibepollo-session-controller.service vibepollo.service \
       vibepollo-prelogin.service vibepollo-machine-prepare.service; do
@@ -1580,6 +1597,8 @@ vibepollo_preun_quiesce() {
     vibepollo_preun_unit_is_masked vibepollo.service || return 1
     vibepollo_preun_unit_is_masked vibepollo-session-exec.socket || return 1
     vibepollo_preun_stop_exact_unit vibepollo-session-exec.socket
+    vibepollo_preun_stop_exact_unit vibepollo.service
+    vibepollo_preun_unit_is_quiescent vibepollo.service || return 1
     vibepollo_preun_stop_brokers || return 1
     for vibepollo_unit in vibepollo-session-exec.socket vibepollo-session-controller.service \
       vibepollo.service vibepollo-prelogin.service vibepollo-machine-prepare.service; do

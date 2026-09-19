@@ -28,7 +28,9 @@ AmbientCapabilities=
 NoNewPrivileges=no
 ExecStart=/usr/libexec/vibeshine/vibepollo-machine-host run
 Restart=no
-KillMode=control-group
+# Signal the supervisor, which forwards once to the GPU-owning host. Its
+# broker clients must survive until capture drains and the host closes them.
+KillMode=mixed
 # A stuck GPU teardown must leave this unit deactivating and block rebinding;
 # killing the process tree would strand imported DRM/NVENC resources.
 SendSIGKILL=no

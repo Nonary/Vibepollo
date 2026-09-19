@@ -256,7 +256,9 @@ vibepollo_select_upgrade_kill_mode() {
     return 0
   fi
   vibepollo_privileged_helper_is_safe "$vibepollo_legacy_host" || return 1
-  if grep -Fqx '  trap mark_host_shutdown TERM INT HUP' "$vibepollo_legacy_host"; then
+  if grep -Fqx '  trap request_host_shutdown TERM INT HUP' "$vibepollo_legacy_host"; then
+    vibepollo_upgrade_kill_mode=mixed
+  elif grep -Fqx '  trap mark_host_shutdown TERM INT HUP' "$vibepollo_legacy_host"; then
     vibepollo_upgrade_kill_mode=control-group
   elif grep -Fqx "  trap 'forward_host_signal TERM' TERM" "$vibepollo_legacy_host" && \
        grep -Fqx "  trap 'forward_host_signal INT' INT" "$vibepollo_legacy_host" && \
@@ -275,7 +277,7 @@ vibepollo_prepare_host_upgrade_fence() (
      '0:0:755:directory' ]] || exit 1
   temporary=$(mktemp /run/vibepollo-host-upgrade.XXXXXX) || exit 1
   trap 'rm -f -- "$temporary"' EXIT
-  [[ "$vibepollo_upgrade_kill_mode" =~ ^(process|control-group)$ ]] || exit 1
+  [[ "$vibepollo_upgrade_kill_mode" =~ ^(mixed|process|control-group)$ ]] || exit 1
   printf '[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=%s\nSendSIGKILL=no\n' \
     "$vibepollo_upgrade_kill_mode" >"$temporary" || exit 1
   chmod 0600 -- "$temporary" || exit 1
@@ -653,6 +655,7 @@ vibepollo_preserved_quiesce_is_safe() {
          '0:0:644:1:regular file' ]] || return 1
     contents=$(sed -n '1,6p' -- "$vibepollo_host_upgrade_dropin") || return 1
     [[ "$contents" == $'[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=process\nSendSIGKILL=no' ||
+       "$contents" == $'[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=mixed\nSendSIGKILL=no' ||
        "$contents" == $'[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=control-group\nSendSIGKILL=no' ]] || return 1
   fi
 }
@@ -887,6 +890,7 @@ vibepollo_unmask_host_for_controller() {
          '0:0:644:1:regular file' ]] || return 1
     contents=$(sed -n '1,6p' -- "$vibepollo_host_upgrade_dropin") || return 1
     [[ "$contents" == $'[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=process\nSendSIGKILL=no' ||
+       "$contents" == $'[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=mixed\nSendSIGKILL=no' ||
        "$contents" == $'[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=control-group\nSendSIGKILL=no' ]] || return 1
     rm -f -- "$vibepollo_host_upgrade_dropin" || return 1
     rmdir -- "$vibepollo_host_upgrade_dropin_dir" 2>/dev/null || true
@@ -897,7 +901,7 @@ vibepollo_unmask_host_for_controller() {
   properties=$(timeout --signal=KILL 5 systemctl show vibepollo.service \
     --property=RefuseManualStart --property=KillMode --property=SendSIGKILL 2>/dev/null) || return 1
   grep -qx 'RefuseManualStart=no' <<<"$properties" && \
-    grep -qx 'KillMode=control-group' <<<"$properties" && \
+    grep -qx 'KillMode=mixed' <<<"$properties" && \
     grep -qx 'SendSIGKILL=no' <<<"$properties" || return 1
   timeout --signal=KILL 15 systemctl unmask --runtime vibeshine-vkms-control.socket 2>/dev/null || return 1
   systemctl start vibeshine-vkms-control.socket || return 1

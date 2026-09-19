@@ -785,11 +785,10 @@ quiesce() {
   # fully validated replacement binding is published immediately before host
   # start.
   close_broker_admission "$deadline" || return 1
-  # Attempt every bounded cgroup shutdown even when one worker is stuck. This
-  # is especially important for display-query brokers: a host blocked in the
-  # display driver must not strand an independently stoppable query worker.
-  # Display/session state is revoked only after all exact cgroups prove empty.
-  stop_host "$deadline" || success=1
+  # Broker disconnects cancel applications that may still own buffers imported
+  # by capture or encoding. Preserve their connections and the session record
+  # until the host's exact cgroup is proven empty, including on drain failure.
+  stop_host "$deadline" || return 1
   stop_broker_instances "$deadline" || success=1
   # Application units are generation-bound by the trusted session record. Do
   # not touch another session's units, even when the same user manager survives

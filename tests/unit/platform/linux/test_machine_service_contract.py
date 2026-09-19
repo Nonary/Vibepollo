@@ -196,7 +196,7 @@ require(
 )
 for forbidden in ("ExecStart=", "ExecStartPre=", "WantedBy="):
     forbid(kwin_environment_dropin, forbidden, "KWin session environment drop-in")
-require(controller, 'stop_host "$deadline" || success=1', "fail-closed transition ordering")
+require(controller, 'stop_host "$deadline" || return 1', "fail-closed transition ordering")
 require(controller, "binding_matches_candidate complete", "display credential rebinding")
 require(controller, "observe_active_session || return 1", "authoritative transition snapshot")
 require(controller, "read_user_environment || return 1", "current transition credentials")
@@ -227,7 +227,7 @@ quiesce_body = controller.split("\nquiesce() {\n", 1)[1].split("\n}\n\nnext_gene
 quiesce_normalized = " ".join(quiesce_body.split())
 quiesce_order = (
     quiesce_normalized.index('close_broker_admission "$deadline" || return 1'),
-    quiesce_normalized.index('stop_host "$deadline" || success=1'),
+    quiesce_normalized.index('stop_host "$deadline" || return 1'),
     quiesce_normalized.index('stop_broker_instances "$deadline" || success=1'),
     quiesce_normalized.index('stop_bound_session_apps "$deadline" || success=1'),
     quiesce_normalized.rindex('stop_broker_instances "$deadline" || success=1'),
@@ -301,7 +301,7 @@ for unit_text, label in (
     forbid(unit_text, "PartOf=vibepollo-session-controller.service", f"{label} ordered controller cleanup")
 require(broker_unit.split("[Service]", 1)[0], "CollectMode=inactive-or-failed",
         "completed rejected broker requests must not exhaust handoff inventory")
-require(host_unit, "KillMode=control-group", "machine host process-tree shutdown")
+require(host_unit, "KillMode=mixed", "supervisor-owned host shutdown")
 require(host_unit, "SendSIGKILL=no", "GPU-owner graceful shutdown")
 require(host_unit, "Type=notify", "encoder-gated machine host readiness")
 require(host_unit, "NotifyAccess=all", "encoder-gated machine host readiness")
@@ -318,13 +318,12 @@ require(host_unit, "ProtectHome=yes", "machine host unit")
 require(host_unit, "PrivateTmp=yes", "machine host unit")
 require(host_unit, "RestrictSUIDSGID=yes", "machine host unit")
 for forbidden in (
-    "User=root", "CAP_DAC_OVERRIDE", "machine-prepare", "ExecStopPost=", "WantedBy=", "KillMode=mixed",
+    "User=root", "CAP_DAC_OVERRIDE", "machine-prepare", "ExecStopPost=", "WantedBy=", "KillMode=control-group",
     "BindsTo=vibepollo-session-controller.service",
 ):
     forbid(host_unit_directives, forbidden, "machine host unit")
-require(host, "trap mark_host_shutdown TERM INT HUP", "single service signal delivery")
+require(host, "trap request_host_shutdown TERM INT HUP", "single service signal delivery")
 forbid(host, "trap 'forward_host_signal", "duplicate service signal delivery")
-require(host, "((shutting_down)) || terminate_host", "single child termination request")
 
 for variable in ("VIBEPOLLO_MACHINE_HOST", "VIBEPOLLO_SESSION_ROLE"):
     require(host, variable, "machine-host provider scan environment")
@@ -805,6 +804,8 @@ for lifecycle, label in (
         "RefuseManualStart=yes",
         "vibepollo_upgrade_kill_mode=process",
         "vibepollo_upgrade_kill_mode=control-group",
+        "vibepollo_upgrade_kill_mode=mixed",
+        "trap request_host_shutdown TERM INT HUP",
         "SendSIGKILL=no",
         "--property=Job",
         "systemctl freeze",
@@ -955,7 +956,7 @@ for lifecycle, label in (
         "vibepollo_unmask_host_for_controller",
         "90-vibepollo-safe-upgrade.conf",
         "RefuseManualStart=no",
-        "KillMode=control-group",
+        "KillMode=mixed",
         "SendSIGKILL=no",
         "unmask --runtime vibeshine-vkms-control.socket",
         "start vibeshine-vkms-control.socket",

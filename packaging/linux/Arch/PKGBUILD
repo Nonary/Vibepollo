@@ -54,7 +54,7 @@ depends=(
   'numactl'
   'openssl'
   'opus'
-  'python'
+  'python>=3.9'
   'socat'
   'udev'
   'util-linux'

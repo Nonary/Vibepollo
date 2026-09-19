@@ -46,7 +46,9 @@ capability_clean_exec() {
   # The sandbox may need inheritable capabilities while systemd constructs
   # its namespaces.  Revoke those before the private +p executable is entered,
   # without setting no_new_privs early and suppressing its file capabilities.
-  /usr/bin/setpriv --inh-caps=-all --ambient-caps=-all -- "$@"
+  # This runs only in the background host child. Keep its PID through exec so
+  # the supervisor can signal the host without signalling its broker clients.
+  exec /usr/bin/setpriv --inh-caps=-all --ambient-caps=-all -- "$@"
 }
 
 resolve_desktop_identity() {
@@ -662,9 +664,117 @@ nvidia_gpu_present() {
   return 1
 }
 
+find_host_readiness_log() {
+  local host_log_directory=$1 expected_owner=$2
+  local candidate attributes count=0
+  local -n previous_logs=$3
+  host_log=''
+  [[ -d "$host_log_directory" && ! -L "$host_log_directory" ]] || return 1
+  for candidate in "$host_log_directory"/vibepollo-*.log; do
+    [[ -e "$candidate" || -L "$candidate" ]] || continue
+    [[ -z ${previous_logs[$candidate]:-} ]] || continue
+    ((count += 1))
+    ((count == 1)) || return 1
+    [[ "${candidate##*/}" =~ ^vibepollo-[0-9]{8}-[0-9]{6}-[0-9]{3}\.log$ &&
+       -f "$candidate" && ! -L "$candidate" ]] || return 1
+    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$candidate") || return 1
+    [[ "$attributes" == "${expected_owner}:600:regular file" ]] || return 1
+    host_log=$candidate
+  done
+  ((count == 1))
+}
+
+cleanup_host_clients() {
+  # The GPU-owning host has been reaped before this function runs. Detached
+  # session clients can still hold broker connections; close only members of
+  # this exact unit, using pidfds so PID reuse cannot signal another process.
+  "${host_cleanup_python:-/usr/bin/python3}" -I - "$BASHPID" "${1:-drain}" <<'PY'
+import os
+import pathlib
+import select
+import signal
+import sys
+import time
+
+supervisor = int(sys.argv[1])
+group = "/system.slice/vibepollo.service"
+members = pathlib.Path("/sys/fs/cgroup/system.slice/vibepollo.service/cgroup.procs")
+
+def belongs(pid):
+    try:
+        return f"0::{group}" in pathlib.Path(f"/proc/{pid}/cgroup").read_text().splitlines()
+    except FileNotFoundError:
+        return False
+
+pending = {}
+try:
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        raise RuntimeError("client cleanup requires Python 3.9 or newer with pidfd support")
+    if os.getppid() != supervisor or not belongs(supervisor) or not belongs("self"):
+        raise RuntimeError("refusing client cleanup outside the host service cgroup")
+    if sys.argv[2] == "check":
+        descriptor = os.pidfd_open(os.getpid())
+        try:
+            signal.pidfd_send_signal(descriptor, 0)
+        finally:
+            os.close(descriptor)
+        members.read_text()
+        sys.exit(0)
+    deadline = time.monotonic() + 5
+    while True:
+        for pid, descriptor in list(pending.items()):
+            if select.select([descriptor], [], [], 0)[0]:
+                os.close(descriptor)
+                del pending[pid]
+        for member in members.read_text().split():
+            pid = int(member)
+            if pid in (supervisor, os.getpid()) or pid in pending:
+                continue
+            try:
+                descriptor = os.pidfd_open(pid)
+            except ProcessLookupError:
+                continue
+            try:
+                if select.select([descriptor], [], [], 0)[0]:
+                    continue
+                if not belongs(pid):
+                    continue
+                signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+                pending[pid] = descriptor
+                descriptor = None
+            except ProcessLookupError:
+                pass
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+        if not pending:
+            # A member may fork and exit between the snapshot and pidfd_open.
+            # Confirm a fresh kernel snapshot contains no subordinate process
+            # before declaring the unit drained.
+            remaining = [int(member) for member in members.read_text().split()
+                         if int(member) not in (supervisor, os.getpid())]
+            if not remaining:
+                break
+        if time.monotonic() >= deadline:
+            raise RuntimeError("host exited but its remaining clients did not drain")
+        time.sleep(0.05)
+except (OSError, ValueError, RuntimeError) as error:
+    print(f"vibepollo-machine-host: {error}", file=sys.stderr)
+    sys.exit(1)
+finally:
+    for descriptor in pending.values():
+        os.close(descriptor)
+PY
+}
+
 run_host() {
-  local host_capabilities host_log='' host_log_directory=/run/vibepollo/host/logs
-  local host_log_prefix host_pid readiness_attempt state status shutting_down=0
+  local host_capabilities host_log='' host_log_directory=$machine_profile/logs
+  local host_log_prefix candidate readiness_attempt state status readiness_failed=0
+  # Bash unwinds function locals before an errexit EXIT trap. Keep only the
+  # process-lifetime shutdown state outside that stack so the guard can still
+  # stop and reap the real host when an unrelated supervisor command fails.
+  host_pid='' host_reaped=0 host_stop_sent=0 shutting_down=0 host_cleanup_python=''
+  local -A previous_host_logs=()
   # Linux private displays are capture-ready through the Vibeshine DRM/KMS
   # path.  Leaving desktop sessions to inherit a compositor capture setting
   # makes a newly reserved output disappear during KWin's topology refresh,
@@ -700,22 +810,51 @@ run_host() {
     "VIBEPOLLO_SESSION_TYPE=wayland" \
     "VIBEPOLLO_SESSION_ROLE=$session_role" "VIBEPOLLO_SESSION_USER=$session_user" "VIBEPOLLO_SESSION_UID=$session_uid" "VIBEPOLLO_SESSION_GID=$session_gid" "VIBEPOLLO_SESSION_GROUPS=$session_groups" \
     "VIBEPOLLO_SESSION_ID=$session_id" "VIBEPOLLO_SESSION_GENERATION=$session_generation" "VIBEPOLLO_SESSION_HOME=$session_home")
+  request_host_shutdown() {
+    shutting_down=1
+    # A signal can arrive before the background child's PID is assigned. Keep
+    # the request pending, then forward it exactly once after assignment.
+    if ((host_reaped == 0)) && [[ -n "$host_pid" ]] && ((host_stop_sent == 0)); then
+      host_stop_sent=1
+      /usr/bin/kill -s TERM -- "$host_pid" 2>/dev/null || :
+    fi
+  }
+  # Leap retains an older default Python alongside the supported python311
+  # package. Select a trusted system interpreter before starting the GPU owner.
+  for candidate in /usr/bin/python3 /usr/bin/python3.11; do
+    if [[ -x "$candidate" ]] && "$candidate" -I -c \
+      'import os, signal; raise SystemExit(not (hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")))'; then
+      host_cleanup_python=$candidate
+      break
+    fi
+  done
+  [[ -n "$host_cleanup_python" ]] || { fail 'client cleanup requires Python 3.9 or newer with pidfd support'; return 1; }
+  cleanup_host_clients check || return 1
+  finish_host_supervisor() {
+    local result=$1
+    trap - EXIT
+    # An unexpected supervisor error must still let the GPU owner finish
+    # before touching any subordinate broker connection.
+    if ((host_reaped == 0)); then
+      request_host_shutdown
+      while /usr/bin/kill -0 "$host_pid" 2>/dev/null; do
+        wait "$host_pid" || :
+      done
+      wait "$host_pid" 2>/dev/null || :
+      host_reaped=1
+    fi
+    cleanup_host_clients || return 1
+    return "$result"
+  }
+  # KillMode=mixed sends TERM only to this supervisor. Broker clients must
+  # remain connected while the host drains capture and encoding; their early
+  # death cancels applications through the broker before that drain finishes.
+  trap request_host_shutdown TERM INT HUP
   capability_clean_exec /usr/bin/env -i "${environment[@]}" \
     "$machine_host_executable" "$machine_profile/vibepollo.conf" "${overrides[@]}" &
   host_pid=$!
-
-  mark_host_shutdown() {
-    shutting_down=1
-  }
-  terminate_host() {
-    mark_host_shutdown
-    /usr/bin/kill -s TERM -- "$host_pid" 2>/dev/null || :
-  }
-  # KillMode=control-group delivers the service signal to both this readiness
-  # supervisor and the real host.  The trap must only interrupt wait(1);
-  # forwarding a second signal can re-enter the host's shutdown handler while
-  # it is releasing encoder and DRM resources.
-  trap mark_host_shutdown TERM INT HUP
+  trap 'finish_host_supervisor "$?"' EXIT
+  if ((shutting_down)); then request_host_shutdown; fi
 
   find_host_readiness_log() {
     local candidate attributes count=0
@@ -738,12 +877,16 @@ run_host() {
     if ((shutting_down)); then break; fi
     if ! /usr/bin/kill -0 "$host_pid" 2>/dev/null; then
       wait "$host_pid" || status=$?
-      return "${status:-1}"
+      host_reaped=1
+      finish_host_supervisor "${status:-1}"
+      return "$?"
     fi
     state=$(/usr/bin/awk '{print $3}' "/proc/$host_pid/stat" 2>/dev/null) || state=''
     if [[ "$state" == Z ]]; then
       wait "$host_pid" || status=$?
-      return "${status:-1}"
+      host_reaped=1
+      finish_host_supervisor "${status:-1}"
+      return "$?"
     fi
     # KMS capture is instantiated by the first stream and is verified after a
     # client connects; startup readiness proves the listener and the mandatory
@@ -756,27 +899,34 @@ run_host() {
       /usr/bin/grep -Fq 'Found AV1 encoder:' "$host_log" && codecs+=', AV1'
       /usr/bin/systemd-notify --pid="$$" --ready \
         --status="Vibepollo generation $session_generation is listening with $codecs encoders" || {
-          terminate_host
+          readiness_failed=1
+          request_host_shutdown
           break
         }
       while /usr/bin/kill -0 "$host_pid" 2>/dev/null; do
         wait "$host_pid" && status=0 || status=$?
       done
-      ((shutting_down)) && return 0
-      return "${status:-0}"
+      host_reaped=1
+      ((shutting_down)) && status=0
+      finish_host_supervisor "${status:-0}"
+      return "$?"
     fi
     /usr/bin/sleep 0.1
   done
 
-  # During a service stop systemd already delivered exactly one signal to the
-  # complete cgroup.  Only readiness failures initiated by this wrapper need
-  # it to request child termination itself.
-  ((shutting_down)) || terminate_host
+  # Readiness failures use the same idempotent stop as service termination.
+  ((shutting_down)) || readiness_failed=1
+  request_host_shutdown
   while /usr/bin/kill -0 "$host_pid" 2>/dev/null; do
     wait "$host_pid" || status=$?
   done
-  ((shutting_down)) && return 0
-  fail 'host did not complete KMS capture and encoder discovery before its readiness deadline'
+  host_reaped=1
+  if ((readiness_failed)); then
+    fail 'host did not complete encoder readiness or notify systemd before its readiness deadline' || :
+    finish_host_supervisor 1
+  else
+    finish_host_supervisor 0
+  fi
 }
 
 remove_pam_hook() {

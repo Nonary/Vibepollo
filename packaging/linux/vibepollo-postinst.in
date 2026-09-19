@@ -35,6 +35,12 @@ RefuseManualStart=yes
 
 [Service]
 KillMode=control-group
+SendSIGKILL=no' | \
+      '[Unit]
+RefuseManualStart=yes
+
+[Service]
+KillMode=mixed
 SendSIGKILL=no') ;;
       *) return 1 ;;
     esac
@@ -47,7 +53,7 @@ SendSIGKILL=no') ;;
   vibepollo_new_host_properties=$(timeout --signal=KILL 5 systemctl show vibepollo.service \
     --property=RefuseManualStart --property=KillMode --property=SendSIGKILL 2>/dev/null) || return 1
   printf '%s\n' "$vibepollo_new_host_properties" | grep -qx 'RefuseManualStart=no' || return 1
-  printf '%s\n' "$vibepollo_new_host_properties" | grep -qx 'KillMode=control-group' || return 1
+  printf '%s\n' "$vibepollo_new_host_properties" | grep -qx 'KillMode=mixed' || return 1
   printf '%s\n' "$vibepollo_new_host_properties" | grep -qx 'SendSIGKILL=no' || return 1
   timeout --signal=KILL 15 systemctl unmask --runtime vibeshine-vkms-control.socket 2>/dev/null || return 1
   systemctl start vibeshine-vkms-control.socket || return 1
@@ -221,6 +227,8 @@ vibepollo_quiesce_machine_host() {
     vibepollo_unit_is_masked vibepollo-session-exec.socket || return 1
     vibepollo_stop_exact_unit vibepollo-session-exec.socket
     vibepollo_unit_is_quiescent vibepollo-session-exec.socket || return 1
+    vibepollo_stop_exact_unit vibepollo.service
+    vibepollo_unit_is_quiescent vibepollo.service || return 1
     vibepollo_stop_brokers || return 1
     for vibepollo_unit in vibepollo-session-controller.service vibepollo.service \
       vibepollo-prelogin.service vibepollo-machine-prepare.service; do
@@ -242,6 +250,8 @@ vibepollo_quiesce_machine_host() {
     vibepollo_unit_is_masked vibepollo.service || return 1
     vibepollo_unit_is_masked vibepollo-session-exec.socket || return 1
     vibepollo_stop_exact_unit vibepollo-session-exec.socket
+    vibepollo_stop_exact_unit vibepollo.service
+    vibepollo_unit_is_quiescent vibepollo.service || return 1
     vibepollo_stop_brokers || return 1
     for vibepollo_unit in vibepollo-session-exec.socket vibepollo-session-controller.service \
       vibepollo.service vibepollo-prelogin.service vibepollo-machine-prepare.service; do

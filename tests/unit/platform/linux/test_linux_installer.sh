@@ -219,3 +219,115 @@ printf 'Retired running kernels require a reboot, not mismatched header installa
   [[ $reboot_required == 0 ]]
 )
 printf 'Fresh installs require a compositor restart even when the driver loads immediately.\n'
+
+# Upgrades must match the running supervisor's signal-forwarding contract.
+# Evaluate only this pure selector from each package hook; never execute a
+# package hook's top-level host mutations in the test environment.
+for package_hook in \
+  "$repo/packaging/linux/Arch/vibepollo.install" \
+  "$repo/packaging/linux/vibeshine-preinst.in" \
+  "$repo/packaging/linux/copr/Sunshine.spec"; do
+  (
+    eval "$(sed -n '/^vibepollo_select_upgrade_kill_mode() {$/,/^}$/p' "$package_hook")"
+    declare -F vibepollo_select_upgrade_kill_mode >/dev/null
+    vibepollo_legacy_host="$workdir/supervisor-fixture"
+    helper_safe=1
+    host_quiescent=1
+    vibepollo_privileged_helper_is_safe() { ((helper_safe)); }
+    vibepollo_unit_is_quiescent() { [[ "$1" == vibepollo.service ]] && ((host_quiescent)); }
+
+    printf '%s\n' '  trap request_host_shutdown TERM INT HUP' > "$vibepollo_legacy_host"
+    vibepollo_select_upgrade_kill_mode
+    [[ "$vibepollo_upgrade_kill_mode" == mixed ]]
+    # Prefer the new contract if a transitional helper retains the old marker.
+    printf '%s\n' '  trap mark_host_shutdown TERM INT HUP' >> "$vibepollo_legacy_host"
+    vibepollo_select_upgrade_kill_mode
+    [[ "$vibepollo_upgrade_kill_mode" == mixed ]]
+    helper_safe=0
+    if vibepollo_select_upgrade_kill_mode; then exit 1; fi
+    helper_safe=1
+
+    printf '%s\n' '  trap mark_host_shutdown TERM INT HUP' > "$vibepollo_legacy_host"
+    vibepollo_select_upgrade_kill_mode
+    [[ "$vibepollo_upgrade_kill_mode" == control-group ]]
+    printf '%s\n' \
+      "  trap 'forward_host_signal TERM' TERM" \
+      "  trap 'forward_host_signal INT' INT" \
+      "  trap 'forward_host_signal HUP' HUP" > "$vibepollo_legacy_host"
+    vibepollo_select_upgrade_kill_mode
+    [[ "$vibepollo_upgrade_kill_mode" == process ]]
+
+    printf '%s\n' "  trap 'forward_host_signal TERM' TERM" > "$vibepollo_legacy_host"
+    if vibepollo_select_upgrade_kill_mode; then exit 1; fi
+    printf '%s\n' 'unrecognized supervisor' > "$vibepollo_legacy_host"
+    if vibepollo_select_upgrade_kill_mode; then exit 1; fi
+
+    vibepollo_legacy_host="$workdir/absent-supervisor"
+    host_quiescent=0
+    if vibepollo_select_upgrade_kill_mode; then exit 1; fi
+    host_quiescent=1
+    vibepollo_select_upgrade_kill_mode
+    [[ "$vibepollo_upgrade_kill_mode" == control-group ]]
+  )
+done
+printf 'Package upgrades preserve new and legacy supervisor shutdown contracts.\n'
+
+# Removal and post-install recovery must leave broker/app workers untouched
+# when the GPU host has not drained, even if the admission socket has stopped.
+for hook_case in \
+  'packaging/linux/vibeshine-prerm.in:vibepollo_quiesce_for_removal' \
+  'packaging/linux/vibeshine-postinst.in:vibepollo_quiesce_machine_host' \
+  'packaging/linux/copr/Sunshine.spec:vibepollo_quiesce_machine_host' \
+  'packaging/linux/copr/Sunshine.spec:vibepollo_preun_quiesce'; do
+  (
+    package_hook="$repo/${hook_case%%:*}"
+    quiesce_function=${hook_case#*:}
+    # The RPM post-install definition intentionally supersedes its pre-install
+    # namesake. Redirect runtime-presence checks and paths into this fixture.
+    eval "$(sed -n "/^${quiesce_function}() {$/,/^}$/p" "$package_hook" |
+      sed -e "s|/run/systemd/system|$workdir|g" \
+          -e "s|/run/vibepollo/|$workdir/absent-runtime/|g")"
+    declare -F "$quiesce_function" >/dev/null
+    vibepollo_controller="$workdir/absent-controller"
+    vibepollo_broker_socket="$workdir/absent-runtime/session-broker.sock"
+    vibepollo_session_record="$workdir/absent-runtime/session.env"
+    vibepollo_legacy_acl="$workdir/absent-runtime/session.acl"
+    hook_calls="$workdir/hook-calls"
+    host_verified=0
+    host_quiescent=0
+    systemctl() { return 0; }
+    timeout() { return 0; }
+    vibepollo_stop_exact_unit() { printf 'stop %s\n' "$1" >> "$hook_calls"; }
+    vibepollo_unit_is_quiescent() {
+      if [[ "$1" == vibepollo.service ]]; then
+        ((host_quiescent)) || return 1
+        host_verified=1
+        printf 'host drained\n' >> "$hook_calls"
+      fi
+    }
+    vibepollo_stop_brokers() {
+      ((host_verified)) || return 1
+      printf 'stop brokers\n' >> "$hook_calls"
+    }
+    vibepollo_unit_is_masked() { return 0; }
+    vibepollo_unit_is_disabled() { return 0; }
+    vibepollo_remove_pam_hook() { return 0; }
+    vibepollo_preun_stop_exact_unit() { vibepollo_stop_exact_unit "$@"; }
+    vibepollo_preun_unit_is_quiescent() { vibepollo_unit_is_quiescent "$@"; }
+    vibepollo_preun_stop_brokers() { vibepollo_stop_brokers; }
+    vibepollo_preun_unit_is_masked() { return 0; }
+    vibepollo_preun_unit_is_disabled() { return 0; }
+    vibepollo_preun_remove_pam() { return 0; }
+
+    : > "$hook_calls"
+    if "$quiesce_function"; then exit 1; fi
+    grep -Fxq 'stop vibepollo.service' "$hook_calls"
+    ! grep -Fxq 'stop brokers' "$hook_calls"
+
+    host_quiescent=1
+    "$quiesce_function"
+    grep -Fxq 'host drained' "$hook_calls"
+    grep -Fxq 'stop brokers' "$hook_calls"
+  )
+done
+printf 'Removal and repair refuse broker teardown until the GPU host has drained.\n'

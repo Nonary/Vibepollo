@@ -242,7 +242,9 @@ vibepollo_select_upgrade_kill_mode() {
     return 0
   fi
   vibepollo_privileged_helper_is_safe "$vibepollo_legacy_host" || return 1
-  if grep -Fqx '  trap mark_host_shutdown TERM INT HUP' "$vibepollo_legacy_host"; then
+  if grep -Fqx '  trap request_host_shutdown TERM INT HUP' "$vibepollo_legacy_host"; then
+    vibepollo_upgrade_kill_mode=mixed
+  elif grep -Fqx '  trap mark_host_shutdown TERM INT HUP' "$vibepollo_legacy_host"; then
     vibepollo_upgrade_kill_mode=control-group
   elif grep -Fqx "  trap 'forward_host_signal TERM' TERM" "$vibepollo_legacy_host" && \
        grep -Fqx "  trap 'forward_host_signal INT' INT" "$vibepollo_legacy_host" && \
@@ -261,7 +263,7 @@ vibepollo_prepare_host_upgrade_fence() (
     '0:0:755:directory' ] || exit 1
   vibepollo_upgrade_temporary=$(mktemp /run/vibepollo-host-upgrade.XXXXXX) || exit 1
   trap 'rm -f -- "$vibepollo_upgrade_temporary"' 0
-  case "$vibepollo_upgrade_kill_mode" in process | control-group) ;; *) exit 1 ;; esac
+  case "$vibepollo_upgrade_kill_mode" in mixed | process | control-group) ;; *) exit 1 ;; esac
   printf '[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=%s\nSendSIGKILL=no\n' \
     "$vibepollo_upgrade_kill_mode" >"$vibepollo_upgrade_temporary" || exit 1
   chmod 0600 -- "$vibepollo_upgrade_temporary" || exit 1

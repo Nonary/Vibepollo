@@ -315,9 +315,8 @@ reconcile_once
 expect_events I,Q,R,A,P,A,S,Q
 expect_state 0 0
 
-# Once admission is closed, a wedged host must not short-circuit bounded
-# broker/application shutdown attempts. Persistent state is retained unless
-# every exact cgroup proof succeeds.
+# Once admission is closed, failed host drain must preserve broker clients,
+# applications and the session record: any of them may still back GPU work.
 eval "$controller_quiesce_definition"
 declare -a quiesce_events=()
 close_broker_admission() { quiesce_events+=(C); }
@@ -328,8 +327,26 @@ remove_session_record() { quiesce_events+=(D); }
 if quiesce; then
   fail_test 'quiesce accepted a host cgroup that did not stop'
 fi
+[[ "${quiesce_events[*]}" == 'C H' ]] ||
+  fail_test "quiesce changed broker/application state before host drain completed: ${quiesce_events[*]}"
+
+# A later successful drain resumes ordered cleanup and revokes the record only
+# after brokers and applications have stopped.
+quiesce_events=()
+stop_host() { quiesce_events+=(H); }
+quiesce || fail_test 'quiesce rejected a successfully drained host'
+[[ "${quiesce_events[*]}" == 'C H B A B D' ]] ||
+  fail_test "quiesce did not finish ordered cleanup after host drain: ${quiesce_events[*]}"
+
+# Failure after host drain can still clean independent workers, but must keep
+# the session record until all remaining cgroups are empty.
+quiesce_events=()
+stop_broker_instances() { quiesce_events+=(B); return 1; }
+if quiesce; then
+  fail_test 'quiesce accepted a broker cgroup that did not stop'
+fi
 [[ "${quiesce_events[*]}" == 'C H B A B' ]] ||
-  fail_test "quiesce skipped bounded worker cleanup after host-stop failure: ${quiesce_events[*]}"
+  fail_test "quiesce mishandled broker failure after host drain: ${quiesce_events[*]}"
 eval "$controller_close_broker_definition"
 eval "$controller_stop_host_definition"
 eval "$controller_stop_brokers_definition"
