@@ -88,10 +88,10 @@ namespace platf {
                              "early" : "late";
       auto result = std::make_unique<limiter_lease>();
       GError *error = nullptr;
-      if (std::getenv("VIBEPOLLO_MACHINE_HOST")) {
-        result->process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE, &error, "/usr/libexec/vibeshine/vibepollo-session-exec", "global-limiter", provider, limit.c_str(), preset, graph, method, color_mode_name(environment.color_mode), environment.wayland_hdr_compatibility ? "1" : "0", nullptr);
+      if (std::getenv("VIBESHINE_MACHINE_HOST")) {
+        result->process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE, &error, "/usr/libexec/vibeshine/vibepollo-session-exec", "global-limiter", provider, limit.c_str(), preset, graph, method, color_mode_name(environment.color_mode), environment.wayland_hdr_compatibility ? "1" : "0", config::input.proton_dualsense_compatibility ? "1" : "0", nullptr);
       } else {
-        result->process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE, &error, "/usr/libexec/vibeshine/vibepollo-steam-launch", "--global", provider, limit.c_str(), preset, graph, method, "0", "0", color_mode_name(environment.color_mode), environment.wayland_hdr_compatibility ? "1" : "0", nullptr);
+        result->process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE, &error, "/usr/libexec/vibeshine/vibepollo-steam-launch", "--global", provider, limit.c_str(), preset, graph, method, "0", "0", color_mode_name(environment.color_mode), environment.wayland_hdr_compatibility ? "1" : "0", config::input.proton_dualsense_compatibility ? "1" : "0", nullptr);
       }
       if (!result->process) {
         BOOST_LOG(warning) << "Global Linux limiter: " << (error ? error->message : "helper unavailable");
@@ -183,6 +183,7 @@ namespace platf {
       const auto environment = aggregate_environment();
       const std::string signature = std::string(color_mode_name(environment.color_mode)) + "|" +
                                     (environment.wayland_hdr_compatibility ? "1|" : "0|") +
+                                    (config::input.proton_dualsense_compatibility ? "1|" : "0|") +
                                     (policy.enabled ? "1|" + std::to_string(policy.limit_millihz) : "0") + "|" +
                                     config::frame_limiter.provider + "|" +
                                     config::frame_limiter.mangohud_preset + "|" +

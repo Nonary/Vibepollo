@@ -23,9 +23,9 @@ def address():
 
 
 def environment(policy, inherited):
-    if not isinstance(policy, list) or len(policy) != 7:
+    if not isinstance(policy, list) or len(policy) != 8:
         raise ValueError("policy")
-    provider, millihz, preset, graph, method, color_mode, wayland_hdr_compatibility = policy
+    provider, millihz, preset, graph, method, color_mode, wayland_hdr_compatibility, dualsense = policy
     if provider not in ("disabled", "proton", "mangohud-proton", "mangohud"):
         raise ValueError("provider")
     if type(millihz) is not int or not 0 <= millihz <= 1000000:
@@ -43,6 +43,9 @@ def environment(policy, inherited):
             raise ValueError("disabled policy")
     elif millihz < 1000:
         raise ValueError("limit")
+
+    if type(dualsense) is not bool:
+        raise ValueError("DualSense compatibility")
 
     hdr = color_mode == "hdr"
     # DXVK reports a 10-bit DXGI output descriptor in both SDR modes. Keep its
@@ -62,6 +65,9 @@ def environment(policy, inherited):
     if wayland_hdr_compatibility:
         set_default("ENABLE_HDR_WSI", "1")
         set_default("PROTON_ENABLE_WAYLAND", "1")
+    if dualsense:
+        set_default("PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE", "1")
+        set_default("PROTON_SONY_WINDOWS_DEVICE_NAMES", "1")
     if provider == "disabled":
         return result
 
@@ -139,6 +145,8 @@ def apply(namespace):
                     "DXVK_HDR",
                     "ENABLE_HDR_WSI",
                     "PROTON_ENABLE_WAYLAND",
+                    "PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE",
+                    "PROTON_SONY_WINDOWS_DEVICE_NAMES",
                 }
             }
         for key, value in overrides.items():
@@ -297,4 +305,4 @@ def serve(policy, roots):
 
 
 if __name__ == "__main__":
-    serve([sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4] == "1", sys.argv[5], sys.argv[6], sys.argv[7] == "1"], sys.argv[8:])
+    serve([sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4] == "1", sys.argv[5], sys.argv[6], sys.argv[7] == "1", sys.argv[8] == "1"], sys.argv[9:])

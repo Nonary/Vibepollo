@@ -320,6 +320,8 @@ namespace config {
     // When forcing DS5 emulation via Inputtino, randomize the virtual controller MAC
     // to avoid client-side config mixing when controllers are swapped.
     bool ds5_inputtino_randomize_mac;
+    // Apply native Sony audio endpoint compatibility to streamed Proton launches.
+    bool proton_dualsense_compatibility;
 
     bool keyboard;
     bool mouse;

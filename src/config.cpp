@@ -1030,6 +1030,7 @@ namespace config {
     true,  // client gamepads with motion events are emulated as DS4
     true,  // client gamepads with touchpads are emulated as DS4
     true,  // ds5_inputtino_randomize_mac
+    true,  // proton_dualsense_compatibility
 
     true,  // keyboard enabled
     true,  // mouse enabled
@@ -2197,6 +2198,7 @@ namespace config {
     string_restricted_f(vars, "gamepad"s, input.gamepad, get_supported_gamepad_options());
     bool_f(vars, "ds4_back_as_touchpad_click", input.ds4_back_as_touchpad_click);
     bool_f(vars, "motion_as_ds4", input.motion_as_ds4);
+    bool_f(vars, "proton_dualsense_compatibility", input.proton_dualsense_compatibility);
     bool_f(vars, "touchpad_as_ds4", input.touchpad_as_ds4);
 
     bool_f(vars, "mouse", input.mouse);
@@ -2649,6 +2651,7 @@ namespace config {
         "native_pen_touch",
         "keybindings",
         "ds5_inputtino_randomize_mac",
+        "proton_dualsense_compatibility",
 
         // Stream audio/video and display automation
         "audio_sink",

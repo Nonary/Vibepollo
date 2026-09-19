@@ -58,73 +58,87 @@ int main(void) {
 
   char *valid_steam_direct[] = {
     "vibepollo-session-broker", "steam-direct", "1182900",
-    "mangohud-proton", "116000", "3", "1", "late", "0", "0", "1", "1", NULL
+    "mangohud-proton", "116000", "3", "1", "late", "0", "0", "1", "1", "0", NULL
   };
-  CHECK(steam_direct_arguments_are_safe(12, valid_steam_direct));
+  CHECK(steam_direct_arguments_are_safe(13, valid_steam_direct));
   valid_steam_direct[3] = "proton";
   valid_steam_direct[5] = "custom";
   valid_steam_direct[6] = "0";
-  CHECK(steam_direct_arguments_are_safe(12, valid_steam_direct));
+  CHECK(steam_direct_arguments_are_safe(13, valid_steam_direct));
   valid_steam_direct[3] = "disabled";
   valid_steam_direct[4] = "0";
   valid_steam_direct[8] = "1";
   valid_steam_direct[9] = "1";
-  CHECK(steam_direct_arguments_are_safe(12, valid_steam_direct));
+  CHECK(steam_direct_arguments_are_safe(13, valid_steam_direct));
   valid_steam_direct[9] = "2";
-  CHECK(!steam_direct_arguments_are_safe(12, valid_steam_direct));
+  CHECK(!steam_direct_arguments_are_safe(13, valid_steam_direct));
   valid_steam_direct[9] = "0";
   valid_steam_direct[8] = "0";
   valid_steam_direct[10] = "0";
-  CHECK(!steam_direct_arguments_are_safe(12, valid_steam_direct));
+  CHECK(!steam_direct_arguments_are_safe(13, valid_steam_direct));
+  valid_steam_direct[11] = "0";
+  valid_steam_direct[12] = "1";
+  CHECK(steam_direct_arguments_are_safe(13, valid_steam_direct));
+  valid_steam_direct[12] = "2";
+  CHECK(!steam_direct_arguments_are_safe(13, valid_steam_direct));
+  valid_steam_direct[12] = "0";
   valid_steam_direct[10] = "1";
-  CHECK(steam_direct_arguments_are_safe(12, valid_steam_direct));
+  CHECK(steam_direct_arguments_are_safe(13, valid_steam_direct));
   valid_steam_direct[11] = "2";
-  CHECK(!steam_direct_arguments_are_safe(12, valid_steam_direct));
+  CHECK(!steam_direct_arguments_are_safe(13, valid_steam_direct));
   valid_steam_direct[11] = "0";
   valid_steam_direct[10] = "2";
-  CHECK(!steam_direct_arguments_are_safe(12, valid_steam_direct));
+  CHECK(!steam_direct_arguments_are_safe(13, valid_steam_direct));
   valid_steam_direct[10] = "0";
   valid_steam_direct[3] = "proton";
   valid_steam_direct[4] = "116000";
   valid_steam_direct[6] = "1";
-  CHECK(!steam_direct_arguments_are_safe(12, valid_steam_direct));
+  CHECK(!steam_direct_arguments_are_safe(13, valid_steam_direct));
   valid_steam_direct[6] = "0";
   valid_steam_direct[4] = "116.0";
-  CHECK(!steam_direct_arguments_are_safe(12, valid_steam_direct));
+  CHECK(!steam_direct_arguments_are_safe(13, valid_steam_direct));
   valid_steam_direct[4] = "116000";
   valid_steam_direct[2] = "0";
-  CHECK(!steam_direct_arguments_are_safe(12, valid_steam_direct));
+  CHECK(!steam_direct_arguments_are_safe(13, valid_steam_direct));
 
   char *global_limiter[] = {
-    "vibepollo-session-broker", "global-limiter", "proton", "59940", "custom", "0", "late", "sdr", "0", NULL
+    "vibepollo-session-broker", "global-limiter", "proton", "59940", "custom", "0", "late", "sdr", "0", "1", NULL
   };
-  CHECK(global_limiter_arguments_are_safe(9, global_limiter));
-  CHECK(!global_limiter_arguments_are_safe(8, global_limiter));
+  CHECK(global_limiter_arguments_are_safe(10, global_limiter));
+  CHECK(!global_limiter_arguments_are_safe(9, global_limiter));
+  global_limiter[9] = "2";
+  CHECK(!global_limiter_arguments_are_safe(10, global_limiter));
+  global_limiter[9] = "0";
+  CHECK(global_limiter_arguments_are_safe(10, global_limiter));
   global_limiter[7] = "sdr10";
-  CHECK(global_limiter_arguments_are_safe(9, global_limiter));
+  CHECK(global_limiter_arguments_are_safe(10, global_limiter));
   global_limiter[7] = "hdr";
   global_limiter[8] = "1";
-  CHECK(global_limiter_arguments_are_safe(9, global_limiter));
+  CHECK(global_limiter_arguments_are_safe(10, global_limiter));
   global_limiter[7] = "pq";
-  CHECK(!global_limiter_arguments_are_safe(9, global_limiter));
+  CHECK(!global_limiter_arguments_are_safe(10, global_limiter));
   global_limiter[7] = "sdr";
   global_limiter[8] = "0";
   global_limiter[2] = "mangohud";
   global_limiter[6] = "early";
-  CHECK(global_limiter_arguments_are_safe(9, global_limiter));
+  CHECK(global_limiter_arguments_are_safe(10, global_limiter));
   global_limiter[3] = "59940;touch /tmp/untrusted";
-  CHECK(!global_limiter_arguments_are_safe(9, global_limiter));
+  CHECK(!global_limiter_arguments_are_safe(10, global_limiter));
   global_limiter[3] = "0";
-  CHECK(!global_limiter_arguments_are_safe(9, global_limiter));
+  CHECK(!global_limiter_arguments_are_safe(10, global_limiter));
   global_limiter[3] = "59940";
   global_limiter[4] = "/tmp/preset";
-  CHECK(!global_limiter_arguments_are_safe(9, global_limiter));
+  CHECK(!global_limiter_arguments_are_safe(10, global_limiter));
   global_limiter[2] = "disabled";
   global_limiter[3] = "0";
   global_limiter[4] = "custom";
   global_limiter[6] = "late";
+  global_limiter[9] = "2";
+  CHECK(!global_limiter_arguments_are_safe(10, global_limiter));
+  global_limiter[9] = "0";
+  CHECK(global_limiter_arguments_are_safe(10, global_limiter));
   global_limiter[7] = "sdr10";
-  CHECK(global_limiter_arguments_are_safe(9, global_limiter));
+  CHECK(global_limiter_arguments_are_safe(10, global_limiter));
 
   CHECK(xauthority_mode_is_safe(0600));
   CHECK(xauthority_mode_is_safe(0400));

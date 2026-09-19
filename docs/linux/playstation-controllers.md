@@ -39,3 +39,23 @@ client feedback behavior. After deployment, reconnect the stream to recreate
 controllers and validate the affected game with its actual Proton and Steam
 Input settings. DS4 and DS5 selections retain their respective device identities;
 game-specific translation by Steam or Proton is a separate layer.
+
+## Global Proton DualSense compatibility
+
+On Linux, **Input → DualSense compatibility for Proton games** defaults to on
+(`proton_dualsense_compatibility = enabled`). During a stream, Vibeshine supplies
+`PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE=1` and
+`PROTON_SONY_WINDOWS_DEVICE_NAMES=1` to Proton game launches.
+
+The session-owned Proton hook covers games launched inside an already-running
+Steam client, including Desktop and Big Picture streams. Brokered direct Steam
+launches carry the same option explicitly. This policy is independent of HDR,
+frame limiting, and the game AppID. Proton builds which do not implement these
+variables do not gain support merely from having the variables set.
+
+Explicit game environment values, including `0`, take priority. Turn the option
+off to stop supplying these defaults; this does not erase user-authored game
+settings. Reconnect the stream and relaunch the game after changing the option.
+Without an active stream the installed Proton hook is inert. Existing game
+processes keep their launch environment. The controller speaker is not made the
+system's default audio output.

@@ -808,6 +808,35 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### proton_dualsense_compatibility
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Supply native DualSense audio compatibility defaults to Proton games launched during streaming,
+            including games started inside an already-running Steam client. Sets
+            <code>PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE=1</code> and
+            <code>PROTON_SONY_WINDOWS_DEVICE_NAMES=1</code> unless the game explicitly overrides them.
+            Independent of HDR and frame limiting. Requires a Proton build implementing these options
+            and a game with native DualSense support. Reconnect the stream and relaunch the game after changing this option.
+            @hint{Only applies on Linux. Without an active stream, the Proton hook is inert.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            proton_dualsense_compatibility = enabled
+            @endcode</td>
+    </tr>
+</table>
+
 ## Audio/Video
 
 ### audio_sink

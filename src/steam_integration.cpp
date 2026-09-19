@@ -1129,7 +1129,7 @@ namespace platf::steam {
           (policy.wayland_hdr_compatibility && !policy.hdr)) {
         return false;
       }
-      return limited || policy.smooth_motion || policy.hdr;
+      return limited || policy.smooth_motion || policy.hdr || policy.proton_dualsense_compatibility;
     }
 
     bool parse_u32_token(std::string_view token, std::uint32_t &value) {
@@ -1153,7 +1153,8 @@ namespace platf::steam {
            policy.limiter_method + " " + (policy.smooth_motion ? "1" : "0") +
            " " + (policy.smooth_motion_graphics_queue ? "1" : "0") +
            " " + (policy.hdr ? "1" : "0") +
-           " " + (policy.wayland_hdr_compatibility ? "1" : "0");
+           " " + (policy.wayland_hdr_compatibility ? "1" : "0") +
+           " " + (policy.proton_dualsense_compatibility ? "1" : "0");
   }
 
   std::optional<std::vector<std::string>> session_launch_arguments(
@@ -1188,7 +1189,7 @@ namespace platf::steam {
       tokens.erase(tokens.begin());
       return tokens;
     }
-    if (tokens.size() != 12 || tokens[0] != session_exec_path ||
+    if (tokens.size() != 13 || tokens[0] != session_exec_path ||
         tokens[1] != "steam-direct") {
       return std::nullopt;
     }
@@ -1201,7 +1202,8 @@ namespace platf::steam {
         (tokens[8] != "0" && tokens[8] != "1") ||
         (tokens[9] != "0" && tokens[9] != "1") ||
         (tokens[10] != "0" && tokens[10] != "1") ||
-        (tokens[11] != "0" && tokens[11] != "1")) {
+        (tokens[11] != "0" && tokens[11] != "1") ||
+        (tokens[12] != "0" && tokens[12] != "1")) {
       return std::nullopt;
     }
     policy.provider = tokens[3];
@@ -1212,6 +1214,7 @@ namespace platf::steam {
     policy.smooth_motion_graphics_queue = tokens[9] == "1";
     policy.hdr = tokens[10] == "1";
     policy.wayland_hdr_compatibility = tokens[11] == "1";
+    policy.proton_dualsense_compatibility = tokens[12] == "1";
     if (session_launch_command(app_id, policy) != command) {
       return std::nullopt;
     }

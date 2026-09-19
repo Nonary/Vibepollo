@@ -39,8 +39,8 @@ print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK"
         self.settings.write_bytes(self.original)
         self.settings.chmod(0o640)
 
-    def server(self, provider="proton", millihz=59940, color_mode="sdr", wayland_hdr_compatibility=False):
-        child = subprocess.Popen([sys.executable, "-I", str(self.source), provider, str(millihz), "custom", "0", "late", color_mode, "1" if wayland_hdr_compatibility else "0", str(self.tool)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    def server(self, provider="proton", millihz=59940, color_mode="sdr", wayland_hdr_compatibility=False, dualsense=True):
+        child = subprocess.Popen([sys.executable, "-I", str(self.source), provider, str(millihz), "custom", "0", "late", color_mode, "1" if wayland_hdr_compatibility else "0", "1" if dualsense else "0", str(self.tool)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         def stop():
             if child.poll() is None:
                 child.terminate()
@@ -54,7 +54,7 @@ print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK"
         return child
 
     def launch(self, **overrides):
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("DXVK", "VKD3D", "MANGOHUD", "PROTON_ENABLE_HDR", "PROTON_ENABLE_WAYLAND", "ENABLE_HDR_WSI", "LD_PRELOAD"))}
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("DXVK", "VKD3D", "MANGOHUD", "PROTON_", "ENABLE_HDR_WSI", "LD_PRELOAD"))}
         env.update(overrides)
         return json.loads(subprocess.check_output([sys.executable, str(self.tool / "proton")], env=env, text=True))
 
@@ -141,6 +141,28 @@ print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK"
         self.assertNotIn("ENABLE_HDR_WSI", sdr)
         self.assertNotIn("PROTON_ENABLE_WAYLAND", sdr)
 
+    def test_dualsense_is_global_independent_of_limiter_and_hdr(self):
+        child = self.server("disabled", 0, "sdr")
+        for app_id in ("3768760", "1182900"):
+            for managed in ("0", "1"):
+                active = self.launch(SteamAppId=app_id, VIBESHINE_LIMITER_MANAGED=managed)
+                self.assertEqual(active["PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE"], "1")
+                self.assertEqual(active["PROTON_SONY_WINDOWS_DEVICE_NAMES"], "1")
+                self.assertNotIn("VKD3D_FRAME_RATE", active)
+        explicit = self.launch(PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE="0",
+                               PROTON_SONY_WINDOWS_DEVICE_NAMES="0")
+        self.assertEqual(explicit["PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE"], "0")
+        self.assertEqual(explicit["PROTON_SONY_WINDOWS_DEVICE_NAMES"], "0")
+        child.kill()
+        child.wait(timeout=8)
+        inactive = self.launch()
+        self.assertNotIn("PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE", inactive)
+        self.assertNotIn("PROTON_SONY_WINDOWS_DEVICE_NAMES", inactive)
+        self.server("disabled", 0, "sdr", dualsense=False)
+        disabled = self.launch()
+        self.assertNotIn("PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE", disabled)
+        self.assertNotIn("PROTON_SONY_WINDOWS_DEVICE_NAMES", disabled)
+
     def test_crash_leaves_inert_hook(self):
         child = self.server()
         child.kill()
@@ -182,12 +204,12 @@ print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK"
     def test_discovery_and_validation(self):
         self.assertEqual(limiter.tools_in([self.tool, self.tool]), {self.tool})
         for invalid in (
-            ["proton", 0, "custom", False, "late", "sdr", False],
-            ["bogus", 60000, "custom", False, "late", "sdr", False],
-            ["proton", 60000, "custom", False, "late", "invalid", False],
-            ["disabled", 60000, "custom", False, "late", "hdr", False],
-            ["disabled", 0, "1", False, "late", "hdr", False],
-            ["proton", 60000, "custom", False, "late", "sdr", True],
+            ["proton", 0, "custom", False, "late", "sdr", False, False],
+            ["bogus", 60000, "custom", False, "late", "sdr", False, False],
+            ["proton", 60000, "custom", False, "late", "invalid", False, False],
+            ["disabled", 60000, "custom", False, "late", "hdr", False, False],
+            ["disabled", 0, "1", False, "late", "hdr", False, False],
+            ["proton", 60000, "custom", False, "late", "sdr", True, False],
             ["proton", 60000, "custom", False, "late", "sdr", False, "extra"],
         ):
             with self.assertRaises(ValueError):

@@ -594,7 +594,7 @@ static bool sink_name_is_safe(const char *name) {
 }
 
 static bool steam_direct_arguments_are_safe(int argc, char **argv) {
-  if (argc != 12 || !argv) return false;
+  if (argc != 13 || !argv) return false;
   unsigned long app_id = 0, limit_millihz = 0;
   if (!parse_number(argv[2], 1, UINT32_MAX, &app_id) ||
       !parse_number(argv[4], 0, 1000000, &limit_millihz)) return false;
@@ -615,17 +615,18 @@ static bool steam_direct_arguments_are_safe(int argc, char **argv) {
   const bool queue = !strcmp(argv[9], "0") || !strcmp(argv[9], "1");
   const bool hdr = !strcmp(argv[10], "0") || !strcmp(argv[10], "1");
   const bool wayland_hdr_compatibility = !strcmp(argv[11], "0") || !strcmp(argv[11], "1");
-  return (limited || disabled) && preset && graph && method && smooth && queue && hdr && wayland_hdr_compatibility &&
+  const bool dualsense = !strcmp(argv[12], "0") || !strcmp(argv[12], "1");
+  return (limited || disabled) && preset && graph && method && smooth && queue && hdr && wayland_hdr_compatibility && dualsense &&
          ((limited && limit_millihz >= 1000) || (disabled && !limit_millihz)) &&
          (overlay || (!strcmp(argv[5], "custom") && !strcmp(argv[6], "0"))) &&
          (mangohud || !strcmp(argv[7], "late")) &&
          (strcmp(argv[8], "0") || !strcmp(argv[9], "0")) &&
-         (limited || strcmp(argv[8], "0") || strcmp(argv[10], "0")) &&
+         (limited || strcmp(argv[8], "0") || strcmp(argv[10], "0") || strcmp(argv[12], "0")) &&
          (!strcmp(argv[11], "0") || !strcmp(argv[10], "1"));
 }
 
 static bool global_limiter_arguments_are_safe(int argc, char **argv) {
-  if (argc != 9 || !argv) return false;
+  if (argc != 10 || !argv) return false;
   const bool color_mode = !strcmp(argv[7], "sdr") || !strcmp(argv[7], "sdr10") ||
                           !strcmp(argv[7], "hdr");
   const bool wayland_hdr_compatibility = !strcmp(argv[8], "0") || !strcmp(argv[8], "1");
@@ -635,8 +636,8 @@ static bool global_limiter_arguments_are_safe(int argc, char **argv) {
   // feature-presence sentinel here; argv[7] remains the validated mode passed
   // to the global hook.
   char *validation[] = {"broker", "steam-direct", "1", argv[2], argv[3],
-                        argv[4], argv[5], argv[6], "0", "0", "1", argv[8]};
-  return steam_direct_arguments_are_safe(12, validation);
+                        argv[4], argv[5], argv[6], "0", "0", "1", argv[8], argv[9]};
+  return steam_direct_arguments_are_safe(13, validation);
 }
 
 static bool parse_channel_mapping(const char *value, size_t channels,
@@ -1376,14 +1377,14 @@ static int execute_request(int argc, char **argv,
     case GLOBAL_LIMITER: {
       char *const arguments[] = {
         (char *) steam_launch_path, "--global", argv[2], argv[3], argv[4],
-        argv[5], argv[6], "0", "0", argv[7], argv[8], NULL
+        argv[5], argv[6], "0", "0", argv[7], argv[8], argv[9], NULL
       };
       return exec_user_service(identity, NULL, arguments, false, false);
     }
     case STEAM_DIRECT: {
       char *const arguments[] = {
         (char *) steam_launch_path, argv[2], argv[3], argv[4], argv[5],
-        argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], NULL
+        argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], NULL
       };
       return exec_user_service(identity, NULL, arguments, false, false);
     }

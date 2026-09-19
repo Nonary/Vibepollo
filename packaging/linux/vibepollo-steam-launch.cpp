@@ -168,8 +168,9 @@ namespace {
     char **argv,
     std::uint32_t &app_id
   ) {
+    if (argc < 2) return std::nullopt;
     const bool global = std::string_view(argv[1]) == "--global";
-    if (argc != 11 || (!global &&
+    if (argc != 12 || (!global &&
                       (!parse_u32(argv[1], app_id) || app_id == 0))) {
       return std::nullopt;
     }
@@ -187,7 +188,8 @@ namespace {
         (global && std::string_view(argv[9]) != "sdr" &&
                    std::string_view(argv[9]) != "sdr10" &&
                    std::string_view(argv[9]) != "hdr") ||
-        (std::string_view(argv[10]) != "0" && std::string_view(argv[10]) != "1")) {
+        (std::string_view(argv[10]) != "0" && std::string_view(argv[10]) != "1") ||
+        (std::string_view(argv[11]) != "0" && std::string_view(argv[11]) != "1")) {
       return std::nullopt;
     }
     policy.always_show_graph = std::string_view(argv[5]) == "1";
@@ -196,6 +198,7 @@ namespace {
     policy.smooth_motion_graphics_queue = std::string_view(argv[8]) == "1";
     policy.hdr = global ? std::string_view(argv[9]) == "hdr" : std::string_view(argv[9]) == "1";
     policy.wayland_hdr_compatibility = std::string_view(argv[10]) == "1";
+    policy.proton_dualsense_compatibility = std::string_view(argv[11]) == "1";
     if (policy.wayland_hdr_compatibility && !policy.hdr) {
       return std::nullopt;
     }
@@ -410,7 +413,7 @@ namespace {
     std::vector<std::string> arguments {
       "/usr/bin/python3", "-I",
       "/usr/libexec/vibeshine/vibepollo-global-limiter.py",
-      argv[2], argv[3], argv[4], argv[5], argv[6], argv[9], argv[10]
+      argv[2], argv[3], argv[4], argv[5], argv[6], argv[9], argv[10], argv[11]
     };
     arguments.insert(arguments.end(), roots.begin(), roots.end());
     std::vector<char *> pointers;
@@ -490,6 +493,13 @@ namespace {
           setenv("PROTON_ENABLE_WAYLAND", "1", 1) != 0))) {
       report(LOG_ERR, "could not install launch policy");
       return 1;
+    }
+    if (policy.proton_dualsense_compatibility && game->launch_os == "windows") {
+      if (setenv("PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE", "1", 0) != 0 ||
+          setenv("PROTON_SONY_WINDOWS_DEVICE_NAMES", "1", 0) != 0) {
+        report(LOG_ERR, "could not install DualSense compatibility policy");
+        return 1;
+      }
     }
     if (proton_wayland_hdr_compatibility) {
       report(LOG_INFO, "Wayland HDR compatibility enabled for direct Proton launch");
@@ -666,9 +676,9 @@ int main(int argc, char **argv) {
   const auto policy = parse_policy(argc, argv, app_id);
   if (!policy) {
     std::cerr << "usage: vibepollo-steam-launch APPID PROVIDER LIMIT_MILLIHZ "
-                 "PRESET GRAPH METHOD SMOOTH QUEUE HDR WAYLAND_HDR_COMPATIBILITY\n"
+                 "PRESET GRAPH METHOD SMOOTH QUEUE HDR WAYLAND_HDR_COMPATIBILITY DUALSENSE_COMPATIBILITY\n"
                  "       vibepollo-steam-launch --global PROVIDER LIMIT_MILLIHZ "
-                 "PRESET GRAPH METHOD 0 0 COLOR_MODE WAYLAND_HDR_COMPATIBILITY\n";
+                 "PRESET GRAPH METHOD 0 0 COLOR_MODE WAYLAND_HDR_COMPATIBILITY DUALSENSE_COMPATIBILITY\n";
     return 2;
   }
   if (std::string_view(argv[1]) == "--global") return global_limiter(argv);

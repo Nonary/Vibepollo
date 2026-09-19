@@ -1753,6 +1753,10 @@ namespace proc {
       _stream_owned_environment_keys.emplace(key);
       return true;
     };
+    if (config::input.proton_dualsense_compatibility) {
+      (void) set_stream_environment_default("PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE", "1");
+      (void) set_stream_environment_default("PROTON_SONY_WINDOWS_DEVICE_NAMES", "1");
+    }
     if (wayland_hdr_compatibility.enabled) {
       (void) set_stream_environment_default("ENABLE_HDR_WSI", "1");
       BOOST_LOG(info) << "Wayland HDR compatibility enabled for application launch.";
@@ -1846,11 +1850,11 @@ namespace proc {
     const bool direct_steam_launch_required =
       !gamescope_steam_launch &&
       !_app.steam_id.empty() &&
-      platf::steam::requires_direct_environment_launch(
+      (config::input.proton_dualsense_compatibility || platf::steam::requires_direct_environment_launch(
         effective_frame_limiter,
         smooth_motion_policy.enabled,
         stream_hdr
-      );
+      ));
     if (direct_steam_launch_required) {
       inherited_steam_environment_ready = false;
       std::uint32_t steam_app_id = 0;
@@ -1893,6 +1897,7 @@ namespace proc {
               // carrying the resolved Wayland/HDR bit here is therefore
               // required for the brokered direct launch to receive it.
               .wayland_hdr_compatibility = wayland_hdr_compatibility.enabled,
+              .proton_dualsense_compatibility = config::input.proton_dualsense_compatibility,
             };
             const bool overlay = policy.provider == "mangohud" ||
                                  policy.provider == "mangohud-proton";
@@ -1960,7 +1965,7 @@ namespace proc {
     }
     if (steam_proton_launch) {
       // Steam metadata is the reliable Proton discriminator. Native Steam and
-      // arbitrary direct executables receive only ENABLE_HDR_WSI above.
+      // arbitrary direct executables do not receive these Proton HDR flags.
       (void) set_stream_environment_default("PROTON_ENABLE_HDR", stream_hdr ? "1" : "0");
       (void) set_stream_environment_default("DXVK_HDR", stream_hdr ? "1" : "0");
       if (wayland_hdr_compatibility.enabled) {
@@ -2329,17 +2334,19 @@ namespace proc {
 #endif
 
 #ifdef __linux__
-    if (gamescope_steam_launch && wayland_hdr_compatibility.enabled) {
+    if (!_app.steam_id.empty() && !session_steam_direct_launch &&
+        (wayland_hdr_compatibility.enabled || config::input.proton_dualsense_compatibility)) {
       // A Steam URI is only a handoff to its already-running daemon. Prepare
       // the session-owned Proton hook before its launch commands run, or the
       // daemon would spawn the game with its old environment.
       platf::frame_limiter_streaming_start(
         platf::frame_limiter_owner::application,
         mangohud_stream_policy,
-        {.color_mode = platf::proton_color_mode::hdr,
-         .wayland_hdr_compatibility = true}
+        {.color_mode = stream_hdr ? platf::proton_color_mode::hdr :
+                                    (launch_session->prefer_sdr_10bit ? platf::proton_color_mode::sdr10 : platf::proton_color_mode::sdr),
+         .wayland_hdr_compatibility = wayland_hdr_compatibility.enabled}
       );
-      BOOST_LOG(debug) << "Wayland HDR compatibility hook prepared before the running Steam handoff.";
+      BOOST_LOG(debug) << "Global Proton compatibility hook prepared before the running Steam handoff.";
     }
 #endif
 
