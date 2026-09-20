@@ -1,75 +1,11 @@
 #pragma once
 
-#include <algorithm>
-#include <chrono>
 #include <cstdint>
-#include <optional>
 
 namespace platf::dxgi::wgc_policy {
   inline constexpr std::uint32_t low_latency_initial_buffer_size = 1;
   inline constexpr std::uint32_t adaptive_max_buffer_size = 2;
   inline constexpr std::uint32_t helper_stop_timeout_ms = 3000;
-
-  /**
-   * Bound WGC helper publication without turning source jitter into frame loss.
-   *
-   * A minimum-time-since-last-frame gate loses any lateness accumulated by the
-   * previous callback. An early callback following that late one is then
-   * rejected even when the pair is at or below the configured average rate.
-   * Keep one frame of phase credit so uneven compositor callbacks can repay one
-   * another, while a two-frame credit cap still coalesces sustained oversupply.
-   */
-  class activity_frame_limiter_t {
-  public:
-    using clock_t = std::chrono::steady_clock;
-
-    void reset(const int frames_per_second) noexcept {
-      interval_ = frames_per_second > 0 ?
-                    std::chrono::nanoseconds(std::chrono::seconds(1)) / frames_per_second :
-                    std::chrono::nanoseconds::zero();
-      credit_ = clock_t::duration::zero();
-      last_admission_.reset();
-    }
-
-    [[nodiscard]] bool admit(const clock_t::time_point arrival) noexcept {
-      if (interval_ <= clock_t::duration::zero()) {
-        return true;
-      }
-
-      if (!last_admission_) {
-        last_admission_ = arrival;
-        // Preserve one frame of source phase so a short/long jitter pair can
-        // begin in either order without losing the short half.
-        credit_ = interval_;
-        return true;
-      }
-
-      const auto elapsed = arrival > *last_admission_ ?
-                             arrival - *last_admission_ :
-                             clock_t::duration::zero();
-      const auto available_credit = (std::min)(credit_capacity(), credit_ + elapsed);
-      if (available_credit < interval_) {
-        return false;
-      }
-
-      // A long stall admits its resumed frame immediately, but must not bank a
-      // burst of catch-up deliveries. Short jitter retains only unused credit.
-      credit_ = elapsed >= credit_capacity() ?
-                  clock_t::duration::zero() :
-                  available_credit - interval_;
-      last_admission_ = arrival;
-      return true;
-    }
-
-  private:
-    [[nodiscard]] clock_t::duration credit_capacity() const noexcept {
-      return interval_ + interval_;
-    }
-
-    clock_t::duration interval_ {};
-    clock_t::duration credit_ {};
-    std::optional<clock_t::time_point> last_admission_;
-  };
 
   // Absolute input uses the whole virtual desktop, not just the captured
   // monitor. A neighbouring monitor can change these values without moving

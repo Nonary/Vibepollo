@@ -7,10 +7,7 @@
 #include <src/platform/windows/wgc_capture_policy.h>
 
 #include <algorithm>
-#include <chrono>
 #include <vector>
-
-using namespace std::chrono_literals;
 
 namespace {
   struct monitor_topology {
@@ -124,70 +121,4 @@ TEST(WgcInputGeometry, UnavailableMetricsDoNotForceCaptureReinitialization) {
     EXPECT_EQ(assess_input_geometry(captured, 1920, 0, bounds), input_geometry_change_e::unavailable);
   }
   EXPECT_EQ(assess_input_geometry(captured, 1920, 0, {0, 0, 4480, 1600}), input_geometry_change_e::unchanged);
-}
-
-TEST(WgcActivityFrameLimiter, PreservesJitteredCadenceBelowTheLimit) {
-  using limiter_t = platf::dxgi::wgc_policy::activity_frame_limiter_t;
-  limiter_t limiter;
-  limiter.reset(120);
-
-  const limiter_t::clock_t::time_point start {};
-  for (const auto offset : {0ms, 7ms, 17ms, 24ms, 34ms, 41ms, 51ms}) {
-    EXPECT_TRUE(limiter.admit(start + offset)) << "offset=" << offset.count() << "ms";
-  }
-}
-
-TEST(WgcActivityFrameLimiter, PreservesBursty393FpsCallbacksUnderA480FpsLimit) {
-  using limiter_t = platf::dxgi::wgc_policy::activity_frame_limiter_t;
-  limiter_t limiter;
-  limiter.reset(480);
-
-  auto arrival = limiter_t::clock_t::time_point {};
-  for (int frame = 0; frame < 393; ++frame) {
-    EXPECT_TRUE(limiter.admit(arrival)) << "frame=" << frame;
-    // This alternating pair averages 393 fps, but the old minimum-gap gate
-    // discarded every 1 ms half despite the source staying below 480 fps.
-    arrival += frame % 2 == 0 ? 1ms : 4089058ns;
-  }
-}
-
-TEST(WgcActivityFrameLimiter, CapsPersistentOversupply) {
-  using limiter_t = platf::dxgi::wgc_policy::activity_frame_limiter_t;
-  limiter_t limiter;
-  limiter.reset(120);
-
-  const limiter_t::clock_t::time_point start {};
-  int admitted = 0;
-  for (int milliseconds = 0; milliseconds < 1000; milliseconds += 2) {
-    admitted += limiter.admit(start + std::chrono::milliseconds(milliseconds)) ? 1 : 0;
-  }
-
-  // One saved phase frame may lead the long-term 120 fps ceiling.
-  EXPECT_GE(admitted, 120);
-  EXPECT_LE(admitted, 121);
-}
-
-TEST(WgcActivityFrameLimiter, DoesNotBankAStallAsCatchUpBurst) {
-  using limiter_t = platf::dxgi::wgc_policy::activity_frame_limiter_t;
-  limiter_t limiter;
-  limiter.reset(120);
-
-  const limiter_t::clock_t::time_point start {};
-  EXPECT_TRUE(limiter.admit(start));
-  EXPECT_TRUE(limiter.admit(start + 100ms));
-  EXPECT_FALSE(limiter.admit(start + 101ms));
-}
-
-TEST(WgcActivityFrameLimiter, ResetAdmitsTheNewRateImmediately) {
-  using limiter_t = platf::dxgi::wgc_policy::activity_frame_limiter_t;
-  limiter_t limiter;
-  limiter.reset(120);
-
-  const limiter_t::clock_t::time_point start {};
-  EXPECT_TRUE(limiter.admit(start));
-  EXPECT_TRUE(limiter.admit(start + 1ms));
-  EXPECT_FALSE(limiter.admit(start + 2ms));
-
-  limiter.reset(240);
-  EXPECT_TRUE(limiter.admit(start + 2ms));
 }
