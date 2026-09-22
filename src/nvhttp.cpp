@@ -4714,7 +4714,8 @@ namespace nvhttp {
 
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
 
-      bool no_active_sessions = !has_stream_session_activity();
+      bool no_active_sessions =
+        !has_stream_session_activity() && proc::proc.current_app_id() <= 0;
       // Runtime overrides are global process state. Do not reapply them while
       // another RTSP/WebRTC session is active, otherwise a second client can mutate
       // active stream limits (e.g. fps/encoding-related settings) mid-session.
