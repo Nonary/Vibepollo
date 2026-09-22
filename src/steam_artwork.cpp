@@ -395,10 +395,16 @@ namespace {
   std::optional<std::vector<std::uint8_t>> convert_to_png(const fs::path &source) {
     const auto bytes = read_bytes(source);
     if (bytes.empty()) return std::nullopt;
+    const auto id = codec_id_for(source, bytes);
+    // A validated PNG is already in the client format. Preserve it directly
+    // so minimal FFmpeg bundles do not need a PNG decoder and encoder merely
+    // to copy existing Steam artwork.
+    if (id == AV_CODEC_ID_PNG) {
+      return valid_png_bytes(bytes) ? std::optional {bytes} : std::nullopt;
+    }
 #ifdef VIBEPOLLO_STEAM_ARTWORK_IMAGE_LIBS
     if (const auto converted = convert_with_image_libs(source, bytes)) return converted;
 #endif
-    const auto id = codec_id_for(source, bytes);
     if (id == AV_CODEC_ID_NONE) return std::nullopt;
     const auto *decoder = avcodec_find_decoder(id);
     if (!decoder) return std::nullopt;
