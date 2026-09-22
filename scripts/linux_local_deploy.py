@@ -955,6 +955,25 @@ def stop_legacy_user_hosts():
             run('systemctl', '--user', 'disable', '--now', unit)
 
 
+def refuse_live_applications(args):
+    # Installation stops the host, and the controller then stops every app it
+    # launched. On the development host, stopping a running game together with
+    # the capture host has preceded whole-GPU NVIDIA hangs (2026-09-16 and
+    # 2026-09-18), so never do that to a live session without being told to.
+    if args.allow_disruption:
+        return
+    result = run('systemctl', '--user', 'list-units', '--plain', '--no-legend', '--no-pager',
+                 '--state=active', 'vibeshine-app-*.service', check=False)
+    if result.returncode:
+        raise DeployError('Could not list running Vibeshine applications; '
+                          'pass --allow-disruption to install anyway')
+    running = [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
+    if running:
+        raise DeployError('A streamed application is still running (' + ', '.join(running) + '). '
+                          'Quit it or end the stream, then rerun with --skip-build; '
+                          'or pass --allow-disruption to stop it during installation')
+
+
 def arch_package_version(version):
     if not VERSION.fullmatch(version):
         raise DeployError('Invalid local package version')
@@ -1590,6 +1609,8 @@ def build_install(args):
             shutil.copyfile(archive_path, destination)
             print(f'Validated candidate: {destination}\nSHA256: {digest(destination)}\nNo system files or services changed.')
             return 0
+        # Checked after the build, since a game can start while it runs.
+        refuse_live_applications(args)
         if not package_install:
             driver_preflight(work / 'stage', args.version)
         if package_install:
@@ -1629,6 +1650,8 @@ def parse_arguments(argv=None):
     install.add_argument('--stage-only', action='store_true', help='Build/stage without sudo or service changes')
     install.add_argument('--enforce', action='store_true', help='Run all tests and stop installation on any failure')
     install.add_argument('--yes', action='store_true')
+    install.add_argument('--allow-disruption', action='store_true',
+                         help='Install even while a streamed application is running; it will be stopped')
     internal = commands.add_parser('_install', help=argparse.SUPPRESS)
     internal.add_argument('archive', type=Path)
     internal.add_argument('sha256')

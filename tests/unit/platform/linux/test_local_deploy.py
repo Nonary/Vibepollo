@@ -270,6 +270,30 @@ class NativePackageTests(unittest.TestCase):
                     self.assertEqual(confirm.call_count, 0 if assume_yes else 1)
                     self.assertIn('--yes', install.call_args.args[0])
 
+    def test_running_streamed_application_blocks_installation(self):
+        args = SimpleNamespace(allow_disruption=False)
+        listing = 'vibeshine-app-2-473489.service loaded active running [systemd-run] steam-launch\n'
+        with mock.patch.object(deploy, 'run', return_value=SimpleNamespace(returncode=0, stdout=listing)) as run:
+            with self.assertRaisesRegex(deploy.DeployError, r'vibeshine-app-2-473489\.service.*--allow-disruption'):
+                deploy.refuse_live_applications(args)
+        self.assertEqual(run.call_args.args[:3], ('systemctl', '--user', 'list-units'))
+        self.assertIn('--state=active', run.call_args.args)
+        self.assertIn('vibeshine-app-*.service', run.call_args.args)
+        with mock.patch.object(deploy, 'run', return_value=SimpleNamespace(returncode=0, stdout='')):
+            deploy.refuse_live_applications(args)
+        # An unreadable user manager is not evidence that nothing is running.
+        with mock.patch.object(deploy, 'run', return_value=SimpleNamespace(returncode=1, stdout='')):
+            with self.assertRaisesRegex(deploy.DeployError, '--allow-disruption'):
+                deploy.refuse_live_applications(args)
+        args.allow_disruption = True
+        with mock.patch.object(deploy, 'run') as run:
+            deploy.refuse_live_applications(args)
+        run.assert_not_called()
+
+    def test_allow_disruption_is_an_install_option(self):
+        self.assertTrue(deploy.parse_arguments(['install', '--allow-disruption']).allow_disruption)
+        self.assertFalse(deploy.parse_arguments(['install']).allow_disruption)
+
     def test_installer_output_and_failure_status_are_retained(self):
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / 'install.log'
