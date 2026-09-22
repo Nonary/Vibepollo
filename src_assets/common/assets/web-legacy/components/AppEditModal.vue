@@ -626,6 +626,7 @@ function fresh(): AppForm {
     detached: [],
     virtualScreen: false,
     prefer10BitSdr: null,
+    commandOutput: '',
     output: '',
     frameGenerationProvider: 'game-provided',
     frameGenerationMode: 'off',
@@ -936,8 +937,8 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
       ? (frameGenerationModeFromConfig as FrameGenerationProvider)
       : normalizedProvider;
   const hasDisplayOutput = Object.prototype.hasOwnProperty.call(src, 'display-output');
-  const rawOutput = String(hasDisplayOutput ? ((src as any)['display-output'] ?? '') : (src.output ?? ''));
-  const rawVirtualScreen = src['virtual-screen'];
+  const rawOutput = String(hasDisplayOutput ? ((src as any)['display-output'] ?? '') : '');
+  const rawVirtualScreen = (src as any)?.['virtual-screen'];
   const virtualScreen =
     typeof rawVirtualScreen === 'boolean'
       ? rawVirtualScreen
@@ -970,7 +971,8 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     index: idx,
     uuid: typeof src.uuid === 'string' ? src.uuid : undefined,
     name: String(src.name ?? ''),
-    output: rawOutput,
+    commandOutput: String(src.output ?? ''),
+    output: sanitizedOutput,
     cmd: String(cmdStr ?? ''),
     workingDir: String(src['working-dir'] ?? ''),
     imagePath: String(src['image-path'] ?? ''),
@@ -1038,6 +1040,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
     // Index is required by the backend to determine add (-1) vs update (>= 0)
     index: typeof f.index === 'number' ? f.index : -1,
     name: f.name,
+    ...(f.commandOutput ? { output: f.commandOutput } : {}),
     cmd: f.cmd,
     'working-dir': f.workingDir,
     'image-path': String(f.imagePath || '').replace(/\"/g, ''),

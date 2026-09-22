@@ -56,6 +56,7 @@ export interface AppForm {
   index: number;
   uuid?: string;
   name: string;
+  commandOutput: string;
   output: string;
   cmd: string;
   workingDir: string;
