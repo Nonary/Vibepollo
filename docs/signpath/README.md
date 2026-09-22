@@ -168,10 +168,10 @@ each signing target explicitly.
 
 The VHF gamepad payload has a strict immutable-artifact boundary. The Windows
 release flow pins `Nonary/libvirtualgamepad` tag
-`v0.1.0-beta.4`, source/tag target
-`0b3970e1a8c839f14f20a7c8eaf48ff59b8c1986`, and archive SHA-256
-`7830a91ba281c44ae9d01e92e9086f72384a07ca1b35ee87150592f8f960361a`.
-It also requires DriverVer `09/13/2026,0.1.0.34` and protocol version 2.
+`v0.1.0-beta.6`, source/tag target
+`4b56fb9da177f320fb2d7ddb1b6262e5d55d2750`, and archive SHA-256
+`a45a8ae27d2764ad26a4b89d43d1e2dc43510d84bddd5899aac7c80499754782`.
+It also requires DriverVer `09/22/2026,0.1.0.39` and protocol version 2.
 
 The producer sidecars remain outside its ZIP. They travel only in the internal
 CI artifact so the Windows build can revalidate the same public bytes without a

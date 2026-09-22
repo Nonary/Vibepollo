@@ -1548,7 +1548,7 @@ jobs:
                     [uint16] $vhfManifest.protocol_version -ne 2 -or
                     $vhfManifest.platform -cne 'x64' -or
                     $vhfManifest.signing.channel -cne 'msi-request-signing') {
-                  throw 'manifest metadata does not match the pinned beta.2 producer release'
+                  throw 'manifest metadata does not match the pinned producer release'
                 }
                 $manifestPaths = @($vhfManifest.files | ForEach-Object { [string] $_.path } | Sort-Object)
                 if (($manifestPaths -join "`n") -cne ($vhfManifestPayload -join "`n")) {
