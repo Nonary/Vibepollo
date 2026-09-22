@@ -15,7 +15,13 @@ function Write-Step {
 function Get-NormalizedPath {
   param([string]$Path)
 
-  return [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+  $fullPath = [System.IO.Path]::GetFullPath($Path)
+  $rootPath = [System.IO.Path]::GetPathRoot($fullPath)
+  if ($fullPath.Equals($rootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return $rootPath
+  }
+
+  return $fullPath.TrimEnd('\', '/')
 }
 
 function Test-PathWithin {

@@ -99,6 +99,11 @@ try {
   Assert-True (Test-Path -LiteralPath (Join-Path $success.OutDir "lib\libwebrtc.dll")) "Successful cleanup removed the staged SDK."
   & $cleanupScript -BuildDir $success.BuildDir -OutDir $success.OutDir
 
+  $driveRoot = [System.IO.Path]::GetPathRoot($testRoot)
+  Assert-CleanupFails `
+    -Fixture ([pscustomobject]@{ BuildDir = $driveRoot; OutDir = $testRoot }) `
+    -ExpectedMessage "drive root"
+
   $inside = New-WebrtcFixture -CaseRoot (Join-Path $testRoot "inside") -OutputInsideBuild
   Assert-CleanupFails -Fixture $inside -ExpectedMessage "must be outside"
 
