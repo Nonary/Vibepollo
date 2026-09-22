@@ -55,6 +55,19 @@ TEST(RtspPendingPolicy, EndedGameStopsWithoutTakingDownProcesslessRemoteRoles) {
   EXPECT_TRUE(rtsp_stream::pending_policy::control_server_should_remain_alive(true, false, false));
 }
 
+TEST(RtspPendingPolicy, PendingSpecialRoleDoesNotMaskEndedGame) {
+  using remote_session::role_e;
+  constexpr bool configured_game_runtime_active = false;
+  constexpr bool unrelated_launch_or_startup_pending = true;
+
+  EXPECT_TRUE(rtsp_stream::pending_policy::game_session_requires_shutdown(configured_game_runtime_active, role_e::game));
+  EXPECT_TRUE(rtsp_stream::pending_policy::control_server_should_remain_alive(
+    configured_game_runtime_active || unrelated_launch_or_startup_pending,
+    false,
+    false
+  ));
+}
+
 TEST(RtspPendingPolicy, EndStreamSelectsEveryGameTransportButNoRemoteRole) {
   using remote_session::role_e;
   EXPECT_TRUE(rtsp_stream::pending_policy::disconnect_scope_matches(role_e::game, role_e::game, false, true));

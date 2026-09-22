@@ -1730,7 +1730,7 @@ namespace stream {
       // mistaking lifecycle-gate contention for a terminal app exit.
       (void) proc::proc.running();
       const bool launch_or_startup_pending = rtsp_stream::has_pending_launch_or_startup();
-      const bool game_runtime_active = proc::proc.current_app_id() > 0 || launch_or_startup_pending;
+      const bool game_runtime_active = proc::proc.current_app_id() > 0;
       bool has_processless_live_session = false;
       bool haptics_client = false;
       bool has_game_session_pending_or_draining = false;
@@ -1859,7 +1859,7 @@ namespace stream {
       // process. Keep the shared control server alive across both the gap
       // before RTSP publishes the session and the complete live transport.
       if (!rtsp_stream::pending_policy::control_server_should_remain_alive(
-            game_runtime_active,
+            game_runtime_active || launch_or_startup_pending,
             has_processless_live_session,
             has_game_session_pending_or_draining
           )) {
