@@ -1353,8 +1353,17 @@ public:
       try {
         auto surface = frame.Surface();
 
-        // Get frame timing information from the WGC frame
-        uint64_t frame_qpc = frame.SystemRelativeTime().count();
+        // Get frame timing information from the WGC frame. The consumer treats
+        // it as QPC ticks, so convert from the TimeSpan's 100 ns units.
+        static const int64_t qpc_frequency = [] {
+          LARGE_INTEGER frequency {};
+          QueryPerformanceFrequency(&frequency);
+          return static_cast<int64_t>(frequency.QuadPart);
+        }();
+        uint64_t frame_qpc = platf::dxgi::wgc_policy::system_relative_time_to_qpc(
+          frame.SystemRelativeTime().count(),
+          qpc_frequency
+        );
         record_frame_arrival(drained_frames);
         if (admit_activity_frame()) {
           queue_frame_for_delivery(std::move(frame), surface, frame_qpc);

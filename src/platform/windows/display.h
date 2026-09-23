@@ -35,6 +35,10 @@ namespace platf::game_activity {
 }
 
 namespace platf::dxgi {
+  namespace present_timing {
+    class capture_stamper_t;
+  }
+
   extern const char *format_str[];
 
   // Add D3D11_CREATE_DEVICE_DEBUG here to enable the D3D11 debug runtime.
@@ -541,6 +545,7 @@ namespace platf::dxgi {
     std::shared_ptr<platf::img_t> _last_cached_frame;
     std::chrono::steady_clock::time_point _wgc_stall_start {};  ///< Start of the current frame-wait stall (zero when frames are flowing).
     std::chrono::steady_clock::time_point _last_secure_desktop_probe {};  ///< Last secure-desktop probe performed during a stall.
+    std::unique_ptr<present_timing::capture_stamper_t> _present_stamper;  ///< Refines composition-quantized frame times.
   };
 
   class display_wgc_ipc_ram_t: public display_ram_t {
@@ -643,6 +648,11 @@ namespace platf::dxgi {
      * @brief Last secure-desktop probe performed during a stall.
      */
     std::chrono::steady_clock::time_point _last_secure_desktop_probe {};
+
+    /**
+     * @brief Refines composition-quantized frame times.
+     */
+    std::unique_ptr<present_timing::capture_stamper_t> _present_stamper;
   };
 
   /**

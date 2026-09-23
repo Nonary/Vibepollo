@@ -257,6 +257,9 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_ram.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_vram.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_wgc.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/present_timing.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/present_timing.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/present_timing_policy.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/audio.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display.h"
         ${SUNSHINE_WINDOWS_VDISPLAY_SOURCES}
@@ -308,6 +311,7 @@ set(OPENSSL_LIBRARIES
 
 list(PREPEND PLATFORM_LIBRARIES
         ${CURL_STATIC_LIBRARIES}
+        advapi32
         avrt
         d3d11
         D3DCompiler

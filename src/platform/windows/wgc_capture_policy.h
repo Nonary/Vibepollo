@@ -91,6 +91,25 @@ namespace platf::dxgi::wgc_policy {
              capture_surface_format::bgra8;
   }
 
+  /**
+   * Direct3D11CaptureFrame::SystemRelativeTime is a TimeSpan: 100 ns units on
+   * the QPC timebase, not raw QPC ticks. The two only coincide when the
+   * performance counter runs at 10 MHz.
+   */
+  constexpr std::uint64_t system_relative_time_to_qpc(const std::int64_t hundred_ns, const std::int64_t frequency) noexcept {
+    constexpr std::int64_t units_per_second = 10'000'000;
+    if (hundred_ns <= 0) {
+      return 0;
+    }
+    if (frequency <= 0 || frequency == units_per_second) {
+      return static_cast<std::uint64_t>(hundred_ns);
+    }
+    return static_cast<std::uint64_t>(
+      (hundred_ns / units_per_second) * frequency +
+      (hundred_ns % units_per_second) * frequency / units_per_second
+    );
+  }
+
   constexpr std::uint32_t maximum_buffer_size(const bool vrr_low_latency) noexcept {
     return vrr_low_latency ? low_latency_initial_buffer_size : adaptive_max_buffer_size;
   }
