@@ -1238,7 +1238,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode
             On Windows 10 hosts the default is <code>disabled</code> (physical display) instead, because the
             Windows 11 capture features the virtual-display pipeline relies on (WGC frame-generation capture
-            at 8x refresh) are unavailable there. An explicit value always wins.</td>
+            at 4x refresh) are unavailable there. An explicit value always wins.</td>
     </tr>
     <tr>
         <td>Example</td>
@@ -3145,7 +3145,9 @@ are detected during the stream. The host log reports hook readiness or failure.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Controls smoother capture for virtual displays. @code{}enabled@endcode uses 8x refresh while a game is active, returns to 1x on the desktop, and applies a matching frame limit. This does not change the stream FPS and can make games with uneven frame pacing capture much more smoothly. @code{}disabled@endcode turns off both the automatic virtual-display limiter and refresh adjustments. @code{}legacy@endcode uses a fixed 2x refresh with the matching limiter for the entire stream, without changing refresh when games start or close. Existing boolean values remain compatible: true maps to enabled and false maps to disabled.
+            Controls how fast the virtual display refreshes, which decides how soon each game frame is captured. Windows only hands Vibeshine a new frame when it redraws the display, so on a display that refreshes at the stream rate a frame that finishes just after a redraw waits up to a whole refresh before capture, and frames reach the client unevenly. A faster virtual display captures each frame closer to when the game drew it. None of the modes change the stream FPS or bandwidth, and all but @code{}disabled@endcode cap games to the stream rate.
+            <br>
+            @code{}vrr@endcode holds the virtual display at a fixed 1000 Hz whatever the stream rate, so every frame is captured within 1 ms of being drawn and its RTP timestamp carries accurate game timing for clients with VRR pacing. @code{}enabled@endcode keeps the display at 4x the stream rate (within ~2 ms at 120 FPS) and captures at most 2x the stream rate on the desktop. @code{}legacy@endcode uses a fixed 2x refresh, as older versions did. @code{}disabled@endcode leaves the display at the stream rate and turns off the matching game cap. Existing boolean values remain compatible: true maps to enabled and false maps to disabled.
         </td>
     </tr>
     <tr>
@@ -3155,6 +3157,7 @@ are detected during the stream. The host log reports hook readiness or failure.
     <tr>
         <td>Examples</td>
         <td colspan="2">@code{}
+            frame_limiter_auto_virtual_framegen = vrr
             frame_limiter_auto_virtual_framegen = disabled
             frame_limiter_auto_virtual_framegen = legacy
             @endcode</td>

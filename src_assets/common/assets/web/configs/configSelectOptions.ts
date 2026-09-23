@@ -469,18 +469,23 @@ export function getConfigSelectOptions(
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'frame_limiter_auto_virtual_framegen': {
+      // Fastest to slowest virtual-screen refresh. The fixed 1000 Hz VRR mode is a
+      // Windows capture option; Linux virtual displays already present with real VRR.
       const options = [
+        ...(platform.includes('linux')
+          ? []
+          : [{ label: t('frameLimiter.virtual.modeVrr'), value: 'vrr' }]),
         {
           label: t('frameLimiter.virtual.modeEnabled'),
           value: 'enabled',
         },
         {
-          label: t('frameLimiter.virtual.modeDisabled'),
-          value: 'disabled',
-        },
-        {
           label: t('frameLimiter.virtual.modeLegacy'),
           value: 'legacy',
+        },
+        {
+          label: t('frameLimiter.virtual.modeDisabled'),
+          value: 'disabled',
         },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);

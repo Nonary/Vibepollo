@@ -152,6 +152,8 @@ namespace rtsp_stream {
     std::optional<int> framegen_refresh_rate;
     std::optional<std::uint32_t> framegen_refresh_millihz;
     int framegen_refresh_multiplier = 1;
+    /// @brief framegen_refresh_millihz is the virtual display's own rate (VRR mode), not a stream multiple.
+    bool framegen_fixed_refresh = false;
     std::string frame_generation_provider;
     std::optional<double> lossless_scaling_target_fps;
     std::optional<int> lossless_scaling_rtss_limit;
@@ -293,7 +295,8 @@ namespace rtsp_stream {
     std::string_view capture_mode,
     bool auto_capture_uses_wgc,
     bool auto_virtual_framegen_limiter,
-    int virtual_display_refresh_multiplier
+    int virtual_display_refresh_multiplier,
+    std::uint32_t virtual_display_fixed_refresh_millihz = 0
   ) {
     return framegen::make_stream_start_policy({
       .fps = session.fps,
@@ -310,6 +313,7 @@ namespace rtsp_stream {
       .auto_capture_uses_wgc = auto_capture_uses_wgc,
       .auto_virtual_framegen_limiter = auto_virtual_framegen_limiter,
       .virtual_display_refresh_multiplier = virtual_display_refresh_multiplier,
+      .virtual_display_fixed_refresh_millihz = virtual_display_fixed_refresh_millihz,
     });
   }
 

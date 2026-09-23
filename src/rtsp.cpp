@@ -225,6 +225,7 @@ namespace rtsp_stream {
     snapshot->framegen_refresh_rate = framegen_refresh_rate;
     snapshot->framegen_refresh_millihz = framegen_refresh_millihz;
     snapshot->framegen_refresh_multiplier = framegen_refresh_multiplier;
+    snapshot->framegen_fixed_refresh = framegen_fixed_refresh;
     snapshot->frame_generation_provider = frame_generation_provider;
     snapshot->lossless_scaling_target_fps = lossless_scaling_target_fps;
     snapshot->lossless_scaling_rtss_limit = lossless_scaling_rtss_limit;

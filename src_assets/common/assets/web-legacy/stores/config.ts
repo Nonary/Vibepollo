@@ -633,7 +633,9 @@ export const useConfigStore = defineStore('config', () => {
           .toLowerCase()
           .trim();
         (data as Record<string, unknown>)[virtualCaptureKey] =
-          normalized === 'legacy' || normalized === '2x' || normalized === 'fixed-2x'
+          ['vrr', '1000hz', '1000', 'fixed-1000hz', 'fixed_1000hz'].includes(normalized)
+            ? 'vrr'
+            : normalized === 'legacy' || normalized === '2x' || normalized === 'fixed-2x'
             ? 'legacy'
             : raw === false ||
                 raw === 0 ||

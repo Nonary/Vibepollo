@@ -845,7 +845,9 @@ function normalizeOverrideRecord(value: unknown): Record<string, unknown> {
         .toLowerCase()
         .trim();
       normalized[key] =
-        mode === 'legacy' || mode === '2x' || mode === 'fixed-2x'
+        ['vrr', '1000hz', '1000', 'fixed-1000hz', 'fixed_1000hz'].includes(mode)
+          ? 'vrr'
+          : mode === 'legacy' || mode === '2x' || mode === 'fixed-2x'
           ? 'legacy'
           : rawValue === false ||
               rawValue === 0 ||

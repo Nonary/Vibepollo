@@ -341,6 +341,7 @@ namespace config {
       enabled,
       disabled,
       legacy,
+      vrr,  ///< Fixed 1000 Hz virtual display.
     };
 
     bool enable {false};
@@ -366,10 +367,12 @@ namespace config {
     // Restores the previous VSYNC state when streaming stops.
     bool disable_vsync {false};
 
-    // Virtual-display capture policy. Enabled keeps the virtual display at a fixed 8x
+    // Virtual-display capture policy. Enabled keeps the virtual display at a fixed 4x
     // refresh and lets WGC admit 2x desktop / 4x game frames without changing the mode.
-    // DWM composes and WGC timestamps frames on that refresh grid, so 8x (928 Hz for a
-    // 116 FPS stream) keeps each composition within ~1 ms of the game's present.
+    // VRR holds the virtual display at a fixed 1000 Hz regardless of stream FPS, with the
+    // same WGC admission: DWM composes and WGC timestamps frames on the display's refresh
+    // grid, so 1000 Hz keeps every frame within 1 ms of when the game presented it for
+    // clients that pace playback from RTP timestamps.
     // Legacy uses a fixed 2x refresh; disabled leaves the automatic policy off.
     virtual_display_capture_mode_e virtual_display_capture_mode {
       virtual_display_capture_mode_e::enabled
@@ -380,14 +383,24 @@ namespace config {
     }
 
     [[nodiscard]] bool game_aware_virtual_display_refresh_enabled() const {
-      return virtual_display_capture_mode == virtual_display_capture_mode_e::enabled;
+      return virtual_display_capture_mode == virtual_display_capture_mode_e::enabled ||
+             virtual_display_capture_mode == virtual_display_capture_mode_e::vrr;
     }
 
     [[nodiscard]] int fixed_virtual_display_refresh_multiplier() const {
       if (virtual_display_capture_mode == virtual_display_capture_mode_e::legacy) {
         return 2;
       }
-      return virtual_display_capture_mode == virtual_display_capture_mode_e::enabled ? 8 : 1;
+      return virtual_display_capture_mode == virtual_display_capture_mode_e::enabled ? 4 : 1;
+    }
+
+    // Exact virtual-display refresh that replaces the multiplier; 0 when unused. VRR mode
+    // always uses it; Automatic uses it when the client requested VRR presentation
+    // (clientVrrRequested), because such clients pace playback from the RTP timestamps.
+    [[nodiscard]] std::uint32_t fixed_virtual_display_refresh_millihz(const bool client_vrr_requested = false) const {
+      const bool vrr = virtual_display_capture_mode == virtual_display_capture_mode_e::vrr ||
+                       (client_vrr_requested && virtual_display_capture_mode == virtual_display_capture_mode_e::enabled);
+      return vrr ? 1'000'000u : 0u;
     }
   };
 

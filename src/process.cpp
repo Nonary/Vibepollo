@@ -1805,7 +1805,8 @@ namespace proc {
       config::video.capture,
       false,
       config::frame_limiter.virtual_display_limiter_enabled(),
-      config::frame_limiter.fixed_virtual_display_refresh_multiplier()
+      config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
+      config::frame_limiter.fixed_virtual_display_refresh_millihz(launch_session->client_vrr_requested)
     );
     const auto mangohud_policy = platf::mangohud::make_launch_policy(
       config::frame_limiter.provider,
@@ -2233,7 +2234,8 @@ namespace proc {
           config::video.capture,
           platf::dxgi::should_use_wgc_default(),
           config::frame_limiter.virtual_display_limiter_enabled(),
-          config::frame_limiter.fixed_virtual_display_refresh_multiplier()
+          config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
+          config::frame_limiter.fixed_virtual_display_refresh_millihz(launch_session->client_vrr_requested)
         );
         platf::frame_limiter_prepare_launch(warmup_policy);
       }
@@ -2757,6 +2759,7 @@ namespace proc {
           .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
           .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
           .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
+          .virtual_display_fixed_refresh_millihz = config::frame_limiter.fixed_virtual_display_refresh_millihz(),
         });
         platf::frame_limiter_prepare_launch(warmup_policy);
         const bool provider_auto = config::frame_limiter.provider.empty() ||

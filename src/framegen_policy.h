@@ -33,6 +33,9 @@ namespace framegen {
     std::optional<int> framegen_refresh_rate;
     std::optional<std::uint32_t> framegen_refresh_millihz;
     int refresh_multiplier = 1;
+    // The virtual display runs at framegen_refresh_millihz itself, not a stream multiple,
+    // so its mode must be created at that rate.
+    bool fixed_refresh = false;
   };
 
   struct stream_start_policy_input_t {
@@ -50,6 +53,8 @@ namespace framegen {
     bool auto_capture_uses_wgc = false;
     bool auto_virtual_framegen_limiter = true;
     int virtual_display_refresh_multiplier = 1;
+    // Exact virtual-display refresh (e.g. 1000 Hz VRR mode). Non-zero replaces the multiplier.
+    std::uint32_t virtual_display_fixed_refresh_millihz = 0;
   };
 
   inline std::string normalize_provider(std::string_view value) {
@@ -186,11 +191,17 @@ namespace framegen {
     // Virtual displays can apply a matching stream-start frame cap independently from their
     // refresh policy. The default automatic policy holds a fixed 4x display refresh; WGC
     // changes its latest-frame admission between 2x desktop and 4x game activity. Legacy
-    // mode instead supplies a fixed 2x multiplier here.
+    // mode instead supplies a fixed 2x multiplier here. VRR mode supplies an exact refresh
+    // (1000 Hz) that does not depend on the stream rate.
     if (policy.uses_virtual_display) {
       policy.auto_virtual_framegen_limiter = input.auto_virtual_framegen_limiter;
       policy.refresh_multiplier = std::max(1, input.virtual_display_refresh_multiplier);
-      if (policy.refresh_multiplier > 1 && policy.fps > 0) {
+      if (input.virtual_display_fixed_refresh_millihz > 0) {
+        policy.refresh_multiplier = 1;
+        policy.fixed_refresh = true;
+        policy.framegen_refresh_millihz = input.virtual_display_fixed_refresh_millihz;
+        policy.framegen_refresh_rate = rounded_fps_from_millihz(input.virtual_display_fixed_refresh_millihz);
+      } else if (policy.refresh_multiplier > 1 && policy.fps > 0) {
         const auto base_millihz = input.display_refresh_millihz > 0 ?
                                       input.display_refresh_millihz :
                                       (input.fps_scaled > 0 ?

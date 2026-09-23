@@ -1103,6 +1103,7 @@ namespace nvhttp {
           .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
           .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
           .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
+          .virtual_display_fixed_refresh_millihz = config::frame_limiter.fixed_virtual_display_refresh_millihz(launch_session->client_vrr_requested),
         });
       };
       const auto requested_display_framegen_policy =
@@ -1118,6 +1119,7 @@ namespace nvhttp {
         launch_session->framegen_refresh_rate = framegen_policy.framegen_refresh_rate;
         launch_session->framegen_refresh_millihz = framegen_policy.framegen_refresh_millihz;
         launch_session->framegen_refresh_multiplier = framegen_policy.refresh_multiplier;
+        launch_session->framegen_fixed_refresh = framegen_policy.fixed_refresh;
       };
       auto reserve_normal_vdd_identity = [&]() {
         if (shared_virtual_display_mode || launch_session->role != remote_session::role_e::game) return true;
@@ -1415,9 +1417,15 @@ namespace nvhttp {
                 *initial_configuration->m_hdr_state == display_device::HdrState::Enabled;
             }
           }
-          const uint32_t base_vd_fps_millihz = launch_session->client_display_refresh_millihz > 0 ?
-                                                     launch_session->client_display_refresh_millihz :
-                                                     framegen::normalize_refresh_millihz(launch_session->fps);
+          // A fixed VRR mode must be advertised by the driver at its exact rate.
+          const bool fixed_vd_refresh = launch_session->framegen_fixed_refresh &&
+                                        launch_session->framegen_refresh_millihz &&
+                                        *launch_session->framegen_refresh_millihz > 0;
+          const uint32_t base_vd_fps_millihz = fixed_vd_refresh ?
+                                                   *launch_session->framegen_refresh_millihz :
+                                                 launch_session->client_display_refresh_millihz > 0 ?
+                                                   launch_session->client_display_refresh_millihz :
+                                                   framegen::normalize_refresh_millihz(launch_session->fps);
           uint32_t vd_fps = rtsp_stream::effective_display_refresh_millihz(*launch_session);
           if (vd_fps == 0) {
             vd_fps = 60000u;
@@ -1694,6 +1702,7 @@ namespace nvhttp {
             launch_session->framegen_refresh_rate.reset();
             launch_session->framegen_refresh_millihz.reset();
             launch_session->framegen_refresh_multiplier = 1;
+            launch_session->framegen_fixed_refresh = false;
             BOOST_LOG(warning) << "Virtual display creation failed.";
           }
         };
@@ -2665,6 +2674,7 @@ namespace nvhttp {
       launch_session->framegen_refresh_rate.reset();
       launch_session->framegen_refresh_millihz.reset();
       launch_session->framegen_refresh_multiplier = 1;
+      launch_session->framegen_fixed_refresh = false;
       launch_session->lossless_scaling_target_fps.reset();
       launch_session->lossless_scaling_rtss_limit.reset();
       launch_session->frame_generation_provider = "lossless-scaling";
@@ -2921,6 +2931,7 @@ namespace nvhttp {
       launch_session->framegen_refresh_rate.reset();
       launch_session->framegen_refresh_millihz.reset();
       launch_session->framegen_refresh_multiplier = 1;
+      launch_session->framegen_fixed_refresh = false;
       launch_session->enable_sops = util::from_view(get_arg(args, "sops", "0"));
       launch_session->surround_info = util::from_view(get_arg(args, "surroundAudioInfo", "196610"));
       launch_session->surround_params = (get_arg(args, "surroundParams", ""));

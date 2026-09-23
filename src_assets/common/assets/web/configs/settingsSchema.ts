@@ -307,7 +307,9 @@ const frameLimiterOptions = [
   option('none', 'ui.settings.options.frame_limiter_provider.none'),
 ];
 
+// Fastest to slowest virtual-screen refresh; VRR is Windows only.
 const frameGenerationOptions = [
+  option('vrr', 'ui.settings.options.frame_generation.vrr'),
   option('enabled', 'ui.settings.options.frame_generation.automatic'),
   option('legacy', 'ui.settings.options.frame_generation.compatibility'),
   option('disabled', 'ui.settings.options.frame_generation.off'),

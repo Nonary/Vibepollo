@@ -1712,9 +1712,9 @@
           "label": "Always limit rendered frames"
         },
         "frame_limiter_auto_virtual_framegen": {
-          "description": "Automatic keeps the virtual screen at 8× refresh and changes only WGC's latest-frame admission: 2× on the desktop and 4× for a confirmed game. This avoids display-mode changes while retaining high-rate game capture. Compatibility keeps the older fixed 2× behavior.",
-          "label": "Virtual-screen game smoothness",
-          "description_linux": "Automatic keeps the virtual display at 4× the requested stream rate and caps launched games to that rate with the selected Linux limiter. Compatibility uses a fixed 2× virtual-display rate."
+          "description": "Windows only hands Vibepollo a new frame when it redraws the virtual screen. If the screen redraws only as often as your stream, a game frame that finishes just after a redraw waits up to a whole refresh before it's captured, so frames reach your device unevenly and motion stutters even at a steady FPS. A faster virtual screen captures each frame almost as soon as the game draws it: at 120 FPS a frame can wait up to 8.3 ms with Off, 4.2 ms with Compatibility (2×), 2.1 ms at 4×, and 1 ms at 1000 Hz. Stream FPS and bandwidth don't change, and games stay capped to the stream rate. Automatic uses 1000 Hz when your client asks for VRR (for example Moonlight with VRR pacing) and 4× otherwise; VRR always uses 1000 Hz.",
+          "description_linux": "Automatic keeps the virtual display at 4× the requested stream rate and caps launched games to that rate with the selected Linux limiter. Compatibility uses a fixed 2× virtual-display rate.",
+          "label": "Capture timing (virtual screen refresh)"
         },
         "frame_limiter_provider": {
           "description": "Used by manual limiting and automatic virtual-screen game smoothness. On Linux, Automatic uses the frame-generation-capable Proton limiter and presents MangoHUD; on Windows it prefers RTSS, then NVIDIA Control Panel."
@@ -1876,9 +1876,9 @@
           "title": "Remote Monitor"
         },
         "everyday_smoothness": {
-          "description": "Virtual screens automatically match the game cap to the stream and switch between desktop and game refresh rates.",
-          "description_linux": "Virtual displays run at a multiple of the requested stream rate while launched games are capped through the selected Linux limiter for smoother motion and lower GPU load.",
-          "title": "Automatic virtual-screen smoothness"
+          "description": "Vibepollo runs the virtual screen faster than your stream so each game frame is captured right after it's drawn, and caps games to the stream rate. Pick how fast below.",
+          "description_linux": "Vibepollo manages virtual-screen capture automatically. Manual Linux pacing overrides are available under Advanced capture and pacing.",
+          "title": "Smoother game capture"
         },
         "everyday_virtual_display": {
           "description": "Customize virtual-screen layout, scaling, and cleanup.",
@@ -2042,12 +2042,13 @@
           "required": "Required"
         },
         "frame_generation": {
-          "automatic": "Automatic — always 4× display; desktop WGC capped at 2× / games at 4× (recommended)",
+          "automatic": "Automatic — 1000 Hz for VRR clients, otherwise 4× the stream rate (recommended)",
           "automatic_linux": "Automatic — 4× virtual display; cap games to the stream rate (recommended)",
-          "compatibility": "Compatibility — fixed 2× display and capture",
+          "compatibility": "Compatibility — 2× the stream rate",
           "compatibility_linux": "Compatibility — 2× virtual display; cap games to the stream rate",
-          "off": "Off — no automatic virtual refresh or WGC admission limit",
-          "off_linux": "Off — no automatic virtual-display refresh or game cap"
+          "off": "Off — stream rate, no automatic game cap",
+          "off_linux": "Off — no automatic virtual-display refresh or game cap",
+          "vrr": "VRR — always 1000 Hz, frames captured within 1 ms"
         },
         "frame_limiter_provider": {
           "autoLinux": "Automatic — Proton limiter + MangoHUD overlay",
@@ -2244,9 +2245,9 @@
       "selected_category": "Selected category",
       "summary": {
         "display": "Streaming display",
-        "automatic_pacing": "Automatic · always 4× display / desktop WGC cap 2× / game WGC cap 4×",
+        "automatic_pacing": "Automatic · 1000 Hz for VRR clients, otherwise 4× the stream rate / game cap matches stream",
         "automatic_pacing_linux": "Automatic · 4× virtual display / game cap matches stream",
-        "automatic_pacing_limiter_off": "Automatic · always 4× display / desktop WGC cap 2× / game WGC cap 4× · limiter off",
+        "automatic_pacing_limiter_off": "Automatic · 1000 Hz for VRR clients, otherwise 4× the stream rate · limiter off",
         "automatic_pacing_limiter_off_linux": "Automatic · 4× virtual display · limiter off",
         "compatibility_pacing": "Compatibility · fixed 2× display and capture",
         "compatibility_pacing_linux": "Compatibility · 2× virtual display / game cap matches stream",

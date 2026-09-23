@@ -91,12 +91,15 @@ const mangohudLimiterMethodOptions = computed(() => [
   { label: t('frameLimiter.mangohudMethod.late'), value: 'late' },
 ]);
 
-type VirtualCaptureMode = 'enabled' | 'disabled' | 'legacy';
+type VirtualCaptureMode = 'vrr' | 'enabled' | 'disabled' | 'legacy';
 
 function normalizeVirtualCaptureMode(value: unknown): VirtualCaptureMode {
   const normalized = String(value ?? '')
     .toLowerCase()
     .trim();
+  if (['vrr', '1000hz', '1000', 'fixed-1000hz', 'fixed_1000hz'].includes(normalized)) {
+    return 'vrr';
+  }
   if (normalized === 'legacy' || normalized === '2x' || normalized === 'fixed-2x') {
     return 'legacy';
   }
@@ -119,6 +122,8 @@ const virtualCaptureMode = computed<VirtualCaptureMode>({
 
 const virtualCaptureSummary = computed(() => {
   switch (virtualCaptureMode.value) {
+    case 'vrr':
+      return t('frameLimiter.virtual.summaryVrr');
     case 'disabled':
       return t('frameLimiter.virtual.summaryDisabled');
     case 'legacy':

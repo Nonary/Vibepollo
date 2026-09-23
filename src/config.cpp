@@ -1903,7 +1903,7 @@ namespace config {
     generic_f(vars, "virtual_display_mode", video.virtual_display_mode, virtual_display_mode_from_view);
 #ifdef _WIN32
     // The virtual-display pipeline is built around Windows 11 capture features (WGC
-    // frame-generation capture at 8x refresh), so unconfigured Windows 10 hosts stay on
+    // frame-generation capture at 4x refresh), so unconfigured Windows 10 hosts stay on
     // the physical display; an explicit config value always wins.
     if (!virtual_display_mode_specified && !platf::is_windows_11_or_later()) {
       video.virtual_display_mode = video_t::virtual_display_mode_e::disabled;
@@ -2050,6 +2050,10 @@ namespace config {
         if (virtual_capture_mode == "legacy" || virtual_capture_mode == "2x" ||
             virtual_capture_mode == "fixed-2x" || virtual_capture_mode == "fixed_2x") {
           frame_limiter.virtual_display_capture_mode = mode_e::legacy;
+        } else if (virtual_capture_mode == "vrr" || virtual_capture_mode == "1000hz" ||
+                   virtual_capture_mode == "1000" || virtual_capture_mode == "fixed-1000hz" ||
+                   virtual_capture_mode == "fixed_1000hz") {
+          frame_limiter.virtual_display_capture_mode = mode_e::vrr;
         } else if (virtual_capture_mode == "false" || virtual_capture_mode == "no" ||
                    virtual_capture_mode == "disable" || virtual_capture_mode == "disabled" ||
                    virtual_capture_mode == "off" || virtual_capture_mode == "0") {

@@ -3444,6 +3444,7 @@ namespace stream {
 #endif
             .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
             .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
+            .virtual_display_fixed_refresh_millihz = config::frame_limiter.fixed_virtual_display_refresh_millihz(session.config.monitor.vrr_low_latency),
           });
 #ifdef _WIN32
           const bool defer_stream_start = platf::is_running_as_system() && !user_session_ready();
