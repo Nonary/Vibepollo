@@ -389,6 +389,10 @@ sunshine_register_component(NAME test_component_steam_integration TEST_SOURCE te
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_integration.cpp"
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/provider_scan_protocol.cpp"
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
+if(WIN32)
+    # The static FFmpeg build uses BCrypt for its random seed provider.
+    list(APPEND STEAM_ARTWORK_TEST_LIBRARIES bcrypt)
+endif()
 sunshine_register_component(NAME test_component_steam_artwork TEST_SOURCE test_steam_artwork.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_artwork.cpp"
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_integration.cpp"
