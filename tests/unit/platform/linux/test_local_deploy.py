@@ -671,6 +671,16 @@ class PolicyTests(unittest.TestCase):
                 mock.patch.object(deploy, 'run', return_value=mock.Mock(stdout='not found', returncode=1)):
             self.assertTrue(deploy.driver_needs_reboot())
 
+    def test_stale_loaded_dualsense_module_requires_reboot(self):
+        disk = [mock.Mock(stdout=value, returncode=0) for value in
+                ('1.19.0', 'drm-source', 'new-ds5-source')]
+        with mock.patch.object(Path, 'exists', return_value=True), \
+                mock.patch.object(Path, 'is_file', return_value=True), \
+                mock.patch.object(Path, 'read_text', side_effect=['1.19.0', 'drm-source', 'old-ds5-source']), \
+                mock.patch.object(deploy, 'run', side_effect=disk) as run:
+            self.assertTrue(deploy.driver_needs_reboot())
+        self.assertEqual(run.call_args.args[-1], 'vibeshine_ds5')
+
     def test_driver_cancellation_does_not_allow_rollback_with_surviving_workers(self):
         process = mock.Mock(pid=123)
         process.wait.side_effect = [KeyboardInterrupt(), 0, 0]

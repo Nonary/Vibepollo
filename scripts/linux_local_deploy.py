@@ -728,14 +728,16 @@ def restore_driver(directory, state, root=Path('/'), owner=0):
 
 
 def driver_needs_reboot():
-    loaded = Path('/sys/module/vibeshine_drm')
-    if not loaded.exists():
-        return False
-    for field in ('version', 'srcversion'):
-        result = run('modinfo', '-F', field, 'vibeshine_drm', check=False)
-        value = result.stdout.strip()
-        if result.returncode or not value or not (loaded / field).is_file() or (loaded / field).read_text().strip() != value:
-            return True
+    for module in ('vibeshine_drm', 'vibeshine_ds5'):
+        loaded = Path('/sys/module') / module
+        if not loaded.exists():
+            continue
+        fields = ('version', 'srcversion') if module == 'vibeshine_drm' else ('srcversion',)
+        for field in fields:
+            result = run('modinfo', '-F', field, module, check=False)
+            value = result.stdout.strip()
+            if result.returncode or not value or not (loaded / field).is_file() or (loaded / field).read_text().strip() != value:
+                return True
     return False
 
 
@@ -758,8 +760,6 @@ def install_driver(directory, manifest):
         returncodes.append(code)
         if code not in (0, 4):
             raise DeployError(f'Driver installation failed for {kernel} ({code}); see output above')
-    manifest['driver']['after'] = driver_state()
-    write_json(directory / 'transaction.json', manifest)
     helper = Path('/usr/libexec/vibeshine/vibeshine-drm-install').read_text()
     source_ids = re.findall(r'^MODULE_SOURCE_ID="([0-9a-f]{64})"$', helper, re.M)
     if len(source_ids) != 1:
@@ -772,9 +772,28 @@ def install_driver(directory, manifest):
         markers = [Path('/var/lib/vibeshine-drm') / f'{kind}-{installed}-{kernel}' for kind in ('dkms', 'direct')]
         if not any(path.is_file() and (path.read_text().splitlines() or [''])[0] == identity for path in markers):
             raise DeployError(f'Driver source/signing identity was not updated for {kernel}')
+    # The DS5 helper targets uname by default. Build each backed-up kernel,
+    # but load the module only for the running kernel.
+    ds5_wrapper = ('source /usr/libexec/vibeshine/vibeshine-ds5-install || exit; '
+                   'readonly deploy_kernel="$1"; '
+                   'current_kernel_release() { printf "%s\\n" "$deploy_kernel"; }; '
+                   'if [[ "$deploy_kernel" != "$(uname -r)" ]]; then load_module() { return 0; }; fi; '
+                   'main install')
+    for kernel in manifest['driver']['kernels']:
+        print(f'Building/installing Vibeshine DS5 for {kernel}', flush=True)
+        code = driver_command(['/usr/bin/bash', '-c', ds5_wrapper, 'vibeshine-ds5-upgrade', kernel])
+        returncodes.append(code)
+        if code not in (0, 4):
+            raise DeployError(f'DualSense USB driver installation failed for {kernel} ({code}); see output above')
+        installed_source = run('modinfo', '-k', kernel, '-F', 'srcversion', 'vibeshine_ds5').stdout.strip()
+        if not installed_source:
+            raise DeployError(f'DualSense USB driver is missing for {kernel}')
+    manifest['driver']['after'] = driver_state()
+    write_json(directory / 'transaction.json', manifest)
     if 4 in returncodes or driver_needs_reboot():
         return True
     run('modprobe', 'vibeshine_drm', 'create_default_dev=0')
+    run('/usr/libexec/vibeshine/vibeshine-ds5-install', 'status')
     return driver_needs_reboot()
 
 
@@ -1345,6 +1364,7 @@ def finalize(directory, manifest):
             if expected and metadata(Path('/') / name) != manifest['installed_metadata'][name]:
                 raise DeployError(f'Payload metadata changed since installation: {name}')
         run('/usr/libexec/vibeshine/vibeshine-drm-install', 'status')
+        run('/usr/libexec/vibeshine/vibeshine-ds5-install', 'status')
         start_controller()
         result, detail = readiness(manifest['timeout'])
         if result not in ('healthy', 'waiting-session'):
