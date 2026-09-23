@@ -9,6 +9,7 @@
 #include <src/deferred_action.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <map>
 
 namespace {
