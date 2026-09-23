@@ -366,8 +366,10 @@ namespace config {
     // Restores the previous VSYNC state when streaming stops.
     bool disable_vsync {false};
 
-    // Virtual-display capture policy. Enabled keeps the virtual display at a fixed 4x
+    // Virtual-display capture policy. Enabled keeps the virtual display at a fixed 8x
     // refresh and lets WGC admit 2x desktop / 4x game frames without changing the mode.
+    // DWM composes and WGC timestamps frames on that refresh grid, so 8x (928 Hz for a
+    // 116 FPS stream) keeps each composition within ~1 ms of the game's present.
     // Legacy uses a fixed 2x refresh; disabled leaves the automatic policy off.
     virtual_display_capture_mode_e virtual_display_capture_mode {
       virtual_display_capture_mode_e::enabled
@@ -385,7 +387,7 @@ namespace config {
       if (virtual_display_capture_mode == virtual_display_capture_mode_e::legacy) {
         return 2;
       }
-      return virtual_display_capture_mode == virtual_display_capture_mode_e::enabled ? 4 : 1;
+      return virtual_display_capture_mode == virtual_display_capture_mode_e::enabled ? 8 : 1;
     }
   };
 

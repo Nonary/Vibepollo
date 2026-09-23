@@ -1712,9 +1712,9 @@
           "label": "Always limit rendered frames"
         },
         "frame_limiter_auto_virtual_framegen": {
-          "description": "Automatic keeps the virtual screen at 4× refresh and changes only WGC's latest-frame admission: 2× on the desktop and 4× for a confirmed game. This avoids display-mode changes while retaining high-rate game capture. Compatibility keeps the older fixed 2× behavior.",
-          "description_linux": "Automatic keeps the virtual display at 4× the requested stream rate and caps launched games to that rate with the selected Linux limiter. Compatibility uses a fixed 2× virtual-display rate.",
-          "label": "Virtual-screen game smoothness"
+          "description": "Automatic keeps the virtual screen at 8× refresh and changes only WGC's latest-frame admission: 2× on the desktop and 4× for a confirmed game. This avoids display-mode changes while retaining high-rate game capture. Compatibility keeps the older fixed 2× behavior.",
+          "label": "Virtual-screen game smoothness",
+          "description_linux": "Automatic keeps the virtual display at 4× the requested stream rate and caps launched games to that rate with the selected Linux limiter. Compatibility uses a fixed 2× virtual-display rate."
         },
         "frame_limiter_provider": {
           "description": "Used by manual limiting and automatic virtual-screen game smoothness. On Linux, Automatic uses the frame-generation-capable Proton limiter and presents MangoHUD; on Windows it prefers RTSS, then NVIDIA Control Panel."

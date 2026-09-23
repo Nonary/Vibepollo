@@ -205,6 +205,7 @@ namespace platf::dxgi {
   display_wgc_ipc_vram_t::display_wgc_ipc_vram_t() = default;
 
   display_wgc_ipc_vram_t::~display_wgc_ipc_vram_t() {
+    present_timing::clear_active_stamper(_present_stamper.get());
     game_refresh_target.reset();
     if (_frame_locked && _ipc_session) {
       _ipc_session->release();
@@ -229,7 +230,8 @@ namespace platf::dxgi {
     }
 
     capture_format = DXGI_FORMAT_UNKNOWN;  // Start with unknown format (prevents race condition/crash on first frame)
-    _present_stamper = std::make_unique<present_timing::capture_stamper_t>(captured_output_desc.DeviceName);
+    _present_stamper = std::make_shared<present_timing::capture_stamper_t>(captured_output_desc.DeviceName);
+    present_timing::set_active_stamper(_present_stamper);
 
     const bool advanced_color_capture = is_hdr();
 
@@ -377,11 +379,9 @@ namespace platf::dxgi {
     _ipc_session->release();
     _frame_locked = false;
 
-    // Present matching runs outside the shared mutex.
-    const auto stamped_qpc = _present_stamper ?
-                               _present_stamper->stamp(static_cast<std::int64_t>(frame_qpc)) :
-                               static_cast<std::int64_t>(frame_qpc);
-    const auto frame_timestamp = host_processing_timestamp - qpc_time_difference(host_processing_qpc, stamped_qpc);
+    // The composition time; the send path refines it for RTP once the game's
+    // present events have been delivered.
+    const auto frame_timestamp = host_processing_timestamp - qpc_time_difference(host_processing_qpc, static_cast<std::int64_t>(frame_qpc));
 
     const auto copy_count = g_wgc_snapshot_copies.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto capture_mutex_wait_ms = std::chrono::duration<double, std::milli>(capture_mutex_wait).count();
@@ -472,6 +472,7 @@ namespace platf::dxgi {
   display_wgc_ipc_ram_t::display_wgc_ipc_ram_t() = default;
 
   display_wgc_ipc_ram_t::~display_wgc_ipc_ram_t() {
+    present_timing::clear_active_stamper(_present_stamper.get());
     game_refresh_target.reset();
   }
 
@@ -495,7 +496,8 @@ namespace platf::dxgi {
 
     // Initialize capture format to unknown - will be determined from first frame
     capture_format = DXGI_FORMAT_UNKNOWN;
-    _present_stamper = std::make_unique<present_timing::capture_stamper_t>(captured_output_desc.DeviceName);
+    _present_stamper = std::make_shared<present_timing::capture_stamper_t>(captured_output_desc.DeviceName);
+    present_timing::set_active_stamper(_present_stamper);
 
     // Note: WGC captures at monitor native resolution, not the requested config resolution.
     // The display helper handles resolution changes before capture starts if needed.
@@ -659,10 +661,7 @@ namespace platf::dxgi {
 
     // Set frame timestamp
     const auto host_processing_timestamp = std::chrono::steady_clock::now();
-    const auto stamped_qpc = _present_stamper ?
-                               _present_stamper->stamp(static_cast<std::int64_t>(frame_qpc)) :
-                               static_cast<std::int64_t>(frame_qpc);
-    auto frame_timestamp = host_processing_timestamp - qpc_time_difference(qpc_counter(), stamped_qpc);
+    auto frame_timestamp = host_processing_timestamp - qpc_time_difference(qpc_counter(), frame_qpc);
     img->frame_timestamp = frame_timestamp;
     img->host_processing_timestamp = host_processing_timestamp;
     img->capture_pacing_timestamp = host_processing_timestamp;

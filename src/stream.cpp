@@ -67,6 +67,7 @@ extern "C" {
   #include "platform/windows/display.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/misc.h"
+  #include "platform/windows/present_timing.h"
   #include "platform/windows/virtual_display.h"
   #include "platform/windows/virtual_display_cleanup.h"
 #elif defined(__linux__)
@@ -2211,6 +2212,14 @@ namespace stream {
           packet->frame_timestamp = ratecontrol_next_frame_start;
           frame_is_dupe = true;
         }
+#ifdef _WIN32
+        else {
+          // WGC composition times sit on the virtual display's refresh grid.
+          // Place the frame by the game's present cadence now that ETW has
+          // had the encode time to deliver those presents.
+          packet->frame_timestamp = platf::dxgi::present_timing::refine_send_timestamp(*packet->frame_timestamp);
+        }
+#endif
         using rtp_tick = std::chrono::duration<uint32_t, std::ratio<1, 90000>>;
         const uint32_t timestamp = std::chrono::round<rtp_tick>(*packet->frame_timestamp - video_epoch).count();
 

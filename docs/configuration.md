@@ -1238,7 +1238,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode
             On Windows 10 hosts the default is <code>disabled</code> (physical display) instead, because the
             Windows 11 capture features the virtual-display pipeline relies on (WGC frame-generation capture
-            at 4x refresh) are unavailable there. An explicit value always wins.</td>
+            at 8x refresh) are unavailable there. An explicit value always wins.</td>
     </tr>
     <tr>
         <td>Example</td>
@@ -3145,7 +3145,7 @@ are detected during the stream. The host log reports hook readiness or failure.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Controls smoother capture for virtual displays. @code{}enabled@endcode uses 4x refresh while a game is active, returns to 1x on the desktop, and applies a matching frame limit. This does not change the stream FPS and can make games with uneven frame pacing capture much more smoothly. @code{}disabled@endcode turns off both the automatic virtual-display limiter and refresh adjustments. @code{}legacy@endcode uses a fixed 2x refresh with the matching limiter for the entire stream, without changing refresh when games start or close. Existing boolean values remain compatible: true maps to enabled and false maps to disabled.
+            Controls smoother capture for virtual displays. @code{}enabled@endcode uses 8x refresh while a game is active, returns to 1x on the desktop, and applies a matching frame limit. This does not change the stream FPS and can make games with uneven frame pacing capture much more smoothly. @code{}disabled@endcode turns off both the automatic virtual-display limiter and refresh adjustments. @code{}legacy@endcode uses a fixed 2x refresh with the matching limiter for the entire stream, without changing refresh when games start or close. Existing boolean values remain compatible: true maps to enabled and false maps to disabled.
         </td>
     </tr>
     <tr>

@@ -395,4 +395,46 @@ namespace platf::dxgi::present_timing {
     return result.stamp;
   }
 
+  namespace {
+    std::mutex active_mutex;
+    std::shared_ptr<capture_stamper_t> active_stamper;
+  }  // namespace
+
+  void set_active_stamper(std::shared_ptr<capture_stamper_t> stamper) {
+    std::lock_guard lock(active_mutex);
+    active_stamper = std::move(stamper);
+  }
+
+  void clear_active_stamper(const capture_stamper_t *stamper) {
+    std::lock_guard lock(active_mutex);
+    if (active_stamper.get() == stamper) {
+      active_stamper.reset();
+    }
+  }
+
+  std::chrono::steady_clock::time_point refine_send_timestamp(const std::chrono::steady_clock::time_point composition) {
+    std::shared_ptr<capture_stamper_t> stamper;
+    {
+      std::lock_guard lock(active_mutex);
+      stamper = active_stamper;
+    }
+    static const std::int64_t frequency = query_frequency();
+    if (!stamper || frequency <= 0) {
+      return composition;
+    }
+
+    // Map the composition time back onto the QPC timeline the ETW events use.
+    // Only the refinement delta is converted back, so the round trip adds no
+    // error to the unrefined part of the time.
+    LARGE_INTEGER counter {};
+    QueryPerformanceCounter(&counter);
+    const auto now = std::chrono::steady_clock::now();
+    const auto age_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now - composition).count();
+    const auto age_ticks = static_cast<std::int64_t>(static_cast<long double>(age_ns) * frequency / 1'000'000'000.0L);
+    const std::int64_t composition_qpc = counter.QuadPart - age_ticks;
+    const std::int64_t stamped_qpc = stamper->stamp(composition_qpc);
+    const auto delta_ns = static_cast<std::int64_t>(static_cast<long double>(stamped_qpc - composition_qpc) * 1'000'000'000.0L / frequency);
+    return composition + std::chrono::nanoseconds(delta_ns);
+  }
+
 }  // namespace platf::dxgi::present_timing
