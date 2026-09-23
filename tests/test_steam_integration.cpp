@@ -604,7 +604,7 @@ TEST(SteamDiscovery, ReadsLastPlayedFromLocalUserData) {
     out << R"("AppState" { "appid" "42" "name" "Game" "installdir" "Game" "LastUpdated" "999" })"; }
   { std::ofstream out(base / "userdata/123/config/localconfig.vdf");
     out << R"("UserLocalConfigStore" { "Software" { "Valve" { "Steam" { "apps" { "42" { "LastPlayed" "123456" } } } } } })"; }
-  const auto games = platf::steam::discover({base});
+  const auto games = platf::steam::discover_catalog({base});
   ASSERT_EQ(games.size(), 1);
   EXPECT_EQ(games[0].last_played, 123456);
   EXPECT_EQ(games[0].last_updated, 999);

@@ -78,19 +78,20 @@ namespace {
   }
 
   TEST(ProcessArtwork, MachinePathsStayInsideImmutableAssetsOrSharedCovers) {
-    const std::string assets = "/usr/share/vibepollo";
-    const std::string covers = "/var/lib/vibepollo/covers";
+    const auto fixture_root = std::filesystem::temp_directory_path() / "vibepollo-artwork-policy";
+    const std::string assets = (fixture_root / "assets").string();
+    const std::string covers = (fixture_root / "covers").string();
 
     EXPECT_TRUE(proc::catalog::machine_image_path_is_confined("desktop.png", assets, covers));
     EXPECT_TRUE(proc::catalog::machine_image_path_is_confined("./assets/steam.png", assets, covers));
     EXPECT_TRUE(proc::catalog::machine_image_path_is_confined(
-      "/usr/share/vibepollo/remote-session/input.png", assets, covers));
+      (std::filesystem::path(assets) / "remote-session/input.png").string(), assets, covers));
     EXPECT_TRUE(proc::catalog::machine_image_path_is_confined(
-      "/var/lib/vibepollo/covers/game.png", assets, covers));
+      (std::filesystem::path(covers) / "game.png").string(), assets, covers));
     EXPECT_FALSE(proc::catalog::machine_image_path_is_confined(
-      "/var/lib/vibepollo/covers", assets, covers));
+      covers, assets, covers));
     EXPECT_FALSE(proc::catalog::machine_image_path_is_confined(
-      "/var/lib/vibepollo/covers/../../secrets.png", assets, covers));
+      (std::filesystem::path(covers) / "../../secrets.png").string(), assets, covers));
     EXPECT_FALSE(proc::catalog::machine_image_path_is_confined(
       "../../home/chasep/.config/vibeshine/secret.png", assets, covers));
     EXPECT_FALSE(proc::catalog::machine_image_path_is_confined(

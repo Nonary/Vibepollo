@@ -158,8 +158,15 @@ def main():
         cpp = Path(directory) / 'test.cpp'
         executable = Path(directory) / 'test'
         cpp.write_text(PRELUDE + globals_source + enable + '\n' + restore + TESTS)
-        subprocess.run([args.compiler, '-std=c++20', '-Wall', '-Wextra', '-Werror',
-                        '-pthread', '-fsanitize=undefined', str(cpp), '-o', str(executable)], check=True)
+        command = [args.compiler, '-std=c++20', '-Wall', '-Wextra', '-Werror', '-pthread']
+        try:
+            subprocess.run(command + ['-fsanitize=undefined', str(cpp), '-o', str(executable)],
+                           check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as error:
+            if 'cannot find -lubsan' not in error.stderr:
+                raise
+            print('UBSan runtime unavailable; running functional assertions without sanitizer')
+            subprocess.run(command + [str(cpp), '-o', str(executable)], check=True)
         return subprocess.run([str(executable)], check=False).returncode
 
 

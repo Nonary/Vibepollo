@@ -3327,18 +3327,24 @@ TEST(DisplayHelperV2StateMachine, TickDrivesScheduledRestoreRetries) {
   harness.state_machine.handle_tick();
   EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 1);
 
-  // A generic event from the failed restore cannot reopen the exhausted
-  // window or bypass the existing event/backoff admission rule.
+  // After the bounded window expires, a generic topology event is fresh
+  // evidence and opens one new retry window.
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
     display_helper::v2::DisplayEvent::DisplayChange,
     harness.cancellation.current_generation()});
-  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 1);
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 2);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Recovery);
+
+  harness.dispatcher.recovery_completion(recovery_fail);
+  harness.drain_messages();
+  harness.clock.advance(std::chrono::minutes(3));
+  harness.state_machine.handle_tick();
 
   // Identity-bearing evidence re-opens an event window and retries immediately.
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
     display_helper::v2::DisplayEvent::DeviceArrival,
     harness.cancellation.current_generation()});
-  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 2);
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 3);
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Recovery);
 }
 

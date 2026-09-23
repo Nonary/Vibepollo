@@ -15,6 +15,7 @@ body = source[start:end]
 a = body.index("    auto g = util::fail_guard(")
 b = body.index("    });", a) + len("    });")
 body = body[:a] + body[b:]
+body = body.replace("    stream::session::cleanup_reservation_t cleanup_reservation;", "")
 body = body.replace("resp_https_t response", "resp_https_t /*response*/")
 body += "    ++authorized_teardowns;\n  }\n"
 downstream = "has_client_perm(verified_client" in body

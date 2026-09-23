@@ -150,5 +150,12 @@ with tempfile.TemporaryDirectory(prefix="vdisplay-scale-") as directory:
     source = pathlib.Path(directory) / "test.cpp"
     binary = pathlib.Path(directory) / "test"
     source.write_text(harness)
-    subprocess.run([sys.argv[1] if len(sys.argv)>1 else "c++", "-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsanitize=undefined", "-fno-sanitize-recover=undefined", str(source), "-o", str(binary)], check=True)
+    command = [sys.argv[1] if len(sys.argv)>1 else "c++", "-std=c++20", "-Wall", "-Wextra", "-Werror"]
+    try:
+        subprocess.run(command + ["-fsanitize=undefined", "-fno-sanitize-recover=undefined", str(source), "-o", str(binary)], check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as error:
+        if "cannot find -lubsan" not in error.stderr:
+            raise
+        print("UBSan runtime unavailable; running functional assertions without sanitizer")
+        subprocess.run(command + [str(source), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
