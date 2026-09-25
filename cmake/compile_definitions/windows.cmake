@@ -341,3 +341,12 @@ if(SUNSHINE_ENABLE_TRAY)
     list(APPEND PLATFORM_TARGET_FILES
             "${CMAKE_SOURCE_DIR}/third-party/tray/src/tray_windows.c")
 endif()
+
+# PyroWave host encoder: D3D11 colour conversion into the Vulkan encoder. Without
+# it, src/pyrowave_host.cpp provides the unavailable stub.
+if(SUNSHINE_ENABLE_PYROWAVE)
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_d3d11_core.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_d3d11_core.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_encode.cpp")
+endif()
