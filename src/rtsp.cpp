@@ -1990,6 +1990,7 @@ namespace rtsp_stream {
     const auto bitrate = pending_policy::negotiate_bitrate(
       configuredBitrateKbps, config.monitor.bitrate, config::video.max_bitrate,
       {config.monitor.framerate, config.monitor.encodingFramerate}, config::video.limit_framerate,
+      // PyroWave protects only its few critical packets, so it keeps the usual FEC share.
       pyrowave_session ? 0 : config::stream.fec_percentage,
       config.audio.channels, config.audio.flags[audio::config_t::HIGH_QUALITY]
     );

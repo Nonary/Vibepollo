@@ -6191,6 +6191,7 @@ namespace video {
     params.bitrate_kbps = config.bitrate;
     params.framing = config.pyrowave_framing;
     params.packetsize = config.packetsize;
+    params.critical_fec = config::stream.pyrowave_critical_fec_percentage > 0;
 
     auto encoder = pyrowave::host::make_encoder(params, disp);
     if (!encoder) {
@@ -6226,6 +6227,7 @@ namespace video {
     }
 
     std::vector<std::uint8_t> frame;
+    std::size_t critical_bytes = 0;
     while (true) {
       const bool reinit_pending = reinit_event.peek() && frame_nr > 1;
       if (shutdown_event->peek() || !images->running() || reinit_pending) {
@@ -6263,7 +6265,7 @@ namespace video {
         return false;
       }
 
-      const int result = encoder->encode(*last_img, frame);
+      const int result = encoder->encode(*last_img, frame, critical_bytes);
       if (result < 0) {
         BOOST_LOG(error) << "PyroWave: encoding failed; ending the video stream"sv;
         return false;
@@ -6275,6 +6277,7 @@ namespace video {
       auto packet = std::make_unique<packet_raw_generic>(std::move(frame), frame_nr++, true);
       frame = {};
       packet->channel_data = channel_data;
+      packet->pyrowave_critical_bytes = critical_bytes;
       packet->frame_timestamp = frame_timestamp;
       packet->host_processing_timestamp = host_processing_timestamp;
       packet->packet_enqueue_timestamp = std::chrono::steady_clock::now();

@@ -36,6 +36,7 @@ namespace pyrowave::host {
     int bitrate_kbps = 0;  ///< Adjusted encoder bitrate (audio and control overhead removed).
     policy::framing_e framing = policy::framing_e::records;
     int packetsize = 0;  ///< Negotiated RTP packet size, for record alignment.
+    bool critical_fec = false;  ///< stream.cpp adds an FEC block for the critical shards.
   };
 
   class encoder_t {
@@ -44,10 +45,12 @@ namespace pyrowave::host {
 
     /**
      * @brief Encode one captured image, replacing `out` with the framed frame.
+     * @param critical_bytes Receives the frame bytes through the coarsest wavelet level
+     *        (record framing), or 0 when the framing has no such prefix.
      * @return 0 on success; negative on a fatal error (end the session); positive
      *         when this frame was skipped but the session can continue.
      */
-    virtual int encode(platf::img_t &img, std::vector<std::uint8_t> &out) = 0;
+    virtual int encode(platf::img_t &img, std::vector<std::uint8_t> &out, std::size_t &critical_bytes) = 0;
 
     /// Apply a new encoder bitrate (dynamic bitrate); only the per-frame budget changes.
     virtual void set_bitrate(int bitrate_kbps) = 0;

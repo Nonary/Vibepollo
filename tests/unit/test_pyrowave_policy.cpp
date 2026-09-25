@@ -120,6 +120,7 @@ TEST(PyroWavePolicy, RecordFrameRoundTripsAndAlignsToShards) {
     EXPECT_EQ(info.late_oversized_records, 0u) << "seed " << seed;
     EXPECT_EQ(info.late_coarse_records, 0u) << "seed " << seed;
     EXPECT_EQ(info.oversized_records, stats->oversized_records) << "seed " << seed;
+    EXPECT_EQ(info.critical_bytes, stats->critical_bytes) << "seed " << seed;
     // First-fit keeps padding small (strict order costs about 20% here).
     EXPECT_LT(stats->padding_bytes * 100, frame.size() * 2) << "seed " << seed;
 
@@ -198,6 +199,126 @@ TEST(PyroWavePolicy, RecordFrameSendsTheCoarsestLevelFirst) {
   EXPECT_EQ(info.late_coarse_records, 0u);
   EXPECT_EQ(info.misaligned_records, 0u);
   EXPECT_EQ(records_by_index(info.stripped), records_by_index(bitstream));
+}
+
+TEST(PyroWavePolicy, RecordFrameReportsTheCriticalPrefix) {
+  // Coarse records of every size come first, oversized ones leading; the finer
+  // level's oversized records then precede its ordinary ones.
+  std::vector<std::uint32_t> words(52, 10);
+  words[3] = 1000;  // coarse, oversized
+  words[50] = 1000;  // finer, oversized
+  const auto bitstream = make_bitstream(words);
+  std::vector<std::uint8_t> frame;
+  const auto stats = write_record_frame(bitstream, SHARD, frame);
+  ASSERT_TRUE(stats);
+  EXPECT_EQ(stats->oversized_records, 2u);
+
+  const auto info = inspect_record_frame(frame, SHARD);
+  ASSERT_TRUE(info.valid) << info.error;
+  EXPECT_EQ(info.late_coarse_records, 0u);
+  EXPECT_EQ(info.late_oversized_records, 0u);
+  EXPECT_EQ(info.misaligned_records, 0u);
+  EXPECT_EQ(info.critical_bytes, stats->critical_bytes);
+  // The sequence header, the oversized coarse record, 47 small ones and padding
+  EXPECT_GE(stats->critical_bytes, 8u + 4000u + 47u * 40u);
+  EXPECT_LT(stats->critical_bytes, 8u + 4000u + 47u * 40u + SHARD);
+  // The oversized coarse record leads, and the finer oversized one follows the prefix
+  EXPECT_EQ(get_u32(frame.data() + 8 + 4) >> 8, 3u);
+  std::size_t position = stats->critical_bytes;
+  while (get_u32(frame.data() + position) == protocol::PADDING_MAGIC) {
+    position += 8 + 4 * std::size_t(get_u32(frame.data() + position + 4));
+  }
+  EXPECT_EQ(get_u32(frame.data() + position + 4) >> 8, 50u);
+}
+
+TEST(PyroWavePolicy, RecordStartShardsMarkWhereAReceiverCanResume) {
+  // 64-byte shards; the first holds 56 frame bytes after the frame header.
+  //   shard 0 [0, 56):    sequence header, 48-byte block
+  //   shard 1 [56, 120):  56-byte block, 8-byte padding
+  //   shard 2 [120, 184): two 32-byte blocks
+  //   shard 3-4 [184, 304): 120-byte block, then padding up to 312
+  //   shard 5 [312, 368): 56-byte block
+  std::vector<std::uint8_t> frame = make_bitstream({});
+  const auto put_block = [&](std::uint32_t index, std::uint32_t words) {
+    put_u32(frame, 0x5a5au | (words << 16));
+    put_u32(frame, 7u | (index << 8));
+    for (std::uint32_t w = 2; w < words; w++) {
+      put_u32(frame, w);
+    }
+  };
+  const auto put_padding = [&](std::uint32_t bytes) {
+    put_u32(frame, protocol::PADDING_MAGIC);
+    put_u32(frame, bytes / 4 - 2);
+    frame.resize(frame.size() + bytes - 8, 0);
+  };
+  put_block(0, 12);
+  put_block(1, 14);
+  put_padding(8);
+  put_block(2, 8);
+  put_block(3, 8);
+  put_block(4, 30);
+  put_padding(8);
+  put_block(5, 14);
+  ASSERT_EQ(frame.size(), 368u);
+
+  const std::vector<bool> expected {true, true, true, true, false, true};
+  EXPECT_EQ(record_start_shards(frame, 64), expected);
+
+  // A frame that cannot be walked gets no flags rather than wrong ones
+  frame.resize(frame.size() - 4);
+  EXPECT_TRUE(record_start_shards(frame, 64).empty());
+  EXPECT_TRUE(record_start_shards(frame, 0).empty());
+}
+
+TEST(PyroWavePolicy, ParityShardsMatchTheFecEncoder) {
+  EXPECT_EQ(parity_shards(21, 20, 2), 5u);
+  EXPECT_EQ(parity_shards(7, 20, 2), 2u);
+  EXPECT_EQ(parity_shards(1, 20, 2), 2u);
+  EXPECT_EQ(parity_shards(10, 100, 2), 10u);
+  EXPECT_EQ(parity_shards(21, 0, 2), 0u);
+}
+
+TEST(PyroWavePolicy, FecPlanProtectsOnlyTheCriticalShards) {
+  const auto plan = plan_fec_blocks(400, 21, 20, 2);
+  ASSERT_EQ(plan.size(), 3u);
+  EXPECT_EQ(plan[0].data_shards, 21u);
+  EXPECT_EQ(plan[0].fec_percentage, 20);
+  EXPECT_EQ(plan[1].data_shards, 190u);
+  EXPECT_EQ(plan[1].fec_percentage, 0);
+  EXPECT_EQ(plan[2].data_shards, 189u);
+  EXPECT_EQ(plan[2].fec_percentage, 0);
+
+  // A frame that is all critical is one protected block
+  const auto tiny = plan_fec_blocks(5, 9, 20, 2);
+  ASSERT_EQ(tiny.size(), 1u);
+  EXPECT_EQ(tiny[0].data_shards, 5u);
+  EXPECT_EQ(tiny[0].fec_percentage, 20);
+
+  // The largest frame the encoder budget allows still fits three unprotected blocks
+  const auto large = plan_fec_blocks(3000 + 30, 30, 20, 2);
+  ASSERT_EQ(large.size(), 4u);
+  for (std::size_t i = 1; i < large.size(); i++) {
+    EXPECT_LE(large[i].data_shards, MAX_FEC_BLOCK_SHARDS);
+  }
+}
+
+TEST(PyroWavePolicy, FecPlanFallsBackToNoParity) {
+  const auto expect_unprotected = [](const std::vector<fec_block_t> &plan, std::size_t total, std::size_t blocks) {
+    ASSERT_EQ(plan.size(), blocks);
+    std::size_t sum = 0;
+    for (const auto &block : plan) {
+      EXPECT_EQ(block.fec_percentage, 0);
+      sum += block.data_shards;
+    }
+    EXPECT_EQ(sum, total);
+  };
+
+  // Disabled, nothing critical, or too large for one Reed-Solomon block
+  expect_unprotected(plan_fec_blocks(400, 21, 0, 2), 400, 2);
+  expect_unprotected(plan_fec_blocks(400, 0, 20, 2), 400, 2);
+  expect_unprotected(plan_fec_blocks(400, 230, 20, 2), 400, 2);
+  expect_unprotected(plan_fec_blocks(3900, 0, 20, 2), 3900, 4);
+  EXPECT_TRUE(plan_fec_blocks(0, 0, 20, 2).empty());
 }
 
 TEST(PyroWavePolicy, RecordFrameNeverStrandsFourBytes) {

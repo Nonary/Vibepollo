@@ -57,4 +57,8 @@ namespace pyrowave::protocol {
   constexpr int SHARD_OVERHEAD_BYTES = 16;
   /// The short frame header occupies the start of the first shard's payload.
   constexpr std::size_t FRAME_HEADER_BYTES = 8;
+
+  /// `NV_VIDEO_PACKET::extraFlags` bit set on a record-framed shard whose frame data
+  /// starts with a record, where a client that lost a record header resumes parsing.
+  constexpr std::uint8_t EXTRA_FLAG_RECORD_START = 0x80;
 }  // namespace pyrowave::protocol

@@ -356,6 +356,9 @@ namespace video {
     void *channel_data = nullptr;
     bool after_ref_frame_invalidation = false;
     // Pacing/scheduled timestamp used for transport timing.
+    /// PyroWave record framing: frame bytes through the coarsest wavelet level, whose
+    /// packets stream.cpp protects with parity and announces; 0 when unknown.
+    std::size_t pyrowave_critical_bytes = 0;
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
     // Raw capture/QPC-derived timestamp before pacing adjustments.
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
