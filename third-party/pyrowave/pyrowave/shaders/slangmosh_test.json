@@ -1,0 +1,14 @@
+{
+	"shaders": [
+		{
+			"name": "test_write_ycbcr",
+			"compute": true,
+			"path": "test_write_ycbcr.comp"
+		},
+		{
+			"name": "test_read_ycbcr",
+			"compute": true,
+			"path": "test_read_ycbcr.comp"
+		}
+	]
+}

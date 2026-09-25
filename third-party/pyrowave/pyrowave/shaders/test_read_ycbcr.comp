@@ -1,0 +1,16 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uTex;
+layout(set = 0, binding = 1) writeonly buffer Readback
+{
+	uint colors[];
+};
+
+void main()
+{
+	ivec2 res = ivec2(gl_WorkGroupSize.xy * gl_NumWorkGroups.xy);
+	vec4 rgb = textureLod(uTex, (vec2(gl_GlobalInvocationID.xy) + 0.5) / vec2(res), 0.0);
+	colors[gl_GlobalInvocationID.y * res.x + gl_GlobalInvocationID.x] = packUnorm4x8(rgb);
+}

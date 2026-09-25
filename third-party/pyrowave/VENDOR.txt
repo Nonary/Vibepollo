@@ -1,0 +1,11 @@
+﻿PyroWave codec, vendored by vendor-pyrowave.ps1. Do not edit by hand; add a
+patch under patches/ and rerun the script instead.
+
+pyrowave:        186f0393b77f7755953b5ecde994bb1cec2e4155 (https://github.com/Themaister/pyrowave)
+Granite:         b6cffd5ce81f540f0855e6778428483e14763d9b (https://github.com/Themaister/Granite)
+volk:            47cddf7ed97b94118a08aacb548a411188e016cc
+vulkan-headers:  6802bb4733b63ed5efd3adb308a6c885ef180ea1
+
+The PyroWave bitstream carries no version field. The host and the client must be
+built from the same pyrowave commit; the RTSP handshake advertises it as
+PYROWAVE_BITSTREAM_ID in pyrowave_protocol.h.

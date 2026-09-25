@@ -1,0 +1,100 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace = '$$NAMESPACE$$'
+    compileSdkVersion = 34
+
+    defaultConfig {
+        minSdkVersion = 26
+        targetSdkVersion = 34
+
+        ndk {
+            abiFilters = [$$ABIS$$]
+        }
+    }
+
+    ndkVersion = '29.0.14206865'
+
+    buildTypes {
+        debug {
+            externalNativeBuild {
+                cmake {
+                    arguments = ["-DANDROID_TOOLCHAIN=clang",
+                            "-DANDROID_STL=c++_shared",
+                            "-DANDROID_ARM_MODE=arm",
+                            "-DANDROID_CPP_FEATURES=exceptions",
+                            "-DGRANITE_SHADER_COMPILER_OPTIMIZE=$$SHADER_OPTIMIZE$$",
+                            "-DGRANITE_VULKAN_FOSSILIZE=$$FOSSILIZE$$",
+                            "-DGRANITE_ANDROID_SWAPPY=$$SWAPPY$$",
+                            "-DCMAKE_BUILD_TYPE=Debug",
+                            "-DANDROID_PLATFORM=android-26",
+                            "-DGRANITE_SHIPPING=ON",
+                            "-DGRANITE_AUDIO=$$AUDIO$$",
+                            "-DGRANITE_BULLET=$$PHYSICS$$",
+                            "-DANDROID_ARM_NEON=ON",
+                            "-DANDROID_USE_LEGACY_TOOLCHAIN_FILE=OFF",
+                            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"]
+
+                    targets = ["$$TARGET$$"]
+                }
+            }
+            jniDebuggable = true
+        }
+        release {
+            externalNativeBuild {
+                cmake {
+                    arguments = ["-DANDROID_TOOLCHAIN=clang",
+                            "-DANDROID_STL=c++_shared",
+                            "-DANDROID_ARM_MODE=arm",
+                            "-DANDROID_CPP_FEATURES=exceptions",
+                            "-DGRANITE_SHADER_COMPILER_OPTIMIZE=$$SHADER_OPTIMIZE$$",
+                            "-DGRANITE_VULKAN_FOSSILIZE=$$FOSSILIZE$$",
+                            "-DGRANITE_ANDROID_SWAPPY=$$SWAPPY$$",
+                            "-DCMAKE_BUILD_TYPE=Release",
+                            "-DANDROID_PLATFORM=android-26",
+                            "-DGRANITE_SHIPPING=ON",
+                            "-DGRANITE_AUDIO=$$AUDIO$$",
+                            "-DGRANITE_BULLET=$$PHYSICS$$",
+                            "-DANDROID_ARM_NEON=ON",
+                            "-DANDROID_USE_LEGACY_TOOLCHAIN_FILE=OFF",
+                            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"]
+
+                    targets = ["$$TARGET$$"]
+                }
+            }
+            debuggable = true
+            signingConfig = signingConfigs.debug
+            jniDebuggable = true
+        }
+    }
+
+    sourceSets {
+        main {
+            manifest.srcFile 'AndroidManifest.xml'
+            resources.srcDirs = ['res']
+            res.srcDirs = ['res']
+            assets.srcDirs = ['$$ASSETS$$', '$$GRANITE_ASSETS$$']
+            jniLibs.srcDirs = ['$$EXTERNAL_JNI$$']
+            $$GRANITE_AUX_ASSETS$$
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = "$$CMAKELISTS$$"
+            version = "3.22.0+"
+        }
+    }
+
+    buildFeatures {
+        prefab = true
+    }
+}
+
+dependencies {
+    api project(':granite')
+    implementation 'androidx.games:games-activity:4.0.0'
+    implementation 'androidx.games:games-controller:2.0.2'
+    implementation 'androidx.games:games-frame-pacing:2.1.3'
+    $$EXTRA_DEPENDENCIES$$
+}

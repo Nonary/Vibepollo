@@ -1,0 +1,20 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) writeonly uniform image2D uLuma;
+layout(set = 0, binding = 1) writeonly uniform image2D uCb;
+layout(set = 0, binding = 2) writeonly uniform image2D uCr;
+
+void main()
+{
+	vec3 ycbcr;
+
+	ycbcr.x = float(128 + ((gl_GlobalInvocationID.x & 3) ^ (gl_GlobalInvocationID.y & 7))) / 255.0;
+	ycbcr.y = float(128 + ((gl_GlobalInvocationID.x & 7) ^ (gl_GlobalInvocationID.y & 3))) / 255.0;
+	ycbcr.z = float(128 + ((gl_GlobalInvocationID.x & 7) ^ (gl_GlobalInvocationID.y & 7))) / 255.0;
+
+	imageStore(uLuma, ivec2(gl_GlobalInvocationID.xy), ycbcr.xxxx);
+	imageStore(uCb, ivec2(gl_GlobalInvocationID.xy), ycbcr.yyyy);
+	imageStore(uCr, ivec2(gl_GlobalInvocationID.xy), ycbcr.zzzz);
+}
