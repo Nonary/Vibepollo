@@ -6207,7 +6207,7 @@ namespace video {
    * PyroWave bypasses encoder_t: every frame is intra-coded, so IDR requests and
    * reference frame invalidation need no action, and a bitrate change only moves the
    * per-frame byte budget. When no new capture arrives within the minimum-FPS
-   * interval, the last image is encoded again.
+   * interval (by default a fifth of the stream rate), the last image is encoded again.
    *
    * @return true when the capture side is reinitializing and the session should
    *         continue with the new display; false when the stream is over or the
@@ -6244,7 +6244,13 @@ namespace video {
       encoder.reset();
     });
 
-    const double minimum_fps_target = (config::video.minimum_fps_target > 0.0) ? config::video.minimum_fps_target : config.framerate;
+    // A repeat is a full intra frame at a budget sized for the capture rate, so repeating
+    // at the stream rate would send up to twice the bitrate whenever the game renders below
+    // it. By default repeat only at a fifth of the stream rate (at least 10 fps), which is
+    // enough to recover a static screen from a lost frame. Adapted from dimizago's Vibepollo.
+    const double minimum_fps_target = (config::video.minimum_fps_target > 0.0) ?
+                                        config::video.minimum_fps_target :
+                                        std::max(config.framerate / 5.0, 10.0);
     const std::chrono::duration<double, std::milli> max_frametime {1000.0 / std::max(minimum_fps_target, 1.0)};
 
     auto shutdown_event = mail->event<bool>(mail::shutdown);

@@ -201,6 +201,12 @@ bounded to at most twice the nominal per-frame budget. PyroWave's rate control n
 exceeds that budget. Padding records are counted against the wire bitrate, not the
 budget.
 
+When no new capture arrives, the host re-encodes the last image at the minimum FPS
+target (`minimum_fps_target`, by default a fifth of the stream rate and at least 10
+fps), so a static screen recovers from a lost frame. Repeats do not count as captures,
+and the default is low enough that a game rendering below the stream rate is never
+padded out with repeats at its enlarged per-frame budget.
+
 Guidance: about 1.6 bits per pixel is visually clean for 4:2:0 SDR (Themaister's
 reference point, 200 Mbps at 1080p60). 4:4:4 costs about 1.6x, and 10-bit about
 1.15x.
