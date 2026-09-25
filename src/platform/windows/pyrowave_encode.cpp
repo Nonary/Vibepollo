@@ -37,8 +37,10 @@ using namespace std::literals;
 namespace pyrowave::host {
   namespace {
     // Frames needing more shards than this cannot be sent: stream.cpp splits a frame into
-    // at most 4 FEC blocks of fewer than 1024 shards each. Leave room for padding records.
+    // at most 4 FEC blocks of fewer than 1024 shards each, one of them the critical block
+    // when that has parity. Leave room for padding records.
     constexpr std::size_t MAX_FRAME_SHARDS = 4000;
+    constexpr std::size_t MAX_FRAME_SHARDS_WITH_CRITICAL_FEC = 3000;
     constexpr std::size_t MAX_FRAME_BYTES_UNALIGNED = 4 * 1024 * 1024;
 
     void log_core_message(int level, const std::string &message) {
@@ -87,7 +89,8 @@ namespace pyrowave::host {
           budget {params.framerate, params.bitrate_kbps, max_frame_bytes(params)},
           encode_logger {debug, "PyroWave: encode (GPU wait)", "ms"},
           frame_size_logger {debug, "PyroWave: frame size", "KiB"},
-          padding_logger {debug, "PyroWave: record padding", "%"} {
+          padding_logger {debug, "PyroWave: record padding", "%"},
+          critical_logger {debug, "PyroWave: critical (coarsest level) share", "%"} {
         framing.framing = params.framing;
         framing.shard_payload = policy::shard_payload_bytes(params.packetsize);
 
@@ -98,7 +101,8 @@ namespace pyrowave::host {
                         << " (shard payload "sv << framing.shard_payload << "), budget "sv << budget.bytes_per_frame() << " bytes/frame"sv;
       }
 
-      int encode(platf::img_t &img_base, std::vector<std::uint8_t> &out) override {
+      int encode(platf::img_t &img_base, std::vector<std::uint8_t> &out, std::size_t &critical_bytes) override {
+        critical_bytes = 0;
         if (failed) {
           return -1;
         }
@@ -150,6 +154,12 @@ namespace pyrowave::host {
         if (stats.frame_bytes) {
           padding_logger.collect_and_log(100.0 * double(stats.records.padding_bytes) / double(stats.frame_bytes));
         }
+        if (params.framing == policy::framing_e::records && framing.shard_payload) {
+          critical_bytes = stats.records.critical_bytes;
+          if (stats.frame_bytes) {
+            critical_logger.collect_and_log(100.0 * double(critical_bytes) / double(stats.frame_bytes));
+          }
+        }
         return 0;
       }
 
@@ -179,7 +189,7 @@ namespace pyrowave::host {
 
       static std::size_t max_frame_bytes(const session_params_t &params) {
         const auto shard = policy::shard_payload_bytes(params.packetsize);
-        return shard ? MAX_FRAME_SHARDS * shard : MAX_FRAME_BYTES_UNALIGNED;
+        return shard ? (params.critical_fec ? MAX_FRAME_SHARDS_WITH_CRITICAL_FEC : MAX_FRAME_SHARDS) * shard : MAX_FRAME_BYTES_UNALIGNED;
       }
 
       bool create_core(platf::dxgi::img_d3d_t &img) {
@@ -272,6 +282,7 @@ namespace pyrowave::host {
       logging::min_max_avg_periodic_logger<double> encode_logger;
       logging::min_max_avg_periodic_logger<double> frame_size_logger;
       logging::min_max_avg_periodic_logger<double> padding_logger;
+      logging::min_max_avg_periodic_logger<double> critical_logger;
     };
   }  // namespace
 

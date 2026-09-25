@@ -2370,7 +2370,8 @@ namespace rtsp_stream {
 
       // If the FEC percentage isn't too high, adjust the configured bitrate to ensure video
       // traffic doesn't exceed the user's selected bitrate when the FEC shards are included.
-      // PyroWave is sent without FEC (see stream.cpp), so it keeps that share.
+      // PyroWave only adds parity to its few critical packets (see stream.cpp), so it
+      // keeps that share.
       if (config::stream.fec_percentage <= 80 && !pyrowave_session) {
         configuredBitrateKbps /= 100.f / (100 - config::stream.fec_percentage);
       }

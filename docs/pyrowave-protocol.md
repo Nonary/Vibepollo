@@ -112,15 +112,34 @@ header `frameType` is always `2` (IDR). moonlight-common-c trims the last payloa
 to `lastPayloadLen` as it does for AV1. The host ignores IDR and
 reference-invalidation requests for PyroWave sessions.
 
-The host sends PyroWave without FEC (0% parity in `fecInfo`, whatever its
-`fec_percentage`). Every frame is independent, so a lost packet costs at most that
-frame, and with record framing usually only the detail it carried (see "Partial
-frames"); parity would add bytes, send time and encode time to every frame. It is
-meant for wired LANs where loss is rare. The frame is split into at most four
-blocks of at most 1023 shards, and the host caps a frame at 4000 shards (about
-5.5 MB with 1392-byte packets). It paces PyroWave packets at its
-`pyrowave_send_rate_mbps` setting, by default twice the stream bitrate and at least
-800 Mbps; the other codecs keep FEC and the stock 800 Mbps.
+Every frame is independent, so a lost packet costs at most that frame, and with
+record framing usually only the detail it carried (see "Partial frames"). The one
+part a client cannot do without is PyroWave's coarsest wavelet level, which record
+framing puts first (see "Layout"): the "critical" packets, a few percent of a
+frame (3-6% in our tests). Only they get parity (`fec_percentage` does not apply
+to PyroWave):
+
+- FEC block 0 is exactly the critical packets, with Reed-Solomon parity at the
+  host's `pyrowave_critical_fec_percentage` (default 20%, at least 2 parity
+  packets, in `fecInfo` as for any block). The rest of the frame follows in up to
+  three blocks without parity, each at most 255 packets like the blocks of the other
+  codecs. With the setting at 0, for length-prefixed framing, or when block 0 would
+  exceed a Reed-Solomon block (255 packets with parity), the whole frame goes in up
+  to four blocks without parity.
+- The last two bytes of the 8-byte short frame header (little-endian, unused by
+  stock Sunshine) carry the number of critical packets, 0 when unknown. Clients
+  that do not know it ignore these bytes.
+- In record framing, `NV_VIDEO_PACKET.extraFlags` bit `0x80` marks each packet
+  whose frame data starts with a record (the first packet always does). Clients
+  that do not know it ignore the bit; stock Sunshine only uses `0x1` (LTR).
+
+Parity on the rest would add bytes, send time and encode time to every frame for
+what is only a blurred area; PyroWave is meant for wired LANs where loss is rare.
+A block holds at most 1023 packets, so the host caps a frame at 3000 packets (about
+4.1 MB with 1392-byte packets) when critical FEC is on and 4000 (about 5.5 MB) when
+it is off. It paces PyroWave packets at its `pyrowave_send_rate_mbps` setting, by
+default twice the stream bitrate and at least 800 Mbps; the other codecs keep FEC
+and the stock 800 Mbps.
 
 ### Record framing (host default for PyroWave-aware clients)
 
@@ -142,24 +161,24 @@ little-endian records:
 Layout: the RTP layer splits the frame into payloads of `packetSize - 16` bytes
 (1376 for the usual 1392-byte packets); the first payload also carries the 8-byte
 frame header, so its frame data ends 8 bytes early. After the sequence header our
-host sends, in this order:
+host sends two groups:
 
-1. Oversized records: those too large to share a payload with a padding record
-   (more than a payload less 8 bytes), in encoder order. They span payloads. A
-   minimal padding record goes before one that would otherwise end 4 bytes before a
-   payload boundary.
-2. The remaining records of PyroWave's coarsest wavelet level: block indices below
+1. PyroWave's coarsest wavelet level: block indices below
    `12 * ceil(W / 32) * ceil(H / 32)`, where `W` and `H` are the frame's width and
    height rounded up to 32 pixels (at least 128), divided by 32. PyroWave indexes
-   these first.
-3. All other records.
+   these first. They end in the last critical packet.
+2. All other records.
 
-Groups 2 and 3 are each packed first-fit: when the next record does not fit the
-rest of a payload, a later record of the group that does fills it, and padding
-fills it only when none fits (well under 1% of the frame in practice, against
-16-21% if records kept strict encoder order). No record in these groups crosses a
-payload boundary, and no 4-byte remainder (too small for a padding record) is
-left, so every payload after the oversized records starts with a record.
+Within each group, oversized records (too large to share a payload with a padding
+record: more than a payload less 8 bytes) come first, in encoder order, and span
+payloads; a minimal padding record goes before one that would otherwise end 4 bytes
+before a payload boundary. The group's other records follow, packed first-fit: when
+the next record does not fit the rest of a payload, a later record of the group
+that does fills it, and padding fills it only when none fits (well under 1% of the
+frame in practice, against 16-21% if records kept strict encoder order). None of
+them crosses a payload boundary, and no 4-byte remainder (too small for a padding
+record) is left, so every payload after the second group's oversized records starts
+with a record.
 
 Receivers must not rely on this layout to parse a complete frame: they parse
 records sequentially and accept straddling records and padding anywhere. Only
@@ -203,27 +222,34 @@ discarding frames after four or more consecutive network drops.
 ### Partial frames
 
 Our client decodes a record-framed frame that lost packets. moonlight-common-c
-does not drop a PyroWave frame whose FEC block cannot complete: once the next
-block or frame starts arriving, each missing data packet is replaced by zeros and
-delivered as a `BUFFER_TYPE_LOST` buffer. The frame is still dropped when its first
-packet (sequence header) or a whole FEC block is missing.
+first repairs what parity can (the critical packets). It does not drop a PyroWave
+frame whose FEC block cannot complete: once the next block or frame starts
+arriving, each missing data packet is replaced by zeros and delivered as a
+`BUFFER_TYPE_LOST` buffer. The frame is still dropped when its first packet
+(sequence header) or a whole FEC block is missing, which parity on the critical
+block makes rare. Packets flagged `0x80` arrive as `BUFFER_TYPE_RECORD_START`
+buffers, and the critical packet count as `DECODE_UNIT.pyrowaveCriticalPackets`.
 
 The parser skips every record that lost a byte. A record whose header arrived but
 whose payload did not has a known end, so parsing continues after it. When a
-header itself was lost, parsing resumes at the start of the next received
-payload, which the layout above guarantees is a record boundary once a record of
-ordinary size (one that fits a payload with 8 bytes to spare) has been seen
-inside a single payload. Before that point the rest of the frame is given up.
+header itself was lost, parsing resumes at the next received payload flagged as
+starting with a record. From a host that does not flag payloads, it resumes at the
+next received payload only once a finer record of ordinary size (one that fits a
+payload with 8 bytes to spare) was seen inside a single payload, which the layout
+above makes a record boundary; before that the rest of the frame is given up.
 
-The coarsest level is intact when no loss came before the first ordinary record
-of a finer level. The frame is then decoded if more than 90% of its records
-arrived (`pyrowave_decoder_decode_is_ready_with_sideband` with no pristine-band
+The coarsest level is intact when none of the announced critical packets was lost
+(without an announcement: when no loss came before the first finer record). The
+frame is then decoded if more than 90% of its records arrived
+(`pyrowave_decoder_decode_is_ready_with_sideband` with no pristine-band
 requirement); missing finer blocks decode as zero coefficients, which blurs their
-area for that frame. PyroWave's own pristine-band check is not used because it
-cannot tell a lost block from an all-zero block that was never sent.
+area for that frame. Losing the packets right after the critical ones blurs the
+most, since they hold the next-coarsest level. PyroWave's own pristine-band check
+is not used because it cannot tell a lost block from an all-zero block that was
+never sent.
 
-Length-prefixed frames with any loss, and frames from hosts that do not follow the
-layout, lose everything after the first lost record header.
+Length-prefixed frames with any loss lose the frame, and frames from hosts that do
+not follow the layout lose everything after the first lost record header.
 
 Output planes are three single-channel UNORM images (R8 for 8-bit streams, R16 for
 10-bit): full-resolution Y, and Cb/Cr at half resolution in each direction for
@@ -234,8 +260,8 @@ Output planes are three single-channel UNORM images (R8 for 8-bit streams, R16 f
 ## Rate control
 
 The client's configured bitrate (`x-ml-video.configuredBitrateKbps`) is used exactly
-as for the other codecs; the host subtracts audio and control overhead (not FEC,
-which PyroWave does not use). The
+as for the other codecs; the host subtracts audio and control overhead, but not
+FEC: the critical packets' parity is well under 1% of the frame at the default. The
 per-frame byte budget is `bitrate / capture rate / 8`, where the capture rate is
 measured (a game at 60 fps in a 120 fps stream gets twice the bytes per frame),
 bounded to at most twice the nominal per-frame budget. PyroWave's rate control never

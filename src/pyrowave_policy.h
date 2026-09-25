@@ -48,6 +48,9 @@ namespace pyrowave::policy {
     std::size_t padding_bytes = 0;
     std::size_t oversized_records = 0;  ///< Records too large to share a shard with padding, which span shards.
     std::size_t reordered_records = 0;  ///< Records placed ahead of an earlier record to fill a shard.
+    /// Frame bytes through the last record of the coarsest wavelet level (at least the
+    /// sequence header). The shards holding them are the frame's critical shards.
+    std::size_t critical_bytes = 0;
   };
 
   /**
@@ -67,15 +70,18 @@ namespace pyrowave::policy {
    * (docs/pyrowave-protocol.md):
    *
    * 1. The sequence header.
-   * 2. Oversized records (too large to share a shard with a padding record), in
-   *    frame order. They span shards; a minimal padding record goes before one that
-   *    would otherwise end 4 bytes before a boundary.
-   * 3. The coarsest wavelet level's other records, then all remaining records, each
-   *    group packed first-fit: a shard remainder takes the earliest record of the
-   *    group that fits it, and a padding record fills it only when none fits. No
-   *    record crosses a shard boundary and no 4-byte remainder (too small for a
-   *    padding record) is left, so every shard after the oversized records starts
-   *    with a record.
+   * 2. The coarsest wavelet level, which a receiver cannot do without: its shards
+   *    (`critical_bytes`) are the ones stream.cpp protects with parity.
+   * 3. Every other record.
+   *
+   * Within groups 2 and 3, oversized records (too large to share a shard with a
+   * padding record) come first, in frame order. They span shards; a minimal padding
+   * record goes before one that would otherwise end 4 bytes before a boundary. The
+   * group's other records follow, packed first-fit: a shard remainder takes the
+   * earliest record of the group that fits it, and a padding record fills it only
+   * when none fits. None of them crosses a shard boundary and no 4-byte remainder
+   * (too small for a padding record) is left, so every shard after the finer
+   * level's oversized records starts with a record.
    *
    * Measured padding is well under 1% of the frame, against about 20% when records
    * keep strict order.
@@ -112,16 +118,60 @@ namespace pyrowave::policy {
     std::size_t misaligned_records = 0;  ///< Ordinary block or padding records that cross a shard boundary.
     std::size_t out_of_order_records = 0;  ///< Block records whose block_index is lower than the previous one.
     std::size_t oversized_records = 0;  ///< Records too large to share a shard with a padding record.
-    std::size_t late_oversized_records = 0;  ///< Oversized records after an ordinary block record.
-    std::size_t late_coarse_records = 0;  ///< Ordinary coarsest-level records after an ordinary finer one.
+    std::size_t late_oversized_records = 0;  ///< Oversized records after an ordinary record of their level.
+    std::size_t late_coarse_records = 0;  ///< Coarsest-level records after a finer one.
+    std::size_t critical_bytes = 0;  ///< Frame bytes through the last coarsest-level record.
     std::vector<std::uint8_t> stripped;  ///< The frame with padding records removed.
   };
+
+  /**
+   * @brief Which shards of a record-framed frame start with a record.
+   *
+   * Shard 0 holds the frame from its first byte (after the frame header) and so starts
+   * with the sequence header; shard s > 0 starts at frame byte s * shard_payload -
+   * FRAME_HEADER_BYTES. A record here is a sequence header, block or padding record.
+   * @return One entry per shard, or empty when the frame cannot be walked.
+   */
+  std::vector<bool> record_start_shards(std::span<const std::uint8_t> frame, std::size_t shard_payload);
 
   /**
    * @brief Parse a record-framed frame the way a receiver does.
    * @param shard_payload Shard size used for the alignment statistics; 0 skips them.
    */
   record_frame_info_t inspect_record_frame(std::span<const std::uint8_t> frame, std::size_t shard_payload);
+
+  /// One FEC block of a PyroWave frame.
+  struct fec_block_t {
+    std::size_t data_shards;
+    int fec_percentage;
+  };
+
+  /// stream.cpp sends a frame in at most this many FEC blocks (2 bits in the header).
+  constexpr std::size_t MAX_FEC_BLOCKS = 4;
+  /// Data shards one FEC block can index (10 bits in the header).
+  constexpr std::size_t MAX_FEC_BLOCK_SHARDS = 1023;
+  /// Data plus parity shards one Reed-Solomon block (GF(2^8)) can hold.
+  constexpr std::size_t MAX_REED_SOLOMON_SHARDS = 255;
+
+  /**
+   * @brief Split a PyroWave frame into FEC blocks.
+   *
+   * Only the frame's first `critical_shards` (the sequence header and the coarsest
+   * wavelet level) get parity, as block 0 at `critical_fec_percentage` with at least
+   * `min_parity_shards` parity shards. Losing any of them costs the whole frame,
+   * while a lost finer record only blurs its area. The rest is split evenly into up
+   * to three blocks without FEC. Parity is skipped when the percentage is 0, there is
+   * nothing critical, or block 0 would exceed a Reed-Solomon block; the frame is then
+   * split as before, into up to four blocks without FEC.
+   *
+   * Blocks are listed in order and their shards add up to `total_shards`. A frame
+   * too large for the blocks gets blocks over MAX_FEC_BLOCK_SHARDS, which the caller
+   * reports; the encoder's frame budget keeps that from happening.
+   */
+  std::vector<fec_block_t> plan_fec_blocks(std::size_t total_shards, std::size_t critical_shards, int critical_fec_percentage, std::size_t min_parity_shards);
+
+  /// Parity shards stream.cpp's FEC encoder adds to a block of `data_shards`.
+  std::size_t parity_shards(std::size_t data_shards, int fec_percentage, std::size_t min_parity_shards);
 
   /**
    * @brief Per-frame byte budget for an intra-only codec.

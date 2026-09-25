@@ -2658,6 +2658,38 @@ this option to replace the running app immediately. The default is `true`.
     </tr>
 </table>
 
+### pyrowave_critical_fec_percentage
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Percentage of error correcting packets for the packets that carry the coarsest wavelet level of a
+            PyroWave frame, the first few percent of it. The client cannot decode a frame that lost any of them,
+            while a loss elsewhere only blurs a small area for one frame, so only these packets are protected,
+            with at least 2 error correcting packets per frame. The rest of the frame is sent without error
+            correction, and `fec_percentage` does not apply to PyroWave. 0 disables it, which also allows frames
+            up to about 5.5 MB instead of 4.1 MB with 1392-byte packets.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            20
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">0-255</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            pyrowave_critical_fec_percentage = 50
+            @endcode</td>
+    </tr>
+</table>
+
 ### qp
 
 <table>

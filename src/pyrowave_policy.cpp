@@ -225,36 +225,44 @@ namespace pyrowave::policy {
       stats.padding_bytes += bytes;
     };
 
-    // Oversized records go first and span shards wherever they start. Each is
-    // shifted by a minimal padding record when it would end 4 bytes before a
-    // boundary, since nothing could fill that remainder.
+    // The coarsest wavelet level goes first: a receiver cannot decode a frame that
+    // lost any of it, so those shards (critical_bytes) are the ones worth parity.
+    // Then everything else. Within each group, oversized records come first and span
+    // shards wherever they start; each is shifted by a minimal padding record when it
+    // would end 4 bytes before a boundary, since nothing could fill that remainder.
+    // The group's other records follow, packed first-fit without crossing a shard
+    // boundary, so every shard after the finer level's oversized records starts with
+    // a record.
     std::vector<std::size_t> coarse;
     std::vector<std::size_t> fine;
     for (std::size_t i = 0; i < records.size(); i++) {
-      if (oversized(records[i].size, shard_payload)) {
-        if (records[i].size % shard_payload == remaining() - 4) {
-          pad(PADDING_RECORD_MIN_BYTES);
-        }
-        place(records[i]);
-        ++stats.oversized_records;
-      } else {
-        (records[i].block_index < coarse_blocks ? coarse : fine).push_back(i);
-      }
+      (records[i].block_index < coarse_blocks ? coarse : fine).push_back(i);
     }
 
-    // Then the coarsest wavelet level, then everything else, each packed first-fit
-    // without crossing a shard boundary: every later shard starts with a record.
     for (const auto *group : {&coarse, &fine}) {
-      std::vector<std::uint32_t> words;
-      words.reserve(group->size());
+      std::vector<std::size_t> ordinary;
       for (const auto i : *group) {
+        if (oversized(records[i].size, shard_payload)) {
+          if (records[i].size % shard_payload == remaining() - 4) {
+            pad(PADDING_RECORD_MIN_BYTES);
+          }
+          place(records[i]);
+          ++stats.oversized_records;
+        } else {
+          ordinary.push_back(i);
+        }
+      }
+
+      std::vector<std::uint32_t> words;
+      words.reserve(ordinary.size());
+      for (const auto i : ordinary) {
         words.push_back(std::uint32_t(records[i].size / 4));
       }
 
       fit_index_t fit(words);
-      std::vector<bool> placed(group->size(), false);
+      std::vector<bool> placed(ordinary.size(), false);
       std::size_t earliest = 0;
-      for (std::size_t left = group->size(); left != 0;) {
+      for (std::size_t left = ordinary.size(); left != 0;) {
         while (placed[earliest]) {
           ++earliest;
         }
@@ -280,7 +288,11 @@ namespace pyrowave::policy {
         placed[chosen] = true;
         fit.remove(words[chosen]);
         --left;
-        place(records[(*group)[chosen]]);
+        place(records[ordinary[chosen]]);
+      }
+
+      if (group == &coarse) {
+        stats.critical_bytes = out.size() - frame_start;
       }
     }
 
@@ -317,7 +329,8 @@ namespace pyrowave::policy {
     };
 
     std::uint32_t coarse_blocks = 0;
-    bool seen_ordinary = false;
+    bool seen_ordinary_coarse = false;
+    bool seen_ordinary_fine = false;
     bool seen_fine = false;
 
     // Returns whether the record is oversized; ordinary records and padding must
@@ -379,6 +392,7 @@ namespace pyrowave::policy {
         }
         info.chroma444 = ((word1 >> 26) & 0x1) != 0;
         coarse_blocks = coarse_block_count(info.width, info.height);
+        info.critical_bytes = position + 8;
         note_alignment(position, 8);
         info.stripped.insert(info.stripped.end(), record, record + 8);
         position += 8;
@@ -402,16 +416,25 @@ namespace pyrowave::policy {
       }
       last_block_index = block_index;
       ++info.block_records;
-      if (note_alignment(position, bytes)) {
-        if (seen_ordinary) {
-          ++info.late_oversized_records;
-        }
-      } else if (shard_payload) {
-        seen_ordinary = true;
-        if (block_index >= coarse_blocks) {
-          seen_fine = true;
-        } else if (seen_fine) {
+      if (shard_payload) {
+        const bool coarse = block_index < coarse_blocks;
+        if (coarse && seen_fine) {
           ++info.late_coarse_records;
+        }
+        if (note_alignment(position, bytes)) {
+          // Each level's oversized records precede its ordinary ones
+          if (coarse ? seen_ordinary_coarse : seen_ordinary_fine) {
+            ++info.late_oversized_records;
+          }
+        } else if (coarse) {
+          seen_ordinary_coarse = true;
+        } else {
+          seen_ordinary_fine = true;
+        }
+        if (!coarse) {
+          seen_fine = true;
+        } else {
+          info.critical_bytes = position + bytes;
         }
       }
       info.stripped.insert(info.stripped.end(), record, record + bytes);
@@ -423,6 +446,76 @@ namespace pyrowave::policy {
     }
     info.valid = true;
     return info;
+  }
+
+  std::vector<bool> record_start_shards(std::span<const std::uint8_t> frame, std::size_t shard_payload) {
+    if (!shard_payload || frame.empty()) {
+      return {};
+    }
+    std::vector<bool> starts((frame.size() + FRAME_HEADER_BYTES + shard_payload - 1) / shard_payload, false);
+    for (std::size_t position = 0; position < frame.size();) {
+      if (frame.size() - position < 8) {
+        return {};
+      }
+      if ((position + FRAME_HEADER_BYTES) % shard_payload == 0 || position == 0) {
+        starts[(position + FRAME_HEADER_BYTES) / shard_payload] = true;
+      }
+      const std::uint32_t word0 = read_u32(frame.data() + position);
+      std::size_t bytes;
+      if (word0 == PADDING_MAGIC) {
+        bytes = PADDING_RECORD_MIN_BYTES + std::size_t(read_u32(frame.data() + position + 4)) * 4;
+      } else if ((word0 >> 31) != 0) {
+        bytes = 8;
+      } else {
+        bytes = std::size_t((word0 >> 16) & 0xfff) * 4;
+        if (bytes < 8) {
+          return {};
+        }
+      }
+      if (bytes > frame.size() - position) {
+        return {};
+      }
+      position += bytes;
+    }
+    return starts;
+  }
+
+  std::size_t parity_shards(std::size_t data_shards, int fec_percentage, std::size_t min_parity_shards) {
+    if (fec_percentage <= 0) {
+      return 0;
+    }
+    return std::max((data_shards * std::size_t(fec_percentage) + 99) / 100, min_parity_shards);
+  }
+
+  std::vector<fec_block_t> plan_fec_blocks(std::size_t total_shards, std::size_t critical_shards, int critical_fec_percentage, std::size_t min_parity_shards) {
+    std::vector<fec_block_t> blocks;
+    if (total_shards == 0) {
+      return blocks;
+    }
+
+    // Blocks without FEC are kept to Reed-Solomon size too, as for the other codecs,
+    // so a block that stops arriving is delivered without waiting for a huge one.
+    const auto split = [&](std::size_t shards, std::size_t max_blocks) {
+      const std::size_t count = std::clamp<std::size_t>((shards + MAX_REED_SOLOMON_SHARDS - 1) / MAX_REED_SOLOMON_SHARDS, 1, max_blocks);
+      const std::size_t per_block = (shards + count - 1) / count;
+      for (std::size_t i = 0; i < count; i++) {
+        blocks.push_back({i + 1 < count ? per_block : shards - per_block * (count - 1), 0});
+      }
+    };
+
+    const std::size_t critical = std::min(critical_shards, total_shards);
+    const bool protect = critical != 0 && critical_fec_percentage > 0 &&
+                         critical + parity_shards(critical, critical_fec_percentage, min_parity_shards) <= MAX_REED_SOLOMON_SHARDS;
+    if (!protect) {
+      split(total_shards, MAX_FEC_BLOCKS);
+      return blocks;
+    }
+
+    blocks.push_back({critical, critical_fec_percentage});
+    if (total_shards > critical) {
+      split(total_shards - critical, MAX_FEC_BLOCKS - 1);
+    }
+    return blocks;
   }
 
   budget_t::budget_t(int framerate, int bitrate_kbps, std::size_t max_frame_bytes):
