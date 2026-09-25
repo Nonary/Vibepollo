@@ -50,6 +50,7 @@ extern "C" {
 #include "nvhttp.h"
 #include "platform/common.h"
 #include "process.h"
+#include "pyrowave_protocol.h"
 #include "remote_display_topology.h"
 #include "rtsp.h"
 #include "rtsp_pending_policy.h"
@@ -332,6 +333,10 @@ namespace stream {
     sizeof(video_short_frame_header_t) == 8,
     "Short frame header must be 8 bytes"
   );
+  static_assert(
+    sizeof(video_short_frame_header_t) == pyrowave::protocol::FRAME_HEADER_BYTES,
+    "PyroWave record alignment assumes the 8-byte short frame header"
+  );
 
   struct video_packet_raw_t {
     uint8_t *payload() {
@@ -343,6 +348,13 @@ namespace stream {
 
     NV_VIDEO_PACKET packet;
   };
+
+  // Each shard carries packetSize + MAX_RTP_HEADER_SIZE - sizeof(video_packet_raw_t)
+  // video payload bytes; PyroWave aligns its records to exactly that size.
+  static_assert(
+    sizeof(video_packet_raw_t) - MAX_RTP_HEADER_SIZE == pyrowave::protocol::SHARD_OVERHEAD_BYTES,
+    "PyroWave record alignment assumes 16 bytes of per-shard overhead"
+  );
 
   struct video_packet_enc_prefix_t {
     std::uint8_t iv[12];  // 12-byte IV is ideal for AES-GCM
@@ -1440,6 +1452,10 @@ namespace stream {
       BOOST_LOG(debug) << "type [IDX_REQUEST_IDR_FRAME]"sv;
 
       saturating_add_relaxed(session->stats.idr_requests, 1u);
+      // Every PyroWave frame is intra-coded; the next frame already recovers.
+      if (session->config.monitor.videoFormat == pyrowave::protocol::BITSTREAM_FORMAT) {
+        return;
+      }
       session->video.idr_events->raise(true);
     });
 
@@ -1466,6 +1482,10 @@ namespace stream {
         << "firstFrame [" << firstFrame << ']' << std::endl
         << "lastFrame [" << lastFrame << ']';
 
+      // PyroWave frames reference nothing (see the IDR handler).
+      if (session->config.monitor.videoFormat == pyrowave::protocol::BITSTREAM_FORMAT) {
+        return;
+      }
       session->video.invalidate_ref_frames_events->raise(std::make_pair(firstFrame, lastFrame));
     });
 
@@ -2087,7 +2107,11 @@ namespace stream {
         session->stats.last_encode_latency_us10.store(0, std::memory_order_relaxed);
       }
 
-      auto fecPercentage = config::stream.fec_percentage;
+      // PyroWave frames are all intra-coded, so a lost frame costs one frame and never a
+      // recovery keyframe. Parity would add bytes, send time and encode time to every
+      // frame for that, so PyroWave is sent without FEC.
+      const bool pyrowave_session = session->config.monitor.videoFormat == pyrowave::protocol::BITSTREAM_FORMAT;
+      auto fecPercentage = pyrowave_session ? 0 : config::stream.fec_percentage;
 
       // Insert space for packet headers
       auto blocksize = session->config.packetsize + MAX_RTP_HEADER_SIZE;
@@ -2116,7 +2140,10 @@ namespace stream {
       // If the number of FEC blocks needed exceeds the protocol limit, turn off FEC for this frame.
       // For normal FEC percentages, this should only happen for enormous frames (over 800 packets at 20%).
       if (fec_blocks_needed > MAX_FEC_BLOCKS) {
-        BOOST_LOG(warning) << "Skipping FEC for abnormally large encoded frame (needed "sv << fec_blocks_needed << " FEC blocks)"sv;
+        // Every frame of a high-bitrate PyroWave stream can be this large; that is expected
+        // there, so keep it out of the warning log.
+        auto &fec_skip_log = pyrowave_session ? debug : warning;
+        BOOST_LOG(fec_skip_log) << "Skipping FEC for abnormally large encoded frame (needed "sv << fec_blocks_needed << " FEC blocks)"sv;
         fecPercentage = 0;
         fec_blocks_needed = MAX_FEC_BLOCKS;
       }
@@ -2178,10 +2205,18 @@ namespace stream {
         }
         //                                          bps    ms    packet      byte
         size_t ratecontrol_packets_in_1ms = pacing_bps / 1000 / blocksize / 8;
-        if (ratecontrol_packets_in_1ms == 0) {
-          // Floor at one packet/ms so the inner pacing loop never divides by zero
-          // and we still send something on absurdly low bitrate caps.
-          ratecontrol_packets_in_1ms = 1;
+        ratecontrol_packets_in_1ms = std::max<size_t>(1, ratecontrol_packets_in_1ms);
+        if (pyrowave_session) {
+          // PyroWave frames are several times larger than H.264/HEVC/AV1 frames, and every
+          // millisecond spent pacing one out is added latency. Pace at the configured rate,
+          // or by default at twice the stream bitrate (burst headroom), but at least 800 Mbps.
+          const auto &monitor = session->config.monitor;
+          const std::int64_t stream_kbps = monitor.client_requested_bitrate > 0 ? monitor.client_requested_bitrate : monitor.bitrate;
+          const std::int64_t send_rate_mbps = config::stream.pyrowave_send_rate_mbps > 0 ?
+                                                config::stream.pyrowave_send_rate_mbps :
+                                                std::max<std::int64_t>(800, stream_kbps * 2 / 1000);
+          //                          Mbps -> bytes per ms                  packet
+          ratecontrol_packets_in_1ms = std::max<size_t>(1, (size_t) (send_rate_mbps * 1000 / 8 / blocksize));
         }
 
         // Send less than 64K in a single batch.

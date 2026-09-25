@@ -43,6 +43,8 @@ namespace stream {
         return "HEVC";
       case 2:
         return "AV1";
+      case 3:
+        return "PyroWave";
       default:
         return "Unknown";
     }
