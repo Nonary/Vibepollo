@@ -45,7 +45,19 @@ namespace pyrowave::policy {
     struct record_t {
       std::size_t offset;
       std::size_t size;
+      std::uint32_t block_index;
     };
+
+    /// Records too large to share a shard with a padding record. A record of a shard
+    /// less 4 bytes would always strand a 4-byte remainder, so it counts too.
+    bool oversized(std::size_t record_bytes, std::size_t shard_payload) {
+      return record_bytes + PADDING_RECORD_MIN_BYTES > shard_payload;
+    }
+
+    /// Bytes left in the current shard at frame byte `position` (never 0).
+    std::size_t shard_remaining(std::size_t position, std::size_t shard_payload) {
+      return shard_payload - (position + FRAME_HEADER_BYTES) % shard_payload;
+    }
 
     /**
      * Finds the earliest remaining record no larger than a limit, in O(log) time.
@@ -131,6 +143,16 @@ namespace pyrowave::policy {
     };
   }  // namespace
 
+  std::uint32_t coarse_block_count(std::uint32_t width, std::uint32_t height) {
+    // PyroWave pads each dimension to 32 pixels (at least 128), then five wavelet
+    // levels halve it; the coarsest level holds four bands of three components.
+    const auto blocks = [](std::uint32_t extent) {
+      const std::uint32_t aligned = std::max<std::uint32_t>((extent + 31) / 32 * 32, 128);
+      return ((aligned >> 5) + 31) / 32;
+    };
+    return blocks(width) * blocks(height) * 4 * 3;
+  }
+
   framing_e select_framing(bool client_sent_adaptive_fec, std::optional<std::uint32_t> client_features) {
     if (client_sent_adaptive_fec) {
       return framing_e::records;
@@ -162,7 +184,6 @@ namespace pyrowave::policy {
       return std::nullopt;
     }
     std::vector<record_t> records;
-    std::vector<std::uint32_t> words;
     for (std::size_t position = 8; position < bitstream.size();) {
       if (bitstream.size() - position < 8) {
         return std::nullopt;
@@ -172,8 +193,7 @@ namespace pyrowave::policy {
       if ((word0 >> 31) != 0 || payload_words < 2 || std::size_t(payload_words) * 4 > bitstream.size() - position) {
         return std::nullopt;
       }
-      records.push_back({position, std::size_t(payload_words) * 4});
-      words.push_back(payload_words);
+      records.push_back({position, std::size_t(payload_words) * 4, read_u32(bitstream.data() + position + 4) >> 8});
       position += records.back().size;
     }
 
@@ -188,63 +208,80 @@ namespace pyrowave::policy {
       return stats;
     }
 
-    fit_index_t fit(words);
-    std::vector<bool> placed(records.size(), false);
-    std::size_t earliest = 0;
-    std::size_t remaining_records = records.size();
+    const std::uint32_t sequence_word = read_u32(bitstream.data());
+    const std::uint32_t coarse_blocks = coarse_block_count((sequence_word & 0x3fff) + 1, ((sequence_word >> 14) & 0x3fff) + 1);
 
     // Frame byte p sits at offset p + FRAME_HEADER_BYTES of the shard stream,
     // because the short frame header precedes the frame in the first shard.
-    std::size_t next_boundary = shard_payload - FRAME_HEADER_BYTES;
-
-    while (remaining_records) {
-      while (placed[earliest]) {
-        ++earliest;
-      }
-      const std::size_t position = out.size() - frame_start;
-      while (next_boundary <= position) {
-        next_boundary += shard_payload;
-      }
-      const std::size_t remaining = next_boundary - position;
-
-      std::size_t chosen = fit.earliest_fitting(remaining / 4);
-      if (chosen != fit_index_t::NONE && remaining - records[chosen].size == 4) {
-        // That would strand 4 bytes, too few for a padding record, so the next record
-        // would straddle the boundary. Prefer a record that fills the shard exactly or
-        // leaves room for another record or a padding record.
-        const std::size_t exact = fit.earliest_exact(std::uint32_t(remaining / 4));
-        const std::size_t roomy = remaining >= 16 ? fit.earliest_fitting((remaining - 8) / 4) : fit_index_t::NONE;
-        const std::size_t better = std::min(exact, roomy);
-        if (better != fit_index_t::NONE) {
-          chosen = better;
-        }
-      }
-      if (chosen == fit_index_t::NONE) {
-        if (records[earliest].size > shard_payload) {
-          // Spans shards wherever it starts; padding first would only add a shard.
-          chosen = earliest;
-          ++stats.oversized_records;
-        } else if (remaining >= PADDING_RECORD_MIN_BYTES) {
-          append_padding(out, remaining);
-          ++stats.padding_records;
-          stats.padding_bytes += remaining;
-          next_boundary += shard_payload;
-          continue;
-        } else {
-          // Too small for a padding record: the next record straddles it.
-          chosen = earliest;
-          ++stats.unpadded_gaps;
-        }
-      }
-
-      if (chosen != earliest) {
-        ++stats.reordered_records;
-      }
-      placed[chosen] = true;
-      fit.remove(words[chosen]);
-      --remaining_records;
-      const auto &record = records[chosen];
+    const auto remaining = [&]() {
+      return shard_remaining(out.size() - frame_start, shard_payload);
+    };
+    const auto place = [&](const record_t &record) {
       out.insert(out.end(), bitstream.begin() + record.offset, bitstream.begin() + record.offset + record.size);
+    };
+    const auto pad = [&](std::size_t bytes) {
+      append_padding(out, bytes);
+      ++stats.padding_records;
+      stats.padding_bytes += bytes;
+    };
+
+    // Oversized records go first and span shards wherever they start. Each is
+    // shifted by a minimal padding record when it would end 4 bytes before a
+    // boundary, since nothing could fill that remainder.
+    std::vector<std::size_t> coarse;
+    std::vector<std::size_t> fine;
+    for (std::size_t i = 0; i < records.size(); i++) {
+      if (oversized(records[i].size, shard_payload)) {
+        if (records[i].size % shard_payload == remaining() - 4) {
+          pad(PADDING_RECORD_MIN_BYTES);
+        }
+        place(records[i]);
+        ++stats.oversized_records;
+      } else {
+        (records[i].block_index < coarse_blocks ? coarse : fine).push_back(i);
+      }
+    }
+
+    // Then the coarsest wavelet level, then everything else, each packed first-fit
+    // without crossing a shard boundary: every later shard starts with a record.
+    for (const auto *group : {&coarse, &fine}) {
+      std::vector<std::uint32_t> words;
+      words.reserve(group->size());
+      for (const auto i : *group) {
+        words.push_back(std::uint32_t(records[i].size / 4));
+      }
+
+      fit_index_t fit(words);
+      std::vector<bool> placed(group->size(), false);
+      std::size_t earliest = 0;
+      for (std::size_t left = group->size(); left != 0;) {
+        while (placed[earliest]) {
+          ++earliest;
+        }
+        const std::size_t room = remaining();
+
+        std::size_t chosen = fit.earliest_fitting(room / 4);
+        if (chosen != fit_index_t::NONE && room - std::size_t(words[chosen]) * 4 == 4) {
+          // That would strand 4 bytes, too few for a padding record. Take a record
+          // that fills the shard exactly or leaves room for a padding record.
+          const std::size_t exact = fit.earliest_exact(std::uint32_t(room / 4));
+          const std::size_t roomy = room >= 16 ? fit.earliest_fitting((room - 8) / 4) : fit_index_t::NONE;
+          chosen = std::min(exact, roomy);
+        }
+        if (chosen == fit_index_t::NONE) {
+          // Never 4: shards start with at least 64 bytes and no placement leaves 4.
+          pad(room);
+          continue;
+        }
+
+        if (chosen != earliest) {
+          ++stats.reordered_records;
+        }
+        placed[chosen] = true;
+        fit.remove(words[chosen]);
+        --left;
+        place(records[(*group)[chosen]]);
+      }
     }
 
     return stats;
@@ -279,18 +316,28 @@ namespace pyrowave::policy {
       return info;
     };
 
+    std::uint32_t coarse_blocks = 0;
+    bool seen_ordinary = false;
+    bool seen_fine = false;
+
+    // Returns whether the record is oversized; ordinary records and padding must
+    // stay inside one shard so that every shard after the oversized records
+    // starts with a record.
     auto note_alignment = [&](std::size_t start, std::size_t size) {
       if (!shard_payload) {
-        return;
+        return false;
       }
       const std::size_t wire_start = start + FRAME_HEADER_BYTES;
       const std::size_t first_shard = wire_start / shard_payload;
       const std::size_t last_shard = (wire_start + size - 1) / shard_payload;
-      if (size > shard_payload) {
+      if (oversized(size, shard_payload)) {
         ++info.oversized_records;
-      } else if (first_shard != last_shard) {
+        return true;
+      }
+      if (first_shard != last_shard) {
         ++info.misaligned_records;
       }
+      return false;
     };
 
     info.stripped.reserve(frame.size());
@@ -309,6 +356,7 @@ namespace pyrowave::policy {
         }
         ++info.padding_records;
         info.padding_bytes += bytes;
+        note_alignment(position, bytes);
         position += bytes;
         continue;
       }
@@ -330,6 +378,7 @@ namespace pyrowave::policy {
           return fail("sequence header code " + std::to_string(code) + " is not START_OF_FRAME");
         }
         info.chroma444 = ((word1 >> 26) & 0x1) != 0;
+        coarse_blocks = coarse_block_count(info.width, info.height);
         note_alignment(position, 8);
         info.stripped.insert(info.stripped.end(), record, record + 8);
         position += 8;
@@ -353,7 +402,18 @@ namespace pyrowave::policy {
       }
       last_block_index = block_index;
       ++info.block_records;
-      note_alignment(position, bytes);
+      if (note_alignment(position, bytes)) {
+        if (seen_ordinary) {
+          ++info.late_oversized_records;
+        }
+      } else if (shard_payload) {
+        seen_ordinary = true;
+        if (block_index >= coarse_blocks) {
+          seen_fine = true;
+        } else if (seen_fine) {
+          ++info.late_coarse_records;
+        }
+      }
       info.stripped.insert(info.stripped.end(), record, record + bytes);
       position += bytes;
     }

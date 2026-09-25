@@ -38,8 +38,10 @@ namespace pyrowave::protocol {
   constexpr std::string_view ANNOUNCE_ADAPTIVE_BITRATE = "x-ss-video[0].pyrowaveAdaptiveBitrate";  ///< Aurora
   constexpr std::string_view ANNOUNCE_FEATURES = "x-ss-video[0].pyrowaveFeatures";  ///< Bitmask of FEATURE_*
 
-  constexpr std::uint32_t FEATURE_RECORD_FRAMING = 0x1;  ///< Client parses record framing with padding records.
-  constexpr std::uint32_t FEATURE_PARTIAL_FRAMES = 0x2;  ///< Client decodes frames with missing records (reserved).
+  /// Client parses record framing with padding records. Record-framed frames are
+  /// always laid out for partial decoding, so no bit asks for that (0x2, once
+  /// reserved for it, is ignored).
+  constexpr std::uint32_t FEATURE_RECORD_FRAMING = 0x1;
 
   /// First word of an in-band padding record: `0xFFFFFFFF, N, N zero words`.
   constexpr std::uint32_t PADDING_MAGIC = 0xFFFFFFFFu;
