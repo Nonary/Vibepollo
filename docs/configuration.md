@@ -2606,6 +2606,36 @@ this option to replace the running app immediately. The default is `true`.
     </tr>
 </table>
 
+### pyrowave_send_rate_mbps
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Rate, in Mbps, at which the video packets of a PyroWave session are paced onto the network. The
+            other codecs are paced at about 800 Mbps; PyroWave frames are large, so a slow pace adds several
+            milliseconds of latency to every frame. 0 selects twice the stream bitrate, but at least 800 Mbps.
+            Raise it on 2.5 or 10 Gbps links; lower it if a switch drops bursts.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">0-100000</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            pyrowave_send_rate_mbps = 2000
+            @endcode</td>
+    </tr>
+</table>
+
 ### qp
 
 <table>
@@ -2737,6 +2767,35 @@ this option to replace the running app immediately. The default is `true`.
     <tr>
         <td>3</td>
         <td>advertise support for AV1 Main 8-bit and 10-bit (HDR) profiles</td>
+    </tr>
+</table>
+
+### pyrowave
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Allows PyroWave-capable clients (such as the Nonary Moonlight fork) to request PyroWave, an
+            intra-only GPU wavelet codec. Every frame is coded on its own in well under a millisecond, so a lost
+            frame never needs a keyframe, but a clean picture needs hundreds of Mbps; use it on wired LANs only.
+            It is advertised only when the capture GPU can run the PyroWave Vulkan encoder with Direct3D 11
+            interop (Windows). The client's bitrate setting sets the bitrate. PyroWave streams are sent
+            without FEC, whatever `fec_percentage` says.
+            See [PyroWave protocol](pyrowave-protocol.md).
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            pyrowave = disabled
+            @endcode</td>
     </tr>
 </table>
 
