@@ -4,17 +4,18 @@ Refreshes the vendored PyroWave codec (upstream Themaister/pyrowave plus the
 pruned Granite subset its C API needs) and reapplies the local patches.
 
 .DESCRIPTION
-PyroWave has no bitstream version field, so the host (vibeshine) and the client
+PyroWave has no bitstream version field, so the host (Vibepollo) and the client
 (moonlight-qt) must be built from the same commits. Keep PYROWAVE_COMMIT and
 GRANITE_COMMIT identical in both repositories and record them in VENDOR.txt.
-patches/ and VENDOR.txt in moonlight-qt/pyrowave and
-vibeshine/third-party/pyrowave must stay identical.
+patches/ and VENDOR.txt in moonlight-qt/pyrowave,
+vibeshine/third-party/pyrowave, and Vibepollo/third-party/pyrowave must stay
+identical.
 
 The result replaces <Destination> completely. Run from any directory:
 
     powershell -File third-party\pyrowave\vendor-pyrowave.ps1
 
-CMakeLists.txt next to this script (vibeshine's build wrapper) is not touched.
+CMakeLists.txt next to this script (Vibepollo's build wrapper) is not touched.
 #>
 param(
     [string]$Destination = (Join-Path $PSScriptRoot "pyrowave"),
