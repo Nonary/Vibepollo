@@ -60,3 +60,6 @@ elseif(UNIX)
         include("${CMAKE_MODULE_PATH}/dependencies/linux.cmake")
     endif()
 endif()
+
+# PyroWave codec library (optional)
+include("${CMAKE_MODULE_PATH}/dependencies/pyrowave.cmake")
