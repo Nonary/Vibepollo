@@ -847,6 +847,7 @@ namespace config {
 
     0,  // hevc_mode
     0,  // av1_mode
+    true,  // pyrowave
 
     2,  // min_threads
     {
@@ -988,6 +989,7 @@ namespace config {
 
     20,  // fecPercentage
     64,  // video_max_batch_size_kb
+    0,  // pyrowave_send_rate_mbps (automatic)
 
     ENCRYPTION_MODE_NEVER,  // lan_encryption_mode
     ENCRYPTION_MODE_OPPORTUNISTIC,  // wan_encryption_mode
@@ -1762,6 +1764,7 @@ namespace config {
     int_f(vars, "qp", video.qp);
     int_between_f(vars, "hevc_mode", video.hevc_mode, {0, 3});
     int_between_f(vars, "av1_mode", video.av1_mode, {0, 3});
+    bool_f(vars, "pyrowave", video.pyrowave);
     int_f(vars, "min_threads", video.min_threads);
     string_f(vars, "sw_preset", video.sw.sw_preset);
     if (!video.sw.sw_preset.empty()) {
@@ -2160,6 +2163,7 @@ namespace config {
     int_between_f(vars, "fec_percentage", stream.fec_percentage, {1, 255});
     int_between_f(vars, "pacing_max_bitrate_kbps", stream.pacing_max_bitrate_kbps, {0, 10000000});
     int_between_f(vars, "packetsize", stream.packetsize, {0, PACKETSIZE_MAX});
+    int_between_f(vars, "pyrowave_send_rate_mbps", stream.pyrowave_send_rate_mbps, {0, 100000});
     int_between_f(vars, "video_max_batch_size_kb", stream.video_max_batch_size_kb, {0, 64});
     if (stream.video_max_batch_size_kb == 0) {
       stream.video_max_batch_size_kb = 64;
@@ -2692,6 +2696,7 @@ namespace config {
         // Codec / capture negotiation
         "fec_percentage",
         "video_max_batch_size_kb",
+        "pyrowave_send_rate_mbps",
         "qp",
         "min_threads",
         "hevc_mode",

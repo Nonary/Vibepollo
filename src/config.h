@@ -63,6 +63,7 @@ namespace config {
 
     int hevc_mode;
     int av1_mode;
+    bool pyrowave;  ///< Advertise PyroWave (bitStreamFormat 3) when the capture GPU can encode it.
 
     int min_threads;  // Minimum number of threads/slices for CPU encoding
 
@@ -276,6 +277,7 @@ namespace config {
 
     int fec_percentage;
     int video_max_batch_size_kb;
+    int pyrowave_send_rate_mbps;  ///< Video send pacing for PyroWave sessions; 0 = max(800 Mbps, 2x stream bitrate).
 
     // Video encryption settings for LAN and WAN streams
     int lan_encryption_mode;
