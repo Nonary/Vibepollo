@@ -92,7 +92,9 @@ needs a wired link with hundreds of Mbps to spare.
 | Bit | Name | Meaning |
 |---|---|---|
 | `0x1` | `PYROWAVE_FEATURE_RECORD_FRAMING` | Client parses record framing with padding records. |
-| `0x2` | `PYROWAVE_FEATURE_PARTIAL_FRAMES` | Client decodes frames with missing records (reserved; host may use it to lower FEC). |
+
+`0x2` was once reserved for partial-frame decoding. No bit is needed: record-framed
+frames are always laid out for it (see "Partial frames"), and hosts ignore `0x2`.
 
 The host rejects `bitStreamFormat=3` with `400 BAD REQUEST` when PyroWave is
 unavailable, like HEVC/AV1.
@@ -111,9 +113,10 @@ to `lastPayloadLen` as it does for AV1. The host ignores IDR and
 reference-invalidation requests for PyroWave sessions.
 
 The host sends PyroWave without FEC (0% parity in `fecInfo`, whatever its
-`fec_percentage`). Every frame is independent, so a lost packet costs that frame
-only, while parity would add bytes, send time and encode time to every frame; it
-is meant for wired LANs where loss is rare. The frame is split into at most four
+`fec_percentage`). Every frame is independent, so a lost packet costs at most that
+frame, and with record framing usually only the detail it carried (see "Partial
+frames"); parity would add bytes, send time and encode time to every frame. It is
+meant for wired LANs where loss is rare. The frame is split into at most four
 blocks of at most 1023 shards, and the host caps a frame at 4000 shards (about
 5.5 MB with 1392-byte packets). It paces PyroWave packets at its
 `pyrowave_send_rate_mbps` setting, by default twice the stream bitrate and at least
@@ -129,32 +132,45 @@ little-endian records:
    first in the frame, with the negotiated width, height and chroma resolution and
    `total_blocks` equal to the number of block records in the frame.
 2. PyroWave block records (`BitstreamHeader` + payload, `payload_words` words
-   including the header), in any order. The host fills the end of each payload
-   with a later record that fits, so the order is only approximately lowest
-   frequency first. PyroWave places blocks by `block_index`.
+   including the header, `sequence` equal to the sequence header's), in any order.
+   PyroWave places blocks by `block_index`.
 3. Padding records, anywhere between other records:
    `0xFFFFFFFF`, a word count `N`, then `N` zero words (`8 + 4N` bytes). Decoded as a
    sequence header this would be an impossible 16384-pixel width with code 3, so it
    cannot be confused with real data.
 
-Alignment: the RTP layer splits the frame into payloads of `packetSize - 16` bytes
+Layout: the RTP layer splits the frame into payloads of `packetSize - 16` bytes
 (1376 for the usual 1392-byte packets); the first payload also carries the 8-byte
-frame header, so its frame data ends 8 bytes early. The host packs whole records
-into payloads, first-fit: when the next record does not fit the rest of a
-payload, it places a later record that does, and pads only when none fits
-(well under 1% of the frame in practice, against 16-21% if records kept strict
-encoder order). A record larger than one payload spans payloads, and a 4-byte
-remainder (too small for a padding record) is left for the next record to
-straddle. As a result, a lost payload only loses the records inside it, and a
-receiver can resynchronize at the next payload boundary. Receivers must not rely on
-alignment for correctness: they parse records sequentially and must accept
-straddling records and padding anywhere.
+frame header, so its frame data ends 8 bytes early. After the sequence header our
+host sends, in this order:
+
+1. Oversized records: those too large to share a payload with a padding record
+   (more than a payload less 8 bytes), in encoder order. They span payloads. A
+   minimal padding record goes before one that would otherwise end 4 bytes before a
+   payload boundary.
+2. The remaining records of PyroWave's coarsest wavelet level: block indices below
+   `12 * ceil(W / 32) * ceil(H / 32)`, where `W` and `H` are the frame's width and
+   height rounded up to 32 pixels (at least 128), divided by 32. PyroWave indexes
+   these first.
+3. All other records.
+
+Groups 2 and 3 are each packed first-fit: when the next record does not fit the
+rest of a payload, a later record of the group that does fills it, and padding
+fills it only when none fits (well under 1% of the frame in practice, against
+16-21% if records kept strict encoder order). No record in these groups crosses a
+payload boundary, and no 4-byte remainder (too small for a padding record) is
+left, so every payload after the oversized records starts with a record.
+
+Receivers must not rely on this layout to parse a complete frame: they parse
+records sequentially and accept straddling records and padding anywhere. Only
+partial-frame recovery depends on it.
 
 Receivers must reject a block record whose `payload_words` is smaller than 2 (the
 header itself), a record that runs past the end of the frame, a sequence header
-whose size or chroma resolution differs from the negotiated stream, and
-`block_index` values outside the frame. A rejected frame is dropped; the next frame
-is independent.
+whose size or chroma resolution differs from the negotiated stream, a second
+sequence header, a block record before the sequence header or with another
+`sequence`, and `block_index` values outside the frame. A rejected frame is
+dropped; the next frame is independent.
 
 This is the Aurora/Solarflare framing, minus their conditional-replenishment
 extensions (sequence code 1 "keep previous" frames and header-only zero blocks),
@@ -183,6 +199,31 @@ The decoder is cleared before every frame (`pyrowave_decoder_clear`), all record
 are pushed, and the frame is decoded when `pyrowave_decoder_decode_is_ready`
 reports it complete. Clearing per frame keeps PyroWave's 3-bit sequence counter from
 discarding frames after four or more consecutive network drops.
+
+### Partial frames
+
+Our client decodes a record-framed frame that lost packets. moonlight-common-c
+does not drop a PyroWave frame whose FEC block cannot complete: once the next
+block or frame starts arriving, each missing data packet is replaced by zeros and
+delivered as a `BUFFER_TYPE_LOST` buffer. The frame is still dropped when its first
+packet (sequence header) or a whole FEC block is missing.
+
+The parser skips every record that lost a byte. A record whose header arrived but
+whose payload did not has a known end, so parsing continues after it. When a
+header itself was lost, parsing resumes at the start of the next received
+payload, which the layout above guarantees is a record boundary once a record of
+ordinary size (one that fits a payload with 8 bytes to spare) has been seen
+inside a single payload. Before that point the rest of the frame is given up.
+
+The coarsest level is intact when no loss came before the first ordinary record
+of a finer level. The frame is then decoded if more than 90% of its records
+arrived (`pyrowave_decoder_decode_is_ready_with_sideband` with no pristine-band
+requirement); missing finer blocks decode as zero coefficients, which blurs their
+area for that frame. PyroWave's own pristine-band check is not used because it
+cannot tell a lost block from an all-zero block that was never sent.
+
+Length-prefixed frames with any loss, and frames from hosts that do not follow the
+layout, lose everything after the first lost record header.
 
 Output planes are three single-channel UNORM images (R8 for 8-bit streams, R16 for
 10-bit): full-resolution Y, and Cb/Cr at half resolution in each direction for
@@ -216,7 +257,7 @@ reference point, 200 Mbps at 1080p60). 4:4:4 costs about 1.6x, and 10-bit about
 | Peer | Result |
 |---|---|
 | Aurora client, our host | Negotiates PyroWave, record framing. Aurora's decoder is an older WiVRn-derived PyroWave; frames decode only if its bitstream matches `186f0393`. |
-| Our client, Solarflare host | Negotiates PyroWave. Solarflare's full frames decode; its "keep previous" frames (code 1) are rejected and dropped. |
+| Our client, Solarflare host | Negotiates PyroWave. Solarflare's full frames decode; its "keep previous" frames (code 1) are rejected and dropped. A frame that lost packets keeps only the records before its first lost record header unless Solarflare lays frames out as ours does. |
 | Xbox / azafrob-protocol client, our host | Negotiates PyroWave, length-prefixed framing. Bitstream compatibility depends on their PyroWave commit. |
 | Our client, dimizago Vibepollo host | Negotiates PyroWave from the SCM bits; length-prefixed framing is detected per frame. |
 | Stock Moonlight | Never sees PyroWave; negotiates H.264/HEVC/AV1 as before. |

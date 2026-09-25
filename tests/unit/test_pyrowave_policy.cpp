@@ -76,8 +76,9 @@ TEST(PyroWavePolicy, SelectsRecordFramingForAwareClients) {
   EXPECT_EQ(select_framing(true, std::nullopt), framing_e::records);
   EXPECT_EQ(select_framing(true, 0u), framing_e::records);
   EXPECT_EQ(select_framing(false, protocol::FEATURE_RECORD_FRAMING), framing_e::records);
-  EXPECT_EQ(select_framing(false, protocol::FEATURE_RECORD_FRAMING | protocol::FEATURE_PARTIAL_FRAMES), framing_e::records);
-  EXPECT_EQ(select_framing(false, protocol::FEATURE_PARTIAL_FRAMES), framing_e::length_prefixed);
+  // 0x2 was once reserved for partial-frame decoding and is ignored.
+  EXPECT_EQ(select_framing(false, protocol::FEATURE_RECORD_FRAMING | 0x2u), framing_e::records);
+  EXPECT_EQ(select_framing(false, 0x2u), framing_e::length_prefixed);
   EXPECT_EQ(select_framing(false, 0u), framing_e::length_prefixed);
   EXPECT_EQ(select_framing(false, std::nullopt), framing_e::length_prefixed);
 }
@@ -113,8 +114,12 @@ TEST(PyroWavePolicy, RecordFrameRoundTripsAndAlignsToShards) {
     EXPECT_EQ(info.padding_bytes, stats->padding_bytes);
     EXPECT_EQ(frame.size(), bitstream.size() + stats->padding_bytes);
 
-    // Only 4-byte remainders may leave a shard-sized record straddling a boundary.
-    EXPECT_EQ(info.misaligned_records, stats->unpadded_gaps) << "seed " << seed;
+    // Every shard after the oversized records starts with a record, and the
+    // coarsest level precedes finer blocks: what partial decoding relies on.
+    EXPECT_EQ(info.misaligned_records, 0u) << "seed " << seed;
+    EXPECT_EQ(info.late_oversized_records, 0u) << "seed " << seed;
+    EXPECT_EQ(info.late_coarse_records, 0u) << "seed " << seed;
+    EXPECT_EQ(info.oversized_records, stats->oversized_records) << "seed " << seed;
     // First-fit keeps padding small (strict order costs about 20% here).
     EXPECT_LT(stats->padding_bytes * 100, frame.size() * 2) << "seed " << seed;
 
@@ -137,7 +142,7 @@ TEST(PyroWavePolicy, RecordFrameFillsShardGapsWithLaterRecords) {
   const auto info = inspect_record_frame(frame, SHARD);
   ASSERT_TRUE(info.valid) << info.error;
   EXPECT_EQ(info.block_records, words.size());
-  EXPECT_EQ(info.misaligned_records, stats->unpadded_gaps);
+  EXPECT_EQ(info.misaligned_records, 0u);
 }
 
 TEST(PyroWavePolicy, RecordFramePadsWhenNothingFits) {
@@ -165,7 +170,59 @@ TEST(PyroWavePolicy, RecordFrameLetsOversizedRecordsSpanShards) {
   ASSERT_TRUE(info.valid) << info.error;
   EXPECT_EQ(info.oversized_records, 2u);
   EXPECT_EQ(info.block_records, 3u);
+  // Both go ahead of the ordinary record between them
+  EXPECT_EQ(info.late_oversized_records, 0u);
+  EXPECT_EQ(info.out_of_order_records, 1u);
   EXPECT_EQ(records_by_index(info.stripped), records_by_index(bitstream));
+}
+
+TEST(PyroWavePolicy, CoarseBlockCountMatchesTheWaveletLayout) {
+  // Four bands of three components at the coarsest of five levels, on dimensions
+  // padded to 32 pixels (at least 128).
+  EXPECT_EQ(coarse_block_count(1920, 1080), 2u * 2u * 12u);
+  EXPECT_EQ(coarse_block_count(1280, 720), 2u * 1u * 12u);
+  EXPECT_EQ(coarse_block_count(3840, 2160), 4u * 3u * 12u);
+  EXPECT_EQ(coarse_block_count(64, 64), 12u);
+}
+
+TEST(PyroWavePolicy, RecordFrameSendsTheCoarsestLevelFirst) {
+  // 1080p has 48 coarsest-level blocks. Large coarse records leave gaps that the
+  // small finer records would fill first-fit; they must wait for the coarse ones.
+  std::vector<std::uint32_t> words(60, 10);
+  std::fill(words.begin(), words.begin() + 48, 200);
+  const auto bitstream = make_bitstream(words);
+  std::vector<std::uint8_t> frame;
+  ASSERT_TRUE(write_record_frame(bitstream, SHARD, frame));
+  const auto info = inspect_record_frame(frame, SHARD);
+  ASSERT_TRUE(info.valid) << info.error;
+  EXPECT_EQ(info.late_coarse_records, 0u);
+  EXPECT_EQ(info.misaligned_records, 0u);
+  EXPECT_EQ(records_by_index(info.stripped), records_by_index(bitstream));
+}
+
+TEST(PyroWavePolicy, RecordFrameNeverStrandsFourBytes) {
+  // After the sequence header the first shard has 1360 bytes left. An oversized
+  // 2732-byte record would end 4 bytes short of the third shard's end, so a
+  // minimal padding record shifts it.
+  const auto bitstream = make_bitstream({683, 10, 10});
+  std::vector<std::uint8_t> frame;
+  const auto stats = write_record_frame(bitstream, SHARD, frame);
+  ASSERT_TRUE(stats);
+  EXPECT_EQ(stats->oversized_records, 1u);
+  EXPECT_GE(stats->padding_records, 1u);
+  const auto info = inspect_record_frame(frame, SHARD);
+  ASSERT_TRUE(info.valid) << info.error;
+  EXPECT_EQ(info.misaligned_records, 0u);
+
+  // A record of a shard less 4 bytes could never be placed alone without
+  // stranding 4 bytes, so it is treated as oversized; one 4 bytes smaller is not.
+  std::vector<std::uint8_t> frame2;
+  const auto stats2 = write_record_frame(make_bitstream({343, 342, 342}), SHARD, frame2);
+  ASSERT_TRUE(stats2);
+  EXPECT_EQ(stats2->oversized_records, 1u);
+  const auto info2 = inspect_record_frame(frame2, SHARD);
+  ASSERT_TRUE(info2.valid) << info2.error;
+  EXPECT_EQ(info2.misaligned_records, 0u);
 }
 
 TEST(PyroWavePolicy, RecordFrameWithoutAlignmentCopiesTheBitstream) {

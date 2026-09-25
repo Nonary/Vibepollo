@@ -46,23 +46,39 @@ namespace pyrowave::policy {
     std::size_t block_records = 0;
     std::size_t padding_records = 0;
     std::size_t padding_bytes = 0;
-    std::size_t unpadded_gaps = 0;  ///< 4-byte shard remainders that a record had to straddle.
-    std::size_t oversized_records = 0;  ///< Records larger than one shard, which span shards.
+    std::size_t oversized_records = 0;  ///< Records too large to share a shard with padding, which span shards.
     std::size_t reordered_records = 0;  ///< Records placed ahead of an earlier record to fill a shard.
   };
+
+  /**
+   * @brief Number of blocks in PyroWave's coarsest wavelet level for a frame size.
+   *
+   * PyroWave indexes these first (block indices below this count). A receiver cannot
+   * decode a frame that lost any of them, so they are sent before finer blocks.
+   */
+  std::uint32_t coarse_block_count(std::uint32_t width, std::uint32_t height);
 
   /**
    * @brief Append a record-framed frame to `out`.
    *
    * `bitstream` is one PyroWave packet holding the whole frame: the 8-byte sequence
    * header followed by every block record (`pyrowave_encoder_packetize` with an
-   * unlimited boundary). The sequence header goes first. Records are then packed into
-   * shards first-fit: each shard remainder takes the earliest remaining record that
-   * fits it, so records stay roughly lowest-frequency-first but a later, smaller record
-   * may fill a gap. A padding record fills a remainder only when no remaining record
-   * fits it. A record larger than one shard, or placed at a 4-byte remainder (too small
-   * for a padding record), straddles a shard boundary. Measured padding is well under 1%
-   * of the frame, against about 20% when records keep strict order.
+   * unlimited boundary). The layout lets a receiver decode a frame that lost packets
+   * (docs/pyrowave-protocol.md):
+   *
+   * 1. The sequence header.
+   * 2. Oversized records (too large to share a shard with a padding record), in
+   *    frame order. They span shards; a minimal padding record goes before one that
+   *    would otherwise end 4 bytes before a boundary.
+   * 3. The coarsest wavelet level's other records, then all remaining records, each
+   *    group packed first-fit: a shard remainder takes the earliest record of the
+   *    group that fits it, and a padding record fills it only when none fits. No
+   *    record crosses a shard boundary and no 4-byte remainder (too small for a
+   *    padding record) is left, so every shard after the oversized records starts
+   *    with a record.
+   *
+   * Measured padding is well under 1% of the frame, against about 20% when records
+   * keep strict order.
    *
    * @param shard_payload Result of shard_payload_bytes(); 0 copies the bitstream unchanged.
    * @return Statistics, or std::nullopt when `bitstream` is not a valid PyroWave frame
@@ -93,9 +109,11 @@ namespace pyrowave::policy {
     std::size_t block_records = 0;
     std::size_t padding_records = 0;
     std::size_t padding_bytes = 0;
-    std::size_t misaligned_records = 0;  ///< Records no larger than a shard that cross a shard boundary.
+    std::size_t misaligned_records = 0;  ///< Ordinary block or padding records that cross a shard boundary.
     std::size_t out_of_order_records = 0;  ///< Block records whose block_index is lower than the previous one.
-    std::size_t oversized_records = 0;  ///< Records larger than a shard.
+    std::size_t oversized_records = 0;  ///< Records too large to share a shard with a padding record.
+    std::size_t late_oversized_records = 0;  ///< Oversized records after an ordinary block record.
+    std::size_t late_coarse_records = 0;  ///< Ordinary coarsest-level records after an ordinary finer one.
     std::vector<std::uint8_t> stripped;  ///< The frame with padding records removed.
   };
 
