@@ -46,6 +46,7 @@ extern "C" {
 #include "nvenc/nvenc_base.h"
 #include "platform/common.h"
 #include "process.h"
+#include "pyrowave_host.h"
 #include "sync.h"
 #include "video.h"
 #include "video_encoder_probe_policy.h"
@@ -777,6 +778,7 @@ namespace video {
       oss << "encoder=" << config::video.encoder
           << "|hevc=" << config::video.hevc_mode
           << "|av1=" << config::video.av1_mode
+          << "|pyrowave=" << (config::video.pyrowave ? 1 : 0)
           << "|amd_coder=" << config::video.amd.amd_coder
           << "|amd_ltr=" << config::video.amd.amd_ltr_frames
           << "|amd_queue=" << config::video.amd.amd_input_queue_size;
@@ -2721,6 +2723,7 @@ namespace video {
   static encoder_t *chosen_encoder;
   int active_hevc_mode;
   int active_av1_mode;
+  std::atomic_int active_pyrowave_mode {0};
   bool last_encoder_probe_supported_ref_frames_invalidation = false;
   std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec = {};
   std::atomic<std::int64_t> last_negative_hdr_advertisement_probe_ns {0};
@@ -6110,6 +6113,173 @@ namespace video {
            ) == encode_e::reinit) {}
   }
 
+  /**
+   * @brief Stream colorspace and HDR info for a PyroWave session.
+   *
+   * Mirrors make_encode_device(), including the per-session HDR latch that keeps a
+   * transient SDR reading during a capture reinit from downgrading an HDR stream.
+   * RTX HDR is never active for PyroWave sessions (see rtsp.cpp).
+   */
+  sunshine_colorspace_t pyrowave_session_colorspace(platf::display_t &disp, const config_t &config, hdr_latch_t &hdr_latch, hdr_info_t &hdr_info) {
+    const bool display_is_hdr = disp.is_hdr();
+    bool hdr_display = display_is_hdr;
+    if (config.dynamicRange > 0 && !config.prefer_sdr_10bit && !config.force_sdr) {
+      if (hdr_display) {
+        hdr_latch.latched = true;
+      } else if (hdr_latch.latched) {
+        BOOST_LOG(info) << "Display momentarily reported SDR during reinit; keeping HDR colorspace for this HDR session.";
+        hdr_display = true;
+      }
+    }
+
+    const auto colorspace = colorspace_from_client_config(config, hdr_display);
+
+    hdr_info = std::make_unique<hdr_info_raw_t>(false);
+    if (colorspace_is_hdr(colorspace)) {
+      SS_HDR_METADATA metadata {};
+      if (display_is_hdr && disp.get_hdr_metadata(metadata)) {
+        hdr_latch.metadata = metadata;
+        hdr_latch.metadata_valid = true;
+        hdr_info = std::make_unique<hdr_info_raw_t>(true, metadata);
+      } else if (hdr_latch.metadata_valid) {
+        hdr_info = std::make_unique<hdr_info_raw_t>(true, hdr_latch.metadata);
+      } else {
+        BOOST_LOG(error) << "Couldn't get display hdr metadata when colorspace selection indicates it should have one";
+      }
+    }
+
+    const auto color_coding = colorspace.colorspace == colorspace_e::bt2020    ? "HDR (Rec. 2020 + SMPTE 2084 PQ)" :
+                              colorspace.colorspace == colorspace_e::rec601    ? "SDR (Rec. 601)" :
+                              colorspace.colorspace == colorspace_e::rec709    ? "SDR (Rec. 709)" :
+                              colorspace.colorspace == colorspace_e::bt2020sdr ? "SDR (Rec. 2020)" :
+                                                                                 "unknown";
+    BOOST_LOG(info) << "Creating encoder [pyrowave]";
+    BOOST_LOG(info) << "Color coding: " << color_coding;
+    BOOST_LOG(info) << "Color depth: " << colorspace.bit_depth << "-bit";
+    BOOST_LOG(info) << "Color range: " << (colorspace.full_range ? "JPEG" : "MPEG");
+    return colorspace;
+  }
+
+  /**
+   * @brief Encode loop of a PyroWave session (docs/pyrowave-protocol.md).
+   *
+   * PyroWave bypasses encoder_t: every frame is intra-coded, so IDR requests and
+   * reference frame invalidation need no action, and a bitrate change only moves the
+   * per-frame byte budget. When no new capture arrives within the minimum-FPS
+   * interval, the last image is encoded again.
+   *
+   * @return true when the capture side is reinitializing and the session should
+   *         continue with the new display; false when the stream is over or the
+   *         encoder failed.
+   */
+  bool encode_run_pyrowave(
+    int &frame_nr,
+    safe::mail_t mail,
+    img_event_t images,
+    config_t &config,
+    std::shared_ptr<platf::display_t> disp,
+    const sunshine_colorspace_t &colorspace,
+    safe::signal_t &reinit_event,
+    void *channel_data
+  ) {
+    pyrowave::host::session_params_t params;
+    params.width = config.width;
+    params.height = config.height;
+    params.yuv444 = config.chromaSamplingType == 1;
+    params.colorspace = colorspace;
+    params.framerate = config.framerate;
+    params.bitrate_kbps = config.bitrate;
+    params.framing = config.pyrowave_framing;
+    params.packetsize = config.packetsize;
+
+    auto encoder = pyrowave::host::make_encoder(params, disp);
+    if (!encoder) {
+      BOOST_LOG(error) << "PyroWave: could not create the encoder for "sv << config.width << 'x' << config.height;
+      return false;
+    }
+    // Serialize GPU device destruction with the other encoders' teardown.
+    auto destroy_encoder = util::fail_guard([&encoder]() {
+      std::lock_guard lg {encode_session_teardown_mutex};
+      encoder.reset();
+    });
+
+    const double minimum_fps_target = (config::video.minimum_fps_target > 0.0) ? config::video.minimum_fps_target : config.framerate;
+    const std::chrono::duration<double, std::milli> max_frametime {1000.0 / std::max(minimum_fps_target, 1.0)};
+
+    auto shutdown_event = mail->event<bool>(mail::shutdown);
+    auto packets = mail::man->queue<packet_t>(mail::video_packets);
+    auto idr_events = mail->event<bool>(mail::idr);
+    auto invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
+    auto bitrate_events = mail->event<int>(mail::dynamic_bitrate);
+
+    // Encoded until the first capture arrives, so the client sees the stream come up.
+    std::shared_ptr<platf::img_t> last_img = disp->alloc_img();
+    if (!last_img || disp->dummy_img(last_img.get())) {
+      BOOST_LOG(error) << "PyroWave: could not allocate the initial frame"sv;
+      return false;
+    }
+
+    std::vector<std::uint8_t> frame;
+    while (true) {
+      const bool reinit_pending = reinit_event.peek() && frame_nr > 1;
+      if (shutdown_event->peek() || !images->running() || reinit_pending) {
+        return reinit_pending && !shutdown_event->peek() && images->running();
+      }
+
+      std::optional<int> latest_bitrate;
+      while (bitrate_events->peek()) {
+        if (auto new_bitrate = bitrate_events->pop(0ms)) {
+          latest_bitrate = *new_bitrate;
+        }
+      }
+      if (latest_bitrate) {
+        config.bitrate = *latest_bitrate;
+        config.client_requested_bitrate = *latest_bitrate;
+        encoder->set_bitrate(*latest_bitrate);
+      }
+      while (invalidate_ref_frames_events->peek()) {
+        (void) invalidate_ref_frames_events->pop(0ms);
+      }
+      if (idr_events->peek()) {
+        (void) idr_events->pop();
+      }
+
+      std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
+      std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
+      if (auto img = images->pop(max_frametime)) {
+        if (!is_placeholder_capture_image(*img)) {
+          frame_timestamp = img->frame_timestamp;
+          host_processing_timestamp = img->host_processing_timestamp;
+          encoder->on_new_capture(std::chrono::steady_clock::now());
+        }
+        last_img = std::move(img);
+      } else if (!images->running()) {
+        return false;
+      }
+
+      const int result = encoder->encode(*last_img, frame);
+      if (result < 0) {
+        BOOST_LOG(error) << "PyroWave: encoding failed; ending the video stream"sv;
+        return false;
+      }
+      if (result > 0) {
+        continue;
+      }
+
+      auto packet = std::make_unique<packet_raw_generic>(std::move(frame), frame_nr++, true);
+      frame = {};
+      packet->channel_data = channel_data;
+      packet->frame_timestamp = frame_timestamp;
+      packet->host_processing_timestamp = host_processing_timestamp;
+      packet->packet_enqueue_timestamp = std::chrono::steady_clock::now();
+      packets->raise(std::move(packet));
+
+      // While streaming check to see if the mouse is present and enable Mouse Keys to force the cursor to appear
+      // This is useful for KVM switch scenarios where mouse may disappear during streaming
+      platf::enable_mouse_keys();
+    }
+  }
+
   void capture_async(
     safe::mail_t mail,
     config_t &config,
@@ -6177,6 +6347,21 @@ namespace video {
         }
 
         display = source_ctx.display_wp->lock();
+      }
+
+      if (config.videoFormat == 3) {
+        hdr_info_t hdr_info;
+        const auto colorspace = pyrowave_session_colorspace(*display, config, hdr_latch, hdr_info);
+
+        // absolute mouse coordinates require that the dimensions of the screen are known
+        touch_port_event->raise(make_port(display.get(), config));
+        raise_hdr_info_if_changed(hdr_event, last_hdr_info, std::move(hdr_info));
+
+        if (!encode_run_pyrowave(frame_nr, mail, images, config, display, colorspace, source_ctx.reinit_event, channel_data)) {
+          // Shutdown, or an encoder failure: end the session either way.
+          return;
+        }
+        continue;
       }
 
       auto *enc_ptr = chosen_encoder;
@@ -6357,7 +6542,9 @@ namespace video {
     auto idr_events = mail->event<bool>(mail::idr);
 
     idr_events->raise(true);
-    if ((encoder->flags & PARALLEL_ENCODING) || config.capture_source != capture_source_e::active_output) {
+    // PyroWave sessions always run on the async path (see encode_run_pyrowave).
+    if ((encoder->flags & PARALLEL_ENCODING) || config.capture_source != capture_source_e::active_output ||
+        config.videoFormat == 3) {
       capture_async(std::move(mail), config, channel_data);
     } else {
       safe::signal_t join_event;
@@ -6861,6 +7048,31 @@ namespace video {
     return true;
   }
 
+  /**
+   * @brief Check whether PyroWave can encode on the capture adapter.
+   * @return The active_pyrowave_mode for this probe: 2 when available, else 1.
+   */
+  int probe_pyrowave(const std::optional<platf::adapter_id_t> &adapter) {
+    if (!config::video.pyrowave) {
+      BOOST_LOG(info) << "PyroWave is disabled by configuration"sv;
+      return 1;
+    }
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+    const auto started = std::chrono::steady_clock::now();
+    std::string detail;
+    const bool supported = pyrowave::host::probe(adapter, detail);
+    const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started);
+    if (supported) {
+      BOOST_LOG(info) << "Found PyroWave encoder [Vulkan] (probe took "sv << elapsed.count() << " ms)"sv;
+      return 2;
+    }
+    BOOST_LOG(info) << "PyroWave is unavailable: "sv << detail;
+#else
+    (void) adapter;
+#endif
+    return 1;
+  }
+
   int probe_encoders() {
     std::lock_guard<std::mutex> lock(encoder_probe_mutex);
     const auto probe_target = resolve_probe_target();
@@ -6921,6 +7133,7 @@ namespace video {
     }
     const auto previous_active_hevc_mode = active_hevc_mode;
     const auto previous_active_av1_mode = active_av1_mode;
+    const auto previous_active_pyrowave_mode = active_pyrowave_mode.load();
     const auto previous_last_ref_frames_invalidation = last_encoder_probe_supported_ref_frames_invalidation;
     const auto previous_last_yuv444_for_codec = last_encoder_probe_supported_yuv444_for_codec;
     auto previous_encoder = chosen_encoder;
@@ -6928,6 +7141,7 @@ namespace video {
     auto restore_previous_probe_state = util::fail_guard([&]() {
       active_hevc_mode = previous_active_hevc_mode;
       active_av1_mode = previous_active_av1_mode;
+      active_pyrowave_mode = previous_active_pyrowave_mode;
       last_encoder_probe_supported_ref_frames_invalidation = previous_last_ref_frames_invalidation;
       last_encoder_probe_supported_yuv444_for_codec = previous_last_yuv444_for_codec;
     });
@@ -7162,6 +7376,9 @@ namespace video {
       active_av1_mode = encoder.av1[encoder_t::PASSED] ? (encoder.av1[encoder_t::DYNAMIC_RANGE] ? 3 : 2) : 1;
     }
 
+    // PyroWave does not use the selected encoder, only the capture adapter it validated on.
+    active_pyrowave_mode = probe_pyrowave(successful_probe_adapter ? successful_probe_adapter : required_adapter);
+
     const bool hevc_passed = encoder.hevc[encoder_t::PASSED];
     const bool hevc_hdr_supported = encoder.hevc[encoder_t::DYNAMIC_RANGE];
     const bool av1_passed = encoder.av1[encoder_t::PASSED];
@@ -7213,6 +7430,7 @@ namespace video {
     const advertised_encoder_capabilities_t successful_capabilities {
       .hevc_mode = active_hevc_mode,
       .av1_mode = active_av1_mode,
+      .pyrowave_mode = active_pyrowave_mode.load(),
       .yuv444_for_codec = last_encoder_probe_supported_yuv444_for_codec,
     };
     update_probe_cache(

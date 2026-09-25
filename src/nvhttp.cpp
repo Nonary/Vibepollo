@@ -57,6 +57,7 @@
 #include "remote_display_topology.h"
 #include "remote_session.h"
 #include "platform/common.h"
+#include "pyrowave_protocol.h"
 #include "state_storage.h"
 #include "paired_state_policy.h"
 #include "update.h"
@@ -809,6 +810,7 @@ namespace nvhttp {
           << (caps.hevc_mode == 3 || caps.av1_mode == 3)
           << ", hevc_mode=" << caps.hevc_mode
           << ", av1_mode=" << caps.av1_mode
+          << ", pyrowave_mode=" << caps.pyrowave_mode
           << ", source=" << reason << '.';
         return http_encoder_capabilities_t {
           .advertised = std::move(caps),
@@ -1784,6 +1786,7 @@ namespace nvhttp {
           << (caps.hevc_mode == 3 || caps.av1_mode == 3)
           << ", hevc_mode=" << caps.hevc_mode
           << ", av1_mode=" << caps.av1_mode
+          << ", pyrowave_mode=" << caps.pyrowave_mode
           << ", source=" << reason << '.';
         return http_encoder_capabilities_t {
           .advertised = std::move(caps),
@@ -3779,6 +3782,11 @@ namespace nvhttp {
         if (advertised_video.yuv444_for_codec[2]) {
           codec_mode_flags |= SCM_AV1_HIGH10_444;
         }
+      }
+      // PyroWave encodes 8/10-bit and 4:2:0/4:4:4 alike, whatever encoder was selected above.
+      // pyrowave_mode is 2 only when the probe passed and the pyrowave option is enabled.
+      if (advertised_video.pyrowave_mode >= 2) {
+        codec_mode_flags |= pyrowave::protocol::SCM_MASK_PYROWAVE;
       }
       tree.put("root.ServerCodecModeSupport", codec_mode_flags);
 

@@ -37,6 +37,7 @@ extern "C" {
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
+#include "pyrowave_protocol.h"
 #include "rtsp.h"
 #include "rtsp_pending_policy.h"
 #include "stream.h"
@@ -169,8 +170,11 @@ namespace rtsp_stream {
     // per-frame RTX HDR runtime still bypasses conversion while the foreground is
     // desktop or any non-matching app, so we can turn RTX HDR off without changing
     // WGC capture format or reinitializing the encoder.
+    // TrueHDR conversion lives in the avcodec/NVENC/AMF encode devices; the PyroWave
+    // encoder converts on its own device and has no SDR->HDR stage.
     config.rtx_hdr_active = config::runtime_config_override_enabled("rtx_hdr") &&
                             config::video.rtx_hdr.enabled &&
+                            config.videoFormat != pyrowave::protocol::BITSTREAM_FORMAT &&
                             config.dynamicRange > 0 &&
                             !config.prefer_sdr_10bit &&
                             !config.force_sdr;
@@ -1651,6 +1655,12 @@ namespace rtsp_stream {
       ss << "a=rtpmap:98 AV1/90000"sv << std::endl;
     }
 
+    // PyroWave capability marker and bitstream version (docs/pyrowave-protocol.md).
+    if (video::active_pyrowave_mode >= 2) {
+      ss << pyrowave::protocol::DESCRIBE_RTPMAP << std::endl;
+      ss << pyrowave::protocol::DESCRIBE_BITSTREAM_ATTRIBUTE << pyrowave::protocol::BITSTREAM_ID << std::endl;
+    }
+
     if (!session->surround_params.empty()) {
       // If we have our own surround parameters, advertise them twice first
       ss << "a=fmtp:97 surround-params="sv << session->surround_params << std::endl;
@@ -1933,10 +1943,29 @@ namespace rtsp_stream {
       BOOST_LOG(info) << "Client requested VRR low-latency stream policy";
     }
 
+    const bool pyrowave_session = config.monitor.videoFormat == pyrowave::protocol::BITSTREAM_FORMAT;
+    if (pyrowave_session) {
+      // Aurora's adaptive-FEC attribute or our record-framing feature bit selects
+      // record framing; other PyroWave clients get length-prefixed frames.
+      std::optional<std::uint32_t> pyrowave_features;
+      if (const auto it = args.find(pyrowave::protocol::ANNOUNCE_FEATURES); it != args.end()) {
+        pyrowave_features = (std::uint32_t) util::from_view(it->second);
+      }
+      const bool pyrowave_adaptive_fec = args.contains(pyrowave::protocol::ANNOUNCE_ADAPTIVE_FEC);
+      config.monitor.pyrowave_framing = pyrowave::policy::select_framing(pyrowave_adaptive_fec, pyrowave_features);
+      config.monitor.packetsize = config.packetsize;
+      BOOST_LOG(info) << "Client requested PyroWave: framing="sv
+                      << (config.monitor.pyrowave_framing == pyrowave::policy::framing_e::records ? "records"sv : "length-prefixed"sv)
+                      << ", features="sv << pyrowave_features.value_or(0)
+                      << ", adaptiveFec="sv << (pyrowave_adaptive_fec ? "sent"sv : "absent"sv)
+                      << ", packetSize="sv << config.packetsize;
+    }
+
     const bool prefer_10bit_sdr = effective_10bit_sdr_requested(*session);
     const bool hevc_main10 = config.monitor.videoFormat == 1 && video::active_hevc_mode >= 3;
     const bool av1_main10 = config.monitor.videoFormat == 2 && video::active_av1_mode >= 3;
-    const bool supports_10bit_dynamic_range = hevc_main10 || av1_main10;
+    const bool pyrowave_10bit = pyrowave_session && video::active_pyrowave_mode >= 2;
+    const bool supports_10bit_dynamic_range = hevc_main10 || av1_main10 || pyrowave_10bit;
     config.monitor.force_sdr = session->force_sdr;
     if (prefer_10bit_sdr) {
       if (supports_10bit_dynamic_range) {
@@ -1949,7 +1978,9 @@ namespace rtsp_stream {
         BOOST_LOG(info) << "10-bit SDR is enabled for this client, but Main10 is unavailable; using 8-bit SDR encode";
       }
     } else if (config.monitor.dynamicRange == 0) {
-      if (session->enable_hdr && supports_10bit_dynamic_range) {
+      // A PyroWave bitstream does not carry its bit depth: the client sizes its planes
+      // from the profile it negotiated, so never upgrade an 8-bit PyroWave request.
+      if (session->enable_hdr && supports_10bit_dynamic_range && !pyrowave_session) {
         BOOST_LOG(info) << "RTSP ANNOUNCE requested SDR while launch HDR is enabled; using HDR 10-bit encode";
         config.monitor.dynamicRange = 1;
       }
@@ -1959,7 +1990,8 @@ namespace rtsp_stream {
     const auto bitrate = pending_policy::negotiate_bitrate(
       configuredBitrateKbps, config.monitor.bitrate, config::video.max_bitrate,
       {config.monitor.framerate, config.monitor.encodingFramerate}, config::video.limit_framerate,
-      config::stream.fec_percentage, config.audio.channels, config.audio.flags[audio::config_t::HIGH_QUALITY]
+      pyrowave_session ? 0 : config::stream.fec_percentage,
+      config.audio.channels, config.audio.flags[audio::config_t::HIGH_QUALITY]
     );
     config.monitor.client_requested_bitrate = bitrate.requested_kbps;
     config.monitor.bitrate = bitrate.encoder_kbps;
@@ -1975,6 +2007,13 @@ namespace rtsp_stream {
 
     if (config.monitor.videoFormat == 2 && video::active_av1_mode == 1) {
       BOOST_LOG(warning) << "AV1 is disabled, yet the client requested AV1"sv;
+
+      respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+      return false;
+    }
+
+    if (pyrowave_session && video::active_pyrowave_mode < 2) {
+      BOOST_LOG(warning) << "PyroWave is disabled or unsupported, yet the client requested PyroWave"sv;
 
       respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
       return false;
