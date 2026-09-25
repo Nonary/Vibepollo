@@ -1,0 +1,10 @@
+{
+	"include": [ "../assets/shaders/inc" ],
+	"shaders": [
+		{
+			"name": "scaler",
+			"compute": true,
+			"path": "../assets/shaders/util/scaler.comp"
+		}
+	]
+}

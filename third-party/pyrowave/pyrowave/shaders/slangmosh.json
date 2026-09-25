@@ -1,0 +1,71 @@
+{
+	"shaders": [
+		{
+			"name": "dwt",
+			"compute": true,
+			"path": "dwt.comp",
+			"variants": [
+				{ "define": "PRECISION", "count": 3, "resolve": false },
+				{ "define": "FP16", "count": 2, "resolve": true }
+			]
+		},
+		{
+			"name": "block_packing",
+			"compute": true,
+			"path": "block_packing.comp"
+		},
+		{
+			"name": "idwt",
+			"compute": true,
+			"path": "idwt.comp",
+			"variants": [
+				{ "define": "PRECISION", "count": 3, "resolve": false },
+				{ "define": "FP16", "count": 2, "resolve": true }
+			]
+		},
+		{
+			"name": "idwt_vs",
+			"path": "idwt.vert"
+		},
+		{
+			"name": "idwt_fs",
+			"path": "idwt.frag",
+			"variants": [
+				{ "define": "CHROMA_CONFIG", "count": 3 }
+			]
+		},
+		{
+			"name": "power_to_db",
+			"compute": true,
+			"path": "power_to_db.comp"
+		},
+		{
+			"name": "analyze_rate_control",
+			"compute": true,
+			"path": "analyze_rate_control.comp"
+		},
+		{
+			"name": "analyze_rate_control_finalize",
+			"compute": true,
+			"path": "analyze_rate_control_finalize.comp"
+		},
+		{
+			"name": "resolve_rate_control",
+			"compute": true,
+			"path": "resolve_rate_control.comp"
+		},
+		{
+			"name": "wavelet_quant",
+			"compute": true,
+			"path": "wavelet_quant.comp"
+		},
+		{
+			"name": "wavelet_dequant",
+			"compute": true,
+			"path": "wavelet_dequant.comp",
+			"variants": [
+				{ "define": "STORAGE_MODE", "count" : 3 }
+			]
+		}
+	]
+}
