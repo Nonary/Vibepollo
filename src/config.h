@@ -520,6 +520,8 @@ namespace config {
   extern video_t video;
   extern audio_t audio;
   extern stream_t stream;
+  // One snapshot of the last completed apply; 0 preserves ENet defaults.
+  std::chrono::milliseconds get_control_peer_timeout();
   extern nvhttp_t nvhttp;
   extern input_t input;
   extern frame_limiter_t frame_limiter;

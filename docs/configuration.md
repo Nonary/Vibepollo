@@ -2426,6 +2426,40 @@ back to a physical output, the virtual-only promotion is not applied.
     </tr>
 </table>
 
+### control_peer_timeout
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Host-side timeout thresholds, in milliseconds, for unacknowledged reliable control traffic.
+            `0` leaves the ENet defaults unchanged (minimum 5000 ms, maximum 30000 ms).
+            A positive value sets both thresholds for each new control peer. Accepted decimal values are
+            0 through 86399999; higher values exceed ENet's timestamp comparison window.
+            Each configuration apply starts from defaults: a missing, empty, malformed, negative or
+            out-of-range value uses `0`, including when reloading a previously valid positive value.
+            New peers take one snapshot of the last timeout published after successful configuration
+            parsing. During a reload they can use the preceding value; a parsing failure does not publish
+            a new timeout. Existing peers keep their connection-time thresholds.
+            To tolerate short network drops, also raise `ping_timeout` and use a client with a matching
+            retry window. The ping deadline or the client's own timeout can still end the stream earlier.
+            This option does not delay explicit session termination or change session resume behavior.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            control_peer_timeout = 60000
+            @endcode</td>
+    </tr>
+</table>
+
 ### video_max_batch_size_kb
 
 <table>

@@ -37,6 +37,7 @@
 #include "amf/amf_config_policy.h"
 #include "amf/amf_lifecycle.h"
 #include "config.h"
+#include "control_peer_timeout.h"
 #include "virtual_display_scale.h"
 #include "config_key.h"
 #include "config_playnite.h"
@@ -1123,6 +1124,10 @@ namespace config {
   };
 
   namespace {
+    // Only completed applies publish this setting; the control thread never
+    // reads the mutable/reset-in-progress configuration objects.
+    std::atomic<std::uint32_t> g_control_peer_timeout_ms {0};
+
     const video_t default_video = video;
     const audio_t default_audio = audio;
     const stream_t default_stream = stream;
@@ -1157,6 +1162,10 @@ namespace config {
       sunshine.cmd = preserved_cmd;
     }
   }  // namespace
+
+  std::chrono::milliseconds get_control_peer_timeout() {
+    return std::chrono::milliseconds {g_control_peer_timeout_ms.load(std::memory_order_acquire)};
+  }
 
   bool endline(char ch) {
     return ch == '\r' || ch == '\n';
@@ -1727,6 +1736,7 @@ namespace config {
 
   void apply_config(std::unordered_map<std::string, std::string> &&vars) {
     reset_runtime_config_to_defaults();
+    std::chrono::milliseconds control_peer_timeout {0};
 #ifndef __ANDROID__
     // TODO: Android can possibly support this
     if (!fs::exists(stream.file_apps.c_str())) {
@@ -2156,6 +2166,17 @@ namespace config {
       stream.ping_timeout = std::chrono::milliseconds(to);
     }
 
+    // Parse locally so reset/parse cannot expose a transient policy to CONNECT.
+    // Each completed apply uses default 0 for invalid or missing values.
+    generic_f(vars, "control_peer_timeout", control_peer_timeout, [&](std::string_view value) {
+      const auto timeout = parse_control_peer_timeout(value);
+      if (!timeout) {
+        BOOST_LOG(warning) << "Invalid control_peer_timeout: expected decimal milliseconds from 0 to "sv
+                           << max_control_peer_timeout.count();
+      }
+      return timeout.value_or(control_peer_timeout);
+    });
+
     int_between_f(vars, "lan_encryption_mode", stream.lan_encryption_mode, {0, 2});
     int_between_f(vars, "wan_encryption_mode", stream.wan_encryption_mode, {0, 2});
 
@@ -2392,6 +2413,9 @@ namespace config {
       }
     }
 
+    // Publish last, after all configuration parsing and side effects succeed.
+    // A pending CONNECT can keep using the last completed policy during apply.
+    g_control_peer_timeout_ms.store(static_cast<std::uint32_t>(control_peer_timeout.count()), std::memory_order_release);
   }
 
   int parse(int argc, char *argv[]) {

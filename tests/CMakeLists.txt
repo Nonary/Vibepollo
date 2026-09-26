@@ -268,6 +268,12 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
             "${SUNSHINE_TEST_REPOSITORY_ROOT}"
             "${CMAKE_CXX_COMPILER}")
     set_tests_properties(test_component_windows_input_desktop PROPERTIES LABELS "component" TIMEOUT 30)
+    add_test(NAME test_component_control_peer_timeout
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_control_peer_timeout.py"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}"
+            "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_control_peer_timeout PROPERTIES LABELS "component" TIMEOUT 30)
 endif()
 
 if(WIN32)

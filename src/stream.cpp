@@ -29,6 +29,7 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/endian/arithmetic.hpp>
 #include <openssl/err.h>
+#include <enet/time.h>
 
 extern "C" {
   // clang-format off
@@ -39,6 +40,7 @@ extern "C" {
 
 // local includes
 #include "config.h"
+#include "control_peer_timeout.h"
 #include "crypto.h"
 #include "deferred_stream_start_policy.h"
 #include "display_device.h"
@@ -1145,6 +1147,14 @@ namespace stream {
           break;
         case ENET_EVENT_TYPE_CONNECT:
           BOOST_LOG(info) << "CLIENT CONNECTED"sv;
+          // Match the contributor's opt-in retry window for each accepted peer.
+          // The separate ping deadline and explicit stop path retain ownership.
+          static_assert(config::max_control_peer_timeout.count() < ENET_TIME_OVERFLOW);
+          if (const auto timeout = config::get_control_peer_timeout(); timeout.count() > 0) {
+            const auto timeout_ms = static_cast<enet_uint32>(timeout.count());
+            enet_peer_timeout(event.peer, ENET_PEER_TIMEOUT_LIMIT, timeout_ms, timeout_ms);
+            BOOST_LOG(info) << "Control peer timeout set to "sv << timeout_ms << " ms"sv;
+          }
           break;
         case ENET_EVENT_TYPE_DISCONNECT:
           BOOST_LOG(info) << "CLIENT DISCONNECTED"sv;
