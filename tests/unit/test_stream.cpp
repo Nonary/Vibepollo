@@ -6,6 +6,36 @@
 #include "../tests_common.h"
 #include "src/stream_protocol.h"
 
+TEST(VideoSendBatchTests, EncryptedDefaultPacketsStayWithinWindowsBufferingLimit) {
+  // packetSize=1392 plus the 16-byte RTP allowance, then a 32-byte GCM prefix.
+  // The old calculation selected 46 packets: 66,240 bytes instead of <=65,536.
+  EXPECT_EQ(stream::video_send_batch_size(1408, 0, 65536), 46u);
+  const auto encrypted_count = stream::video_send_batch_size(1408, 32, 65536);
+  EXPECT_EQ(encrypted_count, 45u);
+  EXPECT_LE(encrypted_count * (1408 + 32), 65536u);
+}
+
+TEST(VideoSendBatchTests, HonorsConfiguredByteBudgetAndSegmentationLimit) {
+  EXPECT_EQ(stream::video_send_batch_size(1408, 32, 16 * 1024), 11u);
+  EXPECT_EQ(stream::video_send_batch_size(1408, 32, 128 * 1024), 45u);
+  EXPECT_EQ(stream::video_send_batch_size(64, 32, 65536), 64u);
+  EXPECT_EQ(stream::video_send_batch_size(1408, 32, 0), 1u);
+  EXPECT_EQ(stream::video_send_batch_size(1408, 32, 1000), 1u);
+}
+
+TEST(VideoSendBatchTests, EncryptionPrefixNeverPushesABatchPastTheByteLimit) {
+  for (std::size_t block_size = 64; block_size <= 9000; ++block_size) {
+    for (const std::size_t prefix_size : {0u, 32u}) {
+      for (const std::size_t budget : {16u * 1024, 64u * 1024}) {
+        const auto count = stream::video_send_batch_size(block_size, prefix_size, budget);
+        ASSERT_LE(count * (block_size + prefix_size), budget);
+        ASSERT_GE(count, 1u);
+        ASSERT_LE(count, 64u);
+      }
+    }
+  }
+}
+
 TEST(VideoFormatNameTests, CanonicalCodecNameNormalizesKnownAliases) {
   EXPECT_EQ(stream::canonical_codec_name("h264"), "H.264");
   EXPECT_EQ(stream::canonical_codec_name("H.264"), "H.264");

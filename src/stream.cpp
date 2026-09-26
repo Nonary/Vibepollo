@@ -2007,6 +2007,11 @@ namespace stream {
     logging::time_delta_periodic_logger frame_send_batch_latency_logger(debug, "Network: each send_batch() latency");
     logging::time_delta_periodic_logger frame_fec_latency_logger(debug, "Network: each FEC block latency");
     logging::time_delta_periodic_logger frame_network_latency_logger(debug, "Network: frame's overall network latency");
+    // A frame's first send_batch() to the return of its last one: the rate at which
+    // the frame leaves this process, independent of the average stream bitrate.
+    logging::min_max_avg_periodic_logger<double> frame_burst_logger(debug, "Network: frame send burst", "ms");
+    logging::min_max_avg_periodic_logger<double> frame_burst_rate_logger(debug, "Network: frame send burst rate (100+ packets)", "Mbps");
+    auto next_burst_detail_log = std::chrono::steady_clock::now();
 
     crypto::aes_t iv(12);
 
@@ -2033,6 +2038,8 @@ namespace stream {
       std::chrono::steady_clock::time_point window_started;
       unsigned lines = 0;
       unsigned suppressed = 0;
+      // Last logged PyroWave pacing source: link bps and interface LUID.
+      std::optional<std::pair<std::uint64_t, std::uint64_t>> logged_pacing;
     };
     std::unordered_map<session_t *, wire_timeline_state_t> wire_timeline_by_session;
 
@@ -2247,8 +2254,16 @@ namespace stream {
           // Resolve the actual route each frame so adapter/rate changes take effect.
           // This is local link capacity, not an estimate of downstream bottlenecks.
           std::uint64_t link_bps = 0;
+          std::uint64_t link_luid = 0;
+          std::string link_alias = "unavailable";
 #ifdef _WIN32
-          link_bps = platf::routed_link_bps(session->localAddress, session->video.peer.address());
+          platf::routed_link_info_t link_info;
+          link_bps = platf::routed_link_bps(session->localAddress, session->video.peer.address(), &link_info);
+          link_luid = link_info.luid;
+          if (!link_info.alias.empty()) {
+            link_alias = link_info.alias + " (ifType " + std::to_string(link_info.if_type) +
+                         ", transmit " + std::to_string(link_info.transmit_bps / 1'000'000) + " Mbps)";
+          }
 #endif
           const auto &monitor = session->config.monitor;
           const auto stream_kbps = monitor.client_requested_bitrate > 0 ? monitor.client_requested_bitrate : monitor.bitrate;
@@ -2261,6 +2276,16 @@ namespace stream {
             link_bps, stream_kbps, payload_blocksize, wire_bytes,
             packet->data_size() + sizeof(frame_header), monitor.framerate
           );
+          const std::pair pacing_source {link_bps, link_luid};
+          if (wire_timeline_state.logged_pacing != pacing_source) {
+            wire_timeline_state.logged_pacing = pacing_source;
+            BOOST_LOG(info) << "PyroWave pacing: "sv << session->localAddress << " -> "sv << session->video.peer.address()
+                            << " via "sv << link_alias << ", LUID 0x"sv << std::hex << link_luid << std::dec
+                            << ", routed_link_bps "sv << link_bps << (link_bps ? "" : " (fallback: frame/bitrate demand)")
+                            << ", "sv << ratecontrol_packets_in_1ms << " packets/ms at "sv << wire_bytes << " wire bytes ("sv
+                            << ratecontrol_packets_in_1ms * wire_bytes * 8 / 1000 << " Mbps), payload "sv << payload_blocksize
+                            << " bytes, stream "sv << stream_kbps << " kbps at "sv << monitor.framerate << " fps"sv;
+          }
         }
 
         // Send less than 64K in a single batch.
@@ -2268,15 +2293,15 @@ namespace stream {
         // appear in "Other I/O" and begin waiting for interrupts.
         // This gives inconsistent performance so we'd rather avoid it.
         size_t max_batch_size_bytes = 64 * 1024;
+        const auto prefix_size = session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0;
+        const auto datagram_size = blocksize + prefix_size;
         max_batch_size_bytes = pyrowave_session ?
-                                 std::min(max_batch_size_bytes, ratecontrol_packets_in_1ms * blocksize) :
+                                 std::min(max_batch_size_bytes, ratecontrol_packets_in_1ms * datagram_size) :
                                  std::min<size_t>(max_batch_size_bytes, (size_t) config::stream.video_max_batch_size_kb * 1024);
 
-        size_t send_batch_size = std::max<size_t>(1, max_batch_size_bytes / blocksize);
-        // Also don't exceed 64 packets, which can happen when Moonlight requests
-        // unusually small packet size.
-        // Generic Segmentation Offload on Linux can't do more than 64.
-        send_batch_size = std::min<size_t>(64, send_batch_size);
+        // Encryption adds a prefix to every datagram. Omitting it here lets a
+        // nominally 64 KiB batch cross the Windows buffering threshold.
+        const auto send_batch_size = video_send_batch_size(blocksize, prefix_size, max_batch_size_bytes);
 
         // Don't ignore the last ratecontrol group of the previous frame
         auto ratecontrol_frame_start = std::max(ratecontrol_next_frame_start, std::chrono::steady_clock::now());
@@ -2310,6 +2335,14 @@ namespace stream {
                                      pyrowave::policy::record_start_shards({packet->data(), packet->data_size()}, payload_blocksize) :
                                      std::vector<bool> {};
         std::size_t block_first_shard = 0;
+
+        // Send burst diagnostics for frame_burst_logger.
+        std::optional<std::chrono::steady_clock::time_point> burst_first_send;
+        std::chrono::steady_clock::time_point burst_last_return;
+        double burst_sleep_ms = 0.0;
+        double burst_send_ms = 0.0;
+        double burst_max_send_ms = 0.0;
+        std::size_t burst_fallback_batches = 0;
 
         auto blockIndex = 0;
         std::for_each(fec_blocks_begin, fec_blocks_end, [&](std::string_view &current_payload) {
@@ -2410,7 +2443,11 @@ namespace stream {
                 if (now < due) {
                   auto sleep_time = due - now;
                   ratecontrol_sleep_logger.collect_and_log(std::chrono::duration<double, std::milli>(sleep_time).count());
+                  const auto sleep_start = std::chrono::steady_clock::now();
                   timer->sleep_for(sleep_time);
+                  if (burst_first_send) {
+                    burst_sleep_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sleep_start).count();
+                  }
                 } else {
                   ratecontrol_late_logger.collect_and_log(std::chrono::duration<double, std::milli>(now - due).count());
                 }
@@ -2424,8 +2461,13 @@ namespace stream {
               batch_info.block_count = current_batch_size;
 
               frame_send_batch_latency_logger.first_point_now();
+              const auto send_start = std::chrono::steady_clock::now();
+              if (!burst_first_send) {
+                burst_first_send = send_start;
+              }
               // Use a batched send if it's supported on this platform
               if (!platf::send_batch(batch_info)) {
+                ++burst_fallback_batches;
                 // Batched send is not available, so send each packet individually
                 BOOST_LOG(verbose) << "Falling back to unbatched send"sv;
                 for (auto y = 0; y < current_batch_size; y++) {
@@ -2444,6 +2486,10 @@ namespace stream {
                 }
               }
               frame_send_batch_latency_logger.second_point_now_and_log();
+              burst_last_return = std::chrono::steady_clock::now();
+              const double send_ms = std::chrono::duration<double, std::milli>(burst_last_return - send_start).count();
+              burst_send_ms += send_ms;
+              burst_max_send_ms = std::max(burst_max_send_ms, send_ms);
 
               ratecontrol_group_packets_sent += current_batch_size;
               ratecontrol_frame_packets_sent += current_batch_size;
@@ -2471,6 +2517,25 @@ namespace stream {
         });
 
         session->video.lowseq = lowseq;
+
+        if (burst_first_send) {
+          const double burst_ms = std::chrono::duration<double, std::milli>(burst_last_return - *burst_first_send).count();
+          frame_burst_logger.collect_and_log(burst_ms);
+          const std::size_t burst_bytes = ratecontrol_frame_packets_sent * datagram_size;
+          const double burst_mbps = burst_ms > 0.0 ? burst_bytes * 8.0 / burst_ms / 1000.0 : 0.0;
+          if (ratecontrol_frame_packets_sent >= 100) {
+            frame_burst_rate_logger.collect_and_log(burst_mbps);
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= next_burst_detail_log) {
+              next_burst_detail_log = now + 1s;
+              BOOST_LOG(debug) << "Network: frame "sv << packet->frame_index() << " send burst "sv << burst_ms << " ms for "sv
+                               << ratecontrol_frame_packets_sent << " packets ("sv << burst_bytes << " UDP payload bytes, "sv
+                               << burst_mbps << " Mbps); paced sleep "sv << burst_sleep_ms << " ms, in send_batch() "sv
+                               << burst_send_ms << " ms (longest "sv << burst_max_send_ms << " ms), fallback batches "sv
+                               << burst_fallback_batches << ", pacing "sv << ratecontrol_packets_in_1ms << " packets/ms"sv;
+            }
+          }
+        }
 
         const auto send_complete_timestamp = std::chrono::steady_clock::now();
         if (!frame_is_dupe) {

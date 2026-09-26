@@ -13,6 +13,18 @@ function Write-Step {
   Write-Host "[truehdr-runtime] $Message"
 }
 
+function Get-Sha256 {
+  param([string]$Path)
+  $stream = [System.IO.File]::OpenRead($Path)
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    return [System.BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+    $stream.Dispose()
+  }
+}
+
 function New-GitHubHeaders {
   param([string]$Token = "")
 
@@ -62,6 +74,26 @@ $version = $Tag -replace '^v', ''
 if ([string]::IsNullOrWhiteSpace($AssetName)) {
   $AssetName = "vibeshine-truehdr-runtime-$version-windows-x64.zip"
 }
+
+$requiredDlls = @("vibeshine_truehdr.dll", "nvngx_truehdr.dll")
+$missingOrEmpty = @()
+foreach ($dll in $requiredDlls) {
+  $path = Join-Path $OutDir $dll
+  $item = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+  if (-not $item -or $item.Length -le 0) {
+    $missingOrEmpty += $dll
+  }
+}
+
+if ($missingOrEmpty.Count -eq 0) {
+  Write-Step "Pinned runtime already staged in $OutDir"
+  Get-ChildItem -LiteralPath $OutDir -File | Where-Object { $_.Name -in $requiredDlls } | ForEach-Object {
+    Write-Step ("{0}  {1} bytes  sha256={2}" -f $_.Name, $_.Length, (Get-Sha256 -Path $_.FullName))
+  }
+  exit 0
+}
+
+Write-Step "Missing required runtime file(s): $($missingOrEmpty -join ', ')"
 
 $headers = New-GitHubHeaders -Token $GitHubToken
 $releaseUri = "https://api.github.com/repos/$Repository/releases/tags/$([System.Uri]::EscapeDataString($Tag))"
@@ -131,7 +163,7 @@ try {
 
   Write-Step "Installed pinned TrueHDR runtime to $OutDir"
   Get-ChildItem -LiteralPath $OutDir -File | ForEach-Object {
-    Write-Step ("{0}  {1} bytes  sha256={2}" -f $_.Name, $_.Length, (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())
+    Write-Step ("{0}  {1} bytes  sha256={2}" -f $_.Name, $_.Length, (Get-Sha256 -Path $_.FullName))
   }
 } finally {
   if (Test-Path -LiteralPath $tempRoot) {

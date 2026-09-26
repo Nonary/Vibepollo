@@ -3,6 +3,16 @@
 #include <algorithm>
 
 namespace stream {
+  std::size_t video_send_batch_size(std::size_t block_size, std::size_t prefix_size, std::size_t max_batch_bytes) {
+    const auto byte_limit = std::min<std::size_t>(64 * 1024, max_batch_bytes);
+    // Even an individual packet larger than the configured batch budget must
+    // still be sent. Check before adding so invalid sizes cannot overflow.
+    if (block_size > byte_limit || prefix_size > byte_limit - block_size || block_size + prefix_size == 0) {
+      return 1;
+    }
+    return std::clamp<std::size_t>(byte_limit / (block_size + prefix_size), 1, 64);
+  }
+
   std::optional<control_packet_view_t> decode_control_packet(std::string_view packet_bytes) {
     if (packet_bytes.size() < sizeof(std::uint16_t)) {
       return std::nullopt;
