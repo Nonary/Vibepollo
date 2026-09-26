@@ -263,6 +263,12 @@ TEST(RemoteSession, SecondaryGameTransportJoinsActiveOrRetainedOutput) {
   EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::input, false, true));
 }
 
+TEST(RemoteSession, SecondaryGameClientIsDeterminedByRunningAppOwner) {
+  EXPECT_FALSE(remote_session::is_secondary_game_client("owner", "owner"));
+  EXPECT_TRUE(remote_session::is_secondary_game_client("owner", "other"));
+  EXPECT_FALSE(remote_session::is_secondary_game_client("", "other"));
+}
+
 TEST(RemoteSession, ApplistResumeUsesLaunchResponseShape) {
   EXPECT_EQ(remote_session::stream_start_response_key(true), "gamesession");
   EXPECT_EQ(remote_session::stream_start_response_key(false), "resume");

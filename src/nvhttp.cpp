@@ -5280,6 +5280,11 @@ namespace nvhttp {
     // already counts pending launches, so every mutating decision below degrades to a
     // plain join on its own.
     const bool no_active_sessions = !has_stream_session_activity();
+    const auto request_client_identity = resolve_client_identity_from_request(request);
+    const auto active_game = proc::proc.active_session_guard();
+    const bool secondary_game_client = remote_session::is_secondary_game_client(
+      active_game.client_uuid, request_client_identity.uuid
+    );
     bool retained_game_output_ready = false;
     if (no_active_sessions) {
       if (const auto retained_output = config::runtime_output_name_override(); retained_output && !retained_output->empty()) {
@@ -5293,7 +5298,7 @@ namespace nvhttp {
       }
     }
     const bool joining_existing_game_output =
-      remote_session::joins_existing_game_output(
+      secondary_game_client || remote_session::joins_existing_game_output(
         remote_session::role_e::game,
         !no_active_sessions,
         retained_game_output_ready
@@ -5354,7 +5359,7 @@ namespace nvhttp {
       }
     });
 
-    if (no_active_sessions) {
+    if (no_active_sessions && !secondary_game_client) {
       config::set_runtime_config_overrides(std::move(requested_runtime_overrides));
       config::apply_config_now();
       runtime_overrides_reapplied = true;
@@ -5463,6 +5468,8 @@ namespace nvhttp {
       );
     }
 #endif
+    const auto launch_session = make_launch_session(host_audio, args, request, allow_session_display_changes, &request_client_identity);
+    launch_session->secondary_game_client = secondary_game_client;
 #ifdef __linux__
     // The application retains its normal display lease while paused. A new
     // TLS client resuming it must not create a second normal-game identity.
@@ -5579,23 +5586,23 @@ namespace nvhttp {
 #ifdef __linux__
         platf::linux_private_display::resume_policy::requires_session_apply(
           launch_session->virtual_display,
-          allow_display_changes,
+          allow_session_display_changes,
           launch_session->normal_vdd_identity_newly_reserved,
           launch_session->virtual_display_recreated_on_demand || launch_session->virtual_display_needs_resume_apply
         );
 #else
-        allow_display_changes ||
+        allow_session_display_changes ||
         launch_session->virtual_display_recreated_on_demand ||
         launch_session->virtual_display_needs_resume_apply;
 #endif
       if (should_apply_display_request) {
         BOOST_LOG(debug) << "Display helper: applying session display request on "
-                         << (allow_display_changes ? "normal start/resume" :
+                         << (allow_session_display_changes ? "normal start/resume" :
                                                        (launch_session->virtual_display_recreated_on_demand ?
                                                           "resume virtual-display recreation" :
                                                           "resume virtual-display refresh"))
                          << " for client '" << launch_session->client_name << "'.";
-        revert_display_configuration = allow_display_changes || launch_session->virtual_display_failed;
+        revert_display_configuration = allow_session_display_changes || launch_session->virtual_display_failed;
 
 #ifdef _WIN32
         const bool helper_session_available = display_helper_session_available();

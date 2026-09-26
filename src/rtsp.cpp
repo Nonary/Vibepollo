@@ -195,6 +195,7 @@ namespace rtsp_stream {
     snapshot->id = id;
     snapshot->role = role;
     snapshot->role_generation = role_generation;
+    snapshot->secondary_game_client = secondary_game_client;
     snapshot->remote_capture_output = remote_capture_output;
     snapshot->rtsp_source_address = rtsp_source_address;
     snapshot->gcm_key = gcm_key;

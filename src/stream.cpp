@@ -586,6 +586,7 @@ namespace stream {
     int stream_fps = 0;
     int stream_fps_scaled = 0;
     std::uint32_t client_display_refresh_millihz = 0;
+    bool secondary_game_client = false;
     remote_session::role_e remote_role {remote_session::role_e::game};
     std::uint64_t remote_role_generation {};
     bool input_only {};
@@ -865,7 +866,7 @@ namespace stream {
 
 #ifdef _WIN32
   struct deferred_stream_start_t {
-    framegen::stream_start_policy_t policy;
+    std::optional<framegen::stream_start_policy_t> policy;
   };
 
   std::mutex &deferred_stream_start_mutex() {
@@ -934,10 +935,12 @@ namespace stream {
     }
 
     BOOST_LOG(info) << "Stream-start actions applied after user session became available.";
-    platf::frame_limiter_streaming_start(
-      platf::frame_limiter_owner::rtsp,
-      deferred->policy
-    );
+    if (deferred->policy) {
+      platf::frame_limiter_streaming_start(
+        platf::frame_limiter_owner::rtsp,
+        *deferred->policy
+      );
+    }
     session::start_shared_platform_if_needed();
     return true;
   }
@@ -2937,6 +2940,7 @@ namespace stream {
 
   namespace session {
     std::atomic_uint running_sessions;
+    std::atomic_uint frame_limiter_sessions;
     std::atomic_uint teardown_sessions;
     std::atomic_uint cleanup_reservations;
     bool shared_platform_started;
@@ -3336,9 +3340,23 @@ namespace stream {
       });
       teardown_reservation.disable();
 
+      [[maybe_unused]] const bool last_frame_limiter_session =
+        !session.secondary_game_client && !session.config.monitor.input_only && --frame_limiter_sessions == 0;
       const bool last_rtsp_session = --running_sessions == 0;
       host_stats::rtsp_session_ended();
       bool finalized_shared_runtime = false;
+#ifdef _WIN32
+      if (last_frame_limiter_session && !last_rtsp_session) {
+        // A deferred start must not apply a departed settings owner's policy
+        // while only secondary transports remain.
+        {
+          std::lock_guard lock(deferred_stream_start_mutex());
+          if (deferred_stream_start_state()) {
+            deferred_stream_start_state()->policy.reset();
+          }
+        }
+      }
+#endif
       if (last_rtsp_session) {
         webrtc_stream::set_rtsp_sessions_active(false);
         const bool rtsp_pending = rtsp_stream::has_pending_launch_or_startup();
@@ -3351,9 +3369,10 @@ namespace stream {
         const bool is_paused = proc::proc.current_app_id() > 0;
         if (is_paused) {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
+        if (proc::proc.current_app_id() > 0) {
           system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
-#endif
         }
+#endif
 
 #ifdef _WIN32
         clear_deferred_stream_start_actions();
@@ -3366,7 +3385,7 @@ namespace stream {
           session::has_shared_runtime_owner(finalize_context);
         platf::frame_limiter_streaming_stop(
           platf::frame_limiter_owner::rtsp,
-          is_paused || shared_runtime_still_owned
+          proc::proc.current_app_id() > 0 || shared_runtime_still_owned
         );
 #else
 #ifdef __linux__
@@ -3482,14 +3501,19 @@ namespace stream {
 
       // If this is the first session, invoke the platform callbacks
       const bool first_rtsp_session = ++running_sessions == 1;
+      const bool first_frame_limiter_session =
+        !session.secondary_game_client && !session.config.monitor.input_only &&
+        ++frame_limiter_sessions == 1;
       host_stats::rtsp_session_started();
-      if (first_rtsp_session) {
-        if (!webrtc_stream::has_active_or_pending_sessions()) {
-          webrtc_stream::set_rtsp_capture_config(session.config.monitor, session.config.audio);
+      if (first_rtsp_session || first_frame_limiter_session) {
+        if (first_rtsp_session) {
+          if (!webrtc_stream::has_active_or_pending_sessions()) {
+            webrtc_stream::set_rtsp_capture_config(session.config.monitor, session.config.audio);
+          }
+          webrtc_stream::set_rtsp_sessions_active(true);
         }
-        webrtc_stream::set_rtsp_sessions_active(true);
 #if defined(_WIN32) || defined(__linux__)
-        if (!session.config.monitor.input_only) {
+        if (first_frame_limiter_session) {
           // Apply the stream-owned limiter independently of application launch.
           std::optional<int> lossless_rtss_limit;
           const bool using_lossless_provider = session.config.lossless_scaling_framegen &&
@@ -3534,6 +3558,7 @@ namespace stream {
             defer_stream_start_actions(std::move(deferred));
             BOOST_LOG(info) << "Stream-start actions deferred until user session is ready.";
           } else {
+            clear_deferred_stream_start_actions();
             platf::frame_limiter_streaming_start(
               platf::frame_limiter_owner::rtsp,
               policy
@@ -3605,6 +3630,7 @@ namespace stream {
       }
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
+      if (first_rtsp_session) {
       system_tray::update_tray_playing(proc::proc.get_last_run_app_name());
       update::on_stream_started();
   #if defined(_WIN32)
@@ -3617,6 +3643,7 @@ namespace stream {
         // best-effort: ignore any unexpected errors while checking
       }
   #endif
+      }
 #endif
 
       return 0;
@@ -3652,6 +3679,7 @@ namespace stream {
         session->stream_fps_scaled = fps_millihz;
       }
       session->client_display_refresh_millihz = launch_session.client_display_refresh_millihz;
+      session->secondary_game_client = launch_session.secondary_game_client;
       session->remote_role = launch_session.role;
       session->remote_role_generation = launch_session.role_generation;
 #ifdef __linux__

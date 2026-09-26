@@ -176,6 +176,7 @@ namespace remote_session {
     bool stream_active,
     bool retained_output_ready = false
   );
+  [[nodiscard]] bool is_secondary_game_client(std::string_view app_owner_uuid, std::string_view caller_uuid);
   [[nodiscard]] std::string_view stream_start_response_key(bool launched_from_applist);
   [[nodiscard]] std::optional<control_completion_t> successful_control_completion(control_e control);
   [[nodiscard]] bool input_uses_display_or_audio(role_e role);
