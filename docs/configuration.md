@@ -2332,6 +2332,7 @@ this option to replace the running app immediately. The default is `true`.
             The default is 64 KiB.
             Lower values can improve stream stability on cheaper switches, routers, and Wi-Fi hardware by reducing burst size,
             but at the cost of less than 1 ms of additional host-side delay.
+            PyroWave resolves its send batch size automatically and ignores this setting.
         </td>
     </tr>
     <tr>
@@ -2584,6 +2585,7 @@ this option to replace the running app immediately. The default is `true`.
         <td>Description</td>
         <td colspan="2">
             Percentage of error correcting packets per data packet in each video frame.
+            PyroWave always sends without FEC and ignores this setting.
             @warning{Higher values can correct for more network packet loss,
             but at the cost of increasing bandwidth usage.}
         </td>
@@ -2602,36 +2604,6 @@ this option to replace the running app immediately. The default is `true`.
         <td>Example</td>
         <td colspan="2">@code{}
             fec_percentage = 20
-            @endcode</td>
-    </tr>
-</table>
-
-### pyrowave_send_rate_mbps
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Rate, in Mbps, at which the video packets of a PyroWave session are paced onto the network. The
-            other codecs are paced at about 800 Mbps; PyroWave frames are large, so a slow pace adds several
-            milliseconds of latency to every frame. 0 selects twice the stream bitrate, but at least 800 Mbps.
-            Raise it on 2.5 or 10 Gbps links; lower it if a switch drops bursts.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            0
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Range</td>
-        <td colspan="2">0-100000</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            pyrowave_send_rate_mbps = 2000
             @endcode</td>
     </tr>
 </table>

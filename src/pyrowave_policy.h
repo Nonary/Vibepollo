@@ -17,6 +17,19 @@
 #include <vector>
 
 namespace pyrowave::policy {
+  /// Frame payload capacity from the negotiated packet size and video header fields.
+  std::size_t max_frame_bytes(int packetsize, bool critical_fec = false);
+
+  /// Codec budget leaving enough space for compatibility packet length prefixes.
+  std::size_t max_bitstream_bytes(int packetsize, bool length_prefixed, bool critical_fec = false);
+
+  /// Packets per pacing quantum, using the routed link speed or stream bitrate.
+  std::size_t pacing_packets_per_ms(
+    std::uint64_t link_bps, int bitrate_kbps,
+    std::size_t payload_bytes, std::size_t wire_bytes,
+    std::size_t frame_bytes = 0, int framerate = 0
+  );
+
   enum class framing_e {
     records,  ///< Concatenated PyroWave records with padding records aligned to RTP shards.
     length_prefixed,  ///< `[u32 count] { [u32 size] [packet] }`, for the azafrob/dimizago clients.
@@ -87,13 +100,15 @@ namespace pyrowave::policy {
    * keep strict order.
    *
    * @param shard_payload Result of shard_payload_bytes(); 0 copies the bitstream unchanged.
+   * @param frame_limit If set, omit padding when it would exceed this capacity.
    * @return Statistics, or std::nullopt when `bitstream` is not a valid PyroWave frame
    *         (nothing is appended then).
    */
   std::optional<record_frame_stats_t> write_record_frame(
     std::span<const std::uint8_t> bitstream,
     std::size_t shard_payload,
-    std::vector<std::uint8_t> &out
+    std::vector<std::uint8_t> &out,
+    std::size_t frame_limit = 0
   );
 
   /// Append a length-prefixed frame (`[u32 LE count] { [u32 LE size] [bytes] }`) to `out`.
@@ -176,12 +191,9 @@ namespace pyrowave::policy {
   /**
    * @brief Per-frame byte budget for an intra-only codec.
    *
-   * Every PyroWave frame is coded on its own, so the stream bitrate divided by the
-   * rate frames are actually captured gives each frame its share. When a game renders
-   * below the stream rate (60 fps in a 120 fps stream), dividing by the stream rate
-   * would leave half the bitrate unused. The capture interval is smoothed and bounded
-   * to [1, 2] nominal frame intervals, so a frame never gets more than twice the
-   * nominal budget. Adapted from dimizago's Vibepollo PyroWave encoder.
+   * Each submitted frame, including repeats, gets the bytes earned since the
+   * previous submission. The initial budget uses the negotiated frame rate.
+   * The transport capacity bounds accumulation after stalls.
    */
   class budget_t {
   public:
@@ -189,26 +201,25 @@ namespace pyrowave::policy {
 
     void set_bitrate(int bitrate_kbps);
 
-    /// Report a newly captured frame (not a repeat of the previous capture).
-    void on_new_capture(std::chrono::steady_clock::time_point when);
+    /// Report an encoding attempt, including repeats of the previous capture.
+    void on_frame(std::chrono::steady_clock::time_point when);
 
-    /// Current budget in bytes, a multiple of four, at least 4096.
+    /// Current budget in bytes, aligned to codec words; zero means skip this frame.
     [[nodiscard]] std::size_t bytes_per_frame() const {
       return budget;
     }
 
-    [[nodiscard]] double capture_fps() const {
-      return capture_interval > 0.0 ? 1.0 / capture_interval : 0.0;
+    [[nodiscard]] double frame_fps() const {
+      return frame_interval > 0.0 ? 1.0 / frame_interval : 0.0;
     }
 
   private:
     void update();
 
-    int framerate;
     int bitrate_kbps;
     std::size_t max_frame_bytes;
-    double capture_interval;
-    std::optional<std::chrono::steady_clock::time_point> last_capture;
+    double frame_interval;
+    std::optional<std::chrono::steady_clock::time_point> last_frame;
     std::size_t budget = 0;
   };
 }  // namespace pyrowave::policy

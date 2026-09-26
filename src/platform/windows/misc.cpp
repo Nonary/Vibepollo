@@ -1844,6 +1844,39 @@ namespace platf {
     return saddr_v6;
   }
 
+  std::uint64_t routed_link_bps(const boost::asio::ip::address &source, const boost::asio::ip::address &target) {
+    auto socket_address = [](const boost::asio::ip::address &address) {
+      SOCKADDR_INET result {};
+      if (address.is_v6() && !address.to_v6().is_v4_mapped()) {
+        result.Ipv6 = to_sockaddr(address.to_v6(), 0);
+      } else {
+        const auto ipv4 = address.is_v4() ? address.to_v4() :
+                                          boost::asio::ip::make_address_v4(boost::asio::ip::v4_mapped, address.to_v6());
+        result.Ipv4 = to_sockaddr(ipv4, 0);
+      }
+      return result;
+    };
+    const auto destination = socket_address(target);
+    const auto local = socket_address(source);
+    if (local.si_family != destination.si_family) {
+      return 0;
+    }
+    MIB_IPFORWARD_ROW2 route {};
+    SOCKADDR_INET selected_source {};
+    if (GetBestRoute2(nullptr, 0, source.is_unspecified() ? nullptr : &local,
+                      &destination, 0, &route, &selected_source) != NO_ERROR) {
+      return 0;
+    }
+    MIB_IF_ROW2 interface_row {};
+    interface_row.InterfaceLuid = route.InterfaceLuid;
+    if (GetIfEntry2(&interface_row) != NO_ERROR || interface_row.OperStatus != IfOperStatusUp ||
+        interface_row.TransmitLinkSpeed == std::numeric_limits<std::uint64_t>::max()) {
+      return 0;
+    }
+    // Tunnel and Wi-Fi link rates are not usable estimates of packet throughput.
+    return interface_row.Type == IF_TYPE_ETHERNET_CSMACD ? interface_row.TransmitLinkSpeed : 0;
+  }
+
   // Use UDP segmentation offload if it is supported by the OS. If the NIC is capable, this will use
   // hardware acceleration to reduce CPU usage. Support for USO was introduced in Windows 10 20H1.
   bool send_batch(batched_send_info_t &send_info) {

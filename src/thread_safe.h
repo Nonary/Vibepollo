@@ -334,6 +334,29 @@ namespace safe {
         _max_elements {max_elements} {
     }
 
+    /// Replace a matching pending item in place, preserving other producers'
+    /// order. For independent snapshots whose older values may be discarded.
+    template<class Predicate>
+    bool raise_latest(T value, Predicate matches) {
+      std::lock_guard ul {_lock};
+      if (!_poll_state.running()) {
+        return false;
+      }
+      for (auto &pending : _queue) {
+        if (matches(pending)) {
+          pending = std::move(value);
+          return true;
+        }
+      }
+      if (_queue.size() >= _max_elements) {
+        return false;
+      }
+      _queue.emplace_back(std::move(value));
+      _poll_state.set_ready(true);
+      _cv.notify_all();
+      return true;
+    }
+
     template<class... Args>
     void raise(Args &&...args) {
       std::lock_guard ul {_lock};

@@ -60,6 +60,7 @@ namespace pyrowave::d3d11 {
     color_matrix_t color_matrix {};  ///< video::color_vectors_from_colorspace(colorspace, true).
     std::wstring shader_path;  ///< Full path of convert_pyrowave_cs.hlsl.
     float sdr_white_nits = 100.0f;  ///< For transfer_e::sdr_to_pq.
+    std::chrono::milliseconds capture_wait {};  ///< Negotiated frame interval, rounded up.
   };
 
   /// A captured frame, already opened on core_t::device().
@@ -75,6 +76,7 @@ namespace pyrowave::d3d11 {
   struct framing_params_t {
     pyrowave::policy::framing_e framing = pyrowave::policy::framing_e::records;
     std::size_t shard_payload = 0;  ///< policy::shard_payload_bytes(packetsize); 0 disables alignment.
+    std::size_t max_frame_bytes = 0;  ///< Transport capacity; zero for standalone callers.
   };
 
   struct frame_stats_t {

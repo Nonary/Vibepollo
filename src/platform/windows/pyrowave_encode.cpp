@@ -36,13 +36,6 @@ using namespace std::literals;
 
 namespace pyrowave::host {
   namespace {
-    // Frames needing more shards than this cannot be sent: stream.cpp splits a frame into
-    // at most 4 FEC blocks of fewer than 1024 shards each, one of them the critical block
-    // when that has parity. Leave room for padding records.
-    constexpr std::size_t MAX_FRAME_SHARDS = 4000;
-    constexpr std::size_t MAX_FRAME_SHARDS_WITH_CRITICAL_FEC = 3000;
-    constexpr std::size_t MAX_FRAME_BYTES_UNALIGNED = 4 * 1024 * 1024;
-
     void log_core_message(int level, const std::string &message) {
       switch (level) {
         case 0:
@@ -86,13 +79,14 @@ namespace pyrowave::host {
       encoder_impl_t(const session_params_t &params, std::shared_ptr<platf::display_t> display):
           params {params},
           display {std::move(display)},
-          budget {params.framerate, params.bitrate_kbps, max_frame_bytes(params)},
+          budget {params.framerate, params.bitrate_kbps, policy::max_bitstream_bytes(params.packetsize, params.framing == policy::framing_e::length_prefixed, params.critical_fec)},
           encode_logger {debug, "PyroWave: encode (GPU wait)", "ms"},
           frame_size_logger {debug, "PyroWave: frame size", "KiB"},
           padding_logger {debug, "PyroWave: record padding", "%"},
           critical_logger {debug, "PyroWave: critical (coarsest level) share", "%"} {
         framing.framing = params.framing;
         framing.shard_payload = policy::shard_payload_bytes(params.packetsize);
+        framing.max_frame_bytes = policy::max_frame_bytes(params.packetsize, params.critical_fec);
 
         BOOST_LOG(info) << "PyroWave encoder session: "sv << params.width << 'x' << params.height
                         << (params.yuv444 ? " 4:4:4"sv : " 4:2:0"sv) << ", "sv << params.colorspace.bit_depth << "-bit "sv
@@ -105,6 +99,9 @@ namespace pyrowave::host {
         critical_bytes = 0;
         if (failed) {
           return -1;
+        }
+        if (budget.bytes_per_frame() == 0) {
+          return 1;
         }
 
         auto *img = dynamic_cast<platf::dxgi::img_d3d_t *>(&img_base);
@@ -168,13 +165,13 @@ namespace pyrowave::host {
         BOOST_LOG(info) << "PyroWave: bitrate "sv << bitrate_kbps << " kbps, budget "sv << budget.bytes_per_frame() << " bytes/frame"sv;
       }
 
-      void on_new_capture(std::chrono::steady_clock::time_point when) override {
-        budget.on_new_capture(when);
-        // The smoothed rate moves a little every frame; only log real changes.
+      void on_frame(std::chrono::steady_clock::time_point when) override {
+        budget.on_frame(when);
+        // Only log material changes in the per-frame allocation.
         const std::size_t current = budget.bytes_per_frame();
         if (logged_budget == 0 || current * 10 > logged_budget * 11 || current * 11 < logged_budget * 10) {
           logged_budget = current;
-          BOOST_LOG(debug) << "PyroWave: capture rate "sv << budget.capture_fps() << " fps, budget "sv << current << " bytes/frame"sv;
+          BOOST_LOG(debug) << "PyroWave: encode rate "sv << budget.frame_fps() << " fps, budget "sv << current << " bytes/frame"sv;
         }
       }
 
@@ -187,11 +184,6 @@ namespace pyrowave::host {
         std::weak_ptr<const platf::img_t> img_weak;
       };
 
-      static std::size_t max_frame_bytes(const session_params_t &params) {
-        const auto shard = policy::shard_payload_bytes(params.packetsize);
-        return shard ? (params.critical_fec ? MAX_FRAME_SHARDS_WITH_CRITICAL_FEC : MAX_FRAME_SHARDS) * shard : MAX_FRAME_BYTES_UNALIGNED;
-      }
-
       bool create_core(platf::dxgi::img_d3d_t &img) {
         auto adapter = adapter_of(img.capture_texture.get());
         if (!adapter) {
@@ -202,6 +194,7 @@ namespace pyrowave::host {
         d3d11::core_config_t config;
         config.width = params.width;
         config.height = params.height;
+        config.capture_wait = std::chrono::ceil<std::chrono::milliseconds>(std::chrono::duration<double>(1.0 / params.framerate));
         config.yuv444 = params.yuv444;
         config.ten_bit = params.colorspace.bit_depth > 8;
         config.color_matrix = color_matrix_for(params.colorspace);
@@ -287,6 +280,10 @@ namespace pyrowave::host {
   }  // namespace
 
   std::unique_ptr<encoder_t> make_encoder(const session_params_t &params, std::shared_ptr<platf::display_t> display) {
+    if (params.framerate <= 0 || params.bitrate_kbps <= 0 || policy::max_frame_bytes(params.packetsize) == 0) {
+      BOOST_LOG(error) << "PyroWave: invalid negotiated frame rate, bitrate or packet size"sv;
+      return nullptr;
+    }
     if (params.width <= 0 || params.height <= 0 ||
         (!params.yuv444 && ((params.width & 1) || (params.height & 1)))) {
       BOOST_LOG(error) << "PyroWave: invalid stream size "sv << params.width << 'x' << params.height;

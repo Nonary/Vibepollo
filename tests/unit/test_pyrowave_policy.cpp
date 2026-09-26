@@ -9,6 +9,7 @@
 #include <map>
 #include <optional>
 #include <random>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -88,7 +89,8 @@ TEST(PyroWavePolicy, ShardPayloadMatchesTheRtpLayer) {
   EXPECT_EQ(shard_payload_bytes(1024), 1008u);
   EXPECT_EQ(shard_payload_bytes(0), 0u);
   EXPECT_EQ(shard_payload_bytes(16), 0u);
-  EXPECT_EQ(shard_payload_bytes(64), 0u);  // too small to be worth aligning
+  EXPECT_EQ(shard_payload_bytes(36), 0u);  // cannot fit the headers and padding
+  EXPECT_EQ(shard_payload_bytes(64), 48u);
   EXPECT_EQ(shard_payload_bytes(1390), 0u);  // not a whole number of words
 }
 
@@ -416,7 +418,7 @@ TEST(PyroWavePolicy, LengthPrefixedFrameLayout) {
   EXPECT_EQ(frame[3] & 0x80, 0);
 }
 
-TEST(PyroWavePolicy, BudgetFollowsBitrateAndCaptureRate) {
+TEST(PyroWavePolicy, BudgetFollowsSubmittedFramesIncludingRepeats) {
   using namespace std::chrono_literals;
 
   // 600 Mbps at 120 fps: 625000 bytes per frame.
@@ -426,18 +428,18 @@ TEST(PyroWavePolicy, BudgetFollowsBitrateAndCaptureRate) {
   budget.set_bitrate(300000);
   EXPECT_EQ(budget.bytes_per_frame(), 312500u);
 
-  // A game rendering 60 fps in a 120 fps stream converges to twice the bytes.
+  // At 60 submissions per second, including repeats, each gets twice the bytes.
   auto t = std::chrono::steady_clock::time_point {} + 1s;
   for (int i = 0; i < 200; i++) {
-    budget.on_new_capture(t);
+    budget.on_frame(t);
     t += 16667us;
   }
   EXPECT_NEAR(double(budget.bytes_per_frame()), 625000.0, 625000.0 * 0.01);
-  EXPECT_NEAR(budget.capture_fps(), 60.0, 0.5);
+  EXPECT_NEAR(budget.frame_fps(), 60.0, 0.5);
 
-  // A long pause never pushes past twice the nominal budget.
-  budget.on_new_capture(t + 10s);
-  EXPECT_LE(budget.bytes_per_frame(), 625000u + 4);
+  // No fixed 2x ceiling: lower submission rates get their actual share.
+  budget.on_frame(t + 16666us);
+  EXPECT_NEAR(double(budget.bytes_per_frame()), 1250000.0, 100.0);
   EXPECT_EQ(budget.bytes_per_frame() % 4, 0u);
 }
 
@@ -446,8 +448,67 @@ TEST(PyroWavePolicy, BudgetHonorsLimits) {
   EXPECT_EQ(capped.bytes_per_frame(), 1000000u);
 
   budget_t floor(60, 1, 0);
-  EXPECT_EQ(floor.bytes_per_frame(), 4096u);
+  EXPECT_EQ(floor.bytes_per_frame(), 0u);  // cannot fit even the codec headers
 
-  budget_t unknown_rate(0, 480000, 0);  // falls back to 60 fps
-  EXPECT_EQ(unknown_rate.bytes_per_frame(), 1000000u);
+  budget_t small_cap(60, 480000, 1025);
+  EXPECT_EQ(small_cap.bytes_per_frame(), 1024u);
+  EXPECT_THROW(budget_t(0, 480000, 0), std::invalid_argument);
+}
+
+TEST(PyroWavePolicy, PausesAndDuplicateTimestampsRespectTheTransportBudget) {
+  using namespace std::chrono_literals;
+  budget_t budget(120, 600000, 1000000);
+  const auto start = std::chrono::steady_clock::time_point {};
+  budget.on_frame(start);
+  budget.on_frame(start + 10s);
+  EXPECT_EQ(budget.bytes_per_frame(), 1000000u);
+  budget.on_frame(start + 10s);
+  EXPECT_EQ(budget.bytes_per_frame(), 0u);
+  budget.on_frame(start);
+  EXPECT_EQ(budget.bytes_per_frame(), 0u);
+  budget.on_frame(start + 10s + 8333us);
+  EXPECT_NEAR(double(budget.bytes_per_frame()), 625000.0, 100.0);
+}
+
+TEST(PyroWavePolicy, CapacityUsesNegotiatedPayloadEvenWithoutRecordAlignment) {
+  for (const auto packet_size : {64, 1024, 1390, 1392, 1500}) {
+    const auto payload = std::size_t(packet_size - 16);
+    const auto capacity = max_frame_bytes(packet_size);
+    EXPECT_EQ(capacity, 4000u * payload - 8u);
+    EXPECT_EQ(max_frame_bytes(packet_size, true), 3000u * payload - 8u);
+    EXPECT_LE(max_bitstream_bytes(packet_size, false), capacity);
+    const auto legacy_budget = max_bitstream_bytes(packet_size, true);
+    EXPECT_LE(legacy_budget + (legacy_budget / 8u) * 4u + 4u, capacity);
+  }
+  EXPECT_EQ(max_frame_bytes(0), 0u);
+  EXPECT_EQ(max_bitstream_bytes(16, true), 0u);
+}
+
+TEST(PyroWavePolicy, FramingDropsPaddingWhenItWouldExceedCapacity) {
+  const auto bitstream = make_bitstream({200, 200, 200});
+  std::vector<std::uint8_t> padded;
+  ASSERT_TRUE(write_record_frame(bitstream, SHARD, padded));
+  ASSERT_GT(padded.size(), bitstream.size());
+  std::vector<std::uint8_t> frame {42};
+  auto stats = write_record_frame(bitstream, SHARD, frame, bitstream.size());
+  ASSERT_TRUE(stats);
+  EXPECT_EQ(stats->padding_bytes, 0u);
+  EXPECT_EQ(frame.front(), 42);
+  EXPECT_EQ(std::vector<std::uint8_t>(frame.begin() + 1, frame.end()), bitstream);
+  const auto previous = frame;
+  EXPECT_FALSE(write_record_frame(bitstream, SHARD, frame, bitstream.size() - 1));
+  EXPECT_EQ(frame, previous);
+}
+
+TEST(PyroWavePolicy, PacingTracksLinkCapacityAndAccountsForWireOverhead) {
+  EXPECT_EQ(pacing_packets_per_ms(100000000, 600000, 1376, 1474), 8u);
+  EXPECT_EQ(pacing_packets_per_ms(1000000000, 600000, 1376, 1474), 84u);
+  EXPECT_EQ(pacing_packets_per_ms(2500000000, 600000, 1376, 1474), 212u);
+  EXPECT_LT(pacing_packets_per_ms(1000000000, 600000, 1376, 1474 + 32),
+            pacing_packets_per_ms(1000000000, 600000, 1376, 1474));
+  EXPECT_EQ(pacing_packets_per_ms(0, 200000, 1376, 1474), 19u);
+  EXPECT_EQ(pacing_packets_per_ms(0, 400000, 1376, 1474), 37u);
+  EXPECT_EQ(pacing_packets_per_ms(0, 200000, 1376, 1474, 1376000, 120), 120u);
+  EXPECT_EQ(pacing_packets_per_ms(100000000, 200000, 1376, 1474, 1376000, 120), 8u);
+  EXPECT_EQ(pacing_packets_per_ms(0, 0, 0, 0), 1u);
 }
