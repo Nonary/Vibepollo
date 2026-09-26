@@ -26,8 +26,16 @@
 #include "utf_utils.h"
 
 namespace platf {
+  /// Interface resolved by routed_link_bps(), for diagnostics.
+  struct routed_link_info_t {
+    std::uint64_t luid = 0;
+    std::string alias;
+    unsigned long if_type = 0;
+    std::uint64_t transmit_bps = 0;
+  };
+
   /// Current transmit speed of the routed interface, or zero when unavailable.
-  std::uint64_t routed_link_bps(const boost::asio::ip::address &source, const boost::asio::ip::address &target);
+  std::uint64_t routed_link_bps(const boost::asio::ip::address &source, const boost::asio::ip::address &target, routed_link_info_t *info = nullptr);
 
   void print_status(const std::string_view &prefix, HRESULT status);
   HDESK syncThreadDesktop();
