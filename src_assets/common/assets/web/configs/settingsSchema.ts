@@ -699,6 +699,7 @@ export const settingsCategories: SettingsCategory[] = [
           text('bind_address', { monospace: true, stacked: true }),
           text('external_ip', { monospace: true, stacked: true }),
           number('ping_timeout', { min: 0, step: 1 }),
+          number('control_peer_timeout', { min: 0, step: 1 }),
         ],
       },
       {
@@ -866,6 +867,7 @@ export const settingsDefaults: Record<string, unknown> = {
   bind_address: '',
   external_ip: '',
   ping_timeout: 10000,
+  control_peer_timeout: 0,
   lan_encryption_mode: 0,
   wan_encryption_mode: 1,
   csrf_allowed_origins: '',

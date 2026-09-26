@@ -2128,6 +2128,32 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### control_peer_timeout
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            How long, in milliseconds, the control stream may stay silent before the client is considered gone
+            and the session is stopped. With `0` the ENet defaults apply (the client is dropped after 5 to 30 seconds
+            of silence). Raise it together with `ping_timeout` to keep a session alive through short network drops,
+            e.g. on mobile internet. The smaller of the two values decides.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            control_peer_timeout = 60000
+            @endcode</td>
+    </tr>
+</table>
+
 ### video_max_batch_size_kb
 
 <table>
