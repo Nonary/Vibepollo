@@ -83,7 +83,9 @@ namespace pyrowave::host {
           encode_logger {debug, "PyroWave: encode (GPU wait)", "ms"},
           frame_size_logger {debug, "PyroWave: frame size", "KiB"},
           padding_logger {debug, "PyroWave: record padding", "%"},
-          critical_logger {debug, "PyroWave: critical (coarsest level) share", "%"} {
+          critical_logger {debug, "PyroWave: critical (coarsest level) share", "%"},
+          encode_rate_logger {debug, "PyroWave: encode rate", "fps"},
+          budget_logger {debug, "PyroWave: frame budget", "bytes"} {
         framing.framing = params.framing;
         framing.shard_payload = policy::shard_payload_bytes(params.packetsize);
         framing.max_frame_bytes = policy::max_frame_bytes(params.packetsize, params.critical_fec);
@@ -167,12 +169,8 @@ namespace pyrowave::host {
 
       void on_frame(std::chrono::steady_clock::time_point when) override {
         budget.on_frame(when);
-        // Only log material changes in the per-frame allocation.
-        const std::size_t current = budget.bytes_per_frame();
-        if (logged_budget == 0 || current * 10 > logged_budget * 11 || current * 11 < logged_budget * 10) {
-          logged_budget = current;
-          BOOST_LOG(debug) << "PyroWave: encode rate "sv << budget.frame_fps() << " fps, budget "sv << current << " bytes/frame"sv;
-        }
+        encode_rate_logger.collect_and_log(budget.frame_fps());
+        budget_logger.collect_and_log(budget.bytes_per_frame());
       }
 
     private:
@@ -267,7 +265,6 @@ namespace pyrowave::host {
       std::shared_ptr<platf::display_t> display;
       d3d11::framing_params_t framing;
       policy::budget_t budget;
-      std::size_t logged_budget = 0;
       std::unique_ptr<d3d11::core_t> core;
       std::map<std::uint32_t, img_ctx_t> img_ctxs;
       bool failed = false;
@@ -276,6 +273,8 @@ namespace pyrowave::host {
       logging::min_max_avg_periodic_logger<double> frame_size_logger;
       logging::min_max_avg_periodic_logger<double> padding_logger;
       logging::min_max_avg_periodic_logger<double> critical_logger;
+      logging::min_max_avg_periodic_logger<double> encode_rate_logger;
+      logging::min_max_avg_periodic_logger<std::size_t> budget_logger;
     };
   }  // namespace
 

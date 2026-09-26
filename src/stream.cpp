@@ -2040,6 +2040,7 @@ namespace stream {
       unsigned suppressed = 0;
       // Last logged PyroWave pacing source: link bps and interface LUID.
       std::optional<std::pair<std::uint64_t, std::uint64_t>> logged_pacing;
+      std::chrono::steady_clock::time_point last_pacing_log {};
     };
     std::unordered_map<session_t *, wire_timeline_state_t> wire_timeline_by_session;
 
@@ -2272,8 +2273,13 @@ namespace stream {
                                          std::min(ratecontrol_packets_in_1ms, route_packets_per_ms) :
                                          route_packets_per_ms;
           const std::pair pacing_source {link_bps, link_luid};
-          if (wire_timeline_state.logged_pacing != pacing_source) {
+          // Route probes can alternate between a link speed and the fallback on
+          // successive frames. Rate-limit changes without logging each probe.
+          if (wire_timeline_state.logged_pacing != pacing_source &&
+              (wire_timeline_state.last_pacing_log == std::chrono::steady_clock::time_point {} ||
+               packet_pop_timestamp - wire_timeline_state.last_pacing_log >= 30s)) {
             wire_timeline_state.logged_pacing = pacing_source;
+            wire_timeline_state.last_pacing_log = packet_pop_timestamp;
             BOOST_LOG(info) << "PyroWave pacing: "sv << session->localAddress << " -> "sv << session->video.peer.address()
                             << " via "sv << link_alias << ", LUID 0x"sv << std::hex << link_luid << std::dec
                             << ", routed_link_bps "sv << link_bps << (link_bps ? "" : " (fallback: frame/bitrate demand)")
