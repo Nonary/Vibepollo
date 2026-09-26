@@ -274,6 +274,10 @@ namespace remote_session {
     return role == role_e::game && (stream_active || retained_output_ready);
   }
 
+  bool is_secondary_game_client(const std::string_view app_owner_uuid, const std::string_view caller_uuid) {
+    return !app_owner_uuid.empty() && app_owner_uuid != caller_uuid;
+  }
+
   std::string_view stream_start_response_key(const bool launched_from_applist) {
     return launched_from_applist ? "gamesession" : "resume";
   }

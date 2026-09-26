@@ -5078,6 +5078,11 @@ namespace nvhttp {
     // already counts pending launches, so every mutating decision below degrades to a
     // plain join on its own.
     const bool no_active_sessions = !has_stream_session_activity();
+    const auto request_client_identity = resolve_client_identity_from_request(request);
+    const auto active_game = proc::proc.active_session_guard();
+    const bool secondary_game_client = remote_session::is_secondary_game_client(
+      active_game.client_uuid, request_client_identity.uuid
+    );
     bool retained_game_output_ready = false;
     if (no_active_sessions) {
       if (const auto retained_output = config::runtime_output_name_override(); retained_output && !retained_output->empty()) {
@@ -5091,7 +5096,7 @@ namespace nvhttp {
       }
     }
     const bool joining_existing_game_output =
-      remote_session::joins_existing_game_output(
+      secondary_game_client || remote_session::joins_existing_game_output(
         remote_session::role_e::game,
         !no_active_sessions,
         retained_game_output_ready
@@ -5152,7 +5157,7 @@ namespace nvhttp {
       }
     });
 
-    if (no_active_sessions) {
+    if (no_active_sessions && !secondary_game_client) {
       config::set_runtime_config_overrides(std::move(requested_runtime_overrides));
       config::apply_config_now();
       runtime_overrides_reapplied = true;
@@ -5180,6 +5185,7 @@ namespace nvhttp {
 
     auto launch_session = make_launch_session_from_snapshot(host_audio, is_input_only, args, verified_client, &request_client_identity);
     launch_session->rtsp_source_address = request->remote_endpoint().address().to_string();
+    launch_session->secondary_game_client = secondary_game_client;
     if (joining_existing_game_output) {
       launch_session->virtual_display = false;
       launch_session->client_requests_virtual_display = false;
@@ -5222,17 +5228,19 @@ namespace nvhttp {
           // launch_session->virtual_display is deliberately left alone: the launch path assigns
           // it from the app and then immediately overwrites it with the request's virtualDisplay
           // argument and the per-client setting, both of which are already resolved here.
-          if (!launch_session->virtual_display_mode_override && app_ctx->virtual_display_mode_override) {
-            launch_session->virtual_display_mode_override = app_ctx->virtual_display_mode_override;
-          }
-          if (!launch_session->virtual_display_layout_override && app_ctx->virtual_display_layout_override) {
-            launch_session->virtual_display_layout_override = app_ctx->virtual_display_layout_override;
-          }
-          if (!launch_session->dd_config_option_override && app_ctx->dd_config_option_override) {
-            launch_session->dd_config_option_override = app_ctx->dd_config_option_override;
-          }
-          if (app_ctx->output_name_override) {
-            launch_session->output_name_override = *app_ctx->output_name_override;
+          if (!joining_existing_game_output) {
+            if (!launch_session->virtual_display_mode_override && app_ctx->virtual_display_mode_override) {
+              launch_session->virtual_display_mode_override = app_ctx->virtual_display_mode_override;
+            }
+            if (!launch_session->virtual_display_layout_override && app_ctx->virtual_display_layout_override) {
+              launch_session->virtual_display_layout_override = app_ctx->virtual_display_layout_override;
+            }
+            if (!launch_session->dd_config_option_override && app_ctx->dd_config_option_override) {
+              launch_session->dd_config_option_override = app_ctx->dd_config_option_override;
+            }
+            if (app_ctx->output_name_override) {
+              launch_session->output_name_override = *app_ctx->output_name_override;
+            }
           }
           launch_session->app_metadata = std::move(metadata);
           BOOST_LOG(debug) << "Resume request carried no app id; applying settings from running app ["sv
@@ -5377,7 +5385,7 @@ namespace nvhttp {
 #endif
       if (should_apply_display_request) {
         BOOST_LOG(debug) << "Display helper: applying session display request on "
-                         << (allow_display_changes ? "normal start/resume" :
+                         << (allow_session_display_changes ? "normal start/resume" :
                                                        (launch_session->virtual_display_recreated_on_demand ?
                                                           "resume virtual-display recreation" :
                                                           "resume virtual-display refresh"))
