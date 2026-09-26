@@ -9,20 +9,11 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 
 namespace pyrowave::policy {
   namespace {
     using namespace pyrowave::protocol;
-
-    // Smallest shard worth aligning to. Below this, a single typical block no
-    // longer fits and padding would only waste bandwidth.
-    constexpr std::size_t MIN_ALIGNED_SHARD_BYTES = 64;
-
-    // Smoothing of the measured capture interval, per captured frame.
-    constexpr double CAPTURE_INTERVAL_SMOOTHING = 0.1;
-    // A frame's budget never exceeds this multiple of the nominal budget.
-    constexpr double MAX_BUDGET_BOOST = 2.0;
-    constexpr std::size_t MIN_FRAME_BYTES = 4096;
 
     std::uint32_t read_u32(const std::uint8_t *p) {
       return std::uint32_t(p[0]) | (std::uint32_t(p[1]) << 8) | (std::uint32_t(p[2]) << 16) | (std::uint32_t(p[3]) << 24);
@@ -168,7 +159,7 @@ namespace pyrowave::policy {
       return 0;
     }
     const auto shard = std::size_t(packetsize - SHARD_OVERHEAD_BYTES);
-    if (shard < MIN_ALIGNED_SHARD_BYTES || shard % 4 != 0) {
+    if (shard < FRAME_HEADER_BYTES + SEQUENCE_HEADER_BYTES + PADDING_RECORD_MIN_BYTES || shard % 4 != 0) {
       return 0;
     }
     return shard;
@@ -177,10 +168,12 @@ namespace pyrowave::policy {
   std::optional<record_frame_stats_t> write_record_frame(
     std::span<const std::uint8_t> bitstream,
     std::size_t shard_payload,
-    std::vector<std::uint8_t> &out
+    std::vector<std::uint8_t> &out,
+    std::size_t frame_limit
   ) {
     // Split the frame into its sequence header and block records.
-    if (bitstream.size() < 8 || (read_u32(bitstream.data()) >> 31) == 0) {
+    if (bitstream.size() < 8 || (read_u32(bitstream.data()) >> 31) == 0 ||
+        (frame_limit && bitstream.size() > frame_limit)) {
       return std::nullopt;
     }
     std::vector<record_t> records;
@@ -200,7 +193,7 @@ namespace pyrowave::policy {
     record_frame_stats_t stats;
     stats.block_records = records.size();
     const std::size_t frame_start = out.size();
-    out.reserve(frame_start + bitstream.size() + (shard_payload ? bitstream.size() / 64 + shard_payload : 0));
+    out.reserve(frame_start + bitstream.size());
     out.insert(out.end(), bitstream.begin(), bitstream.begin() + 8);
 
     if (!shard_payload) {
@@ -296,6 +289,12 @@ namespace pyrowave::policy {
       }
     }
 
+    if (frame_limit && out.size() - frame_start > frame_limit) {
+      out.resize(frame_start);
+      out.insert(out.end(), bitstream.begin(), bitstream.end());
+      stats = {};
+      stats.block_records = records.size();
+    }
     return stats;
   }
 
@@ -518,11 +517,55 @@ namespace pyrowave::policy {
     return blocks;
   }
 
+  std::size_t max_frame_bytes(int packetsize, bool critical_fec) {
+    if (packetsize <= SHARD_OVERHEAD_BYTES) {
+      return 0;
+    }
+    const auto max_shards = critical_fec ? 3000u : 4000u;
+    return std::min<std::size_t>(max_shards, protocol::MAX_FEC_BLOCKS * protocol::MAX_DATA_SHARDS_PER_BLOCK) *
+             std::size_t(packetsize - SHARD_OVERHEAD_BYTES) - FRAME_HEADER_BYTES;
+  }
+
+  std::size_t max_bitstream_bytes(int packetsize, bool length_prefixed, bool critical_fec) {
+    auto capacity = max_frame_bytes(packetsize, critical_fec);
+    if (length_prefixed) {
+      // At worst each block and the sequence header occupy their own packet.
+      // Each packet needs a length word, plus the frame's packet-count word.
+      if (capacity < sizeof(std::uint32_t)) {
+        return 0;
+      }
+      capacity = (capacity - sizeof(std::uint32_t)) /
+                 (BLOCK_HEADER_BYTES + sizeof(std::uint32_t)) * BLOCK_HEADER_BYTES;
+    }
+    return capacity & ~std::size_t(3);
+  }
+
+  std::size_t pacing_packets_per_ms(
+    std::uint64_t link_bps, int bitrate_kbps,
+    std::size_t payload_bytes, std::size_t wire_bytes,
+    std::size_t frame_bytes, int framerate
+  ) {
+    if (payload_bytes == 0 || wire_bytes == 0) {
+      return 1;
+    }
+    // Link capacity includes network headers; the negotiated bitrate is payload.
+    const auto frame_packets = (frame_bytes + payload_bytes - 1) / payload_bytes;
+    const auto frame_allowance = (frame_packets * std::uint64_t(std::max(framerate, 0)) + 999) / 1000;
+    const auto bitrate_allowance = (std::uint64_t(std::max(bitrate_kbps, 0)) + 8 * payload_bytes - 1) / (8 * payload_bytes);
+    // Round demand up so quantizing to a pacing quantum cannot create a backlog.
+    // Round link capacity down so pacing never exceeds the reported link speed.
+    const auto packets = link_bps != 0 ? link_bps / 8 / 1000 / wire_bytes :
+                                       std::max(frame_allowance, bitrate_allowance);
+    return std::max<std::size_t>(1, packets);
+  }
+
   budget_t::budget_t(int framerate, int bitrate_kbps, std::size_t max_frame_bytes):
-      framerate {framerate > 0 ? framerate : 60},
       bitrate_kbps {bitrate_kbps},
       max_frame_bytes {max_frame_bytes},
-      capture_interval {1.0 / (framerate > 0 ? framerate : 60)} {
+      frame_interval {framerate > 0 ? 1.0 / framerate : 0.0} {
+    if (framerate <= 0) {
+      throw std::invalid_argument("PyroWave requires a negotiated frame rate");
+    }
     update();
   }
 
@@ -531,23 +574,27 @@ namespace pyrowave::policy {
     update();
   }
 
-  void budget_t::on_new_capture(std::chrono::steady_clock::time_point when) {
-    const double nominal = 1.0 / framerate;
-    if (last_capture) {
-      // Bounded, so a pause (static screen, loading) cannot drag the average out.
-      const double interval = std::clamp(std::chrono::duration<double>(when - *last_capture).count(), nominal, nominal * MAX_BUDGET_BOOST);
-      capture_interval += CAPTURE_INTERVAL_SMOOTHING * (interval - capture_interval);
+  void budget_t::on_frame(std::chrono::steady_clock::time_point when) {
+    if (last_frame) {
+      if (when <= *last_frame) {
+        budget = 0;
+        return;
+      }
+      frame_interval = std::chrono::duration<double>(when - *last_frame).count();
     }
-    last_capture = when;
+    last_frame = when;
     update();
   }
 
   void budget_t::update() {
-    double bytes = std::max(0.0, double(bitrate_kbps) * 1000.0 * capture_interval / 8.0);
+    double bytes = std::max(0.0, double(bitrate_kbps) * 1000.0 * frame_interval / 8.0);
     if (max_frame_bytes) {
       bytes = std::min(bytes, double(max_frame_bytes));
     }
-    auto result = std::max<std::size_t>(std::size_t(bytes), MIN_FRAME_BYTES);
-    budget = result & ~std::size_t(3);
+    bytes = std::min(bytes, double(std::numeric_limits<std::uint32_t>::max() & ~3u));
+    budget = std::size_t(bytes) & ~std::size_t(3);
+    if (budget < SEQUENCE_HEADER_BYTES + BLOCK_HEADER_BYTES) {
+      budget = 0;
+    }
   }
 }  // namespace pyrowave::policy

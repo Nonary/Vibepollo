@@ -6245,14 +6245,12 @@ namespace video {
       encoder.reset();
     });
 
-    // A repeat is a full intra frame at a budget sized for the capture rate, so repeating
-    // at the stream rate would send up to twice the bitrate whenever the game renders below
-    // it. By default repeat only at a fifth of the stream rate (at least 10 fps), which is
-    // enough to recover a static screen from a lost frame. Adapted from dimizago's Vibepollo.
+    // Independent frames recover from packet loss on the next submission. Default
+    // to the negotiated cadence; repeats receive their own elapsed-time budget.
     const double minimum_fps_target = (config::video.minimum_fps_target > 0.0) ?
-                                        config::video.minimum_fps_target :
-                                        std::max(config.framerate / 5.0, 10.0);
-    const std::chrono::duration<double, std::milli> max_frametime {1000.0 / std::max(minimum_fps_target, 1.0)};
+                                        std::min(config::video.minimum_fps_target, double(config.framerate)) :
+                                        double(config.framerate);
+    const std::chrono::duration<double, std::milli> max_frametime {1000.0 / minimum_fps_target};
 
     auto shutdown_event = mail->event<bool>(mail::shutdown);
     auto packets = mail::man->queue<packet_t>(mail::video_packets);
@@ -6299,13 +6297,13 @@ namespace video {
         if (!is_placeholder_capture_image(*img)) {
           frame_timestamp = img->frame_timestamp;
           host_processing_timestamp = img->host_processing_timestamp;
-          encoder->on_new_capture(std::chrono::steady_clock::now());
         }
         last_img = std::move(img);
       } else if (!images->running()) {
         return false;
       }
 
+      encoder->on_frame(std::chrono::steady_clock::now());
       const int result = encoder->encode(*last_img, frame, critical_bytes);
       if (result < 0) {
         BOOST_LOG(error) << "PyroWave: encoding failed; ending the video stream"sv;
@@ -6322,7 +6320,11 @@ namespace video {
       packet->frame_timestamp = frame_timestamp;
       packet->host_processing_timestamp = host_processing_timestamp;
       packet->packet_enqueue_timestamp = std::chrono::steady_clock::now();
-      packets->raise(std::move(packet));
+      // Each frame is independent. Replace this session's pending frame when
+      // sending falls behind, without discarding frames belonging to other sessions.
+      packets->raise_latest(std::move(packet), [channel_data](const packet_t &pending) {
+        return pending->channel_data == channel_data;
+      });
 
       // While streaming check to see if the mouse is present and enable Mouse Keys to force the cursor to appear
       // This is useful for KVM switch scenarios where mouse may disappear during streaming

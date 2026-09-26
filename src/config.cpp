@@ -989,7 +989,6 @@ namespace config {
 
     20,  // fecPercentage
     64,  // video_max_batch_size_kb
-    0,  // pyrowave_send_rate_mbps (automatic)
     20,  // pyrowave_critical_fec_percentage
 
     ENCRYPTION_MODE_NEVER,  // lan_encryption_mode
@@ -2164,7 +2163,7 @@ namespace config {
     int_between_f(vars, "fec_percentage", stream.fec_percentage, {1, 255});
     int_between_f(vars, "pacing_max_bitrate_kbps", stream.pacing_max_bitrate_kbps, {0, 10000000});
     int_between_f(vars, "packetsize", stream.packetsize, {0, PACKETSIZE_MAX});
-    int_between_f(vars, "pyrowave_send_rate_mbps", stream.pyrowave_send_rate_mbps, {0, 100000});
+    vars.erase("pyrowave_send_rate_mbps");
     int_between_f(vars, "pyrowave_critical_fec_percentage", stream.pyrowave_critical_fec_percentage, {0, 255});
     int_between_f(vars, "video_max_batch_size_kb", stream.video_max_batch_size_kb, {0, 64});
     if (stream.video_max_batch_size_kb == 0) {
@@ -2698,7 +2697,6 @@ namespace config {
         // Codec / capture negotiation
         "fec_percentage",
         "video_max_batch_size_kb",
-        "pyrowave_send_rate_mbps",
         "pyrowave_critical_fec_percentage",
         "qp",
         "min_threads",

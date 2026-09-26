@@ -32,7 +32,7 @@ namespace pyrowave::host {
     int height = 0;
     bool yuv444 = false;
     video::sunshine_colorspace_t colorspace {};
-    int framerate = 60;
+    int framerate = 0;
     int bitrate_kbps = 0;  ///< Adjusted encoder bitrate (audio and control overhead removed).
     policy::framing_e framing = policy::framing_e::records;
     int packetsize = 0;  ///< Negotiated RTP packet size, for record alignment.
@@ -55,8 +55,8 @@ namespace pyrowave::host {
     /// Apply a new encoder bitrate (dynamic bitrate); only the per-frame budget changes.
     virtual void set_bitrate(int bitrate_kbps) = 0;
 
-    /// Report a newly captured image (not a repeat), to track the capture rate.
-    virtual void on_new_capture(std::chrono::steady_clock::time_point when) = 0;
+    /// Account for every frame submitted for encoding, including repeats.
+    virtual void on_frame(std::chrono::steady_clock::time_point when) = 0;
   };
 
   /**

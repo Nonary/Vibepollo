@@ -2138,8 +2138,7 @@ namespace stream {
       payload = std::string_view {(char *) payload_new.data(), payload_new.size()};
 
       // There are 2 bits for FEC block count for a maximum of 4 FEC blocks
-      constexpr auto MAX_FEC_BLOCKS = 4;
-      constexpr auto MAX_TOTAL_FEC_SHARDS = 255;
+      constexpr auto MAX_FEC_BLOCKS = pyrowave::protocol::MAX_FEC_BLOCKS;
 
       std::array<std::string_view, MAX_FEC_BLOCKS> fec_blocks;
       std::array<int, MAX_FEC_BLOCKS> fec_block_percentages {};
@@ -2245,16 +2244,23 @@ namespace stream {
         size_t ratecontrol_packets_in_1ms = pacing_bps / 1000 / blocksize / 8;
         ratecontrol_packets_in_1ms = std::max<size_t>(1, ratecontrol_packets_in_1ms);
         if (pyrowave_session) {
-          // PyroWave frames are several times larger than H.264/HEVC/AV1 frames, and every
-          // millisecond spent pacing one out is added latency. Pace at the configured rate,
-          // or by default at twice the stream bitrate (burst headroom), but at least 800 Mbps.
+          // Resolve the actual route each frame so adapter/rate changes take effect.
+          // This is local link capacity, not an estimate of downstream bottlenecks.
+          std::uint64_t link_bps = 0;
+#ifdef _WIN32
+          link_bps = platf::routed_link_bps(session->localAddress, session->video.peer.address());
+#endif
           const auto &monitor = session->config.monitor;
-          const std::int64_t stream_kbps = monitor.client_requested_bitrate > 0 ? monitor.client_requested_bitrate : monitor.bitrate;
-          const std::int64_t send_rate_mbps = config::stream.pyrowave_send_rate_mbps > 0 ?
-                                                config::stream.pyrowave_send_rate_mbps :
-                                                std::max<std::int64_t>(800, stream_kbps * 2 / 1000);
-          //                          Mbps -> bytes per ms                  packet
-          ratecontrol_packets_in_1ms = std::max<size_t>(1, (size_t) (send_rate_mbps * 1000 / 8 / blocksize));
+          const auto stream_kbps = monitor.client_requested_bitrate > 0 ? monitor.client_requested_bitrate : monitor.bitrate;
+          // Ethernet header/FCS/preamble/interpacket gap, IP header, UDP header,
+          // plus the optional encrypted-video prefix all occupy link time.
+          const auto ip_header_bytes = session->video.peer.address().is_v6() ? 40u : 20u;
+          const auto wire_bytes = blocksize + 38 + ip_header_bytes + 8 +
+                                  (session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
+          ratecontrol_packets_in_1ms = pyrowave::policy::pacing_packets_per_ms(
+            link_bps, stream_kbps, payload_blocksize, wire_bytes,
+            packet->data_size() + sizeof(frame_header), monitor.framerate
+          );
         }
 
         // Send less than 64K in a single batch.
@@ -2262,7 +2268,9 @@ namespace stream {
         // appear in "Other I/O" and begin waiting for interrupts.
         // This gives inconsistent performance so we'd rather avoid it.
         size_t max_batch_size_bytes = 64 * 1024;
-        max_batch_size_bytes = std::min<size_t>(max_batch_size_bytes, (size_t) config::stream.video_max_batch_size_kb * 1024);
+        max_batch_size_bytes = pyrowave_session ?
+                                 std::min(max_batch_size_bytes, ratecontrol_packets_in_1ms * blocksize) :
+                                 std::min<size_t>(max_batch_size_bytes, (size_t) config::stream.video_max_batch_size_kb * 1024);
 
         size_t send_batch_size = std::max<size_t>(1, max_batch_size_bytes / blocksize);
         // Also don't exceed 64 packets, which can happen when Moonlight requests

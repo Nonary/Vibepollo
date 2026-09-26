@@ -35,8 +35,6 @@ namespace pyrowave::d3d11 {
   namespace {
     using clock_type = std::chrono::steady_clock;
 
-    constexpr DWORD CAPTURE_MUTEX_TIMEOUT_MS = 3000;
-
     // Matches params_cbuffer (b2) in convert_pyrowave_cs.hlsl.
     struct convert_params_t {
       std::uint32_t luma_size[2];
@@ -453,12 +451,16 @@ namespace pyrowave::d3d11 {
       // Synchronize with the capture side, with a finite timeout so display re-init or
       // device loss cannot wedge the stream.
       if (!blank && source.mutex) {
-        const HRESULT status = source.mutex->AcquireSync(0, CAPTURE_MUTEX_TIMEOUT_MS);
+        const HRESULT status = source.mutex->AcquireSync(0, static_cast<DWORD>(config.capture_wait.count()));
         if (status == static_cast<HRESULT>(WAIT_TIMEOUT)) {
           warning("timed out acquiring the capture mutex; skipping the frame");
           return result_e::skipped;
         }
-        if (status != S_OK && status != static_cast<HRESULT>(WAIT_ABANDONED)) {
+        if (status == static_cast<HRESULT>(WAIT_ABANDONED)) {
+          error("the capture mutex was abandoned; its texture must be recreated");
+          return result_e::failed;
+        }
+        if (status != S_OK) {
           warning("acquiring the capture mutex failed [" + hresult_string(status) + "]; skipping the frame");
           return result_e::skipped;
         }
@@ -573,7 +575,10 @@ namespace pyrowave::d3d11 {
     release.num_images = state.pw_plane_refs.size();
 
     pyrowave_rate_control rate {};
-    rate.maximum_bitstream_size = std::clamp<std::size_t>(max_bitstream_bytes, 4096, std::numeric_limits<std::uint32_t>::max() & ~3u);
+    rate.maximum_bitstream_size = std::min<std::size_t>(max_bitstream_bytes, std::numeric_limits<std::uint32_t>::max() & ~3u) & ~std::size_t(3);
+    if (rate.maximum_bitstream_size < protocol::SEQUENCE_HEADER_BYTES + protocol::BLOCK_HEADER_BYTES) {
+      return result_e::skipped;
+    }
 
     auto result = pyrowave_encoder_encode_gpu_synchronous(state.pw_encoder, &acquire, &release, &state.pw_buffers, &rate);
     if (result != PYROWAVE_SUCCESS) {
@@ -609,7 +614,7 @@ namespace pyrowave::d3d11 {
 
     // The packetizer copies the sequence header and every coded block; the raw
     // bitstream buffer bounds the blocks.
-    const std::size_t scratch_bytes = mapped_bitstream_size + 64;
+    const std::size_t scratch_bytes = mapped_bitstream_size + protocol::SEQUENCE_HEADER_BYTES;
     if (state.scratch.size() < scratch_bytes) {
       state.scratch.resize(scratch_bytes);
     }
@@ -633,7 +638,7 @@ namespace pyrowave::d3d11 {
         return result_e::failed;
       }
       const auto &frame = packet_span[0];
-      auto written = pyrowave::policy::write_record_frame(std::span<const std::uint8_t>(state.scratch.data() + frame.offset, frame.size), framing.shard_payload, out);
+      auto written = pyrowave::policy::write_record_frame(std::span<const std::uint8_t>(state.scratch.data() + frame.offset, frame.size), framing.shard_payload, out, framing.max_frame_bytes);
       if (!written) {
         state.error("the encoder produced a malformed bitstream");
         return result_e::failed;
@@ -643,6 +648,11 @@ namespace pyrowave::d3d11 {
       pyrowave::policy::write_length_prefixed_frame(packet_span, state.scratch.data(), out);
     }
     s.frame_bytes = out.size() - frame_start;
+    if (framing.max_frame_bytes && s.frame_bytes > framing.max_frame_bytes) {
+      out.resize(frame_start);
+      state.warning("encoded frame exceeds the negotiated transport capacity; skipping it");
+      return result_e::skipped;
+    }
     s.packets = out_packets;
     s.packetize_ms = elapsed_ms(packetize_start, clock_type::now());
     return result_e::ok;

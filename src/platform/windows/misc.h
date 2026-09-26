@@ -15,6 +15,9 @@
 #include <system_error>
 #include <vector>
 
+// lib includes
+#include <boost/asio/ip/address.hpp>
+
 // platform includes
 #include <WinSock2.h>
 #include <Windows.h>
@@ -23,6 +26,9 @@
 #include "utf_utils.h"
 
 namespace platf {
+  /// Current transmit speed of the routed interface, or zero when unavailable.
+  std::uint64_t routed_link_bps(const boost::asio::ip::address &source, const boost::asio::ip::address &target);
+
   void print_status(const std::string_view &prefix, HRESULT status);
   HDESK syncThreadDesktop();
 

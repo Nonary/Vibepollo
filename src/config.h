@@ -277,7 +277,6 @@ namespace config {
 
     int fec_percentage;
     int video_max_batch_size_kb;
-    int pyrowave_send_rate_mbps;  ///< Video send pacing for PyroWave sessions; 0 = max(800 Mbps, 2x stream bitrate).
     int pyrowave_critical_fec_percentage;  ///< Parity on the PyroWave shards holding the coarsest wavelet level (at least 2 shards); 0 = none.
 
     // Video encryption settings for LAN and WAN streams

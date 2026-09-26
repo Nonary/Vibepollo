@@ -113,33 +113,21 @@ to `lastPayloadLen` as it does for AV1. The host ignores IDR and
 reference-invalidation requests for PyroWave sessions.
 
 Every frame is independent, so a lost packet costs at most that frame, and with
-record framing usually only the detail it carried (see "Partial frames"). The one
-part a client cannot do without is PyroWave's coarsest wavelet level, which record
-framing puts first (see "Layout"): the "critical" packets, a few percent of a
-frame (3-6% in our tests). Only they get parity (`fec_percentage` does not apply
-to PyroWave):
+record framing usually only the detail it carried (see "Partial frames"). The
+coarsest wavelet level is required for decoding. Its first few percent of shards
+receive parity at `pyrowave_critical_fec_percentage`; `fec_percentage` does not
+apply to PyroWave. The remaining shards are sent without parity.
 
-- FEC block 0 is exactly the critical packets, with Reed-Solomon parity at the
-  host's `pyrowave_critical_fec_percentage` (default 20%, at least 2 parity
-  packets, in `fecInfo` as for any block). The rest of the frame follows in up to
-  three blocks without parity, each at most 255 packets like the blocks of the other
-  codecs. With the setting at 0, for length-prefixed framing, or when block 0 would
-  exceed a Reed-Solomon block (255 packets with parity), the whole frame goes in up
-  to four blocks without parity.
-- The last two bytes of the 8-byte short frame header (little-endian, unused by
-  stock Sunshine) carry the number of critical packets, 0 when unknown. Clients
-  that do not know it ignore these bytes.
-- In record framing, `NV_VIDEO_PACKET.extraFlags` bit `0x80` marks each packet
-  whose frame data starts with a record (the first packet always does). Clients
-  that do not know it ignore the bit; stock Sunshine only uses `0x1` (LTR).
+The frame is split into at most four blocks. The host caps a frame at 3000
+packets when critical FEC is on and 4000 when it is off. The codec budget and
+record padding honor this limit and the negotiated packet size. PyroWave
+resolves the routed link speed each frame for pacing; if it is unavailable,
+pacing follows packet demand and stream bitrate. `pyrowave_send_rate_mbps`
+is ignored. Other codecs retain their existing pacing and FEC settings.
 
-Parity on the rest would add bytes, send time and encode time to every frame for
-what is only a blurred area; PyroWave is meant for wired LANs where loss is rare.
-A block holds at most 1023 packets, so the host caps a frame at 3000 packets (about
-4.1 MB with 1392-byte packets) when critical FEC is on and 4000 (about 5.5 MB) when
-it is off. It paces PyroWave packets at its `pyrowave_send_rate_mbps` setting, by
-default twice the stream bitrate and at least 800 Mbps; the other codecs keep FEC
-and the stock 800 Mbps.
+When sending falls behind, a newly encoded PyroWave frame replaces that
+session's pending frame in the send queue. The frame already being sent
+completes, and other sessions keep their queue positions.
 
 ### Record framing (host default for PyroWave-aware clients)
 
@@ -261,18 +249,20 @@ Output planes are three single-channel UNORM images (R8 for 8-bit streams, R16 f
 
 The client's configured bitrate (`x-ml-video.configuredBitrateKbps`) is used exactly
 as for the other codecs; the host subtracts audio and control overhead, but not
-FEC: the critical packets' parity is well under 1% of the frame at the default. The
-per-frame byte budget is `bitrate / capture rate / 8`, where the capture rate is
-measured (a game at 60 fps in a 120 fps stream gets twice the bytes per frame),
-bounded to at most twice the nominal per-frame budget. PyroWave's rate control never
-exceeds that budget. Padding records are counted against the wire bitrate, not the
-budget.
+FEC. The initial per-frame byte budget uses the negotiated frame rate. Subsequent
+budgets use elapsed time between encoding attempts, including repeated images.
+This gives slower submissions their share without allocating extra bytes to
+repeats or imposing a fixed bitrate floor or a fixed 2x budget multiplier. The
+negotiated transport capacity bounds the budget after a stall. Budgets are rounded
+down to codec words; a budget too small for the codec headers skips that attempt.
+Framing and network headers still add overhead to the codec bitrate.
 
-When no new capture arrives, the host re-encodes the last image at the minimum FPS
-target (`minimum_fps_target`, by default a fifth of the stream rate and at least 10
-fps), so a static screen recovers from a lost frame. Repeats do not count as captures,
-and the default is low enough that a game rendering below the stream rate is never
-padded out with repeats at its enlarged per-frame budget.
+When no new capture arrives, the host re-encodes the last image. By default the
+wait is one negotiated frame interval, so a static screen can recover promptly
+from a lost frame. An explicit `minimum_fps_target` can reduce the repeat cadence
+and is capped at the negotiated frame rate. Capture mutex waits are also bounded
+by the negotiated frame interval. Packetizer storage follows the codec's reported
+bitstream buffer size plus its sequence header.
 
 Guidance: about 1.6 bits per pixel is visually clean for 4:2:0 SDR (Themaister's
 reference point, 200 Mbps at 1080p60). 4:4:4 costs about 1.6x, and 10-bit about

@@ -61,4 +61,10 @@ namespace pyrowave::protocol {
   /// `NV_VIDEO_PACKET::extraFlags` bit set on a record-framed shard whose frame data
   /// starts with a record, where a client that lost a record header resumes parsing.
   constexpr std::uint8_t EXTRA_FLAG_RECORD_START = 0x80;
+  /// The video header has two bits for the block count and ten for data shards.
+  constexpr std::size_t MAX_FEC_BLOCKS = 1u << 2;
+  constexpr std::size_t MAX_DATA_SHARDS_PER_BLOCK = (1u << 10) - 1;
+  /// PyroWave headers contain two 32-bit words.
+  constexpr std::size_t SEQUENCE_HEADER_BYTES = 2 * sizeof(std::uint32_t);
+  constexpr std::size_t BLOCK_HEADER_BYTES = 2 * sizeof(std::uint32_t);
 }  // namespace pyrowave::protocol
