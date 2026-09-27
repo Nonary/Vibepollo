@@ -2175,6 +2175,9 @@ namespace platf {
         img->data = nullptr;
         img->pixel_pitch = 4;
 
+        img->capture_render_device = card.vulkan_device_path;
+        img->capture_offset_x = img_offset_x;
+        img->capture_offset_y = img_offset_y;
         img->sequence = 0;
         std::fill_n(img->sd.fds, 4, -1);
 

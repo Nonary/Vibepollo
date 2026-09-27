@@ -27,6 +27,7 @@
 
 #ifndef _WIN32
 #include <unistd.h>
+#include <fcntl.h>
 #else
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -689,6 +690,13 @@ bool DeviceAllocator::internal_allocate(
 	VkImportMemoryWin32HandleInfoKHR import_info = { VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR };
 #else
 	VkImportMemoryFdInfoKHR import_info = { VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR };
+	// Keep the caller's DMA-BUF alive until image creation (including bind and
+	// views) succeeds. Vulkan consumes only this duplicate at allocation time.
+	struct ImportedDmaBuf
+	{
+		int fd = -1;
+		~ImportedDmaBuf() { if (fd >= 0) ::close(fd); }
+	} imported_dmabuf;
 #endif
 
 	if (dedicated_object != 0)
@@ -714,6 +722,13 @@ bool DeviceAllocator::internal_allocate(
 			import_info.handle = external->handle;
 #else
 			import_info.fd = external->handle;
+			if (external->memory_handle_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+			{
+				imported_dmabuf.fd = fcntl(external->handle, F_DUPFD_CLOEXEC, 0);
+				if (imported_dmabuf.fd < 0)
+					return false;
+				import_info.fd = imported_dmabuf.fd;
+			}
 #endif
 		}
 		else
@@ -762,6 +777,10 @@ bool DeviceAllocator::internal_allocate(
 	{
 		GRANITE_SCOPED_TIMELINE_EVENT_FILE(device->get_system_handles().timeline_trace_file, "vkAllocateMemory");
 		res = table->vkAllocateMemory(device->get_device(), &info, nullptr, &device_memory);
+#ifndef _WIN32
+		if (res == VK_SUCCESS)
+			imported_dmabuf.fd = -1;
+#endif
 	}
 
 	if (res == VK_SUCCESS)
@@ -794,6 +813,10 @@ bool DeviceAllocator::internal_allocate(
 				GRANITE_SCOPED_TIMELINE_EVENT_FILE(device->get_system_handles().timeline_trace_file,
 				                                   "vkAllocateMemory");
 				res = table->vkAllocateMemory(device->get_device(), &info, nullptr, &device_memory);
+#ifndef _WIN32
+		if (res == VK_SUCCESS)
+			imported_dmabuf.fd = -1;
+#endif
 			}
 			++block_itr;
 		}

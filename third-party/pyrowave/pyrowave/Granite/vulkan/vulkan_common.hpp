@@ -101,8 +101,7 @@ struct ExternalHandle
 
 		return type != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT &&
 		       type != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT &&
-		       type != VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT &&
-		       type != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+		       type != VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
 	}
 
 	static bool semaphore_handle_type_imports_by_reference(VkExternalSemaphoreHandleTypeFlagBits type)

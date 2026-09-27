@@ -9,3 +9,7 @@ vulkan-headers:  6802bb4733b63ed5efd3adb308a6c885ef180ea1
 The PyroWave bitstream carries no version field. The host and the client must be
 built from the same pyrowave commit; the RTSP handshake advertises it as
 PYROWAVE_BITSTREAM_ID in pyrowave_protocol.h.
+
+Linux host patch: DMA-BUF memory import duplicates its input FD before Vulkan allocation,
+consuming the original only after image creation succeeds. Failure leaves the input FD
+owned by the caller, including failures after memory allocation. No bitstream changes.

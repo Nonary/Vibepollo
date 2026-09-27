@@ -1285,6 +1285,10 @@ namespace platf {
   }
 #endif
 
+  bool pyrowave_capture_supported() {
+    return !sources[source::NVFBC];
+  }
+
   std::vector<std::string> display_names(mem_type_e hwdevice_type) {
 #ifdef SUNSHINE_BUILD_GAMESCOPE
     if (sources[source::GAMESCOPE]) {

@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
 

@@ -10,9 +10,9 @@ on:
         required: false
         type: string
       use_self_hosted:
-        description: Use the local Windows release runner
+        description: Use the local Windows and Linux release runners
         type: boolean
-        default: true
+        default: false
   push:
     branches:
       - '**'
@@ -257,7 +257,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/ci-windows.yml
     with:
-      use_self_hosted: ${{ needs.release-candidate.outputs.should_release == 'true' || (github.event_name == 'workflow_dispatch' && inputs.use_self_hosted) }}
+      use_self_hosted: ${{ github.event_name == 'workflow_dispatch' && inputs.use_self_hosted }}
       build_only: ${{ needs.release-candidate.outputs.should_release == 'true' }}
       build_tests: false
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
@@ -285,6 +285,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/ci-archlinux.yml
     with:
+      use_self_hosted: ${{ github.event_name == 'workflow_dispatch' && inputs.use_self_hosted }}
       artifact_retention_days: ${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
       release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0' }}

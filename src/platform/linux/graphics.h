@@ -297,6 +297,9 @@ namespace egl {
     }
 
     surface_descriptor_t sd;
+    std::string capture_render_device;
+    int capture_offset_x = 0;
+    int capture_offset_y = 0;
 
     // Increment sequence when new rgb_t needs to be created
     std::uint64_t sequence;

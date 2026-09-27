@@ -5,14 +5,11 @@
  * Windows builds with SUNSHINE_ENABLE_PYROWAVE use
  * src/platform/windows/pyrowave_encode.cpp instead.
  *
- * TODO(pyrowave): Linux. Import the capture DMA-BUF with pyrowave_image_create
- * (VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT plus the DRM format modifier) and
- * encode it with pyrowave_encoder_encode_gpu_scaled_synchronous, which performs the
- * colour conversion and scaling.
+ * Linux builds use src/platform/linux/pyrowave_encode.cpp.
  */
 #include "pyrowave_host.h"
 
-#if !(defined(_WIN32) && defined(SUNSHINE_ENABLE_PYROWAVE))
+#if !((defined(_WIN32) || defined(__linux__)) && defined(SUNSHINE_ENABLE_PYROWAVE))
 
   #include "platform/common.h"
 

@@ -43,6 +43,15 @@ else()
 endif()
 
 add_subdirectory("${PYROWAVE_VENDOR_DIR}/Granite" "${CMAKE_CURRENT_BINARY_DIR}/Granite" EXCLUDE_FROM_ALL)
+if(NOT WIN32)
+    # Visibility alone does not prevent the static Volk vk* pointer symbols
+    # from binding direct libvulkan calls in the host executable. Namespace
+    # Volk so PyroWave can coexist with the native Vulkan encoder and FFmpeg.
+    set_source_files_properties("${PYROWAVE_VENDOR_DIR}/Granite/third_party/volk/volk.c"
+        TARGET_DIRECTORY granite-volk PROPERTIES LANGUAGE CXX)
+    target_compile_definitions(granite-volk-headers INTERFACE VOLK_NAMESPACE)
+endif()
+
 add_subdirectory("${PYROWAVE_VENDOR_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/pyrowave" EXCLUDE_FROM_ALL)
 
 add_library(pyrowave-capi STATIC

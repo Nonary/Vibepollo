@@ -32,3 +32,8 @@ namespace dyn {
   void *handle(const std::vector<const char *> &libs);
 
 }  // namespace dyn
+
+namespace platf {
+  /// CUDA-only NvFBC images cannot be imported by the Linux PyroWave encoder.
+  bool pyrowave_capture_supported();
+}
