@@ -116,7 +116,53 @@ Every frame is independent, so a lost packet costs at most that frame, and with
 record framing usually only the detail it carried (see "Partial frames"). The
 coarsest wavelet level is required for decoding. Its first few percent of shards
 receive parity at `pyrowave_critical_fec_percentage`; `fec_percentage` does not
-apply to PyroWave. The remaining shards are sent without parity.
+apply to PyroWave. Finer detail normally has no parity, but the host can protect
+it when sustained low frame rates make loss-induced flicker more visible.
+
+For record framing with FEC enabled, the encoded image budget is capped at the
+negotiated bitrate divided by the negotiated frame rate. A frame-rate drop leaves
+bandwidth available for protection instead of making each encoded image larger.
+For example, 800 Mbps at 120 FPS allows about 0.83 MB of encoded data per frame;
+that ceiling remains about 0.83 MB at 60 or 30 FPS. Faster-than-negotiated
+submissions still receive a smaller elapsed-time budget.
+
+The adaptive policy requires at least 250 ms of frames below negotiated FPS with at
+least 75% unchanged encoded record bytes. It compares records by block ID,
+ignoring sequence numbers, padding and packing order. This is a conservative
+proxy for picture activity, not a pixel motion measurement: changes in encoder
+quantization count as changes too. A 1% timing tolerance ignores small cadence
+noise. The requested detail parity percentage is
+`min(50, 100 * (negotiated FPS / observed FPS - 1))`. Thus a 120 FPS session
+requests about 9% at 110 FPS, 20% at 100 FPS, 33% at 90 FPS and 50% at 80 FPS or
+below. This cap is independent of the critical block's configured parity rate;
+the critical rate remains unchanged. Motion or a return to negotiated cadence disables extra
+protection immediately; cadence smoothing and the entry delay avoid reacting to
+isolated hitches.
+
+Extra parity uses only unused bytes from the current bitrate allowance, after
+accounting for data, baseline parity, network headers and encryption. The
+allowance uses the smaller of the current and smoothed frame intervals, capped
+at 50 ms, without accumulating idle credit. A frame that already fills its
+allowance gets no extra parity. This limits overhead against the configured
+bitrate; it does not estimate available downstream network capacity.
+Unused bandwidth beyond useful parity is left idle; the sender does not try to
+fill the configured bitrate after a cadence drop.
+
+The 50% cap corresponds to an ideal one-third missing-packet tolerance within a
+fully protected block, not a guarantee at one-third average network loss. The
+planner may select less parity or protect only part of the detail to satisfy
+the wire budget and the four-block limit.
+
+The planner prefers protecting all finer detail, reducing its parity percentage
+if necessary. Frames too large for that receive partial coverage: first by
+extending the critical block, then adding protected detail blocks where space
+allows. Every protected block stays within the Reed-Solomon limit of 255 data
+plus parity packets, and the frame still fits four blocks. The announced
+critical packet count continues to describe only the required coarse data.
+No new client protocol is needed. Setting `pyrowave_critical_fec_percentage=0`
+also disables adaptive detail FEC; length-prefixed clients keep their existing
+behavior. The debug statistic `PyroWave: detail packets protected` reports actual
+coverage after budget and block limits, rather than just the requested rate.
 
 The frame is split into at most four blocks. The host caps a frame at 3000
 packets when critical FEC is on and 4000 when it is off. The codec budget and
@@ -210,7 +256,7 @@ discarding frames after four or more consecutive network drops.
 ### Partial frames
 
 Our client decodes a record-framed frame that lost packets. moonlight-common-c
-first repairs what parity can (the critical packets). It does not drop a PyroWave
+first repairs what parity can (critical packets and any protected detail). It does not drop a PyroWave
 frame whose FEC block cannot complete: once the next block or frame starts
 arriving, each missing data packet is replaced by zeros and delivered as a
 `BUFFER_TYPE_LOST` buffer. The frame is still dropped when its first packet
@@ -249,11 +295,14 @@ Output planes are three single-channel UNORM images (R8 for 8-bit streams, R16 f
 
 The client's configured bitrate (`x-ml-video.configuredBitrateKbps`) is used exactly
 as for the other codecs; the host subtracts audio and control overhead, but not
-FEC. The initial per-frame byte budget uses the negotiated frame rate. Subsequent
-budgets use elapsed time between encoding attempts, including repeated images.
-This gives slower submissions their share without allocating extra bytes to
-repeats or imposing a fixed bitrate floor or a fixed 2x budget multiplier. The
-negotiated transport capacity bounds the budget after a stall. Budgets are rounded
+FEC. The initial per-frame byte budget uses the negotiated frame rate. With record
+framing and FEC enabled, subsequent image budgets use the smaller of that interval
+and the elapsed time between encoding attempts, including repeated images.
+Slower submissions therefore keep the same encoded image ceiling and make room
+for adaptive detail FEC. Disabling FEC or using length-prefixed compatibility
+framing retains elapsed-time image budgets. Dynamic bitrate changes update the
+ceiling using the new bitrate and the original negotiated FPS. The negotiated
+transport capacity also bounds the budget. Budgets are rounded
 down to codec words; a budget too small for the codec headers skips that attempt.
 Framing and network headers still add overhead to the codec bitrate.
 

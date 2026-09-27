@@ -2638,9 +2638,13 @@ this option to replace the running app immediately. The default is `true`.
         <td colspan="2">
             Percentage of error correcting packets for the packets that carry the coarsest wavelet level of a
             PyroWave frame, the first few percent of it. The client cannot decode a frame that lost any of them,
-            while a loss elsewhere only blurs a small area for one frame, so only these packets are protected,
-            with at least 2 error correcting packets per frame. The rest of the frame is sent without error
-            correction, and `fec_percentage` does not apply to PyroWave. 0 disables it, which also allows frames
+            with at least 2 error correcting packets per frame. With record framing, encoded image size
+            is capped at the bitrate divided by negotiated FPS. At sustained frame rates below negotiated FPS,
+            mostly unchanged pictures also receive adaptive protection for finer detail, using only unused
+            bitrate and available FEC block space. Detail parity follows the cadence shortfall, up to 50%,
+            independently of this setting's critical-packet rate. This targets flicker caused by packet loss;
+            it cannot correct encoder quantization shimmer.
+            `fec_percentage` does not apply to PyroWave. 0 disables both kinds of protection and allows frames
             up to about 5.5 MB instead of 4.1 MB with 1392-byte packets.
         </td>
     </tr>

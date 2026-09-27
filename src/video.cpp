@@ -6246,7 +6246,8 @@ namespace video {
     });
 
     // Independent frames recover from packet loss on the next submission. Default
-    // to the negotiated cadence; repeats receive their own elapsed-time budget.
+    // to the negotiated cadence. With record FEC, image size stays bounded by
+    // that cadence's allowance and slower submissions leave room for parity.
     const double minimum_fps_target = (config::video.minimum_fps_target > 0.0) ?
                                         std::min(config::video.minimum_fps_target, double(config.framerate)) :
                                         double(config.framerate);
@@ -6267,6 +6268,7 @@ namespace video {
 
     std::vector<std::uint8_t> frame;
     std::size_t critical_bytes = 0;
+    pyrowave::policy::detail_fec_controller_t detail_fec_controller(config.framerate);
     while (true) {
       const bool reinit_pending = reinit_event.peek() && frame_nr > 1;
       if (shutdown_event->peek() || !images->running() || reinit_pending) {
@@ -6303,7 +6305,8 @@ namespace video {
         return false;
       }
 
-      encoder->on_frame(std::chrono::steady_clock::now());
+      const auto submitted_at = std::chrono::steady_clock::now();
+      encoder->on_frame(submitted_at);
       const int result = encoder->encode(*last_img, frame, critical_bytes);
       if (result < 0) {
         BOOST_LOG(error) << "PyroWave: encoding failed; ending the video stream"sv;
@@ -6313,10 +6316,15 @@ namespace video {
         continue;
       }
 
+      const auto detail_fec = params.critical_fec && params.framing == pyrowave::policy::framing_e::records ?
+                                detail_fec_controller.observe(frame, submitted_at, config.bitrate) :
+                                pyrowave::policy::detail_fec_t {};
       auto packet = std::make_unique<packet_raw_generic>(std::move(frame), frame_nr++, true);
       frame = {};
       packet->channel_data = channel_data;
       packet->pyrowave_critical_bytes = critical_bytes;
+      packet->pyrowave_detail_fec_percentage = detail_fec.percentage;
+      packet->pyrowave_frame_wire_budget = detail_fec.frame_wire_budget;
       packet->frame_timestamp = frame_timestamp;
       packet->host_processing_timestamp = host_processing_timestamp;
       packet->packet_enqueue_timestamp = std::chrono::steady_clock::now();

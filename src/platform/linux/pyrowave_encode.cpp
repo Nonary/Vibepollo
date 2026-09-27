@@ -31,7 +31,8 @@ namespace pyrowave::host {
       encoder_impl_t(const session_params_t &p, std::shared_ptr<platf::display_t> d):
           params(p),
           display(std::move(d)),
-          budget(p.framerate, p.bitrate_kbps, policy::max_bitstream_bytes(p.packetsize, p.framing == policy::framing_e::length_prefixed, p.critical_fec)) {}
+          budget(p.framerate, p.bitrate_kbps, policy::max_bitstream_bytes(p.packetsize, p.framing == policy::framing_e::length_prefixed, p.critical_fec),
+                 p.critical_fec && p.framing == policy::framing_e::records) {}
 
       void set_bitrate(int bitrate) override {
         budget.set_bitrate(bitrate);

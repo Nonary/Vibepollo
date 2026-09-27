@@ -14,6 +14,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace pyrowave::policy {
@@ -167,37 +168,68 @@ namespace pyrowave::policy {
   constexpr std::size_t MAX_FEC_BLOCK_SHARDS = 1023;
   /// Data plus parity shards one Reed-Solomon block (GF(2^8)) can hold.
   constexpr std::size_t MAX_REED_SOLOMON_SHARDS = 255;
+  /// Stop buying detail protection once parity costs half the protected data.
+  constexpr int MAX_DETAIL_FEC_PERCENTAGE = 50;
 
   /**
    * @brief Split a PyroWave frame into FEC blocks.
    *
-   * Only the frame's first `critical_shards` (the sequence header and the coarsest
+   * By default, only the frame's first `critical_shards` (the sequence header and the coarsest
    * wavelet level) get parity, as block 0 at `critical_fec_percentage` with at least
    * `min_parity_shards` parity shards. Losing any of them costs the whole frame,
    * while a lost finer record only blurs its area. The rest is split evenly into up
    * to three blocks without FEC. Parity is skipped when the percentage is 0, there is
    * nothing critical, or block 0 would exceed a Reed-Solomon block; the frame is then
-   * split as before, into up to four blocks without FEC.
+   * split as before, into up to four blocks without FEC. Optional detail protection
+   * spends at most `extra_parity_budget` additional shards. Large frames receive
+   * partial coverage within the same four blocks.
    *
    * Blocks are listed in order and their shards add up to `total_shards`. A frame
    * too large for the blocks gets blocks over MAX_FEC_BLOCK_SHARDS, which the caller
    * reports; the encoder's frame budget keeps that from happening.
    */
-  std::vector<fec_block_t> plan_fec_blocks(std::size_t total_shards, std::size_t critical_shards, int critical_fec_percentage, std::size_t min_parity_shards);
+  std::vector<fec_block_t> plan_fec_blocks(std::size_t total_shards, std::size_t critical_shards, int critical_fec_percentage, std::size_t min_parity_shards, int detail_fec_percentage = 0, std::size_t extra_parity_budget = 0);
 
   /// Parity shards stream.cpp's FEC encoder adds to a block of `data_shards`.
   std::size_t parity_shards(std::size_t data_shards, int fec_percentage, std::size_t min_parity_shards);
+
+  struct detail_fec_t {
+    int percentage = 0;
+    std::size_t frame_wire_budget = 0;
+  };
+
+  /// Conservative activity estimate from record contents, ignoring sequence bits
+  /// and padding. No GPU readback; quantization changes count as picture changes.
+  /// Extra protection requires 250 ms of similar frames below negotiated FPS.
+  /// The cadence shortfall determines the request, capped at 50% extra parity.
+  /// Only unused bitrate can pay for the resulting parity.
+  class detail_fec_controller_t {
+  public:
+    explicit detail_fec_controller_t(int framerate);
+    detail_fec_t observe(std::span<const std::uint8_t> frame, std::chrono::steady_clock::time_point when, int bitrate_kbps);
+
+  private:
+    double nominal_interval;
+    std::unordered_map<std::uint32_t, std::uint64_t> previous_blocks;
+    std::size_t previous_record_bytes = 0;
+    std::uint64_t previous_format = 0;
+    std::optional<std::chrono::steady_clock::time_point> previous_time;
+    double interval = 0.0;
+    double stable_seconds = 0.0;
+  };
 
   /**
    * @brief Per-frame byte budget for an intra-only codec.
    *
    * Each submitted frame, including repeats, gets the bytes earned since the
    * previous submission. The initial budget uses the negotiated frame rate.
-   * The transport capacity bounds accumulation after stalls.
+   * With stable_frame_size, the encoded image budget never exceeds one negotiated
+   * frame's allowance at the current bitrate, leaving slower cadence's savings for FEC.
+   * The transport capacity bounds accumulation after stalls in either mode.
    */
   class budget_t {
   public:
-    budget_t(int framerate, int bitrate_kbps, std::size_t max_frame_bytes);
+    budget_t(int framerate, int bitrate_kbps, std::size_t max_frame_bytes, bool stable_frame_size = false);
 
     void set_bitrate(int bitrate_kbps);
 
@@ -218,6 +250,8 @@ namespace pyrowave::policy {
 
     int bitrate_kbps;
     std::size_t max_frame_bytes;
+    double nominal_interval;
+    bool stable_frame_size;
     double frame_interval;
     std::optional<std::chrono::steady_clock::time_point> last_frame;
     std::size_t budget = 0;

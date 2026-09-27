@@ -323,6 +323,259 @@ TEST(PyroWavePolicy, FecPlanFallsBackToNoParity) {
   EXPECT_TRUE(plan_fec_blocks(0, 0, 20, 2).empty());
 }
 
+TEST(PyroWavePolicy, DetailFecProtectsSmallFramesAndPartOfLargeFrames) {
+  const auto small = plan_fec_blocks(400, 21, 20, 2, 20, 100);
+  ASSERT_EQ(small.size(), 3u);
+  EXPECT_EQ(small.front().data_shards, 21u);
+  for (const auto &block : small) {
+    EXPECT_EQ(block.fec_percentage, 20);
+    EXPECT_LE(block.data_shards + parity_shards(block.data_shards, block.fec_percentage, 2), 255u);
+  }
+
+  const auto large = plan_fec_blocks(3000, 30, 20, 2, 20, 100);
+  ASSERT_EQ(large.size(), 4u);
+  EXPECT_GT(large.front().data_shards, 30u);
+  EXPECT_EQ(large.front().fec_percentage, 20);
+  EXPECT_EQ(large.back().fec_percentage, 0);
+
+  // With little spare bandwidth, cover all detail at a lower percentage.
+  const auto tight = plan_fec_blocks(400, 21, 20, 2, 20, 4);
+  ASSERT_EQ(tight.size(), 3u);
+  EXPECT_EQ(tight[1].fec_percentage, 1);
+  EXPECT_EQ(tight[2].fec_percentage, 1);
+  EXPECT_EQ(plan_fec_blocks(400, 21, 20, 2, 20, 0)[1].fec_percentage, 0);
+  EXPECT_EQ(plan_fec_blocks(400, 21, 0, 2, 20, 100)[0].fec_percentage, 0);
+}
+
+TEST(PyroWavePolicy, DetailFecAlwaysHonorsTransportAndParityBudgets) {
+  std::mt19937 rng(0xfec);
+  for (int attempt = 0; attempt < 4000; ++attempt) {
+    const std::size_t total = 1 + rng() % 3000;
+    const std::size_t critical = std::min<std::size_t>(total, 1 + rng() % 255);
+    const int critical_rate = 1 + rng() % 255;
+    const int detail_rate = 1 + rng() % 75;  // Also exercise requests above the 50% cap.
+    const std::size_t minimum = 2 + rng() % 8;
+    const std::size_t budget = rng() % 100;
+    const auto baseline = plan_fec_blocks(total, critical, critical_rate, minimum);
+    const auto plan = plan_fec_blocks(total, critical, critical_rate, minimum, detail_rate, budget);
+    SCOPED_TRACE(attempt);
+    ASSERT_LE(plan.size(), 4u);
+    std::size_t data = 0;
+    std::size_t parity = 0;
+    std::size_t base_parity = 0;
+    for (const auto &block : baseline) {
+      base_parity += parity_shards(block.data_shards, block.fec_percentage, minimum);
+    }
+    for (const auto &block : plan) {
+      EXPECT_GT(block.data_shards, 0u);
+      EXPECT_LE(block.data_shards, MAX_FEC_BLOCK_SHARDS);
+      const auto extra = parity_shards(block.data_shards, block.fec_percentage, minimum);
+      if (extra) {
+        EXPECT_LE(block.data_shards + extra, MAX_REED_SOLOMON_SHARDS);
+      }
+      data += block.data_shards;
+      parity += extra;
+    }
+    EXPECT_EQ(data, total);
+    EXPECT_GE(parity, base_parity);
+    EXPECT_LE(parity, base_parity + budget);
+    if (baseline.front().fec_percentage) {
+      EXPECT_GE(plan.front().data_shards, critical);
+      EXPECT_EQ(plan.front().fec_percentage, critical_rate);
+    }
+  }
+}
+
+TEST(PyroWavePolicy, DetailFecCanReachFiftyPercentWithoutChangingCriticalProtection) {
+  for (const int requested : {50, 75, 100}) {
+    const auto plan = plan_fec_blocks(400, 21, 20, 2, requested, 1000);
+    ASSERT_EQ(plan.size(), 4u);
+    EXPECT_EQ(plan.front().data_shards, 21u);
+    EXPECT_EQ(plan.front().fec_percentage, 20);
+    std::size_t data = plan.front().data_shards;
+    std::size_t detail_parity = 0;
+    for (std::size_t i = 1; i < plan.size(); ++i) {
+      EXPECT_EQ(plan[i].fec_percentage, 50);
+      const auto parity = parity_shards(plan[i].data_shards, plan[i].fec_percentage, 2);
+      EXPECT_LE(plan[i].data_shards + parity, MAX_REED_SOLOMON_SHARDS);
+      data += plan[i].data_shards;
+      detail_parity += parity;
+    }
+    EXPECT_EQ(data, 400u);
+    EXPECT_LE(detail_parity, parity_shards(379, 50, 0));
+  }
+  // A ~0.83 MB frame has too much detail for three 50% FEC blocks.
+  // Lower the rate to cover all detail while keeping the critical block intact.
+  const auto large = plan_fec_blocks(606, 21, 20, 2, 50, 1000);
+  ASSERT_EQ(large.size(), 4u);
+  EXPECT_EQ(large.front().data_shards, 21u);
+  EXPECT_EQ(large.front().fec_percentage, 20);
+  for (std::size_t i = 1; i < large.size(); ++i) {
+    EXPECT_EQ(large[i].data_shards, 195u);
+    EXPECT_EQ(large[i].fec_percentage, 30);
+  }
+}
+
+TEST(PyroWavePolicy, DetailFecCadenceTargetsMatchTheAgreedRanges) {
+  using namespace std::chrono;
+  const auto frame = make_bitstream(std::vector<std::uint32_t>(10, 12));
+  struct target_t {
+    int fps;
+    int parity;
+  };
+  for (const auto [fps, parity] : {target_t {120, 0}, {110, 9}, {100, 20}, {90, 33}, {80, 50}, {60, 50}, {30, 50}}) {
+    SCOPED_TRACE(fps);
+    detail_fec_controller_t controller(120);
+    auto now = steady_clock::time_point {};
+    const auto interval = duration_cast<steady_clock::duration>(duration<double>(1.0 / fps));
+    detail_fec_t result;
+    for (int i = 0; i < fps; ++i) {
+      result = controller.observe(frame, now, 800000);
+      now += interval;
+    }
+    // Cadence timestamps and integer FEC percentages round down.
+    EXPECT_GE(result.percentage, std::max(0, parity - 1));
+    EXPECT_LE(result.percentage, parity);
+    EXPECT_LE(result.frame_wire_budget, std::size_t(800000.0 * 125.0 / fps));
+  }
+}
+
+TEST(PyroWavePolicy, DetailFecRequiresSustainedLowCadenceAndSimilarity) {
+  using namespace std::chrono;
+  const auto frame = make_bitstream(std::vector<std::uint32_t>(10, 12));
+  detail_fec_controller_t slow(120), fast(120);
+  auto slow_time = steady_clock::time_point {};
+  auto fast_time = slow_time;
+  for (int i = 0; i < 30; ++i) {
+    const auto result = slow.observe(frame, slow_time, 100000);
+    if (i < 8) {
+      EXPECT_EQ(result.percentage, 0);
+    } else {
+      EXPECT_EQ(result.percentage, 50);
+      EXPECT_LE(result.frame_wire_budget, 100000u * 125 / 30);
+    }
+    EXPECT_EQ(fast.observe(frame, fast_time, 100000).percentage, 0);
+    slow_time += microseconds(33333);
+    fast_time += microseconds(8333);
+  }
+  // Immediate exit on a return to high cadence; no averaging tail of extra FEC.
+  EXPECT_EQ(slow.observe(frame, slow_time - microseconds(25000), 100000).percentage, 0);
+}
+
+TEST(PyroWavePolicy, DetailFecTracksNegotiatedCadenceInsteadOfAnAbsoluteFpsThreshold) {
+  using namespace std::chrono;
+  const auto frame = make_bitstream(std::vector<std::uint32_t>(10, 12));
+  for (const auto target : {30, 60, 120}) {
+    detail_fec_controller_t controller(target);
+    auto now = steady_clock::time_point {};
+    const auto nominal = duration_cast<steady_clock::duration>(duration<double>(1.0 / target));
+    const auto slower = duration_cast<steady_clock::duration>(duration<double>(1.10 / target));
+    // Normal cadence, including a native 30 FPS stream, does not request FEC.
+    for (int i = 0; i < target; ++i) {
+      EXPECT_EQ(controller.observe(frame, now, 800000).percentage, 0);
+      now += nominal;
+    }
+    detail_fec_t result;
+    for (int i = 0; i < 2 * target; ++i) {
+      now += slower;
+      result = controller.observe(frame, now, 800000);
+    }
+    EXPECT_GE(result.percentage, 9);
+    EXPECT_LE(result.percentage, 10);
+    now += nominal;
+    EXPECT_EQ(controller.observe(frame, now, 800000).percentage, 0);
+  }
+  EXPECT_THROW(detail_fec_controller_t(0), std::invalid_argument);
+}
+
+TEST(PyroWavePolicy, DetailFecIgnoresSequenceAndRecordOrderButDetectsMotion) {
+  using namespace std::chrono;
+  detail_fec_controller_t controller(120);
+  auto now = steady_clock::time_point {};
+  auto frame = make_bitstream(std::vector<std::uint32_t>(10, 12));
+  for (int i = 0; i < 20; ++i) {
+    auto encoded = frame;
+    // Move the last record first and vary the per-frame sequence bits.
+    std::rotate(encoded.begin() + 8, encoded.end() - 48, encoded.end());
+    encoded[3] = (encoded[3] & 0x8f) | ((i % 8) << 4);
+    for (std::size_t offset = 8; offset < encoded.size(); offset += 48) {
+      encoded[offset + 3] = (encoded[offset + 3] & 0x8f) | ((i % 8) << 4);
+    }
+    if (i & 1) {
+      // Padding must not be counted as picture activity.
+      put_u32(encoded, protocol::PADDING_MAGIC);
+      put_u32(encoded, 2);
+      put_u32(encoded, 0);
+      put_u32(encoded, 0);
+    }
+    const auto result = controller.observe(encoded, now, 100000);
+    if (i > 8) {
+      EXPECT_EQ(result.percentage, 50);
+    }
+    now += microseconds(33333);
+  }
+  // Change only one of ten equal-sized records: still a mostly stable picture.
+  frame[16] ^= 1;
+  EXPECT_EQ(controller.observe(frame, now, 100000).percentage, 50);
+  now += microseconds(33333);
+  for (std::size_t offset = 8; offset < frame.size(); offset += 48) {
+    frame[offset + 8] ^= 2;
+  }
+  EXPECT_EQ(controller.observe(frame, now, 100000).percentage, 0);
+}
+
+TEST(PyroWavePolicy, DetailFecRejectsHitchesDiscontinuitiesAndMalformedFrames) {
+  using namespace std::chrono;
+  detail_fec_controller_t controller(120);
+  const auto frame = make_bitstream(std::vector<std::uint32_t>(10, 12));
+  auto now = steady_clock::time_point {};
+  controller.observe(frame, now, 100000);
+  now += milliseconds(100);
+  EXPECT_EQ(controller.observe(frame, now, 100000).percentage, 0);
+  now += seconds(2);
+  EXPECT_EQ(controller.observe(frame, now, 100000).percentage, 0);
+  for (int i = 0; i < 20; ++i) {
+    now += microseconds(33333);
+    controller.observe(frame, now, 100000);
+  }
+  now += microseconds(33333);
+  EXPECT_GT(controller.observe(frame, now, 100000).percentage, 0);
+  EXPECT_EQ(controller.observe(frame, now, 100000).percentage, 0);
+  now += microseconds(33333);
+  auto truncated = frame;
+  truncated.pop_back();
+  EXPECT_EQ(controller.observe(truncated, now, 100000).percentage, 0);
+  now += microseconds(33333);
+  EXPECT_EQ(controller.observe(frame, now, 100000).percentage, 0);
+}
+
+TEST(PyroWavePolicy, DetailFecHandlesSparseBlocksAndDisappearingDetail) {
+  using namespace std::chrono;
+  detail_fec_controller_t controller(120);
+  auto frame = make_bitstream(std::vector<std::uint32_t>(10, 12));
+  // The sequence's count is the number of nonzero records, not the ID limit.
+  for (std::size_t offset = 8; offset < frame.size(); offset += 48) {
+    frame[offset + 6] = 1;
+  }
+  auto now = steady_clock::time_point {};
+  for (int i = 0; i < 20; ++i) {
+    const auto result = controller.observe(frame, now, 100000);
+    if (i > 8) {
+      EXPECT_EQ(result.percentage, 50);
+    }
+    now += microseconds(33333);
+  }
+  // One record turning to zero should not invalidate the format or all matches.
+  frame.resize(frame.size() - 48);
+  frame[4] = 9;
+  EXPECT_EQ(controller.observe(frame, now, 100000).percentage, 50);
+  now += microseconds(33333);
+  // Most detail disappearing is activity even if all surviving records match.
+  frame.resize(8 + 48);
+  frame[4] = 1;
+  EXPECT_EQ(controller.observe(frame, now, 100000).percentage, 0);
+}
+
 TEST(PyroWavePolicy, RecordFrameNeverStrandsFourBytes) {
   // After the sequence header the first shard has 1360 bytes left. An oversized
   // 2732-byte record would end 4 bytes short of the third shard's end, so a
@@ -453,6 +706,54 @@ TEST(PyroWavePolicy, BudgetHonorsLimits) {
   budget_t small_cap(60, 480000, 1025);
   EXPECT_EQ(small_cap.bytes_per_frame(), 1024u);
   EXPECT_THROW(budget_t(0, 480000, 0), std::invalid_argument);
+}
+
+TEST(PyroWavePolicy, StableFrameBudgetLeavesCadenceSavingsForFec) {
+  using namespace std::chrono;
+  budget_t budget(120, 800000, max_bitstream_bytes(PACKET_SIZE, false, true), true);
+  const auto nominal_bytes = budget.bytes_per_frame();
+  EXPECT_EQ(nominal_bytes, 833332u);
+  auto now = steady_clock::time_point {};
+  budget.on_frame(now);
+  const auto frame = make_bitstream(std::vector<std::uint32_t>(10, 12));
+  detail_fec_controller_t controller(120);
+  controller.observe(frame, now, 800000);
+  detail_fec_t request;
+  for (int i = 0; i < 60; ++i) {
+    now += microseconds(16667);
+    budget.on_frame(now);
+    EXPECT_EQ(budget.bytes_per_frame(), nominal_bytes);
+    request = controller.observe(frame, now, 800000);
+  }
+  EXPECT_EQ(request.percentage, 50);
+  // Model a full-sized image plus a representative 21-shard critical prefix.
+  const auto data = (budget.bytes_per_frame() + protocol::FRAME_HEADER_BYTES + SHARD - 1) / SHARD;
+  constexpr std::size_t wire_bytes = 1500;  // Includes a conservative header allowance.
+  const auto baseline = data + parity_shards(21, 20, 2);
+  const auto allowance = request.frame_wire_budget / wire_bytes;
+  ASSERT_GT(allowance, baseline);
+  const auto plan = plan_fec_blocks(data, 21, 20, 2, request.percentage, allowance - baseline);
+  std::size_t wire_packets = 0;
+  for (const auto &block : plan) {
+    EXPECT_GT(block.fec_percentage, 0);  // All detail now fits protected blocks.
+    wire_packets += block.data_shards + parity_shards(block.data_shards, block.fec_percentage, 2);
+  }
+  EXPECT_LE(wire_packets * wire_bytes, request.frame_wire_budget);
+  // Further FPS loss or a stall does not inflate the encoded image budget.
+  now += microseconds(33333);
+  budget.on_frame(now);
+  EXPECT_EQ(budget.bytes_per_frame(), nominal_bytes);
+  now += seconds(10);
+  budget.on_frame(now);
+  EXPECT_EQ(budget.bytes_per_frame(), nominal_bytes);
+  budget.set_bitrate(400000);
+  EXPECT_EQ(budget.bytes_per_frame(), 416664u);
+  // Faster submissions still get less budget; no overspend above negotiated FPS.
+  now += microseconds(4000);
+  budget.on_frame(now);
+  EXPECT_EQ(budget.bytes_per_frame(), 200000u);
+  budget.on_frame(now);
+  EXPECT_EQ(budget.bytes_per_frame(), 0u);
 }
 
 TEST(PyroWavePolicy, PausesAndDuplicateTimestampsRespectTheTransportBudget) {
