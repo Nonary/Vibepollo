@@ -28,6 +28,7 @@ namespace {
     ls.control_connect_data = 0xABCDu;
     ls.unique_id = "unique-id";
     ls.client_uuid = "client-uuid";
+    ls.secondary_game_client = true;
     ls.device_name = "device-name";
     ls.perm = crypto::PERM::_all;
     ls.fps = 120;
@@ -76,6 +77,7 @@ TEST(RtspStartupSnapshot, CopiesAllConsumedFields) {
   EXPECT_EQ(clone->control_connect_data, source.control_connect_data);
   EXPECT_EQ(clone->unique_id, source.unique_id);
   EXPECT_EQ(clone->client_uuid, source.client_uuid);
+  EXPECT_EQ(clone->secondary_game_client, source.secondary_game_client);
   EXPECT_EQ(clone->device_name, source.device_name);
   EXPECT_EQ(clone->perm, source.perm);
   EXPECT_EQ(clone->fps, source.fps);

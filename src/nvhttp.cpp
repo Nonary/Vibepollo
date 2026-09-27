@@ -5078,7 +5078,6 @@ namespace nvhttp {
     // already counts pending launches, so every mutating decision below degrades to a
     // plain join on its own.
     const bool no_active_sessions = !has_stream_session_activity();
-    const auto request_client_identity = resolve_client_identity_from_request(request);
     const auto active_game = proc::proc.active_session_guard();
     const bool secondary_game_client = remote_session::is_secondary_game_client(
       active_game.client_uuid, request_client_identity.uuid

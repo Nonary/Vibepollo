@@ -2585,7 +2585,8 @@ this option to replace the running app immediately. The default is `true`.
         <td>Description</td>
         <td colspan="2">
             Percentage of error correcting packets per data packet in each video frame.
-            PyroWave always sends without FEC and ignores this setting.
+            PyroWave ignores this setting; its critical packets use
+            `pyrowave_critical_fec_percentage` instead.
             @warning{Higher values can correct for more network packet loss,
             but at the cost of increasing bandwidth usage.}
         </td>
@@ -2785,7 +2786,8 @@ this option to replace the running app immediately. The default is `true`.
             frame never needs a keyframe, but a clean picture needs hundreds of Mbps; use it on wired LANs only.
             It is advertised only when the capture GPU can run the PyroWave Vulkan encoder with Direct3D 11
             interop (Windows). The client's bitrate setting sets the bitrate. PyroWave streams are sent
-            without FEC, whatever `fec_percentage` says.
+            with critical-packet FEC controlled by `pyrowave_critical_fec_percentage`;
+            `fec_percentage` does not apply.
             See [PyroWave protocol](pyrowave-protocol.md).
         </td>
     </tr>
