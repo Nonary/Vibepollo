@@ -20,6 +20,49 @@ def load_workflow(name: str) -> dict:
 
 
 class ReleaseWorkflowSplitTest(unittest.TestCase):
+    def test_self_hosted_runners_are_manual_opt_in(self) -> None:
+        ci_workflow = load_workflow("ci.yml")
+        dispatch_input = ci_workflow["on"]["workflow_dispatch"]["inputs"][
+            "use_self_hosted"
+        ]
+        self.assertEqual(dispatch_input["type"], "boolean")
+        self.assertEqual(dispatch_input["default"], "false")
+
+        expected_forwarding = (
+            "${{ github.event_name == 'workflow_dispatch' && inputs.use_self_hosted }}"
+        )
+        for job_name in ("build-windows", "build-archlinux"):
+            self.assertEqual(
+                ci_workflow["jobs"][job_name]["with"]["use_self_hosted"],
+                expected_forwarding,
+            )
+
+        validation_workflow = load_workflow("validate-windows.yml")
+        validation_input = validation_workflow["on"]["workflow_dispatch"]["inputs"][
+            "use_self_hosted"
+        ]
+        self.assertEqual(validation_input["default"], "false")
+        self.assertEqual(
+            validation_workflow["jobs"]["windows"]["with"]["use_self_hosted"],
+            "${{ inputs.use_self_hosted }}",
+        )
+
+        runner_cases = (
+            ("ci-windows.yml", "build_windows", "windows-2022", "windows-release"),
+            ("ci-archlinux.yml", "build_archlinux", "ubuntu-latest", "linux-release"),
+        )
+        for workflow_name, job_name, hosted_runner, self_hosted_label in runner_cases:
+            workflow = load_workflow(workflow_name)
+            self_hosted_input = workflow["on"]["workflow_call"]["inputs"][
+                "use_self_hosted"
+            ]
+            self.assertEqual(self_hosted_input["type"], "boolean")
+            self.assertEqual(self_hosted_input["default"], "false")
+            runner_expression = workflow["jobs"][job_name]["runs-on"]
+            self.assertIn("inputs.use_self_hosted", runner_expression)
+            self.assertIn(hosted_runner, runner_expression)
+            self.assertIn(self_hosted_label, runner_expression)
+
     def test_package_compilers_have_bounded_parallelism(self) -> None:
         for workflow_name in ('ci-windows.yml', 'ci-archlinux.yml'):
             workflow = load_workflow(workflow_name)

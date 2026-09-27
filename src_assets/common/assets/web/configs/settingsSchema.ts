@@ -837,7 +837,7 @@ export const settingsCategories: SettingsCategory[] = [
             option('2', 'ui.settings.options.codec.eight_bit'),
             option('3', 'ui.settings.options.codec.hdr_ten_bit'),
           ]),
-          boolean('pyrowave', { platform: 'windows' }),
+          boolean('pyrowave', { platform: ['windows', 'linux'] }),
         ],
       },
       {
@@ -849,7 +849,7 @@ export const settingsCategories: SettingsCategory[] = [
           number('qp', { min: 0, max: 51, step: 1 }),
           number('fec_percentage', { min: 0, max: 255, step: 1 }),
           number('video_max_batch_size_kb', { min: 1, step: 1 }),
-          number('pyrowave_critical_fec_percentage', { min: 0, max: 255, step: 1, platform: 'windows' }),
+          number('pyrowave_critical_fec_percentage', { min: 0, max: 255, step: 1, platform: ['windows', 'linux'] }),
         ],
       },
       ...advancedEncoderGroups,

@@ -2784,10 +2784,12 @@ this option to replace the running app immediately. The default is `true`.
             Allows PyroWave-capable clients (such as the Nonary Moonlight fork) to request PyroWave, an
             intra-only GPU wavelet codec. Every frame is coded on its own in well under a millisecond, so a lost
             frame never needs a keyframe, but a clean picture needs hundreds of Mbps; use it on wired LANs only.
-            It is advertised only when the capture GPU can run the PyroWave Vulkan encoder with Direct3D 11
-            interop (Windows). The client's bitrate setting sets the bitrate. PyroWave streams are sent
-            with critical-packet FEC controlled by `pyrowave_critical_fec_percentage`;
-            `fec_percentage` does not apply.
+            It is advertised only when the GPU can run the PyroWave Vulkan encoder. Windows uses Direct3D 11
+            interop; Linux imports explicit-modifier RGB DMA-BUF capture frames (including KMS) and also
+            supports BGRA system-memory capture. Linux preserves scaling, cursor composition, and the
+            negotiated color matrix/range for 8/10-bit and 4:2:0/4:4:4 profiles. CUDA-only NvFBC capture
+            is not supported. The client's bitrate setting sets the bitrate. Critical packets use
+            `pyrowave_critical_fec_percentage`; `fec_percentage` does not apply.
             See [PyroWave protocol](pyrowave-protocol.md).
         </td>
     </tr>

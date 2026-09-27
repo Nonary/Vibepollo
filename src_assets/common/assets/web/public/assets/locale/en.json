@@ -501,7 +501,7 @@
     "av1_mode_3": "Vibepollo will advertise support for AV1 Main 8-bit and 10-bit (HDR) profiles",
     "av1_mode_desc": "Allows the client to request AV1 Main 8-bit or 10-bit video streams. AV1 is more CPU-intensive to encode, so enabling this may reduce performance when using software encoding.",
     "pyrowave": "PyroWave Support",
-    "pyrowave_desc": "Allows PyroWave-capable clients to request PyroWave, an intra-only GPU wavelet codec. Each frame is coded on its own in well under a millisecond and a lost frame never needs a keyframe, but a clean picture needs hundreds of Mbps, so use it on wired LANs only. Critical packets use the PyroWave Critical FEC Percentage setting. It is advertised only when the capture GPU can run the PyroWave Vulkan encoder with Direct3D 11 interop.",
+    "pyrowave_desc": "Allows PyroWave-capable clients to request PyroWave, an intra-only GPU wavelet codec. Each frame is coded on its own in well under a millisecond and a lost frame never needs a keyframe, but a clean picture needs hundreds of Mbps, so use it on wired LANs only. Critical packets use the PyroWave Critical FEC Percentage setting. Requires a compatible Vulkan GPU; Windows uses Direct3D 11 interop, while Linux supports RGB DMA-BUF and BGRA system-memory capture.",
     "app_prefer_10bit_sdr_inherit": "Use device preference",
     "app_prefer_10bit_sdr_desc": "Override the device preference for this application. Enabled keeps HDR requests in SDR with a 10-bit HEVC or AV1 stream; disabled allows normal HDR requests. SDR clients and H.264 remain 8-bit. Explicit HDR request overrides still take priority. Applies on the next launch or resume.",
     "prefer_10bit_sdr": "10-bit SDR instead of HDR",

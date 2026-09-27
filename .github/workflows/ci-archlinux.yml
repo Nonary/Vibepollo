@@ -5,6 +5,10 @@ permissions: {}
 on:
   workflow_call:
     inputs:
+      use_self_hosted:
+        required: false
+        type: boolean
+        default: false
       build_tests:
         required: false
         type: boolean
@@ -33,9 +37,8 @@ jobs:
       COMMIT: ${{ inputs.release_commit }}
     permissions:
       contents: read
-    # Trusted builds use the Linux runner registered to this repository.
-    # Pull requests and forks continue to use disposable GitHub-hosted runners.
-    runs-on: ${{ github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Linux", "X64", "linux-release"]') || fromJSON('["ubuntu-latest"]') }}
+    # The repository's Linux runner is selected only by manual dispatch opt-in.
+    runs-on: ${{ inputs.use_self_hosted && github.repository == 'Nonary/Vibepollo' && github.event_name == 'workflow_dispatch' && fromJSON('["self-hosted", "Linux", "X64", "linux-release"]') || fromJSON('["ubuntu-latest"]') }}
     container:
       image: archlinux/archlinux:base-devel
       options: --cpus 8 --memory 16g

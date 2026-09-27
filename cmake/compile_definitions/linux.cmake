@@ -384,3 +384,35 @@ list(APPEND PLATFORM_LIBRARIES
         pulse-simple)
 
 list(APPEND SUNSHINE_EXTERNAL_LIBRARIES glad)
+
+if(SUNSHINE_ENABLE_PYROWAVE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(LIBDRM REQUIRED)
+    find_program(PYROWAVE_GLSLC glslc)
+    if(PYROWAVE_GLSLC)
+        set(PYROWAVE_SHADER_COMPILER ${PYROWAVE_GLSLC})
+        set(PYROWAVE_SHADER_FLAGS -O)
+    else()
+        find_program(PYROWAVE_GLSLANG glslangValidator REQUIRED)
+        set(PYROWAVE_SHADER_COMPILER ${PYROWAVE_GLSLANG})
+        set(PYROWAVE_SHADER_FLAGS -V)
+    endif()
+    set(PYROWAVE_SHADER_DIR "${CMAKE_BINARY_DIR}/generated-src/shaders")
+    file(MAKE_DIRECTORY "${PYROWAVE_SHADER_DIR}")
+    set(PYROWAVE_SHADER "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/assets/shaders/vulkan/pyrowave.comp")
+    add_custom_command(OUTPUT "${PYROWAVE_SHADER_DIR}/pyrowave.spv.inc"
+        COMMAND ${PYROWAVE_SHADER_COMPILER} ${PYROWAVE_SHADER_FLAGS} "${PYROWAVE_SHADER}" -o "${PYROWAVE_SHADER_DIR}/pyrowave.spv"
+        COMMAND ${CMAKE_COMMAND} -DSPV_FILE=${PYROWAVE_SHADER_DIR}/pyrowave.spv
+            -DOUT_FILE=${PYROWAVE_SHADER_DIR}/pyrowave.spv.inc
+            -P "${CMAKE_SOURCE_DIR}/cmake/scripts/binary_to_c.cmake"
+        DEPENDS "${PYROWAVE_SHADER}" "${CMAKE_SOURCE_DIR}/cmake/scripts/binary_to_c.cmake"
+        VERBATIM)
+    add_library(pyrowave-linux STATIC
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/pyrowave_core.cpp"
+        "${PYROWAVE_SHADER_DIR}/pyrowave.spv.inc")
+    target_compile_features(pyrowave-linux PRIVATE cxx_std_17)
+    target_compile_options(pyrowave-linux PRIVATE -fvisibility=hidden)
+    target_include_directories(pyrowave-linux PRIVATE "${CMAKE_BINARY_DIR}/generated-src" ${LIBDRM_INCLUDE_DIRS})
+    target_link_libraries(pyrowave-linux PRIVATE pyrowave granite-vulkan)
+    list(APPEND PLATFORM_LIBRARIES pyrowave-linux)
+    list(APPEND PLATFORM_TARGET_FILES "${CMAKE_SOURCE_DIR}/src/platform/linux/pyrowave_encode.cpp")
+endif()

@@ -9,6 +9,10 @@ on:
         description: Nonzero package version for this validation build
         required: true
         type: string
+      use_self_hosted:
+        description: Use the local Windows release runner
+        type: boolean
+        default: false
 
 concurrency:
   group: windows-validation-${{ github.ref }}
@@ -21,7 +25,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/ci-windows.yml
     with:
-      use_self_hosted: true
+      use_self_hosted: ${{ inputs.use_self_hosted }}
       build_only: true
       build_tests: false
       release_commit: ${{ github.sha }}
