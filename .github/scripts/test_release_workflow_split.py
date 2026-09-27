@@ -62,6 +62,14 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             self.assertIn("inputs.use_self_hosted", runner_expression)
             self.assertIn(hosted_runner, runner_expression)
             self.assertIn(self_hosted_label, runner_expression)
+            if workflow_name == "ci-archlinux.yml":
+                self.assertEqual(
+                    runner_expression,
+                    "${{ inputs.use_self_hosted && github.repository == 'Nonary/Vibepollo' "
+                    "&& github.event_name == 'workflow_dispatch' && "
+                    "fromJSON('[\"self-hosted\", \"Linux\", \"X64\", \"linux-release\"]') "
+                    "|| fromJSON('[\"ubuntu-latest\"]') }}",
+                )
 
     def test_package_compilers_have_bounded_parallelism(self) -> None:
         for workflow_name in ('ci-windows.yml', 'ci-archlinux.yml'):
