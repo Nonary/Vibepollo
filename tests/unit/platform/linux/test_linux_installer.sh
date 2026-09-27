@@ -140,7 +140,7 @@ prepare_driver_replacement
 for relative in usr/lib/modules-load.d/70-vibeshine-ds5.conf \
   usr/libexec/vibeshine/vibeshine-ds5-install; do
   [[ " ${driver_overwrite[*]} " == *" $relative "* ]]
-  package_backups=("$backup_root"/vibeshine-driver-backup.*/"$relative")
+  package_backups=("$backup_root"/vibepollo-driver-backup.*/"$relative")
   [[ ${#package_backups[@]} == 1 ]]
   cmp "$install_root/$relative" "${package_backups[0]}"
 done
@@ -153,7 +153,7 @@ done
   directory_owner=unowned
   prepare_driver_replacement
   [[ " ${driver_overwrite[*]} " == *" usr/src/vibeshine-ds5-2.0.0/vibeshine_ds5_main.c "* ]]
-  ds5_backups=("$backup_root"/vibeshine-driver-backup.*/vibeshine-ds5-2.0.0/vibeshine_ds5_main.c)
+  ds5_backups=("$backup_root"/vibepollo-driver-backup.*/vibeshine-ds5-2.0.0/vibeshine_ds5_main.c)
   [[ ${#ds5_backups[@]} == 1 ]]
   cmp "$directory/vibeshine_ds5_main.c" "${ds5_backups[0]}"
 )

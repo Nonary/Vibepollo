@@ -39,6 +39,10 @@ namespace nvhttp {
   std::mutex gate;
   std::mutex &stream_lifecycle_mutex() { return gate; }
 }
+namespace platf {
+  enum class frame_limiter_owner { application };
+  void frame_limiter_streaming_stop(frame_limiter_owner) {}
+}
 namespace proc {
   int cleanup_calls = 0;
   struct proc_t {
