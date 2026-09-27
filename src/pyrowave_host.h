@@ -36,7 +36,7 @@ namespace pyrowave::host {
     int bitrate_kbps = 0;  ///< Adjusted encoder bitrate (audio and control overhead removed).
     policy::framing_e framing = policy::framing_e::records;
     int packetsize = 0;  ///< Negotiated RTP packet size, for record alignment.
-    bool critical_fec = false;  ///< stream.cpp adds an FEC block for the critical shards.
+    bool critical_fec = false;  ///< Adds critical FEC; record framing also keeps a stable image budget for adaptive detail FEC.
   };
 
   class encoder_t {

@@ -79,7 +79,8 @@ namespace pyrowave::host {
       encoder_impl_t(const session_params_t &params, std::shared_ptr<platf::display_t> display):
           params {params},
           display {std::move(display)},
-          budget {params.framerate, params.bitrate_kbps, policy::max_bitstream_bytes(params.packetsize, params.framing == policy::framing_e::length_prefixed, params.critical_fec)},
+          budget {params.framerate, params.bitrate_kbps, policy::max_bitstream_bytes(params.packetsize, params.framing == policy::framing_e::length_prefixed, params.critical_fec),
+                  params.critical_fec && params.framing == policy::framing_e::records},
           encode_logger {debug, "PyroWave: encode (GPU wait)", "ms"},
           frame_size_logger {debug, "PyroWave: frame size", "KiB"},
           padding_logger {debug, "PyroWave: record padding", "%"},

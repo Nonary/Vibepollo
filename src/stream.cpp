@@ -2011,6 +2011,7 @@ namespace stream {
     // the frame leaves this process, independent of the average stream bitrate.
     logging::min_max_avg_periodic_logger<double> frame_burst_logger(debug, "Network: frame send burst", "ms");
     logging::min_max_avg_periodic_logger<double> frame_burst_rate_logger(debug, "Network: frame send burst rate (100+ packets)", "Mbps");
+    logging::min_max_avg_periodic_logger<double> detail_fec_coverage_logger(debug, "PyroWave: detail packets protected", "%");
     auto next_burst_detail_log = std::chrono::steady_clock::now();
 
     crypto::aes_t iv(12);
@@ -2124,9 +2125,8 @@ namespace stream {
 
       // PyroWave frames are all intra-coded, so a lost frame costs one frame and never a
       // recovery keyframe, and the client decodes a frame that lost only finer detail.
-      // Only the shards holding the coarsest wavelet level, without which a frame cannot
-      // be decoded, get parity (pyrowave::policy::plan_fec_blocks); FEC on the rest would
-      // add bytes, send time and encode time to every frame.
+      // Critical shards receive baseline parity. Stable pictures at low cadence
+      // may also protect detail, bounded by unused bitrate and FEC block capacity.
       const bool pyrowave_session = session->config.monitor.videoFormat == pyrowave::protocol::BITSTREAM_FORMAT;
       auto fecPercentage = pyrowave_session ? 0 : config::stream.fec_percentage;
 
@@ -2158,7 +2158,28 @@ namespace stream {
                                               std::size_t(std::max(session->config.minRequiredFecPackets, 0));
 
       if (pyrowave_session) {
-        const auto plan = pyrowave::policy::plan_fec_blocks(total_shards, critical_shards, config::stream.pyrowave_critical_fec_percentage, min_parity_shards);
+        auto plan = pyrowave::policy::plan_fec_blocks(total_shards, critical_shards, config::stream.pyrowave_critical_fec_percentage, min_parity_shards);
+        if (packet->pyrowave_detail_fec_percentage > 0 && critical_shards) {
+          std::size_t baseline_packets = total_shards;
+          for (const auto &block : plan) {
+            baseline_packets += pyrowave::policy::parity_shards(block.data_shards, block.fec_percentage, min_parity_shards);
+          }
+          const auto wire_bytes = blocksize + 38 + (session->video.peer.address().is_v6() ? 40 : 20) + 8 +
+                                  (session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
+          const auto packet_budget = packet->pyrowave_frame_wire_budget / wire_bytes;
+          if (packet_budget > baseline_packets) {
+            plan = pyrowave::policy::plan_fec_blocks(total_shards, critical_shards, config::stream.pyrowave_critical_fec_percentage,
+                                                   min_parity_shards, packet->pyrowave_detail_fec_percentage, packet_budget - baseline_packets);
+          }
+        }
+        std::size_t protected_shards = 0;
+        for (const auto &block : plan) {
+          if (block.fec_percentage > 0) {
+            protected_shards += block.data_shards;
+          }
+        }
+        detail_fec_coverage_logger.collect_and_log(total_shards > critical_shards && protected_shards >= critical_shards ?
+                                                   100.0 * (protected_shards - critical_shards) / (total_shards - critical_shards) : 0.0);
 
         std::size_t offset = 0;
         for (const auto &block : plan) {

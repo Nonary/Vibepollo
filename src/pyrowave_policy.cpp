@@ -486,7 +486,7 @@ namespace pyrowave::policy {
     return std::max((data_shards * std::size_t(fec_percentage) + 99) / 100, min_parity_shards);
   }
 
-  std::vector<fec_block_t> plan_fec_blocks(std::size_t total_shards, std::size_t critical_shards, int critical_fec_percentage, std::size_t min_parity_shards) {
+  std::vector<fec_block_t> plan_fec_blocks(std::size_t total_shards, std::size_t critical_shards, int critical_fec_percentage, std::size_t min_parity_shards, int detail_fec_percentage, std::size_t extra_parity_budget) {
     std::vector<fec_block_t> blocks;
     if (total_shards == 0) {
       return blocks;
@@ -511,10 +511,184 @@ namespace pyrowave::policy {
     }
 
     blocks.push_back({critical, critical_fec_percentage});
+    detail_fec_percentage = std::clamp(detail_fec_percentage, 0, MAX_DETAIL_FEC_PERCENTAGE);
+    if (detail_fec_percentage > 0 && extra_parity_budget > 0 && total_shards > critical) {
+      const auto fine = total_shards - critical;
+      // Bound the total extra overhead even when only part of a large frame can
+      // be protected. Never spend credit accumulated across an idle period.
+      auto budget = std::min(extra_parity_budget, parity_shards(fine, detail_fec_percentage, 0));
+      const auto capacity = [&](int percentage) {
+        std::size_t data = MAX_REED_SOLOMON_SHARDS;
+        while (data && data + parity_shards(data, percentage, min_parity_shards) > MAX_REED_SOLOMON_SHARDS) {
+          --data;
+        }
+        return data;
+      };
+
+      // Prefer covering all detail, reducing the rate if needed. Even splitting
+      // avoids leaving the last block with a disproportionately high minimum FEC.
+      for (int percentage = detail_fec_percentage; percentage > 0; --percentage) {
+        const auto cap = capacity(percentage);
+        if (!cap) {
+          continue;
+        }
+        const auto count = (fine + cap - 1) / cap;
+        if (count > MAX_FEC_BLOCKS - 1) {
+          continue;
+        }
+        std::vector<fec_block_t> candidate = blocks;
+        std::size_t parity = 0;
+        for (std::size_t i = 0; i < count; ++i) {
+          const auto data = fine / count + (i < fine % count ? 1 : 0);
+          candidate.push_back({data, percentage});
+          parity += parity_shards(data, percentage, min_parity_shards);
+        }
+        if (parity <= budget) {
+          return candidate;
+        }
+      }
+
+      // Large frames cannot fit entirely in Reed-Solomon blocks. Extend the
+      // critical block first, then protect additional prefixes only when enough
+      // block slots remain to carry every unprotected shard.
+      const auto base_parity = parity_shards(critical, critical_fec_percentage, min_parity_shards);
+      auto leading = critical;
+      const auto leading_cap = std::min(total_shards, capacity(critical_fec_percentage));
+      while (leading < leading_cap && parity_shards(leading + 1, critical_fec_percentage, min_parity_shards) - base_parity <= budget) {
+        ++leading;
+      }
+      blocks.front().data_shards = leading;
+      budget -= parity_shards(leading, critical_fec_percentage, min_parity_shards) - base_parity;
+      auto remaining = total_shards - leading;
+      const auto cap = capacity(detail_fec_percentage);
+      while (remaining && blocks.size() < MAX_FEC_BLOCKS && cap) {
+        auto data = std::min(remaining, cap);
+        while (data && parity_shards(data, detail_fec_percentage, min_parity_shards) > budget) {
+          --data;
+        }
+        const auto slots_after = MAX_FEC_BLOCKS - blocks.size() - 1;
+        if (!data || remaining - data > slots_after * MAX_FEC_BLOCK_SHARDS) {
+          break;
+        }
+        blocks.push_back({data, detail_fec_percentage});
+        budget -= parity_shards(data, detail_fec_percentage, min_parity_shards);
+        remaining -= data;
+      }
+      if (remaining) {
+        split(remaining, MAX_FEC_BLOCKS - blocks.size());
+      }
+      return blocks;
+    }
     if (total_shards > critical) {
       split(total_shards - critical, MAX_FEC_BLOCKS - 1);
     }
     return blocks;
+  }
+
+  detail_fec_controller_t::detail_fec_controller_t(int framerate):
+      nominal_interval {framerate > 0 ? 1.0 / framerate : 0.0} {
+    if (framerate <= 0) {
+      throw std::invalid_argument("PyroWave requires a negotiated frame rate");
+    }
+  }
+
+  detail_fec_t detail_fec_controller_t::observe(std::span<const std::uint8_t> frame, std::chrono::steady_clock::time_point when, int bitrate_kbps) {
+    const auto reset = [&]() -> detail_fec_t {
+      previous_blocks.clear();
+      previous_record_bytes = 0;
+      previous_time.reset();
+      interval = stable_seconds = 0.0;
+      return {};
+    };
+    const auto elapsed = previous_time ? std::chrono::duration<double>(when - *previous_time).count() : 0.0;
+    if (elapsed > 0.0 && elapsed <= nominal_interval * 1.01) {
+      // At negotiated cadence, allow 1% timing noise without an activity scan.
+      // Start a fresh similarity history if cadence subsequently falls.
+      previous_blocks.clear();
+      previous_record_bytes = 0;
+      previous_time = when;
+      interval = elapsed;
+      stable_seconds = 0.0;
+      return {};
+    }
+    if (frame.size() < SEQUENCE_HEADER_BYTES) {
+      return reset();
+    }
+    const auto word0 = read_u32(frame.data());
+    const auto word1 = read_u32(frame.data() + 4);
+    const auto count = word1 & 0xffffff;
+    if (!(word0 & 0x80000000u) || word0 == PADDING_MAGIC || ((word1 >> 24) & 3) != 0 || !count || count > (frame.size() - 8) / 8) {
+      return reset();
+    }
+    // Sequence and nonzero block count can change without changing the format.
+    // Zero coefficient blocks are omitted, so block IDs need not be contiguous.
+    const auto format = (std::uint64_t(word0 & 0x8fffffffu) << 32) | (word1 & 0xff000000u);
+    std::unordered_map<std::uint32_t, std::uint64_t> hashes;
+    hashes.reserve(count);
+    std::size_t unchanged_bytes = 0;
+    std::size_t record_bytes = 0;
+    std::size_t records = 0;
+    for (std::size_t position = 8; position < frame.size();) {
+      if (frame.size() - position < 8) {
+        return reset();
+      }
+      const auto *record = frame.data() + position;
+      const auto header = read_u32(record);
+      const auto index_word = read_u32(record + 4);
+      const bool padding = header == PADDING_MAGIC;
+      const auto bytes = padding ? 8 + std::size_t(index_word) * 4 : std::size_t((header >> 16) & 0xfff) * 4;
+      if (bytes < 8 || bytes > frame.size() - position || (!padding && (header >> 31))) {
+        return reset();
+      }
+      if (!padding) {
+        const auto index = index_word >> 8;
+        // Hash complete records, masking only the three sequence bits. Indexing
+        // by block ID makes padding and the record packer's reordering irrelevant.
+        std::uint64_t hash = 14695981039346656037ull;
+        for (std::size_t i = 0; i < bytes; ++i) {
+          hash ^= i == 3 ? record[i] & 0x8f : record[i];
+          hash *= 1099511628211ull;
+        }
+        if (!hashes.emplace(index, hash).second) {
+          return reset();
+        }
+        const auto previous = previous_blocks.find(index);
+        if (format == previous_format && previous != previous_blocks.end() && hash == previous->second) {
+          unchanged_bytes += bytes;
+        }
+        record_bytes += bytes;
+        ++records;
+      }
+      position += bytes;
+    }
+    if (records != count) {
+      return reset();
+    }
+    const bool similar = double(unchanged_bytes) >= 0.75 * double(std::max(record_bytes, previous_record_bytes));
+    previous_blocks = std::move(hashes);
+    previous_record_bytes = record_bytes;
+    previous_format = format;
+    previous_time = when;
+    if (elapsed <= 0.0 || elapsed > 0.25) {
+      interval = stable_seconds = 0.0;
+      return {};
+    }
+    interval = interval > 0.0 ? interval + (elapsed / (0.25 + elapsed)) * (elapsed - interval) : elapsed;
+    // Require both current and smoothed cadence to be slow. A single hitch must
+    // not enable parity; a return to negotiated FPS turns it off immediately.
+    const auto cadence = std::min(interval, elapsed);
+    stable_seconds = similar && cadence > nominal_interval * 1.01 ? stable_seconds + std::min(elapsed, 0.05) : 0.0;
+    if (stable_seconds < 0.25) {
+      return {};
+    }
+    detail_fec_t result;
+    // Stable encoded frame size frees this fraction of a frame's payload budget
+    // as cadence falls. The sender deducts wire overhead before spending it.
+    result.percentage = int(std::clamp(100.0 * (cadence / nominal_interval - 1.0), 0.0, double(MAX_DETAIL_FEC_PERCENTAGE)));
+    // Full wire cost (including base FEC) is deducted by the sender. This is a
+    // per-frame allowance, not a token bucket; stalls cannot fund a large burst.
+    result.frame_wire_budget = std::size_t(double(std::max(bitrate_kbps, 0)) * 125.0 * std::min(cadence, 0.05));
+    return result;
   }
 
   std::size_t max_frame_bytes(int packetsize, bool critical_fec) {
@@ -559,10 +733,12 @@ namespace pyrowave::policy {
     return std::max<std::size_t>(1, packets);
   }
 
-  budget_t::budget_t(int framerate, int bitrate_kbps, std::size_t max_frame_bytes):
+  budget_t::budget_t(int framerate, int bitrate_kbps, std::size_t max_frame_bytes, bool stable_frame_size):
       bitrate_kbps {bitrate_kbps},
       max_frame_bytes {max_frame_bytes},
-      frame_interval {framerate > 0 ? 1.0 / framerate : 0.0} {
+      nominal_interval {framerate > 0 ? 1.0 / framerate : 0.0},
+      stable_frame_size {stable_frame_size},
+      frame_interval {nominal_interval} {
     if (framerate <= 0) {
       throw std::invalid_argument("PyroWave requires a negotiated frame rate");
     }
@@ -587,7 +763,8 @@ namespace pyrowave::policy {
   }
 
   void budget_t::update() {
-    double bytes = std::max(0.0, double(bitrate_kbps) * 1000.0 * frame_interval / 8.0);
+    const auto budget_interval = stable_frame_size ? std::min(frame_interval, nominal_interval) : frame_interval;
+    double bytes = std::max(0.0, double(bitrate_kbps) * 1000.0 * budget_interval / 8.0);
     if (max_frame_bytes) {
       bytes = std::min(bytes, double(max_frame_bytes));
     }
