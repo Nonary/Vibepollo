@@ -1,5 +1,6 @@
 /** Linux GPU integration test: real conversion, encoding, packetization and decoding. */
 #include "src/platform/linux/pyrowave_core.h"
+#include "src/platform/linux/pyrowave_capture.h"
 
 #include <cmath>
 #include <cstring>
@@ -8,6 +9,7 @@
 #include <iostream>
 #include <linux/dma-buf.h>
 #include <stdexcept>
+#include <string_view>
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <vulkan/vulkan.h>
@@ -19,6 +21,35 @@ static void require(bool ok, const char *message) {
   if (!ok) {
     throw std::runtime_error(message);
   }
+}
+
+static void test_capture_source() {
+  std::vector<std::uint8_t> pixels(272 * 128);
+  egl::img_descriptor_t image;
+  image.width = 64;
+  image.height = 128;
+  image.pixel_pitch = 4;
+  image.row_pitch = 272;
+  image.data = pixels.data();
+  image.sequence = 1;
+  image.pw_flags = 0;
+
+  auto ram = pyrowave::linux_gpu::prepare_capture_source(image, 128, 128);
+  require(ram.has_value(), "PipeWire descriptor-backed RAM frame was skipped");
+  require(ram->source.pixels == pixels.data() && !ram->source.surface && ram->source.stride == 272,
+          "PipeWire RAM pixels were not selected");
+
+  image.pw_flags.reset();
+  require(!pyrowave::linux_gpu::prepare_capture_source(image, 128, 128),
+          "KMS cursor pixels were mistaken for a RAM frame");
+
+  image.sd.fds[0] = open("/dev/null", O_RDONLY | O_CLOEXEC);
+  require(image.sd.fds[0] >= 0, "opening capture-source test descriptor failed");
+  image.capture_render_device = "/dev/dri/renderD128";
+  auto dma = pyrowave::linux_gpu::prepare_capture_source(image, 128, 128);
+  require(dma.has_value() && dma->source.surface == &image.sd && dma->source.width == 128,
+          "DMA-BUF source was not selected");
+  require(dma->render_device == image.capture_render_device, "capture render device was dropped");
 }
 
 static std::array<float, 3> sdr_to_pq(std::array<float, 3> rgb) {
@@ -102,6 +133,11 @@ struct dma_source_t {
 
 int main(int argc, char **argv) {
   try {
+    test_capture_source();
+    if (argc == 2 && std::string_view(argv[1]) == "--source-only") {
+      std::cout << "Linux capture-source selection passed\n";
+      return 0;
+    }
     // Direct libvulkan entry points must remain functions, not resolve to
     // the statically linked codec's Volk function-pointer variables.
     VkInstanceCreateInfo native_info {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};

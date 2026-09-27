@@ -2,6 +2,7 @@
  * @brief Linux capture adapter for the Vulkan PyroWave encoder.
  */
 #include "graphics.h"
+#include "pyrowave_capture.h"
 #include "pyrowave_core.h"
 #include "src/platform/common.h"
 #include "src/pyrowave_host.h"
@@ -47,45 +48,19 @@ namespace pyrowave::host {
         if (budget.bytes_per_frame() < 16) {
           return 1;
         }
-        linux_gpu::source_t source;
-        std::string capture_device;
-        if (auto *img = dynamic_cast<egl::img_descriptor_t *>(&image)) {
-          if (!img->sequence || img->sd.fds[0] < 0) {
-            return 1;
-          }
-          source.surface = &img->sd;
-          source.width = display->width;
-          source.height = display->height;
-          source.offset_x = img->capture_offset_x;
-          source.offset_y = img->capture_offset_y;
-          source.y_invert = img->y_invert;
-          source.cursor = img->data;
-          source.cursor_width = img->src_w;
-          source.cursor_height = img->src_h;
-          source.cursor_x = img->x;
-          source.cursor_y = img->y;
-          source.cursor_dst_width = img->width;
-          source.cursor_dst_height = img->height;
-          source.lut = img->crtc_gamma_lut.get();
-          capture_device = img->capture_render_device;
-        } else {
-          if (!image.data) {
-            return 1;
-          }
-          if (image.pixel_pitch != 4) {
+        auto prepared = linux_gpu::prepare_capture_source(image, display->width, display->height);
+        if (!prepared) {
+          if (image.data && image.pixel_pitch != 4) {
             BOOST_LOG(error) << "PyroWave: unsupported RAM capture format";
             return -1;
           }
-          source.pixels = image.data;
-          source.width = image.width;
-          source.height = image.height;
-          source.stride = image.row_pitch;
+          return 1;
         }
         std::string detail;
         if (!core) {
           auto config = core_config(params);
-          if (!capture_device.empty()) {
-            config.render_device = capture_device;
+          if (!prepared->render_device.empty()) {
+            config.render_device = prepared->render_device;
           }
           core = linux_gpu::core_t::create(config, detail);
           if (!core) {
@@ -96,7 +71,7 @@ namespace pyrowave::host {
         }
         bool records = params.framing == policy::framing_e::records;
         auto boundary = records ? std::size_t(UINT32_MAX) : protocol::LENGTH_PREFIXED_PACKET_BOUNDARY;
-        if (!core->encode(source, budget.bytes_per_frame(), boundary, scratch, packets, detail)) {
+        if (!core->encode(prepared->source, budget.bytes_per_frame(), boundary, scratch, packets, detail)) {
           BOOST_LOG(error) << "PyroWave: " << detail;
           return -1;
         }
