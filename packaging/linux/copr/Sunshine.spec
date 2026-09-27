@@ -319,9 +319,9 @@ export BRANCH=%{branch}
 export BUILD_VERSION=%{build_semver}
 export COMMIT=%{commit}
 
-# Disable Vulkan on openSUSE Leap (shaderc/glslang not in official repos)
+# Disable Vulkan encoders on openSUSE Leap (shaderc/glslang not in official repos)
 %if 0%{?sle_version}
-cmake_args+=("-DSUNSHINE_ENABLE_VULKAN=OFF")
+cmake_args+=("-DSUNSHINE_ENABLE_VULKAN=OFF" "-DSUNSHINE_ENABLE_PYROWAVE=OFF")
 %endif
 
 # cmake
