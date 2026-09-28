@@ -251,6 +251,7 @@ namespace config {
     int max_bitrate;  // Maximum bitrate, sets ceiling in kbps for bitrate requested from client
     double minimum_fps_target;  ///< Lowest framerate that will be used when streaming. Range 0-1000, 0 = half of client's requested framerate.
     bool wgc_pacing_smoothing;  ///< Smooth WGC delivered frame cadence under low-latency (Reflex) source caps by snapping the pacing-group re-anchor back onto the prior grid instead of the jittery arrival phase. Disable for byte-for-byte legacy pacing.
+    bool wgc_direct_encoder_input;  ///< GPU encoders read the WGC helper's shared frame directly instead of a host-side snapshot copy made on the capture device.
     std::string fallback_mode;
     bool ignore_encoder_probe_failure;
   };

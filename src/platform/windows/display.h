@@ -40,6 +40,7 @@ namespace platf::dxgi {
   }
 
   extern const char *format_str[];
+  struct img_d3d_t;
 
   // Add D3D11_CREATE_DEVICE_DEBUG here to enable the D3D11 debug runtime.
   // You should have a debugger like WinDbg attached to receive debug messages.
@@ -537,9 +538,23 @@ namespace platf::dxgi {
     capture_e release_snapshot() override;
 
   private:
+    /**
+     * @brief Hand the helper's shared frame to the encoder without a host-side copy.
+     * @details The pool image aliases the shared texture; the encoder device opens it
+     *          and orders its reads with the texture's keyed mutex.
+     */
+    capture_e snapshot_direct(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out);
+
+    /**
+     * @brief Point a pool image at the helper's shared texture.
+     * @return 0 on success, -1 on failure.
+     */
+    int alias_shared_frame(img_d3d_t &img);
+
     std::unique_ptr<class ipc_session_t> _ipc_session;
     ::video::config_t _config;
     std::string _display_name;
+    bool _direct_encoder_input = false;  ///< Latched from config at init so one pool never mixes modes.
     bool _session_initialized_logged = false;
     bool _frame_locked = false;
     std::shared_ptr<platf::img_t> _last_cached_frame;

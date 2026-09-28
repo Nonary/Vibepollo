@@ -181,6 +181,7 @@ namespace platf::dxgi {
       }
 
       _shared_texture = nullptr;
+      _shared_texture_handle.close();
       _keyed_mutex = nullptr;
       _frame_ready_event.close();
       _frame_metadata_mapping.close();
@@ -251,6 +252,7 @@ namespace platf::dxgi {
     _frame_ready_event.close();
     _frame_metadata_mapping.close();
     _shared_texture = nullptr;
+    _shared_texture_handle.close();
     _keyed_mutex = nullptr;
     _last_frame_id = 0;
     _frame_qpc = 0;
@@ -460,6 +462,7 @@ namespace platf::dxgi {
         _frame_metadata = nullptr;
       }
       _shared_texture = nullptr;
+      _shared_texture_handle.close();
       _keyed_mutex = nullptr;
       _frame_ready_event.close();
       _frame_metadata_mapping.close();
@@ -702,6 +705,31 @@ namespace platf::dxgi {
     return capture_e::ok;
   }
 
+  capture_e ipc_session_t::claim_latest_frame(uint64_t &frame_qpc_out) {
+    if (!_shared_texture || !_frame_metadata) {
+      _force_reinit = true;
+      _initialized = false;
+      return capture_e::reinit;
+    }
+
+    // The helper publishes metadata with a sequence lock, so a consistent
+    // snapshot can be read without the keyed mutex.
+    frame_metadata_snapshot_t snapshot;
+    if (!read_frame_metadata_snapshot(_frame_metadata, snapshot) || snapshot.frame_id <= _last_frame_id) {
+      return capture_e::timeout;
+    }
+
+    _last_frame_id = snapshot.frame_id;
+    _frame_qpc = static_cast<uint64_t>(snapshot.frame_qpc);
+    // Any pending wakeup refers to a frame at or before the one just claimed.
+    while (WaitForSingleObject(_frame_ready_event.get(), 0) == WAIT_OBJECT_0) {
+    }
+    _frames_acquired.fetch_add(1, std::memory_order_relaxed);
+
+    frame_qpc_out = _frame_qpc;
+    return capture_e::ok;
+  }
+
   void ipc_session_t::release() {
     if (_keyed_mutex) {
       const HRESULT hr = _keyed_mutex->ReleaseSync(0);
@@ -811,11 +839,13 @@ namespace platf::dxgi {
     if (!_keyed_mutex) {
       BOOST_LOG(error) << "Failed to get keyed mutex interface from shared texture";
       _shared_texture = nullptr;
+      _shared_texture_handle.close();
       return false;
     }
 
     _frame_ready_event = std::move(duplicated_event_handle);
     _frame_metadata_mapping = std::move(duplicated_metadata_handle);
+    _shared_texture_handle = std::move(duplicated_texture_handle);
     _frame_metadata = metadata;
     frame_metadata_snapshot_t snapshot;
     _last_frame_id = read_frame_metadata_snapshot(_frame_metadata, snapshot) ? snapshot.frame_id : 0;

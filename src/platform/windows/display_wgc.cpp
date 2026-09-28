@@ -232,6 +232,8 @@ namespace platf::dxgi {
     capture_format = DXGI_FORMAT_UNKNOWN;  // Start with unknown format (prevents race condition/crash on first frame)
     _present_stamper = std::make_shared<present_timing::capture_stamper_t>(captured_output_desc.DeviceName);
     present_timing::set_active_stamper(_present_stamper);
+    _direct_encoder_input = config::video.wgc_direct_encoder_input;
+    BOOST_LOG(info) << "WGC encoder input: "sv << (_direct_encoder_input ? "direct from the helper's shared frame"sv : "host snapshot copy"sv);
 
     const bool advanced_color_capture = is_hdr();
 
@@ -317,6 +319,10 @@ namespace platf::dxgi {
       return capture_e::reinit;
     }
 
+    if (_direct_encoder_input) {
+      return snapshot_direct(pull_free_image_cb, img_out);
+    }
+
     // Pull a free image from the pool before touching the shared IPC keyed
     // mutex. The encoder image pool can block under pressure; holding the
     // shared mutex during that wait stalls the WGC helper producer.
@@ -326,6 +332,10 @@ namespace platf::dxgi {
     }
 
     auto d3d_img = std::static_pointer_cast<img_d3d_t>(img);
+    if (d3d_img->capture_texture && d3d_img->capture_texture.get() == _ipc_session->shared_texture().get()) {
+      // Never snapshot into an image that aliases the shared frame itself.
+      d3d_img->capture_texture.reset();
+    }
     if (complete_img(d3d_img.get(), false)) {
       return capture_e::error;
     }
@@ -410,6 +420,75 @@ namespace platf::dxgi {
     img_out = img;
     _last_cached_frame = img;
 
+    return capture_e::ok;
+  }
+
+  int display_wgc_ipc_vram_t::alias_shared_frame(img_d3d_t &img) {
+    const auto shared = _ipc_session->shared_texture();
+    const HANDLE shared_handle = _ipc_session->shared_texture_handle();
+    if (!shared || !shared_handle) {
+      return -1;
+    }
+
+    if (img.capture_texture.get() == shared.get() && img.encoder_texture_handle && !img.dummy) {
+      img.blank = false;
+      return 0;
+    }
+
+    // Each image owns its handle; the encoder opens it once per image context.
+    HANDLE image_handle = nullptr;
+    if (!DuplicateHandle(GetCurrentProcess(), shared_handle, GetCurrentProcess(), &image_handle, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+      BOOST_LOG(error) << "Failed to duplicate the WGC shared frame handle: "sv << GetLastError();
+      return -1;
+    }
+
+    img.capture_rt.reset();
+    img.capture_mutex.reset();
+    if (img.encoder_texture_handle) {
+      CloseHandle(img.encoder_texture_handle);
+    }
+    img.encoder_texture_handle = image_handle;
+    shared->AddRef();
+    img.capture_texture.reset(shared.get());
+    img.dummy = false;
+    img.blank = false;
+    img.format = capture_format;
+    img.pixel_pitch = get_pixel_pitch();
+    img.row_pitch = img.pixel_pitch * img.width;
+    img.data = (std::uint8_t *) img.capture_texture.get();
+    return 0;
+  }
+
+  capture_e display_wgc_ipc_vram_t::snapshot_direct(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out) {
+    std::shared_ptr<platf::img_t> img;
+    if (!pull_free_image_cb(img)) {
+      return capture_e::interrupted;
+    }
+
+    auto d3d_img = std::static_pointer_cast<img_d3d_t>(img);
+    if (alias_shared_frame(*d3d_img)) {
+      return capture_e::error;
+    }
+
+    // No keyed mutex and no GPU work here: the encoder acquires the shared
+    // frame's keyed mutex on its own device, which orders its conversion after
+    // the helper's copy. That removes a full-frame copy on the capture device
+    // and the capture-to-encoder device hand-off from every frame.
+    uint64_t frame_qpc = 0;
+    const auto claim_status = _ipc_session->claim_latest_frame(frame_qpc);
+    if (claim_status != capture_e::ok) {
+      return claim_status;
+    }
+
+    const auto host_processing_timestamp = std::chrono::steady_clock::now();
+    const auto host_processing_qpc = qpc_counter();
+    // The composition time; the send path refines it for RTP once the game's
+    // present events have been delivered.
+    img->frame_timestamp = host_processing_timestamp - qpc_time_difference(host_processing_qpc, static_cast<std::int64_t>(frame_qpc));
+    img->host_processing_timestamp = host_processing_timestamp;
+    img->capture_pacing_timestamp = host_processing_timestamp;
+    img_out = img;
+    _last_cached_frame = img;
     return capture_e::ok;
   }
 
