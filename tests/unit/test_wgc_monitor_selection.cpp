@@ -122,3 +122,12 @@ TEST(WgcInputGeometry, UnavailableMetricsDoNotForceCaptureReinitialization) {
   }
   EXPECT_EQ(assess_input_geometry(captured, 1920, 0, {0, 0, 4480, 1600}), input_geometry_change_e::unchanged);
 }
+
+TEST(WgcHelperPublication, DirectPublishOnlyWhenNothingOlderIsInFlight) {
+  using platf::dxgi::wgc_policy::may_publish_directly;
+  EXPECT_TRUE(may_publish_directly(false, false, false));
+  // A queued or mid-delivery scratch frame is older and must be published first.
+  EXPECT_FALSE(may_publish_directly(false, true, false));
+  EXPECT_FALSE(may_publish_directly(false, false, true));
+  EXPECT_FALSE(may_publish_directly(true, false, false));
+}
