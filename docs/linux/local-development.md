@@ -63,6 +63,12 @@ options do not permit changing privileged installation or signing paths.
 
 ## Build settings
 
+Normal builds explicitly set the C and C++ `RelWithDebInfo` flags to
+`-O2 -g -DNDEBUG`, and apply the same flags to CUDA when enabled. This repairs
+empty or unoptimized configuration flags left in an existing CMake cache;
+selecting `RelWithDebInfo` alone does not reset them. `--skip-build` uses the
+existing artifacts and does not repair or rebuild them.
+
 `--version` overrides the `BUILD_VERSION` environment variable, then the existing
 `build/CMakeCache.txt` version, then an exact Git tag on a clean HEAD checkout
 (an optional `v` prefix is removed from tags). An untagged or modified fresh checkout needs an explicit

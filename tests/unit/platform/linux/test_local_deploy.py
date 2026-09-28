@@ -225,6 +225,30 @@ class SharedBuildTests(unittest.TestCase):
             command = deploy.configure_command(self.args(cuda='off'), ROOT / 'build', {'SUNSHINE_ENABLE_CUDA': 'ON'})
             self.assertIn('-DSUNSHINE_ENABLE_CUDA=OFF', command)
 
+    def test_release_build_overrides_unoptimized_cached_flags(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'bin').mkdir()
+            (root / 'bin/nvcc').write_bytes(b'fixture')
+            for cuda in ('on', 'off'):
+                for old_flags in (None, '', '-O0 -g'):
+                    with self.subTest(cuda=cuda, old_flags=old_flags):
+                        cache = {} if old_flags is None else {
+                            f'CMAKE_{language}_FLAGS_RELWITHDEBINFO': old_flags
+                            for language in ('C', 'CXX', 'CUDA')}
+                        with mock.patch.dict(os.environ, {}, clear=True):
+                            command = deploy.configure_command(
+                                self.args(cuda=cuda, cuda_root=temporary), root / 'build', cache)
+                        # Apply the actual CMake cache overrides to the old settings.
+                        configured = dict(cache)
+                        for argument in command:
+                            if argument.startswith('-D'):
+                                key, value = argument[2:].split('=', 1)
+                                configured[key.split(':', 1)[0]] = value
+                        for language in ('C', 'CXX') + (('CUDA',) if cuda == 'on' else ()):
+                            self.assertEqual(configured.get(f'CMAKE_{language}_FLAGS_RELWITHDEBINFO'),
+                                             '-O2 -g -DNDEBUG')
+
     def test_stage_only_platform_check_does_not_need_systemd(self):
         with mock.patch.object(deploy.sys, 'platform', 'linux'), \
                 mock.patch.object(deploy.sys, 'version_info', (3, 11)), \
