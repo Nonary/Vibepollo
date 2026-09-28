@@ -11,6 +11,21 @@ import {
   serializeCommandRows,
 } from '../utils/v2Parity.ts';
 
+test('AMD speed default agrees across backend, settings UI and legacy fallbacks', () => {
+  for (const path of [
+    '../configs/settingsSchema.ts',
+    '../config.html',
+    '../../web-legacy/config.html',
+    '../../web-legacy/stores/config.ts',
+  ]) {
+    assert.match(readFileSync(new URL(path, import.meta.url), 'utf8'), /amd_quality:\s*'speed'/);
+  }
+  const backend = readFileSync(new URL('../../../../../src/config.cpp', import.meta.url), 'utf8');
+  for (const codec of ['h264', 'hevc', 'av1']) {
+    assert.ok(backend.includes(`amd::quality_${codec}_e::speed,  // quality (${codec})`));
+  }
+});
+
 test('global command rows preserve order, verbatim text, and Windows elevation', () => {
   const source = [
     { do: '  set-mode "A"  ', undo: 'restore A', elevated: true, custom: 'keep' },

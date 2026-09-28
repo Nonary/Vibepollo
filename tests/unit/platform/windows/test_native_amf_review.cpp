@@ -4,6 +4,8 @@
  */
 
 #include "src/amf/amf_lifecycle.h"
+#include "src/amf/amf_config_policy.h"
+#include "src/platform/windows/capture_gpu_policy.h"
 
 #include <array>
 #include <atomic>
@@ -21,6 +23,136 @@
 using namespace std::chrono_literals;
 
 namespace {
+
+  struct ready_output_session_t {
+    struct frame_t {
+      int index;
+      bool fatal = false;
+    };
+    struct result_t {
+      std::vector<frame_t> frames;
+      bool fatal = false;
+    } queued;
+    int drains = 0;
+    std::chrono::milliseconds timeout {99};
+
+    bool has_completed_output() const {
+      return !queued.frames.empty();
+    }
+    result_t drain_frames(std::chrono::milliseconds wait) {
+      ++drains;
+      timeout = wait;
+      return std::exchange(queued, {});
+    }
+  };
+
+  bool capture_wait_completion_is_delivered_before_conversion() {
+    ready_output_session_t session;
+    std::vector<int> events;
+    auto deliver = [&](auto &frames) {
+      for (auto &frame : frames) events.push_back(frame.index);
+    };
+    if (!amf::lifecycle::deliver_ready_output(&session, deliver) || session.drains != 0) return false;
+    // Output arrives during capture's wait; a catch-up batch must retain order.
+    session.queued.frames = {{41}, {42}};
+    if (!amf::lifecycle::deliver_ready_output(&session, deliver)) return false;
+    events.push_back(43);  // Convert the newly captured image only after delivery.
+    if (!amf::lifecycle::deliver_ready_output(&session, deliver)) return false;
+    return events == std::vector<int> {41, 42, 43} && session.drains == 1 && session.timeout == 0ms;
+  }
+
+  bool ready_output_drain_is_optional_and_propagates_failures() {
+    bool delivered = false;
+    auto deliver = [&](auto &) { delivered = true; };
+    if (!amf::lifecycle::deliver_ready_output<ready_output_session_t>(nullptr, deliver)) return false;
+    for (bool batch_fatal : {false, true}) {
+      ready_output_session_t session;
+      session.queued = {{{41, !batch_fatal}}, batch_fatal};
+      if (amf::lifecycle::deliver_ready_output(&session, deliver) || delivered ||
+          session.drains != 1 || session.timeout != 0ms) return false;
+    }
+    return !delivered;
+  }
+
+  bool av1_tiles_auto_preserves_client_and_preset_behavior() {
+    using amf::config_policy::av1_tiles_request;
+    return !av1_tiles_request(0, 0) && !av1_tiles_request(0, 1) &&
+           av1_tiles_request(0, 2) == 2 && av1_tiles_request(0, 8) == 8;
+  }
+
+  bool av1_tiles_override_includes_explicit_single_tile() {
+    using amf::config_policy::av1_tiles_request;
+    return av1_tiles_request(1, 4) == 1 && av1_tiles_request(2, 1) == 2 &&
+           av1_tiles_request(4, 1) == 4;
+  }
+
+  bool av1_tiles_rejects_invalid_host_overrides() {
+    using namespace amf::config_policy;
+    return valid_av1_tiles_override(0) && valid_av1_tiles_override(1) &&
+           valid_av1_tiles_override(2) && valid_av1_tiles_override(4) &&
+           !valid_av1_tiles_override(-1) && !valid_av1_tiles_override(3) &&
+           !valid_av1_tiles_override(8) && !av1_tiles_request(3, 1) &&
+           av1_tiles_request(-1, 8) == 8;
+  }
+
+  bool fresh_cursor_capture_releases_output_before_caching_desktop() {
+    std::vector<int> commands;
+    int desktop = 42;
+    int cached_desktop = 17;
+    int output = 0;
+    const bool result = platf::dxgi::capture_policy::submit_cursor_frame(
+      true,
+      [&](bool fresh) {
+        commands.push_back(1);
+        output = fresh ? desktop : cached_desktop;
+      },
+      [&]() {
+        commands.push_back(2);
+        output += 100;
+      },
+      [&]() {
+        commands.push_back(3);
+        return output == 142 && cached_desktop == 17;
+      },
+      [&]() {
+        commands.push_back(4);
+        cached_desktop = desktop;
+      });
+    return result && commands == std::vector<int> {1, 2, 3, 4} &&
+           output == 142 && cached_desktop == 42;
+  }
+
+  bool mouse_only_capture_uses_unmodified_cached_desktop() {
+    int cached_desktop = 42;
+    int output = 0;
+    int cache_copies = 0;
+    int releases = 0;
+    for (int cursor : {100, 200}) {
+      if (!platf::dxgi::capture_policy::submit_cursor_frame(
+            false,
+            [&](bool fresh) { output = fresh ? -1 : cached_desktop; },
+            [&]() { output += cursor; },
+            [&]() {
+              ++releases;
+              return true;
+            },
+            [&]() {
+              ++cache_copies;
+              cached_desktop = output;
+            }) ||
+          output != 42 + cursor) {
+        return false;
+      }
+    }
+    return cached_desktop == 42 && cache_copies == 0 && releases == 2;
+  }
+
+  bool failed_capture_handoff_is_not_reported_as_a_valid_frame() {
+    bool cache_copied = false;
+    const bool result = platf::dxgi::capture_policy::submit_cursor_frame(
+      true, [](bool) {}, []() {}, []() { return false; }, [&]() { cache_copied = true; });
+    return !result && !cache_copied;
+  }
 
   enum class fake_amf_result_e {
     ok,
@@ -338,7 +470,47 @@ namespace {
     return amf::lifecycle::should_disarm_output_poll(queried_through, 10, false, 0) &&
            !amf::lifecycle::should_disarm_output_poll(queried_through, 10, false, 1) &&
            !amf::lifecycle::should_disarm_output_poll(queried_through, 11, false, 0) &&
-           !amf::lifecycle::should_disarm_output_poll(queried_through, 10, true, 0);
+           !amf::lifecycle::should_disarm_output_poll(queried_through, 10, true, 0) &&
+           !amf::lifecycle::output_poll_requires_fixed_backoff(1, true, true) &&
+           !amf::lifecycle::output_poll_requires_fixed_backoff(1, true, false) &&
+           amf::lifecycle::output_poll_requires_fixed_backoff(0, true, true) &&
+           amf::lifecycle::output_poll_requires_fixed_backoff(0, false, false) &&
+           !amf::lifecycle::output_poll_requires_fixed_backoff(0, false, true);
+  }
+
+  bool strict_application_depth_preserves_driver_headroom() {
+    using amf::lifecycle::low_latency_submit_capacity_available;
+
+    // Cold start may prime four retained native surfaces, independent of the
+    // driver's larger configured input-queue capacity.
+    const bool cold_start = low_latency_submit_capacity_available(0, 0, 0, 4, std::nullopt) &&
+                            low_latency_submit_capacity_available(1, 0, 0, 4, std::nullopt) &&
+                            low_latency_submit_capacity_available(3, 0, 0, 4, std::nullopt) &&
+                            !low_latency_submit_capacity_available(4, 0, 0, 4, std::nullopt);
+
+    // A normal no-PA encoder learns that it retains no output after completion,
+    // making the application depth one. PA preserves exactly its lookahead.
+    const auto direct_depth = amf::lifecycle::refine_low_latency_pipeline_depth(
+      std::nullopt, 1, 1, 0);
+    const auto pa_depth = amf::lifecycle::refine_low_latency_pipeline_depth(
+      std::nullopt, 2, 1, 1);
+    const bool steady_state = low_latency_submit_capacity_available(4, 4, 0, 4, direct_depth) &&
+                              !low_latency_submit_capacity_available(5, 4, 0, 4, direct_depth) &&
+                              low_latency_submit_capacity_available(5, 4, 1, 6, pa_depth) &&
+                              !low_latency_submit_capacity_available(6, 4, 1, 6, pa_depth);
+
+    // If a driver needs four inputs before its first output, retain that observed
+    // three-frame baseline so the gate cannot deadlock. Later catch-up can only
+    // reduce the learned depth; it can never let latency drift upward.
+    const auto retained_depth = amf::lifecycle::refine_low_latency_pipeline_depth(
+      std::nullopt, 4, 1, 0);
+    const auto caught_up_depth = amf::lifecycle::refine_low_latency_pipeline_depth(
+      retained_depth, 4, 3, 0);
+    const bool retained_driver = retained_depth == 3 &&
+                                 low_latency_submit_capacity_available(4, 1, 0, 4, retained_depth) &&
+                                 !low_latency_submit_capacity_available(5, 1, 0, 4, retained_depth) &&
+                                 caught_up_depth == 1;
+    return cold_start && steady_state && retained_driver;
   }
 
   bool asynchronous_pipeline_catches_up_to_current_output() {
@@ -346,11 +518,11 @@ namespace {
     using amf::lifecycle::driver_wait_budget;
     using amf::lifecycle::output_coalesce_target_reached;
 
-    return output_coalesce_budget(30) == std::chrono::milliseconds(32) &&
-           output_coalesce_budget(60) == std::chrono::milliseconds(16) &&
-           output_coalesce_budget(120) == std::chrono::milliseconds(8) &&
-           output_coalesce_budget(240) == std::chrono::milliseconds(4) &&
-           output_coalesce_budget(1000) == std::chrono::milliseconds(1) &&
+    return output_coalesce_budget(30) == std::chrono::milliseconds(50) &&
+           output_coalesce_budget(60) == std::chrono::milliseconds(33) &&
+           output_coalesce_budget(120) == std::chrono::milliseconds(17) &&
+           output_coalesce_budget(240) == std::chrono::milliseconds(9) &&
+           output_coalesce_budget(1000) == std::chrono::milliseconds(2) &&
            driver_wait_budget(30) == std::chrono::milliseconds(20) &&
            driver_wait_budget(60) == std::chrono::milliseconds(16) &&
            driver_wait_budget(120) == std::chrono::milliseconds(8) &&
@@ -544,7 +716,15 @@ namespace {
 #ifdef SUNSHINE_AMF_LIFECYCLE_STANDALONE
 
 int main() {
-  return synchronous_release_during_submit_is_reentrant_safe() &&
+  return capture_wait_completion_is_delivered_before_conversion() &&
+             ready_output_drain_is_optional_and_propagates_failures() &&
+             av1_tiles_auto_preserves_client_and_preset_behavior() &&
+             av1_tiles_override_includes_explicit_single_tile() &&
+             av1_tiles_rejects_invalid_host_overrides() &&
+             fresh_cursor_capture_releases_output_before_caching_desktop() &&
+             mouse_only_capture_uses_unmodified_cached_desktop() &&
+             failed_capture_handoff_is_not_reported_as_a_valid_frame() &&
+             synchronous_release_during_submit_is_reentrant_safe() &&
              backpressure_retries_the_same_submission_until_accepted() &&
              exhausted_backpressure_reinitializes_without_owned_surfaces() &&
              recovery_state_changes_only_after_accepted_input() &&
@@ -559,6 +739,7 @@ int main() {
              driver_submit_capacity_bounds_are_inclusive() &&
              saturation_wait_requires_an_actual_surface_release() &&
              output_poll_rearm_survives_concurrent_submission() &&
+             strict_application_depth_preserves_driver_headroom() &&
              asynchronous_pipeline_catches_up_to_current_output() &&
              preanalysis_target_tracks_accepted_indices_with_gaps() &&
              teardown_timeout_returns_control_before_a_wedged_destructor() &&
@@ -574,6 +755,38 @@ int main() {
 }
 
 #else
+
+TEST(SunshineNativeAmfReview, CaptureWaitCompletionIsDeliveredBeforeConversion) {
+  EXPECT_TRUE(capture_wait_completion_is_delivered_before_conversion());
+}
+
+TEST(SunshineNativeAmfReview, ReadyOutputDrainIsOptionalAndPropagatesFailures) {
+  EXPECT_TRUE(ready_output_drain_is_optional_and_propagates_failures());
+}
+
+TEST(SunshineNativeAmfReview, Av1TilesAutoPreservesClientAndPresetBehavior) {
+  EXPECT_TRUE(av1_tiles_auto_preserves_client_and_preset_behavior());
+}
+
+TEST(SunshineNativeAmfReview, Av1TilesOverrideIncludesExplicitSingleTile) {
+  EXPECT_TRUE(av1_tiles_override_includes_explicit_single_tile());
+}
+
+TEST(SunshineNativeAmfReview, Av1TilesRejectsInvalidHostOverrides) {
+  EXPECT_TRUE(av1_tiles_rejects_invalid_host_overrides());
+}
+
+TEST(WindowsCaptureGpuPolicy, FreshCursorFrameIsReleasedBeforeBackgroundCopy) {
+  EXPECT_TRUE(fresh_cursor_capture_releases_output_before_caching_desktop());
+}
+
+TEST(WindowsCaptureGpuPolicy, MouseOnlyFramesPreserveCursorFreeBackground) {
+  EXPECT_TRUE(mouse_only_capture_uses_unmodified_cached_desktop());
+}
+
+TEST(WindowsCaptureGpuPolicy, FailedHandoffRejectsFrame) {
+  EXPECT_TRUE(failed_capture_handoff_is_not_reported_as_a_valid_frame());
+}
 
 TEST(SunshineNativeAmfReview, SynchronousReleaseDuringSubmitIsReentrantSafe) {
   EXPECT_TRUE(synchronous_release_during_submit_is_reentrant_safe());
@@ -634,6 +847,10 @@ TEST(SunshineNativeAmfReview, SaturationWaitRequiresActualSurfaceRelease) {
 
 TEST(SunshineNativeAmfReview, OutputPollRearmSurvivesConcurrentSubmission) {
   EXPECT_TRUE(output_poll_rearm_survives_concurrent_submission());
+}
+
+TEST(SunshineNativeAmfReview, StrictApplicationDepthPreservesDriverHeadroom) {
+  EXPECT_TRUE(strict_application_depth_preserves_driver_headroom());
 }
 
 TEST(SunshineNativeAmfReview, AsynchronousPipelineCatchesUpToCurrentOutput) {

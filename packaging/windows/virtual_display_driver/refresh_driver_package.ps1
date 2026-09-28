@@ -210,6 +210,17 @@ function Resolve-PackageVersionFromPrebuiltRoot {
         return ''
     }
 
+    # A prebuilt package carries its own authoritative driver version. CI may
+    # extract it into a generic directory and have no source tags available;
+    # neither the directory name nor the checkout describes that signed payload.
+    $prebuiltInf = Join-Path $Path 'driver\SunshineVirtualDisplayDriver.inf'
+    if (Test-Path -LiteralPath $prebuiltInf -PathType Leaf) {
+        $infText = Get-Content -LiteralPath $prebuiltInf -Raw
+        if ($infText -match '(?m)^\s*DriverVer\s*=\s*[0-9]{2}/[0-9]{2}/[0-9]{4}\s*,\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\s*$') {
+            return $Matches[1]
+        }
+    }
+
     $current = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
     while ($current) {
         if ($current.Name -match '^libvirtualdisplay-([0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?)-windows-[^-]+$') {

@@ -49,6 +49,8 @@ namespace amf {
      * More than one frame may be returned when a transient encoder delay left
      * completed output queued from an earlier call. Returning the whole ready batch
      * lets the caller catch up without permanently adding frame-interval latency.
+     * Ready output may be returned without accepting the new input; callers must
+     * use input_accepted to decide whether submission-dependent state can advance.
      * @return Encoded frames in presentation order.
      */
     virtual amf_encode_result
@@ -57,6 +59,8 @@ namespace amf {
     /**
      * @brief Wait for and return output from already accepted inputs without submitting another frame.
      * @param timeout Maximum time to wait for output-pump progress.
+     * Ready packets return immediately. No wait is needed when there is neither
+     * outstanding accepted input nor an explicit drain pending.
      */
     virtual amf_encode_result
     drain_output(std::chrono::milliseconds timeout) = 0;

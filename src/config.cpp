@@ -33,6 +33,7 @@
 #include <nlohmann/json.hpp>
 
 // local includes
+#include "amf/amf_config_policy.h"
 #include "config.h"
 #include "config_key.h"
 #include "config_playnite.h"
@@ -867,9 +868,9 @@ namespace config {
       (int) amd::rc_av1_e::vbr_latency,  // rate control (av1)
       std::nullopt,  // qvbr_quality_level (0/unset = encoder default)
       0,  // enforce_hrd
-      (int) amd::quality_h264_e::balanced,  // quality (h264)
-      (int) amd::quality_hevc_e::balanced,  // quality (hevc)
-      (int) amd::quality_av1_e::balanced,  // quality (av1)
+      (int) amd::quality_h264_e::speed,  // quality (h264)
+      (int) amd::quality_hevc_e::speed,  // quality (hevc)
+      (int) amd::quality_av1_e::speed,  // quality (av1)
       0,  // preanalysis
       1,  // vbaq
       (int) amd::coder_e::_auto,  // coder
@@ -880,6 +881,7 @@ namespace config {
       std::nullopt,  // high_motion_quality_boost (auto)
       std::nullopt,  // av1_screen_content (auto)
       std::nullopt,  // av1_latency_mode (auto)
+      0,  // av1_tiles (preserve client/preset behavior)
     },  // amd
 
     {
@@ -1822,6 +1824,11 @@ namespace config {
     int_f(vars, "amd_high_motion_quality_boost", video.amd.amd_high_motion_quality_boost, amd::tristate_from_view);
     int_f(vars, "amd_av1_screen_content", video.amd.amd_av1_screen_content, amd::tristate_from_view);
     int_f(vars, "amd_av1_latency_mode", video.amd.amd_av1_latency_mode, amd::av1_latency_from_view);
+    int_f(vars, "amd_av1_tiles", video.amd.amd_av1_tiles);
+    if (!amf::config_policy::valid_av1_tiles_override(video.amd.amd_av1_tiles)) {
+      BOOST_LOG(warning) << "config: amd_av1_tiles must be 0, 1, 2 or 4; using auto instead of "sv << video.amd.amd_av1_tiles;
+      video.amd.amd_av1_tiles = 0;
+    }
 
     int_f(vars, "vt_coder", video.vt.vt_coder, vt::coder_from_view);
     int_f(vars, "vt_software", video.vt.vt_allow_sw, vt::allow_software_from_view);
