@@ -31,6 +31,7 @@
 #include "src/logging.h"
 #include "src/platform/windows/ipc/misc_utils.h"
 #include "src/platform/windows/ipc/pipes.h"
+#include "src/platform/windows/power_throttling.h"
 #include "src/platform/windows/wgc_capture_policy.h"
 #include "src/utility.h"  // For RAII utilities
 
@@ -381,6 +382,11 @@ public:
   bool initialize_all() {
     bool success = true;
     initialize_dpi_awareness();
+    // Best effort: the helper never owns a visible window, so Windows 11 may
+    // otherwise schedule its frame-arrival and delivery threads as background work.
+    if (!platf::set_process_high_qos(true)) {
+      BOOST_LOG(warning) << "Failed to opt out of process power throttling: " << GetLastError();
+    }
     success &= initialize_thread_priority();
     success &= initialize_gpu_scheduling_priority();
     success &= initialize_mmcss_characteristics();
