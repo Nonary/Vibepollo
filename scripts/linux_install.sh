@@ -16,7 +16,7 @@
 #   sudo bash linux_install.sh [options]
 #
 # Options:
-#   --version VERSION     Install this exact release (for example 1.19.0-beta.5).
+#   --version VERSION     Install this exact release (for example 2.0.0).
 #   --package FILE        Install a local vibepollo-*.pkg.tar.zst instead of downloading.
 #   --stable              Ignore pre-releases when picking the newest GitHub release.
 #   --no-repo             Skip the signed pacman repository and use GitHub releases.

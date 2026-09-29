@@ -12,7 +12,7 @@ Docker build in this beta.
 | Distribution | Arch Linux or CachyOS, x86_64. Vibepollo is tuned for CachyOS. |
 | Desktop | KDE Plasma 6 on **Wayland**, started by **SDDM** or **Plasma Login Manager**. GNOME, other compositors, X11 sessions, and remote logins are not streamed. |
 | Kernel | Linux **6.16 or newer**, plus the headers for the kernel you boot (for example `linux-cachyos-headers`). The virtual-display driver is built with DKMS during installation. |
-| GPU | Any GPU with a hardware **H.264** encoder. NVIDIA uses NVENC through `nvidia-utils`; AMD needs `libva-mesa-driver`; Intel needs `intel-media-driver`. HEVC and AV1 are used when available. |
+| GPU | A GPU with a hardware **H.264** encoder. Testing has focused on NVIDIA and modern AMD GPUs; older cards may not work properly. NVIDIA uses NVENC through `nvidia-utils`; AMD needs `libva-mesa-driver`; Intel needs `intel-media-driver`. HEVC and AV1 are used when available. |
 | Pre-login streaming | NVIDIA only. AMD and Intel machines stream after you log in. |
 | Accounts | One interactive desktop account. Machines with several accounts choose the streaming owner once (see [Choosing the streaming user](#choosing-the-streaming-user)). |
 | Secure Boot | Supported. The package signs its kernel module; on kernels that enforce module signatures you approve a one-time MOK enrollment at the next reboot. Do not disable Secure Boot. |
@@ -36,7 +36,7 @@ downloads the newest release package from GitHub and installs it with `pacman -U
 
 | Option | Effect |
 | --- | --- |
-| `--version 1.19.0-beta.5` | Install that exact release. |
+| `--version 2.0.0` | Install that exact release. |
 | `--stable` | Ignore pre-releases. |
 | `--package ./vibepollo-*.pkg.tar.zst` | Install a package you already downloaded. |
 | `--no-repo` | Skip the pacman repository and use GitHub releases. |
@@ -110,7 +110,7 @@ The `PKGBUILD` in the repository is a template; a CMake configure step fills in 
 version before `makepkg` can use it. Install `cuda` first if you want NVENC (the build detects it):
 
 ```bash
-git clone --branch 1.19.0-beta.5 https://github.com/Nonary/Vibepollo.git
+git clone --branch 2.0.0 https://github.com/Nonary/Vibepollo.git
 cd Vibepollo
 cmake -S . -B build -DSUNSHINE_CONFIGURE_ONLY=ON -DSUNSHINE_CONFIGURE_PKGBUILD=ON
 mkdir pkg && cp build/PKGBUILD build/vibepollo.install pkg/

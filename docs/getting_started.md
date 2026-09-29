@@ -67,7 +67,8 @@ layout, is [docs/linux/install.md](linux/install.md).
 - **Linux 6.16 or newer with matching kernel headers** (for example `linux-cachyos-headers`).
   The managed virtual-display driver is built with DKMS during installation.
 - **A GPU with an H.264 hardware encoder.** NVIDIA uses NVENC from `nvidia-utils`; AMD and Intel
-  use VAAPI (`libva-mesa-driver` or `intel-media-driver`). Pre-login streaming is NVIDIA-only.
+  use VAAPI (`libva-mesa-driver` or `intel-media-driver`). Testing has focused on NVIDIA and modern
+  AMD GPUs; older cards may not work properly. Pre-login streaming is NVIDIA-only.
 - **A single interactive desktop account**, or run
   `sudo vibepollo configure USER` once to choose the owner.
 
@@ -89,11 +90,12 @@ downloaded from the [releases page](https://github.com/Nonary/Vibepollo/releases
 
 ##### After installation
 
-1. **Reboot if asked.** A kernel that still holds an older driver, or a one-time Secure Boot key
-   enrollment, needs one reboot.
-2. **Pair Moonlight.** Open `https://localhost:47990` on the machine, create the Web UI login,
-   then enter the Moonlight PIN. Pairing also works at the login screen from another device.
-   Log in to Plasma (Wayland) to stream the desktop.
+1. **Reboot after the first installation.** The login screen and desktop need to load Vibepollo's
+   display and session integration. On updates, reboot if asked. A kernel that still holds an older
+   driver, or a one-time Secure Boot key enrollment, needs one reboot.
+2. **Log in to Plasma (Wayland) and pair.** Open `https://localhost:47990` on the machine, create
+   the Web UI login, then pair Moonlight with the PIN. Pairing also works at the login screen:
+   enter the PIN in the Web UI from another device.
 3. **Open the firewall** if the script did not do it for you:
 
    ```bash
@@ -104,7 +106,8 @@ downloaded from the [releases page](https://github.com/Nonary/Vibepollo/releases
    ```
 
    Vibepollo listens on TCP 47984, 47989, 47990, and 48010, and UDP 47998 to 48000 and 48010.
-4. **Log out and back in once** so the PipeWire audio drop-in the package installs takes effect.
+4. **Start a new login session** so the PipeWire audio drop-in the package installs takes effect.
+   The first-install reboot above already does this.
 
 Check the host with:
 
