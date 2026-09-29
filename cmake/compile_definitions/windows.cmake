@@ -350,3 +350,5 @@ if(SUNSHINE_ENABLE_PYROWAVE)
             "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_d3d11_core.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_encode.cpp")
 endif()
+
+list(APPEND PLATFORM_TARGET_FILES "${CMAKE_SOURCE_DIR}/src/platform/windows/managed_app_focus.cpp")

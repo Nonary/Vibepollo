@@ -39,6 +39,7 @@ export type ConfigFieldSchemaContext = ConfigSelectOptionsContext & {
 };
 
 const SWITCH_KEYS = new Set<string>([
+  'app_focus_exit_on_first',
   'frame_limiter_enable',
   'frame_limiter_disable_vsync',
   'rtx_hdr',
@@ -46,6 +47,8 @@ const SWITCH_KEYS = new Set<string>([
 ]);
 
 const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
+  app_focus_attempts: { min: 0, max: 100, step: 1, precision: 0 },
+  app_focus_timeout_secs: { min: 0, max: 300, step: 1, precision: 0 },
   fec_percentage: { placeholder: '20' },
   qp: { placeholder: '28' },
   min_threads: { placeholder: '2', min: 1 },

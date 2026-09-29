@@ -207,6 +207,31 @@ int main(void) {
   user_service_fixture = false;
 
   CHECK(!check_display_cancellation());
+  char *focus_request[] = {"broker", "managed-focus", "steam", "42", "3", "15", "0", NULL};
+  CHECK(managed_focus_arguments_are_safe(7, focus_request));
+  CHECK(!managed_focus_arguments_are_safe(6, focus_request));
+  focus_request[2] = "playnite";
+  CHECK(!managed_focus_arguments_are_safe(7, focus_request));
+  focus_request[2] = "lutris";
+  CHECK(managed_focus_arguments_are_safe(7, focus_request));
+  focus_request[3] = "42; /bin/true";
+  CHECK(!managed_focus_arguments_are_safe(7, focus_request));
+  focus_request[3] = "0";
+  CHECK(!managed_focus_arguments_are_safe(7, focus_request));
+  focus_request[3] = "42";
+  focus_request[4] = "101";
+  CHECK(!managed_focus_arguments_are_safe(7, focus_request));
+  focus_request[4] = "3";
+  focus_request[5] = "301";
+  CHECK(!managed_focus_arguments_are_safe(7, focus_request));
+  focus_request[5] = "15";
+  focus_request[6] = "2";
+  CHECK(!managed_focus_arguments_are_safe(7, focus_request));
+  focus_request[6] = "0";
+  struct session_identity focus_greeter = {0};
+  strcpy(focus_greeter.role, "greeter");
+  CHECK(execute_request(7, focus_request, &focus_greeter, getgid()) == 126);
+
   CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://open/bigpicture"), "steam://open/bigpicture"));
   CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://close/bigpicture"), "steam://close/bigpicture"));
   CHECK(!steam_big_picture_uri(NULL));

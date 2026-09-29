@@ -397,6 +397,15 @@
     "output_name_default": "Primary display (default)"
   },
   "config": {
+    "app_focus_title": "Managed application focus",
+    "app_focus_description": "Bring games launched from managed libraries to the foreground. Applies to Steam, Lutris and Playnite on their supported platforms.",
+    "app_focus_attempts": "Focus count",
+    "app_focus_attempts_desc": "Number of confirmed focus applications after launch (0 disables automatic focus).",
+    "app_focus_timeout_secs": "Focus timeout (seconds)",
+    "app_focus_timeout_secs_desc": "Wait for the game window and reapply focus within this time (0 disables automatic focus).",
+    "app_focus_exit_on_first": "Stop after the first successful focus",
+    "app_focus_exit_on_first_desc": "Stop once a game window reaches the foreground; otherwise continue until the focus count or timeout is reached.",
+
     "amf": {
       "quality": "AMF Usage",
       "rate_control": "AMF Rate Control"

@@ -3,6 +3,7 @@
  * @brief Definitions for the configuration of Sunshine.
  */
 // standard includes
+#include "managed_app_focus.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -2297,6 +2298,7 @@ namespace config {
 
     // Provider settings are cross-platform. Playnite remains Windows-only,
     // while Steam's parser enforces the Linux Steam-only policy.
+    managed_app_focus::settings = managed_app_focus::parse_policy(vars);
     config::apply_steam(vars);
 #ifdef __linux__
     config::apply_lutris(vars);

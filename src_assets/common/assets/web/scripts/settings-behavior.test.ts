@@ -144,3 +144,15 @@ test('legacy global configuration is covered by v2 fields or a dedicated integra
     );
   }
 });
+
+test('managed application focus settings are shared across platforms and separate from Playnite', async () => {
+  const { settingsCategories, settingsDestinations } = await import('../configs/settingsSchema.ts');
+  const focus = settingsCategories.flatMap((category) => category.groups).find((group) => group.id === 'app_focus');
+  assert.deepEqual(focus?.fields.map((field) => field.key), [
+    'app_focus_attempts', 'app_focus_timeout_secs', 'app_focus_exit_on_first',
+  ]);
+  for (const field of focus?.fields ?? []) {
+    assert.equal(field.platform, undefined);
+    assert.ok(!settingsDestinations.some((destination) => destination.keys.includes(field.key)));
+  }
+});

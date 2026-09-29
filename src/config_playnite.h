@@ -42,10 +42,6 @@ namespace config {
     // Persisted/meta: excluded plugins with id+name (for offline labeling)
     std::vector<id_name_t> exclude_plugins_meta;
 
-    // Focus behavior
-    int focus_attempts = 3;  // Count of confirmed re-applies of focus
-    int focus_timeout_secs = 15;  // Total window to apply focus attempts
-    bool focus_exit_on_first = false;  // Stop after first confirmed focus
     // Runtime: excluded Playnite game IDs
     std::vector<std::string> exclude_games;
     // Persisted/meta: excluded games with id+name (for offline labeling)

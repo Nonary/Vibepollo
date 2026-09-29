@@ -1816,6 +1816,7 @@
         }
       },
       "groups": {
+        "app_focus": {"title": "Managed application focus", "description": "Automatically bring games from managed libraries to the foreground after launch."},
         "audio_routing": {
           "title": "Audio routing"
         },

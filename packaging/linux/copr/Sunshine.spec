@@ -1716,6 +1716,7 @@ fi
 %{_prefix}/libexec/vibeshine/vibepollo-provider-scan
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-global-limiter.py
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-steam-launch
+%attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-app-focus
 %{_prefix}/libexec/vibeshine/vibepollo-profile-import
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-app-supervisor
 %{_prefix}/libexec/vibeshine/vibepollo-machine-host

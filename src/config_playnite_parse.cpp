@@ -122,14 +122,11 @@ namespace config {
     consume_bool(vars, "playnite_sync_all_installed", result.sync_all_installed);
     consume_bool(vars, "playnite_autosync_require_replacement", result.autosync_require_replacement);
     consume_bool(vars, "playnite_autosync_remove_uninstalled", result.autosync_remove_uninstalled);
-    consume_bool(vars, "playnite_focus_exit_on_first", result.focus_exit_on_first);
     consume_bool(vars, "playnite_fullscreen_entry_enabled", result.fullscreen_entry_enabled);
 
     consume_int(vars, "playnite_recent_games", result.recent_games, false);
     consume_int(vars, "playnite_recent_max_age_days", result.recent_max_age_days, true);
     consume_int(vars, "playnite_autosync_delete_after_days", result.autosync_delete_after_days, true);
-    consume_int(vars, "playnite_focus_attempts", result.focus_attempts, true);
-    consume_int(vars, "playnite_focus_timeout_secs", result.focus_timeout_secs, true);
 
     parse_id_name_array(vars, "playnite_sync_categories", result.sync_categories_meta, result.sync_categories, false);
     parse_id_name_array(vars, "playnite_exclude_categories", result.exclude_categories_meta, result.exclude_categories, false);

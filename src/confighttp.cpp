@@ -545,7 +545,7 @@ namespace confighttp {
       }
 
       for (const auto &key : keys) {
-        if (key.rfind("playnite_", 0) == 0) {
+        if (key.rfind("app_focus_", 0) == 0 || key.rfind("playnite_", 0) == 0) {
           continue;
         }
 

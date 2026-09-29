@@ -1213,6 +1213,16 @@ static int exec_user_service(const struct session_identity *identity, const char
   return 126;
 }
 
+static bool managed_focus_arguments_are_safe(int argc, char **argv) {
+  unsigned long id = 0, attempts = 0, timeout = 0, first = 0;
+  return argc == 7 &&
+         (!strcmp(argv[2], "steam") || !strcmp(argv[2], "lutris")) &&
+         parse_number(argv[3], 1, !strcmp(argv[2], "steam") ? UINT32_MAX : LONG_MAX, &id) &&
+         parse_number(argv[4], 0, 100, &attempts) &&
+         parse_number(argv[5], 0, 300, &timeout) &&
+         parse_number(argv[6], 0, 1, &first);
+}
+
 static const char *steam_big_picture_uri(const char *command) {
   // These are the two commands shipped in the default Linux apps.json. Treat
   // them as fixed Steam actions: a fresh install creates its command manifest
@@ -1237,7 +1247,7 @@ static int execute_request(int argc, char **argv,
   if (argc < 2) return 2;
   enum operation {
     DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_POWER, DISPLAY_WAKE, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
-    AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS,
+    AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS, MANAGED_FOCUS,
     PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, APP, APP_WAYLAND_HDR
   } operation;
   unsigned long first_number = 0, second_number = 0, third_number = 0;
@@ -1282,6 +1292,9 @@ static int execute_request(int argc, char **argv,
            steam_direct_arguments_are_safe(argc, argv) &&
            !strcmp(identity->role, "desktop")) operation = STEAM_DIRECT;
   else if (!strcmp(argv[1], "lutris") && argc == 3 && numeric_suffix(argv[2], "") && !strcmp(identity->role, "desktop")) operation = LUTRIS;
+  else if (!strcmp(argv[1], "managed-focus") &&
+           managed_focus_arguments_are_safe(argc, argv) &&
+           !strcmp(identity->role, "desktop")) operation = MANAGED_FOCUS;
   else if (!strcmp(argv[1], "provider-steam-scan") && argc == 2 && !strcmp(identity->role, "desktop")) operation = PROVIDER_STEAM_SCAN;
   else if (!strcmp(argv[1], "provider-lutris-scan") && argc == 2 && !strcmp(identity->role, "desktop")) operation = PROVIDER_LUTRIS_SCAN;
   else if (argc == 2 && !strcmp(identity->role, "desktop") &&
@@ -1408,6 +1421,11 @@ static int execute_request(int argc, char **argv,
         argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], argv[13], NULL
       };
       return exec_user_service(identity, NULL, arguments, false, false, 0, NULL);
+    }
+    case MANAGED_FOCUS: {
+      char *const arguments[] = {"/usr/libexec/vibeshine/vibepollo-app-focus", "--managed",
+                                argv[2], argv[3], argv[4], argv[5], argv[6], NULL};
+      return exec_user_service(identity, NULL, arguments, false, false);
     }
     case LUTRIS: {
       // Apply the same ownership boundary to an already-running Lutris daemon.

@@ -911,6 +911,14 @@ export const settingsCategories: SettingsCategory[] = [
     id: 'host',
     groups: [
       {
+        id: 'app_focus',
+        fields: [
+          number('app_focus_attempts', { min: 0, max: 100, step: 1 }),
+          number('app_focus_timeout_secs', { min: 0, max: 300, step: 1 }),
+          boolean('app_focus_exit_on_first'),
+        ],
+      },
+      {
         id: 'everyday_automation',
         collapsed: true,
         fields: [

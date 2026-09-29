@@ -362,42 +362,6 @@
                 desc="playnite.fullscreen_entry_desc"
               />
             </div>
-            <div>
-              <n-form-item :label="$t('playnite.focus_attempts')">
-                <n-input-number
-                  id="playnite_focus_attempts"
-                  v-model:value="config.playnite_focus_attempts"
-                  :min="0"
-                  :max="30"
-                  :show-button="true"
-                  class="playnite-number-input"
-                />
-              </n-form-item>
-              <n-text depth="3" class="playnite-help">
-                {{ $t('playnite.focus_attempts_help') }}
-              </n-text>
-            </div>
-            <div>
-              <ConfigDurationField
-                id="playnite_focus_timeout_secs"
-                v-model="config.playnite_focus_timeout_secs"
-                :label="String($t('playnite.focus_timeout_secs'))"
-                :desc="String($t('playnite.focus_timeout_secs_help'))"
-                :min="0"
-                :max="120"
-                size="small"
-              />
-            </div>
-            <div class="md:col-span-2">
-              <Checkbox
-                v-model="config.playnite_focus_exit_on_first"
-                id="playnite_focus_exit_on_first"
-                :default="store.defaults.playnite_focus_exit_on_first"
-                :localePrefix="'playnite'"
-                label="playnite.focus_exit_on_first"
-                desc="playnite.focus_exit_on_first_help"
-              />
-            </div>
           </div>
         </n-form>
       </n-card>
@@ -701,7 +665,6 @@ import {
 } from 'naive-ui';
 import { useI18n } from 'vue-i18n';
 import Checkbox from '@/Checkbox.vue';
-import ConfigDurationField from '@/ConfigDurationField.vue';
 import { useConfigStore } from '@/stores/config';
 import { storeToRefs } from 'pinia';
 import { http } from '@/http';
@@ -1427,9 +1390,6 @@ function resetAutoSyncSection() {
 
 function resetLaunchSection() {
   const d = store.defaults as any;
-  store.updateOption('playnite_focus_attempts', d.playnite_focus_attempts);
-  store.updateOption('playnite_focus_timeout_secs', d.playnite_focus_timeout_secs);
-  store.updateOption('playnite_focus_exit_on_first', d.playnite_focus_exit_on_first);
   notify('success', t('playnite.reset_done') as any);
 }
 

@@ -4938,3 +4938,32 @@ Sets the maximum network packet size used for streaming. Set `0` to use the defa
   <summary></summary>
   [TOC]
 </details>
+
+## Managed application focus
+
+Focus policy is shared by managed Steam, Lutris and Playnite launches. Windows
+uses foreground window activation, Linux uses the selected KDE/KWin desktop
+session for both native Wayland and Xwayland games, and macOS activates the
+running game application. Manual applications and Desktop launches do not
+start automatic focus. A pending focus session is cancelled when its game
+session ends. Missing windows are retried until the timeout; only confirmed
+foreground activations consume the focus count.
+
+### app_focus_attempts
+
+Number of confirmed focus applications after launch, from 0 to 100. Default:
+`3`. Set to `0` to disable automatic focus.
+
+### app_focus_timeout_secs
+
+Total launch-time focus window in seconds, from 0 to 300. Default: `15`. Set to
+`0` to disable automatic focus.
+
+### app_focus_exit_on_first
+
+Stop after the first confirmed foreground activation. Default: `false`.
+
+The previous `playnite_focus_attempts`, `playnite_focus_timeout_secs` and
+`playnite_focus_exit_on_first` keys remain readable aliases. Explicit shared
+keys take precedence. The web interface removes the corresponding old key
+when saving a shared focus setting, including resetting it to its default.

@@ -225,9 +225,9 @@ const defaultGroups = [
       playnite_autosync_delete_after_days: 0,
       playnite_autosync_require_replacement: true,
       playnite_autosync_remove_uninstalled: true,
-      playnite_focus_attempts: 3,
-      playnite_focus_timeout_secs: 15,
-      playnite_focus_exit_on_first: false,
+      app_focus_attempts: 3,
+      app_focus_timeout_secs: 15,
+      app_focus_exit_on_first: false,
       playnite_fullscreen_entry_enabled: false,
       playnite_sync_categories: [] as Array<{ id: string; name: string }>,
       playnite_sync_plugins: [] as Array<{ id: string; name: string }>,
@@ -458,6 +458,9 @@ export const useConfigStore = defineStore('config', () => {
     patchQueue.value = {
       ...patchQueue.value,
       [key]: patchValue(key, value),
+      ...(key.startsWith('app_focus_')
+        ? { [key.replace('app_focus_', 'playnite_focus_')]: null }
+        : {}),
     };
   }
 
@@ -582,6 +585,15 @@ export const useConfigStore = defineStore('config', () => {
       }
     }
 
+    // Preserve focus preferences saved by older Playnite-only versions.
+    if (data) {
+      for (const suffix of ['attempts', 'timeout_secs', 'exit_on_first']) {
+        const shared = `app_focus_${suffix}`;
+        const legacy = `playnite_focus_${suffix}`;
+        if (!(shared in data) && legacy in data) data[shared] = data[legacy];
+      }
+    }
+
     // Coerce primitive types based on defaults so UI widgets match options.
     // This fixes cases where server returns numeric fields as strings, causing
     // selects to show raw values instead of their friendly labels.
@@ -664,7 +676,7 @@ export const useConfigStore = defineStore('config', () => {
       'playnite_sync_all_installed',
       'playnite_autosync_require_replacement',
       'playnite_autosync_remove_uninstalled',
-      'playnite_focus_exit_on_first',
+      'app_focus_exit_on_first',
       'playnite_fullscreen_entry_enabled',
     ];
     // Extend boolean normalization to cover RTSS enable flag

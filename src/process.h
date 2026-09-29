@@ -3,6 +3,7 @@
  * @brief Declarations for the startup and shutdown of the apps started by a streaming Session.
  */
 #pragma once
+#include "managed_app_focus.h"
 
 #ifndef __kernel_entry
   #define __kernel_entry
@@ -291,6 +292,7 @@ namespace proc {
     // If no command associated with _app_id, yet it's still running
     bool placebo {};
 
+    std::unique_ptr<managed_app_focus::session> _app_focus;
     platf::steam::lifecycle::tracker _steam_tracker;
     std::shared_ptr<platf::steam::lifecycle::process_controller> _steam_process_controller;
     bool _steam_tracking_active {false};
