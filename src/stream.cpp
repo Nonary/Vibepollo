@@ -2348,7 +2348,9 @@ namespace stream {
           const wire_timeline_frame_t current_wire_frame {
             .frame_index = packet->frame_index(),
             .rtp_timestamp = timestamp,
-            .source_timestamp = *packet->frame_timestamp,
+            // Capture time is raw; frame_timestamp may have been moved by
+            // transport pacing and can hide an actual capture gap.
+            .source_timestamp = packet->capture_timestamp.value_or(*packet->frame_timestamp),
             .host_processing_timestamp = packet->host_processing_timestamp,
             .packet_enqueue_timestamp = packet->packet_enqueue_timestamp,
             .packet_pop_timestamp = packet_pop_timestamp,
