@@ -29,6 +29,7 @@ async function host(
     } else if (path === '/api/metadata')
       body = {
         platform,
+        providers: { steam: true, lutris: platform === 'linux', mangohud: platform === 'linux' },
         version: '1.0.0',
         encoder_status: { state: 'ready', h264: true },
         virtual_display: {
@@ -214,6 +215,13 @@ test('all canonical v2 pages render without client-side exceptions', async ({ pa
     await expect(page.locator('main h1')).toBeVisible();
   }
   expect(errors).toEqual([]);
+});
+
+test('Linux integration metadata exposes Steam controls', async ({ page }) => {
+  await host(page);
+  await page.goto('/v2/integrations');
+  await expect(page.locator('.integration-row--steam')).toBeVisible();
+  await expect(page.locator('#steam-auto-sync')).toBeVisible();
 });
 
 test('search reaches integration settings and Linux adapters accept a render-device path', async ({

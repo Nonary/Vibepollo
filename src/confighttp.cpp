@@ -3126,6 +3126,7 @@ namespace confighttp {
 #endif
     // Build/release date provided by CMake (ISO 8601 when available)
     output_tree["release_date"] = PROJECT_RELEASE_DATE;
+    output_tree["providers"]["steam"] = true;
 #if defined(__linux__)
     output_tree["providers"]["lutris"] = true;
     output_tree["providers"]["mangohud"] = true;
