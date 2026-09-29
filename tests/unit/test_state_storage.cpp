@@ -743,15 +743,17 @@ TEST(StateStorageApollo, LegacyNumericBooleansRemainUsableByTypedClientAndComman
 }
 
 
-TEST(StateStorageApollo, BooleanLastSeenCannotBypassRecovery) {
-  memory_state_store_t store;
-  auto damaged = nlohmann::json::parse(apollo_snapshot);
-  damaged["root"]["named_devices"][0]["last_seen"] = true;
-  store.files["shared.json"] = damaged.dump();
-  store.files["shared.json.bak"] = apollo_snapshot;
-  pt::ptree tree;
-  ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
-  EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
+TEST(StateStorageApollo, InvalidLastSeenCannotBypassRecovery) {
+  for (const auto &invalid : {nlohmann::json(true), nlohmann::json("bad"), nlohmann::json::object()}) {
+    memory_state_store_t store;
+    auto damaged = nlohmann::json::parse(apollo_snapshot);
+    damaged["root"]["named_devices"][0]["last_seen"] = invalid;
+    store.files["shared.json"] = damaged.dump();
+    store.files["shared.json.bak"] = apollo_snapshot;
+    pt::ptree tree;
+    ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
+    EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
+  }
 }
 
 TEST(StateStorageApollo, MissingReadCallbackFailsClosed) {

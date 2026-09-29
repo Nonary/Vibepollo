@@ -2342,8 +2342,15 @@ namespace nvhttp {
         return certificate && X509_cmp(candidate.get(), certificate.get()) == 0;
       });
       if (existing != client_root.named_devices.end()) {
-        // An explicit re-pair retains Apollo permissions, commands, stable UUID
-        // and display preferences instead of creating a default-permission copy.
+        // A verified re-pair restores a disabled client's default access while
+        // retaining its stable UUID, commands and display preferences.
+        if ((*existing)->perm == PERM::_no) {
+          (*existing)->perm = PERM::_default;
+          if (!transient && !save_state_snapshot_locked(client_root)) {
+            (*existing)->perm = PERM::_no;
+            return false;
+          }
+        }
         *named_cert_p = **existing;
         return true;
       }
