@@ -55,6 +55,7 @@
 
 // local includes
 #include "misc.h"
+#include "src/screen_saver_state.h"
 #include "src/platform/common_services.h"
 #include "nvprefs/nvprefs_interface.h"
 #include "src/boost_process_shim.h"
@@ -93,8 +94,11 @@ extern "C" {
 namespace {
 
   std::atomic<bool> used_nt_set_timer_resolution = false;
-  std::mutex screen_saver_state_mutex;
-  std::optional<bool> screen_saver_active_before_app;
+  struct screen_saver_context_t {
+    std::mutex mutex;
+    platf::screen_saver_state_t state;
+  };
+  const auto screen_saver_context = std::make_shared<screen_saver_context_t>();
 
   bool nt_set_timer_resolution_max() {
     ULONG maximum;
@@ -181,39 +185,53 @@ namespace platf {
   }  // namespace
 
   void cache_screen_saver_state() {
-    auto lock = std::lock_guard(screen_saver_state_mutex);
-    if (screen_saver_active_before_app) {
-      return;
-    }
+    const auto context = screen_saver_context;
+    auto lock = std::lock_guard(context->mutex);
+    context->state.begin([]() -> std::optional<bool> {
+      BOOL active = FALSE;
+      DWORD winerr = ERROR_SUCCESS;
+      if (!update_screen_saver_state(SPI_GETSCREENSAVEACTIVE, 0, &active, winerr)) {
+        BOOST_LOG(warning) << "Unable to cache the screen saver state before app launch: " << winerr;
+        return std::nullopt;
+      }
+      BOOST_LOG(debug) << "Cached screen saver state before app launch: " << (active ? "enabled" : "disabled");
+      return active != FALSE;
+    });
+  }
 
-    BOOL screen_saver_active = FALSE;
+  static bool apply_screen_saver_state(bool previous_state) {
     DWORD winerr = ERROR_SUCCESS;
-    if (!update_screen_saver_state(SPI_GETSCREENSAVEACTIVE, 0, &screen_saver_active, winerr)) {
-      BOOST_LOG(warning) << "Unable to cache the screen saver state before app launch: "sv << winerr;
-      return;
+    if (!update_screen_saver_state(SPI_SETSCREENSAVEACTIVE, previous_state ? TRUE : FALSE, nullptr, winerr)) {
+      BOOST_LOG(warning) << "Unable to restore the screen saver state after app/session teardown: " << winerr;
+      return false;
     }
+    BOOST_LOG(info) << "Restored screen saver state after app/session teardown: " << (previous_state ? "enabled" : "disabled");
+    return true;
+  }
 
-    screen_saver_active_before_app = screen_saver_active != FALSE;
-    BOOST_LOG(debug) << "Cached screen saver state before app launch: "
-                     << (*screen_saver_active_before_app ? "enabled" : "disabled");
+  std::function<void()> deferred_screen_saver_restore() {
+    const auto context = screen_saver_context;
+    auto lock = std::lock_guard(context->mutex);
+    const auto token = context->state.defer();
+    auto release_on_failure = util::fail_guard([&] {
+      context->state.finish(token, apply_screen_saver_state);
+    });
+    std::function<void()> completion = [weak_context = std::weak_ptr {context}, token] {
+      // Pause commands may outlive normal host teardown. Do not dereference
+      // destroyed globals; an in-flight completion retains its own context.
+      if (const auto retained_context = weak_context.lock()) {
+        auto state_lock = std::lock_guard(retained_context->mutex);
+        retained_context->state.finish(token, apply_screen_saver_state);
+      }
+    };
+    release_on_failure.disable();
+    return completion;
   }
 
   void restore_screen_saver_state() {
-    auto lock = std::lock_guard(screen_saver_state_mutex);
-    if (!screen_saver_active_before_app) {
-      return;
-    }
-
-    DWORD winerr = ERROR_SUCCESS;
-    const auto previous_state = *screen_saver_active_before_app;
-    if (!update_screen_saver_state(SPI_SETSCREENSAVEACTIVE, previous_state ? TRUE : FALSE, nullptr, winerr)) {
-      BOOST_LOG(warning) << "Unable to restore the screen saver state after app/session teardown: "sv << winerr;
-      return;
-    }
-
-    screen_saver_active_before_app.reset();
-    BOOST_LOG(info) << "Restored screen saver state after app/session teardown: "
-                    << (previous_state ? "enabled" : "disabled");
+    const auto context = screen_saver_context;
+    auto lock = std::lock_guard(context->mutex);
+    context->state.restore(apply_screen_saver_state);
   }
 
   std::filesystem::path appdata() {
