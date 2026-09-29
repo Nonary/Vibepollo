@@ -3518,8 +3518,12 @@ namespace confighttp {
     print_req(request);
 
     nlohmann::json output_tree;
-    const int active = rtsp_stream::session_count() + static_cast<int>(webrtc_stream::active_session_count());
-    const bool app_running = proc::proc.running() > 0;
+    // Status polling runs on the HTTPS event loop. The lifecycle versions of
+    // these queries can join capture threads or terminate an exited app,
+    // blocking every Web UI request while stream teardown waits after resume.
+    // The RTSP and control loops own cleanup; report their current snapshots.
+    const int active = rtsp_stream::session_count_no_cleanup() + static_cast<int>(webrtc_stream::active_session_count());
+    const bool app_running = proc::proc.current_app_id() > 0;
     output_tree["activeSessions"] = active;
     output_tree["appRunning"] = app_running;
     output_tree["appName"] = app_running ? proc::proc.get_last_run_app_name() : "";
@@ -6179,8 +6183,8 @@ namespace confighttp {
     register_api_route("^/api/apps/([0-9]+)$", "DELETE", deleteApp);
     register_api_route("^/api/clients/unpair-all$", "POST", unpairAll);
     register_api_route("^/api/clients/list$", "GET", getClients);
-    register_api_route("^/api/clients/display-layout$", "GET", getClientDisplayLayout);
-    register_api_route("^/api/clients/display-layout$", "PUT", putClientDisplayLayout);
+    register_blocking_api_route("^/api/clients/display-layout$", "GET", getClientDisplayLayout);
+    register_blocking_api_route("^/api/clients/display-layout$", "PUT", putClientDisplayLayout);
     register_api_route("^/api/clients/hdr-profiles$", "GET", getHdrProfiles);
     register_api_route("^/api/clients/update$", "POST", updateClient);
     register_api_route("^/api/clients/unpair$", "POST", unpair);

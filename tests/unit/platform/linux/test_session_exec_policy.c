@@ -56,6 +56,42 @@ static int broker_fixture_execv(const char *path, char *const arguments[]) {
   } \
 } while (0)
 
+static bool signal_test_worker(pid_t target, int signal_number) {
+  return !kill(target, signal_number) || errno == ESRCH;
+}
+
+static int check_display_cancellation(void) {
+  int ready[2];
+  CHECK(!pipe(ready));
+  const pid_t worker = fork();
+  CHECK(worker >= 0);
+  if (!worker) {
+    close(ready[0]);
+    if (setpgid(0, 0) || signal(SIGTERM, SIG_IGN) == SIG_ERR) _exit(1);
+    if (write(ready[1], "r", 1) != 1) _exit(1);
+    close(ready[1]);
+    for (;;) pause();
+  }
+  close(ready[1]);
+  char byte;
+  CHECK(read(ready[0], &byte, 1) == 1);
+  close(ready[0]);
+  bool exited = false;
+  int status = 0;
+  const uint64_t started = monotonic_milliseconds();
+  CHECK(terminate_display_worker(worker, &exited, &status, signal_test_worker));
+  CHECK(exited && WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+  CHECK(display_worker_completion_status(status, true, true) == VIBEPOLLO_SESSION_COMPLETION_UNKNOWN);
+  CHECK(display_worker_completion_status(status, false, true) == VIBEPOLLO_SESSION_COMPLETION_UNKNOWN);
+  CHECK(display_worker_completion_status(status, true, false) == 126);
+  CHECK(display_worker_completion_status(0, false, true) == 0);
+  CHECK(display_worker_completion_status(1 << 8, false, true) == 1);
+  CHECK(monotonic_milliseconds() - started < 1000);
+  errno = 0;
+  CHECK(waitpid(worker, &status, WNOHANG) < 0 && errno == ECHILD);
+  return 0;
+}
+
 int main(void) {
   char *stream_environment[] = {
     "SUNSHINE_APP_ID=42", "SUNSHINE_APP_NAME=Literal $HOME; $(false) name=ok",
@@ -170,6 +206,7 @@ int main(void) {
   CHECK(!getenv("APOLLO_CLIENT_FPS") && !getenv("ENABLE_HDR_WSI"));
   user_service_fixture = false;
 
+  CHECK(!check_display_cancellation());
   CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://open/bigpicture"), "steam://open/bigpicture"));
   CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://close/bigpicture"), "steam://close/bigpicture"));
   CHECK(!steam_big_picture_uri(NULL));

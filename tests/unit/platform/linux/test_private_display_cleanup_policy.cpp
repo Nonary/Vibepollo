@@ -9,6 +9,9 @@
 #include <mutex>
 #include <src/platform/linux/private_display_cleanup_policy.h>
 #include <string>
+#include <thread>
+
+using namespace std::chrono_literals;
 
 namespace policy = platf::linux_private_display::cleanup_policy;
 
@@ -89,4 +92,37 @@ TEST(LinuxPrivateDisplayCleanupPolicy, PausedTimeoutWithNoCaptureOrMonitorRestor
   EXPECT_EQ(policy::run_delayed_restore(lifecycle, display, generation, 1,
               [] { return false; }, restore), policy::result_e::superseded);
   EXPECT_EQ(restores, 1);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, HelperShutdownDoesNotWaitForBlockedLifecycleGate) {
+  std::mutex lifecycle, display;
+  std::atomic<std::uint64_t> generation {1};
+  std::stop_source stop;
+  std::unique_lock gate {lifecycle};
+  auto worker = std::async(std::launch::async, [&] {
+    return policy::run_delayed_restore(lifecycle, display, generation, 1,
+      [] { return false; }, [] { ADD_FAILURE() << "cancelled restore ran"; return true; }, stop.get_token());
+  });
+  stop.request_stop();
+  const auto status = worker.wait_for(200ms);
+  gate.unlock();
+  EXPECT_EQ(status, std::future_status::ready);
+  EXPECT_EQ(worker.get(), policy::result_e::superseded);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, OperationDeadlineIncludesWaitingForDisplayLock) {
+  std::mutex lifecycle, display;
+  std::atomic<std::uint64_t> generation {1};
+  std::unique_lock gate {display};
+  auto worker = std::async(std::launch::async, [&] {
+    return policy::run_delayed_restore(lifecycle, display, generation, 1,
+      [] { return false; }, [] { ADD_FAILURE() << "expired restore ran"; return true; }, {},
+      std::chrono::steady_clock::now() + 30ms);
+  });
+  const auto status = worker.wait_for(200ms);
+  gate.unlock();
+  EXPECT_EQ(status, std::future_status::ready);
+  EXPECT_EQ(worker.get(), policy::result_e::failed);
+  EXPECT_TRUE(lifecycle.try_lock());
+  lifecycle.unlock();
 }

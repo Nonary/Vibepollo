@@ -5,6 +5,8 @@
 
 #include "private_display.h"
 #include "display_power.h"
+#include "display_helper_process.h"
+#include "display_restore_dispatcher.h"
 
 #include "hdr_policy.h"
 #include "private_display_cleanup_policy.h"
@@ -48,15 +50,32 @@ namespace platf::linux_private_display {
 
     constexpr auto output_publication_timeout = std::chrono::seconds {3};
     constexpr auto output_verification_timeout = std::chrono::seconds {3};
+    constexpr auto helper_reply_timeout = std::chrono::seconds {10};
+    constexpr auto connector_reply_timeout = std::chrono::seconds {8};
+    constexpr auto restore_operation_timeout = std::chrono::seconds {30};
     static_assert(std::atomic_bool::is_always_lock_free);
     std::atomic_bool preserve_for_process_shutdown {false};
+    std::atomic_bool helper_completion_unknown {false};
     std::shared_mutex topology_mutation_gate;
 
-    struct command_result_t {
-      bool success {false};
-      std::string stdout_text;
-      std::string stderr_text;
+    using command_result_t = helper_process::result_t;
+
+    struct restore_context_t {
+      std::chrono::steady_clock::time_point deadline;
+      std::function<bool()> valid;
     };
+    thread_local const restore_context_t *restore_context = nullptr;
+
+    bool restore_allowed() {
+      return !helper_completion_unknown.load(std::memory_order_acquire) &&
+             (!restore_context ||
+              (std::chrono::steady_clock::now() < restore_context->deadline && restore_context->valid()));
+    }
+
+    bool helper_budget_available(std::chrono::steady_clock::duration budget) {
+      return restore_allowed() && (!restore_context ||
+             restore_context->deadline - std::chrono::steady_clock::now() >= budget);
+    }
 
     struct state_t {
       std::mutex mutex;
@@ -65,6 +84,11 @@ namespace platf::linux_private_display {
       std::map<std::string, double> retained_scales;
       std::set<std::string> newly_connected_reservations;
       std::atomic<std::uint64_t> cleanup_generation {0};
+      std::atomic<std::uint64_t> reset_generation {0};
+      // Destroy/join the worker before its snapshot, generation and mutex.
+      restore_dispatcher_t restore_dispatcher {[] {
+        BOOST_LOG(error) << "Linux display helper: asynchronous restore failed with an exception.";
+      }};
     };
 
     state_t &state() {
@@ -80,6 +104,9 @@ namespace platf::linux_private_display {
     }
 
     bool broker_set_connected(const std::string &output_name, const bool connected) {
+      // The control client waits longer than the broker's mutation/stop bound.
+      // Reserve that entire interval rather than shortening its safe drain.
+      if (!helper_budget_available(connector_reply_timeout)) return false;
       static const virtual_display::driver::LinuxControlClient client;
       const auto result = client.set_connector(output_name, connected);
       if (!result.ok()) {
@@ -104,6 +131,10 @@ namespace platf::linux_private_display {
 
     command_result_t run_doctor(const std::vector<std::string> &arguments, const bool mutating = false) {
       command_result_t result;
+      if (!helper_budget_available(helper_reply_timeout)) {
+        result.stderr_text = "display helper fenced, restore superseded, or insufficient reply budget";
+        return result;
+      }
       const auto executable = doctor_path();
       if (!executable) {
         result.stderr_text = "kscreen-doctor was not found in PATH";
@@ -141,53 +172,39 @@ namespace platf::linux_private_display {
         }
       }
 
-      GError *error = nullptr;
+      // Revalidate after admission: a concurrent query may have fenced helper
+      // completion, or the queued restore may have been superseded meanwhile.
+      if (!helper_budget_available(helper_reply_timeout)) {
+        result.stderr_text = "display helper admission superseded or fenced";
+        return result;
+      }
+      GError *spawn_error = nullptr;
       GSubprocess *process = g_subprocess_newv(
         argv.data(),
         static_cast<GSubprocessFlags>(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE),
-        &error
+        &spawn_error
       );
       if (!process) {
-        if (error) {
-          result.stderr_text = error->message;
-          g_error_free(error);
+        if (spawn_error) {
+          result.stderr_text = spawn_error->message;
+          g_error_free(spawn_error);
         }
         return result;
       }
       // Admission closes once the exact helper exists. Its KScreen request is
-      // deliberately allowed to drain outside the gate: shutdown must never
-      // cancel a compositor transaction, but it also must not wait for an
-      // unbounded external reply before publishing the shutdown event.
+      // allowed to drain outside the gate up to the helper reply deadline:
+      // shutdown fences later mutations without cancelling an admitted one.
       if (mutation_admission.owns_lock()) {
         mutation_admission.unlock();
       }
 
-      gchar *stdout_text = nullptr;
-      gchar *stderr_text = nullptr;
-      const gboolean communicated = g_subprocess_communicate_utf8(
-        process,
-        nullptr,
-        nullptr,
-        &stdout_text,
-        &stderr_text,
-        &error
-      );
-      if (stdout_text) {
-        result.stdout_text = stdout_text;
-        g_free(stdout_text);
+      auto deadline = std::chrono::steady_clock::now() + helper_reply_timeout;
+      result = helper_process::communicate_until(process, deadline, std::getenv("VIBESHINE_MACHINE_HOST") != nullptr);
+      if (result.completion_unknown) {
+        std::unique_lock mutation_barrier {topology_mutation_gate};
+        helper_completion_unknown.store(true, std::memory_order_release);
+        BOOST_LOG(error) << "Linux display helper: completion could not be confirmed; refusing further display mutations until host restart.";
       }
-      if (stderr_text) {
-        result.stderr_text = stderr_text;
-        g_free(stderr_text);
-      }
-      if (!communicated && error) {
-        if (!result.stderr_text.empty()) {
-          result.stderr_text += ": ";
-        }
-        result.stderr_text += error->message;
-        g_error_free(error);
-      }
-      result.success = communicated && g_subprocess_get_successful(process);
       g_object_unref(process);
       return result;
     }
@@ -215,6 +232,7 @@ namespace platf::linux_private_display {
       const auto deadline = std::chrono::steady_clock::now() + output_verification_timeout;
       linux_hdr::output_state_stabilizer_t stabilizer;
       do {
+        if (!restore_allowed()) return false;
         const auto configuration = query_configuration();
         const bool matches = configuration && predicate(*configuration);
         if (matches && (!require_stability || stabilizer.observe(true))) {
@@ -523,7 +541,7 @@ namespace platf::linux_private_display {
                       << '@' << request.refresh_millihz << " mHz on " << name << '.';
       {
         std::shared_lock mutation_admission {topology_mutation_gate};
-        if (process_shutdown_preserve_requested()) return false;
+        if (process_shutdown_preserve_requested() || !restore_allowed()) return false;
         const auto admitted = request_managed_mode(name, request);
         if (!admitted.success) {
           BOOST_LOG(error) << "Linux private display: " << admitted.detail;
@@ -689,6 +707,7 @@ namespace platf::linux_private_display {
     bool wait_for_capture_publication(const std::string &name) {
       const auto deadline = std::chrono::steady_clock::now() + output_verification_timeout;
       do {
+        if (!restore_allowed()) return false;
         const auto capture_outputs = platf::display_names(platf::mem_type_e::unknown);
         if (std::find(capture_outputs.begin(), capture_outputs.end(), name) != capture_outputs.end()) {
           return true;
@@ -1350,9 +1369,8 @@ namespace platf::linux_private_display {
   void request_process_shutdown_preserve() noexcept {
     preserve_for_process_shutdown.store(true, std::memory_order_release);
     // Drain only bounded mutation-admission sections. KScreen helpers which
-    // were already spawned continue outside the gate and are never cancelled
-    // mid-transaction; the signal thread can therefore publish shutdown
-    // without waiting for an unbounded compositor reply.
+    // were already spawned drain outside the gate to their normal deadline;
+    // the signal thread can publish shutdown without waiting for their reply.
     std::unique_lock mutation_barrier {topology_mutation_gate};
   }
 
@@ -1372,7 +1390,8 @@ namespace platf::linux_private_display {
     std::lock_guard lock {manager.mutex};
     // Remote Monitor bypasses prepare_session(). Invalidate an earlier idle
     // restore under the same lock which publishes its connector reservation.
-    manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
+    const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    manager.restore_dispatcher.cancel(generation);
     const auto output = reserve_output(
       manager,
       client_reservation_identity(client_uuid),
@@ -1445,7 +1464,8 @@ namespace platf::linux_private_display {
 
     auto &manager = state();
     std::lock_guard lock {manager.mutex};
-    manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
+    const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    manager.restore_dispatcher.cancel(generation);
     snapshot_configuration_if_needed(manager, *configuration);
 
     std::vector<desired_output_t> desired;
@@ -1778,6 +1798,7 @@ namespace platf::linux_private_display {
     if (process_shutdown_preserve_requested()) {
       return true;
     }
+    if (!restore_allowed()) return false;
     std::set<std::string> reserved_outputs;
     for (const auto &[_, output_name] : manager.reservations) {
       reserved_outputs.insert(output_name);
@@ -1787,6 +1808,7 @@ namespace platf::linux_private_display {
       remember_reserved_scales(manager, *current);
     }
     if (!manager.snapshot) {
+      if (!restore_allowed()) return false;
       if (!reserved_outputs.empty()) {
         BOOST_LOG(warning) << "Linux private display: no saved replacement topology can guard connector release; preserving the current private scanout and releasing only process-local ownership.";
       }
@@ -1799,6 +1821,7 @@ namespace platf::linux_private_display {
     }
     const auto arguments = restore_arguments(*manager.snapshot, *current, reserved_outputs);
     if (!arguments.guard_output) {
+      if (!restore_allowed()) return false;
       // A headless saved baseline, or a saved private output which is itself
       // being retired, cannot authorize removing the compositor's last live
       // scanout. Release only process-local client ownership; startup can
@@ -1894,6 +1917,7 @@ namespace platf::linux_private_display {
       BOOST_LOG(error) << "Linux private display: the pre-stream topology did not stabilize after connector retirement.";
       return false;
     }
+    if (!restore_allowed()) return false;
     manager.snapshot.reset();
     manager.reservations.clear();
     manager.newly_connected_reservations.clear();
@@ -1901,58 +1925,83 @@ namespace platf::linux_private_display {
     return true;
   }
 
-  bool revert() {
-    cancel_scheduled_revert();
+  static bool dispatch_restore(std::chrono::milliseconds delay, std::string reason, bool reset) {
     if (process_shutdown_preserve_requested()) {
       return true;
     }
     auto &manager = state();
-    std::lock_guard lock {manager.mutex};
-    return revert_locked(manager);
+    const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    if (reset) {
+      // Coalescing later restores must retain an accepted persistence reset.
+      auto previous = manager.reset_generation.load(std::memory_order_acquire);
+      while (previous < generation &&
+             !manager.reset_generation.compare_exchange_weak(previous, generation, std::memory_order_acq_rel)) {}
+    }
+    const bool accepted = manager.restore_dispatcher.submit(generation,
+      [generation, reason = std::move(reason)](std::stop_token stop) {
+        auto &manager = state();
+        stream::session::cleanup_reservation_t cleanup_reservation;
+        const auto deadline = std::chrono::steady_clock::now() + restore_operation_timeout;
+        const auto result = cleanup_policy::run_delayed_restore(
+          nvhttp::stream_lifecycle_mutex(), manager.mutex, manager.cleanup_generation, generation,
+          [] {
+            // Normal paused apps may reach their display timeout. Retained
+            // Remote Monitors remain owners even without an active transport.
+            return stream::session::has_capture_runtime_owner() ||
+                   !remote_display_topology::instance().protected_remote_monitor_client_ids().empty();
+          },
+          [&] {
+            const auto claimed_generation = generation + 1;
+            const restore_context_t context {deadline, [&] {
+              return !stop.stop_requested() && !process_shutdown_preserve_requested() &&
+                     manager.cleanup_generation.load(std::memory_order_acquire) == claimed_generation;
+            }};
+            restore_context = &context;
+            auto context_guard = util::fail_guard([] { restore_context = nullptr; });
+            BOOST_LOG(info) << "Linux display helper: restoring outputs (reason=" << reason << ").";
+            if (!revert_locked(manager)) return false;
+            auto reset_generation = manager.reset_generation.load(std::memory_order_acquire);
+            if (reset_generation && reset_generation <= claimed_generation && restore_allowed()) {
+              manager.retained_scales.clear();
+              statefile::clear_virtual_display_scales();
+              (void) manager.reset_generation.compare_exchange_strong(reset_generation, 0, std::memory_order_acq_rel);
+            }
+            return true;
+          }, stop, deadline);
+        if (result == cleanup_policy::result_e::failed) {
+          BOOST_LOG(error) << "Linux display helper: restore failed; preserving saved topology (reason=" << reason << ").";
+        } else if (result == cleanup_policy::result_e::restored) {
+          BOOST_LOG(info) << "Linux display helper: restore completed (reason=" << reason << ").";
+        } else {
+          BOOST_LOG(debug) << "Linux display helper: restore superseded or still owned (reason=" << reason << ").";
+        }
+      }, std::max(delay, std::chrono::milliseconds::zero()));
+    if (!accepted) BOOST_LOG(warning) << "Linux display helper: restore request was not accepted.";
+    return accepted;
+  }
+
+  bool revert() {
+    return dispatch_restore({}, "immediate restore", false);
   }
 
   bool reset_persistence() {
-    if (!revert()) {
-      return false;
-    }
-    auto &manager = state();
-    std::lock_guard lock {manager.mutex};
-    manager.snapshot.reset();
-    manager.reservations.clear();
-    manager.retained_scales.clear();
-    manager.newly_connected_reservations.clear();
-    statefile::clear_virtual_display_scales();
-    return true;
+    return dispatch_restore({}, "reset display persistence", true);
   }
 
   void schedule_revert(const std::chrono::milliseconds delay, std::string reason) {
-    auto &manager = state();
-    const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
-    std::thread([delay, generation, reason = std::move(reason)]() {
-      std::this_thread::sleep_for(delay);
-      stream::session::cleanup_reservation_t cleanup_reservation;
-      auto &delayed_manager = state();
-      (void) cleanup_policy::run_delayed_restore(
-        nvhttp::stream_lifecycle_mutex(),
-        delayed_manager.mutex,
-        delayed_manager.cleanup_generation,
-        generation,
-        [] {
-          // A paused normal app may intentionally reach its display timeout.
-          // Retained Remote Monitors remain owners even without a transport.
-          return stream::session::has_capture_runtime_owner() ||
-                 !remote_display_topology::instance().protected_remote_monitor_client_ids().empty();
-        },
-        [&] {
-          BOOST_LOG(info) << "Linux private display: " << reason << " elapsed; restoring outputs.";
-          return revert_locked(delayed_manager);
-        }
-      );
-    }).detach();
+    (void) dispatch_restore(delay, std::move(reason), false);
   }
 
   void cancel_scheduled_revert() {
-    state().cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
+    auto &manager = state();
+    const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    manager.restore_dispatcher.cancel(generation);
+  }
+
+  void shutdown_restore_worker(bool drain) {
+    auto &manager = state();
+    if (drain) manager.restore_dispatcher.drain();
+    manager.restore_dispatcher.stop();
   }
 
   bool capable() {

@@ -168,13 +168,18 @@ static int relay_responses(int socket_fd, uint64_t generation) {
     } while (received < 0 && errno == EINTR);
     if (!received) {
       errno = ECONNRESET;
-      return fail("broker disconnected before reporting completion");
+      (void) fail("broker disconnected before reporting completion");
+      return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
     }
-    if (received < 0) return fail("could not receive broker response");
+    if (received < 0) {
+      (void) fail("could not receive broker response");
+      return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
+    }
     if ((message.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) ||
         received < (ssize_t) sizeof(struct vibepollo_session_message)) {
       errno = EPROTO;
-      return fail("invalid broker response");
+      (void) fail("invalid broker response");
+      return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
     }
     struct vibepollo_session_message header;
     memcpy(&header, packet, sizeof(header));
@@ -184,28 +189,33 @@ static int relay_responses(int socket_fd, uint64_t generation) {
         header.generation != generation || header.reserved ||
         header.argument_count || header.payload_length != payload_length) {
       errno = EPROTO;
-      return fail("invalid broker response");
+      (void) fail("invalid broker response");
+      return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
     }
     if (header.type == VIBEPOLLO_SESSION_STDOUT ||
         header.type == VIBEPOLLO_SESSION_STDERR) {
       if (!payload_length || payload_length > VIBEPOLLO_SESSION_PROTOCOL_OUTPUT_CHUNK ||
           header.status) {
         errno = EPROTO;
-        return fail("invalid broker output frame");
+        (void) fail("invalid broker output frame");
+        return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
       }
       if (!write_all(header.type == VIBEPOLLO_SESSION_STDOUT ? STDOUT_FILENO : STDERR_FILENO,
                      packet + sizeof(header), payload_length)) {
-        return fail("could not forward broker output");
+        (void) fail("could not forward broker output");
+        return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
       }
     } else if (header.type == VIBEPOLLO_SESSION_EXIT) {
       if (payload_length || header.status < 0 || header.status > 255) {
         errno = EPROTO;
-        return fail("invalid broker exit frame");
+        (void) fail("invalid broker exit frame");
+        return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
       }
       return header.status;
     } else {
       errno = EPROTO;
-      return fail("unknown broker response");
+      (void) fail("unknown broker response");
+      return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
     }
   }
 }

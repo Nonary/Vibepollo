@@ -1658,12 +1658,27 @@ static uint64_t monotonic_milliseconds(void) {
   return (uint64_t) now.tv_sec * UINT64_C(1000) + (uint64_t) now.tv_nsec / UINT64_C(1000000);
 }
 
-static bool terminate_worker(pid_t worker, bool *worker_exited, int *status) {
+static bool terminate_display_worker(pid_t worker, bool *worker_exited, int *status,
+                                     bool (*signal_worker)(pid_t, int)) {
+  (void) signal_worker(-worker, SIGKILL);
+  (void) signal_worker(worker, SIGKILL);
+  const uint64_t now = monotonic_milliseconds();
+  *worker_exited = now && reap_child_until(worker, now + 1000, status);
+  return *worker_exited;
+}
+
+static bool terminate_worker(pid_t worker, bool *worker_exited, int *status, bool display_request) {
   if (*worker_exited) return true;
   // The worker has already changed to the selected session UID. CAP_KILL is
   // therefore the broker supervisor's only capability beyond SETUID/SETGID,
   // and is required solely to cancel this direct descendant on disconnect or
   // generation change. It is never inherited past drop_to_session().
+  if (display_request) {
+    // KScreen has no application teardown to drain. Stop the entire helper
+    // group and reap before acknowledging cancellation to the host, which
+    // holds the topology serialization fence until that acknowledgement.
+    return terminate_display_worker(worker, worker_exited, status, signal_cross_uid_worker);
+  }
   if (!signal_cross_uid_worker(worker, SIGTERM)) return false;
   const struct timespec delay = {.tv_sec = 0, .tv_nsec = 50000000};
   for (unsigned int attempt = 0; attempt < 240; ++attempt) {
@@ -1697,17 +1712,29 @@ static bool forward_output(int socket_fd, int *pipe_fd, uint16_t type,
   return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
 }
 
+static int display_worker_completion_status(int status, bool cancelled, bool display_mutating) {
+  // A killed Wayland/D-Bus client cannot retract a mutation already delivered
+  // to KWin. Reaping the client proves only process completion.
+  if (display_mutating && (cancelled || WIFSIGNALED(status))) return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
+  return cancelled ? 126 : wait_status_exit_code(status);
+}
+
 static int relay_worker(int socket_fd, pid_t worker, int output_fd[2],
                         const struct session_identity *identity,
-                        gid_t service_gid) {
+                        gid_t service_gid, bool display_request, bool display_mutating) {
   bool worker_exited = false;
   int status = 126 << 8;
   const char *cancellation_reason = NULL;
   bool client_connected = true;
   uint64_t last_identity_check = monotonic_milliseconds();
+  const uint64_t display_deadline = last_identity_check + VIBEPOLLO_SESSION_DISPLAY_TIMEOUT_MS;
 
   while (!worker_exited || output_fd[0] >= 0 || output_fd[1] >= 0) {
     const uint64_t now = monotonic_milliseconds();
+    if (display_request && (!now || now >= display_deadline)) {
+      cancellation_reason = "Vibepollo display helper timed out; request cancelled.\n";
+      break;
+    }
     if (!now || !last_identity_check || now - last_identity_check >= 250) {
       if (!identity_is_current(identity, service_gid)) {
         cancellation_reason = "Vibepollo session changed; request cancelled.\n";
@@ -1770,15 +1797,18 @@ static int relay_worker(int socket_fd, pid_t worker, int output_fd[2],
     }
   }
 
-  if (!worker_exited) (void) terminate_worker(worker, &worker_exited, &status);
+  if (!worker_exited) (void) terminate_worker(worker, &worker_exited, &status, display_request);
   if (output_fd[0] >= 0) close(output_fd[0]);
   if (output_fd[1] >= 0) close(output_fd[1]);
   if (!client_connected) return 126;
+  // A failed reap must never look like completion. Closing the connection
+  // makes session-exec report unknown completion and the host fail closed.
+  if (!worker_exited) return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
+  const int exit_code = display_worker_completion_status(status, cancellation_reason != NULL, display_mutating);
   if (cancellation_reason) {
-    send_rejection(socket_fd, identity->generation, cancellation_reason);
-    return 126;
+    (void) send_frame(socket_fd, VIBEPOLLO_SESSION_STDERR, identity->generation, 0,
+                      cancellation_reason, strlen(cancellation_reason));
   }
-  const int exit_code = wait_status_exit_code(status);
   (void) send_frame(socket_fd, VIBEPOLLO_SESSION_EXIT, identity->generation,
                     exit_code, NULL, 0);
   return exit_code;
@@ -1826,7 +1856,11 @@ int main(int argc, char **argv) {
     free(packet);
     return 126;
   }
-  const int result = relay_worker(STDIN_FILENO, worker, output_fd, &identity, service_gid);
+  const bool display_request = request.argc >= 2 &&
+    (!strcmp(request.argv[1], "display-query") || !strcmp(request.argv[1], "display-apply"));
+  const bool display_mutating = request.argc >= 2 && !strcmp(request.argv[1], "display-apply");
+  const int result = relay_worker(STDIN_FILENO, worker, output_fd, &identity, service_gid,
+                                 display_request, display_mutating);
   free(packet);
   return result;
 }

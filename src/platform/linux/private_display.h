@@ -79,15 +79,18 @@ namespace platf::linux_private_display {
   bool is_kernel_output(const std::string &output_name);
   std::optional<std::string> output_for_client(const std::string &client_uuid);
 
-  /** Restore the pre-stream topology and release all private-output reservations. */
+  /** Queue topology restoration through the session helper; true means accepted. */
   bool revert();
 
-  /** Forget cached topology/reservations after restoring the current session. */
+  /** Queue restoration and forget cached state only after successful completion. */
   bool reset_persistence();
 
   /** Generation-fenced delayed restore with a lifecycle-specific diagnostic reason. */
   void schedule_revert(std::chrono::milliseconds delay, std::string reason);
   void cancel_scheduled_revert();
+
+  /** Drain standalone restoration or cancel pending machine-host work before teardown. */
+  void shutdown_restore_worker(bool drain);
 
   /** Runtime capability/readiness and Web UI display enumeration. */
   bool capable();

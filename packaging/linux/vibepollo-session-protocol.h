@@ -9,6 +9,10 @@
 #define VIBEPOLLO_SESSION_PROTOCOL_MAX_ARGUMENTS UINT32_C(65)
 #define VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE UINT32_C(131072)
 #define VIBEPOLLO_SESSION_PROTOCOL_OUTPUT_CHUNK UINT32_C(16384)
+/* No terminal broker acknowledgement was received; mutation completion is unknown. */
+#define VIBEPOLLO_SESSION_COMPLETION_UNKNOWN 125
+/* KScreen requests are cancelled and reaped by the broker before reporting exit. */
+#define VIBEPOLLO_SESSION_DISPLAY_TIMEOUT_MS UINT64_C(5000)
 
 enum vibepollo_session_message_type {
   VIBEPOLLO_SESSION_REQUEST = 1,

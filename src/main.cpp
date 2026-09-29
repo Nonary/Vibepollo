@@ -715,9 +715,11 @@ int main(int argc, char *argv[]) {
   auto linux_private_display_guard = util::fail_guard([supervised_machine_host]() {
     if (supervised_machine_host) {
       platf::linux_private_display::request_process_shutdown_preserve();
+      platf::linux_private_display::shutdown_restore_worker(false);
       return;
     }
     (void) platf::linux_display::backend().revert();
+    platf::linux_private_display::shutdown_restore_worker(true);
   });
 #endif
 

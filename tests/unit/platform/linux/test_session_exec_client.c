@@ -113,6 +113,11 @@ int main(void) {
   close(peers[0]);
   close(peers[1]);
 
+  CHECK(!socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, peers));
+  close(peers[1]);
+  CHECK(relay_responses(peers[0], 42) == VIBEPOLLO_SESSION_COMPLETION_UNKNOWN);
+  close(peers[0]);
+
   const pid_t child = fork();
   CHECK(child >= 0);
   if (!child) {

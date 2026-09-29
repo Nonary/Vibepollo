@@ -330,7 +330,7 @@ forbid(host, "trap 'forward_host_signal", "duplicate service signal delivery")
 for variable in ("VIBEPOLLO_MACHINE_HOST", "VIBEPOLLO_SESSION_ROLE"):
     require(host, variable, "machine-host provider scan environment")
     require(provider_scan_protocol, f'std::getenv("{variable}")', "provider scan machine-session guard")
-for variable in ("VIBESHINE_MACHINE_HOST", "VIBESHINE_SESSION_ROLE"):
+for variable in ("VIBESHINE_MACHINE_HOST", "VIBEPOLLO_SESSION_ROLE"):
     forbid(provider_scan_protocol, variable, "provider scan source-only environment")
 require(frame_limiter, 'std::getenv("VIBEPOLLO_MACHINE_HOST")', "machine-host global limiter routing")
 require(frame_limiter, '"/usr/libexec/vibeshine/vibepollo-session-exec", "global-limiter"',
@@ -338,7 +338,7 @@ require(frame_limiter, '"/usr/libexec/vibeshine/vibepollo-session-exec", "global
 forbid(frame_limiter, "VIBESHINE_MACHINE_HOST", "global limiter source-only environment")
 require(host, '"VIBEPOLLO_SESSION_TYPE=wayland"', "managed Wayland session type")
 require(wayland_hdr_policy, 'std::getenv("VIBEPOLLO_SESSION_TYPE")', "managed Wayland HDR policy")
-forbid(wayland_hdr_policy, "VIBESHINE_SESSION_TYPE", "Wayland HDR source-only environment")
+forbid(wayland_hdr_policy, "VIBEPOLLO_SESSION_TYPE", "Wayland HDR source-only environment")
 
 # API restart of the private child exits back to the readiness-gating wrapper.
 # Ordinary Linux launches retain the historical atexit self-reexec path.
@@ -413,21 +413,45 @@ for invariant in (
     "std::shared_lock {topology_mutation_gate}",
     "g_subprocess_newv(",
     "mutation_admission.unlock()",
-    "g_subprocess_communicate_utf8(",
+    "helper_process::communicate_until(process, deadline,",
 ):
     require(doctor_body, invariant, "bounded KScreen mutation admission")
 if not (
     doctor_body.index("std::shared_lock {topology_mutation_gate}")
     < doctor_body.index("g_subprocess_newv(")
     < doctor_body.index("mutation_admission.unlock()")
-    < doctor_body.index("g_subprocess_communicate_utf8(")
+    < doctor_body.index("helper_process::communicate_until(process, deadline,")
 ):
-    raise AssertionError("KScreen mutation admission remains held across its unbounded response")
+    raise AssertionError("KScreen mutation admission remains held across its helper response")
 execute_body = private_display.split("bool execute_configuration", 1)[1].split(
     "double floating_point", 1
 )[0]
 require(execute_body, "run_doctor(arguments, true)", "fenced KScreen mutation spawn")
 forbid(execute_body, "std::shared_lock", "KScreen response outside mutation admission")
+for operation, end_marker in (
+    ("revert", "bool reset_persistence"),
+    ("reset_persistence", "void schedule_revert"),
+    ("schedule_revert", "void cancel_scheduled_revert"),
+):
+    body = private_display.split(f"\n  {'void' if operation == 'schedule_revert' else 'bool'} {operation}(", 1)[1].split(end_marker, 1)[0]
+    require(body, "dispatch_restore(", f"asynchronous {operation} admission")
+    forbid(body, "revert_locked(", f"no inline restoration in {operation}")
+    forbid(body, "manager.mutex", f"no display transaction lock in {operation}")
+forbid(private_display, ").detach()", "owned restore worker lifetime")
+require(doctor_body, "helper_budget_available(helper_reply_timeout)", "full helper drain budget")
+require(doctor_body, "helper_completion_unknown.store(true", "uncertain completion fences later mutations")
+require(private_display, "helper_budget_available(connector_reply_timeout)", "full connector drain budget")
+require(broker, "now >= display_deadline", "broker-owned display request deadline")
+require(broker, "if (!worker_exited) return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN", "no acknowledgement before reap")
+require(broker, "terminate_display_worker(worker, worker_exited, status, signal_cross_uid_worker)", "display cancellation before acknowledgement")
+require(broker, "display_mutating && (cancelled || WIFSIGNALED(status))", "interrupted compositor mutations remain uncertain")
+for method, handler in (("GET", "getClientDisplayLayout"), ("PUT", "putClientDisplayLayout")):
+    require(confighttp, f'register_blocking_api_route("^/api/clients/display-layout$", "{method}", {handler})', "display queries outside HTTPS loop")
+status_body = confighttp.split("void getSessionStatus(", 1)[1].split("\n  void ", 1)[0]
+require(status_body, "session_count_no_cleanup()", "status uses passive stream snapshot")
+require(status_body, "proc::proc.current_app_id()", "status uses passive app snapshot")
+forbid(status_body, "rtsp_stream::session_count()", "no stream teardown from status polling")
+forbid(status_body, "proc::proc.running()", "no app teardown from status polling")
 initialize_body = private_display.split("\n  bool initialize() {", 1)[1].split(
     "\n  prepare_result_t prepare_session", 1
 )[0]
