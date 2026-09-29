@@ -463,7 +463,7 @@ sunshine_register_component(NAME test_component_session_history TEST_SOURCE unit
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_storage.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_storage_diagnostics.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_policy.cpp"
-    LINK_LIBRARIES PkgConfig::SQLITE3)
+    LINK_LIBRARIES PkgConfig::SQLITE3 nlohmann_json::nlohmann_json)
 sunshine_register_component(NAME test_component_host_stats TEST_SOURCE unit/test_host_stats.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/host_stats_service.cpp")
 sunshine_register_component(NAME test_component_audio_policy TEST_SOURCE unit/test_audio.cpp
