@@ -88,7 +88,7 @@ TEST(LutrisDiscovery, ReadsInstalledGamesAndClassifiesSteam) {
 
 TEST(LutrisArtwork, PreparesPortraitAsProviderSpecificPng) {
   const auto base = fs::temp_directory_path() /
-                    ("vibeshine-lutris-artwork-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+                    ("vibepollo-lutris-artwork-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
   fs::create_directories(base);
   const auto source = base / "portrait.jpg";
   write_test_cover(source);
