@@ -288,7 +288,7 @@
       },
       "steam": {
         "browse": "Browse Steam games",
-        "editNotice": "Vibeshine manages this game's launch command and working directory from Steam metadata. Those generated details stay hidden here; automatic Steam entries refresh them during sync.",
+        "editNotice": "Vibepollo manages this game's launch command and working directory from Steam metadata. Those generated details stay hidden here; automatic Steam entries refresh them during sync.",
         "empty": "No installed Steam games match this name.",
         "loadFailed": "Unable to load Steam games. Check that Steam is installed and its libraries are readable.",
         "loading": "Loading Steam games...",
@@ -299,7 +299,7 @@
       },
       "lutris": {
         "browse": "Browse Lutris games",
-        "editNotice": "Vibeshine manages this game's launch command from Lutris metadata. Those generated details stay hidden here; automatic Lutris entries refresh them during sync.",
+        "editNotice": "Vibepollo manages this game's launch command from Lutris metadata. Those generated details stay hidden here; automatic Lutris entries refresh them during sync.",
         "empty": "No imported Lutris games match this name.",
         "loadFailed": "Unable to load Lutris games. Check that Lutris is installed and its library is readable.",
         "loading": "Loading Lutris games...",
