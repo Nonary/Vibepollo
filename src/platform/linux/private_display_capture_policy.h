@@ -5,6 +5,11 @@
 #pragma once
 
 namespace platf::linux_private_display_capture {
+  /** An explicit KMS backend must survive a temporarily dormant scanout. */
+  [[nodiscard]] constexpr bool enable_kms(bool explicitly_requested, bool outputs_available) noexcept {
+    return explicitly_requested || outputs_available;
+  }
+
   /** Direct KMS is required to preserve managed private-display HDR scanout. */
   [[nodiscard]] constexpr bool prefer_kms(
     int dynamic_range,

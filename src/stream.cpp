@@ -2590,6 +2590,40 @@ namespace stream {
         }
 
         const auto send_complete_timestamp = std::chrono::steady_clock::now();
+#ifdef __linux__
+        {
+          const auto source_timestamp = packet->capture_timestamp.value_or(*packet->frame_timestamp);
+          const auto source_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                   source_timestamp.time_since_epoch()
+          ).count();
+          const auto send_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 send_complete_timestamp.time_since_epoch()
+          ).count();
+          const auto wall_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 std::chrono::system_clock::now().time_since_epoch()
+          ).count();
+          drm_timing_trace::write([&](auto &trace) {
+            trace << "kind=rtp frame=" << packet->frame_index();
+            if (frame_is_dupe) {
+              trace << " timestamp_source=synthetic synthetic_ns=" << source_ns;
+            } else if (packet->capture_timestamp) {
+              trace << " timestamp_source=drm raw_ns=" << source_ns;
+            } else {
+              trace << " timestamp_source=frame_fallback frame_ns=" << source_ns;
+            }
+            trace << " rtp=" << timestamp;
+            if (frame_is_dupe) {
+              // Duplicate packets have a synthetic RTP timestamp.
+            } else if (wire_timeline_state.previous_frame) {
+              trace << " previous_rtp=" << wire_timeline_state.previous_frame->rtp_timestamp
+                    << " delta=" << static_cast<std::uint32_t>(timestamp - wire_timeline_state.previous_frame->rtp_timestamp);
+            } else {
+              trace << " previous_rtp=none delta=none";
+            }
+            trace << " send_ns=" << send_ns << " wall_ns=" << wall_ns;
+          });
+        }
+#endif
         if (!frame_is_dupe) {
           const wire_timeline_frame_t current_wire_frame {
             .frame_index = packet->frame_index(),

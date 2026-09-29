@@ -167,6 +167,27 @@ TEST(KmsgrabSelection, StartupPhaseCreditIsBoundedToOneFrame) {
   EXPECT_EQ(limiter.next_delivery(first), first + 10ms);
 }
 
+TEST(KmsgrabSelection, ReportsCreditAndDeadlineWithoutChangingLimiterState) {
+  using namespace std::chrono_literals;
+  using clock_t = platf::kms::pacing::clock_t;
+
+  platf::kms::pacing::presentation_rate_limiter_t limiter;
+  limiter.set_interval(10ms);
+
+  const auto first = clock_t::time_point {1s};
+  limiter.mark_delivered(first);
+  limiter.mark_delivered(first + 4ms);
+
+  const auto state = limiter.diagnostic_state(first + 5ms);
+  EXPECT_EQ(state.interval, 10ms);
+  EXPECT_EQ(state.stored_credit, 4ms);
+  EXPECT_EQ(state.available_credit, 5ms);
+  ASSERT_TRUE(state.last_delivery);
+  EXPECT_EQ(*state.last_delivery, first + 4ms);
+  EXPECT_EQ(state.next_delivery, first + 10ms);
+  EXPECT_EQ(limiter.next_delivery(first + 5ms), state.next_delivery);
+}
+
 TEST(KmsgrabSelection, SustainedOversupplyStaysWithinTheOneFrameBurstAllowance) {
   using namespace std::chrono_literals;
   using clock_t = platf::kms::pacing::clock_t;
@@ -298,6 +319,17 @@ TEST(KmsgrabSelection, UsesStableVibeshinePresentationAbi) {
   EXPECT_EQ(offsetof(vibeshine_drm_frame, dma_buf_fds), 52u);
   EXPECT_EQ(offsetof(vibeshine_drm_frame, sync_file_fds), 100u);
   EXPECT_EQ(offsetof(vibeshine_drm_frame, reserved), 120u);
+
+  EXPECT_EQ(VIBESHINE_DRM_TRACE_ABI_VERSION, 1u);
+  EXPECT_EQ(VIBESHINE_DRM_TRACE_MAX_EVENTS, 64u);
+  EXPECT_EQ(DRM_VIBESHINE_GET_PRESENT_TRACE, 2u);
+  EXPECT_EQ(sizeof(vibeshine_drm_trace_event), 16u);
+  EXPECT_EQ(sizeof(vibeshine_drm_present_trace), 1088u);
+  EXPECT_EQ(offsetof(vibeshine_drm_present_trace, after_sequence), 8u);
+  EXPECT_EQ(offsetof(vibeshine_drm_present_trace, newest_sequence), 16u);
+  EXPECT_EQ(offsetof(vibeshine_drm_present_trace, count), 24u);
+  EXPECT_EQ(offsetof(vibeshine_drm_present_trace, events), 32u);
+  EXPECT_EQ(offsetof(vibeshine_drm_present_trace, reserved), 1056u);
 }
 
 TEST(KmsgrabSelection, RecognizesCudaImportableDisplayDrivers) {

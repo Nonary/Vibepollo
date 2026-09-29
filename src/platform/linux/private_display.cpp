@@ -9,6 +9,7 @@
 #include "hdr_policy.h"
 #include "private_display_cleanup_policy.h"
 #include "private_display_mode_client.h"
+#include "private_display_configuration_policy.h"
 #include "private_display_mode_policy.h"
 #include "private_display_restore_policy.h"
 #include "private_display_resume_policy.h"
@@ -417,10 +418,11 @@ namespace platf::linux_private_display {
         return true;
       }
       const auto result = run_doctor(arguments, true);
-      if (!result.success || mode_policy::doctor_reported_failure(result.stdout_text) ||
+      if (!configuration_policy::command_succeeded(result.success, result.stdout_text, result.stderr_text) ||
+          mode_policy::doctor_reported_failure(result.stdout_text) ||
           mode_policy::doctor_reported_failure(result.stderr_text)) {
         BOOST_LOG(error) << "Linux private display: KScreen " << operation << " failed: "
-                         << (result.stderr_text.empty() ? result.stdout_text : result.stderr_text);
+                         << result.stdout_text << result.stderr_text;
         return false;
       }
       return true;

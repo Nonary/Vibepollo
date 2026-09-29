@@ -13,8 +13,8 @@
 #include <vector>
 
 namespace drm_timing_trace {
-  inline constexpr auto TRACE_PATH = "/run/vibeshine/host/drm-timing.trace";
-  inline constexpr auto PREVIOUS_TRACE_PATH = "/run/vibeshine/host/drm-timing.trace.previous";
+  inline constexpr auto TRACE_PATH = "/run/vibepollo/host/drm-timing.trace";
+  inline constexpr auto PREVIOUS_TRACE_PATH = "/run/vibepollo/host/drm-timing.trace.previous";
   inline constexpr std::size_t MAX_TRACE_BYTES = 128U * 1024U * 1024U;
 
   class writer_t {

@@ -6,6 +6,7 @@
 
 #include <vibeshine_drm_present.h>
 #include <vibeshine_drm_change.h>
+#include <vibeshine_drm_vrr.h>
 
 TEST(VibeshinePresentPolicy, ValidatesEveryRequestField) {
   vibeshine_drm_wait_present request {};
@@ -126,4 +127,22 @@ TEST(VibeshinePresentPolicy, DetectsCrtcAndConnectorOutputChanges) {
   new_connector = old_connector;
   new_connector.crtc = 2;
   EXPECT_TRUE(vibeshine_drm_connector_changes_scanout(&old_connector, &new_connector));
+}
+
+TEST(VibeshinePresentPolicy, BoundsVrrPresentationsByTheModePeriod) {
+  constexpr unsigned long long period_ns = 8'333'333;
+
+  EXPECT_EQ(vibeshine_drm_vrr_presentation_deadline_ns(0, 100, period_ns), 100);
+  EXPECT_EQ(
+    vibeshine_drm_vrr_presentation_deadline_ns(1'000'000'000, 1'007'000'000, period_ns),
+    1'008'333'333
+  );
+  EXPECT_EQ(
+    vibeshine_drm_vrr_presentation_deadline_ns(1'000'000'000, 1'010'000'000, period_ns),
+    1'010'000'000
+  );
+  EXPECT_EQ(
+    vibeshine_drm_vrr_presentation_deadline_ns(~0ULL - 2, 100, 10),
+    ~0ULL
+  );
 }
