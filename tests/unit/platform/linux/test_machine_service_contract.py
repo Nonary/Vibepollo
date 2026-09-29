@@ -749,8 +749,9 @@ for lifecycle, label in ((arch_install, "Arch lifecycle"), (rpm, "RPM lifecycle"
     if label != "Arch lifecycle":
         require(lifecycle, "disable vibepollo.service", label)
     require(lifecycle, "remove-pam", label)
-require(arch_install, "for obsolete_unit in vibepollo.service vibepollo-session-exec.socket", "Arch lifecycle")
-require(arch_install, 'systemctl disable "$obsolete_unit"', "Arch lifecycle")
+require(arch_install, "vibepollo_retire_obsolete_boot_links || return 1", "Arch lifecycle")
+require(arch_install, "for unit in vibepollo.service vibepollo-session-exec.socket", "Arch lifecycle")
+require(arch_install, 'resolved=$(readlink -f -- "$link")', "Arch lifecycle")
 for lifecycle, label in ((arch_install, "Arch removal"), (rpm, "RPM removal"), (prerm, "native removal")):
     require(lifecycle, "vibepollo-session-controller", label)
 

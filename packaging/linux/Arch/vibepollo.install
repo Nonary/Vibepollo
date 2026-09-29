@@ -950,6 +950,23 @@ vibepollo_unmask_host_for_controller() {
      "$load" == 'LoadState=loaded' ]]
 }
 
+vibepollo_retire_obsolete_boot_links() {
+  local root=${1:-} unit expected link resolved base
+  for unit in vibepollo.service vibepollo-session-exec.socket; do
+    expected=$(readlink -f -- "$root/usr/lib/systemd/system/$unit") || return 1
+    [[ -f "$expected" ]] || return 1
+    for base in "$root/etc/systemd/system" "$root/run/systemd/system"; do
+      for link in "$base"/*.wants/"$unit" "$base"/*.requires/"$unit" "$base"/*.upholds/"$unit"; do
+        [[ -e "$link" || -L "$link" ]] || continue
+        [[ -L "$link" ]] || return 1
+        resolved=$(readlink -f -- "$link") || return 1
+        [[ "$resolved" == "$expected" ]] || return 1
+        rm -- "$link" || return 1
+      done
+    done
+  done
+}
+
 do_install_prelogin() {
   local helper=/usr/libexec/vibeshine/vibepollo-machine-host
   if [[ -x "$helper" ]]; then
@@ -958,16 +975,7 @@ do_install_prelogin() {
   systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
   # Retire legacy boot links only after pacman has replaced the package.
   # A failed preflight keeps the old installation enabled for reboot.
-  local obsolete_unit obsolete_state
-  for obsolete_unit in vibepollo.service vibepollo-session-exec.socket; do
-    obsolete_state=$(timeout --signal=KILL 5 systemctl is-enabled "$obsolete_unit" 2>/dev/null || true)
-    case "$obsolete_state" in
-      enabled | enabled-runtime | linked | linked-runtime)
-        timeout --signal=KILL 15 systemctl disable "$obsolete_unit" || return 1 ;;
-      disabled | static | indirect | generated | transient | masked | masked-runtime | not-found) ;;
-      *) return 1 ;;
-    esac
-  done
+  vibepollo_retire_obsolete_boot_links || return 1
   systemctl daemon-reload || return 1
   [[ -x "$helper" ]] || return 0
   if "$helper" configure-auto; then

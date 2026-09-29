@@ -459,3 +459,42 @@ for package_hook in packaging/linux/vibeshine-preinst.in \
   )
 done
 printf 'Debian and RPM package guards accept stopped sockets without MainPID.\n'
+(
+  preun_function=$(sed -n '/^vibepollo_preun_unit_is_quiescent() {$/,/^}$/p' \
+    "$repo/packaging/linux/copr/Sunshine.spec")
+  preun_function=${preun_function//%%/%}
+  eval "$preun_function"
+  timeout() { printf '%s\n' "$property_fixture"; }
+  vibepollo_preun_cgroup_is_quiescent() { [[ -z "$1" ]]; }
+  property_fixture=$'LoadState=loaded\nActiveState=inactive\nSubState=dead\nControlGroup='
+  vibepollo_preun_unit_is_quiescent vibepollo-session-exec.socket
+  if vibepollo_preun_unit_is_quiescent vibepollo.service; then exit 1; fi
+)
+printf 'RPM removal accepts stopped sockets without MainPID.\n'
+
+(
+  source "$repo/packaging/linux/Arch/vibepollo.install"
+  fixture=$(mktemp -d /tmp/vibepollo-masked-links.XXXXXXXX)
+  trap 'rm -rf -- "$fixture"' EXIT
+  mkdir -p "$fixture/usr/lib/systemd/system" \
+    "$fixture/etc/systemd/system/graphical.target.wants" \
+    "$fixture/etc/systemd/system/sockets.target.wants" \
+    "$fixture/run/systemd/system"
+  for unit in vibepollo.service vibepollo-session-exec.socket; do
+    printf '[Unit]\nDescription=Fixture\n' > "$fixture/usr/lib/systemd/system/$unit"
+    ln -s /dev/null "$fixture/run/systemd/system/$unit"
+  done
+  ln -s "$fixture/usr/lib/systemd/system/vibepollo.service" \
+    "$fixture/etc/systemd/system/graphical.target.wants/vibepollo.service"
+  ln -s "$fixture/usr/lib/systemd/system/vibepollo-session-exec.socket" \
+    "$fixture/etc/systemd/system/sockets.target.wants/vibepollo-session-exec.socket"
+  [[ $(systemctl --root="$fixture" is-enabled vibepollo.service) == masked-runtime ]]
+  vibepollo_retire_obsolete_boot_links "$fixture"
+  [[ ! -e "$fixture/etc/systemd/system/graphical.target.wants/vibepollo.service" ]]
+  [[ ! -e "$fixture/etc/systemd/system/sockets.target.wants/vibepollo-session-exec.socket" ]]
+  [[ $(systemctl --root="$fixture" is-enabled vibepollo.service) == masked-runtime ]]
+  ln -s /dev/null "$fixture/etc/systemd/system/graphical.target.wants/vibepollo.service"
+  if vibepollo_retire_obsolete_boot_links "$fixture"; then exit 1; fi
+  [[ -L "$fixture/etc/systemd/system/graphical.target.wants/vibepollo.service" ]]
+)
+printf 'Arch upgrade retires only matching boot links while runtime masks remain.\n'
