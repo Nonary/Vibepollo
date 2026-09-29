@@ -179,7 +179,7 @@ test('Linux maintenance offers logs and display setup', async ({ page }) => {
 for (const theme of ['dark', 'light']) {
   test(`${theme} theme and keyboard switches remain usable`, async ({ page }) => {
     await host(page);
-    await page.addInitScript((theme) => localStorage.setItem('vibeshine.theme', theme), theme);
+    await page.addInitScript((theme) => localStorage.setItem('vibepollo.theme', theme), theme);
     await page.goto('/v2/settings');
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
     await page.locator('#setting-stream_audio').focus();
