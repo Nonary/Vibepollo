@@ -95,7 +95,7 @@ namespace {
 
 TEST(SteamDiscovery, CatalogIncludesPlayedUninstalledGamesWithNames) {
   const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());
-  const auto base = fs::temp_directory_path() / ("vibeshine-steam-catalog-test-" + std::to_string(nonce));
+  const auto base = fs::temp_directory_path() / ("vibepollo-steam-catalog-test-" + std::to_string(nonce));
   std::error_code ec;
   fs::create_directories(base / "steamapps", ec);
   fs::create_directories(base / "appcache", ec);

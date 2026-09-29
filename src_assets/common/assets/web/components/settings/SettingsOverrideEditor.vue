@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n';
 
 import {
   clientOverrideableKeys,
+  gamepadOptionsForPlatform,
   settingsCategories,
   settingsDefaults,
   type SettingsField,
@@ -287,7 +288,9 @@ function selectOptions(key: string): Array<{ label: string; value: string }> {
   }
 
   let declaredOptions = field?.options ?? [];
-  if (key === 'encoder') {
+  if (key === 'gamepad') {
+    declaredOptions = gamepadOptionsForPlatform(String(props.metadata.platform ?? ''));
+  } else if (key === 'encoder') {
     const auto: SettingsOption = { value: '', labelKey: '_common.auto' };
     const platform = String(props.metadata.platform ?? '').toLocaleLowerCase();
     declaredOptions = platform.includes('windows')

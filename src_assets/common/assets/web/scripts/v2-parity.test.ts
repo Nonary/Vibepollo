@@ -6,6 +6,7 @@ import {
   captureOptionsForPlatform,
   frameGenerationOptionsForPlatform,
   gamepadOptionsForPlatform,
+  settingsDefaults,
   settingsCategories,
   type SettingsField,
 } from '../configs/settingsSchema.ts';

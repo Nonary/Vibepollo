@@ -29,6 +29,7 @@ import {
 } from '@/services/apps';
 import { searchCovers, updatePlayniteCover, uploadCover } from '@/services/covers';
 import {
+  gamepadOptionsForPlatform,
   settingsCategories,
   settingsDefaults,
   type SettingsField,
@@ -143,6 +144,8 @@ interface PlayniteStatus {
 }
 
 interface SteamGame {
+  installed: boolean;
+  filtered: boolean;
   appid: number | string;
   steamId: string;
   stableId: string;
@@ -516,9 +519,11 @@ const filteredPlayniteGames = computed(() => {
 });
 const filteredSteamGames = computed(() => {
   const query = form.name.trim().toLocaleLowerCase();
-  return query
-    ? steamGames.value.filter((game) => game.name.toLocaleLowerCase().includes(query))
-    : steamGames.value;
+  const games = steamGames.value.filter((game) => game.installed && !game.filtered);
+  return (query
+    ? games.filter((game) => game.name.toLocaleLowerCase().includes(query))
+    : games
+  ).sort((left, right) => left.name.localeCompare(right.name));
 });
 const filteredLutrisGames = computed(() => {
   const query = form.name.trim().toLocaleLowerCase();
@@ -1014,7 +1019,9 @@ function overrideSelectOptions(key: string): Array<{ label: string; value: strin
   }
 
   let declaredOptions = field?.options ?? [];
-  if (key === 'encoder') {
+  if (key === 'gamepad') {
+    declaredOptions = gamepadOptionsForPlatform(String(overrideMetadata.value.platform ?? ''));
+  } else if (key === 'encoder') {
     const auto: SettingsOption = { value: '', labelKey: '_common.auto' };
     const platform = String(overrideMetadata.value.platform ?? '').toLocaleLowerCase();
     declaredOptions = platform.includes('windows')
@@ -1852,6 +1859,8 @@ function steamGame(value: unknown): SteamGame | null {
   return {
     appid,
     steamId,
+    installed: game.installed === undefined ? true : asBoolean(game.installed),
+    filtered: asBoolean(game.filtered),
     stableId: asString(game.stable_id),
     name,
     installDir: asString(game.install_dir),

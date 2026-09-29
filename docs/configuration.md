@@ -4444,7 +4444,7 @@ their catalog.
 Default: `false`
 
 The manual application picker shows installed, importable Steam games by
-default, matching the Playnite picker. Vibeshine also reads Steam's local user
+default, matching the Playnite picker. Vibepollo also reads Steam's local user
 play-history and `appinfo.vdf` caches to rank installed games for recent-game
 synchronization without requiring a Steam Web API key or a public profile.
 
