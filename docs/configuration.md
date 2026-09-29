@@ -2607,7 +2607,7 @@ this option to replace the running app immediately. The default is `true`.
         <td>Description</td>
         <td colspan="2">
             Percentage of error correcting packets per data packet in each video frame.
-            PyroWave always sends without FEC and ignores this setting.
+            PyroWave ignores this setting; its parity is controlled by `pyrowave_critical_fec_percentage`.
             @warning{Higher values can correct for more network packet loss,
             but at the cost of increasing bandwidth usage.}
         </td>
@@ -2637,15 +2637,21 @@ this option to replace the running app immediately. The default is `true`.
         <td>Description</td>
         <td colspan="2">
             Percentage of error correcting packets for the packets that carry the coarsest wavelet level of a
-            PyroWave frame, the first few percent of it. The client cannot decode a frame that lost any of them,
-            with at least 2 error correcting packets per frame. With record framing, encoded image size
-            is capped at the bitrate divided by negotiated FPS. At sustained frame rates below negotiated FPS,
+            PyroWave frame, the first few percent of it. The client cannot decode a frame if any of these
+            packets remain missing after recovery. Protection requires record framing with shard alignment
+            and a value greater than 0, and adds at least 2 error correcting packets when the critical data
+            and parity fit in one FEC block. Length-prefixed frames and unaligned record frames receive no
+            parity; see [PyroWave protocol](pyrowave-protocol.md) for the packet-size requirements.
+            With record framing and a value greater than 0, encoded image size
+            is capped at the encoder bitrate divided by negotiated FPS. At sustained frame rates below negotiated FPS,
             mostly unchanged pictures also receive adaptive protection for finer detail, using only unused
             bitrate and available FEC block space. Detail parity follows the cadence shortfall, up to 50%,
             independently of this setting's critical-packet rate. This targets flicker caused by packet loss;
             it cannot correct encoder quantization shimmer.
-            `fec_percentage` does not apply to PyroWave. 0 disables both kinds of protection and allows frames
-            up to about 5.5 MB instead of 4.1 MB with 1392-byte packets.
+            `fec_percentage` does not apply to PyroWave. 0 disables both kinds of protection, removes the
+            cap of one negotiated frame's bitrate allowance, and allows frames up to about 5.5 MB instead
+            of 4.1 MB with 1392-byte packets. Frames remain bounded by elapsed-time bitrate allowance
+            and transport capacity.
         </td>
     </tr>
     <tr>
@@ -2813,7 +2819,9 @@ this option to replace the running app immediately. The default is `true`.
             interop; Linux imports explicit-modifier RGB DMA-BUF capture frames (including KMS) and also
             supports BGRA system-memory capture. Linux preserves scaling, cursor composition, and the
             negotiated color matrix/range for 8/10-bit and 4:2:0/4:4:4 profiles. CUDA-only NvFBC capture
-            is not supported. The client's bitrate setting sets the bitrate. Critical packets use
+            is not supported. The client's bitrate setting supplies the requested bandwidth budget;
+            at session setup the host subtracts allowances for audio, packet overhead, and control traffic
+            to set the encoder bitrate. Critical packets use
             `pyrowave_critical_fec_percentage`; `fec_percentage` does not apply.
             See [PyroWave protocol](pyrowave-protocol.md).
         </td>

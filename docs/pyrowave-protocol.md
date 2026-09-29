@@ -109,13 +109,15 @@ needs a wired link with hundreds of Mbps to spare.
 | `0x1` | `PYROWAVE_FEATURE_RECORD_FRAMING` | Client parses record framing with padding records. |
 
 `0x2` was once reserved for partial-frame decoding. No bit is needed: record-framed
-frames are always laid out for it (see "Partial frames"), and hosts ignore `0x2`.
+frames use the partial-recovery layout when the negotiated packet size supports
+record alignment (see "Record framing"), and hosts ignore `0x2`.
 
 The host rejects `bitStreamFormat=3` with `400 BAD REQUEST` when PyroWave is
 unavailable, like HEVC/AV1.
 
 Colour: the stock `x-nv-video[0].encoderCscMode` selects range and SDR matrix
-exactly as for the other codecs. 10-bit streams on an HDR display are BT.2020 PQ.
+exactly as for the other codecs. 10-bit streams on an HDR display use BT.2020 PQ
+unless 10-bit SDR is preferred or SDR is forced; those streams use the SDR matrix.
 The host keeps sending the usual HDR mode and metadata control messages.
 
 ## Frames
@@ -129,17 +131,24 @@ reference-invalidation requests for PyroWave sessions.
 
 Every frame is independent, so a lost packet costs at most that frame, and with
 record framing usually only the detail it carried (see "Partial frames"). The
-coarsest wavelet level is required for decoding. Its first few percent of shards
-receive parity at `pyrowave_critical_fec_percentage`; `fec_percentage` does not
-apply to PyroWave. Finer detail normally has no parity, but the host can protect
-it when sustained low frame rates make loss-induced flicker more visible.
+coarsest wavelet level is required for decoding. With aligned record framing and
+`pyrowave_critical_fec_percentage > 0`, its leading shards receive parity at that
+percentage, with at least two parity shards. Protection is skipped if the critical
+data and parity cannot fit in one Reed-Solomon block of 255 shards. Length-prefixed
+frames and record frames without shard alignment have no critical prefix and
+receive no parity. `fec_percentage` does not apply to PyroWave. Finer detail
+normally has no parity, but the host can protect it alongside the critical data
+when sustained low frame rates make loss-induced flicker more visible.
 
-For record framing with FEC enabled, the encoded image budget is capped at the
-negotiated bitrate divided by the negotiated frame rate. A frame-rate drop leaves
-bandwidth available for protection instead of making each encoded image larger.
-For example, 800 Mbps at 120 FPS allows about 0.83 MB of encoded data per frame;
-that ceiling remains about 0.83 MB at 60 or 30 FPS. Faster-than-negotiated
-submissions still receive a smaller elapsed-time budget.
+For record framing with `pyrowave_critical_fec_percentage > 0`, the encoded image
+budget is capped at the encoder bitrate divided by the negotiated frame rate.
+At session setup, the host derives the encoder bitrate from the client's requested
+bandwidth budget after allowing for audio, packet overhead and control traffic.
+A frame-rate drop leaves bandwidth available for protection instead of making
+each encoded image larger. For example, an encoder bitrate of 800 Mbps at 120 FPS
+allows about 0.83 MB of encoded data per frame; that ceiling remains about 0.83 MB
+at 60 or 30 FPS. Faster-than-negotiated submissions still receive a smaller
+elapsed-time budget.
 
 The adaptive policy requires at least 250 ms of frames below negotiated FPS with at
 least 75% unchanged encoded record bytes. It compares records by block ID,
@@ -209,8 +218,11 @@ little-endian records:
 
 Layout: the RTP layer splits the frame into payloads of `packetSize - 16` bytes
 (1376 for the usual 1392-byte packets); the first payload also carries the 8-byte
-frame header, so its frame data ends 8 bytes early. After the sequence header our
-host sends two groups:
+frame header, so its frame data ends 8 bytes early. Alignment requires this payload
+size to be a multiple of four and at least 24 bytes. Otherwise (for example, with
+1390-byte packets), the host copies the encoder's records without reordering or
+padding and reports no critical prefix. The layout below applies when alignment
+is available. After the sequence header our host sends two groups:
 
 1. PyroWave's coarsest wavelet level: block indices below
    `12 * ceil(W / 32) * ceil(H / 32)`, where `W` and `H` are the frame's width and
