@@ -1314,7 +1314,10 @@ namespace rtsp_stream {
       // Match the ANNOUNCE worker's lock order. This prevents a launch that
       // already passed its reservation check from inserting after this exact
       // role has been disconnected.
-      std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
+      std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex(), std::defer_lock);
+      if (!lifecycle_lock_held) {
+        lifecycle_lock.lock();
+      }
       const bool all_clients = client_uuid.empty();
       {
         std::lock_guard<std::mutex> lock {_launch_sessions_mutex};
@@ -1353,7 +1356,9 @@ namespace rtsp_stream {
         }
         vulkan_hdr_layer_active = vulkan_hdr_layer_active_locked();
       }
-      lifecycle_lock.unlock();
+      if (!lifecycle_lock_held) {
+        lifecycle_lock.unlock();
+      }
 #ifdef _WIN32
       set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
 #endif
@@ -1372,7 +1377,9 @@ namespace rtsp_stream {
 
       if (removed_pending || !to_cleanup.empty()) {
         stream::session::cleanup_reservation_t cleanup_reservation;
-        lifecycle_lock.lock();
+        if (!lifecycle_lock_held) {
+          lifecycle_lock.lock();
+        }
         const stream::session::shared_runtime_finalize_context_t finalize_context {
           .virtual_display_guid_bytes = virtual_display_guid_bytes,
         };

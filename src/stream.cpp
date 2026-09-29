@@ -3473,7 +3473,7 @@ namespace stream {
       }
 
       if (!session.do_cmds.empty()) {
-        auto exec_thread = std::thread([cmd_list = session.do_cmds] {
+        auto exec_thread = std::thread([cmd_list = session.do_cmds, env = proc::proc.get_env()]() mutable {
           for (auto &cmd : cmd_list) {
             std::error_code ec;
             boost::filesystem::path working_dir = proc::find_working_directory(cmd.cmd, env);

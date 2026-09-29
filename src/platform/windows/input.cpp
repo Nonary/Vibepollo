@@ -605,7 +605,8 @@ namespace platf {
     const bool vhf_available = raw.vhf->probe();
 
     raw.vigem = new vigem_t {};
-    raw.vigem->vhf_gamepad_available = vhf_available && vhf_gamepad_selected();
+    raw.vigem->vhf_gamepad_available = vhf_available &&
+                                         (config::input.gamepad == "auto" || vhf_gamepad_selected());
     if (raw.vigem->init()) {
       delete raw.vigem;
       raw.vigem = nullptr;

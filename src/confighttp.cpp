@@ -118,8 +118,9 @@ namespace confighttp {
    * @return `true` unless a selected VHF backend is ready to provide controllers.
    */
   static bool is_vigem_required() {
-    return !config::input.gamepad.starts_with("vhf") ||
-           !platf::is_virtual_gamepad_driver_available();
+    const bool vhf_allowed = config::input.gamepad == "auto" ||
+                             config::input.gamepad.starts_with("vhf");
+    return !vhf_allowed || !platf::is_virtual_gamepad_driver_available();
   }
 #endif
 

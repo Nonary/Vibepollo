@@ -4672,7 +4672,7 @@ namespace nvhttp {
           BOOST_LOG(info) << "Replacing running app " << current_appid << " with app " << appid
                           << " at the request of paired client " << request_client_identity.uuid << ".";
           (void) rtsp_stream::disconnect_game_sessions(true);
-          proc::proc.terminate(false, true);
+          proc::proc.terminate(false, true, false, true);
         }
       }
 

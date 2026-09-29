@@ -16,7 +16,7 @@ let timer: ReturnType<typeof setTimeout> | undefined;
 let stopped = false;
 let controller: AbortController | undefined;
 
-async function check(): Promise<void> {
+async function check(forced = false): Promise<void> {
   if (loading.value || !system.metadata?.version || stopped) return;
   clearTimeout(timer);
   loading.value = true;
@@ -27,6 +27,12 @@ async function check(): Promise<void> {
     const config = await apiGet<Record<string, unknown>>('/api/config', {
       signal: controller.signal,
     });
+    const interval = Number(config.update_check_interval ?? 86400);
+    nextCheck = Number.isFinite(interval) && interval >= 0 ? interval * 1000 : 86400000;
+    if (nextCheck === 0 && !forced) {
+      failed.value = false;
+      return;
+    }
     const response = await fetch('https://api.github.com/repos/Nonary/Vibepollo/releases', {
       headers: { Accept: 'application/json' },
       credentials: 'omit',
@@ -41,8 +47,6 @@ async function check(): Promise<void> {
       config.notify_pre_releases,
     );
     failed.value = false;
-    const interval = Number(config.update_check_interval ?? 86400);
-    nextCheck = Number.isFinite(interval) && interval >= 0 ? interval * 1000 : 86400000;
   } catch {
     if (!stopped) failed.value = true;
   } finally {
@@ -90,7 +94,7 @@ onBeforeUnmount(() => {
         :busy="loading"
         :busy-label="t('ui.maintenance.releases.loading')"
         variant="secondary"
-        @click="check"
+        @click="check(true)"
       />
     </InlineAlert>
   </div>

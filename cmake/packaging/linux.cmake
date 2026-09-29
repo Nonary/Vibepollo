@@ -338,6 +338,7 @@ set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
             make, \
             libnuma1, \
             libopus0, \
+            python3, \
             libpulse0, \
             pulseaudio-utils, \
             libva2, \
