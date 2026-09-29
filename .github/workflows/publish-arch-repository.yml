@@ -9,6 +9,11 @@ on:
         description: Published v-less Vibepollo release tag, for example 1.19.0
         required: true
         type: string
+      allow_draft:
+        description: Publish the package from a draft release. Only for a first release whose assets were reviewed by hand.
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: arch-repository
@@ -41,6 +46,7 @@ jobs:
         id: release
         shell: bash
         env:
+          ALLOW_DRAFT: ${{ inputs.allow_draft }}
           REQUESTED_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
@@ -52,10 +58,24 @@ jobs:
             exit 1
           fi
 
-          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${source_tag}")"
-          if [[ "$(jq -r '.draft' <<<"${release_json}")" != false ]]; then
-            echo "::error::Release ${source_tag} is still a draft."
+          # The tags endpoint only resolves published releases. A draft has no tag
+          # ref yet, so with allow_draft fall back to matching tag_name in the list.
+          # gh api prints the error body on stdout, so drop it when the lookup fails.
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${source_tag}" 2>/dev/null)" || release_json=""
+          if [[ -z "${release_json}" && "${ALLOW_DRAFT}" == "true" ]]; then
+            release_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              | jq -cs --arg tag "${source_tag}" '[.[][] | select(.tag_name == $tag and .draft == true)] | first // empty')"
+          fi
+          if [[ -z "${release_json}" ]]; then
+            echo "::error::No release found for tag ${source_tag}."
             exit 1
+          fi
+          if [[ "$(jq -r '.draft' <<<"${release_json}")" != false ]]; then
+            if [[ "${ALLOW_DRAFT}" != "true" ]]; then
+              echo "::error::Release ${source_tag} is still a draft."
+              exit 1
+            fi
+            echo "::warning::Publishing the Arch package from draft release ${source_tag} because allow_draft was set."
           fi
 
           mapfile -t package_assets < <(
@@ -73,10 +93,12 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" >"incoming/${package_name}"
 
           package_info="$(bsdtar -xOf "incoming/${package_name}" .PKGINFO)"
-          arch_release_version=${release_version//-/}
-          arch_release_version=${arch_release_version//+/.}
           grep -qx 'pkgname = vibepollo' <<<"${package_info}"
-          grep -qx "pkgver = ${arch_release_version}-1" <<<"${package_info}"
+          # Keep this aligned with special_package_configuration.cmake: Arch
+          # pkgver strips SemVer's prerelease separator.
+          arch_package_version=${release_version//-/}
+          arch_package_version=${arch_package_version//+/.}
+          grep -qx "pkgver = ${arch_package_version}-1" <<<"${package_info}"
           grep -qx 'arch = x86_64' <<<"${package_info}"
 
           echo "package_name=${package_name}" >>"${GITHUB_OUTPUT}"
@@ -140,6 +162,8 @@ jobs:
           SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_GPG_PASSPHRASE }}
         run: |
           set -euo pipefail
+          # The checkout is owned by a different uid than the container user.
+          git config --global --add safe.directory '*'
           publication_dir="${RUNNER_TEMP}/arch-repo"
           if git fetch --depth=1 origin refs/heads/arch-repo:refs/remotes/origin/arch-repo; then
             git worktree add "${publication_dir}" refs/remotes/origin/arch-repo
@@ -177,6 +201,8 @@ jobs:
           RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
         run: |
           set -euo pipefail
+          # The checkout is owned by a different uid than the container user.
+          git config --global --add safe.directory '*'
           publication_dir="${RUNNER_TEMP}/arch-repo"
           git -C "${publication_dir}" config user.name 'Nonary release automation'
           git -C "${publication_dir}" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
