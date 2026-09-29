@@ -547,41 +547,17 @@ namespace platf {
 
   /**
    * @brief Chooses which controller the VHF driver should present.
-   * @details Explicit profile selections are honoured as-is. Plain `vhf` matches PlayStation and
-   *          Nintendo client types before applying the motion/touchpad preferences to other pads.
    * @param metadata The client's reported gamepad capabilities.
    * @return The profile to request.
    */
   static vhf_profile_e vhf_desired_profile(const gamepad_arrival_t &metadata) {
-    if (config::input.gamepad == "vhf_ds5"sv) {
-      return vhf_profile_e::dualsense;
-    }
-    if (config::input.gamepad == "vhf_ds4"sv) {
-      return vhf_profile_e::dualshock4;
-    }
-    if (config::input.gamepad == "vhf_xbox"sv) {
-      return vhf_profile_e::xbox_series;
-    }
-    if (config::input.gamepad == "vhf_xbox_one"sv) {
-      return vhf_profile_e::xbox_one;
-    }
-    if (config::input.gamepad == "vhf_switch"sv) {
-      return vhf_profile_e::switch_pro;
-    }
-
-    if (metadata.type == LI_CTYPE_PS) {
-      return vhf_profile_e::dualsense;
-    }
-    if (metadata.type == LI_CTYPE_NINTENDO) {
-      return vhf_profile_e::switch_pro;
-    }
-    if (config::input.motion_as_ds4 && (metadata.capabilities & (LI_CCAP_ACCEL | LI_CCAP_GYRO))) {
-      return vhf_profile_e::dualsense;
-    }
-    if (config::input.touchpad_as_ds4 && (metadata.capabilities & LI_CCAP_TOUCHPAD)) {
-      return vhf_profile_e::dualsense;
-    }
-    return vhf_profile_e::automatic;
+    return vhf_gamepad::select_desired_profile(
+      config::input.gamepad,
+      metadata.type,
+      metadata.capabilities,
+      config::input.motion_as_ds4,
+      config::input.touchpad_as_ds4
+    );
   }
 
   /**

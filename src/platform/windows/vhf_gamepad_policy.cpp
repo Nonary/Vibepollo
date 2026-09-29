@@ -33,6 +33,47 @@ namespace platf::vhf_gamepad {
     return std::nullopt;
   }
 
+  vhf_profile_e select_desired_profile(
+    const std::string_view configured_gamepad,
+    const std::uint8_t client_type,
+    const std::uint16_t client_capabilities,
+    const bool motion_as_ds4,
+    const bool touchpad_as_ds4
+  ) noexcept {
+    if (configured_gamepad == "vhf_ds5") {
+      return vhf_profile_e::dualsense;
+    }
+    if (configured_gamepad == "vhf_ds4") {
+      return vhf_profile_e::dualshock4;
+    }
+    if (configured_gamepad == "vhf_xbox") {
+      return vhf_profile_e::xbox_series;
+    }
+    if (configured_gamepad == "vhf_xbox_one") {
+      return vhf_profile_e::xbox_one;
+    }
+    if (configured_gamepad == "vhf_switch") {
+      return vhf_profile_e::switch_pro;
+    }
+
+    if (client_type == LI_CTYPE_PS) {
+      return vhf_profile_e::dualsense;
+    }
+    if (client_type == LI_CTYPE_XBOX) {
+      return vhf_profile_e::automatic;
+    }
+    if (client_type == LI_CTYPE_NINTENDO) {
+      return vhf_profile_e::switch_pro;
+    }
+    if (motion_as_ds4 && (client_capabilities & (LI_CCAP_ACCEL | LI_CCAP_GYRO))) {
+      return vhf_profile_e::dualsense;
+    }
+    if (touchpad_as_ds4 && (client_capabilities & LI_CCAP_TOUCHPAD)) {
+      return vhf_profile_e::dualsense;
+    }
+    return vhf_profile_e::automatic;
+  }
+
   lvg::input_state_request make_input_state(
     const std::uint32_t controller_id,
     const normalized_state_t &state
