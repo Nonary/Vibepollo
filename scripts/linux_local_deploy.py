@@ -38,6 +38,7 @@ CONTROLLER = 'vibepollo-session-controller.service'
 SOCKET = 'vibepollo-session-exec.socket'
 HELPERS = (
     'app-supervisor', 'display-power', 'global-limiter.py', 'host',
+    'package-preflight',
     'kwin-session-environment', 'machine-host', 'profile-import', 'provider-scan',
     'session-broker', 'session-controller', 'session-exec', 'steam-launch',
 )
@@ -55,6 +56,8 @@ FIXED = {
     'usr/lib/firewalld/services/vibepollo.xml', 'etc/ufw/applications.d/vibepollo',
     'usr/share/pipewire/pipewire.conf.d/50-vibepollo-audio.conf',
     'usr/share/metainfo/io.github.Nonary.vibepollo.metainfo.xml',
+    'usr/share/vibepollo/arch-package-hooks',
+    'usr/share/libalpm/hooks/00-vibepollo-quiesce.hook',
 }
 FIXED.update(f'usr/libexec/vibeshine/vibepollo-{name}' for name in HELPERS)
 FIXED.update(f'usr/libexec/vibeshine/vibeshine-{name}' for name in

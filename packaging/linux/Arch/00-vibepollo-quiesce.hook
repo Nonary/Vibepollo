@@ -1,0 +1,12 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = vibepollo
+
+[Action]
+Description = Safely stopping Vibepollo before package replacement
+When = PreTransaction
+Exec = /usr/libexec/vibeshine/vibepollo-package-preflight
+AbortOnFail

@@ -956,7 +956,19 @@ do_install_prelogin() {
     "$helper" remove-pam || echo 'warning: could not remove the obsolete Plasma Login Manager handoff hook.'
   fi
   systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
-  systemctl daemon-reload
+  # Retire legacy boot links only after pacman has replaced the package.
+  # A failed preflight keeps the old installation enabled for reboot.
+  local obsolete_unit obsolete_state
+  for obsolete_unit in vibepollo.service vibepollo-session-exec.socket; do
+    obsolete_state=$(timeout --signal=KILL 5 systemctl is-enabled "$obsolete_unit" 2>/dev/null || true)
+    case "$obsolete_state" in
+      enabled | enabled-runtime | linked | linked-runtime)
+        timeout --signal=KILL 15 systemctl disable "$obsolete_unit" || return 1 ;;
+      disabled | static | indirect | generated | transient | masked | masked-runtime | not-found) ;;
+      *) return 1 ;;
+    esac
+  done
+  systemctl daemon-reload || return 1
   [[ -x "$helper" ]] || return 0
   if "$helper" configure-auto; then
     if ! systemctl enable vibepollo-session-controller.service; then
@@ -991,8 +1003,8 @@ pre_upgrade() {
 }
 
 post_install() {
-  vibepollo_quiesce_or_abort
-  do_secure_executables
+  vibepollo_quiesce_or_abort || return 1
+  do_secure_executables || return 1
   do_udev_reload
   do_restore_kwin_capability
   do_install_vibeshine_drm
@@ -1002,8 +1014,8 @@ post_install() {
 }
 
 post_upgrade() {
-  vibepollo_quiesce_or_abort
-  do_secure_executables
+  vibepollo_quiesce_or_abort || return 1
+  do_secure_executables || return 1
   do_udev_reload
   do_restore_kwin_capability
   do_install_vibeshine_drm

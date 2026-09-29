@@ -746,8 +746,11 @@ for dependency_file, label in ((arch_pkgbuild, "Arch dependencies"), (rpm, "RPM 
     forbid(dependency_file, "libpam0g", label)
 for lifecycle, label in ((arch_install, "Arch lifecycle"), (rpm, "RPM lifecycle"), (postinst, "native lifecycle")):
     require(lifecycle, "enable vibepollo-session-controller.service", label)
-    require(lifecycle, "disable vibepollo.service", label)
+    if label != "Arch lifecycle":
+        require(lifecycle, "disable vibepollo.service", label)
     require(lifecycle, "remove-pam", label)
+require(arch_install, "for obsolete_unit in vibepollo.service vibepollo-session-exec.socket", "Arch lifecycle")
+require(arch_install, 'systemctl disable "$obsolete_unit"', "Arch lifecycle")
 for lifecycle, label in ((arch_install, "Arch removal"), (rpm, "RPM removal"), (prerm, "native removal")):
     require(lifecycle, "vibepollo-session-controller", label)
 

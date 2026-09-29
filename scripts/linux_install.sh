@@ -325,6 +325,36 @@ EOF
   fi
 }
 
+stage_upgrade_guard() {
+  local candidate=$1 library="$workdir/arch-package-hooks" preflight="$workdir/preflight"
+  local hook_dir="$workdir/hooks"
+  [[ -f "$candidate" ]] || die "package preflight candidate is missing: $candidate"
+  command -v bsdtar >/dev/null 2>&1 || die 'bsdtar is required for the safe package preflight'
+  mkdir -p -m 700 -- "$hook_dir" || die 'could not stage the package transaction guard'
+  bsdtar -xOf "$candidate" .INSTALL > "$library" || die 'candidate has no Arch package hooks'
+  chmod 0600 "$library" || die 'could not protect the staged package hooks'
+  bash -n "$library" || die 'candidate package hooks have invalid shell syntax'
+  grep -q '^vibepollo_quiesce_or_abort() {' "$library" ||
+    die 'candidate lacks the required quiescence check'
+  printf '#!/usr/bin/bash\n. %q || exit 1\nvibepollo_quiesce_or_abort\n' "$library" > "$preflight"
+  chmod 0700 "$preflight" || die 'could not protect the transaction preflight'
+  cat > "$hook_dir/00-vibepollo-quiesce.hook" <<EOF
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = vibepollo
+
+[Action]
+Description = Safely stopping Vibepollo before package replacement
+When = PreTransaction
+Exec = $preflight
+AbortOnFail
+EOF
+  chmod 0600 "$hook_dir/00-vibepollo-quiesce.hook" || die 'could not protect the transaction hook'
+}
+
 install_from_repo() {
   configure_pacman_repo
   if ! pacman -Si vibepollo >/dev/null 2>&1; then
@@ -333,15 +363,28 @@ install_from_repo() {
     install_from_package
     return
   fi
-  prepare_driver_replacement
-  log 'Installing Vibepollo and its dependencies; no full system upgrade is requested'
+  local -a repo_target candidates
   if [[ -n "$requested_version" ]]; then
     local arch_version="${requested_version//-/}"
     arch_version="${arch_version//+/.}"
-    pacman -S "${replacement_confirm[@]}" "${driver_overwrite[@]}" "vibepollo=${arch_version}-1"
+    repo_target=("vibepollo=${arch_version}-1")
   else
-    pacman -S "${replacement_confirm[@]}" "${driver_overwrite[@]}" vibepollo
+    repo_target=(vibepollo)
   fi
+  mkdir -p -m 700 -- "$workdir/cache" || die 'could not stage the signed repository package'
+  # Download and verify the exact signed candidate before executing its hook
+  # under the package manager's transaction lock.
+  pacman -Sw "${replacement_confirm[@]}" --cachedir "$workdir/cache" "${repo_target[@]}"
+  mapfile -d '' -t candidates < <(find "$workdir/cache" -maxdepth 1 -type f \
+    -name 'vibepollo-*.pkg.tar.*' ! -name '*.sig' -print0)
+  [[ ${#candidates[@]} == 1 ]] || die 'expected exactly one verified Vibepollo package in the private cache'
+  [[ $(pacman -Qp -- "${candidates[0]}") == 'vibepollo '* ]] ||
+    die 'cached package identity is not Vibepollo'
+  stage_upgrade_guard "${candidates[0]}"
+  prepare_driver_replacement
+  log 'Installing Vibepollo and its dependencies; no full system upgrade is requested'
+  pacman -S "${replacement_confirm[@]}" "${driver_overwrite[@]}" \
+    --cachedir "$workdir/cache" --hookdir "$workdir/hooks" "${repo_target[@]}"
 }
 
 download_release_package() {
@@ -489,14 +532,16 @@ install_from_package() {
   local identity
   identity=$(pacman -Qp -- "$local_package") || die 'could not inspect the local package'
   [[ "$identity" == 'vibepollo '* && "$identity" != *$'\n'* ]] || die 'local package is not Vibepollo'
+  stage_upgrade_guard "$local_package"
   prepare_driver_replacement
   log "Installing ${local_package##*/} with pacman"
   # Installing a local build must not also upgrade the operating system.
-  pacman -U "${replacement_confirm[@]}" "${driver_overwrite[@]}" -- "$local_package"
+  pacman -U "${replacement_confirm[@]}" "${driver_overwrite[@]}" \
+    --hookdir "$workdir/hooks" -- "$local_package"
 }
 
 install_vibepollo() {
-  workdir=$(mktemp -d)
+  workdir=$(mktemp -d /tmp/vibepollo-installer.XXXXXXXX)
   if [[ -n "$local_package" ]]; then
     install_from_package
     return

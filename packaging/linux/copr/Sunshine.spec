@@ -372,16 +372,26 @@ vibepollo_unit_is_quiescent() {
   vibepollo_properties=$(timeout --signal=KILL 5 systemctl show "$1" \
     --property=LoadState --property=ActiveState --property=SubState --property=MainPID \
     --property=ControlGroup 2>/dev/null) || return 1
-  [ "$(printf '%%s\n' "$vibepollo_properties" | wc -l | tr -d ' ')" = 5 ] || return 1
-  for vibepollo_property in LoadState ActiveState SubState MainPID ControlGroup; do
+  vibepollo_property_lines=$(printf '%%s\n' "$vibepollo_properties" | wc -l | tr -d ' ')
+  case "$1:$vibepollo_property_lines" in
+    *.socket:4 | *.socket:5 | *:5) ;;
+    *) return 1 ;;
+  esac
+  for vibepollo_property in LoadState ActiveState SubState ControlGroup; do
     vibepollo_property_count=$(printf '%%s\n' "$vibepollo_properties" | \
       grep -c "^$vibepollo_property=" || true)
     [ "$vibepollo_property_count" = 1 ] || return 1
   done
+  vibepollo_property_count=$(printf '%%s\n' "$vibepollo_properties" | grep -c '^MainPID=' || true)
+  case "$1:$vibepollo_property_count" in
+    *.socket:0 | *.socket:1 | *:1) ;;
+    *) return 1 ;;
+  esac
   vibepollo_load=$(printf '%%s\n' "$vibepollo_properties" | sed -n 's/^LoadState=//p')
   vibepollo_state=$(printf '%%s\n' "$vibepollo_properties" | sed -n 's/^ActiveState=//p')
   vibepollo_substate=$(printf '%%s\n' "$vibepollo_properties" | sed -n 's/^SubState=//p')
   vibepollo_pid=$(printf '%%s\n' "$vibepollo_properties" | sed -n 's/^MainPID=//p')
+  case "$1" in *.socket) [ -n "$vibepollo_pid" ] || vibepollo_pid=0 ;; esac
   vibepollo_control_group=$(printf '%%s\n' "$vibepollo_properties" | sed -n 's/^ControlGroup=//p')
   case "$vibepollo_load:$vibepollo_state:$vibepollo_substate" in
     not-found:inactive:dead | \
@@ -1136,16 +1146,26 @@ vibepollo_unit_is_quiescent() {
   vibepollo_properties=$(timeout --signal=KILL 5 systemctl show "$1" \
     --property=LoadState --property=ActiveState --property=SubState --property=MainPID \
     --property=ControlGroup 2>/dev/null) || return 1
-  [ "$(printf '%%s\n' "$vibepollo_properties" | wc -l | tr -d ' ')" = 5 ] || return 1
-  for vibepollo_property in LoadState ActiveState SubState MainPID ControlGroup; do
+  vibepollo_property_lines=$(printf '%%s\n' "$vibepollo_properties" | wc -l | tr -d ' ')
+  case "$1:$vibepollo_property_lines" in
+    *.socket:4 | *.socket:5 | *:5) ;;
+    *) return 1 ;;
+  esac
+  for vibepollo_property in LoadState ActiveState SubState ControlGroup; do
     vibepollo_property_count=$(printf '%%s\n' "$vibepollo_properties" | \
       grep -c "^$vibepollo_property=" || true)
     [ "$vibepollo_property_count" = 1 ] || return 1
   done
+  vibepollo_property_count=$(printf '%%s\n' "$vibepollo_properties" | grep -c '^MainPID=' || true)
+  case "$1:$vibepollo_property_count" in
+    *.socket:0 | *.socket:1 | *:1) ;;
+    *) return 1 ;;
+  esac
   vibepollo_load=$(printf '%%s\n' "$vibepollo_properties" | sed -n 's/^LoadState=//p')
   vibepollo_state=$(printf '%%s\n' "$vibepollo_properties" | sed -n 's/^ActiveState=//p')
   vibepollo_substate=$(printf '%%s\n' "$vibepollo_properties" | sed -n 's/^SubState=//p')
   vibepollo_pid=$(printf '%%s\n' "$vibepollo_properties" | sed -n 's/^MainPID=//p')
+  case "$1" in *.socket) [ -n "$vibepollo_pid" ] || vibepollo_pid=0 ;; esac
   vibepollo_control_group=$(printf '%%s\n' "$vibepollo_properties" | sed -n 's/^ControlGroup=//p')
   case "$vibepollo_load:$vibepollo_state:$vibepollo_substate" in
     not-found:inactive:dead | \

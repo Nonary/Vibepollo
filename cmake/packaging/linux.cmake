@@ -161,11 +161,19 @@ else()
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms"
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms-quiesce"
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-machine-host"
+                "${CMAKE_SOURCE_DIR}/packaging/linux/Arch/vibepollo-package-preflight"
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-controller"
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-global-limiter.py"
                 "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-install"
                 "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-ds5-install"
                 DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
+        # Pacman loads hooks before extraction. Future upgrades use the
+        # previously installed function library to abort an unsafe transaction.
+        install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/Arch/vibepollo.install"
+                DESTINATION "${CMAKE_INSTALL_DATADIR}/vibepollo"
+                RENAME "arch-package-hooks")
+        install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/Arch/00-vibepollo-quiesce.hook"
+                DESTINATION "${CMAKE_INSTALL_DATADIR}/libalpm/hooks")
         install(TARGETS vibepollo_session_exec vibepollo_app_supervisor
                 vibepollo_profile_import vibepollo_kwin_session_environment
                 vibepollo_provider_scan vibepollo_steam_launch vibepollo_display_power

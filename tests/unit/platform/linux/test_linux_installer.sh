@@ -4,7 +4,12 @@ repo=$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd -P)
 source "$repo/scripts/linux_install.sh"
 workdir=$(mktemp -d /tmp/vibepollo-installer-test.XXXXXXXX)
 local_package="$workdir/vibepollo.pkg.tar.zst"
-touch "$local_package"
+printf 'vibepollo_quiesce_or_abort() { return 1; }\n' > "$workdir/.INSTALL"
+bsdtar -cf "$local_package" -C "$workdir" .INSTALL
+stage_upgrade_guard "$local_package"
+grep -Fxq 'AbortOnFail' "$workdir/hooks/00-vibepollo-quiesce.hook"
+grep -Fxq "Exec = $workdir/preflight" "$workdir/hooks/00-vibepollo-quiesce.hook"
+if "$workdir/preflight"; then exit 1; fi
 calls="$workdir/calls"
 source_root="$workdir/usr/src"
 backup_root="$workdir/backups"
@@ -25,6 +30,11 @@ repository_metadata_available=1
 pacman() {
   printf '%s\n' "$*" >> "$calls"
   if [[ "$1" == -Si ]]; then ((repository_metadata_available)); return; fi
+  if [[ "$1" == -Sw ]]; then
+    mkdir -p "$workdir/cache"
+    command cp "$local_package" "$workdir/cache/vibepollo-1.0-1-x86_64.pkg.tar.zst"
+    return
+  fi
   if [[ "$1" == -Qp ]]; then printf '%s 1.0-1\n' "$package_name"; fi
   if [[ "$1" == -Qoq ]]; then
     local path=${!#}
@@ -46,7 +56,7 @@ pacman() {
 parse_args --yes
 install_from_package
 ! grep -Eq -- '^-S' "$calls"
-grep -Fx -- "-U --noconfirm --ask=4 -- $local_package" "$calls"
+grep -Fx -- "-U --noconfirm --ask=4 --hookdir $workdir/hooks -- $local_package" "$calls"
 [[ $(wc -l < "$calls") == 2 ]]
 : > "$calls"
 package_name=unrelated
@@ -57,7 +67,7 @@ if (install_from_package); then exit 1; fi
 package_name=vibepollo
 pacman_confirm=(); replacement_confirm=()
 install_from_package
-grep -Fx -- "-U -- $local_package" "$calls"
+grep -Fx -- "-U --hookdir $workdir/hooks -- $local_package" "$calls"
 printf 'Native installer validates package identity and confines conflict answers to replacement.\n'
 
 directory="$source_root/vibeshine-drm-1.19.0"
@@ -71,7 +81,7 @@ printf 'literal wildcard\n' > "$directory/unsafe*.h"
 install_from_package
 expected='--overwrite usr/src/vibeshine-drm-1.19.0/vibeshine_drm_vrr.h'
 ! grep -Eq -- '^-S' "$calls"
-grep -Fx -- "-U $expected -- $local_package" "$calls"
+grep -Fx -- "-U $expected --hookdir $workdir/hooks -- $local_package" "$calls"
 [[ ${#driver_overwrite[@]} == 2 ]]
 backups=("$backup_root"/vibeshine-driver-backup.*/vibeshine-drm-1.19.0/vibeshine_drm_vrr.h)
 [[ ${#backups[@]} == 1 ]]
@@ -106,14 +116,14 @@ configure_pacman_repo() { :; }
 parse_args --yes
 : > "$calls"
 install_from_repo
-grep -Fx -- "-S --noconfirm --ask=4 $expected vibepollo" "$calls"
+grep -Fx -- "-S --noconfirm --ask=4 $expected --cachedir $workdir/cache --hookdir $workdir/hooks vibepollo" "$calls"
 ! grep -Eq -- '^-S[^ ]*[yu]' "$calls"
 download_release_package() { printf 'download-release\n' >> "$calls"; }
 repository_metadata_available=0
 : > "$calls"
 install_from_repo
 grep -Fx -- 'download-release' "$calls"
-grep -Fx -- "-U --noconfirm --ask=4 $expected -- $local_package" "$calls"
+grep -Fx -- "-U --noconfirm --ask=4 $expected --hookdir $workdir/hooks -- $local_package" "$calls"
 ! grep -Eq -- '^-S[^ ]*[yu]' "$calls"
 repository_metadata_available=1
 
@@ -427,3 +437,25 @@ for hook in packaging/linux/vibeshine-preinst.in packaging/linux/Arch/vibepollo.
   )
 done
 printf 'Failed pre-upgrade quiesce preserves the early host, prior enablement, and late restart fences.\n'
+# Socket units have no MainPID property. All package formats must accept a
+# stopped four-property socket while still rejecting a malformed service.
+for package_hook in packaging/linux/vibeshine-preinst.in \
+  packaging/linux/vibepollo-postinst.in \
+  packaging/linux/vibepollo-prerm.in \
+  packaging/linux/copr/Sunshine.spec; do
+  (
+    unit_function=$(sed -n '/^vibepollo_unit_is_quiescent() {$/,/^}$/p' "$repo/$package_hook")
+    if [[ "$package_hook" == *.spec ]]; then unit_function=${unit_function//%%/%}; fi
+    eval "$unit_function"
+    timeout() { printf '%s\n' "$property_fixture"; }
+    vibepollo_cgroup_is_quiescent() { [[ -z "$1" ]]; }
+    property_fixture=$'LoadState=loaded\nActiveState=inactive\nSubState=dead\nControlGroup='
+    vibepollo_unit_is_quiescent vibepollo-session-exec.socket
+    if vibepollo_unit_is_quiescent vibepollo.service; then exit 1; fi
+    property_fixture+=$'\nMainPID=1'
+    if vibepollo_unit_is_quiescent vibepollo-session-exec.socket; then exit 1; fi
+    property_fixture=${property_fixture%$'\nMainPID=1'}$'\nMainPID=0'
+    vibepollo_unit_is_quiescent vibepollo-session-exec.socket
+  )
+done
+printf 'Debian and RPM package guards accept stopped sockets without MainPID.\n'
