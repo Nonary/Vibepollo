@@ -2,6 +2,13 @@
  * @file src/platform/macos/display.mm
  * @brief Definitions for display capture on macOS.
  */
+// standard includes
+#include <chrono>
+#include <mutex>
+
+// platform includes
+#include <IOKit/pwr_mgt/IOPMLib.h>
+
 // local includes
 #include "src/config.h"
 #include "src/logging.h"
@@ -23,6 +30,20 @@ namespace fs = std::filesystem;
 namespace platf {
   using namespace std::literals;
 
+  namespace {
+    /**
+     * @brief State shared by a capture call and its frame callback.
+     * @details The callback runs on the capture queue and can fire after the call has timed out and
+     *          returned, so it checks `stopped` under the lock before touching anything the call owns.
+     */
+    struct capture_state_t {
+      std::mutex mutex;
+      bool stopped = false;
+      bool delivered = false;
+      std::chrono::steady_clock::time_point last_frame = std::chrono::steady_clock::now();
+    };
+  }  // namespace
+
   struct av_display_t: public display_t {
     AVVideo *av_capture {};
     CGDirectDisplayID display_id {};
@@ -32,7 +53,22 @@ namespace platf {
     }
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
-      auto signal = [av_capture capture:^(CMSampleBufferRef sampleBuffer) {
+      // Keep the display awake while capturing, as the Windows capture does: a sleeping display
+      // sends no frames.
+      IOPMAssertionID keep_awake = kIOPMNullAssertionID;
+      IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep, kIOPMAssertionLevelOn, CFSTR("Vibepollo is streaming the display"), &keep_awake);
+      auto release_keep_awake = util::fail_guard([keep_awake]() {
+        IOPMAssertionRelease(keep_awake);
+      });
+
+      auto state = std::make_shared<capture_state_t>();
+      // Copied to the heap: the capture can hold on to it after this function returns.
+      FrameCallbackBlock on_frame = [^bool(CMSampleBufferRef sampleBuffer) {
+        std::lock_guard lock {state->mutex};
+        if (state->stopped) {
+          return false;
+        }
+
         auto new_sample_buffer = std::make_shared<av_sample_buf_t>(sampleBuffer);
         auto new_pixel_buffer = std::make_shared<av_pixel_buf_t>(new_sample_buffer->buf);
 
@@ -40,6 +76,7 @@ namespace platf {
         if (!pull_free_image_cb(img_out)) {
           // got interrupt signal
           // returning false here stops capture backend
+          state->stopped = true;
           return false;
         }
         auto av_img = std::static_pointer_cast<av_img_t>(img_out);
@@ -64,15 +101,55 @@ namespace platf {
         if (!push_captured_image_cb(std::move(img_out), true)) {
           // got interrupt signal
           // returning false here stops capture backend
+          state->stopped = true;
           return false;
         }
 
+        state->last_frame = std::chrono::steady_clock::now();
         return true;
-      }];
+      } copy];
+      auto signal = [av_capture capture:on_frame];
+      [on_frame release];  // the capture keeps its own reference
+      if (signal == nil) {
+        return capture_e::error;
+      }
 
-      // FIXME: We should time out if an image isn't returned for a while
-      dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
+      // Frames stop while the display sleeps. After a second without one, re-send the last image
+      // every second, as the Linux captures do on a timeout: the stream stays up, and a stop
+      // request is still seen.
+      for (;;) {
+        std::chrono::nanoseconds until_resend;
+        {
+          std::lock_guard lock {state->mutex};
+          until_resend = state->last_frame + 1s - std::chrono::steady_clock::now();
+        }
+        if (until_resend > 0ns && dispatch_semaphore_wait(signal, dispatch_time(DISPATCH_TIME_NOW, until_resend.count())) == 0) {
+          break;
+        }
 
+        std::lock_guard lock {state->mutex};
+        if (state->stopped) {
+          return capture_e::ok;
+        }
+        if (std::chrono::steady_clock::now() - state->last_frame < 1s) {
+          continue;  // a frame arrived while waiting
+        }
+        std::shared_ptr<img_t> img_out;
+        if (!pull_free_image_cb(img_out) || !push_captured_image_cb(std::move(img_out), false)) {
+          state->stopped = true;
+          return capture_e::ok;
+        }
+        state->last_frame = std::chrono::steady_clock::now();
+      }
+
+      // The capture signals when a callback stops it, or when it stops by itself: ScreenCaptureKit
+      // ends a stream on errors, such as its display going away. Start over in that case.
+      std::lock_guard lock {state->mutex};
+      if (!state->stopped) {
+        state->stopped = true;
+        BOOST_LOG(warning) << "Capture of display "sv << display_id << " stopped by itself; restarting it"sv;
+        return capture_e::reinit;
+      }
       return capture_e::ok;
     }
 
@@ -105,7 +182,13 @@ namespace platf {
         return 1;
       }
 
-      auto signal = [av_capture capture:^(CMSampleBufferRef sampleBuffer) {
+      auto state = std::make_shared<capture_state_t>();
+      FrameCallbackBlock on_frame = [^bool(CMSampleBufferRef sampleBuffer) {
+        std::lock_guard lock {state->mutex};
+        if (state->stopped) {
+          return false;
+        }
+
         auto new_sample_buffer = std::make_shared<av_sample_buf_t>(sampleBuffer);
         auto new_pixel_buffer = std::make_shared<av_pixel_buf_t>(new_sample_buffer->buf);
 
@@ -128,11 +211,25 @@ namespace platf {
 
         old_data_retainer = nullptr;
 
+        state->delivered = true;
         // returning false here stops capture backend
         return false;
-      }];
+      } copy];
+      auto signal = [av_capture capture:on_frame];
+      [on_frame release];  // the capture keeps its own reference
+      if (signal == nil) {
+        return 1;
+      }
 
-      dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
+      // A display that's asleep sends nothing: fail, so the client gets an error instead of a
+      // connection that hangs forever. The capture can also end by itself without an image.
+      dispatch_semaphore_wait(signal, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC));
+      std::lock_guard lock {state->mutex};
+      state->stopped = true;
+      if (!state->delivered) {
+        BOOST_LOG(error) << "Display "sv << display_id << " sent no image within 3 seconds"sv;
+        return 1;
+      }
 
       return 0;
     }
@@ -164,6 +261,10 @@ namespace platf {
       BOOST_LOG(error) << "Could not initialize display with the given hw device type."sv;
       return nullptr;
     }
+
+    // Like the Windows capture, power the displays on if they're asleep: a client connecting to a
+    // sleeping Mac only half-wakes it, and a sleeping display sends no frames.
+    wake_displays();
 
     auto display = std::make_shared<av_display_t>();
 

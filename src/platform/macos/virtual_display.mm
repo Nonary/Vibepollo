@@ -401,6 +401,9 @@ namespace platf::macos_virtual_display {
         return nullptr;
       }
 
+      // During a dark wake no display comes online, virtual ones included.
+      platf::wake_displays();
+
       const bool hidpi = use_hidpi(config.width, config.height);
       // HiDPI modes are sized in points; their backing store, which is what gets captured, is 2x.
       const unsigned int mode_width = hidpi ? config.width / 2 : config.width;

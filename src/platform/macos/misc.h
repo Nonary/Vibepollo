@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <chrono>
 #include <functional>
 #include <vector>
 
@@ -26,6 +27,16 @@ namespace platf {
    *          is checked at least twice a second.
    */
   void run_main_event_loop(const std::function<bool()> &should_exit);
+
+  /**
+   * @brief Turn the displays on if they're asleep, as a keypress would, and wait for one to come on.
+   * @details A client can connect while the Mac sleeps. Its network traffic only brings the Mac into
+   *          a "dark wake" with every display off, where captures get no frames. Returns right
+   *          away on a Mac with no display connected.
+   * @param timeout How long to wait for a display to come on.
+   * @return `true` if a display is on.
+   */
+  bool wake_displays(std::chrono::milliseconds timeout = std::chrono::seconds {5});
 }
 
 namespace dyn {

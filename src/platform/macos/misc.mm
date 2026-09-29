@@ -12,12 +12,14 @@
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <mutex>
+#include <thread>
 
 // platform includes
 #include <AppKit/AppKit.h>
 #include <arpa/inet.h>
 #include <dlfcn.h>
 #include <Foundation/Foundation.h>
+#include <IOKit/pwr_mgt/IOPMLib.h>
 #include <mach-o/dyld.h>
 #include <net/if_dl.h>
 #include <pwd.h>
@@ -81,6 +83,45 @@ namespace platf {
         }
       }
     }
+  }
+
+  namespace {
+    // A sleeping display drops out of the active list, and during a dark wake every display does.
+    bool displays_awake() {
+      uint32_t count = 0;
+      return CGGetActiveDisplayList(0, nullptr, &count) == kCGErrorSuccess && count > 0 && !CGDisplayIsAsleep(CGMainDisplayID());
+    }
+  }  // namespace
+
+  bool wake_displays(const std::chrono::milliseconds timeout) {
+    if (displays_awake()) {
+      return true;
+    }
+
+    // Declaring user activity finishes a dark wake and turns the displays on. The assertion
+    // expires on its own after the display sleep delay.
+    IOPMAssertionID activity = kIOPMNullAssertionID;
+    if (IOPMAssertionDeclareUserActivity(CFSTR("Vibepollo is waking the displays for a stream"), kIOPMUserActiveLocal, &activity) != kIOReturnSuccess) {
+      BOOST_LOG(warning) << "Couldn't wake the displays for capture"sv;
+      return false;
+    }
+
+    // A Mac without a screen of its own (a headless Mac mini, a closed MacBook) has none to wait for.
+    uint32_t online = 0;
+    if (CGGetOnlineDisplayList(0, nullptr, &online) != kCGErrorSuccess || online == 0) {
+      return false;
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    while (!displays_awake()) {
+      if (std::chrono::steady_clock::now() - start >= timeout) {
+        BOOST_LOG(warning) << "Displays are still asleep after "sv << timeout.count() << " ms; capture may fail"sv;
+        return false;
+      }
+      std::this_thread::sleep_for(50ms);
+    }
+    BOOST_LOG(info) << "Woke the displays for capture in "sv << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() << " ms"sv;
+    return true;
   }
 
   std::unique_ptr<deinit_t> init() {

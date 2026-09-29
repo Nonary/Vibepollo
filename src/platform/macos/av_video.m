@@ -74,10 +74,15 @@
 }
 
 - (void)dealloc {
+  // Stop the frames before releasing the tables they're looked up in. A capture that timed out
+  // can still have an output attached.
+  [self.session stopRunning];
+  for (AVCaptureVideoDataOutput *output in self.videoOutputs.objectEnumerator) {
+    [output setSampleBufferDelegate:nil queue:nil];
+  }
   [self.videoOutputs release];
   [self.captureCallbacks release];
   [self.captureSignals release];
-  [self.session stopRunning];
   [super dealloc];
 }
 
