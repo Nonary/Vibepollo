@@ -21,6 +21,11 @@ namespace remote_session {
   inline constexpr std::int32_t monitor_id = 2147483505;
   inline constexpr std::int32_t input_id = 2147483506;
   inline constexpr std::int32_t running_game_id = 2147483507;
+  // Distinct identities prevent Moonlight from renaming cached primary tiles.
+  inline constexpr std::int32_t secondary_resume_id = 2147483511;
+  inline constexpr std::int32_t secondary_terminate_id = 2147483514;
+  inline constexpr std::int32_t secondary_monitor_id = 2147483515;
+  inline constexpr std::int32_t secondary_input_id = 2147483516;
   inline constexpr std::size_t max_client_vdds = 4;
 
   enum class role_e : std::uint8_t { none, input, monitor, game };

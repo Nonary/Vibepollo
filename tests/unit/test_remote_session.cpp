@@ -3,6 +3,7 @@
 #include "src/remote_session.h"
 
 #include <atomic>
+#include <algorithm>
 #include <thread>
 
 namespace {
@@ -61,23 +62,23 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   EXPECT_EQ(normal_observer.current_game, 0);
   ASSERT_EQ(normal_observer.catalogue.size(), 7);
   EXPECT_EQ(normal_observer.catalogue[0].id, remote_session::synthetic_running_game_id(42));
-  EXPECT_EQ(normal_observer.catalogue[1].id, remote_session::resume_id);
-  EXPECT_EQ(normal_observer.catalogue[2].id, remote_session::terminate_id);
+  EXPECT_EQ(normal_observer.catalogue[1].id, remote_session::secondary_resume_id);
+  EXPECT_EQ(normal_observer.catalogue[2].id, remote_session::secondary_terminate_id);
   EXPECT_EQ(normal_observer.catalogue[3].title, "One");
   EXPECT_EQ(normal_observer.catalogue[4].title, "Two");
-  EXPECT_EQ(normal_observer.catalogue[5].id, remote_session::input_id);
-  EXPECT_EQ(normal_observer.catalogue[6].id, remote_session::monitor_id);
+  EXPECT_EQ(normal_observer.catalogue[5].id, remote_session::secondary_input_id);
+  EXPECT_EQ(normal_observer.catalogue[6].id, remote_session::secondary_monitor_id);
 
   const auto observer = remote_session::project(caller("other"), game(), {}, configured, true);
   ASSERT_EQ(observer.catalogue.size(), 7);
   EXPECT_EQ(observer.catalogue[0].id, remote_session::synthetic_running_game_id(42));
-  EXPECT_EQ(observer.catalogue[1].id, remote_session::resume_id);
-  EXPECT_EQ(observer.catalogue[2].id, remote_session::terminate_id);
+  EXPECT_EQ(observer.catalogue[1].id, remote_session::secondary_resume_id);
+  EXPECT_EQ(observer.catalogue[2].id, remote_session::secondary_terminate_id);
   EXPECT_EQ(observer.catalogue[2].title, " Terminate");
   EXPECT_EQ(observer.catalogue[3].title, "One");
   EXPECT_EQ(observer.catalogue[4].title, "Two");
-  EXPECT_EQ(observer.catalogue[5].id, remote_session::input_id);
-  EXPECT_EQ(observer.catalogue[6].id, remote_session::monitor_id);
+  EXPECT_EQ(observer.catalogue[5].id, remote_session::secondary_input_id);
+  EXPECT_EQ(observer.catalogue[6].id, remote_session::secondary_monitor_id);
 
   const auto monitor = remote_session::project(caller("monitor"), {}, {.role = remote_session::role_e::monitor, .retained = true}, configured, true);
   ASSERT_EQ(monitor.catalogue.size(), 2);
@@ -93,11 +94,11 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   const auto input_during_game = remote_session::project(caller("input"), game(), {.role = remote_session::role_e::input}, configured, true);
   ASSERT_EQ(input_during_game.catalogue.size(), 6);
   EXPECT_EQ(input_during_game.catalogue[0].id, remote_session::synthetic_running_game_id(42));
-  EXPECT_EQ(input_during_game.catalogue[1].id, remote_session::resume_id);
-  EXPECT_EQ(input_during_game.catalogue[2].id, remote_session::terminate_id);
+  EXPECT_EQ(input_during_game.catalogue[1].id, remote_session::secondary_resume_id);
+  EXPECT_EQ(input_during_game.catalogue[2].id, remote_session::secondary_terminate_id);
   EXPECT_EQ(input_during_game.catalogue[3].title, "One");
   EXPECT_EQ(input_during_game.catalogue[4].title, "Two");
-  EXPECT_EQ(input_during_game.catalogue[5].id, remote_session::monitor_id);
+  EXPECT_EQ(input_during_game.catalogue[5].id, remote_session::secondary_monitor_id);
 
   const auto game_owner_monitor = remote_session::project(caller("owner"), game(), {.role = remote_session::role_e::monitor, .retained = true}, configured, true);
   ASSERT_EQ(game_owner_monitor.catalogue.size(), 2);
@@ -157,7 +158,7 @@ TEST(RemoteSession, SecondaryCatalogueKeepsConfiguredRunningAppBesideInvisibleRe
   EXPECT_EQ(projection.catalogue[0].id, remote_session::synthetic_running_game_id(active_game.app.id));
   EXPECT_EQ(projection.catalogue[0].uuid, remote_session::synthetic_uuid(remote_session::control_e::running_game));
   EXPECT_EQ(projection.catalogue[0].title, "     Running game");
-  EXPECT_EQ(projection.catalogue[1].id, remote_session::resume_id);
+  EXPECT_EQ(projection.catalogue[1].id, remote_session::secondary_resume_id);
   EXPECT_EQ(projection.catalogue[3].id, active_game.app.id);
   EXPECT_EQ(projection.catalogue[3].uuid, active_game.app.uuid);
   EXPECT_EQ(projection.catalogue[3].title, active_game.app.title);
@@ -192,11 +193,85 @@ TEST(RemoteSession, OnlySecondaryCatalogueControlsReceiveAlphabeticalPriority) {
     return left.title < right.title;
   });
   EXPECT_EQ(secondary[0].id, first_tile.id);
-  EXPECT_EQ(secondary[1].id, remote_session::monitor_id);
-  EXPECT_EQ(secondary[2].id, remote_session::input_id);
-  EXPECT_EQ(secondary[3].id, remote_session::resume_id);
-  EXPECT_EQ(secondary[4].id, remote_session::terminate_id);
+  EXPECT_EQ(secondary[1].id, remote_session::secondary_monitor_id);
+  EXPECT_EQ(secondary[2].id, remote_session::secondary_input_id);
+  EXPECT_EQ(secondary[3].id, remote_session::secondary_resume_id);
+  EXPECT_EQ(secondary[4].id, remote_session::secondary_terminate_id);
   EXPECT_EQ(secondary[5].id, 1);
+}
+
+TEST(RemoteSession, CatalogueTransitionsDoNotDuplicateMoonlightRows) {
+  const std::vector<remote_session::app_t> configured {
+    {1, "alpha", "Alpha", false}, {2, "beta", "Beta", false}, game().app,
+  };
+  const std::vector<remote_session::projection_t> states {
+    remote_session::project(caller("other"), {}, {}, configured, false),
+    remote_session::project(caller("owner"), game(), {}, configured, false),
+    remote_session::project(caller("other"), game(), {}, configured, false),
+    remote_session::project(caller("other"), game(), {}, configured, true),
+    remote_session::project(caller("other"), {}, {.role = remote_session::role_e::input}, configured, true),
+    remote_session::project(caller("other"), game(), {.role = remote_session::role_e::input}, configured, true),
+    remote_session::project(caller("other"), game(), {.role = remote_session::role_e::monitor, .retained = true}, configured, true),
+  };
+  // These ASCII titles have the same order with Moonlight's lowercase sort.
+  const auto sort = [](auto &apps) {
+    std::sort(apps.begin(), apps.end(), [](const auto &a, const auto &b) { return a.title < b.title; });
+  };
+  for (std::size_t from = 0; from < states.size(); ++from) {
+    for (std::size_t to = 0; to < states.size(); ++to) {
+      SCOPED_TRACE(std::to_string(from) + " -> " + std::to_string(to));
+      auto visible = states[from].catalogue;
+      auto next = states[to].catalogue;
+      sort(visible);
+      sort(next);
+      // Reproduce Moonlight Qt AppModel's incremental update contract:
+      // surviving IDs are renamed in place, then additions use sorted search.
+      for (auto it = visible.begin(); it != visible.end();) {
+        const auto found = std::find_if(next.begin(), next.end(), [&](const auto &app) { return app.id == it->id; });
+        if (found == next.end()) {
+          it = visible.erase(it);
+        } else {
+          EXPECT_EQ(it->title, found->title) << "Surviving IDs must not change sort position";
+          *it++ = *found;
+        }
+      }
+      for (const auto &app : next) {
+        const auto pos = std::find_if(visible.begin(), visible.end(), [&](const auto &existing) {
+          return existing.id == app.id || existing.title > app.title;
+        });
+        if (pos == visible.end() || pos->id != app.id) visible.insert(pos, app);
+      }
+      ASSERT_EQ(visible.size(), next.size());
+      for (std::size_t i = 0; i < next.size(); ++i) {
+        EXPECT_EQ(visible[i].id, next[i].id);
+        EXPECT_EQ(visible[i].title, next[i].title);
+      }
+    }
+  }
+}
+
+TEST(RemoteSession, PrioritizedIdentitiesPreserveActionsAndArtwork) {
+  const auto active_game = game();
+  const auto other = caller("other");
+  const auto projection = remote_session::project(other, active_game, {}, {}, true);
+  for (const auto &app : projection.catalogue) {
+    const auto control = remote_session::identify(app.id, {}, active_game.app.id);
+    ASSERT_NE(control, remote_session::control_e::none);
+    EXPECT_EQ(control, remote_session::identify(0, app.uuid));
+    if (control == remote_session::control_e::running_game) continue;
+    const auto canonical = remote_session::synthetic(control);
+    EXPECT_NE(app.id, canonical.id);
+    EXPECT_EQ(app.uuid, canonical.uuid);  // Preserve custom covers and UUID launches.
+    const auto actual = remote_session::dispatch(other, active_game, {}, control);
+    const auto expected = remote_session::dispatch(other, active_game, {}, remote_session::identify(canonical.id));
+    EXPECT_EQ(actual.allowed, expected.allowed);
+    EXPECT_EQ(actual.permission, expected.permission);
+    EXPECT_EQ(actual.resume, expected.resume);
+    EXPECT_EQ(actual.resume_role, expected.resume_role);
+    EXPECT_EQ(actual.terminate, expected.terminate);
+    EXPECT_EQ(remote_session::synthetic_artwork_filename(control), remote_session::synthetic_artwork_filename(remote_session::identify(canonical.id)));
+    EXPECT_NE(remote_session::synthetic_running_game_id(app.id ^ 0x40000000), app.id);
+  }
 }
 
 TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {

@@ -42,6 +42,8 @@ namespace remote_session {
 
     bool reserved_synthetic_id(const std::int32_t id) {
       return (id >= resume_id && id <= running_game_id) ||
+             id == secondary_resume_id || id == secondary_terminate_id ||
+             id == secondary_monitor_id || id == secondary_input_id ||
              (id >= 2147483601 && id <= 2147483606);
     }
 
@@ -51,10 +53,10 @@ namespace remote_session {
     app_t prioritized_secondary_control(const control_e control) {
       auto app = synthetic(control);
       switch (control) {
-        case control_e::monitor: app.title = ranked_title("    ", app.title); break;
-        case control_e::input: app.title = ranked_title("   ", app.title); break;
-        case control_e::resume: app.title = ranked_title("  ", app.title); break;
-        case control_e::terminate: app.title = ranked_title(" ", app.title); break;
+        case control_e::monitor: app.id = secondary_monitor_id; app.title = ranked_title("    ", app.title); break;
+        case control_e::input: app.id = secondary_input_id; app.title = ranked_title("   ", app.title); break;
+        case control_e::resume: app.id = secondary_resume_id; app.title = ranked_title("  ", app.title); break;
+        case control_e::terminate: app.id = secondary_terminate_id; app.title = ranked_title(" ", app.title); break;
         default: break;
       }
       return app;
@@ -69,6 +71,10 @@ namespace remote_session {
   }
 
   control_e identify(const std::int32_t id, const std::string_view uuid) {
+    if (id == secondary_resume_id) return control_e::resume;
+    if (id == secondary_terminate_id) return control_e::terminate;
+    if (id == secondary_monitor_id) return control_e::monitor;
+    if (id == secondary_input_id) return control_e::input;
     if (id == resume_id || id == 2147483601 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000001") return control_e::resume;
     if (id == disconnect_monitor_id || id == 2147483602 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000002") return control_e::disconnect_monitor;
     if (id == disconnect_input_id || id == 2147483603 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000003") return control_e::disconnect_input;
