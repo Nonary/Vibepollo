@@ -30,6 +30,7 @@
 #include "nvhttp.h"
 #include "process.h"
 #include "rtsp.h"
+#include "stream.h"
 #include "system_tray.h"
 #include "update.h"
 #include "upnp.h"
@@ -1049,6 +1050,41 @@ int main(int argc, char *argv[]) {
 #endif
 
 #ifdef __APPLE__
+  // End streams properly when the Mac is about to sleep, as from Apple menu > Sleep or a low
+  // battery. Otherwise clients just see their stream freeze. The app keeps running, so a client
+  // can resume once the Mac wakes.
+  platf::on_system_will_sleep([]() {
+    const auto sessions = rtsp_stream::get_sessions_snapshot();
+    if (sessions.empty()) {
+      return;
+    }
+    BOOST_LOG(info) << "The Mac is going to sleep; ending "sv << sessions.size() << " stream(s)"sv;
+    for (const auto &session : sessions) {
+      stream::session::graceful_stop(*session);
+    }
+    // Give the end-of-stream messages a moment to go out before the network sleeps.
+    std::this_thread::sleep_for(1s);
+  });
+
+  // Closing a MacBook's lid ends its streams and quits the app. While the virtual display is its
+  // only display, macOS would keep a plugged-in Mac streaming with the lid shut, but only for
+  // streams started with it open, and a closed Mac can't be woken back into a stream.
+  platf::on_lid_closed([]() {
+    if (rtsp_stream::session_count() == 0) {
+      return;
+    }
+    if (proc::proc.running() > 0) {
+      // As when an app exits, its clients are told the stream ended.
+      BOOST_LOG(info) << "The lid was closed; quitting the app to end the stream"sv;
+      proc::proc.terminate();
+    } else {
+      BOOST_LOG(info) << "The lid was closed; ending the stream"sv;
+      for (const auto &session : rtsp_stream::get_sessions_snapshot()) {
+        stream::session::graceful_stop(*session);
+      }
+    }
+  });
+
   // AppKit only delivers events on the main thread, so it waits here instead: the menu bar and
   // the virtual display's display configuration both depend on them.
   platf::macos_virtual_display::recover_disabled_displays();

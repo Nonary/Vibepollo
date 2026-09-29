@@ -19,6 +19,9 @@
 #include <arpa/inet.h>
 #include <dlfcn.h>
 #include <Foundation/Foundation.h>
+#include <IOKit/IOKitKeys.h>
+#include <IOKit/IOMessage.h>
+#include <IOKit/pwr_mgt/IOPM.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <mach-o/dyld.h>
 #include <net/if_dl.h>
@@ -122,6 +125,87 @@ namespace platf {
     }
     BOOST_LOG(info) << "Woke the displays for capture in "sv << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() << " ms"sv;
     return true;
+  }
+
+  namespace {
+    struct sleep_watch_t {
+      io_connect_t root_port = MACH_PORT_NULL;
+      IONotificationPortRef port = nullptr;
+      io_object_t notifier = IO_OBJECT_NULL;
+      std::function<void()> handler;
+    } sleep_watch;
+
+    void system_power_changed(void *, io_service_t, natural_t message, void *argument) {
+      switch (message) {
+        case kIOMessageCanSystemSleep:
+          // Idle sleep: streaming holds its own assertions against it, so just answer.
+          IOAllowPowerChange(sleep_watch.root_port, reinterpret_cast<intptr_t>(argument));
+          break;
+        case kIOMessageSystemWillSleep:
+          sleep_watch.handler();
+          IOAllowPowerChange(sleep_watch.root_port, reinterpret_cast<intptr_t>(argument));
+          break;
+        default:
+          break;
+      }
+    }
+  }  // namespace
+
+  void on_system_will_sleep(std::function<void()> handler) {
+    static std::once_flag once;
+    std::call_once(once, [&handler]() {
+      sleep_watch.handler = std::move(handler);
+      sleep_watch.root_port = IORegisterForSystemPower(nullptr, &sleep_watch.port, system_power_changed, &sleep_watch.notifier);
+      if (sleep_watch.root_port == MACH_PORT_NULL) {
+        BOOST_LOG(warning) << "Couldn't watch for sleep; streams will just stop when the Mac sleeps"sv;
+        return;
+      }
+      IONotificationPortSetDispatchQueue(sleep_watch.port, dispatch_queue_create("dev.vibepollo.sleep", DISPATCH_QUEUE_SERIAL));
+    });
+  }
+
+  namespace {
+    struct lid_watch_t {
+      IONotificationPortRef port = nullptr;
+      io_object_t notifier = IO_OBJECT_NULL;
+      bool closed = false;
+      std::function<void()> handler;
+    } lid_watch;
+
+    void root_domain_message(void *, io_service_t, natural_t message, void *argument) {
+      if (message != kIOPMMessageClamshellStateChange) {
+        return;
+      }
+      // Also sent while the lid stays closed, when power or displays change: act on closing only.
+      const bool closed = (reinterpret_cast<uintptr_t>(argument) & kClamshellStateBit) != 0;
+      const bool just_closed = closed && !lid_watch.closed;
+      lid_watch.closed = closed;
+      if (just_closed) {
+        lid_watch.handler();
+      }
+    }
+  }  // namespace
+
+  void on_lid_closed(std::function<void()> handler) {
+    static std::once_flag once;
+    std::call_once(once, [&handler]() {
+      const io_service_t root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"));
+      if (root == IO_OBJECT_NULL) {
+        return;
+      }
+      const CFTypeRef state = IORegistryEntryCreateCFProperty(root, CFSTR("AppleClamshellState"), kCFAllocatorDefault, 0);
+      lid_watch.closed = state == kCFBooleanTrue;
+      if (state != nullptr) {
+        CFRelease(state);
+      }
+      lid_watch.handler = std::move(handler);
+      lid_watch.port = IONotificationPortCreate(kIOMainPortDefault);
+      IONotificationPortSetDispatchQueue(lid_watch.port, dispatch_queue_create("dev.vibepollo.lid", DISPATCH_QUEUE_SERIAL));
+      if (IOServiceAddInterestNotification(lid_watch.port, root, kIOGeneralInterest, root_domain_message, nullptr, &lid_watch.notifier) != KERN_SUCCESS) {
+        BOOST_LOG(warning) << "Couldn't watch the lid; closing it won't end streams"sv;
+      }
+      IOObjectRelease(root);
+    });
   }
 
   std::unique_ptr<deinit_t> init() {

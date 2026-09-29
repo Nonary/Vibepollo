@@ -37,6 +37,19 @@ namespace platf {
    * @return `true` if a display is on.
    */
   bool wake_displays(std::chrono::milliseconds timeout = std::chrono::seconds {5});
+
+  /**
+   * @brief Run `handler` whenever the Mac is about to sleep, before letting it sleep.
+   * @details For ending streams properly: otherwise a client just sees its stream freeze. The
+   *          handler runs on a background queue. Only the first call registers a handler.
+   */
+  void on_system_will_sleep(std::function<void()> handler);
+
+  /**
+   * @brief Run `handler` whenever a MacBook's lid goes from open to closed.
+   * @details The handler runs on a background queue. Only the first call registers a handler.
+   */
+  void on_lid_closed(std::function<void()> handler);
 }
 
 namespace dyn {
