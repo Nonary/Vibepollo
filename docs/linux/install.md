@@ -152,7 +152,7 @@ sudo journalctl -u vibepollo-session-controller.service -u vibepollo.service -b
 sudo /usr/libexec/vibeshine/vibeshine-drm-install status
 ```
 
-A healthy host logs `Screencasting with KMS`, `Using event-driven KMS capture for Vibepollo DRM
+A healthy host logs `Screencasting with KMS`, `Using event-driven KMS capture for vibeshine_drm
 CRTC`, and at least `Found H.264 encoder`. HEVC and AV1 lines appear only when the GPU supports
 them. Open ports alone do not prove streaming works; check for those lines.
 
