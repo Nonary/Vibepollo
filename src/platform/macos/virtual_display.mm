@@ -135,6 +135,12 @@ namespace platf::macos_virtual_display {
       return std::find(active.begin(), active.end(), id) != active.end();
     }
 
+    // A display that no longer exists, such as another app's virtual display removed while it was
+    // turned off, reports this vendor. A display that's only turned off keeps its real one.
+    bool is_gone(const CGDirectDisplayID id) {
+      return CGDisplayVendorNumber(id) == 0xFFFFFFFF;
+    }
+
     std::filesystem::path marker_path() {
       return platf::appdata() / "macos_displays_turned_off";
     }
@@ -173,13 +179,21 @@ namespace platf::macos_virtual_display {
       return CGCompleteDisplayConfiguration(config, kCGConfigureForSession) == kCGErrorSuccess;
     }
 
-    // Enabling a display that's already on fails the whole configuration, so skip those.
+    // One configuration per display: a single display that fails, like one that's since been
+    // removed, would otherwise fail them all and leave every screen off. Enabling a display that's
+    // already on fails too, so skip those. Every display is attempted; only a removed one may fail.
     bool turn_on(const std::vector<CGDirectDisplayID> &ids) {
-      std::vector<CGDirectDisplayID> off;
-      std::copy_if(ids.begin(), ids.end(), std::back_inserter(off), [](const CGDirectDisplayID id) {
-        return !is_active(id);
-      });
-      return off.empty() || set_displays_enabled(off, true);
+      bool restored = true;
+      for (const auto id : ids) {
+        if (!is_active(id) && !set_displays_enabled({id}, true) && !is_gone(id)) {
+          restored = false;
+        }
+      }
+      return restored;
+    }
+
+    bool is_active_or_gone(const CGDirectDisplayID id) {
+      return is_active(id) || is_gone(id);
     }
 
     /**
@@ -310,8 +324,10 @@ namespace platf::macos_virtual_display {
         return false;
       }
       display.turned_off = std::move(others);
+      // Let the desktop settle before capture starts: a capture set up while displays are still
+      // going away can get no frames at all.
       wait_until([&display]() {
-        return CGDisplayIsMain(display.id);
+        return CGDisplayIsMain(display.id) && std::none_of(display.turned_off.begin(), display.turned_off.end(), is_active);
       },
                  5s);
       return true;
@@ -466,10 +482,12 @@ namespace platf::macos_virtual_display {
     virtual_display_t::~virtual_display_t() {
       bool restored = true;
       if (!turned_off.empty()) {
-        restored = turn_on(turned_off) && wait_until([this]() {
-          return std::all_of(turned_off.begin(), turned_off.end(), is_active);
-        },
-                                                                        5s);
+        // A stream can end while the Mac is half-awake, where displays never come back online.
+        platf::wake_displays();
+        const auto all_back = [this]() {
+          return std::all_of(turned_off.begin(), turned_off.end(), is_active_or_gone);
+        };
+        restored = turn_on(turned_off) && wait_until(all_back, 5s);
         if (restored) {
           remove_marker();
           BOOST_LOG(info) << "Virtual display: physical displays turned back on"sv;
