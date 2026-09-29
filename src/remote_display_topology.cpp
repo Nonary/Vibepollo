@@ -152,10 +152,10 @@ namespace remote_display_topology {
     auto [state_it, inserted] = clients_.try_emplace(client_uuid);
     auto &state = state_it->second;
     if (inserted) state.placement_order = ++next_placement_order_;
-    if (state.normal_game) return {true, false, state.normal_game_token};
     state.label = label;
     state.normal_requested_mode = mode;
     if (!state.remote_monitor) state.effective_mode = mode;
+    if (state.normal_game) return {true, false, state.normal_game_token};
     state.normal_game = true;
     state.normal_game_token = ++next_normal_game_token_;
     return {true, true, state.normal_game_token};

@@ -324,13 +324,18 @@ TEST(RemoteDisplayTopology, LinuxCrossClientResumeRetainsOneAppOwnedDisplay) {
   ASSERT_TRUE(app.accepted);
   // Disconnecting the transport leaves the app and its display lease alive.
   const std::string owner {platf::linux_private_display::resume_policy::reservation_owner("mac", "deck", app.token)};
-  const auto resumed = coordinator.reserve_normal_game_identity(owner, "Mac", {3024, 1890, 120});
+  const auto resumed = coordinator.reserve_normal_game_identity(owner, "Mac", {3024, 1890, 120, true});
   ASSERT_TRUE(resumed.accepted);
   EXPECT_FALSE(resumed.newly_reserved);
   EXPECT_EQ(resumed.token, app.token);
   ASSERT_TRUE(coordinator.reapply_composed_topology());
   ASSERT_EQ(composed.size(), 1);
   EXPECT_EQ(composed.front().id, "deck");
+  EXPECT_EQ(composed.front().label, "Mac");
+  EXPECT_EQ(composed.front().configured_mode.width, 3024);
+  EXPECT_EQ(composed.front().configured_mode.height, 1890);
+  EXPECT_EQ(composed.front().configured_mode.refresh_hz, 120);
+  EXPECT_TRUE(composed.front().configured_mode.hdr);
 
   // Only an explicit Remote Monitor request adds the Mac's separate output.
   ASSERT_TRUE(coordinator.activate_or_resume("mac", "Mac", {3024, 1890, 120}, 1).ready);
