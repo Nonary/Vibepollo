@@ -296,13 +296,13 @@ class NativePackageTests(unittest.TestCase):
 
     def test_running_streamed_application_blocks_installation(self):
         args = SimpleNamespace(allow_disruption=False)
-        listing = 'vibeshine-app-2-473489.service loaded active running [systemd-run] steam-launch\n'
+        listing = 'vibepollo-app-2-473489.service loaded active running [systemd-run] steam-launch\n'
         with mock.patch.object(deploy, 'run', return_value=SimpleNamespace(returncode=0, stdout=listing)) as run:
-            with self.assertRaisesRegex(deploy.DeployError, r'vibeshine-app-2-473489\.service.*--allow-disruption'):
+            with self.assertRaisesRegex(deploy.DeployError, r'vibepollo-app-2-473489\.service.*--allow-disruption'):
                 deploy.refuse_live_applications(args)
         self.assertEqual(run.call_args.args[:3], ('systemctl', '--user', 'list-units'))
         self.assertIn('--state=active', run.call_args.args)
-        self.assertIn('vibeshine-app-*.service', run.call_args.args)
+        self.assertIn('vibepollo-app-*.service', run.call_args.args)
         with mock.patch.object(deploy, 'run', return_value=SimpleNamespace(returncode=0, stdout='')):
             deploy.refuse_live_applications(args)
         # An unreadable user manager is not evidence that nothing is running.

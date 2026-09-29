@@ -45,6 +45,8 @@ const config = store.config;
     <ConfigFieldRenderer v-model="config.hevc_mode" setting-key="hevc_mode" class="mb-6" />
 
     <ConfigFieldRenderer v-model="config.av1_mode" setting-key="av1_mode" class="mb-6" />
+
+    <ConfigFieldRenderer v-model="config.pyrowave" setting-key="pyrowave" class="mb-6" />
   </div>
 </template>
 

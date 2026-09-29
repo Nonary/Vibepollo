@@ -4,7 +4,7 @@
  *
  * The contract is docs/pyrowave-protocol.md, shared with the moonlight-qt fork.
  * The capability bits and bitStreamFormat value match the Aurora/Solarflare
- * PyroWave implementation. Vibeshine builds against upstream moonlight-common-c,
+ * PyroWave implementation. Vibepollo builds against upstream moonlight-common-c,
  * so the host-side constants live here rather than in Limelight.h.
  */
 #pragma once

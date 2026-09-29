@@ -1286,7 +1286,11 @@ namespace platf {
 #endif
 
   bool pyrowave_capture_supported() {
+#ifdef SUNSHINE_BUILD_CUDA
     return !sources[source::NVFBC];
+#else
+    return true;
+#endif
   }
 
   std::vector<std::string> display_names(mem_type_e hwdevice_type) {

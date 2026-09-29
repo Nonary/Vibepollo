@@ -198,6 +198,7 @@ const defaultGroups = [
       wan_encryption_mode: 1,
       ping_timeout: 10000,
       video_max_batch_size_kb: 64,
+      pyrowave_critical_fec_percentage: 20,
     },
   },
   {
@@ -247,6 +248,7 @@ const defaultGroups = [
       min_threads: 2,
       hevc_mode: 0,
       av1_mode: 0,
+      pyrowave: true,
       envvar_compatibility_mode: 'disabled',
       legacy_ordering: 'disabled',
       ignore_encoder_probe_failure: 'disabled',

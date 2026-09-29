@@ -8,13 +8,13 @@ take well under a millisecond, but a clean picture needs hundreds of Mbps, so it
 meant for wired LANs.
 
 The same document lives in both repositories (`moonlight-qt/docs/pyrowave-protocol.md`
-and `vibeshine/docs/pyrowave-protocol.md`). Change both together.
+and `Vibepollo/docs/pyrowave-protocol.md`). Change both together.
 
 ## Codec library and bitstream version
 
 Both ends vendor upstream PyroWave at the same commit through
 `pyrowave/vendor-pyrowave.ps1` (moonlight-qt) and `third-party/pyrowave`
-(vibeshine); see `VENDOR.txt`. The PyroWave bitstream has no version field, so the
+(Vibepollo); see `VENDOR.txt`. The PyroWave bitstream has no version field, so the
 host advertises the vendored commit (below) and the client warns on a mismatch.
 
 | Name | Value |

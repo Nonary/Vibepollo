@@ -188,6 +188,11 @@ const effectivePort = computed(() => Number(config.port ?? defaultMoonlightPort)
       v-model="config.video_max_batch_size_kb"
       class="mb-6"
     />
+    <ConfigFieldRenderer
+      setting-key="pyrowave_critical_fec_percentage"
+      v-model="config.pyrowave_critical_fec_percentage"
+      class="mb-6"
+    />
   </div>
 </template>
 
