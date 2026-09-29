@@ -11,6 +11,15 @@ else()
     # .app build
     set(APPLE_CODESIGN_IDENTITY "" CACHE STRING "Codesign identity, e.g. 'Developer ID Application: Name (TEAMID)'")
 
+    # Hardened runtime and timestamps only matter for notarization, which needs a Developer ID.
+    # Ad-hoc ("-") and self-signed identities carry no Team ID, so hardened runtime's library
+    # validation would refuse to load the bundled dylibs.
+    if(APPLE_CODESIGN_IDENTITY MATCHES "^Developer ID Application")
+        set(_codesign_extra_args "--timestamp --options=runtime")
+    else()
+        set(_codesign_extra_args "")
+    endif()
+
     # Build an .app
     set(CMAKE_MACOSX_BUNDLE YES)
 
@@ -26,7 +35,7 @@ else()
             DESTINATION "${MAC_BUNDLE_CONTENTS}"
             COMPONENT Runtime)
 
-    install(FILES "${PROJECT_SOURCE_DIR}/src_assets/macos/build/sunshine.icns"
+    install(FILES "${PROJECT_SOURCE_DIR}/src_assets/macos/build/vibepollo.icns"
             DESTINATION "${MAC_BUNDLE_RESOURCES}"
             COMPONENT Runtime)
 
@@ -76,7 +85,7 @@ else()
               foreach(item IN LISTS _sign_items)
                   execute_process(COMMAND /usr/bin/codesign --verbose=2
                       --sign \"${APPLE_CODESIGN_IDENTITY}\" \"\${item}\"
-                      --force --timestamp --options=runtime
+                      --force ${_codesign_extra_args}
                       RESULT_VARIABLE rc2
                   )
                   if(NOT rc2 EQUAL 0)
@@ -88,7 +97,7 @@ else()
           # Sign the app last
           execute_process(COMMAND /usr/bin/codesign --verbose=2
               --sign \"${APPLE_CODESIGN_IDENTITY}\" \"\${_app}\"
-              --force --timestamp --options=runtime
+              --force ${_codesign_extra_args}
               RESULT_VARIABLE rc3
           )
           if(NOT rc3 EQUAL 0)
@@ -108,7 +117,9 @@ else()
     # DragNDrop
     set(CPACK_BUNDLE_NAME "${CMAKE_PROJECT_NAME}")
     set(CPACK_BUNDLE_PLIST "${APPLE_PLIST_FILE}")
-    set(CPACK_BUNDLE_ICON "${PROJECT_SOURCE_DIR}/src_assets/macos/build/sunshine.icns")
+    set(CPACK_BUNDLE_ICON "${PROJECT_SOURCE_DIR}/src_assets/macos/build/vibepollo.icns")
+    # The DMG volume icon must be .icns; the common sunshine.png no longer exists in this fork.
+    set(CPACK_PACKAGE_ICON "${CPACK_BUNDLE_ICON}")
     set(CPACK_PACKAGING_INSTALL_PREFIX "/")
     set(CPACK_DMG_BACKGROUND_IMAGE "${PROJECT_SOURCE_DIR}/src_assets/macos/build/sunshine-background-72dpi.jpg")
     set(CPACK_DMG_DS_STORE_SETUP_SCRIPT "${PROJECT_SOURCE_DIR}/src_assets/macos/build/dmg-finder-layout.applescript")
