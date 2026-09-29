@@ -84,6 +84,14 @@ namespace platf {
   }
 
   std::unique_ptr<deinit_t> init() {
+    // Remote mouse and keyboard input is posted as synthetic events, which macOS only delivers
+    // for apps allowed under Privacy & Security > Accessibility. Streaming works without it.
+    if (!CGPreflightPostEventAccess()) {
+      BOOST_LOG(warning) << "No accessibility permission; remote mouse and keyboard input will be ignored"sv;
+      BOOST_LOG(warning) << "Please activate it in 'System Settings' -> 'Privacy & Security' -> 'Accessibility'"sv;
+      CGRequestPostEventAccess();
+    }
+
     // This will generate a warning about CGPreflightScreenCaptureAccess and
     // CGRequestScreenCaptureAccess being unavailable before macOS 10.15, but
     // we have a guard to prevent it from being called on those earlier systems.
