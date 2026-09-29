@@ -80,6 +80,9 @@
   #include "platform/linux/display_power.h"
   #include "platform/linux/private_display_resume_policy.h"
 #endif
+#ifdef __APPLE__
+  #include "platform/macos/virtual_display.h"
+#endif
 
 #include "process.h"
 #include "rtsp.h"
@@ -217,6 +220,19 @@ namespace nvhttp {
   using verified_client_t = std::optional<crypto::named_cert_t>;
 
   namespace {
+#ifdef __APPLE__
+    // The display a launching client asked for, for bringing its virtual display up early.
+    video::config_t requested_display_config(const rtsp_stream::launch_session_t &session) {
+      const auto millihz = framegen::normalize_refresh_millihz(session.fps);
+      video::config_t config {};
+      config.width = session.width;
+      config.height = session.height;
+      config.framerate = static_cast<int>(std::lround(millihz / 1000.0));
+      config.framerateX100 = static_cast<int>(std::lround(millihz / 10.0));
+      return config;
+    }
+#endif
+
     std::int64_t now_seconds() {
       return std::chrono::duration_cast<std::chrono::seconds>(
                std::chrono::system_clock::now().time_since_epoch()
@@ -4851,6 +4867,12 @@ namespace nvhttp {
         stream::cancel_paused_display_cleanup();
 #endif
       }
+#ifdef __APPLE__
+      // A launch that fails before its stream starts removes the display it brought up.
+      auto launch_display_guard = util::fail_guard([]() {
+        platf::macos_virtual_display::end_launch_hold();
+      });
+#endif
 
 #ifdef _WIN32
       std::optional<video::encoder_probe_adapter_hint_lease_t> pending_adapter_hint;
@@ -5029,7 +5051,11 @@ namespace nvhttp {
         BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
       }
 #endif
-
+#ifdef __APPLE__
+        // As the Windows display helper does, bring the client's display up before probing: a
+        // Mac without a screen of its own has nothing else to probe.
+        platf::macos_virtual_display::hold_for_launch(requested_display_config(*launch_session));
+#endif
 
         // Probe encoders again before streaming to ensure our chosen
         // encoder matches the active GPU (which could have changed
@@ -5203,6 +5229,9 @@ namespace nvhttp {
 #endif
 #if defined(_WIN32) || defined(__linux__)
       normal_vdd_identity_guard.disable();
+#endif
+#ifdef __APPLE__
+      launch_display_guard.disable();
 #endif
       revert_display_configuration = false;
       output_override_guard.disable();
@@ -5502,6 +5531,12 @@ namespace nvhttp {
         config::set_runtime_output_name_override(std::nullopt);
       }
     });
+#ifdef __APPLE__
+    // A resume that fails before its stream starts removes the display it brought up.
+    auto launch_display_guard = util::fail_guard([]() {
+      platf::macos_virtual_display::end_launch_hold();
+    });
+#endif
 
 #ifdef _WIN32
     std::optional<video::encoder_probe_adapter_hint_lease_t> pending_adapter_hint;
@@ -5711,6 +5746,12 @@ namespace nvhttp {
         }
 #endif
       }
+#ifdef __APPLE__
+      // As on launch: bring the client's display up before probing.
+      if (!launch_session->input_only) {
+        platf::macos_virtual_display::hold_for_launch(requested_display_config(*launch_session));
+      }
+#endif
 
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
@@ -5802,6 +5843,9 @@ namespace nvhttp {
 #endif
 #if defined(_WIN32) || defined(__linux__)
     normal_vdd_identity_guard.disable();
+#endif
+#ifdef __APPLE__
+    launch_display_guard.disable();
 #endif
     output_override_guard.disable();
     runtime_overrides_guard.disable();

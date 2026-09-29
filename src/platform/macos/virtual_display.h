@@ -29,6 +29,22 @@ namespace platf::macos_virtual_display {
   std::shared_ptr<void> acquire(const video::config_t &config);
 
   /**
+   * @brief Bring up the virtual display when a client launches a stream, before the encoder probe.
+   * @details Mirrors the Windows display helper, which applies the client's display before probing.
+   *          A Mac without a screen of its own (a headless Mac mini, a MacBook with the lid closed)
+   *          otherwise has nothing to probe. The hold ends when the stream's session acquires the
+   *          display, when end_launch_hold() is called, or after 30 seconds.
+   * @param config The client's requested resolution and refresh rate.
+   */
+  void hold_for_launch(const video::config_t &config);
+
+  /**
+   * @brief Release the hold from hold_for_launch(), if any: the session now holds the display,
+   *        or the launch failed.
+   */
+  void end_launch_hold();
+
+  /**
    * @brief The virtual display that capture and input should target while one exists.
    */
   std::optional<std::uint32_t> active_display_id();

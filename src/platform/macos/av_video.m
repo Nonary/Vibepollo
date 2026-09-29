@@ -44,7 +44,12 @@
 - (id)initWithDisplay:(CGDirectDisplayID)displayID frameRate:(int)frameRate {
   self = [super init];
 
+  // No mode means no such display, as on a Mac without a screen of its own.
   CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
+  if (mode == NULL) {
+    [self release];
+    return nil;
+  }
 
   self.displayID = displayID;
   self.pixelFormat = kCVPixelFormatType_32BGRA;

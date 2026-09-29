@@ -3628,6 +3628,8 @@ namespace stream {
       // Vibepollo's per-client virtual display, at the client's resolution and refresh rate. It
       // must exist before input and capture pick their display. Released in join().
       session.macos_virtual_display = platf::macos_virtual_display::acquire(session.config.monitor);
+      // The display launch brought up is the session's now.
+      platf::macos_virtual_display::end_launch_hold();
 #endif
       session.input = input::alloc(session.mail);
 

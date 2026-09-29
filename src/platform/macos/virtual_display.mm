@@ -30,6 +30,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // platform includes
@@ -535,6 +536,50 @@ namespace platf::macos_virtual_display {
     return std::shared_ptr<void>(&token, [](void *) {
       release();
     });
+  }
+
+  namespace {
+    std::mutex launch_hold_mutex;
+    std::shared_ptr<void> launch_hold;
+    std::uint64_t launch_hold_generation = 0;
+  }  // namespace
+
+  void hold_for_launch(const video::config_t &config) {
+    auto held = acquire(config);
+    if (!held) {
+      return;
+    }
+
+    std::shared_ptr<void> previous;  // released outside the lock: releasing can take seconds
+    std::uint64_t generation;
+    {
+      std::lock_guard lock {launch_hold_mutex};
+      previous = std::exchange(launch_hold, std::move(held));
+      generation = ++launch_hold_generation;
+    }
+
+    std::thread([generation]() {
+      std::this_thread::sleep_for(30s);
+      std::shared_ptr<void> expired;
+      {
+        std::lock_guard lock {launch_hold_mutex};
+        if (launch_hold_generation == generation) {
+          expired = std::move(launch_hold);
+        }
+      }
+      if (expired) {
+        BOOST_LOG(info) << "Virtual display: no stream started within 30 seconds of the launch; removing it"sv;
+      }
+    }).detach();
+  }
+
+  void end_launch_hold() {
+    std::shared_ptr<void> held;
+    {
+      std::lock_guard lock {launch_hold_mutex};
+      held = std::move(launch_hold);
+      ++launch_hold_generation;
+    }
   }
 
   std::optional<std::uint32_t> active_display_id() {
