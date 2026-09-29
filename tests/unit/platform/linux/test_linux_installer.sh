@@ -2,8 +2,8 @@
 set -euo pipefail
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd -P)
 source "$repo/scripts/linux_install.sh"
-workdir=$(mktemp -d /tmp/vibeshine-installer-test.XXXXXXXX)
-local_package="$workdir/vibeshine.pkg.tar.zst"
+workdir=$(mktemp -d /tmp/vibepollo-installer-test.XXXXXXXX)
+local_package="$workdir/vibepollo.pkg.tar.zst"
 touch "$local_package"
 calls="$workdir/calls"
 source_root="$workdir/usr/src"
@@ -17,8 +17,8 @@ stat() {
   # Our fixture's /tmp ancestor is intentionally the only mocked metadata.
   if [[ "${!#}" == /tmp ]]; then printf '%s 755\n' "$EUID"; else command stat "$@"; fi
 }
-package_name=vibeshine
-directory_owner=vibeshine
+package_name=vibepollo
+directory_owner=vibepollo
 ownership_error=0
 repository_metadata_available=1
 pacman() {
@@ -49,7 +49,7 @@ if (install_from_package); then exit 1; fi
 [[ $(wc -l < "$calls") == 1 ]]
 ! grep -Eq -- '^-R|^-U|^-S' "$calls"
 : > "$calls"
-package_name=vibeshine
+package_name=vibepollo
 pacman_confirm=(); replacement_confirm=()
 install_from_package
 grep -Fx -- "-U -- $local_package" "$calls"
@@ -78,7 +78,7 @@ cmp "$directory/vibeshine_drm_vrr.h" "${backups[0]}"
 directory_owner=unrelated
 prepare_driver_replacement
 [[ ${#driver_overwrite[@]} == 0 ]]
-directory_owner=vibeshine
+directory_owner=vibepollo
 
 # Ownership-query failures are not evidence of an unowned file.
 ownership_error=1
@@ -101,7 +101,7 @@ configure_pacman_repo() { :; }
 parse_args --yes
 : > "$calls"
 install_from_repo
-grep -Fx -- "-S --noconfirm --ask=4 $expected vibeshine" "$calls"
+grep -Fx -- "-S --noconfirm --ask=4 $expected vibepollo" "$calls"
 ! grep -Eq -- '^-S[^ ]*[yu]' "$calls"
 download_release_package() { printf 'download-release\n' >> "$calls"; }
 repository_metadata_available=0

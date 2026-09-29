@@ -85,7 +85,7 @@ parse_args() {
       --stable) allow_prerelease=0; shift ;;
       --no-repo) use_repo=0; shift ;;
       --skip-checks) skip_checks=1; shift ;;
-      --yes) pacman_confirm=(--noconfirm); shift ;;
+      --yes) pacman_confirm=(--noconfirm); replacement_confirm=(--noconfirm --ask=4); shift ;;
       -h | --help) usage; exit 0 ;;
       *) die "unknown option: $1 (see --help)" ;;
     esac

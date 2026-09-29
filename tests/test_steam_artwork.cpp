@@ -9,7 +9,7 @@
 #include <optional>
 #include <vector>
 
-#ifdef VIBESHINE_STEAM_ARTWORK_IMAGE_LIBS
+#ifdef VIBEPOLLO_STEAM_ARTWORK_IMAGE_LIBS
 extern "C" {
 #include <jpeglib.h>
 }
@@ -170,7 +170,7 @@ TEST(SteamArtwork, ConvertsWebpCoverWithStaleJpegExtension) {
   fs::remove_all(root, ec);
 }
 
-#ifdef VIBESHINE_STEAM_ARTWORK_IMAGE_LIBS
+#ifdef VIBEPOLLO_STEAM_ARTWORK_IMAGE_LIBS
 TEST(SteamArtwork, ConvertsJpegWithoutFFmpegImageCodecs) {
   jpeg_compress_struct compressor {};
   jpeg_error_mgr error {};

@@ -10,7 +10,7 @@
 #include <optional>
 #include <sqlite3.h>
 
-#ifdef VIBESHINE_STEAM_ARTWORK_IMAGE_LIBS
+#ifdef VIBEPOLLO_STEAM_ARTWORK_IMAGE_LIBS
 extern "C" {
 #include <jpeglib.h>
 }
@@ -38,7 +38,7 @@ namespace {
 #endif
 
   void write_test_cover(const fs::path &path) {
-#ifdef VIBESHINE_STEAM_ARTWORK_IMAGE_LIBS
+#ifdef VIBEPOLLO_STEAM_ARTWORK_IMAGE_LIBS
     auto *file = std::fopen(path.string().c_str(), "wb");
     ASSERT_NE(file, nullptr);
     jpeg_compress_struct compressor {};
