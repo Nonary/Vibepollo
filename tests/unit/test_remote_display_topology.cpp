@@ -573,7 +573,7 @@ TEST(RemoteDisplayTopology, TerminateReleasesAllGameDisplaysAndRetainsMonitorRol
     .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
     .apply_composed_topology = [](const auto &) { return true; },
     .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; },
-    .remove_owned_display = [&removals](const auto &uuid) { removals.push_back(uuid); },
+    .remove_owned_display = [&removals](const auto &uuid) { removals.push_back(uuid); return true; },
   });
   ASSERT_TRUE(coordinator.reserve_normal_game_identity("original", "Original", {}).accepted);
   ASSERT_TRUE(coordinator.reserve_normal_game_identity("resumed", "Resumed", {}).accepted);
