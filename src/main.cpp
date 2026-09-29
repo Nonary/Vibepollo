@@ -189,13 +189,12 @@ namespace {
       // therefore cannot leave a stale timer behind to trap later.
       state_ = state_e::firing;
       lock.unlock();
-      BOOST_LOG(fatal) << deadline.count() << " seconds passed, yet Vibepollo's still running: Forcing shutdown"sv;
       if (supervised_machine_host_) {
-        // A trap would leave the process (and its ports) behind for systemd,
-        // which is exactly the orphan this deadline exists to prevent.
-        logging::log_flush();
+        // The deadline must be unconditional: even an asynchronous log sink
+        // can be blocked by the shutdown path that this watchdog protects.
         std::_Exit(lifetime::desired_exit_code);
       }
+      BOOST_LOG(fatal) << deadline.count() << " seconds passed, yet Vibepollo's still running: Forcing shutdown"sv;
       lifetime::debug_trap();
     }
 
