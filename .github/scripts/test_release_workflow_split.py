@@ -163,7 +163,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         )
         self.assertNotIn("vibepollo.pkg.tar.gz", getting_started)
         self.assertIn("vibepollo-*.pkg.tar.zst", getting_started)
-        self.assertIn("to guess a header package name", getting_started)
+        self.assertIn("installs the kernel headers for your running kernel", (ROOT / "docs" / "linux" / "install.md").read_text(encoding="utf-8"))
 
     def test_prerelease_notes_do_not_claim_to_cover_stable_releases(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:

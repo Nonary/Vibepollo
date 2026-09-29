@@ -91,9 +91,9 @@ downloaded from the [releases page](https://github.com/Nonary/Vibepollo/releases
 
 1. **Reboot if asked.** A kernel that still holds an older driver, or a one-time Secure Boot key
    enrollment, needs one reboot.
-2. **Log in to Plasma (Wayland) and pair.** Open `https://localhost:47990` on the machine, create
-   the Web UI login, then pair Moonlight with the PIN. Pairing works only from a logged-in
-   desktop; the pre-login stream reuses that pairing.
+2. **Pair Moonlight.** Open `https://localhost:47990` on the machine, create the Web UI login,
+   then enter the Moonlight PIN. Pairing also works at the login screen from another device.
+   Log in to Plasma (Wayland) to stream the desktop.
 3. **Open the firewall** if the script did not do it for you:
 
    ```bash
