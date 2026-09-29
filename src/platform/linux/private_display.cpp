@@ -1113,7 +1113,7 @@ namespace platf::linux_private_display {
     if (resolution && refresh && !prefer_highest && is_managed_output(session.virtual_display_device_id) &&
         (mode_id.empty() || !mode_matches_refresh(*target_before, mode_id, *refresh))) {
       if (!admit_requested_mode(configuration, session.virtual_display_device_id, *resolution, *refresh)) {
-        return false;
+        return use_current_output();
       }
       target_before = find_output(*configuration, session.virtual_display_device_id);
       if (!target_before) {
@@ -1126,7 +1126,7 @@ namespace platf::linux_private_display {
                             !mode_matches_refresh(*target_before, mode_id, *refresh))) {
       BOOST_LOG(error) << "Linux private display: no compatible mode is available for "
                        << session.virtual_display_device_id;
-      return false;
+      return use_current_output();
     }
 
     const auto private_names = private_output_set();
@@ -1243,7 +1243,7 @@ namespace platf::linux_private_display {
 
     if (!execute_configuration(arguments, "apply")) {
       if (!isolated) {
-        return false;
+        return use_current_output();
       }
       BOOST_LOG(warning) << "Linux private display: compositor rejected isolated placement; using an adjacent private output.";
       arguments.erase(
@@ -1254,7 +1254,7 @@ namespace platf::linux_private_display {
       );
       arguments.push_back(target_prefix + "position." + std::to_string(right_edge) + ",0");
       if (!execute_configuration(arguments, "isolated-layout fallback")) {
-        return false;
+        return use_current_output();
       }
     }
 
@@ -1279,10 +1279,10 @@ namespace platf::linux_private_display {
         })) {
       BOOST_LOG(error) << "Linux private display: timed out stabilizing mode/scale state on "
                        << session.virtual_display_device_id << '.';
-      return false;
+      return use_current_output();
     }
     if (!execute_configuration(hdr_arguments, "HDR activation")) {
-      return false;
+      return use_current_output();
     }
 
     bool verified_hdr_enabled = false;
@@ -1301,7 +1301,7 @@ namespace platf::linux_private_display {
     if (!verified || !wait_for_capture_publication(session.virtual_display_device_id)) {
       BOOST_LOG(error) << "Linux private display: timed out verifying mode/HDR/scale or capture state on "
                        << session.virtual_display_device_id << '.';
-      return false;
+      return use_current_output();
     }
 
     if (hdr_requested && !verified_hdr_enabled) {
