@@ -71,18 +71,18 @@ namespace platf::dxgi::present_timing {
   };
 
   /**
-   * @brief Makes `stamper` the one used by refine_send_timestamp().
+   * @brief Registers `stamper` for send-time refinement when it is the sole capture source.
    */
   void set_active_stamper(std::shared_ptr<capture_stamper_t> stamper);
 
   /**
-   * @brief Stops using `stamper` if it is still the active one.
+   * @brief Unregisters `stamper` when its capture source closes.
    */
   void clear_active_stamper(const capture_stamper_t *stamper);
 
   /**
    * @brief Refines a captured frame's composition time for its RTP timestamp.
-   * @return `composition` unchanged when no capture stamper is active.
+   * @return `composition` unchanged unless exactly one capture stamper is active.
    */
   std::chrono::steady_clock::time_point refine_send_timestamp(std::chrono::steady_clock::time_point composition);
 

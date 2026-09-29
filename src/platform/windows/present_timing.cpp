@@ -11,6 +11,7 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 
 // platform includes
@@ -397,26 +398,30 @@ namespace platf::dxgi::present_timing {
 
   namespace {
     std::mutex active_mutex;
-    std::shared_ptr<capture_stamper_t> active_stamper;
+    std::unordered_map<const capture_stamper_t *, std::shared_ptr<capture_stamper_t>> active_stampers;
   }  // namespace
 
   void set_active_stamper(std::shared_ptr<capture_stamper_t> stamper) {
     std::lock_guard lock(active_mutex);
-    active_stamper = std::move(stamper);
+    if (stamper) {
+      active_stampers[stamper.get()] = std::move(stamper);
+    }
   }
 
   void clear_active_stamper(const capture_stamper_t *stamper) {
     std::lock_guard lock(active_mutex);
-    if (active_stamper.get() == stamper) {
-      active_stamper.reset();
-    }
+    active_stampers.erase(stamper);
   }
 
   std::chrono::steady_clock::time_point refine_send_timestamp(const std::chrono::steady_clock::time_point composition) {
     std::shared_ptr<capture_stamper_t> stamper;
     {
       std::lock_guard lock(active_mutex);
-      stamper = active_stamper;
+      // The RTP packet does not identify its WGC capture source. Use the
+      // composition time unchanged while multiple sources are active.
+      if (active_stampers.size() == 1) {
+        stamper = active_stampers.begin()->second;
+      }
     }
     static const std::int64_t frequency = query_frequency();
     if (!stamper || frequency <= 0) {

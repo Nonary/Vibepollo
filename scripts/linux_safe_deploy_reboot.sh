@@ -88,6 +88,10 @@ done
 [[ $(id -un) == "$expected_user" ]] || die "this host script must be run as ${expected_user}"
 [[ $HOME == "$expected_home" ]] || die "expected HOME=${expected_home}, got ${HOME}"
 
+# This historical user-service installer predates the machine-scoped host.
+# Stop before any staging, capability changes, service stop, or reboot.
+die "This deployment path is retired for the machine-scoped Vibepollo host. Use scripts/linux_local_deploy.py install --version 2.0.0 for a validated installation; reboot separately if the driver requires it."
+
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "$script_dir/.." && pwd -P)"
 build_dir="$repo_root/build"

@@ -5294,7 +5294,6 @@ namespace nvhttp {
     // already counts pending launches, so every mutating decision below degrades to a
     // plain join on its own.
     const bool no_active_sessions = !has_stream_session_activity();
-    const auto request_client_identity = resolve_client_identity_from_request(request);
     const auto active_game = proc::proc.active_session_guard();
     const bool secondary_game_client = remote_session::is_secondary_game_client(
       active_game.client_uuid, request_client_identity.uuid
@@ -5482,7 +5481,6 @@ namespace nvhttp {
       );
     }
 #endif
-    const auto launch_session = make_launch_session(host_audio, args, request, allow_session_display_changes, &request_client_identity);
     launch_session->secondary_game_client = secondary_game_client;
 #ifdef __linux__
     // The application retains its normal display lease while paused. A new
@@ -6154,8 +6152,9 @@ namespace nvhttp {
   void getPyroWaveBandwidthProbe(resp_https_t response, req_https_t request) {
     // Fixed-size download over the normal pinned, mutually authenticated HTTPS
     // connection. The client measures actual host-to-client transfer time.
-    const auto identity = resolve_client_identity_from_request(request);
-    if (identity.uuid.empty()) {
+    const auto verified_client = get_verified_cert(request);
+    const auto identity = resolve_client_identity(request, verified_client);
+    if (!verified_client || identity.uuid.empty()) {
       response->write(SimpleWeb::StatusCode::client_error_forbidden, "Paired client required");
       response->close_connection_after_response = true;
       return;

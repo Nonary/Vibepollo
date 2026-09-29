@@ -44,7 +44,7 @@ downloads the newest release package from GitHub and installs it with `pacman -U
 
 Re-running the script is safe. It only installs what is missing and repeats the checks.
 The script does not run a full system upgrade. Local packages use `pacman -U`;
-repository installs use existing metadata to install Vibeshine and its dependencies.
+repository installs use existing metadata to install Vibepollo and its dependencies.
 If the host repository has not been cached yet, the script uses a release package
 instead of refreshing system databases automatically.
 Maintain the rest of your Arch system separately. Matching headers for the

@@ -297,15 +297,32 @@ class NativePackageTests(unittest.TestCase):
     def test_running_streamed_application_blocks_installation(self):
         args = SimpleNamespace(allow_disruption=False)
         listing = 'vibepollo-app-2-473489.service loaded active running [systemd-run] steam-launch\n'
-        with mock.patch.object(deploy, 'run', return_value=SimpleNamespace(returncode=0, stdout=listing)) as run:
+
+        def run_for_seat(*command, **_kwargs):
+            if command[:2] == ('loginctl', 'show-seat'):
+                return SimpleNamespace(returncode=0, stdout='42\n')
+            if command[:2] == ('loginctl', 'show-session'):
+                return SimpleNamespace(returncode=0, stdout=deploy.pwd.getpwuid(deploy.os.getuid()).pw_name + '\n')
+            return SimpleNamespace(returncode=0, stdout=listing)
+
+        with mock.patch.object(deploy, 'run', side_effect=run_for_seat) as run:
             with self.assertRaisesRegex(deploy.DeployError, r'vibepollo-app-2-473489\.service.*--allow-disruption'):
                 deploy.refuse_live_applications(args)
-        self.assertEqual(run.call_args.args[:3], ('systemctl', '--user', 'list-units'))
-        self.assertIn('--state=active', run.call_args.args)
-        self.assertIn('vibepollo-app-*.service', run.call_args.args)
-        with mock.patch.object(deploy, 'run', return_value=SimpleNamespace(returncode=0, stdout='')):
+        self.assertIn(mock.call('systemctl', '--user', 'list-units', '--plain', '--no-legend',
+                                '--no-pager', '--state=active', 'vibepollo-app-*.service',
+                                check=False), run.call_args_list)
+        with mock.patch.object(deploy, 'run', side_effect=lambda *command, **kwargs:
+                               SimpleNamespace(returncode=0, stdout='' if command[0] == 'systemctl' else
+                                               '42\n' if command[1] == 'show-seat' else
+                                               deploy.pwd.getpwuid(deploy.os.getuid()).pw_name + '\n')):
             deploy.refuse_live_applications(args)
-        # An unreadable user manager is not evidence that nothing is running.
+        # A different active seat owner must never be checked through this user's manager.
+        with mock.patch.object(deploy, 'run', side_effect=lambda *command, **kwargs:
+                               SimpleNamespace(returncode=0, stdout='42\n' if command[1] == 'show-seat' else
+                                               'another-user\n')) as run:
+            with self.assertRaisesRegex(deploy.DeployError, 'another account'):
+                deploy.refuse_live_applications(args)
+            self.assertFalse(any(call.args[0] == 'systemctl' for call in run.call_args_list))
         with mock.patch.object(deploy, 'run', return_value=SimpleNamespace(returncode=1, stdout='')):
             with self.assertRaisesRegex(deploy.DeployError, '--allow-disruption'):
                 deploy.refuse_live_applications(args)
@@ -403,10 +420,29 @@ class NativePackageTests(unittest.TestCase):
                    SimpleNamespace(returncode=1)]
         with mock.patch.object(deploy, 'run', side_effect=results) as run:
             deploy.stop_legacy_user_hosts()
-        self.assertIn(mock.call('systemctl', '--user', 'disable', '--now', 'sunshine.service'),
+        self.assertIn(mock.call('systemctl', '--user', 'stop', 'sunshine.service'),
                       run.call_args_list)
-        self.assertNotIn(mock.call('systemctl', '--user', 'disable', '--now', deploy.HOST),
+        self.assertNotIn(mock.call('systemctl', '--user', 'disable', '--now', 'sunshine.service'),
                          run.call_args_list)
+        self.assertNotIn(mock.call('systemctl', '--user', 'stop', deploy.HOST),
+                         run.call_args_list)
+
+    def test_user_service_enablement_changes_only_after_successful_package_install(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = Path(temporary) / 'candidate.pkg.tar.gz'
+            candidate.write_bytes(b'fixture')
+            args = SimpleNamespace(yes=True, version=VERSION, timeout=30)
+            previous = [('sunshine.service', True), ('vibeshine.service', False)]
+            for status in (1, 0):
+                with self.subTest(status=status), \
+                        mock.patch.object(deploy, 'stop_legacy_user_hosts', return_value=previous), \
+                        mock.patch.object(deploy.subprocess, 'call', return_value=status), \
+                        mock.patch.object(deploy, 'run') as run:
+                    self.assertEqual(deploy.install_confirmed_package(candidate, args), status)
+                    disables = [call for call in run.call_args_list
+                                if call.args[:3] == ('systemctl', '--user', 'disable')]
+                    self.assertEqual(disables, [] if status else
+                                     [mock.call('systemctl', '--user', 'disable', 'sunshine.service')])
 
     def test_package_resume_never_calls_file_rollback(self):
         with tempfile.TemporaryDirectory() as temporary:

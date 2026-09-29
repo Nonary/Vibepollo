@@ -595,7 +595,7 @@ jobs:
           fi
 
           mkdir -p build
-          # Test targets are opt-in for CI builds.
+          # Release tag builds omit test targets; ordinary reusable-workflow calls retain them.
           cmake \
             -B build \
             -G Ninja \

@@ -42,9 +42,9 @@ build dependencies.
 - Runtime operation targets the native controller's KDE/Wayland seat0 desktop
   or greeter sessions. On Arch, confirmed installation disables the invoking
   user's obsolete Sunshine/Vibeshine/Vibepollo service and imports the selected
-  desktop profile into service-owned state. Original profiles remain intact. Multiple
-  source profiles require explicit selection through the native installer
-  (`--source-profile`) or `vibepollo configure USER SOURCE` before retrying setup.
+  desktop profile into service-owned state. Original profiles remain intact. If
+  automatic setup finds multiple desktop accounts, select one with
+  `sudo vibepollo configure USER` before retrying setup.
   It does not support arbitrary compositors, Windows, macOS, live deployment
   inside containers, or cross-compiling. `--stage-only` can be used in Linux build
   containers: it skips the live-host requirements and does not elevate.
@@ -126,7 +126,7 @@ requirement; it never applies a file rollback over the package database. Package
 hooks and dependency changes are not covered by the file updater's rollback journal.
 
 On both paths, installation refuses to start while an application launched by
-the host (`vibeshine-app-*.service` in your user manager) is still running,
+the host (`vibepollo-app-*.service` in the selected desktop user manager) is still running,
 because installing stops it together with the capture host. Quit the game or end
 the stream and rerun with `--skip-build`, or pass `--allow-disruption`.
 

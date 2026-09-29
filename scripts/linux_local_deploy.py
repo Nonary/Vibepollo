@@ -966,12 +966,17 @@ def rollback(directory, manifest):
 
 
 def stop_legacy_user_hosts():
-    # Run as the invoking desktop user, only after installation confirmation.
+    # Stop conflicts after confirmation, but keep boot enablement until the
+    # package has installed successfully. A refused sudo or failed pre-hook
+    # must not permanently disable the prior user service.
+    previous = []
     for unit in ('sunshine.service', 'vibeshine.service', HOST):
         active = run('systemctl', '--user', 'is-active', '--quiet', unit, check=False).returncode == 0
         enabled = run('systemctl', '--user', 'is-enabled', '--quiet', unit, check=False).returncode == 0
-        if active or enabled:
-            run('systemctl', '--user', 'disable', '--now', unit)
+        if active:
+            run('systemctl', '--user', 'stop', unit)
+        previous.append((unit, enabled))
+    return previous
 
 
 def refuse_live_applications(args):
@@ -981,6 +986,18 @@ def refuse_live_applications(args):
     # 2026-09-18), so never do that to a live session without being told to.
     if args.allow_disruption:
         return
+    # The broker launches apps in the seat owner's user manager. A different
+    # administrator must not silently inspect only their own empty manager.
+    active = run('loginctl', 'show-seat', 'seat0', '-p', 'ActiveSession', '--value', check=False)
+    if active.returncode:
+        raise DeployError('Could not identify the active seat0 session; pass --allow-disruption to install anyway')
+    session = active.stdout.strip()
+    if session:
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', session):
+            raise DeployError('Invalid active seat0 session; pass --allow-disruption to install anyway')
+        owner = run('loginctl', 'show-session', session, '-p', 'Name', '--value', check=False)
+        if owner.returncode or owner.stdout.strip() != pwd.getpwuid(os.getuid()).pw_name:
+            raise DeployError('The active seat0 session belongs to another account; run deployment as that desktop user or pass --allow-disruption')
     result = run('systemctl', '--user', 'list-units', '--plain', '--no-legend', '--no-pager',
                  '--state=active', 'vibepollo-app-*.service', check=False)
     if result.returncode:
@@ -1553,14 +1570,19 @@ def confirm_install():
 def install_confirmed_package(package, args):
     if not args.yes and not confirm_install():
         raise DeployError('Installation cancelled; the local package was retained')
-    stop_legacy_user_hosts()
+    legacy_user_units = stop_legacy_user_hosts()
     # Consent above covers this exact package and conflicting host replacement.
     # Carry it through sudo so pacman does not ask a second time.
-    return subprocess.call([
+    result = subprocess.call([
         'sudo', '/usr/bin/python3', '-I', str(Path(__file__).resolve()),
         '_package_install', str(package), digest(package), '--version', args.version,
         '--timeout', str(args.timeout), '--yes',
     ])
+    if result == 0:
+        for unit, enabled in legacy_user_units:
+            if enabled:
+                run('systemctl', '--user', 'disable', unit)
+    return result
 
 
 def version_probe_environment(work):

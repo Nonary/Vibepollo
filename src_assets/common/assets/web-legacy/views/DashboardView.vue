@@ -548,7 +548,6 @@ const installedIsPrerelease = ref(false);
 const vigemInstalled = ref<boolean | null>(null);
 const vigemRequired = ref<boolean | null>(null);
 const vigemVersion = ref('');
-const vigemRequired = ref(true);
 // Vulkan HDR layer health (Windows only)
 const vulkanHdrLayer = ref<{ installed: boolean; enabled: boolean } | null>(null);
 const vulkanHdrLayerInstalling = ref(false);

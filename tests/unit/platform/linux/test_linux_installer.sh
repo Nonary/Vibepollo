@@ -330,8 +330,8 @@ printf 'Package upgrades preserve new and legacy supervisor shutdown contracts.\
 # Removal and post-install recovery must leave broker/app workers untouched
 # when the GPU host has not drained, even if the admission socket has stopped.
 for hook_case in \
-  'packaging/linux/vibeshine-prerm.in:vibepollo_quiesce_for_removal' \
-  'packaging/linux/vibeshine-postinst.in:vibepollo_quiesce_machine_host' \
+  'packaging/linux/vibepollo-prerm.in:vibepollo_quiesce_for_removal' \
+  'packaging/linux/vibepollo-postinst.in:vibepollo_quiesce_machine_host' \
   'packaging/linux/copr/Sunshine.spec:vibepollo_quiesce_machine_host' \
   'packaging/linux/copr/Sunshine.spec:vibepollo_preun_quiesce'; do
   (
@@ -386,3 +386,44 @@ for hook_case in \
   )
 done
 printf 'Removal and repair refuse broker teardown until the GPU host has drained.\n'
+
+# A pre-replacement failure must not stop the GPU host before broker admission
+# was touched. Once that shutdown begins, retain the runtime restart fence and
+# recover the installed unit enablement for the next boot.
+for hook in packaging/linux/vibeshine-preinst.in packaging/linux/Arch/vibepollo.install packaging/linux/copr/Sunshine.spec; do
+  (
+    eval "$(sed -n '/^vibepollo_abort_quiesce() {$/,/^}$/p' "$repo/$hook")"
+    actions=''
+    systemctl() { actions="$actions $*"; }
+    timeout() { shift 2; "$@"; }
+    stat() { printf '%s\n' '1:2:0:0:0:1'; }
+    chmod() { actions="$actions CHMOD:$*"; }
+    vibepollo_legacy_handoff="$workdir/handoff-fixture"
+    : > "$vibepollo_legacy_handoff"
+    vibepollo_pre_handoff_identity='1:2:0:0:755:1'
+    vibepollo_stop_exact_unit() { actions="$actions STOP:$1"; }
+    vibepollo_unit_is_quiescent() { return 1; }
+    vibepollo_controller_was_frozen=1
+    vibepollo_shutdown_started=0
+    vibepollo_quiesce_step='early fixture failure'
+    vibepollo_abort_quiesce 2>/dev/null
+    [[ "$actions" == *'thaw vibepollo-session-controller.service'* ]]
+    [[ "$actions" == *'CHMOD:0755 --'* ]]
+    [[ "$actions" == *'CHMOD:0755 --'*'thaw vibepollo-session-controller.service'* ]]
+    [[ "$actions" != *'STOP:'* && "$actions" != *'unmask'* ]]
+    actions=''
+    vibepollo_controller_was_frozen=0
+    vibepollo_shutdown_started=1
+    vibepollo_pre_controller_enabled=enabled
+    vibepollo_pre_host_enabled=disabled
+    vibepollo_pre_prelogin_enabled=disabled
+    vibepollo_pre_prepare_enabled=disabled
+    vibepollo_broker_socket="$workdir/absent-broker-socket"
+    vibepollo_control_socket="$workdir/absent-control-socket"
+    vibepollo_abort_quiesce 2>/dev/null
+    [[ "$actions" == *'STOP:vibepollo-session-controller.service'* ]]
+    [[ "$actions" == *'STOP:vibepollo.service'* ]]
+    [[ "$actions" != *'enable '* && "$actions" != *'disable '* && "$actions" != *'unmask'* ]]
+  )
+done
+printf 'Failed pre-upgrade quiesce preserves the early host, prior enablement, and late restart fences.\n'

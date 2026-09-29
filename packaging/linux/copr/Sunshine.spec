@@ -737,6 +737,8 @@ vibepollo_freeze_controller() {
   case "$vibepollo_controller_pid" in '' | 0 | *[!0-9]*) return 1 ;; esac
   case "$vibepollo_controller_cgroup" in /*) ;; *) return 1 ;; esac
   case "$vibepollo_controller_cgroup" in */../* | */..) return 1 ;; esac
+  # A timed-out freeze may have succeeded; the abort path must attempt thaw.
+  vibepollo_controller_was_frozen=1
   timeout --signal=TERM --kill-after=2 15 systemctl freeze \
     vibepollo-session-controller.service 2>/dev/null || return 1
   vibepollo_controller_state=$(timeout --signal=KILL 5 systemctl show \
@@ -754,7 +756,6 @@ vibepollo_freeze_controller() {
     [ -f "$vibepollo_controller_events_path" ] && [ ! -L "$vibepollo_controller_events_path" ] && \
     grep -qx 'populated 1' "$vibepollo_controller_events_path" && \
     grep -qx 'frozen 1' "$vibepollo_controller_events_path" || return 1
-  vibepollo_controller_was_frozen=1
 }
 vibepollo_controller_remains_frozen() {
   [ "$vibepollo_controller_was_frozen" -eq 1 ] || return 0
@@ -917,10 +918,44 @@ vibepollo_cleanup_legacy_transition_state() {
     [ ! -e "$vibepollo_legacy_transition_lock" ] && [ ! -L "$vibepollo_legacy_transition_lock" ]
   )
 }
+vibepollo_abort_quiesce() {
+  echo 'error: could not safely quiesce the existing Vibepollo host; package replacement is blocked.' >&2
+
+  if [ "${vibepollo_shutdown_started:-0}" -eq 0 ]; then
+    case "${vibepollo_pre_handoff_identity:-}" in
+      *:0:0:755:1)
+        vibepollo_handoff_expected=$(printf '%s\n' "$vibepollo_pre_handoff_identity" | sed 's/:755:1$/:0:1/')
+        if [ -f "$vibepollo_legacy_handoff" ] && [ ! -L "$vibepollo_legacy_handoff" ] &&
+           [ "$(stat -Lc '%%d:%%i:%%u:%%g:%%a:%%h' -- "$vibepollo_legacy_handoff" 2>/dev/null)" = "$vibepollo_handoff_expected" ]; then
+          chmod 0755 -- "$vibepollo_legacy_handoff" ||
+            echo 'error: could not restore the legacy handoff executable mode.' >&2
+        fi
+        ;;
+    esac
+    if [ "${vibepollo_controller_was_frozen:-0}" -eq 1 ]; then
+      timeout --signal=KILL 15 systemctl thaw vibepollo-session-controller.service 2>/dev/null || true
+      vibepollo_controller_was_frozen=0
+    fi
+    echo 'error: the old host was not stopped; admission may be closed. Retry the upgrade after fixing the failed step, or reboot to clear runtime fences.' >&2
+    return 0
+  fi
+  if [ "${vibepollo_controller_was_frozen:-0}" -eq 1 ]; then
+    timeout --signal=KILL 15 systemctl thaw vibepollo-session-controller.service 2>/dev/null || true
+    vibepollo_controller_was_frozen=0
+  fi
+  echo 'error: admission remains closed and the prior host may be stopped. Do not restart a populated GPU host; retry the package upgrade or reboot after investigating the failed step.' >&2
+  vibepollo_stop_exact_unit vibepollo-session-controller.service
+  vibepollo_stop_exact_unit vibepollo.service
+}
 vibepollo_quiesce_machine_host() {
   vibepollo_have_systemd=0
   if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
     vibepollo_have_systemd=1
+    vibepollo_shutdown_started=0
+    vibepollo_pre_handoff_identity=''
+    if [ -f "$vibepollo_legacy_handoff" ] && [ ! -L "$vibepollo_legacy_handoff" ]; then
+      vibepollo_pre_handoff_identity=$(stat -Lc '%%d:%%i:%%u:%%g:%%a:%%h' -- "$vibepollo_legacy_handoff" 2>/dev/null || true)
+    fi
     vibepollo_select_upgrade_kill_mode || return 1
     vibepollo_prepare_host_upgrade_fence || return 1
     vibepollo_freeze_controller || return 1
@@ -937,6 +972,7 @@ vibepollo_quiesce_machine_host() {
     vibepollo_stop_exact_unit vibeshine-vkms-control.socket
     vibepollo_unit_is_quiescent vibeshine-vkms-control.socket || return 1
     vibepollo_control_instances_are_quiescent || return 1
+    vibepollo_shutdown_started=1
     timeout --signal=KILL 15 systemctl mask --runtime vibepollo-session-exec.socket 2>/dev/null || return 1
     vibepollo_broker_socket_is_masked || return 1
     vibepollo_stop_exact_unit vibepollo-session-exec.socket
@@ -955,10 +991,6 @@ vibepollo_quiesce_machine_host() {
     vibepollo_unit_is_quiescent vibepollo-session-controller.service || return 1
     vibepollo_stop_exact_unit vibepollo-prelogin.service
     vibepollo_stop_exact_unit vibepollo-machine-prepare.service
-    timeout --signal=KILL 15 systemctl disable vibepollo-session-controller.service --now 2>/dev/null || true
-    timeout --signal=KILL 15 systemctl disable vibepollo.service --now 2>/dev/null || true
-    timeout --signal=KILL 15 systemctl disable vibepollo-prelogin.service --now 2>/dev/null || true
-    timeout --signal=KILL 15 systemctl disable vibepollo-machine-prepare.service --now 2>/dev/null || true
   fi
 
   if [ "$vibepollo_have_systemd" -eq 0 ]; then vibepollo_disable_legacy_handoff || return 1; fi
@@ -991,7 +1023,6 @@ vibepollo_quiesce_machine_host() {
       vibepollo.service vibepollo-prelogin.service vibepollo-machine-prepare.service; do
       vibepollo_stop_exact_unit "$vibepollo_unit"
       vibepollo_unit_is_quiescent "$vibepollo_unit" || return 1
-      vibepollo_unit_is_disabled "$vibepollo_unit" || return 1
     done
     vibepollo_brokers_are_quiescent || return 1
     vibepollo_restore_instances_are_quiescent || return 1
@@ -1007,6 +1038,7 @@ vibepollo_quiesce_machine_host() {
     [ ! -e "$vibepollo_legacy_prelogin_marker" ] && [ ! -L "$vibepollo_legacy_prelogin_marker" ]
 }
 if ! vibepollo_quiesce_machine_host; then
+  vibepollo_abort_quiesce
   echo "error: installed Vibepollo services did not quiesce; replacement is blocked and admission remains disabled." >&2
   exit 1
 fi

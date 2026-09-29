@@ -325,6 +325,8 @@ vibepollo_freeze_controller() {
   case "$vibepollo_controller_pid" in '' | 0 | *[!0-9]*) return 1 ;; esac
   case "$vibepollo_controller_cgroup" in /*) ;; *) return 1 ;; esac
   case "$vibepollo_controller_cgroup" in */../* | */..) return 1 ;; esac
+  # A timed-out freeze may have succeeded; the abort path must attempt thaw.
+  vibepollo_controller_was_frozen=1
   timeout --signal=TERM --kill-after=2 15 systemctl freeze \
     vibepollo-session-controller.service 2>/dev/null || return 1
   vibepollo_controller_state=$(timeout --signal=KILL 5 systemctl show \
@@ -342,7 +344,6 @@ vibepollo_freeze_controller() {
     [ -f "$vibepollo_controller_events_path" ] && [ ! -L "$vibepollo_controller_events_path" ] && \
     grep -qx 'populated 1' "$vibepollo_controller_events_path" && \
     grep -qx 'frozen 1' "$vibepollo_controller_events_path" || return 1
-  vibepollo_controller_was_frozen=1
 }
 
 vibepollo_controller_remains_frozen() {
@@ -685,14 +686,36 @@ vq() {
 # frozen behind runtime masks and the upgrade fence, with the old host still
 # running and nothing able to restart it until a reboot.
 vibepollo_abort_quiesce() {
-  echo "error: could not quiesce the existing Vibepollo host (failed step: ${vibepollo_quiesce_step:-unknown}); the previous host is left running." >&2
+  echo "error: could not safely quiesce the existing Vibepollo host (failed step: ${vibepollo_quiesce_step:-unknown}); package replacement is blocked." >&2
+
+  # Before broker admission closes, preserve the existing GPU-owning host.
+  # Keep any runtime fence/masks for a deliberate retry or reboot instead of
+  # racing a restart against a partially completed shutdown.
+  if [ "${vibepollo_shutdown_started:-0}" -eq 0 ]; then
+    # The legacy handoff mode is persistent. Restore only the same validated
+    # root-owned single-link inode that this invocation changed from 0755.
+    case "${vibepollo_pre_handoff_identity:-}" in
+      *:0:0:755:1)
+        vibepollo_handoff_expected=${vibepollo_pre_handoff_identity%:755:1}:0:1
+        if [ -f "$vibepollo_legacy_handoff" ] && [ ! -L "$vibepollo_legacy_handoff" ] &&
+           [ "$(stat -Lc '%d:%i:%u:%g:%a:%h' -- "$vibepollo_legacy_handoff" 2>/dev/null)" = "$vibepollo_handoff_expected" ]; then
+          chmod 0755 -- "$vibepollo_legacy_handoff" ||
+            echo 'error: could not restore the legacy handoff executable mode.' >&2
+        fi
+        ;;
+    esac
+    if [ "${vibepollo_controller_was_frozen:-0}" -eq 1 ]; then
+      timeout --signal=KILL 15 systemctl thaw vibepollo-session-controller.service 2>/dev/null || true
+      vibepollo_controller_was_frozen=0
+    fi
+    echo 'error: the old host was not stopped; admission may be closed. Retry the upgrade after fixing the failed step, or reboot to clear runtime fences.' >&2
+    return 0
+  fi
   if [ "${vibepollo_controller_was_frozen:-0}" -eq 1 ]; then
     timeout --signal=KILL 15 systemctl thaw vibepollo-session-controller.service 2>/dev/null || true
     vibepollo_controller_was_frozen=0
   fi
-  # Pre-replacement never unmasks anything: fail closed by stopping the
-  # controller and host under the fence, then drop the fence so
-  # post-replacement can bring the new host up cleanly.
+  echo 'error: admission remains closed and the prior host may be stopped. Do not restart a populated GPU host; retry the package upgrade or reboot after investigating the failed step.' >&2
   vibepollo_stop_exact_unit vibepollo-session-controller.service
   vibepollo_stop_exact_unit vibepollo.service
   # Socket paths that outlived a masked-then-stopped unit would keep the next
@@ -705,9 +728,7 @@ vibepollo_abort_quiesce() {
      [ -S "$vibepollo_control_socket" ] && [ ! -L "$vibepollo_control_socket" ]; then
     rm -f -- "$vibepollo_control_socket" 2>/dev/null || true
   fi
-  rm -f -- "$vibepollo_host_upgrade_dropin" 2>/dev/null || true
-  rmdir -- "$vibepollo_host_upgrade_dropin_dir" 2>/dev/null || true
-  systemctl daemon-reload 2>/dev/null || true
+
 }
 
 vibepollo_quiesce_or_abort() {
@@ -728,6 +749,11 @@ vibepollo_quiesce_machine_host() {
     # controller cgroup before changing any dependency. This is the transaction
     # barrier which prevents its legacy reconcile path from issuing a
     # concurrent hard kill or connector release.
+    vibepollo_shutdown_started=0
+    vibepollo_pre_handoff_identity=''
+    if [ -f "$vibepollo_legacy_handoff" ] && [ ! -L "$vibepollo_legacy_handoff" ]; then
+      vibepollo_pre_handoff_identity=$(stat -Lc '%d:%i:%u:%g:%a:%h' -- "$vibepollo_legacy_handoff" 2>/dev/null || true)
+    fi
     vq vibepollo_select_upgrade_kill_mode || return 1
     vq vibepollo_prepare_host_upgrade_fence || return 1
     vq vibepollo_freeze_controller || return 1
@@ -761,6 +787,7 @@ vibepollo_quiesce_machine_host() {
     # Closing the required broker socket may start the host stop. The verified
     # process-mode fence directs one TERM to the old wrapper and forbids the
     # service manager from escalating against its GPU-owning child.
+    vibepollo_shutdown_started=1
     vq timeout --signal=KILL 15 systemctl mask --runtime \
       vibepollo-session-exec.socket 2>/dev/null || return 1
     vq vibepollo_broker_socket_is_masked || return 1
@@ -791,10 +818,6 @@ vibepollo_quiesce_machine_host() {
     vq vibepollo_unit_is_quiescent vibepollo-session-controller.service || return 1
     vibepollo_stop_exact_unit vibepollo-prelogin.service
     vibepollo_stop_exact_unit vibepollo-machine-prepare.service
-    timeout --signal=KILL 15 systemctl disable vibepollo-session-controller.service --now 2>/dev/null || true
-    timeout --signal=KILL 15 systemctl disable vibepollo.service --now 2>/dev/null || true
-    timeout --signal=KILL 15 systemctl disable vibepollo-prelogin.service --now 2>/dev/null || true
-    timeout --signal=KILL 15 systemctl disable vibepollo-machine-prepare.service --now 2>/dev/null || true
   fi
 
   if [ "$vibepollo_have_systemd" -eq 0 ]; then
@@ -843,7 +866,6 @@ vibepollo_quiesce_machine_host() {
       vibepollo-machine-prepare.service; do
       vibepollo_stop_exact_unit "$vibepollo_unit"
       vibepollo_unit_is_quiescent "$vibepollo_unit" || return 1
-      vibepollo_unit_is_disabled "$vibepollo_unit" || return 1
     done
     vibepollo_brokers_are_quiescent || return 1
     vibepollo_restore_instances_are_quiescent || return 1
