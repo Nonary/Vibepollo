@@ -10,6 +10,8 @@
 #include "src/platform/macos/av_video.h"
 #include "src/platform/macos/misc.h"
 #include "src/platform/macos/nv12_zero_device.h"
+#include "src/platform/macos/sc_video.h"
+#include "src/platform/macos/virtual_display.h"
 
 // Avoid conflict between AVFoundation and libavutil both defining AVMediaType
 #define AVMediaType AVMediaType_FFmpeg
@@ -181,9 +183,18 @@ namespace platf {
         display->display_id = [display_id unsignedIntValue];
       }
     }
+    // The stream's virtual display, while there is one, takes precedence over output_name.
+    if (const auto virtual_id = macos_virtual_display::active_display_id()) {
+      display->display_id = *virtual_id;
+    }
     BOOST_LOG(info) << "Configuring selected display ("sv << display->display_id << ") to stream"sv;
 
-    display->av_capture = [[AVVideo alloc] initWithDisplay:display->display_id frameRate:config.framerate];
+    // AVCaptureScreenInput delivers no frames from virtual displays; ScreenCaptureKit does.
+    if (macos_virtual_display::active_display_id() == display->display_id) {
+      display->av_capture = [[SCVideo alloc] initWithDisplay:display->display_id frameRate:config.framerate];
+    } else {
+      display->av_capture = [[AVVideo alloc] initWithDisplay:display->display_id frameRate:config.framerate];
+    }
 
     if (!display->av_capture) {
       BOOST_LOG(error) << "Video setup failed."sv;

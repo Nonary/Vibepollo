@@ -23,6 +23,7 @@
 #include "src/input.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/platform/macos/virtual_display.h"
 #include "src/utility.h"
 
 /**
@@ -40,7 +41,8 @@ namespace platf {
 
   struct macos_input_t {
   public:
-    CGDirectDisplayID display {};
+    CGDirectDisplayID configured_display {};  ///< Chosen at startup from output_name.
+    CGDirectDisplayID display {};  ///< Display input currently targets; see current_display().
     CGFloat displayScaling {};
     CGEventSourceRef source {};
 
@@ -55,6 +57,28 @@ namespace platf {
     bool mouse_down[3] {};  // mouse button status
     std::chrono::steady_clock::steady_clock::time_point last_mouse_event[3][2];  // timestamp of last mouse events
   };
+
+  // Input coordinates are based on the display's points, not its pixels (Retina is 2 pixels per point).
+  CGFloat display_scaling(const CGDirectDisplayID display) {
+    const CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display);
+    if (!mode) {
+      return 1;
+    }
+    const auto pixel_width = CGDisplayModeGetPixelWidth(mode);
+    CGDisplayModeRelease(mode);
+    return pixel_width ? ((CGFloat) CGDisplayPixelsWide(display)) / ((CGFloat) pixel_width) : 1;
+  }
+
+  // The streamed display can change while input is running (the per-client virtual display comes
+  // and goes with streams), so resolve it per event and refresh the scaling when it changes.
+  CGDirectDisplayID current_display(macos_input_t *macos_input) {
+    const CGDirectDisplayID display = macos_virtual_display::active_display_id().value_or(macos_input->configured_display);
+    if (display != macos_input->display) {
+      macos_input->display = display;
+      macos_input->displayScaling = display_scaling(display);
+    }
+    return display;
+  }
 
   // A struct to hold a Windows keycode to Mac virtual keycode mapping.
   struct KeyCodeMap {
@@ -380,7 +404,7 @@ const KeyCodeMap kKeyCodesMap[] = {
     BOOST_LOG(debug) << "mouse_event: "sv << button << ", type: "sv << type << ", location:"sv << raw_location.x << ":"sv << raw_location.y << " click_count: "sv << click_count;
 
     const auto macos_input = static_cast<macos_input_t *>(input.get());
-    const auto display = macos_input->display;
+    const auto display = current_display(macos_input);
     const auto event = macos_input->mouse_event;
 
     // get display bounds for current display
@@ -444,8 +468,8 @@ const KeyCodeMap kKeyCodesMap[] = {
     const float y
   ) {
     const auto macos_input = static_cast<macos_input_t *>(input.get());
+    const auto display = current_display(macos_input);
     const auto scaling = macos_input->displayScaling;
-    const auto display = macos_input->display;
 
     auto location = util::point_t {x * scaling, y * scaling};
     CGRect display_bounds = CGDisplayBounds(display);
@@ -638,10 +662,8 @@ const KeyCodeMap kKeyCodesMap[] = {
       }
     }
 
-    // Input coordinates are based on the virtual resolution not the physical, so we need the scaling factor
-    const CGDisplayModeRef mode = CGDisplayCopyDisplayMode(macos_input->display);
-    macos_input->displayScaling = ((CGFloat) CGDisplayPixelsWide(macos_input->display)) / ((CGFloat) CGDisplayModeGetPixelWidth(mode));
-    CFRelease(mode);
+    macos_input->configured_display = macos_input->display;
+    macos_input->displayScaling = display_scaling(macos_input->display);
 
     macos_input->source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
     macos_input->keyboard_source = CGEventSourceCreate(kCGEventSourceStatePrivate);

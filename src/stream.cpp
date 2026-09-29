@@ -81,6 +81,9 @@ extern "C" {
   #include "platform/linux/wayland_hdr_compatibility.h"
   #include "src/platform/linux/display_backend.h"
 #endif
+#ifdef __APPLE__
+  #include "platform/macos/virtual_display.h"
+#endif
 
 #define IDX_START_A 0
 #define IDX_START_B 1
@@ -600,6 +603,9 @@ namespace stream {
 
 #ifdef _WIN32
     std::shared_future<rtsp_stream::launch_session_t::display_helper_gate_status_e> display_helper_gate;
+#endif
+#ifdef __APPLE__
+    std::shared_ptr<void> macos_virtual_display;  ///< Keeps this stream's virtual display alive.
 #endif
 
     std::thread audioThread;
@@ -3472,6 +3478,11 @@ namespace stream {
       // Trapping on any of that is a false positive that would kill every other
       // live stream.
 
+#ifdef __APPLE__
+      // Capture and input have stopped, so the virtual display (and turned-off displays) can go back.
+      session.macos_virtual_display.reset();
+#endif
+
       // Serialize client cleanup and shared runtime finalization with lifecycle transitions.
       std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex(), std::defer_lock);
       if (!lifecycle_lock_held) {
@@ -3613,6 +3624,11 @@ namespace stream {
     }
 
     int start(session_t &session, const std::string &addr_string) {
+#ifdef __APPLE__
+      // Vibepollo's per-client virtual display, at the client's resolution and refresh rate. It
+      // must exist before input and capture pick their display. Released in join().
+      session.macos_virtual_display = platf::macos_virtual_display::acquire(session.config.monitor);
+#endif
       session.input = input::alloc(session.mail);
 
       session.broadcast_ref = broadcast.ref();
