@@ -91,6 +91,32 @@ namespace platf::dxgi {
     capture_e lock_frame(winrt::com_ptr<ID3D11Texture2D> &gpu_tex_out, uint64_t &frame_qpc_out);
 
     /**
+     * @brief Mark the newest published frame as consumed without taking the keyed mutex.
+     * @details Used when the encoder reads the shared texture directly. The encoder's own
+     *          keyed-mutex acquire orders its GPU reads after the helper's copy, so the
+     *          capture thread only needs the frame id and timestamp. The encoder may read
+     *          a newer frame if the helper publishes again first; that frame is fresher.
+     * @param frame_qpc_out Output for the claimed frame's QPC timestamp.
+     * @return capture_e::ok if a new frame was claimed, capture_e::timeout otherwise.
+     */
+    capture_e claim_latest_frame(uint64_t &frame_qpc_out);
+
+    /**
+     * @brief NT handle of the helper's shared texture, owned by this session.
+     * @details Duplicate it before handing it to another owner. Null when not initialized.
+     */
+    HANDLE shared_texture_handle() const {
+      return _shared_texture_handle.get();
+    }
+
+    /**
+     * @brief The helper's shared texture opened on this session's device.
+     */
+    winrt::com_ptr<ID3D11Texture2D> shared_texture() const {
+      return _shared_texture;
+    }
+
+    /**
      * @brief Release the keyed mutex.
      */
     void release();
@@ -187,6 +213,7 @@ namespace platf::dxgi {
     std::unique_ptr<AsyncNamedPipe> _pipe;  ///< Async control/message pipe.
     winrt::com_ptr<IDXGIKeyedMutex> _keyed_mutex;  ///< Keyed mutex for shared texture.
     winrt::com_ptr<ID3D11Texture2D> _shared_texture;  ///< Shared texture duplicated from helper.
+    winrt::handle _shared_texture_handle;  ///< NT handle of the shared texture, for opening on encoder devices.
     winrt::com_ptr<ID3D11Device> _device;  ///< D3D11 device pointer (not owned).
     winrt::handle _frame_ready_event;  ///< Duplicated auto-reset event signaled by the helper per frame.
     winrt::handle _frame_metadata_mapping;  ///< Duplicated shared-memory mapping for frame metadata.

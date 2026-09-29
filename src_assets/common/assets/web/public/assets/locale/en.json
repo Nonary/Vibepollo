@@ -515,6 +515,8 @@
     "capture_wgc_auto": "Windows Graphics Capture (variable)",
     "wgc_pacing_smoothing": "WGC Pacing Smoothing",
     "wgc_pacing_smoothing_desc": "Keeps Windows Graphics Capture pacing aligned to the stream cadence instead of re-anchoring directly to raw frame arrival.",
+    "wgc_direct_encoder_input": "WGC Direct Encoder Input",
+    "wgc_direct_encoder_input_desc": "GPU encoders read each Windows Graphics Capture frame directly from the capture helper instead of a host-side copy. This removes one full-frame copy and one GPU hand-off per frame. Disable to restore the previous copy path.",
     "capture_ddx_legacy": "Desktop Duplication API (legacy)",
     "capture_autodetect_legacy": "Automatic (legacy fallback)",
     "cert": "Certificate",

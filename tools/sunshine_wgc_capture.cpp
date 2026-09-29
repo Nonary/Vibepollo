@@ -1093,9 +1093,11 @@ private:
   std::atomic<uint64_t> _slow_shared_mutex_holds {0};
   std::atomic<uint64_t> _slow_copy_submissions {0};
   std::atomic<uint64_t> _published_frames {0};
+  std::atomic<uint64_t> _direct_published_frames {0};  ///< Frames copied straight into the shared texture.
   std::atomic<uint64_t> _activity_rate_limited_frames {0};
   uint64_t _last_diagnostics_captured_frames = 0;
   uint64_t _last_diagnostics_published_frames = 0;
+  uint64_t _last_diagnostics_direct_published_frames = 0;
   uint64_t _last_diagnostics_empty_drops = 0;
   uint64_t _last_diagnostics_drained_frames = 0;
   uint64_t _last_diagnostics_replaced_frames = 0;
@@ -1449,6 +1451,7 @@ private:
 
       const auto captured = _captured_frames.load(std::memory_order_relaxed);
       const auto published = _published_frames.load(std::memory_order_relaxed);
+      const auto direct_published = _direct_published_frames.load(std::memory_order_relaxed);
       const auto empty_drops = _frame_pool_empty_drops.load(std::memory_order_relaxed);
       const auto drained = _drained_pool_frames.load(std::memory_order_relaxed);
       const auto replaced = _delivery_replaced_frames.load(std::memory_order_relaxed);
@@ -1461,6 +1464,7 @@ private:
 
       const auto captured_delta = captured - _last_diagnostics_captured_frames;
       const auto published_delta = published - _last_diagnostics_published_frames;
+      const auto direct_published_delta = direct_published - _last_diagnostics_direct_published_frames;
       const auto empty_drop_delta = empty_drops - _last_diagnostics_empty_drops;
       const auto drained_delta = drained - _last_diagnostics_drained_frames;
       const auto replaced_delta = replaced - _last_diagnostics_replaced_frames;
@@ -1473,6 +1477,7 @@ private:
 
       _last_diagnostics_captured_frames = captured;
       _last_diagnostics_published_frames = published;
+      _last_diagnostics_direct_published_frames = direct_published;
       _last_diagnostics_empty_drops = empty_drops;
       _last_diagnostics_drained_frames = drained;
       _last_diagnostics_replaced_frames = replaced;
@@ -1488,6 +1493,7 @@ private:
                       << " approx_extra_pool_latency_ms=" << approximate_extra_pool_latency_ms(_current_buffer_size)
                       << " capture_fps=" << (static_cast<double>(captured_delta) / interval_s)
                       << " publish_fps=" << (static_cast<double>(published_delta) / interval_s)
+                      << " direct_published=" << direct_published_delta
                       << " drained=" << drained_delta
                       << " activity_rate_limited=" << activity_rate_limited_delta
                       << " empty_drops=" << empty_drop_delta
@@ -1718,6 +1724,58 @@ private:
   }
 
   /**
+   * @brief Publish a WGC frame straight into the shared texture when nothing is in the way.
+   * @details The scratch handoff exists so this callback never waits on the shared keyed
+   *          mutex. Most frames arrive while the host is not holding that mutex and no older
+   *          frame is queued; those need one GPU copy instead of two (WGC -> scratch -> shared).
+   *          Every GPU submission here competes with the host's conversion for the graphics
+   *          queue, so halving them shortens the host's encode latency tail. Anything busy
+   *          falls back to the scratch path, which keeps publication order and never blocks.
+   * @return true if the frame was published.
+   */
+  bool try_publish_directly(const winrt::com_ptr<ID3D11Texture2D> &frame_tex, uint64_t frame_qpc) {
+    std::unique_lock delivery_lock(_delivery_mutex);
+    const bool frame_delivering = std::any_of(_scratch_textures.begin(), _scratch_textures.end(), [](const auto &scratch) {
+      return scratch.state == scratch_state_e::delivering;
+    });
+    if (!platf::dxgi::wgc_policy::may_publish_directly(
+          _delivery_stop || _shutting_down.load(std::memory_order_acquire),
+          _pending_delivery_frame.has_value(),
+          frame_delivering)) {
+      return false;
+    }
+
+    std::unique_lock context_lock(_d3d_context_mutex, std::try_to_lock);
+    if (!context_lock.owns_lock()) {
+      return false;
+    }
+
+    const auto &keyed_mutex = _deps->resource_manager.get_keyed_mutex();
+    const HRESULT hr = keyed_mutex ? keyed_mutex->AcquireSync(0, 0) : E_FAIL;
+    if (hr != S_OK && hr != WAIT_ABANDONED) {
+      return false;
+    }
+    if (hr == WAIT_ABANDONED) {
+      BOOST_LOG(error) << "Keyed mutex was abandoned; continuing with lock held";
+    }
+
+    _deps->d3d_context->CopyResource(_deps->resource_manager.get_shared_texture().get(), frame_tex.get());
+    _deps->resource_manager.publish_frame_metadata(frame_qpc);
+    const HRESULT release_hr = keyed_mutex->ReleaseSync(0);
+    context_lock.unlock();
+    delivery_lock.unlock();
+    if (FAILED(release_hr)) {
+      BOOST_LOG(warning) << "Failed to release mutex key 0: " << std::format(": 0x{:08X}", release_hr);
+      return true;
+    }
+
+    _deps->resource_manager.signal_frame_ready();
+    _published_frames.fetch_add(1, std::memory_order_relaxed);
+    _direct_published_frames.fetch_add(1, std::memory_order_relaxed);
+    return true;
+  }
+
+  /**
    * @brief Copies the next WGC frame into helper-owned scratch storage and queues it for delivery.
    * @param frame The WGC frame object; it is released before the shared IPC mutex can block.
    * @param surface The captured D3D11 surface.
@@ -1739,6 +1797,10 @@ private:
     winrt::com_ptr<ID3D11Texture2D> frame_tex;
     if (FAILED(ia->GetInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<::IUnknown **>(frame_tex.put_void())))) {
       BOOST_LOG(error) << "Failed to get ID3D11Texture2D from interface";
+      return;
+    }
+
+    if (try_publish_directly(frame_tex, frame_qpc)) {
       return;
     }
 
