@@ -1544,7 +1544,7 @@ namespace stream {
       input::passthrough(session->input, std::move(plaintext), session->permission);
     });
 
-    server->map(packetTypes[IDX_EXEC_SERVER_CMD], [server](session_t *session, const std::string_view &payload) {
+    server->map(packetTypes[IDX_EXEC_SERVER_CMD], [](session_t *session, const std::string_view &payload) {
       BOOST_LOG(debug) << "type [IDX_EXEC_SERVER_CMD]"sv;
 
       if (!(session->permission & crypto::PERM::server_cmd)) {
@@ -1581,7 +1581,7 @@ namespace stream {
       }
     });
 
-    server->map(packetTypes[IDX_SET_CLIPBOARD], [server](session_t *session, const std::string_view &payload) {
+    server->map(packetTypes[IDX_SET_CLIPBOARD], [](session_t *session, const std::string_view &payload) {
       BOOST_LOG(info) << "type [IDX_SET_CLIPBOARD]: "sv << payload << " size: " << payload.size();
 
       if (!(session->permission & crypto::PERM::clipboard_set)) {
@@ -1590,7 +1590,7 @@ namespace stream {
       }
     });
 
-    server->map(packetTypes[IDX_FILE_TRANSFER_NONCE_REQUEST], [server](session_t *session, const std::string_view &payload) {
+    server->map(packetTypes[IDX_FILE_TRANSFER_NONCE_REQUEST], [](session_t *session, const std::string_view &payload) {
       BOOST_LOG(info) << "type [IDX_FILE_TRANSFER_NONCE_REQUEST]: "sv << payload << " size: " << payload.size();
 
       if (!(session->permission & crypto::PERM::file_upload)) {
@@ -3239,9 +3239,9 @@ namespace stream {
         deferred_app_revert ||
         (!is_paused && shared_runtime_force_display_revert_when_idle);
       const int paused_timeout_secs = std::max(0, config::video.dd.paused_virtual_display_timeout_secs);
-      const bool delay_virtual_display_cleanup_due_to_pause =
+      [[maybe_unused]] const bool delay_virtual_display_cleanup_due_to_pause =
         is_paused && !display_restore_requested && paused_timeout_secs > 0;
-      const bool keep_virtual_display_due_to_pause =
+      [[maybe_unused]] const bool keep_virtual_display_due_to_pause =
         is_paused && !display_restore_requested && paused_timeout_secs == 0;
 
 #ifdef _WIN32

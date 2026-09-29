@@ -5014,7 +5014,7 @@ namespace video {
 #ifdef _WIN32
     const bool legacy_amf_session = session_encoder == &amdvce_ffmpeg;
 #else
-    const bool legacy_amf_session = false;
+    bool legacy_amf_session = false;  // no AMF here; not const, so the teardown thread captures it as on Windows
 #endif
     bool native_amf_runtime_failed = false;
     const auto session_encoder_flags = session_encoder->flags;

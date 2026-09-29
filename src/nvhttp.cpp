@@ -3739,7 +3739,7 @@ namespace nvhttp {
       // Virtual-display limiting is independent of the manual limiter switch.
       // Report the configured default display path; app/client overrides and
       // per-game provider success are resolved later at launch.
-      const bool automatic_virtual_limiter =
+      [[maybe_unused]] const bool automatic_virtual_limiter =
         config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled &&
         config::frame_limiter.virtual_display_limiter_enabled();
 #ifdef _WIN32
@@ -4852,7 +4852,7 @@ namespace nvhttp {
         display_startup_deadline
       );
 #endif
-      const bool allow_display_changes = true;
+      [[maybe_unused]] const bool allow_display_changes = true;
       auto launch_session = make_launch_session_from_snapshot(host_audio, is_input_only, args, verified_client, &request_client_identity, request);
       std::optional<std::string> pending_output_override;
       auto output_override_guard = util::fail_guard([&]() {

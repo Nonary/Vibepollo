@@ -667,7 +667,6 @@ namespace confighttp {
 
   // SESSION COOKIE
   std::string sessionCookie;
-  static std::chrono::time_point<std::chrono::steady_clock> cookie_creation_time;
 
   /**
    * @brief Log the request details.

@@ -811,10 +811,11 @@ int main(int argc, char *argv[]) {
 #ifdef _WIN32
   bool startup_probe_succeeded = false;
 #endif
-  auto startup_probe = [&shutdown_event
+  auto startup_probe = [
 #ifdef _WIN32
-                        , &startup_probe_succeeded
-                        , &has_startup_stream_activity
+                         &shutdown_event,
+                         &startup_probe_succeeded,
+                         &has_startup_stream_activity
 #endif
   ]() {
 #ifdef _WIN32

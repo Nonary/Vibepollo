@@ -132,7 +132,6 @@ namespace webrtc_stream {
     constexpr int kDefaultFps = 60;
     constexpr int kDefaultAudioChannels = 2;
     constexpr int kDefaultAudioPacketMs = 10;
-    constexpr std::size_t kEncodedPrefixLogLimit = 5;
     constexpr auto kKeyframeRequestInterval = std::chrono::milliseconds {100};
     constexpr auto kVideoPacingSlackLatency = std::chrono::milliseconds {0};
     constexpr auto kVideoPacingSlackBalanced = std::chrono::milliseconds {2};
@@ -141,6 +140,8 @@ namespace webrtc_stream {
     constexpr auto kVideoPacingSlackMax = std::chrono::milliseconds {10};
     constexpr auto kVideoMaxFrameAgeMin = std::chrono::milliseconds {5};
     constexpr auto kVideoMaxFrameAgeMax = std::chrono::milliseconds {100};
+#ifdef SUNSHINE_ENABLE_WEBRTC  // only the WebRTC transport uses these
+    constexpr std::size_t kEncodedPrefixLogLimit = 5;
     constexpr auto kAudioMaxFrameAge = std::chrono::milliseconds {kDefaultAudioPacketMs * kMaxAudioFrames};
     constexpr auto kWebrtcStartupKeyframeHold = std::chrono::milliseconds {3000};
     constexpr auto kWebrtcStartupKeyframeDeadline = std::chrono::milliseconds {8000};
@@ -155,6 +156,7 @@ namespace webrtc_stream {
     constexpr std::size_t kVideoInflightFramesMin = 2;
     constexpr std::size_t kVideoInflightFramesMax = 6;
     constexpr std::size_t kVideoInflightKeyframeExtra = 2;
+#endif
 
     struct SharedEncodedPayloadReleaseContext {
       std::shared_ptr<std::vector<std::uint8_t>> payload;
