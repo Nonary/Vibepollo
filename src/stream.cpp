@@ -75,6 +75,7 @@ extern "C" {
 #elif defined(__linux__)
   #include "platform/linux/frame_limiter.h"
   #include "platform/linux/misc.h"
+  #include "platform/linux/routed_link.h"
   #include "drm_timing_trace.h"
   #include "platform/linux/private_display.h"
   #include "platform/linux/wayland_hdr_compatibility.h"
@@ -2039,9 +2040,13 @@ namespace stream {
       std::chrono::steady_clock::time_point window_started;
       unsigned lines = 0;
       unsigned suppressed = 0;
-      // Last logged PyroWave pacing source: link bps and interface LUID.
+      // Last logged PyroWave pacing source: link bps and platform interface ID.
       std::optional<std::pair<std::uint64_t, std::uint64_t>> logged_pacing;
       std::chrono::steady_clock::time_point last_pacing_log {};
+      std::chrono::steady_clock::time_point last_route_check {};
+      std::uint64_t cached_link_bps = 0;
+      std::uint64_t cached_interface_id = 0;
+      std::string cached_link_alias = "unavailable";
     };
     std::unordered_map<session_t *, wire_timeline_state_t> wire_timeline_by_session;
 
@@ -2273,20 +2278,40 @@ namespace stream {
         size_t ratecontrol_packets_in_1ms = pacing_bps / 1000 / blocksize / 8;
         ratecontrol_packets_in_1ms = std::max<size_t>(1, ratecontrol_packets_in_1ms);
         if (pyrowave_session) {
-          // Resolve the actual route each frame so adapter/rate changes take effect.
+          // Refresh the actual route periodically. Socket/interface discovery and
+          // sysfs reads must not block the send path on every frame.
           // This is local link capacity, not an estimate of downstream bottlenecks.
-          std::uint64_t link_bps = 0;
-          std::uint64_t link_luid = 0;
-          std::string link_alias = "unavailable";
+          const char *link_interface_kind = "interface";
+          if (wire_timeline_state.last_route_check == std::chrono::steady_clock::time_point {} ||
+              packet_pop_timestamp - wire_timeline_state.last_route_check >= 2s) {
+            wire_timeline_state.last_route_check = packet_pop_timestamp;
+            wire_timeline_state.cached_link_bps = 0;
+            wire_timeline_state.cached_interface_id = 0;
+            wire_timeline_state.cached_link_alias = "unavailable";
 #ifdef _WIN32
-          platf::routed_link_info_t link_info;
-          link_bps = platf::routed_link_bps(session->localAddress, session->video.peer.address(), &link_info);
-          link_luid = link_info.luid;
-          if (!link_info.alias.empty()) {
-            link_alias = link_info.alias + " (ifType " + std::to_string(link_info.if_type) +
-                         ", transmit " + std::to_string(link_info.transmit_bps / 1'000'000) + " Mbps)";
-          }
+            platf::routed_link_info_t link_info;
+            wire_timeline_state.cached_link_bps = platf::routed_link_bps(session->localAddress, session->video.peer.address(), &link_info);
+            wire_timeline_state.cached_interface_id = link_info.luid;
+            if (!link_info.alias.empty()) {
+              wire_timeline_state.cached_link_alias = link_info.alias + " (ifType " + std::to_string(link_info.if_type) +
+                                                       ", transmit " + std::to_string(link_info.transmit_bps / 1'000'000) + " Mbps)";
+            }
+#elif defined(__linux__)
+            platf::routed_link_info_t link_info;
+            wire_timeline_state.cached_link_bps = platf::routed_link_bps(session->localAddress, session->video.peer.address(), &link_info);
+            wire_timeline_state.cached_interface_id = link_info.if_index;
+            if (!link_info.alias.empty()) {
+              wire_timeline_state.cached_link_alias = link_info.alias + " (transmit " + std::to_string(link_info.transmit_bps / 1'000'000) + " Mbps)";
+            }
 #endif
+          }
+#ifdef _WIN32
+          link_interface_kind = "LUID";
+#elif defined(__linux__)
+          link_interface_kind = "ifindex";
+#endif
+          const auto link_bps = wire_timeline_state.cached_link_bps;
+          const auto link_interface_id = wire_timeline_state.cached_interface_id;
           const auto &monitor = session->config.monitor;
           const auto stream_kbps = monitor.client_requested_bitrate > 0 ? monitor.client_requested_bitrate : monitor.bitrate;
           // Ethernet header/FCS/preamble/interpacket gap, IP header, UDP header,
@@ -2298,16 +2323,16 @@ namespace stream {
             link_bps, stream_kbps, payload_blocksize, wire_bytes,
             packet->data_size() + sizeof(frame_header), monitor.framerate
           );
-          const std::pair pacing_source {link_bps, link_luid};
+          const std::pair pacing_source {link_bps, link_interface_id};
           // Route probes can alternate between a link speed and the fallback on
-          // successive frames. Rate-limit changes without logging each probe.
+          // successive refreshes. Rate-limit changes without logging each probe.
           if (wire_timeline_state.logged_pacing != pacing_source &&
               (wire_timeline_state.last_pacing_log == std::chrono::steady_clock::time_point {} ||
                packet_pop_timestamp - wire_timeline_state.last_pacing_log >= 30s)) {
             wire_timeline_state.logged_pacing = pacing_source;
             wire_timeline_state.last_pacing_log = packet_pop_timestamp;
             BOOST_LOG(info) << "PyroWave pacing: "sv << session->localAddress << " -> "sv << session->video.peer.address()
-                            << " via "sv << link_alias << ", LUID 0x"sv << std::hex << link_luid << std::dec
+                            << " via "sv << wire_timeline_state.cached_link_alias << ", " << link_interface_kind << ' ' << link_interface_id
                             << ", routed_link_bps "sv << link_bps << (link_bps ? "" : " (fallback: frame/bitrate demand)")
                             << ", "sv << ratecontrol_packets_in_1ms << " packets/ms at "sv << wire_bytes << " wire bytes ("sv
                             << ratecontrol_packets_in_1ms * wire_bytes * 8 / 1000 << " Mbps), payload "sv << payload_blocksize

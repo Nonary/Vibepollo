@@ -74,6 +74,7 @@
   #include "platform/windows/virtual_display_cleanup.h"
 #elif defined(__linux__)
   #include "platform/linux/private_display.h"
+  #include "platform/linux/routed_link.h"
   #include "platform/linux/mangohud_policy.h"
   #include "src/platform/linux/display_backend.h"
   #include "platform/linux/display_power.h"
@@ -3844,6 +3845,17 @@ namespace nvhttp {
       tree.put("root.ServerCodecModeSupport", codec_mode_flags);
 
       tree.put("root.PairStatus", pair_status);
+    // This is the host's outbound physical link, not measured end-to-end
+    // throughput. Unknown, wireless, and virtual routes report zero.
+    if (pair_status && advertised_video.pyrowave_mode >= 2) {
+      std::uint64_t link_bps = 0;
+#if defined(_WIN32) || defined(__linux__)
+      link_bps = platf::routed_link_bps(local_endpoint.address(), request->remote_endpoint().address());
+#endif
+      tree.put("root.PyroWaveHostLinkMbps", link_bps / 1'000'000);
+      tree.put("root.PyroWaveBandwidthProbeBytes", 32U * 1024U * 1024U);
+    }
+
 
       if constexpr (std::is_same_v<SunshineHTTPS, T>) {
         const int current_appid = proc::proc.running();
@@ -6119,6 +6131,59 @@ namespace nvhttp {
     response->close_connection_after_response = true;
   }
 
+  struct pyrowave_probe_state_t {
+    resp_https_t response;
+    std::size_t remaining;
+  };
+
+  void sendPyroWaveProbeChunk(const std::shared_ptr<pyrowave_probe_state_t> &state) {
+    static const std::string chunk(1024U * 1024U, '\x5a');
+    const auto bytes = std::min(state->remaining, chunk.size());
+    state->response->write(chunk.data(), static_cast<std::streamsize>(bytes));
+    state->remaining -= bytes;
+    if (state->remaining > 0) {
+      state->response->send([state](const auto &error) {
+        if (!error) sendPyroWaveProbeChunk(state);
+      });
+    }
+    // The response destructor sends the final buffered chunk.
+  }
+
+  void getPyroWaveBandwidthProbe(resp_https_t response, req_https_t request) {
+    // Fixed-size download over the normal pinned, mutually authenticated HTTPS
+    // connection. The client measures actual host-to-client transfer time.
+    const auto identity = resolve_client_identity_from_request(request);
+    if (identity.uuid.empty()) {
+      response->write(SimpleWeb::StatusCode::client_error_forbidden, "Paired client required");
+      response->close_connection_after_response = true;
+      return;
+    }
+    static std::mutex quota_mutex;
+    static std::unordered_map<std::string, std::pair<std::chrono::steady_clock::time_point, unsigned>> quotas;
+    {
+      std::lock_guard lock {quota_mutex};
+      auto &quota = quotas[identity.uuid];
+      const auto now = std::chrono::steady_clock::now();
+      if (quota.first == std::chrono::steady_clock::time_point {} || now - quota.first >= 1min) {
+        quota = {now, 0};
+      }
+      if (quota.second >= 8) {
+        response->write(SimpleWeb::StatusCode::client_error_too_many_requests, "Probe rate limit reached");
+        response->close_connection_after_response = true;
+        return;
+      }
+      ++quota.second;
+    }
+    constexpr std::size_t probe_bytes = 32U * 1024U * 1024U;
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", "application/octet-stream");
+    headers.emplace("Cache-Control", "no-store");
+    headers.emplace("Content-Length", std::to_string(probe_bytes));
+    response->write(SimpleWeb::StatusCode::success_ok, headers);
+    response->close_connection_after_response = true;
+    sendPyroWaveProbeChunk(std::make_shared<pyrowave_probe_state_t>(pyrowave_probe_state_t {response, probe_bytes}));
+  }
+
   void setup(const std::string &pkey, const std::string &cert) {
     conf_intern.pkey = pkey;
     conf_intern.servercert = cert;
@@ -6365,6 +6430,7 @@ namespace nvhttp {
     https_server.resource["^/actions/clipboard$"]["POST"] = setClipboard;
     https_server.resource["^/bitrate$"]["GET"] = setBitrate;
     https_server.resource["^/api/abr/capabilities$"]["GET"] = getAbrCapabilities;
+    https_server.resource["^/pyrowave-bandwidth-probe$"]["GET"] = getPyroWaveBandwidthProbe;
 
     https_server.config.reuse_address = true;
     https_server.config.address = net::get_bind_address(address_family);

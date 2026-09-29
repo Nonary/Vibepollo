@@ -36,6 +36,21 @@ different frame framing; see "Compatibility".
 The host ORs these bits into `ServerCodecModeSupport` when PyroWave encoding works
 on the capture adapter:
 
+For a paired HTTPS `/serverinfo` request, a capable host also returns
+`PyroWaveHostLinkMbps` (zero if its outbound route is not a known physical wired
+link) and `PyroWaveBandwidthProbeBytes=33554432`. The link number is the host's
+local transmit speed, not measured end-to-end throughput. Linux and Windows
+resolve the route to the requesting client; Linux ignores virtual, wireless,
+half-duplex and inactive interfaces.
+
+The paired client can GET `/pyrowave-bandwidth-probe` over its pinned HTTPS
+connection. It receives exactly 32 MiB of fixed binary payload
+to time. The client discards a warm-up and uses the slowest of three measurements,
+then reserves 20% for protocol overhead and contention. The result is a bulk
+host-to-client throughput estimate. It does not prove that live UDP bursts will
+avoid packet loss, so calibration remains a recommendation rather than a stream
+quality guarantee.
+
 | Bit | Value | Meaning |
 |---|---|---|
 | `SCM_PYROWAVE` | `0x00800000` | 8-bit 4:2:0 |
@@ -167,7 +182,7 @@ coverage after budget and block limits, rather than just the requested rate.
 The frame is split into at most four blocks. The host caps a frame at 3000
 packets when critical FEC is on and 4000 when it is off. The codec budget and
 record padding honor this limit and the negotiated packet size. PyroWave
-resolves the routed link speed each frame for pacing; if it is unavailable,
+refreshes the routed link speed every two seconds for pacing; if it is unavailable,
 pacing follows packet demand and stream bitrate. `pyrowave_send_rate_mbps`
 is ignored. Other codecs retain their existing pacing and FEC settings.
 
