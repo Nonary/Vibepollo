@@ -434,6 +434,18 @@ TEST(SteamLaunch, MachineSessionLaunchUsesCanonicalSemanticArguments) {
     })
   );
 
+  const auto fallback = session_launch_arguments(
+    "/usr/libexec/vibeshine/vibepollo-session-exec steam 1182900"
+  );
+  ASSERT_TRUE(fallback);
+  EXPECT_EQ(*fallback, (std::vector<std::string> {"steam", "1182900"}));
+  EXPECT_FALSE(session_launch_arguments(
+    "/usr/libexec/vibeshine/vibepollo-session-exec steam 01182900"
+  ));
+  EXPECT_FALSE(session_launch_arguments(
+    "/usr/libexec/vibeshine/vibepollo-session-exec steam 0"
+  ));
+
   policy.provider = "disabled";
   EXPECT_TRUE(session_launch_command(1182900, policy).empty());
   EXPECT_FALSE(session_launch_arguments(command + " trailing"));

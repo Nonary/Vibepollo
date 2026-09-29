@@ -170,6 +170,10 @@ candidate with source/patch hashes and host metadata, not a signed sysext image.
 Privileged activation, Moonlight HDR playback, actual native/Proton HDR games,
 mode switching and OS update/rollback behavior remain unvalidated.
 
+> The results in this section describe the source Vibeshine implementation.
+> They are historical evidence; this Vibepollo migration has not been
+> validated on a live SteamOS host.
+
 ## Local native deployment validation, 2026-09-05
 
 The SteamOS work was merged with `vibe-test` revision `be846187`. The resulting
@@ -211,6 +215,3 @@ profile excludes the managed virtual-display driver affected by that change.
 The installed SteamOS `gamescope-session.service`, `gamescope-session.target`,
 `steam-launcher.service` and `/usr/lib/steamos/gamescope-session` were also inspected
 to verify graphical-session ownership and how the environment file is published.
-# Migration note: the validation results below describe the source Vibeshine
-# implementation. They are historical evidence, not a claim that this Vibepollo
-# migration has been tested on a live SteamOS host.
