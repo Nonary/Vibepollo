@@ -9,7 +9,7 @@
 namespace policy = platf::linux_private_display::restore_policy;
 
 TEST(LinuxPrivateDisplayRestorePolicy, PrefersConnectedPhysicalGuard) {
-  constexpr std::array candidates {
+  const std::array candidates {
     policy::candidate_t {"Virtual-1", true, true, true},
     policy::candidate_t {"HDMI-A-1", true, true, false},
   };
@@ -17,8 +17,16 @@ TEST(LinuxPrivateDisplayRestorePolicy, PrefersConnectedPhysicalGuard) {
   EXPECT_EQ(policy::select_guard(candidates), "HDMI-A-1");
 }
 
+TEST(LinuxPrivateDisplayRestorePolicy, CandidateOwnsNameAfterOriginalChanges) {
+  std::string output_name {"HDMI-A-1"};
+  const std::array candidates {policy::candidate_t {output_name, true, true, false}};
+  output_name.assign("changed");
+
+  EXPECT_EQ(policy::select_guard(candidates), "HDMI-A-1");
+}
+
 TEST(LinuxPrivateDisplayRestorePolicy, FallsBackToPrivateGuardForPrivateBaseline) {
-  constexpr std::array candidates {
+  const std::array candidates {
     policy::candidate_t {"Virtual-2", true, true, true},
   };
 
@@ -26,7 +34,7 @@ TEST(LinuxPrivateDisplayRestorePolicy, FallsBackToPrivateGuardForPrivateBaseline
 }
 
 TEST(LinuxPrivateDisplayRestorePolicy, RejectsDisabledAndDisconnectedGuards) {
-  constexpr std::array candidates {
+  const std::array candidates {
     policy::candidate_t {"HDMI-A-1", false, true, false},
     policy::candidate_t {"DP-1", true, false, false},
   };
@@ -35,7 +43,7 @@ TEST(LinuxPrivateDisplayRestorePolicy, RejectsDisabledAndDisconnectedGuards) {
 }
 
 TEST(LinuxPrivateDisplayRestorePolicy, EnabledDisconnectedBaselineStillRequiresGuard) {
-  constexpr std::array candidates {
+  const std::array candidates {
     policy::candidate_t {"HDMI-A-1", true, false, false},
   };
 
@@ -44,7 +52,7 @@ TEST(LinuxPrivateDisplayRestorePolicy, EnabledDisconnectedBaselineStillRequiresG
 }
 
 TEST(LinuxPrivateDisplayRestorePolicy, HeadlessBaselineDoesNotRequireGuard) {
-  constexpr std::array candidates {
+  const std::array candidates {
     policy::candidate_t {"HDMI-A-1", false, true, false},
     policy::candidate_t {"Virtual-1", false, false, true},
   };

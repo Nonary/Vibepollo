@@ -12,7 +12,7 @@
 
 namespace platf::linux_private_display::restore_policy {
   struct candidate_t {
-    std::string_view name;
+    std::string name;
     bool enabled {false};
     bool connected {false};
     bool private_output {false};
