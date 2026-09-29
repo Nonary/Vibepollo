@@ -2402,6 +2402,7 @@ TEST(DisplayHelperV2StateMachine, RevertWithNoSnapshotsExitsImmediately) {
   EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 0);
   ASSERT_TRUE(harness.exit_code.has_value());
   EXPECT_EQ(harness.exit_code.value(), 0);
+  EXPECT_EQ(harness.task_manager.deleted, 1);
 }
 
 TEST(DisplayHelperV2StateMachine, RecoveryFailureKeepsEventLoopArmed) {

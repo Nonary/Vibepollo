@@ -7,10 +7,7 @@ import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
 import NetworkPortDetails from '@/components/settings/NetworkPortDetails.vue';
 import { acknowledgeSettings, configBoolean, settingError } from '@/utils/settings';
 import WindowsDisplayStatus from '@/components/settings/WindowsDisplayStatus.vue';
-import {
-  applyDummyPlugVsyncChange,
-  dummyPlugVsyncState,
-} from '@/utils/displayHealth';
+import { applyDummyPlugVsyncChange, dummyPlugVsyncState } from '@/utils/displayHealth';
 
 import { ApiError, apiGet, apiPatch, apiPost } from '@/api/client';
 import DisplayModeOverrides from '@/components/settings/DisplayModeOverrides.vue';
@@ -52,6 +49,7 @@ const system = useSystemStore();
 const route = useRoute();
 const router = useRouter();
 const confirmation = ref<'restart' | 'reset' | null>(null);
+const displayMaintenanceAvailable = ref<boolean | null>(null);
 const resetting = ref(false);
 const form = ref<HTMLFormElement | null>(null);
 
@@ -726,6 +724,20 @@ function normalizeConfiguredValues(configured: Record<string, unknown>): Record<
   return normalized;
 }
 
+async function loadDisplayMaintenanceStatus(): Promise<void> {
+  if (!isWindowsHost.value) {
+    displayMaintenanceAvailable.value = true;
+    return;
+  }
+  displayMaintenanceAvailable.value = null;
+  try {
+    const status = await apiGet<{ maintenance_available?: boolean }>('/api/display/golden_status');
+    displayMaintenanceAvailable.value = status.maintenance_available !== false;
+  } catch {
+    displayMaintenanceAvailable.value = null;
+  }
+}
+
 async function load(): Promise<void> {
   loading.value = true;
   error.value = '';
@@ -771,6 +783,7 @@ async function load(): Promise<void> {
     original.value = cloneSettings(normalized);
     syncDummyPlugTracking(normalized);
     configLoaded.value = true;
+    await loadDisplayMaintenanceStatus();
   } catch {
     error.value = t('ui.settings.errors.load');
   } finally {
@@ -837,6 +850,7 @@ async function save(): Promise<void> {
     if (result.status === false) throw new Error('save-rejected');
     original.value = acknowledgeSettings(original.value, submitted);
     syncDummyPlugTracking(original.value);
+    await loadDisplayMaintenanceStatus();
     restartAvailable.value ||= Boolean(result.restartRequired);
     notice.value = restartAvailable.value
       ? t('ui.settings.notices.saved_restart')
@@ -877,7 +891,7 @@ async function restart(): Promise<void> {
 }
 
 async function resetDisplayPersistence(): Promise<void> {
-  if (resetting.value) return;
+  if (resetting.value || !displayMaintenanceAvailable.value) return;
   resetting.value = true;
   error.value = '';
   notice.value = '';
@@ -1228,6 +1242,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
 
                   <DisplayRecoverySettings
                     v-else-if="field.kind === 'display-recovery'"
+                    :maintenance-available="displayMaintenanceAvailable"
                     :hotkey="values.dd_snapshot_restore_hotkey"
                     :modifiers="values.dd_snapshot_restore_hotkey_modifiers"
                     :prefer-golden="values.dd_always_restore_from_golden"
@@ -1410,11 +1425,20 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
           <div>
             <h2 id="display-recovery-title">{{ t('ui.settings.display_recovery.title') }}</h2>
             <p>{{ t('ui.settings.display_recovery.description') }}</p>
+            <p v-if="!displayMaintenanceAvailable" role="status">
+              {{
+                t(
+                  displayMaintenanceAvailable === false
+                    ? 'troubleshooting.dd_maintenance_disabled'
+                    : 'troubleshooting.dd_maintenance_unavailable',
+                )
+              }}
+            </p>
           </div>
           <button
             class="button button--danger-text"
             type="button"
-            :disabled="resetting"
+            :disabled="resetting || !displayMaintenanceAvailable"
             @click="confirmation = 'reset'"
           >
             {{ t('ui.settings.display_recovery.action') }}

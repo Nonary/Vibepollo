@@ -38,6 +38,11 @@ interface CrashDumpStatus {
 }
 
 interface GoldenStatus {
+  maintenance_available?: boolean;
+  session_current_exists?: boolean;
+  session_previous_exists?: boolean;
+  restore_task_state?: 'enabled' | 'disabled' | 'missing' | 'unavailable';
+  helper_engine?: 'legacy' | 'v2';
   exists?: boolean;
   snapshot_version?: number | null;
   latest_snapshot_version?: number;
@@ -97,6 +102,27 @@ const system = useSystemStore();
 const metadata = ref<HostMetadata | null>(system.metadata);
 const crashDump = ref<CrashDumpStatus | null>(null);
 const golden = ref<GoldenStatus | null>(null);
+const displayMaintenanceAvailable = computed(
+  () => golden.value !== null && golden.value.maintenance_available !== false,
+);
+const sessionRecoveryDetail = computed(() => {
+  const status = golden.value;
+  if (!status || status.restore_task_state === undefined) return '';
+  return t('troubleshooting.dd_session_recovery_status', {
+    current: t(
+      status.session_current_exists
+        ? 'troubleshooting.dd_recovery_present'
+        : 'troubleshooting.dd_recovery_absent',
+    ),
+    previous: t(
+      status.session_previous_exists
+        ? 'troubleshooting.dd_recovery_present'
+        : 'troubleshooting.dd_recovery_absent',
+    ),
+    task: t(`troubleshooting.dd_restore_task_${status.restore_task_state}`),
+    engine: status.helper_engine === 'legacy' ? 'v1' : 'v2',
+  });
+});
 const browserSessions = ref<BrowserSession[]>([]);
 const loading = ref(true);
 const refreshing = ref(false);
@@ -312,7 +338,10 @@ async function load(): Promise<void> {
     if (crashResult.status === 'fulfilled') crashDump.value = crashResult.value;
     else errors.push(message(crashResult.reason, t('ui.maintenance.errors.crashStatus')));
     if (goldenResult.status === 'fulfilled') golden.value = goldenResult.value;
-    else errors.push(message(goldenResult.reason, t('ui.maintenance.errors.recoveryStatus')));
+    else {
+      golden.value = null;
+      errors.push(message(goldenResult.reason, t('ui.maintenance.errors.recoveryStatus')));
+    }
   } else {
     crashDump.value = null;
     golden.value = null;
@@ -505,6 +534,18 @@ async function runConfirmedAction(): Promise<void> {
   actionError.value = '';
 
   try {
+    if (
+      (action.kind === 'golden-export' || action.kind === 'golden-delete') &&
+      !displayMaintenanceAvailable.value
+    ) {
+      throw new Error(
+        t(
+          golden.value
+            ? 'troubleshooting.dd_maintenance_disabled'
+            : 'troubleshooting.dd_maintenance_unavailable',
+        ),
+      );
+    }
     if (action.kind === 'golden-export') {
       const result = await apiPost<MutationResponse>('/api/display/export_golden', {});
       if (result.status === false) {
@@ -857,6 +898,16 @@ onBeforeUnmount(() => {
           </div>
           <StatusBadge :label="goldenState.label" :tone="goldenState.tone" />
         </div>
+        <p v-if="sessionRecoveryDetail" class="maintenance-muted">{{ sessionRecoveryDetail }}</p>
+        <p v-if="!displayMaintenanceAvailable" class="maintenance-muted" role="status">
+          {{
+            t(
+              golden
+                ? 'troubleshooting.dd_maintenance_disabled'
+                : 'troubleshooting.dd_maintenance_unavailable',
+            )
+          }}
+        </p>
         <dl v-if="golden?.exists" class="recovery-facts">
           <div>
             <dt>{{ t('ui.maintenance.recovery.snapshotSchema') }}</dt>
@@ -888,6 +939,7 @@ onBeforeUnmount(() => {
                 : t('ui.maintenance.actions.captureSnapshot')
             "
             variant="secondary"
+            :disabled="!displayMaintenanceAvailable || !golden"
             @click="requestAction({ kind: 'golden-export' })"
           />
           <AppButton
@@ -895,6 +947,7 @@ onBeforeUnmount(() => {
             class="maintenance-danger-text"
             :label="t('ui.maintenance.actions.deleteSnapshot')"
             variant="tertiary"
+            :disabled="!displayMaintenanceAvailable"
             @click="requestAction({ kind: 'golden-delete' })"
           />
           <AppButton

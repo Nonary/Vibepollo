@@ -73,6 +73,7 @@
 
 #ifdef _WIN32
   #include "platform/windows/virtual_display_cleanup.h"
+  #include "platform/windows/display_helper_v2/win_scheduled_task_manager.h"
   #include "platform/windows/virtual_display.h"
 #elif defined(__linux__)
   #include "platform/linux/capture_status.h"
@@ -4912,6 +4913,14 @@ namespace confighttp {
     print_req(request);
 
     nlohmann::json output_tree;
+#ifdef _WIN32
+    if (!display_helper_integration::maintenance_available()) {
+      output_tree["status"] = false;
+      output_tree["error"] = "Display maintenance requires display automation or an active virtual display.";
+      send_response(response, output_tree);
+      return;
+    }
+#endif
     output_tree["status"] = display_helper_integration::reset_persistence();
     send_response(response, output_tree);
   }
@@ -4958,6 +4967,12 @@ namespace confighttp {
     }
     print_req(request);
     nlohmann::json out;
+    if (!display_helper_integration::maintenance_available()) {
+      out["status"] = false;
+      out["error"] = "Display maintenance requires display automation or an active virtual display.";
+      send_response(response, out);
+      return;
+    }
     try {
       const bool ok = display_helper_integration::export_golden_restore();
       out["status"] = ok;
@@ -5519,6 +5534,18 @@ namespace confighttp {
       }
     } catch (...) {
     }
+    out["maintenance_available"] = display_helper_integration::maintenance_available();
+    out["helper_engine"] = display_helper_integration::legacy_helper_engine_selected() ? "legacy" : "v2";
+    bool session_current_exists = false;
+    bool session_previous_exists = false;
+    for (const auto &snapshot : golden_snapshot_candidates()) {
+      session_current_exists = session_current_exists || file_exists_nofail(snapshot.parent_path() / L"display_session_current.json");
+      session_previous_exists = session_previous_exists || file_exists_nofail(snapshot.parent_path() / L"display_session_previous.json");
+    }
+    out["session_current_exists"] = session_current_exists;
+    out["session_previous_exists"] = session_previous_exists;
+    display_helper::v2::WinScheduledTaskManager tasks;
+    out["restore_task_state"] = display_helper::restore_task_state_name(tasks.restore_task_state());
     out["exists"] = exists;
     out["snapshot_version"] = snapshot_version ? nlohmann::json(*snapshot_version) : nlohmann::json(nullptr);
     out["latest_snapshot_version"] = kGoldenSnapshotLatestVersion;

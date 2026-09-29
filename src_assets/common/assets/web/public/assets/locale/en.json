@@ -1787,7 +1787,16 @@
     "quit_apollo_success_ongoing": "Apollo is shutting down. This page may stop responding.",
     "restart_apollo": "Restart Apollo",
     "restart_apollo_desc": "Restart the Apollo service. Active sessions will be disconnected.",
-    "restart_apollo_success": "Apollo restart request sent."
+    "restart_apollo_success": "Apollo restart request sent.",
+    "dd_maintenance_disabled": "Display maintenance requires display automation or a virtual display. Enable display configuration or a virtual display in Settings, save, then refresh this status.",
+    "dd_session_recovery_status": "Session recovery: current snapshot {current}, previous snapshot {previous}. Restore task: {task}. Helper engine: {engine}.",
+    "dd_recovery_present": "present",
+    "dd_recovery_absent": "absent",
+    "dd_restore_task_enabled": "enabled",
+    "dd_restore_task_disabled": "disabled by the user",
+    "dd_restore_task_missing": "not registered",
+    "dd_restore_task_unavailable": "status unavailable",
+    "dd_maintenance_unavailable": "Display maintenance status is unavailable. Refresh the status before using recovery actions."
   },
   "vulkan_hdr": {
     "dismiss": "Dismiss",

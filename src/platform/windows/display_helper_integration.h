@@ -86,6 +86,10 @@ namespace display_helper_integration {
   // Request the helper to export current OS settings as golden restore snapshot.
   bool export_golden_restore();
 
+  // Report the same effective gate as helper startup without starting it.
+  bool maintenance_available();
+  bool legacy_helper_engine_selected();
+
   // Request the helper to reset its persistence/state.
   bool reset_persistence();
 

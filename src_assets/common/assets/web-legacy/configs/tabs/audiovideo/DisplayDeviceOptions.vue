@@ -165,6 +165,8 @@ const goldenBusy = ref(false);
 const exportStatus = ref<null | boolean>(null);
 const deleteStatus = ref<null | boolean>(null);
 const goldenExists = ref<null | boolean>(null);
+const goldenMaintenanceAvailable = ref<boolean | null>(null);
+const sessionRecoveryDetail = ref('');
 const snapshotDevices = ref<DisplayDevice[]>([]);
 const snapshotDevicesLoading = ref(false);
 const snapshotDevicesError = ref('');
@@ -173,9 +175,32 @@ const excludeAllWarning = ref(false);
 async function loadGoldenStatus(): Promise<void> {
   try {
     const r = await http.get('/api/display/golden_status', { validateStatus: () => true });
+    if (r.status !== 200 || typeof r?.data?.exists !== 'boolean') {
+      throw new Error('display-status-unavailable');
+    }
     goldenExists.value = r?.data?.exists === true;
+    goldenMaintenanceAvailable.value = r?.data?.maintenance_available !== false;
+    const status = r?.data;
+    sessionRecoveryDetail.value = status?.restore_task_state
+      ? t('troubleshooting.dd_session_recovery_status', {
+          current: t(
+            status.session_current_exists
+              ? 'troubleshooting.dd_recovery_present'
+              : 'troubleshooting.dd_recovery_absent',
+          ),
+          previous: t(
+            status.session_previous_exists
+              ? 'troubleshooting.dd_recovery_present'
+              : 'troubleshooting.dd_recovery_absent',
+          ),
+          task: t(`troubleshooting.dd_restore_task_${status.restore_task_state}`),
+          engine: status.helper_engine === 'legacy' ? 'v1' : 'v2',
+        })
+      : '';
   } catch {
     goldenExists.value = false;
+    goldenMaintenanceAvailable.value = null;
+    sessionRecoveryDetail.value = '';
   }
 }
 
@@ -186,6 +211,7 @@ const createOrRecreateLabel = computed(() =>
 );
 
 async function exportGolden(): Promise<void> {
+  if (!goldenMaintenanceAvailable.value) return;
   goldenBusy.value = true;
   exportStatus.value = null;
   try {
@@ -280,6 +306,7 @@ const excludedSnapshotDevices = computed<string[]>({
 });
 
 async function deleteGolden(): Promise<void> {
+  if (!goldenMaintenanceAvailable.value) return;
   goldenBusy.value = true;
   deleteStatus.value = null;
   try {
@@ -487,12 +514,24 @@ function clearSnapshotHotkey(): void {
           <div class="my-4 border-t border-dark/5 dark:border-light/5" />
 
           <!-- Snapshot for recovery -->
-          <template v-if="config.dd_configuration_option !== 'disabled'">
+          <template>
             <div class="px-0 text-sm font-medium">
               {{ $t('troubleshooting.dd_golden_title') }}
             </div>
             <p class="text-[11px] opacity-60 mt-1">
               {{ $t('troubleshooting.dd_golden_help') }}
+            </p>
+            <p v-if="sessionRecoveryDetail" class="text-[11px] opacity-70 mt-1">
+              {{ sessionRecoveryDetail }}
+            </p>
+            <p v-if="!goldenMaintenanceAvailable" class="text-[11px] opacity-70 mt-1" role="status">
+              {{
+                $t(
+                  goldenMaintenanceAvailable === false
+                    ? 'troubleshooting.dd_maintenance_disabled'
+                    : 'troubleshooting.dd_maintenance_unavailable',
+                )
+              }}
             </p>
 
             <div
@@ -537,7 +576,7 @@ function clearSnapshotHotkey(): void {
                   size="tiny"
                   type="primary"
                   strong
-                  :disabled="goldenBusy"
+                  :disabled="goldenBusy || !goldenMaintenanceAvailable || goldenExists === null"
                   :loading="goldenBusy && exportStatus === null && deleteStatus === null"
                   @click="exportGolden"
                 >
@@ -547,7 +586,7 @@ function clearSnapshotHotkey(): void {
                   size="tiny"
                   type="error"
                   strong
-                  :disabled="goldenBusy || goldenExists !== true"
+                  :disabled="goldenBusy || !goldenMaintenanceAvailable || goldenExists !== true"
                   :loading="goldenBusy && deleteStatus === null"
                   @click="deleteGolden"
                 >

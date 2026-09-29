@@ -2291,6 +2291,14 @@ namespace display_helper_integration {
     );
   }
 
+  bool maintenance_available() {
+    return dd_feature_enabled();
+  }
+
+  bool legacy_helper_engine_selected() {
+    return use_legacy_helper_engine();
+  }
+
   bool export_golden_restore() {
     if (!ensure_helper_started()) {
       BOOST_LOG(info) << "Display helper unavailable; cannot export golden snapshot.";

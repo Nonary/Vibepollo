@@ -5,12 +5,23 @@ interface HostOptions {
   apps?: Array<Record<string, unknown>>;
   browse?: boolean;
   playniteUndetected?: boolean;
+  golden?: Record<string, unknown>;
+  config?: Record<string, unknown>;
 }
 
 async function setupHost(page: Page, options: HostOptions = {}) {
   const platform = options.platform ?? 'windows';
   const apps = options.apps ?? [];
   let currentApps = [...apps];
+  const currentConfig: Record<string, unknown> = {
+    capture: 'wgc',
+    encoder: 'nvenc',
+    lossless_scaling_path: '',
+    lossless_scaling_legacy_auto_detect: false,
+    playnite_auto_sync: true,
+    ...options.config,
+  };
+  const goldenStatus: Record<string, unknown> = { exists: false, ...options.golden };
   const calls = {
     crashManifest: 0,
     crashParts: [] as number[],
@@ -20,6 +31,10 @@ async function setupHost(page: Page, options: HostOptions = {}) {
     browse: [] as string[],
     configPatches: [] as Record<string, unknown>[],
     playniteStatus: 0,
+    failGoldenStatus: false,
+    goldenExports: 0,
+    goldenDeletes: 0,
+    displayResets: 0,
   };
   let failedPartTwo = true;
 
@@ -55,7 +70,18 @@ async function setupHost(page: Page, options: HostOptions = {}) {
     } else if (path === '/api/health/crashdump') {
       body = { available: true, filename: 'crash.dmp', size_bytes: 1234 };
     } else if (path === '/api/display/golden_status') {
-      body = { exists: false };
+      if (calls.failGoldenStatus) {
+        await route.fulfill({ status: 503, json: { error: 'status unavailable' } });
+        return;
+      }
+      body = goldenStatus;
+    } else if (path === '/api/display/export_golden' && method === 'POST') {
+      calls.goldenExports += 1;
+    } else if (path === '/api/display/golden' && method === 'DELETE') {
+      calls.goldenDeletes += 1;
+      body = { status: true, deleted: true };
+    } else if (path === '/api/reset-display-device-persistence' && method === 'POST') {
+      calls.displayResets += 1;
     } else if (path === '/api/apps') {
       body = { apps: currentApps };
     } else if (path === '/api/playnite/status') {
@@ -103,15 +129,16 @@ async function setupHost(page: Page, options: HostOptions = {}) {
     } else if (path === '/api/health/vulkan-hdr-layer') {
       body = { installed: true, enabled: false };
     } else if (path === '/api/config' && method === 'GET') {
-      body = {
-        capture: 'wgc',
-        encoder: 'nvenc',
-        lossless_scaling_path: '',
-        lossless_scaling_legacy_auto_detect: false,
-        playnite_auto_sync: true,
-      };
+      body = currentConfig;
     } else if (path === '/api/config' && method === 'PATCH') {
-      calls.configPatches.push(request.postDataJSON());
+      const patch = request.postDataJSON() as Record<string, unknown>;
+      calls.configPatches.push(patch);
+      Object.assign(currentConfig, patch);
+      if ('dd_configuration_option' in patch || 'virtual_display_mode' in patch) {
+        goldenStatus.maintenance_available =
+          String(currentConfig.dd_configuration_option ?? 'disabled') !== 'disabled' ||
+          String(currentConfig.virtual_display_mode ?? 'disabled') !== 'disabled';
+      }
       body = { status: true };
     } else if (path === '/api/browse') {
       const browsePath = url.searchParams.get('path') ?? '';
@@ -357,3 +384,166 @@ test('Playnite detection failure exposes a host directory picker and saves its s
   await policies.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect.poll(() => calls.configPatches).toEqual([{ playnite_install_dir: 'C:\\' }]);
 });
+test('disabled display maintenance exposes session recovery without activating the helper', async ({
+  page,
+}) => {
+  const calls = await setupHost(page, {
+    golden: {
+      maintenance_available: false,
+      session_current_exists: true,
+      session_previous_exists: false,
+      restore_task_state: 'disabled',
+      helper_engine: 'legacy',
+    },
+  });
+  await page.goto('/v2/maintenance');
+  await expect(
+    page.getByText(
+      'Session recovery: current snapshot present, previous snapshot absent. Restore task: disabled by the user. Helper engine: v1.',
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/Display maintenance requires display automation or a virtual display/),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Capture snapshot', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Capture snapshot', exact: true })).toBeDisabled();
+  await expect(
+    page.getByRole('button', { name: 'Terminate virtual display', exact: true }),
+  ).toBeEnabled();
+  expect(calls.goldenExports).toBe(0);
+  expect(calls.goldenDeletes).toBe(0);
+  expect(calls.configPatches).toEqual([]);
+});
+
+test('existing snapshot maintenance stays visible and disabled when automation is off', async ({
+  page,
+}) => {
+  const calls = await setupHost(page, {
+    golden: {
+      exists: true,
+      maintenance_available: false,
+      restore_task_state: 'enabled',
+      helper_engine: 'v2',
+    },
+  });
+  await page.goto('/v2/maintenance');
+  await expect(page.getByRole('button', { name: 'Replace snapshot', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Delete snapshot', exact: true })).toBeDisabled();
+  await expect(page.getByText(/Restore task: enabled. Helper engine: v2./)).toBeVisible();
+  expect(calls.goldenExports).toBe(0);
+  expect(calls.goldenDeletes).toBe(0);
+});
+
+test('available display maintenance preserves confirmation and normal capture', async ({
+  page,
+}) => {
+  const calls = await setupHost(page, {
+    golden: { maintenance_available: true, restore_task_state: 'enabled', helper_engine: 'v2' },
+  });
+  await page.goto('/v2/maintenance');
+  await page.getByRole('button', { name: 'Capture snapshot', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  expect(calls.goldenExports).toBe(0);
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: 'Capture snapshot', exact: true })
+    .click();
+  await expect.poll(() => calls.goldenExports).toBe(1);
+  expect(calls.configPatches).toEqual([]);
+});
+
+test('display settings explain disabled capture and reset without changing saved automation', async ({
+  page,
+}) => {
+  const calls = await setupHost(page, {
+    golden: { maintenance_available: false },
+    config: { dd_configuration_option: 'disabled', virtual_display_mode: 'disabled' },
+  });
+  await page.goto('/v2/settings?category=display');
+  await expect(page.getByRole('button', { name: 'Create snapshot', exact: true })).toBeDisabled();
+  await expect(
+    page.getByRole('button', { name: 'Clear display state', exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByText(/Display maintenance requires display automation or a virtual display/).first(),
+  ).toBeVisible();
+  expect(calls.displayResets).toBe(0);
+  expect(calls.goldenExports).toBe(0);
+  expect(calls.configPatches).toEqual([]);
+});
+
+test('failed maintenance refresh clears previously available recovery actions', async ({
+  page,
+}) => {
+  const calls = await setupHost(page, {
+    golden: { maintenance_available: true, restore_task_state: 'enabled', helper_engine: 'v2' },
+  });
+  await page.goto('/v2/maintenance');
+  await expect(page.getByRole('button', { name: 'Capture snapshot', exact: true })).toBeEnabled();
+  calls.failGoldenStatus = true;
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Capture snapshot', exact: true })).toBeDisabled();
+  await expect(
+    page.getByText(
+      'Display maintenance status is unavailable. Refresh the status before using recovery actions.',
+    ),
+  ).toBeVisible();
+  await expect(page.getByText(/Session recovery: current snapshot/)).toHaveCount(0);
+  expect(calls.goldenExports).toBe(0);
+  expect(calls.configPatches).toEqual([]);
+});
+
+for (const initiallyAvailable of [false, true]) {
+  test(`display recovery follows saved automation ${initiallyAvailable ? 'on-off-on' : 'off-on-off'} without reload`, async ({
+    page,
+  }) => {
+    const calls = await setupHost(page, {
+      golden: { maintenance_available: initiallyAvailable },
+      config: {
+        dd_configuration_option: initiallyAvailable ? 'ensure_active' : 'disabled',
+        virtual_display_mode: 'disabled',
+      },
+    });
+    await page.goto('/v2/settings?category=display');
+    await page.evaluate(() => {
+      Object.assign(window, { recoveryPageInstance: 'same-document' });
+    });
+    const capture = page.getByRole('button', { name: 'Create snapshot', exact: true });
+    const reset = page.getByRole('button', { name: 'Clear display state', exact: true });
+    const disabledMessage = page
+      .locator('.display-recovery-settings')
+      .getByText(/Display maintenance requires display automation or a virtual display/);
+    const assertAvailability = async (available: boolean) => {
+      if (available) {
+        await expect(capture).toBeEnabled();
+        await expect(reset).toBeEnabled();
+        await expect(disabledMessage).toHaveCount(0);
+      } else {
+        await expect(capture).toBeDisabled();
+        await expect(reset).toBeDisabled();
+        await expect(disabledMessage).toBeVisible();
+      }
+    };
+    await assertAvailability(initiallyAvailable);
+    for (const available of [!initiallyAvailable, initiallyAvailable]) {
+      await page
+        .locator('#setting-dd_configuration_option')
+        .selectOption(available ? 'ensure_active' : 'disabled');
+      // Unsaved settings must not change actions backed by the active host policy.
+      await assertAvailability(!available);
+      await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+      await assertAvailability(available);
+    }
+    expect(calls.configPatches).toEqual([
+      { dd_configuration_option: initiallyAvailable ? 'disabled' : 'ensure_active' },
+      { dd_configuration_option: initiallyAvailable ? 'ensure_active' : 'disabled' },
+    ]);
+    expect(calls.goldenExports).toBe(0);
+    expect(calls.displayResets).toBe(0);
+    expect(
+      await page.evaluate(
+        () => (window as Window & { recoveryPageInstance?: string }).recoveryPageInstance,
+      ),
+    ).toBe('same-document');
+  });
+}

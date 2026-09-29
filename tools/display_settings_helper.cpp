@@ -37,6 +37,7 @@
 // third-party (libdisplaydevice)
   #include "src/logging.h"
   #include "src/utility.h"
+  #include "src/platform/windows/display_restore_task.h"
   #include "src/platform/windows/ipc/pipes.h"
 
   #include <display_device/json.h>
@@ -3837,6 +3838,9 @@ namespace {
         const bool has_golden = std::filesystem::exists(self->golden_path, ec2);
         if (!has_session && !has_previous && !has_golden) {
           BOOST_LOG(info) << "Restore polling: no session/previous or golden snapshot present; exiting helper.";
+          if (!cancelled() && !ec1 && !ec_prev && !ec2) {
+            delete_restore_scheduled_task();
+          }
           if (self->running_flag) {
             self->running_flag->store(false, std::memory_order_release);
           }
@@ -4604,6 +4608,15 @@ namespace {
       return false;
     }
 
+    const auto existing_state = display_helper::read_restore_task_state(root_folder, L"VibepolloDisplayRestore");
+    if (!display_helper::can_manage_restore_task(existing_state)) {
+      BOOST_LOG(info) << "Preserving restore task state: " << display_helper::restore_task_state_name(existing_state);
+      root_folder->Release();
+      service->Release();
+      CoUninitialize();
+      return existing_state == display_helper::restore_task_state_e::disabled;
+    }
+
     ITaskDefinition *task = nullptr;
     hr = service->NewTask(0, &task);
     if (FAILED(hr)) {
@@ -4879,6 +4892,12 @@ namespace {
 
     bool success = true;
     for (const auto &name : task_names) {
+      const auto existing_state = display_helper::read_restore_task_state(root_folder, name.c_str());
+      if (!display_helper::can_manage_restore_task(existing_state)) {
+        // Retain a disabled task as the user's opt-out across later APPLYs.
+        success = success && existing_state == display_helper::restore_task_state_e::disabled;
+        continue;
+      }
       const HRESULT delete_hr = root_folder->DeleteTask(_bstr_t(name.c_str()), 0);
       if (SUCCEEDED(delete_hr)) {
         BOOST_LOG(info) << "Removed scheduled task '" << std::string(name.begin(), name.end()) << "'";
