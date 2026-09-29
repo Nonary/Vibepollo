@@ -144,7 +144,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             "Managed virtual displays require Linux 6.16 or newer.", release_text
         )
         self.assertIn(
-            "https://github.com/${GITHUB_REPOSITORY}/blob/${TAG_NAME}/docs/getting_started.md#arch-linux-and-cachyos",
+            "https://github.com/${GITHUB_REPOSITORY}/blob/${TAG_NAME}/docs/linux/install.md",
             release_text,
         )
         self.assertIn("arch_package_version=${RELEASE_VERSION//-/}", release_text)
