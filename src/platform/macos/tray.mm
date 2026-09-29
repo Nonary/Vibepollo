@@ -119,8 +119,14 @@ namespace {
       return;
     }
 
-    // Template images let the menu bar tint the icon for light and dark appearances.
-    NSImage *image = [[NSImage alloc] initWithContentsOfFile:@(state.icon.c_str())];
+    // Template images let the menu bar tint the icon for light and dark appearances. If the SVG
+    // doesn't load, use the icon's PNG rendering next to it.
+    NSString *path = @(state.icon.c_str());
+    NSImage *image = [[NSImage alloc] initWithContentsOfFile:path];
+    if (image == nil && [path hasSuffix:@".svg"]) {
+      NSString *png = [[path stringByDeletingPathExtension] stringByAppendingString:@"-45.png"];
+      image = [[NSImage alloc] initWithContentsOfFile:png];
+    }
     if (image != nil) {
       image.size = NSMakeSize(18, 18);
       [image setTemplate:YES];  // `template` is a C++ keyword, so no dot syntax
