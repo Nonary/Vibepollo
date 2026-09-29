@@ -20,7 +20,7 @@ def load_workflow(name: str) -> dict:
 
 
 class ReleaseWorkflowSplitTest(unittest.TestCase):
-    def test_self_hosted_runners_are_manual_opt_in(self) -> None:
+    def test_release_tag_uses_local_linux_and_cloud_windows(self) -> None:
         ci_workflow = load_workflow("ci.yml")
         dispatch_input = ci_workflow["on"]["workflow_dispatch"]["inputs"][
             "use_self_hosted"
@@ -31,11 +31,15 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         expected_forwarding = (
             "${{ github.event_name == 'workflow_dispatch' && inputs.use_self_hosted }}"
         )
-        for job_name in ("build-windows", "build-archlinux"):
-            self.assertEqual(
-                ci_workflow["jobs"][job_name]["with"]["use_self_hosted"],
-                expected_forwarding,
-            )
+        self.assertEqual(
+            ci_workflow["jobs"]["build-windows"]["with"]["use_self_hosted"],
+            expected_forwarding,
+        )
+        self.assertEqual(
+            ci_workflow["jobs"]["build-archlinux"]["with"]["use_self_hosted"],
+            "${{ needs.release-candidate.outputs.should_release == 'true' || "
+            "(github.event_name == 'workflow_dispatch' && inputs.use_self_hosted) }}",
+        )
 
         validation_workflow = load_workflow("validate-windows.yml")
         validation_input = validation_workflow["on"]["workflow_dispatch"]["inputs"][
