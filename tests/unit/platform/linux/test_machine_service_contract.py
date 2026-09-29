@@ -454,7 +454,7 @@ if prepare.index("display_power::acquire()") > prepare.index("session.virtual_di
     raise AssertionError("power recovery must precede display topology preparation")
 if prepare.index("return result;") > prepare.index("cancel_scheduled_revert()"):
     raise AssertionError("failed power admission must preserve scheduled display cleanup")
-require(rtsp, "snapshot->display_power_guard = source.display_power_guard", "pending-to-startup power handoff")
+require(rtsp, "snapshot->display_power_guard = display_power_guard", "pending-to-startup power handoff")
 require(stream, "session->display_power_guard = launch_session.display_power_guard", "active capture power ownership")
 require(stream, "session.display_power_guard.reset()", "capture teardown releases display power")
 forbid(linux_misc, "display_power::acquire()", "retained shared runtime must not inhibit sleep")

@@ -982,9 +982,9 @@ def refuse_live_applications(args):
     if args.allow_disruption:
         return
     result = run('systemctl', '--user', 'list-units', '--plain', '--no-legend', '--no-pager',
-                 '--state=active', 'vibeshine-app-*.service', check=False)
+                 '--state=active', 'vibepollo-app-*.service', check=False)
     if result.returncode:
-        raise DeployError('Could not list running Vibeshine applications; '
+        raise DeployError('Could not list running Vibepollo applications; '
                           'pass --allow-disruption to install anyway')
     running = [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
     if running:

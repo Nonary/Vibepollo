@@ -3377,10 +3377,9 @@ namespace stream {
         const bool is_paused = proc::proc.current_app_id() > 0;
         if (is_paused) {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-        if (proc::proc.current_app_id() > 0) {
           system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
-        }
 #endif
+        }
 
 #ifdef _WIN32
         clear_deferred_stream_start_actions();
@@ -3393,7 +3392,7 @@ namespace stream {
           session::has_shared_runtime_owner(finalize_context);
         platf::frame_limiter_streaming_stop(
           platf::frame_limiter_owner::rtsp,
-          proc::proc.current_app_id() > 0 || shared_runtime_still_owned
+          is_paused || shared_runtime_still_owned
         );
 #else
 #ifdef __linux__
@@ -3610,13 +3609,25 @@ namespace stream {
           );
           session::start_shared_platform_if_needed();
 #endif
-        } else {
+        } else if (first_rtsp_session) {
+          #ifdef _WIN32
+          if (platf::is_running_as_system() && !user_session_ready()) {
+            defer_stream_start_actions({});
+          } else {
+            session::start_shared_platform_if_needed();
+          }
+          #else
           session::start_shared_platform_if_needed();
+          #endif
         }
 #else
-        session::start_shared_platform_if_needed();
+        if (first_rtsp_session) {
+          session::start_shared_platform_if_needed();
+        }
 #endif
-        proc::proc.resume();
+        if (first_rtsp_session) {
+          proc::proc.resume();
+        }
       }
 
       if (!session.do_cmds.empty()) {
@@ -3639,8 +3650,8 @@ namespace stream {
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
       if (first_rtsp_session) {
-      system_tray::update_tray_playing(proc::proc.get_last_run_app_name());
-      update::on_stream_started();
+        system_tray::update_tray_playing(proc::proc.get_last_run_app_name());
+        update::on_stream_started();
   #if defined(_WIN32)
       // Notify only when neither virtual-gamepad backend is installed and usable.
       try {

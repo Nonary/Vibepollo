@@ -261,7 +261,7 @@ jobs:
       build_only: ${{ needs.release-candidate.outputs.should_release == 'true' }}
       build_tests: false
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
-      release_version: ${{ needs.release-candidate.outputs.release_version || '0.0.0' }}
+      release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0' }}
       release_tag: ${{ needs.release-candidate.outputs.tag_name }}
       release_artifact_retention_days: ${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}
       symbol_product_name: Vibepollo
@@ -287,7 +287,7 @@ jobs:
     with:
       artifact_retention_days: ${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
-      release_version: ${{ needs.release-candidate.outputs.release_version || '0.0.0' }}
+      release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0' }}
 
   awaiting-signing:
     name: Awaiting manual signing

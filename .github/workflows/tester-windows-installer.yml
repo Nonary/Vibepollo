@@ -9,9 +9,9 @@ on:
         description: Version string embedded in the tester installer.
         required: false
         type: string
-        default: '0.0.0'
+        default: '2.0.0'
 
-run-name: Tester Windows Installer ${{ github.ref_name }} (${{ inputs.build_version || '0.0.0' }})
+run-name: Tester Windows Installer ${{ github.ref_name }} (${{ inputs.build_version || '2.0.0' }})
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
@@ -26,7 +26,7 @@ jobs:
     uses: ./.github/workflows/ci-windows.yml
     with:
       release_commit: ${{ github.sha }}
-      release_version: ${{ inputs.build_version || '0.0.0' }}
+      release_version: ${{ inputs.build_version || '2.0.0' }}
       release_tag: ''
       symbol_product_name: Vibepollo
       symbol_release_prefix: polo
