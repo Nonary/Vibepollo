@@ -236,7 +236,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertEqual(signing_inputs["require_signpath_signing"], "true")
         self.assertEqual(
             signing_inputs["signpath_wait_for_completion_timeout_in_seconds"],
-            "600",
+            "3600",
         )
         self.assertIn("release", jobs)
         self.assertEqual(
