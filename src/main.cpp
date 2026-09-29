@@ -70,6 +70,8 @@
 #endif
 
 #ifdef __APPLE__
+  #include "platform/macos/misc.h"
+
   #include <mach-o/dyld.h>
 #endif
 
@@ -1037,6 +1039,14 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(fatal) << "GameStream is still enabled in GeForce Experience! This *will* cause streaming problems with Apollo!"sv;
     BOOST_LOG(fatal) << "Disable GameStream on the SHIELD tab in GeForce Experience or change the Port setting on the Advanced tab in the Apollo Web UI."sv;
   }
+#endif
+
+#ifdef __APPLE__
+  // AppKit only delivers events on the main thread, so it waits here instead: the menu bar
+  // depends on them.
+  platf::run_main_event_loop([&shutdown_event]() {
+    return shutdown_event->peek();
+  });
 #endif
 
   // Wait for shutdown

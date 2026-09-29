@@ -11,8 +11,10 @@
 // standard includes
 #include <fcntl.h>
 #include <ifaddrs.h>
+#include <mutex>
 
 // platform includes
+#include <AppKit/AppKit.h>
 #include <arpa/inet.h>
 #include <dlfcn.h>
 #include <Foundation/Foundation.h>
@@ -58,6 +60,27 @@ namespace platf {
   // Return whether screen capture is allowed for this process.
   bool is_screen_capture_allowed() {
     return screen_capture_allowed;
+  }
+
+  void ensure_appkit_session() {
+    static std::once_flag once;
+    std::call_once(once, []() {
+      [NSApplication sharedApplication];
+      [NSApp finishLaunching];
+    });
+  }
+
+  void run_main_event_loop(const std::function<bool()> &should_exit) {
+    ensure_appkit_session();
+    while (!should_exit()) {
+      @autoreleasepool {
+        NSDate *until = [NSDate dateWithTimeIntervalSinceNow:0.5];
+        NSEvent *event = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:until inMode:NSDefaultRunLoopMode dequeue:YES];
+        if (event != nil) {
+          [NSApp sendEvent:event];
+        }
+      }
+    }
   }
 
   std::unique_ptr<deinit_t> init() {

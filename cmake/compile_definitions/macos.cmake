@@ -68,6 +68,10 @@ set(PLATFORM_TARGET_FILES
 if(SUNSHINE_ENABLE_TRAY)
     list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
             ${COCOA})
+    # Used instead of third-party/tray/src/tray_darwin.m, which exits the process from tray_exit()
+    # and calls AppKit off the main thread (see the file header).
+    set_source_files_properties("${CMAKE_SOURCE_DIR}/src/platform/macos/tray.mm"
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     list(APPEND PLATFORM_TARGET_FILES
-            "${CMAKE_SOURCE_DIR}/third-party/tray/src/tray_darwin.m")
+            "${CMAKE_SOURCE_DIR}/src/platform/macos/tray.mm")
 endif()

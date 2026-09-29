@@ -22,10 +22,11 @@
     #define TRAY_ICON_PAUSING SUNSHINE_TRAY_PREFIX "-pausing"
     #define TRAY_ICON_LOCKED SUNSHINE_TRAY_PREFIX "-locked"
   #elif defined(__APPLE__) || defined(__MACH__)
-    #define TRAY_ICON WEB_DIR "images/logo-apollo-16.png"
-    #define TRAY_ICON_PLAYING WEB_DIR "images/apollo-playing-16.png"
-    #define TRAY_ICON_PAUSING WEB_DIR "images/apollo-pausing-16.png"
-    #define TRAY_ICON_LOCKED WEB_DIR "images/apollo-locked-16.png"
+    // SVGs stay crisp as menu bar template images; the PNGs have a shadow baked in.
+    #define TRAY_ICON WEB_DIR "images/logo-apollo.svg"
+    #define TRAY_ICON_PLAYING WEB_DIR "images/apollo-playing.svg"
+    #define TRAY_ICON_PAUSING WEB_DIR "images/apollo-pausing.svg"
+    #define TRAY_ICON_LOCKED WEB_DIR "images/apollo-locked.svg"
     #include <dispatch/dispatch.h>
   #endif
 
@@ -361,14 +362,15 @@ namespace system_tray {
     // create the system tray
     tray_set_log_callback(&tray_log_bridge);
   #if defined(__APPLE__) || defined(__MACH__)
-    // macOS requires that UI elements be created on the main thread
-    // creating tray using dispatch queue does not work, although the code doesn't actually throw any (visible) errors
-
-    // dispatch_async(dispatch_get_main_queue(), ^{
-    //   system_tray();
-    // });
-
-    BOOST_LOG(info) << "system_tray() is not yet implemented for this platform."sv;
+    // AppKit only runs the menu bar on the main thread, which is where main() calls this from.
+    // main() then runs the AppKit event loop there once startup is done.
+    // No retries: unlike Windows' shell, a status item that fails once won't recover.
+    if (tray_init(&tray) < 0) {
+      BOOST_LOG(warning) << "Failed to create the menu bar icon"sv;
+      return;
+    }
+    BOOST_LOG(info) << "System tray created"sv;
+    tray_initialized = true;
   #else  // Windows, Linux
     if (tray_thread.joinable()) {
       return;
@@ -385,6 +387,9 @@ namespace system_tray {
 #ifdef _WIN32
     tray_shutdown_requested = true;
     tray_action_cv.notify_one();
+#elif defined(__APPLE__) || defined(__MACH__)
+    // No tray thread on macOS: this wakes the main thread's event loop, and is safe from any thread.
+    tray_exit();
 #else
     if (tray_thread.joinable()) {
       tray_exit();
