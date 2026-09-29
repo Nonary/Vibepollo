@@ -191,7 +191,12 @@ namespace platf {
 
     // AVCaptureScreenInput delivers no frames from virtual displays; ScreenCaptureKit does.
     if (macos_virtual_display::active_display_id() == display->display_id) {
-      display->av_capture = [[SCVideo alloc] initWithDisplay:display->display_id frameRate:config.framerate];
+      SCVideo *capture = [[SCVideo alloc] initWithDisplay:display->display_id frameRate:config.framerate];
+      // The sync encode path only encodes delivered frames, so enforce the minimum frame rate here
+      // (the same default as video.cpp: a fifth of the stream's rate, at least 10 fps).
+      const double minimum_fps = config::video.minimum_fps_target > 0 ? config::video.minimum_fps_target : std::max(config.framerate / 5.0, 10.0);
+      capture.keepaliveInterval = CMTimeMakeWithSeconds(1.0 / minimum_fps, 1000000);
+      display->av_capture = capture;
     } else {
       display->av_capture = [[AVVideo alloc] initWithDisplay:display->display_id frameRate:config.framerate];
     }

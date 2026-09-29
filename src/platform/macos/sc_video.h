@@ -15,6 +15,9 @@
  */
 @interface SCVideo: AVVideo
 
+/// Longest time without a delivered frame before the last one is re-sent (the minimum frame rate).
+@property (nonatomic, assign) CMTime keepaliveInterval;
+
 - (id)initWithDisplay:(CGDirectDisplayID)displayID frameRate:(int)frameRate;
 - (dispatch_semaphore_t)capture:(FrameCallbackBlock)frameCallback;
 

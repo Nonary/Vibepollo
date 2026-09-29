@@ -10,42 +10,68 @@
 
 /**
  * @brief One capture: a stream feeding a frame callback until the callback returns false.
+ * @details ScreenCaptureKit only sends an image when the screen changes, and can go silent on a
+ *          static desktop. New images are delivered as soon as they arrive, for the lowest
+ *          latency; if nothing new arrives within the keepalive interval, the last one is re-sent.
+ *          That matches the async encode path's minimum frame rate: the encoder only runs on
+ *          delivered frames, and keyframe requests need a frame to encode. Repeating on a fixed
+ *          clock instead would queue new images behind repeats in a busy hardware encoder.
+ *          Frames, keepalive ticks, and finishing all run on one serial queue.
  */
 @interface SCVideoCapture: NSObject <SCStreamOutput, SCStreamDelegate>
 @property (nonatomic, strong) SCStream *stream;
 @property (nonatomic, copy) FrameCallbackBlock callback;
 @property (nonatomic, strong) dispatch_semaphore_t signal;
+@property (nonatomic, strong) dispatch_queue_t queue;
+- (void)startKeepaliveEvery:(CMTime)interval;
 - (void)finish;
 @end
 
 @implementation SCVideoCapture {
-  CMSampleBufferRef _lastFrame;  ///< Last buffer with an image, re-sent on idle ticks.
+  CMSampleBufferRef _lastFrame;  ///< Last buffer with an image, re-sent when nothing new arrives.
+  dispatch_source_t _keepalive;
+  uint64_t _keepalivePeriod;
+  uint64_t _lastDelivery;
   BOOL _finished;
 }
 
+- (void)startKeepaliveEvery:(CMTime)interval {
+  _keepalivePeriod = (uint64_t) (CMTimeGetSeconds(interval) * NSEC_PER_SEC);
+  _keepalive = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, self.queue);
+  dispatch_source_set_timer(_keepalive, dispatch_time(DISPATCH_TIME_NOW, _keepalivePeriod), _keepalivePeriod, _keepalivePeriod / 10);
+  __weak SCVideoCapture *weakSelf = self;
+  dispatch_source_set_event_handler(_keepalive, ^{
+    [weakSelf keepaliveTick];
+  });
+  dispatch_resume(_keepalive);
+}
+
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
-  if (type != SCStreamOutputTypeScreen || _finished) {
+  // Idle and blank status updates carry no image; the keepalive covers those stretches.
+  if (type != SCStreamOutputTypeScreen || CMSampleBufferGetImageBuffer(sampleBuffer) == NULL) {
     return;
   }
-
-  CMSampleBufferRef frame = sampleBuffer;
-  if (CMSampleBufferGetImageBuffer(sampleBuffer) == NULL) {
-    // ScreenCaptureKit only sends images when the screen changes, plus image-less idle ticks.
-    // Re-send the last image on those, keeping the steady cadence AVCaptureScreenInput had:
-    // keyframe requests from the client need a frame to encode even on a static desktop.
-    if (_lastFrame == NULL) {
-      return;
-    }
-    frame = _lastFrame;
-  } else {
-    if (_lastFrame != NULL) {
-      CFRelease(_lastFrame);
-    }
-    _lastFrame = (CMSampleBufferRef) CFRetain(sampleBuffer);
+  if (_lastFrame != NULL) {
+    CFRelease(_lastFrame);
   }
+  _lastFrame = (CMSampleBufferRef) CFRetain(sampleBuffer);
+  [self deliverLastFrame];
+}
 
-  if (!self.callback(frame)) {
-    [self finish];
+- (void)keepaliveTick {
+  const uint64_t idle = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - _lastDelivery;
+  if (idle >= _keepalivePeriod * 9 / 10) {
+    [self deliverLastFrame];
+  }
+}
+
+- (void)deliverLastFrame {
+  if (_finished || _lastFrame == NULL) {
+    return;
+  }
+  _lastDelivery = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+  if (!self.callback(_lastFrame)) {
+    [self finishOnQueue];
   }
 }
 
@@ -54,17 +80,27 @@
 }
 
 - (void)finish {
-  @synchronized(self) {
-    if (_finished) {
-      return;
-    }
-    _finished = YES;
+  dispatch_async(self.queue, ^{
+    [self finishOnQueue];
+  });
+}
+
+- (void)finishOnQueue {
+  if (_finished) {
+    return;
+  }
+  _finished = YES;
+  if (_keepalive != nil) {
+    dispatch_source_cancel(_keepalive);
   }
   [self.stream stopCaptureWithCompletionHandler:nil];
   dispatch_semaphore_signal(self.signal);
 }
 
 - (void)dealloc {
+  if (_keepalive != nil) {
+    dispatch_source_cancel(_keepalive);
+  }
   if (_lastFrame != NULL) {
     CFRelease(_lastFrame);
   }
@@ -121,19 +157,20 @@
   configuration.pixelFormat = self.pixelFormat;
   configuration.minimumFrameInterval = self.minFrameDuration;
   configuration.showsCursor = YES;
-  // The pipeline holds a few frames and the last one is kept for idle ticks, so leave room.
+  // The pipeline holds a few frames and the last one is kept for the keepalive, so leave room.
   configuration.queueDepth = 8;
 
   SCVideoCapture *capture = [[SCVideoCapture alloc] init];
   capture.callback = frameCallback;
   capture.signal = dispatch_semaphore_create(0);
+  dispatch_queue_attr_t qos = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, DISPATCH_QUEUE_PRIORITY_HIGH);
+  capture.queue = dispatch_queue_create("videoCaptureQueue", qos);
 
   SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:_display excludingWindows:@[]];
   capture.stream = [[SCStream alloc] initWithFilter:filter configuration:configuration delegate:capture];
 
-  dispatch_queue_attr_t qos = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, DISPATCH_QUEUE_PRIORITY_HIGH);
   NSError *error = nil;
-  if (![capture.stream addStreamOutput:capture type:SCStreamOutputTypeScreen sampleHandlerQueue:dispatch_queue_create("videoCaptureQueue", qos) error:&error]) {
+  if (![capture.stream addStreamOutput:capture type:SCStreamOutputTypeScreen sampleHandlerQueue:capture.queue error:&error]) {
     return nil;
   }
   [capture.stream startCaptureWithCompletionHandler:^(NSError *startError) {
@@ -141,6 +178,9 @@
       [capture finish];
     }
   }];
+  if (CMTIME_IS_VALID(self.keepaliveInterval)) {
+    [capture startKeepaliveEvery:self.keepaliveInterval];
+  }
 
   @synchronized(self) {
     [_captures addObject:capture];
