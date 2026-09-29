@@ -1036,15 +1036,13 @@ function overrideSelectOptions(key: string): Array<{ label: string; value: strin
               auto,
               {
                 value: 'nvenc',
-                labelKey: platform.includes('linux')
-                  ? 'ui.settings.options.encoder.nvenc_ffmpeg'
-                  : 'ui.settings.options.encoder.nvenc',
+                labelKey: 'ui.settings.options.encoder.nvenc',
               },
               ...(platform.includes('linux')
                 ? [
                     {
-                      value: 'nvenc_experimental',
-                      labelKey: 'ui.settings.options.encoder.nvenc_experimental',
+                      value: 'nvenc_legacy',
+                      labelKey: 'ui.settings.options.encoder.nvenc_legacy',
                     },
                   ]
                 : []),

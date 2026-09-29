@@ -124,7 +124,7 @@ const preferredGpu = computed<GpuMetadata | null>(() => {
 });
 
 function encoderFamily(encoder: string): SettingsField['encoderFamily'] | undefined {
-  if (encoder === 'nvenc' || encoder === 'nvenc_experimental') return 'nvidia';
+  if (encoder === 'nvenc' || encoder === 'nvenc_legacy' || encoder === 'nvenc_experimental') return 'nvidia';
   if (encoder === 'quicksync') return 'intel';
   if (encoder === 'amdvce_experimental' || encoder === 'amdvce_ffmpeg') return 'amd';
   return undefined;

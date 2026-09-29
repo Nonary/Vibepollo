@@ -303,10 +303,10 @@ function selectOptions(key: string): Array<{ label: string; value: string }> {
       : platform.includes('linux')
         ? [
             auto,
-            { value: 'nvenc', labelKey: 'ui.settings.options.encoder.nvenc_ffmpeg' },
+            { value: 'nvenc', labelKey: 'ui.settings.options.encoder.nvenc' },
             {
-              value: 'nvenc_experimental',
-              labelKey: 'ui.settings.options.encoder.nvenc_experimental',
+              value: 'nvenc_legacy',
+              labelKey: 'ui.settings.options.encoder.nvenc_legacy',
             },
             { value: 'vulkan', labelKey: 'ui.settings.options.encoder.vulkan' },
             { value: 'vaapi', labelKey: 'ui.settings.options.encoder.vaapi' },
