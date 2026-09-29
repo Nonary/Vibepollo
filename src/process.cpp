@@ -1753,7 +1753,7 @@ namespace proc {
             }
             BOOST_LOG(info)
               << "NVIDIA Smooth Motion: resolved direct Steam launch for app " << steam_app_id
-              << "; inherited Steam Launch Options and Vibeshine environment will be applied to the game process.";
+              << "; inherited Steam Launch Options and Vibepollo environment will be applied to the game process.";
           } else {
             smooth_motion_launch_ready = false;
             BOOST_LOG(error)
