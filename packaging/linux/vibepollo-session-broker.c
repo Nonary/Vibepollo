@@ -992,7 +992,7 @@ static bool steam_launch_retry_is_safe(int result, bool cleanup_verified,
 
 static int supervise_user_service(const char *unit, char *const arguments[], bool *cleanup_verified) {
   *cleanup_verified = false;
-  termination_signal = 0;
+  if (termination_signal) return 128 + termination_signal;
   if (!set_termination_handlers(request_user_service_stop)) return 126;
   if (termination_signal) return 128 + termination_signal;
 
@@ -1089,7 +1089,9 @@ static int exec_user_service(const struct session_identity *identity, const char
       (identity->xauthority[0] && snprintf(environment_xauthority, sizeof(environment_xauthority), "XAUTHORITY=%s", identity->xauthority) >= (int) sizeof(environment_xauthority))) return 126;
   char *arguments[72];
   const unsigned int attempts = recover_steam_launch ? steam_launch_attempts : 1;
+  termination_signal = 0;
   for (unsigned int attempt = 0; attempt < attempts; ++attempt) {
+    if (termination_signal) return 128 + termination_signal;
     const int unit_length = recover_steam_launch
       ? snprintf(unit, sizeof(unit), "vibepollo-app-%lu-%ld-%u.service",
                  identity->generation, (long) getpid(), attempt + 1)

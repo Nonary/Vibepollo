@@ -1039,7 +1039,9 @@ namespace platf::linux_private_display {
       }
       mode_id = best_mode_id(*target_before, resolution, refresh);
     }
-    if (mode_id.empty()) {
+    if (mode_id.empty() || (resolution && refresh && !prefer_highest &&
+                            is_managed_output(session.virtual_display_device_id) &&
+                            !mode_matches_refresh(*target_before, mode_id, *refresh))) {
       BOOST_LOG(error) << "Linux private display: no compatible mode is available for "
                        << session.virtual_display_device_id;
       return false;
@@ -1450,6 +1452,10 @@ namespace platf::linux_private_display {
           1,
         };
         entry.mode_id = best_mode_id(*output, resolution, refresh);
+        if (entry.mode_id.empty() || !mode_matches_refresh(*output, entry.mode_id, refresh)) {
+          BOOST_LOG(error) << "Linux Remote Monitor: custom mode was not accepted on " << entry.name;
+          return false;
+        }
       }
     }
 

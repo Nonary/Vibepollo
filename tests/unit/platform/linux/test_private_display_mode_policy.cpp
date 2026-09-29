@@ -11,6 +11,8 @@ namespace policy = platf::linux_private_display::mode_policy;
 TEST(LinuxPrivateDisplayModePolicy, AcceptsFractionalEquivalentRefresh) {
   EXPECT_TRUE(policy::refresh_matches(59.95, 60.0));
   EXPECT_TRUE(policy::refresh_matches(119.88, 120.0));
+  EXPECT_TRUE(policy::refresh_matches(240.0 * 1000.0 / 1001.0, 240.0));
+  EXPECT_TRUE(policy::refresh_matches(480.0 * 1000.0 / 1001.0, 480.0));
 }
 
 TEST(LinuxPrivateDisplayModePolicy, RejectsNearestDifferentRefresh) {
