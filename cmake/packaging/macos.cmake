@@ -37,6 +37,10 @@ else()
             PATTERN ".DS_Store" EXCLUDE
             PATTERN "._*" EXCLUDE)
 
+    # copy assets to build directory, for running the build-tree .app without install
+    file(COPY "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/assets/"
+         DESTINATION "${CMAKE_BINARY_DIR}/assets")
+
     # Pull in non-system dylibs for a self-contained .app
     install(CODE "
         set(_app \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_PROJECT_NAME}.app\")

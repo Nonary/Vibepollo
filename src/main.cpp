@@ -69,6 +69,10 @@
   #include "platform/windows/virtual_display.h"
 #endif
 
+#ifdef __APPLE__
+  #include <mach-o/dyld.h>
+#endif
+
 #define PROBE_DISPLAY_UUID "38F72B96-B00C-4F21-8B6C-E1BFF1602B0E"
 
 extern "C" {
@@ -350,6 +354,25 @@ int main(int argc, char *argv[]) {
 #pragma GCC diagnostic pop
 
   mail::man = std::make_shared<safe::mail_raw_t>();
+
+#ifdef __APPLE__
+  // Bundle assets are referenced relative to the executable
+  // (e.g. ../Resources/assets), so anchor cwd to Contents/MacOS.
+  {
+    char executable[2048];
+    uint32_t size = sizeof(executable);
+    if (_NSGetExecutablePath(executable, &size) == 0) {
+      std::error_code ec;
+      auto exec_dir = std::filesystem::weakly_canonical(std::filesystem::path {executable}, ec).parent_path();
+      if (!ec) {
+        std::filesystem::current_path(exec_dir, ec);
+      }
+      if (ec) {
+        std::cerr << "Failed to set working directory to executable path: " << ec.message() << '\n';
+      }
+    }
+  }
+#endif
 
   // parse config file
   if (config::parse(argc, argv)) {
