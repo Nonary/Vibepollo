@@ -1790,7 +1790,7 @@
       },
       "loading": "Loading settings",
       "metadata_unavailable": {
-        "description": "Host-specific settings may be hidden until Vibeshine can report this system's platform and hardware.",
+        "description": "Host-specific settings may be hidden until Vibepollo can report this system's platform and hardware.",
         "title": "Some host details are unavailable"
       },
       "no_results": "No settings match “{query}”.",
