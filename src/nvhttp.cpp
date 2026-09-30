@@ -52,6 +52,7 @@
 #include "httpcommon.h"
 #include "http_pairing_policy.h"
 #include "hdr_request_policy.h"
+#include "jthread.h"
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
@@ -6522,7 +6523,7 @@ namespace nvhttp {
     std::thread ssl {accept_and_run, &https_server};
     std::thread tcp {accept_and_run, &http_server};
 
-    std::jthread pairing_expiry_worker([](std::stop_token stop_token) {
+    util::jthread pairing_expiry_worker([](util::stop_token stop_token) {
       platf::set_thread_name("pair_expiry");
       while (!stop_token.stop_requested()) {
         for (int interval = 0; interval < 10 && !stop_token.stop_requested(); ++interval) {
