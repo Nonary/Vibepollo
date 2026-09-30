@@ -372,7 +372,7 @@ profile_tree_is_sanitized() {
 }
 
 rewrite_machine_cover_paths() {
-  local apps=$machine_profile/apps.json attributes temporary old_prefix new_prefix size
+  local apps=$machine_profile/apps.json attributes temporary old_prefix legacy_prefix new_prefix size
   local marker_line source_user entry account_name account_home
   [[ $(/usr/bin/id -un) == "$service_user" ]] || fail 'cover migration requires the service account'
   [[ -f "$profile_marker" && ! -L "$profile_marker" ]] || fail 'machine-profile marker is unsafe'
@@ -399,11 +399,12 @@ rewrite_machine_cover_paths() {
   [[ "$size" =~ ^[0-9]+$ ]] && ((size > 0 && size <= 16777216)) ||
     fail 'machine application catalog exceeds the migration limit'
   old_prefix=$account_home/.config/vibepollo/covers/
+  legacy_prefix=$account_home/.config/sunshine/covers/
   new_prefix=$machine_profile/covers/
   temporary=$(/usr/bin/mktemp --tmpdir="$machine_profile" .apps-migrate.XXXXXX)
   /usr/bin/chmod 0600 "$temporary"
   if ! capability_free_exec /usr/bin/timeout --signal=KILL 10 \
-      /usr/bin/jq --arg old "$old_prefix" --arg new "$new_prefix" '
+      /usr/bin/jq --arg old "$old_prefix" --arg legacy_old "$legacy_prefix" --arg new "$new_prefix" '
           def safe_suffix($value):
             ($value | type) == "string" and
             ($value | length) > 0 and
@@ -413,8 +414,9 @@ rewrite_machine_cover_paths() {
               if (has("image-path") | not) then .
               elif (.["image-path"] | type) != "string" then
                 .["image-path"] = "box.png"
-              elif (.["image-path"] | startswith($old)) then
-                (.["image-path"] | ltrimstr($old)) as $suffix
+              elif (.["image-path"] | startswith($old) or startswith($legacy_old)) then
+                (.["image-path"] | if startswith($old) then ltrimstr($old)
+                                   else ltrimstr($legacy_old) end) as $suffix
                 | .["image-path"] =
                     (if safe_suffix($suffix) then $new + $suffix else "box.png" end)
               elif (.["image-path"] | startswith($new)) then
@@ -555,7 +557,7 @@ migrate_profile() {
 }
 
 configure_automatically() {
-  local home selected state user uid; local -a candidates=()
+  local home selected profile state user uid; local -a candidates=()
   require_root configure-auto || return 1
   if [[ -f "$settings_file" && ! -L "$settings_file" ]]; then
     selected=$(read_desktop_user "$settings_file") || return 1
@@ -568,7 +570,13 @@ configure_automatically() {
       valid_user "$user" || continue
       case "$shell" in */nologin|*/false|'') continue ;; esac
       accounts+=("$user")
-      for state in "$home/.config/vibepollo/vibeshine_state.json" "$home/.config/vibepollo/sunshine_state.json"; do
+      # Match the importer's source priority. An existing canonical directory
+      # owns this account's state even when only the legacy directory is paired.
+      profile=$home/.config/vibepollo
+      if ! user_exec "$user" /usr/bin/test -e "$profile" && ! user_exec "$user" /usr/bin/test -L "$profile"; then
+        profile=$home/.config/sunshine
+      fi
+      for state in "$profile/vibeshine_state.json" "$profile/sunshine_state.json"; do
         if user_exec "$user" /usr/bin/test -f "$state" && ! user_exec "$user" /usr/bin/test -L "$state"; then
           candidates+=("$user")
           break

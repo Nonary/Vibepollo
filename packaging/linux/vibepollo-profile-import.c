@@ -25,6 +25,7 @@
 static const char destination_prefix[] = "/var/lib/.vibepollo-profile.";
 static const char destination_suffix[] = "/incoming";
 static const char source_relative[] = ".config/vibepollo";
+static const char legacy_source_relative[] = ".config/sunshine";
 
 enum {
   maximum_depth = 32,
@@ -122,6 +123,33 @@ static int open_beneath(int directory, const char *path, int flags) {
     .resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV,
   };
   return (int) syscall(SYS_openat2, directory, path, &how, sizeof(how));
+}
+
+static int open_desktop_profile(int home) {
+  int source = open_beneath(home, source_relative,
+                            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  /* A canonical profile, including an empty one, is authoritative. Unsafe or
+   * inaccessible canonical paths must fail rather than import another tree. */
+  if (source < 0 && errno == ENOENT) {
+    source = open_beneath(home, legacy_source_relative,
+                          O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  }
+  return source;
+}
+
+static bool remap_legacy_configuration(int destination) {
+  struct stat attributes;
+  if (!fstatat(destination, "vibepollo.conf", &attributes, AT_SYMLINK_NOFOLLOW)) return true;
+  if (errno != ENOENT) return false;
+  if (fstatat(destination, "sunshine.conf", &attributes, AT_SYMLINK_NOFOLLOW)) return errno == ENOENT;
+  if (!S_ISREG(attributes.st_mode)) {
+    errno = EPERM;
+    return false;
+  }
+  /* Only the private imported copy is renamed, after the bounded copy and
+   * while still running as the desktop user. Never replace canonical data. */
+  return !renameat2(destination, "sunshine.conf", destination, "vibepollo.conf", RENAME_NOREPLACE) &&
+         !fsync(destination);
 }
 
 static bool same_snapshot(const struct stat *before, const struct stat *after) {
@@ -387,8 +415,7 @@ int main(int argc, char **argv) {
     free(passwd_buffer);
     return 1;
   }
-  const int source = open_beneath(home, source_relative,
-                                  O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  const int source = open_desktop_profile(home);
   if (source < 0) {
     const int open_error = errno;
     close(home);
@@ -435,7 +462,8 @@ int main(int argc, char **argv) {
     .source_device = source_attributes.st_dev,
     .destination_root = destination,
   };
-  const bool success = now && copy_directory(source, destination, 0, &budget);
+  const bool success = now && copy_directory(source, destination, 0, &budget) &&
+                       remap_legacy_configuration(destination);
   close(source);
   close(home);
   close(destination);

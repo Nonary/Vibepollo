@@ -92,4 +92,6 @@ if find_host_readiness_log "$test_logs" "$expected_owner" retained_logs; then
 fi
 printf 'PASS: persistent host log readiness isolation\n'
 
-/usr/bin/python3 "$(dirname "${BASH_SOURCE[0]}")/test_machine_host_shutdown.py" "$1"
+/usr/bin/python3 "$(dirname "${BASH_SOURCE[0]}")/test_machine_host_shutdown.py" "$1" || exit 1
+
+/usr/bin/python3 "$(dirname "${BASH_SOURCE[0]}")/test_machine_profile_import.py" "$1"
