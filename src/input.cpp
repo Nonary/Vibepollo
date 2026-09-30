@@ -882,7 +882,8 @@ namespace input {
   void refresh_shortcut_flags(input_t &input) {
     input.shortcutFlags = 0;
     for (const auto &[key, held] : input.keys) {
-      update_shortcutFlags(&input.shortcutFlags, key, false);
+      // Match the host key injected at key-down, even if its mapping changes.
+      update_shortcutFlags(&input.shortcutFlags, held.host_key, false);
     }
   }
 
@@ -960,13 +961,19 @@ namespace input {
 
     uint8_t synthetic_modifiers = 0;
     if (!is_modifier(key_code)) {
-      if ((packet->modifiers & MODIFIER_SHIFT) && !(input->shortcutFlags & input_t::SHIFT)) {
+      // A held client modifier can be remapped to a different host key. Do not
+      // reintroduce its original modifier from the packet's modifier mask.
+      int client_modifier_flags = 0;
+      for (const auto &[client_key, held] : input->keys) {
+        update_shortcutFlags(&client_modifier_flags, client_key, false);
+      }
+      if ((packet->modifiers & MODIFIER_SHIFT) && !(client_modifier_flags & input_t::SHIFT)) {
         synthetic_modifiers |= MODIFIER_SHIFT;
       }
-      if ((packet->modifiers & MODIFIER_CTRL) && !(input->shortcutFlags & input_t::CTRL)) {
+      if ((packet->modifiers & MODIFIER_CTRL) && !(client_modifier_flags & input_t::CTRL)) {
         synthetic_modifiers |= MODIFIER_CTRL;
       }
-      if ((packet->modifiers & MODIFIER_ALT) && !(input->shortcutFlags & input_t::ALT)) {
+      if ((packet->modifiers & MODIFIER_ALT) && !(client_modifier_flags & input_t::ALT)) {
         synthetic_modifiers |= MODIFIER_ALT;
       }
     }

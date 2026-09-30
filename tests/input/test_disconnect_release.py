@@ -119,6 +119,38 @@ int main(int argc, char **argv) {
     key(a, 0x20, false, MODIFIER_ALT); key(a, 0x20, true);
     key(a, VKEY_LMENU, true);
     expect({{0x5B, false, 0}, {0x20, false, 0}, {0x20, true, 0}, {0x5B, true, 0}});
+  } else if (test == "remapped_rightalt_does_not_trigger_shortcut") {
+    // key_rightalt_to_key_win maps this client Alt to the host Windows key.
+    config::input.keybindings[VKEY_RMENU] = 0x5B;
+    key(a, VKEY_LSHIFT); key(a, VKEY_LCONTROL); key(a, VKEY_RMENU);
+    auto count = platf::keyboard_events.size();
+    key(a, 0x70); key(a, 0x70, true);
+    assert(platf::keyboard_events.size() == count + 2);
+    assert(platf::keyboard_events[count].key == 0x70);
+    disconnect(a);
+  } else if (test == "remapped_ordinary_key_triggers_shortcut") {
+    config::input.keybindings[0x41] = VKEY_LCONTROL;
+    key(a, VKEY_LSHIFT); key(a, VKEY_LMENU); key(a, 0x41);
+    auto count = platf::keyboard_events.size();
+    key(a, 0x70); key(a, 0x70, true);
+    assert(platf::keyboard_events.size() == count);
+    disconnect(a);
+  } else if (test == "shortcut_remap_changes_while_held") {
+    config::input.keybindings[0x41] = VKEY_LCONTROL;
+    key(a, VKEY_LSHIFT); key(a, VKEY_LMENU); key(a, 0x41);
+    config::input.keybindings[0x41] = 0x42;
+    // Recomputing after another key changes must retain the original Ctrl.
+    key(a, VKEY_LSHIFT, true); key(a, VKEY_LSHIFT);
+    auto count = platf::keyboard_events.size();
+    key(a, 0x70); key(a, 0x70, true);
+    assert(platf::keyboard_events.size() == count);
+    key(a, 0x41, true);
+    assert(platf::keyboard_events.back().key == VKEY_LCONTROL);
+    assert(platf::keyboard_events.back().release);
+    platf::keyboard_events.clear();
+    key(a, 0x70); key(a, 0x70, true);
+    expect({{0x70, false, 0}, {0x70, true, 0}});
+    disconnect(a);
   } else if (test == "modifier_sides") {
     for (auto mods : {std::array<int, 3>{VKEY_LSHIFT, VKEY_RSHIFT, MODIFIER_SHIFT},
                       std::array<int, 3>{VKEY_LCONTROL, VKEY_RCONTROL, MODIFIER_CTRL},
