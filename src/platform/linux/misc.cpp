@@ -62,6 +62,7 @@
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/video.h"
+#include "packaging/linux/vibepollo-session-stream-environment.h"
 #ifdef __linux__
   #include "src/platform/linux/display_backend.h"
   #include "src/platform/linux/private_display_capture_policy.h"
@@ -442,6 +443,30 @@ namespace platf {
           environment_value("SUNSHINE_CLIENT_HDR") == "true" &&
           environment_value("ENABLE_HDR_WSI") == "1";
         args = {wayland_hdr_compatibility ? "app-wayland-hdr" : "app", cmd};
+        // The broker clears the network host's environment. Send only the
+        // supported stream metadata as literal assignments; user/session and
+        // loader settings remain broker-owned, and cmd still matches the
+        // administrator's exact command manifest.
+        size_t stream_environment_bytes = 0;
+        for (const auto &field : vibepollo_stream_environment_fields) {
+          const auto it = std::find_if(env.cbegin(), env.cend(), [&field](const auto &entry) {
+            return entry.get_name() == field.name;
+          });
+          if (it == env.cend()) continue;
+          const auto value = it->to_string();
+          // Empty optional toggles/numeric settings must not turn a bootstrap
+          // request into a failed launch. Text fields preserve empty values.
+          if (value.empty() && field.type != VIBEPOLLO_STREAM_TEXT) continue;
+          auto assignment = std::string {field.name} + '=' + value;
+          if (!vibepollo_stream_environment_entry_is_safe(assignment.c_str(), nullptr) ||
+              assignment.size() + 1 > VIBEPOLLO_STREAM_ENVIRONMENT_MAX_BYTES - stream_environment_bytes) {
+            BOOST_LOG(error) << "Invalid session launch metadata: " << field.name;
+            ec = std::make_error_code(std::errc::invalid_argument);
+            return bp::child();
+          }
+          stream_environment_bytes += assignment.size() + 1;
+          args.emplace_back(std::move(assignment));
+        }
       }
     } else {
       std::vector<std::string> parts;
