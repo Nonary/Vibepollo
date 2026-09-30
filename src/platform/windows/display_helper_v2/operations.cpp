@@ -872,7 +872,11 @@ namespace display_helper::v2 {
   bool RecoveryOperation::should_skip_golden(const Snapshot &golden) {
     const auto now_ms = steady_now_ms();
     const auto last_ok = state_.last_session_restore_success_ms.load(std::memory_order_acquire);
-    if (last_ok != 0 && (now_ms - last_ok) < 60'000) {
+    // A session fallback cannot supersede an explicitly authoritative golden
+    // baseline. Repeated fallback successes refresh last_ok on every poll and
+    // otherwise prevent golden from being retried when a missing monitor returns.
+    const bool golden_first = state_.always_restore_from_golden.load(std::memory_order_acquire);
+    if (!golden_first && last_ok != 0 && (now_ms - last_ok) < 60'000) {
       BOOST_LOG(info) << "Skipping golden: recent session restore success guard active.";
       return true;
     }
