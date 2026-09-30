@@ -48,6 +48,8 @@ env:
   BUILD_VERSION: ${{ inputs.release_version || '2.0.0' }}
   COMMIT: ${{ inputs.release_commit || github.sha }}
   MACOSX_DEPLOYMENT_TARGET: 14.2
+  OPENSSL_VERSION: 3.6.5
+  OPENSSL_SHA256: a2157c2830efdec3788939b00c9b0638306d3f0bbb76dc4832ee503bb397df98
 
 jobs:
   build_dmg:
@@ -90,11 +92,38 @@ jobs:
             graphviz \
             pkgconf \
             miniupnpc \
-            openssl@3 \
             opus
           # Runner images ship icu4c@78 unlinked, and installing it again only warns about that.
           # Configure finds it through brew --prefix, linked or not.
           brew list --versions icu4c@78 > /dev/null || brew install icu4c@78
+
+      - name: Cache OpenSSL
+        id: openssl_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/openssl
+          key: openssl-${{ env.OPENSSL_VERSION }}-${{ matrix.arch }}-macos${{ env.MACOSX_DEPLOYMENT_TARGET }}
+
+      - name: Build OpenSSL
+        if: steps.openssl_cache.outputs.cache-hit != 'true'
+        env:
+          MATRIX_ARCH: ${{ matrix.arch }}
+        run: |
+          # Homebrew publishes no Intel macOS bottles of OpenSSL, and the runner images' copies
+          # target the runner's own macOS, which would raise the DMG's minimum above
+          # MACOSX_DEPLOYMENT_TARGET. Build a static OpenSSL for the deployment target instead.
+          src="${RUNNER_TEMP}/openssl-src"
+          mkdir -p "${src}"
+          curl -fsSL -o "${src}/openssl.tar.gz" \
+            "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
+          echo "${OPENSSL_SHA256}  ${src}/openssl.tar.gz" | shasum -a 256 -c -
+          tar -xzf "${src}/openssl.tar.gz" -C "${src}"
+          cd "${src}/openssl-${OPENSSL_VERSION}"
+          ./Configure "darwin64-${MATRIX_ARCH}-cc" no-shared no-tests no-docs \
+            "-mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}" \
+            --prefix="${RUNNER_TEMP}/openssl"
+          make -j "$(sysctl -n hw.ncpu)" build_sw
+          make install_sw
 
       - name: Configure
         env:
@@ -109,7 +138,8 @@ jobs:
             -DBUILD_WERROR=ON \
             -DCMAKE_BUILD_TYPE=Release \
             -DICU_ROOT="$(brew --prefix icu4c@78 2>/dev/null)" \
-            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3 2>/dev/null)" \
+            -DOPENSSL_ROOT_DIR="${RUNNER_TEMP}/openssl" \
+            -DOPENSSL_USE_STATIC_LIBS=ON \
             -DOpus_ROOT_DIR="$(brew --prefix opus 2>/dev/null)" \
             -DSUNSHINE_PUBLISHER_NAME="${GITHUB_REPOSITORY_OWNER}" \
             -DSUNSHINE_PUBLISHER_WEBSITE="https://github.com/Nonary/Vibepollo" \
@@ -169,6 +199,12 @@ jobs:
           done | sort -V | tail -1)"
           echo "${MATRIX_NAME} requires macOS ${min_macos} or later"
           echo "- ${MATRIX_NAME}: requires macOS ${min_macos} or later" >> "${GITHUB_STEP_SUMMARY}"
+          # A bundled library built for a newer macOS raises the whole app's minimum.
+          if [[ "$(printf '%s\n' "${min_macos}" "${MACOSX_DEPLOYMENT_TARGET}" | sort -V | tail -1)" != "${MACOSX_DEPLOYMENT_TARGET}" ]]; then
+            echo "::error::${MATRIX_NAME} requires macOS ${min_macos}, newer than the ${MACOSX_DEPLOYMENT_TARGET} deployment target"
+            hdiutil detach "${mnt}" -quiet || true
+            exit 1
+          fi
 
           # A scratch HOME keeps the runner's state out of it; -1 skips loading saved state.
           scratch_home="$(mktemp -d)"
