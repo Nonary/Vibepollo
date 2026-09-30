@@ -33,6 +33,7 @@
 #include <mach-o/dyld.h>
 #include <net/if_dl.h>
 #include <pwd.h>
+#include <ScreenCaptureKit/ScreenCaptureKit.h>
 #include <ServiceManagement/ServiceManagement.h>
 #include <spawn.h>
 #include <sys/file.h>
@@ -421,7 +422,10 @@ namespace platf {
         !CGPreflightScreenCaptureAccess()) {
       BOOST_LOG(error) << "No screen capture permission!"sv;
       BOOST_LOG(error) << "Please allow it in 'System Settings' -> 'Privacy & Security', then restart Vibepollo"sv;
-      CGRequestScreenCaptureAccess();
+      // Asking ScreenCaptureKit shows the system prompt and lists the app under Privacy & Security.
+      // CGRequestScreenCaptureAccess() no longer does either on current macOS.
+      [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *, NSError *) {
+      }];
       return nullptr;
     }
 #pragma clang diagnostic pop
