@@ -513,8 +513,8 @@
         "success": "All devices were unpaired."
       },
       "layout": {
-        "title": "Arrange remote monitors",
-        "description": "Choose how remote monitors sit beside your other screens."
+        "title": "Arrange client displays",
+        "description": "Choose placement for extended application streams and Remote Monitor."
       }
     },
     "integrations": {

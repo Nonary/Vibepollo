@@ -29,6 +29,36 @@ namespace remote_display_topology {
     nlohmann::json empty_layout() { return {{"version", layout_version}, {"placements", nlohmann::json::object()}}; }
   }
 
+  void coordinator_t::place_relative(node_t &node, const node_t &anchor, const nlohmann::json &placement) {
+    const auto anchor_width = effective_mode(anchor).width;
+    const auto anchor_height = effective_mode(anchor).height;
+    const auto width = effective_mode(node).width;
+    const auto height = effective_mode(node).height;
+    const auto gap = placement.value("gap_px", 0);
+    const auto edge = placement.value("edge", "right");
+    const auto alignment = placement.value("alignment", "center");
+    if (edge == "left") {
+      node.x = anchor.x - width - gap;
+    }
+    if (edge == "right") {
+      node.x = anchor.x + anchor_width + gap;
+    }
+    if (edge == "above") {
+      node.y = anchor.y - height - gap;
+    }
+    if (edge == "below") {
+      node.y = anchor.y + anchor_height + gap;
+    }
+    if (edge == "left" || edge == "right") {
+      node.y = alignment == "start" ? anchor.y : alignment == "end" ? anchor.y + anchor_height - height :
+                                                                      anchor.y + (anchor_height - height) / 2;
+    }
+    if (edge == "above" || edge == "below") {
+      node.x = alignment == "start" ? anchor.x : alignment == "end" ? anchor.x + anchor_width - width :
+                                                                      anchor.x + (anchor_width - width) / 2;
+    }
+  }
+
   bool layout_schema_valid(const nlohmann::json &layout, std::string &error) {
     if (!layout.is_object() || !layout.contains("version") || !layout["version"].is_number_integer() || layout["version"].get<int>() != static_cast<int>(layout_version) || !layout.contains("placements") || !layout["placements"].is_object()) {
       error = "Layout must be version 1 with an object of placements.";
@@ -45,8 +75,12 @@ namespace remote_display_topology {
         error = "Placement primary must be a boolean.";
         return false;
       }
+      if (placement.contains("preserve") && !placement["preserve"].is_boolean()) {
+        error = "Placement preserve must be a boolean.";
+        return false;
+      }
       const auto gap = placement["gap_px"].get<int>();
-      if ((placement["anchor_kind"].get<std::string>() != "physical" && placement["anchor_kind"].get<std::string>() != "client") || placement["anchor_id"].get<std::string>().empty() || !edges.contains(placement["edge"].get<std::string>()) || !alignments.contains(placement["alignment"].get<std::string>()) || gap < 0 || gap > max_gap_px) {
+      if ((placement["anchor_kind"].get<std::string>() != "physical" && placement["anchor_kind"].get<std::string>() != "client") || (!placement.value("preserve", false) && placement["anchor_id"].get<std::string>().empty()) || !edges.contains(placement["edge"].get<std::string>()) || !alignments.contains(placement["alignment"].get<std::string>()) || gap < 0 || gap > max_gap_px) {
         error = "Placement has an unsupported anchor, edge, alignment, or gap.";
         return false;
       }
@@ -70,6 +104,7 @@ namespace remote_display_topology {
         error = "Every placement must name a paired client.";
         return false;
       }
+      if (placement.value("preserve", false)) continue;
       const auto anchor_kind = placement["anchor_kind"].get<std::string>();
       const auto anchor_id = placement["anchor_id"].get<std::string>();
       if (placement.value("primary", false) && ++primary_count > 1) {
@@ -105,6 +140,27 @@ namespace remote_display_topology {
 
   void coordinator_t::set_runtime_callbacks(runtime_callbacks_t callbacks) { std::lock_guard lock(mutex_); callbacks_ = std::move(callbacks); }
   void coordinator_t::set_layout(nlohmann::json layout) { std::lock_guard lock(mutex_); layout_ = normalize_layout(layout); }
+  std::optional<node_t> coordinator_t::saved_stream_placement(const node_t &target, const std::vector<node_t> &active_nodes) const {
+    std::lock_guard lock(mutex_);
+    const auto placement = layout_["placements"].find(target.id);
+    if (placement == layout_["placements"].end()) {
+      return std::nullopt;
+    }
+    if (placement->value("preserve", false)) return target;
+    const auto anchor_id = placement->value("anchor_id", "");
+    const auto physical = placement->value("anchor_kind", "") == "physical";
+    const auto anchor = std::find_if(active_nodes.begin(), active_nodes.end(), [&](const node_t &candidate) {
+      return candidate.active && candidate.id == anchor_id && candidate.physical == physical;
+    });
+    if (anchor == active_nodes.end()) {
+      return std::nullopt;
+    }
+    auto node = target;
+    node.primary = placement->value("primary", false);
+    place_relative(node, *anchor, *placement);
+    return node;
+  }
+
   void coordinator_t::set_physical_baseline(std::vector<node_t> nodes) { std::lock_guard lock(mutex_); physical_baseline_ = std::move(nodes); }
   std::vector<std::string> coordinator_t::physical_node_ids() const {
     std::lock_guard lock(mutex_);
@@ -713,7 +769,7 @@ namespace remote_display_topology {
       }
 
       const auto placement_it = layout_["placements"].find(uuid);
-      if (placement_it == layout_["placements"].end()) {
+      if (placement_it == layout_["placements"].end() || placement_it->value("preserve", false)) {
         append_right({});
         visiting.erase(uuid);
         return;
@@ -737,18 +793,8 @@ namespace remote_display_topology {
         return;
       }
 
-      const auto anchor_mode = effective_mode(*anchor);
-      const auto mode = effective_mode(node);
-      const auto gap = placement.value("gap_px", 0);
-      const auto edge = placement.value("edge", "right");
-      const auto alignment = placement.value("alignment", "center");
-      if (edge == "left") node.x = anchor->x - mode.width - gap;
-      if (edge == "right") node.x = anchor->x + anchor_mode.width + gap;
-      if (edge == "above") node.y = anchor->y - mode.height - gap;
-      if (edge == "below") node.y = anchor->y + anchor_mode.height + gap;
-      if (edge == "left" || edge == "right") node.y = alignment == "start" ? anchor->y : alignment == "end" ? anchor->y + anchor_mode.height - mode.height : anchor->y + (anchor_mode.height - mode.height) / 2;
-      if (edge == "above" || edge == "below") node.x = alignment == "start" ? anchor->x : alignment == "end" ? anchor->x + anchor_mode.width - mode.width : anchor->x + (anchor_mode.width - mode.width) / 2;
-      rightmost = std::max(rightmost, node.x + mode.width);
+      place_relative(node, *anchor, placement);
+      rightmost = std::max(rightmost, node.x + effective_mode(node).width);
       nodes.push_back(std::move(node));
       emitted.insert(uuid);
       visiting.erase(uuid);

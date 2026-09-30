@@ -2501,13 +2501,14 @@ namespace VDISPLAY_SUNSHINE {
       for (int attempt = 0; attempt < 4; ++attempt) {
         UINT queried_path_count = static_cast<UINT>(query.paths.size());
         UINT queried_mode_count = static_cast<UINT>(query.modes.size());
+        DISPLAYCONFIG_TOPOLOGY_ID database_topology {};
         result = QueryDisplayConfig(
           flags,
           &queried_path_count,
           queried_path_count ? query.paths.data() : nullptr,
           &queried_mode_count,
           queried_mode_count ? query.modes.data() : nullptr,
-          nullptr
+          (flags & QDC_DATABASE_CURRENT) != 0 ? &database_topology : nullptr
         );
         if (result == ERROR_SUCCESS) {
           if (!VDISPLAY::policy::display_config_buffer_sizes_are_sane(queried_path_count, queried_mode_count)) {
@@ -2576,6 +2577,38 @@ namespace VDISPLAY_SUNSHINE {
         static_cast<LONG>((std::min)(right_edge, static_cast<std::int64_t>((std::numeric_limits<LONG>::max)()))),
         0,
       };
+    }
+
+    std::optional<POINTL> display_config_origin(const DisplayConfigQuery &query, const DisplayConfigTarget &target) {
+      for (const auto &path : query.paths) {
+        if (target_key(target) != path_state(path).target) {
+          continue;
+        }
+        const auto index = source_mode_index(path, query.virtual_mode_aware);
+        if (!index || *index >= query.modes.size()) {
+          continue;
+        }
+        const auto &mode = query.modes[*index];
+        if (mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE && mode.id == path.sourceInfo.id && luid_equals(mode.adapterId, path.sourceInfo.adapterId)) {
+          return mode.sourceMode.position;
+        }
+      }
+      return std::nullopt;
+    }
+
+    POINTL retained_display_origin(const DisplayConfigQuery &query, const DisplayConfigTarget &target) {
+      // QDC_ALL_PATHS can expose temporary state. Prefer the persisted CCD
+      // source origin for this exact driver target when Windows has saved one.
+      DisplayConfigQuery saved;
+      if (query_display_config(QDC_DATABASE_CURRENT | QDC_VIRTUAL_MODE_AWARE, saved) == ERROR_SUCCESS) {
+        if (const auto origin = display_config_origin(saved, target)) {
+          return *origin;
+        }
+      }
+      if (const auto origin = display_config_origin(query, target)) {
+        return *origin;
+      }
+      return next_extended_position(query);
     }
 
     DISPLAYCONFIG_VIDEO_SIGNAL_INFO make_activation_signal_info(
@@ -2663,7 +2696,7 @@ namespace VDISPLAY_SUNSHINE {
       source_mode.sourceMode.width = width;
       source_mode.sourceMode.height = height;
       source_mode.sourceMode.pixelFormat = DISPLAYCONFIG_PIXELFORMAT_32BPP;
-      source_mode.sourceMode.position = next_extended_position(query);
+      source_mode.sourceMode.position = retained_display_origin(query, output);
       requested_modes.push_back(source_mode);
 
       // A hand-built DISPLAYCONFIG_VIDEO_SIGNAL_INFO cannot match a timing the

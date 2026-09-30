@@ -1372,6 +1372,15 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+On Windows, non-isolated extended application streams preserve Windows'
+relative monitor arrangement. Per-client directions can be saved under
+**Devices → Arrange client displays**. The editor supports left, right, above, below,
+alignment and gap, plus **Preserve / manual**. A saved direction or explicit
+manual rule takes precedence over isolated positioning for that client.
+`dd_configuration_option = verify_only` verifies the existing extended target
+and preserves topology and positions; use an automatic preparation option to
+apply a saved direction. Shared displays use the application layout.
+
 ### remote_monitor_confirm_app_replacement
 
 Protect a running app while Vibepollo advertises the host as available for
