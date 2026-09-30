@@ -5892,10 +5892,20 @@ namespace nvhttp {
 #else
     constexpr bool preserve_deferred_launch = false;
 #endif
-    rtsp_stream::terminate_sessions(preserve_deferred_launch);
+    if (remote_sessions_active && !preserve_deferred_launch) {
+      // Quitting the game leaves Remote Monitor and Remote Input sessions attached, as the
+      // Terminate control does.
+      (void) rtsp_stream::disconnect_game_sessions(false);
+      stream::session::release_terminated_game_displays();
+      if (has_running_app) {
+        proc::proc.terminate();
+      }
+    } else {
+      rtsp_stream::terminate_sessions(preserve_deferred_launch);
 
-    if (has_running_app && !preserve_deferred_launch) {
-      proc::proc.terminate();
+      if (has_running_app && !preserve_deferred_launch) {
+        proc::proc.terminate();
+      }
     }
     // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
 
