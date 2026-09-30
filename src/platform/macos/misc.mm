@@ -397,7 +397,7 @@ namespace platf {
     // for apps allowed under Privacy & Security > Accessibility. Streaming works without it.
     if (!CGPreflightPostEventAccess()) {
       BOOST_LOG(warning) << "No accessibility permission; remote mouse and keyboard input will be ignored"sv;
-      BOOST_LOG(warning) << "Please activate it in 'System Settings' -> 'Privacy & Security' -> 'Accessibility'"sv;
+      BOOST_LOG(warning) << "Please allow it in 'System Settings' -> 'Privacy & Security'"sv;
       CGRequestPostEventAccess();
     }
 
@@ -420,7 +420,7 @@ namespace platf {
         CGPreflightScreenCaptureAccess != nullptr && CGRequestScreenCaptureAccess != nullptr &&
         !CGPreflightScreenCaptureAccess()) {
       BOOST_LOG(error) << "No screen capture permission!"sv;
-      BOOST_LOG(error) << "Please activate it in 'System Preferences' -> 'Privacy' -> 'Screen Recording'"sv;
+      BOOST_LOG(error) << "Please allow it in 'System Settings' -> 'Privacy & Security', then restart Vibepollo"sv;
       CGRequestScreenCaptureAccess();
       return nullptr;
     }

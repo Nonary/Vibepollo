@@ -57,6 +57,10 @@ extern "C" {
   #include "platform/linux/cuda.h"
 #endif
 
+#ifdef __APPLE__
+  #include "src/platform/macos/misc.h"
+#endif
+
 #ifdef _WIN32
   #include "src/platform/windows/display.h"
   #include "src/platform/windows/display_helper_integration.h"
@@ -7365,7 +7369,16 @@ namespace video {
 
     if (new_encoder == nullptr) {
       BOOST_LOG(fatal) << "Unable to initialize a working video encoder during startup."sv;
-      if (!config::video.adapter_name.empty() || !config::video.adapter_pnp_id.empty()) {
+#ifdef __APPLE__
+      // Encoders are validated on a captured frame, so without the permission every one fails.
+      const bool screen_capture_denied = !platf::is_screen_capture_allowed();
+#else
+      constexpr bool screen_capture_denied = false;
+#endif
+      if (screen_capture_denied) {
+        BOOST_LOG(fatal) << "Vibepollo isn't allowed to record the screen. Allow it in 'System Settings' -> "
+                            "'Privacy & Security', then restart Vibepollo."sv;
+      } else if (!config::video.adapter_name.empty() || !config::video.adapter_pnp_id.empty()) {
         BOOST_LOG(fatal) << "Please ensure the selected GPU is available and its encoder driver is working."sv;
       } else {
         BOOST_LOG(fatal) << "Please check the GPU driver and configured encoder."sv;
