@@ -71,7 +71,6 @@
   #include "platform/windows/virtual_display_cleanup.h"
   #include "tools/playnite_launcher/focus_utils.h"
   #include "tools/playnite_launcher/lossless_scaling.h"
-  #include "tools/playnite_launcher/lossless_scaling_policy.h"
 
   #include <Psapi.h>
 #elif defined(__linux__)
@@ -94,6 +93,8 @@
 #include "httpcommon.h"
 #include "nvhttp.h"
 #include "process.h"
+// Header-only policy used by shared launch code; safe on every platform.
+#include "tools/playnite_launcher/lossless_scaling_policy.h"
 #ifdef _WIN32
   #include "platform/windows/virtual_display.h"
   #include "platform/windows/virtual_display_legacy.h"

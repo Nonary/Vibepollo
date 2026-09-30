@@ -16,7 +16,10 @@ set(MACOS_LINK_DIRECTORIES
         /usr/local/lib)
 
 foreach(dir ${MACOS_LINK_DIRECTORIES})
-    if(EXISTS ${dir})
+    # Honor CMAKE_IGNORE_PREFIX_PATH (e.g. /opt/local) so a stale package manager's
+    # libraries can't shadow the SDK's by bare name (-lcurl, -liconv).
+    get_filename_component(_prefix "${dir}" DIRECTORY)
+    if(EXISTS ${dir} AND NOT _prefix IN_LIST CMAKE_IGNORE_PREFIX_PATH)
         link_directories(${dir})
     endif()
 endforeach()
