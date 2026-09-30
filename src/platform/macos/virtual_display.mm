@@ -215,10 +215,77 @@ namespace platf::macos_virtual_display {
       return scale >= 150;
     }
 
+    bool same_mode(const CGDisplayModeRef a, const CGDisplayModeRef b) {
+      return CGDisplayModeGetPixelWidth(a) == CGDisplayModeGetPixelWidth(b) && CGDisplayModeGetPixelHeight(a) == CGDisplayModeGetPixelHeight(b) &&
+             CGDisplayModeGetWidth(a) == CGDisplayModeGetWidth(b) && CGDisplayModeGetHeight(a) == CGDisplayModeGetHeight(b);
+    }
+
+    /**
+     * @brief The other displays' modes, from before a new display joins them.
+     * @details macOS keeps display settings per combination of displays, so a new display gives the
+     *          others their default modes and drops the user's scaling, such as More Space. So does
+     *          turning a display back on, or removing one. restore() puts back any that changed.
+     */
+    class saved_modes_t {
+    public:
+      saved_modes_t() {
+        for (const auto id : display_list(CGGetActiveDisplayList)) {
+          if (const CGDisplayModeRef mode = CGDisplayCopyDisplayMode(id)) {
+            modes.emplace_back(id, mode);
+          }
+        }
+      }
+
+      saved_modes_t(const saved_modes_t &) = delete;
+      saved_modes_t &operator=(const saved_modes_t &) = delete;
+
+      ~saved_modes_t() {
+        for (const auto &[_, mode] : modes) {
+          CGDisplayModeRelease(mode);
+        }
+      }
+
+      /// @param wait How long macOS may take to make the change, which it does just after the displays change.
+      void restore(const std::chrono::milliseconds wait) const {
+        wait_until([this]() {
+          return !changed().empty();
+        },
+                   wait);
+        const auto displays = changed();
+        CGDisplayConfigRef config;
+        if (displays.empty() || CGBeginDisplayConfiguration(&config) != kCGErrorSuccess) {
+          return;
+        }
+        for (const auto &[id, mode] : displays) {
+          BOOST_LOG(info) << "Virtual display: putting back the mode macOS changed on display "sv << id;
+          CGConfigureDisplayWithDisplayMode(config, id, mode, nullptr);
+        }
+        CGCompleteDisplayConfiguration(config, kCGConfigureForAppOnly);
+      }
+
+    private:
+      std::vector<std::pair<CGDirectDisplayID, CGDisplayModeRef>> changed() const {
+        std::vector<std::pair<CGDirectDisplayID, CGDisplayModeRef>> result;
+        for (const auto &[id, mode] : modes) {
+          const CGDisplayModeRef current = CGDisplayCopyDisplayMode(id);
+          if (current && is_active(id) && !same_mode(current, mode)) {
+            result.emplace_back(id, mode);
+          }
+          if (current) {
+            CGDisplayModeRelease(current);
+          }
+        }
+        return result;
+      }
+
+      std::vector<std::pair<CGDirectDisplayID, CGDisplayModeRef>> modes;
+    };
+
     struct virtual_display_t {
       CGVirtualDisplay *display = nil;
       CGDirectDisplayID id = kCGNullDirectDisplay;
       std::vector<CGDirectDisplayID> turned_off;  ///< Physical displays to turn back on.
+      std::unique_ptr<saved_modes_t> turned_off_modes;  ///< Their modes from before.
       pid_t watchdog_pid = -1;
       int watchdog_fd = -1;  ///< Write end of the helper's stdin; EOF without "done" makes it restore.
 
@@ -321,6 +388,7 @@ namespace platf::macos_virtual_display {
       }
 
       // Safeguards first: macOS won't turn these back on if Vibepollo dies.
+      display.turned_off_modes = std::make_unique<saved_modes_t>();
       write_marker(others);
       start_watchdog(display, others);
 
@@ -430,6 +498,7 @@ namespace platf::macos_virtual_display {
 
       // During a dark wake no display comes online, virtual ones included.
       platf::wake_displays();
+      const saved_modes_t other_modes;
 
       const bool hidpi = use_hidpi(width, height);
       // HiDPI modes are sized in points; their backing store, which is what gets captured, is 2x.
@@ -480,6 +549,7 @@ namespace platf::macos_virtual_display {
       if (hidpi) {
         select_mode(result->id, pixel_width, pixel_height);
       }
+      other_modes.restore(1s);
       BOOST_LOG(info) << "Virtual display: "sv << name.UTF8String << ' ' << pixel_width << 'x' << pixel_height << '@' << refresh << "Hz"sv
                       << (hidpi ? " (Retina, looks like "s + std::to_string(mode_width) + 'x' + std::to_string(mode_height) + ')' : ""s)
                       << ", display id "sv << result->id;
@@ -501,6 +571,7 @@ namespace platf::macos_virtual_display {
     }
 
     virtual_display_t::~virtual_display_t() {
+      const saved_modes_t other_modes;
       bool restored = true;
       if (!turned_off.empty()) {
         // A stream can end while the Mac is half-awake, where displays never come back online.
@@ -525,6 +596,10 @@ namespace platf::macos_virtual_display {
         },
                    3s);
       }
+      if (turned_off_modes) {
+        turned_off_modes->restore(500ms);
+      }
+      other_modes.restore(500ms);
     }
 
     void release() {
