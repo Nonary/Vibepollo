@@ -409,6 +409,18 @@ function(sunshine_register_component)
     )
 endfunction()
 
+if(SUNSHINE_TEST_ENABLE_COMPONENT AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    find_program(SUNSHINE_TEST_PYTHON_EXECUTABLE NAMES python3)
+    if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+        add_test(NAME test_component_windows_audio_role_restore
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_windows_audio_role_restore.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/audio.cpp"
+                --compiler "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_windows_audio_role_restore PROPERTIES LABELS "component")
+    endif()
+endif()
+
 sunshine_register_component(NAME test_component_stream_protocol TEST_SOURCE unit/test_stream.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_protocol.cpp")
 sunshine_register_component(NAME test_component_remote_session TEST_SOURCE unit/test_remote_session.cpp
