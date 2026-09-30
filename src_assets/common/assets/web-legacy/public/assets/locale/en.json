@@ -1,4 +1,16 @@
 {
+  "service_startup": {
+    "title": "Windows startup",
+    "description": "Choose whether the installed service starts automatically with Windows. Turning this off selects Manual startup, so you can still launch the app when needed. This changes future startup only; the current stream keeps running.",
+    "automatic": "Start automatically with Windows",
+    "mode": "Service startup mode",
+    "manual": "Manual",
+    "disabled": "Disabled",
+    "unknown": "Unavailable",
+    "saved": "Startup preference saved. The current service and stream keep running.",
+    "unavailable": "Unable to read or save the service startup preference. Refresh and try again.",
+    "automatic_mode": "Automatic"
+  },
   "_common": {
     "all": "All",
     "apply": "Apply",

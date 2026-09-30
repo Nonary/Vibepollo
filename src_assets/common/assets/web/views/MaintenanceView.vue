@@ -25,6 +25,15 @@ import {
   type CrashBundlePart,
 } from '@/utils/maintenanceCrashBundle';
 
+interface ServiceStartup {
+  status?: boolean;
+  installed?: boolean;
+  automatic?: boolean;
+  start_type?: string;
+  can_change?: boolean;
+  error?: string;
+}
+
 interface CrashDumpStatus {
   available?: boolean;
   filename?: string;
@@ -100,6 +109,11 @@ type CrashBundlePartState = CrashBundlePart & {
 const { locale, t } = useI18n();
 const system = useSystemStore();
 const metadata = ref<HostMetadata | null>(system.metadata);
+const serviceStartup = ref<ServiceStartup | null>(null);
+const serviceStartupDraft = ref(false);
+const serviceStartupBusy = ref(false);
+const serviceStartupError = ref('');
+const serviceStartupSaved = ref(false);
 const crashDump = ref<CrashDumpStatus | null>(null);
 const golden = ref<GoldenStatus | null>(null);
 const displayMaintenanceAvailable = computed(
@@ -299,6 +313,39 @@ function reconcileSessions(
   return [...stable, ...byId.values()];
 }
 
+async function refreshServiceStartup(): Promise<void> {
+  serviceStartupError.value = '';
+  serviceStartup.value = null;
+  try {
+    serviceStartup.value = await apiGet<ServiceStartup>('/api/service/startup');
+    serviceStartupDraft.value = serviceStartup.value.automatic === true;
+  } catch {
+    serviceStartupError.value = t('service_startup.unavailable');
+  }
+}
+
+async function saveServiceStartup(): Promise<void> {
+  if (serviceStartupBusy.value || serviceStartup.value?.can_change !== true) return;
+  serviceStartupBusy.value = true;
+  serviceStartupError.value = '';
+  serviceStartupSaved.value = false;
+  try {
+    const result = await apiPost<ServiceStartup>('/api/service/startup', {
+      automatic: serviceStartupDraft.value,
+    });
+    serviceStartup.value = result;
+    serviceStartupDraft.value = result.automatic === true;
+    if (result.status !== true) throw new Error(result.error || t('service_startup.unavailable'));
+    serviceStartupSaved.value = true;
+  } catch (cause) {
+    const error = message(cause, t('service_startup.unavailable'));
+    await refreshServiceStartup();
+    serviceStartupError.value = error;
+  } finally {
+    serviceStartupBusy.value = false;
+  }
+}
+
 async function load(): Promise<void> {
   if (refreshing.value) return;
   refreshing.value = true;
@@ -330,6 +377,7 @@ async function load(): Promise<void> {
   }
 
   if (isWindows.value) {
+    await refreshServiceStartup();
     const windowsResults = await Promise.allSettled([
       apiGet<CrashDumpStatus>('/api/health/crashdump'),
       apiGet<GoldenStatus>('/api/display/golden_status'),
@@ -343,6 +391,7 @@ async function load(): Promise<void> {
       errors.push(message(goldenResult.reason, t('ui.maintenance.errors.recoveryStatus')));
     }
   } else {
+    serviceStartup.value = null;
     crashDump.value = null;
     golden.value = null;
   }
@@ -1093,6 +1142,42 @@ onBeforeUnmount(() => {
             />
           </div>
         </form>
+      </section>
+
+      <section v-if="isWindows" class="maintenance-section" aria-labelledby="service-startup-title">
+        <div class="maintenance-section__heading">
+          <div>
+            <h2 id="service-startup-title">{{ t('service_startup.title') }}</h2>
+            <p>{{ t('service_startup.description') }}</p>
+          </div>
+        </div>
+        <label class="vs-cluster">
+          <input
+            v-model="serviceStartupDraft"
+            type="checkbox"
+            :disabled="serviceStartupBusy || serviceStartup?.can_change !== true"
+            @change="saveServiceStartup"
+          />
+          <span>{{ t('service_startup.automatic') }}</span>
+        </label>
+        <p>
+          {{ t('service_startup.mode') }}:
+          {{
+            t(
+              'service_startup.' +
+                (serviceStartup?.start_type === 'automatic'
+                  ? 'automatic_mode'
+                  : serviceStartup?.start_type || 'unknown'),
+            )
+          }}
+        </p>
+        <p v-if="serviceStartup?.error">{{ serviceStartup.error }}</p>
+        <InlineAlert v-if="serviceStartupError" tone="danger" announce="assertive">{{
+          serviceStartupError
+        }}</InlineAlert>
+        <InlineAlert v-if="serviceStartupSaved" tone="success" announce="polite">{{
+          t('service_startup.saved')
+        }}</InlineAlert>
       </section>
 
       <section class="danger-zone" aria-labelledby="restart-title">
