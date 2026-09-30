@@ -9,6 +9,7 @@
 #include <src/paired_state_policy.h>
 
 #include <map>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -663,6 +664,88 @@ namespace {
       [&store](const std::string &path, const std::string &contents) { return store.write(path, contents); },
       nvhttp::state_policy::valid_primary_tree, nvhttp::state_policy::valid_primary_json);
   }
+
+  pt::ptree apollo_tree(const nlohmann::json &snapshot) {
+    pt::ptree tree;
+    std::istringstream input(snapshot.dump());
+    pt::read_json(input, tree);
+    return tree;
+  }
+}
+
+TEST(StateStorageApollo, PopulatedLastSeenLoadsWithoutReplacingCurrentPrimary) {
+  for (const auto &timestamp : {nlohmann::json(1759000000), nlohmann::json(0), nlohmann::json(-1),
+         nlohmann::json(std::numeric_limits<std::int64_t>::min()), nlohmann::json(std::numeric_limits<std::int64_t>::max()),
+         nlohmann::json("1759000000"), nlohmann::json("-1"), nlohmann::json("0"),
+         nlohmann::json("-9223372036854775808"), nlohmann::json("9223372036854775807"), nlohmann::json(nullptr)}) {
+    SCOPED_TRACE(timestamp.dump());
+    memory_state_store_t store;
+    auto snapshot = nlohmann::json::parse(apollo_snapshot);
+    snapshot["root"]["named_devices"][0]["last_seen"] = timestamp;
+    store.files["shared.json"] = snapshot.dump();
+    store.files["shared.json.bak"] = apollo_snapshot;
+    const auto original = store.files;
+    pt::ptree tree;
+    ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
+    EXPECT_EQ(store.files, original);
+    auto selected = nlohmann::json::parse(store.files["shared.json"]);
+    ASSERT_TRUE(nvhttp::state_policy::normalize_snapshot(selected));
+    const auto &last_seen = selected["root"]["named_devices"][0]["last_seen"];
+    if (timestamp.is_null()) {
+      EXPECT_TRUE(last_seen.is_null());
+    } else {
+      EXPECT_TRUE(last_seen.is_number_integer());
+      EXPECT_EQ(last_seen.get<std::int64_t>(), tree.get_child("root.named_devices").front().second.get<std::int64_t>("last_seen"));
+    }
+  }
+}
+
+TEST(StateStorageApollo, PopulatedLastSeenAllowsNewHostPersistenceAndMetadataUpdate) {
+  memory_state_store_t store;
+  auto snapshot = nlohmann::json::parse(apollo_snapshot);
+  snapshot["root"]["named_devices"][0]["last_seen"] = 1759000000;
+  auto tree = apollo_tree(snapshot);
+  ASSERT_TRUE(nvhttp::state_policy::valid_primary_json(snapshot.dump()));
+  ASSERT_TRUE(policy::primary_write_allowed(tree, policy::load_result_e::missing, {}, nvhttp::state_policy::valid_primary_tree));
+  store.files["shared.json"] = snapshot.dump();
+  store.files["shared.json.bak"] = snapshot.dump();
+  ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
+  const auto backup = tree;
+  tree.put("root.last_notified_version", "2.0.0");
+  tree.get_child("root.named_devices").front().second.put("last_seen", 1759000010);
+  ASSERT_TRUE(policy::primary_write_allowed(tree, policy::load_result_e::loaded, backup, nvhttp::state_policy::valid_primary_tree));
+
+  nlohmann::json persisted;
+  ASSERT_TRUE(nvhttp::state_policy::primary_tree_json(tree, persisted));
+  ASSERT_TRUE(nvhttp::state_policy::valid_primary_json(persisted.dump()));
+  EXPECT_TRUE(persisted["root"]["named_devices"][0]["last_seen"].is_number_integer());
+  store.write("shared.json", persisted.dump());
+  store.write("shared.json.bak", persisted.dump());
+  ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
+  EXPECT_EQ(tree.get<std::string>("root.last_notified_version"), "2.0.0");
+  EXPECT_EQ(tree.get_child("root.named_devices").front().second.get<std::int64_t>("last_seen"), 1759000010);
+  EXPECT_EQ(store.files["shared.json"], store.files["shared.json.bak"]);
+
+  store.files["shared.json"] = "broken";
+  ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
+  EXPECT_EQ(store.files["shared.json"], persisted.dump());
+  EXPECT_EQ(store.files["shared.json.bak"], persisted.dump());
+  EXPECT_EQ(tree.get_child("root.named_devices").front().second.get<std::int64_t>("last_seen"), 1759000010);
+}
+
+TEST(StateStorageApollo, NullLastSeenSurvivesMetadataSerializationAndBackupRecovery) {
+  memory_state_store_t store;
+  auto snapshot = nlohmann::json::parse(apollo_snapshot);
+  snapshot["root"]["named_devices"][0]["last_seen"] = nullptr;
+  auto tree = apollo_tree(snapshot);
+  ASSERT_TRUE(nvhttp::state_policy::valid_primary_tree(tree, false));
+  nlohmann::json persisted;
+  ASSERT_TRUE(nvhttp::state_policy::primary_tree_json(tree, persisted));
+  EXPECT_TRUE(persisted["root"]["named_devices"][0]["last_seen"].is_null());
+  store.files["shared.json"] = "broken";
+  store.files["shared.json.bak"] = persisted.dump();
+  ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
+  EXPECT_EQ(store.files["shared.json"], persisted.dump());
 }
 
 TEST(StateStorageApollo, TypedClientDamageRecoversExactBackupBeforeStartup) {
@@ -744,16 +827,47 @@ TEST(StateStorageApollo, LegacyNumericBooleansRemainUsableByTypedClientAndComman
 
 
 TEST(StateStorageApollo, InvalidLastSeenCannotBypassRecovery) {
-  for (const auto &invalid : {nlohmann::json(true), nlohmann::json("bad"), nlohmann::json::object()}) {
+  auto backup = nlohmann::json::parse(apollo_snapshot);
+  backup["root"]["named_devices"][0]["last_seen"] = 1759000000;
+  for (const auto &invalid : {nlohmann::json(true), nlohmann::json(false), nlohmann::json(1.0), nlohmann::json(1.5),
+         nlohmann::json(std::numeric_limits<std::uint64_t>::max()), nlohmann::json(std::uint64_t(std::numeric_limits<std::int64_t>::max()) + 1),
+         nlohmann::json("bad"), nlohmann::json(""), nlohmann::json("null"), nlohmann::json("1tail"),
+         nlohmann::json(" 1"), nlohmann::json("1 "), nlohmann::json("+1"), nlohmann::json("-"),
+         nlohmann::json("01"), nlohmann::json("-01"), nlohmann::json("1.0"), nlohmann::json("1e3"),
+         nlohmann::json("9223372036854775808"), nlohmann::json("-9223372036854775809"),
+         nlohmann::json::object(), nlohmann::json::array(), nlohmann::json {{"value", 1}}}) {
+    SCOPED_TRACE(invalid.dump());
     memory_state_store_t store;
     auto damaged = nlohmann::json::parse(apollo_snapshot);
     damaged["root"]["named_devices"][0]["last_seen"] = invalid;
+    ASSERT_FALSE(nvhttp::state_policy::valid_primary_json(damaged.dump()));
     store.files["shared.json"] = damaged.dump();
-    store.files["shared.json.bak"] = apollo_snapshot;
+    store.files["shared.json.bak"] = backup.dump();
     pt::ptree tree;
     ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
-    EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
+    EXPECT_EQ(store.files["shared.json"], backup.dump());
+    EXPECT_EQ(store.files["shared.json.bak"], backup.dump());
+
+    store.files["shared.json"] = "broken";
+    store.files["shared.json.bak"] = damaged.dump();
+    EXPECT_EQ(load_apollo_primary(store, tree), policy::load_result_e::failed);
+    EXPECT_EQ(store.files["shared.json"], "broken");
+    EXPECT_EQ(store.files["shared.json.bak"], damaged.dump());
   }
+}
+
+TEST(StateStorageApollo, MalformedPropertyTreeTimestampCannotBePublished) {
+  const auto backup = apollo_tree(nlohmann::json::parse(apollo_snapshot));
+  for (const auto invalid : {"", "bad", "true", "1tail", " 1", "1 ", "+1", "01", "1.0", "1e3", "9223372036854775808", "-9223372036854775809"}) {
+    SCOPED_TRACE(invalid);
+    auto tree = backup;
+    tree.get_child("root.named_devices").front().second.put("last_seen", invalid);
+    EXPECT_FALSE(policy::primary_write_allowed(tree, policy::load_result_e::loaded, backup, nvhttp::state_policy::valid_primary_tree));
+  }
+  auto tree = backup;
+  auto &timestamp = tree.get_child("root.named_devices").front().second.put("last_seen", "1");
+  timestamp.put("nested", "1");
+  EXPECT_FALSE(policy::primary_write_allowed(tree, policy::load_result_e::loaded, backup, nvhttp::state_policy::valid_primary_tree));
 }
 
 TEST(StateStorageApollo, MissingReadCallbackFailsClosed) {

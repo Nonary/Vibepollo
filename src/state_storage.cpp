@@ -41,6 +41,8 @@ namespace statefile {
 
     using policy_load_result_e = policy::load_result_e;
 
+    void write_json_atomic_direct(const std::string &path, const nlohmann::json &tree);
+
     /**
      * @brief Best-effort rename of an unparseable state file out of the way so a
      *        fresh, valid file can replace it. Preserves the bad copy for forensics.
@@ -545,14 +547,18 @@ namespace statefile {
     if (!policy::primary_write_allowed(tree, backup_status, backup, valid_primary_snapshot)) {
       throw std::runtime_error("refusing to replace primary state with an invalid or partial snapshot");
     }
-    write_json_atomic_direct(path, tree);
+    nlohmann::json typed;
+    if (!nvhttp::state_policy::primary_tree_json(tree, typed)) {
+      throw std::runtime_error("refusing to replace primary state with an invalid timestamp");
+    }
+    write_json_atomic_direct(path, typed);
 
     const auto backup_path = sunshine_state_backup_path();
     if (backup_path.empty()) {
       return;
     }
     try {
-      write_json_atomic_direct(backup_path, tree);
+      write_json_atomic_direct(backup_path, typed);
     } catch (const std::exception &e) {
       // The primary snapshot is already durable. Keep serving it, but report
       // that the recovery copy could not be refreshed so the next save can

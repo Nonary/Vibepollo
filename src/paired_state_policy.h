@@ -38,6 +38,23 @@ namespace nvhttp::state_policy {
     return result.ec == std::errc {} && result.ptr == text.data() + text.size();
   }
 
+  inline bool normalize_last_seen(nlohmann::json &value) {
+    if (value.is_null()) return true;
+    if (value.is_number_unsigned()) return value.get<std::uint64_t>() <= std::numeric_limits<std::int64_t>::max();
+    if (value.is_number_integer()) return true;
+    if (!value.is_string()) return false;
+    const auto &text = value.get_ref<const std::string &>();
+    if (text.empty()) return false;
+    const auto digits = text.front() == '-' ? 1U : 0U;
+    if (digits == text.size() || (text[digits] == '0' && text.size() - digits > 1)) return false;
+    std::int64_t parsed;
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), parsed);
+    if (result.ec != std::errc {} || result.ptr != text.data() + text.size()) return false;
+    // Older property-tree writers persisted timestamps as decimal strings.
+    value = parsed;
+    return true;
+  }
+
   // Old property-tree writers encode empty arrays as "". Normalize only those
   // known containers; preserve every Apollo permission, command and unknown key.
   inline bool normalize_snapshot(nlohmann::json &tree) {
@@ -64,7 +81,7 @@ namespace nvhttp::state_policy {
         if (device.contains("perm") && !permission(device["perm"])) return false;
         if (device.contains("enabled") && !boolean(device["enabled"])) return false;
         if (device.contains("enabled") && device["enabled"].is_number_integer()) device["enabled"] = device["enabled"] == 1;
-        if (device.contains("last_seen") && !device["last_seen"].is_number_integer()) return false;
+        if (device.contains("last_seen") && !normalize_last_seen(device["last_seen"])) return false;
         for (const auto key : {"name", "display_mode", "hdr_profile", "output_name_override", "virtual_display_mode", "virtual_display_layout"}) {
           if (device.contains(key) && !device[key].is_string()) return false;
         }
@@ -119,12 +136,36 @@ namespace nvhttp::state_policy {
       return false;
     }
   }
+
+  // Restore only the timestamp type lost by property-tree serialization. The
+  // original JSON validator still rejects malformed timestamp values before
+  // selecting a snapshot; a literal string "null" is not an unset timestamp.
+  inline bool primary_tree_json(const boost::property_tree::ptree &tree, nlohmann::json &typed) {
+    try {
+      std::ostringstream serialized;
+      boost::property_tree::write_json(serialized, tree);
+      typed = nlohmann::json::parse(serialized.str());
+      const auto root = typed.find("root");
+      if (root == typed.end() || !root->is_object()) return true;
+      const auto devices = root->find("named_devices");
+      if (devices == root->end() || !devices->is_array()) return true;
+      for (auto &device : *devices) {
+        if (!device.is_object()) continue;
+        const auto last_seen = device.find("last_seen");
+        if (last_seen == device.end()) continue;
+        if (*last_seen == "null") *last_seen = nullptr;
+        if (!normalize_last_seen(*last_seen)) return false;
+      }
+      return true;
+    } catch (...) {
+      return false;
+    }
+  }
+
   inline bool valid_primary_tree(const boost::property_tree::ptree &tree, bool allow_bootstrap) {
     if (!statefile::policy::valid_primary_state(tree, allow_bootstrap)) return false;
     if (!statefile::policy::valid_primary_state(tree, false)) return true;
-    std::ostringstream serialized;
-    boost::property_tree::write_json(serialized, tree);
-    auto typed = nlohmann::json::parse(serialized.str());
-    return normalize_snapshot(typed);
+    nlohmann::json typed;
+    return primary_tree_json(tree, typed) && normalize_snapshot(typed);
   }
 }  // namespace nvhttp::state_policy
