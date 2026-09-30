@@ -529,23 +529,51 @@ namespace platf {
     return removed64 && removed32;
   }
 
-  HDESK syncThreadDesktop() {
+  bool syncThreadDesktop() {
+    struct desktop_binding_t {
+      // GetThreadDesktop returns a borrowed handle; never close it. Keep the
+      // opened handle alive while this thread uses it, then switch away before
+      // releasing it (CloseDesktop rejects a handle still assigned to a thread).
+      HDESK initial {GetThreadDesktop(GetCurrentThreadId())};
+      HDESK owned {nullptr};
+
+      ~desktop_binding_t() {
+        if (owned && initial && SetThreadDesktop(initial)) {
+          CloseDesktop(owned);
+        }
+      }
+    };
+    thread_local desktop_binding_t binding;
+
     auto hDesk = OpenInputDesktop(DF_ALLOWOTHERACCOUNTHOOK, FALSE, GENERIC_ALL);
     if (!hDesk) {
       auto err = GetLastError();
       BOOST_LOG(error) << "Failed to Open Input Desktop [0x"sv << util::hex(err).to_string_view() << ']';
-
-      return nullptr;
+      return false;
     }
 
     if (!SetThreadDesktop(hDesk)) {
       auto err = GetLastError();
       BOOST_LOG(error) << "Failed to sync desktop to thread [0x"sv << util::hex(err).to_string_view() << ']';
+      CloseDesktop(hDesk);
+      return false;
     }
 
-    CloseDesktop(hDesk);
+    // Selecting the already-current desktop may keep its existing handle.
+    // Release the redundant OpenInputDesktop handle instead of mistaking the
+    // successful no-op for a new thread-owned binding.
+    const auto assigned = GetThreadDesktop(GetCurrentThreadId());
+    if (assigned && assigned != hDesk) {
+      CloseDesktop(hDesk);
+      return true;
+    }
 
-    return hDesk;
+    const auto previous = binding.owned;
+    binding.owned = hDesk;
+    if (previous) {
+      CloseDesktop(previous);
+    }
+    return true;
   }
 
   void print_status(const std::string_view &prefix, HRESULT status) {

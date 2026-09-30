@@ -38,7 +38,8 @@ namespace platf {
   std::uint64_t routed_link_bps(const boost::asio::ip::address &source, const boost::asio::ip::address &target, routed_link_info_t *info = nullptr);
 
   void print_status(const std::string_view &prefix, HRESULT status);
-  HDESK syncThreadDesktop();
+  /// Bind the calling thread to the input desktop, retaining its owned handle.
+  bool syncThreadDesktop();
 
   int64_t qpc_counter();
 

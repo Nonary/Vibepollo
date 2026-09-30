@@ -256,6 +256,18 @@ target_include_directories(sunshine_test_nanors_headers SYSTEM INTERFACE
 
 enable_testing()
 
+# Exercise the Windows API-independent desktop/input ownership contract on the
+# native test host without requiring a physical Windows desktop.
+find_program(SUNSHINE_TEST_PYTHON_EXECUTABLE NAMES python3)
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
+    add_test(NAME test_component_windows_input_desktop
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/tools/tests/test_input_desktop.py"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}"
+            "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_windows_input_desktop PROPERTIES LABELS "component" TIMEOUT 30)
+endif()
+
 if(WIN32)
     find_program(SUNSHINE_TEST_POWERSHELL_EXECUTABLE NAMES pwsh powershell)
     if(SUNSHINE_TEST_POWERSHELL_EXECUTABLE)

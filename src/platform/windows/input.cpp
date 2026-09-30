@@ -37,8 +37,6 @@ WINUSERAPI VOID WINAPI DestroySyntheticPointerDevice(HSYNTHETICPOINTERDEVICE dev
 namespace platf {
   using namespace std::literals;
 
-  thread_local HDESK _lastKnownInputDesktop = nullptr;
-
   constexpr touch_port_t target_touch_port {
     0,
     0,
@@ -626,16 +624,16 @@ namespace platf {
    * @param i The `INPUT` struct to send.
    */
   void send_input(INPUT &i) {
-  retry:
-    auto send = SendInput(1, &i, sizeof(INPUT));
-    if (send != 1) {
-      auto hDesk = syncThreadDesktop();
-      if (_lastKnownInputDesktop != hDesk) {
-        _lastKnownInputDesktop = hDesk;
-        goto retry;
-      }
-      BOOST_LOG(error) << "Couldn't send input"sv;
+    if (SendInput(1, &i, sizeof(INPUT)) == 1) {
+      return;
     }
+    // Desktop synchronization can repair a transition, but injection may also
+    // fail for other reasons (for example UIPI). Never pin the input worker in
+    // a retry loop while newly opened desktop handles keep changing value.
+    if (syncThreadDesktop() && SendInput(1, &i, sizeof(INPUT)) == 1) {
+      return;
+    }
+    BOOST_LOG(error) << "Couldn't send input"sv;
   }
 
   /**
@@ -648,16 +646,10 @@ namespace platf {
    * @return true if input was successfully injected.
    */
   bool inject_synthetic_pointer_input(input_raw_t *input, HSYNTHETICPOINTERDEVICE device, const POINTER_TYPE_INFO *pointerInfo, UINT32 count) {
-  retry:
-    if (!input->fnInjectSyntheticPointerInput(device, pointerInfo, count)) {
-      auto hDesk = syncThreadDesktop();
-      if (_lastKnownInputDesktop != hDesk) {
-        _lastKnownInputDesktop = hDesk;
-        goto retry;
-      }
-      return false;
+    if (input->fnInjectSyntheticPointerInput(device, pointerInfo, count)) {
+      return true;
     }
-    return true;
+    return syncThreadDesktop() && input->fnInjectSyntheticPointerInput(device, pointerInfo, count);
   }
 
   void abs_mouse(input_t &input, const touch_port_t &touch_port, float x, float y) {
