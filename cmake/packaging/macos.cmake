@@ -54,6 +54,17 @@ else()
     file(COPY "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/assets/"
          DESTINATION "${CMAKE_BINARY_DIR}/assets")
 
+    # Search the linked dylibs' directories too: fixup_bundle can't follow the @rpath a library
+    # loads its own dependencies through, such as Homebrew's libwebp loading libsharpyuv.
+    set(_bundle_library_dirs "")
+    foreach(_library IN LISTS SUNSHINE_EXTERNAL_LIBRARIES)
+        if(IS_ABSOLUTE "${_library}" AND _library MATCHES "\\.dylib$")
+            get_filename_component(_library_dir "${_library}" DIRECTORY)
+            list(APPEND _bundle_library_dirs "${_library_dir}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _bundle_library_dirs)
+
     # Pull in non-system dylibs for a self-contained .app
     install(CODE "
         set(_app \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_PROJECT_NAME}.app\")
@@ -61,7 +72,7 @@ else()
         message(STATUS \"Running fixup_bundle for: \${_app}\")
         include(BundleUtilities)
         set(BU_CHMOD_BUNDLE_ITEMS TRUE)
-        fixup_bundle(\"\${_app}\" \"\" \"\")
+        fixup_bundle(\"\${_app}\" \"\" \"${_bundle_library_dirs}\")
 
         # Remove Finder/resource-fork metadata that breaks codesign.
         execute_process(COMMAND /usr/bin/xattr -rc \"\${_app}\")
