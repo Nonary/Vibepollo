@@ -221,6 +221,9 @@ namespace platf::dxgi {
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override;
     void prepare_for_reinit() override;
+    // A teardown notification only; derived implementations must not block.
+    virtual void request_capture_stop() noexcept {}
+
     std::optional<adapter_id_t> capture_adapter_id() const override;
 
     factory1_t factory;
@@ -475,6 +478,7 @@ namespace platf::dxgi {
      * Cleans up resources and IPC session associated with the WGC IPC VRAM display backend.
      */
     ~display_wgc_ipc_vram_t() override;
+    void request_capture_stop() noexcept override;
 
     /**
      * @brief Factory method to create a WGC IPC VRAM display instance or fallback.
@@ -562,6 +566,7 @@ namespace platf::dxgi {
      * Cleans up resources associated with the WGC IPC RAM display backend.
      */
     ~display_wgc_ipc_ram_t() override;
+    void request_capture_stop() noexcept override;
 
     /**
      * @brief Factory method to create a WGC IPC RAM display instance or fallback.

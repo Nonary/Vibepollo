@@ -563,6 +563,9 @@ namespace platf::dxgi {
      */
     std::unique_ptr<INamedPipe> create_server(const std::string &pipe_name) override;
 
+    // Optional generation-local cancellation, checked between native handshake waits.
+    std::unique_ptr<INamedPipe> create_server(const std::string &pipe_name, std::function<bool()> stop_requested);
+
     /**
      * @brief Creates a client anonymous pipe.
      * @param pipe_name The name of the pipe to connect to.

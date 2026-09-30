@@ -7660,6 +7660,22 @@ namespace video {
   void end_capture_async(capture_thread_async_ctx_t &capture_thread_ctx) {
     capture_thread_ctx.capture_ctx_queue->stop();
 
+#ifdef _WIN32
+    {
+      // The queue cannot interrupt a WGC helper handshake already in progress.
+      // Notify this generation without entering the driver. Release the borrowed
+      // display before joining, so capture reinit can still drain its references.
+      std::shared_ptr<platf::display_t> display;
+      {
+        auto lock = capture_thread_ctx.display_wp.lock();
+        display = capture_thread_ctx.display_wp->lock();
+      }
+      if (auto *windows_display = dynamic_cast<platf::dxgi::display_base_t *>(display.get())) {
+        windows_display->request_capture_stop();
+      }
+    }
+#endif
+
     capture_thread_ctx.capture_thread.join();
   }
 
