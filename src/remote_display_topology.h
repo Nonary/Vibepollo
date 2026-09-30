@@ -96,6 +96,10 @@ namespace remote_display_topology {
   public:
     void set_runtime_callbacks(runtime_callbacks_t callbacks);
     void set_layout(nlohmann::json layout);
+    // Resolve only this normal stream's saved placement against live anchors.
+    // Missing placement/anchor preserves Windows' current arrangement, and
+    // never recomposes or moves a peer owned by another session.
+    std::optional<node_t> saved_stream_placement(const node_t &target, const std::vector<node_t> &active_nodes) const;
     void set_physical_baseline(std::vector<node_t> nodes);
     std::vector<std::string> physical_node_ids() const;
     // Managed ownership is independent of transport lifetime. A retryable or
@@ -170,6 +174,7 @@ namespace remote_display_topology {
     void resolve_effective_mode_locked(const std::string &client_uuid, client_state_t &state);
     std::vector<node_t> compose_locked(std::vector<std::string> &warnings) const;
     static mode_t effective_mode(const node_t &node);
+    static void place_relative(node_t &node, const node_t &anchor, const nlohmann::json &placement);
     static int layout_width(const node_t &node);
     static int layout_height(const node_t &node);
     mutable std::mutex mutex_;

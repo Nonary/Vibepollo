@@ -17,6 +17,7 @@
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
+  #include "src/remote_display_topology.h"
   #include "src/rtsp.h"
 
   #include <algorithm>
@@ -35,7 +36,7 @@ namespace display_helper_integration::helpers {
       bool isolated = false;
     };
 
-    int safe_add_int(int value, int delta) {
+    int safe_add_int(int value, long long delta) {
       const auto result = static_cast<long long>(value) + static_cast<long long>(delta);
       if (result > std::numeric_limits<int>::max()) {
         return std::numeric_limits<int>::max();
@@ -399,7 +400,11 @@ namespace display_helper_integration::helpers {
     }
     vd_cfg.m_device_id = target_device_id;
     const auto layout_flags = describe_layout(layout);
-    vd_cfg.m_device_prep = layout_flags.device_prep;
+    // VerifyOnly validates an already active extended target without preparing
+    // topology or primary state. Mode/HDR policy remains independently parsed.
+    if (layout == config::video_t::virtual_display_layout_e::exclusive || effective_video_config_.dd.configuration_option != config::video_t::dd_t::config_option_e::verify_only) {
+      vd_cfg.m_device_prep = layout_flags.device_prep;
+    }
     if (minimum_fps > 0 && vd_cfg.m_refresh_rate) {
       ensure_minimum_refresh_if_present(vd_cfg.m_refresh_rate, minimum_fps);
     }
@@ -463,7 +468,9 @@ namespace display_helper_integration::helpers {
       BOOST_LOG(info) << "Display helper apply (standard): target device_id=" << cfg_effective.m_device_id
                       << " prep=" << static_cast<int>(cfg_effective.m_device_prep);
 
-      if (session_.virtual_display) {
+      if (session_.virtual_display &&
+          (layout == config::video_t::virtual_display_layout_e::exclusive ||
+           effective_video_config_.dd.configuration_option != config::video_t::dd_t::config_option_e::verify_only)) {
         const auto layout_flags = describe_layout(layout);
         cfg_effective.m_device_prep = layout_flags.device_prep;
       }
@@ -575,8 +582,7 @@ namespace display_helper_integration::helpers {
       // enabled), so only pin a single-display topology when the user explicitly
       // chose to deactivate the other displays. The virtual display placement
       // logic below does not apply to physical sessions.
-      if (effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::ensure_only_display &&
-          topology.topology.empty() && !default_device_id.empty()) {
+      if (effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::ensure_only_display && topology.topology.empty() && !default_device_id.empty()) {
         topology.topology = {{default_device_id}};
       }
       return;
@@ -590,29 +596,24 @@ namespace display_helper_integration::helpers {
     const auto effective_layout =
       session_.virtual_display_layout_override.value_or(effective_video_config_.virtual_display_layout);
     const auto layout_flags = describe_layout(effective_layout);
+    if (effective_layout != config::video_t::virtual_display_layout_e::exclusive && effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::verify_only) {
+      return;
+    }
     const auto resolved_virtual_device_id = resolve_virtual_device_id(effective_video_config_, session_);
     const std::string topology_device_id =
       resolved_virtual_device_id && !resolved_virtual_device_id->empty() ? *resolved_virtual_device_id : default_device_id;
     bool topology_overridden = false;
-    if (session_.virtual_display &&
-        session_.virtual_display_topology_snapshot &&
-        layout_flags.arrangement != display_helper_integration::VirtualDisplayArrangement::Exclusive) {
+    if (session_.virtual_display && session_.virtual_display_topology_snapshot && layout_flags.arrangement != display_helper_integration::VirtualDisplayArrangement::Exclusive) {
       const std::string merged_device_id =
         !session_.virtual_display_device_id.empty() ? session_.virtual_display_device_id : topology_device_id;
       if (!merged_device_id.empty()) {
-        auto merged_topology = *session_.virtual_display_topology_snapshot;
-        const auto already_present = std::any_of(
-          merged_topology.begin(),
-          merged_topology.end(),
-          [&](const std::vector<std::string> &group) {
-            return std::any_of(group.begin(), group.end(), [&](const std::string &device_id) {
-              return boost::iequals(device_id, merged_device_id);
-            });
-          }
+        // Keep live client outputs when adding the stream to its physical
+        // baseline. A physical-only snapshot must never retire another owner.
+        auto merged_topology = request_policy::merge_extended_topology(
+          display_helper_integration::capture_current_topology().value_or(*session_.virtual_display_topology_snapshot),
+          *session_.virtual_display_topology_snapshot,
+          merged_device_id
         );
-        if (!already_present) {
-          merged_topology.push_back({merged_device_id});
-        }
         if (!merged_topology.empty()) {
           topology.topology = std::move(merged_topology);
           topology_overridden = true;
@@ -620,54 +621,80 @@ namespace display_helper_integration::helpers {
       }
     }
 
-    if (!topology_overridden &&
-        layout_flags.arrangement == display_helper_integration::VirtualDisplayArrangement::Exclusive &&
-        topology.topology.empty() && !default_device_id.empty()) {
+    if (!topology_overridden && layout_flags.arrangement == display_helper_integration::VirtualDisplayArrangement::Exclusive && topology.topology.empty() && !default_device_id.empty()) {
       topology.topology = {{default_device_id}};
     }
 
-    if (!layout_flags.isolated) {
-      // For non-primary Extended mode, ensure the physical monitor retains primary
-      // status by explicitly preserving monitor positions. When the virtual display
-      // is created by the SUDOVDA driver it may land at (0,0), inadvertently stealing
-      // primary from the physical monitor.
-      if (layout_flags.arrangement == display_helper_integration::VirtualDisplayArrangement::Extended) {
-        const std::string virtual_device_id =
-          (resolved_virtual_device_id && !resolved_virtual_device_id->empty()) ? *resolved_virtual_device_id : default_device_id;
-        if (!virtual_device_id.empty()) {
-          auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
-          if (devices) {
-            bool virtual_is_primary = false;
-            for (const auto &device : *devices) {
-              if (device.m_device_id.empty() || !device.m_info) continue;
-              if (boost::iequals(device.m_device_id, virtual_device_id)) {
-                virtual_is_primary = device.m_info->m_primary;
-                break;
-              }
-            }
+    if (layout_flags.arrangement == display_helper_integration::VirtualDisplayArrangement::Exclusive) {
+      return;
+    }
 
-            if (virtual_is_primary) {
-              // The virtual display stole primary. Find the first physical monitor
-              // and restore it as primary at (0,0); place the virtual display to its right.
-              for (const auto &device : *devices) {
-                if (device.m_device_id.empty() || !device.m_info) continue;
-                if (boost::iequals(device.m_device_id, virtual_device_id)) continue;
-
-                // Restore this physical monitor at (0,0) to reclaim primary
-                topology.monitor_positions[device.m_device_id] = display_device::Point {0, 0};
-                // Place virtual display to the right
-                topology.monitor_positions[virtual_device_id] = display_device::Point {
-                  static_cast<int>(device.m_info->m_resolution.m_width), 0
-                };
-                BOOST_LOG(info) << "Display helper: Extended layout — repositioning virtual display to the right of "
-                                << device.m_device_id << " to restore physical primary.";
-                break;
-              }
+    // Preserve CCD positions through helper topology/mode changes. Resolve a
+    // saved per-client rule against live anchors and move only this target;
+    // composing the coordinator here would also rearrange active peers.
+    const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+    std::vector<remote_display_topology::node_t> live_nodes;
+    std::optional<remote_display_topology::node_t> target;
+    const auto managed_clients = remote_display_topology::instance().managed_client_identity_ids();
+    if (devices) {
+      for (const auto &device : *devices) {
+        if (device.m_device_id.empty() || !device.m_info) {
+          continue;
+        }
+        topology.monitor_positions[device.m_device_id] = device.m_info->m_origin_point;
+        remote_display_topology::node_t node {
+          .id = device.m_device_id,
+          .device_id = device.m_device_id,
+          .physical = !VDISPLAY::is_virtual_display_output(device.m_device_id),
+          .active = true,
+          .primary = device.m_info->m_primary,
+          .x = device.m_info->m_origin_point.m_x,
+          .y = device.m_info->m_origin_point.m_y,
+          .configured_mode = {
+            .width = static_cast<int>(device.m_info->m_resolution.m_width),
+            .height = static_cast<int>(device.m_info->m_resolution.m_height),
+          },
+        };
+        if (boost::iequals(device.m_device_id, topology_device_id)) {
+          node.id = session_.client_uuid;
+          if (const auto request = builder.build(); request.configuration && request.configuration->m_resolution) {
+            node.configured_mode.width = static_cast<int>(request.configuration->m_resolution->m_width);
+            node.configured_mode.height = static_cast<int>(request.configuration->m_resolution->m_height);
+          }
+          target = node;
+        } else if (!node.physical) {
+          for (const auto &uuid : managed_clients) {
+            const auto peer_id = VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(uuid, {}, {}, false);
+            if (peer_id && boost::iequals(*peer_id, device.m_device_id)) {
+              node.id = uuid;
+              break;
             }
           }
         }
+        live_nodes.push_back(std::move(node));
       }
+    }
+    const auto placement = target && effective_video_config_.virtual_display_mode != config::video_t::virtual_display_mode_e::shared ?
+                             remote_display_topology::instance().saved_stream_placement(*target, live_nodes) :
+                             std::nullopt;
+    if (placement) {
+      topology.monitor_positions[target->device_id] = {placement->x, placement->y};
+      if (placement->primary) {
+        if (auto request = builder.build(); request.configuration) {
+          request.configuration->m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsurePrimary;
+          builder.set_configuration(*request.configuration);
+        }
+      }
+    }
+    const auto request = builder.build();
+    if (target && request.configuration && request.configuration->m_device_prep == display_device::SingleDisplayConfiguration::DevicePreparation::EnsurePrimary && (!layout_flags.isolated || placement)) {
+      const auto origin = topology.monitor_positions.at(target->device_id);
+      for (auto &[id, point] : topology.monitor_positions) {
+        point = {safe_add_int(point.m_x, -static_cast<long long>(origin.m_x)), safe_add_int(point.m_y, -static_cast<long long>(origin.m_y))};
+      }
+    }
 
+    if (!layout_flags.isolated || placement) {
       // Populate physical monitor refresh rate overrides from pre-VD snapshot
       // so the display helper can restore them after applying the configuration.
       if (session_.pre_virtual_display_refresh_rates) {
@@ -675,7 +702,9 @@ namespace display_helper_integration::helpers {
           (resolved_virtual_device_id && !resolved_virtual_device_id->empty()) ? *resolved_virtual_device_id : default_device_id;
         for (const auto &[device_id, rate] : *session_.pre_virtual_display_refresh_rates) {
           // Only include non-virtual devices
-          if (!virtual_device_id.empty() && boost::iequals(device_id, virtual_device_id)) continue;
+          if (!virtual_device_id.empty() && boost::iequals(device_id, virtual_device_id)) {
+            continue;
+          }
           topology.device_refresh_rate_overrides[device_id] = rate;
         }
       }
@@ -749,7 +778,6 @@ namespace display_helper_integration::helpers {
     // When the topology is applied, Windows may rearrange displays. By storing all
     // current positions, we ensure non-isolated displays return to their original
     // locations after the topology change.
-    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     if (devices) {
       for (const auto &device : *devices) {
         if (device.m_device_id.empty() || !device.m_info) {
@@ -775,7 +803,11 @@ namespace display_helper_integration::helpers {
       session.dd_config_option_override.value_or(video_config.dd.configuration_option);
     const auto policy = request_policy::evaluate({
       .configuration_option = effective_config_option == config::video_t::dd_t::config_option_e::disabled ?
-                                request_policy::ConfigurationOption::Disabled : request_policy::ConfigurationOption::EnsureActive,
+                                request_policy::ConfigurationOption::Disabled :
+                              effective_config_option == config::video_t::dd_t::config_option_e::verify_only ?
+                                request_policy::ConfigurationOption::VerifyOnly :
+                                request_policy::ConfigurationOption::EnsureActive,
+      .layout = static_cast<request_policy::VirtualDisplayLayout>(session.virtual_display_layout_override.value_or(video_config.virtual_display_layout)),
       .virtual_display = session.virtual_display,
       .virtual_display_failed = session.virtual_display_failed,
       .physical_output_override = session_has_physical_output_override(session),

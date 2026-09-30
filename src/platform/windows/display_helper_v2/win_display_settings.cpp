@@ -8,6 +8,7 @@
 
 #include <thread>
 #include <algorithm>
+#include <boost/algorithm/string/predicate.hpp>
 #include <cmath>
 #include <cstdint>
 #include <sstream>
@@ -407,6 +408,13 @@ namespace display_helper::v2 {
     // Treat monitor reposition as part of APPLY semantics (no recovery).
     display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
     try {
+      // Preserved positions are frequently already correct. Avoid another CCD
+      // APPLY/database write (and its display notification) for a no-op.
+      for (const auto &device : display_device_->enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal)) {
+        if (boost::iequals(device.m_device_id, device_id) && device.m_info && device.m_info->m_origin_point.m_x == origin.m_x && device.m_info->m_origin_point.m_y == origin.m_y) {
+          return true;
+        }
+      }
       return display_device_->setDisplayOrigin(device_id, origin);
     } catch (...) {
       return false;
