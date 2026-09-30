@@ -1269,7 +1269,13 @@ static int execute_request(int argc, char **argv,
   else if (!strcmp(argv[1], "display-wake") && argc == 2) operation = DISPLAY_WAKE;
   else if (!strcmp(argv[1], "display-apply") && argc >= 3 && argc <= 66) {
     operation = DISPLAY_APPLY;
-    for (int index = 2; index < argc; ++index) if (!display_argument_is_safe(argv[index])) return 126;
+    for (int index = 2; index < argc; ++index) {
+      if (!display_argument_is_safe(argv[index])) {
+        // Avoid reflecting arbitrary control bytes from rejected input.
+        fprintf(stderr, "vibepollo-session-broker: rejected display argument %d\n", index - 1);
+        return 126;
+      }
+    }
   } else if (!strcmp(argv[1], "audio-get-default") && argc == 2) operation = AUDIO_GET_DEFAULT;
   else if (!strcmp(argv[1], "audio-list-sinks") && argc == 2) operation = AUDIO_LIST_SINKS;
   else if (!strcmp(argv[1], "audio-set-default") && argc == 3 && sink_name_is_safe(argv[2])) operation = AUDIO_SET_DEFAULT;

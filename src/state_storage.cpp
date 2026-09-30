@@ -1359,6 +1359,52 @@ namespace statefile {
     return std::nullopt;
   }
 
+  bool save_linux_display_snapshot(const std::optional<std::string> &snapshot) {
+    if (snapshot && (snapshot->empty() || snapshot->size() > 1024 * 1024)) {
+      return false;
+    }
+    migrate_recent_state_keys();
+    const auto &path = vibeshine_state_path();
+    if (path.empty()) {
+      return false;
+    }
+    std::lock_guard guard {state_mutex()};
+    pt::ptree tree;
+    if (load_tree_for_update(fs::path {path}, tree) == policy::load_result_e::failed) {
+      return false;
+    }
+    auto &root = ensure_root(tree);
+    if (snapshot) {
+      root.put("linux_display_topology", *snapshot);
+    } else {
+      root.erase("linux_display_topology");
+    }
+    try {
+      write_tree(fs::path {path}, tree);
+      return true;
+    } catch (const std::exception &storage_error) {
+      BOOST_LOG(error) << "statefile: failed to persist Linux display topology: " << storage_error.what();
+      return false;
+    }
+  }
+
+  std::optional<std::string> load_linux_display_snapshot() {
+    migrate_recent_state_keys();
+    const auto &path = vibeshine_state_path();
+    if (path.empty()) {
+      return std::nullopt;
+    }
+    std::lock_guard guard {state_mutex()};
+    pt::ptree tree;
+    if (!load_tree_if_exists(fs::path {path}, tree)) {
+      return std::nullopt;
+    }
+    const auto snapshot = tree.get_optional<std::string>("root.linux_display_topology");
+    return snapshot && !snapshot->empty() && snapshot->size() <= 1024 * 1024 ?
+             std::make_optional(*snapshot) :
+             std::nullopt;
+  }
+
   void clear_virtual_display_scales() {
     migrate_recent_state_keys();
     const auto &path_str = vibeshine_state_path();

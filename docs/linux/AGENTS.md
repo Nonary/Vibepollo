@@ -135,6 +135,18 @@ capture and retained Remote Monitor ownership under the lifecycle gate before
 mutating outputs, preserves the saved topology on failure, and clears reset
 state only after restoration succeeds.
 
+The Linux desktop baseline is saved in the service-owned auxiliary state before
+private connector hotplug. Its payload is schema-validated and bound to the
+selected session UID and role; another user's or greeter's baseline is ignored.
+A genuinely idle desktop refreshes the baseline before the snapshot gate, so
+old failed restores do not override newly disabled monitors. Restart recovery
+uses the same asynchronous, capture-verified handoff and retires orphan managed
+connectors only after a distinct saved guard is ready. Missing/unusable saved
+intent can fall back only to currently enabled physical outputs. If every
+physical monitor is disabled and no saved baseline survives, the private image
+is retained: recovering an older, already-orphaned desktop requires an operator
+to enable the intended physical monitor first.
+
 The session broker gives KScreen five seconds, then kills/reaps its helper
 before acknowledging cancellation. Cancelled display-apply requests still
 report unknown compositor completion, since killing a D-Bus client does not

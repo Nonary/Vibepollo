@@ -2755,12 +2755,10 @@ namespace proc {
 
   int proc_t::running() {
 #ifndef _WIN32
-    // On POSIX OSes, we must periodically wait for our children to avoid
-    // them becoming zombies. This must be synchronized carefully with
-    // calls to bp::wait() and platf::process_group_running() which both
-    // invoke waitpid() under the hood.
+    // Detached launchers still need collecting, but other children retain
+    // their own wait status (Boost, provider scans and GLib helpers).
     auto reaper = util::fail_guard([]() {
-      while (waitpid(-1, nullptr, WNOHANG) > 0);
+      bp::child::reap_detached();
     });
 #endif
 

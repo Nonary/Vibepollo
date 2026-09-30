@@ -5,17 +5,18 @@
 
 #include "private_display.h"
 #include "private_display_capacity.h"
-#include "display_power.h"
-#include "display_helper_process.h"
-#include "display_restore_dispatcher.h"
 
+#include "display_helper_process.h"
+#include "display_power.h"
+#include "display_restore_dispatcher.h"
 #include "hdr_policy.h"
 #include "private_display_cleanup_policy.h"
-#include "private_display_mode_client.h"
 #include "private_display_configuration_policy.h"
+#include "private_display_mode_client.h"
 #include "private_display_mode_policy.h"
 #include "private_display_restore_policy.h"
 #include "private_display_resume_policy.h"
+#include "private_display_snapshot_policy.h"
 #include "src/config.h"
 #include "src/display_device.h"
 #include "src/logging.h"
@@ -43,6 +44,7 @@
 #include <shared_mutex>
 #include <sys/stat.h>
 #include <thread>
+#include <unistd.h>
 #include <virtual_display/driver/linux_control_client.h>
 
 namespace platf::linux_private_display {
@@ -81,6 +83,7 @@ namespace platf::linux_private_display {
     struct state_t {
       std::mutex mutex;
       std::optional<json> snapshot;
+      bool snapshot_loaded {false};
       std::map<std::string, std::string> reservations;
       std::map<std::string, double> retained_scales;
       std::set<std::string> newly_connected_reservations;
@@ -767,27 +770,36 @@ namespace platf::linux_private_display {
       }
     }
 
-    json restorable_snapshot(const json &configuration) {
-      auto snapshot = configuration;
-      const auto private_names = private_output_set();
-      const bool has_active_physical = std::ranges::any_of(snapshot["outputs"], [&](const json &output) {
-        return connected(output) && enabled(output) &&
-               !private_names.contains(output.value("name", std::string {}));
-      });
-      if (has_active_physical) {
-        for (auto &output : snapshot["outputs"]) {
-          if (private_names.contains(output.value("name", std::string {}))) {
-            output["enabled"] = false;
-          }
-        }
-      }
-      return snapshot;
+    std::string snapshot_owner() {
+      const auto *uid = std::getenv("VIBEPOLLO_SESSION_UID");
+      const auto *role = std::getenv("VIBEPOLLO_SESSION_ROLE");
+      return std::string {uid ? uid : std::to_string(getuid())} + ":" + (role ? role : "standalone");
     }
 
-    void snapshot_configuration_if_needed(state_t &manager, const json &configuration) {
-      if (!manager.snapshot) {
-        manager.snapshot = restorable_snapshot(configuration);
+    bool persist_snapshot(const json &snapshot) {
+      return statefile::save_linux_display_snapshot(json {{"version", 1}, {"owner", snapshot_owner()}, {"topology", snapshot}}.dump());
+    }
+
+    void load_snapshot_if_needed(state_t &manager) {
+      if (manager.snapshot_loaded) {
+        return;
       }
+      manager.snapshot_loaded = true;
+      if (const auto saved = statefile::load_linux_display_snapshot()) {
+        manager.snapshot = snapshot_policy::decode<json>(*saved, snapshot_owner());
+        if (!manager.snapshot) {
+          BOOST_LOG(warning) << "Linux private display: ignoring unusable or different-session saved topology.";
+        }
+      }
+    }
+
+    bool snapshot_configuration_if_needed(state_t &manager, const json &configuration) {
+      load_snapshot_if_needed(manager);
+      if (!snapshot_policy::capture(manager.snapshot, configuration, private_output_set(), !manager.reservations.empty(), persist_snapshot)) {
+        BOOST_LOG(error) << "Linux private display: cannot persist the desktop before changing outputs.";
+        return false;
+      }
+      return true;
     }
 
     std::optional<std::string> reserve_output(
@@ -797,16 +809,14 @@ namespace platf::linux_private_display {
       const bool reuse_active_reservation = true
     ) {
       const auto connect = [&](const std::string &name) {
-        return restore_policy::connect_with_snapshot(manager.snapshot, [&]() -> std::optional<json> {
-          const auto configuration = query_configuration();
-          if (!configuration) {
-            BOOST_LOG(error) << "Linux private display: cannot save the desktop before connecting " << name << '.';
-            return std::nullopt;
-          }
-          return restorable_snapshot(*configuration);
-        }, [&] {
-          return connect_managed_output(name);
-        });
+        const auto configuration = query_configuration();
+        // Refresh genuinely idle topology even if an earlier failed restore
+        // left a snapshot. This must precede the existing-snapshot gate.
+        if (!configuration || !snapshot_configuration_if_needed(manager, *configuration)) {
+          BOOST_LOG(error) << "Linux private display: cannot save the desktop before connecting " << name << '.';
+          return false;
+        }
+        return connect_managed_output(name);
       };
       if (const auto existing = manager.reservations.find(identity); existing != manager.reservations.end()) {
         if (const auto configuration = query_configuration()) {
@@ -873,6 +883,23 @@ namespace platf::linux_private_display {
 
     auto configuration = query_configuration();
     if (!configuration) {
+      return false;
+    }
+
+    auto &manager = state();
+    std::lock_guard lock {manager.mutex};
+    load_snapshot_if_needed(manager);
+    const bool active_private = std::ranges::any_of((*configuration)["outputs"], [&](const json &output) {
+      return connected(output) && enabled(output) && private_names.contains(output.value("name", std::string {}));
+    });
+    if (active_private && manager.snapshot) {
+      // Restore an orphan through the same capture-verified handoff as stream
+      // end. Never unplug it in startup cleanup before its saved guard wakes.
+      schedule_revert({}, "recover saved topology after host restart");
+      BOOST_LOG(info) << "Linux private display: queued saved topology recovery for the current session.";
+      return true;
+    }
+    if (snapshot_policy::idle(*configuration, private_names, false) && !snapshot_configuration_if_needed(manager, *configuration)) {
       return false;
     }
 
@@ -1092,7 +1119,9 @@ namespace platf::linux_private_display {
     bool newly_connected = false;
     {
       std::lock_guard lock {manager.mutex};
-      snapshot_configuration_if_needed(manager, *configuration);
+      if (!snapshot_configuration_if_needed(manager, *configuration)) {
+        return false;
+      }
       for (const auto &[_, output_name] : manager.reservations) {
         reserved_outputs.insert(output_name);
       }
@@ -1467,7 +1496,9 @@ namespace platf::linux_private_display {
     std::lock_guard lock {manager.mutex};
     const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
     manager.restore_dispatcher.cancel(generation);
-    snapshot_configuration_if_needed(manager, *configuration);
+    if (!snapshot_configuration_if_needed(manager, *configuration)) {
+      return false;
+    }
 
     std::vector<desired_output_t> desired;
     std::map<std::string, std::size_t> desired_indexes;
@@ -1808,31 +1839,51 @@ namespace platf::linux_private_display {
     if (current) {
       remember_reserved_scales(manager, *current);
     }
-    if (!manager.snapshot) {
-      if (!restore_allowed()) return false;
-      if (!reserved_outputs.empty()) {
-        BOOST_LOG(warning) << "Linux private display: no saved replacement topology can guard connector release; preserving the current private scanout and releasing only process-local ownership.";
-      }
-      manager.reservations.clear();
-      manager.newly_connected_reservations.clear();
-      return true;
-    }
-    if (!current) {
+    if (!current || !restore_allowed()) {
       return false;
     }
-    const auto arguments = restore_arguments(*manager.snapshot, *current, reserved_outputs);
-    if (!arguments.guard_output) {
-      if (!restore_allowed()) return false;
-      // A headless saved baseline, or a saved private output which is itself
-      // being retired, cannot authorize removing the compositor's last live
-      // scanout. Release only process-local client ownership; startup can
-      // retire the preserved connector after a distinct physical capture
-      // source exists.
-      BOOST_LOG(warning) << "Linux private display: no distinct connected saved output can guard topology restore; preserving the current private scanout.";
-      manager.snapshot.reset();
+    load_snapshot_if_needed(manager);
+    const auto private_names = private_output_set();
+    const auto use_live_fallback = [&] {
+      const auto fallback = snapshot_policy::live_fallback(*current, private_names);
+      if (!fallback || !persist_snapshot(*fallback)) {
+        return false;
+      }
+      manager.snapshot = *fallback;
+      BOOST_LOG(info) << "Linux private display: recovering with the live enabled physical topology.";
+      return true;
+    };
+    if (!manager.snapshot && !use_live_fallback()) {
+      // No historical intent remains. Do not guess which deliberately
+      // disabled physical monitor should be enabled, or retire the last image.
+      BOOST_LOG(warning) << "Linux private display: no saved or active physical topology can guard connector release; preserving the current private scanout.";
       manager.reservations.clear();
       manager.newly_connected_reservations.clear();
-      return true;
+      return false;
+    }
+    // Restart has no process-local reservations, but its orphan connectors
+    // still need retirement once a distinct saved guard is capture-ready.
+    const auto managed = discover_managed_outputs();
+    const auto remember_orphans = [&] {
+      const auto orphaned = snapshot_policy::retiring_outputs(
+        *manager.snapshot,
+        *current,
+        std::set<std::string> {managed.begin(), managed.end()}
+      );
+      reserved_outputs.insert(orphaned.begin(), orphaned.end());
+    };
+    remember_orphans();
+    auto arguments = restore_arguments(*manager.snapshot, *current, reserved_outputs);
+    if (!arguments.guard_output && use_live_fallback()) {
+      remember_orphans();
+      arguments = restore_arguments(*manager.snapshot, *current, reserved_outputs);
+    }
+    if (!arguments.guard_output) {
+      if (!restore_allowed()) return false;
+      BOOST_LOG(warning) << "Linux private display: no distinct connected saved output can guard topology restore; preserving the current private scanout and saved topology.";
+      manager.reservations.clear();
+      manager.newly_connected_reservations.clear();
+      return false;
     }
     if (!execute_configuration(arguments.guard_activate, "topology restore guard activation")) {
       return false;
@@ -1963,6 +2014,9 @@ namespace platf::linux_private_display {
             if (!revert_locked(manager)) return false;
             auto reset_generation = manager.reset_generation.load(std::memory_order_acquire);
             if (reset_generation && reset_generation <= claimed_generation && restore_allowed()) {
+              if (!statefile::save_linux_display_snapshot(std::nullopt)) {
+                return false;
+              }
               manager.retained_scales.clear();
               statefile::clear_virtual_display_scales();
               (void) manager.reset_generation.compare_exchange_strong(reset_generation, 0, std::memory_order_acq_rel);

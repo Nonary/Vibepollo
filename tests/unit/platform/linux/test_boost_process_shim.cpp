@@ -4,12 +4,12 @@
  */
 #include "../../../tests_common.h"
 
-#include <src/boost_process_shim.h>
-#include <src/platform/linux/private_vaapi_environment.h>
-
 #include <algorithm>
 #include <cstdio>
 #include <memory>
+#include <src/boost_process_shim.h>
+#include <src/platform/linux/private_vaapi_environment.h>
+#include <src/platform/linux/process_group.h>
 #include <string>
 
 TEST(BoostProcessShim, ConvertedEnvironmentOwnsItsEntries) {
@@ -77,5 +77,145 @@ TEST(BoostProcessShim, PrivateVaapiFilteringPreservesApplicationOverridesAndRequ
       environment, marker, "/game/drivers", "game-driver"
     );
     EXPECT_EQ(std::distance(unchanged.begin(), unchanged.end()), 3);
+  }
+}
+
+namespace {
+  pid_t completed_child(const int exit_code, const bool own_group = false) {
+    const auto pid = fork();
+    if (pid == 0) {
+      if (own_group && setpgid(0, 0)) {
+        _exit(99);
+      }
+      _exit(exit_code);
+    }
+    if (pid > 0) {
+      siginfo_t status {};
+      while (waitid(P_PID, pid, &status, WEXITED | WNOWAIT) && errno == EINTR) {}
+    }
+    return pid;
+  }
+}  // namespace
+
+TEST(BoostProcessShim, ExternallyReapedChildIsStoppedWithUnknownStatus) {
+  const auto pid = completed_child(7);
+  ASSERT_GT(pid, 0);
+  boost_process_shim::child child {pid};
+  int status = 0;
+  ASSERT_EQ(waitpid(pid, &status, 0), pid);
+  ASSERT_EQ(WEXITSTATUS(status), 7);
+  EXPECT_NO_THROW(EXPECT_FALSE(child.running()));
+  EXPECT_EQ(child.exit_code(), -1);
+  EXPECT_NE(child.native_exit_code(), 0);
+  EXPECT_NO_THROW(EXPECT_EQ(child.wait(), -1));
+  std::error_code error;
+  EXPECT_EQ(child.wait(error), -1);
+  EXPECT_EQ(error, std::errc::no_child_process);
+  EXPECT_FALSE(child.running(error));
+  EXPECT_EQ(error, std::errc::no_child_process);
+}
+
+TEST(BoostProcessShim, WaitAlsoToleratesExternalReapingBeforeAnyPoll) {
+  const auto pid = completed_child(7);
+  ASSERT_GT(pid, 0);
+  boost_process_shim::child child {pid};
+  ASSERT_EQ(waitpid(pid, nullptr, 0), pid);
+  EXPECT_NO_THROW(EXPECT_EQ(child.wait(), -1));
+  EXPECT_EQ(child.exit_code(), -1);
+}
+
+TEST(BoostProcessShim, NormalWaitRetainsNonzeroExitStatus) {
+  const auto pid = completed_child(7);
+  ASSERT_GT(pid, 0);
+  boost_process_shim::child child {pid};
+  EXPECT_EQ(child.wait(), 7);
+  EXPECT_EQ(child.exit_code(), 7);
+}
+
+TEST(BoostProcessShim, DetachedReaperDoesNotConsumeUnrelatedChildren) {
+  const auto pid = completed_child(7);
+  ASSERT_GT(pid, 0);
+  boost_process_shim::child::reap_detached();
+  int status = 0;
+  ASSERT_EQ(waitpid(pid, &status, 0), pid);
+  EXPECT_EQ(WEXITSTATUS(status), 7);
+}
+
+TEST(BoostProcessShim, DetachedChildIsCollectedWithoutReapingItsNeighbor) {
+  const auto detached = completed_child(3);
+  const auto neighbor = completed_child(7);
+  ASSERT_GT(detached, 0);
+  ASSERT_GT(neighbor, 0);
+  boost_process_shim::child child {detached};
+  child.detach();
+  boost_process_shim::child::reap_detached();
+  errno = 0;
+  EXPECT_EQ(waitpid(detached, nullptr, WNOHANG), -1);
+  EXPECT_EQ(errno, ECHILD);
+  int status = 0;
+  ASSERT_EQ(waitpid(neighbor, &status, 0), neighbor);
+  EXPECT_EQ(WEXITSTATUS(status), 7);
+}
+
+TEST(LinuxProcessGroup, ObservationNeverReapsExitedLeader) {
+  const auto pid = completed_child(7, true);
+  ASSERT_GT(pid, 0);
+  EXPECT_FALSE(platf::linux_process::group_running(pid));
+  int status = 0;
+  ASSERT_EQ(waitpid(pid, &status, 0), pid);
+  EXPECT_EQ(WEXITSTATUS(status), 7);
+}
+
+TEST(LinuxProcessGroup, ObservesLiveGroupAndRejectsInvalidHandle) {
+  const auto group = getpgrp();
+  EXPECT_TRUE(platf::linux_process::group_running(group));
+  EXPECT_FALSE(platf::linux_process::group_running(0));
+  EXPECT_FALSE(platf::linux_process::group_running(-1));
+}
+
+TEST(LinuxProcessGroup, LeaderExitKeepsLiveMemberWithoutConsumingEitherStatus) {
+  int ready[2], leader_release[2], member_release[2];
+  ASSERT_EQ(pipe(ready), 0);
+  ASSERT_EQ(pipe(leader_release), 0);
+  ASSERT_EQ(pipe(member_release), 0);
+  const auto spawn = [&](const pid_t group, const int release, const int code) {
+    const auto pid = fork();
+    if (pid == 0) {
+      if (setpgid(0, group)) {
+        _exit(99);
+      }
+      const char byte = 'r';
+      if (write(ready[1], &byte, 1) != 1) {
+        _exit(99);
+      }
+      char signal;
+      if (read(release, &signal, 1) != 1) {
+        _exit(99);
+      }
+      _exit(code);
+    }
+    return pid;
+  };
+  const auto leader = spawn(0, leader_release[0], 7);
+  ASSERT_GT(leader, 0);
+  char byte;
+  ASSERT_EQ(read(ready[0], &byte, 1), 1);
+  const auto member = spawn(leader, member_release[0], 11);
+  ASSERT_GT(member, 0);
+  ASSERT_EQ(read(ready[0], &byte, 1), 1);
+  ASSERT_EQ(write(leader_release[1], "x", 1), 1);
+  siginfo_t info {};
+  ASSERT_EQ(waitid(P_PID, leader, &info, WEXITED | WNOWAIT), 0);
+  EXPECT_TRUE(platf::linux_process::group_running(leader));
+  ASSERT_EQ(write(member_release[1], "x", 1), 1);
+  ASSERT_EQ(waitid(P_PID, member, &info, WEXITED | WNOWAIT), 0);
+  EXPECT_FALSE(platf::linux_process::group_running(leader));
+  int status = 0;
+  ASSERT_EQ(waitpid(leader, &status, 0), leader);
+  EXPECT_EQ(WEXITSTATUS(status), 7);
+  ASSERT_EQ(waitpid(member, &status, 0), member);
+  EXPECT_EQ(WEXITSTATUS(status), 11);
+  for (const auto fd : {ready[0], ready[1], leader_release[0], leader_release[1], member_release[0], member_release[1]}) {
+    close(fd);
   }
 }

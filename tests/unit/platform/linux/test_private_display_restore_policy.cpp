@@ -7,6 +7,7 @@
 #include <map>
 #include <nlohmann/json.hpp>
 #include <src/platform/linux/private_display_restore_policy.h>
+#include <src/platform/linux/private_display_snapshot_policy.h>
 #include <vector>
 
 namespace policy = platf::linux_private_display::restore_policy;
@@ -226,4 +227,120 @@ TEST(LinuxPrivateDisplayRestorePolicy, CleansPrivateScanoutWhenPhysicalCaptureIs
 
 TEST(LinuxPrivateDisplayRestorePolicy, DoesNotPreserveUncapturablePrivateConnector) {
   EXPECT_FALSE(policy::preserve_private_scanout(false, false));
+}
+
+namespace snapshot_policy = platf::linux_private_display::snapshot_policy;
+
+TEST(LinuxPrivateDisplaySnapshot, RestartRestoresSavedIntentFromSerializedBaseline) {
+  const auto original = external_desktop();
+  std::optional<json> snapshot;
+  std::string disk;
+  ASSERT_TRUE(snapshot_policy::capture(snapshot, original, {"Virtual-1"}, false, [&](const json &saved) {
+    disk = json {{"version", 1}, {"owner", "1000:desktop"}, {"topology", saved}}.dump();
+    return true;
+  }));
+  auto streamed = original;
+  streamed["outputs"][1]["enabled"] = false;
+  streamed["outputs"].push_back({{"name", "Virtual-1"}, {"connected", true}, {"enabled", true}});
+  const auto restored = snapshot_policy::decode<json>(disk, "1000:desktop");
+  ASSERT_TRUE(restored);
+  EXPECT_EQ(*restored, original);
+  EXPECT_FALSE((*restored)["outputs"][0]["enabled"]);
+  EXPECT_TRUE((*restored)["outputs"][1]["enabled"]);
+  EXPECT_EQ(snapshot_policy::retiring_outputs(*restored, streamed, {"Virtual-1"}), (std::set<std::string> {"Virtual-1"}));
+}
+
+TEST(LinuxPrivateDisplaySnapshot, IdleRefreshRunsEvenWhenOldSnapshotAlreadyExists) {
+  auto old = external_desktop();
+  old["outputs"][0]["enabled"] = true;
+  std::optional<json> snapshot = old;
+  const auto current = external_desktop();
+  int saves = 0;
+  ASSERT_TRUE(snapshot_policy::capture(snapshot, current, {"Virtual-1"}, false, [&](const json &saved) {
+    ++saves;
+    EXPECT_EQ(saved, current);
+    return true;
+  }));
+  EXPECT_EQ(saves, 1);
+  EXPECT_EQ(*snapshot, current);
+}
+
+TEST(LinuxPrivateDisplaySnapshot, ConnectedPrivateOrRetainedOwnerPreservesCrashBaseline) {
+  std::optional<json> snapshot = external_desktop();
+  const auto original = *snapshot;
+  auto current = original;
+  current["outputs"][1]["enabled"] = false;
+  current["outputs"].push_back({{"name", "Virtual-1"}, {"connected", true}, {"enabled", true}});
+  int writes = 0;
+  ASSERT_TRUE(snapshot_policy::capture(snapshot, current, {"Virtual-1"}, false, [&](const json &) {
+    ++writes;
+    return true;
+  }));
+  current["outputs"].erase(2);
+  ASSERT_TRUE(snapshot_policy::capture(snapshot, current, {"Virtual-1"}, true, [&](const json &) {
+    ++writes;
+    return true;
+  }));
+  EXPECT_EQ(writes, 0);
+  EXPECT_EQ(*snapshot, original);
+}
+
+TEST(LinuxPrivateDisplaySnapshot, FailedPersistencePreventsSnapshotReplacementAndHotplug) {
+  std::optional<json> snapshot = external_desktop();
+  const auto original = *snapshot;
+  auto current = original;
+  current["outputs"][1]["rotation"] = 8;
+  bool hotplug = false;
+  if (snapshot_policy::capture(snapshot, current, {"Virtual-1"}, false, [](const json &) {
+        return false;
+      })) {
+    hotplug = true;
+  }
+  EXPECT_FALSE(hotplug);
+  EXPECT_EQ(*snapshot, original);
+}
+
+TEST(LinuxPrivateDisplaySnapshot, MissingOrInvalidBaselineUsesOnlyLiveEnabledPhysicalOutputs) {
+  auto current = external_desktop();
+  current["outputs"].push_back({{"name", "Virtual-1"}, {"connected", true}, {"enabled", true}});
+  const auto fallback = snapshot_policy::live_fallback(current, {"Virtual-1"});
+  ASSERT_TRUE(fallback);
+  EXPECT_FALSE((*fallback)["outputs"][0]["enabled"]);
+  EXPECT_TRUE((*fallback)["outputs"][1]["enabled"]);
+  EXPECT_FALSE((*fallback)["outputs"][2]["enabled"]);
+  current["outputs"][1]["enabled"] = false;
+  EXPECT_FALSE(snapshot_policy::live_fallback(current, {"Virtual-1"}));
+}
+
+TEST(LinuxPrivateDisplaySnapshot, RejectsCorruptSchemaAndOtherSessionIntent) {
+  const auto valid = json {{"version", 1}, {"owner", "1000:desktop"}, {"topology", external_desktop()}};
+  EXPECT_FALSE(snapshot_policy::decode<json>(valid.dump(), "1001:desktop"));
+  EXPECT_FALSE(snapshot_policy::decode<json>(valid.dump(), "1000:greeter"));
+  EXPECT_FALSE(snapshot_policy::decode<json>("{", "1000:desktop"));
+  for (const auto &change : {json {{"enabled", "true"}}, json {{"name", "DP-1;exec"}}, json {{"scale", -1}}, json {{"rotation", 90}}, json {{"pos", {{"x", "wrong"}}}}, json {{"modes", "wrong"}}}) {
+    auto invalid = valid;
+    invalid["topology"]["outputs"][1].update(change);
+    EXPECT_FALSE(snapshot_policy::decode<json>(invalid.dump(), "1000:desktop"));
+  }
+}
+
+TEST(LinuxPrivateDisplaySnapshot, StartupRetiresOnlyUnsavedOrDisabledManagedConnectors) {
+  auto saved = external_desktop();
+  saved["outputs"].push_back({{"name", "Virtual-2"}, {"connected", true}, {"enabled", true}});
+  auto current = saved;
+  current["outputs"].push_back({{"name", "Virtual-1"}, {"connected", true}, {"enabled", true}});
+  current["outputs"].push_back({{"name", "Virtual-3"}, {"connected", false}, {"enabled", false}});
+  EXPECT_EQ(snapshot_policy::retiring_outputs(saved, current, {"Virtual-1", "Virtual-2", "Virtual-3"}), (std::set<std::string> {"Virtual-1"}));
+}
+
+TEST(LinuxPrivateDisplaySnapshot, LiveFallbackRetiresPreviouslyRetainedPrivateBaseline) {
+  auto saved = external_desktop();
+  saved["outputs"][1]["enabled"] = false;
+  saved["outputs"].push_back({{"name", "Virtual-1"}, {"connected", true}, {"enabled", true}});
+  auto current = saved;
+  current["outputs"][1]["enabled"] = true;
+  EXPECT_TRUE(snapshot_policy::retiring_outputs(saved, current, {"Virtual-1"}).empty());
+  const auto fallback = snapshot_policy::live_fallback(current, {"Virtual-1"});
+  ASSERT_TRUE(fallback);
+  EXPECT_EQ(snapshot_policy::retiring_outputs(*fallback, current, {"Virtual-1"}), (std::set<std::string> {"Virtual-1"}));
 }
