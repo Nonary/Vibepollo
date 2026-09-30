@@ -39,6 +39,10 @@ else()
             DESTINATION "${MAC_BUNDLE_RESOURCES}"
             COMPONENT Runtime)
 
+    install(FILES "${APPLE_LAUNCH_AGENT_FILE}"
+            DESTINATION "${MAC_BUNDLE_CONTENTS}/Library/LaunchAgents"
+            COMPONENT Runtime)
+
     # macOS-specific assets (apps.json, etc.)
     install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/assets/"
             DESTINATION "${MAC_BUNDLE_RESOURCES}/assets"

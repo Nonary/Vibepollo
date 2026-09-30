@@ -25,12 +25,16 @@ else()
     # Populate bundle resources in the build tree for local runs.
     # MACOSX_BUNDLE_ICON_FILE only writes the Info.plist key, so copy the icon it names too.
     set(_bundle_resources_dir "$<TARGET_FILE_DIR:sunshine>/../Resources")
+    set(_bundle_launch_agents_dir "$<TARGET_FILE_DIR:sunshine>/../Library/LaunchAgents")
     add_custom_command(TARGET sunshine POST_BUILD
             COMMENT "Copying bundle resources to build tree"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${_bundle_resources_dir}"
             COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_BINARY_DIR}/assets" "${_bundle_resources_dir}/assets"
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                     "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/build/vibepollo.icns" "${_bundle_resources_dir}/vibepollo.icns"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${_bundle_launch_agents_dir}"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "${APPLE_LAUNCH_AGENT_FILE}" "${_bundle_launch_agents_dir}/${PROJECT_FQDN}.plist"
             ${_sign_build_tree_bundle}
             VERBATIM)
 endif()

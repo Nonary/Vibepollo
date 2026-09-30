@@ -464,6 +464,18 @@ int main(int argc, char *argv[]) {
     return fn->second(argv[0], config::sunshine.cmd.argc, config::sunshine.cmd.argv);
   }
 
+#ifdef __APPLE__
+  // With Open at Login on, only launchd's copy runs, so launchd can restart it if it crashes.
+  // Handing over to or from it starts the new copy before the old one has quit.
+  if (platf::defer_to_login_agent()) {
+    return 0;
+  }
+  if (!platf::acquire_instance_lock(std::chrono::seconds {30})) {
+    BOOST_LOG(fatal) << "Another copy of "sv << PROJECT_NAME << " is already running"sv;
+    return 1;
+  }
+#endif
+
   // Display configuration is managed by the external Windows helper; no in-process init.
 
   // Construct the process-owned shutdown deadline before the session monitor.

@@ -40,6 +40,7 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         ${FOUNDATION_LIBRARY}
         ${IO_KIT_LIBRARY}
         ${SCREEN_CAPTURE_KIT_LIBRARY}
+        ${SERVICE_MANAGEMENT_LIBRARY}
         ${VIDEO_TOOLBOX_LIBRARY})
 
 set_source_files_properties(
@@ -50,6 +51,10 @@ set_source_files_properties(
 set(APPLE_PLIST_TEMPLATE "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/build/Info.plist.in")
 set(APPLE_PLIST_FILE "${CMAKE_BINARY_DIR}/Info.plist")
 configure_file("${APPLE_PLIST_TEMPLATE}" "${APPLE_PLIST_FILE}" @ONLY)
+
+# The launchd agent behind the menu bar's Open at Login. SMAppService looks it up by file name.
+set(APPLE_LAUNCH_AGENT_FILE "${CMAKE_BINARY_DIR}/${PROJECT_FQDN}.plist")
+configure_file("${SUNSHINE_SOURCE_ASSETS_DIR}/macos/build/LaunchAgent.plist.in" "${APPLE_LAUNCH_AGENT_FILE}" @ONLY)
 
 set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/macos/av_audio.h"

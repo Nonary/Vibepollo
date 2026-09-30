@@ -9,14 +9,21 @@
 #endif
 
 // standard includes
+#include <chrono>
+#include <csignal>
+#include <cstdlib>
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <mutex>
+#include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 // platform includes
 #include <AppKit/AppKit.h>
 #include <arpa/inet.h>
+#include <crt_externs.h>
 #include <dlfcn.h>
 #include <Foundation/Foundation.h>
 #include <IOKit/IOKitKeys.h>
@@ -26,7 +33,11 @@
 #include <mach-o/dyld.h>
 #include <net/if_dl.h>
 #include <pwd.h>
+#include <ServiceManagement/ServiceManagement.h>
+#include <spawn.h>
+#include <sys/file.h>
 #include <sys/qos.h>
+#include <sys/wait.h>
 
 // lib includes
 #include <boost/asio/ip/address.hpp>
@@ -86,6 +97,179 @@ namespace platf {
         }
       }
     }
+  }
+
+  namespace {
+    SMAppService *login_agent() API_AVAILABLE(macos(13.0)) {
+      // Contents/Library/LaunchAgents/<this>, whose Label is also PROJECT_FQDN.
+      return [SMAppService agentServiceWithPlistName:@PROJECT_FQDN ".plist"];
+    }
+
+    // launchd stops the login agent when it's unregistered, so carry on in a copy of our own.
+    void launch_replacement() {
+      NSWorkspaceOpenConfiguration *configuration = [NSWorkspaceOpenConfiguration configuration];
+      configuration.createsNewApplicationInstance = YES;
+      configuration.activates = NO;
+      [NSWorkspace.sharedWorkspace openApplicationAtURL:NSBundle.mainBundle.bundleURL
+                                          configuration:configuration
+                                      completionHandler:^(NSRunningApplication *, NSError *launch_error) {
+                                        if (launch_error != nil) {
+                                          BOOST_LOG(error) << "Couldn't start Vibepollo again without Open at Login: "sv << launch_error.localizedDescription.UTF8String;
+                                        }
+                                      }];
+    }
+
+    int run(const std::vector<std::string> &args) {
+      std::vector<char *> argv;
+      for (const auto &arg : args) {
+        argv.push_back(const_cast<char *>(arg.c_str()));
+      }
+      argv.push_back(nullptr);
+
+      pid_t pid;
+      if (posix_spawn(&pid, argv[0], nullptr, nullptr, argv.data(), *_NSGetEnviron()) != 0) {
+        return -1;
+      }
+      int status = 0;
+      while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+      return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    }
+  }  // namespace
+
+  bool is_login_agent() {
+    // launchd names the job it started in XPC_SERVICE_NAME. Restarting from the menu bar
+    // re-executes in place, so it survives that too.
+    const char *service = getenv("XPC_SERVICE_NAME");
+    return service != nullptr && std::string_view {service} == PROJECT_FQDN;
+  }
+
+  bool opens_at_login() {
+    if (@available(macOS 13.0, *)) {
+      return login_agent().status == SMAppServiceStatusEnabled;
+    }
+    return false;
+  }
+
+  bool set_opens_at_login(bool enabled) {
+    if (@available(macOS 13.0, *)) {
+      SMAppService *agent = login_agent();
+      NSError *error = nil;
+      if (enabled) {
+        // launchd starts the agent right away, and it takes over from this copy.
+        if (![agent registerAndReturnError:&error]) {
+          BOOST_LOG(warning) << "Couldn't turn on Open at Login: "sv << error.localizedDescription.UTF8String;
+        }
+
+        // If the user turned Vibepollo off in System Settings, only they can turn it back on.
+        if (agent.status == SMAppServiceStatusRequiresApproval) {
+          BOOST_LOG(info) << "Opening Login Items so the user can allow Vibepollo in the background"sv;
+          [SMAppService openSystemSettingsLoginItems];
+        }
+        return opens_at_login();
+      }
+
+      bool replace = is_login_agent();
+      if (![agent unregisterAndReturnError:&error]) {
+        BOOST_LOG(warning) << "Couldn't turn off Open at Login: "sv << error.localizedDescription.UTF8String;
+        return false;
+      }
+      if (replace) {
+        launch_replacement();
+      }
+      return true;
+    }
+
+    BOOST_LOG(warning) << "Open at Login requires macOS 13 or later"sv;
+    return false;
+  }
+
+  namespace {
+    fs::path instance_lock_path() {
+      return appdata() / "vibepollo.lock";
+    }
+
+    // Whether another process holds the instance lock, as the login agent does once it runs.
+    bool instance_lock_held_elsewhere() {
+      int fd = open(instance_lock_path().c_str(), O_RDONLY | O_CLOEXEC);
+      if (fd < 0) {
+        return false;
+      }
+      const bool held = flock(fd, LOCK_EX | LOCK_NB) != 0;
+      close(fd);
+      return held;
+    }
+
+    // Starts the agent unless it's already running, and waits for it to take over.
+    bool start_login_agent(const std::string &service) {
+      if (run({"/bin/launchctl", "kickstart", service}) != 0) {
+        return false;
+      }
+      // kickstart succeeds even when launchd then fails to spawn the agent.
+      const auto deadline = std::chrono::steady_clock::now() + 5s;
+      while (!instance_lock_held_elsewhere()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+          return false;
+        }
+        std::this_thread::sleep_for(100ms);
+      }
+      return true;
+    }
+  }  // namespace
+
+  bool defer_to_login_agent() {
+    if (is_login_agent() || !opens_at_login()) {
+      return false;
+    }
+
+    auto service = "gui/"s + std::to_string(getuid()) + "/" PROJECT_FQDN;
+    if (!start_login_agent(service)) {
+      // launchd only starts the agent for the build that registered it, so an update can leave it
+      // unable to. Turning Open at Login off and on again registers it for this build.
+      BOOST_LOG(warning) << "Couldn't start "sv << service << ", so running without it"sv;
+      BOOST_LOG(warning) << "If Vibepollo was just updated, turn Open at Login off and on again"sv;
+      return false;
+    }
+    BOOST_LOG(info) << "Open at Login is on, so leaving it to "sv << service << " to run Vibepollo"sv;
+    return true;
+  }
+
+  bool acquire_instance_lock(std::chrono::milliseconds timeout) {
+    std::error_code ec;
+    fs::create_directories(appdata(), ec);
+    auto path = instance_lock_path();
+
+    // Held until the process exits. O_CLOEXEC keeps launched apps from holding it after that, and
+    // restarting from the menu bar closes it before re-executing.
+    int fd = open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) {
+      BOOST_LOG(warning) << "Couldn't open "sv << path << ", so not checking for other copies of Vibepollo: "sv << strerror(errno);
+      return true;
+    }
+
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+      // The login agent takes over from other copies, like the one that just turned Open at Login on.
+      char pid[16] = {};
+      if (is_login_agent() && pread(fd, pid, sizeof(pid) - 1, 0) > 0 && std::atoi(pid) > 0) {
+        BOOST_LOG(info) << "Asking the copy of Vibepollo with PID "sv << pid << " to quit"sv;
+        kill(std::atoi(pid), SIGTERM);
+      }
+
+      BOOST_LOG(info) << "Waiting for another copy of Vibepollo to quit"sv;
+      auto deadline = std::chrono::steady_clock::now() + timeout;
+      while (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+          close(fd);
+          return false;
+        }
+        std::this_thread::sleep_for(100ms);
+      }
+    }
+
+    auto pid = std::to_string(getpid());
+    if (ftruncate(fd, 0) != 0 || pwrite(fd, pid.data(), pid.size(), 0) < 0) {
+      BOOST_LOG(warning) << "Couldn't record this process in "sv << path;
+    }
+    return true;
   }
 
   namespace {
