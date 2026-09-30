@@ -984,6 +984,7 @@ namespace config {
 
   stream_t stream {
     10s,  // ping_timeout
+    0ms,  // control_peer_timeout (0 = ENet defaults, behavior unchanged)
 
     APPS_JSON_PATH,
 
@@ -2142,6 +2143,13 @@ namespace config {
     int_between_f(vars, "ping_timeout", to, {-1, std::numeric_limits<int>::max()});
     if (to != -1) {
       stream.ping_timeout = std::chrono::milliseconds(to);
+    }
+
+    // How long the control stream peer may stay silent before ENet drops it (0 = ENet defaults)
+    int control_to = -1;
+    int_between_f(vars, "control_peer_timeout", control_to, {-1, std::numeric_limits<int>::max()});
+    if (control_to != -1) {
+      stream.control_peer_timeout = std::chrono::milliseconds(control_to);
     }
 
     int_between_f(vars, "lan_encryption_mode", stream.lan_encryption_mode, {0, 2});

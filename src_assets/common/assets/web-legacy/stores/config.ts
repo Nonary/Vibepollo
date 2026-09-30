@@ -197,6 +197,7 @@ const defaultGroups = [
       lan_encryption_mode: 0,
       wan_encryption_mode: 1,
       ping_timeout: 10000,
+      control_peer_timeout: 0,
       video_max_batch_size_kb: 64,
       pyrowave_critical_fec_percentage: 20,
     },
