@@ -2325,11 +2325,24 @@ namespace rtsp_stream {
       const bool pyrowave_adaptive_fec = args.contains(pyrowave::protocol::ANNOUNCE_ADAPTIVE_FEC);
       config.monitor.pyrowave_framing = pyrowave::policy::select_framing(pyrowave_adaptive_fec, pyrowave_features);
       config.monitor.packetsize = config.packetsize;
+      if (const auto it = args.find(pyrowave::protocol::ANNOUNCE_HYBRID); it != args.end() && it->second != "0"sv) {
+        // Hybrid wire bytes cannot be decoded as ordinary PyroWave records. Require
+        // both the exact version and an explicit feature bit; never silently switch.
+        if (it->second != "1"sv ||
+            !(pyrowave_features.value_or(0) & pyrowave::protocol::FEATURE_HYBRID) ||
+            config.monitor.pyrowave_framing != pyrowave::policy::framing_e::records) {
+          BOOST_LOG(warning) << "Unsupported PyroWave hybrid version or framing"sv;
+          respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+          return false;
+        }
+        config.monitor.pyrowave_hybrid = true;
+      }
       BOOST_LOG(info) << "Client requested PyroWave: framing="sv
                       << (config.monitor.pyrowave_framing == pyrowave::policy::framing_e::records ? "records"sv : "length-prefixed"sv)
                       << ", features="sv << pyrowave_features.value_or(0)
                       << ", adaptiveFec="sv << (pyrowave_adaptive_fec ? "sent"sv : "absent"sv)
-                      << ", packetSize="sv << config.packetsize;
+                      << ", packetSize="sv << config.packetsize
+                      << ", hybrid="sv << config.monitor.pyrowave_hybrid;
     }
 
     const bool prefer_10bit_sdr = effective_10bit_sdr_requested(*session);

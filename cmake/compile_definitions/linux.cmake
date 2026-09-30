@@ -113,8 +113,24 @@ if(${SUNSHINE_ENABLE_VULKAN})
         get_target_property(VULKAN_HEADERS_DIR Vulkan::Headers INTERFACE_INCLUDE_DIRECTORIES)
     endif()
 
-    if(NOT EXISTS "${VULKAN_HEADERS_DIR}/vulkan/vulkan.h")
-        message(FATAL_ERROR "Vulkan headers not found in build-deps submodule")
+    # PyroWave's Granite can register Vulkan::Headers before this check. Its
+    # build-tree include path is a BUILD_INTERFACE expression, not a filesystem
+    # name. Resolve expressions only for validation; retain the target's original
+    # include directories below so every Vulkan consumer keeps the same headers.
+    set(SUNSHINE_VULKAN_HEADERS_FOUND FALSE)
+    foreach(SUNSHINE_VULKAN_HEADER_CANDIDATE IN LISTS VULKAN_HEADERS_DIR)
+        if(SUNSHINE_VULKAN_HEADER_CANDIDATE MATCHES "^\\$<BUILD_INTERFACE:(.*)>$")
+            set(SUNSHINE_VULKAN_HEADER_CANDIDATE "${CMAKE_MATCH_1}")
+        elseif(SUNSHINE_VULKAN_HEADER_CANDIDATE MATCHES "^\\$<INSTALL_INTERFACE:")
+            continue()
+        endif()
+        if(EXISTS "${SUNSHINE_VULKAN_HEADER_CANDIDATE}/vulkan/vulkan.h")
+            set(SUNSHINE_VULKAN_HEADERS_FOUND TRUE)
+            break()
+        endif()
+    endforeach()
+    if(NOT SUNSHINE_VULKAN_HEADERS_FOUND)
+        message(FATAL_ERROR "Vulkan headers not found in the selected include directories")
     endif()
 
     find_library(VULKAN_LIBRARY NAMES vulkan vulkan-1)

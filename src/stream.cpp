@@ -623,6 +623,7 @@ namespace stream {
       safe::mail_raw_t::event_t<bool> idr_events;
       safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
       safe::mail_raw_t::event_t<int> bitrate_events;
+      safe::mail_raw_t::queue_t<std::uint64_t> pyrowave_hybrid_acks;
 
       std::unique_ptr<platf::deinit_t> qos;
     } video;
@@ -1460,8 +1461,8 @@ namespace stream {
       BOOST_LOG(debug) << "type [IDX_REQUEST_IDR_FRAME]"sv;
 
       saturating_add_relaxed(session->stats.idr_requests, 1u);
-      // Every PyroWave frame is intra-coded; the next frame already recovers.
-      if (session->config.monitor.videoFormat == pyrowave::protocol::BITSTREAM_FORMAT) {
+      // Ordinary PyroWave is independent; hybrid must retire acknowledged references.
+      if (session->config.monitor.videoFormat == pyrowave::protocol::BITSTREAM_FORMAT && !session->config.monitor.pyrowave_hybrid) {
         return;
       }
       session->video.idr_events->raise(true);
@@ -1490,11 +1491,29 @@ namespace stream {
         << "firstFrame [" << firstFrame << ']' << std::endl
         << "lastFrame [" << lastFrame << ']';
 
-      // PyroWave frames reference nothing (see the IDR handler).
-      if (session->config.monitor.videoFormat == pyrowave::protocol::BITSTREAM_FORMAT) {
+      // Ordinary PyroWave frames reference nothing (see the IDR handler).
+      if (session->config.monitor.videoFormat == pyrowave::protocol::BITSTREAM_FORMAT && !session->config.monitor.pyrowave_hybrid) {
         return;
       }
       session->video.invalidate_ref_frames_events->raise(std::make_pair(firstFrame, lastFrame));
+    });
+
+    server->map(pyrowave::protocol::CONTROL_HYBRID_ACK, [](session_t *session, const std::string_view &payload) {
+      if (session->config.monitor.videoFormat != pyrowave::protocol::BITSTREAM_FORMAT || !session->config.monitor.pyrowave_hybrid) {
+        return;
+      }
+      if (payload.size() != sizeof(std::uint64_t)) {
+        BOOST_LOG(warning) << "Ignoring malformed PyroWave hybrid ACK (" << payload.size() << " bytes)";
+        return;
+      }
+      std::uint64_t frame_id;
+      std::memcpy(&frame_id, payload.data(), sizeof(frame_id));
+      frame_id = util::endian::little(frame_id);
+      // Preserve zero/reset requests in order. If the bounded queue fills, clear
+      // it with a reset rather than accepting a potentially stale reference.
+      if (!session->video.pyrowave_hybrid_acks->try_raise(frame_id)) {
+        session->video.pyrowave_hybrid_acks->raise(std::uint64_t {0});
+      }
     });
 
     server->map(packetTypes[IDX_INPUT_DATA], [&](session_t *session, const std::string_view &payload) {
@@ -2383,9 +2402,12 @@ namespace stream {
 
         // PyroWave record framing: flag the shards that start with a record, where a
         // client that lost a record header resumes parsing.
-        const auto record_starts = critical_shards ?
-                                     pyrowave::policy::record_start_shards({packet->data(), packet->data_size()}, payload_blocksize) :
-                                     std::vector<bool> {};
+        std::vector<bool> record_starts;
+        if (session->config.monitor.pyrowave_hybrid) {
+          record_starts.assign(packet->pyrowave_record_start_shards.begin(), packet->pyrowave_record_start_shards.end());
+        } else if (critical_shards) {
+          record_starts = pyrowave::policy::record_start_shards({packet->data(), packet->data_size()}, payload_blocksize);
+        }
         std::size_t block_first_shard = 0;
 
         // Send burst diagnostics for frame_burst_logger.
@@ -3956,6 +3978,7 @@ namespace stream {
       session->video.idr_events = mail->event<bool>(mail::idr);
       session->video.invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
       session->video.bitrate_events = mail->event<int>(mail::dynamic_bitrate);
+      session->video.pyrowave_hybrid_acks = mail->queue<std::uint64_t>(mail::pyrowave_hybrid_ack);
       session->video.lowseq = 0;
       session->video.ping_payload = launch_session.av_ping_payload;
       if (config.encryptionFlagsEnabled & SS_ENC_VIDEO) {

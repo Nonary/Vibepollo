@@ -53,6 +53,7 @@ namespace mail {
   MAIL(touch_port);
   MAIL(idr);
   MAIL(invalidate_ref_frames);
+  MAIL(pyrowave_hybrid_ack);  // uint64 snapshot ACK; zero requests a fresh full frame
   MAIL(gamepad_feedback);
   MAIL(hdr);
   MAIL(dynamic_bitrate);  // Runtime encoder bitrate change (kbps), posted from the HTTP /bitrate handler

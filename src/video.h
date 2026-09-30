@@ -91,6 +91,10 @@ namespace video {
     // framing aligns to, and the framing the client asked for in ANNOUNCE.
     int packetsize = 0;
     pyrowave::policy::framing_e pyrowave_framing = pyrowave::policy::framing_e::records;
+    bool pyrowave_hybrid = false;
+    // Capture-thread-owned hybrid identity persists through encoder/display reinit.
+    // Never reset it on recovery: late ACKs must not name a new snapshot.
+    std::uint64_t pyrowave_hybrid_next_frame_id = 1;
   };
 
   platf::mem_type_e map_base_dev_type(AVHWDeviceType type);
@@ -361,6 +365,8 @@ namespace video {
     std::size_t pyrowave_critical_bytes = 0;
     int pyrowave_detail_fec_percentage = 0;
     std::size_t pyrowave_frame_wire_budget = 0;
+    // Hybrid has its own record layout; flags are derived before moving the wire bytes.
+    std::vector<std::uint8_t> pyrowave_record_start_shards;
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
     // Raw capture/QPC-derived timestamp before pacing adjustments.
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp;

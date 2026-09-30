@@ -135,6 +135,12 @@ vulkan-headers:  $(& git -C $graniteSrc rev-parse HEAD:third_party/khronos/vulka
 The PyroWave bitstream carries no version field. The host and the client must be
 built from the same pyrowave commit; the RTSP handshake advertises it as
 PYROWAVE_BITSTREAM_ID in pyrowave_protocol.h.
+
+Local patch 0010-deterministic-record-padding.patch zeroes decoder-ignored
+sign bits and word-alignment tails on the GPU so identical coefficient records
+can be reused by optional hybrid encoding. It changes no decoded values or
+Vulkan feature requirements. scripts/regenerate-pyrowave-block-packing.py
+refreshes only the packing program, preserving all other programs/reflection.
 "@ | Set-Content -Encoding utf8 (Join-Path (Split-Path $Destination) "VENDOR.txt")
 
 Write-Host "PyroWave vendored into $Destination"

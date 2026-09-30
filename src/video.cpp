@@ -47,6 +47,8 @@ extern "C" {
 #include "platform/common.h"
 #include "process.h"
 #include "pyrowave_host.h"
+#include "pyrowave_protocol.h"
+#include "pyrowave_hybrid/pyrowavehybrid.h"
 #include "sync.h"
 #include "video.h"
 #include "video_encoder_probe_policy.h"
@@ -6204,9 +6206,10 @@ namespace video {
   /**
    * @brief Encode loop of a PyroWave session (docs/pyrowave-protocol.md).
    *
-   * PyroWave bypasses encoder_t: every frame is intra-coded, so IDR requests and
-   * reference frame invalidation need no action, and a bitrate change only moves the
-   * per-frame byte budget. When no new capture arrives within the minimum-FPS
+   * PyroWave bypasses encoder_t. The base codec remains intra-coded; optional
+   * hybrid transport reuses only client-acknowledged blocks and resets on IDR or
+   * reference invalidation. A bitrate change only moves the per-frame byte budget.
+   * When no new capture arrives within the minimum-FPS
    * interval (by default a fifth of the stream rate), the last image is encoded again.
    *
    * @return true when the capture side is reinitializing and the session should
@@ -6233,6 +6236,7 @@ namespace video {
     params.framing = config.pyrowave_framing;
     params.packetsize = config.packetsize;
     params.critical_fec = config::stream.pyrowave_critical_fec_percentage > 0;
+    params.hybrid = config.pyrowave_hybrid;
 
     auto encoder = pyrowave::host::make_encoder(params, disp);
     if (!encoder) {
@@ -6258,6 +6262,7 @@ namespace video {
     auto idr_events = mail->event<bool>(mail::idr);
     auto invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
     auto bitrate_events = mail->event<int>(mail::dynamic_bitrate);
+    auto hybrid_acks = mail->queue<std::uint64_t>(mail::pyrowave_hybrid_ack);
 
     // Encoded until the first capture arrives, so the client sees the stream come up.
     std::shared_ptr<platf::img_t> last_img = disp->alloc_img();
@@ -6269,6 +6274,15 @@ namespace video {
     std::vector<std::uint8_t> frame;
     std::size_t critical_bytes = 0;
     pyrowave::policy::detail_fec_controller_t detail_fec_controller(config.framerate);
+    PyroWaveHybrid::Sender hybrid_sender;
+    const auto hybrid_shard_payload = std::size_t(std::max(config.packetsize - pyrowave::protocol::SHARD_OVERHEAD_BYTES, 0));
+    // Preserve the transport ceiling, including its dedicated critical-FEC block.
+    const auto hybrid_max_wire_bytes = std::min(PyroWaveHybrid::Limits {}.maxFrameBytes,
+      pyrowave::policy::max_frame_bytes(config.packetsize, params.critical_fec));
+    logging::min_max_avg_periodic_logger<std::size_t> hybrid_input_logger(debug, "PyroWave hybrid original frame", "bytes", 5s);
+    logging::min_max_avg_periodic_logger<std::size_t> hybrid_wire_logger(debug, "PyroWave hybrid sent frame", "bytes", 5s);
+    logging::min_max_avg_periodic_logger<double> hybrid_changed_logger(debug, "PyroWave hybrid changed blocks", "%", 5s);
+    logging::time_delta_periodic_logger hybrid_duration_logger(debug, "PyroWave hybrid transform duration", 5s);
     while (true) {
       const bool reinit_pending = reinit_event.peek() && frame_nr > 1;
       if (shutdown_event->peek() || !images->running() || reinit_pending) {
@@ -6286,11 +6300,23 @@ namespace video {
         config.client_requested_bitrate = *latest_bitrate;
         encoder->set_bitrate(*latest_bitrate);
       }
+      // Applying ACKs before reset requests ensures recovery wins this iteration.
+      while (hybrid_acks->peek()) {
+        if (const auto ack = hybrid_acks->pop(0ms); ack && config.pyrowave_hybrid) {
+          (void) hybrid_sender.acknowledge(*ack);
+        }
+      }
+      bool reset_hybrid = false;
       while (invalidate_ref_frames_events->peek()) {
         (void) invalidate_ref_frames_events->pop(0ms);
+        reset_hybrid = true;
       }
       if (idr_events->peek()) {
         (void) idr_events->pop();
+        reset_hybrid = true;
+      }
+      if (reset_hybrid && config.pyrowave_hybrid) {
+        hybrid_sender.reset();
       }
 
       std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
@@ -6316,10 +6342,37 @@ namespace video {
         continue;
       }
 
-      const auto detail_fec = params.critical_fec && params.framing == pyrowave::policy::framing_e::records ?
+      // Optional detail FEC parses ordinary records. Hybrid preserves critical
+      // FEC. A damaged hybrid frame cannot become a reference; the existing valid
+      // acknowledged base remains available for following frames.
+      const auto detail_fec = !config.pyrowave_hybrid && params.critical_fec && params.framing == pyrowave::policy::framing_e::records ?
                                 detail_fec_controller.observe(frame, submitted_at, config.bitrate) :
                                 pyrowave::policy::detail_fec_t {};
+      std::vector<std::uint8_t> hybrid_record_starts;
+      if (config.pyrowave_hybrid) {
+        PyroWaveHybrid::EncodedFrame encoded;
+        std::string error;
+        // Monotonic identity is independent of RTP's frame number and survives reset.
+        const auto hybrid_frame_id = config.pyrowave_hybrid_next_frame_id++;
+        hybrid_duration_logger.first_point_now();
+        if (!hybrid_sender.encode(frame.data(), frame.size(), hybrid_frame_id, hybrid_shard_payload,
+                                  hybrid_max_wire_bytes, encoded, error)) {
+          BOOST_LOG(warning) << "PyroWave hybrid frame skipped: " << error;
+          hybrid_sender.reset();
+          continue;
+        }
+        hybrid_duration_logger.second_point_now_and_log();
+        hybrid_record_starts = PyroWaveHybrid::recordStartShards(encoded, hybrid_shard_payload, pyrowave::protocol::FRAME_HEADER_BYTES);
+        critical_bytes = encoded.criticalBytes;
+        const auto changed_blocks = encoded.stats.rawBlocks + encoded.stats.compressedBlocks + encoded.stats.clearedBlocks;
+        const auto total_blocks = changed_blocks + encoded.stats.unchangedBlocks;
+        hybrid_input_logger.collect_and_log(encoded.stats.inputBytes);
+        hybrid_wire_logger.collect_and_log(encoded.stats.wireBytes);
+        hybrid_changed_logger.collect_and_log(total_blocks ? 100.0 * changed_blocks / total_blocks : 0.0);
+        frame = std::move(encoded.bytes);
+      }
       auto packet = std::make_unique<packet_raw_generic>(std::move(frame), frame_nr++, true);
+      packet->pyrowave_record_start_shards = std::move(hybrid_record_starts);
       frame = {};
       packet->channel_data = channel_data;
       packet->pyrowave_critical_bytes = critical_bytes;
@@ -6328,8 +6381,9 @@ namespace video {
       packet->frame_timestamp = frame_timestamp;
       packet->host_processing_timestamp = host_processing_timestamp;
       packet->packet_enqueue_timestamp = std::chrono::steady_clock::now();
-      // Each frame is independent. Replace this session's pending frame when
-      // sending falls behind, without discarding frames belonging to other sessions.
+      // Hybrid references only acknowledged snapshots, never a queued frame.
+      // Replace this session's pending frame when sending falls behind, without
+      // discarding frames belonging to other sessions.
       packets->raise_latest(std::move(packet), [channel_data](const packet_t &pending) {
         return pending->channel_data == channel_data;
       });

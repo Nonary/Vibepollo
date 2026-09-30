@@ -10,6 +10,12 @@ The PyroWave bitstream carries no version field. The host and the client must be
 built from the same pyrowave commit; the RTSP handshake advertises it as
 PYROWAVE_BITSTREAM_ID in pyrowave_protocol.h.
 
+Local patch 0010-deterministic-record-padding.patch zeroes decoder-ignored
+sign bits and word-alignment tails on the GPU so identical coefficient records
+can be reused by optional hybrid encoding. It changes no decoded values or
+Vulkan feature requirements. scripts/regenerate-pyrowave-block-packing.py
+refreshes only the packing program, preserving all other programs/reflection.
+
 Linux host patch: DMA-BUF memory import duplicates its input FD before Vulkan allocation,
 consuming the original only after image creation succeeds. Failure leaves the input FD
 owned by the caller, including failures after memory allocation. No bitstream changes.

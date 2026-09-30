@@ -37,11 +37,15 @@ namespace pyrowave::protocol {
   constexpr std::string_view ANNOUNCE_ADAPTIVE_FEC = "x-ss-video[0].pyrowaveAdaptiveFec";  ///< Aurora; presence selects record framing
   constexpr std::string_view ANNOUNCE_ADAPTIVE_BITRATE = "x-ss-video[0].pyrowaveAdaptiveBitrate";  ///< Aurora
   constexpr std::string_view ANNOUNCE_FEATURES = "x-ss-video[0].pyrowaveFeatures";  ///< Bitmask of FEATURE_*
+  constexpr std::string_view ANNOUNCE_HYBRID = "x-ss-video[0].pyrowaveHybrid";  ///< Exact hybrid wire version, 0 disables
+  constexpr std::uint32_t HYBRID_VERSION = 1;
+  constexpr std::uint16_t CONTROL_HYBRID_ACK = 0x5610;  ///< uint64 little-endian frame ID; zero requests a full reset
 
   /// Client parses record framing with padding records. Record-framed frames are
   /// always laid out for partial decoding, so no bit asks for that (0x2, once
   /// reserved for it, is ignored).
   constexpr std::uint32_t FEATURE_RECORD_FRAMING = 0x1;
+  constexpr std::uint32_t FEATURE_HYBRID = 0x4;
 
   /// First word of an in-band padding record: `0xFFFFFFFF, N, N zero words`.
   constexpr std::uint32_t PADDING_MAGIC = 0xFFFFFFFFu;
