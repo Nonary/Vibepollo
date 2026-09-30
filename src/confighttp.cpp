@@ -6112,7 +6112,8 @@ namespace confighttp {
       };
       record_token_route(normalize_route_pattern(pattern), method);
     };
-    auto register_blocking_api_route = [&](const char *pattern, const char *method, const auto &handler) {
+    // By value: capturing a function reference in the nested lambdas below trips up Apple Clang 15.
+    auto register_blocking_api_route = [&](const char *pattern, const char *method, auto handler) {
       register_api_route(pattern, method, [&blocking_route_pool, handler](resp_https_t response, req_https_t request) {
         if (!authenticate(response, request)) {
           return;
