@@ -4,13 +4,12 @@
  */
 #include <gtest/gtest.h>
 
-#ifdef _WIN32
-  #include <virtual_display_package_contract.generated.h>
+#include <virtual_display_package_contract.generated.h>
 
-  #include <algorithm>
-  #include <array>
-  #include <ranges>
-  #include <string_view>
+#include <algorithm>
+#include <array>
+#include <ranges>
+#include <string_view>
 
 namespace contract = sunshine::virtual_display_package_contract;
 
@@ -47,6 +46,8 @@ TEST(SunshineVirtualDisplayPackaging, RequiredPayloadIsTypedAndInstalledInDedica
 TEST(SunshineVirtualDisplayPackaging, VulkanHdrLayerContractIsOptOutAndCoLocated) {
   EXPECT_TRUE(contains(contract::vulkan_layer_files, "vulkan-layer/VkLayer_sunshine_hdr.dll"));
   EXPECT_TRUE(contains(contract::vulkan_layer_files, "vulkan-layer/VkLayer_sunshine_hdr.json"));
+  EXPECT_TRUE(contains(contract::vulkan_layer_files, "vulkan-layer/VkLayer_sunshine_hdr_x86.dll"));
+  EXPECT_TRUE(contains(contract::vulkan_layer_files, "vulkan-layer/VkLayer_sunshine_hdr_x86.json"));
   EXPECT_EQ(contract::vulkan_layer_name, "VK_LAYER_SUNSHINE_virtual_hdr");
   EXPECT_EQ(contract::vulkan_layer_library, ".\\VkLayer_sunshine_hdr.dll");
   EXPECT_EQ(contract::vulkan_layer_disable_environment, "DISABLE_SUNSHINE_VIRTUAL_HDR");
@@ -173,5 +174,3 @@ TEST(SunshineVirtualDisplayPackaging, InstallerKeepsSudoVdaRollbackAndSunshineDr
   EXPECT_TRUE(contract::install_selection_seeds_runtime_flag);
   EXPECT_TRUE(contract::cli_preserves_driver_selection);
 }
-
-#endif

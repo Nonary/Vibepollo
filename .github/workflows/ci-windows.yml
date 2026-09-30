@@ -828,7 +828,7 @@ jobs:
           cp "${msi_path}" "../unsigned-signpath-msi/${msi_name}"
           echo "msi_name=${msi_name}" >> "${GITHUB_OUTPUT}"
 
-      - name: Verify unsigned MSI contains the pinned VHF package
+      - name: Verify unsigned MSI contains the pinned drivers and Vulkan layers
         shell: pwsh
         env:
           MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
@@ -840,6 +840,11 @@ jobs:
           $process = Start-Process msiexec.exe -ArgumentList @('/a', $msiPath, '/qn', "TARGETDIR=$extractRoot") -Wait -PassThru
           if ($process.ExitCode -ne 0) {
             throw "Administrative extraction of unsigned MSI failed with exit code $($process.ExitCode)."
+          }
+          $vulkanInstaller = Join-Path $extractRoot 'Apollo\drivers\sunshine\install.ps1'
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $vulkanInstaller -RegisterVulkanLayerOnly -ValidateOnly
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unsigned MSI Vulkan layer payload validation failed with exit code $LASTEXITCODE."
           }
           $packageDir = Join-Path $extractRoot 'Apollo\drivers\vhf-gamepad'
           .\packaging\windows\virtual_gamepad_driver\refresh_driver_package.ps1 `
@@ -1409,6 +1414,11 @@ jobs:
           $virtualDisplayCatalog = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.cat'
           $virtualDisplayInf = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.inf'
           $virtualDisplayDll = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.dll'
+          $vulkanInstaller = Join-Path $virtualDisplayRoot 'install.ps1'
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $vulkanInstaller -RegisterVulkanLayerOnly -ValidateOnly
+          if ($LASTEXITCODE -ne 0) {
+            $failures.Add("Signed MSI Vulkan layer payload validation failed with exit code $LASTEXITCODE.")
+          }
           $expectedSignPathFoundationSigner = 'CN=SignPath Foundation, O=SignPath Foundation, L=Lewes, S=Delaware, C=US'
           if (-not (Test-Path -LiteralPath $virtualDisplayCatalog -PathType Leaf)) {
             $failures.Add('Sunshine virtual display catalog is missing from the signed MSI')
@@ -1439,7 +1449,7 @@ jobs:
             'sunshinesvc.exe','dxgi-info.exe','audio-info.exe',
             'playnite-launcher.exe','sunshine_wgc_capture.exe','sunshine_display_helper.exe',
             'vibepollo_dualsense_haptics.exe','vibepollo_dualsense_audio.dll',
-            'virtualdisplay_probe.exe','VkLayer_sunshine_hdr.dll','VibepolloPlaynite.dll'
+            'virtualdisplay_probe.exe','VkLayer_sunshine_hdr.dll','VkLayer_sunshine_hdr_x86.dll','VibepolloPlaynite.dll'
           )
           $optionalFirstParty = @('vibeshine_truehdr.dll')
           $vendorSkip = @(

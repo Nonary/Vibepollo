@@ -14,7 +14,14 @@ set(SUNSHINE_VDD_DRIVER_REQUIRED_FILES
 set(SUNSHINE_VDD_DRIVER_OPTIONAL_FILES SunshineVirtualDisplayDriver.cer)
 set(SUNSHINE_VDD_VULKAN_LAYER_FILES
     vulkan-layer/VkLayer_sunshine_hdr.dll
-    vulkan-layer/VkLayer_sunshine_hdr.json)
+    vulkan-layer/VkLayer_sunshine_hdr.json
+    vulkan-layer/VkLayer_sunshine_hdr_x86.dll
+    vulkan-layer/VkLayer_sunshine_hdr_x86.json)
+# Built from the pinned source by package refresh, independently of the signed
+# x64 driver release. These files do not exist at initial CMake configuration.
+set(SUNSHINE_VDD_VULKAN_LAYER_GENERATED_FILES
+    vulkan-layer/VkLayer_sunshine_hdr_x86.dll
+    vulkan-layer/VkLayer_sunshine_hdr_x86.json)
 set(SUNSHINE_VDD_TRUEHDR_FILES vibeshine_truehdr.dll nvngx_truehdr.dll)
 
 set(SUNSHINE_VDD_DRIVER_DESTINATION "drivers/sunshine")

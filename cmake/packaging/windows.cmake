@@ -160,6 +160,11 @@ unset(_sunshine_driver_optional_file)
 unset(_sunshine_driver_optional_name)
 
 foreach(_sunshine_driver_file IN LISTS SUNSHINE_VIRTUAL_DISPLAY_PACKAGE_FILES)
+    file(RELATIVE_PATH _sunshine_driver_relative_file
+        "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}" "${_sunshine_driver_file}")
+    if(_sunshine_driver_relative_file IN_LIST SUNSHINE_VDD_VULKAN_LAYER_GENERATED_FILES)
+        continue()
+    endif()
     if (NOT EXISTS "${_sunshine_driver_file}")
         message(FATAL_ERROR "Required Vibepollo Display Driver artifact missing: ${_sunshine_driver_file}")
     endif()
@@ -195,7 +200,6 @@ if(EXISTS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}")
                 -PrebuiltPackageDir "${SUNSHINE_EFFECTIVE_LIBVIRTUALDISPLAY_PREBUILT_DIR}"
                 -PackageDir "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}"
         DEPENDS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}"
-                ${SUNSHINE_VIRTUAL_DISPLAY_PACKAGE_FILES}
         COMMENT "Validating Vibepollo Display Driver package assets"
         VERBATIM)
 
@@ -208,6 +212,7 @@ if(EXISTS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}")
         COMMAND powershell -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass
                 -File "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}"
                 -Build
+                -VulkanLayerX86BuildDir "${CMAKE_BINARY_DIR}/vulkan-layer-x86"
                 -LibVirtualDisplayDir "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}"
                 -PrebuiltPackageDir "${SUNSHINE_EFFECTIVE_LIBVIRTUALDISPLAY_PREBUILT_DIR}"
                 -PackageDir "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}"

@@ -22,6 +22,10 @@ $probePath = Join-Path $scriptDir 'virtualdisplay_probe.exe'
 $vulkanLayerDir = Join-Path $scriptDir 'vulkan-layer'
 $vulkanLayerDllPath = Join-Path $vulkanLayerDir 'VkLayer_sunshine_hdr.dll'
 $vulkanLayerJsonPath = Join-Path $vulkanLayerDir 'VkLayer_sunshine_hdr.json'
+$vulkanLayers = @(
+    @{ View = [Microsoft.Win32.RegistryView]::Registry64; Manifest = $vulkanLayerJsonPath; Dll = $vulkanLayerDllPath; Machine = 0x8664 },
+    @{ View = [Microsoft.Win32.RegistryView]::Registry32; Manifest = (Join-Path $vulkanLayerDir 'VkLayer_sunshine_hdr_x86.json'); Dll = (Join-Path $vulkanLayerDir 'VkLayer_sunshine_hdr_x86.dll'); Machine = 0x014c }
+)
 $vulkanImplicitLayersSubKey = 'SOFTWARE\Khronos\Vulkan\ImplicitLayers'
 $userModeDriversSid = 'S-1-5-84-0-0-0-0-0'
 $script:rebootRequired = $false
@@ -304,13 +308,27 @@ function Assert-Package {
 }
 
 function Assert-VulkanLayerPackage {
-    foreach ($artifact in @($vulkanLayerDllPath, $vulkanLayerJsonPath)) {
-        Assert-Artifact -Path $artifact
+    foreach ($layer in $vulkanLayers) {
+        Assert-Artifact -Path $layer.Dll
+        Assert-Artifact -Path $layer.Manifest
+        $bytes = [System.IO.File]::ReadAllBytes($layer.Dll)
+        if ($bytes.Length -lt 64 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
+            throw "[SunshineVirtualDisplay] Invalid Vulkan layer DLL: $($layer.Dll)"
+        }
+        $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3c)
+        if ($peOffset -lt 0 -or $peOffset -gt ($bytes.Length - 6) -or
+            [System.BitConverter]::ToUInt32($bytes, $peOffset) -ne 0x00004550 -or
+            [System.BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne $layer.Machine) {
+            throw "[SunshineVirtualDisplay] Wrong Vulkan layer DLL architecture for $($layer.View): $($layer.Dll)"
+        }
+        $manifest = Get-Content -LiteralPath $layer.Manifest -Raw | ConvertFrom-Json
+        $expectedLibrary = '.\' + [System.IO.Path]::GetFileName($layer.Dll)
+        if ($manifest.layer.name -cne 'VK_LAYER_SUNSHINE_virtual_hdr' -or
+            $manifest.layer.library_path -cne $expectedLibrary -or
+            $manifest.layer.functions.vkGetInstanceProcAddr -cne 'vkGetInstanceProcAddr') {
+            throw "[SunshineVirtualDisplay] Vulkan layer manifest does not match its architecture: $($layer.Manifest)"
+        }
     }
-}
-
-function Get-VulkanLayerJsonFullPath {
-    return (Resolve-Path -LiteralPath $vulkanLayerJsonPath).Path
 }
 
 function Open-LocalMachineRegistryKey {
@@ -338,22 +356,25 @@ function Open-LocalMachineRegistryKey {
 }
 
 function Register-VulkanLayer {
+    # Check both DLL/manifest pairs before removing any working registration.
+    Assert-VulkanLayerPackage
     Unregister-VulkanLayer
-    $jsonFullPath = Get-VulkanLayerJsonFullPath
-    $key = Open-LocalMachineRegistryKey `
-        -View ([Microsoft.Win32.RegistryView]::Registry64) `
-        -SubKey $vulkanImplicitLayersSubKey `
-        -Writable $true `
-        -Create $true
-    if (-not $key) {
-        throw "[SunshineVirtualDisplay] Unable to open HKLM:\$vulkanImplicitLayersSubKey in the 64-bit registry view."
-    }
-
-    try {
-        $key.SetValue($jsonFullPath, 0, [Microsoft.Win32.RegistryValueKind]::DWord)
-        Write-Host "[SunshineVirtualDisplay] Vulkan HDR implicit layer registered: $jsonFullPath"
-    } finally {
-        $key.Dispose()
+    foreach ($layer in $vulkanLayers) {
+        $jsonFullPath = (Resolve-Path -LiteralPath $layer.Manifest).Path
+        $key = Open-LocalMachineRegistryKey `
+            -View $layer.View `
+            -SubKey $vulkanImplicitLayersSubKey `
+            -Writable $true `
+            -Create $true
+        if (-not $key) {
+            throw "[SunshineVirtualDisplay] Unable to open HKLM:\$vulkanImplicitLayersSubKey in $($layer.View)."
+        }
+        try {
+            $key.SetValue($jsonFullPath, 0, [Microsoft.Win32.RegistryValueKind]::DWord)
+            Write-Host "[SunshineVirtualDisplay] Vulkan HDR implicit layer registered in $($layer.View): $jsonFullPath"
+        } finally {
+            $key.Dispose()
+        }
     }
 }
 
@@ -370,7 +391,7 @@ function Unregister-VulkanLayer {
         try {
             $removed = 0
             foreach ($valueName in @($key.GetValueNames())) {
-                if ([System.IO.Path]::GetFileName($valueName) -eq 'VkLayer_sunshine_hdr.json') {
+                if ([System.IO.Path]::GetFileName($valueName) -in @('VkLayer_sunshine_hdr.json', 'VkLayer_sunshine_hdr_x86.json')) {
                     $key.DeleteValue($valueName, $false)
                     $removed++
                 }

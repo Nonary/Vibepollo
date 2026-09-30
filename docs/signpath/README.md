@@ -1,4 +1,9 @@
-# SignPath signing configuration
+# Historical SignPath signing configuration
+
+SignPath publication is disabled under the current build policy. This document
+and its XML files are inactive integration references kept for audit; current
+CI must not invoke SignPath. The signing requests described below apply only
+to that historical integration.
 
 This directory documents how the Windows installer is code-signed through
 [SignPath](https://signpath.io) and keeps **review copies** of the account-side
@@ -159,10 +164,12 @@ invalidates its catalog hash and **breaks driver installation**. These must be
   repository's MSI request.
 - `nvngx_truehdr.dll` (NVIDIA RTX Video SDK runtime, downloaded from the pinned TrueHDR runtime release)
 
-The virtual-display catalog, probe, and Vulkan layer are first-party signing
+The virtual-display catalog, probe, and both Vulkan layers are first-party signing
 targets; the VHF catalog and setup tool are downstream-signing targets. The
 recommended config excludes only the protected files above while enumerating
 each signing target explicitly.
+The x64 driver/layer payload comes from the pinned libvirtualdisplay release;
+package refresh builds the separate x86 layer from pinned source.
 
 ## VHF gamepad release boundary
 
@@ -210,6 +217,7 @@ stripped in CI and never signed on the runner). The `msi-file-apollo` config is 
 | `SunshineVirtualDisplayDriver.cat` | `Apollo\drivers\sunshine\` |
 | `virtualdisplay_probe.exe` | `Apollo\drivers\sunshine\` |
 | `VkLayer_sunshine_hdr.dll` | `Apollo\drivers\sunshine\vulkan-layer\` |
+| `VkLayer_sunshine_hdr_x86.dll` | `Apollo\drivers\sunshine\vulkan-layer\` |
 
 > The paths in the artifact-configuration XML must match the MSI's logical
 > directory layout. Confirm the exact in-MSI paths against a built MSI's File

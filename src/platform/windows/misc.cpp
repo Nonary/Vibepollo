@@ -393,49 +393,64 @@ namespace platf {
   namespace {
     constexpr wchar_t kVulkanImplicitLayersSubKey[] = L"SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers";
     constexpr wchar_t kVulkanHdrLayerManifestName[] = L"VkLayer_sunshine_hdr.json";
-    // Resolve the shipped manifest path: <sunshine.exe dir>\drivers\sunshine\vulkan-layer\VkLayer_sunshine_hdr.json
-    std::filesystem::path vulkan_hdr_layer_manifest_path() {
+    constexpr wchar_t kVulkanHdrLayerX86ManifestName[] = L"VkLayer_sunshine_hdr_x86.json";
+
+    struct vulkan_hdr_layer_t {
+      REGSAM view;
+      const wchar_t *manifest_name;
+      const wchar_t *library_name;
+    };
+
+    constexpr vulkan_hdr_layer_t kVulkanHdrLayers[] = {
+      {KEY_WOW64_64KEY, kVulkanHdrLayerManifestName, L"VkLayer_sunshine_hdr.dll"},
+      {KEY_WOW64_32KEY, kVulkanHdrLayerX86ManifestName, L"VkLayer_sunshine_hdr_x86.dll"},
+    };
+
+    std::filesystem::path vulkan_hdr_layer_manifest_path(const vulkan_hdr_layer_t &layer) {
       wchar_t module_path[MAX_PATH] = {};
-      if (GetModuleFileNameW(nullptr, module_path, _countof(module_path)) == 0) {
+      const DWORD length = GetModuleFileNameW(nullptr, module_path, _countof(module_path));
+      if (length == 0 || length >= _countof(module_path)) {
         return {};
       }
-      return std::filesystem::path {module_path}.parent_path() / L"drivers" / L"sunshine" / L"vulkan-layer" / kVulkanHdrLayerManifestName;
+      return std::filesystem::path {module_path}.parent_path() / L"drivers" / L"sunshine" / L"vulkan-layer" / layer.manifest_name;
     }
 
-    // The registry value name is a full manifest path; match on its (ASCII, case-insensitive) leaf.
+    bool vulkan_hdr_layer_payload_exists(const vulkan_hdr_layer_t &layer) {
+      const auto manifest = vulkan_hdr_layer_manifest_path(layer);
+      std::error_code ec;
+      return !manifest.empty() && std::filesystem::is_regular_file(manifest, ec) &&
+             std::filesystem::is_regular_file(manifest.parent_path() / layer.library_name, ec);
+    }
+
+    // Match only our two manifest leaves, including registrations at old install
+    // paths. Other implicit layers share this key and must remain untouched.
     bool value_name_is_our_manifest(const std::wstring &value_name) {
-      const std::wstring leaf = std::filesystem::path {value_name}.filename().wstring();
-      const std::wstring target = kVulkanHdrLayerManifestName;
-      if (leaf.size() != target.size()) {
+      const auto leaf = std::filesystem::path {value_name}.filename().wstring();
+      return _wcsicmp(leaf.c_str(), kVulkanHdrLayerManifestName) == 0 ||
+             _wcsicmp(leaf.c_str(), kVulkanHdrLayerX86ManifestName) == 0;
+    }
+
+    bool unregister_vulkan_hdr_layer_view(REGSAM view) {
+      HKEY key = nullptr;
+      const LONG opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, kVulkanImplicitLayersSubKey, 0, KEY_QUERY_VALUE | KEY_SET_VALUE | view, &key);
+      if (opened == ERROR_FILE_NOT_FOUND) {
+        return true;
+      }
+      if (opened != ERROR_SUCCESS) {
         return false;
       }
-      const auto ascii_lower = [](wchar_t c) -> wchar_t {
-        return (c >= L'A' && c <= L'Z') ? static_cast<wchar_t>(c - L'A' + L'a') : c;
-      };
-      for (size_t i = 0; i < leaf.size(); ++i) {
-        if (ascii_lower(leaf[i]) != ascii_lower(target[i])) {
-          return false;
-        }
-      }
-      return true;
-    }
-
-    // Remove any of our manifest registrations from a single registry view.
-    void unregister_vulkan_hdr_layer_view(REGSAM view) {
-      HKEY key = nullptr;
-      if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kVulkanImplicitLayersSubKey, 0, KEY_QUERY_VALUE | KEY_SET_VALUE | view, &key) != ERROR_SUCCESS) {
-        return;
-      }
       std::vector<std::wstring> to_delete;
+      bool ok = true;
       for (DWORD index = 0;; ++index) {
-        wchar_t value_name[2048];
+        wchar_t value_name[32768];
         DWORD name_len = _countof(value_name);
         const LONG r = RegEnumValueW(key, index, value_name, &name_len, nullptr, nullptr, nullptr, nullptr);
-        if (r == ERROR_MORE_DATA) {
-          continue;  // value name longer than our buffer; not ours, skip
+        if (r == ERROR_NO_MORE_ITEMS) {
+          break;
         }
         if (r != ERROR_SUCCESS) {
-          break;  // ERROR_NO_MORE_ITEMS or a hard error
+          ok = false;
+          break;
         }
         std::wstring name {value_name, name_len};
         if (value_name_is_our_manifest(name)) {
@@ -443,83 +458,75 @@ namespace platf {
         }
       }
       for (const auto &name : to_delete) {
-        RegDeleteValueW(key, name.c_str());
+        if (RegDeleteValueW(key, name.c_str()) != ERROR_SUCCESS) {
+          ok = false;
+        }
       }
       RegCloseKey(key);
+      return ok;
+    }
+
+    bool vulkan_hdr_layer_view_registered(const vulkan_hdr_layer_t &layer) {
+      if (!vulkan_hdr_layer_payload_exists(layer)) {
+        return false;
+      }
+      HKEY key = nullptr;
+      if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kVulkanImplicitLayersSubKey, 0, KEY_QUERY_VALUE | layer.view, &key) != ERROR_SUCCESS) {
+        return false;
+      }
+      DWORD type = 0;
+      DWORD value = 1;
+      DWORD size = sizeof(value);
+      const auto manifest = vulkan_hdr_layer_manifest_path(layer).wstring();
+      const LONG r = RegQueryValueExW(key, manifest.c_str(), nullptr, &type, reinterpret_cast<BYTE *>(&value), &size);
+      RegCloseKey(key);
+      return r == ERROR_SUCCESS && type == REG_DWORD && size == sizeof(value) && value == 0;
     }
 
     bool register_vulkan_hdr_layer() {
-      const std::filesystem::path manifest = vulkan_hdr_layer_manifest_path();
-      std::error_code ec;
-      if (manifest.empty() || !std::filesystem::exists(manifest, ec)) {
-        BOOST_LOG(warning) << "Vulkan HDR layer manifest not found; cannot register: "sv << manifest.string();
-        return false;
+      // Validate both architectures before removing a working old registration.
+      for (const auto &layer : kVulkanHdrLayers) {
+        if (!vulkan_hdr_layer_payload_exists(layer)) {
+          BOOST_LOG(warning) << "Vulkan HDR layer payload missing; cannot register: "sv << vulkan_hdr_layer_manifest_path(layer).string();
+          return false;
+        }
       }
-      // Clear stale registrations (including ones pointing at old install paths) before adding ours.
-      unregister_vulkan_hdr_layer_view(KEY_WOW64_64KEY);
-      unregister_vulkan_hdr_layer_view(KEY_WOW64_32KEY);
-
-      HKEY key = nullptr;
-      LONG r = RegCreateKeyExW(HKEY_LOCAL_MACHINE, kVulkanImplicitLayersSubKey, 0, nullptr, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &key, nullptr);
-      if (r != ERROR_SUCCESS) {
-        BOOST_LOG(warning) << "Failed to open Vulkan ImplicitLayers key for write [0x"sv << util::hex(r).to_string_view() << ']';
-        return false;
+      bool ok = true;
+      for (const auto &layer : kVulkanHdrLayers) {
+        if (!unregister_vulkan_hdr_layer_view(layer.view)) {
+          ok = false;
+          continue;
+        }
+        HKEY key = nullptr;
+        LONG r = RegCreateKeyExW(HKEY_LOCAL_MACHINE, kVulkanImplicitLayersSubKey, 0, nullptr, 0, KEY_SET_VALUE | layer.view, nullptr, &key, nullptr);
+        if (r == ERROR_SUCCESS) {
+          const auto manifest = vulkan_hdr_layer_manifest_path(layer).wstring();
+          const DWORD enabled_value = 0;  // Vulkan loader: DWORD 0 enables the layer.
+          r = RegSetValueExW(key, manifest.c_str(), 0, REG_DWORD, reinterpret_cast<const BYTE *>(&enabled_value), sizeof(enabled_value));
+          RegCloseKey(key);
+        }
+        if (r != ERROR_SUCCESS) {
+          BOOST_LOG(warning) << "Failed to register Vulkan HDR layer "sv << vulkan_hdr_layer_manifest_path(layer).string() << " [0x"sv << util::hex(r).to_string_view() << ']';
+          ok = false;
+        }
       }
-      const std::wstring manifest_w = manifest.wstring();
-      DWORD enabled_value = 0;  // 0 = layer enabled, per the Vulkan loader convention
-      r = RegSetValueExW(key, manifest_w.c_str(), 0, REG_DWORD, reinterpret_cast<const BYTE *>(&enabled_value), sizeof(enabled_value));
-      RegCloseKey(key);
-      if (r != ERROR_SUCCESS) {
-        BOOST_LOG(warning) << "Failed to register Vulkan HDR layer [0x"sv << util::hex(r).to_string_view() << ']';
-        return false;
-      }
-      BOOST_LOG(info) << "Vulkan HDR implicit layer registered: "sv << manifest.string();
-      return true;
+      return ok;
     }
-
   }  // namespace
 
   bool is_vulkan_hdr_layer_registered() {
-    HKEY key = nullptr;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kVulkanImplicitLayersSubKey, 0, KEY_QUERY_VALUE | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS) {
-      return false;
-    }
-    bool found = false;
-    for (DWORD index = 0;; ++index) {
-      wchar_t value_name[2048];
-      DWORD name_len = _countof(value_name);
-      const LONG r = RegEnumValueW(key, index, value_name, &name_len, nullptr, nullptr, nullptr, nullptr);
-      if (r == ERROR_MORE_DATA) {
-        continue;
-      }
-      if (r != ERROR_SUCCESS) {
-        break;
-      }
-      const std::wstring name {value_name, name_len};
-      if (value_name_is_our_manifest(name)) {
-        std::error_code ec;
-        if (std::filesystem::exists(std::filesystem::path {name}, ec)) {
-          found = true;
-          break;
-        }
-      }
-    }
-    RegCloseKey(key);
-    return found;
+    return std::all_of(std::begin(kVulkanHdrLayers), std::end(kVulkanHdrLayers), vulkan_hdr_layer_view_registered);
   }
 
   bool set_vulkan_hdr_layer_enabled(bool enabled) {
-    const bool currently = is_vulkan_hdr_layer_registered();
-    if (enabled == currently) {
-      return true;  // already in the desired state; avoid needless registry churn / log spam
-    }
     if (enabled) {
-      return register_vulkan_hdr_layer();
+      return is_vulkan_hdr_layer_registered() || register_vulkan_hdr_layer();
     }
-    unregister_vulkan_hdr_layer_view(KEY_WOW64_64KEY);
-    unregister_vulkan_hdr_layer_view(KEY_WOW64_32KEY);
-    BOOST_LOG(info) << "Vulkan HDR implicit layer unregistered."sv;
-    return true;
+    // Partial installation is unhealthy, but can still contain one enabled
+    // architecture. Always remove both views when the preference is disabled.
+    const bool removed64 = unregister_vulkan_hdr_layer_view(KEY_WOW64_64KEY);
+    const bool removed32 = unregister_vulkan_hdr_layer_view(KEY_WOW64_32KEY);
+    return removed64 && removed32;
   }
 
   HDESK syncThreadDesktop() {

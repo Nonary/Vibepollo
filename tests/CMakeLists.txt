@@ -719,6 +719,15 @@ sunshine_register_component(NAME test_component_external_command_policy TEST_SOU
 sunshine_register_component(NAME test_component_virtual_display_manifest TEST_SOURCE integration/test_virtual_display_packaging.cpp
     INCLUDE_DIRECTORIES "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}")
 
+find_program(SUNSHINE_TEST_POWERSHELL NAMES pwsh powershell)
+if(SUNSHINE_TEST_POWERSHELL AND SUNSHINE_TEST_ENABLE_COMPONENT)
+    add_test(NAME test_windows_vulkan_hdr_layer_registration
+        COMMAND "${SUNSHINE_TEST_POWERSHELL}" -NoLogo -NoProfile -NonInteractive
+            -File "${CMAKE_CURRENT_LIST_DIR}/integration/test_windows_vulkan_hdr_layer.ps1"
+            -RepositoryRoot "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+    set_tests_properties(test_windows_vulkan_hdr_layer_registration PROPERTIES LABELS COMPONENT)
+endif()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
     sunshine_register_component(NAME test_component_linux_secure_open
         TEST_SOURCE unit/platform/linux/test_secure_open.cpp
