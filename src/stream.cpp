@@ -3627,10 +3627,13 @@ namespace stream {
     int start(session_t &session, const std::string &addr_string) {
 #ifdef __APPLE__
       // Vibepollo's per-client virtual display, at the client's resolution and refresh rate. It
-      // must exist before input and capture pick their display. Released in join().
-      session.macos_virtual_display = platf::macos_virtual_display::acquire(session.config.monitor);
-      // The display launch brought up is the session's now.
-      platf::macos_virtual_display::end_launch_hold();
+      // must exist before input and capture pick their display. Released in join(). Remote Monitor
+      // and Remote Input streams have capture targets of their own.
+      if (session.config.monitor.capture_source == video::capture_source_e::active_output) {
+        session.macos_virtual_display = platf::macos_virtual_display::acquire(session.config.monitor);
+        // The display launch brought up is the session's now.
+        platf::macos_virtual_display::end_launch_hold();
+      }
 #endif
       session.input = input::alloc(session.mail);
 

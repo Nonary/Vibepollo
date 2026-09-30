@@ -284,14 +284,16 @@ namespace platf {
         display->display_id = [display_id unsignedIntValue];
       }
     }
-    // The stream's virtual display, while there is one, takes precedence over output_name.
-    if (const auto virtual_id = macos_virtual_display::active_display_id()) {
+    // A Remote Monitor stream captures its own display. For any other stream, the stream's virtual
+    // display, while there is one, takes precedence over output_name.
+    const bool remote_monitor = macos_virtual_display::is_remote_display(display->display_id);
+    if (const auto virtual_id = macos_virtual_display::active_display_id(); virtual_id && !remote_monitor) {
       display->display_id = *virtual_id;
     }
     BOOST_LOG(info) << "Configuring selected display ("sv << display->display_id << ") to stream"sv;
 
     // AVCaptureScreenInput delivers no frames from virtual displays; ScreenCaptureKit does.
-    if (macos_virtual_display::active_display_id() == display->display_id) {
+    if (remote_monitor || macos_virtual_display::active_display_id() == display->display_id) {
       SCVideo *capture = [[SCVideo alloc] initWithDisplay:display->display_id frameRate:config.framerate];
       // The sync encode path only encodes delivered frames, so enforce the minimum frame rate here
       // (the same default as video.cpp: a fifth of the stream's rate, at least 10 fps).
@@ -312,6 +314,14 @@ namespace platf {
     // We also need set env_width and env_height for absolute mouse coordinates
     display->env_width = display->width;
     display->env_height = display->height;
+    // Where the display sits on the desktop, in points. Input sends each stream's pointer to the
+    // display at its offset, so a Remote Monitor client's clicks land on its own display.
+    const CGRect bounds = CGDisplayBounds(display->display_id);
+    display->offset_x = static_cast<int>(bounds.origin.x);
+    display->offset_y = static_cast<int>(bounds.origin.y);
+    if (remote_monitor) {
+      macos_virtual_display::note_remote_capture_origin(display->display_id, display->offset_x, display->offset_y);
+    }
 
     return display;
   }

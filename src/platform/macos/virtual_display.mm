@@ -20,6 +20,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
@@ -27,9 +28,11 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -48,6 +51,7 @@
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/remote_display_topology.h"
 #include "src/video.h"
 #include "virtual_display.h"
 
@@ -307,7 +311,8 @@ namespace platf::macos_virtual_display {
 
       std::vector<CGDirectDisplayID> others;
       for (const auto id : display_list(CGGetOnlineDisplayList)) {
-        if (id != display.id) {
+        // Remote Monitors are other clients' displays, not the host's.
+        if (id != display.id && !is_remote_display(id)) {
           others.push_back(id);
         }
       }
@@ -408,30 +413,34 @@ namespace platf::macos_virtual_display {
       CGDisplayModeRelease(chosen);
     }
 
-    std::unique_ptr<virtual_display_t> create(const video::config_t &config) {
+    /**
+     * @brief Create a virtual display, bring it online, and pick its mode, without arranging it.
+     * @param name Shown in System Settings > Displays.
+     * @param serial Distinguishes the display from Vibepollo's others, so macOS remembers each one's settings.
+     */
+    std::unique_ptr<virtual_display_t> make_display(NSString *name, const unsigned int serial, const int width, const int height, const double refresh) {
       const Class descriptor_class = NSClassFromString(@"CGVirtualDisplayDescriptor");
       const Class display_class = NSClassFromString(@"CGVirtualDisplay");
       const Class settings_class = NSClassFromString(@"CGVirtualDisplaySettings");
       const Class mode_class = NSClassFromString(@"CGVirtualDisplayMode");
       if (!descriptor_class || !display_class || !settings_class || !mode_class) {
-        BOOST_LOG(warning) << "Virtual display: not supported by this macOS; streaming the physical display"sv;
+        BOOST_LOG(warning) << "Virtual display: not supported by this macOS"sv;
         return nullptr;
       }
 
       // During a dark wake no display comes online, virtual ones included.
       platf::wake_displays();
 
-      const bool hidpi = use_hidpi(config.width, config.height);
+      const bool hidpi = use_hidpi(width, height);
       // HiDPI modes are sized in points; their backing store, which is what gets captured, is 2x.
-      const unsigned int mode_width = hidpi ? config.width / 2 : config.width;
-      const unsigned int mode_height = hidpi ? config.height / 2 : config.height;
+      const unsigned int mode_width = hidpi ? width / 2 : width;
+      const unsigned int mode_height = hidpi ? height / 2 : height;
       const unsigned int pixel_width = hidpi ? mode_width * 2 : mode_width;
       const unsigned int pixel_height = hidpi ? mode_height * 2 : mode_height;
-      const double refresh = config.framerateX100 > 0 ? config.framerateX100 / 100.0 : config.framerate;
 
       CGVirtualDisplayDescriptor *descriptor = [[descriptor_class alloc] init];
       descriptor.queue = dispatch_queue_create("dev.vibepollo.virtual-display", DISPATCH_QUEUE_SERIAL);
-      descriptor.name = @PROJECT_NAME;
+      descriptor.name = name;
       descriptor.maxPixelsWide = pixel_width;
       descriptor.maxPixelsHigh = pixel_height;
       // Only informs macOS's defaults: a Retina or a standard pixel density to match the mode.
@@ -439,7 +448,7 @@ namespace platf::macos_virtual_display {
       descriptor.sizeInMillimeters = CGSizeMake(pixel_width / ppi * 25.4, pixel_height / ppi * 25.4);
       descriptor.vendorID = vendor_id;
       descriptor.productID = product_id;
-      descriptor.serialNum = serial_number;
+      descriptor.serialNum = serial;
       descriptor.terminationHandler = ^(id, id) {
         BOOST_LOG(warning) << "Virtual display: macOS removed the virtual display"sv;
       };
@@ -447,7 +456,7 @@ namespace platf::macos_virtual_display {
       auto result = std::make_unique<virtual_display_t>();
       result->display = [[display_class alloc] initWithDescriptor:descriptor];
       if (!result->display) {
-        BOOST_LOG(error) << "Virtual display: macOS refused to create it; streaming the physical display"sv;
+        BOOST_LOG(error) << "Virtual display: macOS refused to create it"sv;
         return nullptr;
       }
 
@@ -455,7 +464,7 @@ namespace platf::macos_virtual_display {
       settings.hiDPI = hidpi ? 1 : 0;
       settings.modes = @[[[mode_class alloc] initWithWidth:mode_width height:mode_height refreshRate:refresh]];
       if (![result->display applySettings:settings]) {
-        BOOST_LOG(error) << "Virtual display: macOS rejected "sv << mode_width << 'x' << mode_height << '@' << refresh << "; streaming the physical display"sv;
+        BOOST_LOG(error) << "Virtual display: macOS rejected "sv << mode_width << 'x' << mode_height << '@' << refresh << "Hz"sv;
         return nullptr;
       }
       result->id = result->display.displayID;
@@ -464,19 +473,30 @@ namespace platf::macos_virtual_display {
             return is_active(id);
           },
                       5s)) {
-        BOOST_LOG(error) << "Virtual display: it never came online; streaming the physical display"sv;
+        BOOST_LOG(error) << "Virtual display: it never came online"sv;
         return nullptr;
       }
 
       if (hidpi) {
         select_mode(result->id, pixel_width, pixel_height);
       }
-      apply_layout(*result);
-
-      BOOST_LOG(info) << "Virtual display: "sv << pixel_width << 'x' << pixel_height << '@' << refresh << "Hz"sv
+      BOOST_LOG(info) << "Virtual display: "sv << name.UTF8String << ' ' << pixel_width << 'x' << pixel_height << '@' << refresh << "Hz"sv
                       << (hidpi ? " (Retina, looks like "s + std::to_string(mode_width) + 'x' + std::to_string(mode_height) + ')' : ""s)
-                      << ", display id "sv << result->id
-                      << (result->turned_off.empty() ? ""sv : ", physical displays turned off"sv);
+                      << ", display id "sv << result->id;
+      return result;
+    }
+
+    std::unique_ptr<virtual_display_t> create(const video::config_t &config) {
+      const double refresh = config.framerateX100 > 0 ? config.framerateX100 / 100.0 : config.framerate;
+      auto result = make_display(@PROJECT_NAME, serial_number, config.width, config.height, refresh);
+      if (!result) {
+        BOOST_LOG(warning) << "Virtual display: streaming the physical display instead"sv;
+        return nullptr;
+      }
+      apply_layout(*result);
+      if (!result->turned_off.empty()) {
+        BOOST_LOG(info) << "Virtual display: physical displays turned off"sv;
+      }
       return result;
     }
 
@@ -585,6 +605,199 @@ namespace platf::macos_virtual_display {
   std::optional<std::uint32_t> active_display_id() {
     const auto id = current_id.load();
     return id == kCGNullDirectDisplay ? std::nullopt : std::optional<std::uint32_t> {id};
+  }
+
+  namespace {
+    struct remote_display_t {
+      std::unique_ptr<virtual_display_t> display;
+      remote_display_topology::mode_t mode;  ///< As requested.
+      std::size_t pixel_width = 0;  ///< As created, which is what gets captured.
+      std::size_t pixel_height = 0;
+    };
+
+    std::mutex remote_mutex;  ///< Held while displays are created, which takes seconds.
+    std::map<std::string, remote_display_t> remote_displays;  ///< By client UUID.
+
+    // The displays' IDs, for lookups from input and capture that mustn't wait on remote_mutex.
+    std::mutex remote_ids_mutex;
+    std::vector<CGDirectDisplayID> remote_ids;
+    std::map<CGDirectDisplayID, std::pair<int, int>> remote_capture_origins;
+
+    // Call with remote_mutex held.
+    void publish_remote_ids() {
+      std::vector<CGDirectDisplayID> ids;
+      for (const auto &[_, remote] : remote_displays) {
+        if (remote.display) {
+          ids.push_back(remote.display->id);
+        }
+      }
+      std::lock_guard lock {remote_ids_mutex};
+      std::erase_if(remote_capture_origins, [&ids](const auto &entry) {
+        return std::find(ids.begin(), ids.end(), entry.first) == ids.end();
+      });
+      remote_ids = std::move(ids);
+    }
+
+    // A serial per client (FNV-1a of its UUID), so macOS remembers each Remote Monitor's settings.
+    unsigned int remote_serial(const std::string &client_uuid) {
+      std::uint32_t hash = 2166136261u;
+      for (const unsigned char c : client_uuid) {
+        hash = (hash ^ c) * 16777619u;
+      }
+      return hash == serial_number ? hash + 1 : hash;
+    }
+
+    std::pair<std::size_t, std::size_t> current_pixels(const CGDirectDisplayID id) {
+      const CGDisplayModeRef mode = CGDisplayCopyDisplayMode(id);
+      if (!mode) {
+        return {0, 0};
+      }
+      const std::pair<std::size_t, std::size_t> pixels {CGDisplayModeGetPixelWidth(mode), CGDisplayModeGetPixelHeight(mode)};
+      CGDisplayModeRelease(mode);
+      return pixels;
+    }
+
+    int current_refresh_hz(const CGDirectDisplayID id) {
+      const CGDisplayModeRef mode = CGDisplayCopyDisplayMode(id);
+      const double refresh = mode ? CGDisplayModeGetRefreshRate(mode) : 0;
+      if (mode) {
+        CGDisplayModeRelease(mode);
+      }
+      // Built-in and virtual displays can report 0.
+      return refresh > 0 ? static_cast<int>(std::lround(refresh)) : 60;
+    }
+
+    std::string display_label(const CGDirectDisplayID id) {
+      for (NSScreen *screen in NSScreen.screens) {
+        NSNumber *number = screen.deviceDescription[@"NSScreenNumber"];
+        if (number.unsignedIntValue == id) {
+          return screen.localizedName.UTF8String;
+        }
+      }
+      return "Display "s + std::to_string(id);
+    }
+  }  // namespace
+
+  bool remote_create_or_reclaim(const std::string &client_uuid, const std::string &client_label, const remote_display_topology::mode_t &mode) {
+    std::lock_guard lock {remote_mutex};
+    auto &remote = remote_displays[client_uuid];
+    if (remote.display && is_active(remote.display->id) && remote.mode.width == mode.width && remote.mode.height == mode.height && remote.mode.refresh_hz == mode.refresh_hz) {
+      return true;
+    }
+
+    // A new mode gets a new display: two at once with the same serial would confuse macOS.
+    remote.display.reset();
+    publish_remote_ids();
+    NSString *name = client_label.empty() ? @PROJECT_NAME " Remote Monitor" : @(client_label.c_str());
+    remote.display = make_display(name, remote_serial(client_uuid), mode.width, mode.height, mode.refresh_hz);
+    if (!remote.display) {
+      remote_displays.erase(client_uuid);
+      return false;
+    }
+    remote.mode = mode;
+    std::tie(remote.pixel_width, remote.pixel_height) = current_pixels(remote.display->id);
+    publish_remote_ids();
+    return true;
+  }
+
+  void remote_resolve_mode(const std::string &, remote_display_topology::mode_t &mode) {
+    // Vibepollo's macOS virtual displays are SDR.
+    mode.hdr = false;
+  }
+
+  bool remote_apply_composed_topology(const std::vector<remote_display_topology::node_t> &composed) {
+    std::lock_guard lock {remote_mutex};
+    CGDisplayConfigRef config;
+    if (CGBeginDisplayConfiguration(&config) != kCGErrorSuccess) {
+      return false;
+    }
+    for (const auto &node : composed) {
+      CGDirectDisplayID id = kCGNullDirectDisplay;
+      if (node.preexisting) {
+        id = static_cast<CGDirectDisplayID>(std::strtoul(node.device_id.c_str(), nullptr, 10));
+      } else if (const auto remote = remote_displays.find(node.id); remote != remote_displays.end() && remote->second.display) {
+        id = remote->second.display->id;
+      }
+      if (node.active && id != kCGNullDirectDisplay && is_active(id)) {
+        CGConfigureDisplayOrigin(config, id, node.x, node.y);
+      }
+    }
+    // Like the game's virtual display, the arrangement lasts only while Vibepollo runs.
+    return CGCompleteDisplayConfiguration(config, kCGConfigureForAppOnly) == kCGErrorSuccess;
+  }
+
+  std::optional<std::string> remote_exact_capture_output(const std::string &client_uuid, const remote_display_topology::mode_t &) {
+    std::lock_guard lock {remote_mutex};
+    const auto remote = remote_displays.find(client_uuid);
+    if (remote == remote_displays.end() || !remote->second.display || !is_active(remote->second.display->id)) {
+      return std::nullopt;
+    }
+    // Ready once the display is online in the mode it was created with; macOS offers no other.
+    const auto id = remote->second.display->id;
+    if (current_pixels(id) != std::pair {remote->second.pixel_width, remote->second.pixel_height}) {
+      return std::nullopt;
+    }
+    // platf::display_names() names displays by their ID.
+    return std::to_string(id);
+  }
+
+  bool remote_remove_owned_display(const std::string &client_uuid) {
+    std::lock_guard lock {remote_mutex};
+    remote_displays.erase(client_uuid);
+    publish_remote_ids();
+    return true;
+  }
+
+  std::vector<remote_display_topology::node_t> remote_baseline() {
+    std::vector<remote_display_topology::node_t> baseline;
+    for (const auto id : display_list(CGGetActiveDisplayList)) {
+      if (is_remote_display(id)) {
+        continue;
+      }
+      const CGRect bounds = CGDisplayBounds(id);
+      const auto [pixel_width, pixel_height] = current_pixels(id);
+      remote_display_topology::node_t node;
+      node.id = node.device_id = std::to_string(id);
+      node.label = display_label(id);
+      node.preexisting = true;
+      node.physical = id != current_id.load();
+      node.active = true;
+      node.primary = CGDisplayIsMain(id);
+      // Desktop coordinates are in points, while modes are in pixels.
+      node.x = static_cast<int>(bounds.origin.x);
+      node.y = static_cast<int>(bounds.origin.y);
+      node.configured_mode = {
+        .width = static_cast<int>(pixel_width),
+        .height = static_cast<int>(pixel_height),
+        .refresh_hz = current_refresh_hz(id),
+      };
+      node.layout_width = static_cast<int>(bounds.size.width);
+      node.layout_height = static_cast<int>(bounds.size.height);
+      baseline.push_back(std::move(node));
+    }
+    return baseline;
+  }
+
+  bool is_remote_display(const std::uint32_t display_id) {
+    std::lock_guard lock {remote_ids_mutex};
+    return std::find(remote_ids.begin(), remote_ids.end(), display_id) != remote_ids.end();
+  }
+
+  void note_remote_capture_origin(const std::uint32_t display_id, const int x, const int y) {
+    std::lock_guard lock {remote_ids_mutex};
+    if (std::find(remote_ids.begin(), remote_ids.end(), display_id) != remote_ids.end()) {
+      remote_capture_origins[display_id] = {x, y};
+    }
+  }
+
+  std::optional<std::uint32_t> remote_display_captured_at(const int x, const int y) {
+    std::lock_guard lock {remote_ids_mutex};
+    for (const auto &[id, origin] : remote_capture_origins) {
+      if (origin == std::pair {x, y}) {
+        return id;
+      }
+    }
+    return std::nullopt;
   }
 
   void recover_disabled_displays() {

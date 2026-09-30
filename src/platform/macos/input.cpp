@@ -4,6 +4,7 @@
  */
 // standard includes
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -78,6 +79,19 @@ namespace platf {
       macos_input->displayScaling = display_scaling(display);
     }
     return display;
+  }
+
+  // A Remote Monitor stream's pointer belongs to its own display, which display() records by the
+  // stream's touch port offset. Every other stream's goes to the streamed display.
+  CGDirectDisplayID pointer_display(macos_input_t *macos_input, const touch_port_t &touch_port) {
+    static std::atomic<CGDirectDisplayID> last_remote {kCGNullDirectDisplay};
+    if (const auto remote = macos_virtual_display::remote_display_captured_at(touch_port.offset_x, touch_port.offset_y)) {
+      if (last_remote.exchange(*remote) != *remote) {
+        BOOST_LOG(info) << "Remote Monitor pointer: moving on display "sv << *remote;
+      }
+      return *remote;
+    }
+    return current_display(macos_input);
   }
 
   // A struct to hold a Windows keycode to Mac virtual keycode mapping.
@@ -404,13 +418,18 @@ const KeyCodeMap kKeyCodesMap[] = {
     BOOST_LOG(debug) << "mouse_event: "sv << button << ", type: "sv << type << ", location:"sv << raw_location.x << ":"sv << raw_location.y << " click_count: "sv << click_count;
 
     const auto macos_input = static_cast<macos_input_t *>(input.get());
-    const auto display = current_display(macos_input);
     const auto event = macos_input->mouse_event;
 
-    // get display bounds for current display
+    // Keep the pointer on the streamed display, or on a Remote Monitor display, which someone is
+    // also watching.
+    auto display = current_display(macos_input);
+    CGDirectDisplayID display_at_point = kCGNullDirectDisplay;
+    uint32_t count = 0;
+    if (CGGetDisplaysWithPoint(CGPointMake(raw_location.x, raw_location.y), 1, &display_at_point, &count) == kCGErrorSuccess && count == 1 &&
+        macos_virtual_display::is_remote_display(display_at_point)) {
+      display = display_at_point;
+    }
     const CGRect display_bounds = CGDisplayBounds(display);
-
-    // limit mouse to current display bounds
     const auto location = CGPoint {
       std::clamp(raw_location.x, display_bounds.origin.x, display_bounds.origin.x + display_bounds.size.width - 1),
       std::clamp(raw_location.y, display_bounds.origin.y, display_bounds.origin.y + display_bounds.size.height - 1)
@@ -468,8 +487,8 @@ const KeyCodeMap kKeyCodesMap[] = {
     const float y
   ) {
     const auto macos_input = static_cast<macos_input_t *>(input.get());
-    const auto display = current_display(macos_input);
-    const auto scaling = macos_input->displayScaling;
+    const auto display = pointer_display(macos_input, touch_port);
+    const auto scaling = display == macos_input->display ? macos_input->displayScaling : display_scaling(display);
 
     auto location = util::point_t {x * scaling, y * scaling};
     CGRect display_bounds = CGDisplayBounds(display);

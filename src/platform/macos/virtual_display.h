@@ -8,11 +8,18 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace video {
   struct config_t;
 }
+
+namespace remote_display_topology {
+  struct mode_t;
+  struct node_t;
+}  // namespace remote_display_topology
 
 /**
  * @brief Vibepollo's per-client virtual display on macOS, following the same settings as on Windows:
@@ -48,6 +55,36 @@ namespace platf::macos_virtual_display {
    * @brief The virtual display that capture and input should target while one exists.
    */
   std::optional<std::uint32_t> active_display_id();
+
+  /**
+   * @name Remote Monitor displays
+   * @brief One virtual display per Remote Monitor client, arranged by the remote display topology.
+   * @details These are the remote_display_topology runtime callbacks. A Remote Monitor display is
+   *          captured by its display ID, which is also its name in platf::display_names().
+   * @{
+   */
+  bool remote_create_or_reclaim(const std::string &client_uuid, const std::string &client_label, const remote_display_topology::mode_t &mode);
+  void remote_resolve_mode(const std::string &client_uuid, remote_display_topology::mode_t &mode);
+  bool remote_apply_composed_topology(const std::vector<remote_display_topology::node_t> &composed);
+  std::optional<std::string> remote_exact_capture_output(const std::string &client_uuid, const remote_display_topology::mode_t &mode);
+  bool remote_remove_owned_display(const std::string &client_uuid);
+
+  /// The active displays other than Remote Monitor ones, which the topology arranges them around.
+  std::vector<remote_display_topology::node_t> remote_baseline();
+
+  /// Whether a display is one of the Remote Monitor displays.
+  bool is_remote_display(std::uint32_t display_id);
+
+  /**
+   * @brief Record where a Remote Monitor display was when its capture started.
+   * @details Its stream's input carries that origin as its touch port offset, which is how input
+   *          finds the display even after the display moves.
+   */
+  void note_remote_capture_origin(std::uint32_t display_id, int x, int y);
+
+  /// The Remote Monitor display whose capture started at an origin, from note_remote_capture_origin().
+  std::optional<std::uint32_t> remote_display_captured_at(int x, int y);
+  /** @} */
 
   /**
    * @brief Turn back on displays that a previous run turned off and never restored.

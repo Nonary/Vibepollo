@@ -698,6 +698,53 @@ namespace nvhttp {
       });
     }
   }  // namespace
+#elif defined(__APPLE__)
+  namespace {
+    void refresh_remote_monitor_baseline(bool) {
+      remote_display_topology::instance().set_physical_baseline(platf::macos_virtual_display::remote_baseline());
+    }
+
+    void register_remote_monitor_runtime() {
+      remote_display_topology::instance().set_runtime_callbacks({
+        .create_or_reclaim = platf::macos_virtual_display::remote_create_or_reclaim,
+        .resolve_mode = platf::macos_virtual_display::remote_resolve_mode,
+        .apply_composed_topology = platf::macos_virtual_display::remote_apply_composed_topology,
+        .exact_target_has_current_mode_and_dxgi = platf::macos_virtual_display::remote_exact_capture_output,
+        .remove_owned_display = platf::macos_virtual_display::remote_remove_owned_display,
+      });
+      remote_display_topology::instance().set_plaintext_rtsp_warning_provider([](const std::string &) {
+        return rtsp_stream::plaintext_route_warning();
+      });
+      remote_session::register_monitor_runtime_hooks({
+        .activate_or_resume = [](std::string_view uuid, std::string_view label, std::string_view requested_mode, const bool hdr_requested, std::uint64_t generation) -> remote_session::monitor_runtime_state_t {
+          remote_display_topology::mode_t mode;
+          if (std::sscanf(std::string {requested_mode}.c_str(), "%dx%d@%d", &mode.width, &mode.height, &mode.refresh_hz) != 3 || mode.width <= 0 || mode.height <= 0 || mode.refresh_hz <= 0) {
+            return remote_session::monitor_runtime_state_t {.retryable = true, .error = "Remote Monitor requested an invalid display mode."};
+          }
+          mode.hdr = hdr_requested;
+          refresh_remote_monitor_baseline(has_stream_session_activity());
+          const auto state = remote_display_topology::instance().activate_or_resume(std::string {uuid}, std::string {label}, mode, generation);
+          return {.accepted = state.accepted, .ready = state.ready, .retryable = state.retryable, .output = state.output, .error = state.error, .hdr_enabled = state.hdr_enabled};
+        },
+        .snapshot = [](std::string_view uuid, std::uint64_t generation) {
+          const auto state = remote_display_topology::instance().snapshot(std::string {uuid}, generation);
+          return remote_session::monitor_runtime_state_t {.accepted = state.accepted, .ready = state.ready, .retryable = state.retryable, .output = state.output, .error = state.error, .hdr_enabled = state.hdr_enabled};
+        },
+        .explicit_release = [](std::string_view uuid, std::uint64_t generation, std::string_view reason) {
+          remote_display_topology::instance().explicit_release(std::string {uuid}, generation, std::string {reason});
+        },
+        .transport_lost = [](std::string_view uuid, std::uint64_t generation) {
+          remote_display_topology::instance().transport_lost(std::string {uuid}, generation);
+        },
+        .unpair = [](std::string_view uuid) {
+          remote_display_topology::instance().unpair_client(std::string {uuid});
+        },
+        .shutdown = [] {
+          remote_display_topology::instance().shutdown();
+        },
+      });
+    }
+  }  // namespace
 #endif
 
   std::string cert_subject_name_for_log(const crypto::x509_t &cert) {
@@ -6243,7 +6290,7 @@ namespace nvhttp {
 
   void start() {
     platf::set_thread_name("nvhttp");
-#if defined(_WIN32) || defined(__linux__)
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)
     // The listeners below can accept /launch as soon as they are started.
     // Install the concrete coordinator callbacks before exposing that route.
     register_remote_monitor_runtime();
