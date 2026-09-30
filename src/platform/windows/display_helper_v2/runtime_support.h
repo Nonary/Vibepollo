@@ -181,8 +181,11 @@ namespace display_helper::v2 {
         return candidate == DisplayEvent::DeviceArrival || candidate == DisplayEvent::DeviceRemoval;
       };
       // Preserve a device-identity signal if a generic WM_DISPLAYCHANGE or
-      // power notification lands later in the same quiet-window burst.
+      // power notification lands later in the same owner's quiet-window burst.
+      // A retired owner must not suppress a newer owner's generic evidence.
       const bool preserve_existing_device_event = pending_ &&
+                                                  ticket_.generation == generation &&
+                                                  ticket_.connection_epoch == connection_epoch &&
                                                   is_device_identity_event(ticket_.event) &&
                                                   !is_device_identity_event(event);
       if (!preserve_existing_device_event) {

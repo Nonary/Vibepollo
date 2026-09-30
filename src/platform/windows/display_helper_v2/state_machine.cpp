@@ -1,12 +1,13 @@
 #include "src/platform/windows/display_helper_v2/state_machine.h"
 
+#include "src/platform/windows/display_helper_v2/diagnostics.h"
+
 #include <algorithm>
 #include <array>
 #include <boost/algorithm/string/predicate.hpp>
+#include <exception>
 #include <iterator>
 #include <utility>
-
-#include "src/platform/windows/display_helper_v2/diagnostics.h"
 
 namespace display_helper::v2 {
   namespace {
@@ -261,6 +262,53 @@ namespace display_helper::v2 {
     return candidate;
   }
 
+  std::optional<std::set<std::string>> SnapshotLedger::present_physical_restore_baseline_devices(
+    const bool golden_first,
+    const std::vector<std::string> &exclusions
+  ) {
+    try {
+      const std::array tiers = golden_first ?
+                                 std::array {SnapshotTier::Golden, SnapshotTier::Current, SnapshotTier::Previous} :
+                                 std::array {SnapshotTier::Current, SnapshotTier::Previous, SnapshotTier::Golden};
+      std::optional<Snapshot> baseline;
+      for (const auto tier : tiers) {
+        auto loaded = persistence_.storage().load(tier);
+        if (loaded && !loaded->m_topology.empty()) {
+          baseline = std::move(loaded);
+          break;
+        }
+      }
+      if (!baseline) {
+        return std::nullopt;
+      }
+
+      std::set<std::string> required;
+      for (const auto &group : baseline->m_topology) {
+        for (const auto &id : group) {
+          const auto normalized = codec::normalize_device_id(id);
+          const bool excluded = std::any_of(exclusions.begin(), exclusions.end(), [&](const auto &excluded_id) {
+            return codec::normalize_device_id(excluded_id) == normalized;
+          });
+          if (!normalized.empty() && !excluded) {
+            required.insert(normalized);
+          }
+        }
+      }
+
+      std::set<std::string> present;
+      for (const auto &device : service_.enumerate()) {
+        const auto normalized = codec::normalize_device_id(device.m_device_id);
+        if (required.contains(normalized) && !codec::is_virtual_display_device(device)) {
+          present.insert(normalized);
+        }
+      }
+      return present;
+    } catch (const std::exception &ex) {
+      BOOST_LOG(debug) << "Display helper: physical baseline observation unavailable: " << ex.what();
+      return std::nullopt;
+    }
+  }
+
   StateMachine::StateMachine(
     ApplyPipeline &apply,
     RecoveryPipeline &recovery,
@@ -297,6 +345,11 @@ namespace display_helper::v2 {
     // queued work must not toggle the topology recovery is about to own.
     system_.clear_pending_hdr_blank();
     recovery_staged_state_reset_succeeded_.reset();
+    deferred_recovery_display_event_.reset();
+    recovery_baseline_present_devices_ = snapshots_.present_physical_restore_baseline_devices(
+      restore_state_.always_restore_from_golden.load(std::memory_order_acquire),
+      exclusions_vector()
+    );
     transition(State::Recovery, trigger);
     active_mutation_worker_ = ActiveMutationWorker {
       .kind = MutationWorkerKind::Recovery,
@@ -315,6 +368,8 @@ namespace display_helper::v2 {
     system_.disarm_heartbeat();
     recovery_snapshot_.reset();
     recovery_event_feedback_quiet_until_.reset();
+    deferred_recovery_display_event_.reset();
+    recovery_baseline_present_devices_.reset();
     virtual_identity_discoveries_remaining_ = 0;
     virtual_identity_repairs_remaining_ = 0;
     baseline_topology_repair_available_ = false;
@@ -853,6 +908,8 @@ namespace display_helper::v2 {
     // behind the current mutation fence. Invalidate older queued HDR work at
     // ingress and again when a deferred Apply drains through this method.
     system_.clear_pending_hdr_blank();
+    deferred_recovery_display_event_.reset();
+    recovery_baseline_present_devices_.reset();
     // Apply describes the newest desired session even when it has to wait
     // behind a worker.  Clear older autonomous/explicit recovery intent at
     // ingress so a heartbeat cannot replace this deferred session start.
@@ -1709,6 +1766,8 @@ namespace display_helper::v2 {
       recovery_armed_ = false;
       display_changes_pending_recovery_ = false;
       recovery_event_feedback_quiet_until_.reset();
+      deferred_recovery_display_event_.reset();
+      recovery_baseline_present_devices_.reset();
       unconfirmed_cancelled_mutation_ = false;
       scheduler_.disarm();
       restore_state_.reset_request_progress();
@@ -1942,6 +2001,14 @@ namespace display_helper::v2 {
       return;
     }
 
+    if (recovery_armed_ && recovery_worker_in_progress()) {
+      // Coalescing can leave DeviceRemoval last in a mixed monitor-return
+      // burst. Preserve the opportunity; baseline presence decides whether
+      // it was a physical return after the worker settles.
+      deferred_recovery_display_event_ = event;
+      return;
+    }
+
     // Standard recovery from EventLoop state
     if (state_ != State::EventLoop) {
       return;
@@ -1956,7 +2023,8 @@ namespace display_helper::v2 {
       // member of a recovery-generated burst. A fixed deadline can expire
       // while WinEventPump's 500ms debounce is still being extended.
       recovery_event_feedback_quiet_until_ = now + kRecoveryFeedbackQuietPeriod;
-      BOOST_LOG(debug) << "Display helper: ignoring display feedback inside the post-recovery quiet period.";
+      deferred_recovery_display_event_ = event;
+      BOOST_LOG(debug) << "Display helper: deferring topology reconciliation inside the post-recovery quiet period.";
       return;
     }
     recovery_event_feedback_quiet_until_.reset();
@@ -1968,6 +2036,9 @@ namespace display_helper::v2 {
       // restore -> notification -> immediate restore feedback loop. External
       // evidence remains useful after the window expires, when it can open one
       // new bounded opportunity.
+      // Keep the evidence if the next backoff falls outside this window.
+      // An ordinary retry consumes it; otherwise reconcile at window expiry.
+      deferred_recovery_display_event_ = event;
       BOOST_LOG(debug) << "Display helper: retaining recovery backoff despite a display event inside the active recovery window.";
       return;
     }
@@ -2067,6 +2138,29 @@ namespace display_helper::v2 {
     }
 
     const auto now = system_.now();
+    if (deferred_recovery_display_event_ && !mutation_worker_active() && !staged_state_reset_pending_ && !scheduler_.window_active(now) && (!recovery_event_feedback_quiet_until_ || now >= *recovery_event_feedback_quiet_until_)) {
+      const auto event = *deferred_recovery_display_event_;
+      deferred_recovery_display_event_.reset();
+      if (!is_stale(event.generation) && !is_stale_connection(event.connection_epoch) && recovery_baseline_present_devices_) {
+        const auto present = snapshots_.present_physical_restore_baseline_devices(
+          restore_state_.always_restore_from_golden.load(std::memory_order_acquire),
+          exclusions_vector()
+        );
+        const bool physical_return = present && std::any_of(present->begin(), present->end(), [&](const auto &id) {
+                                       return !recovery_baseline_present_devices_->contains(id);
+                                     });
+        if (physical_return) {
+          // The event alone never resets backoff. Only a newly enumerable
+          // member of the retained physical restore contract can reopen one
+          // bounded window after the failed worker and its feedback settle.
+          BOOST_LOG(info) << "Display helper: deferred event confirmed a returned physical baseline member; reopening bounded recovery.";
+          recovery_event_feedback_quiet_until_.reset();
+          scheduler_.on_display_event(now);
+          start_recovery(std::chrono::milliseconds(0), ApplyAction::Revert);
+          return;
+        }
+      }
+    }
     if (scheduler_.window_just_expired(now)) {
       BOOST_LOG(info) << "Restore polling: window exhausted; pausing attempts until next event.";
       golden_health_.register_unresolved("restore window exhausted");

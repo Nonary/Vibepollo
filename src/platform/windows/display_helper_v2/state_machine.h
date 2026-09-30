@@ -278,6 +278,14 @@ namespace display_helper::v2 {
       const std::string &virtual_device_id,
       const std::vector<std::string> &exclusions);
 
+    /// Read-only presence of physical members in the first retained restore
+    /// baseline. Connected inactive members count: restore owns their saved
+    /// active intent. Virtual/excluded/non-baseline outputs never count.
+    std::optional<std::set<std::string>> present_physical_restore_baseline_devices(
+      bool golden_first,
+      const std::vector<std::string> &exclusions
+    );
+
     /**
      * @brief Legacy capture pipeline: capture, gate on topology validity, filter
      *        (active virtual displays, exclusions, display_name-less devices),
@@ -492,6 +500,10 @@ namespace display_helper::v2 {
     std::optional<ActiveTopology> expected_topology_;
     std::optional<Snapshot> recovery_snapshot_;
     std::optional<std::chrono::steady_clock::time_point> recovery_event_feedback_quiet_until_;
+    // One post-settlement read can reconcile a return notification delivered
+    // during recovery/feedback suppression without making feedback a retry.
+    std::optional<DisplayEventMessage> deferred_recovery_display_event_;
+    std::optional<std::set<std::string>> recovery_baseline_present_devices_;
     std::size_t virtual_identity_discoveries_remaining_ = 0;
     std::size_t virtual_identity_repairs_remaining_ = 0;
     std::set<std::string> snapshot_blacklist_;

@@ -4,19 +4,19 @@
  */
 #ifdef _WIN32
 
-#include "../tests_common.h"
+  #include "../tests_common.h"
+  #include "src/platform/windows/display_helper_v2/async_dispatcher.h"
+  #include "src/platform/windows/display_helper_v2/operations.h"
+  #include "src/platform/windows/display_helper_v2/runtime_support.h"
+  #include "src/platform/windows/display_helper_v2/snapshot.h"
+  #include "src/platform/windows/display_helper_v2/state_machine.h"
+  #include "src/platform/windows/display_helper_v2/topology_policy.h"
 
-#include "src/platform/windows/display_helper_v2/async_dispatcher.h"
-#include "src/platform/windows/display_helper_v2/operations.h"
-#include "src/platform/windows/display_helper_v2/runtime_support.h"
-#include "src/platform/windows/display_helper_v2/snapshot.h"
-#include "src/platform/windows/display_helper_v2/state_machine.h"
-#include "src/platform/windows/display_helper_v2/topology_policy.h"
-
-#include <array>
-#include <deque>
-#include <map>
-#include <set>
+  #include <array>
+  #include <deque>
+  #include <map>
+  #include <set>
+  #include <stdexcept>
 
 namespace {
   class FakeClock final : public display_helper::v2::IClock {
@@ -219,11 +219,26 @@ namespace {
       return apply_status;
     }
 
-    display_helper::v2::ApplyStatus apply_topology(const display_device::ActiveTopology &) override {
+    display_helper::v2::ApplyStatus apply_topology(const display_device::ActiveTopology &requested) override {
+      if (enact_restore && topology_status == display_helper::v2::ApplyStatus::Ok) {
+        topology = requested;
+        for (auto &device : devices) {
+          const bool selected = std::any_of(requested.begin(), requested.end(), [&](const auto &group) {
+            return std::find(group.begin(), group.end(), device.m_device_id) != group.end();
+          });
+          if (selected) {
+            device.m_info = display_device::EnumeratedDevice::Info {};
+            device.m_display_name = "\\\\.\\RESTORED";
+          }
+        }
+      }
       return topology_status;
     }
 
     display_device::EnumeratedDeviceList enumerate(display_device::DeviceEnumerationDetail) override {
+      if (throw_enumeration) {
+        throw std::runtime_error("transient display query failure");
+      }
       return devices;
     }
 
@@ -241,10 +256,17 @@ namespace {
 
     bool apply_snapshot(const display_device::DisplaySettingsSnapshot &snapshot_input) override {
       apply_snapshot_calls += 1;
-      return apply_snapshot_ids.count(extract_id(snapshot_input.m_topology)) > 0;
+      const bool applied = apply_snapshot_ids.count(extract_id(snapshot_input.m_topology)) > 0;
+      if (applied && enact_restore) {
+        snapshot = snapshot_input;
+      }
+      return applied;
     }
 
     bool snapshot_matches_current(const display_device::DisplaySettingsSnapshot &snapshot_input) override {
+      if (enact_restore) {
+        return display_helper::v2::topology::equal_snapshot(snapshot_input, snapshot);
+      }
       const auto id = extract_id(snapshot_input.m_topology);
       auto &calls = match_calls[id];
       if (calls < static_cast<int>(match_sequence[id].size())) {
@@ -261,8 +283,8 @@ namespace {
       return true;
     }
 
-    bool is_topology_same(const display_device::ActiveTopology &, const display_device::ActiveTopology &) override {
-      return topology_same_result;
+    bool is_topology_same(const display_device::ActiveTopology &expected, const display_device::ActiveTopology &actual) override {
+      return enact_restore ? expected == actual : topology_same_result;
     }
 
     static std::string extract_id(const display_device::ActiveTopology &topology_input) {
@@ -283,6 +305,8 @@ namespace {
     display_device::DisplaySettingsSnapshot snapshot;
     bool configuration_matches_result = true;
     bool topology_same_result = true;
+    bool throw_enumeration = false;
+    bool enact_restore = false;
     int apply_snapshot_calls = 0;
   };
 
@@ -3391,6 +3415,351 @@ TEST(DisplayHelperV2StateMachine, SnapshotCurrentRefreshFailureKeepsBaseline) {
   EXPECT_FALSE(harness.storage.load(display_helper::v2::SnapshotTier::Previous).has_value());
   ASSERT_TRUE(harness.snapshot_result.has_value());
   EXPECT_FALSE(*harness.snapshot_result);
+}
+
+namespace {
+  constexpr auto kReturnedPhysicalBaseline = "{41c6e8b8-0f2b-594c-b86b-b776dbd7e8e9}";
+
+  void start_physical_baseline_recovery(StateMachineHarness &harness) {
+    harness.seed_current_snapshot(kReturnedPhysicalBaseline);
+    ASSERT_TRUE(harness.storage.save(
+      display_helper::v2::SnapshotTier::Golden,
+      make_snapshot(kReturnedPhysicalBaseline)
+    ));
+    display_helper::v2::RevertCommand command {harness.cancellation.current_generation()};
+    command.immediate = true;
+    command.always_restore_from_golden = true;
+    harness.state_machine.handle_message(command);
+    // The final attempt can outlive the bounded polling window, as in #516.
+    harness.clock.advance(std::chrono::minutes(2) + std::chrono::milliseconds(1));
+  }
+
+  void fail_physical_baseline_recovery(StateMachineHarness &harness) {
+    display_helper::v2::RecoveryOutcome failure;
+    harness.dispatcher.recovery_completion(failure);
+    harness.drain_messages();
+    ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::EventLoop);
+    harness.state_machine.handle_tick();
+  }
+}  // namespace
+
+TEST(DisplayHelperV2StateMachine, ReturnedPhysicalBaselineInsideQuietPeriodGetsDeferredRecovery) {
+  StateMachineHarness harness;
+  start_physical_baseline_recovery(harness);
+  fail_physical_baseline_recovery(harness);
+  harness.clock.advance(std::chrono::milliseconds(210));
+  // A powered-off baseline target can return connected but inactive. Restore
+  // owns its saved active intent; the event must not invent another topology.
+  harness.add_inactive_device(kReturnedPhysicalBaseline);
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {display_helper::v2::DisplayEvent::DeviceArrival, harness.cancellation.current_generation()});
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+  harness.clock.advance(std::chrono::milliseconds(999));
+  harness.state_machine.handle_tick();
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+  harness.clock.advance(std::chrono::milliseconds(1));
+  harness.state_machine.handle_tick();
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 2);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Recovery);
+  EXPECT_EQ(harness.dispatcher.recovery_delay, std::chrono::milliseconds(0));
+  ASSERT_TRUE(harness.storage.load(display_helper::v2::SnapshotTier::Golden));
+  EXPECT_EQ(harness.storage.load(display_helper::v2::SnapshotTier::Golden)->m_topology, (display_device::ActiveTopology {{kReturnedPhysicalBaseline}}));
+}
+
+TEST(DisplayHelperV2StateMachine, ReturnedPhysicalBaselineOutsideQuietPeriodStartsRecovery) {
+  StateMachineHarness harness;
+  start_physical_baseline_recovery(harness);
+  fail_physical_baseline_recovery(harness);
+  harness.add_inactive_device(kReturnedPhysicalBaseline);
+  harness.clock.advance(std::chrono::milliseconds(1001));
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {display_helper::v2::DisplayEvent::DeviceArrival, harness.cancellation.current_generation()});
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 2);
+}
+
+TEST(DisplayHelperV2StateMachine, PhysicalReturnDuringRecoverySurvivesFailedWorker) {
+  StateMachineHarness harness;
+  start_physical_baseline_recovery(harness);
+  harness.add_inactive_device(kReturnedPhysicalBaseline);
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {display_helper::v2::DisplayEvent::DeviceArrival, harness.cancellation.current_generation()});
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+  fail_physical_baseline_recovery(harness);
+  harness.clock.advance(std::chrono::milliseconds(1000));
+  harness.state_machine.handle_tick();
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 2);
+}
+
+TEST(DisplayHelperV2StateMachine, PhysicalReturnDuringValidationSurvivesFailedGate) {
+  StateMachineHarness harness;
+  start_physical_baseline_recovery(harness);
+  display_helper::v2::RecoveryOutcome recovered;
+  recovered.success = true;
+  recovered.snapshot = make_snapshot(kReturnedPhysicalBaseline);
+  harness.dispatcher.recovery_completion(recovered);
+  harness.drain_messages();
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::RecoveryValidation);
+  harness.add_inactive_device(kReturnedPhysicalBaseline);
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {display_helper::v2::DisplayEvent::DeviceArrival, harness.cancellation.current_generation()});
+  harness.dispatcher.recovery_validation_completion(false);
+  harness.drain_messages();
+  harness.clock.advance(std::chrono::milliseconds(1000));
+  harness.state_machine.handle_tick();
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 2);
+}
+
+TEST(DisplayHelperV2StateMachine, DeferredRecoveryFeedbackDoesNotReopenWindowWithoutPhysicalReturn) {
+  for (const bool already_present : {false, true}) {
+    StateMachineHarness harness;
+    if (already_present) {
+      harness.add_inactive_device(kReturnedPhysicalBaseline);
+    }
+    start_physical_baseline_recovery(harness);
+    fail_physical_baseline_recovery(harness);
+    for (int i = 0; i < 4; ++i) {
+      harness.clock.advance(std::chrono::milliseconds(200));
+      harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {display_helper::v2::DisplayEvent::DeviceArrival, harness.cancellation.current_generation()});
+    }
+    harness.clock.advance(std::chrono::milliseconds(1000));
+    harness.state_machine.handle_tick();
+    harness.clock.advance(std::chrono::minutes(1));
+    harness.state_machine.handle_tick();
+    EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+  }
+}
+
+TEST(DisplayHelperV2StateMachine, DeferredRecoveryRespectsBaselineMembershipAndExclusions) {
+  for (const bool excluded : {false, true}) {
+    StateMachineHarness harness;
+    if (excluded) {
+      harness.state_machine.set_snapshot_blacklist({kReturnedPhysicalBaseline});
+    }
+    start_physical_baseline_recovery(harness);
+    fail_physical_baseline_recovery(harness);
+    harness.add_inactive_device(excluded ? kReturnedPhysicalBaseline : "intentionally_disabled_other_monitor");
+    harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {display_helper::v2::DisplayEvent::DeviceArrival, harness.cancellation.current_generation()});
+    harness.clock.advance(std::chrono::milliseconds(1000));
+    harness.state_machine.handle_tick();
+    EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+  }
+}
+
+TEST(DisplayHelperV2StateMachine, DeferredRecoveryRejectsRetiredEventOwnership) {
+  for (const bool retired_connection : {false, true}) {
+    StateMachineHarness harness;
+    std::uint64_t epoch = 7;
+    harness.state_machine.set_connection_epoch_provider([&] {
+      return epoch;
+    });
+    start_physical_baseline_recovery(harness);
+    fail_physical_baseline_recovery(harness);
+    harness.add_inactive_device(kReturnedPhysicalBaseline);
+    harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {.event = display_helper::v2::DisplayEvent::DeviceArrival, .generation = harness.cancellation.current_generation(), .connection_epoch = epoch});
+    if (retired_connection) {
+      ++epoch;
+    } else {
+      harness.cancellation.cancel();
+    }
+    harness.clock.advance(std::chrono::milliseconds(1000));
+    harness.state_machine.handle_tick();
+    EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+  }
+}
+
+TEST(DisplayHelperV2StateMachine, ReplacementApplySupersedesDeferredPhysicalReturn) {
+  StateMachineHarness harness;
+  start_physical_baseline_recovery(harness);
+  fail_physical_baseline_recovery(harness);
+  harness.add_inactive_device(kReturnedPhysicalBaseline);
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {display_helper::v2::DisplayEvent::DeviceArrival, harness.cancellation.current_generation()});
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "new_virtual_owner";
+  request.virtual_layout = "exclusive";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+  harness.clock.advance(std::chrono::seconds(2));
+  harness.state_machine.handle_tick();
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 1);
+}
+
+TEST(DisplayHelperV2Debounce, NewOwnerReplacesRetiredIdentityNotification) {
+  for (const bool changed_connection : {false, true}) {
+    display_helper::v2::DebouncedTrigger debouncer(std::chrono::milliseconds(500));
+    const auto start = std::chrono::steady_clock::now();
+    debouncer.notify(start, 42, 7, display_helper::v2::DisplayEvent::DeviceArrival);
+    debouncer.notify(start + std::chrono::milliseconds(100), changed_connection ? 42 : 43, changed_connection ? 8 : 7, display_helper::v2::DisplayEvent::DisplayChange);
+    const auto ticket = debouncer.take_if_due(start + std::chrono::milliseconds(600));
+    ASSERT_TRUE(ticket);
+    EXPECT_EQ(ticket->generation, changed_connection ? 42 : 43);
+    EXPECT_EQ(ticket->connection_epoch, changed_connection ? 8 : 7);
+    EXPECT_EQ(ticket->event, display_helper::v2::DisplayEvent::DisplayChange);
+  }
+}
+
+TEST(DisplayHelperV2StateMachine, DeferredPhysicalReturnDoesNotResetActiveRecoveryBackoff) {
+  StateMachineHarness harness;
+  harness.seed_current_snapshot(kReturnedPhysicalBaseline);
+  display_helper::v2::RevertCommand command {harness.cancellation.current_generation()};
+  command.immediate = true;
+  harness.state_machine.handle_message(command);
+  display_helper::v2::RecoveryOutcome failure;
+  harness.dispatcher.recovery_completion(failure);
+  harness.drain_messages();
+  harness.add_inactive_device(kReturnedPhysicalBaseline);
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {display_helper::v2::DisplayEvent::DeviceArrival, harness.cancellation.current_generation()});
+  harness.clock.advance(std::chrono::milliseconds(999));
+  harness.state_machine.handle_tick();
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+  harness.clock.advance(std::chrono::milliseconds(1));
+  harness.state_machine.handle_tick();
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 2);
+  // It joins the ordinary one-second backoff, rather than reopening a window
+  // or dispatching an extra worker in response to the pending notification.
+  harness.state_machine.handle_tick();
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 2);
+}
+
+TEST(DisplayHelperV2StateMachine, DeferredReturnSurvivesBackoffPastOwnedWindowDeadline) {
+  for (const bool return_after_quiet : {false, true}) {
+    SCOPED_TRACE(return_after_quiet ? "return after quiet" : "return during worker");
+    StateMachineHarness harness;
+    harness.seed_current_snapshot(kReturnedPhysicalBaseline);
+    display_helper::v2::RevertCommand command {harness.cancellation.current_generation()};
+    command.immediate = true;
+    harness.state_machine.handle_message(command);
+    display_helper::v2::RecoveryOutcome failure;
+    harness.dispatcher.recovery_completion(failure);
+    harness.drain_messages();
+    harness.clock.advance(std::chrono::seconds(1));
+    harness.state_machine.handle_tick();
+    ASSERT_EQ(harness.dispatcher.recovery_dispatch_count, 2);
+    harness.dispatcher.recovery_completion(failure);
+    harness.drain_messages();
+    harness.clock.advance(std::chrono::seconds(3));
+    harness.state_machine.handle_tick();
+    ASSERT_EQ(harness.dispatcher.recovery_dispatch_count, 3);
+
+    // This final worker fails at 118s. Its next 5s backoff is outside the 120s
+    // owned window, even though feedback quiet settles inside that window.
+    harness.clock.advance(std::chrono::seconds(114));
+    if (!return_after_quiet) {
+      harness.add_inactive_device(kReturnedPhysicalBaseline);
+      harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {display_helper::v2::DisplayEvent::DeviceArrival, harness.cancellation.current_generation()});
+    }
+    harness.dispatcher.recovery_completion(failure);
+    harness.drain_messages();
+    harness.clock.advance(std::chrono::milliseconds(return_after_quiet ? 1500 : 1000));
+    if (return_after_quiet) {
+      harness.add_inactive_device(kReturnedPhysicalBaseline);
+      harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {display_helper::v2::DisplayEvent::DeviceArrival, harness.cancellation.current_generation()});
+    }
+    harness.state_machine.handle_tick();
+    EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 3);
+    harness.clock.advance(std::chrono::milliseconds(return_after_quiet ? 501 : 1001));
+    harness.state_machine.handle_tick();
+    EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 4);
+  }
+}
+
+TEST(DisplayHelperV2StateMachine, DeferredRecoveryNeverTreatsVirtualBaselineReturnAsPhysical) {
+  StateMachineHarness harness;
+  start_physical_baseline_recovery(harness);
+  auto golden = make_snapshot("virtual_baseline");
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, golden));
+  fail_physical_baseline_recovery(harness);
+  harness.add_inactive_device("virtual_baseline");
+  harness.display_settings.devices.back().m_edid = display_device::EdidData {};
+  harness.display_settings.devices.back().m_edid->m_manufacturer_id = "SDD";
+  harness.display_settings.devices.back().m_edid->m_product_code = "50F6";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {display_helper::v2::DisplayEvent::DeviceArrival, harness.cancellation.current_generation()});
+  harness.clock.advance(std::chrono::milliseconds(1000));
+  harness.state_machine.handle_tick();
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+}
+
+TEST(DisplayHelperV2StateMachine, CoalescedArrivalAndRemovalRetainPhysicalReturnDuringRecovery) {
+  StateMachineHarness harness;
+  start_physical_baseline_recovery(harness);
+  harness.add_inactive_device(kReturnedPhysicalBaseline);
+  display_helper::v2::DebouncedTrigger debounce(std::chrono::milliseconds(500));
+  debounce.notify(harness.clock.now(), harness.cancellation.current_generation(), 0, display_helper::v2::DisplayEvent::DeviceArrival);
+  harness.clock.advance(std::chrono::milliseconds(100));
+  debounce.notify(harness.clock.now(), harness.cancellation.current_generation(), 0, display_helper::v2::DisplayEvent::DeviceRemoval);
+  harness.clock.advance(std::chrono::milliseconds(500));
+  const auto ticket = debounce.take_if_due(harness.clock.now());
+  ASSERT_TRUE(ticket);
+  ASSERT_EQ(ticket->event, display_helper::v2::DisplayEvent::DeviceRemoval);
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {.event = ticket->event, .generation = ticket->generation, .connection_epoch = ticket->connection_epoch});
+  fail_physical_baseline_recovery(harness);
+  harness.clock.advance(std::chrono::milliseconds(1000));
+  harness.state_machine.handle_tick();
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 2);
+}
+
+TEST(DisplayHelperV2StateMachine, FailedPhysicalObservationDoesNotPreventAuthoritativeRecovery) {
+  StateMachineHarness harness;
+  harness.display_settings.throw_enumeration = true;
+  start_physical_baseline_recovery(harness);
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+  fail_physical_baseline_recovery(harness);
+  harness.display_settings.throw_enumeration = false;
+  harness.add_inactive_device(kReturnedPhysicalBaseline);
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {display_helper::v2::DisplayEvent::DeviceArrival, harness.cancellation.current_generation()});
+  harness.clock.advance(std::chrono::milliseconds(1000));
+  harness.state_machine.handle_tick();
+  // Unknown prior presence cannot prove a return or reset exhausted backoff.
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+}
+
+TEST(DisplayHelperV2StateMachine, DeferredReturnRunsAuthoritativeGoldenRestoreThroughValidation) {
+  StateMachineHarness harness;
+  start_physical_baseline_recovery(harness);
+  auto golden = make_snapshot(kReturnedPhysicalBaseline);
+  golden.m_modes[kReturnedPhysicalBaseline] = display_device::DisplayMode {
+    display_device::Resolution {3440, 1440},
+    display_device::Rational {144, 1}
+  };
+  golden.m_primary_device = kReturnedPhysicalBaseline;
+  golden.m_origins[kReturnedPhysicalBaseline] = display_device::Point {0, 0};
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, golden));
+  fail_physical_baseline_recovery(harness);
+  harness.add_inactive_device(kReturnedPhysicalBaseline);
+  harness.add_inactive_device("intentionally_disabled_other_monitor");
+  harness.display_settings.topology = {{"old_virtual_output"}};
+  harness.display_settings.snapshot = make_snapshot("old_virtual_output");
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {display_helper::v2::DisplayEvent::DeviceArrival, harness.cancellation.current_generation()});
+  harness.clock.advance(std::chrono::milliseconds(1000));
+  harness.state_machine.handle_tick();
+  ASSERT_EQ(harness.dispatcher.recovery_dispatch_count, 2);
+
+  // Execute the real operation behind the newly scheduled worker. The port
+  // models CCD accepting the exact baseline topology/mode, not enable-all.
+  harness.display_settings.enact_restore = true;
+  harness.display_settings.valid_topology_ids.insert(kReturnedPhysicalBaseline);
+  harness.display_settings.apply_snapshot_ids.insert(kReturnedPhysicalBaseline);
+  display_helper::v2::RecoveryOperation recovery {
+    harness.display_settings,
+    harness.storage,
+    harness.golden_health,
+    harness.restore_state,
+    harness.clock
+  };
+  auto restored = recovery.run(harness.cancellation.token());
+  ASSERT_TRUE(restored.success);
+  ASSERT_TRUE(restored.snapshot);
+  EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(*restored.snapshot, golden));
+  EXPECT_FALSE(harness.storage.load(display_helper::v2::SnapshotTier::Current));
+  EXPECT_FALSE(harness.storage.load(display_helper::v2::SnapshotTier::Previous));
+  harness.dispatcher.recovery_completion(restored);
+  harness.drain_messages();
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::RecoveryValidation);
+
+  display_helper::v2::RecoveryValidationOperation validation {harness.snapshot_service, harness.clock};
+  harness.dispatcher.recovery_validation_completion(validation.run(*restored.snapshot, harness.cancellation.token()));
+  harness.drain_messages();
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
+  EXPECT_FALSE(harness.state_machine.recovery_armed());
+  EXPECT_EQ(harness.exit_code, 0);
+  EXPECT_EQ(harness.display_settings.topology, golden.m_topology);
+  EXPECT_FALSE(harness.display_settings.devices.back().m_info);
 }
 
 #endif  // _WIN32
