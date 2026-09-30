@@ -741,6 +741,9 @@ namespace confighttp {
     return read_file_if_exists(*latest, out);
   }
 
+  constexpr std::uint64_t kCrashBundleMaxBytes = 30ull * 1024ull * 1024ull;
+  static std::uint64_t estimate_zip_entry_size(std::size_t name_len, std::uint64_t data_size);
+
   static std::vector<ZipDataEntry> collect_support_logs() {
     std::vector<ZipDataEntry> entries;
     export_log_sanitizer_t sanitizer;
@@ -1734,7 +1737,7 @@ namespace confighttp {
         continue;
       }
       CrashBundlePartPlan *part = &parts.back();
-      const bool part_has_payload = part->include_logs ? !logs.empty() : !part->files.empty();
+      const bool part_has_payload = (part->include_logs && !logs.empty()) || !part->files.empty();
       if (part_has_payload && part->estimated_size > kCrashBundleMaxBytes - entry_est) {
         add_new_part(false);
         part = &parts.back();

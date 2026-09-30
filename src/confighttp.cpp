@@ -2510,25 +2510,6 @@ namespace confighttp {
 
     std::optional<size_t> target_index = index_from_body ? index_from_body : index_from_path;
 
-    // Detect if the app being removed is the Playnite fullscreen launcher
-    auto is_playnite_fullscreen = [](const nlohmann::json &app) -> bool {
-      try {
-        if (app.contains("playnite-fullscreen") && app["playnite-fullscreen"].is_boolean() && app["playnite-fullscreen"].get<bool>()) {
-          return true;
-        }
-        if (app.contains("cmd") && app["cmd"].is_string()) {
-          auto s = app["cmd"].get<std::string>();
-          if (s.find("playnite-launcher") != std::string::npos && s.find("--fullscreen") != std::string::npos) {
-            return true;
-          }
-        }
-        if (app.contains("name") && app["name"].is_string() && app["name"].get<std::string>() == "Playnite (Fullscreen)") {
-          return true;
-        }
-      } catch (...) {}
-      return false;
-    };
-
     try {
       std::lock_guard apps_lock {apps_file_mutex()};
       std::string content = file_handler::read_file(config::stream.file_apps.c_str());
