@@ -1,7 +1,10 @@
-# PyroWave over the GameStream/Sunshine protocol
+# PyroWave streaming with Vibepollo
 
-This fork streams [PyroWave](https://github.com/Themaister/pyrowave), Hans-Kristian
-Arntzen's intra-only GPU wavelet codec, over the normal Sunshine video stream.
+Vibepollo streams [PyroWave](https://github.com/Themaister/pyrowave), Hans-Kristian
+Arntzen's intra-only GPU wavelet codec, over its normal video stream. To use
+PyroWave or VRR playback with Vibepollo, install Nonary's
+[VRR Moonlight Client fork](https://github.com/Nonary/moonlight-qt). Select PyroWave
+explicitly in that client's codec settings; stock Moonlight does not support it.
 Every frame is independently decodable, so a lost frame costs one frame and never
 needs a keyframe request. PyroWave trades bandwidth for latency: encode and decode
 take well under a millisecond, but a clean picture needs hundreds of Mbps, so it is
@@ -26,10 +29,9 @@ change the bitstream.
 
 ## Negotiation
 
-The capability and format constants match the Aurora (moonlight-qt fork) and
-Solarflare (Sunshine fork) PyroWave implementation, so those clients and hosts can
-negotiate with ours. Other PyroWave forks share the capability bits but use
-different frame framing; see "Compatibility".
+Vibepollo and the VRR Moonlight Client use the capability and format constants
+below to negotiate PyroWave profiles and framing. See "Compatibility" for client
+requirements.
 
 ### `/serverinfo`
 
@@ -84,12 +86,10 @@ a=x-ss-pyrowave.bitstream:186f0393
 ```
 
 The `rtpmap` line is a capability marker only; no RTP payload type 99 is sent.
-Aurora clients require it. Our client selects PyroWave only when the user chose the
-PyroWave codec and `ServerCodecModeSupport` has `SCM_PYROWAVE`; it does not require
-the marker, because the dimizago/azafrob-protocol hosts omit it and their framing is
-detected per frame (see below). It picks the best mutual profile: HDR10 4:4:4,
-HDR10, 4:4:4, then 8-bit 4:2:0. PyroWave is never chosen automatically, since it
-needs a wired link with hundreds of Mbps to spare.
+The VRR Moonlight Client selects PyroWave only when the user chose the
+PyroWave codec and `ServerCodecModeSupport` has `SCM_PYROWAVE`. It picks the best
+mutual profile: HDR10 4:4:4, HDR10, 4:4:4, then 8-bit 4:2:0. PyroWave is never
+chosen automatically, since it needs a wired link with hundreds of Mbps to spare.
 
 ### RTSP ANNOUNCE (client to host)
 
@@ -98,8 +98,8 @@ needs a wired link with hundreds of Mbps to spare.
 | `x-nv-vqos[0].bitStreamFormat` | `3` (PyroWave; 0/1/2 are H.264/HEVC/AV1) |
 | `x-ss-video[0].chromaSamplingType` | `1` for 4:4:4, else `0` (stock attribute) |
 | `x-nv-video[0].dynamicRangeMode` | `1` for 10-bit, else `0` (stock attribute) |
-| `x-ss-video[0].pyrowaveAdaptiveFec` | `0` (Aurora attribute; its presence selects record framing) |
-| `x-ss-video[0].pyrowaveAdaptiveBitrate` | `0` (Aurora attribute) |
+| `x-ss-video[0].pyrowaveAdaptiveFec` | `0` (its presence selects record framing) |
+| `x-ss-video[0].pyrowaveAdaptiveBitrate` | `0` |
 | `x-ss-video[0].pyrowaveFeatures` | bitmask, below |
 
 `pyrowaveFeatures` bits:
@@ -110,7 +110,7 @@ needs a wired link with hundreds of Mbps to spare.
 
 `0x2` was once reserved for partial-frame decoding. No bit is needed: record-framed
 frames use the partial-recovery layout when the negotiated packet size supports
-record alignment (see "Record framing"), and hosts ignore `0x2`.
+record alignment (see "Record framing"), and Vibepollo ignores `0x2`.
 
 The host rejects `bitStreamFormat=3` with `400 BAD REQUEST` when PyroWave is
 unavailable, like HEVC/AV1.
@@ -122,7 +122,7 @@ The host keeps sending the usual HDR mode and metadata control messages.
 
 ## Frames
 
-PyroWave frames ride the stock Sunshine video path unchanged: RTP, the
+PyroWave frames use Vibepollo's existing video transport: RTP, the
 `NV_VIDEO_PACKET` header and FEC block layout (up to four blocks), optional
 AES-GCM, and the 8-byte short frame header in front of the first payload. The frame
 header `frameType` is always `2` (IDR). moonlight-common-c trims the last payload
@@ -252,9 +252,9 @@ sequence header, a block record before the sequence header or with another
 `sequence`, and `block_index` values outside the frame. A rejected frame is
 dropped; the next frame is independent.
 
-This is the Aurora/Solarflare framing, minus their conditional-replenishment
-extensions (sequence code 1 "keep previous" frames and header-only zero blocks),
-which upstream PyroWave does not decode and our host never sends.
+Vibepollo sends complete, independent frames. It never sends conditional
+replenishment records (sequence code 1 "keep previous" frames or header-only zero
+blocks), which upstream PyroWave does not decode.
 
 ### Length-prefixed framing (compatibility)
 
@@ -294,7 +294,7 @@ buffers, and the critical packet count as `DECODE_UNIT.pyrowaveCriticalPackets`.
 The parser skips every record that lost a byte. A record whose header arrived but
 whose payload did not has a known end, so parsing continues after it. When a
 header itself was lost, parsing resumes at the next received payload flagged as
-starting with a record. From a host that does not flag payloads, it resumes at the
+starting with a record. Without these flags, it resumes at the
 next received payload only once a finer record of ordinary size (one that fits a
 payload with 8 bytes to spare) was seen inside a single payload, which the layout
 above makes a record boundary; before that the rest of the frame is given up.
@@ -309,8 +309,8 @@ most, since they hold the next-coarsest level. PyroWave's own pristine-band chec
 is not used because it cannot tell a lost block from an all-zero block that was
 never sent.
 
-Length-prefixed frames with any loss lose the frame, and frames from hosts that do
-not follow the layout lose everything after the first lost record header.
+Length-prefixed frames with any loss lose the frame. Record-framed partial
+recovery depends on the alignment and record-start flags described above.
 
 Output planes are three single-channel UNORM images (R8 for 8-bit streams, R16 for
 10-bit): full-resolution Y, and Cb/Cr at half resolution in each direction for
@@ -346,10 +346,9 @@ reference point, 200 Mbps at 1080p60). 4:4:4 costs about 1.6x, and 10-bit about
 
 ## Compatibility
 
-| Peer | Result |
+| Client connecting to Vibepollo | Result |
 |---|---|
-| Aurora client, our host | Negotiates PyroWave, record framing. Aurora's decoder is an older WiVRn-derived PyroWave; frames decode only if its bitstream matches `186f0393`. |
-| Our client, Solarflare host | Negotiates PyroWave. Solarflare's full frames decode; its "keep previous" frames (code 1) are rejected and dropped. A frame that lost packets keeps only the records before its first lost record header unless Solarflare lays frames out as ours does. |
-| Xbox / azafrob-protocol client, our host | Negotiates PyroWave, length-prefixed framing. Bitstream compatibility depends on their PyroWave commit. |
-| Our client, dimizago Vibepollo host | Negotiates PyroWave from the SCM bits; length-prefixed framing is detected per frame. |
+| Nonary's [VRR Moonlight Client fork](https://github.com/Nonary/moonlight-qt) | Recommended for PyroWave and VRR playback. Uses record framing and partial-frame recovery with the matching vendored bitstream. |
+| Aurora client | Negotiates PyroWave, record framing. Its decoder is an older WiVRn-derived PyroWave; frames decode only if its bitstream matches `186f0393`. |
+| Xbox / azafrob-protocol client | Negotiates PyroWave, length-prefixed framing. Bitstream compatibility depends on its PyroWave commit. |
 | Stock Moonlight | Never sees PyroWave; negotiates H.264/HEVC/AV1 as before. |

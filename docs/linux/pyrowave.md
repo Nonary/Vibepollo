@@ -1,5 +1,10 @@
 # PyroWave on Linux
 
+For PyroWave streaming and VRR playback with Vibepollo, use Nonary's
+[VRR Moonlight Client fork](https://github.com/Nonary/moonlight-qt). Select PyroWave
+in the client's codec settings and connect over a fast wired LAN; stock Moonlight
+does not support PyroWave.
+
 Linux builds enable `SUNSHINE_ENABLE_PYROWAVE` by default. Building requires a
 Vulkan shader compiler (`glslc` or `glslangValidator`) in addition to the normal
 Linux dependencies. No change to the PyroWave bitstream or client protocol is
