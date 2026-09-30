@@ -156,3 +156,14 @@ test('managed application focus settings are shared across platforms and separat
     assert.ok(!settingsDestinations.some((destination) => destination.keys.includes(field.key)));
   }
 });
+
+test('virtual display capacity allows six and stays a bounded global setting', async () => {
+  const { settingsDefaults, clientOverrideableKeys } = await import('../configs/settingsSchema.ts');
+  const field = settingsFields.get('virtual_display_max_clients');
+  assert.equal(settingsDefaults.virtual_display_max_clients, 4);
+  assert.equal(field?.min, 1);
+  assert.equal(field?.max, 8);
+  assert.equal(clientOverrideableKeys.has('virtual_display_max_clients'), false);
+  for (const value of [1, 4, 6, 8]) assert.equal(settingError(field, value), undefined);
+  for (const value of [0, 9, 5.5, NaN]) assert.ok(settingError(field, value));
+});

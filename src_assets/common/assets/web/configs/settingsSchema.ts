@@ -413,6 +413,14 @@ const virtualDisplayCustomizationFields = (): SettingsField[] => [
 ];
 
 const remoteMonitorFields = (): SettingsField[] => [
+  number('virtual_display_max_clients', {
+    labelKey: 'ui.settings.fields.virtual_display_max_clients.label',
+    descriptionKey: 'ui.settings.fields.virtual_display_max_clients.description',
+    min: 1,
+    max: 8,
+    step: 1,
+    platform: ['windows', 'linux'],
+  }),
   boolean('remote_monitor_confirm_app_replacement', {
     labelKey: 'ui.settings.fields.remote_monitor_confirm_app_replacement.label',
     descriptionKey: 'ui.settings.fields.remote_monitor_confirm_app_replacement.description',
@@ -1006,6 +1014,7 @@ export const settingsDefaults: Record<string, unknown> = {
   gamepad: 'auto',
   virtual_display_mode: 'per_client',
   virtual_display_layout: 'exclusive',
+  virtual_display_max_clients: 4,
   remote_monitor_mute_audio: false,
   remote_monitor_disconnect_on_stream_end: false,
   remote_monitor_disconnect_on_client_disconnect: false,

@@ -100,6 +100,8 @@ namespace platf::linux_private_display {
   bool kernel_hdr_pool_available();
   bool kernel_pool_available();
   std::vector<std::string> private_output_names();
+  /** Count configured outputs actually provisioned by the managed kernel pool. */
+  std::size_t client_output_capacity();
   std::optional<display_device::EnumeratedDeviceList> enumerate_devices(
     display_device::DeviceEnumerationDetail detail
   );

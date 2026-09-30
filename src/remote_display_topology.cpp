@@ -104,6 +104,9 @@ namespace remote_display_topology {
   coordinator_t &instance() { static coordinator_t coordinator; return coordinator; }
 
   void coordinator_t::set_runtime_callbacks(runtime_callbacks_t callbacks) { std::lock_guard lock(mutex_); callbacks_ = std::move(callbacks); }
+  std::size_t coordinator_t::client_identity_capacity_locked() const {
+    return std::min(max_client_identities, callbacks_.client_identity_capacity ? callbacks_.client_identity_capacity() : default_client_identities);
+  }
   void coordinator_t::set_layout(nlohmann::json layout) { std::lock_guard lock(mutex_); layout_ = normalize_layout(layout); }
   void coordinator_t::set_physical_baseline(std::vector<node_t> nodes) { std::lock_guard lock(mutex_); physical_baseline_ = std::move(nodes); }
   std::vector<std::string> coordinator_t::physical_node_ids() const {
@@ -170,7 +173,7 @@ namespace remote_display_topology {
 
   normal_game_reservation_t coordinator_t::reserve_normal_game_identity(const std::string &client_uuid, const std::string &label, mode_t mode) {
     std::lock_guard lock(mutex_);
-    if (client_uuid.empty() || (!clients_.contains(client_uuid) && clients_.size() >= max_client_identities)) return {};
+    if (client_uuid.empty() || (!clients_.contains(client_uuid) && clients_.size() >= client_identity_capacity_locked())) return {};
     auto [state_it, inserted] = clients_.try_emplace(client_uuid);
     auto &state = state_it->second;
     if (inserted) state.placement_order = ++next_placement_order_;
@@ -353,8 +356,8 @@ namespace remote_display_topology {
 
   monitor_runtime_state_t coordinator_t::activate_or_resume(const std::string &client_uuid, const std::string &label, mode_t mode, uint64_t generation) {
     std::lock_guard lock(mutex_);
-    if (!clients_.contains(client_uuid) && clients_.size() >= max_client_identities) {
-      return {false, false, true, {}, "Remote display capacity is four paired-client identities."};
+    if (!clients_.contains(client_uuid) && clients_.size() >= client_identity_capacity_locked()) {
+      return {false, false, true, {}, "Remote display capacity is " + std::to_string(client_identity_capacity_locked()) + " paired-client identities."};
     }
     auto [state_it, inserted] = clients_.try_emplace(client_uuid);
     auto &state = state_it->second;
@@ -657,7 +660,7 @@ namespace remote_display_topology {
     std::lock_guard lock(mutex_);
     std::vector<std::string> warnings;
     const auto nodes = compose_locked(warnings);
-    nlohmann::json result {{"status", true}, {"version", layout_version}, {"layout", layout_}, {"capacity", {{"max", max_client_identities}, {"used", clients_.size()}}}, {"warnings", warnings}, {"nodes", nlohmann::json::array()}, {"clients", paired_clients}};
+    nlohmann::json result {{"status", true}, {"version", layout_version}, {"layout", layout_}, {"capacity", {{"max", client_identity_capacity_locked()}, {"used", clients_.size()}}}, {"warnings", warnings}, {"nodes", nlohmann::json::array()}, {"clients", paired_clients}};
     for (const auto &node : nodes) {
       const auto mode = effective_mode(node);
       result["nodes"].push_back({{"id", node.id}, {"label", node.label}, {"kind", node.physical ? "physical" : "client"}, {"active", node.active}, {"primary", node.primary}, {"desired_position", {{"x", node.x}, {"y", node.y}}}, {"current_position", {{"x", node.x}, {"y", node.y}}}, {"mode", {{"width", mode.width}, {"height", mode.height}, {"refresh_hz", mode.refresh_hz}, {"hdr", mode.hdr}}}});

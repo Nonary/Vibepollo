@@ -481,7 +481,7 @@ Additional information:
   Native packages and `vibeshine-drm-setup.service` attempt the module build automatically; the
   first command retries it manually. Privileged helpers always install under the fixed, root-owned
   `/usr/libexec/vibeshine` path even when the application uses a custom prefix. The pool service
-  provisions four dormant private outputs using the custom GPU-attached backend. If the module
+  provisions eight dormant private outputs using the custom GPU-attached backend. If the module
   cannot be built or loaded, managed virtual displays remain unavailable rather than falling back
   to CPU-backed stock VKMS.
 

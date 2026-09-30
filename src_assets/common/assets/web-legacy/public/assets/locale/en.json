@@ -599,6 +599,8 @@
     "virtual_display_mode_per_client": "Virtual Display (Per Client) — Recommended",
     "virtual_display_mode_shared": "Shared Virtual Display",
     "virtual_display_mode_label": "Virtual display mode",
+    "virtual_display_max_clients": "Virtual display client limit",
+    "virtual_display_max_clients_desc": "Allow 1 to 8 paired clients to own virtual displays (default 4). Normal streams and Remote Monitor share this limit. Linux is also limited by its provisioned private outputs. Lowering the limit keeps existing displays until their owners release them.",
     "remote_monitor_options_title": "Remote Monitor options",
     "remote_monitor_options_desc": "Choose what Remote Monitor sends and when its extra Windows screen is removed.",
     "remote_monitor_mute_audio": "Mute audio on Remote Monitor",

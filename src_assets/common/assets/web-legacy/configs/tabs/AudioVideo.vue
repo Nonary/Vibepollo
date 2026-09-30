@@ -492,6 +492,12 @@ function selectVirtualDisplayLayout(v: unknown) {
             <div
               class="mt-4 rounded-lg border border-dark/10 bg-surface/20 p-3 dark:border-light/10 sm:p-4"
             >
+              <ConfigFieldRenderer
+                v-if="platform === 'windows' || platform === 'linux'"
+                setting-key="virtual_display_max_clients"
+                v-model="config.virtual_display_max_clients"
+                class="mb-3"
+              />
               <n-checkbox v-model:checked="config.remote_monitor_confirm_app_replacement">
                 <div class="flex flex-col">
                   <span class="text-sm font-medium">

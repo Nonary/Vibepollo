@@ -1,5 +1,7 @@
 #pragma once
 
+#include "virtual_display_capacity.h"
+
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -26,7 +28,7 @@ namespace remote_session {
   inline constexpr std::int32_t secondary_terminate_id = 2147483514;
   inline constexpr std::int32_t secondary_monitor_id = 2147483515;
   inline constexpr std::int32_t secondary_input_id = 2147483516;
-  inline constexpr std::size_t max_client_vdds = 4;
+  inline constexpr std::size_t max_client_vdds = virtual_display_capacity::max_clients;
 
   enum class role_e : std::uint8_t { none, input, monitor, game };
   enum class control_e : std::uint8_t { none, resume, disconnect_monitor, disconnect_input, terminate, monitor, input, running_game };

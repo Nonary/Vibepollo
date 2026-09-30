@@ -1,5 +1,7 @@
 #pragma once
 
+#include "virtual_display_capacity.h"
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -13,7 +15,8 @@
 namespace remote_display_topology {
 
   inline constexpr unsigned int layout_version = 1;
-  inline constexpr std::size_t max_client_identities = 4;
+  inline constexpr std::size_t default_client_identities = virtual_display_capacity::default_clients;
+  inline constexpr std::size_t max_client_identities = virtual_display_capacity::max_clients;
 
   enum class lifecycle_e { desired, leased, applying, ready, retryable, released };
 
@@ -58,6 +61,9 @@ namespace remote_display_topology {
     // prevents a callback from treating a GUID/device-id lookup as readiness.
     std::function<std::optional<std::string>(const std::string &client_uuid, const mode_t &mode)> exact_target_has_current_mode_and_dxgi;
     std::function<bool(const std::string &client_uuid)> remove_owned_display;
+    // Total supported client identities, including retained normal/monitor owners.
+    // Linux reports only provisioned managed outputs, never a desired pool size.
+    std::function<std::size_t()> client_identity_capacity;
   };
 
   struct activation_result_t {
@@ -155,6 +161,7 @@ namespace remote_display_topology {
       std::string warning;
     };
 
+    std::size_t client_identity_capacity_locked() const;
     activation_result_t activate_locked(const std::string &client_uuid, client_state_t &state);
     struct capture_reference_t;
     void release_normal_game_identity_locked(const std::string &client_uuid, client_state_t &state);

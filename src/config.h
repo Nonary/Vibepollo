@@ -160,6 +160,8 @@ namespace config {
     virtual_display_mode_e virtual_display_mode;
     virtual_display_layout_e virtual_display_layout;
 
+    int virtual_display_max_clients;  ///< Shared normal-game/Remote Monitor client identity limit (1..8).
+
     bool remote_monitor_mute_audio;  ///< Do not capture or transmit audio for Remote Monitor sessions.
     bool remote_monitor_disconnect_on_stream_end;  ///< Release a Remote Monitor when its RTSP stream ends.
     bool remote_monitor_disconnect_on_client_disconnect;  ///< Release a Remote Monitor when its paired client transport disconnects.

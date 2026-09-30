@@ -4,6 +4,7 @@
  */
 
 #include "private_display.h"
+#include "private_display_capacity.h"
 #include "display_power.h"
 #include "display_helper_process.h"
 #include "display_restore_dispatcher.h"
@@ -2043,6 +2044,10 @@ namespace platf::linux_private_display {
 
   std::vector<std::string> private_output_names() {
     return configured_outputs();
+  }
+
+  std::size_t client_output_capacity() {
+    return configured_client_output_capacity(configured_outputs(), discover_managed_outputs(), connector_is_connected);
   }
 
   std::optional<display_device::EnumeratedDeviceList> enumerate_devices(

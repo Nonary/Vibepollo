@@ -1668,6 +1668,10 @@
           "description": "Optional comma-separated DRM connector names reserved for private streams. Leave empty to use the four-output managed pool. On Linux 7.1+, Vibepollo provides GPU-attached HDR10 and 10-bit output; HDR uses direct KMS capture, KWin is recommended for SDR, and managed display creation fails if the custom driver is unavailable.",
           "label": "Linux private display connectors"
         },
+        "virtual_display_max_clients": {
+          "label": "Virtual display client limit",
+          "description": "Allow 1 to 8 paired clients to own virtual displays (default 4). Normal streams and Remote Monitor share this limit. Linux is also limited by its provisioned private outputs. Lowering the limit keeps existing displays until their owners release them."
+        },
         "remote_monitor_mute_audio": {
           "description": "Send picture and input without sending game or desktop audio to the Remote Monitor client.",
           "label": "Mute audio on Remote Monitor"

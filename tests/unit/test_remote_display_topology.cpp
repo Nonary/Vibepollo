@@ -4,6 +4,7 @@
 
 #include "src/remote_display_topology.h"
 #include "src/platform/linux/private_display_resume_policy.h"
+#include "src/platform/linux/private_display_capacity.h"
 
 namespace {
   using remote_display_topology::mode_t;
@@ -1015,4 +1016,130 @@ TEST(RemoteDisplayTopology, MissingAnchorAppendsAndReleasingOnePeerPreservesTheO
   EXPECT_TRUE(state["warnings"].empty());
   ASSERT_FALSE(applied.empty());
   EXPECT_EQ(applied.back(), std::vector<std::string>({"two"}));
+}
+
+TEST(RemoteDisplayTopology, ConfiguredSixClientsShareSlotsAndRejectBeforeCreatingSeventh) {
+  remote_display_topology::coordinator_t coordinator;
+  int creates = 0;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&creates](const auto &, const auto &, const auto &) { ++creates; return true; },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; },
+    .client_identity_capacity = [] { return 6; },
+  });
+  const auto normal = coordinator.reserve_normal_game_identity("one", "One", {});
+  ASSERT_TRUE(normal.accepted);
+  EXPECT_TRUE(coordinator.activate_or_resume("one", "One", {}, 1).ready);
+  for (const auto &uuid : {"two", "three", "four", "five", "six"}) {
+    EXPECT_TRUE(coordinator.activate_or_resume(uuid, uuid, {}, 1).ready);
+  }
+  EXPECT_EQ(creates, 6);
+  EXPECT_FALSE(coordinator.reserve_normal_game_identity("seven", "Seven", {}).accepted);
+  const auto rejected = coordinator.activate_or_resume("seven", "Seven", {}, 1);
+  EXPECT_FALSE(rejected.accepted);
+  EXPECT_NE(rejected.error.find("6 paired-client identities"), std::string::npos);
+  EXPECT_EQ(creates, 6);
+  EXPECT_EQ(coordinator.snapshot({})["capacity"], (nlohmann::json {{"max", 6}, {"used", 6}}));
+}
+
+TEST(RemoteDisplayTopology, CapacityReductionRetainsOwnersAndCaptureUntilRelease) {
+  remote_display_topology::coordinator_t coordinator;
+  std::size_t capacity = 6;
+  std::vector<std::string> removed;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; },
+    .remove_owned_display = [&removed](const auto &uuid) { removed.push_back(uuid); return true; },
+    .client_identity_capacity = [&capacity] { return capacity; },
+  });
+  const auto normal = coordinator.reserve_normal_game_identity("normal", "Normal", {});
+  ASSERT_TRUE(normal.accepted);
+  auto capture = coordinator.retain_normal_game_capture("normal", normal.token);
+  for (const auto &uuid : {"one", "two", "three", "four", "five"}) {
+    ASSERT_TRUE(coordinator.activate_or_resume(uuid, uuid, {}, 1).ready);
+  }
+  capacity = 4;
+  EXPECT_EQ(coordinator.snapshot({})["capacity"], (nlohmann::json {{"max", 4}, {"used", 6}}));
+  EXPECT_TRUE(removed.empty());
+  EXPECT_TRUE(coordinator.activate_or_resume("five", "Five", {}, 2).ready);
+  coordinator.transport_lost("five", 2);
+  EXPECT_FALSE(coordinator.activate_or_resume("new", "New", {}, 1).accepted);
+  coordinator.release_normal_game_identity("normal", normal.token);
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 6);
+  capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 5);
+  coordinator.explicit_release("five", 2, "owner release");
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 4);
+  EXPECT_FALSE(coordinator.reserve_normal_game_identity("new", "New", {}).accepted);
+  coordinator.explicit_release("four", 1, "owner release");
+  EXPECT_TRUE(coordinator.reserve_normal_game_identity("new", "New", {}).accepted);
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 4);
+}
+
+TEST(RemoteDisplayTopology, CapacityNeverExceedsDriverEightOrInventsMissingLinuxOutputs) {
+  remote_display_topology::coordinator_t coordinator;
+  std::size_t capacity = 100;
+  coordinator.set_runtime_callbacks({.client_identity_capacity = [&capacity] { return capacity; }});
+  EXPECT_EQ(coordinator.snapshot({})["capacity"]["max"], 8);
+  for (int i = 0; i < 8; ++i) EXPECT_TRUE(coordinator.reserve_normal_game_identity(std::to_string(i), "Client", {}).accepted);
+  EXPECT_FALSE(coordinator.reserve_normal_game_identity("ninth", "Ninth", {}).accepted);
+  capacity = 0;
+  EXPECT_EQ(coordinator.snapshot({})["capacity"]["max"], 0);
+  EXPECT_TRUE(coordinator.reserve_normal_game_identity("0", "Existing", {}).accepted);
+  EXPECT_FALSE(coordinator.reserve_normal_game_identity("new", "New", {}).accepted);
+
+  using platf::linux_private_display::configured_client_output_capacity;
+  const auto no_connected_output = [](const auto &) { return false; };
+  const std::vector<std::string> legacy {"Virtual-1", "Virtual-2", "Virtual-3", "Virtual-4"};
+  const std::vector<std::string> expanded {"Virtual-1", "Virtual-2", "Virtual-3", "Virtual-4", "Virtual-5", "Virtual-6", "Virtual-7", "Virtual-8"};
+  EXPECT_EQ(configured_client_output_capacity(expanded, legacy, no_connected_output), 4);
+  EXPECT_EQ(configured_client_output_capacity(expanded, expanded, no_connected_output), 8);
+  EXPECT_EQ(configured_client_output_capacity({"Virtual-6", "Virtual-6", "HDMI-1", "Virtual-9"}, expanded, no_connected_output), 1);
+  EXPECT_EQ(configured_client_output_capacity(expanded, {}, no_connected_output), 0);
+}
+
+TEST(RemoteDisplayTopology, ExplicitPhysicalOutputAdmitsFirstNormalStreamOrRemoteMonitor) {
+  using platf::linux_private_display::configured_client_output_capacity;
+  // Match the production DRM validator: the provisioned physical/dummy output
+  // is connected; the other configured names do not resolve to valid outputs.
+  const auto connected_output = [](const auto &name) { return name == "HDMI-A-1"; };
+  const std::vector<std::string> configured {"HDMI-A-1", "HDMI-A-1", "HDMI-A-missing", "Virtual-9"};
+  ASSERT_EQ(configured_client_output_capacity(configured, {}, connected_output), 1);
+  EXPECT_EQ(configured_client_output_capacity({"HDMI-A-1", "Virtual-1", "Virtual-1"}, {"Virtual-1"}, connected_output), 2);
+
+  for (const bool remote_monitor : {false, true}) {
+    remote_display_topology::coordinator_t coordinator;
+    coordinator.set_runtime_callbacks({
+      .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+      .apply_composed_topology = [](const auto &) { return true; },
+      .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) { return std::optional<std::string> {"HDMI-A-1"}; },
+      .client_identity_capacity = [&] { return configured_client_output_capacity(configured, {}, connected_output); },
+    });
+    if (remote_monitor) {
+      EXPECT_TRUE(coordinator.activate_or_resume("first", "First", {}, 1).ready);
+    } else {
+      EXPECT_TRUE(coordinator.reserve_normal_game_identity("first", "First", {}).accepted);
+    }
+    EXPECT_EQ(coordinator.snapshot({})["capacity"], (nlohmann::json {{"max", 1}, {"used", 1}}));
+    EXPECT_FALSE(coordinator.reserve_normal_game_identity("second", "Second", {}).accepted);
+    EXPECT_FALSE(coordinator.activate_or_resume("second", "Second", {}, 1).accepted);
+  }
+}
+
+TEST(RemoteDisplayTopology, MissingExplicitOutputsCannotAdmitAnyClient) {
+  using platf::linux_private_display::configured_client_output_capacity;
+  const std::vector<std::string> configured {"HDMI-A-missing", "HDMI-A-missing", "Virtual-9"};
+  const auto no_connected_output = [](const auto &) { return false; };
+  remote_display_topology::coordinator_t coordinator;
+  std::size_t created = 0;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&](const auto &, const auto &, const auto &) { ++created; return true; },
+    .client_identity_capacity = [&] { return configured_client_output_capacity(configured, {}, no_connected_output); },
+  });
+  EXPECT_EQ(coordinator.snapshot({})["capacity"]["max"], 0);
+  EXPECT_FALSE(coordinator.reserve_normal_game_identity("normal", "Normal", {}).accepted);
+  EXPECT_FALSE(coordinator.activate_or_resume("remote", "Remote", {}, 1).accepted);
+  EXPECT_EQ(created, 0);
 }

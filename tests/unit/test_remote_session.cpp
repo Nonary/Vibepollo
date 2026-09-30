@@ -559,3 +559,15 @@ TEST(RemoteSession, LayoutGraphRejectsInvalidAnchorsCyclesAndDuplicatePrimary) {
   EXPECT_FALSE(remote_session::validate_layout({{"a", "physical", "missing", "right", "center", 0, false}}, clients, physical, &error));
   EXPECT_FALSE(remote_session::validate_layout({{"a", "physical", "DISPLAY1", "right", "center", 0, true}, {"b", "physical", "DISPLAY1", "right", "center", 0, true}}, clients, physical, &error));
 }
+
+TEST(RemoteSession, PendingRegistrySupportsEightClientsAndKeepsItsBound) {
+  remote_session::pending_registry_t registry;
+  const auto expiry = std::chrono::steady_clock::now() + std::chrono::minutes(1);
+  for (std::uint32_t id = 1; id <= 16; ++id) {
+    EXPECT_TRUE(registry.add({.launch_id = id, .client_uuid = std::to_string((id - 1) / 2), .crypto_binding = std::to_string(id), .encrypted = true, .role = remote_session::role_e::monitor, .expires_at = expiry}));
+  }
+  EXPECT_FALSE(registry.add({.launch_id = 17, .client_uuid = "ninth", .crypto_binding = "new", .encrypted = true, .expires_at = expiry}));
+  EXPECT_TRUE(registry.match_encrypted("7", "16", std::chrono::steady_clock::now()));
+  registry.erase(16);
+  EXPECT_TRUE(registry.add({.launch_id = 17, .client_uuid = "replacement", .crypto_binding = "new", .encrypted = true, .expires_at = expiry}));
+}

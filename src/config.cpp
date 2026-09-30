@@ -928,6 +928,7 @@ namespace config {
     video_t::virtual_display_mode_e::per_client,  // virtual_display_mode
     video_t::virtual_display_layout_e::exclusive,  // virtual_display_layout
 
+    4,  // virtual_display_max_clients
     false,  // remote_monitor_mute_audio
     false,  // remote_monitor_disconnect_on_stream_end
     false,  // remote_monitor_disconnect_on_client_disconnect
@@ -1924,6 +1925,7 @@ namespace config {
     }
 #endif
     generic_f(vars, "virtual_display_layout", video.virtual_display_layout, virtual_display_layout_from_view);
+    int_between_f(vars, "virtual_display_max_clients", video.virtual_display_max_clients, {1, 8});
     bool_f(vars, "remote_monitor_mute_audio", video.remote_monitor_mute_audio);
     bool_f(vars, "remote_monitor_disconnect_on_stream_end", video.remote_monitor_disconnect_on_stream_end);
     bool_f(vars, "remote_monitor_disconnect_on_client_disconnect", video.remote_monitor_disconnect_on_client_disconnect);

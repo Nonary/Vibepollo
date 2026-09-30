@@ -1298,7 +1298,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             Replacing the module file does not replace a module already loaded by the compositor.
             Compare <code>modinfo -F version vibeshine_drm</code> with
             <code>cat /sys/module/vibeshine_drm/version</code> and reboot before testing when they differ.
-            The module supports Linux 6.16 or newer and exposes four independent virtual connectors
+            The module supports Linux 6.16 or newer and exposes eight independent virtual connectors
             with a deterministic HDR10 EDID, BT.2020/PQ metadata, 8-16 bits per component, and
             10-bit RGB plane formats. Vibepollo enables one only for a stream, applies the requested
             mode, layout, and HDR state through KScreen, captures that exact connector, and restores
@@ -1371,6 +1371,23 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Combine the primary + isolated behaviors: the virtual display becomes primary while remaining far away from the physical monitors.</td>
     </tr>
 </table>
+
+### virtual_display_max_clients
+
+Maximum paired-client identities that may own virtual displays at once, from
+`1` to `8`. The default is `4`; set `virtual_display_max_clients = 6` to allow
+six clients. Normal game streams and Remote Monitor share one slot when they
+belong to the same paired client. Retained or retryable displays still own a
+slot until explicitly released. Lowering the setting does not unplug existing
+owners; it prevents new identities until usage falls below the limit.
+
+The Windows driver supports eight temporary per-client displays, independently
+of the permanent-display setting. Linux also clamps this limit to configured
+outputs actually present in its managed kernel pool. New Linux pools provision
+eight outputs. An existing four-output pool is preserved during updates; reboot
+or safely reprovision the pool with the host and compositor stopped before
+requesting more than four clients. The topology editor reports the effective
+limit. Arbitrarily many displays are not supported.
 
 ### remote_monitor_mute_audio
 
