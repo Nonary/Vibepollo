@@ -7,13 +7,25 @@
 // standard includes
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <vector>
 
 // platform includes
 #include <CoreGraphics/CoreGraphics.h>
 
+namespace video {
+  struct config_t;
+}
+
 namespace platf {
+  class display_t;
+
   bool is_screen_capture_allowed();
+
+  /**
+   * @brief A display that captures nothing and produces black frames, for Remote Input streams.
+   */
+  std::shared_ptr<display_t> black_display(const video::config_t &config);
 
   /**
    * @brief Set up this process's AppKit session once. Call on the main thread.
