@@ -592,6 +592,12 @@ sunshine_register_component(NAME test_component_log_sessions TEST_SOURCE unit/te
     LINK_LIBRARIES Boost::log Boost::asio Boost::crc Boost::format ZLIB::ZLIB ${SUNSHINE_TEST_SOCKET_LIBRARIES})
 sunshine_register_component(NAME test_component_logging_policy TEST_SOURCE unit/test_logging.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/logging_policy.cpp")
+# Exercise the Windows SCM calls with a narrow API shim on non-Windows hosts.
+if(NOT WIN32)
+    sunshine_register_component(NAME test_component_windows_service_startup
+        TEST_SOURCE unit/platform/windows/test_service_startup.cpp
+        INCLUDE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/support/windows_service_api")
+endif()
 sunshine_register_component(NAME test_component_entry_metadata TEST_SOURCE unit/test_entry_handler.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/entry_metadata.cpp")
 sunshine_register_component(NAME test_component_config_http_policy TEST_SOURCE unit/test_config_http_policy.cpp

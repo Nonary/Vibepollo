@@ -47,6 +47,38 @@
       </section>
 
       <section v-if="platform === 'windows'" class="troubleshoot-card">
+        <h2 class="text-base font-semibold">{{ $t('service_startup.title') }}</h2>
+        <p class="text-xs opacity-70">{{ $t('service_startup.description') }}</p>
+        <label class="flex items-center gap-2 mt-3">
+          <input
+            v-model="serviceStartupDraft"
+            type="checkbox"
+            :disabled="serviceStartupBusy || serviceStartup?.can_change !== true"
+            @change="saveServiceStartup"
+          />
+          <span>{{ $t('service_startup.automatic') }}</span>
+        </label>
+        <p class="text-xs mt-2">
+          {{ $t('service_startup.mode') }}:
+          {{
+            $t(
+              'service_startup.' +
+                (serviceStartup?.start_type === 'automatic'
+                  ? 'automatic_mode'
+                  : serviceStartup?.start_type || 'unknown'),
+            )
+          }}
+        </p>
+        <p v-if="serviceStartup?.error" class="text-xs mt-2">{{ serviceStartup.error }}</p>
+        <n-alert v-if="serviceStartupError" type="error" class="mt-3">{{
+          serviceStartupError
+        }}</n-alert>
+        <n-alert v-if="serviceStartupSaved" type="success" class="mt-3">{{
+          $t('service_startup.saved')
+        }}</n-alert>
+      </section>
+
+      <section v-if="platform === 'windows'" class="troubleshoot-card">
         <div class="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <h2 class="text-base font-semibold text-dark dark:text-light">
@@ -360,6 +392,21 @@ const store = useConfigStore();
 const authStore = useAuthStore();
 const { t } = useI18n();
 const platform = computed(() => store.metadata.platform);
+
+interface ServiceStartup {
+  status?: boolean;
+  installed?: boolean;
+  automatic?: boolean;
+  start_type?: string;
+  can_change?: boolean;
+  error?: string;
+}
+
+const serviceStartup = ref<ServiceStartup | null>(null);
+const serviceStartupDraft = ref(false);
+const serviceStartupBusy = ref(false);
+const serviceStartupError = ref('');
+const serviceStartupSaved = ref(false);
 
 const crashDump = ref<CrashDumpStatus | null>(null);
 const crashDumpAvailable = computed(() => isCrashDumpEligible(crashDump.value));
@@ -908,6 +955,56 @@ async function refreshCrashDumpStatus() {
   }
 }
 
+async function refreshServiceStartup() {
+  serviceStartupError.value = '';
+  serviceStartup.value = null;
+  if (platform.value !== 'windows') return;
+  try {
+    const response = await http.get('/api/service/startup');
+    serviceStartup.value = response.data;
+    serviceStartupDraft.value = response.data.automatic === true;
+  } catch {
+    serviceStartupError.value = t('service_startup.unavailable');
+  }
+}
+
+async function saveServiceStartup() {
+  if (serviceStartupBusy.value || serviceStartup.value?.can_change !== true) return;
+  serviceStartupBusy.value = true;
+  serviceStartupError.value = '';
+  serviceStartupSaved.value = false;
+  try {
+    const response = await http.post('/api/service/startup', {
+      automatic: serviceStartupDraft.value,
+    });
+    serviceStartup.value = response.data;
+    serviceStartupDraft.value = response.data.automatic === true;
+    if (response.data.status !== true)
+      throw new Error(response.data.error || t('service_startup.unavailable'));
+    serviceStartupSaved.value = true;
+  } catch (cause) {
+    const error = cause instanceof Error ? cause.message : t('service_startup.unavailable');
+    await refreshServiceStartup();
+    serviceStartupError.value = error;
+  } finally {
+    serviceStartupBusy.value = false;
+  }
+}
+
+// Host metadata can arrive after this route mounts; wait for its platform.
+watch(
+  platform,
+  async (value) => {
+    if (value !== 'windows') {
+      serviceStartup.value = null;
+      return;
+    }
+    await authStore.waitForAuthentication();
+    await refreshServiceStartup();
+  },
+  { immediate: true },
+);
+
 async function refreshVulkanHdrLayerStatus() {
   try {
     if (platform.value === 'windows') {
@@ -1050,6 +1147,7 @@ onMounted(async () => {
     void refreshLogs();
     void refreshCrashDumpStatus();
     void refreshVulkanHdrLayerStatus();
+    void refreshServiceStartup();
   });
 
   await authStore.waitForAuthentication();

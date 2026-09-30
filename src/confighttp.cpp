@@ -73,6 +73,7 @@
 #include "webrtc_stream.h"
 
 #ifdef _WIN32
+  #include "platform/windows/service_startup.h"
   #include "platform/windows/virtual_display_cleanup.h"
   #include "platform/windows/virtual_display.h"
 #elif defined(__linux__)
@@ -5566,6 +5567,42 @@ namespace confighttp {
   }
 #endif
 
+#ifdef _WIN32
+  nlohmann::json serviceStartupResponse(const service_ctrl::startup_state &state) {
+    const char *mode = state.start_type == SERVICE_AUTO_START   ? "automatic" :
+                       state.start_type == SERVICE_DEMAND_START ? "manual" :
+                       state.start_type == SERVICE_DISABLED     ? "disabled" :
+                                                                  "unknown";
+    return {{"status", state.status}, {"installed", state.installed}, {"automatic", state.automatic}, {"start_type", mode}, {"can_change", state.can_change}, {"error", state.error}, {"error_code", state.error_code}};
+  }
+
+  void getServiceStartup(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    send_response(response, serviceStartupResponse(service_ctrl::get_service_startup()));
+  }
+
+  void saveServiceStartup(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+    try {
+      const auto body = nlohmann::json::parse(request->content.string());
+      if (!body.is_object() || !body.contains("automatic") || !body["automatic"].is_boolean()) {
+        bad_request(response, request, "automatic must be a boolean");
+        return;
+      }
+      send_response(response, serviceStartupResponse(service_ctrl::set_service_startup(body["automatic"].get<bool>())));
+    } catch (const std::exception &e) {
+      bad_request(response, request, e.what());
+    }
+  }
+#endif
+
   /**
    * @brief Restart Apollo.
    * @param response The HTTP response object.
@@ -6141,6 +6178,10 @@ namespace confighttp {
     register_api_route("^/api/configLocale$", "GET", getLocale);
     register_api_route("^/api/restart$", "POST", restart);
     register_api_route("^/api/quit$", "POST", quit);
+#ifdef _WIN32
+    register_api_route("^/api/service/startup$", "GET", getServiceStartup);
+    register_api_route("^/api/service/startup$", "POST", saveServiceStartup);
+#endif
     register_blocking_api_route("^/api/reset-display-device-persistence$", "POST", resetDisplayDevicePersistence);
 #if defined(_WIN32)
     register_blocking_api_route("^/api/display/terminate_virtual$", "POST", postTerminateVirtualDisplay);
