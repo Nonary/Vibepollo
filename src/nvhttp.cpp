@@ -4433,6 +4433,20 @@ namespace nvhttp {
           return;
         }
 
+        if (synthetic_control == remote_session::control_e::input && owner.role == remote_session::role_e::input) {
+          // Replace this client's previous Remote Input session, which may
+          // still be closing, as Disconnect Input would.
+          if (const auto generation = remote_owner_generation(request_client_identity.uuid, remote_session::role_e::input)) {
+            (void) rtsp_stream::disconnect_remote_role_session(
+              request_client_identity.uuid,
+              remote_session::role_e::input,
+              *generation,
+              false
+            );
+            forget_remote_owner(request_client_identity.uuid, remote_session::role_e::input, *generation);
+          }
+        }
+
         const bool no_active_sessions = !has_stream_session_activity();
         const auto runtime_app = proc::proc.resolve_app(
           "0",

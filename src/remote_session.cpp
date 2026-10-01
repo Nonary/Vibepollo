@@ -179,6 +179,9 @@ namespace remote_session {
       result.catalogue = {synthetic(control_e::resume), synthetic(control_e::disconnect_monitor)};
       return result;
     }
+    // Remote Input stays listed for its own client. Moonlight fetches the app
+    // list as it leaves the stream, before the host has torn the session down,
+    // and doesn't fetch it again, so hiding the tile then loses it.
     if (!game.running && !remote_sessions_active && owner.role == role_e::none) {
       result.catalogue = std::move(visible_configured);
       result.catalogue.push_back(synthetic(control_e::input));
@@ -189,7 +192,7 @@ namespace remote_session {
       result.free = false;
       result.current_game = game.app.id;
       result.catalogue = visible_configured;
-      if (owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
+      result.catalogue.push_back(synthetic(control_e::input));
       result.catalogue.push_back(synthetic(control_e::monitor));
       return result;
     }
@@ -204,12 +207,12 @@ namespace remote_session {
         prioritized_secondary_control(control_e::terminate),
       };
       result.catalogue.insert(result.catalogue.end(), visible_configured.begin(), visible_configured.end());
-      if (owner.role != role_e::input) result.catalogue.push_back(prioritized_secondary_control(control_e::input));
+      result.catalogue.push_back(prioritized_secondary_control(control_e::input));
       result.catalogue.push_back(prioritized_secondary_control(control_e::monitor));
       return result;
     }
     result.catalogue = visible_configured;
-    if (owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
+    result.catalogue.push_back(synthetic(control_e::input));
     result.catalogue.push_back(synthetic(control_e::monitor));
     return result;
   }
@@ -228,7 +231,9 @@ namespace remote_session {
         break;
       case control_e::input:
         result.permission = permission_e::launch;
-        result.allowed = caller.may_launch && owner.role == role_e::none;
+        // The same client relaunching replaces its previous Remote Input
+        // session, which may still be closing.
+        result.allowed = caller.may_launch && (owner.role == role_e::none || owner.role == role_e::input);
         break;
       case control_e::monitor:
         result.permission = permission_e::launch;
