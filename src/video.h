@@ -91,7 +91,6 @@ namespace video {
     // framing aligns to, and the framing the client asked for in ANNOUNCE.
     int packetsize = 0;
     pyrowave::policy::framing_e pyrowave_framing = pyrowave::policy::framing_e::records;
-    bool pyrowave_compression = false;
     std::size_t pyrowave_min_parity_shards = 2;
     std::uint64_t pyrowave_peer_link_bps = 0;
   };
@@ -364,8 +363,6 @@ namespace video {
     std::size_t pyrowave_critical_bytes = 0;
     int pyrowave_detail_fec_percentage = 0;
     std::size_t pyrowave_frame_wire_budget = 0;
-    // Record-start flags are derived before moving the compressed wire bytes.
-    std::vector<std::uint8_t> pyrowave_record_start_shards;
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
     // Raw capture/QPC-derived timestamp before pacing adjustments.
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp;

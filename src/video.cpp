@@ -47,8 +47,6 @@ extern "C" {
 #include "platform/common.h"
 #include "process.h"
 #include "pyrowave_host.h"
-#include "pyrowave_protocol.h"
-#include "pyrowave_compression/pyrowavecompression.h"
 #include "sync.h"
 #include "video.h"
 #include "video_encoder_probe_policy.h"
@@ -6206,9 +6204,9 @@ namespace video {
   /**
    * @brief Encode loop of a PyroWave session (docs/pyrowave-protocol.md).
    *
-   * PyroWave bypasses encoder_t. The base codec remains intra-coded; optional
-   * compression packs independent detail groups with fast LZ4. A bitrate change only moves the per-frame byte budget.
-   * When no new capture arrives within the minimum-FPS
+   * PyroWave bypasses encoder_t: every frame is intra-coded, so IDR requests and
+   * reference frame invalidation need no action, and a bitrate change only moves the
+   * per-frame byte budget. When no new capture arrives within the minimum-FPS
    * interval (by default a fifth of the stream rate), the last image is encoded again.
    *
    * @return true when the capture side is reinitializing and the session should
@@ -6276,11 +6274,6 @@ namespace video {
     std::vector<std::uint8_t> frame;
     std::size_t critical_bytes = 0;
     pyrowave::policy::detail_fec_controller_t detail_fec_controller(config.framerate);
-    PyroWaveCompression::Encoder compressor;
-    const auto compression_shard_payload = std::size_t(std::max(config.packetsize - pyrowave::protocol::SHARD_OVERHEAD_BYTES, 0));
-    logging::min_max_avg_periodic_logger<std::size_t> compression_input_logger(debug, "PyroWave original frame", "bytes", 5s);
-    logging::min_max_avg_periodic_logger<std::size_t> compression_wire_logger(debug, "PyroWave compressed frame", "bytes", 5s);
-    logging::time_delta_periodic_logger compression_duration_logger(debug, "PyroWave compression duration", 5s);
     while (true) {
       const bool reinit_pending = reinit_event.peek() && frame_nr > 1;
       if (shutdown_event->peek() || !images->running() || reinit_pending) {
@@ -6325,35 +6318,10 @@ namespace video {
         continue;
       }
 
-      // Learn detail parity from native records before applying independent compression.
       const auto detail_fec = params.critical_fec && params.framing == pyrowave::policy::framing_e::records ?
                                 detail_fec_controller.observe(frame, submitted_at, config.bitrate) :
                                 pyrowave::policy::detail_fec_t {};
-      std::vector<std::uint8_t> record_starts;
-      if (config.pyrowave_compression) {
-        PyroWaveCompression::EncodedFrame encoded;
-        std::string error;
-        const auto original_bytes = frame.size();
-        compression_duration_logger.first_point_now();
-        const bool compressed = compressor.encode(frame.data(), frame.size(), critical_bytes, compression_shard_payload, encoded, error);
-        compression_duration_logger.second_point_now_and_log();
-        if (compressed) {
-          record_starts = std::move(encoded.recordStartShards);
-          critical_bytes = encoded.criticalBytes;
-          frame = std::move(encoded.bytes);
-        } else {
-          // Native framing can fall back to an unpadded frame with no protected
-          // prefix at the transport ceiling. Compression is optional: send that
-          // independent frame rather than stalling delivery.
-          BOOST_LOG(warning) << "PyroWave compression unavailable; sending native frame: " << error;
-          const auto native_starts = pyrowave::policy::record_start_shards(frame, compression_shard_payload);
-          record_starts.assign(native_starts.begin(), native_starts.end());
-        }
-        compression_input_logger.collect_and_log(original_bytes);
-        compression_wire_logger.collect_and_log(frame.size());
-      }
       auto packet = std::make_unique<packet_raw_generic>(std::move(frame), frame_nr++, true);
-      packet->pyrowave_record_start_shards = std::move(record_starts);
       frame = {};
       packet->channel_data = channel_data;
       packet->pyrowave_critical_bytes = critical_bytes;

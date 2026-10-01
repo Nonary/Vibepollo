@@ -1466,7 +1466,7 @@ namespace stream {
       BOOST_LOG(debug) << "type [IDX_REQUEST_IDR_FRAME]"sv;
 
       saturating_add_relaxed(session->stats.idr_requests, 1u);
-      // Every PyroWave frame is independent, including compressed frames.
+      // Every PyroWave frame is intra-coded; the next frame already recovers.
       if (session->config.monitor.videoFormat == pyrowave::protocol::BITSTREAM_FORMAT) {
         return;
       }
@@ -1496,7 +1496,7 @@ namespace stream {
         << "firstFrame [" << firstFrame << ']' << std::endl
         << "lastFrame [" << lastFrame << ']';
 
-      // Ordinary PyroWave frames reference nothing (see the IDR handler).
+      // PyroWave frames reference nothing (see the IDR handler).
       if (session->config.monitor.videoFormat == pyrowave::protocol::BITSTREAM_FORMAT) {
         return;
       }
@@ -2390,12 +2390,9 @@ namespace stream {
 
         // PyroWave record framing: flag the shards that start with a record, where a
         // client that lost a record header resumes parsing.
-        std::vector<bool> record_starts;
-        if (session->config.monitor.pyrowave_compression) {
-          record_starts.assign(packet->pyrowave_record_start_shards.begin(), packet->pyrowave_record_start_shards.end());
-        } else if (critical_shards) {
-          record_starts = pyrowave::policy::record_start_shards({packet->data(), packet->data_size()}, payload_blocksize);
-        }
+        const auto record_starts = critical_shards ?
+                                     pyrowave::policy::record_start_shards({packet->data(), packet->data_size()}, payload_blocksize) :
+                                     std::vector<bool> {};
         std::size_t block_first_shard = 0;
 
         // Send burst diagnostics for frame_burst_logger.

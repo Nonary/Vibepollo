@@ -2344,24 +2344,16 @@ namespace rtsp_stream {
         respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
         return false;
       }
-      if (const auto it = args.find(pyrowave::protocol::ANNOUNCE_COMPRESSION); it != args.end() && it->second != "0"sv) {
-        // Compressed groups require explicit client support. Require
-        // both the exact version and an explicit feature bit; never silently switch.
-        if (it->second != "1"sv ||
-            !(pyrowave_features.value_or(0) & pyrowave::protocol::FEATURE_COMPRESSION) ||
-            config.monitor.pyrowave_framing != pyrowave::policy::framing_e::records) {
-          BOOST_LOG(warning) << "Unsupported PyroWave compression version or framing"sv;
-          respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
-          return false;
-        }
-        config.monitor.pyrowave_compression = true;
+      // Retired compression transports must not be negotiated as native framing.
+      if (const auto it = args.find("x-ss-video[0].pyrowaveCompression"sv); it != args.end() && it->second != "0"sv) {
+        respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+        return false;
       }
       BOOST_LOG(info) << "Client requested PyroWave: framing="sv
                       << (config.monitor.pyrowave_framing == pyrowave::policy::framing_e::records ? "records"sv : "length-prefixed"sv)
                       << ", features="sv << pyrowave_features.value_or(0)
                       << ", adaptiveFec="sv << (pyrowave_adaptive_fec ? "sent"sv : "absent"sv)
-                      << ", packetSize="sv << config.packetsize
-                      << ", compression="sv << config.monitor.pyrowave_compression;
+                      << ", packetSize="sv << config.packetsize;
     }
 
     const bool prefer_10bit_sdr = effective_10bit_sdr_requested(*session);

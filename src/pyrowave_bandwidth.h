@@ -6,14 +6,13 @@
 #include <cmath>
 
 // Keep identical in Vibeshine and Moonlight. Wire budgets include Ethernet
-// preamble/gap/FCS, IPv6, UDP, RTP and encrypted-video headers. Compression
-// savings are never needed to meet the cap.
+// preamble/gap/FCS, IPv6, UDP, RTP and encrypted-video headers.
 namespace pyrowave::bandwidth {
 struct transport_t {
     int packetsize = 1392;
     int critical_fec_percentage = 20;
     std::size_t min_parity_shards = 2;
-    std::size_t envelope_bytes = 0; // Independent compression has a raw fallback.
+    std::size_t envelope_bytes = 0;
 };
 constexpr std::size_t wire_overhead = 134;
 constexpr std::size_t frame_header = 8;

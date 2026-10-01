@@ -11,8 +11,8 @@ built from the same pyrowave commit; the RTSP handshake advertises it as
 PYROWAVE_BITSTREAM_ID in pyrowave_protocol.h.
 
 Local patch 0010-deterministic-record-padding.patch zeroes decoder-ignored
-sign bits and word-alignment tails on the GPU so identical coefficient records
-compress more consistently with optional independent LZ4 groups. It changes no decoded values or
+sign bits and word-alignment tails on the GPU so identical coefficients produce
+identical records. It changes no decoded values or
 Vulkan feature requirements. scripts/regenerate-pyrowave-block-packing.py
 refreshes only the packing program, preserving all other programs/reflection.
 

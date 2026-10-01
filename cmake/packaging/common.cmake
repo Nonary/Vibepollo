@@ -23,11 +23,7 @@ install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/"
         DESTINATION "${SUNSHINE_ASSETS_DIR}"
         PATTERN "web" EXCLUDE
         PATTERN "web-legacy" EXCLUDE)
-# Keep the linked LZ4 library's redistribution notice with runtime assets.
-install(FILES "${CMAKE_SOURCE_DIR}/third-party/lz4/LICENSE"
-        DESTINATION "${SUNSHINE_ASSETS_DIR}" RENAME "LZ4-LICENSE.txt" COMPONENT assets)
-configure_file("${CMAKE_SOURCE_DIR}/third-party/lz4/LICENSE"
-        "${CMAKE_CURRENT_BINARY_DIR}/assets/LZ4-LICENSE.txt" COPYONLY)
+
 # copy assets to build directory, for running without install
 file(GLOB_RECURSE ALL_ASSETS
         RELATIVE "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/" "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/*")

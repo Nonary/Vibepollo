@@ -49,7 +49,7 @@ namespace pyrowave::host {
     return policy::wire_budget_t {params.packetsize, params.critical_fec_percentage, params.min_parity_shards, 0u};
   }
 
-  /// Compression cannot increase the frame budget.
+  /// Maximum native bitstream size allowed by the negotiated transport.
   inline std::size_t bitstream_capacity(const session_params_t &params) {
     return policy::max_bitstream_bytes(params.packetsize,
       params.framing == policy::framing_e::length_prefixed, params.critical_fec);

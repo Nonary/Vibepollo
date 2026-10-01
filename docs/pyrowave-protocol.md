@@ -5,11 +5,9 @@ Arntzen's intra-only GPU wavelet codec, over its normal video stream. To use
 PyroWave or VRR playback with Vibepollo, install Nonary's
 [VRR Moonlight Client fork](https://github.com/Nonary/moonlight-qt). Select PyroWave
 explicitly in that client's codec settings; stock Moonlight does not support it.
-Every frame decodes independently. Optional fast LZ4 compression packs detail
-records into independent groups; it preserves coefficients and partial-frame
-recovery without references to earlier frames or acknowledgements. PyroWave needs substantial
-bandwidth and is intended for wired LANs; processing and delivery costs depend on
-the device, format, and scene.
+Every frame decodes independently, so a lost frame never needs a keyframe request.
+PyroWave needs substantial bandwidth and is intended for wired LANs; processing
+and delivery costs depend on the device, format, and scene.
 
 The same document lives in both repositories (`moonlight-qt/docs/pyrowave-protocol.md`
 and `Vibepollo/docs/pyrowave-protocol.md`). Change both together.
@@ -39,13 +37,6 @@ requirements.
 
 The host ORs these bits into `ServerCodecModeSupport` when PyroWave encoding works
 on the capture adapter:
-
-A PyroWave-capable host advertises `PyroWaveCompressionVersion=1`. This exact
-version is required for the optional PyroWave compression setting; clients fall
-back to ordinary PyroWave with a launch warning when the host does not support it.
-The setting is off by default and applies when the next stream connects. An
-existing enabled Hybrid preference migrates to compression; it never negotiates
-the abandoned frame-reference protocol.
 
 For a paired HTTPS `/serverinfo` request, a capable host also returns
 `PyroWaveHostLinkMbps` (zero if its outbound route is not a known physical wired
@@ -110,25 +101,23 @@ chosen automatically, since it needs a wired link with hundreds of Mbps to spare
 | `x-ss-video[0].pyrowaveAdaptiveFec` | `0` (its presence selects record framing) |
 | `x-ss-video[0].pyrowaveAdaptiveBitrate` | `0` |
 | `x-ss-video[0].pyrowaveFeatures` | bitmask, below |
-| `x-ss-video[0].pyrowaveCompression` | `1` only when compression version 1 is enabled and advertised |
 
 `pyrowaveFeatures` bits:
 
 | Bit | Name | Meaning |
 |---|---|---|
 | `0x1` | `PYROWAVE_FEATURE_RECORD_FRAMING` | Client parses record framing with padding records. |
-| `0x8` | `PYROWAVE_FEATURE_COMPRESSION` | Client expands independent LZ4 detail groups. |
 
 `0x2` was once reserved for partial-frame decoding. No bit is needed: ordinary
 record-framed frames use the partial-recovery layout when the negotiated packet size supports
 record alignment (see "Record framing"), and Vibepollo ignores `0x2`.
 
 The host rejects `bitStreamFormat=3` with `400 BAD REQUEST` when PyroWave is
-unavailable, like HEVC/AV1. Compression requests require the exact version `1`,
-record framing, and feature `0x8`; unsupported combinations are rejected. A
-compression client sends features `0x9`. The old Hybrid feature `0x4` and
-`pyrowaveHybrid` attribute are retired; explicit nonzero Hybrid requests are
-rejected instead of reinterpreting their incompatible wire format.
+unavailable, like HEVC/AV1. The former compression and Hybrid transports are
+retired: the host no longer advertises `PyroWaveCompressionVersion`, and explicit
+nonzero `pyrowaveCompression` or `pyrowaveHybrid` requests are rejected. Clients
+must use native PyroWave framing. The former feature bits `0x4` and `0x8` do not
+enable a transport mode.
 
 Colour: the stock `x-nv-video[0].encoderCscMode` selects range and SDR matrix
 exactly as for the other codecs. 10-bit streams on an HDR display use BT.2020 PQ
@@ -142,7 +131,7 @@ PyroWave frames use Vibepollo's existing video transport: RTP, the
 AES-GCM, and the 8-byte short frame header in front of the first payload. The frame
 header `frameType` is always `2` (IDR). moonlight-common-c trims the last payload
 to `lastPayloadLen` as it does for AV1. The host ignores IDR and
-reference-invalidation requests for all PyroWave sessions, including compression.
+reference-invalidation requests for PyroWave sessions.
 
 Every PyroWave frame is independent, so a lost packet costs at most
 that frame, and with record framing usually only the detail it carried (see
@@ -294,52 +283,6 @@ Our client detects the framing per frame: a record-framed frame starts with a
 sequence header, whose first word has bit 31 (`extended`) set, while a packet count
 never does.
 
-### Independent compression version 1
-
-After native encoding and ordinary record framing, the host preserves the sequence
-header and the entire coarse-data prefix byte for byte. Detail records are grouped
-into at most 64 KiB and compressed with fast LZ4 (acceleration 1). A 4 KiB sample
-skips full compression when savings look unlikely. There is no XOR against old
-frames, omitted unchanged detail, retained reference cache, frame ID or ACK.
-
-Every compressed group starts on an RTP shard boundary and carries four
-little-endian u32 words, followed by compressed bytes padded to four bytes:
-
-| Offset | Field |
-|---|---|
-| 0 | magic `0xFFFFFFFE` (distinct from padding `0xFFFFFFFF`) |
-| 4 | compressed payload byte count |
-| 8 | native group byte count, nonzero, word-aligned, at most 65,536 |
-| 12 | CRC32C of the exact native group bytes |
-
-Expanded groups contain only complete ordinary native detail records, with the
-current frame's sequence value. Sequence headers, padding, coarse records, nested
-compression and records outside the negotiated geometry are rejected. CRC32C uses
-the Castagnoli polynomial, with runtime SSE4.2 acceleration and a portable
-slicing-by-eight fallback. LZ4 decoding validates exact output size before GPU use.
-
-Groups that do not save their header/alignment overhead use native records. If
-repacking erases the total gain, the original frame is sent verbatim. Output never
-exceeds the original framed bytes; image quality and bitrate budget are unchanged.
-The encoder still initializes unused sign/alignment bits to avoid needless entropy.
-If compression cannot transform a native frame, the host sends that frame normally.
-This also handles native framing's unpadded fallback at the transport ceiling,
-where no protected coarse prefix is available for grouping.
-
-Unrepaired loss skips only affected detail records/groups. When a group header is
-lost, the receiver resumes at the next received shard marked as a record start.
-No damaged group reaches the GPU. The intact coarse prefix still permits a partial
-image; the next intact intra frame restores every coefficient immediately. A group
-may span several packets, so one lost shard can remove up to 64 KiB of detail.
-Critical FEC remains unchanged. Optional detail-FEC observation runs on native
-records before compression, and parity is assigned to the resulting wire shards.
-
-The shared implementation and wire contract are in
-`pyrowave/compression/` in Moonlight and `src/pyrowave_compression/` in Vibeshine;
-the shared C++ files and vendored LZ4 must match. This adds no future-frame
-lookahead or pacing delay. Compression/decompression still consume CPU time;
-savings and live-link delivery time depend on content and device.
-
 ## Decoding
 
 The decoder is cleared before every frame (`pyrowave_decoder_clear`), all records
@@ -460,23 +403,17 @@ FPS, chroma and HDR mode. The recommendation is converted from image bitrate
 to total wire bitrate, reserving the largest feasible critical FEC block (43
 parity packets at the default 20%), IPv6/encryption/Ethernet overhead, packet
 rounding and up to eight high-quality audio channels plus control. Detail is
-not charged a blanket 20% FEC rate. Compression savings do not increase the cap.
+not charged a blanket 20% FEC rate.
 
 Calibration uses the slowest of three warmed HTTPS transfers, limits that by
 both known wired link speeds, accounts for whole-packet pacing, and reserves
 20% for contention. It encodes only the image allowance left after overhead,
 then lowers quality within the developer's range to target less than 4 ms of
-estimated network serialization plus p99 decode/draw and compression time.
+estimated network serialization plus p99 decode/draw time.
 Results above that target require VRR even if average frame throughput keeps up.
 This estimate excludes capture, host GPU encoding and physical scanout; it is
 not a measured end-to-end latency or proof against live UDP loss.
 
-The optional compression checkbox selects independent per-frame lossless LZ4
-detail groups, with raw coarse data and raw fallback. Enabled calibration times
-compression on the client CPU, feeds compressed frames through the actual client
-expansion/decoder, and reports savings on its synthetic test image. It does not
-measure the remote host CPU's compression speed. Real scenes can save nothing;
-both compressed and raw frames must fit the same total bandwidth cap.
 The client remembers the measured cap for one hour on the same host/address
 and applies it at launch even if the bitrate slider was subsequently raised.
 
