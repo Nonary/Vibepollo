@@ -3846,7 +3846,7 @@ namespace nvhttp {
       }
       if (advertised_video.pyrowave_mode >= 2) {
         codec_mode_flags |= pyrowave::protocol::SCM_MASK_PYROWAVE;
-        tree.put("root.PyroWaveHybridVersion", pyrowave::protocol::HYBRID_VERSION);
+        tree.put("root.PyroWaveCompressionVersion", pyrowave::protocol::COMPRESSION_VERSION);
       }
       tree.put("root.ServerCodecModeSupport", codec_mode_flags);
 

@@ -138,7 +138,7 @@ PYROWAVE_BITSTREAM_ID in pyrowave_protocol.h.
 
 Local patch 0010-deterministic-record-padding.patch zeroes decoder-ignored
 sign bits and word-alignment tails on the GPU so identical coefficient records
-can be reused by optional hybrid encoding. It changes no decoded values or
+compress more consistently with optional independent LZ4 groups. It changes no decoded values or
 Vulkan feature requirements. scripts/regenerate-pyrowave-block-packing.py
 refreshes only the packing program, preserving all other programs/reflection.
 "@ | Set-Content -Encoding utf8 (Join-Path (Split-Path $Destination) "VENDOR.txt")

@@ -11,7 +11,6 @@
 #pragma once
 
 #include "pyrowave_policy.h"
-#include "pyrowave_hybrid/pyrowavehybrid.h"
 #include "video_colorspace.h"
 
 #include <algorithm>
@@ -38,21 +37,13 @@ namespace pyrowave::host {
     int bitrate_kbps = 0;  ///< Adjusted encoder bitrate (audio and control overhead removed).
     policy::framing_e framing = policy::framing_e::records;
     int packetsize = 0;  ///< Negotiated RTP packet size, for record alignment.
-    bool hybrid = false;  ///< Optional acknowledged-block reuse and LZ4 transport.
     bool critical_fec = false;  ///< Adds critical FEC; record framing also keeps a stable image budget for adaptive detail FEC.
   };
 
-  /// Keep the selected image budget unchanged unless it reaches the transport
-  /// ceiling. A native full-refresh fallback needs a 64-byte hybrid envelope.
+  /// Compression falls back to native records without increasing the image budget.
   inline std::size_t bitstream_capacity(const session_params_t &params) {
-    auto capacity = policy::max_bitstream_bytes(params.packetsize,
+    return policy::max_bitstream_bytes(params.packetsize,
       params.framing == policy::framing_e::length_prefixed, params.critical_fec);
-    if (!params.hybrid) {
-      return capacity;
-    }
-    capacity = std::min(capacity, PyroWaveHybrid::Limits {}.maxFrameBytes);
-    constexpr std::size_t hybrid_envelope_bytes = 64;
-    return capacity > hybrid_envelope_bytes ? capacity - hybrid_envelope_bytes : 0;
   }
 
   class encoder_t {
