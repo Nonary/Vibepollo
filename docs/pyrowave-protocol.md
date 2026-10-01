@@ -408,7 +408,12 @@ Output planes are three single-channel UNORM images (R8 for 8-bit streams, R16 f
 
 The client's configured bitrate (`x-ml-video.configuredBitrateKbps`) is used exactly
 as for the other codecs; the host subtracts audio and control overhead, but not
-FEC. The initial per-frame byte budget uses the negotiated frame rate. With record
+FEC at negotiation. Record-framed encoders then reduce the image budget to reserve
+baseline critical FEC, whole-packet rounding, and packet headers (conservatively
+including IPv6 and encryption). Only the critical block's maximum feasible parity
+is reserved; finer detail is not charged the critical FEC percentage. Record padding fits within the reduced image
+budget; if padding cannot fit, coarse records still lead the frame and retain FEC.
+The initial per-frame byte budget uses the negotiated frame rate. With record
 framing and FEC enabled, subsequent image budgets use the smaller of that interval
 and the elapsed time between encoding attempts, including repeated images.
 Slower submissions therefore keep the same encoded image ceiling and make room
@@ -417,7 +422,7 @@ framing retains elapsed-time image budgets. Dynamic bitrate changes update the
 ceiling using the new bitrate and the original negotiated FPS. The negotiated
 transport capacity also bounds the budget. Budgets are rounded
 down to codec words; a budget too small for the codec headers skips that attempt.
-Framing and network headers still add overhead to the codec bitrate.
+Length-prefixed compatibility framing retains its existing overhead accounting.
 
 When no new capture arrives, the host re-encodes the last image. By default the
 wait is one negotiated frame interval, so a static screen can recover promptly
@@ -440,3 +445,44 @@ HDR10. At 60 fps that is about 220 Mbps for 1080p and 290 Mbps for 1440p and 4K 
 | Aurora client | Negotiates PyroWave, record framing. Its decoder is an older WiVRn-derived PyroWave; frames decode only if its bitstream matches `186f0393`. |
 | Xbox / azafrob-protocol client | Negotiates PyroWave, length-prefixed framing. Bitstream compatibility depends on its PyroWave commit. |
 | Stock Moonlight | Never sees PyroWave; negotiates H.264/HEVC/AV1 as before. |
+
+## FEC-inclusive recommendations and calibration
+
+Paired server info advertises `PyroWaveWireBudgetVersion=1`,
+`PyroWaveCriticalFecPercentage`, and `PyroWaveMinParityShards=2`. Version 1
+means record-framed image budgets reserve critical parity and packet overhead.
+The host also caps negotiated PyroWave bandwidth at 80% of its known routed
+wired transmit speed. Runtime bitrate changes cannot exceed that negotiated cap.
+
+Moonlight applies a prefix maximum to the developer's 2H quality regression:
+increasing resolution cannot lower the recommended rate for the same quality,
+FPS, chroma and HDR mode. The recommendation is converted from image bitrate
+to total wire bitrate, reserving the largest feasible critical FEC block (43
+parity packets at the default 20%), IPv6/encryption/Ethernet overhead, packet
+rounding and up to eight high-quality audio channels plus control. Detail is
+not charged a blanket 20% FEC rate. Compression savings do not increase the cap.
+
+Calibration uses the slowest of three warmed HTTPS transfers, limits that by
+both known wired link speeds, accounts for whole-packet pacing, and reserves
+20% for contention. It encodes only the image allowance left after overhead,
+then lowers quality within the developer's range to target less than 4 ms of
+estimated network serialization plus p99 decode/draw and compression time.
+Results above that target require VRR even if average frame throughput keeps up.
+This estimate excludes capture, host GPU encoding and physical scanout; it is
+not a measured end-to-end latency or proof against live UDP loss.
+
+The optional compression checkbox selects independent per-frame lossless LZ4
+detail groups, with raw coarse data and raw fallback. Enabled calibration times
+compression on the client CPU, feeds compressed frames through the actual client
+expansion/decoder, and reports savings on its synthetic test image. It does not
+measure the remote host CPU's compression speed. Real scenes can save nothing;
+both compressed and raw frames must fit the same total bandwidth cap.
+The client remembers the measured cap for one hour on the same host/address
+and applies it at launch even if the bitrate slider was subsequently raised.
+
+The client announces `x-ss-video[0].pyrowaveLinkMbps` with the smaller of its
+known wired receive speed and a fresh calibrated route speed. Host pacing uses
+the smaller nonzero value of this limit and its own routed transmit speed,
+including whole-packet 1 ms pacing. Negotiated bandwidth is capped at 80% of
+that bottleneck. Thus a 2.5 Gbps host does not burst at 2.5 Gbps into a known
+1 Gbps receiver. Unknown values retain the existing host/fallback behavior.

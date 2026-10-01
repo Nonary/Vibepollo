@@ -51,6 +51,7 @@ extern "C" {
 #include "platform/common.h"
 #include "process.h"
 #include "pyrowave_policy.h"
+#include "pyrowave_bandwidth.h"
 #include "pyrowave_protocol.h"
 #include "remote_display_topology.h"
 #include "rtsp.h"
@@ -366,6 +367,11 @@ namespace stream {
     std::uint32_t frameNumber;
     std::uint8_t tag[16];
   };
+
+  static_assert(
+    MAX_RTP_HEADER_SIZE + 38 + 40 + 8 + sizeof(video_packet_enc_prefix_t) == pyrowave::policy::MAX_PACKET_WIRE_OVERHEAD_BYTES,
+    "PyroWave wire budget must reserve the sender's maximum packet overhead"
+  );
 
   struct audio_packet_t {
     RTP_PACKET rtp;
@@ -2310,7 +2316,8 @@ namespace stream {
 #elif defined(__linux__)
           link_interface_kind = "ifindex";
 #endif
-          const auto link_bps = wire_timeline_state.cached_link_bps;
+          const auto link_bps = pyrowave::bandwidth::pacing_link_bps(
+            wire_timeline_state.cached_link_bps, session->config.monitor.pyrowave_peer_link_bps);
           const auto link_interface_id = wire_timeline_state.cached_interface_id;
           const auto &monitor = session->config.monitor;
           const auto stream_kbps = monitor.client_requested_bitrate > 0 ? monitor.client_requested_bitrate : monitor.bitrate;

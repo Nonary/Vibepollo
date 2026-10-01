@@ -3860,6 +3860,9 @@ namespace nvhttp {
 #endif
       tree.put("root.PyroWaveHostLinkMbps", link_bps / 1'000'000);
       tree.put("root.PyroWaveBandwidthProbeBytes", 32U * 1024U * 1024U);
+      tree.put("root.PyroWaveWireBudgetVersion", 1);
+      tree.put("root.PyroWaveCriticalFecPercentage", config::stream.pyrowave_critical_fec_percentage);
+      tree.put("root.PyroWaveMinParityShards", 2);
     }
 
 

@@ -710,9 +710,9 @@ TEST(PyroWavePolicy, BudgetHonorsLimits) {
 
 TEST(PyroWavePolicy, StableFrameBudgetLeavesCadenceSavingsForFec) {
   using namespace std::chrono;
-  budget_t budget(120, 800000, max_bitstream_bytes(PACKET_SIZE, false, true), true);
+  budget_t budget(120, 800000, max_bitstream_bytes(PACKET_SIZE, false, true), true, wire_budget_t {PACKET_SIZE, 20});
   const auto nominal_bytes = budget.bytes_per_frame();
-  EXPECT_EQ(nominal_bytes, 833332u);
+  EXPECT_EQ(nominal_bytes, 692120u);
   auto now = steady_clock::time_point {};
   budget.on_frame(now);
   const auto frame = make_bitstream(std::vector<std::uint32_t>(10, 12));
@@ -728,7 +728,7 @@ TEST(PyroWavePolicy, StableFrameBudgetLeavesCadenceSavingsForFec) {
   EXPECT_EQ(request.percentage, 50);
   // Model a full-sized image plus a representative 21-shard critical prefix.
   const auto data = (budget.bytes_per_frame() + protocol::FRAME_HEADER_BYTES + SHARD - 1) / SHARD;
-  constexpr std::size_t wire_bytes = 1500;  // Includes a conservative header allowance.
+  constexpr std::size_t wire_bytes = PACKET_SIZE + 134;  // IPv6 and encrypted video.
   const auto baseline = data + parity_shards(21, 20, 2);
   const auto allowance = request.frame_wire_budget / wire_bytes;
   ASSERT_GT(allowance, baseline);
@@ -747,11 +747,11 @@ TEST(PyroWavePolicy, StableFrameBudgetLeavesCadenceSavingsForFec) {
   budget.on_frame(now);
   EXPECT_EQ(budget.bytes_per_frame(), nominal_bytes);
   budget.set_bitrate(400000);
-  EXPECT_EQ(budget.bytes_per_frame(), 416664u);
+  EXPECT_EQ(budget.bytes_per_frame(), 316472u);
   // Faster submissions still get less budget; no overspend above negotiated FPS.
   now += microseconds(4000);
   budget.on_frame(now);
-  EXPECT_EQ(budget.bytes_per_frame(), 200000u);
+  EXPECT_EQ(budget.bytes_per_frame(), 143096u);
   budget.on_frame(now);
   EXPECT_EQ(budget.bytes_per_frame(), 0u);
 }
@@ -812,4 +812,60 @@ TEST(PyroWavePolicy, PacingTracksLinkCapacityAndAccountsForWireOverhead) {
   EXPECT_EQ(pacing_packets_per_ms(0, 200000, 1376, 1474, 1376000, 120), 120u);
   EXPECT_EQ(pacing_packets_per_ms(100000000, 200000, 1376, 1474, 1376000, 120), 8u);
   EXPECT_EQ(pacing_packets_per_ms(0, 0, 0, 0), 1u);
+}
+
+TEST(PyroWavePolicy, RecordWireBudgetIncludesBaselineFecAt800Mbps) {
+  for (const int packet_size : {1024, 1025, 1392, 1408}) {
+    for (const int fps : {30, 60, 120, 240}) {
+      for (const int rate : {0, 1, 20, 50, 255}) {
+        for (const std::size_t minimum : {2u, 10u, 254u, 300u}) {
+          for (const std::size_t envelope : {0u, 64u}) {
+            const wire_budget_t transport {packet_size, rate, minimum, envelope};
+            budget_t budget(fps, 800000, max_bitstream_bytes(packet_size, false, rate > 0), true, transport);
+            for (const int bitrate : {800000, 400000, 10000, 1}) {
+              budget.set_bitrate(bitrate);
+              const auto allowance = std::size_t(double(bitrate) * 125.0 / fps);
+              const auto bytes = budget.bytes_per_frame();
+              if (!bytes) {
+                continue;
+              }
+              const auto data = (bytes + envelope + protocol::FRAME_HEADER_BYTES + packet_size - 17) / (packet_size - 16);
+              for (std::size_t critical = 0; critical <= std::min(data, std::size_t(256)); ++critical) {
+                const auto plan = plan_fec_blocks(data, critical, rate, minimum);
+                std::size_t packets = 0;
+                for (const auto &block : plan) {
+                  packets += block.data_shards + parity_shards(block.data_shards, block.fec_percentage, minimum);
+                }
+                EXPECT_LE(packets * (packet_size + 134), allowance)
+                  << "fps=" << fps << " bitrate=" << bitrate << " FEC=" << rate << " critical=" << critical;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST(PyroWavePolicy, RateLimitedRecordPaddingRetainsCriticalProtection) {
+  const auto bitstream = make_bitstream(std::vector<std::uint32_t>(100, 100));
+  std::vector<std::uint8_t> out;
+  const auto stats = write_record_frame(bitstream, SHARD, out, bitstream.size());
+  ASSERT_TRUE(stats);
+  EXPECT_LE(out.size(), bitstream.size());
+  EXPECT_EQ(stats->padding_bytes, 0u);
+  EXPECT_GT(stats->critical_bytes, 0u);
+  const auto info = inspect_record_frame(out, SHARD);
+  EXPECT_TRUE(info.valid) << info.error;
+  EXPECT_EQ(info.late_coarse_records, 0u);
+  EXPECT_EQ(info.critical_bytes, stats->critical_bytes);
+  EXPECT_EQ(records_by_index(out), records_by_index(bitstream));
+}
+
+TEST(PyroWavePolicy, WireBudgetRejectsInvalidPacketsAndReservesHybridEnvelope) {
+  EXPECT_EQ(frame_payload_budget(100000, {0, 20}), 0u);
+  EXPECT_EQ(frame_payload_budget(100000, {16, 20}), 0u);
+  EXPECT_EQ(frame_payload_budget(1, {PACKET_SIZE, 20}), 0u);
+  const auto native = frame_payload_budget(100000, {PACKET_SIZE, 20});
+  EXPECT_EQ(frame_payload_budget(100000, {PACKET_SIZE, 20, 2, 64}), native - 64);
 }

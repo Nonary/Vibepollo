@@ -79,8 +79,7 @@ namespace pyrowave::host {
       encoder_impl_t(const session_params_t &params, std::shared_ptr<platf::display_t> display):
           params {params},
           display {std::move(display)},
-          budget {params.framerate, params.bitrate_kbps, bitstream_capacity(params),
-                  params.critical_fec && params.framing == policy::framing_e::records},
+          budget {params.framerate, params.bitrate_kbps, bitstream_capacity(params), params.critical_fec && params.framing == policy::framing_e::records, wire_budget(params)},
           encode_logger {debug, "PyroWave: encode (GPU wait)", "ms"},
           frame_size_logger {debug, "PyroWave: frame size", "KiB"},
           padding_logger {debug, "PyroWave: record padding", "%"},
@@ -140,7 +139,11 @@ namespace pyrowave::host {
 
         out.clear();
         d3d11::frame_stats_t stats;
-        const auto result = core->encode(source, budget.bytes_per_frame(), framing, out, &stats);
+        auto frame_framing = framing;
+        if (params.framing == policy::framing_e::records) {
+          frame_framing.max_frame_bytes = budget.bytes_per_frame();
+        }
+        const auto result = core->encode(source, budget.bytes_per_frame(), frame_framing, out, &stats);
         if (result == d3d11::result_e::failed) {
           failed = true;
           return -1;

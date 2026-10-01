@@ -34,13 +34,22 @@ namespace pyrowave::host {
     bool yuv444 = false;
     video::sunshine_colorspace_t colorspace {};
     int framerate = 0;
-    int bitrate_kbps = 0;  ///< Adjusted encoder bitrate (audio and control overhead removed).
+    int bitrate_kbps = 0;  ///< Video wire budget (audio and control overhead removed).
     policy::framing_e framing = policy::framing_e::records;
     int packetsize = 0;  ///< Negotiated RTP packet size, for record alignment.
+    int critical_fec_percentage = 0;
+    std::size_t min_parity_shards = 2;
     bool critical_fec = false;  ///< Adds critical FEC; record framing also keeps a stable image budget for adaptive detail FEC.
   };
 
-  /// Compression falls back to native records without increasing the image budget.
+  inline std::optional<policy::wire_budget_t> wire_budget(const session_params_t &params) {
+    if (params.framing != policy::framing_e::records) {
+      return std::nullopt;
+    }
+    return policy::wire_budget_t {params.packetsize, params.critical_fec_percentage, params.min_parity_shards, 0u};
+  }
+
+  /// Compression cannot increase the frame budget.
   inline std::size_t bitstream_capacity(const session_params_t &params) {
     return policy::max_bitstream_bytes(params.packetsize,
       params.framing == policy::framing_e::length_prefixed, params.critical_fec);

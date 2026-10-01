@@ -92,6 +92,8 @@ namespace video {
     int packetsize = 0;
     pyrowave::policy::framing_e pyrowave_framing = pyrowave::policy::framing_e::records;
     bool pyrowave_compression = false;
+    std::size_t pyrowave_min_parity_shards = 2;
+    std::uint64_t pyrowave_peer_link_bps = 0;
   };
 
   platf::mem_type_e map_base_dev_type(AVHWDeviceType type);

@@ -6234,7 +6234,12 @@ namespace video {
     params.bitrate_kbps = config.bitrate;
     params.framing = config.pyrowave_framing;
     params.packetsize = config.packetsize;
-    params.critical_fec = config::stream.pyrowave_critical_fec_percentage > 0;
+    params.critical_fec_percentage = config::stream.pyrowave_critical_fec_percentage;
+    params.min_parity_shards = config.pyrowave_min_parity_shards;
+    params.critical_fec = params.critical_fec_percentage > 0;
+
+    const int maximum_wire_kbps = config.client_requested_bitrate > 0 ? config.client_requested_bitrate : config.bitrate;
+    const int audio_control_reserve_kbps = std::max(0, maximum_wire_kbps - config.bitrate);
 
     auto encoder = pyrowave::host::make_encoder(params, disp);
     if (!encoder) {
@@ -6289,9 +6294,9 @@ namespace video {
         }
       }
       if (latest_bitrate) {
-        config.bitrate = *latest_bitrate;
-        config.client_requested_bitrate = *latest_bitrate;
-        encoder->set_bitrate(*latest_bitrate);
+        config.client_requested_bitrate = std::clamp(*latest_bitrate, 0, maximum_wire_kbps);
+        config.bitrate = std::max(0, config.client_requested_bitrate - audio_control_reserve_kbps);
+        encoder->set_bitrate(config.bitrate);
       }
       if (idr_events->peek()) idr_events->pop();
       if (invalidate_ref_frames_events->peek()) invalidate_ref_frames_events->pop();

@@ -31,8 +31,7 @@ namespace pyrowave::host {
       encoder_impl_t(const session_params_t &p, std::shared_ptr<platf::display_t> d):
           params(p),
           display(std::move(d)),
-          budget(p.framerate, p.bitrate_kbps, bitstream_capacity(p),
-                 p.critical_fec && p.framing == policy::framing_e::records) {}
+          budget(p.framerate, p.bitrate_kbps, bitstream_capacity(p), p.critical_fec && p.framing == policy::framing_e::records, wire_budget(p)) {}
 
       void set_bitrate(int bitrate) override {
         budget.set_bitrate(bitrate);
@@ -106,7 +105,7 @@ namespace pyrowave::host {
             return -1;
           }
           auto &p = packets.front();
-          auto stats = policy::write_record_frame(std::span<const std::uint8_t>(scratch.data() + p.offset, p.size), policy::shard_payload_bytes(params.packetsize), out, policy::max_frame_bytes(params.packetsize, params.critical_fec));
+          auto stats = policy::write_record_frame(std::span<const std::uint8_t>(scratch.data() + p.offset, p.size), policy::shard_payload_bytes(params.packetsize), out, budget.bytes_per_frame());
           if (!stats) {
             return -1;
           }
