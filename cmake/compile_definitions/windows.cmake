@@ -284,6 +284,7 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/dualsense_haptics.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad_policy.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad_policy.cpp"

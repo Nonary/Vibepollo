@@ -61,6 +61,8 @@
     "change": "Change"
   },
   "apps": {
+    "dualsense_haptics": "DualSense waveform haptics (experimental)",
+    "dualsense_haptics_desc": "Uses a virtual DualSense and starts an audio hook helper before the game. Requires the VHF driver, a direct game .exe launch, and a client with waveform support. Steam URI and Playnite launches are not supported.",
     "actions": "Actions",
     "add_cmds": "Add Commands",
     "add_new": "Add New",

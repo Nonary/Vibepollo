@@ -72,6 +72,12 @@ install(TARGETS audio-info RUNTIME DESTINATION "tools" COMPONENT audio)
 # - Playnite launcher helper used for Playnite-managed app launches
 # - WGC capture helper used by the WGC display backend
 # - Display helper used for applying/reverting display settings
+install(TARGETS vibepollo_dualsense_haptics vibepollo_dualsense_audio
+        RUNTIME DESTINATION "tools" LIBRARY DESTINATION "tools" COMPONENT application)
+if(DEFINED _MINHOOK_DLL)
+    install(FILES "${_MINHOOK_DLL}" DESTINATION "tools" COMPONENT application)
+endif()
+
 if (TARGET playnite-launcher)
     install(TARGETS playnite-launcher RUNTIME DESTINATION "tools" COMPONENT application)
 endif()

@@ -2384,7 +2384,8 @@ namespace VibepolloInstaller {
       "sunshine_display_helper",
       "apollo",
       "apollosvc",
-      "vibepollo"
+      "vibepollo",
+      "vibepollo_dualsense_haptics"
     };
 
     internal sealed class InstalledProductInfo {

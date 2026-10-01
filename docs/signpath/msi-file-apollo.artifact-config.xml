@@ -66,6 +66,8 @@
     <pe-file path="Apollo/tools/sunshinesvc.exe"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/tools/dxgi-info.exe"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/tools/audio-info.exe"><authenticode-sign/></pe-file>
+    <pe-file path="Apollo/tools/vibepollo_dualsense_haptics.exe"><authenticode-sign/></pe-file>
+    <pe-file path="Apollo/tools/vibepollo_dualsense_audio.dll"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/tools/playnite-launcher.exe"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/tools/sunshine_wgc_capture.exe"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/tools/sunshine_display_helper.exe"><authenticode-sign/></pe-file>

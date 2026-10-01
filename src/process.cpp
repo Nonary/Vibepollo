@@ -1044,6 +1044,7 @@ namespace proc {
       _process(std::move(other._process)),
       _process_group(std::move(other._process_group)),
 #ifdef _WIN32
+      _dualsense_audio(std::move(other._dualsense_audio)),
       _virtual_display_guid(other._virtual_display_guid),
       _virtual_display_active(other._virtual_display_active),
       _runtime_output_override_lease(std::exchange(other._runtime_output_override_lease, std::nullopt)),
@@ -1098,6 +1099,7 @@ namespace proc {
         (void) config::clear_runtime_output_name_override_if_lease(*_runtime_output_override_lease);
       }
       _runtime_output_override_lease = std::exchange(other._runtime_output_override_lease, std::nullopt);
+      _dualsense_audio = std::move(other._dualsense_audio);
       _lossless_thread = std::move(other._lossless_thread);
       _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
       _lossless_profile_applied = other._lossless_profile_applied;
@@ -1361,6 +1363,8 @@ namespace proc {
     std::string resolved_lossless_exe_utf8;
     _virtual_display_active = false;
     _virtual_display_guid = GUID {};
+    _dualsense_audio.reset();
+    _env["VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING"] = "";
     _deferred_launch = false;
     _lossless_should_start_support = false;
     _lossless_metadata = {};
@@ -2374,6 +2378,19 @@ namespace proc {
     // of whether the launched process remains trackable.
     platf::cache_screen_saver_state();
 
+    if (_app.dualsense_haptics) {
+      if (_app.cmd.empty() || !_app.playnite_id.empty() || _app.playnite_fullscreen ||
+          !_app.steam_id.empty() || !_app.detached.empty()) {
+        BOOST_LOG(error) << "DualSense waveform haptics requires a direct game executable launch.";
+        return -1;
+      }
+      _dualsense_audio = platf::dualsense_audio::start();
+      if (!_dualsense_audio) {
+        BOOST_LOG(error) << "Could not prepare DualSense waveform IPC before game launch.";
+        return -1;
+      }
+      _env["VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING"] = _dualsense_audio->mapping_name;
+    }
     std::unordered_set<DWORD> lossless_baseline_pids;
     bool lossless_monitor_started = false;
     std::string lossless_install_dir_hint;
@@ -2648,7 +2665,17 @@ namespace proc {
         }
       }
       BOOST_LOG(info) << "Executing: ["sv << _app.cmd << "] in ["sv << working_dir << ']';
-      _process = platf::run_command(_app.elevated, true, _app.cmd, working_dir, _env, _pipe.get(), ec, &_process_group);
+      std::string launch_command = _app.cmd;
+#ifdef _WIN32
+      if (_app.dualsense_haptics) {
+        launch_command = platf::dualsense_audio::wrap_command(_app.cmd);
+        if (launch_command.empty()) {
+          BOOST_LOG(error) << "DualSense waveform helper is missing or the command is not a direct executable.";
+          return -1;
+        }
+      }
+#endif
+      _process = platf::run_command(_app.elevated, true, launch_command, working_dir, _env, _pipe.get(), ec, &_process_group);
       if (ec) {
         BOOST_LOG(warning) << "Couldn't run ["sv << _app.cmd << "]: System: "sv << ec.message();
         return -1;
@@ -3121,6 +3148,8 @@ namespace proc {
     placebo = false;
     std::chrono::seconds remaining_timeout = _app.exit_timeout;
 #ifdef _WIN32
+    _dualsense_audio.reset();
+    _env["VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING"] = "";
     _deferred_launch = false;
     _lossless_should_start_support = false;
     stop_lossless_scaling_support();
@@ -4398,6 +4427,7 @@ namespace proc {
             ctx.config_overrides = std::move(normalized_overrides);
           }
 
+        ctx.dualsense_haptics = app_node.value("dualsense-haptics", false);
         ctx.frame_gen_limiter_fix = util::get_non_string_json_value<bool>(app_node, "frame-gen-limiter-fix", util::get_non_string_json_value<bool>(app_node, "dlss-framegen-limiter-fix", false));
         ctx.elevated = util::get_non_string_json_value<bool>(app_node, "elevated", false);
         ctx.virtual_screen = util::get_non_string_json_value<bool>(app_node, "virtual-screen", false);

@@ -1787,6 +1787,7 @@ namespace confighttp {
         "gen1-framegen-fix",
         "gen2-framegen-fix",
         "dlss-framegen-capture-fix",  // backward compatibility
+        "dualsense-haptics",
         "lossless-scaling-enabled",
         "lossless-scaling-framegen",
         "lossless-scaling-legacy-auto-detect"
