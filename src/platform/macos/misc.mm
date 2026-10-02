@@ -396,10 +396,10 @@ namespace platf {
   std::unique_ptr<deinit_t> init() {
     // Remote mouse and keyboard input is posted as synthetic events, which macOS only delivers
     // for apps allowed under Privacy & Security > Accessibility. Streaming works without it.
-    if (!CGPreflightPostEventAccess()) {
+    const bool can_post_events = CGPreflightPostEventAccess();
+    if (!can_post_events) {
       BOOST_LOG(warning) << "No accessibility permission; remote mouse and keyboard input will be ignored"sv;
       BOOST_LOG(warning) << "Please allow it in 'System Settings' -> 'Privacy & Security'"sv;
-      CGRequestPostEventAccess();
     }
 
     // This will generate a warning about CGPreflightScreenCaptureAccess and
@@ -424,11 +424,16 @@ namespace platf {
       BOOST_LOG(error) << "Please allow it in 'System Settings' -> 'Privacy & Security', then restart Vibepollo"sv;
       // Asking ScreenCaptureKit shows the system prompt and lists the app under Privacy & Security.
       // CGRequestScreenCaptureAccess() no longer does either on current macOS.
+      // macOS shows one privacy prompt at a time, so Accessibility waits for the next launch,
+      // which allowing screen recording needs anyway (macOS offers to quit and reopen).
       [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *, NSError *) {
       }];
       return nullptr;
     }
 #pragma clang diagnostic pop
+    if (!can_post_events) {
+      CGRequestPostEventAccess();
+    }
     // Record that we determined that we have the screen capture permission.
     screen_capture_allowed = true;
     return std::make_unique<deinit_t>();
