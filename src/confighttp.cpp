@@ -1770,6 +1770,20 @@ namespace confighttp {
       file_tree["current_app"] = proc::proc.get_running_app_uuid();
       file_tree["host_uuid"] = http::unique_id;
       file_tree["host_name"] = config::nvhttp.sunshine_name;
+      {
+        // UUIDs in the order /applist sends them, so the Library can preview it.
+        const auto apps = proc::proc.get_apps();
+        std::vector<const proc::ctx_t *> ordered;
+        ordered.reserve(apps.size());
+        for (const auto &app : apps) {
+          ordered.push_back(&app);
+        }
+        proc::sort_for_clients(ordered);
+        auto &client_order = file_tree["client_order"] = nlohmann::json::array();
+        for (const auto *app : ordered) {
+          client_order.push_back(app->uuid);
+        }
+      }
 #ifdef _WIN32
       // No auto-insert here; controlled by config 'playnite_fullscreen_entry_enabled'.
 #endif

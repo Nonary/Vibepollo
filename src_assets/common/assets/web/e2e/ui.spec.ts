@@ -523,6 +523,50 @@ test('library placeholders preserve search, keyboard selection, and list prefere
   await expect(page.getByRole('searchbox', { name: 'Search applications' })).toHaveValue('dolphin');
 });
 
+test('library client order groups sources and saves the custom order', async ({ page }) => {
+  const patches = await host(page, 'windows', {
+    app_order_groups: 'custom,steam',
+    app_order_steam: 'recent',
+  });
+  const reorders: unknown[] = [];
+  await page.route('**/api/apps', (route) =>
+    route.fulfill({
+      json: {
+        apps: [
+          { uuid: 'big-picture', name: 'Steam Big Picture' },
+          { uuid: 'hades', name: 'Hades II', 'steam-id': '1145350', 'last-played': 1727800000 },
+          { uuid: 'desktop', name: 'Desktop' },
+          { uuid: 'elden', name: 'Elden Ring', 'steam-id': '1245620', 'last-played': 1727000000 },
+        ],
+        client_order: ['big-picture', 'desktop', 'hades', 'elden'],
+      },
+    }),
+  );
+  await page.route('**/api/apps/reorder', async (route) => {
+    reorders.push(route.request().postDataJSON());
+    await route.fulfill({ json: { status: true } });
+  });
+  await page.route('**/api/apps/*/cover', (route) => route.fulfill({ status: 404, body: '' }));
+  await page.goto('/v2/library?sort=client');
+
+  const custom = page.locator('[data-section="custom"]');
+  await expect(custom.locator('.client-order__name')).toHaveText(['Steam Big Picture', 'Desktop']);
+  await expect(page.locator('[data-section="steam"] .client-order__name')).toHaveText([
+    'Hades II',
+    'Elden Ring',
+  ]);
+  await expect(page.getByRole('combobox', { name: 'Order Steam by' })).toHaveValue('recent');
+
+  await custom.getByRole('button', { name: 'Move Desktop up' }).click();
+  await expect.poll(() => reorders).toEqual([{ order: ['desktop', 'big-picture'] }]);
+  await page.getByRole('button', { name: 'Move Steam up' }).click();
+  await expect.poll(() => patches.at(-1)).toEqual({ app_order_groups: 'steam,custom' });
+  await page.getByRole('combobox', { name: 'Order Steam by' }).selectOption('playtime');
+  await expect.poll(() => patches.at(-1)).toEqual({ app_order_steam: 'playtime' });
+  await page.getByRole('button', { name: 'Turn on' }).click();
+  await expect.poll(() => patches.at(-1)).toEqual({ legacy_ordering: true });
+});
+
 for (const width of [320, 390, 768, 1100, 1440]) {
   test(`main workflows reflow without horizontal scrolling at ${width}px`, async ({
     page,
