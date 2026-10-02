@@ -132,7 +132,6 @@ namespace webrtc_stream {
     constexpr int kDefaultFps = 60;
     constexpr int kDefaultAudioChannels = 2;
     constexpr int kDefaultAudioPacketMs = 10;
-    constexpr std::size_t kEncodedPrefixLogLimit = 5;
     constexpr auto kKeyframeRequestInterval = std::chrono::milliseconds {100};
     constexpr auto kVideoPacingSlackLatency = std::chrono::milliseconds {0};
     constexpr auto kVideoPacingSlackBalanced = std::chrono::milliseconds {2};
@@ -141,6 +140,8 @@ namespace webrtc_stream {
     constexpr auto kVideoPacingSlackMax = std::chrono::milliseconds {10};
     constexpr auto kVideoMaxFrameAgeMin = std::chrono::milliseconds {5};
     constexpr auto kVideoMaxFrameAgeMax = std::chrono::milliseconds {100};
+#ifdef SUNSHINE_ENABLE_WEBRTC  // only the WebRTC transport uses these
+    constexpr std::size_t kEncodedPrefixLogLimit = 5;
     constexpr auto kAudioMaxFrameAge = std::chrono::milliseconds {kDefaultAudioPacketMs * kMaxAudioFrames};
     constexpr auto kWebrtcStartupKeyframeHold = std::chrono::milliseconds {3000};
     constexpr auto kWebrtcStartupKeyframeDeadline = std::chrono::milliseconds {8000};
@@ -155,6 +156,7 @@ namespace webrtc_stream {
     constexpr std::size_t kVideoInflightFramesMin = 2;
     constexpr std::size_t kVideoInflightFramesMax = 6;
     constexpr std::size_t kVideoInflightKeyframeExtra = 2;
+#endif
 
     struct SharedEncodedPayloadReleaseContext {
       std::shared_ptr<std::vector<std::uint8_t>> payload;
@@ -886,9 +888,7 @@ namespace webrtc_stream {
       std::atomic_bool active {false};
       std::atomic_size_t pending_session_creations {0};
       std::atomic_bool teardown_in_progress {false};
-#if defined(_WIN32) || defined(__linux__)
       std::optional<config::runtime_output_override_lease_t> output_override_lease;
-#endif
       std::shared_ptr<safe::mail_raw_t> mail;
       std::shared_ptr<rtsp_stream::launch_session_t> launch_session;
       std::shared_ptr<void> normal_display_capture;
@@ -3261,14 +3261,12 @@ namespace webrtc_stream {
       }
 #endif
 
-#if defined(_WIN32) || defined(__linux__)
       std::optional<config::runtime_output_override_lease_t> pending_output_override_lease;
       auto output_override_guard = util::fail_guard([&]() {
         if (pending_output_override_lease) {
           (void) config::clear_runtime_output_name_override_if_lease(*pending_output_override_lease);
         }
       });
-#endif
 #ifdef __linux__
       bool linux_private_display_prepared = false;
       auto linux_private_display_guard = util::fail_guard([&]() {
@@ -3476,12 +3474,10 @@ namespace webrtc_stream {
       webrtc_capture.app_id = effective_app_id > 0 ? std::optional<int> {effective_app_id} : std::nullopt;
       webrtc_capture.config_key = desired_key;
       webrtc_capture.published_bitrate_kbps.reset();
-#if defined(_WIN32) || defined(__linux__)
       if (pending_output_override_lease) {
         webrtc_capture.output_override_lease = pending_output_override_lease;
       }
       output_override_guard.disable();
-#endif
 #ifdef __linux__
       linux_private_display_guard.disable();
 #endif
@@ -3668,9 +3664,7 @@ namespace webrtc_stream {
         webrtc_capture.launch_session.reset();
         if (finalized_shared_runtime) {
           // The centralized finalizer invalidates any output override lease.
-#if defined(_WIN32) || defined(__linux__)
           webrtc_capture.output_override_lease.reset();
-#endif
         }
         webrtc_capture.teardown_in_progress.store(false, std::memory_order_release);
         teardown_flag_owned = false;

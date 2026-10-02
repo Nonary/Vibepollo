@@ -28,8 +28,10 @@ file(GLOB_RECURSE ALL_ASSETS
         RELATIVE "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/" "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/*")
 list(FILTER ALL_ASSETS EXCLUDE REGEX "^web(-legacy)?/.*$")  # Filter out browser source directories
 foreach(asset ${ALL_ASSETS})  # Copy assets to build directory, excluding browser source directories
+    # Keep subdirectories such as remote-session/, where the host looks for them.
+    get_filename_component(asset_dir "${asset}" DIRECTORY)
     file(COPY "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/${asset}"
-            DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/assets")
+            DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/assets/${asset_dir}")
 endforeach()
 
 # Vite writes the complete browser application directly into the runtime asset

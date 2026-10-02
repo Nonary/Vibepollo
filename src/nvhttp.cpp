@@ -52,6 +52,7 @@
 #include "httpcommon.h"
 #include "http_pairing_policy.h"
 #include "hdr_request_policy.h"
+#include "jthread.h"
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
@@ -79,6 +80,9 @@
   #include "src/platform/linux/display_backend.h"
   #include "platform/linux/display_power.h"
   #include "platform/linux/private_display_resume_policy.h"
+#endif
+#ifdef __APPLE__
+  #include "platform/macos/virtual_display.h"
 #endif
 
 #include "process.h"
@@ -217,6 +221,21 @@ namespace nvhttp {
   using verified_client_t = std::optional<crypto::named_cert_t>;
 
   namespace {
+#ifdef __APPLE__
+    // The display a launching client asked for, for bringing its virtual display up early.
+    video::config_t requested_display_config(const rtsp_stream::launch_session_t &session) {
+      const auto millihz = framegen::normalize_refresh_millihz(session.fps);
+      video::config_t config {};
+      config.width = session.width;
+      config.height = session.height;
+      config.framerate = static_cast<int>(std::lround(millihz / 1000.0));
+      config.framerateX100 = static_cast<int>(std::lround(millihz / 10.0));
+      // An HDR stream needs the display to be HDR from the start.
+      config.dynamicRange = rtsp_stream::effective_hdr_requested(session) ? 1 : 0;
+      return config;
+    }
+#endif
+
     std::int64_t now_seconds() {
       return std::chrono::duration_cast<std::chrono::seconds>(
                std::chrono::system_clock::now().time_since_epoch()
@@ -677,6 +696,53 @@ namespace nvhttp {
           remote_display_topology::instance().shutdown(
             platf::linux_private_display::process_shutdown_preserve_requested()
           );
+        },
+      });
+    }
+  }  // namespace
+#elif defined(__APPLE__)
+  namespace {
+    void refresh_remote_monitor_baseline(bool) {
+      remote_display_topology::instance().set_physical_baseline(platf::macos_virtual_display::remote_baseline());
+    }
+
+    void register_remote_monitor_runtime() {
+      remote_display_topology::instance().set_runtime_callbacks({
+        .create_or_reclaim = platf::macos_virtual_display::remote_create_or_reclaim,
+        .resolve_mode = platf::macos_virtual_display::remote_resolve_mode,
+        .apply_composed_topology = platf::macos_virtual_display::remote_apply_composed_topology,
+        .exact_target_has_current_mode_and_dxgi = platf::macos_virtual_display::remote_exact_capture_output,
+        .remove_owned_display = platf::macos_virtual_display::remote_remove_owned_display,
+      });
+      remote_display_topology::instance().set_plaintext_rtsp_warning_provider([](const std::string &) {
+        return rtsp_stream::plaintext_route_warning();
+      });
+      remote_session::register_monitor_runtime_hooks({
+        .activate_or_resume = [](std::string_view uuid, std::string_view label, std::string_view requested_mode, const bool hdr_requested, std::uint64_t generation) -> remote_session::monitor_runtime_state_t {
+          remote_display_topology::mode_t mode;
+          if (std::sscanf(std::string {requested_mode}.c_str(), "%dx%d@%d", &mode.width, &mode.height, &mode.refresh_hz) != 3 || mode.width <= 0 || mode.height <= 0 || mode.refresh_hz <= 0) {
+            return remote_session::monitor_runtime_state_t {.retryable = true, .error = "Remote Monitor requested an invalid display mode."};
+          }
+          mode.hdr = hdr_requested;
+          refresh_remote_monitor_baseline(has_stream_session_activity());
+          const auto state = remote_display_topology::instance().activate_or_resume(std::string {uuid}, std::string {label}, mode, generation);
+          return {.accepted = state.accepted, .ready = state.ready, .retryable = state.retryable, .output = state.output, .error = state.error, .hdr_enabled = state.hdr_enabled};
+        },
+        .snapshot = [](std::string_view uuid, std::uint64_t generation) {
+          const auto state = remote_display_topology::instance().snapshot(std::string {uuid}, generation);
+          return remote_session::monitor_runtime_state_t {.accepted = state.accepted, .ready = state.ready, .retryable = state.retryable, .output = state.output, .error = state.error, .hdr_enabled = state.hdr_enabled};
+        },
+        .explicit_release = [](std::string_view uuid, std::uint64_t generation, std::string_view reason) {
+          remote_display_topology::instance().explicit_release(std::string {uuid}, generation, std::string {reason});
+        },
+        .transport_lost = [](std::string_view uuid, std::uint64_t generation) {
+          remote_display_topology::instance().transport_lost(std::string {uuid}, generation);
+        },
+        .unpair = [](std::string_view uuid) {
+          remote_display_topology::instance().unpair_client(std::string {uuid});
+        },
+        .shutdown = [] {
+          remote_display_topology::instance().shutdown();
         },
       });
     }
@@ -3723,7 +3789,7 @@ namespace nvhttp {
       // Virtual-display limiting is independent of the manual limiter switch.
       // Report the configured default display path; app/client overrides and
       // per-game provider success are resolved later at launch.
-      const bool automatic_virtual_limiter =
+      [[maybe_unused]] const bool automatic_virtual_limiter =
         config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled &&
         config::frame_limiter.virtual_display_limiter_enabled();
 #ifdef _WIN32
@@ -4836,7 +4902,7 @@ namespace nvhttp {
         display_startup_deadline
       );
 #endif
-      const bool allow_display_changes = true;
+      [[maybe_unused]] const bool allow_display_changes = true;
       auto launch_session = make_launch_session_from_snapshot(host_audio, is_input_only, args, verified_client, &request_client_identity, request);
       std::optional<std::string> pending_output_override;
       auto output_override_guard = util::fail_guard([&]() {
@@ -4851,6 +4917,12 @@ namespace nvhttp {
         stream::cancel_paused_display_cleanup();
 #endif
       }
+#ifdef __APPLE__
+      // A launch that fails before its stream starts removes the display it brought up.
+      auto launch_display_guard = util::fail_guard([]() {
+        platf::macos_virtual_display::end_launch_hold();
+      });
+#endif
 
 #ifdef _WIN32
       std::optional<video::encoder_probe_adapter_hint_lease_t> pending_adapter_hint;
@@ -5029,7 +5101,11 @@ namespace nvhttp {
         BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
       }
 #endif
-
+#ifdef __APPLE__
+        // As the Windows display helper does, bring the client's display up before probing: a
+        // Mac without a screen of its own has nothing else to probe.
+        platf::macos_virtual_display::hold_for_launch(requested_display_config(*launch_session));
+#endif
 
         // Probe encoders again before streaming to ensure our chosen
         // encoder matches the active GPU (which could have changed
@@ -5203,6 +5279,9 @@ namespace nvhttp {
 #endif
 #if defined(_WIN32) || defined(__linux__)
       normal_vdd_identity_guard.disable();
+#endif
+#ifdef __APPLE__
+      launch_display_guard.disable();
 #endif
       revert_display_configuration = false;
       output_override_guard.disable();
@@ -5502,6 +5581,12 @@ namespace nvhttp {
         config::set_runtime_output_name_override(std::nullopt);
       }
     });
+#ifdef __APPLE__
+    // A resume that fails before its stream starts removes the display it brought up.
+    auto launch_display_guard = util::fail_guard([]() {
+      platf::macos_virtual_display::end_launch_hold();
+    });
+#endif
 
 #ifdef _WIN32
     std::optional<video::encoder_probe_adapter_hint_lease_t> pending_adapter_hint;
@@ -5711,6 +5796,12 @@ namespace nvhttp {
         }
 #endif
       }
+#ifdef __APPLE__
+      // As on launch: bring the client's display up before probing.
+      if (!launch_session->input_only) {
+        platf::macos_virtual_display::hold_for_launch(requested_display_config(*launch_session));
+      }
+#endif
 
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
@@ -5802,6 +5893,9 @@ namespace nvhttp {
 #endif
 #if defined(_WIN32) || defined(__linux__)
     normal_vdd_identity_guard.disable();
+#endif
+#ifdef __APPLE__
+    launch_display_guard.disable();
 #endif
     output_override_guard.disable();
     runtime_overrides_guard.disable();
@@ -6198,7 +6292,7 @@ namespace nvhttp {
 
   void start() {
     platf::set_thread_name("nvhttp");
-#if defined(_WIN32) || defined(__linux__)
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)
     // The listeners below can accept /launch as soon as they are started.
     // Install the concrete coordinator callbacks before exposing that route.
     register_remote_monitor_runtime();
@@ -6478,7 +6572,7 @@ namespace nvhttp {
     std::thread ssl {accept_and_run, &https_server};
     std::thread tcp {accept_and_run, &http_server};
 
-    std::jthread pairing_expiry_worker([](std::stop_token stop_token) {
+    util::jthread pairing_expiry_worker([](util::stop_token stop_token) {
       platf::set_thread_name("pair_expiry");
       while (!stop_token.stop_requested()) {
         for (int interval = 0; interval < 10 && !stop_token.stop_requested(); ++interval) {
