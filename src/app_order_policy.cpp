@@ -11,7 +11,7 @@
 namespace proc::app_order {
   namespace {
     std::string lower(std::string_view text) {
-      // ponytail: ASCII folding only, matching how Moonlight compares names.
+      // ASCII folding only, matching how Moonlight compares names.
       std::string result {text};
       std::transform(result.begin(), result.end(), result.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
