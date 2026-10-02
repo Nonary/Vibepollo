@@ -328,9 +328,9 @@ namespace {
     }
     if (out.portrait.empty()) {
       // Current Steam clients key cached store assets by their content hash:
-      // <appid>/<hash>/library_capsule.jpg. The capsule is the same portrait
-      // cover as the legacy library_600x900 asset (normally 300x450 locally).
-      out.portrait = first_hashed_nested_existing(cache_dirs, app_id, {"library_capsule.jpg", "library_capsule.png", "library_capsule.webp"});
+      // <appid>/<hash>/library_capsule.jpg, or library_600x900.jpg for newer
+      // apps. Both are the portrait cover (normally 300x450 locally).
+      out.portrait = first_hashed_nested_existing(cache_dirs, app_id, {"library_capsule.jpg", "library_capsule.png", "library_capsule.webp", "library_600x900.jpg", "library_600x900.png", "library_600x900.webp"});
     }
     if (out.portrait.empty()) {
       out.portrait = first_existing(grid_dirs, app_id, {"p.png", "p.jpg", "_p.png", "_p.jpg"});
