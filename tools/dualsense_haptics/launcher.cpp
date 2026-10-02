@@ -31,6 +31,28 @@ namespace {
 }  // namespace
 
 int wmain(int argc, wchar_t **argv) {
+  // Playnite can be a 32-bit process even when Steam and the game are 64-bit.
+  // Run storefront preparation here instead of loading our DLL into Playnite.
+  if (argc == 2 && wcscmp(argv[1], L"--prepare-steam") == 0) {
+    wchar_t mapping[128] {}, directory[32768] {}, path[32768] {};
+    const auto mapping_length = GetEnvironmentVariableW(dualsense_haptics::environment_key, mapping, 128);
+    const auto directory_length = GetEnvironmentVariableW(L"VIBEPOLLO_DUALSENSE_HAPTICS_DIRECTORY", directory, 32768);
+    const auto path_length = GetModuleFileNameW(nullptr, path, 32768);
+    if (!mapping_length || mapping_length >= 128 || !directory_length || directory_length >= 32768 ||
+        !path_length || path_length >= 32768) {
+      std::fwprintf(stderr, L"DualSense haptics: missing or invalid storefront preparation parameters.\n");
+      return 125;
+    }
+    std::wstring dll(path);
+    dll = dll.substr(0, dll.find_last_of(L"\\") + 1) + L"vibepollo_dualsense_audio.dll";
+    const auto library = LoadLibraryExW(dll.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+    const auto prepare = library ? reinterpret_cast<DWORD(WINAPI *)(const wchar_t *, const wchar_t *, BOOL)>(GetProcAddress(library, "VibepolloHapticsPreparePlaynite")) : nullptr;
+    if (!prepare || !prepare(mapping, directory, TRUE)) {
+      std::fwprintf(stderr, L"DualSense haptics: Steam hook preparation failed (Windows error %lu).\n", GetLastError());
+      return 125;
+    }
+    return 0;
+  }
   const bool playnite = argc == 3 && wcscmp(argv[1], L"--playnite") == 0;
   if (argc != 2 && !playnite) {
     return 125;

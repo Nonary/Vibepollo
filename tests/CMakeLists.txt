@@ -266,6 +266,21 @@ if(WIN32)
             COMMAND "${SUNSHINE_TEST_POWERSHELL_EXECUTABLE}" -NoLogo -NoProfile -ExecutionPolicy Bypass
                 -File "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_playnite_waveform_launch.ps1" -CompileBridge)
         set_tests_properties(test_script_playnite_waveform_launch test_script_playnite_waveform_bridge PROPERTIES LABELS "component;script")
+        if(TARGET vibepollo_dualsense_haptics)
+            add_test(NAME test_script_playnite_waveform_helper
+                COMMAND "${SUNSHINE_TEST_POWERSHELL_EXECUTABLE}" -NoLogo -NoProfile -ExecutionPolicy Bypass
+                    -File "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_playnite_waveform_launch.ps1"
+                    -CompileBridge -NativeHelperDirectory "$<TARGET_FILE_DIR:vibepollo_dualsense_haptics>")
+            set_tests_properties(test_script_playnite_waveform_helper PROPERTIES TIMEOUT 35 LABELS "component;script")
+            set(_playnite_x86_powershell "$ENV{WINDIR}/SysWOW64/WindowsPowerShell/v1.0/powershell.exe")
+            if(EXISTS "${_playnite_x86_powershell}")
+                add_test(NAME test_script_playnite_waveform_helper_x86
+                    COMMAND "${_playnite_x86_powershell}" -NoLogo -NoProfile -ExecutionPolicy Bypass
+                        -File "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_playnite_waveform_launch.ps1"
+                        -CompileBridge -NativeHelperDirectory "$<TARGET_FILE_DIR:vibepollo_dualsense_haptics>")
+                set_tests_properties(test_script_playnite_waveform_helper_x86 PROPERTIES TIMEOUT 35 LABELS "component;script")
+            endif()
+        endif()
         add_test(
             NAME test_script_webrtc_build_cleanup
             COMMAND "${SUNSHINE_TEST_POWERSHELL_EXECUTABLE}"
