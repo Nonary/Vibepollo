@@ -392,6 +392,83 @@ TEST(RemoteDisplayTopology, AppExitWaitsForEveryCaptureBeforeMutatingTopology) {
   EXPECT_EQ(operations.size(), 2u);
 }
 
+TEST(RemoteDisplayTopology, FreshZeroTokenCaptureWaitsForRetiringNormalDisplay) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> operations;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [&](const auto &) {
+      operations.emplace_back("apply");
+      return true;
+    },
+    .remove_owned_display = [&](const auto &uuid) {
+      operations.push_back("remove:" + uuid);
+      return true;
+    },
+  });
+
+  const auto app = coordinator.reserve_normal_game_identity("game", "Game", {});
+  auto rtsp = coordinator.retain_normal_game_capture("game", app.token);
+  ASSERT_TRUE(rtsp);
+
+  coordinator.release_normal_game_identity("game", app.token);
+  ASSERT_TRUE(coordinator.normal_game_release_pending());
+  // A fresh WebRTC desktop capture has no surviving app token. It must wait
+  // rather than inherit the RTSP output without retaining its generation.
+  EXPECT_FALSE(coordinator.retain_normal_game_capture("game", 0));
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_TRUE(operations.empty());
+
+  rtsp.reset();
+  EXPECT_TRUE(operations.empty());
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(operations, (std::vector<std::string> {"apply", "remove:game"}));
+  EXPECT_FALSE(coordinator.normal_game_release_pending());
+}
+
+TEST(RemoteDisplayTopology, CaptureIdleRetiresOnlyNormalGameRecoveryAndResumeCanReacquire) {
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) {
+      return true;
+    },
+    .apply_composed_topology = [](const auto &) {
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+  });
+
+  const auto paused_game = coordinator.reserve_normal_game_identity("paused-game", "Paused Game", {});
+  const auto shared = coordinator.reserve_normal_game_identity("shared", "Shared", {});
+  ASSERT_TRUE(paused_game.accepted);
+  ASSERT_TRUE(shared.accepted);
+  ASSERT_TRUE(coordinator.activate_or_resume("shared", "Shared", {}, 1).ready);
+  ASSERT_TRUE(coordinator.activate_or_resume("monitor", "Monitor", {}, 2).ready);
+  coordinator.transport_lost("monitor", 2);
+
+  // A live or starting peer keeps every recovery worker armed. Once capture is
+  // globally idle, only the paused normal-game identity is eligible; retained
+  // Remote Monitor identities keep their recovery authority.
+  EXPECT_TRUE(coordinator.idle_normal_game_recovery_client_ids(true).empty());
+  EXPECT_EQ(
+    coordinator.idle_normal_game_recovery_client_ids(false),
+    (std::vector<std::string> {"paused-game"})
+  );
+
+  // Selecting recovery retirement does not release the paused identity.
+  // Resume can retain it again, and the live capture reference removes it
+  // from the idle retirement set.
+  auto resumed_capture = coordinator.retain_normal_game_capture("paused-game", paused_game.token);
+  ASSERT_TRUE(resumed_capture);
+  EXPECT_TRUE(coordinator.idle_normal_game_recovery_client_ids(false).empty());
+  resumed_capture.reset();
+  EXPECT_EQ(
+    coordinator.idle_normal_game_recovery_client_ids(false),
+    (std::vector<std::string> {"paused-game"})
+  );
+}
+
 TEST(RemoteDisplayTopology, OldCaptureDrainCannotReleaseSuccessorAppIdentity) {
   remote_display_topology::coordinator_t coordinator;
   std::vector<std::string> removed;

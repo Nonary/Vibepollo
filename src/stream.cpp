@@ -40,6 +40,7 @@ extern "C" {
 // local includes
 #include "config.h"
 #include "crypto.h"
+#include "deferred_stream_start_policy.h"
 #include "display_device.h"
 #include "display_helper_integration.h"
 #include "globals.h"
@@ -918,31 +919,35 @@ namespace stream {
       return false;
     }
 
-    std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
-    std::optional<deferred_stream_start_t> deferred;
-    {
-      std::lock_guard<std::mutex> lock(deferred_stream_start_mutex());
-      if (!deferred_stream_start_state()) {
-        return false;
+    return deferred_start::try_apply_with_lifecycle_gate(
+      nvhttp::stream_lifecycle_mutex(),
+      [&]() {
+        std::optional<deferred_stream_start_t> deferred;
+        {
+          std::lock_guard<std::mutex> lock(deferred_stream_start_mutex());
+          if (!deferred_stream_start_state()) {
+            return false;
+          }
+          deferred = std::move(deferred_stream_start_state());
+          deferred_stream_start_state().reset();
+        }
+
+        if (!rtsp_stream_start_actions_still_needed()) {
+          BOOST_LOG(debug) << "Stream-start actions skipped because no active RTSP stream remains.";
+          return false;
+        }
+
+        BOOST_LOG(info) << "Stream-start actions applied after user session became available.";
+        if (deferred->policy) {
+          platf::frame_limiter_streaming_start(
+            platf::frame_limiter_owner::rtsp,
+            *deferred->policy
+          );
+        }
+        session::start_shared_platform_if_needed();
+        return true;
       }
-      deferred = std::move(deferred_stream_start_state());
-      deferred_stream_start_state().reset();
-    }
-
-    if (!rtsp_stream_start_actions_still_needed()) {
-      BOOST_LOG(debug) << "Stream-start actions skipped because no active RTSP stream remains.";
-      return false;
-    }
-
-    BOOST_LOG(info) << "Stream-start actions applied after user session became available.";
-    if (deferred->policy) {
-      platf::frame_limiter_streaming_start(
-        platf::frame_limiter_owner::rtsp,
-        *deferred->policy
-      );
-    }
-    session::start_shared_platform_if_needed();
-    return true;
+    );
   }
 #endif
 
@@ -3156,7 +3161,8 @@ namespace stream {
       const std::string_view reason,
       const shared_runtime_finalize_context_t &context
     ) {
-      remote_display_topology::instance().release_drained_normal_game_identities();
+      auto &topology = remote_display_topology::instance();
+      topology.release_drained_normal_game_identities();
       if (!shared_runtime_cleanup_armed) {
         return false;
       }
@@ -3166,7 +3172,30 @@ namespace stream {
         shared_runtime_force_display_revert_when_idle ||
         context.force_display_revert_when_idle;
 
-      if (has_shared_runtime_owner(context)) {
+      const bool capture_runtime_owned = has_capture_runtime_owner(context);
+#ifdef _WIN32
+      // A paused app intentionally keeps its normal identity for Resume, but
+      // crash recovery has authority only while capture is live. Retire each
+      // drained normal-only worker at the final capture boundary. A Remote
+      // Monitor sharing that stable identity retains its worker, and any live
+      // or starting peer defers this boundary for every display.
+      const auto retiring_recovery_clients =
+        topology.idle_normal_game_recovery_client_ids(capture_runtime_owned);
+      for (const auto &client_uuid : retiring_recovery_clients) {
+        const auto recovery_uuid = VDISPLAY::virtualDisplayUuidFromStableId(client_uuid);
+        GUID recovery_guid {};
+        static_assert(sizeof(recovery_guid) == sizeof(recovery_uuid.b8));
+        std::memcpy(&recovery_guid, recovery_uuid.b8, sizeof(recovery_guid));
+        VDISPLAY::cancel_virtual_display_recovery_monitor(recovery_guid);
+      }
+      if (!retiring_recovery_clients.empty()) {
+        BOOST_LOG(info) << "Virtual display recovery: disengaged "
+                        << retiring_recovery_clients.size()
+                        << " paused normal-game monitor(s) at the final capture boundary.";
+      }
+#endif
+
+      if (capture_runtime_owned || topology.managed_client_identity_count() != 0) {
         return false;
       }
 
@@ -3844,7 +3873,7 @@ namespace stream {
       session->secondary_game_client = launch_session.secondary_game_client;
       session->remote_role = launch_session.role;
       session->remote_role_generation = launch_session.role_generation;
-#ifdef __linux__
+#if defined(_WIN32) || defined(__linux__)
       if (launch_session.role == remote_session::role_e::game) {
         const auto app = proc::proc.active_session_guard();
         const auto token = launch_session.normal_vdd_identity_token != 0 ?

@@ -146,6 +146,20 @@ namespace remote_display_topology {
     std::sort(ids.begin(), ids.end());
     return ids;
   }
+  std::vector<std::string> coordinator_t::idle_normal_game_recovery_client_ids(const bool capture_runtime_owned) const {
+    std::lock_guard lock(mutex_);
+    std::vector<std::string> ids;
+    if (capture_runtime_owned) {
+      return ids;
+    }
+    for (const auto &[uuid, state] : clients_) {
+      if (state.normal_game && !state.remote_monitor && state.normal_capture_references.empty()) {
+        ids.push_back(uuid);
+      }
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
+  }
   bool coordinator_t::generic_virtual_display_cleanup_allowed() const {
     std::lock_guard lock(mutex_);
     return std::none_of(clients_.begin(), clients_.end(), [](const auto &entry) {

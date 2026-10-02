@@ -147,6 +147,48 @@ namespace framegen {
     return raw >= 1000 ? raw : saturating_refresh_millihz(raw, 1000);
   }
 
+  struct virtual_display_recovery_refresh_input_t {
+    bool fixed_refresh = false;
+    std::optional<std::uint32_t> framegen_refresh_millihz;
+    std::uint32_t client_display_refresh_millihz = 0;
+    int stream_fps_millihz = 0;
+    std::uint32_t effective_display_refresh_millihz = 0;
+    int refresh_multiplier = 1;
+  };
+
+  struct virtual_display_recovery_refresh_t {
+    std::uint32_t base_fps_millihz = 0;
+    std::uint32_t fps_millihz = 0;
+  };
+
+  // Vibepollo stores RTSP stream cadence in millihertz at its launch boundary.
+  // Keep the recovery descriptor in that unit while retaining compatibility
+  // with older whole-Hz callers accepted by normalize_refresh_millihz().
+  inline virtual_display_recovery_refresh_t make_virtual_display_recovery_refresh(
+    const virtual_display_recovery_refresh_input_t &input
+  ) {
+    const auto base_fps_millihz =
+      input.fixed_refresh && input.framegen_refresh_millihz && *input.framegen_refresh_millihz > 0 ?
+        *input.framegen_refresh_millihz :
+      input.client_display_refresh_millihz > 0 ?
+        input.client_display_refresh_millihz :
+        normalize_refresh_millihz(input.stream_fps_millihz);
+
+    auto fps_millihz = input.effective_display_refresh_millihz > 0 ?
+                         input.effective_display_refresh_millihz :
+                         60000u;
+    if (base_fps_millihz > 0 && input.refresh_multiplier > 1) {
+      fps_millihz = std::max(
+        fps_millihz,
+        saturating_refresh_millihz(base_fps_millihz, input.refresh_multiplier)
+      );
+    }
+    return {
+      .base_fps_millihz = base_fps_millihz,
+      .fps_millihz = fps_millihz,
+    };
+  }
+
   inline int rounded_fps_from_millihz(std::uint32_t millihz) {
     constexpr std::uint32_t kMillihzPerHertz = 1000;
     const auto rounded = (static_cast<std::uint64_t>(millihz) + kMillihzPerHertz / 2) / kMillihzPerHertz;

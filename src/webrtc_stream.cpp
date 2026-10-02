@@ -3161,7 +3161,7 @@ namespace webrtc_stream {
       // the desktop (0) so the launch session and capture key stay well-formed.
       const int effective_app_id = requested_app_id > 0 ? requested_app_id : std::max(current_app_id, 0);
       const bool capture_already_active = webrtc_capture.active.load(std::memory_order_acquire);
-#ifdef __linux__
+#if defined(_WIN32) || defined(__linux__)
       // A fresh desktop capture can inherit RTSP's output after its app exits.
       // It must not attach to an ended generation while that output drains.
       if (!capture_already_active && remote_display_topology::instance().normal_game_release_pending()) {
@@ -3455,7 +3455,7 @@ namespace webrtc_stream {
       }
 
       std::shared_ptr<void> normal_display_capture;
-#ifdef __linux__
+#if defined(_WIN32) || defined(__linux__)
       const auto app = proc::proc.active_session_guard();
       if (app.normal_vdd_identity_token != 0) {
         normal_display_capture = remote_display_topology::instance().retain_normal_game_capture(

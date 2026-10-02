@@ -4,7 +4,107 @@
  */
 
 #include "../tests_common.h"
+#include "src/deferred_stream_start_policy.h"
 #include "src/stream_protocol.h"
+
+namespace {
+  class lifecycle_mutex_stub_t {
+  public:
+    explicit lifecycle_mutex_stub_t(const bool available):
+        available_ {available} {
+    }
+
+    void lock() {
+      ++blocking_lock_calls;
+      locked = true;
+    }
+
+    bool try_lock() {
+      ++try_lock_calls;
+      if (!available_) {
+        return false;
+      }
+      locked = true;
+      return true;
+    }
+
+    void unlock() {
+      ++unlock_calls;
+      locked = false;
+    }
+
+    void set_available(const bool available) {
+      available_ = available;
+    }
+
+    int blocking_lock_calls {0};
+    int try_lock_calls {0};
+    int unlock_calls {0};
+    bool locked {false};
+
+  private:
+    bool available_;
+  };
+}  // namespace
+
+TEST(DeferredStreamStartPolicy, ContendedLifecycleGatePreservesPendingWorkWithoutBlocking) {
+  lifecycle_mutex_stub_t lifecycle_gate {false};
+  bool pending = true;
+  int apply_calls = 0;
+
+  const auto apply_pending = [&] {
+    ++apply_calls;
+    pending = false;
+    return true;
+  };
+  const bool initially_applied = stream::deferred_start::try_apply_with_lifecycle_gate(
+    lifecycle_gate,
+    apply_pending
+  );
+
+  EXPECT_FALSE(initially_applied);
+  EXPECT_TRUE(pending);
+  EXPECT_EQ(apply_calls, 0);
+  EXPECT_EQ(lifecycle_gate.blocking_lock_calls, 0);
+  EXPECT_EQ(lifecycle_gate.try_lock_calls, 1);
+  EXPECT_EQ(lifecycle_gate.unlock_calls, 0);
+
+  lifecycle_gate.set_available(true);
+  const bool retried = stream::deferred_start::try_apply_with_lifecycle_gate(
+    lifecycle_gate,
+    apply_pending
+  );
+
+  EXPECT_TRUE(retried);
+  EXPECT_FALSE(pending);
+  EXPECT_EQ(apply_calls, 1);
+  EXPECT_EQ(lifecycle_gate.blocking_lock_calls, 0);
+  EXPECT_EQ(lifecycle_gate.try_lock_calls, 2);
+  EXPECT_EQ(lifecycle_gate.unlock_calls, 1);
+}
+
+TEST(DeferredStreamStartPolicy, ReadyWorkRunsWhileHoldingTheLifecycleGate) {
+  lifecycle_mutex_stub_t lifecycle_gate {true};
+  bool pending = true;
+  bool applied_while_locked = false;
+
+  const bool applied = stream::deferred_start::try_apply_with_lifecycle_gate(
+    lifecycle_gate,
+    [&] {
+      applied_while_locked = lifecycle_gate.locked;
+      pending = false;
+      return true;
+    }
+  );
+
+  EXPECT_TRUE(applied);
+  EXPECT_TRUE(applied_while_locked);
+  EXPECT_FALSE(pending);
+  EXPECT_EQ(lifecycle_gate.blocking_lock_calls, 0);
+  EXPECT_EQ(lifecycle_gate.try_lock_calls, 1);
+  EXPECT_EQ(lifecycle_gate.unlock_calls, 1);
+  EXPECT_FALSE(lifecycle_gate.locked);
+}
 
 TEST(VideoSendBatchTests, EncryptedDefaultPacketsStayWithinWindowsBufferingLimit) {
   // packetSize=1392 plus the 16-byte RTP allowance, then a 32-byte GCM prefix.

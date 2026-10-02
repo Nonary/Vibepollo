@@ -94,6 +94,9 @@ namespace remote_display_topology {
     bool normal_game_release_pending() const;
     std::vector<std::string> managed_client_identity_ids() const;
     std::vector<std::string> protected_remote_monitor_client_ids() const;
+    // Recovery belongs to live capture. At the final capture boundary, return
+    // only drained normal-game identities that have no retained monitor role.
+    std::vector<std::string> idle_normal_game_recovery_client_ids(bool capture_runtime_owned) const;
     bool generic_virtual_display_cleanup_allowed() const;
     void set_plaintext_rtsp_warning_provider(std::function<std::string(const std::string &)> provider);
     monitor_runtime_state_t activate_or_resume(const std::string &client_uuid, const std::string &label, mode_t mode, uint64_t generation);
