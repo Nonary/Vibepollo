@@ -155,6 +155,16 @@
   configuration.width = self.frameWidth;
   configuration.height = self.frameHeight;
   configuration.pixelFormat = self.pixelFormat;
+  if (self.hdr && self.pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange) {
+    // The stream's HDR color space, so the frames go to the encoder as they are. captureDynamicRange
+    // is new in macOS 15; set it by name so builds with an older SDK, such as the Apple Silicon CI's
+    // Xcode 15, still capture HDR. 1 is SCCaptureDynamicRangeHDRLocalDisplay.
+    if ([configuration respondsToSelector:NSSelectorFromString(@"setCaptureDynamicRange:")]) {
+      [configuration setValue:@1 forKey:@"captureDynamicRange"];
+    }
+    configuration.colorSpaceName = kCGColorSpaceITUR_2100_PQ;
+    configuration.colorMatrix = kCVImageBufferYCbCrMatrix_ITU_R_2020;
+  }
   configuration.minimumFrameInterval = self.minFrameDuration;
   configuration.showsCursor = YES;
   // The pipeline holds a few frames and the last one is kept for the keepalive, so leave room.

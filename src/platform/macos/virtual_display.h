@@ -75,6 +75,9 @@ namespace platf::macos_virtual_display {
   /// Whether a display is one of the Remote Monitor displays.
   bool is_remote_display(std::uint32_t display_id);
 
+  /// Whether a display is one of Vibepollo's virtual displays, made as an HDR display.
+  bool is_hdr_display(std::uint32_t display_id);
+
   /**
    * @brief Record where a Remote Monitor display was when its capture started.
    * @details Its stream's input carries that origin as its touch port offset, which is how input

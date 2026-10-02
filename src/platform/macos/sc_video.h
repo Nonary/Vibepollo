@@ -18,6 +18,9 @@
 /// Longest time without a delivered frame before the last one is re-sent (the minimum frame rate).
 @property (nonatomic, assign) CMTime keepaliveInterval;
 
+/// Capture HDR, in BT.2020 with the PQ transfer function, when the pixel format is 10-bit. Needs macOS 15.
+@property (nonatomic, assign) BOOL hdr;
+
 - (id)initWithDisplay:(CGDirectDisplayID)displayID frameRate:(int)frameRate;
 - (dispatch_semaphore_t)capture:(FrameCallbackBlock)frameCallback;
 

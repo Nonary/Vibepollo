@@ -4,9 +4,12 @@
  */
 // standard includes
 #include <chrono>
+#include <cmath>
+#include <cstring>
 #include <mutex>
 
 // platform includes
+#import <AppKit/AppKit.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
 
 // local includes
@@ -42,14 +45,64 @@ namespace platf {
       bool delivered = false;
       std::chrono::steady_clock::time_point last_frame = std::chrono::steady_clock::now();
     };
+
+    // SDR white in ScreenCaptureKit's HDR frames, measured from an HDR virtual display on macOS 27.
+    constexpr double sdr_white_nits = 140.0;
+    // macOS 27 gives an HDR virtual display this much EDR headroom.
+    constexpr double virtual_display_headroom = 5.0;
+    // The brightest Apple displays peak at 1600 nits.
+    constexpr double max_peak_nits = 1600.0;
+
+    /**
+     * @brief How far above SDR white a display can go: more than 1 for an HDR display.
+     */
+    double edr_headroom(const CGDirectDisplayID display_id) {
+      @autoreleasepool {
+        for (NSScreen *screen in NSScreen.screens) {
+          if ([screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue] == display_id) {
+            return screen.maximumPotentialExtendedDynamicRangeColorComponentValue;
+          }
+        }
+      }
+      return 1.0;
+    }
   }  // namespace
 
   struct av_display_t: public display_t {
     AVVideo *av_capture {};
     CGDirectDisplayID display_id {};
+    bool hdr = false;
+    double headroom = 1.0;  ///< The display's EDR headroom, while hdr.
 
     ~av_display_t() override {
       [av_capture release];
+    }
+
+    bool is_hdr() override {
+      return hdr;
+    }
+
+    bool get_hdr_metadata(SS_HDR_METADATA &metadata) override {
+      std::memset(&metadata, 0, sizeof(metadata));
+      if (!hdr) {
+        return false;
+      }
+      // Display P3 primaries (red, green, blue) and a D65 white point, normalized to 50,000: the
+      // gamut of Apple's HDR displays and of Vibepollo's HDR virtual display.
+      metadata.displayPrimaries[0] = {34000, 16000};
+      metadata.displayPrimaries[1] = {13250, 34500};
+      metadata.displayPrimaries[2] = {7500, 3000};
+      metadata.whitePoint = {15635, 16450};
+      metadata.maxDisplayLuminance = peak_nits();
+      metadata.minDisplayLuminance = 50;  // 0.005 nits
+      metadata.maxContentLightLevel = metadata.maxDisplayLuminance;
+      metadata.maxFrameAverageLightLevel = static_cast<std::uint16_t>(sdr_white_nits);
+      return true;
+    }
+
+    /// The display's peak brightness in the captured frames: its EDR headroom over SDR white.
+    std::uint16_t peak_nits() const {
+      return static_cast<std::uint16_t>(std::lround(std::min(headroom * sdr_white_nits, max_peak_nits)));
     }
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
@@ -426,9 +479,28 @@ namespace platf {
     }
     BOOST_LOG(info) << "Configuring selected display ("sv << display->display_id << ") to stream"sv;
 
-    // AVCaptureScreenInput delivers no frames from virtual displays; ScreenCaptureKit does.
-    if (remote_monitor || macos_virtual_display::active_display_id() == display->display_id) {
+    // HDR needs ScreenCaptureKit's HDR capture, from macOS 15, and an HDR display: Vibepollo's HDR
+    // virtual display, or a physical one with EDR headroom, such as a MacBook Pro's.
+    if (config.dynamicRange > 0 && !config.prefer_sdr_10bit && !config.force_sdr) {
+      if (@available(macOS 15.0, *)) {
+        display->headroom = edr_headroom(display->display_id);
+        if (macos_virtual_display::is_hdr_display(display->display_id)) {
+          // AppKit can lag behind a display that was just created.
+          display->headroom = std::max(display->headroom, virtual_display_headroom);
+        }
+        display->hdr = display->headroom > 1.0;
+      }
+      if (display->hdr) {
+        BOOST_LOG(info) << "Capturing HDR, up to "sv << display->peak_nits() << " nits"sv;
+      } else {
+        BOOST_LOG(info) << "Display "sv << display->display_id << " can't be captured in HDR, so the stream is SDR"sv;
+      }
+    }
+
+    // AVCaptureScreenInput delivers no frames from virtual displays, nor HDR; ScreenCaptureKit does.
+    if (remote_monitor || macos_virtual_display::active_display_id() == display->display_id || display->hdr) {
       SCVideo *capture = [[SCVideo alloc] initWithDisplay:display->display_id frameRate:config.framerate];
+      capture.hdr = display->hdr;
       // The sync encode path only encodes delivered frames, so enforce the minimum frame rate here
       // (the same default as video.cpp: a fifth of the stream's rate, at least 10 fps).
       const double minimum_fps = config::video.minimum_fps_target > 0 ? config::video.minimum_fps_target : std::max(config.framerate / 5.0, 10.0);

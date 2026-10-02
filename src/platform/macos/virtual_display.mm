@@ -67,11 +67,17 @@ extern char **environ;
 @property (nonatomic) unsigned int serialNum;
 @property (nonatomic) unsigned int productID;
 @property (nonatomic) unsigned int vendorID;
+@property (nonatomic) CGPoint redPrimary;
+@property (nonatomic) CGPoint greenPrimary;
+@property (nonatomic) CGPoint bluePrimary;
+@property (nonatomic) CGPoint whitePoint;
 @property (copy, nonatomic) void (^terminationHandler)(id, id);
 @end
 
 @interface CGVirtualDisplayMode: NSObject
 - (instancetype)initWithWidth:(unsigned int)width height:(unsigned int)height refreshRate:(double)refreshRate;
+// Newer macOS only; check with instancesRespondToSelector: first.
+- (instancetype)initWithWidth:(unsigned int)width height:(unsigned int)height refreshRate:(double)refreshRate transferFunction:(unsigned int)transferFunction;
 @end
 
 @interface CGVirtualDisplaySettings: NSObject
@@ -95,6 +101,22 @@ namespace platf::macos_virtual_display {
     constexpr unsigned int vendor_id = 0x5650;  // "VP"
     constexpr unsigned int product_id = 0x0001;
     constexpr unsigned int serial_number = 0x0001;
+
+    // A mode's transfer function, on macOS versions that take one. 1 makes the display HDR: macOS
+    // then gives it EDR headroom, as it does an HDR monitor. 0, the default, is SDR. The values are
+    // undocumented; these were found by testing on macOS 27.
+    constexpr unsigned int hdr_transfer_function = 1;
+
+    /**
+     * @brief Whether this macOS can make an HDR virtual display and capture it in HDR.
+     * @details Capturing HDR needs ScreenCaptureKit's HDR capture, from macOS 15.
+     */
+    bool can_make_hdr() {
+      if (@available(macOS 15.0, *)) {
+        return [NSClassFromString(@"CGVirtualDisplayMode") instancesRespondToSelector:@selector(initWithWidth:height:refreshRate:transferFunction:)];
+      }
+      return false;
+    }
 
     configure_display_enabled_fn configure_display_enabled() {
       static const auto fn = reinterpret_cast<configure_display_enabled_fn>(dlsym(RTLD_DEFAULT, "CGSConfigureDisplayEnabled"));
@@ -284,6 +306,7 @@ namespace platf::macos_virtual_display {
     struct virtual_display_t {
       CGVirtualDisplay *display = nil;
       CGDirectDisplayID id = kCGNullDirectDisplay;
+      bool hdr = false;
       std::vector<CGDirectDisplayID> turned_off;  ///< Physical displays to turn back on.
       std::unique_ptr<saved_modes_t> turned_off_modes;  ///< Their modes from before.
       pid_t watchdog_pid = -1;
@@ -299,6 +322,7 @@ namespace platf::macos_virtual_display {
     std::unique_ptr<virtual_display_t> current;
     int current_users = 0;
     std::atomic<CGDirectDisplayID> current_id {kCGNullDirectDisplay};
+    std::atomic<bool> current_hdr {false};
 
     void start_watchdog(virtual_display_t &display, const std::vector<CGDirectDisplayID> &ids) {
       int fds[2];
@@ -485,8 +509,9 @@ namespace platf::macos_virtual_display {
      * @brief Create a virtual display, bring it online, and pick its mode, without arranging it.
      * @param name Shown in System Settings > Displays.
      * @param serial Distinguishes the display from Vibepollo's others, so macOS remembers each one's settings.
+     * @param hdr Make it an HDR display, where this macOS can.
      */
-    std::unique_ptr<virtual_display_t> make_display(NSString *name, const unsigned int serial, const int width, const int height, const double refresh) {
+    std::unique_ptr<virtual_display_t> make_display(NSString *name, const unsigned int serial, const int width, const int height, const double refresh, const bool hdr) {
       const Class descriptor_class = NSClassFromString(@"CGVirtualDisplayDescriptor");
       const Class display_class = NSClassFromString(@"CGVirtualDisplay");
       const Class settings_class = NSClassFromString(@"CGVirtualDisplaySettings");
@@ -494,6 +519,11 @@ namespace platf::macos_virtual_display {
       if (!descriptor_class || !display_class || !settings_class || !mode_class) {
         BOOST_LOG(warning) << "Virtual display: not supported by this macOS"sv;
         return nullptr;
+      }
+
+      const bool make_hdr = hdr && can_make_hdr();
+      if (hdr && !make_hdr) {
+        BOOST_LOG(info) << "Virtual display: this macOS can't make it HDR, so the stream is SDR"sv;
       }
 
       // During a dark wake no display comes online, virtual ones included.
@@ -518,6 +548,13 @@ namespace platf::macos_virtual_display {
       descriptor.vendorID = vendor_id;
       descriptor.productID = product_id;
       descriptor.serialNum = serial;
+      if (make_hdr) {
+        // A wide gamut, as on Apple's HDR displays: Display P3 primaries and a D65 white point.
+        descriptor.redPrimary = CGPointMake(0.680, 0.320);
+        descriptor.greenPrimary = CGPointMake(0.265, 0.690);
+        descriptor.bluePrimary = CGPointMake(0.150, 0.060);
+        descriptor.whitePoint = CGPointMake(0.3127, 0.3290);
+      }
       descriptor.terminationHandler = ^(id, id) {
         BOOST_LOG(warning) << "Virtual display: macOS removed the virtual display"sv;
       };
@@ -531,12 +568,16 @@ namespace platf::macos_virtual_display {
 
       CGVirtualDisplaySettings *settings = [[settings_class alloc] init];
       settings.hiDPI = hidpi ? 1 : 0;
-      settings.modes = @[[[mode_class alloc] initWithWidth:mode_width height:mode_height refreshRate:refresh]];
+      CGVirtualDisplayMode *mode = make_hdr ?
+                                     [[mode_class alloc] initWithWidth:mode_width height:mode_height refreshRate:refresh transferFunction:hdr_transfer_function] :
+                                     [[mode_class alloc] initWithWidth:mode_width height:mode_height refreshRate:refresh];
+      settings.modes = @[mode];
       if (![result->display applySettings:settings]) {
         BOOST_LOG(error) << "Virtual display: macOS rejected "sv << mode_width << 'x' << mode_height << '@' << refresh << "Hz"sv;
         return nullptr;
       }
       result->id = result->display.displayID;
+      result->hdr = make_hdr;
 
       if (!wait_until([id = result->id]() {
             return is_active(id);
@@ -551,6 +592,7 @@ namespace platf::macos_virtual_display {
       }
       other_modes.restore(1s);
       BOOST_LOG(info) << "Virtual display: "sv << name.UTF8String << ' ' << pixel_width << 'x' << pixel_height << '@' << refresh << "Hz"sv
+                      << (make_hdr ? " HDR"sv : ""sv)
                       << (hidpi ? " (Retina, looks like "s + std::to_string(mode_width) + 'x' + std::to_string(mode_height) + ')' : ""s)
                       << ", display id "sv << result->id;
       return result;
@@ -558,7 +600,8 @@ namespace platf::macos_virtual_display {
 
     std::unique_ptr<virtual_display_t> create(const video::config_t &config) {
       const double refresh = config.framerateX100 > 0 ? config.framerateX100 / 100.0 : config.framerate;
-      auto result = make_display(@PROJECT_NAME, serial_number, config.width, config.height, refresh);
+      const bool hdr = config.dynamicRange > 0 && !config.prefer_sdr_10bit && !config.force_sdr;
+      auto result = make_display(@PROJECT_NAME, serial_number, config.width, config.height, refresh, hdr);
       if (!result) {
         BOOST_LOG(warning) << "Virtual display: streaming the physical display instead"sv;
         return nullptr;
@@ -608,6 +651,7 @@ namespace platf::macos_virtual_display {
         return;
       }
       current_id = kCGNullDirectDisplay;
+      current_hdr = false;
       current.reset();
     }
   }  // namespace
@@ -623,6 +667,7 @@ namespace platf::macos_virtual_display {
       if (!current) {
         return nullptr;
       }
+      current_hdr = current->hdr;
       current_id = current->id;
     }
     ++current_users;
@@ -696,14 +741,19 @@ namespace platf::macos_virtual_display {
     // The displays' IDs, for lookups from input and capture that mustn't wait on remote_mutex.
     std::mutex remote_ids_mutex;
     std::vector<CGDirectDisplayID> remote_ids;
+    std::vector<CGDirectDisplayID> remote_hdr_ids;
     std::map<CGDirectDisplayID, std::pair<int, int>> remote_capture_origins;
 
     // Call with remote_mutex held.
     void publish_remote_ids() {
       std::vector<CGDirectDisplayID> ids;
+      std::vector<CGDirectDisplayID> hdr_ids;
       for (const auto &[_, remote] : remote_displays) {
         if (remote.display) {
           ids.push_back(remote.display->id);
+          if (remote.display->hdr) {
+            hdr_ids.push_back(remote.display->id);
+          }
         }
       }
       std::lock_guard lock {remote_ids_mutex};
@@ -711,6 +761,7 @@ namespace platf::macos_virtual_display {
         return std::find(ids.begin(), ids.end(), entry.first) == ids.end();
       });
       remote_ids = std::move(ids);
+      remote_hdr_ids = std::move(hdr_ids);
     }
 
     // A serial per client (FNV-1a of its UUID), so macOS remembers each Remote Monitor's settings.
@@ -756,7 +807,7 @@ namespace platf::macos_virtual_display {
   bool remote_create_or_reclaim(const std::string &client_uuid, const std::string &client_label, const remote_display_topology::mode_t &mode) {
     std::lock_guard lock {remote_mutex};
     auto &remote = remote_displays[client_uuid];
-    if (remote.display && is_active(remote.display->id) && remote.mode.width == mode.width && remote.mode.height == mode.height && remote.mode.refresh_hz == mode.refresh_hz) {
+    if (remote.display && is_active(remote.display->id) && remote.mode.width == mode.width && remote.mode.height == mode.height && remote.mode.refresh_hz == mode.refresh_hz && remote.mode.hdr == mode.hdr) {
       return true;
     }
 
@@ -764,7 +815,7 @@ namespace platf::macos_virtual_display {
     remote.display.reset();
     publish_remote_ids();
     NSString *name = client_label.empty() ? @PROJECT_NAME " Remote Monitor" : @(client_label.c_str());
-    remote.display = make_display(name, remote_serial(client_uuid), mode.width, mode.height, mode.refresh_hz);
+    remote.display = make_display(name, remote_serial(client_uuid), mode.width, mode.height, mode.refresh_hz, mode.hdr);
     if (!remote.display) {
       remote_displays.erase(client_uuid);
       return false;
@@ -776,8 +827,7 @@ namespace platf::macos_virtual_display {
   }
 
   void remote_resolve_mode(const std::string &, remote_display_topology::mode_t &mode) {
-    // Vibepollo's macOS virtual displays are SDR.
-    mode.hdr = false;
+    mode.hdr = mode.hdr && can_make_hdr();
   }
 
   bool remote_apply_composed_topology(const std::vector<remote_display_topology::node_t> &composed) {
@@ -856,6 +906,14 @@ namespace platf::macos_virtual_display {
   bool is_remote_display(const std::uint32_t display_id) {
     std::lock_guard lock {remote_ids_mutex};
     return std::find(remote_ids.begin(), remote_ids.end(), display_id) != remote_ids.end();
+  }
+
+  bool is_hdr_display(const std::uint32_t display_id) {
+    if (display_id == current_id.load()) {
+      return current_hdr.load();
+    }
+    std::lock_guard lock {remote_ids_mutex};
+    return std::find(remote_hdr_ids.begin(), remote_hdr_ids.end(), display_id) != remote_hdr_ids.end();
   }
 
   void note_remote_capture_origin(const std::uint32_t display_id, const int x, const int y) {

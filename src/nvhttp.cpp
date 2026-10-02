@@ -230,6 +230,8 @@ namespace nvhttp {
       config.height = session.height;
       config.framerate = static_cast<int>(std::lround(millihz / 1000.0));
       config.framerateX100 = static_cast<int>(std::lround(millihz / 10.0));
+      // An HDR stream needs the display to be HDR from the start.
+      config.dynamicRange = rtsp_stream::effective_hdr_requested(session) ? 1 : 0;
       return config;
     }
 #endif
