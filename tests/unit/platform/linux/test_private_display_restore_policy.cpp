@@ -91,6 +91,16 @@ TEST(LinuxPrivateDisplayRestorePolicy, FinalVerificationRejectsShiftedDesktopAnd
   EXPECT_FALSE(policy::snapshot_matches(snapshot, current, true));
 }
 
+TEST(LinuxPrivateDisplayRestorePolicy, ActivationToleratesPriorityHeldByRetiringOutput) {
+  // KWin keeps the live private output at priority 1 until it is disconnected,
+  // so the restored primary is reported one slot lower during activation.
+  const auto snapshot = external_desktop();
+  auto current = snapshot;
+  current["outputs"][1]["priority"] = 2;
+  EXPECT_TRUE(policy::snapshot_matches(snapshot, current));
+  EXPECT_FALSE(policy::snapshot_matches(snapshot, current, true));
+}
+
 TEST(LinuxPrivateDisplayRestorePolicy, FinalVerificationRejectsChangedOrientationScaleAndHdr) {
   const auto snapshot = external_desktop();
   for (const auto &change : {json {{"rotation", 8}}, json {{"scale", 1.0}}, json {{"hdr", false}}}) {
