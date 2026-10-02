@@ -957,7 +957,7 @@ async function runConfirmedAction(): Promise<void> {
   try {
     let result: MutationResult;
     if (action === 'playnite-install') {
-      result = await apiPost<MutationResult>('/api/playnite/install', { restart: false });
+      result = await apiPost<MutationResult>('/api/playnite/install', { restart: true });
       notice.value = t('ui.integrations.notices.playniteInstalled');
     } else if (action === 'playnite-uninstall') {
       result = await apiPost<MutationResult>('/api/playnite/uninstall', { restart: false });
