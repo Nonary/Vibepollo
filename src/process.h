@@ -217,7 +217,8 @@ namespace proc {
 
     void launch_input_only();
 
-    int execute(const ctx_t &_app, std::shared_ptr<rtsp_stream::launch_session_t> launch_session);
+    // Callers holding the configuration read gate must defer cleanup writes.
+    int execute(const ctx_t &_app, std::shared_ptr<rtsp_stream::launch_session_t> launch_session, bool config_read_gate_held = false);
 
     /**
      * @return `_app_id` if a process is running, otherwise returns `0`
@@ -246,7 +247,8 @@ namespace proc {
       bool immediate = false,
       bool needs_refresh = true,
       bool skip_display_revert = false,
-      bool stream_lifecycle_lock_held = false
+      bool stream_lifecycle_lock_held = false,
+      bool config_read_gate_held = false
     );
     bool last_run_app_frame_gen_limiter_fix() const;
     bool is_launch_deferred() const;
@@ -272,7 +274,7 @@ namespace proc {
     bp::environment release_env();
 
   private:
-    int launch_app_commands(bool stream_lifecycle_lock_held);
+    int launch_app_commands(bool stream_lifecycle_lock_held, bool config_read_gate_held = false);
 
     std::atomic<int> _app_id {0};
     std::string _app_name;

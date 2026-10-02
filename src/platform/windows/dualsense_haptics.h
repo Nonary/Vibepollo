@@ -20,5 +20,6 @@ namespace platf::dualsense_audio {
   bool enabled();
   void set_slot(unsigned index, bool active);
   std::vector<dualsense_haptics::packet> drain(unsigned index);
-  std::string wrap_command(const std::string &command);
+  std::string wrap_command(const std::string &command, bool playnite = false);
+  std::string hook_library_path();
 }  // namespace platf::dualsense_audio

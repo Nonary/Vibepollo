@@ -233,6 +233,9 @@ namespace playnite_launcher {
       platf::playnite::IpcClient client;
       const auto fullscreen_launch_environment = snapshot_process_environment();
       std::atomic<bool> pipe_connected {false};
+      const bool waveform_requested = GetEnvironmentVariableW(L"VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING", nullptr, 0) > 1;
+      std::atomic<bool> waveform_connector_ready {false};
+      std::atomic<bool> waveform_environment_ready {false};
 
       std::atomic<bool> game_start_signal {false};
       std::atomic<bool> game_stop_signal {false};
@@ -326,6 +329,14 @@ namespace playnite_launcher {
         auto msg = platf::playnite::parse(bytes);
         using MT = platf::playnite::MessageType;
         if (msg.type != MT::Status) {
+          return;
+        }
+        if (msg.status_name == "waveformConnectorReady") {
+          waveform_connector_ready.store(true, std::memory_order_release);
+          return;
+        }
+        if (msg.status_name == "waveformEnvironmentReady") {
+          waveform_environment_ready.store(true, std::memory_order_release);
           return;
         }
         auto norm_id = normalize_game_id(msg.status_game_id);
@@ -495,6 +506,18 @@ namespace playnite_launcher {
       };
 
       BOOST_LOG(info) << "Fullscreen mode requested; attempting to start Playnite.DesktopApp.exe --startfullscreen";
+      if (waveform_requested) {
+        ensure_playnite_open();
+        const auto ready_deadline = std::chrono::steady_clock::now() + 30s;
+        while (!(waveform_connector_ready.load(std::memory_order_acquire) && waveform_environment_ready.load(std::memory_order_acquire)) && std::chrono::steady_clock::now() < ready_deadline) {
+          std::this_thread::sleep_for(50ms);
+        }
+        if (!(waveform_connector_ready.load(std::memory_order_acquire) && waveform_environment_ready.load(std::memory_order_acquire))) {
+          BOOST_LOG(error) << "Playnite waveform haptics requires connector 0.4.15 or newer; restart Playnite after updating it.";
+          client.stop();
+          return 3;
+        }
+      }
       (void) launch_playnite_fullscreen();
       ensure_cleanup_leases();
 
@@ -903,6 +926,8 @@ namespace playnite_launcher {
       std::atomic<bool> game_stop_pending {false};
       std::atomic<bool> explicit_stop_requested {false};
       std::atomic<bool> launch_command_sent {false};
+      const bool waveform_requested = GetEnvironmentVariableW(L"VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING", nullptr, 0) > 1;
+      std::atomic<bool> waveform_connector_ready {false};
       std::atomic<int> launch_retry_budget {2};
       std::atomic<bool> request_game_focus {false};
       std::atomic<bool> game_focus_confirmed {false};
@@ -1027,10 +1052,20 @@ namespace playnite_launcher {
         if (msg.type != MT::Status) {
           return;
         }
+        if (msg.status_name == "waveformConnectorReady") {
+          waveform_connector_ready.store(true, std::memory_order_release);
+          return;
+        }
         auto norm = [&](std::string s) {
           return normalize_game_id(std::move(s));
         };
         if (!msg.status_game_id.empty() && norm(msg.status_game_id) == norm(config.game_id)) {
+          if (msg.status_name == "waveformSetupFailed") {
+            BOOST_LOG(error) << "Playnite could not prepare waveform haptics; game startup was cancelled.";
+            explicit_stop_requested.store(true, std::memory_order_release);
+            should_exit.store(true, std::memory_order_release);
+            return;
+          }
           const bool launch_was_sent = launch_command_sent.load(std::memory_order_acquire);
           if (!launch_was_sent && msg.status_name != "gameStarted") {
             BOOST_LOG(debug) << "Ignoring pre-launch status '" << msg.status_name << "' for id=" << msg.status_game_id;
@@ -1221,6 +1256,17 @@ namespace playnite_launcher {
         return 3;
       }
 
+      if (waveform_requested) {
+        const auto ready_deadline = std::chrono::steady_clock::now() + 3s;
+        while (!waveform_connector_ready.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < ready_deadline) {
+          std::this_thread::sleep_for(50ms);
+        }
+        if (!waveform_connector_ready.load(std::memory_order_acquire)) {
+          BOOST_LOG(error) << "Playnite waveform haptics requires connector 0.4.15 or newer; restart Playnite after updating it.";
+          client.stop();
+          return 3;
+        }
+      }
       if (!send_launch_command("initial")) {
         client.stop();
         return 3;

@@ -136,7 +136,18 @@ namespace platf::dualsense_audio {
     return result;
   }
 
-  std::string wrap_command(const std::string &command) {
+  std::string hook_library_path() {
+    wchar_t path[32768] {};
+    const auto length = GetModuleFileNameW(nullptr, path, 32768);
+    if (!length || length >= 32768) {
+      return {};
+    }
+    std::wstring dll(path);
+    dll = dll.substr(0, dll.find_last_of(L"\\") + 1) + L"tools\\vibepollo_dualsense_audio.dll";
+    return GetFileAttributesW(dll.c_str()) == INVALID_FILE_ATTRIBUTES ? std::string {} : utf_utils::to_utf8(dll);
+  }
+
+  std::string wrap_command(const std::string &command, bool playnite) {
     int argc = 0;
     const auto args = CommandLineToArgvW(utf_utils::from_utf8(command).c_str(), &argc);
     if (!args || !argc) {
@@ -148,7 +159,8 @@ namespace platf::dualsense_audio {
     std::wstring executable = args[0];
     LocalFree(args);
     const auto name = executable.substr(executable.find_last_of(L"/\\") + 1);
-    if (name.size() < 4 || _wcsicmp(name.c_str() + name.size() - 4, L".exe") != 0 || _wcsicmp(name.c_str(), L"cmd.exe") == 0 || _wcsicmp(name.c_str(), L"steam.exe") == 0 || _wcsicmp(name.c_str(), L"powershell.exe") == 0 || _wcsicmp(name.c_str(), L"pwsh.exe") == 0 || _wcsicmp(name.c_str(), L"explorer.exe") == 0 || name.find(L"Playnite") != std::wstring::npos) {
+    if (playnite ? _wcsicmp(name.c_str(), L"playnite-launcher.exe") != 0 :
+        (name.size() < 4 || _wcsicmp(name.c_str() + name.size() - 4, L".exe") != 0 || _wcsicmp(name.c_str(), L"cmd.exe") == 0 || _wcsicmp(name.c_str(), L"steam.exe") == 0 || _wcsicmp(name.c_str(), L"powershell.exe") == 0 || _wcsicmp(name.c_str(), L"pwsh.exe") == 0 || _wcsicmp(name.c_str(), L"explorer.exe") == 0 || name.find(L"Playnite") != std::wstring::npos)) {
       return {};
     }
     wchar_t path[32768] {};
@@ -175,6 +187,6 @@ namespace platf::dualsense_audio {
     }
     argument.append(slashes * 2, '\\');
     argument += '"';
-    return "\"" + utf_utils::to_utf8(helper) + "\" " + argument;
+    return "\"" + utf_utils::to_utf8(helper) + "\" " + (playnite ? "--playnite " : "") + argument;
   }
 }  // namespace platf::dualsense_audio

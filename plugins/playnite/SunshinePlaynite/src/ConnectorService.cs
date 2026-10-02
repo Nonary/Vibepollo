@@ -169,6 +169,29 @@ namespace SunshinePlaynite
             log.Dispose();
         }
 
+        public bool GameStarting(Game game)
+        {
+            var mapping = Environment.GetEnvironmentVariable("VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING");
+            if (string.IsNullOrWhiteSpace(mapping)) return true;
+            try
+            {
+                var dll = Environment.GetEnvironmentVariable("VIBEPOLLO_DUALSENSE_HAPTICS_DLL");
+                var steam = game.PluginId == Guid.Parse("cb91dfc9-b977-43bf-8e70-55f46e410fab");
+                if (!WaveformLaunchBridge.Prepare(dll, mapping, game.InstallDirectory, steam))
+                    throw new InvalidOperationException("Could not prepare waveform haptics before the game starts.");
+                log.Info("Waveform haptics prepared for " + game.Name);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                log.Warn("Waveform game launch cancelled: " + ex.Message);
+                var payload = RunOnUi(() => dataMapper.BuildStatus("waveformSetupFailed", game), true);
+                SendCore(payload);
+                Broadcast(payload, null);
+                return false;
+            }
+        }
+
         public void GameStarted(Game game)
         {
             if (game == null || Volatile.Read(ref started) == 0) return;
@@ -380,6 +403,10 @@ namespace SunshinePlaynite
                 try
                 {
                     token.ThrowIfCancellationRequested();
+                    connection.Send(Serialize(new Dictionary<string, object>
+                    {
+                        ["type"] = "status", ["status"] = new Dictionary<string, object> { ["name"] = "waveformConnectorReady" }
+                    }));
                     SyncLauncher(connection, token);
                     FlushPending(connection, token);
                     while (!token.IsCancellationRequested)
@@ -410,6 +437,10 @@ namespace SunshinePlaynite
                             {
                                 if (!IsCurrentRun(token)) break;
                                 environmentScopes.Set(connection.Id, GetEnvironment(message));
+                                connection.Send(Serialize(new Dictionary<string, object>
+                                {
+                                    ["type"] = "status", ["status"] = new Dictionary<string, object> { ["name"] = "waveformEnvironmentReady" }
+                                }));
                             }
                         }
                     }

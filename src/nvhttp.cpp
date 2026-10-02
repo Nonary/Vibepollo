@@ -5142,7 +5142,7 @@ namespace nvhttp {
 #ifdef _WIN32
           rtsp_stream::set_vulkan_hdr_layer_pending_stream(rtsp_stream::effective_hdr_requested(*launch_session));
 #endif
-          auto err = proc::proc.execute(*requested_app, launch_session);
+          auto err = proc::proc.execute(*requested_app, launch_session, true);
           if (err) {
             tree.put("root.<xmlattr>.status_code", err);
             tree.put(
@@ -5187,7 +5187,7 @@ namespace nvhttp {
         launch_session->virtual_display_guid_bytes
       );
       if (!paired_client_uuid_enabled(launch_session->client_uuid, verified_client->perm)) {
-        if (appid > 0) proc::proc.terminate(false, true, false, true);
+        if (appid > 0) proc::proc.terminate(false, true, false, true, true);
         tree.put("root.resume", 0);
         tree.put("root.gamesession", 0);
         tree.put("root.<xmlattr>.status_code", 403);
@@ -5195,7 +5195,7 @@ namespace nvhttp {
         return;
       }
       if (!rtsp_stream::launch_session_raise(launch_session)) {
-        if (appid > 0) proc::proc.terminate(false, true, false, true);
+        if (appid > 0) proc::proc.terminate(false, true, false, true, true);
         tree.put("root.<xmlattr>.status_code", 409);
         tree.put("root.<xmlattr>.status_message", "RTSP pending session admission was rejected");
         tree.put("root.gamesession", 0);

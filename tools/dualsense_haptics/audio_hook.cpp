@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "inject.h"
+#include "attach.h"
 #include "ipc.h"
 #include "pcm.h"
 
@@ -9,8 +10,10 @@
 #include <MinHook.h>
 #include <mmdeviceapi.h>
 #include <mutex>
+#include <memory>
 #include <propvarutil.h>
 #include <string>
+#include <shellapi.h>
 #include <vector>
 
 namespace {
@@ -21,6 +24,21 @@ namespace {
   std::wstring hook_path;
   std::wstring mapping_name;
   std::atomic<bool> initialized_hook {};
+  struct launcher_session {
+    std::wstring mapping_name;
+    std::wstring directory;
+    shared_state *state {};
+    ~launcher_session() {
+      if (state) {
+        UnmapViewOfFile(state);
+      }
+    }
+  };
+  std::mutex launcher_mutex;
+  std::shared_ptr<launcher_session> launcher_state;
+  std::atomic<bool> launcher_mode {};
+  std::mutex initialization_mutex;
+  bool process_hooks_installed = false;
   const PROPERTYKEY container_key {{0x8c7ed206, 0x3f8a, 0x4827, {0xb3, 0xab, 0xae, 0x9e, 0x1f, 0xae, 0xfc, 0x6c}}, 2};
 
   bool active(unsigned index) {
@@ -728,7 +746,30 @@ namespace {
     if (!created) {
       return false;
     }
-    if (!inject(*child, hook_path, mapping_name, flags & CREATE_SUSPENDED)) {
+    std::shared_ptr<launcher_session> session;
+    std::wstring child_mapping = mapping_name;
+    bool should_inject = state && state->alive;
+    if (launcher_mode) {
+      {
+        std::lock_guard lock(launcher_mutex);
+        session = launcher_state;
+      }
+      wchar_t image[32768] {};
+      DWORD length = 32768;
+      should_inject = session && session->state->alive &&
+                      QueryFullProcessImageNameW(child->hProcess, 0, image, &length) &&
+                      under_directory(image, session->directory);
+      if (should_inject) {
+        child_mapping = session->mapping_name;
+      }
+    }
+    if (!should_inject) {
+      if (!(flags & CREATE_SUSPENDED)) {
+        ResumeThread(child->hThread);
+      }
+      return true;
+    }
+    if (!inject(*child, hook_path, child_mapping, flags & CREATE_SUSPENDED)) {
       TerminateProcess(child->hProcess, 125);
       WaitForSingleObject(child->hProcess, 10000);
       CloseHandle(child->hThread);
@@ -745,6 +786,9 @@ namespace {
       return real_process_w(app, cmd, pa, ta, inherit, flags, env, cwd, si, pi);
     }
     if (flags & (DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS)) {
+      if (launcher_mode) {
+        return real_process_w(app, cmd, pa, ta, inherit, flags, env, cwd, si, pi);
+      }
       SetLastError(ERROR_NOT_SUPPORTED);
       return FALSE;
     }
@@ -759,6 +803,9 @@ namespace {
       return real_process_a(app, cmd, pa, ta, inherit, flags, env, cwd, si, pi);
     }
     if (flags & (DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS)) {
+      if (launcher_mode) {
+        return real_process_a(app, cmd, pa, ta, inherit, flags, env, cwd, si, pi);
+      }
       SetLastError(ERROR_NOT_SUPPORTED);
       return FALSE;
     }
@@ -767,9 +814,149 @@ namespace {
     creating_process = false;
     return finish_child(created, flags, pi);
   }
+
+  bool prepare_process_hooks() {
+    if (process_hooks_installed) {
+      return true;
+    }
+    const auto status = MH_Initialize();
+    if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED) {
+      return false;
+    }
+    if (!real_process_w && MH_CreateHookApi(L"kernel32", "CreateProcessW", reinterpret_cast<void *>(&process_w), reinterpret_cast<void **>(&real_process_w)) != MH_OK) {
+      return false;
+    }
+    if (!real_process_a && MH_CreateHookApi(L"kernel32", "CreateProcessA", reinterpret_cast<void *>(&process_a), reinterpret_cast<void **>(&real_process_a)) != MH_OK) {
+      return false;
+    }
+    const auto unicode = MH_EnableHook(reinterpret_cast<void *>(&CreateProcessW));
+    const auto ansi = MH_EnableHook(reinterpret_cast<void *>(&CreateProcessA));
+    process_hooks_installed = (unicode == MH_OK || unicode == MH_ERROR_ENABLED) &&
+                              (ansi == MH_OK || ansi == MH_ERROR_ENABLED);
+    return process_hooks_installed;
+  }
+
+  bool resolve_hook_path() {
+    if (!hook_path.empty()) {
+      return true;
+    }
+    HMODULE module = nullptr;
+    wchar_t path[32768] {};
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(&resolve_hook_path), &module)) {
+      return false;
+    }
+    const auto length = GetModuleFileNameW(module, path, 32768);
+    if (!length || length >= 32768) {
+      return false;
+    }
+    hook_path = path;
+    return true;
+  }
 }  // namespace
 
+extern "C" __declspec(dllexport) DWORD WINAPI VibepolloHapticsInitializeLauncher(void *argument) {
+  std::lock_guard initialize_lock(initialization_mutex);
+  if (!argument || state) {
+    return 0;
+  }
+  const auto &config = *static_cast<const dualsense_haptics::launcher_config *>(argument);
+  if (!config.mapping_name[0] || config.mapping_name[127] || !config.directory[0] || config.directory[32767]) {
+    return 0;
+  }
+  auto session = std::make_shared<launcher_session>();
+  session->mapping_name = config.mapping_name;
+  wchar_t directory[32768] {};
+  const auto length = GetFullPathNameW(config.directory, 32768, directory, nullptr);
+  if (!length || length >= 32768) {
+    return 0;
+  }
+  session->directory.assign(directory, length);
+  while (!session->directory.empty() && (session->directory.back() == L'\\' || session->directory.back() == L'/')) {
+    session->directory.pop_back();
+  }
+  // Never arm a whole drive or the Windows installation as a game scope.
+  wchar_t windows[32768] {};
+  if (session->directory.size() <= 3 || !GetWindowsDirectoryW(windows, 32768) ||
+      _wcsicmp(session->directory.c_str(), windows) == 0 || under_directory(session->directory, windows)) {
+    return 0;
+  }
+  const auto mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, config.mapping_name);
+  if (!mapping) {
+    return 0;
+  }
+  session->state = static_cast<shared_state *>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(shared_state)));
+  CloseHandle(mapping);
+  if (!session->state || session->state->signature != magic || !session->state->alive ||
+      !resolve_hook_path()) {
+    return 0;
+  }
+  {
+    std::lock_guard lock(launcher_mutex);
+    launcher_state = std::move(session);
+  }
+  launcher_mode = true;
+  return prepare_process_hooks() ? 1 : 0;
+}
+
+extern "C" __declspec(dllexport) DWORD WINAPI VibepolloHapticsPreparePlaynite(const wchar_t *mapping, const wchar_t *directory, BOOL steam) {
+  if (!mapping || !directory || wcslen(mapping) >= 128 || wcslen(directory) >= 32768) {
+    return 0;
+  }
+  dualsense_haptics::launcher_config config;
+  wcscpy(config.mapping_name, mapping);
+  wcscpy(config.directory, directory);
+  if (!VibepolloHapticsInitializeLauncher(&config)) {
+    return 0;
+  }
+  if (!steam) {
+    return 1;
+  }
+  const auto deadline = GetTickCount64() + 10000;
+  bool requested_start = false;
+  do {
+    const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+      return 0;
+    }
+    PROCESSENTRY32W process {sizeof(process)};
+    bool found = false, ok = true;
+    if (Process32FirstW(snapshot, &process)) {
+      do {
+        if (_wcsicmp(process.szExeFile, L"steam.exe") == 0) {
+          DWORD session = 0, ours = 0;
+          if (ProcessIdToSessionId(process.th32ProcessID, &session) &&
+              ProcessIdToSessionId(GetCurrentProcessId(), &ours) && session == ours) {
+            found = true;
+            ok = dualsense_haptics::attach_launcher(process.th32ProcessID, hook_path, config) && ok;
+          }
+        }
+      } while (Process32NextW(snapshot, &process));
+    }
+    CloseHandle(snapshot);
+    if (found) {
+      if (ok) {
+        return 1;
+      }
+      if (!requested_start) {
+        return 0;
+      }
+    }
+    if (!requested_start) {
+      if (reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", L"steam://open/main", nullptr, nullptr, SW_HIDE)) <= 32) {
+        return 0;
+      }
+      requested_start = true;
+    }
+    Sleep(100);
+  } while (GetTickCount64() < deadline);
+  return 0;
+}
+
 extern "C" __declspec(dllexport) DWORD WINAPI VibepolloHapticsInitialize(void *argument) {
+  std::lock_guard initialize_lock(initialization_mutex);
+  if (launcher_mode) {
+    return 0;
+  }
   if (state) {
     return initialized_hook ? 1 : 0;
   }
@@ -793,21 +980,13 @@ extern "C" __declspec(dllexport) DWORD WINAPI VibepolloHapticsInitialize(void *a
   if (!state || state->signature != dualsense_haptics::magic || !state->alive) {
     return 0;
   }
-  HMODULE module = nullptr;
-  GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(&VibepolloHapticsInitialize), &module);
-  wchar_t path[32768] {};
-  const auto length = GetModuleFileNameW(module, path, 32768);
-  if (!length || length >= 32768) {
+  if (!resolve_hook_path() || !prepare_process_hooks()) {
     return 0;
   }
-  hook_path = path;
-  if (MH_Initialize() != MH_OK) {
+  if (MH_CreateHookApi(L"ole32", "CoCreateInstance", reinterpret_cast<void *>(&create), reinterpret_cast<void **>(&real_create)) != MH_OK) {
     return 0;
   }
-  if (MH_CreateHookApi(L"ole32", "CoCreateInstance", reinterpret_cast<void *>(&create), reinterpret_cast<void **>(&real_create)) != MH_OK || MH_CreateHookApi(L"kernel32", "CreateProcessW", reinterpret_cast<void *>(&process_w), reinterpret_cast<void **>(&real_process_w)) != MH_OK || MH_CreateHookApi(L"kernel32", "CreateProcessA", reinterpret_cast<void *>(&process_a), reinterpret_cast<void **>(&real_process_a)) != MH_OK) {
-    return 0;
-  }
-  initialized_hook = MH_EnableHook(MH_ALL_HOOKS) == MH_OK;
+  initialized_hook = MH_EnableHook(reinterpret_cast<void *>(&CoCreateInstance)) == MH_OK;
   return initialized_hook ? 1 : 0;
 }
 

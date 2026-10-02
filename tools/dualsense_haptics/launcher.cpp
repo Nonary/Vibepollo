@@ -31,7 +31,8 @@ namespace {
 }  // namespace
 
 int wmain(int argc, wchar_t **argv) {
-  if (argc != 2) {
+  const bool playnite = argc == 3 && wcscmp(argv[1], L"--playnite") == 0;
+  if (argc != 2 && !playnite) {
     return 125;
   }
   wchar_t name[128] {};
@@ -61,6 +62,7 @@ int wmain(int argc, wchar_t **argv) {
     }
     Sleep(10);
   }
+  ready = ready && state->alive;
   UnmapViewOfFile(state);
   CloseHandle(mapping);
   if (!ready) {
@@ -74,13 +76,16 @@ int wmain(int argc, wchar_t **argv) {
   }
   std::wstring dll(path);
   dll = dll.substr(0, dll.find_last_of(L"\\") + 1) + L"vibepollo_dualsense_audio.dll";
-  std::vector<wchar_t> command(argv[1], argv[1] + wcslen(argv[1]) + 1);
+  const auto game_command = argv[playnite ? 2 : 1];
+  std::vector<wchar_t> command(game_command, game_command + wcslen(game_command) + 1);
   STARTUPINFOW startup {sizeof(startup)};
   PROCESS_INFORMATION child {};
   if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr, &startup, &child)) {
     return 125;
   }
-  bool ok = dualsense_haptics::inject(child, dll, name);
+  // The connector arms Playnite and its running storefront before dispatching
+  // the game. Injecting only this helper would miss already-running launchers.
+  bool ok = playnite ? ResumeThread(child.hThread) != static_cast<DWORD>(-1) : dualsense_haptics::inject(child, dll, name);
   if (!ok) {
     std::fwprintf(stderr, L"DualSense haptics: audio hook initialization failed; game was not resumed.\n");
     TerminateProcess(child.hProcess, 125);
