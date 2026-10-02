@@ -91,6 +91,10 @@ namespace playnite_launcher {
 
     void ensure_playnite_open() {
       if (!playnite::is_playnite_running()) {
+        const auto exe = playnite::query_playnite_executable_from_assoc();
+        if (!exe.empty() && playnite::launch_executable_detached_parented(exe)) {
+          return;
+        }
         BOOST_LOG(info) << "Playnite not running; opening playnite:// URI in detached mode";
         if (!playnite::launch_uri_detached_parented(L"playnite://")) {
           BOOST_LOG(warning) << "Failed to launch playnite:// via detached CreateProcess";

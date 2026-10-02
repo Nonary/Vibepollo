@@ -1471,6 +1471,10 @@
     "history_delete_confirm_no": "Cancel"
   },
   "playnite": {
+    "directory_label": "Playnite directory",
+    "directory_hint": "If automatic detection fails, choose the host folder containing Playnite.DesktopApp.exe. Save settings before installing the plugin. Clear the path to restore automatic detection.",
+    "directory_parent": "Parent folder",
+    "directory_select": "Use this folder",
     "title": "Playnite Integration",
     "desc": "Vibepollo can sync your Playnite library so your installed games appear automatically. First, install Playnite, run it, and configure it to start with Windows. Then install the Vibepollo plugin below to enable the integration.",
     "only_windows": "Playnite integration is available on Windows only.",

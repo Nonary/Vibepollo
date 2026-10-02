@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n';
 import { ApiError, apiGet } from '@/api/client';
 import { AppButton, StatusBadge, UiIcon } from '@/components/ui';
 
-type IntegrationKind = 'rtss' | 'lossless';
+type IntegrationKind = 'rtss' | 'lossless' | 'playnite';
 type StatusTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger';
 
 interface RtssStatus {
@@ -31,7 +31,7 @@ interface LosslessStatus {
   candidates?: string[];
 }
 
-type IntegrationStatus = RtssStatus | LosslessStatus;
+type IntegrationStatus = RtssStatus | LosslessStatus | { extensions_dir?: string };
 
 interface BrowseEntry {
   name: string;
@@ -119,6 +119,7 @@ const candidates = computed(() => {
 });
 
 const detectedPath = computed(() => {
+  if (props.kind === 'playnite') return '';
   if (props.kind === 'rtss') {
     return rtssStatus.value?.path_exists
       ? normalizeWindowsPath(rtssStatus.value.resolved_path)
@@ -138,6 +139,8 @@ const selectedDetectedPath = computed(
 );
 
 const ready = computed(() => {
+  if (props.kind === 'playnite')
+    return Boolean(status.value && 'extensions_dir' in status.value && status.value.extensions_dir);
   if (props.kind === 'rtss') {
     return Boolean(rtssStatus.value?.path_exists && rtssStatus.value.hooks_found);
   }
@@ -184,6 +187,7 @@ const statusLabel = computed(() => {
 });
 
 const statusDescription = computed(() => {
+  if (props.kind === 'playnite') return t('ui.settings.integrations.playnite.directory_hint');
   if (loading.value) return t('ui.settings.integrations.checking_description');
   if (loadError.value) return t('ui.settings.integrations.status_unavailable_description');
 
@@ -248,7 +252,9 @@ async function loadBrowseDirectory(path: string): Promise<void> {
   browseLoading.value = true;
   browseError.value = '';
   try {
-    const query = new URLSearchParams({ type: 'executable' });
+    const query = new URLSearchParams({
+      type: props.kind === 'playnite' ? 'directory' : 'executable',
+    });
     const normalized = normalizeWindowsPath(path);
     if (normalized) query.set('path', normalized);
     const payload = await apiGet<unknown>(`/api/browse?${query.toString()}`);
@@ -257,6 +263,7 @@ async function loadBrowseDirectory(path: string): Promise<void> {
     browsePath.value = normalizeWindowsPath(response.path);
     browseParent.value = normalizeWindowsPath(response.parent);
     browseEntries.value = parseBrowseEntries(response.entries);
+    if (props.kind === 'playnite') browseSelection.value = browsePath.value;
   } catch (cause) {
     browseEntries.value = [];
     browseError.value =
@@ -269,7 +276,7 @@ async function loadBrowseDirectory(path: string): Promise<void> {
 }
 
 async function openBrowse(event?: MouseEvent): Promise<void> {
-  if (props.kind !== 'lossless' || browseLoading.value) return;
+  if (props.kind === 'rtss' || browseLoading.value) return;
   browseTrigger.value = (event?.currentTarget as HTMLElement | null) ?? null;
   browseSelection.value = normalizeWindowsPath(draftPath.value) || selectedDetectedPath.value || '';
   browsePath.value = '';
@@ -325,7 +332,12 @@ async function refresh(): Promise<void> {
         ? configuredPath.value || (userEdited.value ? normalizeWindowsPath(draftPath.value) : '')
         : '';
     const query = queryPath ? `?path=${encodeURIComponent(queryPath)}` : '';
-    const endpoint = props.kind === 'rtss' ? '/api/rtss/status' : '/api/lossless_scaling/status';
+    const endpoint =
+      props.kind === 'playnite'
+        ? '/api/playnite/status'
+        : props.kind === 'rtss'
+          ? '/api/rtss/status'
+          : '/api/lossless_scaling/status';
     status.value = await apiGet<IntegrationStatus>(`${endpoint}${query}`);
 
     const firstCandidate = candidates.value[0];
@@ -434,7 +446,7 @@ onBeforeUnmount(() => {
       {{ t('ui.settings.integrations.explicit_path_hint') }}
     </p>
 
-    <div v-if="props.kind === 'lossless'" class="integration-path__browse">
+    <div v-if="props.kind !== 'rtss'" class="integration-path__browse">
       <div class="integration-path__browse-heading">
         <strong v-if="candidates.length">{{
           t('ui.settings.integrations.detected_installations')
@@ -465,7 +477,13 @@ onBeforeUnmount(() => {
         />
       </div>
       <p class="integration-path__browse-hint">
-        {{ t('ui.settings.integrations.browse_host_hint') }}
+        {{
+          t(
+            props.kind === 'playnite'
+              ? 'ui.settings.integrations.playnite.directory_hint'
+              : 'ui.settings.integrations.browse_host_hint',
+          )
+        }}
       </p>
     </div>
 
@@ -481,9 +499,23 @@ onBeforeUnmount(() => {
         <div class="integration-path__dialog-heading">
           <div>
             <h3 :id="`${inputId}-browse-title`">
-              {{ t('ui.settings.integrations.browse_title') }}
+              {{
+                t(
+                  props.kind === 'playnite'
+                    ? 'ui.settings.integrations.playnite.browse_title'
+                    : 'ui.settings.integrations.browse_title',
+                )
+              }}
             </h3>
-            <p>{{ t('ui.settings.integrations.browse_description') }}</p>
+            <p>
+              {{
+                t(
+                  props.kind === 'playnite'
+                    ? 'ui.settings.integrations.playnite.directory_hint'
+                    : 'ui.settings.integrations.browse_description',
+                )
+              }}
+            </p>
           </div>
           <AppButton
             icon="x"
@@ -536,7 +568,13 @@ onBeforeUnmount(() => {
           {{ t('ui.settings.integrations.browse_loading') }}
         </p>
         <div v-else-if="!browseEntries.length" class="integration-path__dialog-state">
-          {{ t('ui.settings.integrations.browse_empty') }}
+          {{
+            t(
+              props.kind === 'playnite'
+                ? 'ui.settings.integrations.playnite.browse_empty'
+                : 'ui.settings.integrations.browse_empty',
+            )
+          }}
         </div>
         <div
           v-else
@@ -572,7 +610,14 @@ onBeforeUnmount(() => {
         </div>
 
         <p v-if="browseSelectionName" class="integration-path__selected">
-          {{ t('ui.settings.integrations.browse_selected', { path: browseSelectionName }) }}
+          {{
+            t(
+              props.kind === 'playnite'
+                ? 'ui.settings.integrations.playnite.browse_selected'
+                : 'ui.settings.integrations.browse_selected',
+              { path: browseSelectionName },
+            )
+          }}
         </p>
         <p
           v-if="losslessStatus?.status === 'path-is-directory'"
@@ -587,7 +632,12 @@ onBeforeUnmount(() => {
             variant="primary"
             icon="check"
             :label="t('ui.settings.integrations.use_selected')"
-            :disabled="!browseSelectionName || browseSelectionName === configuredPath"
+            :disabled="
+              browseLoading ||
+              Boolean(browseError) ||
+              !browseSelectionName ||
+              browseSelectionName === configuredPath
+            "
             @click="useBrowseSelection"
           />
         </div>

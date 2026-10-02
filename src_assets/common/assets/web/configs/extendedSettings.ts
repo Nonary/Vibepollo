@@ -9,7 +9,6 @@ export const extendedDefaults: Record<string, unknown> = {
   amd_lowlatency_mode: 'auto',
   amd_high_motion_quality_boost: 'auto',
   playnite_install_dir: '',
-  playnite_extensions_dir: '',
 
   nvenc_preset: 1,
   nvenc_intra_refresh: 'disabled',

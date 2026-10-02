@@ -4,6 +4,7 @@ interface HostOptions {
   platform?: 'windows' | 'linux';
   apps?: Array<Record<string, unknown>>;
   browse?: boolean;
+  playniteUndetected?: boolean;
 }
 
 async function setupHost(page: Page, options: HostOptions = {}) {
@@ -64,7 +65,7 @@ async function setupHost(page: Page, options: HostOptions = {}) {
         available: true,
         active: false,
         installed: true,
-        extensions_dir: 'C:\\Playnite\\Extensions',
+        extensions_dir: options.playniteUndetected ? '' : 'C:\\Playnite\\Extensions',
         installed_version: '1.0.0',
         packaged_version: '1.0.0',
         update_available: false,
@@ -336,4 +337,23 @@ test('Linux integrations do not query or expose Playnite', async ({ page }) => {
   await expect(page.locator('.integrations-page')).toBeVisible();
   await expect(page.getByText('Playnite', { exact: true })).toHaveCount(0);
   expect(calls.playniteStatus).toBe(0);
+});
+
+test('Playnite detection failure exposes a host directory picker and saves its selection', async ({
+  page,
+}) => {
+  const calls = await setupHost(page, { playniteUndetected: true });
+  await page.goto('/v2/integrations');
+  const policies = page.locator('#playnite-policies');
+  await expect(policies).toHaveAttribute('open', '');
+  await policies.getByRole('button', { name: 'Browse host' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toHaveAccessibleName('Choose Playnite directory');
+  await dialog.getByRole('option', { name: /C:/ }).click();
+  await expect(dialog).toContainText('Selected folder: C:\\');
+  await dialog.getByRole('button', { name: 'Use selected path' }).click();
+  await expect(policies.getByLabel('Playnite directory', { exact: true })).toHaveValue('C:\\');
+  expect(calls.configPatches).toEqual([]);
+  await policies.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => calls.configPatches).toEqual([{ playnite_install_dir: 'C:\\' }]);
 });

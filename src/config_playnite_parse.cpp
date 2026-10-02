@@ -116,6 +116,7 @@ namespace config {
 
   playnite_t parse_playnite(std::unordered_map<std::string, std::string> &vars) {
     playnite_t result;
+    result.install_dir = erase_take(vars, "playnite_install_dir");
 
     consume_bool(vars, "playnite_enabled", result.enabled);
     consume_bool(vars, "playnite_auto_sync", result.auto_sync);

@@ -3,6 +3,15 @@
 #include <string>
 #include <unordered_map>
 
+TEST(PlayniteConfig, InstallationDirectoryPreservesSpacesAndCanBeCleared) {
+  std::unordered_map<std::string, std::string> vars {{"playnite_install_dir", "D:\\My Games\\Playnite"}};
+  EXPECT_EQ(config::parse_playnite(vars).install_dir, "D:\\My Games\\Playnite");
+  EXPECT_TRUE(vars.empty());
+  vars["playnite_install_dir"] = "";
+  EXPECT_TRUE(config::parse_playnite(vars).install_dir.empty());
+  EXPECT_TRUE(vars.empty());
+}
+
 TEST(PlayniteConfig, Booleans_ParseCaseInsensitiveTruths) {
   std::unordered_map<std::string, std::string> vars {
     {"playnite_auto_sync", "on"},

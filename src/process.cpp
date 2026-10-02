@@ -2522,6 +2522,7 @@ namespace proc {
       }
 
       BOOST_LOG(info) << "Launching Playnite game via helper, id=" << _app.playnite_id;
+      _env["SUNSHINE_PLAYNITE_INSTALL_DIR"] = config::playnite.install_dir;
       bool launched = false;
       // Resolve launcher alongside sunshine.exe: tools\\playnite-launcher.exe
       try {
@@ -2586,6 +2587,7 @@ namespace proc {
 #ifdef _WIN32
       if (_app.playnite_fullscreen) {
       BOOST_LOG(info) << "Launching Playnite in fullscreen via helper";
+      _env["SUNSHINE_PLAYNITE_INSTALL_DIR"] = config::playnite.install_dir;
       bool launched = false;
       try {
         WCHAR exePathW[MAX_PATH] = {};

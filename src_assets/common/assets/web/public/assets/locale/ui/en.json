@@ -1798,6 +1798,13 @@
         "status_unavailable_description": "The host could not report installation status. You can still enter a path manually.",
         "use_detected": "Save detected path",
         "use_selected": "Use selected path",
+        "playnite": {
+          "directory_label": "Playnite directory",
+          "directory_hint": "If automatic detection fails, choose the host folder containing Playnite.DesktopApp.exe. Save settings before installing the plugin. Clear the path to restore automatic detection.",
+          "browse_title": "Choose Playnite directory",
+          "browse_selected": "Selected folder: {path}",
+          "browse_empty": "This folder has no subfolders. You can select the current folder."
+        },
         "lossless": {
           "not_detected": "Lossless Scaling was not found. Install it from Steam or enter the full path to LosslessScaling.exe.",
           "path_is_directory": "The selected path is a folder. Choose LosslessScaling.exe itself.",

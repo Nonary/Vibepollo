@@ -62,7 +62,8 @@ namespace config {
     // than the configured recent slots.
     bool autosync_require_replacement = true;
 
-    // Installation/paths (overrides removed)
+    // Optional executable directory for installations without a working URI association.
+    std::string install_dir;
 
     // When enabled, Sunshine maintains a "Playnite (Fullscreen)" entry in apps.json
     // that launches Playnite in fullscreen/desktop mode via the helper.

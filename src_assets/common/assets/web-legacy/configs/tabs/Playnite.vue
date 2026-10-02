@@ -40,6 +40,68 @@
           <n-text v-if="diagnosticText" depth="3" class="playnite-help">
             {{ diagnosticText }}
           </n-text>
+          <n-form-item :label="$t('playnite.directory_label')">
+            <n-space vertical class="w-full">
+              <n-input v-model:value="config.playnite_install_dir" clearable />
+              <n-text depth="3">{{ $t('playnite.directory_hint') }}</n-text>
+              <n-button size="small" @click="openDirectoryBrowser">{{
+                $t('_common.browse')
+              }}</n-button>
+            </n-space>
+          </n-form-item>
+          <n-card
+            v-if="directoryBrowserOpen"
+            size="small"
+            embedded
+            :title="$t('playnite.directory_label')"
+          >
+            <n-space vertical>
+              <n-input
+                v-model:value="directoryDraft"
+                @keydown.enter.prevent="browseDirectory(directoryDraft)"
+              />
+              <n-space>
+                <n-button
+                  size="small"
+                  :loading="directoryLoading"
+                  @click="browseDirectory(directoryDraft)"
+                  >{{ $t('config.lossless.browser_open_folder') }}</n-button
+                >
+                <n-button
+                  size="small"
+                  :disabled="directoryLoading || directoryParent === directoryPath"
+                  @click="browseDirectory(directoryParent)"
+                  >{{ $t('playnite.directory_parent') }}</n-button
+                >
+              </n-space>
+              <n-alert v-if="directoryError" type="warning">{{
+                $t('config.lossless.browser_failed')
+              }}</n-alert>
+              <n-list v-else style="max-height: 16rem; overflow-y: auto">
+                <n-list-item v-for="entry in directoryEntries" :key="entry.path">
+                  <n-button
+                    text
+                    :disabled="directoryLoading"
+                    @click="browseDirectory(entry.path)"
+                    >{{ entry.name }}</n-button
+                  >
+                </n-list-item>
+              </n-list>
+              <n-text>{{ directoryPath || $t('config.lossless.browser_computer') }}</n-text>
+              <n-space>
+                <n-button
+                  size="small"
+                  type="primary"
+                  :disabled="directoryLoading || directoryError || !directoryPath"
+                  @click="selectDirectory"
+                  >{{ $t('playnite.directory_select') }}</n-button
+                >
+                <n-button size="small" @click="directoryBrowserOpen = false">{{
+                  $t('_common.cancel')
+                }}</n-button>
+              </n-space>
+            </n-space>
+          </n-card>
           <div class="playnite-primary-actions">
             <n-button
               v-if="canLaunch"
@@ -641,6 +703,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, onUnmounted, watch, h } from 'vue';
 import {
+  NInput,
   NInputNumber,
   NSelect,
   NButton,
@@ -677,6 +740,43 @@ const platform = computed(() =>
   (metadata.value?.platform || config.value?.platform || '').toLowerCase(),
 );
 const { t, locale } = useI18n();
+const directoryBrowserOpen = ref(false);
+const directoryLoading = ref(false);
+const directoryError = ref(false);
+const directoryDraft = ref('');
+const directoryPath = ref('');
+const directoryParent = ref('');
+const directoryEntries = ref<Array<{ name: string; path: string }>>([]);
+
+async function browseDirectory(path: string) {
+  if (directoryLoading.value) return;
+  directoryLoading.value = true;
+  directoryError.value = false;
+  try {
+    const response = await http.get('/api/browse', { params: { type: 'directory', path } });
+    directoryPath.value = response.data.path;
+    directoryDraft.value = response.data.path;
+    directoryParent.value = response.data.parent;
+    directoryEntries.value = response.data.entries.filter(
+      (entry: { type: string }) => entry.type === 'directory',
+    );
+  } catch {
+    directoryError.value = true;
+    directoryEntries.value = [];
+  } finally {
+    directoryLoading.value = false;
+  }
+}
+
+function openDirectoryBrowser() {
+  directoryBrowserOpen.value = true;
+  void browseDirectory(config.value.playnite_install_dir || '');
+}
+
+function selectDirectory() {
+  config.value.playnite_install_dir = directoryPath.value;
+  directoryBrowserOpen.value = false;
+}
 const gamesCacheTimeFormatter = computed(
   () =>
     new Intl.DateTimeFormat(toIntlLocale(locale.value), {

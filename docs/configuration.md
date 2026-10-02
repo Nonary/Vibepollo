@@ -4660,6 +4660,12 @@ Default: `false`
 
 ## Playnite Integration
 
+### playnite_install_dir
+
+Optional host directory containing `Playnite.DesktopApp.exe`. Use the Playnite directory picker under Integrations when automatic detection cannot find the installation, then save before installing the plugin. This setting also supplies the executable location for game and fullscreen launches. Installed copies retain their extensions in the user's RoamingAppData; portable copies use `Extensions` inside the selected directory. Clear the setting to restore automatic detection.
+
+Default: empty (automatic detection)
+
 ### playnite_enabled
 
 Enables Playnite library synchronization and launch support on Windows. Disable this setting to use Steam by itself, or leave both providers enabled to combine their catalogs. Playnite is unavailable on Linux.

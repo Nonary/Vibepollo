@@ -1134,8 +1134,17 @@ namespace platf::playnite {
     }
   }
 
-  // Consolidated helper: query association for 'playnite' to resolve executable path
+  // Resolve the configured executable directory, then the 'playnite' association.
   static bool query_assoc_for_playnite(std::wstring &outExe) {
+    if (!config::playnite.install_dir.empty()) {
+      const auto exe = std::filesystem::path(platf::from_utf8(config::playnite.install_dir)) / L"Playnite.DesktopApp.exe";
+      std::error_code ec;
+      if (!std::filesystem::is_regular_file(exe, ec)) {
+        return false;
+      }
+      outExe = exe.wstring();
+      return true;
+    }
     HANDLE user_token = nullptr;
     if (platf::dxgi::is_running_as_system()) {
       user_token = acquire_preferred_user_token_for_playnite();
@@ -1224,6 +1233,14 @@ namespace platf::playnite {
       DWORD byte_count = 0;
       installed = RegQueryValueExW(install_key, L"InstallLocation", nullptr, &value_type, nullptr, &byte_count) == ERROR_SUCCESS &&
                   (value_type == REG_SZ || value_type == REG_EXPAND_SZ) && byte_count > sizeof(wchar_t);
+      if (installed && !config::playnite.install_dir.empty()) {
+        std::vector<wchar_t> location(byte_count / sizeof(wchar_t) + 1, L'\0');
+        installed = RegQueryValueExW(install_key, L"InstallLocation", nullptr, &value_type, reinterpret_cast<BYTE *>(location.data()), &byte_count) == ERROR_SUCCESS;
+        if (installed) {
+          std::error_code ec;
+          installed = std::filesystem::equivalent(std::filesystem::path(location.data()), std::filesystem::path(platf::from_utf8(config::playnite.install_dir)), ec);
+        }
+      }
     };
     if (user_token) {
       if (const auto ec = platf::impersonate_current_user(user_token, read_install)) {
@@ -1287,6 +1304,14 @@ namespace platf::playnite {
 
   bool get_extension_target_dir(std::string &out) {
     std::filesystem::path dest;
+    // Validate the selected executable directory before using it as a portable target.
+    // Installed Playnite still stores extensions in the interactive user's RoamingAppData.
+    if (!config::playnite.install_dir.empty()) {
+      std::wstring exe;
+      if (!query_assoc_for_playnite(exe)) {
+        return false;
+      }
+    }
     if (!resolve_extensions_dir_via_per_user_install(dest) && !resolve_extensions_dir_via_assoc(dest)) {
       return false;
     }
@@ -1969,7 +1994,7 @@ namespace platf::playnite {
         // Prefer the same resolution used by status API
         std::string resolved;
         if (!platf::playnite::get_extension_target_dir(resolved)) {
-          error_out = "Could not resolve Playnite Extensions directory (and no override provided).";
+          error_out = "Could not locate Playnite. Select the folder containing Playnite.DesktopApp.exe in Playnite settings and save before installing.";
           return false;
         }
         destDir = std::filesystem::path(resolved);
