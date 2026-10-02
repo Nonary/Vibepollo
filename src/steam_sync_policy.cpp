@@ -135,6 +135,9 @@ namespace platf::steam::sync::policy {
       app["steam-id"] = std::to_string(game.app_id);
       app["steam-managed"] = "auto";
       app["steam-source"] = source;
+      // Client app ordering reads these; Steam reports minutes and Unix seconds.
+      app["last-played"] = game.last_played;
+      app["playtime-minutes"] = game.playtime_minutes;
       set_or_erase(app, "steam-app-type", game.app_type);
       app["cmd"] = launch_command(game);
       app["auto-detach"] = true;

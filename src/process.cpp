@@ -47,6 +47,7 @@
 // local includes
 #include "app_catalog_policy.h"
 #include "app_framegen_config.h"
+#include "app_order_policy.h"
 #include "audio.h"
 #include "config.h"
 #include "crypto.h"
@@ -3698,6 +3699,24 @@ namespace proc {
     }
   }  // namespace
 
+  void sort_for_clients(std::vector<const ctx_t *> &apps) {
+    const auto &settings = config::sunshine.app_order;
+    if (settings.groups.empty()) {
+      return;
+    }
+    std::vector<app_order::entry_t> entries;
+    entries.reserve(apps.size());
+    for (const auto *app : apps) {
+      entries.push_back({app_order::group_of(app->playnite_id, app->steam_id, app->lutris_id), app->name, app->last_played, app->playtime_minutes});
+    }
+    std::vector<const ctx_t *> sorted;
+    sorted.reserve(apps.size());
+    for (const auto index : app_order::order(entries, settings)) {
+      sorted.push_back(apps[index]);
+    }
+    apps = std::move(sorted);
+  }
+
   std::string validate_app_image_path(std::string app_image_path) {
     return catalog::validate_image_path(
       std::move(app_image_path),
@@ -4377,6 +4396,12 @@ namespace proc {
           }
           if (app_node.contains("lutris-directory") && app_node["lutris-directory"].is_string()) {
             ctx.lutris_directory = parse_env_val(this_env, app_node["lutris-directory"].get<std::string>());
+          }
+          if (app_node.contains("last-played") && app_node["last-played"].is_number_integer()) {
+            ctx.last_played = app_node["last-played"].get<std::int64_t>();
+          }
+          if (app_node.contains("playtime-minutes") && app_node["playtime-minutes"].is_number_integer()) {
+            ctx.playtime_minutes = app_node["playtime-minutes"].get<std::int64_t>();
           }
           if (app_node.contains("image-path")) {
             ctx.image_path = parse_env_val(this_env, app_node.value("image-path", ""));

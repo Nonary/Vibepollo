@@ -4120,6 +4120,7 @@ namespace nvhttp {
 
           visible_apps.push_back(&app);
         }
+        proc::sort_for_clients(visible_apps);
 
         std::vector<remote_session::app_t> configured_apps;
         configured_apps.reserve(visible_apps.size());

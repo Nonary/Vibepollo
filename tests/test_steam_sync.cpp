@@ -326,3 +326,20 @@ TEST(SteamSync, RecentLimitAppliesAfterExclusionsAndToolFiltering) {
   ASSERT_EQ(selected.size(), 1);
   EXPECT_EQ(selected[0].app_id, 3);
 }
+
+TEST(SteamSync, StoresPlayStatisticsForClientOrdering) {
+  platf::steam::game_t game;
+  game.app_id = 7;
+  game.name = "Game";
+  game.installed = true;
+  game.last_played = 1700000000;
+  game.playtime_minutes = 90;
+  nlohmann::json root = {{"apps", nlohmann::json::array()}};
+  ASSERT_TRUE(platf::steam::sync::policy::reconcile(root, {game}));
+  EXPECT_EQ(root["apps"][0]["last-played"], 1700000000);
+  EXPECT_EQ(root["apps"][0]["playtime-minutes"], 90);
+  EXPECT_FALSE(platf::steam::sync::policy::reconcile(root, {game}));
+  game.playtime_minutes = 120;
+  EXPECT_TRUE(platf::steam::sync::policy::reconcile(root, {game}));
+  EXPECT_EQ(root["apps"][0]["playtime-minutes"], 120);
+}

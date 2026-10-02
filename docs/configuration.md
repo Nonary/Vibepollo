@@ -4756,6 +4756,48 @@ playnite_exclude_categories = ["Steam", {"id": "deck", "name": "Steam Deck"}]
     </tr>
 </table>
 
+## Client App Order
+
+These options control the order of the application list sent to clients
+(`/applist`). Moonlight sorts apps by name unless
+[legacy_ordering](#legacy_ordering) is enabled; Artemis follows the host order
+directly.
+
+### app_order_groups
+
+Comma-separated list of source groups, sent in the listed order. Valid groups
+are `custom`, `steam`, `playnite`, and `lutris`. An app belongs to the group of
+its provider ID (Playnite first, then Steam, then Lutris); everything else is
+`custom`. Custom apps keep their `apps.json` order. Groups left out of the
+list follow in `apps.json` order. Leave empty to send every app in
+`apps.json` order.
+
+Default: empty
+
+Example: `app_order_groups = custom,steam,playnite,lutris`
+
+### app_order_steam
+
+Order of Steam games within the `steam` group: `name` (A to Z), `recent`
+(most recently played first), or `playtime` (most played first). Play
+statistics are recorded by Steam synchronization.
+
+Default: `name`
+
+### app_order_playnite
+
+Order of Playnite games within the `playnite` group: `name`, `recent`, or
+`playtime`.
+
+Default: `name`
+
+### app_order_lutris
+
+Order of Lutris games within the `lutris` group: `name`, `recent`, or
+`playtime`.
+
+Default: `name`
+
 ## Advanced runtime and recovery options
 
 ### amd_ltr_frames

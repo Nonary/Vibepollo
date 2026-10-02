@@ -17,6 +17,7 @@
 #include <vector>
 
 // local includes
+#include "app_order_policy.h"
 #include "nvenc/nvenc_config.h"
 
 namespace config {
@@ -509,6 +510,7 @@ namespace config {
     std::vector<std::string> csrf_allowed_origins;
     bool realtime_stats_enabled {true};  ///< Sample live host stats (CPU/GPU/RAM/VRAM) for the web UI
     int realtime_stats_poll_interval_ms {2000};  ///< Host stats sampler interval in milliseconds
+    proc::app_order::settings_t app_order;  ///< Client app list grouping from the app_order_* keys
   };
 
   extern video_t video;

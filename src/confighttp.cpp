@@ -557,6 +557,10 @@ namespace confighttp {
           continue;
         }
 
+        if (key.rfind("app_order_", 0) == 0) {
+          continue;
+        }
+
         if (is_rtx_hdr_live_key(key)) {
           continue;
         }
