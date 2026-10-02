@@ -16,8 +16,11 @@ else()
     # validation would refuse to load the bundled dylibs.
     if(APPLE_CODESIGN_IDENTITY MATCHES "^Developer ID Application")
         set(_codesign_extra_args "--timestamp --options=runtime")
+        # The hardened runtime needs entitlements for audio capture.
+        set(_codesign_app_args "--entitlements \"${SUNSHINE_SOURCE_ASSETS_DIR}/macos/build/entitlements.plist\"")
     else()
         set(_codesign_extra_args "")
+        set(_codesign_app_args "")
     endif()
 
     # Build an .app
@@ -112,7 +115,7 @@ else()
           # Sign the app last
           execute_process(COMMAND /usr/bin/codesign --verbose=2
               --sign \"${APPLE_CODESIGN_IDENTITY}\" \"\${_app}\"
-              --force ${_codesign_extra_args}
+              --force ${_codesign_extra_args} ${_codesign_app_args}
               RESULT_VARIABLE rc3
           )
           if(NOT rc3 EQUAL 0)
