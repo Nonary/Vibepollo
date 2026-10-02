@@ -101,6 +101,50 @@ namespace pyrowave::d3d11 {
     }
 
     static_assert(sizeof(LUID) == sizeof(pyrowave_luid), "LUID and pyrowave_luid differ");
+
+    bool supports_d3d11_import(pyrowave_device device, bool ten_bit, std::string &detail) {
+      // The upstream interop probe requires every supported handle family,
+      // including opaque timelines and KMT textures. Intel can import our NT
+      // textures and D3D fences without supporting those unrelated paths.
+      VkInstance instance = VK_NULL_HANDLE;
+      VkPhysicalDevice gpu = VK_NULL_HANDLE;
+      pyrowave_device_get_vk_device_handles(device, &instance, &gpu, nullptr);
+      const auto loader = GetModuleHandleW(L"vulkan-1.dll");
+      const auto get_proc = loader ? reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(loader, "vkGetInstanceProcAddr")) : nullptr;
+      const auto get_image = get_proc ? reinterpret_cast<PFN_vkGetPhysicalDeviceImageFormatProperties2>(get_proc(instance, "vkGetPhysicalDeviceImageFormatProperties2")) : nullptr;
+      const auto get_semaphore = get_proc ? reinterpret_cast<PFN_vkGetPhysicalDeviceExternalSemaphoreProperties>(get_proc(instance, "vkGetPhysicalDeviceExternalSemaphoreProperties")) : nullptr;
+      if (!get_image || !get_semaphore) {
+        detail = "cannot query Vulkan D3D11 import capabilities";
+        return false;
+      }
+
+      VkPhysicalDeviceExternalImageFormatInfo external {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO};
+      external.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
+      VkPhysicalDeviceImageFormatInfo2 image {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, &external};
+      image.format = ten_bit ? VK_FORMAT_R16_UNORM : VK_FORMAT_R8_UNORM;
+      image.type = VK_IMAGE_TYPE_2D;
+      image.tiling = VK_IMAGE_TILING_OPTIMAL;
+      image.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+      VkExternalImageFormatProperties external_properties {VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
+      VkImageFormatProperties2 properties {VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, &external_properties};
+      if (get_image(gpu, &image, &properties) != VK_SUCCESS ||
+          !(external_properties.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT)) {
+        detail = std::string("the Vulkan driver cannot import D3D11 ") + (ten_bit ? "R16" : "R8") + " plane textures";
+        return false;
+      }
+
+      // Match upstream's legacy D3D fence capability query: some drivers
+      // mishandle VkSemaphoreTypeCreateInfo for this older handle family.
+      VkPhysicalDeviceExternalSemaphoreInfo semaphore {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO};
+      semaphore.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT;
+      VkExternalSemaphoreProperties semaphore_properties {VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES};
+      get_semaphore(gpu, &semaphore, &semaphore_properties);
+      if (!(semaphore_properties.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT)) {
+        detail = "the Vulkan driver cannot import D3D11 fences";
+        return false;
+      }
+      return true;
+    }
   }  // namespace
 
   struct core_t::impl_t {
@@ -205,8 +249,9 @@ namespace pyrowave::d3d11 {
         error(std::string("no Vulkan device matches the capture adapter: ") + pyrowave_result_string(result));
         return false;
       }
-      if (!pyrowave_device_confirm_interop_support(pw_device)) {
-        error("the Vulkan driver cannot import Direct3D 11 textures and fences");
+      std::string detail;
+      if (!supports_d3d11_import(pw_device, config.ten_bit, detail)) {
+        error(detail);
         return false;
       }
       // Sunshine is a separate process from the game, which keeps the graphics
@@ -667,8 +712,7 @@ namespace pyrowave::d3d11 {
     }
 
     bool ok = true;
-    if (!pyrowave_device_confirm_interop_support(device)) {
-      detail = "the Vulkan driver cannot import Direct3D 11 textures and fences";
+    if (!supports_d3d11_import(device, false, detail)) {
       ok = false;
     }
 

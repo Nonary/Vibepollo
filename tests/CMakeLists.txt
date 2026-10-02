@@ -984,6 +984,19 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET libinputtino)
     endif()
 endif()
 
+if(WIN32 AND TARGET pyrowave::capi)
+    add_executable(test_pyrowave_windows_gpu test_pyrowave_windows_gpu.cpp
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/pyrowave_d3d11_core.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/pyrowave_policy.cpp")
+    target_include_directories(test_pyrowave_windows_gpu PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+    target_compile_features(test_pyrowave_windows_gpu PRIVATE cxx_std_20)
+    target_compile_definitions(test_pyrowave_windows_gpu PRIVATE
+        "PYROWAVE_TEST_SHADER_PATH=L\"${SUNSHINE_TEST_REPOSITORY_ROOT}/src_assets/windows/assets/shaders/directx/convert_pyrowave_cs.hlsl\"")
+    target_link_libraries(test_pyrowave_windows_gpu PRIVATE pyrowave::capi d3d11 dxgi d3dcompiler)
+    add_test(NAME pyrowave_windows_gpu COMMAND test_pyrowave_windows_gpu)
+    set_tests_properties(pyrowave_windows_gpu PROPERTIES SKIP_RETURN_CODE 77 LABELS "integration;gpu")
+endif()
+
 if(TARGET pyrowave-linux)
     add_executable(test_pyrowave_linux_gpu test_pyrowave_linux_gpu.cpp)
     target_include_directories(test_pyrowave_linux_gpu PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
