@@ -23,7 +23,12 @@ namespace platf::linux_private_display::restore_policy {
     return connect();
   }
 
-  /** Activation checks allow retiring outputs; the final check also enforces saved disables. */
+  /**
+   * Activation checks allow retiring outputs; the final check also enforces saved disables
+   * and priorities. KWin keeps priorities contiguous, so a still-live retiring output holds
+   * a priority slot and pushes each restored output down until the retiring connector is
+   * disconnected.
+   */
   template <typename Configuration>
   bool snapshot_matches(const Configuration &snapshot, const Configuration &current, const bool final = false) {
     const auto refresh = [](const auto &output) {
@@ -55,7 +60,7 @@ namespace platf::linux_private_display::restore_policy {
              std::abs(saved.value("scale", 1.0) - output->value("scale", 1.0)) < 0.01 &&
              saved.value("pos", Configuration::object()) == output->value("pos", Configuration::object()) &&
              saved.value("rotation", 1) == output->value("rotation", 1) &&
-             saved.value("priority", 0) == output->value("priority", 0) &&
+             (!final || saved.value("priority", 0) == output->value("priority", 0)) &&
              (!saved.contains("hdr") || saved.value("hdr", false) == output->value("hdr", false));
     });
   }
