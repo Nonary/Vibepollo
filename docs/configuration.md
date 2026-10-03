@@ -4759,9 +4759,10 @@ playnite_exclude_categories = ["Steam", {"id": "deck", "name": "Steam Deck"}]
 ## Client App Order
 
 These options control the order of the application list sent to clients
-(`/applist`). Moonlight sorts apps by name unless
-[legacy_ordering](#legacy_ordering) is enabled; Artemis follows the host order
-directly. **Library → App order** in the web UI edits all of them.
+(`/applist`). Setting `app_order_groups` also turns on the ordering Moonlight
+needs, as [legacy_ordering](#legacy_ordering) does; Artemis follows the host
+order directly. **Library → App order** in the web UI edits all of them.
+Remote Input and Remote Monitor are always listed last.
 
 ### app_order_groups
 

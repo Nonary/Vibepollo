@@ -70,6 +70,11 @@ namespace remote_session {
     return equal_folded(visible_name, "Remote Input") || equal_folded(visible_name, "Remote Monitor") || equal_folded(visible_name, "Virtual Display") || equal_folded(visible_name, "Terminate");
   }
 
+  bool replaced_by_control(const std::string_view uuid, const std::string_view title) {
+    const auto control = identify(0, uuid);
+    return control == control_e::input || control == control_e::monitor || reserved_name(title);
+  }
+
   control_e identify(const std::int32_t id, const std::string_view uuid) {
     if (id == secondary_resume_id) return control_e::resume;
     if (id == secondary_terminate_id) return control_e::terminate;
@@ -172,8 +177,7 @@ namespace remote_session {
     projection_t result;
     std::vector<app_t> visible_configured;
     std::copy_if(configured.begin(), configured.end(), std::back_inserter(visible_configured), [](const app_t &app) {
-      const auto control = identify(0, app.uuid);
-      return control != control_e::input && control != control_e::monitor && !reserved_name(app.title);
+      return !replaced_by_control(app.uuid, app.title);
     });
     if (owner.role == role_e::monitor) {
       result.catalogue = {synthetic(control_e::resume), synthetic(control_e::disconnect_monitor)};

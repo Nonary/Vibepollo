@@ -24,7 +24,6 @@ import {
 } from '@/services/apps';
 
 const PREVIEW_COUNT = 8;
-const TRUE_VALUES = new Set(['true', 'enabled', '1', 'on', 'yes']);
 
 const { t, locale } = useI18n();
 
@@ -40,18 +39,20 @@ const drag = ref<{ kind: 'group' | 'app'; key: string } | null>(null);
 const dropKey = ref('');
 
 const groups = computed(() => parseAppOrderGroups(config.value.app_order_groups));
-const legacyOrdering = computed(() =>
-  TRUE_VALUES.has(String(config.value.legacy_ordering ?? '').toLowerCase()),
-);
 
-// The host's /applist order; apps the host has not reloaded yet go last.
+// The host's /applist order.
 const ordered = computed<AppRecord[]>(() => {
+  if (!clientOrder.value.length) return apps.value;
   const byUuid = new Map(apps.value.map((app) => [appUuid(app), app]));
-  const result = clientOrder.value
+  return clientOrder.value
     .map((uuid) => byUuid.get(uuid))
     .filter((app): app is AppRecord => Boolean(app));
-  const seen = new Set(result);
-  return [...result, ...apps.value.filter((app) => !seen.has(app))];
+});
+// Apps the host replaces with its built-in controls (Remote Input, Remote Monitor), always sent last.
+const fixedApps = computed(() => {
+  if (!clientOrder.value.length) return [];
+  const listed = new Set(clientOrder.value);
+  return apps.value.filter((app) => !listed.has(appUuid(app)));
 });
 
 function appsIn(group: AppOrderGroup): AppRecord[] {
@@ -201,18 +202,6 @@ onMounted(() => {
     <InlineAlert v-if="error" tone="danger" announce="assertive">{{ error }}</InlineAlert>
 
     <template v-if="!loading">
-      <InlineAlert v-if="!legacyOrdering" tone="warning" :title="t('ui.appOrder.legacyTitle')">
-        {{ t('ui.appOrder.legacyBody') }}
-        <template #actions>
-          <AppButton
-            size="compact"
-            :label="t('ui.appOrder.legacyAction')"
-            :disabled="busy"
-            @click="patchConfig({ legacy_ordering: true })"
-          />
-        </template>
-      </InlineAlert>
-
       <template v-if="groups.length">
         <ol class="app-order-groups" :aria-label="t('ui.appOrder.groupsLabel')">
           <li
@@ -367,6 +356,10 @@ onMounted(() => {
             </div>
           </header>
         </section>
+
+        <p v-if="fixedApps.length" class="app-order-fixed">
+          {{ t('ui.appOrder.fixedLast', { names: fixedApps.map(appName).join(', ') }) }}
+        </p>
 
         <div class="app-order-footer">
           <AppButton
@@ -632,6 +625,12 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   gap: var(--vs-space-12);
+}
+
+.app-order-fixed {
+  margin: 0;
+  color: var(--vs-color-text-muted);
+  font-size: var(--vs-type-size-metadata);
 }
 
 .app-order-footer {

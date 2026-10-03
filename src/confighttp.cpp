@@ -1772,11 +1772,14 @@ namespace confighttp {
       file_tree["host_name"] = config::nvhttp.sunshine_name;
       {
         // UUIDs in the order /applist sends them, so the App order page can show it.
+        // Apps a built-in control replaces are left out; the host always lists those controls last.
         const auto apps = proc::proc.get_apps();
         std::vector<const proc::ctx_t *> ordered;
         ordered.reserve(apps.size());
         for (const auto &app : apps) {
-          ordered.push_back(&app);
+          if (!remote_session::replaced_by_control(app.uuid, app.name)) {
+            ordered.push_back(&app);
+          }
         }
         proc::sort_for_clients(ordered);
         auto &client_order = file_tree["client_order"] = nlohmann::json::array();

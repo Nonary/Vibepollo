@@ -874,6 +874,7 @@
         "load": "Couldn't load the app order.",
         "save": "Couldn't save the order. Try again."
       },
+      "fixedLast": "Always last: {names}",
       "groupAction": "Group by source",
       "groups": {
         "all": "All applications",
@@ -890,9 +891,6 @@
         "label": "Order in app list"
       },
       "integrationSettings": "Integration settings",
-      "legacyAction": "Turn on",
-      "legacyBody": "Moonlight sorts apps A to Z unless app ordering for legacy clients is on. Artemis follows this order already.",
-      "legacyTitle": "Moonlight ignores this order",
       "moveDown": "Move {name} down",
       "moveUp": "Move {name} up",
       "otherHint": "Sources missing from the order above are sent last, in file order",
@@ -909,8 +907,8 @@
         "recent": "Recently played"
       },
       "ungroupAction": "Stop grouping",
-      "ungroupedBody": "Group apps by source to keep your custom apps first and sort each integration automatically as games sync.",
-      "ungroupedTitle": "Apps are sent in file order"
+      "ungroupedBody": "Moonlight shows apps A to Z. Group them by source to keep your custom apps first and sort each integration automatically as games sync.",
+      "ungroupedTitle": "Grouping is off"
     },
     "logs": {
       "action": {
