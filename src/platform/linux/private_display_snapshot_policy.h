@@ -100,7 +100,7 @@ namespace platf::linux_private_display::snapshot_policy {
   }
 
   template<typename Json>
-  std::optional<Json> decode(const std::string &contents, const std::string &owner) {
+  std::optional<Json> decode(const std::string &contents, const std::string &owner, bool *restore_pending = nullptr) {
     if (contents.size() > 1024 * 1024) {
       return std::nullopt;
     }
@@ -108,6 +108,12 @@ namespace platf::linux_private_display::snapshot_policy {
       const auto saved = Json::parse(contents);
       if (saved.value("version", 0) != 1 || saved.value("owner", std::string {}) != owner || !saved.contains("topology") || !valid(saved["topology"])) {
         return std::nullopt;
+      }
+      // Older records preceded the intent flag and may describe an orphan
+      // stream; retain their recovery behavior until an idle refresh replaces them.
+      const bool pending = saved.value("restore_pending", true);
+      if (restore_pending) {
+        *restore_pending = pending;
       }
       return saved["topology"];
     } catch (...) {
@@ -169,6 +175,14 @@ namespace platf::linux_private_display::snapshot_policy {
       }
     }
     return result;
+  }
+
+  /** An idle baseline alone does not authorize a topology mutation. */
+  template<typename Json>
+  bool restore_needed(const std::optional<Json> &snapshot, const Json &current, const std::set<std::string> &managed_names, const bool reserved) {
+    return snapshot.has_value() || reserved || std::ranges::any_of(current["outputs"], [&](const auto &output) {
+      return output.value("connected", false) && managed_names.contains(output.value("name", std::string {}));
+    });
   }
 
   /** Missing/unusable snapshots may use live enabled monitors, never guess disabled intent. */

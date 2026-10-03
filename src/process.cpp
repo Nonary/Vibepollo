@@ -2877,11 +2877,12 @@ namespace proc {
 
     if (placebo) {
       return _app_id;
-    } else if (_app.wait_all && _process_group && platf::process_group_running((std::uintptr_t) _process_group.native_handle())) {
-      // The app is still running if any process in the group is still running
-      return _app_id;
     } else if (_process.running()) {
-      // The app is still running only if the initial process launched is still running
+      // Checking the owned child is cheap and collects its exact exit status.
+      // Only inspect the rest of the group after this child has exited.
+      return _app_id;
+    } else if (_app.wait_all && _process_group && platf::process_group_running((std::uintptr_t) _process_group.native_handle())) {
+      // A launcher may exit before the game processes in its group.
       return _app_id;
     } else if (_app.auto_detach && std::chrono::steady_clock::now() - _app_launch_time < 5s) {
       BOOST_LOG(info) << "App exited with code ["sv << _process.native_exit_code() << "] within 5 seconds of launch. Treating the app as a detached command."sv;

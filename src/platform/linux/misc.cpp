@@ -732,7 +732,7 @@ namespace platf {
 
   bool process_group_running(std::uintptr_t native_handle) {
 #ifdef __linux__
-    return linux_process::group_running(static_cast<pid_t>(native_handle));
+    return linux_process::cached_group_running(static_cast<pid_t>(native_handle));
 #else
     return waitpid(-((pid_t) native_handle), nullptr, WNOHANG) >= 0;
 #endif

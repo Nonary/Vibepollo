@@ -4,12 +4,15 @@
  */
 #pragma once
 
+#include <cerrno>
 #include <charconv>
+#include <chrono>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <sys/types.h>
 
 namespace platf::linux_process {
@@ -47,5 +50,34 @@ namespace platf::linux_process {
     // An unavailable procfs cannot prove quiescence. Preserve the group until
     // it disappears, using the non-destructive signal probe as a fallback.
     return error && (::kill(-group, 0) == 0 || errno == EPERM);
+  }
+
+  /** Recheck negative observations so new groups are never cached as missing. */
+  class group_observer_t {
+  public:
+    template<typename Observe>
+    bool running(const pid_t group, const std::chrono::steady_clock::time_point now, Observe observe) {
+      if (group <= 0) {
+        return false;
+      }
+      if (group == _group && now < _positive_until) {
+        return true;
+      }
+      const bool live = observe(group);
+      _group = live ? group : 0;
+      _positive_until = now + std::chrono::milliseconds {250};
+      return live;
+    }
+
+  private:
+    pid_t _group {0};
+    std::chrono::steady_clock::time_point _positive_until {};
+  };
+
+  inline bool cached_group_running(const pid_t group) {
+    // The control thread may poll once per input packet. Bound its procfs
+    // scans without sharing mutable cache state between polling threads.
+    thread_local group_observer_t observer;
+    return observer.running(group, std::chrono::steady_clock::now(), group_running);
   }
 }  // namespace platf::linux_process

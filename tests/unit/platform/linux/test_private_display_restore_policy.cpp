@@ -344,3 +344,73 @@ TEST(LinuxPrivateDisplaySnapshot, LiveFallbackRetiresPreviouslyRetainedPrivateBa
   ASSERT_TRUE(fallback);
   EXPECT_EQ(snapshot_policy::retiring_outputs(*fallback, current, {"Virtual-1"}), (std::set<std::string> {"Virtual-1"}));
 }
+
+TEST(LinuxPrivateDisplaySnapshot, IdleStartupBaselineDoesNotRestoreOverLaterPhysicalLayout) {
+  const auto startup = external_desktop();
+  std::optional<json> baseline;
+  std::string disk;
+  ASSERT_TRUE(snapshot_policy::capture(baseline, startup, {"Virtual-1"}, false, [&](const json &saved) {
+    disk = json {{"version", 1}, {"owner", "1000:desktop"}, {"restore_pending", false}, {"topology", saved}}.dump();
+    return true;
+  }));
+  // Restart loads an idle baseline without arming an output transaction.
+  bool pending = true;
+  const auto saved = snapshot_policy::decode<json>(disk, "1000:desktop", &pending);
+  ASSERT_TRUE(saved);
+  EXPECT_FALSE(pending);
+  const auto snapshot = pending ? saved : std::nullopt;
+  auto current = startup;
+  current["outputs"][0]["enabled"] = true;
+  current["outputs"][1]["rotation"] = 8;
+  current["outputs"][1]["pos"]["x"] = 1920;
+  EXPECT_NE(current, *saved);
+  EXPECT_FALSE(snapshot_policy::restore_needed(snapshot, current, {"Virtual-1"}, false));
+}
+
+TEST(LinuxPrivateDisplaySnapshot, ExplicitConnectedOutputCapturesCurrentLayoutWithoutIdleRestore) {
+  auto current = external_desktop();
+  current["outputs"].push_back({{"name", "Virtual-1"}, {"connected", true}, {"enabled", true}});
+  std::optional<json> snapshot;
+  // An explicitly reserved, always-connected connector is not an orphan
+  // managed hotplug. A physical-only stream has no restore work here.
+  EXPECT_FALSE(snapshot_policy::restore_needed(snapshot, current, {}, false));
+  current["outputs"][1]["rotation"] = 8;
+  ASSERT_TRUE(snapshot_policy::capture(snapshot, current, {"Virtual-1"}, true, [](const json &) { return true; }));
+  ASSERT_TRUE(snapshot);
+  EXPECT_EQ((*snapshot)["outputs"][1]["rotation"], 8);
+  EXPECT_TRUE(snapshot_policy::restore_needed(snapshot, current, {}, true));
+}
+
+TEST(LinuxPrivateDisplaySnapshot, OwnedBaselineSurvivesConnectorReleaseUntilRestore) {
+  const auto current = external_desktop();
+  std::optional<json> snapshot;
+  std::string disk;
+  ASSERT_TRUE(snapshot_policy::capture(snapshot, current, {"Virtual-1"}, false, [&](const json &saved) {
+    disk = json {{"version", 1}, {"owner", "1000:desktop"}, {"restore_pending", true}, {"topology", saved}}.dump();
+    return true;
+  }));
+  bool pending = false;
+  const auto recovered = snapshot_policy::decode<json>(disk, "1000:desktop", &pending);
+  ASSERT_TRUE(recovered);
+  EXPECT_TRUE(pending);
+  // Remote Monitor release can unplug its output before final topology
+  // restoration. Its armed snapshot still needs restoration with no owner.
+  EXPECT_TRUE(snapshot_policy::restore_needed(recovered, current, {"Virtual-1"}, false));
+}
+
+TEST(LinuxPrivateDisplaySnapshot, ManagedOrphanWithoutSavedIntentStillRequiresGuardedRecovery) {
+  auto current = external_desktop();
+  current["outputs"].push_back({{"name", "Virtual-1"}, {"connected", true}, {"enabled", true}});
+  const std::optional<json> snapshot;
+  EXPECT_TRUE(snapshot_policy::restore_needed(snapshot, current, {"Virtual-1"}, false));
+  EXPECT_TRUE(snapshot_policy::restore_needed(snapshot, external_desktop(), {}, true));
+}
+
+TEST(LinuxPrivateDisplaySnapshot, LegacySavedIntentRemainsRecoverableAndInvalidFlagIsRejected) {
+  auto saved = json {{"version", 1}, {"owner", "1000:desktop"}, {"topology", external_desktop()}};
+  bool pending = false;
+  EXPECT_TRUE(snapshot_policy::decode<json>(saved.dump(), "1000:desktop", &pending));
+  EXPECT_TRUE(pending);
+  saved["restore_pending"] = "true";
+  EXPECT_FALSE(snapshot_policy::decode<json>(saved.dump(), "1000:desktop", &pending));
+}

@@ -38,6 +38,7 @@
   #include <processthreadsapi.h>
   #include <Windows.h>
 #else
+  #include <cerrno>
   #include <csignal>
   #include <sys/wait.h>
   #include <unistd.h>

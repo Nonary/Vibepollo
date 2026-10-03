@@ -176,8 +176,8 @@ namespace platf::linux_private_display {
         }
       }
 
-      // Revalidate after admission: a concurrent query may have fenced helper
-      // completion, or the queued restore may have been superseded meanwhile.
+      // Revalidate after admission: a concurrent mutation may have fenced
+      // helper completion, or the queued restore was superseded meanwhile.
       if (!helper_budget_available(helper_reply_timeout)) {
         result.stderr_text = "display helper admission superseded or fenced";
         return result;
@@ -204,7 +204,7 @@ namespace platf::linux_private_display {
 
       auto deadline = std::chrono::steady_clock::now() + helper_reply_timeout;
       result = helper_process::communicate_until(process, deadline, std::getenv("VIBEPOLLO_MACHINE_HOST") != nullptr);
-      if (result.completion_unknown) {
+      if (mutating && result.completion_unknown) {
         std::unique_lock mutation_barrier {topology_mutation_gate};
         helper_completion_unknown.store(true, std::memory_order_release);
         BOOST_LOG(error) << "Linux display helper: completion could not be confirmed; refusing further display mutations until host restart.";
@@ -776,8 +776,8 @@ namespace platf::linux_private_display {
       return std::string {uid ? uid : std::to_string(getuid())} + ":" + (role ? role : "standalone");
     }
 
-    bool persist_snapshot(const json &snapshot) {
-      return statefile::save_linux_display_snapshot(json {{"version", 1}, {"owner", snapshot_owner()}, {"topology", snapshot}}.dump());
+    bool persist_snapshot(const json &snapshot, const bool restore_pending = true) {
+      return statefile::save_linux_display_snapshot(json {{"version", 1}, {"owner", snapshot_owner()}, {"restore_pending", restore_pending}, {"topology", snapshot}}.dump());
     }
 
     void load_snapshot_if_needed(state_t &manager) {
@@ -786,16 +786,21 @@ namespace platf::linux_private_display {
       }
       manager.snapshot_loaded = true;
       if (const auto saved = statefile::load_linux_display_snapshot()) {
-        manager.snapshot = snapshot_policy::decode<json>(*saved, snapshot_owner());
-        if (!manager.snapshot) {
+        bool restore_pending = false;
+        auto snapshot = snapshot_policy::decode<json>(*saved, snapshot_owner(), &restore_pending);
+        if (!snapshot) {
           BOOST_LOG(warning) << "Linux private display: ignoring unusable or different-session saved topology.";
+        } else if (restore_pending) {
+          manager.snapshot = std::move(snapshot);
         }
       }
     }
 
     bool snapshot_configuration_if_needed(state_t &manager, const json &configuration) {
       load_snapshot_if_needed(manager);
-      if (!snapshot_policy::capture(manager.snapshot, configuration, private_output_set(), !manager.reservations.empty(), persist_snapshot)) {
+      if (!snapshot_policy::capture(manager.snapshot, configuration, private_output_set(), !manager.reservations.empty(), [](const json &snapshot) {
+            return persist_snapshot(snapshot);
+          })) {
         BOOST_LOG(error) << "Linux private display: cannot persist the desktop before changing outputs.";
         return false;
       }
@@ -899,8 +904,16 @@ namespace platf::linux_private_display {
       BOOST_LOG(info) << "Linux private display: queued saved topology recovery for the current session.";
       return true;
     }
-    if (snapshot_policy::idle(*configuration, private_names, false) && !snapshot_configuration_if_needed(manager, *configuration)) {
-      return false;
+    if (snapshot_policy::idle(*configuration, private_names, false)) {
+      // Persist the idle preferences without arming a
+      // later physical-only stream or config change to restore this layout.
+      std::optional<json> baseline;
+      if (!snapshot_policy::capture(baseline, *configuration, private_names, false, [](const json &snapshot) {
+            return persist_snapshot(snapshot, false);
+          })) {
+        return false;
+      }
+      manager.snapshot.reset();
     }
 
     // A normal idle pool is dormant, but a restart may follow a failed
@@ -1831,6 +1844,10 @@ namespace platf::linux_private_display {
       return true;
     }
     if (!restore_allowed()) return false;
+    const auto private_names = private_output_set();
+    if (!manager.snapshot && manager.reservations.empty() && private_names.empty()) {
+      return true;
+    }
     std::set<std::string> reserved_outputs;
     for (const auto &[_, output_name] : manager.reservations) {
       reserved_outputs.insert(output_name);
@@ -1843,7 +1860,12 @@ namespace platf::linux_private_display {
       return false;
     }
     load_snapshot_if_needed(manager);
-    const auto private_names = private_output_set();
+    const auto managed = discover_managed_outputs();
+    if (!snapshot_policy::restore_needed(manager.snapshot, *current, {managed.begin(), managed.end()}, !manager.reservations.empty())) {
+      // Nothing acquired display ownership and no managed orphan remains.
+      // The user's current idle layout is authoritative.
+      return true;
+    }
     const auto use_live_fallback = [&] {
       const auto fallback = snapshot_policy::live_fallback(*current, private_names);
       if (!fallback || !persist_snapshot(*fallback)) {
@@ -1863,7 +1885,6 @@ namespace platf::linux_private_display {
     }
     // Restart has no process-local reservations, but its orphan connectors
     // still need retirement once a distinct saved guard is capture-ready.
-    const auto managed = discover_managed_outputs();
     const auto remember_orphans = [&] {
       const auto orphaned = snapshot_policy::retiring_outputs(
         *manager.snapshot,
@@ -1970,6 +1991,9 @@ namespace platf::linux_private_display {
       return false;
     }
     if (!restore_allowed()) return false;
+    if (!statefile::save_linux_display_snapshot(std::nullopt)) {
+      return false;
+    }
     manager.snapshot.reset();
     manager.reservations.clear();
     manager.newly_connected_reservations.clear();

@@ -138,8 +138,12 @@ state only after restoration succeeds.
 The Linux desktop baseline is saved in the service-owned auxiliary state before
 private connector hotplug. Its payload is schema-validated and bound to the
 selected session UID and role; another user's or greeter's baseline is ignored.
-A genuinely idle desktop refreshes the baseline before the snapshot gate, so
-old failed restores do not override newly disabled monitors. Restart recovery
+Idle startup baselines remain unarmed: physical-only streams and idle settings
+changes preserve the user's current layout. Private display acquisition saves
+restore intent before changing connectors; successful restoration clears that
+intent, including for always-connected explicit outputs. A genuinely idle
+desktop refreshes the baseline before the snapshot gate, so old failed restores
+do not override newly disabled monitors. Restart recovery
 uses the same asynchronous, capture-verified handoff and retires orphan managed
 connectors only after a distinct saved guard is ready. Missing/unusable saved
 intent can fall back only to currently enabled physical outputs. If every
@@ -151,9 +155,9 @@ The session broker gives KScreen five seconds, then kills/reaps its helper
 before acknowledging cancellation. Cancelled display-apply requests still
 report unknown compositor completion, since killing a D-Bus client does not
 retract an already delivered mutation. The host allows ten seconds for the reply;
-if completion cannot be confirmed it refuses further display mutations until
-host restart. Restore requests have a thirty-second admission budget beginning
-at worker execution, including waiting for lifecycle/display locks. Each helper
+if mutation completion cannot be confirmed it refuses further display mutations
+until host restart. Failed read-only queries do not fence later mutations.
+Restore requests have a thirty-second admission budget beginning at worker execution, including waiting for lifecycle/display locks. Each helper
 operation reserves its full safe reply interval before starting. Shutdown
 closes mutation admission, cancels queued
 machine-host restores, and joins the owned worker before platform teardown.

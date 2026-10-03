@@ -219,3 +219,46 @@ TEST(LinuxProcessGroup, LeaderExitKeepsLiveMemberWithoutConsumingEitherStatus) {
     close(fd);
   }
 }
+
+TEST(LinuxProcessGroup, PositiveGroupObservationsAreBoundedUnderInputPacketPolling) {
+  using namespace std::chrono_literals;
+  platf::linux_process::group_observer_t observer;
+  const auto start = std::chrono::steady_clock::time_point {};
+  int scans = 0;
+  bool live = true;
+  const auto observe = [&](const pid_t group) {
+    EXPECT_EQ(group, 123);
+    ++scans;
+    return live;
+  };
+  // A thousand input events within the interval share one non-reaping scan.
+  for (int packet = 0; packet < 1000; ++packet) {
+    EXPECT_TRUE(observer.running(123, start + packet * 200us, observe));
+  }
+  EXPECT_EQ(scans, 1);
+  live = false;
+  EXPECT_TRUE(observer.running(123, start + 249ms, observe));
+  EXPECT_FALSE(observer.running(123, start + 250ms, observe));
+  EXPECT_EQ(scans, 2);
+  // A later group with the same ID is observed immediately after a negative
+  // result rather than inheriting an old "not running" observation.
+  live = true;
+  EXPECT_TRUE(observer.running(123, start + 251ms, observe));
+  EXPECT_EQ(scans, 3);
+}
+
+TEST(LinuxProcessGroup, CachedObservationDoesNotCarryAcrossGroupsOrInvalidHandles) {
+  using namespace std::chrono_literals;
+  platf::linux_process::group_observer_t observer;
+  const auto start = std::chrono::steady_clock::time_point {};
+  int scans = 0;
+  const auto observe = [&](const pid_t group) {
+    ++scans;
+    return group == 123;
+  };
+  EXPECT_TRUE(observer.running(123, start, observe));
+  EXPECT_FALSE(observer.running(456, start + 1ms, observe));
+  EXPECT_FALSE(observer.running(0, start + 2ms, observe));
+  EXPECT_FALSE(observer.running(-1, start + 3ms, observe));
+  EXPECT_EQ(scans, 2);
+}
