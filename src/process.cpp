@@ -2487,7 +2487,7 @@ namespace proc {
             BOOST_LOG(info) << "Playnite plugin update available (" << installed_ver
                             << " -> " << packaged_ver << "), auto-updating before launch";
             std::string install_error;
-            if (platf::playnite::install_plugin(install_error)) {
+            if (platf::playnite::install_plugin(install_error, true)) {
               BOOST_LOG(info) << "Playnite plugin auto-update succeeded";
             } else {
               BOOST_LOG(warning) << "Playnite plugin auto-update failed: " << install_error

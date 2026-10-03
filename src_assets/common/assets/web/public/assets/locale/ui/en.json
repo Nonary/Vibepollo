@@ -529,9 +529,9 @@
       "checksFailed": "Some integration checks failed",
       "confirm": {
         "defaultTitle": "Confirm integration action",
-        "playniteInstallDescription": "Vibepollo will write its bundled extension into the detected Playnite extensions directory.",
+        "playniteInstallDescription": "Playnite will close and reopen to install or update the Vibepollo extension.",
         "playniteInstallTitle": "Install the Playnite extension?",
-        "playniteRemoveDescription": "Playnite library synchronization will stop until the extension is installed again.",
+        "playniteRemoveDescription": "Playnite will close to remove the extension. Library synchronization will stop until the extension is installed again.",
         "playniteRemoveTitle": "Remove the Playnite extension?",
         "playnitePurgeAutosyncDescriptionOne": "There is currently {count} Playnite-managed auto-synced application entry. Confirm to remove auto-synced entries only; manually added apps and other providers are kept.",
         "playnitePurgeAutosyncDescriptionOther": "There are currently {count} Playnite-managed auto-synced application entries. Confirm to remove auto-synced entries only; manually added apps and other providers are kept.",

@@ -59,6 +59,9 @@
     <pe-file path="Apollo/zlib1.dll"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/vibeshine_truehdr.dll"><authenticode-sign/></pe-file>
 
+    <!-- Bundled first-party Playnite extension -->
+    <pe-file path="Apollo/plugins/playnite/SunshinePlaynite/VibepolloPlaynite.dll"><authenticode-sign/></pe-file>
+
     <!-- Apollo/tools\ -->
     <pe-file path="Apollo/tools/sunshinesvc.exe"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/tools/dxgi-info.exe"><authenticode-sign/></pe-file>
@@ -140,6 +143,7 @@
         <include path="Apollo/*.dll"       min-matches="0" max-matches="unbounded"/>
         <include path="Apollo/tools/*.exe" min-matches="0" max-matches="unbounded"/>
         <include path="Apollo/tools/*.dll" min-matches="0" max-matches="unbounded"/>
+        <include path="Apollo/plugins/playnite/SunshinePlaynite/*.dll" min-matches="0" max-matches="unbounded"/>
         <for-each><authenticode-sign/></for-each>
       </pe-file-set>
       <authenticode-sign/>

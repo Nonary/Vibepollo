@@ -561,6 +561,7 @@ if (typeof window !== 'undefined') {
 // Playnite extension status
 type PlayniteStatus = {
   installed: boolean | null;
+  legacy_plugin?: boolean;
   active: boolean;
   extensions_dir?: string;
   installed_version?: string;
@@ -1156,7 +1157,7 @@ const showGoldenSnapshotOutOfDateBanner = computed(() => {
 });
 
 const playniteUpdateAvailable = computed(() => {
-  return !!(playnite.value && playnite.value.installed && playnite.value.update_available);
+  return !!(playnite.value && playnite.value.update_available);
 });
 
 const playniteApps = computed(() => getAppsSnapshot().filter((app) => isPlayniteApp(app)));
@@ -1169,7 +1170,12 @@ const hasPlayniteFullscreenApp = computed(() => {
 const showPlayniteMissingPluginBanner = computed(() => {
   const plat = (configStore.metadata?.platform || '').toLowerCase();
   if (plat !== 'windows') return false;
-  if (!playnite.value || playnite.value.active === true || playnite.value.installed !== false)
+  if (
+    !playnite.value ||
+    playnite.value.active === true ||
+    playnite.value.installed !== false ||
+    playnite.value.legacy_plugin === true
+  )
     return false;
   return playniteAutoSyncedAppsCount.value > 0 || hasPlayniteFullscreenApp.value;
 });
