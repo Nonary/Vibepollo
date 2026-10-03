@@ -1771,7 +1771,7 @@ namespace confighttp {
       file_tree["host_uuid"] = http::unique_id;
       file_tree["host_name"] = config::nvhttp.sunshine_name;
       {
-        // UUIDs in the order /applist sends them, so the Library can preview it.
+        // UUIDs in the order /applist sends them, so the App order page can show it.
         const auto apps = proc::proc.get_apps();
         std::vector<const proc::ctx_t *> ordered;
         ordered.reserve(apps.size());
