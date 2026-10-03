@@ -15,22 +15,14 @@ TEST(PrivateDisplayCapturePolicy, ExplicitKmsSurvivesDormantStartupAndRecovery) 
   EXPECT_TRUE(policy::enable_kms(false, true));
 }
 
-TEST(PrivateDisplayCapturePolicy, PrefersKmsOnlyForPrivateDynamicRangeSessions) {
-  EXPECT_TRUE(policy::prefer_kms(1, false, false, true));
-  EXPECT_TRUE(policy::prefer_kms(2, false, false, true));
-
-  EXPECT_FALSE(policy::prefer_kms(0, false, false, true));
-  EXPECT_FALSE(policy::prefer_kms(1, false, false, false));
-  EXPECT_FALSE(policy::prefer_kms(0, false, false, false));
+TEST(PrivateDisplayCapturePolicy, AutomaticVirtualCaptureUsesKmsAndExplicitChoicesAreHonored) {
+  EXPECT_TRUE(policy::prefer_kms(true, true));
+  EXPECT_FALSE(policy::prefer_kms(false, true));
+  EXPECT_FALSE(policy::prefer_kms(true, false));
+  EXPECT_FALSE(policy::prefer_kms(false, false));
 }
 
-TEST(PrivateDisplayCapturePolicy, KeepsEffectiveSdrOnTheCompositorPath) {
-  EXPECT_FALSE(policy::prefer_kms(1, true, false, true));
-  EXPECT_FALSE(policy::prefer_kms(1, false, true, true));
-  EXPECT_FALSE(policy::prefer_kms(1, true, true, true));
-}
-
-TEST(PrivateDisplayCapturePolicy, RetainsKmsCapabilityOnlyForHdrPool) {
+TEST(PrivateDisplayCapturePolicy, RetainsKmsCapabilityForAutomaticPrivatePool) {
   EXPECT_TRUE(policy::retain_kms_capability(true));
   EXPECT_FALSE(policy::retain_kms_capability(false));
 

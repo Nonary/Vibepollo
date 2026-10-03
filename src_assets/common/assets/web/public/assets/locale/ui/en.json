@@ -1693,7 +1693,7 @@
           "label": "Confirm before replacing a running app"
         },
         "capture": {
-          "description": "Automatic follows the capture backend Vibepollo chooses for this host. On Linux, managed private HDR sessions use direct KMS capture while KWin remains recommended for SDR. Override it only for compatibility or a specific capture path.",
+          "description": "Automatic uses KMS for managed virtual screens on Linux for maximum compatibility and low latency. Explicit capture choices are honored for physical and virtual screens; other methods are not recommended for virtual screens.",
           "label": "Capture method"
         },
         "encoder": {
@@ -2340,7 +2340,7 @@
       "linux": {
         "title": "Display readiness",
         "recommendation": "Virtual screens match your client's resolution and refresh rate automatically.",
-        "explanation": "A virtual screen provides smooth frame delivery and low capture latency. Automatic resolution and refresh matching keeps it in sync with your client.",
+        "explanation": "KMS capture on managed virtual screens provides smooth frame delivery and low capture latency. Other capture methods are allowed, but may not work properly and do not use this low-latency path. Automatic resolution and refresh matching keeps the screen in sync with your client.",
         "per_client": "Virtual screen per device",
         "shared": "One shared virtual screen",
         "states": {

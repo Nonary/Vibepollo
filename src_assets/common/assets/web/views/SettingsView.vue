@@ -5,7 +5,12 @@ import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router';
 import { useSystemStore, type HostMetadata } from '@/stores/system';
 import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
 import NetworkPortDetails from '@/components/settings/NetworkPortDetails.vue';
-import { acknowledgeSettings, configBoolean, settingError } from '@/utils/settings';
+import {
+  acknowledgeSettings,
+  configBoolean,
+  linuxVirtualCaptureWarning,
+  settingError,
+} from '@/utils/settings';
 import WindowsDisplayStatus from '@/components/settings/WindowsDisplayStatus.vue';
 import { applyDummyPlugVsyncChange, dummyPlugVsyncState } from '@/utils/displayHealth';
 
@@ -603,6 +608,8 @@ function dependencyHint(field: SettingsField): string {
 
 function fieldWarningIsVisible(field: SettingsField): boolean {
   if (!field.warningKey) return false;
+  if (field.key === 'capture')
+    return linuxVirtualCaptureWarning(hostPlatform.value, values.capture);
   return field.kind === 'boolean' ? isTrue(values[field.key]) : Number(values[field.key]) > 0;
 }
 

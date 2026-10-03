@@ -702,7 +702,7 @@ namespace platf {
   std::vector<std::string> kwin_display_names() {
     const bool retain_kms_capability =
       platf::linux_private_display_capture::retain_kms_capability(
-        linux_private_display::kernel_hdr_pool_available()
+        config::video.capture.empty() && linux_private_display::kernel_pool_available()
       );
     if (platf::linux_private_display_capture::use_dummy_compositor_names(
           has_elevated_privileges(false),
@@ -715,7 +715,7 @@ namespace platf {
       return display_names;
     }
 
-    // A managed HDR pool retains permitted CAP_SYS_ADMIN for future KMS use.
+    // Automatic managed display capture retains permitted CAP_SYS_ADMIN for future KMS use.
     // Enumerate KWin directly in that case instead of returning dummy names
     // forever merely because the permitted capability remains available.
 

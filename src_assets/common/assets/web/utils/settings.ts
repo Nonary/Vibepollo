@@ -40,3 +40,12 @@ export function configBoolean(value: unknown, fallback = false): boolean {
     value === true || ['1', 'true', 'enabled', 'yes', 'on'].includes(String(value).toLowerCase())
   );
 }
+
+export function linuxVirtualCaptureWarning(platform: string, capture: unknown): boolean {
+  return (
+    platform.toLowerCase() === 'linux' &&
+    typeof capture === 'string' &&
+    capture !== '' &&
+    capture !== 'kms'
+  );
+}

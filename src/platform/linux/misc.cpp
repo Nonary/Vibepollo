@@ -1485,22 +1485,16 @@ namespace platf {
 #endif
     // Keep KMS as first element to check before dropping CAP_SYS_ADMIN
 #ifdef SUNSHINE_BUILD_DRM
-    // SteamOS KWin rounds PipeWire refresh rates and converts capture to SDR.
-    // Managed outputs use completed DRM frames for both exact pacing and HDR;
-    // their privileged operations run in the restricted capture helper.
-  #ifdef SUNSHINE_BUILD_STEAMOS
-    const bool require_managed_kms = linux_private_display::is_kernel_output(display_name);
-  #else
-    const bool require_managed_kms = false;
-  #endif
+    const bool private_output = linux_private_display::is_private_output(display_name);
     const bool prefer_private_kms =
-      !sources[source::KMS] &&
-      (require_managed_kms || platf::linux_private_display_capture::prefer_kms(
-        config.dynamicRange,
-        config.force_sdr,
-        config.prefer_sdr_10bit,
-        linux_private_display::is_private_output(display_name)
-      ));
+      !sources[source::KMS] && linux_private_display_capture::prefer_kms(
+        config::video.capture.empty(), private_output
+      );
+    if (private_output && !config::video.capture.empty() && config::video.capture != "kms") {
+      BOOST_LOG(warning) << "Using explicitly selected capture method [" << config::video.capture
+                         << "] for a virtual display. KMS is recommended for maximum compatibility; "
+                         << "other methods may not work properly and do not use Vibepollo's low-latency virtual-display capture.";
+    }
     if (prefer_private_kms) {
       BOOST_LOG(info) << "Capturing the private display through completed DRM frames."sv;
 
@@ -1510,14 +1504,14 @@ namespace platf {
       const auto kms_outputs = kms_display_names(hwdevice_type);
       if (kms_outputs.empty()) {
         BOOST_LOG(error) << "Direct KMS capture is unavailable for private display ["sv
-                         << display_name << "]; refusing a compositor fallback that loses the requested mode or HDR."sv;
+                         << display_name << "]; select a different capture method explicitly to try compositor capture."sv;
         return nullptr;
       } else if (auto kms = kms_display(hwdevice_type, display_name, config)) {
         BOOST_LOG(info) << "Screencasting private display ["sv << display_name << "] with KMS"sv;
         return kms;
       } else {
         BOOST_LOG(error) << "Direct KMS capture failed for private display ["sv
-                         << display_name << "]; refusing a compositor fallback that loses the requested mode or HDR."sv;
+                         << display_name << "]; select a different capture method explicitly to try compositor capture."sv;
         return nullptr;
       }
     }
@@ -1534,11 +1528,11 @@ namespace platf {
     }
 #endif
 
-    // Keep a permitted KMS capability when private HDR capture or a Gamescope
+    // Keep a permitted KMS capability when automatic private capture or a Gamescope
     // fallback may need it later. Compositor capture runs with it ineffective.
     if (has_elevated_privileges(false)) {
       bool retain_kms_capability = platf::linux_private_display_capture::retain_kms_capability(
-        linux_private_display::kernel_hdr_pool_available()
+        config::video.capture.empty() && linux_private_display::kernel_pool_available()
       );
 #if defined(SUNSHINE_BUILD_GAMESCOPE) && defined(SUNSHINE_BUILD_DRM)
       retain_kms_capability = retain_kms_capability || sources[source::GAMESCOPE];
@@ -1548,7 +1542,7 @@ namespace platf {
           BOOST_LOG(error) << "Failed to clear effective CAP_SYS_ADMIN while retaining it for KMS capture."sv;
           return nullptr;
         }
-        BOOST_LOG(debug) << "Retaining permitted CAP_SYS_ADMIN for private HDR or Gamescope fallback KMS capture."sv;
+        BOOST_LOG(debug) << "Retaining permitted CAP_SYS_ADMIN for automatic private or Gamescope fallback KMS capture."sv;
       } else {
         if (!drop_elevated_privileges(false)) {
           BOOST_LOG(error) << "Failed to permanently drop CAP_SYS_ADMIN before compositor capture."sv;
@@ -1639,6 +1633,14 @@ namespace platf {
 #else
     bool native_compositor_selected = false;
 #endif
+#ifdef SUNSHINE_BUILD_DRM
+    if (config::video.capture.empty() && sources.none() &&
+        config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled &&
+        linux_private_display::kernel_pool_available()) {
+      sources[source::KMS] = true;
+      BOOST_LOG(info) << "Preferring KMS for managed virtual-display compatibility and low-latency capture."sv;
+    }
+#endif
 #if defined(SUNSHINE_BUILD_STEAMOS) && defined(SUNSHINE_BUILD_KWIN)
     // Desktop Mode provides KWin's native screencast interface. Select it
     // before portal enumeration, which can open an interactive consent dialog.
@@ -1657,20 +1659,6 @@ namespace platf {
 #ifdef SUNSHINE_BUILD_WAYLAND
     if (((config::video.capture.empty() && sources.none()) || config::video.capture == "wlr") && verify_wl()) {
       sources[source::WAYLAND] = true;
-    }
-#endif
-#if defined(__linux__) && defined(SUNSHINE_BUILD_KWIN)
-    // Managed VKMS framebuffers do not have a render node and are commonly on
-    // a different DRM card than the encoder. Let KWin compose/copy that output
-    // so automatic capture retains hardware encoding on hybrid systems.
-    const bool prefer_kwin_for_private_display =
-      config::video.capture.empty() &&
-      config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled &&
-      linux_private_display::kernel_pool_available();
-    if (prefer_kwin_for_private_display && sources.none() && verify_kwin()) {
-      BOOST_LOG(info) << "Preferring KWin ScreenCast for the managed Linux private display pool."sv;
-      sources[source::KWIN] = true;
-      native_compositor_selected = true;
     }
 #endif
 #ifdef SUNSHINE_BUILD_DRM

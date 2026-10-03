@@ -783,12 +783,9 @@ run_host() {
   # stop and reap the real host when an unrelated supervisor command fails.
   host_pid='' host_reaped=0 host_stop_sent=0 shutting_down=0 host_cleanup_python=''
   local -A previous_host_logs=()
-  # Linux private displays are capture-ready through the Vibeshine DRM/KMS
-  # path.  Leaving desktop sessions to inherit a compositor capture setting
-  # makes a newly reserved output disappear during KWin's topology refresh,
-  # producing a connected session with no video.  Keep this aligned with the
-  # machine-wide Linux capture policy for every selected session role.
-  local -a overrides=('system_tray=disabled' 'capture=kms') environment
+  # Capture selection belongs to the host configuration. Automatic capture
+  # prefers KMS for managed virtual displays; explicit backends remain allowed.
+  local -a overrides=('system_tray=disabled') environment
   [[ $(/usr/bin/id -un) == "$service_user" ]] || fail "run requires $service_user"
   load_session
   capability_free_exec "$machine_host" prepare-profile

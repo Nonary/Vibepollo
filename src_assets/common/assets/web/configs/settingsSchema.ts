@@ -711,7 +711,7 @@ export const settingsCategories: SettingsCategory[] = [
       {
         id: 'pacing_capture',
         fields: [
-          select('capture', captureOptions),
+          select('capture', captureOptions, { warningKey: 'config.capture_virtual_warning' }),
           boolean('wgc_pacing_smoothing', { platform: 'windows' }),
         ],
       },
