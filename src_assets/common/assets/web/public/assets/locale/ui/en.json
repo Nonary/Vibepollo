@@ -876,10 +876,8 @@
       },
       "groupAction": "Group by source",
       "groups": {
-        "all": "All applications",
         "custom": "Custom",
         "lutris": "Lutris",
-        "other": "Other",
         "playnite": "Playnite",
         "steam": "Steam"
       },
@@ -892,7 +890,6 @@
       "integrationSettings": "Integration settings",
       "moveDown": "Move {name} down",
       "moveUp": "Move {name} up",
-      "otherHint": "Sources missing from the order above are sent last, in file order",
       "page": {
         "back": "Library",
         "description": "The order Moonlight and other clients show your apps in.",

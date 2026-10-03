@@ -558,7 +558,7 @@ test('app order page arranges groups and saves the custom order', async ({ page 
   await expect(steam.locator('.app-order-group__heading span')).toHaveText('2 apps');
   await expect(page.getByText('Virtual Display')).toHaveCount(0);
   await steam.getByText('Show all 2 in order').click();
-  await expect(steam.locator('.app-order-preview__all li > span')).toHaveText([
+  await expect(steam.locator('.app-order-preview li > span')).toHaveText([
     'Hades II',
     'Elden Ring',
   ]);
