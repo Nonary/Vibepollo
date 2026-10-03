@@ -22,6 +22,7 @@
 #include "src/round_robin.h"
 #include "src/utility.h"
 #include "wayland.h"
+#include "wayland_observation.h"
 
 extern const wl_interface wl_output_interface;
 
@@ -71,6 +72,15 @@ namespace wl {
 
   void display_t::roundtrip() {
     wl_display_roundtrip(display_internal.get());
+  }
+
+  int display_t::init_until(std::chrono::steady_clock::time_point deadline, const std::function<bool()> &allowed) {
+    display_internal.reset(platf::wayland_observation::connect_until(deadline, allowed));
+    return display_internal ? 0 : -1;
+  }
+
+  bool display_t::roundtrip_until(std::chrono::steady_clock::time_point deadline, const std::function<bool()> &allowed) {
+    return platf::wayland_observation::roundtrip_until(display_internal.get(), deadline, allowed);
   }
 
   /**

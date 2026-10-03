@@ -1,10 +1,15 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <future>
+#include <mutex>
 
 #include "src/remote_display_topology.h"
 #include "src/platform/linux/private_display_resume_policy.h"
 #include "src/platform/linux/private_display_capacity.h"
+#include "src/platform/linux/private_display_cleanup_policy.h"
 
 namespace {
   using remote_display_topology::mode_t;
@@ -642,6 +647,216 @@ TEST(RemoteDisplayTopology, SharedMonitorSurvivesDeferredNormalReleaseAndFailedR
   coordinator.release_drained_normal_game_identities();
   EXPECT_EQ(removed, (std::vector<std::string> {"game"}));
   EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+}
+
+TEST(RemoteDisplayTopology, DesktopWithoutAppReleasesOnlyAfterEveryTransportDrains) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> removed;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [](const auto &) { return true; },
+    .remove_owned_display = [&](const auto &uuid) { removed.push_back(uuid); return true; },
+  });
+  const auto desktop = coordinator.reserve_normal_game_identity("desktop", "Desktop", {});
+  auto rtsp = coordinator.retain_normal_game_capture("desktop", desktop.token);
+  auto webrtc = coordinator.retain_normal_game_capture("desktop", desktop.token);
+  ASSERT_TRUE(rtsp);
+  ASSERT_TRUE(webrtc);
+
+  rtsp.reset();
+  coordinator.release_idle_normal_game_identities(false, true);
+  EXPECT_TRUE(coordinator.has_live_managed_client_identity());
+  EXPECT_FALSE(coordinator.normal_game_release_pending());
+  EXPECT_TRUE(removed.empty());
+
+  webrtc.reset();
+  // A pending launch/startup still owns the topology before it has a capture.
+  coordinator.release_idle_normal_game_identities(false, true);
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+  EXPECT_FALSE(coordinator.normal_game_release_pending());
+  EXPECT_TRUE(removed.empty());
+
+  coordinator.release_idle_normal_game_identities(false, false);
+  EXPECT_EQ(removed, (std::vector<std::string> {"desktop"}));
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 0u);
+  EXPECT_FALSE(coordinator.has_live_managed_client_identity());
+}
+
+TEST(RemoteDisplayTopology, PausedGameRemainsLiveWithoutTransportOrCaptureReferences) {
+  remote_display_topology::coordinator_t coordinator;
+  int applies = 0;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [&](const auto &) { ++applies; return true; },
+  });
+  const auto app = coordinator.reserve_normal_game_identity("paused", "Paused", {});
+  coordinator.release_idle_normal_game_identities(true, false);
+  coordinator.complete_restored_normal_game_cleanup();
+  EXPECT_EQ(applies, 0);
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+  EXPECT_TRUE(coordinator.has_live_managed_client_identity());
+  EXPECT_FALSE(coordinator.normal_game_release_pending());
+  EXPECT_TRUE(coordinator.retain_normal_game_capture("paused", app.token));
+}
+
+TEST(RemoteDisplayTopology, FailedDrainedNormalReleaseAllowsRestoreButRetainsStateUntilConfirmedSuccess) {
+  remote_display_topology::coordinator_t coordinator;
+  int applies = 0, removes = 0;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [&](const auto &) { ++applies; return false; },
+    .remove_owned_display = [&](const auto &) { ++removes; return true; },
+  });
+  const auto app = coordinator.reserve_normal_game_identity("ended", "Ended", {});
+  coordinator.release_normal_game_identity("ended", app.token);
+  EXPECT_EQ(applies, 1);
+  EXPECT_EQ(removes, 0);
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+  EXPECT_TRUE(coordinator.normal_game_release_pending());
+  EXPECT_FALSE(coordinator.has_live_managed_client_identity());
+  EXPECT_FALSE(coordinator.retain_normal_game_capture("ended", app.token));
+
+  // The worker must keep the role when its guarded physical restore fails.
+  coordinator.release_idle_normal_game_identities(false, false);
+  EXPECT_EQ(applies, 2);
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+  EXPECT_TRUE(coordinator.normal_game_release_pending());
+
+  // Successful guarded restoration already retired the platform connector.
+  // Reconciliation must not re-enter a failing platform callback afterward.
+  coordinator.complete_restored_normal_game_cleanup();
+  EXPECT_EQ(applies, 2);
+  EXPECT_EQ(removes, 0);
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 0u);
+  EXPECT_FALSE(coordinator.normal_game_release_pending());
+}
+
+TEST(RemoteDisplayTopology, RestoreCompletionPreservesCapturesAndNewerNormalReservation) {
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [](const auto &) { return false; },
+  });
+  const auto ended = coordinator.reserve_normal_game_identity("client", "Client", {});
+  auto capture = coordinator.retain_normal_game_capture("client", ended.token);
+  coordinator.release_normal_game_identity("client", ended.token);
+  coordinator.complete_restored_normal_game_cleanup();
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+  EXPECT_TRUE(coordinator.has_live_managed_client_identity());
+
+  capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_FALSE(coordinator.has_live_managed_client_identity());
+  const auto successor = coordinator.reserve_normal_game_identity("client", "Client", {});
+  ASSERT_NE(successor.token, ended.token);
+  coordinator.complete_restored_normal_game_cleanup();
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+  EXPECT_TRUE(coordinator.has_live_managed_client_identity());
+  EXPECT_FALSE(coordinator.normal_game_release_pending());
+  EXPECT_TRUE(coordinator.retain_normal_game_capture("client", successor.token));
+  EXPECT_FALSE(coordinator.retain_normal_game_capture("client", ended.token));
+}
+
+TEST(RemoteDisplayTopology, FailedConnectorRemovalRemainsPendingWithoutBlockingGuardedRecovery) {
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [](const auto &) { return true; },
+    .remove_owned_display = [](const auto &) { return false; },
+  });
+  const auto app = coordinator.reserve_normal_game_identity("ended", "Ended", {});
+  coordinator.release_normal_game_identity("ended", app.token);
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+  EXPECT_TRUE(coordinator.normal_game_release_pending());
+  EXPECT_FALSE(coordinator.has_live_managed_client_identity());
+  coordinator.complete_restored_normal_game_cleanup();
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 0u);
+}
+
+TEST(RemoteDisplayTopology, DrainedPendingRoleReceivesBoundedGuardedRetriesBeforeReconciliation) {
+  namespace cleanup = platf::linux_private_display::cleanup_policy;
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [](const auto &) { return false; },
+  });
+  const auto desktop = coordinator.reserve_normal_game_identity("desktop", "Desktop", {});
+  coordinator.release_idle_normal_game_identities(false, false);
+  ASSERT_TRUE(coordinator.normal_game_release_pending());
+  ASSERT_FALSE(coordinator.has_live_managed_client_identity());
+
+  std::mutex lifecycle, display;
+  std::atomic<std::uint64_t> generation {1};
+  constexpr std::array delays {std::chrono::milliseconds(0), std::chrono::milliseconds(0)};
+  unsigned attempts = 0;
+  const auto result = cleanup::run_delayed_restore_with_retries(
+    lifecycle, display, generation, 1,
+    [&] { return !coordinator.protected_remote_monitor_client_ids().empty(); },
+    [&](auto, auto) {
+      EXPECT_TRUE(coordinator.normal_game_release_pending());
+      EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+      return ++attempts == 3;
+    }, [] { return true; }, delays, {}, std::chrono::seconds(30),
+    [&](const auto claim) {
+      EXPECT_EQ(claim, generation.load());
+      const auto locks = std::async(std::launch::async, [&] {
+        const bool lifecycle_available = lifecycle.try_lock();
+        if (lifecycle_available) lifecycle.unlock();
+        const bool display_available = display.try_lock();
+        if (display_available) display.unlock();
+        return std::pair {lifecycle_available, display_available};
+      }).get();
+      EXPECT_FALSE(locks.first);
+      EXPECT_TRUE(locks.second);
+      coordinator.complete_restored_normal_game_cleanup();
+    }
+  );
+  ASSERT_EQ(result, cleanup::result_e::restored);
+  EXPECT_EQ(attempts, 3u);
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 0u);
+  EXPECT_FALSE(coordinator.retain_normal_game_capture("desktop", desktop.token));
+}
+
+TEST(RemoteDisplayTopology, ExhaustedGuardedRetriesPreserveDrainedPendingRecoveryState) {
+  namespace cleanup = platf::linux_private_display::cleanup_policy;
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [](const auto &) { return false; },
+  });
+  coordinator.reserve_normal_game_identity("desktop", "Desktop", {});
+  coordinator.release_idle_normal_game_identities(false, false);
+  std::mutex lifecycle, display;
+  std::atomic<std::uint64_t> generation {1};
+  constexpr std::array delays {std::chrono::milliseconds(0), std::chrono::milliseconds(0)};
+  unsigned attempts = 0;
+  const auto result = cleanup::run_delayed_restore_with_retries(
+    lifecycle, display, generation, 1,
+    [&] { return !coordinator.protected_remote_monitor_client_ids().empty(); },
+    [&](auto, auto) { ++attempts; return false; },
+    [] { return true; }, delays, {}, std::chrono::seconds(30),
+    [&](auto) { ADD_FAILURE() << "failed physical restore cleared recovery state"; coordinator.complete_restored_normal_game_cleanup(); }
+  );
+  EXPECT_EQ(result, cleanup::result_e::failed);
+  EXPECT_EQ(attempts, 3u);
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+  EXPECT_TRUE(coordinator.normal_game_release_pending());
+  EXPECT_FALSE(coordinator.has_live_managed_client_identity());
+}
+
+TEST(RemoteDisplayTopology, IdleDesktopReleaseAndRestoreCompletionPreserveRetainedMonitors) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> removed;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; },
+    .remove_owned_display = [&](const auto &uuid) { removed.push_back(uuid); return true; },
+  });
+  coordinator.reserve_normal_game_identity("shared", "Desktop", {});
+  ASSERT_TRUE(coordinator.activate_or_resume("shared", "Monitor", {}, 1).ready);
+  ASSERT_TRUE(coordinator.activate_or_resume("peer", "Peer", {}, 2).ready);
+  coordinator.release_idle_normal_game_identities(false, false);
+  coordinator.complete_restored_normal_game_cleanup();
+  EXPECT_TRUE(removed.empty());
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 2u);
+  EXPECT_TRUE(coordinator.has_live_managed_client_identity());
+  EXPECT_TRUE(coordinator.is_ready("shared", 1));
+  EXPECT_TRUE(coordinator.is_ready("peer", 2));
+  EXPECT_FALSE(coordinator.normal_game_release_pending());
 }
 
 TEST(RemoteDisplayTopology, TerminateReleasesAllGameDisplaysAndRetainsMonitorRoles) {

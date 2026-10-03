@@ -65,6 +65,7 @@
 #include "packaging/linux/vibepollo-session-stream-environment.h"
 #ifdef __linux__
   #include "src/platform/linux/display_backend.h"
+  #include "src/platform/linux/display_restore_capture.h"
   #include "src/platform/linux/private_display.h"
   #include "src/platform/linux/private_display_capture_policy.h"
   #include "src/platform/linux/process_group.h"
@@ -1269,6 +1270,7 @@ namespace platf {
 
 #ifdef SUNSHINE_BUILD_WAYLAND
   std::vector<std::string> wl_display_names();
+  std::vector<std::string> wl_display_names_for_restore(std::chrono::steady_clock::time_point deadline, const std::function<bool()> &allowed);
   std::shared_ptr<display_t> wl_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
 
   bool verify_wl() {
@@ -1306,6 +1308,7 @@ namespace platf {
 #ifdef SUNSHINE_BUILD_KWIN
   bool kwin_available();
   std::vector<std::string> kwin_display_names();
+  std::vector<std::string> kwin_display_names_for_restore(std::chrono::steady_clock::time_point deadline, const std::function<bool()> &allowed);
   std::shared_ptr<display_t> kwin_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
 
   bool verify_kwin() {
@@ -1363,6 +1366,60 @@ namespace platf {
     }
 #endif
     return {};
+  }
+
+  std::vector<std::string> display_names_for_restore(
+    mem_type_e hwdevice_type,
+    std::chrono::steady_clock::time_point deadline,
+    const std::function<bool()> &allowed
+  ) {
+    const auto valid = [&] {
+      return std::chrono::steady_clock::now() < deadline && (!allowed || allowed());
+    };
+    if (!valid()) return {};
+#ifdef SUNSHINE_BUILD_GAMESCOPE
+    if (sources[source::GAMESCOPE]) return {};
+#endif
+#ifdef SUNSHINE_BUILD_CUDA
+    if (sources[source::NVFBC] && hwdevice_type == mem_type_e::cuda) return {};
+#endif
+    std::vector<std::string> outputs;
+#ifdef SUNSHINE_BUILD_WAYLAND
+    if (sources[source::WAYLAND]) {
+      outputs = wl_display_names_for_restore(deadline, allowed);
+    } else
+#endif
+#ifdef SUNSHINE_BUILD_DRM
+    if (sources[source::KMS]) {
+      outputs = kms_display_names(hwdevice_type);
+    } else
+#endif
+#ifdef SUNSHINE_BUILD_X11
+    if (sources[source::X11]) {
+      outputs = x11_display_names();
+    } else
+#endif
+#ifdef SUNSHINE_BUILD_PORTAL
+    if (sources[source::PORTAL]) {
+      // Preserve backend precedence without opening an interactive session.
+      static std::atomic_bool warned {false};
+      if (!warned.exchange(true, std::memory_order_relaxed)) {
+        BOOST_LOG(warning) << "Linux display restore: portal capture requires interactive discovery; preserving outputs because noninteractive capture readiness is unavailable.";
+      }
+      return {};
+    } else
+#endif
+#ifdef SUNSHINE_BUILD_KWIN
+    if (sources[source::KWIN]) {
+      outputs = kwin_display_names_for_restore(deadline, allowed);
+    } else
+#endif
+    {
+      // Portal enumeration can wait for consent indefinitely. A cleanup
+      // observation must neither open that dialog nor guess capture readiness.
+      return {};
+    }
+    return valid() ? outputs : std::vector<std::string> {};
   }
 
   /**
@@ -1613,6 +1670,7 @@ namespace platf {
     if (prefer_kwin_for_private_display && sources.none() && verify_kwin()) {
       BOOST_LOG(info) << "Preferring KWin ScreenCast for the managed Linux private display pool."sv;
       sources[source::KWIN] = true;
+      native_compositor_selected = true;
     }
 #endif
 #ifdef SUNSHINE_BUILD_DRM

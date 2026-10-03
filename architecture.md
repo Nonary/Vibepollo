@@ -245,6 +245,42 @@ HDR requests require an HDR-capable fallback; they do not silently become SDR.
 
 - The desktop implementation delegates connector reservation, mode application,
   and restoration to `linux_private_display` (KScreen and the private DRM pool).
+  Restoration verifies a saved output and its capture availability before
+  retiring private connectors, including connected outputs whose client
+  reservations have already been released. It rechecks the saved guard before
+  each retirement and waits for each hotplug to settle. The remaining saved
+  outputs activate after private retirement, avoiding a temporary requirement
+  for the baseline plus virtual outputs to fit simultaneously. KWin output
+  priorities and the complete saved mode, orientation, scale, position, HDR
+  and activation state are verified after its output ordering has settled.
+  Mode identifiers cannot bypass saved resolution or known refresh evidence.
+  A missing secondary output does not prevent retiring private connectors
+  behind a verified surviving baseline output. Final verification still checks
+  the complete saved desktop and retains the baseline if it is incomplete.
+  Confirmed restore failures receive up to three attempts, with 250 ms and
+  1 s backoff and a 30 s budget per attempt, including lock acquisition. Backoff
+  releases the lifecycle and display locks, and every attempt rechecks ownership
+  and cancellation. Unknown helper completion fences further mutations.
+  Capture readiness observations use bounded private Wayland connections and
+  never request portal consent. An explicitly selected portal cannot certify a
+  replacement scanout noninteractively, so cleanup preserves the connector
+  and reports incomplete restoration. Local DRM/X11 library calls still depend
+  on the display driver or server remaining responsive.
+  A failed restore retains its pre-stream snapshot and reports failure; it does
+  not discard that baseline or report successful cleanup. This snapshot remains
+  process-local, so this recovery does not provide Windows-style crash/logon
+  persistence.
+  A reconnect cancels stale restoration before display preparation. Failed
+  preparation re-arms guarded cleanup, including failures before the caller's
+  stream-start rollback guard exists, while respecting paused-session retention
+  and restore-delay settings. Physical/dummy capture targets are disabled through
+  KScreen when needed; only driver-managed private connectors are unplugged.
+  Terminal desktop streams without a running app release normal display roles
+  after all transports drain. Failed release remains recovery state without
+  preventing restoration, and successful restoration reconciles only drained
+  pending roles. Paused apps, live capture and retained Remote Monitors keep
+  their ownership. Logical completion runs under the lifecycle gate after the
+  display mutex is released.
 - The Gamescope implementation supplies the existing compositor scene, owns no
   connector, and performs no topology restoration. Physical, per-client, and
   shared display preferences all select that scene for normal game sessions.

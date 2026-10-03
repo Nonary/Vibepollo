@@ -582,6 +582,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         sunshine_register_component(NAME test_component_linux_wayland_roundtrip
             TEST_SOURCE unit/platform/linux/test_wayland_roundtrip.cpp
             LINK_LIBRARIES PkgConfig::TEST_WAYLAND)
+        sunshine_register_component(NAME test_component_linux_wayland_observation
+            TEST_SOURCE unit/platform/linux/test_wayland_observation.cpp
+            LINK_LIBRARIES PkgConfig::TEST_WAYLAND)
     endif()
     add_test(NAME test_component_linux_steamos_install
         COMMAND bash "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/steamos/tests/test-user-install.sh")
@@ -622,6 +625,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     sunshine_register_component(NAME test_component_linux_capture_status TEST_SOURCE unit/platform/linux/test_capture_status.cpp)
     sunshine_register_component(NAME test_component_linux_private_display_capture_policy TEST_SOURCE unit/platform/linux/test_private_display_capture_policy.cpp)
     sunshine_register_component(NAME test_component_linux_private_display_restore_policy TEST_SOURCE unit/platform/linux/test_private_display_restore_policy.cpp
+        LINK_LIBRARIES nlohmann_json::nlohmann_json)
+    sunshine_register_component(NAME test_component_linux_private_display_restore_transaction TEST_SOURCE unit/platform/linux/test_private_display_restore_transaction.cpp
         LINK_LIBRARIES nlohmann_json::nlohmann_json)
     sunshine_register_component(NAME test_component_linux_private_display_resume_policy TEST_SOURCE unit/platform/linux/test_private_display_resume_policy.cpp)
     pkg_check_modules(TEST_PIPEWIRE QUIET IMPORTED_TARGET libpipewire-0.3)

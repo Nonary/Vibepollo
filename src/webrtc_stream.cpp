@@ -3295,7 +3295,7 @@ namespace webrtc_stream {
       desired_key = build_capture_config_key(effective_app_id, video_config, options);
 
       if (!rtsp_active) {
-#if defined(_WIN32) || defined(__linux__)
+#ifdef _WIN32
         stream::cancel_paused_display_cleanup();
 #endif
         // Ensure the latest config is applied before starting capture.

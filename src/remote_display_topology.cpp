@@ -187,6 +187,14 @@ namespace remote_display_topology {
       return entry.second.normal_game || entry.second.remote_monitor;
     }));
   }
+  bool coordinator_t::has_live_managed_client_identity() const {
+    std::lock_guard lock(mutex_);
+    return std::any_of(clients_.begin(), clients_.end(), [](const auto &entry) {
+      const auto &state = entry.second;
+      return state.remote_monitor ||
+             (state.normal_game && (!state.normal_release_pending || !state.normal_capture_references.empty()));
+    });
+  }
   std::vector<std::string> coordinator_t::managed_client_identity_ids() const {
     std::lock_guard lock(mutex_);
     std::vector<std::string> ids;
@@ -396,6 +404,23 @@ namespace remote_display_topology {
     for (const auto &[uuid, token] : owners) {
       release_normal_game_identity(uuid, token);
     }
+  }
+
+  void coordinator_t::release_idle_normal_game_identities(const bool app_running, const bool capture_runtime_owned) {
+    if (!app_running && !capture_runtime_owned) {
+      release_all_normal_game_identities();
+    } else {
+      release_drained_normal_game_identities();
+    }
+  }
+
+  void coordinator_t::complete_restored_normal_game_cleanup() {
+    std::lock_guard lock(mutex_);
+    std::erase_if(clients_, [](const auto &entry) {
+      const auto &state = entry.second;
+      return state.normal_game && state.normal_release_pending &&
+             state.normal_capture_references.empty() && !state.remote_monitor;
+    });
   }
 
   activation_result_t coordinator_t::activate_remote_monitor(const std::string &client_uuid, const std::string &label, mode_t mode) {

@@ -3,17 +3,28 @@
  * @brief Deterministic delayed-display cleanup admission races.
  */
 #include <atomic>
+#include <array>
 #include <future>
 #include <gtest/gtest.h>
 #include <latch>
 #include <mutex>
 #include <src/platform/linux/private_display_cleanup_policy.h>
+#include <src/platform/linux/display_restore_dispatcher.h>
 #include <string>
 #include <thread>
 
 using namespace std::chrono_literals;
 
 namespace policy = platf::linux_private_display::cleanup_policy;
+
+TEST(LinuxPrivateDisplayCleanupPolicy, FailedPreparationPreservesPausedRetentionAndTimeoutPreferences) {
+  EXPECT_EQ(policy::failed_preparation_restore_delay(false, false, 0, 5s), 5s);
+  EXPECT_EQ(policy::failed_preparation_restore_delay(false, true, 300, 0ms), 0ms);
+  EXPECT_EQ(policy::failed_preparation_restore_delay(true, true, 0, 5s), 5s);
+  EXPECT_EQ(policy::failed_preparation_restore_delay(true, false, 60, 5s), 60s);
+  EXPECT_FALSE(policy::failed_preparation_restore_delay(true, false, 0, 5s));
+  EXPECT_FALSE(policy::failed_preparation_restore_delay(true, false, -1, 5s));
+}
 
 TEST(LinuxPrivateDisplayCleanupPolicy, NewAdmissionSupersedesWorkerWaitingForLifecycleGate) {
   std::mutex lifecycle;
@@ -125,4 +136,223 @@ TEST(LinuxPrivateDisplayCleanupPolicy, OperationDeadlineIncludesWaitingForDispla
   EXPECT_EQ(worker.get(), policy::result_e::failed);
   EXPECT_TRUE(lifecycle.try_lock());
   lifecycle.unlock();
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, ConfirmedTransientFailureRetriesWithFreshClaimAndPreservedBaseline) {
+  std::mutex lifecycle, display;
+  std::atomic<std::uint64_t> generation {1};
+  constexpr std::array delays {0ms, 0ms};
+  int attempts = 0;
+  bool saved_baseline = true;
+  const auto result = policy::run_delayed_restore_with_retries(lifecycle, display, generation, 1,
+    [] { return false; }, [&](std::uint64_t claim, auto deadline) {
+      EXPECT_EQ(claim, generation.load());
+      EXPECT_EQ(claim, static_cast<std::uint64_t>(++attempts + 1));
+      EXPECT_GT(deadline, std::chrono::steady_clock::now());
+      EXPECT_TRUE(saved_baseline);
+      if (attempts < 3) return false;
+      saved_baseline = false;
+      return true;
+    }, [] { return true; }, delays);
+  EXPECT_EQ(result, policy::result_e::restored);
+  EXPECT_EQ(attempts, 3);
+  EXPECT_FALSE(saved_baseline);
+  EXPECT_EQ(generation, 4U);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, PersistentFailureStopsAfterConfiguredRetries) {
+  std::mutex lifecycle, display;
+  std::atomic<std::uint64_t> generation {1};
+  constexpr std::array delays {0ms, 0ms};
+  int attempts = 0;
+  EXPECT_EQ(policy::run_delayed_restore_with_retries(lifecycle, display, generation, 1,
+              [] { return false; }, [&](auto, auto) { ++attempts; return false; },
+              [] { return true; }, delays), policy::result_e::failed);
+  EXPECT_EQ(attempts, 3);
+  EXPECT_EQ(generation, 4U);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, UncertainHelperCompletionFencesAllRetries) {
+  std::mutex lifecycle, display;
+  std::atomic<std::uint64_t> generation {1};
+  constexpr std::array delays {0ms, 0ms};
+  int attempts = 0;
+  EXPECT_EQ(policy::run_delayed_restore_with_retries(lifecycle, display, generation, 1,
+              [] { return false; }, [&](auto, auto) { ++attempts; return false; },
+              [] { return false; }, delays), policy::result_e::failed);
+  EXPECT_EQ(attempts, 1);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, NewAdmissionDuringFailedAttemptCannotBeClaimedByRetry) {
+  std::mutex lifecycle, display;
+  std::atomic<std::uint64_t> generation {1};
+  constexpr std::array delays {0ms, 0ms};
+  int attempts = 0;
+  EXPECT_EQ(policy::run_delayed_restore_with_retries(lifecycle, display, generation, 1,
+              [] { return false; }, [&](auto, auto) {
+                ++attempts;
+                generation.fetch_add(1);
+                return false;
+              }, [] { return true; }, delays), policy::result_e::superseded);
+  EXPECT_EQ(attempts, 1);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, RetainedOwnerBetweenAttemptsPreventsFurtherMutation) {
+  std::mutex lifecycle, display;
+  std::atomic<std::uint64_t> generation {1};
+  constexpr std::array delays {0ms};
+  bool owned = false;
+  int attempts = 0;
+  EXPECT_EQ(policy::run_delayed_restore_with_retries(lifecycle, display, generation, 1,
+              [&] { return owned; }, [&](auto, auto) { ++attempts; return false; },
+              [&] {
+                owned = true;
+                // Backoff must release both locks so a new session can enter.
+                const bool lifecycle_unlocked = lifecycle.try_lock();
+                EXPECT_TRUE(lifecycle_unlocked);
+                if (lifecycle_unlocked) lifecycle.unlock();
+                const bool display_unlocked = display.try_lock();
+                EXPECT_TRUE(display_unlocked);
+                if (display_unlocked) display.unlock();
+                return true;
+              }, delays), policy::result_e::owned);
+  EXPECT_EQ(attempts, 1);
+  EXPECT_EQ(generation, 2U);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, ShutdownInterruptsRetryBackoffPromptly) {
+  std::mutex lifecycle, display;
+  std::atomic<std::uint64_t> generation {1};
+  constexpr std::array delays {std::chrono::milliseconds(1h)};
+  std::stop_source stop;
+  std::latch backoff {1};
+  std::atomic_bool notified {false};
+  int attempts = 0;
+  auto worker = std::async(std::launch::async, [&] {
+    return policy::run_delayed_restore_with_retries(lifecycle, display, generation, 1,
+      [] { return false; }, [&](auto, auto) { ++attempts; return false; },
+      [&] { if (!notified.exchange(true)) backoff.count_down(); return true; }, delays, stop.get_token());
+  });
+  backoff.wait();
+  stop.request_stop();
+  EXPECT_EQ(worker.wait_for(200ms), std::future_status::ready);
+  EXPECT_EQ(worker.get(), policy::result_e::superseded);
+  EXPECT_EQ(attempts, 1);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, ReconnectDuringBackoffCancelsOldRestoreWithoutBlockingAdmission) {
+  std::mutex lifecycle, display;
+  std::atomic<std::uint64_t> generation {1};
+  constexpr std::array delays {std::chrono::milliseconds(1h)};
+  std::latch backoff {1};
+  std::atomic_bool notified {false};
+  int attempts = 0;
+  auto worker = std::async(std::launch::async, [&] {
+    return policy::run_delayed_restore_with_retries(lifecycle, display, generation, 1,
+      [] { return false; }, [&](auto, auto) { ++attempts; return false; },
+      [&] { if (!notified.exchange(true)) backoff.count_down(); return true; }, delays);
+  });
+  backoff.wait();
+  {
+    std::lock_guard admission {lifecycle};
+    std::lock_guard reservation {display};
+    generation.fetch_add(1);
+  }
+  EXPECT_EQ(worker.wait_for(200ms), std::future_status::ready);
+  EXPECT_EQ(worker.get(), policy::result_e::superseded);
+  EXPECT_EQ(attempts, 1);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, SuccessfulRestoreIsNeverReplayedByRetry) {
+  std::mutex lifecycle, display;
+  std::atomic<std::uint64_t> generation {1};
+  constexpr std::array delays {0ms, 0ms};
+  int attempts = 0;
+  EXPECT_EQ(policy::run_delayed_restore_with_retries(lifecycle, display, generation, 1,
+              [] { return false; }, [&](auto, auto) { ++attempts; return true; },
+              [] { ADD_FAILURE() << "successful restore entered retry backoff"; return true; }, delays),
+            policy::result_e::restored);
+  EXPECT_EQ(attempts, 1);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, SuccessfulCompletionReconcilesOwnershipWithLifecycleHeldAndDisplayReleased) {
+  std::mutex lifecycle, display;
+  std::atomic<std::uint64_t> generation {1};
+  constexpr std::array delays {0ms};
+  int completions = 0;
+  EXPECT_EQ(policy::run_delayed_restore_with_retries(lifecycle, display, generation, 1,
+              [] { return false; }, [](auto, auto) { return true; },
+              [] { return true; }, delays, {}, 1s, [&](const auto claimed_generation) {
+                ++completions;
+                EXPECT_EQ(claimed_generation, 2U);
+                auto probe = std::async(std::launch::async, [&] {
+                  const bool lifecycle_available = lifecycle.try_lock();
+                  if (lifecycle_available) lifecycle.unlock();
+                  const bool display_available = display.try_lock();
+                  if (display_available) display.unlock();
+                  return std::pair {lifecycle_available, display_available};
+                });
+                const auto [lifecycle_available, display_available] = probe.get();
+                EXPECT_FALSE(lifecycle_available);
+                EXPECT_TRUE(display_available);
+              }), policy::result_e::restored);
+  EXPECT_EQ(completions, 1);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, FailedOrSupersededRestorationCannotCommitOwnershipCleanup) {
+  for (const bool restored : {false, true}) {
+    SCOPED_TRACE(restored);
+    std::mutex lifecycle, display;
+    std::atomic<std::uint64_t> generation {1};
+    constexpr std::array delays {0ms};
+    int completions = 0;
+    EXPECT_EQ(policy::run_delayed_restore_with_retries(lifecycle, display, generation, 1,
+                [] { return false; }, [&](auto, auto) {
+                  if (restored) generation.fetch_add(1);
+                  return restored;
+                }, [] { return false; }, delays, {}, 1s,
+                [&](auto) { ++completions; }), restored ? policy::result_e::restored : policy::result_e::failed);
+    EXPECT_EQ(completions, 0);
+  }
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, FailedReconnectRearmsCancelledDesktopRestoration) {
+  platf::linux_private_display::restore_dispatcher_t dispatcher;
+  std::atomic<std::uint64_t> generation {1};
+  std::atomic_uint old_calls {0};
+  ASSERT_TRUE(dispatcher.submit(1, [&](std::stop_token) { ++old_calls; }, 24h));
+  std::promise<void> restored;
+  EXPECT_FALSE(policy::prepare_with_restore_on_failure(
+    [&] { dispatcher.cancel(generation.fetch_add(1) + 1); },
+    [] { return false; },
+    [&] {
+      EXPECT_TRUE(dispatcher.submit(generation.fetch_add(1) + 1,
+        [&](std::stop_token) { restored.set_value(); }));
+    }));
+  EXPECT_EQ(restored.get_future().wait_for(1s), std::future_status::ready);
+  EXPECT_EQ(old_calls, 0U);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, SuccessfulReconnectCancelsOldRestoreWithoutQueuingAReplacement) {
+  int cancellations = 0, restores = 0;
+  EXPECT_TRUE(policy::prepare_with_restore_on_failure(
+    [&] { ++cancellations; }, [] { return true; }, [&] { ++restores; }));
+  EXPECT_EQ(cancellations, 1);
+  EXPECT_EQ(restores, 0);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, PreparationExceptionRearmsRestoreAfterDisplayLockIsReleased) {
+  std::mutex display;
+  bool restored = false;
+  EXPECT_THROW(policy::prepare_with_restore_on_failure(
+    [] {}, [&]() -> bool {
+      std::lock_guard mutation {display};
+      throw std::runtime_error("KScreen preparation failed");
+    }, [&] {
+      const bool unlocked = display.try_lock();
+      EXPECT_TRUE(unlocked);
+      if (unlocked) display.unlock();
+      restored = true;
+    }), std::runtime_error);
+  EXPECT_TRUE(restored);
 }

@@ -1910,11 +1910,11 @@ namespace nvhttp {
           BOOST_LOG(info) << "Skipping Linux private-display cleanup because a streaming session is active or stopping.";
           return;
         }
-        if (!remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
-          BOOST_LOG(info) << "Deferring Linux private-display cleanup until the remaining managed client identities release ownership.";
+        if (stream::session::finalize_shared_runtime_if_idle("managed_display_owner_release")) {
           return;
         }
-        if (stream::session::finalize_shared_runtime_if_idle("managed_display_owner_release")) {
+        if (remote_display_topology::instance().has_live_managed_client_identity()) {
+          BOOST_LOG(info) << "Deferring Linux private-display cleanup until the remaining managed client identities release ownership.";
           return;
         }
         (void) platf::linux_display::backend().revert();
@@ -4968,7 +4968,7 @@ namespace nvhttp {
       no_active_sessions = !has_stream_session_activity();
       if (no_active_sessions) {
         config::set_runtime_output_name_override(std::nullopt);
-#if defined(_WIN32) || defined(__linux__)
+#ifdef _WIN32
         stream::cancel_paused_display_cleanup();
 #endif
       }
@@ -5517,7 +5517,7 @@ namespace nvhttp {
     if (no_active_sessions && args.find("localAudioPlayMode"s) != std::end(args)) {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
-#if defined(_WIN32) || defined(__linux__)
+#ifdef _WIN32
     if (no_active_sessions) {
       stream::cancel_paused_display_cleanup();
     }

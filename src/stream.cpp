@@ -3146,7 +3146,11 @@ namespace stream {
 
     bool has_shared_runtime_owner(const shared_runtime_finalize_context_t &context) {
       return has_capture_runtime_owner(context) ||
+#ifdef __linux__
+             remote_display_topology::instance().has_live_managed_client_identity();
+#else
              remote_display_topology::instance().managed_client_identity_count() != 0;
+#endif
     }
 
     void arm_shared_runtime_cleanup(
@@ -3210,7 +3214,14 @@ namespace stream {
       const shared_runtime_finalize_context_t &context
     ) {
       auto &topology = remote_display_topology::instance();
+#ifdef __linux__
+      topology.release_idle_normal_game_identities(
+        proc::proc.current_app_id() > 0,
+        has_capture_runtime_owner(context)
+      );
+#else
       topology.release_drained_normal_game_identities();
+#endif
       if (!shared_runtime_cleanup_armed) {
         return false;
       }
@@ -3243,7 +3254,11 @@ namespace stream {
       }
 #endif
 
+#ifdef __linux__
+      if (capture_runtime_owned || topology.has_live_managed_client_identity()) {
+#else
       if (capture_runtime_owned || topology.managed_client_identity_count() != 0) {
+#endif
         return false;
       }
 

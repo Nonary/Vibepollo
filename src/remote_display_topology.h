@@ -106,6 +106,9 @@ namespace remote_display_topology {
     // transport-less Remote Monitor remains protected until an explicit owner
     // release, and a normal game may share the same stable client identity.
     std::size_t managed_client_identity_count() const;
+    // Drained normal roles awaiting a failed restore are recovery state, not
+    // live owners. Paused games, captures and retained monitors still own it.
+    bool has_live_managed_client_identity() const;
     bool normal_game_release_pending() const;
     std::vector<std::string> managed_client_identity_ids() const;
     std::vector<std::string> protected_remote_monitor_client_ids() const;
@@ -133,6 +136,13 @@ namespace remote_display_topology {
     std::shared_ptr<void> retain_normal_game_capture(const std::string &client_uuid, std::uint64_t token);
     void release_drained_normal_game_identities();
     void release_all_normal_game_identities();
+    // Caller holds the stream lifecycle gate. A desktop launch without an app
+    // ends only after every active, pending and tearing-down transport drains.
+    void release_idle_normal_game_identities(bool app_running, bool capture_runtime_owned);
+    // Call only after guarded physical restoration succeeds, under the stream
+    // lifecycle gate and outside the platform display lock. No callbacks run;
+    // incomplete cleanup remains pending until that success is established.
+    void complete_restored_normal_game_cleanup();
     void note_lease_lost(const std::string &client_uuid);
     void disconnect_monitor(const std::string &client_uuid);
     void unpair_client(const std::string &client_uuid);
