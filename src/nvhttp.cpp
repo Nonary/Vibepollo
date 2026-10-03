@@ -547,6 +547,11 @@ namespace nvhttp {
         }
       );
       if (!reservation.accepted) {
+        // prepare_session() already leased the connector. No coordinator token
+        // exists for the usual rollback guard to retire this rejected owner.
+        if (!platf::linux_private_display::remote_remove_owned_display(owner_uuid)) {
+          BOOST_LOG(error) << "Linux private display: failed to release the capacity-rejected client output.";
+        }
         launch_session->normal_vdd_capacity_rejected = true;
         launch_session->virtual_display_failed = true;
         return linux_normal_identity_result_e::capacity_rejected;

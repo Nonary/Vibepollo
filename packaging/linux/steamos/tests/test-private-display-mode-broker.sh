@@ -58,4 +58,26 @@ rm "$VKMS_DEVICE_DIR/connectors/Virtual-1/requested_mode"
 ln -s "$fixture/unchanged" "$VKMS_DEVICE_DIR/connectors/Virtual-1/requested_mode"
 expect_error 1000 'mode Virtual-1 3024 1890 120000'
 expect_ok 'status Virtual-1' 'STATUS connected Virtual-1'
+for connector in Virtual-{5..8}; do
+  mkdir -p "$VKMS_DEVICE_DIR/connectors/$connector"
+  printf '2\n' >"$VKMS_DEVICE_DIR/connectors/$connector/status"
+  printf '0 0 0\n' >"$VKMS_DEVICE_DIR/connectors/$connector/requested_mode"
+  expect_ok "connect $connector" "OK connected $connector"
+  expect_ok "status $connector" "STATUS connected $connector"
+  expect_ok "mode $connector 3025 1891 119880" "OK mode $connector 3025 1891 119880"
+  [[ $(<"$VKMS_DEVICE_DIR/connectors/$connector/requested_mode") == '3025 1891 119880' ]]
+  [[ $(<"$VKMS_DEVICE_DIR/connectors/$connector/status") == 1 ]]
+  expect_error 1001 "mode $connector 3024 1890 120000"
+  [[ $(<"$VKMS_DEVICE_DIR/connectors/$connector/requested_mode") == '3025 1891 119880' ]]
+  expect_ok "disconnect $connector" "OK disconnected $connector"
+  expect_ok "status $connector" "STATUS disconnected $connector"
+  expect_error 1000 "mode $connector 3024 1890 120000"
+  [[ $(<"$VKMS_DEVICE_DIR/connectors/$connector/requested_mode") == '3025 1891 119880' ]]
+done
+for connector in Virtual-0 Virtual-9 Virtual-01 Virtual-10 Virtual-5x; do
+  for verb in connect disconnect status; do
+    expect_error 1000 "$verb $connector"
+  done
+  expect_error 1000 "mode $connector 3024 1890 120000"
+done
 printf 'Private-display mode broker tests passed.\n'

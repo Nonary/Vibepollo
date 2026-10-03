@@ -24,7 +24,8 @@ namespace platf::linux_private_display::mode_policy {
   };
 
   [[nodiscard]] inline bool managed_connector_name(const std::string_view name) noexcept {
-    return name == "Virtual-1" || name == "Virtual-2" || name == "Virtual-3" || name == "Virtual-4";
+    return name.size() == 9 && name.starts_with("Virtual-") &&
+           name.back() >= '1' && name.back() <= '8';
   }
 
   [[nodiscard]] inline bool should_admit_requested_mode(
