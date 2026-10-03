@@ -523,7 +523,7 @@ test('library placeholders preserve search, keyboard selection, and list prefere
   await expect(page.getByRole('searchbox', { name: 'Search applications' })).toHaveValue('dolphin');
 });
 
-test('library client order groups sources and saves the custom order', async ({ page }) => {
+test('app order page arranges groups and saves the custom order', async ({ page }) => {
   const patches = await host(page, 'windows', {
     app_order_groups: 'custom,steam',
     app_order_steam: 'recent',
@@ -547,11 +547,16 @@ test('library client order groups sources and saves the custom order', async ({ 
     await route.fulfill({ json: { status: true } });
   });
   await page.route('**/api/apps/*/cover', (route) => route.fulfill({ status: 404, body: '' }));
-  await page.goto('/v2/library?sort=client');
+  await page.goto('/v2/library');
+  await page.getByRole('link', { name: 'App order' }).click();
+  await expect(page).toHaveURL(/\/v2\/library\/order$/);
 
-  const custom = page.locator('[data-section="custom"]');
-  await expect(custom.locator('.client-order__name')).toHaveText(['Steam Big Picture', 'Desktop']);
-  await expect(page.locator('[data-section="steam"] .client-order__name')).toHaveText([
+  const custom = page.locator('[data-group="custom"]');
+  await expect(custom.locator('.app-order-app__name')).toHaveText(['Steam Big Picture', 'Desktop']);
+  const steam = page.locator('[data-group="steam"]');
+  await expect(steam.locator('.app-order-group__heading span')).toHaveText('2 apps');
+  await steam.getByText('Show all 2 in order').click();
+  await expect(steam.locator('.app-order-preview__all li > span')).toHaveText([
     'Hades II',
     'Elden Ring',
   ]);
@@ -565,6 +570,15 @@ test('library client order groups sources and saves the custom order', async ({ 
   await expect.poll(() => patches.at(-1)).toEqual({ app_order_steam: 'playtime' });
   await page.getByRole('button', { name: 'Turn on' }).click();
   await expect.poll(() => patches.at(-1)).toEqual({ legacy_ordering: true });
+});
+
+test('integrations edit the same per-source app order setting', async ({ page }) => {
+  const patches = await host(page, 'linux', { app_order_steam: 'recent' });
+  await page.goto('/v2/integrations');
+  const sort = page.getByRole('combobox', { name: 'Order Steam by' });
+  await expect(sort).toHaveValue('recent');
+  await sort.selectOption('playtime');
+  await expect.poll(() => patches.at(-1)).toEqual({ app_order_steam: 'playtime' });
 });
 
 for (const width of [320, 390, 768, 1100, 1440]) {

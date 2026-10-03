@@ -775,46 +775,11 @@
         "removePlaynite": "Remove Playnite entries",
         "showMore": "Show more",
         "tryAgain": "Try again",
-        "sources": "Manage sources"
+        "sources": "Manage sources",
+        "appOrder": "App order"
       },
       "alerts": {
         "unavailable": "Library unavailable"
-      },
-      "clientOrder": {
-        "description": "This is the order Moonlight and other clients receive from this host.",
-        "dragHint": "Drag or use the arrows to reorder",
-        "errors": {
-          "load": "Couldn't load the client order settings.",
-          "save": "Couldn't save the order. Try again."
-        },
-        "groupAction": "Group by source",
-        "groups": {
-          "all": "All applications",
-          "custom": "Custom",
-          "lutris": "Lutris",
-          "other": "Other",
-          "playnite": "Playnite",
-          "steam": "Steam"
-        },
-        "hours": "{hours} h",
-        "label": "Client order",
-        "legacyAction": "Turn on",
-        "legacyBody": "Moonlight sorts apps A to Z unless app ordering for legacy clients is on. Artemis follows this order already.",
-        "legacyTitle": "Moonlight ignores this order",
-        "moveDown": "Move {name} down",
-        "moveGroupDown": "Move {group} down",
-        "moveGroupUp": "Move {group} up",
-        "moveUp": "Move {name} up",
-        "otherHint": "Not grouped, kept in file order",
-        "sortLabel": "Order {group} by",
-        "sorts": {
-          "name": "Name, A to Z",
-          "playtime": "Most played",
-          "recent": "Recently played"
-        },
-        "ungroupAction": "Stop grouping",
-        "ungroupedBody": "Group apps by source to keep your custom apps first and sort each integration automatically as games sync.",
-        "ungroupedTitle": "Apps are sent in file order"
       },
       "collection": {
         "label": "Applications"
@@ -890,7 +855,6 @@
         "selected": "Selected"
       },
       "sort": {
-        "client": "Client order",
         "configured": "Configured order",
         "label": "Sort applications",
         "nameAsc": "Name, A to Z",
@@ -903,6 +867,50 @@
         "label": "Library view",
         "list": "List"
       }
+    },
+    "appOrder": {
+      "count": "{count} app | {count} apps",
+      "errors": {
+        "load": "Couldn't load the app order.",
+        "save": "Couldn't save the order. Try again."
+      },
+      "groupAction": "Group by source",
+      "groups": {
+        "all": "All applications",
+        "custom": "Custom",
+        "lutris": "Lutris",
+        "other": "Other",
+        "playnite": "Playnite",
+        "steam": "Steam"
+      },
+      "groupsLabel": "Groups, in the order clients receive them",
+      "hours": "{hours} h",
+      "integrationRow": {
+        "description": "How {group} games are ordered in Moonlight's app list. Arrange the groups themselves under Library, App order.",
+        "label": "Order in app list"
+      },
+      "integrationSettings": "Integration settings",
+      "legacyAction": "Turn on",
+      "legacyBody": "Moonlight sorts apps A to Z unless app ordering for legacy clients is on. Artemis follows this order already.",
+      "legacyTitle": "Moonlight ignores this order",
+      "moveDown": "Move {name} down",
+      "moveUp": "Move {name} up",
+      "otherHint": "Sources missing from the order above are sent last, in file order",
+      "page": {
+        "back": "Library",
+        "description": "The order Moonlight and other clients show your apps in.",
+        "title": "App order"
+      },
+      "showAll": "Show all {count} in order",
+      "sortLabel": "Order {group} by",
+      "sorts": {
+        "name": "Name, A to Z",
+        "playtime": "Most played",
+        "recent": "Recently played"
+      },
+      "ungroupAction": "Stop grouping",
+      "ungroupedBody": "Group apps by source to keep your custom apps first and sort each integration automatically as games sync.",
+      "ungroupedTitle": "Apps are sent in file order"
     },
     "logs": {
       "action": {

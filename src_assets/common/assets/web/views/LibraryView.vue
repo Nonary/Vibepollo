@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import GameLibrarySetup from '../../web-legacy/components/GameLibrarySetup.vue';
-import ClientOrderPanel from '@/components/library/ClientOrderPanel.vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
@@ -23,12 +22,12 @@ import {
   appUuid,
   AppServiceError,
   deleteApp,
-  fetchAppCatalog,
+  fetchApps,
   type AppRecord,
 } from '@/services/apps';
 
 type ViewMode = 'grid' | 'list';
-type SortMode = 'name' | 'name-desc' | 'source' | 'client';
+type SortMode = 'name' | 'name-desc' | 'source';
 type AppProvider = 'playnite' | 'steam' | 'lutris';
 
 interface ProviderInfo {
@@ -39,14 +38,13 @@ interface ProviderInfo {
 
 const PAGE_SIZE = 72;
 const VIEW_STORAGE_KEY = 'vibepollo.library.view';
-const validSortModes = new Set<SortMode>(['name', 'name-desc', 'source', 'client']);
+const validSortModes = new Set<SortMode>(['name', 'name-desc', 'source']);
 
 const route = useRoute();
 const router = useRouter();
 const { locale, t } = useI18n();
 const system = useSystemStore();
 const apps = ref<AppRecord[]>([]);
-const clientOrder = ref<string[]>([]);
 const loading = ref(true);
 const error = ref('');
 const search = ref(queryValue(route.query.q));
@@ -258,9 +256,7 @@ async function load(silent = false): Promise<void> {
   if (!silent) loading.value = true;
   error.value = '';
   try {
-    const catalog = await fetchAppCatalog();
-    apps.value = catalog.apps;
-    clientOrder.value = catalog.clientOrder;
+    apps.value = await fetchApps();
     failedCovers.value = new Set();
     const liveIds = new Set(apps.value.map(appUuid).filter(Boolean));
     selectedUuids.value = new Set([...selectedUuids.value].filter((uuid) => liveIds.has(uuid)));
@@ -506,11 +502,6 @@ function onDocumentPointerDown(event: PointerEvent): void {
   }
 }
 
-watch(sort, (mode) => {
-  // Client order always shows the full catalog the host sends.
-  if (mode === 'client') search.value = '';
-});
-
 watch([search, sort], () => {
   renderLimit.value = PAGE_SIZE;
   window.clearTimeout(queryTimer);
@@ -590,6 +581,9 @@ function libraryRequest(
         <RouterLink class="button button--secondary" to="/integrations"
           ><UiIcon name="integrations" />{{ t('ui.library.actions.sources') }}</RouterLink
         >
+        <RouterLink class="button button--secondary" to="/library/order"
+          ><UiIcon name="list" />{{ t('ui.library.actions.appOrder') }}</RouterLink
+        >
         <AppButton
           v-if="isWindows && purgeablePlayniteEntries.length"
           icon="trash"
@@ -624,7 +618,7 @@ function libraryRequest(
     </InlineAlert>
 
     <section class="library-toolbar" :aria-label="t('ui.library.controls.region')">
-      <label v-if="sort !== 'client'" class="library-search">
+      <label class="library-search">
         <span class="vs-sr-only">{{ t('ui.library.search.label') }}</span>
         <UiIcon name="search" :size="16" aria-hidden="true" />
         <input
@@ -642,16 +636,10 @@ function libraryRequest(
           <option value="name">{{ t('ui.library.sort.nameAsc') }}</option>
           <option value="name-desc">{{ t('ui.library.sort.nameDesc') }}</option>
           <option value="source">{{ t('ui.library.sort.provider') }}</option>
-          <option value="client">{{ t('ui.library.sort.client') }}</option>
         </select>
       </label>
 
-      <div
-        v-if="sort !== 'client'"
-        class="library-view-toggle"
-        role="group"
-        :aria-label="t('ui.library.view.label')"
-      >
+      <div class="library-view-toggle" role="group" :aria-label="t('ui.library.view.label')">
         <AppButton
           size="default"
           icon="overview"
@@ -719,13 +707,6 @@ function libraryRequest(
         />
       </template>
     </EmptyState>
-
-    <ClientOrderPanel
-      v-else-if="sort === 'client' && !error"
-      :apps="apps"
-      :client-order="clientOrder"
-      @changed="load(true)"
-    />
 
     <EmptyState
       v-else-if="!filteredApps.length && !error"

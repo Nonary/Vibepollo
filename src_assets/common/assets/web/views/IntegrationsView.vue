@@ -7,6 +7,8 @@ import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 
 import PlaynitePolicySettings from '@/components/settings/PlaynitePolicySettings.vue';
+import AppOrderSortSelect from '@/components/library/AppOrderSortSelect.vue';
+import { parseAppOrderSort, type AppOrderProvider, type AppOrderSort } from '@/services/appOrder';
 import { ApiError, apiGet, apiPatch, apiPost } from '@/api/client';
 import {
   AppButton,
@@ -213,6 +215,12 @@ const actionBusy = ref(false);
 const syncing = ref(false);
 const errors = ref<Partial<Record<IntegrationId, string>>>({});
 const notice = ref('');
+// The same app_order_<provider> keys the Library's App order page edits.
+const appOrder = ref<Record<AppOrderProvider, AppOrderSort>>({
+  steam: 'name',
+  playnite: 'name',
+  lutris: 'name',
+});
 const confirmOpen = ref(false);
 const pendingAction = ref<PendingAction | null>(null);
 
@@ -1272,7 +1280,31 @@ watch(
     document.getElementById(route.hash.slice(1))?.scrollIntoView({ block: 'start' });
   },
 );
-onMounted(() => void load());
+async function loadAppOrder(): Promise<void> {
+  const config = await apiGet<Record<string, unknown>>('/api/config').catch(() => null);
+  if (!config) return;
+  for (const provider of ['steam', 'playnite', 'lutris'] as const) {
+    appOrder.value[provider] = parseAppOrderSort(config[`app_order_${provider}`]);
+  }
+}
+
+async function setAppOrder(provider: AppOrderProvider, value: AppOrderSort): Promise<void> {
+  try {
+    await apiPatch('/api/config', { [`app_order_${provider}`]: value });
+    appOrder.value[provider] = value;
+    notice.value = t('ui.integrations.notices.providerUpdated');
+  } catch (cause) {
+    errors.value = {
+      ...errors.value,
+      [provider]: message(cause, t('ui.integrations.errors.providerUpdateFailed')),
+    };
+  }
+}
+
+onMounted(() => {
+  void load();
+  void loadAppOrder();
+});
 const librarySetupOpen = ref(false);
 function libraryRequest(
   method: 'GET' | 'POST' | 'PATCH',
@@ -1367,6 +1399,20 @@ function libraryRequest(
             <StatusBadge :label="summary.status" :tone="summary.tone" compact />
           </div>
           <PlaynitePolicySettings v-if="summary.id === 'playnite' && isWindows" />
+          <div v-if="summary.id === 'playnite' && isWindows" class="integration-settings__rows">
+            <SettingRow
+              :label="t('ui.appOrder.integrationRow.label')"
+              :description="t('ui.appOrder.integrationRow.description', { group: 'Playnite' })"
+              control-id="playnite-app-order"
+            >
+              <AppOrderSortSelect
+                id="playnite-app-order"
+                :label="t('ui.appOrder.sortLabel', { group: 'Playnite' })"
+                :value="appOrder.playnite"
+                @change="setAppOrder('playnite', $event)"
+              />
+            </SettingRow>
+          </div>
           <ul v-if="summary.details.length" class="integration-details">
             <li v-for="detail in summary.details" :key="detail">{{ detail }}</li>
           </ul>
@@ -1496,6 +1542,18 @@ function libraryRequest(
                   />
                   <span>{{ t('ui.integrations.steam.daysUnit') }}</span>
                 </div>
+              </SettingRow>
+              <SettingRow
+                :label="t('ui.appOrder.integrationRow.label')"
+                :description="t('ui.appOrder.integrationRow.description', { group: 'Steam' })"
+                control-id="steam-app-order"
+              >
+                <AppOrderSortSelect
+                  id="steam-app-order"
+                  :label="t('ui.appOrder.sortLabel', { group: 'Steam' })"
+                  :value="appOrder.steam"
+                  @change="setAppOrder('steam', $event)"
+                />
               </SettingRow>
               <details class="integration-advanced">
                 <summary>{{ t('ui.integrations.steam.advancedSettings') }}</summary>
@@ -1676,6 +1734,18 @@ function libraryRequest(
               </SettingRow>
               <SettingRow :label="t('ui.integrations.lutris.removeUninstalled')" :description="t('ui.integrations.lutris.removeUninstalledDescription')" control-id="lutris-remove-uninstalled">
                 <input id="lutris-remove-uninstalled" class="integration-switch" type="checkbox" :checked="lutris?.autosync_remove_uninstalled !== false" @change="setLutrisPolicy('lutris_autosync_remove_uninstalled', ($event.target as HTMLInputElement).checked)" />
+              </SettingRow>
+              <SettingRow
+                :label="t('ui.appOrder.integrationRow.label')"
+                :description="t('ui.appOrder.integrationRow.description', { group: 'Lutris' })"
+                control-id="lutris-app-order"
+              >
+                <AppOrderSortSelect
+                  id="lutris-app-order"
+                  :label="t('ui.appOrder.sortLabel', { group: 'Lutris' })"
+                  :value="appOrder.lutris"
+                  @change="setAppOrder('lutris', $event)"
+                />
               </SettingRow>
               <details class="integration-advanced">
                 <summary>{{ t('ui.integrations.lutris.advancedSettings') }}</summary>
