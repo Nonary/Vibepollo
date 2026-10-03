@@ -26,6 +26,7 @@ class Program
         StalledWriter();
         StopWithPendingUi();
         TemporaryEnvironmentDoesNotBlockGameStatus();
+        WaveformPrelaunchRouting();
         RoundTrip();
     }
     static void AcceptDuringStop(string role, bool restart)
@@ -164,6 +165,8 @@ class Program
         service.Start();
         using var launcher = Connect("launcher");
         Assert(SpinWait.SpinUntil(() => ((ConcurrentDictionary<string, PipeConnection>)Field(service, "launchers")).Count == 1, 5000), "Launcher accepted for environment test");
+        using var reader = new StreamReader(launcher, new UTF8Encoding(false), false, 8192, true);
+        Assert(ReadLine(reader).Contains("waveformConnectorReady"), "Environment test receives capability acknowledgment");
         var scopes = (EnvironmentScopes)Field(service, "environmentScopes");
         var key = "VIBEPOLLO_TEST_" + Guid.NewGuid().ToString("N");
         using var holdingScope = new ManualResetEventSlim();
@@ -189,9 +192,45 @@ class Program
         }
         finally { runCallback.Set(); }
         Assert(callback.Wait(5000), "GameStarted callback completes while launcher environment update waits");
+        Assert(ReadLine(reader).Contains("gameStarted"), "Callback reports status before environment scope is released");
+        Assert(ReadLine(reader).Contains("waveformEnvironmentReady"), "Environment acknowledgment follows scope application");
         Assert(SpinWait.SpinUntil(() => Environment.GetEnvironmentVariable(key) == "launcher", 5000), "Environment update completes after callback");
         service.Stop();
         Assert(Environment.GetEnvironmentVariable(key) == null, "Shutdown restores launcher environment");
+    }
+    static void WaveformPrelaunchRouting()
+    {
+        Console.WriteLine("CASE: waveform setup routing, reconnect mapping and failure notification");
+        var mapping = Environment.GetEnvironmentVariable("VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING");
+        var dll = Environment.GetEnvironmentVariable("VIBEPOLLO_DUALSENSE_HAPTICS_DLL");
+        using var service = new ConnectorService(new Api(), new Logger(), false);
+        ConnectorPipeTransport.TestSuffix = Guid.NewGuid().ToString("N");
+        service.Start();
+        using var launcher = Connect("launcher");
+        using var reader = new StreamReader(launcher, new UTF8Encoding(false), false, 8192, true);
+        Assert(ReadLine(reader).Contains("waveformConnectorReady"), "Launcher receives waveform capability acknowledgment");
+        var game = new Game { Id = Guid.NewGuid(), Name = "Waveform game", PluginId = Guid.Parse("cb91dfc9-b977-43bf-8e70-55f46e410fab"), InstallDirectory = "test-directory" };
+        try
+        {
+            Environment.SetEnvironmentVariable("VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING", null);
+            var calls = WaveformLaunchBridge.Calls;
+            Assert(service.GameStarting(game) && WaveformLaunchBridge.Calls == calls, "Ordinary launch skips native preparation");
+            Environment.SetEnvironmentVariable("VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING", "first-session");
+            Environment.SetEnvironmentVariable("VIBEPOLLO_DUALSENSE_HAPTICS_DLL", "test-hook");
+            Assert(service.GameStarting(game) && WaveformLaunchBridge.Steam && WaveformLaunchBridge.Directory == game.InstallDirectory, "Steam preparation receives game scope");
+            Environment.SetEnvironmentVariable("VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING", "second-session");
+            game.PluginId = Guid.Empty;
+            Assert(service.GameStarting(game) && !WaveformLaunchBridge.Steam && WaveformLaunchBridge.Mapping == "second-session", "Reconnection uses fresh mapping for direct launches");
+            WaveformLaunchBridge.Result = false;
+            Assert(!service.GameStarting(game), "Failed requested preparation cancels launch");
+            Assert(ReadLine(reader).Contains("waveformSetupFailed"), "Launcher receives preparation failure");
+        }
+        finally
+        {
+            WaveformLaunchBridge.Result = true;
+            Environment.SetEnvironmentVariable("VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING", mapping);
+            Environment.SetEnvironmentVariable("VIBEPOLLO_DUALSENSE_HAPTICS_DLL", dll);
+        }
     }
     static void RoundTrip()
     {
@@ -207,6 +246,7 @@ class Program
         var game = new Game { Id = Guid.NewGuid(), Name = "Test game", IsRunning = true };
         using var launcher = Connect("launcher", game.Id.ToString());
         using var launcherReader = new StreamReader(launcher, new UTF8Encoding(false), false, 8192, true);
+        Assert(ReadLine(launcherReader).Contains("waveformConnectorReady"), "Waveform readiness preserves launcher protocol");
         Assert(SpinWait.SpinUntil(() => ((ConcurrentDictionary<string, PipeConnection>)Field(service, "launchers")).Count == 1, 5000), "Launcher accepted");
         service.GameStarted(game);
         Assert(ReadLine(launcherReader).Contains("gameStarted"), "Game start reaches launcher");

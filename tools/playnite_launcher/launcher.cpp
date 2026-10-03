@@ -513,7 +513,7 @@ namespace playnite_launcher {
           std::this_thread::sleep_for(50ms);
         }
         if (!(waveform_connector_ready.load(std::memory_order_acquire) && waveform_environment_ready.load(std::memory_order_acquire))) {
-          BOOST_LOG(error) << "Playnite waveform haptics requires connector 0.4.15 or newer; restart Playnite after updating it.";
+          BOOST_LOG(error) << "Playnite waveform haptics requires connector 0.5.1 or newer; restart Playnite after updating it.";
           client.stop();
           return 3;
         }
@@ -1262,7 +1262,7 @@ namespace playnite_launcher {
           std::this_thread::sleep_for(50ms);
         }
         if (!waveform_connector_ready.load(std::memory_order_acquire)) {
-          BOOST_LOG(error) << "Playnite waveform haptics requires connector 0.4.15 or newer; restart Playnite after updating it.";
+          BOOST_LOG(error) << "Playnite waveform haptics requires connector 0.5.1 or newer; restart Playnite after updating it.";
           client.stop();
           return 3;
         }

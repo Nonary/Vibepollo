@@ -259,13 +259,10 @@ enable_testing()
 if(WIN32)
     find_program(SUNSHINE_TEST_POWERSHELL_EXECUTABLE NAMES pwsh powershell)
     if(SUNSHINE_TEST_POWERSHELL_EXECUTABLE)
-        add_test(NAME test_script_playnite_waveform_launch
-            COMMAND "${SUNSHINE_TEST_POWERSHELL_EXECUTABLE}" -NoLogo -NoProfile -ExecutionPolicy Bypass
-                -File "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_playnite_waveform_launch.ps1")
         add_test(NAME test_script_playnite_waveform_bridge
             COMMAND "${SUNSHINE_TEST_POWERSHELL_EXECUTABLE}" -NoLogo -NoProfile -ExecutionPolicy Bypass
                 -File "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_playnite_waveform_launch.ps1" -CompileBridge)
-        set_tests_properties(test_script_playnite_waveform_launch test_script_playnite_waveform_bridge PROPERTIES LABELS "component;script")
+        set_tests_properties(test_script_playnite_waveform_bridge PROPERTIES LABELS "component;script")
         if(TARGET vibepollo_dualsense_haptics)
             add_test(NAME test_script_playnite_waveform_helper
                 COMMAND "${SUNSHINE_TEST_POWERSHELL_EXECUTABLE}" -NoLogo -NoProfile -ExecutionPolicy Bypass

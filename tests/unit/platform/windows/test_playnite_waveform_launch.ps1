@@ -18,4 +18,4 @@ if ($NativeHelperDirectory) {
   }
   "Native helper reached from $([IntPtr]::Size * 8)-bit connector host"
 }
-'Compiled Playnite bridge rejects missing libraries; optional native helper routing check completed'
+'Compiled Playnite bridge rejects missing libraries; routing is tested by the connector lifecycle harness'
