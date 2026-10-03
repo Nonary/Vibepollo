@@ -40,7 +40,9 @@ on the capture adapter:
 
 For a paired HTTPS `/serverinfo` request, a capable host also returns
 `PyroWaveHostLinkMbps` (zero if its outbound route is not a known physical wired
-link) and `PyroWaveBandwidthProbeBytes=33554432`. The link number is the host's
+link), `PyroWaveBandwidthProbeBytes=33554432`, and
+`PyroWaveCriticalFecPercentage` (the configured 0..255% critical-block parity
+rate, including 0 for disabled). The link number is the host's
 local transmit speed, not measured end-to-end throughput. Linux and Windows
 resolve the route to the requesting client; Linux ignores virtual, wireless,
 half-duplex and inactive interfaces.
@@ -48,6 +50,19 @@ half-duplex and inactive interfaces.
 The legacy 32 MiB HTTPS download probe remains available for old clients.
 New calibration uses authenticated UDP probes to measure loss and stability;
 see [FEC-inclusive recommendations](#fec-inclusive-recommendations-and-udp-calibration).
+
+An older paired client can GET `/pyrowave-bandwidth-probe` over its pinned HTTPS
+connection. It receives exactly 32 MiB of fixed binary payload
+to time. Its HTTPS calibration discards a warm-up and uses the slowest of three measurements,
+then reserves 20% for record padding, audio, input and contention. It separately
+deducts critical-block parity at the selected FPS and packet wire overhead
+before grading the remaining video bitrate. Parity is bounded by the host's
+255-shard Reed-Solomon block and two-parity minimum. An older host without the
+FEC field uses the maximum parity across all supported settings; the summary
+labels the unknown setting. The result is a bulk
+host-to-client throughput estimate. It does not prove that live UDP bursts will
+avoid packet loss, so calibration remains a recommendation rather than a stream
+quality guarantee.
 
 | Bit | Value | Meaning |
 |---|---|---|
