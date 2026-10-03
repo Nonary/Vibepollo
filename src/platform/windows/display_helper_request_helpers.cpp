@@ -13,6 +13,7 @@
   #include "src/logging.h"
   #include "src/platform/common.h"
   #include "src/platform/windows/display_helper_coordinator.h"
+  #include "src/platform/windows/display_helper_integration.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
