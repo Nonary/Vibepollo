@@ -588,6 +588,19 @@ static bool display_argument_is_safe(const char *argument) {
   return matches;
 }
 
+static bool display_apply_arguments_are_safe(int argc, char **argv) {
+  if (!argv || argc < 3 ||
+      (uint32_t) (argc - 2) > VIBEPOLLO_SESSION_PROTOCOL_MAX_DISPLAY_PROPERTIES) return false;
+  for (int index = 2; index < argc; ++index) {
+    if (!display_argument_is_safe(argv[index])) {
+      // Avoid reflecting arbitrary control bytes from rejected input.
+      fprintf(stderr, "vibepollo-session-broker: rejected display argument %d\n", index - 1);
+      return false;
+    }
+  }
+  return true;
+}
+
 static bool sink_name_is_safe(const char *name) {
   if (!safe_text(name, 127, false)) return false;
   for (const unsigned char *cursor = (const unsigned char *) name; *cursor; ++cursor) {
@@ -1267,16 +1280,8 @@ static int execute_request(int argc, char **argv,
   if (!strcmp(argv[1], "display-query") && argc == 2) operation = DISPLAY_QUERY;
   else if (!strcmp(argv[1], "display-power") && argc == 2) operation = DISPLAY_POWER;
   else if (!strcmp(argv[1], "display-wake") && argc == 2) operation = DISPLAY_WAKE;
-  else if (!strcmp(argv[1], "display-apply") && argc >= 3 && argc <= 66) {
-    operation = DISPLAY_APPLY;
-    for (int index = 2; index < argc; ++index) {
-      if (!display_argument_is_safe(argv[index])) {
-        // Avoid reflecting arbitrary control bytes from rejected input.
-        fprintf(stderr, "vibepollo-session-broker: rejected display argument %d\n", index - 1);
-        return 126;
-      }
-    }
-  } else if (!strcmp(argv[1], "audio-get-default") && argc == 2) operation = AUDIO_GET_DEFAULT;
+  else if (!strcmp(argv[1], "display-apply") && display_apply_arguments_are_safe(argc, argv)) operation = DISPLAY_APPLY;
+  else if (!strcmp(argv[1], "audio-get-default") && argc == 2) operation = AUDIO_GET_DEFAULT;
   else if (!strcmp(argv[1], "audio-list-sinks") && argc == 2) operation = AUDIO_LIST_SINKS;
   else if (!strcmp(argv[1], "audio-set-default") && argc == 3 && sink_name_is_safe(argv[2])) operation = AUDIO_SET_DEFAULT;
   else if (!strcmp(argv[1], "audio-create-null") && argc == 4 &&

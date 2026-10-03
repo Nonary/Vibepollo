@@ -49,6 +49,8 @@ static int broker_fixture_execv(const char *path, char *const arguments[]) {
   return execv(arguments[index + 3], &arguments[index + 3]);
 }
 
+#include "test_session_display_request.h"
+
 #define CHECK(expression) do { \
   if (!(expression)) { \
     fprintf(stderr, "FAIL: %s:%d: %s\n", __FILE__, __LINE__, #expression); \
@@ -89,6 +91,75 @@ static int check_display_cancellation(void) {
   CHECK(monotonic_milliseconds() - started < 1000);
   errno = 0;
   CHECK(waitpid(worker, &status, WNOHANG) < 0 && errno == ECHILD);
+  return 0;
+}
+
+static int check_display_request_limits(void) {
+  struct display_request_fixture fixture;
+  struct decoded_request request;
+  unsigned char *packet = malloc(VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE + 1);
+  CHECK(packet);
+  CHECK(compose_eight_client_display_request(&fixture));
+  CHECK(fixture.argc == 67); // three retained physical outputs plus eight clients
+  const size_t composed_length = encode_display_request(&fixture, packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE);
+  CHECK(composed_length == fixture.message_length);
+  CHECK(decode_request(packet, composed_length, &request));
+  CHECK(request.argc == fixture.argc && request.header.argument_count == 66);
+  CHECK(request.header.payload_length + sizeof(request.header) == composed_length);
+  CHECK(request.header.generation == 42 && !request.argv[request.argc]);
+  CHECK(display_apply_arguments_are_safe(request.argc, request.argv));
+  for (int index = 1; index < request.argc; ++index) CHECK(!strcmp(request.argv[index], fixture.argv[index]));
+
+  while (fixture.argc < TEST_DISPLAY_MAX_PROPERTIES + 2) {
+    CHECK(append_display_property(&fixture, "output.Virtual-8.enable"));
+  }
+  CHECK(display_apply_arguments_are_safe(fixture.argc, fixture.argv));
+  size_t length = encode_display_request(&fixture, packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE);
+  CHECK(length == fixture.message_length && decode_request(packet, length, &request));
+  CHECK(request.argc == TEST_DISPLAY_MAX_PROPERTIES + 2 && !request.argv[request.argc]);
+  CHECK(display_apply_arguments_are_safe(request.argc, request.argv));
+  CHECK(append_display_property(&fixture, "output.Virtual-8.enable"));
+  CHECK(!display_apply_arguments_are_safe(fixture.argc, fixture.argv));
+  length = encode_display_request(&fixture, packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE);
+  CHECK(length && !decode_request(packet, length, &request));
+  // Unsafe properties remain forbidden at the larger property budget.
+  fixture.argc--;
+  fixture.argv[fixture.argc] = NULL;
+  fixture.argv[fixture.argc - 1] = "output.Virtual-8.enable;touch /tmp/untrusted";
+  CHECK(!display_apply_arguments_are_safe(fixture.argc, fixture.argv));
+  CHECK(!display_apply_arguments_are_safe(2, fixture.argv));
+  CHECK(!display_apply_arguments_are_safe(3, NULL));
+
+  // Check transport capacity for the maximum persisted restore shape;
+  // property authorization remains independent of framing and count limits.
+  CHECK(compose_maximum_restore_request(&fixture));
+  length = encode_display_request(&fixture, packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE);
+  CHECK(length == fixture.message_length && length < VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE);
+  CHECK(decode_request(packet, length, &request));
+  CHECK(request.argc == TEST_DISPLAY_MAX_PROPERTIES + 2 && !request.argv[request.argc]);
+
+  // A syntactically complete frame at the byte limit decodes; adding a byte
+  // remains forbidden even though the request has only two wire arguments.
+  const size_t half_payload = (VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE - sizeof(request.header)) / 2;
+  struct vibepollo_session_message header = {
+    .magic = VIBEPOLLO_SESSION_PROTOCOL_MAGIC,
+    .version = VIBEPOLLO_SESSION_PROTOCOL_VERSION,
+    .type = VIBEPOLLO_SESSION_REQUEST,
+    .payload_length = (uint32_t) (half_payload * 2),
+    .argument_count = 2,
+    .generation = 42,
+  };
+  memcpy(packet, &header, sizeof(header));
+  memset(packet + sizeof(header), 'A', half_payload * 2);
+  packet[sizeof(header) + half_payload - 1] = 0;
+  packet[VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE - 1] = 0;
+  CHECK(decode_request(packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE, &request));
+  header.payload_length++;
+  memcpy(packet, &header, sizeof(header));
+  packet[VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE - 1] = 'A';
+  packet[VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE] = 0;
+  CHECK(!decode_request(packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE + 1, &request));
+  free(packet);
   return 0;
 }
 
@@ -232,6 +303,7 @@ int main(void) {
   strcpy(focus_greeter.role, "greeter");
   CHECK(execute_request(7, focus_request, &focus_greeter, getgid()) == 126);
 
+  CHECK(!check_display_request_limits());
   CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://open/bigpicture"), "steam://open/bigpicture"));
   CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://close/bigpicture"), "steam://close/bigpicture"));
   CHECK(!steam_big_picture_uri(NULL));
