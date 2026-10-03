@@ -549,6 +549,9 @@ namespace config {
   std::shared_lock<std::shared_mutex> acquire_apply_read_gate();
   void record_active_adapter_config();
 
+  // File + command-line HDR policy, before any paused app's runtime layer.
+  video_t::dd_t::hdr_request_override_e base_hdr_request_override();
+
   // Runtime, non-persisted config overrides (e.g. per-application overrides).
   // Values use the same raw representation as the config file (strings for string keys,
   // JSON dumps for non-string keys).
