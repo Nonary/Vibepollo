@@ -14,6 +14,7 @@ export type UiIconName =
   | 'edit'
   | 'external-link'
   | 'gamepad'
+  | 'grip'
   | 'help'
   | 'info'
   | 'integrations'
