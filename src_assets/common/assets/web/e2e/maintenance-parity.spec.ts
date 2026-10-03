@@ -32,6 +32,7 @@ async function setupHost(page: Page, options: HostOptions = {}) {
     configPatches: [] as Record<string, unknown>[],
     playniteStatus: 0,
     failGoldenStatus: false,
+    goldenStatusReads: 0,
     goldenExports: 0,
     goldenDeletes: 0,
     displayResets: 0,
@@ -70,6 +71,7 @@ async function setupHost(page: Page, options: HostOptions = {}) {
     } else if (path === '/api/health/crashdump') {
       body = { available: true, filename: 'crash.dmp', size_bytes: 1234 };
     } else if (path === '/api/display/golden_status') {
+      calls.goldenStatusReads += 1;
       if (calls.failGoldenStatus) {
         await route.fulfill({ status: 503, json: { error: 'status unavailable' } });
         return;
@@ -469,6 +471,36 @@ test('display settings explain disabled capture and reset without changing saved
   ).toBeVisible();
   expect(calls.displayResets).toBe(0);
   expect(calls.goldenExports).toBe(0);
+  expect(calls.configPatches).toEqual([]);
+});
+
+test('display settings can retry failed status without enabling recovery mutations', async ({
+  page,
+}) => {
+  const calls = await setupHost(page, {
+    golden: { maintenance_available: false },
+    config: { dd_configuration_option: 'disabled', virtual_display_mode: 'disabled' },
+  });
+  calls.failGoldenStatus = true;
+  await page.goto('/v2/settings?category=display');
+  const retry = page.getByRole('button', { name: 'Retry status', exact: true });
+  const reset = page.getByRole('button', { name: 'Clear display state', exact: true });
+  await expect(retry).toBeEnabled();
+  await expect(reset).toBeDisabled();
+
+  const initialReads = calls.goldenStatusReads;
+  await retry.click();
+  await expect.poll(() => calls.goldenStatusReads).toBe(initialReads + 1);
+  await expect(retry).toBeEnabled();
+
+  calls.failGoldenStatus = false;
+  await retry.click();
+  await expect.poll(() => calls.goldenStatusReads).toBe(initialReads + 2);
+  await expect(page.getByRole('button', { name: 'Create snapshot', exact: true })).toBeDisabled();
+  await expect(reset).toBeDisabled();
+  expect(calls.goldenExports).toBe(0);
+  expect(calls.goldenDeletes).toBe(0);
+  expect(calls.displayResets).toBe(0);
   expect(calls.configPatches).toEqual([]);
 });
 

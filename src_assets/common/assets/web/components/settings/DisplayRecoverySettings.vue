@@ -222,7 +222,7 @@ onMounted(() => void loadGoldenStatus());
         "
         :busy="captureBusy"
         :busy-label="t('ui.settings.recovery.saving_snapshot')"
-        :disabled="statusLoading || maintenanceAvailable !== true"
+        :disabled="statusLoading || (golden !== null && maintenanceAvailable !== true)"
         variant="secondary"
         @click="golden ? captureGoldenSnapshot() : loadGoldenStatus()"
       />
