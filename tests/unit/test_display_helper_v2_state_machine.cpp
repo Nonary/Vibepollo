@@ -751,7 +751,7 @@ TEST(DisplayHelperV2StateMachine, RecentDisconnectWithStickyStateAvoidsExtraRepa
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
 }
 
-TEST(DisplayHelperV2StateMachine, ApplyBlanksHdrOnlyWhenRequested) {
+TEST(DisplayHelperV2StateMachine, AdmissionNeverQueuesHdrMutationAfterVerification) {
   StateMachineHarness harness;
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
@@ -765,8 +765,8 @@ TEST(DisplayHelperV2StateMachine, ApplyBlanksHdrOnlyWhenRequested) {
   harness.dispatcher.verification_completion(true);
   harness.drain_messages();
 
-  EXPECT_EQ(harness.workarounds.blank_calls, 1);
-  EXPECT_EQ(harness.workarounds.last_delay, std::chrono::milliseconds(1000));
+  EXPECT_EQ(harness.workarounds.blank_calls, 0);
+  EXPECT_TRUE(harness.dispatcher.apply_request.hdr_blank);
 
   request.hdr_blank = false;
   harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
@@ -775,7 +775,8 @@ TEST(DisplayHelperV2StateMachine, ApplyBlanksHdrOnlyWhenRequested) {
   harness.dispatcher.verification_completion(true);
   harness.drain_messages();
 
-  EXPECT_EQ(harness.workarounds.blank_calls, 1);
+  EXPECT_EQ(harness.workarounds.blank_calls, 0);
+  EXPECT_FALSE(harness.dispatcher.apply_request.hdr_blank);
   EXPECT_EQ(harness.workarounds.clear_blank_calls, 2);
 }
 

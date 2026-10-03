@@ -13,6 +13,19 @@
   #include <string>
 
 namespace platf::display_helper_client {
+  struct CaptureMutationState {
+    std::uint64_t revision = 0;
+    bool active = false;
+    bool failed = false;
+  };
+  // The source is blocked before acknowledging the helper's mutation request.
+  // Topology operations conservatively affect every capture; notifications also
+  // carry the enumerated device/output set for diagnostics and generation scope.
+  bool capture_mutations_pending();
+  std::uint64_t capture_mutation_revision();
+  CaptureMutationState capture_mutation_state(const std::string &output_name);
+  void pump_mutation_notifications();
+
   // Send APPLY with JSON payload (SingleDisplayConfiguration). Every request
   // carries a backward-compatible token: v2 echoes it for a later verification
   // acknowledgement, while legacy helpers reply in their original untagged

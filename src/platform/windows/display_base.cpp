@@ -35,6 +35,8 @@ typedef enum _D3DKMT_GPU_PREFERENCE_QUERY_STATE : DWORD {
 } D3DKMT_GPU_PREFERENCE_QUERY_STATE;
 
 #include "display.h"
+#include "display_output_monitor.h"
+#include "src/platform/windows/ipc/display_settings_client.h"
 #include "game_activity.h"
 #include "misc.h"
 #include "src/config.h"
@@ -52,21 +54,6 @@ namespace platf {
 namespace platf::dxgi {
   namespace {
     constexpr std::uint32_t WINDOWS_23H2_BUILD = 22631;
-
-    wgc_policy::input_geometry_change_e current_input_geometry_change(const display_base_t &display) {
-      const auto &rect = display.captured_output_desc.DesktopCoordinates;
-      return wgc_policy::assess_input_geometry(
-        {display.offset_x, display.offset_y, display.env_width, display.env_height},
-        static_cast<int>(rect.left),
-        static_cast<int>(rect.top),
-        {
-          GetSystemMetrics(SM_XVIRTUALSCREEN),
-          GetSystemMetrics(SM_YVIRTUALSCREEN),
-          GetSystemMetrics(SM_CXVIRTUALSCREEN),
-          GetSystemMetrics(SM_CYVIRTUALSCREEN),
-        }
-      );
-    }
 
     std::mutex g_adapter_luid_mutex;
     std::optional<wgc_adapter_identity_t> g_last_wgc_adapter_identity;
@@ -456,72 +443,19 @@ namespace platf::dxgi {
 
     sleep_overshoot_logger.reset();
 
-    auto next_output_refresh_attempt = std::chrono::steady_clock::time_point::min();
-    bool output_refresh_deferred = false;
-    // DXGI can report a stale factory while an HDR transition is settling. The
-    // continuation path below may therefore accept a replacement output while
-    // it still reports the old colorspace. Re-enumerate the output periodically
-    // so a transition missed during that window still tears down the fixed
-    // capture resources and recreates them with the correct HDR state.
-    auto next_hdr_state_check = std::chrono::steady_clock::time_point::min();
-
     while (true) {
-      // Moving another monitor can change absolute-input normalization even
-      // while WGC's capture item and DXGI factory remain usable. Recreate the
-      // display so make_port() publishes fresh geometry to every stream.
-      if (refresh_only_changes_supported && current_input_geometry_change(*this) == wgc_policy::input_geometry_change_e::changed) {
-        BOOST_LOG(info) << "WGC capture reinitializing because desktop input geometry changed";
-        return platf::capture_e::reinit;
-      }
-
-      // A stale factory can mean either a harmless refresh-only change or a
-      // structural display/GPU change. WGC can keep its capture item for the
-      // former. Never wait for a display mode-set on this thread: WGC remains
-      // valid during refresh-only changes, so keep consuming frames and retry
-      // output validation on a later frame if DXGI is still settling.
-      if (!factory->IsCurrent()) {
-        if (!refresh_only_changes_supported) {
-          return platf::capture_e::reinit;
-        }
-
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= next_output_refresh_attempt) {
-          const auto refresh_result = refresh_output_after_nonstructural_change();
-
-          switch (refresh_result) {
-            case output_refresh_e::refreshed:
-              frame_pacing_group_start.reset();
-              frame_pacing_group_frames = 0;
-              last_pacing_slot.reset();
-              output_refresh_deferred = false;
-              BOOST_LOG(info) << "WGC capture continued after non-structural display change";
-              continue;
-
-            case output_refresh_e::retry_later:
-              next_output_refresh_attempt = std::chrono::steady_clock::now() + 50ms;
-              if (!output_refresh_deferred) {
-                output_refresh_deferred = true;
-                BOOST_LOG(debug) << "WGC output refresh deferred while DXGI settles; capture remains active";
-              }
-              break;
-
-            case output_refresh_e::structural_change:
-              return platf::capture_e::reinit;
-          }
-        }
-      }
-
-      if (refresh_only_changes_supported && captured_hdr_state_valid) {
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= next_hdr_state_check) {
-          next_hdr_state_check = now + 1s;
-
-          const auto refresh_result = refresh_output_after_nonstructural_change();
-          if (refresh_result == output_refresh_e::structural_change) {
-            BOOST_LOG(info) << "Display state changed during periodic WGC validation; requesting reinitialization";
-            return platf::capture_e::reinit;
-          }
-        }
+      if (output_monitor && output_monitor->failed()) return capture_e::error;
+      if (output_monitor && output_monitor->reinit_requested()) return capture_e::reinit;
+      if (output_monitor && !output_monitor->mutation_current() && !platf::display_helper_client::capture_mutations_pending()) return capture_e::reinit;
+      if (platf::display_helper_client::capture_mutations_pending() || (output_monitor && output_monitor->hold_frames())) {
+        // Maintain normal timeout/keepalive callbacks without forwarding source
+        // pixels that belong to a display mutation or uncommitted color state.
+        if (!push_captured_image_cb({}, false)) return capture_e::ok;
+        frame_pacing_group_start.reset();
+        frame_pacing_group_frames = 0;
+        last_pacing_slot.reset();
+        std::this_thread::sleep_for(25ms);
+        continue;
       }
 
       if (auto diag_now = std::chrono::steady_clock::now(); diag_now - pacing_diag_last_log >= 10s) {
@@ -657,6 +591,18 @@ namespace platf::dxgi {
         }
       }
 
+      if (platf::display_helper_client::capture_mutations_pending() || (output_monitor && output_monitor->hold_frames())) {
+        release_snapshot();
+        img_out.reset();
+        if (!push_captured_image_cb({}, false)) return capture_e::ok;
+        continue;
+      }
+
+      if (output_monitor && (output_monitor->reinit_requested() || !output_monitor->mutation_current())) {
+        release_snapshot();
+        return capture_e::reinit;
+      }
+
       switch (status) {
         case platf::capture_e::reinit:
         case platf::capture_e::error:
@@ -686,6 +632,14 @@ namespace platf::dxgi {
     return capture_e::ok;
   }
 
+  display_base_t::display_base_t() = default;
+  display_base_t::~display_base_t() = default;
+
+  bool display_base_t::capture_state_current() const {
+    return !platf::display_helper_client::capture_mutations_pending() &&
+      (!output_monitor || (!output_monitor->reinit_requested() && !output_monitor->hold_frames() && output_monitor->mutation_current() && !output_monitor->failed()));
+  }
+
   void display_base_t::prepare_for_reinit() {
     release_snapshot();
 
@@ -693,99 +647,6 @@ namespace platf::dxgi {
       device_ctx->ClearState();
       device_ctx->Flush();
     }
-  }
-
-  display_base_t::output_refresh_e display_base_t::refresh_output_after_nonstructural_change() {
-    factory1_t replacement_factory;
-    if (FAILED(CreateDXGIFactory1(IID_IDXGIFactory1, reinterpret_cast<void **>(&replacement_factory)))) {
-      return output_refresh_e::retry_later;
-    }
-
-    adapter_t replacement_adapter;
-    output_t replacement_output;
-    DXGI_OUTPUT_DESC replacement_desc {};
-    for (UINT adapter_index = 0; !replacement_adapter; ++adapter_index) {
-      adapter_t::pointer adapter_ptr = nullptr;
-      const auto adapter_status = replacement_factory->EnumAdapters1(adapter_index, &adapter_ptr);
-      if (adapter_status == DXGI_ERROR_NOT_FOUND) {
-        break;
-      }
-      if (FAILED(adapter_status) || !adapter_ptr) {
-        continue;
-      }
-
-      adapter_t candidate_adapter {adapter_ptr};
-      DXGI_ADAPTER_DESC1 adapter_desc {};
-      if (FAILED(candidate_adapter->GetDesc1(&adapter_desc)) ||
-          !luid_equal(adapter_desc.AdapterLuid, captured_adapter_luid)) {
-        continue;
-      }
-
-      for (UINT output_index = 0;; ++output_index) {
-        output_t::pointer output_ptr = nullptr;
-        const auto output_status = candidate_adapter->EnumOutputs(output_index, &output_ptr);
-        if (output_status == DXGI_ERROR_NOT_FOUND) {
-          break;
-        }
-        if (FAILED(output_status) || !output_ptr) {
-          continue;
-        }
-
-        output_t candidate_output {output_ptr};
-        DXGI_OUTPUT_DESC desc {};
-        if (FAILED(candidate_output->GetDesc(&desc)) ||
-            std::wcscmp(desc.DeviceName, captured_output_desc.DeviceName) != 0) {
-          continue;
-        }
-        replacement_adapter = std::move(candidate_adapter);
-        replacement_output = std::move(candidate_output);
-        replacement_desc = desc;
-        break;
-      }
-    }
-
-    if (!replacement_adapter || !replacement_output) {
-      return output_refresh_e::retry_later;
-    }
-
-    const auto &old_rect = captured_output_desc.DesktopCoordinates;
-    const auto &new_rect = replacement_desc.DesktopCoordinates;
-    const auto input_geometry_change = current_input_geometry_change(*this);
-    if (input_geometry_change == wgc_policy::input_geometry_change_e::unavailable) {
-      return output_refresh_e::retry_later;
-    }
-    const bool geometry_unchanged = input_geometry_change == wgc_policy::input_geometry_change_e::unchanged && replacement_desc.AttachedToDesktop &&
-                                    replacement_desc.Rotation == captured_output_desc.Rotation &&
-                                    old_rect.left == new_rect.left && old_rect.top == new_rect.top &&
-                                    old_rect.right == new_rect.right && old_rect.bottom == new_rect.bottom;
-    if (!geometry_unchanged) {
-      BOOST_LOG(info) << "WGC capture continuation rejected because output or desktop input geometry changed";
-      return output_refresh_e::structural_change;
-    }
-
-    output6_t replacement_output6;
-    const bool replacement_hdr_valid = SUCCEEDED(
-      replacement_output->QueryInterface(IID_IDXGIOutput6, reinterpret_cast<void **>(&replacement_output6))
-    );
-    bool replacement_hdr = false;
-    if (replacement_hdr_valid) {
-      DXGI_OUTPUT_DESC1 desc1 {};
-      if (FAILED(replacement_output6->GetDesc1(&desc1))) {
-        return output_refresh_e::retry_later;
-      }
-      replacement_hdr = desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
-    }
-    if (captured_hdr_state_valid != replacement_hdr_valid ||
-        (captured_hdr_state_valid && captured_hdr_state != replacement_hdr)) {
-      BOOST_LOG(info) << "WGC capture continuation rejected because HDR state changed";
-      return output_refresh_e::structural_change;
-    }
-
-    factory = std::move(replacement_factory);
-    adapter = std::move(replacement_adapter);
-    output = std::move(replacement_output);
-    captured_output_desc = replacement_desc;
-    return output_refresh_e::refreshed;
   }
 
   /**
@@ -885,6 +746,9 @@ namespace platf::dxgi {
     const bool skip_dd_test,
     const std::optional<LUID> &required_adapter_luid
   ) {
+    // Establish the generation before any output snapshot or D3D resources.
+    // A transaction completing during initialization must invalidate them.
+    const auto mutation_revision = platf::display_helper_client::capture_mutation_revision();
     static std::once_flag windows_cpp_once_flag;
 
     std::call_once(windows_cpp_once_flag, []() {
@@ -1291,8 +1155,9 @@ namespace platf::dxgi {
     dxgi::output6_t output6 {};
     status = output->QueryInterface(IID_IDXGIOutput6, (void **) &output6);
     if (SUCCEEDED(status)) {
-      DXGI_OUTPUT_DESC1 desc1;
-      output6->GetDesc1(&desc1);
+      DXGI_OUTPUT_DESC1 desc1 {};
+      if (FAILED(output6->GetDesc1(&desc1))) return -1;
+      captured_color_desc = desc1;
       captured_hdr_state_valid = true;
       captured_hdr_state = desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
 
@@ -1315,6 +1180,11 @@ namespace platf::dxgi {
     }
 
     refresh_only_changes_supported = skip_dd_test;
+    output_monitor = std::make_unique<display_output_monitor_t>(captured_adapter_luid, captured_output_desc,
+      captured_hdr_state_valid, captured_hdr_state, offset_x, offset_y, env_width, env_height, mutation_revision);
+    // Initialization already runs outside frame pacing. Expose a validated
+    // generation to encoder probing and session construction, or retry init.
+    if (!output_monitor->wait_for_initial_validation(3s)) return -1;
 
     return 0;
   }
@@ -1327,18 +1197,7 @@ namespace platf::dxgi {
   }
 
   bool display_base_t::is_hdr() {
-    dxgi::output6_t output6 {};
-
-    auto status = output->QueryInterface(IID_IDXGIOutput6, (void **) &output6);
-    if (FAILED(status)) {
-      BOOST_LOG(warning) << "Failed to query IDXGIOutput6 from the output"sv;
-      return false;
-    }
-
-    DXGI_OUTPUT_DESC1 desc1;
-    output6->GetDesc1(&desc1);
-
-    return desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+    return captured_hdr_state_valid && captured_hdr_state;
   }
 
   bool is_hdr_active_for_output(const std::string &output_name) {
@@ -1382,18 +1241,9 @@ namespace platf::dxgi {
   }
 
   bool display_base_t::get_hdr_metadata(SS_HDR_METADATA &metadata) {
-    dxgi::output6_t output6 {};
-
     std::memset(&metadata, 0, sizeof(metadata));
-
-    auto status = output->QueryInterface(IID_IDXGIOutput6, (void **) &output6);
-    if (FAILED(status)) {
-      BOOST_LOG(warning) << "Failed to query IDXGIOutput6 from the output"sv;
-      return false;
-    }
-
-    DXGI_OUTPUT_DESC1 desc1;
-    output6->GetDesc1(&desc1);
+    if (!captured_hdr_state_valid || !captured_hdr_state) return false;
+    auto desc1 = captured_color_desc;
 
     // The primaries reported here seem to correspond to scRGB (Rec. 709)
     // which we then convert to Rec 2020 in our scRGB FP16 -> PQ shader

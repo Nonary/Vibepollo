@@ -204,14 +204,14 @@ namespace platf::dxgi {
     bool visible;
   };
 
+  class display_output_monitor_t;
+
   class display_base_t: public display_t {
   public:
-    enum class output_refresh_e {
-      refreshed,
-      retry_later,
-      structural_change,
-    };
+    display_base_t();
+    ~display_base_t() override;
 
+    bool capture_state_current() const override;
     int init(
       const ::video::config_t &config,
       const std::string &display_name,
@@ -222,7 +222,6 @@ namespace platf::dxgi {
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override;
     void prepare_for_reinit() override;
     std::optional<adapter_id_t> capture_adapter_id() const override;
-    output_refresh_e refresh_output_after_nonstructural_change();
 
     factory1_t factory;
     adapter_t adapter;
@@ -232,6 +231,8 @@ namespace platf::dxgi {
     DXGI_RATIONAL display_refresh_rate {0, 1};
     int display_refresh_rate_rounded {};
     DXGI_OUTPUT_DESC captured_output_desc {};
+    DXGI_OUTPUT_DESC1 captured_color_desc {};
+    std::unique_ptr<display_output_monitor_t> output_monitor;
     LUID captured_adapter_luid {};
     bool captured_hdr_state {false};
     bool captured_hdr_state_valid {false};

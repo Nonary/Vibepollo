@@ -1572,13 +1572,10 @@ namespace video {
     std::array<pending_timestamp_slot_t, 256> pending_timestamps {};
   };
 
-  // Sticky per-session HDR state, persists across capture reinits so a transient SDR
-  // display reading cannot downgrade an HDR stream's colorspace or poison its metadata.
-  struct hdr_latch_t {
-    // Set once the session has actually established HDR.
-    bool latched = false;
-    // Metadata captured while the display genuinely read HDR, reused during reinits
-    // where the display transiently reads SDR.
+  // Cache only metadata from the capture generation that produced it. Display
+  // SDR is a real stream state; having previously streamed HDR never overrides it.
+  struct hdr_metadata_cache_t {
+    std::uint64_t generation = 0;
     bool metadata_valid = false;
     SS_HDR_METADATA metadata {};
   };
@@ -1601,7 +1598,7 @@ namespace video {
     config_t config;
     int frame_nr;
     void *channel_data;
-    hdr_latch_t hdr_latch;
+    hdr_metadata_cache_t hdr_cache;
     // Last HDR info raised to this session's client, used to suppress duplicates on reinit.
     std::optional<hdr_info_raw_t> last_hdr_info;
     rtx_hdr_metadata_refresh_state_t rtx_hdr_metadata_refresh;
@@ -4659,7 +4656,7 @@ namespace video {
     platf::display_t &disp,
     const encoder_t &encoder,
     const config_t &config,
-    hdr_latch_t *hdr_latch,
+    hdr_metadata_cache_t *hdr_cache,
     bool deferred_avcodec);
 
   void abandon_quarantined_session(
@@ -4756,15 +4753,17 @@ namespace video {
     std::unique_ptr<encode_session_t> session;
     bool hdr_metadata_valid = false;
     SS_HDR_METADATA hdr_metadata {};
-    hdr_latch_t hdr_latch {};
+    hdr_metadata_cache_t hdr_cache {};
   };
+
+  bool destroy_legacy_amf_session_bounded(std::unique_ptr<encode_session_t> &session, std::string_view reason);
 
   std::optional<legacy_amf_session_bundle_t> make_legacy_amf_session_bounded(
     std::shared_ptr<platf::display_t> disp,
     const config_t &config,
     int width,
     int height,
-    hdr_latch_t *hdr_latch,
+    hdr_metadata_cache_t *hdr_cache,
     std::chrono::steady_clock::time_point deadline,
     const initialization_cancel_t &cancelled,
     bool &operation_cancelled,
@@ -4794,8 +4793,8 @@ namespace video {
       return std::nullopt;
     }
 
-    auto local_latch = hdr_latch ? *hdr_latch : hdr_latch_t {};
-    auto base_device = make_encode_device(*disp, amdvce_ffmpeg, config, &local_latch, true);
+    auto local_cache = hdr_cache ? *hdr_cache : hdr_metadata_cache_t {};
+    auto base_device = make_encode_device(*disp, amdvce_ffmpeg, config, &local_cache, true);
     auto prepared_device = boost::dynamic_pointer_cast<platf::avcodec_encode_device_t>(std::move(base_device));
     if (!prepared_device) {
       native_amf_lifecycle_gate.cancel_initialization();
@@ -4805,7 +4804,7 @@ namespace video {
     legacy_amf_session_bundle_t prepared_bundle;
     prepared_bundle.hdr_metadata_valid = prepared_device->hdr_metadata_valid;
     prepared_bundle.hdr_metadata = prepared_device->hdr_metadata;
-    prepared_bundle.hdr_latch = local_latch;
+    prepared_bundle.hdr_cache = local_cache;
     auto display_lease = prepared_device->release_display_lease_for_initialization();
     auto handoff = std::make_shared<amf::lifecycle::worker_handoff_t<legacy_amf_session_bundle_t>>();
     std::thread initialization_thread;
@@ -4863,7 +4862,12 @@ namespace video {
     if (auto *legacy_session = dynamic_cast<avcodec_encode_session_t *>(bundle.session.get())) {
       legacy_session->restore_display_lease_after_initialization(std::move(display_lease));
     }
-    if (hdr_latch) *hdr_latch = bundle.hdr_latch;
+    if (!disp->capture_state_current() || cancelled()) {
+      operation_cancelled = true;
+      destroy_legacy_amf_session_bounded(bundle.session, "superseded color generation"sv);
+      return std::nullopt;
+    }
+    if (hdr_cache) *hdr_cache = bundle.hdr_cache;
     return bundle;
   }
 
@@ -4976,7 +4980,7 @@ namespace video {
     std::unique_ptr<encode_session_t> prepared_session,
     safe::signal_t &reinit_event,
     const encoder_t &encoder,
-    hdr_latch_t *hdr_latch,
+    hdr_info_t pending_hdr_info,
     void *channel_data,
     std::chrono::steady_clock::time_point initialization_deadline,
     initialization_cancel_t initialization_cancelled,
@@ -5231,6 +5235,13 @@ namespace video {
         return native_amf_failure();
       }
     }
+
+    if (initialization_cancelled() || !disp->capture_state_current()) {
+      force_sync_teardown = true;
+      return encode_run_result_e::completed;
+    }
+    session->request_idr_frame();
+    raise_hdr_info_if_changed(hdr_event, last_hdr_info, std::move(pending_hdr_info));
 
     if (config.input_only) {
       BOOST_LOG(info) << "Input only session, video will not be captured."sv;
@@ -5616,9 +5627,10 @@ namespace video {
     platf::display_t &disp,
     const encoder_t &encoder,
     const config_t &config,
-    hdr_latch_t *hdr_latch = nullptr,
+    hdr_metadata_cache_t *hdr_cache = nullptr,
     bool deferred_avcodec = false) {
     std::unique_ptr<platf::encode_device_t> result;
+    if (!disp.capture_state_current()) return {};
 
 #ifdef _WIN32
     if (&encoder == &amdvce_ffmpeg && native_amf_lifecycle_gate.is_quarantined()) {
@@ -5643,25 +5655,13 @@ namespace video {
     hdr_display = hdr_display || rtx_hdr_stream;
 #endif
 
-    // HDR colorspace latch. A virtual display created for an HDR session can briefly
-    // re-enumerate as SDR during a capture reinit (the double-refresh / HDR-profile mode
-    // change that happens ~1s into a session momentarily drops the output to G22 8-bit).
-    // Without this guard the encoder gets rebuilt for an 8-bit SDR colorspace mid-session
-    // and streams SDR frames to an HDR client, which faults the client decoder
-    // ("decoder reported error") and tears the session down. Once an HDR-requested session
-    // has actually established HDR, keep the HDR colorspace for the rest of the session so a
-    // momentary SDR reading during a reinit can no longer downgrade the wire colorspace.
-    // (Genuinely-SDR sources never latch, because hdr_display is never true for them.)
-    if (config.dynamicRange > 0 && !config.prefer_sdr_10bit && !config.force_sdr && hdr_latch) {
-      if (hdr_display) {
-        hdr_latch->latched = true;
-      } else if (hdr_latch->latched) {
-        BOOST_LOG(info) << "Display momentarily reported SDR during reinit; keeping HDR colorspace for this HDR session.";
-        hdr_display = true;
-      }
+    if (hdr_cache && (hdr_cache->generation != disp.capture_color_generation() || !hdr_display)) {
+      *hdr_cache = {};
+      hdr_cache->generation = disp.capture_color_generation();
     }
 
     auto colorspace = colorspace_from_client_config(config, hdr_display);
+    if (hdr_cache && !colorspace_is_hdr(colorspace)) hdr_cache->metadata_valid = false;
 
     platf::pix_fmt_e pix_fmt;
     if (config.chromaSamplingType == 1) {
@@ -5726,14 +5726,14 @@ namespace video {
 #endif
         if (display_is_hdr && disp.get_hdr_metadata(result->hdr_metadata)) {
           result->hdr_metadata_valid = true;
-          if (hdr_latch) {
-            hdr_latch->metadata = result->hdr_metadata;
-            hdr_latch->metadata_valid = true;
+          if (hdr_cache) {
+            hdr_cache->metadata = result->hdr_metadata;
+            hdr_cache->metadata_valid = true;
           }
-        } else if (hdr_latch && hdr_latch->metadata_valid) {
-          // Latched HDR colorspace but the display transiently reads SDR; reuse the
-          // metadata captured when this session established HDR.
-          result->hdr_metadata = hdr_latch->metadata;
+        } else if (hdr_cache && hdr_cache->metadata_valid) {
+          // A metadata query can fail independently of a confirmed HDR source.
+          // Reuse only metadata collected in this capture generation.
+          result->hdr_metadata = hdr_cache->metadata;
           result->hdr_metadata_valid = true;
         } else {
           BOOST_LOG(error) << "Couldn't get display hdr metadata when colorspace selection indicates it should have one";
@@ -5750,7 +5750,7 @@ namespace video {
     encode_session.ctx = &ctx;
     const auto initialization_deadline = std::chrono::steady_clock::now() + 5s;
     initialization_cancel_t initialization_cancelled = [&]() {
-      return ctx.shutdown_event && ctx.shutdown_event->peek();
+      return !disp->capture_state_current() || (ctx.shutdown_event && ctx.shutdown_event->peek());
     };
 
     std::unique_ptr<platf::encode_device_t> encode_device;
@@ -5762,7 +5762,7 @@ namespace video {
       bool legacy_cancelled = false;
       bool legacy_gate_contended = false;
       auto legacy = make_legacy_amf_session_bounded(
-        disp, ctx.config, img.width, img.height, &ctx.hdr_latch,
+        disp, ctx.config, img.width, img.height, &ctx.hdr_cache,
         initialization_deadline, initialization_cancelled,
         legacy_cancelled, legacy_gate_contended);
       if (legacy_cancelled || legacy_gate_contended) return std::nullopt;
@@ -5774,7 +5774,7 @@ namespace video {
     } else
 #endif
     {
-      encode_device = make_encode_device(*disp, encoder, ctx.config, &ctx.hdr_latch);
+      encode_device = make_encode_device(*disp, encoder, ctx.config, &ctx.hdr_cache);
       if (encode_device) {
         session_hdr_metadata_valid = encode_device->hdr_metadata_valid;
         session_hdr_metadata = encode_device->hdr_metadata;
@@ -5784,13 +5784,6 @@ namespace video {
 
     // absolute mouse coordinates require that the dimensions of the screen are known
     ctx.touch_port_events->raise(make_port(disp.get(), ctx.config));
-
-    // Update client with our current HDR stream state
-    hdr_info_t hdr_info = std::make_unique<hdr_info_raw_t>(false);
-    if (session_hdr_metadata_valid) {
-      hdr_info = std::make_unique<hdr_info_raw_t>(true, session_hdr_metadata);
-    }
-    raise_hdr_info_if_changed(ctx.hdr_events, ctx.last_hdr_info, std::move(hdr_info));
 
     if (!session) {
       session = make_encode_session(
@@ -5806,6 +5799,22 @@ namespace video {
       BOOST_LOG(error) << "Could not convert initial image"sv;
       return std::nullopt;
     }
+
+    if (initialization_cancelled()) {
+#ifdef _WIN32
+      if (&encoder == &amdvce_ffmpeg) destroy_legacy_amf_session_bounded(session, "superseded color generation"sv);
+      else
+#endif
+      destroy_encode_session_bounded(session, "superseded color generation"sv);
+      return std::nullopt;
+    }
+    session->request_idr_frame();
+    // Update client with our current HDR stream state
+    hdr_info_t hdr_info = std::make_unique<hdr_info_raw_t>(false);
+    if (session_hdr_metadata_valid) {
+      hdr_info = std::make_unique<hdr_info_raw_t>(true, session_hdr_metadata);
+    }
+    raise_hdr_info_if_changed(ctx.hdr_events, ctx.last_hdr_info, std::move(hdr_info));
 
     encode_session.bootstrap.allow_placeholder_before_first_real = ctx.frame_nr <= 1;
     encode_session.session = std::move(session);
@@ -5920,12 +5929,14 @@ namespace video {
     for (auto &ctx : synced_session_ctxs) {
       auto synced_session = make_synced_session(disp, encoder, *img, *ctx);
       if (!synced_session) {
+        if (!disp->capture_state_current()) { std::this_thread::sleep_for(25ms); return encode_e::reinit; }
         return encode_e::error;
       }
 
       synced_sessions.emplace_back(std::move(*synced_session));
     }
 
+    const auto bootstrap_image = img;
     auto ec = platf::capture_e::ok;
     while (encode_session_ctx_queue.running()) {
       auto push_captured_image_callback = [&](std::shared_ptr<platf::img_t> &&img, bool frame_captured) -> bool {
@@ -5935,6 +5946,7 @@ namespace video {
           return false;
         }
 
+        if (!frame_captured && !img) img = bootstrap_image;
         if (event_driven_capture && !frame_captured && encode_session_ctx_queue.peek()) {
           disp->request_refresh();
         }
@@ -5947,7 +5959,7 @@ namespace video {
 
           auto encode_session = make_synced_session(disp, encoder, *img, *synced_session_ctxs.back());
           if (!encode_session) {
-            ec = platf::capture_e::error;
+            ec = disp->capture_state_current() ? platf::capture_e::error : platf::capture_e::reinit;
             return false;
           }
 
@@ -6157,33 +6169,29 @@ namespace video {
   /**
    * @brief Stream colorspace and HDR info for a PyroWave session.
    *
-   * Mirrors make_encode_device(), including the per-session HDR latch that keeps a
-   * transient SDR reading during a capture reinit from downgrading an HDR stream.
+   * Shares the source state and metadata lifetime of codec streams.
    * RTX HDR is never active for PyroWave sessions (see rtsp.cpp).
    */
-  sunshine_colorspace_t pyrowave_session_colorspace(platf::display_t &disp, const config_t &config, hdr_latch_t &hdr_latch, hdr_info_t &hdr_info) {
+  sunshine_colorspace_t pyrowave_session_colorspace(platf::display_t &disp, const config_t &config, hdr_metadata_cache_t &hdr_cache, hdr_info_t &hdr_info) {
     const bool display_is_hdr = disp.is_hdr();
     bool hdr_display = display_is_hdr;
-    if (config.dynamicRange > 0 && !config.prefer_sdr_10bit && !config.force_sdr) {
-      if (hdr_display) {
-        hdr_latch.latched = true;
-      } else if (hdr_latch.latched) {
-        BOOST_LOG(info) << "Display momentarily reported SDR during reinit; keeping HDR colorspace for this HDR session.";
-        hdr_display = true;
-      }
+    if (hdr_cache.generation != disp.capture_color_generation() || !hdr_display) {
+      hdr_cache = {};
+      hdr_cache.generation = disp.capture_color_generation();
     }
 
     const auto colorspace = colorspace_from_client_config(config, hdr_display);
+    if (!colorspace_is_hdr(colorspace)) hdr_cache.metadata_valid = false;
 
     hdr_info = std::make_unique<hdr_info_raw_t>(false);
     if (colorspace_is_hdr(colorspace)) {
       SS_HDR_METADATA metadata {};
       if (display_is_hdr && disp.get_hdr_metadata(metadata)) {
-        hdr_latch.metadata = metadata;
-        hdr_latch.metadata_valid = true;
+        hdr_cache.metadata = metadata;
+        hdr_cache.metadata_valid = true;
         hdr_info = std::make_unique<hdr_info_raw_t>(true, metadata);
-      } else if (hdr_latch.metadata_valid) {
-        hdr_info = std::make_unique<hdr_info_raw_t>(true, hdr_latch.metadata);
+      } else if (hdr_cache.metadata_valid) {
+        hdr_info = std::make_unique<hdr_info_raw_t>(true, hdr_cache.metadata);
       } else {
         BOOST_LOG(error) << "Couldn't get display hdr metadata when colorspace selection indicates it should have one";
       }
@@ -6221,7 +6229,9 @@ namespace video {
     std::shared_ptr<platf::display_t> disp,
     const sunshine_colorspace_t &colorspace,
     safe::signal_t &reinit_event,
-    void *channel_data
+    void *channel_data,
+    hdr_info_t pending_hdr_info,
+    std::optional<hdr_info_raw_t> &last_hdr_info
   ) {
     pyrowave::host::session_params_t params;
     params.width = config.width;
@@ -6239,6 +6249,7 @@ namespace video {
     const int maximum_wire_kbps = config.client_requested_bitrate > 0 ? config.client_requested_bitrate : config.bitrate;
     const int audio_control_reserve_kbps = std::max(0, maximum_wire_kbps - config.bitrate);
 
+    if (!disp->capture_state_current()) return true;
     auto encoder = pyrowave::host::make_encoder(params, disp);
     if (!encoder) {
       BOOST_LOG(error) << "PyroWave: could not create the encoder for "sv << config.width << 'x' << config.height;
@@ -6261,6 +6272,7 @@ namespace video {
     auto shutdown_event = mail->event<bool>(mail::shutdown);
     auto packets = mail::man->queue<packet_t>(mail::video_packets);
     auto idr_events = mail->event<bool>(mail::idr);
+    auto hdr_event = mail->event<hdr_info_t>(mail::hdr);
     auto invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
     auto bitrate_events = mail->event<int>(mail::dynamic_bitrate);
 
@@ -6275,7 +6287,7 @@ namespace video {
     std::size_t critical_bytes = 0;
     pyrowave::policy::detail_fec_controller_t detail_fec_controller(config.framerate);
     while (true) {
-      const bool reinit_pending = reinit_event.peek() && frame_nr > 1;
+      const bool reinit_pending = (reinit_event.peek() && frame_nr > 1) || !disp->capture_state_current();
       if (shutdown_event->peek() || !images->running() || reinit_pending) {
         return reinit_pending && !shutdown_event->peek() && images->running();
       }
@@ -6317,6 +6329,9 @@ namespace video {
       if (result > 0) {
         continue;
       }
+
+      if (!disp->capture_state_current()) return true;
+      if (pending_hdr_info) raise_hdr_info_if_changed(hdr_event, last_hdr_info, std::move(pending_hdr_info));
 
       const auto detail_fec = params.critical_fec && params.framing == pyrowave::policy::framing_e::records ?
                                 detail_fec_controller.observe(frame, submitted_at, config.bitrate) :
@@ -6373,9 +6388,8 @@ namespace video {
 
     int frame_nr = 1;
 
-    // Per-session HDR latch and last-raised HDR info, persisting across capture reinits
-    // so a transient SDR display reading cannot downgrade or re-signal an HDR stream.
-    hdr_latch_t hdr_latch;
+    // Per-generation metadata cache and per-session message deduplication.
+    hdr_metadata_cache_t hdr_cache;
     std::optional<hdr_info_raw_t> last_hdr_info;
     rtx_hdr_metadata_refresh_state_t rtx_hdr_metadata_refresh;
 
@@ -6413,13 +6427,13 @@ namespace video {
 
       if (config.videoFormat == 3) {
         hdr_info_t hdr_info;
-        const auto colorspace = pyrowave_session_colorspace(*display, config, hdr_latch, hdr_info);
+        if (!display->capture_state_current()) { std::this_thread::sleep_for(20ms); continue; }
+        const auto colorspace = pyrowave_session_colorspace(*display, config, hdr_cache, hdr_info);
+        if (!display->capture_state_current()) continue;
 
         // absolute mouse coordinates require that the dimensions of the screen are known
         touch_port_event->raise(make_port(display.get(), config));
-        raise_hdr_info_if_changed(hdr_event, last_hdr_info, std::move(hdr_info));
-
-        if (!encode_run_pyrowave(frame_nr, mail, images, config, display, colorspace, source_ctx.reinit_event, channel_data)) {
+        if (!encode_run_pyrowave(frame_nr, mail, images, config, display, colorspace, source_ctx.reinit_event, channel_data, std::move(hdr_info), last_hdr_info)) {
           // Shutdown, or an encoder failure: end the session either way.
           return;
         }
@@ -6434,7 +6448,7 @@ namespace video {
       auto &encoder = *enc_ptr;
       const auto initialization_deadline = std::chrono::steady_clock::now() + 5s;
       initialization_cancel_t initialization_cancelled = [&]() {
-        return shutdown_event->peek() || source_ctx.reinit_event.peek() || !images->running();
+        return !display->capture_state_current() || shutdown_event->peek() || source_ctx.reinit_event.peek() || !images->running();
       };
 
       std::unique_ptr<platf::encode_device_t> encode_device;
@@ -6446,7 +6460,7 @@ namespace video {
 #ifdef _WIN32
       if (&encoder == &amdvce_ffmpeg) {
         auto legacy = make_legacy_amf_session_bounded(
-          display, config, display->width, display->height, &hdr_latch,
+          display, config, display->width, display->height, &hdr_cache,
           initialization_deadline, initialization_cancelled,
           initialization_was_cancelled, initialization_gate_contended);
         if (legacy) {
@@ -6457,7 +6471,7 @@ namespace video {
       } else
 #endif
       {
-        encode_device = make_encode_device(*display, encoder, config, &hdr_latch);
+        encode_device = make_encode_device(*display, encoder, config, &hdr_cache);
         if (encode_device) {
           session_hdr_metadata_valid = encode_device->hdr_metadata_valid;
           session_hdr_metadata = encode_device->hdr_metadata;
@@ -6488,6 +6502,13 @@ namespace video {
         std::this_thread::sleep_for(100ms);
         continue;
       }
+      if (!display->capture_state_current() && !encode_device) {
+#ifdef _WIN32
+        if (prepared_session && &encoder == &amdvce_ffmpeg) destroy_legacy_amf_session_bounded(prepared_session, "superseded color generation"sv);
+#endif
+        std::this_thread::sleep_for(20ms);
+        continue;
+      }
       if (!encode_device && !prepared_session) {
         return;
       }
@@ -6496,13 +6517,8 @@ namespace video {
       // absolute mouse coordinates require that the dimensions of the screen are known
       touch_port_event->raise(make_port(display.get(), config));
 
-      // Update client with our current HDR stream state
-      hdr_info_t hdr_info = std::make_unique<hdr_info_raw_t>(false);
-      if (session_hdr_metadata_valid) {
-        hdr_info = std::make_unique<hdr_info_raw_t>(true, session_hdr_metadata);
-      }
-      raise_hdr_info_if_changed(hdr_event, last_hdr_info, std::move(hdr_info));
-
+      hdr_info_t pending_hdr_info = std::make_unique<hdr_info_raw_t>(false);
+      if (session_hdr_metadata_valid) pending_hdr_info = std::make_unique<hdr_info_raw_t>(true, session_hdr_metadata);
       const auto encode_result = encode_run(
         frame_nr,
         mail,
@@ -6513,7 +6529,7 @@ namespace video {
         std::move(prepared_session),
         source_ctx.reinit_event,
         session_encoder,
-        &hdr_latch,
+        std::move(pending_hdr_info),
         channel_data,
         initialization_deadline,
         initialization_cancelled,

@@ -1,9 +1,12 @@
 #include "src/platform/windows/display_helper_v2/win_display_settings.h"
 
 #include "src/logging.h"
+#include "src/utility.h"
 #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
 #include "src/platform/windows/display_helper_v2/topology_policy.h"
 
+
+#include <thread>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -72,6 +75,39 @@ namespace display_helper::v2 {
       BOOST_LOG(error) << "Display helper v2: display settings apply failed.";
       return ApplyStatus::Fatal;
     }
+  }
+
+  bool WinDisplaySettings::blank_hdr_states(std::chrono::milliseconds delay, const std::function<bool()> &cancelled) {
+    if (!ensure_initialized() || cancelled()) return false;
+    std::lock_guard lock(settings_mutex_);
+    const auto topology = display_device_->getCurrentTopology();
+    std::set<std::string> ids;
+    for (const auto &group : topology) ids.insert(group.begin(), group.end());
+    const auto states = display_device_->getCurrentHdrStates(ids);
+    display_device::HdrStateMap disabled, original;
+    for (const auto &[id, state] : states) {
+      if (state == display_device::HdrState::Enabled) {
+        disabled[id] = display_device::HdrState::Disabled;
+        original[id] = display_device::HdrState::Enabled;
+      }
+    }
+    if (original.empty()) return true;
+    if (cancelled()) return false;
+    // Even a failing disable can partially mutate the outputs. Restore before
+    // leaving this worker, including cancellation and exception paths.
+    auto restore = util::fail_guard([&]() noexcept {
+      try { display_device_->setHdrStates(original); } catch (...) {
+        BOOST_LOG(error) << "Display helper: failed to restore HDR after cancelled blank";
+      }
+    });
+    if (!display_device_->setHdrStates(disabled)) return false;
+    const auto end = std::chrono::steady_clock::now() + delay;
+    while (!cancelled() && std::chrono::steady_clock::now() < end) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    const bool restored = display_device_->setHdrStates(original);
+    restore.disable();
+    return restored && !cancelled();
   }
 
   ApplyStatus WinDisplaySettings::apply_topology(const ActiveTopology &topology) {

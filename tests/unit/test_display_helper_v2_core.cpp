@@ -46,6 +46,16 @@ namespace {
       return apply_status;
     }
 
+    bool blank_hdr_states(std::chrono::milliseconds delay, const std::function<bool()> &cancelled) override {
+      events.emplace_back("blank");
+      blank_delay = delay;
+      if (blank_behavior) blank_behavior();
+      return blank_result && !cancelled();
+    }
+    std::chrono::milliseconds blank_delay {0};
+    std::function<void()> blank_behavior;
+    bool blank_result = true;
+
     display_helper::v2::ApplyStatus apply_topology(const display_device::ActiveTopology &requested) override {
       events.emplace_back("topology");
       ++apply_topology_calls;
@@ -393,6 +403,53 @@ TEST(DisplayHelperV2ApplyPolicy, RespectsVirtualDisplayCooldown) {
   EXPECT_EQ(
     policy.maybe_reset_virtual_display(display_helper::v2::ApplyStatus::NeedsVirtualDisplayReset, true),
     display_helper::v2::PolicyDecision::ResetVirtualDisplay);
+}
+
+TEST(DisplayHelperV2ApplyOperation, RequestedBlankFinishesInsideApplyBeforeAdmission) {
+  FakeClock clock;
+  FakeDisplaySettings display;
+  display_helper::v2::CancellationSource cancellation;
+  display_helper::v2::ApplyOperation operation(display, clock);
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.hdr_blank = true;
+  display.blank_behavior = [&] { clock.advance(std::chrono::milliseconds(1000)); };
+  const auto outcome = operation.run(request, cancellation.token());
+  EXPECT_EQ(outcome.status, display_helper::v2::ApplyStatus::Ok);
+  EXPECT_EQ(display.blank_delay, std::chrono::milliseconds(1000));
+  EXPECT_EQ(display.events.back(), "blank");
+  EXPECT_LT(std::find(display.events.begin(), display.events.end(), "settings"),
+            std::find(display.events.begin(), display.events.end(), "blank"));
+}
+
+TEST(DisplayHelperV2ApplyOperation, BlankFailureOrExpiredBudgetCannotAdmitCapture) {
+  FakeClock clock;
+  FakeDisplaySettings display;
+  display_helper::v2::CancellationSource cancellation;
+  display_helper::v2::ApplyOperation operation(display, clock);
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.hdr_blank = true;
+  display.blank_result = false;
+  EXPECT_EQ(operation.run(request, cancellation.token()).status, display_helper::v2::ApplyStatus::HdrStateFailed);
+  display.blank_result = true;
+  request.deadline = clock.now() + std::chrono::milliseconds(500);
+  display.blank_behavior = [&] { clock.advance(std::chrono::milliseconds(1000)); };
+  EXPECT_EQ(operation.run(request, cancellation.token()).status, display_helper::v2::ApplyStatus::Fatal);
+}
+
+TEST(DisplayHelperV2ApplyOperation, BlankIsOptInAndCancellationStopsAdmission) {
+  FakeClock clock;
+  FakeDisplaySettings display;
+  display_helper::v2::CancellationSource cancellation;
+  display_helper::v2::ApplyOperation operation(display, clock);
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  EXPECT_EQ(operation.run(request, cancellation.token()).status, display_helper::v2::ApplyStatus::Ok);
+  EXPECT_EQ(display.blank_delay.count(), 0);
+  request.hdr_blank = true;
+  display.blank_behavior = [&] { cancellation.cancel(); };
+  EXPECT_EQ(operation.run(request, cancellation.token()).status, display_helper::v2::ApplyStatus::Fatal);
 }
 
 TEST(DisplayHelperV2ApplyOperation, UsesExplicitTopologyAsSingleStagingBase) {

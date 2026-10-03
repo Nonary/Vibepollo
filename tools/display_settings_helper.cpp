@@ -36,6 +36,7 @@
 
 // third-party (libdisplaydevice)
   #include "src/logging.h"
+  #include "src/utility.h"
   #include "src/platform/windows/ipc/pipes.h"
 
   #include <display_device/json.h>
@@ -752,16 +753,31 @@ namespace {
       }
     }
 
-    // Apply the HDR blank workaround synchronously (call from a background thread)
-    void blank_hdr_states(std::chrono::milliseconds delay) {
-      if (!ensure_initialized()) {
-        return;
-      }
+    // Finish the optional HDR blank before reporting capture readiness. Restore
+    // every HDR-enabled output even when cancellation interrupts the SDR hold.
+    bool blank_hdr_states(std::chrono::milliseconds delay, const std::function<bool()> &cancelled = [] { return false; }) {
+      if (!ensure_initialized() || cancelled()) return false;
       try {
-        display_device::win_utils::blankHdrStates(*m_dd, delay);
-      } catch (...) {
-        // ignore errors; best effort
-      }
+        std::set<std::string> ids;
+        for (const auto &group : m_dd->getCurrentTopology()) ids.insert(group.begin(), group.end());
+        const auto states = m_dd->getCurrentHdrStates(ids);
+        display_device::HdrStateMap original, disabled;
+        for (const auto &[id, hdr] : states) {
+          if (hdr == display_device::HdrState::Enabled) {
+            original[id] = hdr;
+            disabled[id] = display_device::HdrState::Disabled;
+          }
+        }
+        if (original.empty()) return true;
+        if (cancelled()) return false;
+        auto restore = util::fail_guard([&] { try { m_dd->setHdrStates(original); } catch (...) {} });
+        if (!m_dd->setHdrStates(disabled)) return false;
+        const auto until = std::chrono::steady_clock::now() + delay;
+        while (!cancelled() && std::chrono::steady_clock::now() < until) std::this_thread::sleep_for(25ms);
+        const bool restored = m_dd->setHdrStates(original);
+        restore.disable();
+        return restored && !cancelled();
+      } catch (...) { return false; }
     }
 
     // Compute a simple signature string from snapshot for change detection/logging.
@@ -2203,7 +2219,7 @@ namespace {
     void start(Callback cb) {
       stop();
       callback_ = std::move(cb);
-      worker_ = std::jthread(&DisplayEventPump::thread_proc, this);
+      worker_ = std::jthread([this](std::stop_token stop) { thread_proc(stop); });
     }
 
     void stop() {
@@ -4215,17 +4231,16 @@ namespace {
       stop_and_join(post_apply_thread, "post-apply");
     }
 
-    void schedule_post_apply_tasks(
+    bool run_initial_apply_adjuncts(
       bool enforce_snapshot,
       std::optional<std::string> before_sig,
       bool wa_hdr_toggle,
       std::optional<std::string> requested_virtual_layout,
       std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides,
       std::vector<std::pair<std::string, std::pair<unsigned int, unsigned int>>> refresh_rate_overrides,
-      std::vector<std::chrono::milliseconds> reapply_delays
+      std::chrono::steady_clock::time_point deadline
     ) {
-      cancel_post_apply_tasks();
-      post_apply_thread = std::jthread(
+      auto run =
         [this,
          enforce_snapshot,
          before_sig = std::move(before_sig),
@@ -4233,13 +4248,13 @@ namespace {
          requested_virtual_layout = std::move(requested_virtual_layout),
          monitor_position_overrides = std::move(monitor_position_overrides),
          refresh_rate_overrides = std::move(refresh_rate_overrides),
-         reapply_delays = std::move(reapply_delays)](std::stop_token st) mutable {
+         deadline](std::stop_token st) mutable -> bool {
           const auto apply_epoch = current_connection_epoch();
           auto cancelled = [&]() {
-            return st.stop_requested() || !is_connection_epoch_current(apply_epoch);
+            return st.stop_requested() || !is_connection_epoch_current(apply_epoch) || std::chrono::steady_clock::now() >= deadline;
           };
           if (cancelled()) {
-            return;
+            return false;
           }
 
           if (enforce_snapshot && before_sig) {
@@ -4254,25 +4269,16 @@ namespace {
           }
 
           if (cancelled()) {
-            return;
+            return false;
           }
           retry_apply_on_topology.store(false, std::memory_order_release);
-          if (!reapply_delays.empty()) {
-            if (cancelled()) {
-              return;
-            }
-            schedule_delayed_reapply(std::move(reapply_delays));
-          }
-          if (cancelled()) {
-            return;
-          }
           refresh_shell_after_display_change();
           if (cancelled()) {
-            return;
+            return false;
           }
-          schedule_hdr_blank_if_needed(wa_hdr_toggle);
+          if (wa_hdr_toggle && !controller.blank_hdr_states(1000ms, cancelled)) return false;
           if (cancelled()) {
-            return;
+            return false;
           }
 
           if (requested_virtual_layout) {
@@ -4280,7 +4286,7 @@ namespace {
           }
 
           if (cancelled()) {
-            return;
+            return false;
           }
           if (!monitor_position_overrides.empty()) {
             constexpr int kMinDisplayOrigin = -32768;
@@ -4293,7 +4299,7 @@ namespace {
 
             while (!pending_overrides.empty()) {
               if (cancelled()) {
-                return;
+                return false;
               }
               ++retry_attempt;
               std::vector<std::pair<std::string, display_device::Point>> next_pending;
@@ -4301,7 +4307,7 @@ namespace {
 
               for (const auto &[device_id, origin] : pending_overrides) {
                 if (cancelled()) {
-                  return;
+                  return false;
                 }
                 if (device_id.empty()) {
                   continue;
@@ -4343,7 +4349,7 @@ namespace {
                 break;
               }
               if (!wait_with_stop(st, kRepositionRetryInterval)) {
-                return;
+                return false;
               }
             }
 
@@ -4367,7 +4373,7 @@ namespace {
           // refresh rates (e.g. 240Hz → 60Hz). This restores the original rates.
           if (!refresh_rate_overrides.empty()) {
             if (cancelled()) {
-              return;
+              return false;
             }
             bool rate_result = true;
             for (const auto &[device_id, rate] : refresh_rate_overrides) {
@@ -4392,8 +4398,9 @@ namespace {
             }
             BOOST_LOG(info) << "Display helper: refresh rate overrides applied result=" << (rate_result ? "true" : "false");
           }
-        }
-      );
+          return !cancelled();
+        };
+      return run({});
     }
   };
 
@@ -5071,6 +5078,7 @@ namespace {
     state.exit_after_revert.store(false, std::memory_order_release);
 
     std::string json(reinterpret_cast<const char *>(payload.data()), payload.size());
+    auto apply_deadline = std::chrono::steady_clock::time_point::max();
     bool wa_hdr_toggle = false;
     std::optional<std::string> requested_virtual_layout;
     std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides;
@@ -5086,6 +5094,12 @@ namespace {
         // verification phase, so discard it before deserializing the public
         // display configuration and retain the original untagged response.
         j.erase("sunshine_apply_id");
+        j.erase("sunshine_capture_mutation_protocol");
+        if (j.contains("sunshine_apply_budget_ms")) {
+          apply_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(
+            std::clamp<std::int64_t>(j["sunshine_apply_budget_ms"].get<std::int64_t>(), 0, 15000));
+          j.erase("sunshine_apply_budget_ms");
+        }
         // The legacy helper completes APPLY synchronously and does not have the
         // v2 initial-repair ladder controlled by this private metadata.
         j.erase("sunshine_omit_final_initial_hdr_reapply");
@@ -5205,6 +5219,10 @@ namespace {
     state.retry_revert_on_topology.store(false, std::memory_order_release);
     state.exit_after_revert.store(false, std::memory_order_release);
 
+    if (std::chrono::steady_clock::now() >= apply_deadline) {
+      error_msg = "Display initialization exceeded its budget";
+      return false;
+    }
     bool validated = state.controller.soft_test_display_settings(cfg, sunshine_topology);
     if (!validated) {
       BOOST_LOG(warning) << "Display helper: configuration failed SDC_VALIDATE soft-test; attempting display stack recovery and retrying once.";
@@ -5224,45 +5242,31 @@ namespace {
         return false;
       }
 
+      // Capture admission includes the blank, geometry and refresh adjuncts.
+      // A late reapply must not turn a manually selected SDR source back to HDR.
+      if (!state.run_initial_apply_adjuncts(
+            false, std::nullopt, wa_hdr_toggle, requested_virtual_layout,
+            std::move(monitor_position_overrides), std::move(refresh_rate_overrides), apply_deadline)) {
+        error_msg = "Display initialization was cancelled or exceeded its budget";
+        return false;
+      }
       constexpr int kMaxSyncVerifyAttempts = 2;
       bool verified_sync = false;
-      std::vector<std::chrono::milliseconds> reapply_delays {750ms};
-      if (cfg.m_hdr_state) {
-        // HDR state can be changed asynchronously by Windows shortly after topology/mode changes,
-        // especially for virtual displays. Schedule a few extra best-effort re-apply attempts to
-        // enforce either HDR enablement or the SDR request's HDR disablement.
-        reapply_delays = {750ms, 2500ms, 5500ms};
-      }
-
       for (int attempt = 1; attempt <= kMaxSyncVerifyAttempts; ++attempt) {
+        if (std::chrono::steady_clock::now() >= apply_deadline) break;
         if (state.verify_last_configuration_sticky(ServiceState::kVerificationSettleDelay)) {
-          verified_sync = true;
-          if (attempt > 1) {
-            BOOST_LOG(info) << "Display helper: verification succeeded on attempt #" << attempt << " after re-apply.";
-          }
+          verified_sync = std::chrono::steady_clock::now() < apply_deadline;
           break;
         }
-        BOOST_LOG(warning) << "Display helper: verification attempt #" << attempt
-                           << " did not stick; "
-                           << (attempt < kMaxSyncVerifyAttempts ? "retrying synchronously." : "deferring to async retry.");
-        state.best_effort_apply_last_cfg();
+        if (attempt < kMaxSyncVerifyAttempts && std::chrono::steady_clock::now() < apply_deadline) {
+          state.best_effort_apply_last_cfg();
+        }
       }
-      if (verified_sync) {
-        BOOST_LOG(debug) << "Display helper: synchronous verification succeeded; scheduling follow-up check.";
-      } else {
-        BOOST_LOG(warning) << "Display helper: synchronous verification failed; scheduling async fallback.";
+      if (!verified_sync) {
+        error_msg = "Requested display configuration did not stabilize before capture admission";
+        return false;
       }
-
       state.retry_apply_on_topology.store(false, std::memory_order_release);
-      state.schedule_post_apply_tasks(
-        false,
-        std::nullopt,
-        wa_hdr_toggle,
-        requested_virtual_layout,
-        std::move(monitor_position_overrides),
-        std::move(refresh_rate_overrides),
-        std::move(reapply_delays)
-      );
     } else {
       BOOST_LOG(error) << "Display helper: configuration failed SDC_VALIDATE soft-test; not applying.";
       error_msg = "Display configuration failed validation";

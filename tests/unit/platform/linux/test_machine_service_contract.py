@@ -708,7 +708,7 @@ if len(launch_admission_rechecks) != 3:
     raise AssertionError("every launch/resume admission path must revalidate live pairing authorization")
 launch_body = nvhttp.split("void launch(", 1)[1].split("void resume(", 1)[0]
 forbid(launch_body, "proc::proc.terminate();", "lifecycle-owned launch termination")
-if len(re.findall(r"proc::proc\.terminate\(false, true(?:, false, true)?\)", launch_body)) < 3:
+if len(re.findall(r"proc::proc\.terminate\(false,\s*true(?:,\s*false,\s*true(?:,\s*true)?)?\)", launch_body)) < 3:
     raise AssertionError("every lifecycle-owned launch termination must transfer the held gate")
 require(host, "configure) [[ $# == 2 ]]", "desktop-user-only machine policy")
 require(host, "capability_clean_exec /usr/bin/env -i", "private host capability-clean exec")

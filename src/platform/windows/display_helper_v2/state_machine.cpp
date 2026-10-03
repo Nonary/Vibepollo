@@ -1484,17 +1484,8 @@ namespace display_helper::v2 {
           system_.arm_heartbeat();
         }
         system_.refresh_shell();
-        // wa_hdr_toggle is an explicitly requested workaround. Running it on
-        // every successful APPLY was an unnecessary monitor off/on cycle.
-        if (current_request_.hdr_blank) {
-          system_.blank_hdr_states(std::chrono::milliseconds(1000));
-        }
-        // ApplyResult is the point at which Sunshine begins WGC prewarm. Do
-        // not publish it until the core Apply, best-effort geometry/rate work,
-        // and both target-scoped verification samples have completed. The
-        // explicitly requested asynchronous HDR-blank workaround above is a
-        // separate compatibility action. VerificationResult follows
-        // immediately for the v2 correlation gate.
+        // All display mutations, including the optional HDR blank/restore,
+        // finish in the APPLY worker before these post-apply verification samples.
         send_apply_result(ApplyStatus::Ok);
         send_verification_result(true);
       }

@@ -175,6 +175,7 @@ namespace display_helper::v2 {
     void apply_refresh_rate_overrides(const ApplyRequest &request, const CancellationToken &token);
 
     IDisplaySettings &display_;
+    IClock &clock_;
     MutationBoundary mutation_boundary_;
   };
 

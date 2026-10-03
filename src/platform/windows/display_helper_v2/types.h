@@ -127,6 +127,7 @@ namespace display_helper::v2 {
     /// display creation resets them.
     std::vector<std::pair<std::string, std::pair<unsigned int, unsigned int>>> refresh_rate_overrides;
     bool hdr_blank = false;
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max();
     bool prefer_golden_first = false;
     /// When false, a broken Sunshine connection must not autonomously restore
     /// (stream is intentionally pause-retained).

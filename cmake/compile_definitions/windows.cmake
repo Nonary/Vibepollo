@@ -175,6 +175,8 @@ list(APPEND SUNSHINE_DEFINITIONS VIGEMBUS_PACKAGED_VERSION="${VIGEMBUS_PACKAGED_
 # always compiled in on Windows; it no-ops gracefully when the shim/runtime is absent.
 list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_ENABLE_NV_TRUEHDR=1)
 
+list(APPEND PLATFORM_LIBRARIES windowsapp)
+
 set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/publish.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/misc.h"
@@ -246,6 +248,7 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/input.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_base.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_output_monitor.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/nv_truehdr.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/nv_truehdr.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_policy.h"
