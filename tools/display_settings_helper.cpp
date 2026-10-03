@@ -38,9 +38,11 @@
   #include "src/logging.h"
   #include "src/utility.h"
   #include "src/platform/windows/ipc/pipes.h"
+  #include "src/platform/windows/display_snapshot_restore.h"
 
   #include <display_device/json.h>
   #include <display_device/logging.h>
+  #include <display_device/mode_verification.h>
   #include <display_device/noop_audio_context.h>
   #include <display_device/noop_settings_persistence.h>
   #include <display_device/windows/settings_manager.h>
@@ -1418,7 +1420,8 @@ namespace {
       }
     }
 
-    // Apply snapshot best-effort.
+    // Apply only after the entire saved topology is active. A successful
+    // setTopology call can still mean Windows selected a partial topology.
     bool apply_snapshot(
       const display_device::DisplaySettingsSnapshot &snap,
       const layout_rotation_map_t *layout_rotations = nullptr
@@ -1426,15 +1429,23 @@ namespace {
       if (!ensure_initialized()) {
         return false;
       }
+      display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
       try {
-        (void) m_dd->setTopology(snap.m_topology);
-        (void) m_dd->setDisplayModes(snap.m_modes);
-        (void) m_dd->setHdrStates(snap.m_hdr_states);
-        if (!snap.m_primary_device.empty()) {
-          (void) m_dd->setAsPrimary(snap.m_primary_device);
+        if (!m_dd->setTopology(snap.m_topology)) {
+          BOOST_LOG(warning) << "Snapshot restore: topology apply failed.";
+          return false;
         }
-        for (const auto &[device_id, point] : snap.m_origins) {
-          (void) m_dd->setDisplayOrigin(device_id, point);
+        const auto deadline = std::chrono::steady_clock::now() + 2000ms;
+        while (!m_dd->isTopologyTheSame(m_dd->getCurrentTopology(), snap.m_topology)) {
+          if (std::chrono::steady_clock::now() >= deadline) {
+            BOOST_LOG(warning) << "Snapshot restore: saved topology is not ready; deferring settings.";
+            return false;
+          }
+          std::this_thread::sleep_for(150ms);
+        }
+        if (!display_helper::restore_snapshot_settings(*m_dd, snap)) {
+          BOOST_LOG(warning) << "Snapshot restore: settings failed; skipping remaining layout saves.";
+          return false;
         }
         if (layout_rotations && !layout_rotations->empty()) {
           return apply_layout_rotations(*layout_rotations);
@@ -3024,14 +3035,14 @@ namespace {
       return topology;
     }
 
-    // Strict comparator: require full structural equality; allow Unknown==Unknown for HDR.
+    // Strict comparator: require equal values; allow Unknown==Unknown for HDR.
     // Topology is compared order-insensitively so a restore isn't treated as failed
     // (and endlessly re-applied) just because the OS enumerates paths in a new order.
     static bool equal_snapshots_strict(const display_device::DisplaySettingsSnapshot &a, const display_device::DisplaySettingsSnapshot &b) {
       if (canonical_topology(a.m_topology) != canonical_topology(b.m_topology)) {
         return false;
       }
-      if (!(a.m_modes == b.m_modes && a.m_hdr_states == b.m_hdr_states && a.m_primary_device == b.m_primary_device)) {
+      if (!(display_device::equalDisplayModes(a.m_modes, b.m_modes) && a.m_hdr_states == b.m_hdr_states && a.m_primary_device == b.m_primary_device)) {
         return false;
       }
       // Origins are optional for backward compatibility with older snapshots
@@ -3638,8 +3649,7 @@ namespace {
         );
         if (restored_previous) {
           if (attempted_current) {
-            std::error_code ec_rm_bad;
-            (void) std::filesystem::remove(session_current_path, ec_rm_bad);
+            BOOST_LOG(warning) << "Restore: previous snapshot recovered the desktop; retaining the unconfirmed current baseline for a later restore.";
           }
           return true;
         }

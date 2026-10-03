@@ -4,6 +4,7 @@
 #include "src/utility.h"
 #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
 #include "src/platform/windows/display_helper_v2/topology_policy.h"
+#include "src/platform/windows/display_snapshot_restore.h"
 
 
 #include <thread>
@@ -231,23 +232,9 @@ namespace display_helper::v2 {
       // then modes and HDR are restored before primary/origin changes. Moving
       // primary first can make Windows reject a saved mode on a waking or
       // duplicate display, leaving recovery half-applied.
-      if (!snapshot.m_modes.empty() && !display_device_->setDisplayModes(snapshot.m_modes)) {
-        BOOST_LOG(warning) << "apply_snapshot_settings: failed to restore display modes";
+      if (!display_helper::restore_snapshot_settings(*display_device_, snapshot)) {
+        BOOST_LOG(warning) << "apply_snapshot_settings: failed to restore settings; skipping remaining layout saves";
         return false;
-      }
-      if (!snapshot.m_hdr_states.empty() && !display_device_->setHdrStates(snapshot.m_hdr_states)) {
-        BOOST_LOG(warning) << "apply_snapshot_settings: failed to restore HDR states";
-        return false;
-      }
-      if (!snapshot.m_primary_device.empty() && !display_device_->setAsPrimary(snapshot.m_primary_device)) {
-        BOOST_LOG(warning) << "apply_snapshot_settings: failed to restore primary display";
-        return false;
-      }
-      for (const auto &[device_id, point] : snapshot.m_origins) {
-        if (!display_device_->setDisplayOrigin(device_id, point)) {
-          BOOST_LOG(warning) << "apply_snapshot_settings: failed to restore origin for " << device_id;
-          return false;
-        }
       }
       return true;
     } catch (const std::exception &e) {

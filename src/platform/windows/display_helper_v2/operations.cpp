@@ -1054,7 +1054,7 @@ namespace display_helper::v2 {
       bool attempted_previous = false;
       if (try_session(SnapshotTier::Previous, "previous", attempted_previous)) {
         if (attempted_current && !token.is_cancelled()) {
-          (void) storage_.remove(SnapshotTier::Current);
+          BOOST_LOG(warning) << "Restore: previous snapshot recovered the desktop; retaining the unconfirmed current baseline for a later restore.";
         }
         return true;
       }

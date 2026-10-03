@@ -356,6 +356,19 @@ sunshine_add_test_target(
     DEPENDENCIES
 )
 
+sunshine_add_test_target(
+    NAME test_fast_display_snapshot_restore
+    CATEGORY fast
+    TEST_SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_snapshot_restore.cpp"
+    PRODUCT_SOURCES
+    INCLUDE_DIRECTORIES
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libdisplaydevice/src/common/include"
+    LINK_LIBRARIES GTest::gtest
+    DEPENDENCIES
+)
+
 # rswrapper.c includes the vendored nanors Reed-Solomon implementation directly,
 # so no separate library or server source is required by this target.
 set_source_files_properties(

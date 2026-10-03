@@ -79,6 +79,26 @@ TEST(DisplayHelperV2Codec, CanonicalTopologyEquality) {
   EXPECT_FALSE(codec::equal_snapshots_strict(a, c));
 }
 
+TEST(DisplayHelperV2Codec, StrictSnapshotModeComparisonUsesExactRefreshFrequencies) {
+  const auto baseline = make_snapshot({{"A"}});
+
+  auto equivalent = baseline;
+  equivalent.m_modes.at("A").m_refresh_rate = display_device::Rational {120, 2};
+  EXPECT_TRUE(codec::equal_snapshots_strict(baseline, equivalent));
+
+  auto different_rate = baseline;
+  different_rate.m_modes.at("A").m_refresh_rate = display_device::Rational {120, 1};
+  EXPECT_FALSE(codec::equal_snapshots_strict(baseline, different_rate));
+
+  auto fractional_rate = baseline;
+  fractional_rate.m_modes.at("A").m_refresh_rate = display_device::Rational {60000, 1001};
+  EXPECT_FALSE(codec::equal_snapshots_strict(baseline, fractional_rate));
+
+  auto invalid_rate = baseline;
+  invalid_rate.m_modes.at("A").m_refresh_rate = display_device::Rational {60, 0};
+  EXPECT_FALSE(codec::equal_snapshots_strict(baseline, invalid_rate));
+}
+
 TEST(DisplayHelperV2Codec, SignatureIsOrderIndependent) {
   auto a = make_snapshot({{"A"}, {"B", "C"}});
   auto b = make_snapshot({{"C", "B"}, {"A"}});
@@ -632,6 +652,31 @@ TEST(DisplayHelperV2RecoveryEngine, PrefersGoldenWhenCurrentMissing) {
   EXPECT_EQ(harness.display.transition_order[1], "settings:G");
   // Confirmed golden restore clears the session snapshot chain.
   EXPECT_FALSE(harness.storage.exists(display_helper::v2::SnapshotTier::Previous));
+}
+
+TEST(DisplayHelperV2RecoveryEngine, PreviousSuccessRetainsUnconfirmedCurrentSnapshot) {
+  RecoveryHarness harness;
+  harness.add_device("CURRENT");
+  harness.add_device("PREVIOUS");
+
+  const auto current = make_snapshot({{"CURRENT"}});
+  const auto previous = make_snapshot({{"PREVIOUS"}});
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, current));
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Previous, previous));
+  harness.display.current = make_snapshot({{"OTHER"}});
+  harness.display.ineffective_ids.insert("CURRENT");
+
+  const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+  EXPECT_TRUE(outcome.success);
+  ASSERT_TRUE(outcome.snapshot.has_value());
+  EXPECT_EQ(EngineDisplayFake::first_id(*outcome.snapshot), "PREVIOUS");
+  EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Current));
+  EXPECT_TRUE(codec::equal_snapshots_strict(
+    harness.storage.load(display_helper::v2::SnapshotTier::Current).value(), current));
+  EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Previous));
+  EXPECT_TRUE(codec::equal_snapshots_strict(
+    harness.storage.load(display_helper::v2::SnapshotTier::Previous).value(), previous));
 }
 
 // A usable session fallback is only a bootstrap state. The configured golden
