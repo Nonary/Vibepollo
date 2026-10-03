@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <iomanip>
 #include <sstream>
 #include <unordered_map>
@@ -53,7 +54,10 @@ namespace platf::lutris::sync::policy {
       set_or_erase(app, "lutris-service-id", game.service_id);
       // Client app ordering reads these.
       app["last-played"] = game.last_played;
-      app["playtime-minutes"] = static_cast<std::int64_t>(game.playtime_seconds / 60.0);
+      // Lutris stores playtime in hours, despite the field name.
+      app["playtime-minutes"] = std::isfinite(game.playtime_seconds) && game.playtime_seconds > 0.0 ?
+                                  std::llround(game.playtime_seconds * 60.0) :
+                                  0;
       app["cmd"] = "lutris " + launch_uri(game.id);
       app["auto-detach"] = true;
       app["wait-all"] = false;

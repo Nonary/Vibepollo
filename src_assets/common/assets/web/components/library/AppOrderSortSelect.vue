@@ -4,8 +4,20 @@ import { useI18n } from 'vue-i18n';
 
 import { APP_ORDER_SORTS, type AppOrderSort } from '@/services/appOrder';
 
-defineProps<{ id?: string; label: string; value: AppOrderSort; disabled?: boolean }>();
+const props = defineProps<{
+  id?: string;
+  label: string;
+  value: AppOrderSort;
+  disabled?: boolean;
+}>();
 const emit = defineEmits<{ change: [value: AppOrderSort] }>();
+
+// Show the saved value until the parent passes the new one, so a failed save doesn't leave the new choice on screen.
+function onChange(event: Event): void {
+  const select = event.target as HTMLSelectElement;
+  emit('change', select.value as AppOrderSort);
+  select.value = props.value;
+}
 const { t } = useI18n();
 </script>
 
@@ -16,7 +28,7 @@ const { t } = useI18n();
     :aria-label="label"
     :value="value"
     :disabled="disabled"
-    @change="emit('change', ($event.target as HTMLSelectElement).value as AppOrderSort)"
+    @change="onChange"
   >
     <option v-for="mode in APP_ORDER_SORTS" :key="mode" :value="mode">
       {{ t(`ui.appOrder.sorts.${mode}`) }}

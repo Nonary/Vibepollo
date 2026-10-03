@@ -1778,7 +1778,11 @@ namespace confighttp {
         std::vector<const proc::ctx_t *> ordered;
         ordered.reserve(apps.size());
         for (const auto &app : apps) {
-          ordered.push_back(&app);
+          // /applist drops these legacy entries before placing the controls.
+          const auto appid = util::from_view(app.id);
+          if (appid != proc::input_only_app_id && appid != proc::terminate_app_id) {
+            ordered.push_back(&app);
+          }
         }
         proc::sort_for_clients(ordered);
         auto &client_order = file_tree["client_order"] = nlohmann::json::array();

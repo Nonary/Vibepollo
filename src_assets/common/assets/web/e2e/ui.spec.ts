@@ -613,6 +613,18 @@ test('integrations edit the same per-source app order setting', async ({ page })
   await expect.poll(() => patches.at(-1)).toEqual({ app_order_steam: 'playtime' });
 });
 
+test('a failed app order save keeps the saved sort selected', async ({ page }) => {
+  await host(page, 'linux', { app_order_steam: 'recent' });
+  await page.route('**/api/config', async (route) => {
+    if (route.request().method() !== 'PATCH') return route.fallback();
+    await route.fulfill({ status: 500, json: { error: 'nope' } });
+  });
+  await page.goto('/v2/integrations');
+  const sort = page.getByRole('combobox', { name: 'Order Steam by' });
+  await sort.selectOption('playtime');
+  await expect(sort).toHaveValue('recent');
+});
+
 for (const width of [320, 390, 768, 1100, 1440]) {
   test(`main workflows reflow without horizontal scrolling at ${width}px`, async ({
     page,

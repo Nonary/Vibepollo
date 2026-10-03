@@ -111,9 +111,13 @@ async function run(action: () => Promise<unknown>): Promise<void> {
   error.value = '';
   try {
     await action();
-    await load();
   } catch {
     error.value = t('ui.appOrder.errors.save');
+  }
+  try {
+    await load();
+  } catch {
+    error.value ||= t('ui.appOrder.errors.load');
   } finally {
     busy.value = false;
   }
@@ -161,10 +165,14 @@ function onDropGroup(index: number): void {
   if (dragged?.kind === 'group') moveGroup(dragged.key as AppOrderGroup, index);
 }
 
-function onDropApp(list: AppRecord[], index: number): void {
+function onDropApp(event: DragEvent, list: AppRecord[], index: number): void {
+  // A group dropped on an app row bubbles up to its group instead.
   const dragged = drag.value;
+  if (dragged?.kind !== 'app') return;
+  event.preventDefault();
+  event.stopPropagation();
   onDragEnd();
-  if (dragged?.kind === 'app') moveApp(list, dragged.key, index);
+  moveApp(list, dragged.key, index);
 }
 
 function onDragEnd(): void {
@@ -291,7 +299,7 @@ onMounted(() => {
               :draggable="!busy"
               @dragstart="onDragStart($event, 'app', appUuid(app))"
               @dragover="onDragOver($event, 'app', appUuid(app))"
-              @drop.prevent.stop="onDropApp(group.apps, appIndex)"
+              @drop="onDropApp($event, group.apps, appIndex)"
               @dragend="onDragEnd"
             >
               <UiIcon name="grip" class="app-order-grip" :size="16" aria-hidden="true" />
