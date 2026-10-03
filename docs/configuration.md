@@ -4762,7 +4762,7 @@ These options control the order of the application list sent to clients
 (`/applist`). Setting `app_order_groups` also turns on the ordering Moonlight
 needs, as [legacy_ordering](#legacy_ordering) does; Artemis follows the host
 order directly. **Library → App order** in the web UI edits all of them.
-Remote Input and Remote Monitor are always listed last.
+Remote Input and Remote Monitor take the place of their entries in the custom order.
 
 ### app_order_groups
 

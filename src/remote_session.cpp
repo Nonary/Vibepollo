@@ -75,6 +75,39 @@ namespace remote_session {
     return control == control_e::input || control == control_e::monitor || reserved_name(title);
   }
 
+  control_e configured_control(const std::string_view uuid, const std::string_view title) {
+    const auto control = identify(0, uuid);
+    if (control == control_e::input || control == control_e::monitor) return control;
+    const auto first_visible = title.find_first_not_of(" \t\r\n");
+    const auto visible_title = first_visible == std::string_view::npos ? std::string_view {} : title.substr(first_visible);
+    if (equal_folded(visible_title, "Remote Input")) return control_e::input;
+    if (equal_folded(visible_title, "Remote Monitor")) return control_e::monitor;
+    return control_e::none;
+  }
+
+  namespace {
+    // Configured apps with each built-in control at the first configured entry that stands for it;
+    // controls without one go last, input before monitor.
+    std::vector<app_t> with_controls(const std::vector<app_t> &configured, const bool include_input) {
+      std::vector<control_e> pending {control_e::monitor};
+      if (include_input) pending.insert(pending.begin(), control_e::input);
+      std::vector<app_t> result;
+      for (const auto &app : configured) {
+        if (!replaced_by_control(app.uuid, app.title)) {
+          result.push_back(app);
+          continue;
+        }
+        const auto it = std::find(pending.begin(), pending.end(), configured_control(app.uuid, app.title));
+        if (it != pending.end()) {
+          result.push_back(synthetic(*it));
+          pending.erase(it);
+        }
+      }
+      for (const auto control : pending) result.push_back(synthetic(control));
+      return result;
+    }
+  }
+
   control_e identify(const std::int32_t id, const std::string_view uuid) {
     if (id == secondary_resume_id) return control_e::resume;
     if (id == secondary_terminate_id) return control_e::terminate;
@@ -184,17 +217,13 @@ namespace remote_session {
       return result;
     }
     if (!game.running && !remote_sessions_active && owner.role == role_e::none) {
-      result.catalogue = std::move(visible_configured);
-      result.catalogue.push_back(synthetic(control_e::input));
-      result.catalogue.push_back(synthetic(control_e::monitor));
+      result.catalogue = with_controls(configured, true);
       return result;
     }
     if (owns_game(caller, game)) {
       result.free = false;
       result.current_game = game.app.id;
-      result.catalogue = visible_configured;
-      if (owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
-      result.catalogue.push_back(synthetic(control_e::monitor));
+      result.catalogue = with_controls(configured, owner.role != role_e::input);
       return result;
     }
     if (game.running) {
@@ -212,9 +241,7 @@ namespace remote_session {
       result.catalogue.push_back(prioritized_secondary_control(control_e::monitor));
       return result;
     }
-    result.catalogue = visible_configured;
-    if (owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
-    result.catalogue.push_back(synthetic(control_e::monitor));
+    result.catalogue = with_controls(configured, owner.role != role_e::input);
     return result;
   }
 

@@ -874,7 +874,6 @@
         "load": "Couldn't load the app order.",
         "save": "Couldn't save the order. Try again."
       },
-      "fixedLast": "Always last: {names}",
       "groupAction": "Group by source",
       "groups": {
         "all": "All applications",

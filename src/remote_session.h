@@ -160,6 +160,8 @@ namespace remote_session {
   [[nodiscard]] bool reserved_name(std::string_view name);
   /// Configured apps the app list drops because a built-in control replaces them.
   [[nodiscard]] bool replaced_by_control(std::string_view uuid, std::string_view title);
+  /// The control (input or monitor) a configured app stands in for, so the control takes its place in the app order.
+  [[nodiscard]] control_e configured_control(std::string_view uuid, std::string_view title);
   [[nodiscard]] control_e identify(std::int32_t id, std::string_view uuid = {});
   [[nodiscard]] control_e identify(std::int32_t id, std::string_view uuid, std::int32_t running_app_id);
   [[nodiscard]] std::string synthetic_uuid(control_e control);

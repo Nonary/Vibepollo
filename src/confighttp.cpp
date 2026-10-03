@@ -1772,18 +1772,24 @@ namespace confighttp {
       file_tree["host_name"] = config::nvhttp.sunshine_name;
       {
         // UUIDs in the order /applist sends them, so the App order page can show it.
-        // Apps a built-in control replaces are left out; the host always lists those controls last.
+        // Remote Input and Remote Monitor entries stand in for the built-in controls at their position;
+        // other entries a control replaces are not sent.
         const auto apps = proc::proc.get_apps();
         std::vector<const proc::ctx_t *> ordered;
         ordered.reserve(apps.size());
         for (const auto &app : apps) {
-          if (!remote_session::replaced_by_control(app.uuid, app.name)) {
-            ordered.push_back(&app);
-          }
+          ordered.push_back(&app);
         }
         proc::sort_for_clients(ordered);
         auto &client_order = file_tree["client_order"] = nlohmann::json::array();
+        std::set<remote_session::control_e> placed;
         for (const auto *app : ordered) {
+          if (remote_session::replaced_by_control(app->uuid, app->name)) {
+            const auto control = remote_session::configured_control(app->uuid, app->name);
+            if (control == remote_session::control_e::none || !placed.insert(control).second) {
+              continue;
+            }
+          }
           client_order.push_back(app->uuid);
         }
       }

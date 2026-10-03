@@ -40,19 +40,13 @@ const dropKey = ref('');
 
 const groups = computed(() => parseAppOrderGroups(config.value.app_order_groups));
 
-// The host's /applist order.
+// The host's /applist order; entries it does not send are left out.
 const ordered = computed<AppRecord[]>(() => {
   if (!clientOrder.value.length) return apps.value;
   const byUuid = new Map(apps.value.map((app) => [appUuid(app), app]));
   return clientOrder.value
     .map((uuid) => byUuid.get(uuid))
     .filter((app): app is AppRecord => Boolean(app));
-});
-// Apps the host replaces with its built-in controls (Remote Input, Remote Monitor), always sent last.
-const fixedApps = computed(() => {
-  if (!clientOrder.value.length) return [];
-  const listed = new Set(clientOrder.value);
-  return apps.value.filter((app) => !listed.has(appUuid(app)));
 });
 
 function appsIn(group: AppOrderGroup): AppRecord[] {
@@ -357,10 +351,6 @@ onMounted(() => {
           </header>
         </section>
 
-        <p v-if="fixedApps.length" class="app-order-fixed">
-          {{ t('ui.appOrder.fixedLast', { names: fixedApps.map(appName).join(', ') }) }}
-        </p>
-
         <div class="app-order-footer">
           <AppButton
             size="compact"
@@ -625,12 +615,6 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   gap: var(--vs-space-12);
-}
-
-.app-order-fixed {
-  margin: 0;
-  color: var(--vs-color-text-muted);
-  font-size: var(--vs-type-size-metadata);
 }
 
 .app-order-footer {

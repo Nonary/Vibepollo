@@ -537,7 +537,7 @@ test('app order page arranges groups and saves the custom order', async ({ page 
           { uuid: 'hades', name: 'Hades II', 'steam-id': '1145350', 'last-played': 1727800000 },
           { uuid: 'desktop', name: 'Desktop' },
           { uuid: 'elden', name: 'Elden Ring', 'steam-id': '1245620', 'last-played': 1727000000 },
-          { uuid: 'remote-input', name: 'Remote Input' },
+          { uuid: 'virtual-display', name: 'Virtual Display' },
         ],
         client_order: ['big-picture', 'desktop', 'hades', 'elden'],
       },
@@ -556,7 +556,7 @@ test('app order page arranges groups and saves the custom order', async ({ page 
   await expect(custom.locator('.app-order-app__name')).toHaveText(['Steam Big Picture', 'Desktop']);
   const steam = page.locator('[data-group="steam"]');
   await expect(steam.locator('.app-order-group__heading span')).toHaveText('2 apps');
-  await expect(page.getByText('Always last: Remote Input')).toBeVisible();
+  await expect(page.getByText('Virtual Display')).toHaveCount(0);
   await steam.getByText('Show all 2 in order').click();
   await expect(steam.locator('.app-order-preview__all li > span')).toHaveText([
     'Hades II',
