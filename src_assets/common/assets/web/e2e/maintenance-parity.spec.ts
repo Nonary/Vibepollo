@@ -474,35 +474,56 @@ test('display settings explain disabled capture and reset without changing saved
   expect(calls.configPatches).toEqual([]);
 });
 
-test('display settings can retry failed status without enabling recovery mutations', async ({
-  page,
-}) => {
-  const calls = await setupHost(page, {
-    golden: { maintenance_available: false },
-    config: { dd_configuration_option: 'disabled', virtual_display_mode: 'disabled' },
+for (const available of [false, true]) {
+  test(`display settings retry restores ${available ? 'available' : 'disabled'} maintenance after repeated failures`, async ({
+    page,
+  }) => {
+    const calls = await setupHost(page, {
+      golden: { maintenance_available: available },
+      config: {
+        dd_configuration_option: available ? 'ensure_active' : 'disabled',
+        virtual_display_mode: 'disabled',
+      },
+    });
+    calls.failGoldenStatus = true;
+    await page.goto('/v2/settings?category=display');
+    const retry = page.getByRole('button', { name: 'Retry status', exact: true });
+    const reset = page.getByRole('button', { name: 'Clear display state', exact: true });
+    const unavailableMessage = page.getByText(
+      'Display maintenance status is unavailable. Refresh the status before using recovery actions.',
+      { exact: true },
+    );
+    await expect(retry).toBeEnabled();
+    await expect(reset).toBeDisabled();
+    await expect(unavailableMessage).toHaveCount(2);
+
+    const initialReads = calls.goldenStatusReads;
+    await retry.click();
+    await expect.poll(() => calls.goldenStatusReads).toBe(initialReads + 1);
+    await expect(retry).toBeEnabled();
+    await expect(reset).toBeDisabled();
+
+    calls.failGoldenStatus = false;
+    await retry.click();
+    await expect.poll(() => calls.goldenStatusReads).toBe(initialReads + 2);
+    const capture = page.getByRole('button', { name: 'Create snapshot', exact: true });
+    if (available) {
+      await expect(capture).toBeEnabled();
+      await expect(reset).toBeEnabled();
+    } else {
+      await expect(capture).toBeDisabled();
+      await expect(reset).toBeDisabled();
+      await expect(
+        page.getByText(/Display maintenance requires display automation or a virtual display/),
+      ).toHaveCount(2);
+    }
+    await expect(unavailableMessage).toHaveCount(0);
+    expect(calls.goldenExports).toBe(0);
+    expect(calls.goldenDeletes).toBe(0);
+    expect(calls.displayResets).toBe(0);
+    expect(calls.configPatches).toEqual([]);
   });
-  calls.failGoldenStatus = true;
-  await page.goto('/v2/settings?category=display');
-  const retry = page.getByRole('button', { name: 'Retry status', exact: true });
-  const reset = page.getByRole('button', { name: 'Clear display state', exact: true });
-  await expect(retry).toBeEnabled();
-  await expect(reset).toBeDisabled();
-
-  const initialReads = calls.goldenStatusReads;
-  await retry.click();
-  await expect.poll(() => calls.goldenStatusReads).toBe(initialReads + 1);
-  await expect(retry).toBeEnabled();
-
-  calls.failGoldenStatus = false;
-  await retry.click();
-  await expect.poll(() => calls.goldenStatusReads).toBe(initialReads + 2);
-  await expect(page.getByRole('button', { name: 'Create snapshot', exact: true })).toBeDisabled();
-  await expect(reset).toBeDisabled();
-  expect(calls.goldenExports).toBe(0);
-  expect(calls.goldenDeletes).toBe(0);
-  expect(calls.displayResets).toBe(0);
-  expect(calls.configPatches).toEqual([]);
-});
+}
 
 test('failed maintenance refresh clears previously available recovery actions', async ({
   page,

@@ -33,6 +33,7 @@ const emit = defineEmits<{
   'update:hotkey': [value: string];
   'update:modifiers': [value: string];
   'update:preferGolden': [value: boolean];
+  'maintenance-status': [available: boolean | null];
 }>();
 
 const { t } = useI18n();
@@ -111,8 +112,10 @@ const goldenState = computed<{ label: string; detail: string; tone: StatusTone }
 async function loadGoldenStatus(): Promise<void> {
   statusLoading.value = true;
   statusError.value = '';
+  emit('maintenance-status', null);
   try {
     golden.value = await apiGet<GoldenStatus>('/api/display/golden_status');
+    emit('maintenance-status', golden.value.maintenance_available !== false);
   } catch {
     golden.value = null;
     statusError.value = t('ui.settings.recovery.status_error');

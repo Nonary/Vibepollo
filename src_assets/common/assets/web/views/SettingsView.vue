@@ -1246,6 +1246,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                     :hotkey="values.dd_snapshot_restore_hotkey"
                     :modifiers="values.dd_snapshot_restore_hotkey_modifiers"
                     :prefer-golden="values.dd_always_restore_from_golden"
+                    @maintenance-status="displayMaintenanceAvailable = $event"
                     @update:hotkey="values.dd_snapshot_restore_hotkey = $event"
                     @update:modifiers="values.dd_snapshot_restore_hotkey_modifiers = $event"
                     @update:prefer-golden="values.dd_always_restore_from_golden = $event"
