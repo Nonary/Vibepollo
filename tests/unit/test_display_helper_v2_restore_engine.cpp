@@ -719,7 +719,8 @@ TEST(DisplayHelperV2RecoveryEngine, GoldenFirstRestoresReturningMonitorDuringSes
   ASSERT_TRUE(outcome.success);
   ASSERT_TRUE(outcome.snapshot);
   EXPECT_TRUE(codec::equal_snapshots_strict(harness.display.current, golden));
-  EXPECT_EQ(harness.display.current.m_origins.at("B"), golden.m_origins.at("B"));
+  EXPECT_EQ(harness.display.current.m_origins.at("B").m_x, golden.m_origins.at("B").m_x);
+  EXPECT_EQ(harness.display.current.m_origins.at("B").m_y, golden.m_origins.at("B").m_y);
   EXPECT_EQ(harness.state.golden_pending_session_fallbacks.load(), 0u);
   EXPECT_FALSE(harness.storage.exists(display_helper::v2::SnapshotTier::Current));
   EXPECT_FALSE(harness.storage.exists(display_helper::v2::SnapshotTier::Previous));
