@@ -69,6 +69,7 @@
   #include "platform/windows/display.h"
   #include "platform/windows/display_helper_request_policy.h"
   #include "platform/windows/display_helper_request_helpers.h"
+  #include "platform/windows/local_input_monitor.h"
   #include "platform/windows/misc.h"
   #include "platform/windows/virtual_display.h"
   #include "platform/windows/virtual_display_cleanup.h"
@@ -4659,6 +4660,30 @@ namespace nvhttp {
 
         return;
       }
+
+#ifdef _WIN32
+      // Local-activity guard: refuse to take over the physical machine while
+      // someone is actively using it. Only relevant when this request would
+      // actually start/switch something - a client resuming the app that's
+      // already running isn't a takeover, so it's exempted the same way the
+      // required_perm check above already treats it as non-conflicting.
+      {
+        const bool is_resume_of_current = current_appid > 0 && (appid == current_appid || (!appuuid_str.empty() && appuuid_str == current_app_uuid));
+        const auto guard_threshold = std::chrono::seconds(config::sunshine.local_activity_guard_seconds);
+        if (!is_input_only && !is_resume_of_current && guard_threshold.count() > 0 &&
+            local_input_monitor::locally_active(guard_threshold)) {
+          BOOST_LOG(info) << "nvhttp: refusing launch request - local input seen within "
+                           << guard_threshold.count() << "s";
+
+          tree.put("root.resume", 0);
+          tree.put("root.<xmlattr>.status_code", 400);
+          tree.put("root.<xmlattr>.status_message", "Host is currently in local use. Please try again shortly.");
+
+          return;
+        }
+      }
+#endif
+
       if (!is_input_only) {
         // Special handling for the "terminate" app
         if (
