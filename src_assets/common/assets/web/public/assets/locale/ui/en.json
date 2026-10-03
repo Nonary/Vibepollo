@@ -775,7 +775,8 @@
         "removePlaynite": "Remove Playnite entries",
         "showMore": "Show more",
         "tryAgain": "Try again",
-        "sources": "Manage sources"
+        "sources": "Manage sources",
+        "appOrder": "App order"
       },
       "alerts": {
         "unavailable": "Library unavailable"
@@ -866,6 +867,47 @@
         "label": "Library view",
         "list": "List"
       }
+    },
+    "appOrder": {
+      "count": "{count} app | {count} apps",
+      "errors": {
+        "load": "Couldn't load the app order.",
+        "save": "Couldn't save the order. Try again."
+      },
+      "groupAction": "Group by source",
+      "groups": {
+        "all": "All applications",
+        "custom": "Custom",
+        "lutris": "Lutris",
+        "other": "Other",
+        "playnite": "Playnite",
+        "steam": "Steam"
+      },
+      "groupsLabel": "Groups, in the order clients receive them",
+      "hours": "{hours} h",
+      "integrationRow": {
+        "description": "How {group} games are ordered in Moonlight's app list. Arrange the groups themselves under Library, App order.",
+        "label": "Order in app list"
+      },
+      "integrationSettings": "Integration settings",
+      "moveDown": "Move {name} down",
+      "moveUp": "Move {name} up",
+      "otherHint": "Sources missing from the order above are sent last, in file order",
+      "page": {
+        "back": "Library",
+        "description": "The order Moonlight and other clients show your apps in.",
+        "title": "App order"
+      },
+      "showAll": "Show all {count} in order",
+      "sortLabel": "Order {group} by",
+      "sorts": {
+        "name": "Name, A to Z",
+        "playtime": "Most played",
+        "recent": "Recently played"
+      },
+      "ungroupAction": "Stop grouping",
+      "ungroupedBody": "Moonlight shows apps A to Z. Group them by source to keep your custom apps first and sort each integration automatically as games sync.",
+      "ungroupedTitle": "Grouping is off"
     },
     "logs": {
       "action": {

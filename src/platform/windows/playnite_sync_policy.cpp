@@ -102,6 +102,10 @@ namespace platf::playnite::sync::policy {
       try {
         if (!game.name.empty()) app["name"] = game.name;
         app["playnite-id"] = game.id;
+        // Client app ordering reads these.
+        std::time_t last_played = 0;
+        app["last-played"] = parse_iso8601_utc(game.last_played, last_played) ? static_cast<std::int64_t>(last_played) : 0;
+        app["playtime-minutes"] = game.playtime_minutes;
         app.erase("cmd");
         app.erase("working-dir");
       } catch (...) {}
