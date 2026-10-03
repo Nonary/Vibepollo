@@ -742,7 +742,7 @@ TEST(DisplayHelperV2RecoveryEngine, GoldenFirstRestoresReturnedBaselineAfterRece
   ASSERT_FALSE(fallback.success);
   ASSERT_EQ(harness.state.golden_pending_session_fallbacks.load(), 1u);
   ASSERT_GT(harness.state.last_session_restore_success_ms.load(), 0);
-  EXPECT_EQ(harness.display.current, session);
+  EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(harness.display.current, session));
   EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Previous));
 
   harness.add_device("B");
@@ -751,8 +751,8 @@ TEST(DisplayHelperV2RecoveryEngine, GoldenFirstRestoresReturnedBaselineAfterRece
 
   ASSERT_TRUE(restored.success);
   ASSERT_TRUE(restored.snapshot);
-  EXPECT_EQ(*restored.snapshot, golden);
-  EXPECT_EQ(harness.display.current, golden);
+  EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(*restored.snapshot, golden));
+  EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(harness.display.current, golden));
   EXPECT_GT(harness.display.apply_calls, 0);
   EXPECT_FALSE(harness.storage.exists(display_helper::v2::SnapshotTier::Current));
   EXPECT_FALSE(harness.storage.exists(display_helper::v2::SnapshotTier::Previous));
@@ -793,8 +793,8 @@ TEST(DisplayHelperV2RecoveryEngine, SessionFirstKeepsCooldownWhenGoldenDeviceRet
 
   ASSERT_TRUE(restored.success);
   ASSERT_TRUE(restored.snapshot);
-  EXPECT_EQ(*restored.snapshot, session);
-  EXPECT_EQ(harness.display.current, session);
+  EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(*restored.snapshot, session));
+  EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(harness.display.current, session));
   EXPECT_EQ(harness.display.apply_calls, 0);
   EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Golden));
 }
