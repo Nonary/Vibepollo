@@ -576,7 +576,9 @@ static bool drop_to_session(const struct session_identity *identity) {
 
 static bool display_argument_is_safe(const char *argument) {
   static const char pattern[] =
-    "^output\\.[A-Za-z0-9_-]+\\.(enable|disable|vrrpolicy\\.always|hdr\\.(enable|disable)|"
+    "^output\\.[A-Za-z0-9_-]+\\.(enable|disable|"
+    "rotation\\.(none|left|inverted|right|flipped|flipped90|flipped180|flipped270)|"
+    "vrrpolicy\\.always|hdr\\.(enable|disable)|"
     "mode\\.[A-Za-z0-9_-]+|scale\\.[0-9]+(\\.[0-9]+)?|position\\.-?[0-9]+,-?[0-9]+|"
     "priority\\.[0-9]+|addCustomMode\\.[1-9][0-9]*\\.[1-9][0-9]*\\.[1-9][0-9]*\\.reduced)$";
   regex_t expression;
