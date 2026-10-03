@@ -53,8 +53,11 @@ function appsIn(group: AppOrderGroup): AppRecord[] {
   return ordered.value.filter((app) => appOrderGroup(app) === group);
 }
 
-const listedGroups = computed(() =>
-  groups.value.map((key) => ({ key, apps: appsIn(key) })).filter((group) => group.apps.length),
+// Without grouping every app is one reorderable list, shown like the custom group.
+const listedGroups = computed<{ key: AppOrderGroup; apps: AppRecord[] }[]>(() =>
+  groups.value.length
+    ? groups.value.map((key) => ({ key, apps: appsIn(key) })).filter((group) => group.apps.length)
+    : [{ key: 'custom', apps: ordered.value }],
 );
 const unlistedApps = computed(() =>
   ordered.value.filter((app) => !groups.value.includes(appOrderGroup(app))),
@@ -69,7 +72,7 @@ function sortOf(provider: AppOrderProvider): AppOrderSort {
 }
 
 function groupTitle(group: AppOrderGroup): string {
-  return t(`ui.appOrder.groups.${group}`);
+  return t(`ui.appOrder.groups.${groups.value.length ? group : 'all'}`);
 }
 
 function statLabel(provider: AppOrderProvider, app: AppRecord): string {
@@ -196,196 +199,88 @@ onMounted(() => {
     <InlineAlert v-if="error" tone="danger" announce="assertive">{{ error }}</InlineAlert>
 
     <template v-if="!loading">
-      <template v-if="groups.length">
-        <ol class="app-order-groups" :aria-label="t('ui.appOrder.groupsLabel')">
-          <li
-            v-for="(group, index) in listedGroups"
-            :key="group.key"
-            class="app-order-group"
-            :class="{
-              'app-order-group--dragging': drag?.kind === 'group' && drag.key === group.key,
-              'app-order-group--drop':
-                drag?.kind === 'group' && dropKey === group.key && drag.key !== group.key,
-            }"
-            :data-group="group.key"
-            @dragover="onDragOver($event, 'group', group.key)"
-            @drop.prevent="onDropGroup(index)"
-          >
-            <header
-              class="app-order-group__header"
-              :draggable="!busy"
-              @dragstart="onDragStart($event, 'group', group.key)"
-              @dragend="onDragEnd"
-            >
-              <UiIcon name="grip" class="app-order-grip" :size="16" aria-hidden="true" />
-              <span class="app-order-group__position">{{ index + 1 }}</span>
-              <div class="app-order-group__heading">
-                <h2>{{ groupTitle(group.key) }}</h2>
-                <span>{{
-                  t('ui.appOrder.count', { count: group.apps.length }, group.apps.length)
-                }}</span>
-              </div>
-              <template v-if="isProvider(group.key)">
-                <AppOrderSortSelect
-                  :label="t('ui.appOrder.sortLabel', { group: groupTitle(group.key) })"
-                  :value="sortOf(group.key)"
-                  :disabled="busy"
-                  @change="patchConfig({ [`app_order_${group.key}`]: $event })"
-                />
-                <RouterLink
-                  class="app-order-group__link"
-                  :to="`/integrations#integration-${group.key}`"
-                >
-                  {{ t('ui.appOrder.integrationSettings') }}
-                </RouterLink>
-              </template>
-              <div class="app-order-group__actions">
-                <AppButton
-                  icon="chevron-up"
-                  icon-only
-                  size="compact"
-                  variant="tertiary"
-                  :label="t('ui.appOrder.moveUp', { name: groupTitle(group.key) })"
-                  :disabled="busy || index === 0"
-                  @click="moveGroup(group.key, index - 1)"
-                />
-                <AppButton
-                  icon="chevron-down"
-                  icon-only
-                  size="compact"
-                  variant="tertiary"
-                  :label="t('ui.appOrder.moveDown', { name: groupTitle(group.key) })"
-                  :disabled="busy || index === listedGroups.length - 1"
-                  @click="moveGroup(group.key, index + 1)"
-                />
-              </div>
-            </header>
-
-            <ol v-if="!isProvider(group.key)" class="app-order-apps">
-              <li
-                v-for="(app, appIndex) in group.apps"
-                :key="appUuid(app)"
-                class="app-order-app"
-                :class="{
-                  'app-order-app--dragging': drag?.kind === 'app' && drag.key === appUuid(app),
-                  'app-order-app--drop':
-                    drag?.kind === 'app' && dropKey === appUuid(app) && drag.key !== appUuid(app),
-                }"
-                :draggable="!busy"
-                @dragstart="onDragStart($event, 'app', appUuid(app))"
-                @dragover="onDragOver($event, 'app', appUuid(app))"
-                @drop.prevent.stop="onDropApp(group.apps, appIndex)"
-                @dragend="onDragEnd"
-              >
-                <UiIcon name="grip" class="app-order-grip" :size="16" aria-hidden="true" />
-                <span class="app-order-cover" aria-hidden="true">
-                  <img
-                    v-if="!coverFailed(app)"
-                    :src="appCoverUrl(app)"
-                    alt=""
-                    loading="lazy"
-                    @error="markCoverFailed(app)"
-                  />
-                  <span v-else>{{ (appName(app) || '?').slice(0, 1).toLocaleUpperCase() }}</span>
-                </span>
-                <span class="app-order-app__name">{{ appName(app) }}</span>
-                <AppButton
-                  icon="chevron-up"
-                  icon-only
-                  size="compact"
-                  variant="tertiary"
-                  :label="t('ui.appOrder.moveUp', { name: appName(app) })"
-                  :disabled="busy || appIndex === 0"
-                  @click="moveApp(group.apps, appUuid(app), appIndex - 1)"
-                />
-                <AppButton
-                  icon="chevron-down"
-                  icon-only
-                  size="compact"
-                  variant="tertiary"
-                  :label="t('ui.appOrder.moveDown', { name: appName(app) })"
-                  :disabled="busy || appIndex === group.apps.length - 1"
-                  @click="moveApp(group.apps, appUuid(app), appIndex + 1)"
-                />
-              </li>
-            </ol>
-
-            <div v-else class="app-order-preview">
-              <ul class="app-order-preview__covers">
-                <li
-                  v-for="app in group.apps.slice(0, PREVIEW_COUNT)"
-                  :key="appUuid(app)"
-                  :title="appName(app)"
-                >
-                  <span class="app-order-cover app-order-cover--large">
-                    <img
-                      v-if="!coverFailed(app)"
-                      :src="appCoverUrl(app)"
-                      :alt="appName(app)"
-                      loading="lazy"
-                      @error="markCoverFailed(app)"
-                    />
-                    <span v-else>{{ (appName(app) || '?').slice(0, 1).toLocaleUpperCase() }}</span>
-                  </span>
-                </li>
-              </ul>
-              <details class="app-order-preview__all">
-                <summary>{{ t('ui.appOrder.showAll', { count: group.apps.length }) }}</summary>
-                <ol>
-                  <li v-for="app in group.apps" :key="appUuid(app)">
-                    <span>{{ appName(app) }}</span>
-                    <small>{{ statLabel(group.key, app) }}</small>
-                  </li>
-                </ol>
-              </details>
-            </div>
-          </li>
-        </ol>
-
-        <section v-if="unlistedApps.length" class="app-order-group app-order-group--static">
-          <header class="app-order-group__header">
-            <div class="app-order-group__heading">
-              <h2>{{ t('ui.appOrder.groups.other') }}</h2>
-              <span>{{ t('ui.appOrder.otherHint') }}</span>
-            </div>
-          </header>
-        </section>
-
-        <div class="app-order-footer">
+      <InlineAlert v-if="!groups.length" :title="t('ui.appOrder.ungroupedTitle')">
+        {{ t('ui.appOrder.ungroupedBody') }}
+        <template #actions>
           <AppButton
             size="compact"
-            variant="tertiary"
-            :label="t('ui.appOrder.ungroupAction')"
+            variant="primary"
+            :label="t('ui.appOrder.groupAction')"
             :disabled="busy"
-            @click="patchConfig({ app_order_groups: '' })"
+            @click="patchConfig({ app_order_groups: APP_ORDER_GROUPS.join(',') })"
           />
-        </div>
-      </template>
+        </template>
+      </InlineAlert>
 
-      <template v-else>
-        <InlineAlert :title="t('ui.appOrder.ungroupedTitle')">
-          {{ t('ui.appOrder.ungroupedBody') }}
-          <template #actions>
-            <AppButton
-              size="compact"
-              variant="primary"
-              :label="t('ui.appOrder.groupAction')"
-              :disabled="busy"
-              @click="patchConfig({ app_order_groups: APP_ORDER_GROUPS.join(',') })"
-            />
-          </template>
-        </InlineAlert>
-
-        <section class="app-order-group">
-          <header class="app-order-group__header">
+      <ol class="app-order-groups" :aria-label="t('ui.appOrder.groupsLabel')">
+        <li
+          v-for="(group, index) in listedGroups"
+          :key="group.key"
+          class="app-order-group"
+          :class="{
+            'app-order-group--dragging': drag?.kind === 'group' && drag.key === group.key,
+            'app-order-group--drop':
+              drag?.kind === 'group' && dropKey === group.key && drag.key !== group.key,
+          }"
+          :data-group="group.key"
+          @dragover="onDragOver($event, 'group', group.key)"
+          @drop.prevent="onDropGroup(index)"
+        >
+          <header
+            class="app-order-group__header"
+            :draggable="!busy && groups.length > 0"
+            @dragstart="onDragStart($event, 'group', group.key)"
+            @dragend="onDragEnd"
+          >
+            <template v-if="groups.length">
+              <UiIcon name="grip" class="app-order-grip" :size="16" aria-hidden="true" />
+              <span class="app-order-group__position">{{ index + 1 }}</span>
+            </template>
             <div class="app-order-group__heading">
-              <h2>{{ t('ui.appOrder.groups.all') }}</h2>
-              <span>{{ t('ui.appOrder.count', { count: ordered.length }, ordered.length) }}</span>
+              <h2>{{ groupTitle(group.key) }}</h2>
+              <span>{{
+                t('ui.appOrder.count', { count: group.apps.length }, group.apps.length)
+              }}</span>
+            </div>
+            <template v-if="isProvider(group.key)">
+              <AppOrderSortSelect
+                :label="t('ui.appOrder.sortLabel', { group: groupTitle(group.key) })"
+                :value="sortOf(group.key)"
+                :disabled="busy"
+                @change="patchConfig({ [`app_order_${group.key}`]: $event })"
+              />
+              <RouterLink
+                class="app-order-group__link"
+                :to="`/integrations#integration-${group.key}`"
+              >
+                {{ t('ui.appOrder.integrationSettings') }}
+              </RouterLink>
+            </template>
+            <div v-if="groups.length" class="app-order-group__actions">
+              <AppButton
+                icon="chevron-up"
+                icon-only
+                size="compact"
+                variant="tertiary"
+                :label="t('ui.appOrder.moveUp', { name: groupTitle(group.key) })"
+                :disabled="busy || index === 0"
+                @click="moveGroup(group.key, index - 1)"
+              />
+              <AppButton
+                icon="chevron-down"
+                icon-only
+                size="compact"
+                variant="tertiary"
+                :label="t('ui.appOrder.moveDown', { name: groupTitle(group.key) })"
+                :disabled="busy || index === listedGroups.length - 1"
+                @click="moveGroup(group.key, index + 1)"
+              />
             </div>
           </header>
-          <ol class="app-order-apps">
+
+          <ol v-if="!isProvider(group.key)" class="app-order-apps">
             <li
-              v-for="(app, appIndex) in ordered"
+              v-for="(app, appIndex) in group.apps"
               :key="appUuid(app)"
               class="app-order-app"
               :class="{
@@ -396,7 +291,7 @@ onMounted(() => {
               :draggable="!busy"
               @dragstart="onDragStart($event, 'app', appUuid(app))"
               @dragover="onDragOver($event, 'app', appUuid(app))"
-              @drop.prevent.stop="onDropApp(ordered, appIndex)"
+              @drop.prevent.stop="onDropApp(group.apps, appIndex)"
               @dragend="onDragEnd"
             >
               <UiIcon name="grip" class="app-order-grip" :size="16" aria-hidden="true" />
@@ -418,7 +313,7 @@ onMounted(() => {
                 variant="tertiary"
                 :label="t('ui.appOrder.moveUp', { name: appName(app) })"
                 :disabled="busy || appIndex === 0"
-                @click="moveApp(ordered, appUuid(app), appIndex - 1)"
+                @click="moveApp(group.apps, appUuid(app), appIndex - 1)"
               />
               <AppButton
                 icon="chevron-down"
@@ -426,13 +321,65 @@ onMounted(() => {
                 size="compact"
                 variant="tertiary"
                 :label="t('ui.appOrder.moveDown', { name: appName(app) })"
-                :disabled="busy || appIndex === ordered.length - 1"
-                @click="moveApp(ordered, appUuid(app), appIndex + 1)"
+                :disabled="busy || appIndex === group.apps.length - 1"
+                @click="moveApp(group.apps, appUuid(app), appIndex + 1)"
               />
             </li>
           </ol>
-        </section>
-      </template>
+
+          <div v-else class="app-order-preview">
+            <ul class="app-order-preview__covers">
+              <li
+                v-for="app in group.apps.slice(0, PREVIEW_COUNT)"
+                :key="appUuid(app)"
+                :title="appName(app)"
+              >
+                <span class="app-order-cover app-order-cover--large">
+                  <img
+                    v-if="!coverFailed(app)"
+                    :src="appCoverUrl(app)"
+                    :alt="appName(app)"
+                    loading="lazy"
+                    @error="markCoverFailed(app)"
+                  />
+                  <span v-else>{{ (appName(app) || '?').slice(0, 1).toLocaleUpperCase() }}</span>
+                </span>
+              </li>
+            </ul>
+            <details class="app-order-preview__all">
+              <summary>{{ t('ui.appOrder.showAll', { count: group.apps.length }) }}</summary>
+              <ol>
+                <li v-for="app in group.apps" :key="appUuid(app)">
+                  <span>{{ appName(app) }}</span>
+                  <small>{{ statLabel(group.key, app) }}</small>
+                </li>
+              </ol>
+            </details>
+          </div>
+        </li>
+      </ol>
+
+      <section
+        v-if="groups.length && unlistedApps.length"
+        class="app-order-group app-order-group--static"
+      >
+        <header class="app-order-group__header">
+          <div class="app-order-group__heading">
+            <h2>{{ t('ui.appOrder.groups.other') }}</h2>
+            <span>{{ t('ui.appOrder.otherHint') }}</span>
+          </div>
+        </header>
+      </section>
+
+      <div v-if="groups.length" class="app-order-footer">
+        <AppButton
+          size="compact"
+          variant="tertiary"
+          :label="t('ui.appOrder.ungroupAction')"
+          :disabled="busy"
+          @click="patchConfig({ app_order_groups: '' })"
+        />
+      </div>
     </template>
   </div>
 </template>
@@ -453,6 +400,10 @@ onMounted(() => {
 .app-order-groups {
   display: grid;
   gap: var(--vs-space-12);
+}
+
+.app-order-groups,
+.app-order-apps {
   margin: 0;
   padding: 0;
   list-style: none;
@@ -465,11 +416,13 @@ onMounted(() => {
   background: var(--vs-color-bg-surface);
 }
 
-.app-order-group--dragging {
+.app-order-group--dragging,
+.app-order-app--dragging {
   opacity: 0.5;
 }
 
-.app-order-group--drop {
+.app-order-group--drop,
+.app-order-app--drop {
   box-shadow: inset 0 2px 0 var(--vs-color-accent-default);
 }
 
@@ -482,10 +435,7 @@ onMounted(() => {
   background: var(--vs-color-bg-subtle);
 }
 
-.app-order-group__header[draggable='true'] {
-  cursor: grab;
-}
-
+.app-order-group__header[draggable='true'],
 .app-order-group__position {
   min-inline-size: 2ch;
   color: var(--vs-color-text-muted);
@@ -525,12 +475,6 @@ onMounted(() => {
   color: var(--vs-color-text-muted);
 }
 
-.app-order-apps {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
 .app-order-app {
   display: flex;
   align-items: center;
@@ -542,14 +486,6 @@ onMounted(() => {
 
 .app-order-app[draggable='true'] {
   cursor: grab;
-}
-
-.app-order-app--dragging {
-  opacity: 0.5;
-}
-
-.app-order-app--drop {
-  box-shadow: inset 0 2px 0 var(--vs-color-accent-default);
 }
 
 .app-order-app__name {

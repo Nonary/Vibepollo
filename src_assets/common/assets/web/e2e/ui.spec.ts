@@ -572,6 +572,38 @@ test('app order page arranges groups and saves the custom order', async ({ page 
   await expect.poll(() => patches.at(-1)).toEqual({ app_order_steam: 'playtime' });
 });
 
+test('app order without grouping lists every app and offers grouping', async ({ page }) => {
+  const patches = await host(page, 'linux');
+  const reorders: unknown[] = [];
+  await page.route('**/api/apps', (route) =>
+    route.fulfill({
+      json: {
+        apps: [
+          { uuid: 'desktop', name: 'Desktop' },
+          { uuid: 'hades', name: 'Hades II', 'steam-id': '1145350' },
+        ],
+        client_order: ['desktop', 'hades'],
+      },
+    }),
+  );
+  await page.route('**/api/apps/reorder', async (route) => {
+    reorders.push(route.request().postDataJSON());
+    await route.fulfill({ json: { status: true } });
+  });
+  await page.route('**/api/apps/*/cover', (route) => route.fulfill({ status: 404, body: '' }));
+  await page.goto('/v2/library/order');
+
+  const all = page.locator('[data-group="custom"]');
+  await expect(all.getByRole('heading', { name: 'All applications' })).toBeVisible();
+  await expect(all.locator('.app-order-app__name')).toHaveText(['Desktop', 'Hades II']);
+  await all.getByRole('button', { name: 'Move Hades II up' }).click();
+  await expect.poll(() => reorders).toEqual([{ order: ['hades', 'desktop'] }]);
+  await page.getByRole('button', { name: 'Group by source' }).click();
+  await expect
+    .poll(() => patches.at(-1))
+    .toEqual({ app_order_groups: 'custom,steam,playnite,lutris' });
+});
+
 test('integrations edit the same per-source app order setting', async ({ page }) => {
   const patches = await host(page, 'linux', { app_order_steam: 'recent' });
   await page.goto('/v2/integrations');
