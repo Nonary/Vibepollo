@@ -114,7 +114,8 @@ namespace display_helper::v2 {
     /// Consecutive confirmed session fallbacks while golden remains pending.
     std::atomic<std::size_t> golden_pending_session_fallbacks {0};
 
-    /// Guard: if a session restore succeeded recently, suppress golden for a cooldown.
+    /// Guard: a recent session-first restore suppresses passive golden fallback.
+    /// Explicit golden-first recovery keeps its authoritative baseline pending.
     std::atomic<long long> last_session_restore_success_ms {0};
 
     void set_exclusions(std::vector<std::string> exclusions) {

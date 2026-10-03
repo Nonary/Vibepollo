@@ -726,6 +726,38 @@ TEST(DisplayHelperV2RecoveryEngine, GoldenFirstRestoresReturningMonitorDuringSes
   EXPECT_FALSE(harness.storage.exists(display_helper::v2::SnapshotTier::Previous));
 }
 
+// A pending golden-first request must retry the authoritative baseline as
+// soon as its missing monitor returns, even after a recent usable fallback.
+TEST(DisplayHelperV2RecoveryEngine, GoldenFirstRestoresReturnedBaselineAfterRecentSessionFallback) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+  harness.state.always_restore_from_golden.store(true);
+  const auto session = make_snapshot({{"A"}});
+  const auto golden = make_snapshot({{"A"}, {"B"}});
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, session));
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, golden));
+  harness.display.current = session;
+
+  const auto fallback = harness.recovery.run(harness.cancellation.token());
+  ASSERT_FALSE(fallback.success);
+  ASSERT_EQ(harness.state.golden_pending_session_fallbacks.load(), 1u);
+  ASSERT_GT(harness.state.last_session_restore_success_ms.load(), 0);
+  EXPECT_EQ(harness.display.current, session);
+  EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Previous));
+
+  harness.add_device("B");
+  harness.clock.advance(std::chrono::milliseconds(1000));
+  const auto restored = harness.recovery.run(harness.cancellation.token());
+
+  ASSERT_TRUE(restored.success);
+  ASSERT_TRUE(restored.snapshot);
+  EXPECT_EQ(*restored.snapshot, golden);
+  EXPECT_EQ(harness.display.current, golden);
+  EXPECT_GT(harness.display.apply_calls, 0);
+  EXPECT_FALSE(harness.storage.exists(display_helper::v2::SnapshotTier::Current));
+  EXPECT_FALSE(harness.storage.exists(display_helper::v2::SnapshotTier::Previous));
+}
+
 TEST(DisplayHelperV2RecoveryEngine, DefaultRestoreRetainsRecentSessionCooldownForGolden) {
   RecoveryHarness harness;
   harness.add_device("C");
@@ -741,6 +773,29 @@ TEST(DisplayHelperV2RecoveryEngine, DefaultRestoreRetainsRecentSessionCooldownFo
   harness.display.apply_order.clear();
   EXPECT_FALSE(harness.recovery.run(harness.cancellation.token()).success);
   EXPECT_EQ(std::count(harness.display.apply_order.begin(), harness.display.apply_order.end(), "G"), 0);
+  EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Golden));
+}
+
+TEST(DisplayHelperV2RecoveryEngine, SessionFirstKeepsCooldownWhenGoldenDeviceReturns) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+  const auto session = make_snapshot({{"A"}});
+  const auto golden = make_snapshot({{"A"}, {"B"}});
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, session));
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, golden));
+  harness.display.current = session;
+  ASSERT_TRUE(harness.recovery.run(harness.cancellation.token()).success);
+  ASSERT_GT(harness.state.last_session_restore_success_ms.load(), 0);
+
+  harness.add_device("B");
+  harness.clock.advance(std::chrono::milliseconds(1000));
+  const auto restored = harness.recovery.run(harness.cancellation.token());
+
+  ASSERT_TRUE(restored.success);
+  ASSERT_TRUE(restored.snapshot);
+  EXPECT_EQ(*restored.snapshot, session);
+  EXPECT_EQ(harness.display.current, session);
+  EXPECT_EQ(harness.display.apply_calls, 0);
   EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Golden));
 }
 

@@ -12,6 +12,7 @@
   #include "src/platform/windows/display_helper_v2/state_machine.h"
   #include "src/platform/windows/display_helper_v2/topology_policy.h"
 
+  #include <algorithm>
   #include <array>
   #include <deque>
   #include <map>
@@ -3720,7 +3721,30 @@ TEST(DisplayHelperV2StateMachine, DeferredReturnRunsAuthoritativeGoldenRestoreTh
   golden.m_primary_device = kReturnedPhysicalBaseline;
   golden.m_origins[kReturnedPhysicalBaseline] = display_device::Point {0, 0};
   ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, golden));
-  fail_physical_baseline_recovery(harness);
+  // Run the actual first worker with the golden monitor absent. Its usable
+  // session fallback arms the 60-second cooldown seen in the reporter's log.
+  const auto session = make_snapshot("session_fallback");
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, session));
+  harness.add_active_device("session_fallback");
+  harness.display_settings.topology = session.m_topology;
+  harness.display_settings.snapshot = session;
+  harness.display_settings.enact_restore = true;
+  harness.display_settings.valid_topology_ids.insert("session_fallback");
+  display_helper::v2::RecoveryOperation recovery {
+    harness.display_settings,
+    harness.storage,
+    harness.golden_health,
+    harness.restore_state,
+    harness.clock
+  };
+  const auto fallback = recovery.run(harness.cancellation.token());
+  ASSERT_FALSE(fallback.success);
+  ASSERT_EQ(harness.restore_state.golden_pending_session_fallbacks.load(), 1u);
+  ASSERT_GT(harness.restore_state.last_session_restore_success_ms.load(), 0);
+  harness.dispatcher.recovery_completion(fallback);
+  harness.drain_messages();
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::EventLoop);
+  harness.state_machine.handle_tick();
   harness.add_inactive_device(kReturnedPhysicalBaseline);
   harness.add_inactive_device("intentionally_disabled_other_monitor");
   harness.display_settings.topology = {{"old_virtual_output"}};
@@ -3732,16 +3756,8 @@ TEST(DisplayHelperV2StateMachine, DeferredReturnRunsAuthoritativeGoldenRestoreTh
 
   // Execute the real operation behind the newly scheduled worker. The port
   // models CCD accepting the exact baseline topology/mode, not enable-all.
-  harness.display_settings.enact_restore = true;
   harness.display_settings.valid_topology_ids.insert(kReturnedPhysicalBaseline);
   harness.display_settings.apply_snapshot_ids.insert(kReturnedPhysicalBaseline);
-  display_helper::v2::RecoveryOperation recovery {
-    harness.display_settings,
-    harness.storage,
-    harness.golden_health,
-    harness.restore_state,
-    harness.clock
-  };
   auto restored = recovery.run(harness.cancellation.token());
   ASSERT_TRUE(restored.success);
   ASSERT_TRUE(restored.snapshot);
