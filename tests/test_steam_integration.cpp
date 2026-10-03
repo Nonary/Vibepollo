@@ -268,6 +268,27 @@ TEST(SteamDiscovery, FindsContentHashedLibraryCapsule) {
   fs::remove_all(base, ec);
 }
 
+TEST(SteamDiscovery, FindsContentHashedLibrary600x900) {
+  const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());
+  const auto base = fs::temp_directory_path() / ("vibepollo-steam-hashed-600x900-test-" + std::to_string(nonce));
+  std::error_code ec;
+  fs::create_directories(base / "steamapps/common/NewCoverGame", ec);
+  fs::create_directories(base / "appcache/librarycache/85/portrait-hash", ec);
+  fs::create_directories(base / "appcache/librarycache/85/header-hash", ec);
+  {
+    std::ofstream out(base / "steamapps/appmanifest_85.acf");
+    out << R"VDF("AppState" { "appid" "85" "name" "New Cover Game" "type" "game" "installdir" "NewCoverGame" })VDF";
+  }
+  std::ofstream(base / "appcache/librarycache/85/portrait-hash/library_600x900.jpg") << "portrait";
+  std::ofstream(base / "appcache/librarycache/85/header-hash/library_header.jpg") << "header";
+
+  const auto games = discover({base});
+  ASSERT_EQ(games.size(), 1U);
+  EXPECT_EQ(games[0].portrait_path.filename(), "library_600x900.jpg");
+  EXPECT_EQ(games[0].artwork_path, games[0].portrait_path);
+  fs::remove_all(base, ec);
+}
+
 TEST(SteamDiscovery, IgnoresManifestWithoutInstalledDirectory) {
   const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());
   const auto base = fs::temp_directory_path() / ("vibepollo-steam-stale-test-" + std::to_string(nonce));

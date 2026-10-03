@@ -7,6 +7,7 @@
 #include <fstream>
 #include <gtest/gtest.h>
 #include <optional>
+#include <string>
 #include <vector>
 
 #ifdef VIBEPOLLO_STEAM_ARTWORK_IMAGE_LIBS
@@ -251,6 +252,35 @@ TEST(SteamArtwork, FailedRemoteFetchKeepsUsableLocalFallback) {
   EXPECT_EQ(fetches, 1);
   EXPECT_EQ(png_size(games[0].artwork_client_path), std::make_pair(1U, 1U));
   fs::remove_all(root, ec);
+}
+
+TEST(SteamArtwork, FetchesContentHashPortraitWhenFixedCdnPathIsMissing) {
+  const std::string hash = "1159a696d257cbeb3f4479be3466cfba2ae938a0";
+  for (const std::string stem : {"library_600x900", "library_capsule"}) {
+    const auto root = test_root();
+    std::error_code ec;
+    const auto hash_dir = root / "librarycache/3768760" / hash;
+    fs::create_directories(hash_dir, ec);
+    const auto source = hash_dir / (stem + ".png");
+    std::ofstream(source, std::ios::binary).write(reinterpret_cast<const char *>(one_pixel_png), sizeof(one_pixel_png));
+    platf::steam::game_t game;
+    game.app_id = 3768760;
+    game.artwork_path = source;
+    const auto hashed =
+      "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/3768760/" + hash + "/" + stem + "_2x.jpg";
+    auto fixture = full_portrait_png();
+    std::vector<std::string> requested;
+    std::vector<platf::steam::game_t> games {game};
+    platf::steam::artwork::prepare(games, root / "appdata", [&](const std::string &url) -> std::optional<std::vector<std::uint8_t>> {
+      requested.push_back(url);
+      if (url == hashed) return fixture;
+      return std::nullopt;
+    });
+    ASSERT_EQ(requested.size(), 2U);
+    EXPECT_EQ(requested[1], hashed);
+    EXPECT_EQ(png_size(games[0].artwork_client_path), std::make_pair(600U, 900U));
+    fs::remove_all(root, ec);
+  }
 }
 
 TEST(SteamArtwork, RejectsInvalidRemoteFixture) {
