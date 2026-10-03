@@ -629,16 +629,18 @@ namespace {
 
   // Newer apps publish artwork only under a content-hash directory, so the
   // fixed CDN path 404s. Steam caches them locally as <appid>/<hash>/<file>,
-  // and that hash names the same directory on the CDN.
+  // and the CDN serves <file>_2x.jpg from the same hash directory.
   std::string hashed_portrait_url(std::uint32_t app_id, const fs::path &local_source) {
     const auto hash = local_source.parent_path().filename().string();
+    const auto stem = local_source.stem().string();
     if (hash.size() != 40 || !std::all_of(hash.begin(), hash.end(), [](unsigned char ch) {
           return std::isdigit(ch) || (ch >= 'a' && ch <= 'f');
-        })) {
+        }) ||
+        (stem != "library_600x900" && stem != "library_capsule")) {
       return {};
     }
     return "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/" +
-           std::to_string(app_id) + "/" + hash + "/library_600x900_2x.jpg";
+           std::to_string(app_id) + "/" + hash + "/" + stem + "_2x.jpg";
   }
 
   fs::path obtain_remote_portrait(std::uint32_t app_id, const fs::path &local_source, const fs::path &appdata,
