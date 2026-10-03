@@ -48,8 +48,10 @@ code = r'''
 #include <vector>
 using namespace std::literals;
 #define BOOST_LOG(level) std::ostringstream{}
+#ifndef _WIN32
 constexpr int _TRUNCATE=0;
 template<size_t N> void wcsncpy_s(wchar_t (&out)[N], const wchar_t* in, int){std::wcsncpy(out,in,N-1);out[N-1]=0;}
+#endif
 struct TestClock {
  using time_point=std::chrono::steady_clock::time_point;
  static inline auto origin=std::chrono::steady_clock::now();
