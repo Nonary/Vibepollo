@@ -922,6 +922,16 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_frame_limiter_vsync.py")
     add_test(NAME regression_playnite_stop_callback
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_playnite_stop_callback.py")
+    add_test(NAME regression_playnite_close_grace
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_playnite_close_grace.py")
+    add_test(NAME regression_playnite_plugin_upgrade
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_playnite_plugin_upgrade.py")
+    find_program(SUNSHINE_TEST_DOTNET NAMES dotnet dotnet.exe)
+    add_test(NAME regression_playnite_connector_lifecycle
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/playnite_connector/test_lifecycle.py"
+            --dotnet "${SUNSHINE_TEST_DOTNET}")
+    set_tests_properties(regression_playnite_connector_lifecycle regression_playnite_close_grace regression_playnite_plugin_upgrade
+        PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME regression_rtss_profile_version
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_rtss_profile_version.py")
     add_test(NAME regression_virtual_capture_readiness

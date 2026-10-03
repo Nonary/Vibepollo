@@ -220,7 +220,9 @@ namespace confighttp {
     if (have_packaged) {
       out["packaged_version"] = packaged_ver;
     }
-    bool update_available = false;
+    // A script or differently named DLL needs migration even if its manifest
+    // version is equal to the bundled compiled connector's version.
+    bool update_available = install_state.legacy_plugin;
     if (out["installed"].is_boolean() && out["installed"].get<bool>() && have_installed && have_packaged) {
       update_available = semver_cmp(installed_ver, packaged_ver) < 0;
     }

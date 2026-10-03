@@ -49,7 +49,7 @@ namespace platf::playnite {
    */
   void stop_client_for_session();
 
-  // Install the plugin, optionally closing and relaunching Playnite around deployment.
+  // Stop Playnite before installing the plugin; optionally relaunch it afterward.
   bool install_plugin(std::string &error, bool restart_playnite = true);
   bool install_plugin_to(const std::string &dest_dir, std::string &error, bool restart_playnite = true);
   /**

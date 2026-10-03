@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
+using System.Windows.Threading;
 using Playnite.SDK;
 using Playnite.SDK.Models;
 
@@ -25,8 +26,13 @@ namespace SunshinePlaynite
         private readonly PlayniteDataMapper dataMapper;
         private readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
         private readonly object lifecycleLock = new object();
+        private readonly object connectionLock = new object();
         private readonly object coreLock = new object();
         private readonly object gameStateLock = new object();
+        // RunTemporary holds the scope lock across StartGame, which can call
+        // GameStarted synchronously. Never hold gameStateLock while setting or
+        // clearing a scope, or that callback can deadlock against a pipe worker.
+        private readonly object environmentLock = new object();
         private readonly object snapshotLock = new object();
         private readonly ConcurrentDictionary<string, PipeConnection> launchers = new ConcurrentDictionary<string, PipeConnection>();
         private readonly ConcurrentDictionary<Guid, byte> sunshineGames = new ConcurrentDictionary<Guid, byte>();
@@ -59,15 +65,19 @@ namespace SunshinePlaynite
             {
                 if (Volatile.Read(ref started) != 0) return;
                 var nextCancellation = new CancellationTokenSource();
+                var token = nextCancellation.Token;
                 try
                 {
-                    cancellation = nextCancellation;
                     api.Database.Games.ItemCollectionChanged += GamesChanged;
                     api.Database.Games.ItemUpdated += GamesUpdated;
-                    snapshotTimer = new Timer(_ => SendSnapshot(), null, Timeout.Infinite, Timeout.Infinite);
-                    serverTask = Task.Factory.StartNew(() => ServerLoop(nextCancellation.Token), nextCancellation.Token,
+                    snapshotTimer = new Timer(_ => SendSnapshot(token), null, Timeout.Infinite, Timeout.Infinite);
+                    lock (connectionLock)
+                    {
+                        cancellation = nextCancellation;
+                        Volatile.Write(ref started, 1);
+                    }
+                    serverTask = Task.Factory.StartNew(() => ServerLoop(token), CancellationToken.None,
                         TaskCreationOptions.LongRunning, TaskScheduler.Default);
-                    Volatile.Write(ref started, 1);
                     log.Info("Compiled Playnite plugin started");
                 }
                 catch
@@ -77,7 +87,12 @@ namespace SunshinePlaynite
                     try { if (snapshotTimer != null) snapshotTimer.Dispose(); } catch { }
                     snapshotTimer = null;
                     serverTask = null;
-                    cancellation = null;
+                    lock (connectionLock)
+                    {
+                        Volatile.Write(ref started, 0);
+                        cancellation = null;
+                    }
+                    nextCancellation.Cancel();
                     nextCancellation.Dispose();
                     throw;
                 }
@@ -89,7 +104,9 @@ namespace SunshinePlaynite
             lock (lifecycleLock)
             {
                 if (Volatile.Read(ref started) == 0) return;
-                Volatile.Write(ref started, 0);
+                // Close admission before flushing, using the same lock as
+                // publication so no connection can appear after the stop sweep.
+                lock (connectionLock) Volatile.Write(ref started, 0);
                 log.Info("Beginning shutdown");
                 try
                 {
@@ -107,19 +124,29 @@ namespace SunshinePlaynite
                     snapshotTimer = null;
                     try { if (timer != null) timer.Dispose(); } catch { }
 
-                    var stopCancellation = cancellation;
-                    try { if (stopCancellation != null) stopCancellation.Cancel(); } catch { }
-                    try { if (pendingPipe != null) pendingPipe.Dispose(); } catch { }
-                    pendingPipe = null;
-                    try { ReplaceCore(null); } catch { }
-                    foreach (var item in launchers.ToArray())
+                    CancellationTokenSource stopCancellation;
+                    NamedPipeServerStream stopPipe;
+                    lock (connectionLock)
                     {
-                        PipeConnection ignored;
-                        if (launchers.TryRemove(item.Key, out ignored))
+                        stopCancellation = cancellation;
+                        cancellation = null;
+                        stopPipe = pendingPipe;
+                        pendingPipe = null;
+                    }
+                    try { if (stopCancellation != null) stopCancellation.Cancel(); } catch { }
+                    try { if (stopPipe != null) stopPipe.Dispose(); } catch { }
+                    try { ReplaceCore(null); } catch { }
+                    lock (environmentLock)
+                    {
+                        foreach (var item in launchers.ToArray())
                         {
-                            try { ignored.Dispose(); } catch { }
+                            PipeConnection ignored;
+                            if (launchers.TryRemove(item.Key, out ignored))
+                            {
+                                try { ignored.Dispose(); } catch { }
+                            }
+                            try { environmentScopes.Clear(item.Key); } catch { }
                         }
-                        try { environmentScopes.Clear(item.Key); } catch { }
                     }
                     lock (gameStateLock)
                     {
@@ -130,7 +157,6 @@ namespace SunshinePlaynite
                     var task = serverTask;
                     serverTask = null;
                     try { if (task != null) task.Wait(1000); } catch { }
-                    cancellation = null;
                     try { if (stopCancellation != null) stopCancellation.Dispose(); } catch { }
                     log.Info("Connector stopped");
                 }
@@ -145,7 +171,7 @@ namespace SunshinePlaynite
 
         public void GameStarted(Game game)
         {
-            if (game == null) return;
+            if (game == null || Volatile.Read(ref started) == 0) return;
             log.Info("Game started: " + game.Name + " [" + game.Id + "]");
             var payload = RunOnUi(() => dataMapper.BuildStatus("gameStarted", game), true);
             lock (gameStateLock)
@@ -158,7 +184,7 @@ namespace SunshinePlaynite
 
         public void GameStopped(Game game)
         {
-            if (game == null) return;
+            if (game == null || Volatile.Read(ref started) == 0) return;
             log.Info("Game stopped: " + game.Name + " [" + game.Id + "]");
             var payload = RunOnUi(() => dataMapper.BuildStatus("gameStopped", game), true);
             lock (gameStateLock)
@@ -178,7 +204,8 @@ namespace SunshinePlaynite
         public void QueueSnapshot()
         {
             var timer = snapshotTimer;
-            if (timer != null) timer.Change(3000, Timeout.Infinite);
+            try { if (timer != null) timer.Change(3000, Timeout.Infinite); }
+            catch (ObjectDisposedException) { } // An already delivered database event raced with Stop.
         }
 
         private void GamesChanged(object sender, ItemCollectionChangedEventArgs<Game> args)
@@ -199,18 +226,20 @@ namespace SunshinePlaynite
             {
                 NamedPipeServerStream control = null;
                 NamedPipeServerStream data = null;
+                PipeConnection unownedConnection = null;
                 try
                 {
                     control = ConnectorPipeTransport.CreateServer(ControlPipeName, security);
-                    pendingPipe = control;
+                    if (!SetPendingPipe(control, token)) break;
                     ConnectorPipeTransport.WaitForConnection(control, token);
                     var pipeName = Guid.NewGuid().ToString("B").ToUpperInvariant();
                     data = ConnectorPipeTransport.CreateServer(pipeName, security);
                     ConnectorPipeTransport.WriteHandshake(control, pipeName);
                     if (!ConnectorPipeTransport.WaitForAck(control)) throw new IOException("Handshake ACK missing");
+                    ClearPendingPipe(control);
                     control.Dispose();
                     control = null;
-                    pendingPipe = data;
+                    if (!SetPendingPipe(data, token)) break;
                     ConnectorPipeTransport.WaitForConnection(data, token, DataConnectionTimeoutMs);
 
                     var reader = new StreamReader(data, new UTF8Encoding(false), false, 8192, true);
@@ -219,20 +248,30 @@ namespace SunshinePlaynite
                     if (helloLine == null) throw new IOException("No hello received");
                     var hello = ParseObject(helloLine);
                     var role = ConnectorPipeTransport.ValidateClient(data, hello);
-                    var connection = new PipeConnection(pipeName, data, reader, writer, log);
-                    data = null;
-                    if (string.Equals(role, "sunshine", StringComparison.OrdinalIgnoreCase))
+                    unownedConnection = new PipeConnection(pipeName, data, reader, writer, log);
+                    unownedConnection.Pid = GetInt(hello, "pid");
+                    unownedConnection.GameId = GetString(hello, "gameId");
+                    PipeConnection previous = null;
+                    lock (connectionLock)
                     {
-                        ReplaceCore(connection);
-                        StartCore(connection, token);
+                        if (!IsCurrentRun(token)) break;
+                        if (string.Equals(role, "sunshine", StringComparison.OrdinalIgnoreCase))
+                        {
+                            lock (coreLock) { previous = core; core = unownedConnection; }
+                            StartCore(unownedConnection, token);
+                        }
+                        else
+                        {
+                            launchers[pipeName] = unownedConnection;
+                            StartLauncher(unownedConnection, token);
+                        }
+                        if (ReferenceEquals(pendingPipe, data)) pendingPipe = null;
+                        // The registered worker owns cleanup even if its run
+                        // was cancelled before the task began executing.
+                        data = null;
+                        unownedConnection = null;
                     }
-                    else
-                    {
-                        connection.Pid = GetInt(hello, "pid");
-                        connection.GameId = GetString(hello, "gameId");
-                        launchers[pipeName] = connection;
-                        StartLauncher(connection, token);
-                    }
+                    if (previous != null) previous.Dispose();
                 }
                 catch (OperationCanceledException) { break; }
                 catch (TimeoutException ex)
@@ -245,7 +284,9 @@ namespace SunshinePlaynite
                 }
                 finally
                 {
-                    pendingPipe = null;
+                    ClearPendingPipe(control);
+                    ClearPendingPipe(data);
+                    if (unownedConnection != null) unownedConnection.Dispose();
                     if (control != null) control.Dispose();
                     if (data != null) data.Dispose();
                 }
@@ -260,10 +301,12 @@ namespace SunshinePlaynite
             {
                 try
                 {
-                    SendSnapshot();
-                    SendRunningGames();
+                    token.ThrowIfCancellationRequested();
+                    SendSnapshot(token);
+                    SendRunningGames(token);
                     ReadCore(connection, token);
                 }
+                catch (Exception ex) { if (!token.IsCancellationRequested) log.Warn("Core reader failed: " + ex.Message); }
                 finally
                 {
                     lock (coreLock)
@@ -272,7 +315,7 @@ namespace SunshinePlaynite
                     }
                     connection.Dispose();
                 }
-            }, token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
 
         private void ReadCore(PipeConnection connection, CancellationToken token)
@@ -281,21 +324,25 @@ namespace SunshinePlaynite
             {
                 var line = connection.Reader.ReadLine();
                 if (line == null) break;
-                try { HandleCoreCommand(ParseObject(line)); }
+                try { if (IsCurrentRun(token)) HandleCoreCommand(ParseObject(line), token); }
                 catch (Exception ex) { log.Warn("Failed to handle Sunshine command: " + ex.Message); }
             }
         }
 
-        private void HandleCoreCommand(Dictionary<string, object> message)
+        private void HandleCoreCommand(Dictionary<string, object> message, CancellationToken token)
         {
             if (GetString(message, "type") != "command") return;
             var command = GetString(message, "command");
             var id = GetString(message, "id");
             if (command == "launch" && Guid.TryParse(id, out var gameId))
             {
-                lock (gameStateLock) sunshineGames.TryAdd(gameId, 0);
+                lock (gameStateLock)
+                {
+                    if (!IsCurrentRun(token)) return;
+                    sunshineGames.TryAdd(gameId, 0);
+                }
                 var environment = GetEnvironment(message);
-                RunOnUi(() => environmentScopes.RunTemporary(environment, () => api.StartGame(gameId)), false);
+                RunOnUi(() => environmentScopes.RunTemporary(environment, () => api.StartGame(gameId)), false, token);
             }
             else if (command == "stop")
             {
@@ -303,7 +350,7 @@ namespace SunshinePlaynite
             }
             else if (command == "snapshot")
             {
-                SendSnapshot();
+                SendSnapshot(token);
             }
             else if (command == "set-cover")
             {
@@ -313,7 +360,7 @@ namespace SunshinePlaynite
                 {
                     var path = GetString(message, "path");
                     if (!Guid.TryParse(id, out gameId) || !File.Exists(path)) throw new IOException("Invalid game ID or cover path");
-                    success = RunOnUi(() => dataMapper.SetCover(gameId, path), true);
+                    success = RunOnUi(() => dataMapper.SetCover(gameId, path), true, token);
                     if (!success) throw new InvalidOperationException("Playnite rejected the cover metadata update");
                 }
                 catch (Exception ex) { error = ex.Message; }
@@ -321,35 +368,49 @@ namespace SunshinePlaynite
                 {
                     ["type"] = "commandResult", ["command"] = "set-cover",
                     ["requestId"] = GetString(message, "requestId"), ["success"] = success, ["error"] = error
-                });
+                }, token);
             }
         }
 
         private void StartLauncher(PipeConnection connection, CancellationToken token)
         {
             log.Info(string.Format("Launcher connection accepted id={0} pid={1}", connection.Id, connection.Pid));
-            SyncLauncher(connection);
-            FlushPending(connection);
             Task.Factory.StartNew(() =>
             {
                 try
                 {
+                    token.ThrowIfCancellationRequested();
+                    SyncLauncher(connection, token);
+                    FlushPending(connection, token);
                     while (!token.IsCancellationRequested)
                     {
                         var line = connection.Reader.ReadLine();
                         if (line == null) break;
                         var message = ParseObject(line);
+                        if (!IsCurrentRun(token)) break;
                         if (GetString(message, "type") != "command") continue;
                         var command = GetString(message, "command");
                         if (command == "launch" && Guid.TryParse(GetString(message, "id"), out var gameId))
                         {
-                            lock (gameStateLock) sunshineGames.TryAdd(gameId, 0);
-                            environmentScopes.Set(connection.Id, GetEnvironment(message));
-                            RunOnUi(() => api.StartGame(gameId), false);
+                            lock (gameStateLock)
+                            {
+                                if (!IsCurrentRun(token)) break;
+                                sunshineGames.TryAdd(gameId, 0);
+                            }
+                            lock (environmentLock)
+                            {
+                                if (!IsCurrentRun(token)) break;
+                                environmentScopes.Set(connection.Id, GetEnvironment(message));
+                            }
+                            RunOnUi(() => api.StartGame(gameId), false, token);
                         }
                         else if (command == "set-environment")
                         {
-                            environmentScopes.Set(connection.Id, GetEnvironment(message));
+                            lock (environmentLock)
+                            {
+                                if (!IsCurrentRun(token)) break;
+                                environmentScopes.Set(connection.Id, GetEnvironment(message));
+                            }
                         }
                     }
                 }
@@ -362,18 +423,19 @@ namespace SunshinePlaynite
                     connection.Dispose();
                     log.Info("Launcher disconnected: " + connection.Id);
                 }
-            }, token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
 
-        private void SendSnapshot()
+        private void SendSnapshot(CancellationToken token)
         {
             lock (snapshotLock)
             {
+                if (!IsCurrentRun(token)) return;
                 var target = GetCore();
                 if (target == null) return;
                 try
                 {
-                    var snapshot = RunOnUi(() => dataMapper.BuildSnapshot(), true);
+                    var snapshot = RunOnUi(() => dataMapper.BuildSnapshot(), true, token);
                     var messages = new List<string>
                     {
                         Serialize(new Dictionary<string, object> { ["type"] = "snapshotStart" }),
@@ -422,15 +484,16 @@ namespace SunshinePlaynite
             Broadcast(payload, matches.Length == 0 ? null : matches);
         }
 
-        private void SendRunningGames()
+        private void SendRunningGames(CancellationToken token)
         {
-            foreach (var game in RunOnUi(() => api.Database.Games.Where(x => x.IsRunning).ToArray(), true))
+            foreach (var game in RunOnUi(() => api.Database.Games.Where(x => x.IsRunning).ToArray(), true, token))
             {
                 var payload = dataMapper.BuildStatus("gameStarted", game);
                 lock (gameStateLock)
                 {
+                    if (!IsCurrentRun(token)) return;
                     if (!game.IsRunning || sunshineGames.ContainsKey(game.Id)) continue;
-                    SendCore(payload);
+                    SendCore(payload, token);
                     var delivered = Broadcast(payload, null);
                     if (delivered == 0) pendingGames.TryAdd(game.Id, 0);
                     sunshineGames.TryAdd(game.Id, 0);
@@ -438,15 +501,16 @@ namespace SunshinePlaynite
             }
         }
 
-        private void SyncLauncher(PipeConnection launcher)
+        private void SyncLauncher(PipeConnection launcher, CancellationToken token)
         {
-            var running = RunOnUi(() => api.Database.Games.Where(x => x.IsRunning).ToArray(), true);
+            var running = RunOnUi(() => api.Database.Games.Where(x => x.IsRunning).ToArray(), true, token);
             var preferred = running.FirstOrDefault(x => SameId(launcher.GameId, x.Id));
             foreach (var game in preferred == null ? running : new[] { preferred })
             {
                 var payload = dataMapper.BuildStatus("gameStarted", game);
                 lock (gameStateLock)
                 {
+                    if (!IsCurrentRun(token)) return;
                     if (!game.IsRunning) continue;
                     var queued = launcher.Send(payload);
                     sunshineGames.TryAdd(game.Id, 0);
@@ -456,14 +520,15 @@ namespace SunshinePlaynite
             }
         }
 
-        private void FlushPending(PipeConnection launcher)
+        private void FlushPending(PipeConnection launcher, CancellationToken token)
         {
             foreach (var gameId in pendingGames.Keys.ToArray())
             {
-                var game = RunOnUi(() => api.Database.Games.Get(gameId), true);
+                var game = RunOnUi(() => api.Database.Games.Get(gameId), true, token);
                 var payload = game == null || !game.IsRunning ? null : dataMapper.BuildStatus("gameStarted", game);
                 lock (gameStateLock)
                 {
+                    if (!IsCurrentRun(token)) return;
                     byte ignored;
                     if (!pendingGames.ContainsKey(gameId)) continue;
                     if (game == null || !game.IsRunning)
@@ -505,8 +570,9 @@ namespace SunshinePlaynite
             }
         }
 
-        private void SendCore(object message)
+        private void SendCore(object message, CancellationToken token = default(CancellationToken))
         {
+            if (token.CanBeCanceled && !IsCurrentRun(token)) return;
             var target = GetCore();
             if (target != null) target.Send(message as string ?? Serialize(message));
         }
@@ -523,6 +589,33 @@ namespace SunshinePlaynite
 
         private PipeConnection GetCore() { lock (coreLock) return core; }
 
+        private bool IsCurrentRun(CancellationToken token)
+        {
+            lock (connectionLock)
+            {
+                return Volatile.Read(ref started) != 0 && cancellation != null &&
+                    !token.IsCancellationRequested && cancellation.Token == token;
+            }
+        }
+
+        private bool SetPendingPipe(NamedPipeServerStream pipe, CancellationToken token)
+        {
+            lock (connectionLock)
+            {
+                if (!IsCurrentRun(token)) return false;
+                pendingPipe = pipe;
+                return true;
+            }
+        }
+
+        private void ClearPendingPipe(NamedPipeServerStream pipe)
+        {
+            lock (connectionLock)
+            {
+                if (ReferenceEquals(pendingPipe, pipe)) pendingPipe = null;
+            }
+        }
+
         private void ReplaceCore(PipeConnection replacement)
         {
             PipeConnection previous;
@@ -532,7 +625,7 @@ namespace SunshinePlaynite
 
         private Dictionary<string, object> ParseObject(string value)
         {
-            return json.Deserialize<Dictionary<string, object>>(value) ?? new Dictionary<string, object>();
+            lock (json) return json.Deserialize<Dictionary<string, object>>(value) ?? new Dictionary<string, object>();
         }
 
         private string Serialize(object value) { lock (json) return json.Serialize(value); }
@@ -565,19 +658,28 @@ namespace SunshinePlaynite
             return result;
         }
 
-        private T RunOnUi<T>(Func<T> action, bool synchronous)
+        private T RunOnUi<T>(Func<T> action, bool synchronous, CancellationToken token = default(CancellationToken))
         {
+            token.ThrowIfCancellationRequested();
+            if (token.CanBeCanceled && !IsCurrentRun(token)) throw new OperationCanceledException(token);
             var dispatcher = api.MainView.UIDispatcher;
             if (dispatcher == null || dispatcher.CheckAccess()) return action();
-            return dispatcher.Invoke(action);
+            // A shutdown on the UI thread must be able to cancel a worker's
+            // queued query instead of waiting for that same UI thread.
+            return dispatcher.InvokeAsync(action, DispatcherPriority.Normal, token).Task.GetAwaiter().GetResult();
         }
 
-        private void RunOnUi(Action action, bool synchronous)
+        private void RunOnUi(Action action, bool synchronous, CancellationToken token = default(CancellationToken))
         {
             var dispatcher = api.MainView.UIDispatcher;
-            if (dispatcher == null || dispatcher.CheckAccess()) action();
-            else if (synchronous) dispatcher.Invoke(action);
-            else dispatcher.BeginInvoke(action);
+            Action guarded = () =>
+            {
+                if (token.CanBeCanceled && !IsCurrentRun(token)) return;
+                action();
+            };
+            if (dispatcher == null || dispatcher.CheckAccess()) guarded();
+            else if (synchronous) dispatcher.InvokeAsync(guarded, DispatcherPriority.Normal, token).Task.GetAwaiter().GetResult();
+            else dispatcher.InvokeAsync(guarded, DispatcherPriority.Normal, token);
         }
 
         private static bool SameId(string left, object right)

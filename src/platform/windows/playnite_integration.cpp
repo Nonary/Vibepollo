@@ -29,6 +29,7 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cstdint>
 #include <ctime>
 #include <filesystem>
 #include <iomanip>
@@ -1808,12 +1809,25 @@ namespace platf::playnite {
       const wchar_t *name;
       std::vector<DWORD> pids;
     } ctx {exeName, {}};
+    std::vector<winrt::handle> processes;
 
     // Build a set of target PIDs by name
     try {
       auto ids = platf::dxgi::find_process_ids_by_name(exeName);
-      ctx.pids.insert(ctx.pids.end(), ids.begin(), ids.end());
-    } catch (...) {}
+      for (DWORD pid : ids) {
+        winrt::handle process {OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid)};
+        if (!process) {
+          if (GetLastError() == ERROR_INVALID_PARAMETER) {
+            continue;  // The process exited before its handle could be opened.
+          }
+          return false;
+        }
+        ctx.pids.push_back(pid);
+        processes.emplace_back(std::move(process));
+      }
+    } catch (...) {
+      return false;
+    }
 
     if (!ctx.pids.empty()) {
       BOOST_LOG(debug) << "Playnite: posting WM_CLOSE to " << ctx.pids.size() << " window(s) for '" << platf::to_utf8(std::wstring(exeName)) << "'";
@@ -1835,28 +1849,26 @@ namespace platf::playnite {
                   reinterpret_cast<LPARAM>(&ctx));
     }
 
-    Sleep(1200);
-
+    // Playnite drains plugins, startup scripts and its database after WM_CLOSE.
+    // Wait on the original process handles, with one shared grace deadline,
+    // rather than killing a healthy shutdown after a fixed 1.2-second sleep.
+    constexpr auto graceful_timeout = std::chrono::seconds(15);
+    const auto deadline = std::chrono::steady_clock::now() + graceful_timeout;
     bool stopped = true;
-    try {
-      auto ids = platf::dxgi::find_process_ids_by_name(exeName);
-      if (!ids.empty()) {
-        BOOST_LOG(debug) << "Playnite: terminating remaining processes for '" << platf::to_utf8(std::wstring(exeName)) << "' count=" << ids.size();
-      }
-      for (DWORD pid : ids) {
-        HANDLE hp = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
-        if (!hp) {
+    for (auto &process : processes) {
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+      const DWORD wait_ms = static_cast<DWORD>(std::max<std::int64_t>(0, remaining));
+      const DWORD result = WaitForSingleObject(process.get(), wait_ms);
+      if (result == WAIT_TIMEOUT) {
+        BOOST_LOG(warning) << "Playnite: graceful shutdown timed out for '" << platf::to_utf8(std::wstring(exeName)) << "'; terminating the original process";
+        if (!TerminateProcess(process.get(), 1) || WaitForSingleObject(process.get(), 5000) != WAIT_OBJECT_0) {
           stopped = false;
-          continue;
         }
-        DWORD code = 0;
-        if (!GetExitCodeProcess(hp, &code) || code == STILL_ACTIVE) {
-          if (!TerminateProcess(hp, 1) || WaitForSingleObject(hp, 5000) != WAIT_OBJECT_0) {
-            stopped = false;
-          }
-        }
-        CloseHandle(hp);
+      } else if (result != WAIT_OBJECT_0) {
+        stopped = false;
       }
+    }
+    try {
       if (!platf::dxgi::find_process_ids_by_name(exeName).empty()) {
         stopped = false;
       }
@@ -1974,7 +1986,7 @@ namespace platf::playnite {
         error_out = "Could not resolve the Playnite executable before installation.";
         return false;
       }
-      if (restart && !stop_playnite()) {
+      if (!stop_playnite()) {
         error_out = "Could not stop Playnite before installing the plugin.";
         return false;
       }
