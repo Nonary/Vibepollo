@@ -405,6 +405,8 @@ sunshine_register_component(NAME test_component_remote_session TEST_SOURCE unit/
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/remote_session.cpp")
 sunshine_register_component(NAME test_component_rtsp_pending_policy TEST_SOURCE unit/test_rtsp_pending_policy.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/rtsp_pending_policy.cpp")
+sunshine_register_component(NAME test_component_pyrowave_udp_probe TEST_SOURCE unit/test_pyrowave_udp_probe.cpp
+    LINK_LIBRARIES Boost::asio Boost::system ${SUNSHINE_TEST_SOCKET_LIBRARIES})
 sunshine_register_component(NAME test_component_pyrowave_policy TEST_SOURCE unit/test_pyrowave_policy.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/pyrowave_policy.cpp")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

@@ -59,6 +59,7 @@
 #include "remote_display_topology.h"
 #include "platform/common.h"
 #include "pyrowave_protocol.h"
+#include "pyrowave_udp_probe.h"
 #include "state_storage.h"
 #include "paired_state_policy.h"
 #include "state_storage_policy.h"
@@ -3967,6 +3968,7 @@ namespace nvhttp {
       tree.put("root.PyroWaveHostLinkMbps", link_bps / 1'000'000);
       tree.put("root.PyroWaveBandwidthProbeBytes", 32U * 1024U * 1024U);
       tree.put("root.PyroWaveWireBudgetVersion", 1);
+      tree.put("root.PyroWaveUdpProbeVersion", 1);
       tree.put("root.PyroWaveCriticalFecPercentage", config::stream.pyrowave_critical_fec_percentage);
       tree.put("root.PyroWaveMinParityShards", 2);
     }
@@ -6378,6 +6380,60 @@ namespace nvhttp {
     sendPyroWaveProbeChunk(std::make_shared<pyrowave_probe_state_t>(pyrowave_probe_state_t {response, probe_bytes}));
   }
 
+  void getPyroWaveUdpProbe(resp_https_t response, req_https_t request) {
+    const auto verified_client = get_verified_cert(request);
+    const auto identity = resolve_client_identity(request, verified_client);
+    if (!verified_client || identity.uuid.empty()) {
+      response->write(SimpleWeb::StatusCode::client_error_forbidden, "Paired client required");
+      response->close_connection_after_response = true;
+      return;
+    }
+    auto lifecycle_lock = acquire_stream_start_lifecycle_lock();
+    // One bounded probe at a time; never contend with a running stream.
+    static std::mutex probe_mutex;
+    std::unique_lock lock(probe_mutex, std::try_to_lock);
+    if (!lock.owns_lock() || has_stream_session_activity()) {
+      response->write(SimpleWeb::StatusCode::client_error_bad_request, "Stop streaming before testing bandwidth");
+      return;
+    }
+    const auto args = request->parse_query_string();
+    const auto parse = [&](const char *key) {
+      const auto value = get_arg(args, key, "");
+      if (value.empty() || value.size() > 7 || value.find_first_not_of("0123456789") != std::string::npos) return 0;
+      return std::stoi(value);
+    };
+    const int kbps = parse("kbps"), port = parse("port"), packetsize = parse("packetsize");
+    const auto token = get_arg(args, "token", "");
+    if (kbps < 5000 || kbps > 3000000 || port < 1024 || port > 65535 ||
+        packetsize < 256 || packetsize > 1392 || token.size() != 32 ||
+        token.find_first_not_of("0123456789abcdef") != std::string::npos) {
+      response->write(SimpleWeb::StatusCode::client_error_bad_request, "Invalid UDP probe parameters");
+      return;
+    }
+    try {
+      auto timer = platf::create_high_precision_timer();
+      if (!timer || !*timer) throw std::runtime_error("Could not create the UDP pacing timer");
+      const auto result = pyrowave::probe::send(request->local_endpoint().address(),
+        {request->remote_endpoint().address(), static_cast<unsigned short>(port)}, kbps, packetsize, token,
+        [&](auto due) {
+          const auto now = std::chrono::steady_clock::now();
+          if (due > now) timer->sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(due - now));
+        });
+      pt::ptree tree;
+      tree.put("root.<xmlattr>.status_code", 200);
+      tree.put("root.expected", result.expected);
+      tree.put("root.sent", result.sent);
+      tree.put("root.elapsedMs", result.elapsed_ms);
+      std::ostringstream body;
+      pt::write_xml(body, tree);
+      response->write(body.str());
+    }
+    catch (const std::exception &error) {
+      BOOST_LOG(warning) << "PyroWave UDP probe failed: " << error.what();
+      response->write(SimpleWeb::StatusCode::server_error_internal_server_error, "UDP probe failed");
+    }
+  }
+
   void setup(const std::string &pkey, const std::string &cert) {
     conf_intern.pkey = pkey;
     conf_intern.servercert = cert;
@@ -6625,6 +6681,11 @@ namespace nvhttp {
     https_server.resource["^/bitrate$"]["GET"] = setBitrate;
     https_server.resource["^/api/abr/capabilities$"]["GET"] = getAbrCapabilities;
     https_server.resource["^/pyrowave-bandwidth-probe$"]["GET"] = getPyroWaveBandwidthProbe;
+    https_server.resource["^/pyrowave-udp-probe$"]["GET"] = [run_blocking_nvhttp](auto resp, auto req) {
+      run_blocking_nvhttp(resp, "pyrowaveprobe", [resp, req = std::move(req)]() mutable {
+        getPyroWaveUdpProbe(std::move(resp), std::move(req));
+      });
+    };
 
     https_server.config.reuse_address = true;
     https_server.config.address = net::get_bind_address(address_family);

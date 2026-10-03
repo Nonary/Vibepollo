@@ -786,3 +786,18 @@ sequenceDiagram
   UI->>API: DELETE /api/webrtc/sessions/:id
   API->>WS: close_session -> stop capture if idle
 ```
+
+## PyroWave bandwidth calibration (2026-10-02)
+
+Reviewed over `6d8fc5ac`: paired `/serverinfo` advertises UDP probe v1 alongside
+wire budget v1 and the current critical FEC policy. `/pyrowave-udp-probe` runs
+on the serialized NVHTTP blocking worker, holds the stream-start lifecycle
+lock, rejects active streams, and sends a bounded two-second paced UDP test
+to the HTTPS peer. Reliable response counts allow Moonlight to score packet
+loss, including the lost tail, and schedule-relative delivery delay. The old
+HTTPS throughput probe remains for compatibility. RTSP now caps the total
+wire budget at physical endpoint capacity, without the old blanket 20%
+reduction. Client-reported receive speed still limits stream packet pacing.
+The existing encoder continues reserving critical FEC, headers, and audio
+inside the total allowance. See [the shared protocol](docs/pyrowave-protocol.md#fec-inclusive-recommendations-and-udp-calibration)
+for rate search, validation thresholds, packet layout, and limits of the test.

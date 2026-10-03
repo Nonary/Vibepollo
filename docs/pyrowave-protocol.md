@@ -45,13 +45,9 @@ local transmit speed, not measured end-to-end throughput. Linux and Windows
 resolve the route to the requesting client; Linux ignores virtual, wireless,
 half-duplex and inactive interfaces.
 
-The paired client can GET `/pyrowave-bandwidth-probe` over its pinned HTTPS
-connection. It receives exactly 32 MiB of fixed binary payload
-to time. The client discards a warm-up and uses the slowest of three measurements,
-then reserves 20% for protocol overhead and contention. The result is a bulk
-host-to-client throughput estimate. It does not prove that live UDP bursts will
-avoid packet loss, so calibration remains a recommendation rather than a stream
-quality guarantee.
+The legacy 32 MiB HTTPS download probe remains available for old clients.
+New calibration uses authenticated UDP probes to measure loss and stability;
+see [FEC-inclusive recommendations](#fec-inclusive-recommendations-and-udp-calibration).
 
 | Bit | Value | Meaning |
 |---|---|---|
@@ -389,37 +385,63 @@ HDR10. At 60 fps that is about 220 Mbps for 1080p and 290 Mbps for 1440p and 4K 
 | Xbox / azafrob-protocol client | Negotiates PyroWave, length-prefixed framing. Bitstream compatibility depends on its PyroWave commit. |
 | Stock Moonlight | Never sees PyroWave; negotiates H.264/HEVC/AV1 as before. |
 
-## FEC-inclusive recommendations and calibration
+## FEC-inclusive recommendations and UDP calibration
 
 Paired server info advertises `PyroWaveWireBudgetVersion=1`,
-`PyroWaveCriticalFecPercentage`, and `PyroWaveMinParityShards=2`. Version 1
-means record-framed image budgets reserve critical parity and packet overhead.
-The host also caps negotiated PyroWave bandwidth at 80% of its known routed
-wired transmit speed. Runtime bitrate changes cannot exceed that negotiated cap.
+`PyroWaveCriticalFecPercentage`, `PyroWaveMinParityShards=2`, and
+`PyroWaveUdpProbeVersion=1`. The bitrate applied by calibration is a total
+wire allowance. `pyrowavebandwidth.h` (Moonlight) and `pyrowave_bandwidth.h`
+(Vibeshine) share the conversion between it and the image allowance: reserve
+one maximum feasible critical FEC block, packet rounding, IPv6, encryption,
+Ethernet overhead, and 3572 kbps for up to eight high-quality audio channels,
+audio parity and control. Adaptive detail parity spends unused cadence budget
+inside this allowance; it is not another blanket 50% charge. Quality labels
+use the remaining image allowance against the author's 35 dB recommendation.
 
-Moonlight applies a prefix maximum to the developer's 2H quality regression:
-increasing resolution cannot lower the recommended rate for the same quality,
-FPS, chroma and HDR mode. The recommendation is converted from image bitrate
-to total wire bitrate, reserving the largest feasible critical FEC block (43
-parity packets at the default 20%), IPv6/encryption/Ethernet overhead, packet
-rounding and up to eight high-quality audio channels plus control. Detail is
-not charged a blanket 20% FEC rate.
+The paired client requests `/pyrowave-udp-probe?kbps=...&port=...&packetsize=...&token=...`
+over pinned HTTPS. Parameters are 5000–3000000 kbps, a nonprivileged UDP port,
+a 256–1392 byte packet size, and a fresh 32-character lowercase hex token.
+The destination IP is always the authenticated HTTPS peer's IP; this is a
+LAN probe, and a NAT/firewall blocking its UDP port produces no recommendation.
+The host refuses probes during stream activity and serializes them with stream
+operations on the existing blocking worker. Each probe lasts two seconds and
+paces whole packets in 1 ms groups. Its UDP payload is `packetsize + 48` bytes:
+ASCII token at bytes 0–31, big-endian sequence at bytes 32–35, then filler.
+Each packet is charged `packetsize + 134` wire bytes, matching the conservative
+IPv6/encrypted streaming budget. HTTPS returns XML `expected`, `sent`, and
+`elapsedMs`; reliable counts include lost final packets. Duplicates, foreign
+packets, and previous probes cannot inflate delivery. Sequence IDs tolerate
+reordering; a 100 ms drain still charges tail delay against the send schedule.
 
-Calibration uses the slowest of three warmed HTTPS transfers, limits that by
-both known wired link speeds, accounts for whole-packet pacing, and reserves
-20% for contention. It encodes only the image allowance left after overhead,
-then lowers quality within the developer's range to target less than 4 ms of
-estimated network serialization plus p99 decode/draw time.
-Results above that target require VRR even if average frame throughput keeps up.
-This estimate excludes capture, host GPU encoding and physical scanout; it is
-not a measured end-to-end latency or proof against live UDP loss.
+Calibration starts at the selected bitrate (bounded by known routed wired link
+speeds and the 3 Gbps UI limit), grows by 25% while passing, then bisects the
+passing/failing bracket to 5 Mbps. A pass requires all planned packets sent,
+no more than 0.1% aggregate loss or 1% loss in any 100 ms window, p99 transit
+variation at most 4 ms, delay growth at most 2 ms, and sender duration within
+2% of the requested duration. These are calibration policy thresholds, not FEC
+recovery guarantees. The highest passing rate is reduced by 5% where possible
+and measured twice afresh. Failed confirmation reduces the rate by 20% and
+retests; persistent loss, blocked UDP, malformed responses, or an unsupported
+host do not produce a rate. Cancellation abandons the current result.
 
-The client remembers the measured cap for one hour on the same host/address
-and applies it at launch even if the bitrate slider was subsequently raised.
+Each GPU format starts at the author's image recommendation within that
+confirmed wire budget, then increases image bitrate until it reaches the budget
+or device overload. Three bisections refine the device boundary; the existing
+lower-quality/device test remains for formats that fail at their initial rate.
+Results show the applied total Mbps, visible reduced/low quality, and image Mbps
+in the details. Format measurements use the selected packet size and respect
+the sender's frame capacity. Rates round up to 5 Mbps only when they still fit
+the confirmed budget. The default uncalibrated author guide is unchanged.
 
-The client announces `x-ss-video[0].pyrowaveLinkMbps` with the smaller of its
-known wired receive speed and a fresh calibrated route speed. Host pacing uses
-the smaller nonzero value of this limit and its own routed transmit speed,
-including whole-packet 1 ms pacing. Negotiated bandwidth is capped at 80% of
-that bottleneck. Thus a 2.5 Gbps host does not burst at 2.5 Gbps into a known
-1 Gbps receiver. Unknown values retain the existing host/fallback behavior.
+Moonlight announces `x-ss-video[0].pyrowaveLinkMbps` when the routed client wired
+link speed is known. Host packet pacing uses the smaller known host/client link
+speed, preventing a faster host from sending oversized groups into a slower
+receiver. The host limits the total budget at physical link capacity; it no
+longer silently applies a second 20% reduction to an already tested allowance.
+Calibration results are not cached or silently reapplied at a later launch.
+
+This tests fresh UDP delivery and synthetic GPU work separately. It does not
+prove sustained gameplay smoothness, host encoding speed, frame-burst delivery,
+or physical scanout. The older 32 MiB HTTPS download endpoint remains available
+for older clients; new calibration does not use its loss-hidden throughput as
+proof of stability.

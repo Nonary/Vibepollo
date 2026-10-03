@@ -2391,7 +2391,7 @@ namespace rtsp_stream {
         const auto link_bps = pyrowave::bandwidth::pacing_link_bps(
           platf::routed_link_bps(local.address(), remote.address()), config.monitor.pyrowave_peer_link_bps);
         if (link_bps) {
-          const auto limit_kbps = static_cast<std::int64_t>(link_bps / 1000 * 8 / 10);
+          const auto limit_kbps = static_cast<std::int64_t>(link_bps / 1000);
           const auto requested = configuredBitrateKbps ? configuredBitrateKbps : config.monitor.bitrate;
           configuredBitrateKbps = std::min<std::int64_t>(requested, limit_kbps);
           if (configuredBitrateKbps < requested) {
