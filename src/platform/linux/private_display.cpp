@@ -84,6 +84,7 @@ namespace platf::linux_private_display {
       std::mutex mutex;
       std::optional<json> snapshot;
       bool snapshot_loaded {false};
+      bool snapshot_legacy_record {false};
       std::map<std::string, std::string> reservations;
       std::map<std::string, double> retained_scales;
       std::set<std::string> newly_connected_reservations;
@@ -787,7 +788,7 @@ namespace platf::linux_private_display {
       manager.snapshot_loaded = true;
       if (const auto saved = statefile::load_linux_display_snapshot()) {
         bool restore_pending = false;
-        auto snapshot = snapshot_policy::decode<json>(*saved, snapshot_owner(), &restore_pending);
+        auto snapshot = snapshot_policy::decode<json>(*saved, snapshot_owner(), &restore_pending, &manager.snapshot_legacy_record);
         if (!snapshot) {
           BOOST_LOG(warning) << "Linux private display: ignoring unusable or different-session saved topology.";
         } else if (restore_pending) {
@@ -894,26 +895,19 @@ namespace platf::linux_private_display {
     auto &manager = state();
     std::lock_guard lock {manager.mutex};
     load_snapshot_if_needed(manager);
-    const bool active_private = std::ranges::any_of((*configuration)["outputs"], [&](const json &output) {
-      return connected(output) && enabled(output) && private_names.contains(output.value("name", std::string {}));
-    });
-    if (active_private && manager.snapshot) {
-      // Restore an orphan through the same capture-verified handoff as stream
-      // end. Never unplug it in startup cleanup before its saved guard wakes.
+    const auto startup = snapshot_policy::prepare_startup(manager.snapshot, *configuration, private_names, [](const json &snapshot) {
+      return persist_snapshot(snapshot, false);
+    }, manager.snapshot_legacy_record);
+    if (startup == snapshot_policy::startup_action_e::recover) {
+      // Hot-unplug can precede KWin's final baseline reapply. The durable
+      // marker owns that unfinished restore even after every private output
+      // has disconnected; never refresh it from the interrupted topology.
       schedule_revert({}, "recover saved topology after host restart");
       BOOST_LOG(info) << "Linux private display: queued saved topology recovery for the current session.";
       return true;
     }
-    if (snapshot_policy::idle(*configuration, private_names, false)) {
-      // Persist the idle preferences without arming a
-      // later physical-only stream or config change to restore this layout.
-      std::optional<json> baseline;
-      if (!snapshot_policy::capture(baseline, *configuration, private_names, false, [](const json &snapshot) {
-            return persist_snapshot(snapshot, false);
-          })) {
-        return false;
-      }
-      manager.snapshot.reset();
+    if (startup == snapshot_policy::startup_action_e::failed) {
+      return false;
     }
 
     // A normal idle pool is dormant, but a restart may follow a failed

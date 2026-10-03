@@ -100,7 +100,7 @@ namespace platf::linux_private_display::snapshot_policy {
   }
 
   template<typename Json>
-  std::optional<Json> decode(const std::string &contents, const std::string &owner, bool *restore_pending = nullptr) {
+  std::optional<Json> decode(const std::string &contents, const std::string &owner, bool *restore_pending = nullptr, bool *legacy_record = nullptr) {
     if (contents.size() > 1024 * 1024) {
       return std::nullopt;
     }
@@ -114,6 +114,9 @@ namespace platf::linux_private_display::snapshot_policy {
       const bool pending = saved.value("restore_pending", true);
       if (restore_pending) {
         *restore_pending = pending;
+      }
+      if (legacy_record) {
+        *legacy_record = !saved.contains("restore_pending");
       }
       return saved["topology"];
     } catch (...) {
@@ -157,6 +160,32 @@ namespace platf::linux_private_display::snapshot_policy {
     }
     snapshot = std::move(replacement);
     return true;
+  }
+
+  enum class startup_action_e { ready, recover, failed };
+
+  /** Durable owned intent outlives hotplug; only unowned idle state may refresh. */
+  template<typename Json, typename PersistIdle>
+  startup_action_e prepare_startup(std::optional<Json> &snapshot, const Json &current, const std::set<std::string> &private_names, PersistIdle persist_idle, const bool legacy_record = false) {
+    // Fieldless records mixed idle preferences and restore intent. Preserve
+    // their prior active-private recovery condition; an explicit pending
+    // marker, however, survives every connector-retirement stage.
+    if (legacy_record && snapshot && std::ranges::none_of(current["outputs"], [&](const auto &output) {
+          return output.value("connected", false) && output.value("enabled", false) &&
+                 private_names.contains(output.value("name", std::string {}));
+        })) {
+      snapshot.reset();
+    }
+    if (snapshot) {
+      return startup_action_e::recover;
+    }
+    if (idle(current, private_names, false)) {
+      std::optional<Json> baseline;
+      if (!capture(baseline, current, private_names, false, persist_idle)) {
+        return startup_action_e::failed;
+      }
+    }
+    return startup_action_e::ready;
   }
 
   template<typename Json>

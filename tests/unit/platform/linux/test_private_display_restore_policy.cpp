@@ -349,22 +349,30 @@ TEST(LinuxPrivateDisplaySnapshot, IdleStartupBaselineDoesNotRestoreOverLaterPhys
   const auto startup = external_desktop();
   std::optional<json> baseline;
   std::string disk;
-  ASSERT_TRUE(snapshot_policy::capture(baseline, startup, {"Virtual-1"}, false, [&](const json &saved) {
+  const auto persist_idle = [&](const json &saved) {
     disk = json {{"version", 1}, {"owner", "1000:desktop"}, {"restore_pending", false}, {"topology", saved}}.dump();
     return true;
-  }));
+  };
+  ASSERT_EQ(snapshot_policy::prepare_startup(baseline, startup, {"Virtual-1"}, persist_idle), snapshot_policy::startup_action_e::ready);
+  EXPECT_FALSE(baseline);
   // Restart loads an idle baseline without arming an output transaction.
   bool pending = true;
   const auto saved = snapshot_policy::decode<json>(disk, "1000:desktop", &pending);
   ASSERT_TRUE(saved);
   EXPECT_FALSE(pending);
-  const auto snapshot = pending ? saved : std::nullopt;
+  auto snapshot = pending ? saved : std::nullopt;
   auto current = startup;
   current["outputs"][0]["enabled"] = true;
   current["outputs"][1]["rotation"] = 8;
   current["outputs"][1]["pos"]["x"] = 1920;
   EXPECT_NE(current, *saved);
   EXPECT_FALSE(snapshot_policy::restore_needed(snapshot, current, {"Virtual-1"}, false));
+  EXPECT_EQ(snapshot_policy::prepare_startup(snapshot, current, {"Virtual-1"}, persist_idle), snapshot_policy::startup_action_e::ready);
+  EXPECT_FALSE(snapshot);
+  const auto refreshed = snapshot_policy::decode<json>(disk, "1000:desktop", &pending);
+  ASSERT_TRUE(refreshed);
+  EXPECT_EQ(*refreshed, current);
+  EXPECT_FALSE(pending);
 }
 
 TEST(LinuxPrivateDisplaySnapshot, ExplicitConnectedOutputCapturesCurrentLayoutWithoutIdleRestore) {
@@ -413,4 +421,65 @@ TEST(LinuxPrivateDisplaySnapshot, LegacySavedIntentRemainsRecoverableAndInvalidF
   EXPECT_TRUE(pending);
   saved["restore_pending"] = "true";
   EXPECT_FALSE(snapshot_policy::decode<json>(saved.dump(), "1000:desktop", &pending));
+}
+
+TEST(LinuxPrivateDisplaySnapshot, RestartAfterConnectorRetirementPreservesPendingBaselineThroughFinalReapply) {
+  const auto original = external_desktop();
+  const std::string disk = json {{"version", 1}, {"owner", "1000:desktop"}, {"restore_pending", true}, {"topology", original}}.dump();
+  // Crash at any stage after the guard has activated: the connector may be
+  // connected but disabled, retired in KScreen, or absent from its catalog.
+  for (const int stage : {0, 1, 2}) {
+    SCOPED_TRACE(stage);
+    auto interrupted = original;
+    interrupted["outputs"][0]["enabled"] = true;  // KWin's hotplug setup re-enabled the panel.
+    interrupted["outputs"][1]["pos"]["x"] = 1920;
+    if (stage < 2) {
+      interrupted["outputs"].push_back({{"name", "Virtual-1"}, {"connected", stage == 0}, {"enabled", false}});
+    }
+    bool pending = false;
+    const auto decoded = snapshot_policy::decode<json>(disk, "1000:desktop", &pending);
+    ASSERT_TRUE(decoded);
+    ASSERT_TRUE(pending);
+    auto snapshot = pending ? decoded : std::nullopt;
+    int idle_writes = 0;
+    auto persisted = disk;
+    EXPECT_EQ(snapshot_policy::prepare_startup(snapshot, interrupted, {"Virtual-1"}, [&](const json &saved) {
+      ++idle_writes;
+      persisted = json {{"version", 1}, {"owner", "1000:desktop"}, {"restore_pending", false}, {"topology", saved}}.dump();
+      return true;
+    }), snapshot_policy::startup_action_e::recover);
+    EXPECT_EQ(idle_writes, 0);
+    EXPECT_EQ(persisted, disk);
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(*snapshot, original);
+    EXPECT_TRUE(snapshot_policy::restore_needed(snapshot, interrupted, {"Virtual-1"}, false));
+    EXPECT_FALSE(policy::snapshot_matches(*snapshot, interrupted, true));
+  }
+}
+
+TEST(LinuxPrivateDisplaySnapshot, LegacyIdleBaselineDoesNotBecomeArmedByStartupRecovery) {
+  const auto original = external_desktop();
+  const std::string disk = json {{"version", 1}, {"owner", "1000:desktop"}, {"topology", original}}.dump();
+  for (const bool active_private : {false, true}) {
+    SCOPED_TRACE(active_private);
+    auto current = original;
+    current["outputs"][0]["enabled"] = true;
+    if (active_private) {
+      current["outputs"].push_back({{"name", "Virtual-1"}, {"connected", true}, {"enabled", true}});
+    }
+    bool pending = false, legacy = false;
+    auto snapshot = snapshot_policy::decode<json>(disk, "1000:desktop", &pending, &legacy);
+    ASSERT_TRUE(snapshot);
+    EXPECT_TRUE(pending);
+    EXPECT_TRUE(legacy);
+    int idle_writes = 0;
+    EXPECT_EQ(snapshot_policy::prepare_startup(snapshot, current, {"Virtual-1"}, [&](const json &saved) {
+      ++idle_writes;
+      EXPECT_EQ(saved, current);
+      return true;
+    }, legacy), active_private ? snapshot_policy::startup_action_e::recover : snapshot_policy::startup_action_e::ready);
+    EXPECT_EQ(idle_writes, active_private ? 0 : 1);
+    EXPECT_EQ(snapshot.has_value(), active_private);
+    if (snapshot) EXPECT_EQ(*snapshot, original);
+  }
 }
