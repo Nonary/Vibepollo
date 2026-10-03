@@ -37,7 +37,6 @@
 // third-party (libdisplaydevice)
   #include "src/logging.h"
   #include "src/utility.h"
-  #include "src/platform/windows/display_restore_task.h"
   #include "src/platform/windows/ipc/pipes.h"
 
   #include <display_device/json.h>
@@ -57,6 +56,8 @@
   #ifndef SECURITY_WIN32
     #define SECURITY_WIN32
   #endif
+
+  #include "src/platform/windows/display_restore_task.h"
 
   #include <comdef.h>
   #include <dbt.h>

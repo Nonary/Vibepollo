@@ -514,7 +514,7 @@ function clearSnapshotHotkey(): void {
           <div class="my-4 border-t border-dark/5 dark:border-light/5" />
 
           <!-- Snapshot for recovery -->
-          <template>
+          <div>
             <div class="px-0 text-sm font-medium">
               {{ $t('troubleshooting.dd_golden_title') }}
             </div>
@@ -773,7 +773,7 @@ function clearSnapshotHotkey(): void {
                 {{ hotkeyCaptureError }}
               </p>
             </div>
-          </template>
+          </div>
         </section>
 
         <!-- Optional adjustments (belongs to Step 3 in parent) -->
