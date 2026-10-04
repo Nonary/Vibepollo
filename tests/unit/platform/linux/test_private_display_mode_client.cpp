@@ -49,6 +49,24 @@ TEST(LinuxPrivateDisplayModeClient, SendsExactRequestedModeAndAcceptsReplyBefore
   EXPECT_EQ(received, "mode Virtual-1 3024 1890 120000\n");
 }
 
+TEST(LinuxPrivateDisplayModeClient, SendsRequestedModesForGloballyNumberedConnectors) {
+  for (const auto name : {"Virtual-1", "Virtual-2", "Virtual-3", "Virtual-4",
+                         "Virtual-5", "Virtual-6", "Virtual-7", "Virtual-8",
+                         "Virtual-9", "Virtual-10"}) {
+    SCOPED_TRACE(name);
+    connection_t connection;
+    const std::string request = std::string {"mode "} + name + " 3024 1890 120000\n";
+    const std::string reply = "OK " + request;
+    ASSERT_EQ(send(connection.sockets[1], reply.data(), reply.size(), MSG_NOSIGNAL),
+              static_cast<ssize_t>(reply.size()));
+    const auto result = connection.transact(name);
+    EXPECT_TRUE(result.success) << result.detail;
+    char received[128];
+    const auto count = recv(connection.sockets[1], received, sizeof(received), MSG_DONTWAIT);
+    EXPECT_EQ((count > 0 ? std::string {received, static_cast<std::size_t>(count)} : std::string {}), request);
+  }
+}
+
 TEST(LinuxPrivateDisplayModeClient, AcceptsFragmentedReplyWithExactFractionalMode) {
   connection_t connection;
   std::jthread broker([&] {
@@ -88,8 +106,10 @@ TEST(LinuxPrivateDisplayModeClient, RejectsUntrustedPeerBeforeSendingAnything) {
 
 TEST(LinuxPrivateDisplayModeClient, RejectsInvalidRequestBeforeSendingAnything) {
   connection_t connection;
-  EXPECT_FALSE(connection.transact("DP-1").success);
-  EXPECT_FALSE(connection.transact("Virtual-1\nconnect Virtual-2").success);
+  for (const auto name : {"DP-1", "Virtual-0", "Virtual-01", "Virtual-2147483648",
+                         "Virtual-5x", "Virtual-1\nconnect Virtual-2"}) {
+    EXPECT_FALSE(connection.transact(name).success) << name;
+  }
   EXPECT_FALSE(connection.transact("Virtual-1", {3024, 1890, 0}).success);
   char byte;
   EXPECT_EQ(recv(connection.sockets[1], &byte, 1, MSG_DONTWAIT), -1);

@@ -5,7 +5,9 @@
 #pragma once
 
 #include <cmath>
+#include <charconv>
 #include <cstdint>
+#include <limits>
 #include <string_view>
 
 namespace platf::linux_private_display::mode_policy {
@@ -23,7 +25,18 @@ namespace platf::linux_private_display::mode_policy {
   };
 
   [[nodiscard]] inline bool managed_connector_name(const std::string_view name) noexcept {
-    return name == "Virtual-1" || name == "Virtual-2" || name == "Virtual-3" || name == "Virtual-4";
+    constexpr std::string_view prefix = "Virtual-";
+    if (!name.starts_with(prefix) || name.size() <= prefix.size()) {
+      return false;
+    }
+    const auto suffix = name.substr(prefix.size());
+    if (suffix.size() > 10 || suffix.front() < '1' || suffix.front() > '9') {
+      return false;
+    }
+    std::uint32_t connector_type_id = 0;
+    const auto [end, error] = std::from_chars(suffix.data(), suffix.data() + suffix.size(), connector_type_id);
+    return error == std::errc {} && end == suffix.data() + suffix.size() &&
+           connector_type_id <= static_cast<std::uint32_t>(std::numeric_limits<int>::max());
   }
 
   [[nodiscard]] inline bool should_admit_requested_mode(
