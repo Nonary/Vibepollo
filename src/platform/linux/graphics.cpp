@@ -751,6 +751,10 @@ namespace egl {
   }
 
   std::optional<rgb_t> upload_source(display_t::pointer egl_display, const surface_descriptor_t &xrgb) {
+    if (!can_cpu_upload_surface(xrgb)) {
+      BOOST_LOG(error) << "CPU DMA-BUF upload requires a linear framebuffer layout; managed implicit imports cannot be mapped safely.";
+      return std::nullopt;
+    }
     if (xrgb.direct_import_required) {
       static std::atomic_bool warned {false};
       if (!warned.exchange(true, std::memory_order_relaxed)) {
@@ -759,10 +763,6 @@ namespace egl {
                            << util::hex(xrgb.modifier).to_string_view()
                            << "); using the linear CPU upload fallback.";
       }
-    }
-    if (xrgb.modifier != 0 && xrgb.modifier != DRM_FORMAT_MOD_INVALID) {
-      BOOST_LOG(error) << "CPU DMA-BUF upload requires a linear framebuffer modifier.";
-      return std::nullopt;
     }
     if (xrgb.fds[0] < 0 || xrgb.width <= 0 || xrgb.height <= 0 || xrgb.pitches[0] == 0 || xrgb.pitches[0] % sizeof(std::uint32_t) != 0) {
       return std::nullopt;

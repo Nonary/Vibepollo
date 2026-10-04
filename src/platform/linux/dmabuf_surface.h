@@ -20,6 +20,14 @@ namespace egl {
     bool direct_import_required {};
   };
 
+  inline bool can_cpu_upload_surface(const surface_descriptor_t &surface) noexcept {
+    constexpr std::uint64_t implicit_modifier = 0x00ffffffffffffffULL;
+    // Managed imports retain the exporter's layout. An implicit modifier is
+    // unknown, so those bytes cannot safely be read as linear pixels.
+    return surface.modifier == 0 ||
+      (surface.modifier == implicit_modifier && !surface.direct_import_required);
+  }
+
   inline void reset_surface(surface_descriptor_t &surface) noexcept {
     for (auto &fd : surface.fds) {
       if (fd >= 0) {

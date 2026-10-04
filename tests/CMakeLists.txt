@@ -795,6 +795,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
                 "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}/tests/linux/test-kwin-gpu-bridge-contract.py"
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}")
         set_tests_properties(test_component_linux_kwin_gpu_bridge_contract PROPERTIES LABELS "component")
+        if(TARGET vibeshine_kwin_gpu)
+            find_package(PkgConfig REQUIRED)
+            pkg_check_modules(SUNSHINE_TEST_KWIN_GPU REQUIRED IMPORTED_TARGET libdrm gbm)
+            add_executable(test_linux_kwin_gpu_routing
+                "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}/tests/linux/test-kwin-gpu-routing.cpp")
+            target_link_libraries(test_linux_kwin_gpu_routing PRIVATE
+                PkgConfig::SUNSHINE_TEST_KWIN_GPU ${CMAKE_DL_LIBS})
+            add_test(NAME test_component_linux_kwin_gpu_routing COMMAND test_linux_kwin_gpu_routing)
+            set_tests_properties(test_component_linux_kwin_gpu_routing PROPERTIES LABELS "component" TIMEOUT 30)
+        endif()
     else()
         message(WARNING "python3 was not found; skipping the Vibeshine DRM source contract test")
     endif()
