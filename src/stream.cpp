@@ -3177,6 +3177,12 @@ namespace stream {
       // every game role, including paused owners, while retaining monitor roles.
       topology.release_all_normal_game_identities();
 #ifdef _WIN32
+      // RTSP termination can leave WebRTC capture active on this exact GUID.
+      // Keep it for final idle cleanup until every capture owner has drained.
+      if (has_capture_runtime_owner()) {
+        return;
+      }
+
       // Shared-mode displays have no normal identity token. Their exact GUID
       // belongs to the stream runtime, not proc_t's unused display fields.
       // Remove only that target; generic cleanup would also remove peers.
@@ -3222,6 +3228,7 @@ namespace stream {
 #else
       topology.release_drained_normal_game_identities();
 #endif
+      nvhttp::reconcile_remote_monitor_owners();
       if (!shared_runtime_cleanup_armed) {
         return false;
       }
@@ -3552,6 +3559,7 @@ namespace stream {
       // this capture has joined and released every encoder/conversion import.
       session.normal_display_capture.reset();
       remote_display_topology::instance().release_drained_normal_game_identities();
+      nvhttp::reconcile_remote_monitor_owners();
 
       if (session.remote_role == remote_session::role_e::monitor && !session.device_uuid.empty()) {
         const bool client_disconnected = session.client_disconnected.load(std::memory_order_acquire);
@@ -3560,8 +3568,9 @@ namespace stream {
               config::video.remote_monitor_disconnect_on_client_disconnect,
               client_disconnected)) {
           const auto reason = client_disconnected ? "Remote Monitor client disconnected" : "Remote Monitor stream ended";
-          remote_session::release_monitor(session.device_uuid, session.remote_role_generation, reason);
-          nvhttp::notify_remote_monitor_released(session.device_uuid, session.remote_role_generation);
+          if (remote_session::release_monitor(session.device_uuid, session.remote_role_generation, reason)) {
+            nvhttp::notify_remote_monitor_released(session.device_uuid, session.remote_role_generation);
+          }
         } else {
           // Retain the exact display and desired mode so this paired client can
           // resume the Remote Monitor without changing any peer's topology.

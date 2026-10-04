@@ -108,7 +108,8 @@ namespace stream {
       std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes = std::nullopt
     );
     void start_shared_platform_if_needed();
-    // Called after all game transports stop, while the lifecycle mutex is held.
+    // Called after RTSP game transports stop, while the lifecycle mutex is held.
+    // Other capture owners defer raw GUID removal until final idle cleanup.
     // Remote Monitor and Remote Input ownership survives this terminal action.
     void release_terminated_game_displays();
     bool finalize_shared_runtime_if_idle(
