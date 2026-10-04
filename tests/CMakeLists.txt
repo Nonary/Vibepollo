@@ -638,6 +638,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_restore_task.py" "${CMAKE_CXX_COMPILER}")
         set_tests_properties(test_component_display_restore_task PROPERTIES LABELS "component")
+        add_test(NAME test_component_display_helper_recovery
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_helper_recovery.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" --compiler "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_display_helper_recovery PROPERTIES LABELS "component")
         add_test(NAME test_component_linux_global_limiter
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_global_limiter.py")

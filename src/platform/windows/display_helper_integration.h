@@ -64,9 +64,12 @@ namespace display_helper_integration {
   // a later launch/resume may arm fresh recovery and supersede the restore.
   // Returns true if the helper accepted the command; false to allow fallback.
   // Terminal user actions may explicitly override managed display ownership.
+  // A saved enabled-to-disabled policy transition may finish old recovery even
+  // though future display automation is disabled. Ordinary REVERTs stay gated.
   bool revert(
     bool prefer_golden_if_current_missing = true,
-    bool override_managed_ownership = false
+    bool override_managed_ownership = false,
+    bool allow_disabled_recovery = false
   );
 
   // Attempt to cancel any pending restore/revert requests on a running helper.

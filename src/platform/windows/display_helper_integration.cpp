@@ -1747,6 +1747,13 @@ namespace {
       } catch (...) {
       }
     };
+    auto ping_with_stream_owner = []() {
+      // Helper IPC liveness alone must not retain an orphaned display
+      // mutation. Count transports, rather than an app left paused for resume.
+      return platf::display_helper_client::send_ping(
+        stream_is_active_or_pending() || rtsp_stream::has_pending_launch_or_startup()
+      );
+    };
 
     while (!st.stop_requested()) {
       try {
@@ -1765,7 +1772,7 @@ namespace {
             sleep_interruptible(kActiveInterval);
             continue;
           }
-          (void) platf::display_helper_client::send_ping();
+          (void) ping_with_stream_owner();
         }
 
         // This worker only needs a snapshot to select its polling interval.
@@ -1782,7 +1789,7 @@ namespace {
           break;
         }
 
-        if (!platf::display_helper_client::send_ping()) {
+        if (!ping_with_stream_owner()) {
           // Avoid logging ping failures to reduce log spam; proceed to reconnect
           platf::display_helper_client::reset_connection();
           helper_ready = ensure_helper_started();
@@ -1790,7 +1797,7 @@ namespace {
             continue;
           }
           // Do not re-apply automatically on reconnect; just confirm IPC is reachable.
-          helper_ready = platf::display_helper_client::send_ping();
+          helper_ready = ping_with_stream_owner();
         }
       } catch (const std::exception &e) {
         BOOST_LOG(error) << "Display helper watchdog failed: " << e.what();
@@ -2218,7 +2225,7 @@ namespace display_helper_integration {
     );
   }
 
-  bool revert(const bool prefer_golden_if_current_missing, const bool override_managed_ownership) {
+  bool revert(const bool prefer_golden_if_current_missing, const bool override_managed_ownership, const bool allow_disabled_recovery) {
     const bool managed_cleanup_allowed = remote_display_topology::instance().generic_virtual_display_cleanup_allowed();
     if (!managed_cleanup_allowed && !override_managed_ownership) {
       proc::defer_display_revert();
@@ -2240,7 +2247,10 @@ namespace display_helper_integration {
     std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
     invalidate_apply_verification();
     clear_pending_apply_queue_locked();
-    if (!ensure_helper_started()) {
+    // Saving automation as disabled must still finish old recovery. Keep
+    // ordinary app-end REVERTs gated so an always-disabled configuration does
+    // not unexpectedly launch the helper and restore a saved golden layout.
+    if (!ensure_helper_started(false, allow_disabled_recovery)) {
       BOOST_LOG(info) << "Display helper unavailable; cannot send revert.";
       return false;
     }

@@ -3298,7 +3298,11 @@ namespace config {
       if (dd_config_changed && !has_active_stream_sessions() && runtime_overrides.empty()) {
         stream::session::cleanup_reservation_t cleanup_reservation;
         BOOST_LOG(info) << "Hot-apply: DD configuration changed with no active sessions; reverting cached display state.";
+#ifdef _WIN32
+        display_helper_integration::revert(true, false, dd_was_enabled && dd_disabled_now);
+#else
         display_helper_integration::revert();
+#endif
 
         if (dd_was_enabled && dd_disabled_now) {
           BOOST_LOG(info) << "Hot-apply: DD configuration changed to disabled.";

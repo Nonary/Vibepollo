@@ -2049,10 +2049,13 @@ namespace platf::display_helper_client {
     return send_serialized(session, MsgType::Stop, payload);
   }
 
-  bool send_ping() {
+  bool send_ping(std::optional<bool> stream_owner_active) {
     // No logging for ping path to reduce log spam
     const auto session = connected_session();
     std::vector<uint8_t> payload;
+    if (stream_owner_active.has_value()) {
+      payload.push_back(*stream_owner_active ? 1u : 0u);
+    }
     return send_serialized(session, MsgType::Ping, payload);
   }
 

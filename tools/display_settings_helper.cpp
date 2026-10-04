@@ -2447,6 +2447,13 @@ namespace {
     std::atomic<uint64_t> next_connection_epoch {1};
     std::atomic<uint64_t> active_connection_epoch {0};
     std::atomic<uint64_t> restore_origin_epoch {0};
+    // A disconnect shortly after APPLY may be a transient IPC reset. Keep the
+    // baseline protected while waiting briefly for the host to confirm that a
+    // real stream still owns the display mutation.
+    std::mutex disconnect_settlement_mutex;
+    std::atomic<bool> disconnect_settlement_pending {false};
+    std::atomic<long long> disconnect_settlement_deadline_ms {0};
+    uint64_t disconnect_settlement_origin_epoch {0};  // protected by disconnect_settlement_mutex
     std::atomic<bool> heartbeat_monitor_active {false};
     std::atomic<long long> heartbeat_optional_until_ms {0};
     std::atomic<long long> last_heartbeat_ms {0};
@@ -3709,7 +3716,8 @@ namespace {
       const char *reason = "initial",
       bool force_start = true
     ) {
-      if (!restore_requested.load(std::memory_order_acquire)) {
+      if (!restore_requested.load(std::memory_order_acquire) ||
+          disconnect_settlement_pending.load(std::memory_order_acquire)) {
         return;
       }
 
@@ -3717,6 +3725,9 @@ namespace {
       if (event_pump_running.compare_exchange_strong(pump_expected, true, std::memory_order_acq_rel)) {
         event_pump.start([this](const char *event_reason) {
           if (!restore_requested.load(std::memory_order_acquire)) {
+            return;
+          }
+          if (disconnect_settlement_pending.load(std::memory_order_acquire)) {
             return;
           }
           const char *why = event_reason ? event_reason : "event";
@@ -3743,6 +3754,10 @@ namespace {
     }
 
     void stop_restore_polling() {
+      std::lock_guard settlement_lock(disconnect_settlement_mutex);
+      disconnect_settlement_pending.store(false, std::memory_order_release);
+      disconnect_settlement_deadline_ms.store(0, std::memory_order_release);
+      disconnect_settlement_origin_epoch = 0;
       restore_poll_active.store(false, std::memory_order_release);
       request_restore_cancel();
       event_pump.stop();
@@ -3758,6 +3773,112 @@ namespace {
       restore_origin_epoch.store(0, std::memory_order_release);
       prefer_golden_if_current_missing.store(true, std::memory_order_release);
       reset_pending_golden_session_fallbacks();
+    }
+
+    void clear_disconnect_settlement() {
+      std::lock_guard settlement_lock(disconnect_settlement_mutex);
+      disconnect_settlement_pending.store(false, std::memory_order_release);
+      disconnect_settlement_deadline_ms.store(0, std::memory_order_release);
+      disconnect_settlement_origin_epoch = 0;
+      direct_revert_bypass_grace.store(true, std::memory_order_release);
+    }
+
+    bool begin_disconnect_settlement(uint64_t connection_epoch) {
+      std::lock_guard settlement_lock(disconnect_settlement_mutex);
+      if (!is_connection_epoch_current(connection_epoch)) {
+        return false;
+      }
+
+      retry_apply_on_topology.store(false, std::memory_order_release);
+      restore_requested.store(true, std::memory_order_release);
+      restore_origin_epoch.store(connection_epoch, std::memory_order_release);
+      disconnect_settlement_origin_epoch = connection_epoch;
+      exit_after_revert.store(true, std::memory_order_release);
+      reset_golden_restore_request_tracking();
+      disconnect_settlement_deadline_ms.store(steady_now_ms() + 30000, std::memory_order_release);
+      disconnect_settlement_pending.store(true, std::memory_order_release);
+
+      // Prevent any work queued by APPLY from reasserting the changed layout
+      // while ownership is being settled.
+      cancel_delayed_reapply();
+      cancel_post_apply_tasks();
+      return true;
+    }
+
+    bool preserve_pending_disconnect_settlement(uint64_t connection_epoch) {
+      std::lock_guard settlement_lock(disconnect_settlement_mutex);
+      return is_connection_epoch_current(connection_epoch) &&
+             disconnect_settlement_pending.load(std::memory_order_acquire);
+    }
+
+    bool confirm_disconnect_owner(bool live_owner, uint64_t worker_epoch) {
+      if (!live_owner) {
+        return false;
+      }
+      std::lock_guard settlement_lock(disconnect_settlement_mutex);
+      const auto deadline = disconnect_settlement_deadline_ms.load(std::memory_order_acquire);
+      if (!disconnect_settlement_pending.load(std::memory_order_acquire) || deadline == 0 ||
+          steady_now_ms() >= deadline || restore_poll_active.load(std::memory_order_acquire) ||
+          restore_attempted_unconfirmed.load(std::memory_order_acquire) ||
+          restore_stage_running.load(std::memory_order_acquire) ||
+          direct_revert_bypass_grace.load(std::memory_order_acquire) ||
+          worker_epoch <= disconnect_settlement_origin_epoch ||
+          worker_epoch != command_worker_epoch.load(std::memory_order_acquire) ||
+          worker_epoch != current_connection_epoch()) {
+        return false;
+      }
+
+      disconnect_settlement_deadline_ms.store(steady_now_ms() + 30000, std::memory_order_release);
+      return true;
+    }
+
+    bool handle_stream_owner_ping(std::span<const uint8_t> payload, uint64_t worker_epoch) {
+      return confirm_disconnect_owner(payload.size() == 1 && payload.front() == 1, worker_epoch);
+    }
+
+    int disconnect_settlement_wait_ms() const {
+      constexpr int kMaximumWaitMs = 15000;
+      if (!disconnect_settlement_pending.load(std::memory_order_acquire)) {
+        return kMaximumWaitMs;
+      }
+      const auto deadline = disconnect_settlement_deadline_ms.load(std::memory_order_acquire);
+      if (deadline == 0) {
+        return kMaximumWaitMs;
+      }
+      const auto remaining = deadline - steady_now_ms();
+      if (remaining <= 0) {
+        return 1;
+      }
+      return static_cast<int>(std::min<long long>(kMaximumWaitMs, remaining));
+    }
+
+    bool poll_disconnect_settlement() {
+      std::lock_guard settlement_lock(disconnect_settlement_mutex);
+      const auto deadline = disconnect_settlement_deadline_ms.load(std::memory_order_acquire);
+      if (!disconnect_settlement_pending.load(std::memory_order_acquire) || deadline == 0 ||
+          steady_now_ms() < deadline) {
+        return false;
+      }
+
+      const auto origin_epoch = disconnect_settlement_origin_epoch;
+      if (origin_epoch == 0 || origin_epoch != restore_origin_epoch.load(std::memory_order_acquire)) {
+        disconnect_settlement_pending.store(false, std::memory_order_release);
+        disconnect_settlement_deadline_ms.store(0, std::memory_order_release);
+        disconnect_settlement_origin_epoch = 0;
+        return false;
+      }
+      disconnect_settlement_pending.store(false, std::memory_order_release);
+      disconnect_settlement_deadline_ms.store(0, std::memory_order_release);
+      disconnect_settlement_origin_epoch = 0;
+      if (!restore_requested.load(std::memory_order_acquire) ||
+          direct_revert_bypass_grace.load(std::memory_order_acquire)) {
+        return false;
+      }
+
+      // The provisional window itself is the grace period; begin normal restore
+      // polling immediately when it expires.
+      ensure_restore_polling(RestoreWindow::Primary);
+      return true;
     }
 
     void disarm_restore_requests(const char *reason = nullptr) {
@@ -3778,6 +3899,7 @@ namespace {
     }
 
     uint64_t begin_connection_epoch() {
+      std::lock_guard settlement_lock(disconnect_settlement_mutex);
       const auto epoch = next_connection_epoch.fetch_add(1, std::memory_order_acq_rel);
       active_connection_epoch.store(epoch, std::memory_order_release);
       return epoch;
@@ -5315,6 +5437,7 @@ namespace {
   }
 
   void handle_revert(ServiceState &state, std::atomic<bool> &running, std::span<const uint8_t> payload) {
+    state.clear_disconnect_settlement();
     const auto revert_options = parse_revert_payload(payload);
     BOOST_LOG(info) << "REVERT command received - initiating display settings restoration"
                     << (revert_options.prefer_golden_if_current_missing ? " (prefer golden if current missing)." : ".");
@@ -5337,7 +5460,13 @@ namespace {
     state.ensure_restore_polling(ServiceState::RestoreWindow::Primary);
   }
 
-  void handle_misc(ServiceState &state, platf::dxgi::AsyncNamedPipe &async_pipe, MsgType type, std::span<const uint8_t> payload) {
+  void handle_misc(
+    ServiceState &state,
+    platf::dxgi::AsyncNamedPipe &async_pipe,
+    MsgType type,
+    std::span<const uint8_t> payload,
+    uint64_t worker_epoch
+  ) {
     if (auto exclusions = parse_snapshot_exclude_payload(payload)) {
       state.controller.set_snapshot_exclusions(*exclusions);
     }
@@ -5406,6 +5535,7 @@ namespace {
       std::array<std::uint8_t, 1> result {static_cast<std::uint8_t>(success ? 1u : 0u)};
       send_framed_content(async_pipe, MsgType::RefreshRateResult, result);
     } else if (type == MsgType::Ping) {
+      state.handle_stream_owner_ping(payload, worker_epoch);
       state.record_heartbeat_ping();
       send_framed_content(async_pipe, MsgType::Ping);
     } else {
@@ -5413,7 +5543,14 @@ namespace {
     }
   }
 
-  void handle_frame(ServiceState &state, platf::dxgi::AsyncNamedPipe &async_pipe, MsgType type, std::span<const uint8_t> payload, std::atomic<bool> &running) {
+  void handle_frame(
+    ServiceState &state,
+    platf::dxgi::AsyncNamedPipe &async_pipe,
+    MsgType type,
+    std::span<const uint8_t> payload,
+    std::atomic<bool> &running,
+    uint64_t worker_epoch
+  ) {
     if (type == MsgType::Apply) {
       std::string error_msg;
       bool success = handle_apply(state, payload, error_msg);
@@ -5429,7 +5566,7 @@ namespace {
     } else if (type == MsgType::Stop) {
       running.store(false, std::memory_order_release);
     } else {
-      handle_misc(state, async_pipe, type, payload);
+      handle_misc(state, async_pipe, type, payload, worker_epoch);
     }
   }
 
@@ -5464,6 +5601,11 @@ namespace {
       return;
     }
 
+    if (state.preserve_pending_disconnect_settlement(connection_epoch)) {
+      BOOST_LOG(info) << "Client disconnected during the pending ownership-settlement lease; preserving its deadline.";
+      return;
+    }
+
     if (!state.direct_revert_bypass_grace.load(std::memory_order_acquire)) {
       const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now().time_since_epoch()
@@ -5475,9 +5617,8 @@ namespace {
         if (delta_ms <= kApplyDisconnectGrace.count()) {
           BOOST_LOG(info)
             << "Client disconnected " << delta_ms
-            << "ms after APPLY; deferring restore to avoid thrash.";
-          state.schedule_delayed_reapply();
-          state.restore_requested.store(false, std::memory_order_release);
+            << "ms after APPLY; beginning 30s disconnect ownership settlement.";
+          (void) state.begin_disconnect_settlement(connection_epoch);
           return;
         }
       }
@@ -5498,7 +5639,13 @@ namespace {
     state.ensure_restore_polling(ServiceState::RestoreWindow::Primary);
   }
 
-  void process_incoming_frame(ServiceState &state, platf::dxgi::AsyncNamedPipe &async_pipe, std::span<const uint8_t> frame, std::atomic<bool> &running) {
+  void process_incoming_frame(
+    ServiceState &state,
+    platf::dxgi::AsyncNamedPipe &async_pipe,
+    std::span<const uint8_t> frame,
+    std::atomic<bool> &running,
+    uint64_t worker_epoch
+  ) {
     if (frame.empty()) {
       return;
     }
@@ -5522,7 +5669,7 @@ namespace {
       type = static_cast<MsgType>(frame[0]);
       payload = frame.subspan(1);
     }
-    handle_frame(state, async_pipe, type, payload, running);
+    handle_frame(state, async_pipe, type, payload, running, worker_epoch);
   }
 }  // namespace
 
@@ -5716,7 +5863,8 @@ int run_legacy_helper(int argc, char *argv[]) {
     // Without this, the code below would immediately reach the cleanup path
     // (async_pipe.is_connected() is false at startup), call async_pipe.stop(),
     // and tear down the server pipe before Sunshine has any chance to connect.
-    async_pipe.wait_for_client_connection(15000);
+    async_pipe.wait_for_client_connection(state.disconnect_settlement_wait_ms());
+    (void) state.poll_disconnect_settlement();
     if (!async_pipe.is_connected()) {
       if (state.reconnect_exit_grace_expired()) {
         BOOST_LOG(info) << "No client reconnected within the post-disconnect grace window; shutting down.";
@@ -5779,7 +5927,7 @@ int run_legacy_helper(int argc, char *argv[]) {
           }
           if (!next.empty()) {
             try {
-              process_incoming_frame(state, pipe, next, running);
+              process_incoming_frame(state, pipe, next, running, connection_epoch);
             } catch (const std::exception &ex) {
               BOOST_LOG(error) << "IPC framing error in command worker: " << ex.what();
             }
@@ -5838,6 +5986,7 @@ int run_legacy_helper(int argc, char *argv[]) {
     // Stay in this inner loop until the client disconnects or service told to exit
     while (running.load(std::memory_order_acquire) && async_pipe.is_connected() && !broken.load(std::memory_order_acquire)) {
       std::this_thread::sleep_for(200ms);
+      (void) state.poll_disconnect_settlement();
       if (state.check_heartbeat_timeout() && state.is_connection_epoch_current(connection_epoch)) {
         BOOST_LOG(warning) << "Heartbeat timeout exceeded; applying revert policy.";
         broken.store(true, std::memory_order_release);

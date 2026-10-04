@@ -114,7 +114,9 @@ namespace platf::display_helper_client {
 
   // Lightweight liveness probe; returns true if a Ping frame was sent.
   // This does not wait for a reply; it only validates a healthy send path.
-  bool send_ping();
+  // The watchdog may also attest a live stream owner. An ordinary liveness
+  // probe carries no ownership assertion and cannot cancel pending recovery.
+  bool send_ping(std::optional<bool> stream_owner_active = std::nullopt);
 
   // Cancellation-aware liveness probe. Both connection and send work are
   // bounded by timeout_ms and the predicate is observed between lock waits.
