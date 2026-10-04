@@ -60,9 +60,9 @@ valid_wayland_display() { [[ "$1" =~ ^wayland-[0-9]+$ ]]; }
 valid_xdisplay() { [[ "$1" =~ ^:[0-9]+(\.[0-9]+)?$ ]]; }
 
 xauthority_attributes_are_private() {
-  local attributes=$1 owner mode type extra
-  IFS=: read -r owner mode type extra <<<"$attributes"
-  [[ -z "$extra" && "$owner" == "$candidate_uid" && "$type" == 'regular file' &&
+  local attributes=$1 owner mode extra
+  IFS=: read -r owner mode extra <<<"$attributes"
+  [[ -z "$extra" && "$owner" == "$candidate_uid" &&
      "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
   (((8#$mode & 0077) == 0))
 }
@@ -71,9 +71,11 @@ xauthority_is_private() {
   local path=$1 attributes
   [[ "$path" == "$candidate_runtime"/* && "$path" != */../* && "$path" != */.. ]] || return 1
   /usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
+    /usr/bin/test -f "$path" || return 1
+  /usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
     /usr/bin/test ! -L "$path" || return 1
   attributes=$(/usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
-    /usr/bin/stat -c '%u:%a:%F' -- "$path") || return 1
+    /usr/bin/stat -c '%u:%a' -- "$path") || return 1
   xauthority_attributes_are_private "$attributes"
 }
 
@@ -97,8 +99,8 @@ read_settings() {
   desktop_user=''
   desktop_uid=''
   [[ -f "$settings_file" && ! -L "$settings_file" ]] || return 1
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$settings_file") || return 1
-  [[ "$attributes" == 'root:root:600:regular file' ]] || return 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$settings_file") || return 1
+  [[ "$attributes" == 'root:root:600' ]] || return 1
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -n "$line" && "$line" != \#* && "$line" == *=* ]] || continue
     key=${line%%=*}
@@ -182,7 +184,7 @@ observe_active_session() {
      "$candidate_gid" =~ ^[0-9]+$ && "$candidate_home" == /* ]] || return 1
   candidate_runtime=/run/user/$candidate_uid
   [[ -d "$candidate_runtime" && ! -L "$candidate_runtime" ]] || return 1
-  [[ $(/usr/bin/stat -c '%u:%F' -- "$candidate_runtime") == "$candidate_uid:directory" ]] || return 1
+  [[ $(/usr/bin/stat -c '%u' -- "$candidate_runtime") == "$candidate_uid" ]] || return 1
   runtime_mode=$(/usr/bin/stat -c '%a' -- "$candidate_runtime") || return 1
   [[ "$runtime_mode" =~ ^[0-7]{3,4}$ ]] || return 1
   (((8#$runtime_mode & 0700) == 0700 && (8#$runtime_mode & 0066) == 0 &&
@@ -264,10 +266,12 @@ read_user_environment() {
   done <<<"$environment"
   valid_wayland_display "$wayland" || return 1
   /usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
+    /usr/bin/test -S "$candidate_runtime/$wayland" || return 1
+  /usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
     /usr/bin/test ! -L "$candidate_runtime/$wayland" || return 1
   socket_attributes=$(/usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
-    /usr/bin/stat -c '%u:%F' -- "$candidate_runtime/$wayland") || return 1
-  [[ "$socket_attributes" == "$candidate_uid:socket" ]] || return 1
+    /usr/bin/stat -c '%u' -- "$candidate_runtime/$wayland") || return 1
+  [[ "$socket_attributes" == "$candidate_uid" ]] || return 1
   candidate_display=$wayland
 
   if [[ "$candidate_role" == desktop ]]; then
@@ -346,8 +350,8 @@ broker_socket_is_active() {
   local attributes
   system_systemctl_bounded "$command_timeout" is-active --quiet "$broker_socket_service" || return 1
   [[ -S "$broker_socket_path" && ! -L "$broker_socket_path" ]] || return 1
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$broker_socket_path") || return 1
-  [[ "$attributes" == "root:${service_user}:660:socket" ]]
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$broker_socket_path") || return 1
+  [[ "$attributes" == "root:${service_user}:660" ]]
 }
 host_is_active() { host_unit_is_active && broker_socket_is_active; }
 
@@ -427,8 +431,8 @@ read_session_record() {
     return 2
   fi
   [[ -f "$session_file" && ! -L "$session_file" ]] || return 1
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$session_file") || return 1
-  [[ "$attributes" == "root:${service_user}:640:regular file" ]] || return 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$session_file") || return 1
+  [[ "$attributes" == "root:${service_user}:640" ]] || return 1
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" == *=* ]] || return 1
     key=${line%%=*}
@@ -752,7 +756,7 @@ stop_bound_session_apps() {
     return 0
   fi
   [[ -d "${bound[runtime]}" && ! -L "${bound[runtime]}" ]] || return 1
-  [[ $(/usr/bin/stat -c '%u:%F' -- "${bound[runtime]}") == "${bound[uid]}:directory" ]] || return 1
+  [[ $(/usr/bin/stat -c '%u' -- "${bound[runtime]}") == "${bound[uid]}" ]] || return 1
   entry=$(/usr/bin/getent passwd "${bound[uid]}") || return 1
   IFS=: read -r account_user _ account_uid account_gid _ account_home _ <<<"$entry"
   [[ "$account_user" == "${bound[user]}" && "$account_uid" == "${bound[uid]}" &&
@@ -809,8 +813,8 @@ quiesce() {
 next_generation() {
   local generation=0 attributes temporary
   if [[ -f "$generation_file" && ! -L "$generation_file" ]]; then
-    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$generation_file") || return 1
-    [[ "$attributes" == 'root:root:600:regular file' ]] || return 1
+    attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$generation_file") || return 1
+    [[ "$attributes" == 'root:root:600' ]] || return 1
     read -r generation <"$generation_file" || return 1
     [[ "$generation" =~ ^[0-9]+$ ]] || return 1
   elif [[ -e "$generation_file" || -L "$generation_file" ]]; then
