@@ -86,6 +86,9 @@ namespace platf::steam {
   std::string launch_uri(std::uint32_t app_id);
   std::string launch_command(std::uint32_t app_id);
 
+  // Normalize Pressure Vessel container host paths (e.g. /run/host/usr -> /usr).
+  std::filesystem::path normalize_pressure_vessel_host_path(const std::filesystem::path &input);
+
   // Re-resolve cached catalog commands for the active session. Gaming Mode
   // requires Steam to own the launch; Desktop Mode retains the configured command.
   std::string runtime_launch_command(std::string_view app_id, const std::string &configured_command, bool gamescope_session);
