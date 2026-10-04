@@ -49,9 +49,10 @@ TEST(LinuxPrivateDisplayModeClient, SendsExactRequestedModeAndAcceptsReplyBefore
   EXPECT_EQ(received, "mode Virtual-1 3024 1890 120000\n");
 }
 
-TEST(LinuxPrivateDisplayModeClient, SendsRequestedModesForAllEightManagedConnectors) {
+TEST(LinuxPrivateDisplayModeClient, SendsRequestedModesForGloballyNumberedConnectors) {
   for (const auto name : {"Virtual-1", "Virtual-2", "Virtual-3", "Virtual-4",
-                         "Virtual-5", "Virtual-6", "Virtual-7", "Virtual-8"}) {
+                         "Virtual-5", "Virtual-6", "Virtual-7", "Virtual-8",
+                         "Virtual-9", "Virtual-10"}) {
     SCOPED_TRACE(name);
     connection_t connection;
     const std::string request = std::string {"mode "} + name + " 3024 1890 120000\n";
@@ -105,7 +106,7 @@ TEST(LinuxPrivateDisplayModeClient, RejectsUntrustedPeerBeforeSendingAnything) {
 
 TEST(LinuxPrivateDisplayModeClient, RejectsInvalidRequestBeforeSendingAnything) {
   connection_t connection;
-  for (const auto name : {"DP-1", "Virtual-0", "Virtual-9", "Virtual-01", "Virtual-10",
+  for (const auto name : {"DP-1", "Virtual-0", "Virtual-01", "Virtual-2147483648",
                          "Virtual-5x", "Virtual-1\nconnect Virtual-2"}) {
     EXPECT_FALSE(connection.transact(name).success) << name;
   }
