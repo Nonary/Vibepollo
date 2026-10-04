@@ -102,7 +102,7 @@ namespace remote_display_topology {
     monitor_runtime_state_t activate_or_resume(const std::string &client_uuid, const std::string &label, mode_t mode, uint64_t generation);
     monitor_runtime_state_t snapshot(const std::string &client_uuid, uint64_t generation) const;
     bool is_ready(const std::string &client_uuid, uint64_t generation) const;
-    void explicit_release(const std::string &client_uuid, uint64_t generation, const std::string &reason);
+    bool explicit_release(const std::string &client_uuid, uint64_t generation, const std::string &reason);
     void transport_lost(const std::string &client_uuid, uint64_t generation);
     activation_result_t activate_remote_monitor(const std::string &client_uuid, const std::string &label, mode_t mode);
     activation_result_t resume_remote_monitor(const std::string &client_uuid);
@@ -112,6 +112,7 @@ namespace remote_display_topology {
     // Remote Monitor ownership, and stale tokens, must preserve it.
     bool rollback_normal_game_identity(const std::string &client_uuid, std::uint64_t token);
     void release_normal_game_identity(const std::string &client_uuid, std::uint64_t token);
+    void release_all_normal_game_identities();
     // Capture references outlive the app and retain its output through GPU
     // teardown. Drop them after joining capture; finalize under the stream
     // lifecycle gate so their destructors never perform topology mutations.
@@ -138,6 +139,8 @@ namespace remote_display_topology {
       bool normal_release_pending = false;
       std::unordered_map<std::uint64_t, std::size_t> normal_capture_references;
       bool remote_monitor = false;
+      bool monitor_release_pending = false;
+      std::string monitor_release_reason;
       bool lease_held = false;
       uint64_t generation = 0;
       // Stable first-ownership order keeps existing displays in place when a
@@ -151,6 +154,8 @@ namespace remote_display_topology {
 
     activation_result_t activate_locked(const std::string &client_uuid, client_state_t &state);
     struct capture_reference_t;
+    bool display_mutation_deferred_locked() const;
+    void finalize_shutdown_locked();
     void release_normal_game_identity_locked(const std::string &client_uuid, client_state_t &state);
     void release_locked(const std::string &client_uuid, client_state_t &state, const std::string &reason);
     static mode_t desired_mode(const client_state_t &state);
@@ -163,6 +168,9 @@ namespace remote_display_topology {
     nlohmann::json layout_ { {"version", layout_version}, {"placements", nlohmann::json::object()} };
     std::vector<node_t> physical_baseline_;
     std::unordered_map<std::string, client_state_t> clients_;
+    std::unordered_map<std::string, std::uint64_t> observed_monitor_generations_;
+    std::unordered_map<std::string, std::uint64_t> released_monitor_generations_;
+    bool shutdown_pending_ = false;
     std::uint64_t next_normal_game_token_ = 0;
     std::uint64_t next_placement_order_ = 0;
   };

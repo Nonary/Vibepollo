@@ -534,11 +534,15 @@ TEST(RemoteSession, MonitorHooksRejectWithoutTopologyAndPreserveGeneration) {
 
   std::uint64_t released_generation {};
   remote_session::register_monitor_runtime_hooks({
-    .explicit_release = [&released_generation](std::string_view, std::uint64_t generation, std::string_view) { released_generation = generation; },
+    .explicit_release = [&released_generation](std::string_view, std::uint64_t generation, std::string_view) {
+      released_generation = generation;
+      return true;
+    },
   });
-  remote_session::release_monitor("client", 7, "disconnect");
+  EXPECT_TRUE(remote_session::release_monitor("client", 7, "disconnect"));
   EXPECT_EQ(released_generation, 7u);
   remote_session::register_monitor_runtime_hooks({});
+  EXPECT_FALSE(remote_session::release_monitor("client", 8, "unavailable"));
 }
 
 TEST(RemoteSession, MonitorRuntimeTransportsHdrRequest) {

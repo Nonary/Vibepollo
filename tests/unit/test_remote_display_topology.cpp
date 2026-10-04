@@ -392,6 +392,514 @@ TEST(RemoteDisplayTopology, AppExitWaitsForEveryCaptureBeforeMutatingTopology) {
   EXPECT_EQ(operations.size(), 2u);
 }
 
+TEST(RemoteDisplayTopology, RemoteMonitorWaitsForRetiringNormalCaptureBeforeTouchingDisplay) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> operations;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&](const auto &, const auto &, const auto &) {
+      operations.emplace_back("create");
+      return true;
+    },
+    .apply_composed_topology = [&](const auto &) {
+      operations.emplace_back("apply");
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) {
+      return std::optional<std::string> {"monitor-output"};
+    },
+    .remove_owned_display = [&](const auto &) {
+      operations.emplace_back("remove");
+      return true;
+    },
+  });
+
+  const auto game = coordinator.reserve_normal_game_identity("same", "Game", {2560, 1440, 120, true});
+  auto capture = coordinator.retain_normal_game_capture("same", game.token);
+  ASSERT_TRUE(capture);
+  coordinator.release_normal_game_identity("same", game.token);
+
+  const auto blocked = coordinator.activate_or_resume("same", "Monitor", {1920, 1080, 60, false}, 7);
+  EXPECT_FALSE(blocked.accepted);
+  EXPECT_FALSE(blocked.ready);
+  EXPECT_TRUE(blocked.retryable);
+  EXPECT_TRUE(operations.empty());
+
+  capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(operations, (std::vector<std::string> {"apply", "remove"}));
+
+  const auto retry = coordinator.activate_or_resume("same", "Monitor", {1920, 1080, 60, false}, 7);
+  EXPECT_TRUE(retry.accepted);
+  EXPECT_TRUE(retry.ready);
+  EXPECT_EQ(retry.output, "monitor-output");
+  EXPECT_EQ(operations, (std::vector<std::string> {"apply", "remove", "create", "apply"}));
+}
+
+TEST(RemoteDisplayTopology, ExistingMonitorResumeDoesNotReconfigureWhileNormalCaptureDrains) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<remote_display_topology::mode_t> applied;
+  int creates = 0;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&](const auto &, const auto &, const auto &) {
+      ++creates;
+      return true;
+    },
+    .apply_composed_topology = [&](const auto &nodes) {
+      if (!nodes.empty()) applied.push_back(nodes.front().configured_mode);
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) {
+      return std::optional<std::string> {"monitor-output"};
+    },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("same", "Monitor", {1920, 1080, 60, false}, 1).ready);
+  const auto game = coordinator.reserve_normal_game_identity("same", "Game", {2560, 1440, 120, true});
+  auto capture = coordinator.retain_normal_game_capture("same", game.token);
+  ASSERT_TRUE(capture);
+  coordinator.release_normal_game_identity("same", game.token);
+  const auto apply_count = applied.size();
+
+  const auto unchanged = coordinator.activate_or_resume("same", "Monitor", {1920, 1080, 60, false}, 2);
+  EXPECT_FALSE(unchanged.accepted);
+  EXPECT_FALSE(unchanged.ready);
+  EXPECT_TRUE(unchanged.retryable);
+  EXPECT_FALSE(coordinator.snapshot("same", 2).accepted);
+  EXPECT_TRUE(coordinator.snapshot("same", 1).ready);
+  EXPECT_EQ(applied.size(), apply_count);
+  EXPECT_EQ(creates, 1);
+
+  const auto changed = coordinator.activate_or_resume("same", "Monitor", {3840, 2160, 120, true}, 3);
+  EXPECT_FALSE(changed.accepted);
+  EXPECT_FALSE(changed.ready);
+  EXPECT_TRUE(changed.retryable);
+  EXPECT_FALSE(coordinator.snapshot("same", 3).accepted);
+  EXPECT_TRUE(coordinator.snapshot("same", 1).ready);
+  EXPECT_EQ(applied.size(), apply_count);
+  EXPECT_EQ(creates, 1);
+
+  capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  const auto retried = coordinator.activate_or_resume("same", "Monitor", {3840, 2160, 120, true}, 3);
+  EXPECT_TRUE(retried.ready);
+  ASSERT_GT(applied.size(), apply_count);
+  EXPECT_EQ(applied.back().width, 3840);
+  EXPECT_EQ(applied.back().height, 2160);
+  EXPECT_EQ(applied.back().refresh_hz, 120);
+  EXPECT_TRUE(applied.back().hdr);
+  EXPECT_EQ(creates, 1);
+}
+
+TEST(RemoteDisplayTopology, MonitorReleaseDefersTopologyUntilNormalCaptureDrains) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> operations;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&](const auto &, const auto &, const auto &) {
+      operations.emplace_back("create");
+      return true;
+    },
+    .apply_composed_topology = [&](const auto &) {
+      operations.emplace_back("apply");
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) {
+      return std::optional<std::string> {"monitor-output"};
+    },
+    .remove_owned_display = [&](const auto &) {
+      operations.emplace_back("remove");
+      return true;
+    },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("same", "Monitor", {1920, 1080, 60}, 1).ready);
+  const auto game = coordinator.reserve_normal_game_identity("same", "Game", {2560, 1440, 120});
+  auto capture = coordinator.retain_normal_game_capture("same", game.token);
+  ASSERT_TRUE(capture);
+  coordinator.release_normal_game_identity("same", game.token);
+  operations.clear();
+
+  coordinator.explicit_release("same", 1, "monitor disconnected");
+  EXPECT_TRUE(operations.empty());
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+
+  capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(operations, (std::vector<std::string> {"apply", "remove"}));
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 0u);
+}
+
+TEST(RemoteDisplayTopology, NewMonitorGenerationCancelsOlderDeferredRelease) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> operations;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) {
+      return true;
+    },
+    .apply_composed_topology = [&](const auto &) {
+      operations.emplace_back("apply");
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+    .remove_owned_display = [&](const auto &) {
+      operations.emplace_back("remove");
+      return true;
+    },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("same", "Monitor", {1920, 1080, 60}, 1).ready);
+  const auto game = coordinator.reserve_normal_game_identity("same", "Game", {2560, 1440, 120});
+  auto capture = coordinator.retain_normal_game_capture("same", game.token);
+  coordinator.release_normal_game_identity("same", game.token);
+  coordinator.explicit_release("same", 1, "old monitor disconnected");
+  capture.reset();
+  operations.clear();
+
+  EXPECT_FALSE(coordinator.resume_remote_monitor("same").accepted);
+  const auto stale = coordinator.activate_or_resume("same", "Monitor", {1920, 1080, 60}, 1);
+  EXPECT_FALSE(stale.accepted);
+  EXPECT_TRUE(stale.retryable);
+  const auto successor = coordinator.activate_or_resume("same", "Monitor", {2560, 1440, 120}, 2);
+  EXPECT_TRUE(successor.ready);
+  coordinator.release_drained_normal_game_identities();
+
+  EXPECT_TRUE(coordinator.snapshot("same", 2).ready);
+  EXPECT_EQ(std::count(operations.begin(), operations.end(), "remove"), 0);
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+}
+
+
+TEST(RemoteDisplayTopology, CommittedMonitorReleaseRejectsReplayedGeneration) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> removed;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) {
+      return true;
+    },
+    .apply_composed_topology = [](const auto &) {
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+    .remove_owned_display = [&](const auto &uuid) {
+      removed.push_back(uuid);
+      return true;
+    },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("same", "Monitor", {1920, 1080, 60}, 7).ready);
+  const auto blocker = coordinator.reserve_normal_game_identity("blocker", "Blocker", {});
+  auto capture = coordinator.retain_normal_game_capture("blocker", blocker.token);
+  coordinator.release_normal_game_identity("blocker", blocker.token);
+  coordinator.explicit_release("same", 7, "monitor disconnected");
+  capture.reset();
+  coordinator.release_drained_normal_game_identities();
+
+  EXPECT_NE(std::find(removed.begin(), removed.end(), "same"), removed.end());
+  EXPECT_FALSE(coordinator.activate_or_resume("same", "Monitor", {1920, 1080, 60}, 7).accepted);
+  const auto successor = coordinator.activate_or_resume("same", "Monitor", {2560, 1440, 120}, 8);
+  EXPECT_TRUE(successor.ready);
+  EXPECT_TRUE(coordinator.snapshot("same", 8).ready);
+}
+
+TEST(RemoteDisplayTopology, CapacityRejectionPreservesReleasedGenerationHighWater) {
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) {
+      return true;
+    },
+    .apply_composed_topology = [](const auto &) {
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+    .remove_owned_display = [](const auto &) {
+      return true;
+    },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("same", "Monitor", {1920, 1080, 60}, 7).ready);
+  coordinator.explicit_release("same", 7, "monitor disconnected");
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 0u);
+
+  const auto one = coordinator.reserve_normal_game_identity("one", "One", {});
+  ASSERT_TRUE(one.accepted);
+  ASSERT_TRUE(coordinator.reserve_normal_game_identity("two", "Two", {}).accepted);
+  ASSERT_TRUE(coordinator.reserve_normal_game_identity("three", "Three", {}).accepted);
+  ASSERT_TRUE(coordinator.reserve_normal_game_identity("four", "Four", {}).accepted);
+
+  const auto rejected_successor = coordinator.activate_or_resume("same", "Monitor", {2560, 1440, 120}, 8);
+  EXPECT_FALSE(rejected_successor.accepted);
+  EXPECT_TRUE(rejected_successor.retryable);
+
+  ASSERT_TRUE(coordinator.rollback_normal_game_identity("one", one.token));
+  const auto stale = coordinator.activate_or_resume("same", "Monitor", {1920, 1080, 60}, 7);
+  EXPECT_FALSE(stale.accepted);
+  EXPECT_TRUE(stale.retryable);
+  EXPECT_TRUE(coordinator.activate_or_resume("same", "Monitor", {2560, 1440, 120}, 8).ready);
+}
+
+TEST(RemoteDisplayTopology, ActiveSuccessorRejectsOlderGenerationActivation) {
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("same", "Successor", {2560, 1440, 120}, 8).ready);
+  const auto stale = coordinator.activate_or_resume("same", "Stale", {1920, 1080, 60}, 7);
+  EXPECT_FALSE(stale.accepted);
+  EXPECT_TRUE(stale.retryable);
+  EXPECT_TRUE(coordinator.snapshot("same", 8).ready);
+  EXPECT_FALSE(coordinator.snapshot("same", 7).accepted);
+}
+
+TEST(RemoteDisplayTopology, PreAdmissionRejectionFencesOlderGeneration) {
+  const auto configure = [](remote_display_topology::coordinator_t &coordinator) {
+    coordinator.set_runtime_callbacks({
+      .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+      .apply_composed_topology = [](const auto &) { return true; },
+      .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+        return std::optional<std::string> {uuid};
+      },
+      .remove_owned_display = [](const auto &) { return true; },
+    });
+  };
+
+  {
+    remote_display_topology::coordinator_t coordinator;
+    configure(coordinator);
+    const auto one = coordinator.reserve_normal_game_identity("one", "One", {});
+    ASSERT_TRUE(one.accepted);
+    ASSERT_TRUE(coordinator.reserve_normal_game_identity("two", "Two", {}).accepted);
+    ASSERT_TRUE(coordinator.reserve_normal_game_identity("three", "Three", {}).accepted);
+    ASSERT_TRUE(coordinator.reserve_normal_game_identity("four", "Four", {}).accepted);
+
+    EXPECT_FALSE(coordinator.activate_or_resume("same", "Monitor", {}, 8).accepted);
+    ASSERT_TRUE(coordinator.rollback_normal_game_identity("one", one.token));
+    EXPECT_FALSE(coordinator.activate_or_resume("same", "Monitor", {}, 7).accepted);
+    EXPECT_TRUE(coordinator.activate_or_resume("same", "Monitor", {}, 8).ready);
+  }
+
+  {
+    remote_display_topology::coordinator_t coordinator;
+    configure(coordinator);
+    const auto blocker = coordinator.reserve_normal_game_identity("blocker", "Blocker", {});
+    auto capture = coordinator.retain_normal_game_capture("blocker", blocker.token);
+    coordinator.release_normal_game_identity("blocker", blocker.token);
+
+    EXPECT_FALSE(coordinator.activate_or_resume("same", "Monitor", {}, 8).accepted);
+    capture.reset();
+    coordinator.release_drained_normal_game_identities();
+    EXPECT_FALSE(coordinator.activate_or_resume("same", "Monitor", {}, 7).accepted);
+    EXPECT_TRUE(coordinator.activate_or_resume("same", "Monitor", {}, 8).ready);
+  }
+}
+
+TEST(RemoteDisplayTopology, LegacyUnversionedMonitorCanReactivateAfterRelease) {
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+    .remove_owned_display = [](const auto &) { return true; },
+  });
+
+  ASSERT_TRUE(coordinator.activate_remote_monitor("same", "Monitor", {}).capture_ready);
+  coordinator.disconnect_monitor("same");
+  EXPECT_TRUE(coordinator.activate_remote_monitor("same", "Monitor", {}).capture_ready);
+}
+
+TEST(RemoteDisplayTopology, FailedMonitorReleaseRemainsRetryable) {
+  remote_display_topology::coordinator_t coordinator;
+  bool allow_apply = true;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [&](const auto &) { return allow_apply; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+    .remove_owned_display = [](const auto &) { return true; },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("same", "Monitor", {}, 8).ready);
+  allow_apply = false;
+  EXPECT_FALSE(coordinator.explicit_release("same", 8, "first attempt"));
+  EXPECT_TRUE(coordinator.snapshot("same", 8).accepted);
+
+  allow_apply = true;
+  EXPECT_TRUE(coordinator.explicit_release("same", 8, "retry"));
+  EXPECT_FALSE(coordinator.snapshot("same", 8).accepted);
+
+  ASSERT_TRUE(coordinator.activate_or_resume("automatic", "Monitor", {}, 9).ready);
+  allow_apply = false;
+  EXPECT_FALSE(coordinator.explicit_release("automatic", 9, "automatic retry"));
+  allow_apply = true;
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_FALSE(coordinator.snapshot("automatic", 9).accepted);
+}
+
+TEST(RemoteDisplayTopology, MonitorSnapshotRejectsNormalOnlySharedIdentity) {
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+    .remove_owned_display = [](const auto &) { return true; },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("same", "Monitor", {}, 8).ready);
+  ASSERT_TRUE(coordinator.reserve_normal_game_identity("same", "Game", {}).accepted);
+  EXPECT_TRUE(coordinator.explicit_release("same", 8, "monitor released"));
+  EXPECT_FALSE(coordinator.snapshot("same", 8).accepted);
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+}
+
+TEST(RemoteDisplayTopology, CaptureDrainFencesEveryCoordinatorDisplayMutation) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> operations;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&](const auto &, const auto &, const auto &) {
+      operations.emplace_back("create");
+      return true;
+    },
+    .apply_composed_topology = [&](const auto &) {
+      operations.emplace_back("apply");
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+    .remove_owned_display = [&](const auto &uuid) {
+      operations.push_back("remove:" + uuid);
+      return true;
+    },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("peer", "Peer", {1920, 1080, 60}, 4).ready);
+  const auto rollback_peer = coordinator.reserve_normal_game_identity("rollback-peer", "Rollback", {});
+  const auto game = coordinator.reserve_normal_game_identity("game", "Game", {2560, 1440, 120});
+  auto capture = coordinator.retain_normal_game_capture("game", game.token);
+  ASSERT_TRUE(capture);
+  coordinator.release_normal_game_identity("game", game.token);
+  operations.clear();
+
+  EXPECT_FALSE(coordinator.reapply_composed_topology());
+  EXPECT_FALSE(coordinator.resume_remote_monitor("peer").accepted);
+  EXPECT_FALSE(coordinator.activate_or_resume("peer", "Peer", {1920, 1080, 60}, 3).accepted);
+  EXPECT_FALSE(coordinator.reserve_normal_game_identity("new-game", "New", {}).accepted);
+  EXPECT_FALSE(coordinator.rollback_normal_game_identity("rollback-peer", rollback_peer.token));
+  coordinator.explicit_release("peer", 4, "peer disconnected");
+  EXPECT_TRUE(operations.empty());
+  EXPECT_TRUE(coordinator.snapshot("peer", 4).ready);
+
+  capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(std::count(operations.begin(), operations.end(), "apply"), 3);
+  EXPECT_NE(std::find(operations.begin(), operations.end(), "remove:game"), operations.end());
+  EXPECT_NE(std::find(operations.begin(), operations.end(), "remove:rollback-peer"), operations.end());
+  EXPECT_NE(std::find(operations.begin(), operations.end(), "remove:peer"), operations.end());
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 0u);
+}
+
+TEST(RemoteDisplayTopology, ReleaseAllMarksEveryOwnerBeforeAnyDisplayMutation) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> operations;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [&](const auto &) {
+      operations.emplace_back("apply");
+      return true;
+    },
+    .remove_owned_display = [&](const auto &uuid) {
+      operations.push_back("remove:" + uuid);
+      return true;
+    },
+  });
+  ASSERT_TRUE(coordinator.reserve_normal_game_identity("idle", "Idle", {}).accepted);
+  const auto live = coordinator.reserve_normal_game_identity("live", "Live", {});
+  auto capture = coordinator.retain_normal_game_capture("live", live.token);
+  ASSERT_TRUE(capture);
+
+  coordinator.release_all_normal_game_identities();
+  EXPECT_TRUE(operations.empty());
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 2u);
+
+  capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(std::count(operations.begin(), operations.end(), "apply"), 2);
+  EXPECT_NE(std::find(operations.begin(), operations.end(), "remove:idle"), operations.end());
+  EXPECT_NE(std::find(operations.begin(), operations.end(), "remove:live"), operations.end());
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 0u);
+}
+
+TEST(RemoteDisplayTopology, ShutdownDefersEveryDisplayCallbackUntilCaptureDrains) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> operations;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [&](const auto &) {
+      operations.emplace_back("apply");
+      return true;
+    },
+    .remove_owned_display = [&](const auto &uuid) {
+      operations.push_back("remove:" + uuid);
+      return true;
+    },
+  });
+
+  const auto game = coordinator.reserve_normal_game_identity("game", "Game", {2560, 1440, 120});
+  auto capture = coordinator.retain_normal_game_capture("game", game.token);
+  ASSERT_TRUE(capture);
+
+  coordinator.shutdown(false);
+  EXPECT_TRUE(operations.empty());
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+  const auto blocked = coordinator.activate_or_resume("monitor", "Monitor", {1920, 1080, 60}, 7);
+  EXPECT_FALSE(blocked.accepted);
+  EXPECT_TRUE(blocked.retryable);
+
+  capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(operations, (std::vector<std::string> {"apply", "remove:game"}));
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 0u);
+}
+
+TEST(RemoteDisplayTopology, ShutdownRetainsFailedDisplayOwnershipForRetry) {
+  remote_display_topology::coordinator_t coordinator;
+  bool allow_apply = false;
+  bool allow_remove = false;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [&](const auto &) {
+      return allow_apply;
+    },
+    .remove_owned_display = [&](const auto &) {
+      return allow_remove;
+    },
+  });
+  ASSERT_TRUE(coordinator.reserve_normal_game_identity("game", "Game", {}).accepted);
+
+  coordinator.shutdown(false);
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+  EXPECT_FALSE(coordinator.reserve_normal_game_identity("new-game", "New", {}).accepted);
+
+  allow_apply = true;
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+
+  allow_remove = true;
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 0u);
+}
+
 TEST(RemoteDisplayTopology, FreshZeroTokenCaptureWaitsForRetiringNormalDisplay) {
   remote_display_topology::coordinator_t coordinator;
   std::vector<std::string> operations;
@@ -469,7 +977,7 @@ TEST(RemoteDisplayTopology, CaptureIdleRetiresOnlyNormalGameRecoveryAndResumeCan
   );
 }
 
-TEST(RemoteDisplayTopology, OldCaptureDrainCannotReleaseSuccessorAppIdentity) {
+TEST(RemoteDisplayTopology, SuccessorAppWaitsForPredecessorCaptureDrain) {
   remote_display_topology::coordinator_t coordinator;
   std::vector<std::string> removed;
   coordinator.set_runtime_callbacks({
@@ -484,23 +992,24 @@ TEST(RemoteDisplayTopology, OldCaptureDrainCannotReleaseSuccessorAppIdentity) {
   const auto old_app = coordinator.reserve_normal_game_identity("game", "Game", {});
   auto old_capture = coordinator.retain_normal_game_capture("game", old_app.token);
   coordinator.release_normal_game_identity("game", old_app.token);
+  const auto blocked = coordinator.reserve_normal_game_identity("game", "Game", {2560, 1440, 120});
+  EXPECT_FALSE(blocked.accepted);
+  EXPECT_TRUE(coordinator.normal_game_release_pending());
+  old_capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(removed, (std::vector<std::string> {"game"}));
+
   const auto new_app = coordinator.reserve_normal_game_identity("game", "Game", {2560, 1440, 120});
   ASSERT_TRUE(new_app.accepted);
   ASSERT_NE(new_app.token, old_app.token);
-  EXPECT_FALSE(coordinator.normal_game_release_pending());
   auto new_capture = coordinator.retain_normal_game_capture("game", new_app.token);
   ASSERT_TRUE(new_capture);
-  coordinator.release_normal_game_identity("game", old_app.token);
-  old_capture.reset();
-  coordinator.release_drained_normal_game_identities();
-  EXPECT_TRUE(removed.empty());
-
   coordinator.release_normal_game_identity("game", new_app.token);
   coordinator.release_drained_normal_game_identities();
-  EXPECT_TRUE(removed.empty());
+  EXPECT_EQ(removed, (std::vector<std::string> {"game"}));
   new_capture.reset();
   coordinator.release_drained_normal_game_identities();
-  EXPECT_EQ(removed, (std::vector<std::string> {"game"}));
+  EXPECT_EQ(removed, (std::vector<std::string> {"game", "game"}));
 }
 
 TEST(RemoteDisplayTopology, DrainedGameRetiresWhileIndependentMonitorRemainsOwned) {
@@ -536,7 +1045,7 @@ TEST(RemoteDisplayTopology, DrainedGameRetiresWhileIndependentMonitorRemainsOwne
   EXPECT_TRUE(coordinator.is_ready("monitor", 1));
 }
 
-TEST(RemoteDisplayTopology, FailedSuccessorRollbackCannotRemovePredecessorCapture) {
+TEST(RemoteDisplayTopology, RejectedSuccessorCannotRemovePredecessorCapture) {
   remote_display_topology::coordinator_t coordinator;
   std::vector<std::string> removed;
   coordinator.set_runtime_callbacks({
@@ -552,16 +1061,15 @@ TEST(RemoteDisplayTopology, FailedSuccessorRollbackCannotRemovePredecessorCaptur
   auto old_capture = coordinator.retain_normal_game_capture("game", old_app.token);
   coordinator.release_normal_game_identity("game", old_app.token);
   const auto successor = coordinator.reserve_normal_game_identity("game", "Game", {});
-  ASSERT_NE(successor.token, old_app.token);
+  EXPECT_FALSE(successor.accepted);
   EXPECT_FALSE(coordinator.rollback_normal_game_identity("game", old_app.token));
-  EXPECT_FALSE(coordinator.rollback_normal_game_identity("game", successor.token));
   coordinator.release_drained_normal_game_identities();
   EXPECT_TRUE(removed.empty());
   EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
   old_capture.reset();
   coordinator.release_drained_normal_game_identities();
   EXPECT_EQ(removed, (std::vector<std::string> {"game"}));
-  EXPECT_FALSE(coordinator.retain_normal_game_capture("game", successor.token));
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 0u);
 }
 
 TEST(RemoteDisplayTopology, SharedMonitorSurvivesDeferredNormalReleaseAndFailedRestoreRetries) {

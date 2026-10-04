@@ -138,7 +138,7 @@ namespace remote_session {
   struct monitor_runtime_hooks_t {
     std::function<monitor_runtime_state_t(std::string_view client_uuid, std::string_view client_label, std::string_view requested_mode, bool hdr_requested, std::uint64_t generation)> activate_or_resume;
     std::function<monitor_runtime_state_t(std::string_view client_uuid, std::uint64_t generation)> snapshot;
-    std::function<void(std::string_view client_uuid, std::uint64_t generation, std::string_view reason)> explicit_release;
+    std::function<bool(std::string_view client_uuid, std::uint64_t generation, std::string_view reason)> explicit_release;
     std::function<void(std::string_view client_uuid, std::uint64_t generation)> transport_lost;
     std::function<void(std::string_view client_uuid)> unpair;
     std::function<void()> shutdown;
@@ -212,7 +212,7 @@ namespace remote_session {
   void register_monitor_runtime_hooks(monitor_runtime_hooks_t hooks);
   [[nodiscard]] monitor_runtime_state_t activate_or_resume_monitor(std::string_view client_uuid, std::string_view client_label, std::string_view requested_mode, bool hdr_requested, std::uint64_t generation);
   [[nodiscard]] monitor_runtime_state_t monitor_runtime_snapshot(std::string_view client_uuid, std::uint64_t generation);
-  void release_monitor(std::string_view client_uuid, std::uint64_t generation, std::string_view reason);
+  [[nodiscard]] bool release_monitor(std::string_view client_uuid, std::uint64_t generation, std::string_view reason);
   void notify_monitor_transport_lost(std::string_view client_uuid, std::uint64_t generation);
   void notify_monitor_unpair(std::string_view client_uuid);
   void notify_monitor_shutdown();

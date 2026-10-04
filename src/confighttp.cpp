@@ -6327,6 +6327,7 @@ namespace confighttp {
     tcp.join();
     blocking_route_pool.stop();
     blocking_route_pool.join();
+    webrtc_stream::shutdown_all_sessions();
     // std::jthread (cleanup_thread) auto-joins on destruction, no need for joinable/join
   }
 
