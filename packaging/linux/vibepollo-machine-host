@@ -622,10 +622,14 @@ prepare_upgrade_profile() {
   ensure_command_manifest || return 1
 }
 
-user_exec() {
+user_exec() (
+  # find saves/restores its initial cwd. A service-account child cannot
+  # restore the invoking administrator's private home after dropping UID.
+  # Isolate the cwd change so callers keep their own relative-path semantics.
+  cd / || return 1
   local user=$1 uid gid; shift; uid=$(/usr/bin/id -u -- "$user"); gid=$(/usr/bin/id -g -- "$user")
   /usr/bin/setpriv --reuid "$uid" --regid "$gid" --init-groups --no-new-privs -- "$@"
-}
+)
 
 load_session() {
   local attributes key value line entry account_name account_uid account_gid account_home

@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# Security checks parse stat's file-type names during package removal.
+export LC_ALL=C
+
 vibepollo_controller="@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-session-controller"
 vibepollo_machine_host="@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-machine-host"
 vibepollo_session_record=/run/vibepollo/session.env

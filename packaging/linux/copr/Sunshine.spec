@@ -342,6 +342,7 @@ cd %{_builddir}/Sunshine/build
 %make_install
 
 %pre
+export LC_ALL=C
 vibepollo_controller=%{_prefix}/libexec/vibeshine/vibepollo-session-controller
 vibepollo_legacy_host=%{_prefix}/libexec/vibeshine/vibepollo-machine-host
 vibepollo_legacy_handoff=%{_prefix}/libexec/vibeshine/vibepollo-session-handoff
@@ -1009,6 +1010,7 @@ if ! vibepollo_quiesce_machine_host; then
 fi
 
 %post
+export LC_ALL=C
 # Note: this is copied from the postinst script
 
 vibepollo_controller=%{_prefix}/libexec/vibeshine/vibepollo-session-controller
@@ -1424,6 +1426,7 @@ else
 fi
 
 %preun
+export LC_ALL=C
 vibepollo_controller=%{_prefix}/libexec/vibeshine/vibepollo-session-controller
 vibepollo_machine_host=%{_prefix}/libexec/vibeshine/vibepollo-machine-host
 vibepollo_session_record=/run/vibepollo/session.env

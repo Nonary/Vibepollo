@@ -387,3 +387,133 @@ for hook_case in \
   )
 done
 printf 'Removal and repair refuse broker teardown until the GPU host has drained.\n'
+
+# Recover an already-installed pre-fix package without changing packaged files
+# or making its administrator run a separate locale/configure workaround.
+(
+  recovery_root="$workdir/recovery"
+  mkdir -p "$recovery_root/systemd"
+  recovery_helper="$recovery_root/machine-host"
+  recovery_controller="$recovery_root/controller"
+  recovery_trace="$recovery_root/trace"
+  export recovery_trace recovery_prepare_result=0 recovery_cleanup_result=0
+  printf '%s\n' '#!/usr/bin/env bash' \
+    '[[ "$PWD" == / && "$LC_ALL" == C && "$1" == configure-auto ]] || exit 90' \
+    'printf "prepare\n" >> "$recovery_trace"' \
+    'exit "$recovery_prepare_result"' > "$recovery_helper"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    '[[ "$PWD" == / && "$LC_ALL" == C && "$1" == cleanup ]] || exit 91' \
+    'printf "cleanup\n" >> "$recovery_trace"' \
+    'exit "$recovery_cleanup_result"' > "$recovery_controller"
+  chmod 755 "$recovery_helper" "$recovery_controller"
+  recovery_unsafe_owner=0
+  stat() {
+    local format=$2 path=${!#} metadata
+    case "$format" in
+      '%u:%g:%a:%h')
+        metadata=$(command stat -c '%a:%h' -- "$path") || return 1
+        printf '%s:0:%s\n' "$recovery_unsafe_owner" "$metadata"
+        ;;
+      '%u:%g:%a')
+        # The real system ancestry is root-owned; the fixture lives in /tmp.
+        if [[ "$path" == /tmp ]]; then metadata=755
+        else metadata=$(command stat -c '%a' -- "$path") || return 1; fi
+        printf '0:0:%s\n' "$metadata"
+        ;;
+      *) return 1 ;;
+    esac
+  }
+  timeout() { [[ "$1:$2" == '--signal=KILL:40' ]] || return 1; shift 2; "$@"; }
+  recovery_start_result=0
+  systemctl() {
+    printf 'systemctl %s\n' "$*" >> "$recovery_trace"
+    [[ "$1" != start ]] || return "$recovery_start_result"
+  }
+  printf 'original-pairings\n' > "$recovery_root/pairings"
+  original_cwd=$PWD
+  for attempt in 1 2; do
+    : > "$recovery_trace"
+    repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"
+    [[ "$PWD" == "$original_cwd" ]]
+    [[ $(< "$recovery_root/pairings") == original-pairings ]]
+    [[ $(< "$recovery_trace") == $'systemctl daemon-reload\nsystemctl stop vibepollo-session-controller.service\ncleanup\nprepare\nsystemctl enable vibepollo-session-controller.service\nsystemctl start vibepollo-session-controller.service' ]]
+    dropin="$recovery_root/systemd/vibepollo-session-controller.service.d/99-vibepollo-machine-locale.conf"
+    [[ $(< "$dropin") == $'[Service]\nEnvironment=LC_ALL=C' ]]
+    [[ $(command stat -c %a -- "$dropin") == 644 ]]
+    if [[ "$attempt" == 1 ]]; then chmod 700 "${dropin%/*}"; fi
+    [[ $(command stat -c %a -- "${dropin%/*}") == 700 ]]
+  done
+
+  # A cleanup or setup failure cannot continue to activation or success.
+  recovery_cleanup_result=1; : > "$recovery_trace"
+  if (repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"); then exit 1; fi
+  ! grep -qE '^prepare|^systemctl (enable|start)' "$recovery_trace"
+  recovery_cleanup_result=0; recovery_prepare_result=1; : > "$recovery_trace"
+  if (repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"); then exit 1; fi
+  ! grep -qE '^systemctl (enable|start)' "$recovery_trace"
+  recovery_prepare_result=0; recovery_start_result=1
+  if (repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"); then exit 1; fi
+  recovery_start_result=0
+
+  # Existing service policy is never followed through links or writable dirs.
+  rm "$dropin"; ln -s "$recovery_root/pairings" "$dropin"
+  if (repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"); then exit 1; fi
+  [[ $(< "$recovery_root/pairings") == original-pairings ]]
+  rm "$dropin"
+  chmod 777 "$recovery_root/systemd"
+  if (repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"); then exit 1; fi
+  chmod 755 "$recovery_root/systemd"
+  mv "$recovery_root/systemd" "$recovery_root/systemd.real"
+  ln -s "$recovery_root/systemd.real" "$recovery_root/systemd"
+  if (repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"); then exit 1; fi
+  rm "$recovery_root/systemd"
+  mv "$recovery_root/systemd.real" "$recovery_root/systemd"
+  recovery_unsafe_owner=1000
+  if (repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"); then exit 1; fi
+  recovery_unsafe_owner=0
+
+  # Fixed packages need no service override, but still retry profile setup.
+  printf '\nexport LC_ALL=C\n' >> "$recovery_controller"
+  repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"
+  [[ ! -e "$dropin" ]]
+)
+printf 'Installer automatically recovers old locale/cwd setup and refuses unsafe or failed recovery.\n'
+
+# Package hooks inherit a safe cwd even with relative --package arguments.
+(
+  package_directory="$workdir/relative-package"
+  mkdir "$package_directory"
+  touch "$package_directory/vibepollo.pkg.tar.zst"
+  cd "$package_directory"
+  local_package=vibepollo.pkg.tar.zst
+  prepare_driver_replacement() { :; }
+  pacman() {
+    case "$1" in
+      -Qp) printf 'vibepollo 1.0-1\n' ;;
+      -U) [[ "$PWD" == / && "${!#}" == "$package_directory/vibepollo.pkg.tar.zst" && "$LC_ALL" == C ]] ;;
+      *) return 1 ;;
+    esac
+  }
+  install_from_package
+  [[ "$PWD" == "$package_directory" ]]
+)
+printf 'Relative packages resolve before old package hooks run from a safe working directory.\n'
+
+# The normal CLI must run recovery before it reports a successful install.
+(
+  main_trace="$workdir/main-trace"
+  for step in parse_args require_root require_pacman run_checks install_kernel_headers \
+    check_session_restart install_vibepollo install_virtual_driver install_dualsense_driver \
+    open_firewall check_driver_state check_services; do
+    eval "$step() { :; }"
+  done
+  repair_machine_setup() { printf 'repair\n' >> "$main_trace"; return "$main_repair_result"; }
+  print_summary() { printf 'summary\n' >> "$main_trace"; }
+  main_repair_result=0; : > "$main_trace"
+  main
+  [[ $(< "$main_trace") == $'repair\nsummary' ]]
+  main_repair_result=1; : > "$main_trace"
+  if (set -e; main); then exit 1; fi
+  [[ $(< "$main_trace") == repair ]]
+)
+printf 'Normal install cannot report success before automatic recovery completes.\n'

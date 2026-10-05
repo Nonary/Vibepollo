@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# Security checks parse stat's file-type names during package replacement.
+export LC_ALL=C
+
 vibepollo_controller="@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-session-controller"
 vibepollo_legacy_host="@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-machine-host"
 vibepollo_legacy_handoff="@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-session-handoff"

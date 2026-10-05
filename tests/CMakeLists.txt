@@ -763,6 +763,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
                 COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
                     "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_linux_installer.sh")
             set_tests_properties(test_component_linux_installer PROPERTIES LABELS "component")
+            add_test(NAME test_component_linux_machine_locale
+                COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                    "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_machine_locale.py"
+                    "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+            set_tests_properties(test_component_linux_machine_locale PROPERTIES LABELS "component" TIMEOUT 30)
             add_test(NAME test_component_linux_profile_upgrade
                 COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                     "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_profile_upgrade.py"

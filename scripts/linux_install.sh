@@ -30,6 +30,9 @@
 
 set -euo pipefail
 
+# Requirement and package-ownership checks parse command output.
+export LC_ALL=C
+
 readonly REPO_OWNER='Nonary'
 readonly REPO_NAME='Vibepollo'
 readonly REPO_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -42,6 +45,7 @@ readonly MIN_KERNEL_MINOR=16
 readonly DRM_INSTALL='/usr/libexec/vibeshine/vibeshine-drm-install'
 readonly DS5_INSTALL='/usr/libexec/vibeshine/vibeshine-ds5-install'
 readonly MACHINE_HOST='/usr/libexec/vibeshine/vibepollo-machine-host'
+readonly SESSION_CONTROLLER='/usr/libexec/vibeshine/vibepollo-session-controller'
 
 requested_version=''
 local_package=''
@@ -64,6 +68,13 @@ ok() { printf '    \033[1;32mOK\033[0m   %s\n' "$*"; }
 warn() { printf '    \033[1;33mWARN\033[0m %s\n' "$*" >&2; warnings+=("$*"); }
 fail() { printf '    \033[1;31mFAIL\033[0m %s\n' "$*" >&2; check_failures=$((check_failures + 1)); }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+
+run_from_root() (
+  # Old package hooks and configure helpers drop UID without changing cwd.
+  # Keep their children out of the invoking user's private home.
+  cd / || die 'cannot enter a safe working directory'
+  "$@"
+)
 
 cleanup() {
   if [[ -n "$workdir" && -d "$workdir" ]]; then
@@ -351,9 +362,9 @@ install_from_repo() {
   if [[ -n "$requested_version" ]]; then
     local arch_version="${requested_version//-/}"
     arch_version="${arch_version//+/.}"
-    pacman -S "${replacement_confirm[@]}" "${driver_overwrite[@]}" "vibepollo=${arch_version}-1"
+    run_from_root pacman -S "${replacement_confirm[@]}" "${driver_overwrite[@]}" "vibepollo=${arch_version}-1"
   else
-    pacman -S "${replacement_confirm[@]}" "${driver_overwrite[@]}" vibepollo
+    run_from_root pacman -S "${replacement_confirm[@]}" "${driver_overwrite[@]}" vibepollo
   fi
 }
 
@@ -499,13 +510,14 @@ prepare_driver_replacement() {
 
 install_from_package() {
   [[ -f "$local_package" ]] || die "package file not found: ${local_package}"
-  local identity
+  local identity package_path
   identity=$(pacman -Qp -- "$local_package") || die 'could not inspect the local package'
   [[ "$identity" == 'vibepollo '* && "$identity" != *$'\n'* ]] || die 'local package is not Vibepollo'
+  package_path=$(readlink -f -- "$local_package") || die 'cannot resolve the local package path'
   prepare_driver_replacement
   log "Installing ${local_package##*/} with pacman"
   # Installing a local build must not also upgrade the operating system.
-  pacman -U "${replacement_confirm[@]}" "${driver_overwrite[@]}" -- "$local_package"
+  run_from_root pacman -U "${replacement_confirm[@]}" "${driver_overwrite[@]}" -- "$package_path"
 }
 
 install_vibepollo() {
@@ -614,12 +626,64 @@ check_session_restart() {
   fi
 }
 
+repair_machine_setup() {
+  local helper=${1:-$MACHINE_HOST} controller=${2:-$SESSION_CONTROLLER}
+  local unit_root=${3:-/etc/systemd/system} unit=vibepollo-session-controller.service
+  local path attributes owner group mode cursor temporary
+  for path in "$helper" "$controller"; do
+    [[ -f "$path" && ! -L "$path" && -x "$path" &&
+       $(stat -c '%u:%g:%a:%h' -- "$path") == '0:0:755:1' ]] ||
+      die "missing or unsafe machine setup helper: $path"
+  done
+  log 'Repairing machine setup from earlier installs; active streams disconnect during setup.'
+  # systemd does not inherit the installer's LC_ALL. Older controllers need a
+  # service-local override even though package hooks now run in the C locale.
+  if ! head -n 12 -- "$controller" | grep -qx 'export LC_ALL=C'; then
+    path="$unit_root/$unit.d/99-vibepollo-machine-locale.conf"
+    [[ "$unit_root" == /* && "$unit_root" != */../* && "$unit_root" != */.. ]] ||
+      die 'unsafe system unit directory'
+    cursor=${path%/*}
+    while [[ "$cursor" != / ]]; do
+      if [[ -e "$cursor" || -L "$cursor" ]]; then
+        [[ -d "$cursor" && ! -L "$cursor" ]] || die "unsafe service directory: $cursor"
+        attributes=$(stat -c '%u:%g:%a' -- "$cursor") || die "cannot inspect $cursor"
+        IFS=: read -r owner group mode <<< "$attributes"
+        [[ "$owner:$group" == 0:0 && "$mode" =~ ^[0-7]{3,4}$ ]] &&
+          (((8#$mode & 0022) == 0)) || die "unsafe service directory: $cursor"
+      fi
+      cursor=${cursor%/*}; [[ -n "$cursor" ]] || cursor=/
+    done
+    if [[ -e "$path" || -L "$path" ]]; then
+      [[ -f "$path" && ! -L "$path" &&
+         $(stat -c '%u:%g:%a:%h' -- "$path") == '0:0:644:1' ]] ||
+        die "unsafe locale recovery file: $path"
+    fi
+    if [[ ! -d "${path%/*}" ]]; then
+      install -d -m755 -- "${path%/*}" || die 'cannot create the service recovery directory'
+    fi
+    temporary=$(mktemp "${path%/*}/.locale.XXXXXXXX") || die 'cannot stage the service locale recovery'
+    if ! printf '[Service]\nEnvironment=LC_ALL=C\n' > "$temporary" ||
+       ! chmod 644 "$temporary" || ! mv -fT -- "$temporary" "$path"; then
+      rm -f -- "$temporary"
+      die 'cannot install the service locale recovery'
+    fi
+  fi
+  systemctl daemon-reload || die 'cannot reload the repaired machine service'
+  timeout --signal=KILL 40 systemctl stop "$unit" || die 'cannot stop the machine controller for setup'
+  run_from_root timeout --signal=KILL 40 "$controller" cleanup ||
+    die 'cannot safely drain the previous machine host; installation is not complete'
+  run_from_root "$helper" configure-auto ||
+    die 'automatic machine profile setup failed; installation is not complete'
+  systemctl enable "$unit" || die 'cannot enable the configured machine controller'
+  systemctl start "$unit" || die 'cannot start the configured machine controller'
+  ok 'Machine profile is configured and the session controller is enabled.'
+}
+
 check_services() {
   if systemctl is-enabled --quiet vibepollo-session-controller.service 2>/dev/null; then
     ok 'vibepollo-session-controller.service is enabled.'
   else
-    warn "The session controller is not enabled. If the install printed an ACTION REQUIRED line about choosing a user, run: sudo ${MACHINE_HOST} configure YOUR_USER && sudo systemctl enable --now vibepollo-session-controller.service"
-    reboot_required=1
+    die 'the configured session controller is not enabled; installation is not complete'
   fi
 }
 
@@ -657,6 +721,7 @@ main() {
   install_vibepollo
   install_virtual_driver
   install_dualsense_driver
+  repair_machine_setup || die 'machine setup recovery failed; installation is not complete'
   open_firewall
   check_driver_state
   check_services

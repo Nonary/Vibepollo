@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# The purge ancestry check must not depend on the administrator's locale.
+export LC_ALL=C
+
 # Ordinary removal and upgrades deliberately preserve the administrator's
 # machine policy and the service-owned pairings/settings. Debian's explicit
 # purge operation revokes them. Other package formats expose the equivalent
