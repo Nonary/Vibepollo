@@ -277,6 +277,7 @@ const gamepadOptions = [
   option('vhf_xbox_one', 'config.gamepad_vhf_xbox_one'),
   option('vhf_ds4', 'config.gamepad_vhf_ds4'),
   option('vhf_ds5', 'config.gamepad_vhf_ds5'),
+  option('usbip_ds5', 'config.gamepad_usbip_ds5'),
   option('vhf_switch', 'config.gamepad_vhf_switch'),
 ];
 
@@ -292,6 +293,7 @@ export function gamepadOptionsForPlatform(platform: string): SettingsOption[] {
         'vhf_xbox_one',
         'vhf_ds4',
         'vhf_ds5',
+        'usbip_ds5',
         'vhf_switch',
       ])
     : normalized.includes('linux')

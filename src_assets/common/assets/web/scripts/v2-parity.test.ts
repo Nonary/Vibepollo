@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
+import { getConfigSelectOptions } from '../configs/configSelectOptions.ts';
+import { getConfigSelectOptions as getLegacyConfigSelectOptions } from '../../web-legacy/configs/configSelectOptions.ts';
 import {
   matchesPlatform,
   settingsFields,
@@ -69,13 +71,57 @@ test('gamepad options follow the host platform', () => {
   );
   assert.deepEqual(
     gamepadOptionsForPlatform('windows').map((option) => option.value),
-    ['auto', 'x360', 'ds4', 'vhf', 'vhf_xbox', 'vhf_xbox_one', 'vhf_ds4', 'vhf_ds5', 'vhf_switch'],
+    [
+      'auto',
+      'x360',
+      'ds4',
+      'vhf',
+      'vhf_xbox',
+      'vhf_xbox_one',
+      'vhf_ds4',
+      'vhf_ds5',
+      'usbip_ds5',
+      'vhf_switch',
+    ],
   );
   const legacyOptions = readFileSync(
     new URL('../../web-legacy/configs/configSelectOptions.ts', import.meta.url),
     'utf8',
   );
   assert.match(legacyOptions, /linux:\s*\['xone', 'ds4', 'ds5', 'switch'\]/);
+});
+
+test('both settings interfaces offer the composite DualSense on Windows and preserve saved values', () => {
+  for (const getOptions of [getConfigSelectOptions, getLegacyConfigSelectOptions]) {
+    const context = { t: (key: string) => key, platform: 'windows' };
+    const option = getOptions('gamepad', context).find(
+      (candidate) => candidate.value === 'usbip_ds5',
+    );
+    assert.equal(option?.label, 'usbip_ds5', 'an untranslated label retains a usable fallback');
+
+    const translated = getOptions('gamepad', {
+      ...context,
+      t: (key: string) =>
+        key === 'config.gamepad_usbip_ds5' ? 'DualSense with waveform haptics' : key,
+    }).find((candidate) => candidate.value === 'usbip_ds5');
+    assert.equal(translated?.label, 'DualSense with waveform haptics');
+
+    for (const platform of ['linux', 'macos']) {
+      assert.equal(
+        getOptions('gamepad', { ...context, platform }).some(
+          (candidate) => candidate.value === 'usbip_ds5',
+        ),
+        false,
+        `${platform} must not offer the Windows USB/IP driver`,
+      );
+    }
+    assert.ok(
+      getOptions('gamepad', { ...context, currentValue: 'future_controller' }).some(
+        (candidate) => candidate.value === 'future_controller',
+      ),
+      'loading a saved controller selection must not silently change it',
+    );
+  }
 });
 
 test('Linux keeps common virtual-display policy and hides Windows display internals', () => {

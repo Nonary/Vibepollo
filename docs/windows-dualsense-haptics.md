@@ -1,83 +1,95 @@
 # Windows DualSense waveform haptics
 
-Enable **DualSense waveform haptics (experimental)** in an application's editor.
-The option is saved as `dualsense-haptics` in `apps.json` and defaults to false.
-It selects a VHF DualSense for controllers allocated while that application is
-active, without changing the saved global controller preference. The Windows
-Vibeshine virtual gamepad driver and a Moonlight client implementing the existing
-waveform PCM extension are required.
+Vibepollo exposes the streamed controller as a wired USB DualSense with HID and
+audio interfaces on the Windows host. The bundled installer transport currently
+targets Windows x64. Compatible games see a normal Windows controller audio endpoint
+and can submit native waveform haptics. Vibepollo sends the actuator samples to a
+Moonlight client implementing the waveform extension, which renders them on the
+physical DualSense. The client manages the physical controller connection;
+that connection does not change the wired USB identity exposed to Windows games.
 
-Use a direct game `.exe` command. Steam URI, Playnite, desktop, detached-command,
-and shell launches are rejected. For a Steam game, create a manual application
-with its executable and working directory. Games which hand control to an
-already-running launcher are outside this implementation. Start a new stream
-after changing this option; controllers allocated before the option was enabled
-keep their previous profile.
+## Setup
 
-## Launch and interception
+1. In the Vibepollo installer, select the optional **DualSense USB audio and
+   haptics** component. It is off by default and installs the bundled
+   Microsoft-signed usbip-win2 transport. Restart Windows if the installer requests it.
+2. Enable **DualSense waveform haptics** in an application's editor. The option
+   is saved as `dualsense-haptics` in `apps.json` and defaults to false. It selects
+   the composite DualSense for that application without changing the saved global
+   controller preference. To select it for every stream, choose **DualSense with
+   waveform haptics** (`gamepad = usbip_ds5`) in Settings → Input instead.
+3. Start a new stream so controllers are allocated on the composite backend.
+   Use a Moonlight client with waveform support and a compatible DualSense renderer.
+   Stock clients without this extension cannot render native waveform feedback.
+4. Enable native DualSense support in the game. Game-specific Steam Input settings
+   can determine whether the game sees the DualSense or a translated controller.
 
-Vibepollo creates a random, application-owned shared-memory mapping, restricted
-to SYSTEM and the launch user, before running application commands. The helper
-`tools/vibepollo_dualsense_haptics.exe` waits up to 15 seconds for a streamed
-VHF DualSense slot and its enumerated HID container. This wait allows RTSP and
-controller arrival to complete after the launch request, while the game has
-not yet been created.
+Direct executables, Steam launches, Playnite launches, and desktop streaming use
+the same controller audio endpoint. With the per-application option enabled,
+Vibepollo waits up to 30 seconds for a waveform-capable streamed controller and
+its HID and active audio endpoint before running preparation commands or starting
+the game. Global `usbip_ds5` selection creates the device when a controller arrives;
+a desktop stream can still start with only a mouse and keyboard.
+Games launched outside Vibepollo can also use the endpoint
+while the composite controller is connected. The per-application option does
+not require a special game-launch helper or an injected audio DLL.
 
-The helper creates the game suspended and stages a small native x64 entry-point
-bootstrap. Windows initializes its loader normally. Before the executable entry
-point runs, the bootstrap loads `tools/vibepollo_dualsense_audio.dll`, calls its
-initializer, restores the original entry bytes, and signals readiness. Only a
-successful initializer allows the game to proceed. No debugger is attached and
-no remote thread is created. DLL initialization and TLS callbacks can run before
-the executable entry point, so audio created from those callbacks is not covered
-by this guarantee. The bootstrap uses two process-owned memory regions, released
-when the game exits.
+If the optional transport is unavailable, the per-application option reports an
+error before launching the application. An explicitly selected composite controller
+does not silently substitute a VHF or ViGEm controller. Run the installer again with
+the optional component selected, follow any restart request, and reconnect the stream.
+The shared usbip-win2 driver remains installed when Vibepollo is uninstalled.
 
-The DLL hooks `CoCreateInstance` for `IMMDeviceEnumerator`. It appends
-process-local render endpoints for active streamed VHF DualSense slots and
-preserves real endpoints and the real default audio device. Each added endpoint
-reports the container ID used by libvirtualgamepad for that host slot and a
-four-channel float mix format. It implements `IMMDevice`, `IMMEndpoint`,
-`IPropertyStore`, `IAudioClient`, `IAudioRenderClient`, and `IAudioClock`.
-This follows the matching and render path found in
-[the 007 investigation](007-windows-haptics-re.md).
+## Controller and audio path
 
-Shared-mode float32 and signed PCM16 four-channel streams at 8–192 kHz are
-accepted. The actual negotiated rate is converted to stereo S16LE at 48 kHz;
-only channels 3/4 reach the actuators. Packets contain 240 frames (5 ms). The
-bounded IPC queue never blocks an audio submission. Host polling drops packets
-older than 30 ms and forwards the remaining packets through the existing
-gamepad feedback queue and encrypted `0x5601` control extension. Controller slot
-generations invalidate open streams on disconnect or slot reuse.
+The existing shared Vibeshine VHF driver exposes HID controllers. The composite route uses
+usbip-win2's virtual USB host controller and a local user-mode device emulator to
+expose HID and audio functions under the same USB device. Windows' built-in HID and
+USB audio drivers enumerate these functions and associate their container IDs.
+This is the same controller/audio contract used by the Linux composite DualSense.
 
-The game can create children through `CreateProcessW` or `CreateProcessA`;
-these receive the same hook before their entry points, including when they use
-a custom environment block. A caller-requested suspended child stays suspended.
-Failed initialization terminates the child rather than letting an unhooked
-game continue. The helper remains the tracked application root, and the game
-and its descendants remain in the existing application process group.
+The game writes four-channel, 48 kHz S16LE audio to the controller endpoint.
+Only actuator channels 3/4 enter the waveform transport; controller-speaker channels
+and microphone audio are outside this extension. Vibepollo batches the signed
+samples into 240 stereo frames (5 ms) and forwards them through the existing
+gamepad feedback queue and encrypted `0x5601` control extension. PCM admission is
+bounded so audio cannot clear pending rumble, LED, or adaptive-trigger messages.
+Slot teardown discards outstanding samples before that controller index is reused.
 
-## Limits and validation
+Buttons, axes, touchpad, motion, and battery state arrive from the client through
+the composite HID interface. HID output reports carry ordinary rumble, LEDs, and
+adaptive-trigger effects through the existing feedback messages. Waveform feedback
+requires both the connection's `ML_FF_HAPTICS_PCM` support and the controller's
+`LI_CCAP_HAPTICS_PCM` capability.
 
-This is a process-local WASAPI implementation, not an installed Windows audio
-driver. It does not replace the Sony pad API: the game must recognize the VHF
-DualSense HID device itself. Adaptive triggers and other HID feedback keep the
-existing VHF path. Other activation routes such as `CoCreateInstanceEx`,
-`ActivateAudioInterfaceAsync`, and `IAudioClient2/3` are not intercepted.
-Virtual endpoint notification events and exclusive-mode streams are not
-implemented. The launch bootstrap currently supports native x64 Windows executables.
-Cross-architecture child launches and explicit debugger launches are unsupported.
-Games that refuse injected DLLs may reject this launch route.
+The installer redistributes the unmodified signed usbip-win2 package. Building or
+modifying those kernel drivers requires separate signing; installing this release
+package does not require enabling Windows test-signing mode. The transport is open
+source under BSD-2-Clause; its notices are included with the bundled package.
+Windows distributions also include the HIDMaestro and libvirtualgamepad MIT
+notices in `licenses/dualsense_usbip_NOTICES.txt`.
 
-The portable PCM tests cover signed actuator extraction, finite float handling,
-clipping, block boundaries, sample-rate conversion, silence, and reset behavior.
-`windows_dualsense_audio` is a hardware-free Windows integration probe covering
-COM enumeration, Sony container matching, shared-mode render buffers, waveform
-forwarding, silence, controller-generation invalidation, and hooked child
-startup with a custom environment, caller-requested suspension, and no debugger.
-It can also run under Wine with the helper DLL beside the probe executable.
+## Earlier process-local audio implementation
 
-These checks do not establish native Windows gameplay or physical haptics.
-Acceptance still requires a Windows-host game session that creates the Sony
-haptics sink, produces nonzero actuator samples, negotiates waveform support,
-and delivers correctly timed physical feedback to the client controller.
+The source tree retains the earlier `tools/vibepollo_dualsense_haptics.exe` and
+`tools/vibepollo_dualsense_audio.dll` implementation for development and its
+hardware-free integration probes. That implementation creates process-local WASAPI
+endpoints through injected COM hooks and pairs them with a VHF DualSense. Its launch
+and interception restrictions do not apply to the installed composite controller.
+The `dualsense-haptics` application option now selects the USB/audio route and does
+not fall back to these hooks when the optional driver is missing.
+
+## Validation
+
+Portable tests cover descriptor and feature replies, controller identity, USB/IP
+request handling, signed actuator extraction, block boundaries, and controller
+lifetime behavior. These checks establish protocol and sample handling; they do
+not establish native Windows gameplay or physical haptics.
+
+Acceptance requires a Windows-host game session that discovers the composite HID
+controller and matching audio endpoint, produces nonzero actuator samples,
+negotiates waveform support, and delivers correctly timed physical feedback to the
+client controller. Check distinct left/right effects, simultaneous input and
+adaptive triggers, client controller disconnect, reconnect, and stream teardown. Also
+check a client without waveform support and confirm that audio samples cannot reach
+a different controller after slot reuse.

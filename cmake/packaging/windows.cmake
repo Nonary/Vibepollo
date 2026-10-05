@@ -1,8 +1,11 @@
 # windows specific packaging
 include("${CMAKE_SOURCE_DIR}/cmake/packaging/windows_virtual_display_contract.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/packaging/windows_virtual_gamepad_contract.cmake")
+include("${CMAKE_SOURCE_DIR}/cmake/packaging/windows_usbip_contract.cmake")
 
 install(TARGETS sunshine RUNTIME DESTINATION "." COMPONENT application)
+install(FILES "${CMAKE_SOURCE_DIR}/packaging/windows/dualsense_usbip_NOTICES.txt"
+        DESTINATION "licenses" COMPONENT application)
 
 # Hardening: include zlib1.dll (loaded via LoadLibrary() in openssl's libcrypto.a)
 # Check for zlib in Sunshine or Apollo install directories
@@ -461,6 +464,39 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
     endif()
 endif()
 
+# Optional Windows DualSense composite USB/audio transport. Payload inclusion
+# only makes the unchecked installer option available; PnP installation is
+# explicitly gated by INSTALL_USBIP_TRANSPORT=1 in WiX.
+set(SUNSHINE_USBIP_WIX_BUNDLED 0)
+if(SUNSHINE_BUNDLE_USBIP_TRANSPORT)
+    set(SUNSHINE_USBIP_WIX_BUNDLED 1)
+    set(SUNSHINE_USBIP_PACKAGE_DIR "${CMAKE_BINARY_DIR}/usbip-transport-${SUNSHINE_USBIP_RELEASE_TAG}")
+    set(_usbip_stage_code [=[
+execute_process(
+    COMMAND powershell -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass
+            -File "@CMAKE_SOURCE_DIR@/scripts/download_usbip_transport.ps1"
+            -OutDir "@SUNSHINE_USBIP_PACKAGE_DIR@"
+    RESULT_VARIABLE _usbip_stage_result
+)
+if(NOT _usbip_stage_result EQUAL 0)
+    message(FATAL_ERROR "Failed to stage and verify the original Microsoft-signed USB/IP transport.")
+endif()
+]=])
+    string(CONFIGURE "${_usbip_stage_code}" _usbip_stage_code @ONLY)
+    install(CODE "${_usbip_stage_code}" COMPONENT usbip_transport)
+    unset(_usbip_stage_code)
+    foreach(_usbip_file IN LISTS SUNSHINE_USBIP_REQUIRED_FILES)
+        install(FILES "${SUNSHINE_USBIP_PACKAGE_DIR}/${_usbip_file}"
+                DESTINATION "${SUNSHINE_USBIP_DRIVER_DESTINATION}" COMPONENT usbip_transport)
+    endforeach()
+    unset(_usbip_file)
+    install(FILES
+            "${CMAKE_SOURCE_DIR}/packaging/windows/usbip_transport/install.ps1"
+            "${CMAKE_SOURCE_DIR}/packaging/windows/usbip_transport/package.ps1"
+            "${CMAKE_SOURCE_DIR}/packaging/windows/usbip_transport/LICENSE.txt"
+            DESTINATION "${SUNSHINE_USBIP_DRIVER_DESTINATION}" COMPONENT usbip_transport)
+endif()
+
 # Mandatory scripts
 install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/sunshine-setup.ps1"
         DESTINATION "scripts"
@@ -558,6 +594,15 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
         "Pinned VHF UMDF gamepad source-driver package.")
     set(CPACK_COMPONENT_VIRTUAL_GAMEPAD_DRIVER_GROUP "Drivers")
     set(CPACK_COMPONENT_VIRTUAL_GAMEPAD_DRIVER_REQUIRED true)
+endif()
+
+if(SUNSHINE_BUNDLE_USBIP_TRANSPORT)
+    set(CPACK_COMPONENT_USBIP_TRANSPORT_DISPLAY_NAME "DualSense USB Audio and Haptics")
+    set(CPACK_COMPONENT_USBIP_TRANSPORT_DESCRIPTION
+        "Optional Microsoft-signed USB/IP transport for waveform haptics with a compatible Moonlight client.")
+    set(CPACK_COMPONENT_USBIP_TRANSPORT_GROUP "Drivers")
+    # Required files in the MSI; driver installation remains an explicit opt-in.
+    set(CPACK_COMPONENT_USBIP_TRANSPORT_REQUIRED true)
 endif()
 
 # audio tool

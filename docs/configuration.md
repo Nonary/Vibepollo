@@ -432,6 +432,19 @@ editing the `conf` file in a text editor. Use the examples as reference.
             lightbar, the player and microphone LEDs, and the adaptive triggers.}</td>
     </tr>
     <tr>
+        <td>usbip_ds5</td>
+        <td>Wired USB DualSense with a Windows controller audio endpoint for waveform haptics
+            @note{This option applies to Windows only and requires the optional
+            DualSense USB audio and haptics installer component. It uses the
+            Microsoft-signed usbip-win2 transport to expose a composite USB DualSense
+            with HID and audio interfaces. Compatible native games can send waveform
+            haptics through a Moonlight client implementing the waveform extension.
+            The physical client connection does not change this wired USB identity.
+            This selection reports an error when the transport
+            is unavailable. See [Windows DualSense waveform haptics](windows-dualsense-haptics.md)
+            for setup and validation.}</td>
+    </tr>
+    <tr>
         <td>x360</td>
         <td>Xbox 360 controller
             @note{This option applies to Windows only.}</td>

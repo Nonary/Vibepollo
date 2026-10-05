@@ -18,6 +18,8 @@
     <Property Id="INSTALL_VIRTUAL_DISPLAY_DRIVER" Secure="yes"/>
     <Property Id="INSTALL_VIRTUAL_GAMEPAD_DRIVER" Value="$(var.VhfGamepadDriverBundled)" Secure="yes"/>
     <Property Id="ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE" Value="$(var.VhfGamepadAllowLocalTest)" Secure="yes"/>
+    <Property Id="USBIP_TRANSPORT_BUNDLED" Value="$(var.UsbIpTransportBundled)"/>
+    <Property Id="INSTALL_USBIP_TRANSPORT" Value="0" Secure="yes"/>
     <Property Id="SKIP_REMOVE_CONFLICTING_PRODUCTS" Value="0" Secure="yes"/>
     <Condition Message="Administrator privileges are required.">Privileged</Condition>
     <Property Id="VIGEMBUS_PRESENT">
@@ -68,9 +70,13 @@
       <Custom Action="InstallVirtualDisplayDriver" After="SetInstallVirtualDisplayDriver">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; "0"</Custom>
       <Custom Action="SetInstallVirtualGamepadDriver" After="InstallVirtualDisplayDriver">NOT REMOVE AND INSTALL_VIRTUAL_GAMEPAD_DRIVER &lt;&gt; "0"</Custom>
       <Custom Action="InstallVirtualGamepadDriver" After="SetInstallVirtualGamepadDriver">NOT REMOVE AND INSTALL_VIRTUAL_GAMEPAD_DRIVER &lt;&gt; "0"</Custom>
+      <!-- Explicit opt-in only; existing shared transports are left unchanged.
+           There is intentionally no matching USB/IP uninstall action. -->
+      <Custom Action="SetInstallUsbIpTransport" After="InstallVirtualGamepadDriver">NOT REMOVE AND USBIP_TRANSPORT_BUNDLED = "1" AND INSTALL_USBIP_TRANSPORT = "1"</Custom>
+      <Custom Action="InstallUsbIpTransport" After="SetInstallUsbIpTransport">NOT REMOVE AND USBIP_TRANSPORT_BUNDLED = "1" AND INSTALL_USBIP_TRANSPORT = "1"</Custom>
       <!-- Vibepollo registers the Vulkan HDR layer on every install (SudoVDA needs it too,
            not just the virtual-display driver), so keep this gated only on NOT REMOVE. -->
-      <Custom Action="SetRegisterVulkanHdrLayer" After="InstallVirtualGamepadDriver">NOT REMOVE</Custom>
+      <Custom Action="SetRegisterVulkanHdrLayer" After="InstallUsbIpTransport">NOT REMOVE</Custom>
       <Custom Action="RegisterVulkanHdrLayer" After="SetRegisterVulkanHdrLayer">NOT REMOVE</Custom>
       <!-- Tightened to NOT Installed so repair/upgrade does not rerun install-time migration work. -->
       <Custom Action="SetMigrateConfig" After="RegisterVulkanHdrLayer">NOT Installed AND NOT REMOVE</Custom>

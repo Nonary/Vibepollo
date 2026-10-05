@@ -25,7 +25,7 @@
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "vhf_gamepad.h"
-#include "dualsense_haptics.h"
+#include "dualsense_usbip_gamepad.h"
 #include "vhf_gamepad_policy.h"
 
 #ifdef __MINGW32__
@@ -494,17 +494,20 @@ namespace platf {
   enum class gamepad_backend_e {
     none,
     vigem,
-    vhf
+    vhf,
+    usbip
   };
 
   struct input_raw_t {
     ~input_raw_t() {
       delete vigem;
       delete vhf;
+      delete usbip;
     }
 
     vigem_t *vigem;
     vhf_gamepad_t *vhf;
+    usbip_gamepad_t *usbip;
 
     // Slots are allocated one at a time, so both backends can own gamepads simultaneously.
     std::array<gamepad_backend_e, MAX_GAMEPADS> gamepad_backend {};
@@ -570,6 +573,10 @@ namespace platf {
     return nr >= 0 && nr < MAX_GAMEPADS && raw->gamepad_backend[nr] == gamepad_backend_e::vhf;
   }
 
+  static bool usbip_owns_gamepad(const input_raw_t *raw, int nr) {
+    return nr >= 0 && nr < MAX_GAMEPADS && raw->gamepad_backend[nr] == gamepad_backend_e::usbip;
+  }
+
   input_t input() {
     input_t result {new input_raw_t {}};
     auto &raw = *(input_raw_t *) result.get();
@@ -579,9 +586,15 @@ namespace platf {
     raw.vhf = new vhf_gamepad_t {};
     const bool vhf_available = raw.vhf->probe();
 
+    raw.usbip = new usbip_gamepad_t {};
+    const bool usbip_available = raw.usbip->probe();
+
     raw.vigem = new vigem_t {};
     raw.vigem->vhf_gamepad_available = vhf_available &&
                                          (config::input.gamepad == "auto" || vhf_gamepad_selected());
+    raw.vigem->vhf_gamepad_available = raw.vigem->vhf_gamepad_available ||
+                                     (usbip_available && (config::input.gamepad == "usbip_ds5" ||
+                                                          dualsense_usbip_gamepad::enabled()));
     if (raw.vigem->init()) {
       delete raw.vigem;
       raw.vigem = nullptr;
@@ -1302,15 +1315,25 @@ namespace platf {
       return -1;
     }
 
+    // Composite USB is an explicit selection or an application-scoped
+    // waveform-haptics requirement. It never replaces Automatic globally.
+    if (config::input.gamepad == "usbip_ds5"sv || dualsense_usbip_gamepad::enabled()) {
+      if (raw->usbip && raw->usbip->alloc(id, metadata, feedback_queue) == 0) {
+        raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::usbip;
+        return 0;
+      }
+      BOOST_LOG(error) << "Gamepad " << id.globalIndex << " could not create the requested DualSense USB/audio controller";
+      return -1;
+    }
+
     const bool vigem_available = raw->vigem != nullptr && raw->vigem->available();
     const bool vhf_available = raw->vhf != nullptr && raw->vhf->available();
     const bool automatic_vhf_fallback =
       config::input.gamepad == "auto"sv &&
       vhf_gamepad::select_automatic_backend(vigem_available, vhf_available) == vhf_gamepad::backend_e::vhf;
 
-    const bool waveform_haptics = dualsense_audio::enabled();
-    if (vhf_gamepad_selected() || automatic_vhf_fallback || waveform_haptics) {
-      const auto desired = waveform_haptics ? vhf_profile_e::dualsense : vhf_desired_profile(metadata);
+    if (vhf_gamepad_selected() || automatic_vhf_fallback) {
+      const auto desired = vhf_desired_profile(metadata);
 
       if (vhf_available) {
         BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will use the Vibepollo virtual gamepad driver"sv
@@ -1404,6 +1427,13 @@ namespace platf {
 
     const auto backend = raw->gamepad_backend[nr];
     raw->gamepad_backend[nr] = gamepad_backend_e::none;
+
+    if (backend == gamepad_backend_e::usbip) {
+      if (raw->usbip) {
+        raw->usbip->free(nr);
+      }
+      return;
+    }
 
     if (backend == gamepad_backend_e::vhf) {
       if (raw->vhf) {
@@ -1698,6 +1728,11 @@ namespace platf {
   void gamepad_update(input_t &input, int nr, const gamepad_state_t &gamepad_state) {
     auto raw = (input_raw_t *) input.get();
 
+    if (usbip_owns_gamepad(raw, nr)) {
+      raw->usbip->update(nr, gamepad_state);
+      return;
+    }
+
     if (vhf_owns_gamepad(raw, nr)) {
       raw->vhf->update(nr, gamepad_state);
       return;
@@ -1736,6 +1771,11 @@ namespace platf {
    */
   void gamepad_touch(input_t &input, const gamepad_touch_t &touch) {
     auto raw = (input_raw_t *) input.get();
+
+    if (usbip_owns_gamepad(raw, touch.id.globalIndex)) {
+      raw->usbip->touch(touch.id.globalIndex, touch);
+      return;
+    }
 
     if (vhf_owns_gamepad(raw, touch.id.globalIndex)) {
       // Dropped when the slot's controller has no touchpad.
@@ -1851,6 +1891,11 @@ namespace platf {
   void gamepad_motion(input_t &input, const gamepad_motion_t &motion) {
     auto raw = (input_raw_t *) input.get();
 
+    if (usbip_owns_gamepad(raw, motion.id.globalIndex)) {
+      raw->usbip->motion(motion.id.globalIndex, motion);
+      return;
+    }
+
     if (vhf_owns_gamepad(raw, motion.id.globalIndex)) {
       // Dropped when the slot's controller has no motion sensors.
       raw->vhf->motion(motion.id.globalIndex, motion);
@@ -1892,6 +1937,11 @@ namespace platf {
    */
   void gamepad_battery(input_t &input, const gamepad_battery_t &battery) {
     auto raw = (input_raw_t *) input.get();
+
+    if (usbip_owns_gamepad(raw, battery.id.globalIndex)) {
+      raw->usbip->battery(battery.id.globalIndex, battery);
+      return;
+    }
 
     if (vhf_owns_gamepad(raw, battery.id.globalIndex)) {
       // Dropped when the slot's controller has no battery.
@@ -1983,6 +2033,7 @@ namespace platf {
         supported_gamepad_t {"vhf_xbox_one", false, ""},
         supported_gamepad_t {"vhf_ds4", false, ""},
         supported_gamepad_t {"vhf_ds5", false, ""},
+        supported_gamepad_t {"usbip_ds5", false, ""},
         supported_gamepad_t {"vhf_switch", false, ""},
       };
 
@@ -1996,6 +2047,9 @@ namespace platf {
     auto vhf_enabled = raw->vhf != nullptr && raw->vhf->available();
     auto vhf_reason = vhf_enabled ? "" : "gamepads.vhf-not-available";
 
+    auto usbip_enabled = raw->usbip != nullptr && raw->usbip->available();
+    auto usbip_reason = usbip_enabled ? "" : "gamepads.usbip-not-available";
+
     // ds4 == ps4
     static std::vector gps {
       supported_gamepad_t {"auto", enabled || vhf_enabled, enabled || vhf_enabled ? "" : reason},
@@ -2006,13 +2060,14 @@ namespace platf {
       supported_gamepad_t {"vhf_xbox_one", vhf_enabled, vhf_reason},
       supported_gamepad_t {"vhf_ds4", vhf_enabled, vhf_reason},
       supported_gamepad_t {"vhf_ds5", vhf_enabled, vhf_reason},
+      supported_gamepad_t {"usbip_ds5", usbip_enabled, usbip_reason},
       supported_gamepad_t {"vhf_switch", vhf_enabled, vhf_reason}
     };
 
     // A gamepad type that is unavailable only because its backend is not installed is not
     // worth a warning when another backend is providing controllers; it is just an option the
     // user is not using.
-    const bool any_backend = enabled || vhf_enabled;
+    const bool any_backend = enabled || vhf_enabled || usbip_enabled;
     for (auto &[name, is_enabled, reason_disabled] : gps) {
       if (is_enabled) {
         continue;
@@ -2042,7 +2097,8 @@ namespace platf {
       vhf_gamepad_selected() && !vhf_gamepad_has_touchpad() &&
       (vhf_gamepad_is_xbox() ||
        (!config::input.motion_as_ds4 && !config::input.touchpad_as_ds4));
-    if (config::input.gamepad != "x360"sv && !vhf_without_touchpad) {
+    const bool composite_dualsense = config::input.gamepad == "usbip_ds5"sv || dualsense_usbip_gamepad::enabled();
+    if (composite_dualsense || (config::input.gamepad != "x360"sv && !vhf_without_touchpad)) {
       caps |= platform_caps::controller_touch;
     }
 

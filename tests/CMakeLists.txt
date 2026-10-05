@@ -1084,7 +1084,42 @@ if(TARGET test_component_resource_locale_catalog)
     set_tests_properties(test_component_resource_locale_catalog PROPERTIES
         WORKING_DIRECTORY "${SUNSHINE_TEST_REPOSITORY_ROOT}")
 endif()
+find_program(SUNSHINE_TEST_POWERSHELL NAMES pwsh powershell)
+if(SUNSHINE_TEST_POWERSHELL)
+    add_test(NAME regression_windows_usbip_package
+        COMMAND "${SUNSHINE_TEST_POWERSHELL}" -NoLogo -NonInteractive -NoProfile
+            -File "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/windows/usbip_transport/tests/test_package_contract.ps1")
+    set_tests_properties(regression_windows_usbip_package PROPERTIES LABELS "component")
+endif()
+
 sunshine_register_component(NAME test_component_dualsense_audio_pcm TEST_SOURCE unit/test_dualsense_audio_pcm.cpp)
+sunshine_register_component(NAME test_component_dualsense_launch_policy TEST_SOURCE unit/test_dualsense_launch_policy.cpp)
+set(_dualsense_protocol_test_adapter "")
+if(NOT WIN32)
+    # Only the public GUID/IOCTL declarations are needed for the portable Sony
+    # encoder. The production Windows targets use real Windows SDK headers.
+    set(_dualsense_protocol_test_adapter "${CMAKE_CURRENT_LIST_DIR}/support/virtual_gamepad_protocol")
+endif()
+sunshine_register_component(NAME test_component_dualsense_usbip_gamepad_policy TEST_SOURCE unit/platform/windows/test_dualsense_usbip_gamepad_policy.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/driver/src/dualsense.cpp"
+    INCLUDE_DIRECTORIES ${_dualsense_protocol_test_adapter}
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/include")
+sunshine_register_component(NAME test_component_dualsense_usbip_gamepad TEST_SOURCE unit/platform/windows/test_dualsense_usbip_gamepad.cpp
+    PRODUCT_SOURCES
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/dualsense_usbip_gamepad.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/vhf_gamepad_policy.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/driver/src/dualsense.cpp"
+    INCLUDE_DIRECTORIES ${_dualsense_protocol_test_adapter}
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/include"
+    LINK_LIBRARIES Boost::log Boost::process sunshine_test_moonlight_headers Threads::Threads)
+if(TARGET test_component_dualsense_usbip_gamepad)
+    set_tests_properties(test_component_dualsense_usbip_gamepad PROPERTIES TIMEOUT 30)
+endif()
+unset(_dualsense_protocol_test_adapter)
+sunshine_add_test_target(NAME test_component_dualsense_usbip_protocol CATEGORY component
+    TEST_SOURCES "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_dualsense_usbip_protocol.cpp"
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/dualsense_usbip_protocol.cpp"
+    INCLUDE_DIRECTORIES "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/include")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET libinputtino)
     add_executable(test_ds5_haptics unit/platform/linux/test_ds5_haptics.cpp)

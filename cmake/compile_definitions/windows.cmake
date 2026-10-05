@@ -288,10 +288,14 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/dualsense_haptics.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/dualsense_usbip_protocol.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/dualsense_usbip_transport.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/dualsense_usbip_gamepad.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad_policy.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad_policy.cpp"
         "${SUNSHINE_LIBVIRTUALGAMEPAD_SOURCE_DIR}/client/client.cpp"
+        "${SUNSHINE_LIBVIRTUALGAMEPAD_SOURCE_DIR}/driver/src/dualsense.cpp"
         "${SUNSHINE_LIBVIRTUALGAMEPAD_INCLUDE_DIR}/libvirtualgamepad/client.h"
         "${SUNSHINE_LIBVIRTUALGAMEPAD_INCLUDE_DIR}/libvirtualgamepad/protocol.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/src/ViGEmClient.cpp"
@@ -317,6 +321,7 @@ list(PREPEND PLATFORM_LIBRARIES
         ${CURL_STATIC_LIBRARIES}
         advapi32
         avrt
+        cfgmgr32
         d3d11
         D3DCompiler
         dwmapi
@@ -328,6 +333,7 @@ list(PREPEND PLATFORM_LIBRARIES
         libwinpthread.a
         minhook::minhook
         ntdll
+        ole32
         pdh
         setupapi
         shlwapi

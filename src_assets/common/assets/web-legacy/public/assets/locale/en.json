@@ -73,8 +73,8 @@
     "change": "Change"
   },
   "apps": {
-    "dualsense_haptics": "DualSense waveform haptics (experimental)",
-    "dualsense_haptics_desc": "Uses a virtual DualSense and prepares an audio hook before the game. Requires the VHF driver and a client with waveform support. Supports direct game .exe launches and Playnite launches, including 64-bit Steam. Playnite requires the updated connector and a known game install directory. Standalone Steam URI launches are not supported.",
+    "dualsense_haptics": "DualSense waveform haptics",
+    "dualsense_haptics_desc": "Requires the optional DualSense USB audio and haptics installer component and a Moonlight client with waveform support. Windows games see a wired USB DualSense with HID and audio interfaces and can send native waveform haptics through its controller audio endpoint. Supports direct executables, Steam, Playnite, and desktop streaming. Missing drivers prevent launch. Start a new stream after changing this option.",
     "actions": "Actions",
     "add_cmds": "Add Commands",
     "add_new": "Add New",
@@ -736,7 +736,7 @@
     "file_state_desc": "The file where current state of Vibepollo is stored",
     "gamepad": "Emulated Gamepad Type",
     "gamepad_auto": "Automatic selection options",
-    "gamepad_desc": "Choose which type of gamepad to emulate on the host. The Vibepollo Virtual Gamepad options use Vibepollo's own driver instead of ViGEmBus. Automatic presents a DualSense to PlayStation clients and an Xbox Series controller otherwise. Xbox Series and Xbox One are the options Windows places on the XInput path, so they are the ones games that support only XInput can see. DualShock 4 and DualSense add the touchpad, motion, battery, lightbar, and (DualSense) adaptive triggers.",
+    "gamepad_desc": "Choose which type of gamepad to emulate on the host. The Vibepollo Virtual Gamepad options use Vibepollo's own driver instead of ViGEmBus. Automatic presents a DualSense to PlayStation clients and an Xbox Series controller otherwise. Xbox Series and Xbox One are the options Windows places on the XInput path, so they are the ones games that support only XInput can see. DualShock 4 and DualSense add the touchpad, motion, battery, lightbar, and (DualSense) adaptive triggers. DualSense with waveform haptics presents a wired USB DualSense and its controller audio endpoint to Windows games, regardless of the physical client connection. It requires the optional DualSense USB audio and haptics installer component and a Moonlight client with waveform support.",
     "gamepad_ds4": "DS4 (PS4)",
     "gamepad_ds4_manual": "DS4 selection options",
     "gamepad_ds5": "DS5 (PS5)",
@@ -749,6 +749,7 @@
     "gamepad_vhf_xbox_one": "Vibepollo Virtual Gamepad (Xbox One)",
     "gamepad_vhf_ds4": "Vibepollo Virtual Gamepad (DualShock 4)",
     "gamepad_vhf_ds5": "Vibepollo Virtual Gamepad (DualSense)",
+    "gamepad_usbip_ds5": "DualSense with waveform haptics",
     "gamepad_vhf_switch": "Vibepollo Virtual Gamepad (Switch Pro)",
     "gamepad_xone": "XOne (Xbox One)",
     "vigem_missing_title": "Virtual Gamepad Driver (ViGEm) not installed",

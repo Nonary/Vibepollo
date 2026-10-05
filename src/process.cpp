@@ -61,6 +61,7 @@
 #endif
 #ifdef _WIN32
   #include "config_playnite.h"
+  #include "platform/windows/dualsense_launch_policy.h"
   #include "platform/windows/display.h"
   #include "platform/windows/frame_limiter.h"
   #include "platform/windows/ipc/misc_utils.h"
@@ -1044,7 +1045,7 @@ namespace proc {
       _process(std::move(other._process)),
       _process_group(std::move(other._process_group)),
 #ifdef _WIN32
-      _dualsense_audio(std::move(other._dualsense_audio)),
+      _dualsense_usbip_session(std::move(other._dualsense_usbip_session)),
       _virtual_display_guid(other._virtual_display_guid),
       _virtual_display_active(other._virtual_display_active),
       _runtime_output_override_lease(std::exchange(other._runtime_output_override_lease, std::nullopt)),
@@ -1063,6 +1064,8 @@ namespace proc {
   {
 #ifdef _WIN32
     _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
+    _deferred_launch = other._deferred_launch.load(std::memory_order_acquire);
+    _dualsense_ready_deadline = other._dualsense_ready_deadline;
     other._lossless_profile_applied = false;
 #endif
   }
@@ -1099,7 +1102,9 @@ namespace proc {
         (void) config::clear_runtime_output_name_override_if_lease(*_runtime_output_override_lease);
       }
       _runtime_output_override_lease = std::exchange(other._runtime_output_override_lease, std::nullopt);
-      _dualsense_audio = std::move(other._dualsense_audio);
+      _dualsense_usbip_session = std::move(other._dualsense_usbip_session);
+      _dualsense_ready_deadline = other._dualsense_ready_deadline;
+      _deferred_launch = other._deferred_launch.load(std::memory_order_acquire);
       _lossless_thread = std::move(other._lossless_thread);
       _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
       _lossless_profile_applied = other._lossless_profile_applied;
@@ -1363,7 +1368,8 @@ namespace proc {
     std::string resolved_lossless_exe_utf8;
     _virtual_display_active = false;
     _virtual_display_guid = GUID {};
-    _dualsense_audio.reset();
+    _dualsense_usbip_session.reset();
+    _dualsense_ready_deadline = {};
     _env["VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING"] = "";
     _env["VIBEPOLLO_DUALSENSE_HAPTICS_DLL"] = "";
     _deferred_launch = false;
@@ -2380,25 +2386,22 @@ namespace proc {
     platf::cache_screen_saver_state();
 
     if (_app.dualsense_haptics) {
-      const bool playnite_launch = _app.cmd.empty() && (!_app.playnite_id.empty() || _app.playnite_fullscreen);
-      if ((!playnite_launch && (_app.cmd.empty() || !_app.playnite_id.empty() || _app.playnite_fullscreen)) ||
-          !_app.steam_id.empty() || !_app.detached.empty()) {
-        BOOST_LOG(error) << "DualSense waveform haptics requires a direct executable or Playnite launch.";
-        return -1;
-      }
-      _dualsense_audio = platf::dualsense_audio::start();
-      if (!_dualsense_audio) {
-        BOOST_LOG(error) << "Could not prepare DualSense waveform IPC before game launch.";
-        return -1;
-      }
-      _env["VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING"] = _dualsense_audio->mapping_name;
-      if (playnite_launch) {
-        const auto dll = platf::dualsense_audio::hook_library_path();
-        if (dll.empty()) {
-          BOOST_LOG(error) << "DualSense waveform audio hook library is missing.";
+      if (!_dualsense_usbip_session) {
+        _dualsense_usbip_session = platf::dualsense_usbip_gamepad::start_session();
+        if (!_dualsense_usbip_session) {
+          BOOST_LOG(error) << "DualSense waveform haptics requires the optional DualSense USB audio and haptics driver component. Modify the Windows installation to enable it.";
           return -1;
         }
-        _env["VIBEPOLLO_DUALSENSE_HAPTICS_DLL"] = dll;
+      }
+      // Input arrives after the application request, through the new RTSP
+      // session. Return a live deferred application while USB/HID/audio
+      // enumerate; waiting here would prevent the client from connecting.
+      if (!platf::dualsense_usbip_gamepad::has_ready_controller()) {
+        _dualsense_ready_deadline = std::chrono::steady_clock::now() + 30s;
+        _deferred_launch = true;
+        BOOST_LOG(info) << "Waiting for the streamed DualSense controller and its Windows haptic audio endpoint before launching '" << _app.name << "'.";
+        fg.disable();
+        return 0;
       }
     }
     std::unordered_set<DWORD> lossless_baseline_pids;
@@ -2551,13 +2554,6 @@ namespace proc {
         } catch (...) {}
         // Pass focus attempts from config so the helper can try to bring Playnite/game to foreground
         cmd += managed_app_focus::launcher_arguments(managed_app_focus::settings);
-        if (_app.dualsense_haptics) {
-          cmd = platf::dualsense_audio::wrap_command(cmd, true);
-          if (cmd.empty()) {
-            BOOST_LOG(error) << "DualSense waveform Playnite launch helper is missing.";
-            return -1;
-          }
-        }
         std::error_code fec;
         boost::filesystem::path wd;  // empty wd
         _process = platf::run_command(false, true, cmd, wd, _env, _pipe.get(), fec, &_process_group);
@@ -2578,10 +2574,6 @@ namespace proc {
         launched = false;
       }
       if (!launched) {
-        if (_app.dualsense_haptics) {
-          BOOST_LOG(error) << "Could not start the Playnite waveform launch helper.";
-          return -1;
-        }
         // Best-effort fallback using Playnite URI protocol
         std::string uri = std::string("playnite://playnite/start/") + _app.playnite_id;
         std::error_code fec;
@@ -2618,13 +2610,6 @@ namespace proc {
         std::string lpath = launcher.string();
         std::string cmd = std::string("\"") + lpath + "\" --fullscreen";
         cmd += managed_app_focus::launcher_arguments(managed_app_focus::settings);
-        if (_app.dualsense_haptics) {
-          cmd = platf::dualsense_audio::wrap_command(cmd, true);
-          if (cmd.empty()) {
-            BOOST_LOG(error) << "DualSense waveform Playnite fullscreen helper is missing.";
-            return -1;
-          }
-        }
         std::error_code fec;
         boost::filesystem::path wd;  // empty wd
         _process = platf::run_command(false, true, cmd, wd, _env, _pipe.get(), fec, &_process_group);
@@ -2696,15 +2681,6 @@ namespace proc {
       }
       BOOST_LOG(info) << "Executing: ["sv << _app.cmd << "] in ["sv << working_dir << ']';
       std::string launch_command = _app.cmd;
-#ifdef _WIN32
-      if (_app.dualsense_haptics) {
-        launch_command = platf::dualsense_audio::wrap_command(_app.cmd);
-        if (launch_command.empty()) {
-          BOOST_LOG(error) << "DualSense waveform helper is missing or the command is not a direct executable.";
-          return -1;
-        }
-      }
-#endif
       _process = platf::run_command(_app.elevated, true, launch_command, working_dir, _env, _pipe.get(), ec, &_process_group);
       if (ec) {
         BOOST_LOG(warning) << "Couldn't run ["sv << _app.cmd << "]: System: "sv << ec.message();
@@ -2764,12 +2740,34 @@ namespace proc {
 
 #ifdef _WIN32
     if (_deferred_launch) {
+      // Discovery and the control thread can observe readiness together.
+      // Admit exactly one launch/cleanup owner without blocking discovery
+      // behind another stream lifecycle operation.
+      std::unique_lock deferred_lock {nvhttp::stream_lifecycle_mutex(), std::try_to_lock};
+      if (!deferred_lock.owns_lock() || !_deferred_launch) {
+        return _app_id;
+      }
       if (platf::is_running_as_system()) {
         HANDLE user_token = platf::dxgi::retrieve_users_token(false);
         if (!user_token) {
           return _app_id;
         }
         CloseHandle(user_token);
+      }
+      const bool waiting_for_controller = static_cast<bool>(_dualsense_usbip_session);
+      const auto readiness = dualsense_launch::evaluate(
+        waiting_for_controller,
+        waiting_for_controller && platf::dualsense_usbip_gamepad::has_ready_controller(),
+        _dualsense_ready_deadline,
+        std::chrono::steady_clock::now()
+      );
+      if (readiness == dualsense_launch::decision::wait) {
+        return _app_id;
+      }
+      if (readiness == dualsense_launch::decision::timed_out) {
+        BOOST_LOG(error) << "DualSense launch timed out waiting for the streamed controller and its Windows haptic audio endpoint. Check the optional driver installation and use a compatible Moonlight client with a waveform-capable DualSense.";
+        terminate(false, true, false, true);
+        return 0;
       }
       std::optional<int> rtss_warmup_limit;
       if (_lossless_metadata.enabled && _lossless_metadata.rtss_limit && *_lossless_metadata.rtss_limit > 0) {
@@ -2823,12 +2821,16 @@ namespace proc {
           BOOST_LOG(info) << "RTSS warmup " << (running ? "complete" : "timeout") << " after deferred login.";
         }
       }
-      BOOST_LOG(info) << "User session detected; resuming deferred launch for app '" << _app.name << "'.";
+      BOOST_LOG(info) << "Deferred launch is ready; starting app '" << _app.name << "'.";
       _deferred_launch = false;
-      int err = launch_app_commands(false);
+      int err = launch_app_commands(true);
       if (err != 0) {
         BOOST_LOG(error) << "Deferred launch failed; terminating session.";
         return 0;
+      }
+      // A login-deferred launch may now be waiting for the first controller.
+      if (_deferred_launch) {
+        return _app_id;
       }
     }
 #endif
@@ -3178,7 +3180,8 @@ namespace proc {
     placebo = false;
     std::chrono::seconds remaining_timeout = _app.exit_timeout;
 #ifdef _WIN32
-    _dualsense_audio.reset();
+    _dualsense_usbip_session.reset();
+    _dualsense_ready_deadline = {};
     _env["VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING"] = "";
     _env["VIBEPOLLO_DUALSENSE_HAPTICS_DLL"] = "";
     _deferred_launch = false;
