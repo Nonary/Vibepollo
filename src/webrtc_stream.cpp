@@ -301,6 +301,9 @@ namespace webrtc_stream {
         session->framegen_refresh_millihz = framegen_policy.framegen_refresh_millihz;
         session->framegen_refresh_multiplier = framegen_policy.refresh_multiplier;
         session->framegen_fixed_refresh = framegen_policy.fixed_refresh;
+        if (uses_virtual_display) {
+          display_helper_integration::helpers::resolve_virtual_display_refresh(config::video, *session);
+        }
       };
       BOOST_LOG(debug) << "Display helper: WebRTC session prep client='" << session->client_name
                        << "' allow_display_changes=" << allow_display_changes

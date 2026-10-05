@@ -75,6 +75,14 @@ int main() {
  check(session, 50000);
  session.client_display_mode_override = true;
  check(session, 60000); // Client override retains priority over manual rate.
+ session.client_display_refresh_millihz = 480000;
+ session.framegen_refresh_millihz = 1000000;
+ check(session, 480000); // Explicit client mode wins over VRR promotion.
+ session.client_display_mode_override = false;
+ session.client_display_refresh_millihz = 0;
+ video.dd.refresh_rate_option = policy::video_config_t::dd_t::refresh_rate_option_e::automatic;
+ video.dd.mode_remapping.mixed = {{"2560x1440", "60", "", "480"}};
+ check(session, 480000); // Match streamed 60 FPS, not the promoted 1000 Hz.
  std::cout << count << " adapter refresh cases passed (scaled=" << SCALED << ")\n";
 }
 '''

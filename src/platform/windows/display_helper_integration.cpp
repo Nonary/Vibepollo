@@ -97,6 +97,7 @@ namespace {
     std::optional<int> framegen_refresh_rate;
     std::optional<std::uint32_t> framegen_refresh_millihz;
     int framegen_refresh_multiplier = 1;
+    bool framegen_fixed_refresh = false;
     bool gen1_framegen_fix = false;
     bool gen2_framegen_fix = false;
   };
@@ -177,6 +178,7 @@ namespace {
       state.session_snapshot.framegen_refresh_rate = request.session->framegen_refresh_rate;
       state.session_snapshot.framegen_refresh_millihz = request.session->framegen_refresh_millihz;
       state.session_snapshot.framegen_refresh_multiplier = request.session->framegen_refresh_multiplier;
+      state.session_snapshot.framegen_fixed_refresh = request.session->framegen_fixed_refresh;
       state.session_snapshot.gen1_framegen_fix = request.session->gen1_framegen_fix;
       state.session_snapshot.gen2_framegen_fix = request.session->gen2_framegen_fix;
     }
@@ -2481,6 +2483,7 @@ namespace display_helper_integration {
       snapshot.framegen_refresh_rate = pending.session_snapshot.framegen_refresh_rate;
       snapshot.framegen_refresh_millihz = pending.session_snapshot.framegen_refresh_millihz;
       snapshot.framegen_refresh_multiplier = pending.session_snapshot.framegen_refresh_multiplier;
+      snapshot.framegen_fixed_refresh = pending.session_snapshot.framegen_fixed_refresh;
       snapshot.gen1_framegen_fix = pending.session_snapshot.gen1_framegen_fix;
       snapshot.gen2_framegen_fix = pending.session_snapshot.gen2_framegen_fix;
       session = std::move(snapshot);

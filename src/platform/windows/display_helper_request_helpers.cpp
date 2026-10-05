@@ -17,6 +17,7 @@
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
+  #include "src/platform/windows/virtual_display_refresh_policy.h"
   #include "src/process.h"
   #include "src/remote_display_topology.h"
   #include "src/rtsp.h"
@@ -120,6 +121,7 @@ namespace display_helper_integration::helpers {
       snapshot.framegen_refresh_rate = session.framegen_refresh_rate;
       snapshot.framegen_refresh_millihz = session.framegen_refresh_millihz;
       snapshot.framegen_refresh_multiplier = session.framegen_refresh_multiplier;
+      snapshot.framegen_fixed_refresh = session.framegen_fixed_refresh;
       return snapshot;
     }
 
@@ -230,7 +232,50 @@ namespace display_helper_integration::helpers {
       value = fps_to_refresh_rate(minimum_fps);
     }
 
+    void limit_virtual_display_refresh(display_device::SingleDisplayConfiguration &cfg, const rtsp_stream::launch_session_t &session) {
+      if (!cfg.m_refresh_rate) {
+        return;
+      }
+      const auto height = cfg.m_resolution && cfg.m_resolution->m_height > 0 ?
+                            cfg.m_resolution->m_height :
+                          session.resolution_override && session.resolution_override->height > 0 ?
+                            static_cast<unsigned int>(session.resolution_override->height) :
+                          session.height > 0 ? static_cast<unsigned int>(session.height) : 1080u;
+      static const auto windows_build = platf::query_windows_version().build_number;
+      const auto maximum = VDISPLAY::policy::maximum_refresh_millihz(height, windows_build);
+      if (get_refresh_rate_value(*cfg.m_refresh_rate) * 1000.0 > maximum) {
+        BOOST_LOG(info) << "Virtual display refresh limited to " << maximum << " mHz at height " << height
+                        << " for Windows build " << windows_build.value_or(0) << '.';
+        cfg.m_refresh_rate = display_device::Rational {maximum, 1000u};
+      }
+    }
+
   }  // namespace
+
+  void resolve_virtual_display_refresh(const config::video_t &video_config, rtsp_stream::launch_session_t &session) {
+    SessionDisplayConfigurationHelper helper(video_config, session, true);
+    const auto cfg = helper.initial_virtual_display_configuration();
+    if (!cfg || !cfg->m_refresh_rate) {
+      return;
+    }
+    // Prefer-highest is a selection sentinel, not a rate to advertise. On
+    // older Windows the initial configuration resolves it to the OS maximum.
+    const auto refresh = get_refresh_rate_value(*cfg->m_refresh_rate) * 1000.0;
+    if (refresh <= 0 || refresh >= 10'000'000.0) {
+      return;
+    }
+    const auto millihz = static_cast<std::uint32_t>(refresh + 0.000001);
+    if (millihz == rtsp_stream::effective_display_refresh_millihz(session) &&
+        !display_device::refresh_rate_override_active(video_config, session)) {
+      return;
+    }
+    // Preserve stream FPS and its game limiter. Only the source display rate
+    // changes, including the descriptor used by creation and recovery.
+    session.framegen_refresh_millihz = millihz;
+    session.framegen_refresh_rate = framegen::rounded_fps_from_millihz(millihz);
+    session.framegen_refresh_multiplier = 1;
+    session.framegen_fixed_refresh = true;
+  }
 
   SessionDisplayConfigurationHelper::SessionDisplayConfigurationHelper(
     const config::video_t &video_config,
@@ -280,6 +325,7 @@ namespace display_helper_integration::helpers {
     if (policy.hdr_enabled && !*policy.hdr_enabled) {
       initial_configuration.m_hdr_state = display_device::HdrState::Disabled;
     }
+    limit_virtual_display_refresh(initial_configuration, session_);
     return initial_configuration;
   }
 
@@ -406,12 +452,16 @@ namespace display_helper_integration::helpers {
     if (layout == config::video_t::virtual_display_layout_e::exclusive || effective_video_config_.dd.configuration_option != config::video_t::dd_t::config_option_e::verify_only) {
       vd_cfg.m_device_prep = layout_flags.device_prep;
     }
-    if (minimum_fps > 0 && vd_cfg.m_refresh_rate) {
+    if (minimum_fps > 0 && vd_cfg.m_refresh_rate &&
+        !session_.framegen_fixed_refresh &&
+        !session_.client_display_mode_override &&
+        !display_device::refresh_rate_override_active(effective_video_config_, session_)) {
       ensure_minimum_refresh_if_present(vd_cfg.m_refresh_rate, minimum_fps);
     }
     const bool resolution_disabled = effective_video_config_.dd.resolution_option == config::video_t::dd_t::resolution_option_e::disabled;
     const bool refresh_rate_disabled = effective_video_config_.dd.refresh_rate_option == config::video_t::dd_t::refresh_rate_option_e::disabled;
     apply_resolution_refresh_overrides(vd_cfg, effective_width, effective_height, display_fps, resolution_disabled, refresh_rate_disabled);
+    limit_virtual_display_refresh(vd_cfg, session_);
 
     auto &overrides = builder.mutable_session_overrides();
     overrides.device_id_override = target_device_id.empty() ? std::nullopt : std::optional<std::string>(target_device_id);

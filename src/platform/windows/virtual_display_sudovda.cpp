@@ -1,4 +1,5 @@
 ﻿#include "virtual_display.h"
+#include "src/platform/windows/virtual_display_refresh_policy.h"
 
 #include "virtual_display_recovery_registry.h"
 
@@ -487,94 +488,6 @@ namespace VDISPLAY_SUDOVDA {
       }
 
       return false;
-    }
-
-    std::string trim_copy(std::string_view value) {
-      const auto start = value.find_first_not_of(" \t\r\n");
-      if (start == std::string_view::npos) {
-        return {};
-      }
-      const auto end = value.find_last_not_of(" \t\r\n");
-      return std::string(value.substr(start, end - start + 1));
-    }
-
-    std::optional<uint32_t> parse_refresh_hz(std::string_view value) {
-      const auto trimmed = trim_copy(value);
-      if (trimmed.empty()) {
-        return std::nullopt;
-      }
-      try {
-        const double hz = std::stod(trimmed);
-        if (!std::isfinite(hz) || hz <= 0.0) {
-          return std::nullopt;
-        }
-        const double clamped = std::min(hz, static_cast<double>(std::numeric_limits<uint32_t>::max()));
-        const auto rounded = static_cast<uint32_t>(std::lround(clamped));
-        if (rounded == 0) {
-          return std::nullopt;
-        }
-        return rounded;
-      } catch (...) {
-        return std::nullopt;
-      }
-    }
-
-    uint32_t highest_requested_refresh_hz() {
-      using dd_t = config::video_t::dd_t;
-      uint32_t max_hz = 0;
-
-      if (config::video.dd.refresh_rate_option == dd_t::refresh_rate_option_e::manual) {
-        if (auto manual = parse_refresh_hz(config::video.dd.manual_refresh_rate)) {
-          max_hz = std::max(max_hz, *manual);
-        }
-      }
-
-      const auto process_entries = [&](const auto &entries) {
-        for (const auto &entry : entries) {
-          if (auto parsed = parse_refresh_hz(entry.final_refresh_rate)) {
-            max_hz = std::max(max_hz, *parsed);
-          }
-        }
-      };
-
-      process_entries(config::video.dd.mode_remapping.mixed);
-      process_entries(config::video.dd.mode_remapping.refresh_rate_only);
-      process_entries(config::video.dd.mode_remapping.resolution_only);
-
-      return max_hz;
-    }
-
-    uint32_t apply_refresh_overrides(uint32_t fps_millihz, uint32_t base_fps_millihz = 0u, int framegen_refresh_multiplier = 1) {
-      constexpr uint64_t scale = 1000ull;
-      using dd_t = config::video_t::dd_t;
-      // Manual refresh rate override takes priority over everything, including the multiplied virtual refresh.
-      if (config::video.dd.refresh_rate_option == dd_t::refresh_rate_option_e::manual) {
-        if (auto manual = parse_refresh_hz(config::video.dd.manual_refresh_rate)) {
-          const uint64_t forced = static_cast<uint64_t>(*manual) * scale;
-          return static_cast<uint32_t>(
-            std::min<uint64_t>(forced, std::numeric_limits<uint32_t>::max())
-          );
-        }
-      }
-      const int refresh_multiplier = std::max(1, framegen_refresh_multiplier);
-      if (refresh_multiplier > 1 && base_fps_millihz > 0) {
-        const uint64_t minimum_millihz = static_cast<uint64_t>(base_fps_millihz) * static_cast<uint64_t>(refresh_multiplier);
-        const uint32_t safe_minimum = static_cast<uint32_t>(std::min<uint64_t>(minimum_millihz, std::numeric_limits<uint32_t>::max()));
-        // Ensure we're at least at the minimum, but never lower if already higher
-        if (fps_millihz < safe_minimum) {
-          fps_millihz = safe_minimum;
-        }
-      }
-      const uint32_t max_hz = highest_requested_refresh_hz();
-      if (max_hz == 0) {
-        return fps_millihz;
-      }
-      uint64_t required = static_cast<uint64_t>(max_hz) * scale;
-      if (required <= fps_millihz) {
-        return fps_millihz;
-      }
-      required = std::min<uint64_t>(required, std::numeric_limits<uint32_t>::max());
-      return static_cast<uint32_t>(required);
     }
 
     class DevInfoHandle {
@@ -4163,7 +4076,12 @@ namespace VDISPLAY_SUDOVDA {
         return std::nullopt;
       }
 
-      const uint32_t requested_fps = apply_refresh_overrides(fps, base_fps_millihz, framegen_refresh_active ? framegen_refresh_multiplier : 1);
+      static const auto windows_build = platf::query_windows_version().build_number;
+      const auto refresh = VDISPLAY::policy::resolve_creation_refresh(
+        fps, base_fps_millihz, framegen_refresh_active ? framegen_refresh_multiplier : 1,
+        height, windows_build
+      );
+      const uint32_t requested_fps = refresh.requested_millihz;
       VIRTUAL_DISPLAY_ADD_OUT output {};
       BOOST_LOG(debug) << "Calling AddVirtualDisplay (driver handle present).";
       if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, requested_fps, guid, s_client_name, s_client_uid, output)) {
