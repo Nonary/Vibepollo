@@ -2,6 +2,9 @@
 
 set -uo pipefail
 
+# Keep machine-control command output stable, including during package cleanup.
+export LC_ALL=C
+
 readonly settings_file=/etc/vibepollo/machine.conf
 readonly runtime_root=/run/vibepollo
 readonly session_file=$runtime_root/session.env

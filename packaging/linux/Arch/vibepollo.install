@@ -1,5 +1,9 @@
 # shellcheck shell=bash
 
+# Pacman sources this file for install, upgrade and removal. Keep parsed
+# command output stable in every lifecycle hook.
+export LC_ALL=C
+
 do_secure_executables() {
   # pacman's own systemd-sysusers hook only runs after the whole transaction,
   # but this scriptlet starts vibeshine-vkms-control.socket (SocketGroup=
