@@ -121,7 +121,8 @@ namespace VDISPLAY_SUDOVDA {
   static bool remove_virtual_display_impl(
     const GUID &guid,
     bool cancel_recovery_monitor,
-    std::stop_token stop_token = {}
+    std::stop_token stop_token = {},
+    bool allow_driver_recovery = true
   );
   bool removeAllVirtualDisplays();
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
@@ -161,8 +162,14 @@ namespace VDISPLAY_SUDOVDA {
     std::stop_token stop_token = {},
     bool allow_reinstall = true
   );
-  static DRIVER_STATUS open_vdisplay_device_impl(std::stop_token stop_token, bool allow_reinstall = true);
-  static DRIVER_STATUS open_vdisplay_device_with_status(std::stop_token stop_token, bool allow_reinstall = true);
+  static DRIVER_STATUS open_vdisplay_device_impl(
+    std::stop_token stop_token,
+    bool allow_reinstall = true,
+    bool allow_driver_recovery = true);
+  static DRIVER_STATUS open_vdisplay_device_with_status(
+    std::stop_token stop_token,
+    bool allow_reinstall = true,
+    bool allow_driver_recovery = true);
   static bool start_ping_thread_impl(std::function<void()> fail_cb, std::stop_token stop_token);
   static std::optional<VirtualDisplayCreationResult> create_virtual_display_with_stop(
     const char *s_client_uid,
@@ -1089,6 +1096,45 @@ namespace VDISPLAY_SUDOVDA {
 
     bool is_virtual_display_guid_tracked(const uuid_util::uuid_t &guid) {
       return active_virtual_display_tracker().contains(guid);
+    }
+
+    std::vector<VDISPLAY::TrackedDisplayCleanupTarget> tracked_display_cleanup_targets() {
+      std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
+      std::vector<VDISPLAY::TrackedDisplayCleanupTarget> result;
+      for (const auto &guid_uuid : active_virtual_display_tracker().all()) {
+        const auto identity = g_owned_display_identities.find(guid_uuid.string());
+        if (identity == g_owned_display_identities.end() || identity->second.device_id.empty()) continue;
+        VDISPLAY::TrackedDisplayCleanupTarget target;
+        static_assert(sizeof(GUID) == target.guid_bytes.size());
+        std::memcpy(target.guid_bytes.data(), guid_uuid.b8, target.guid_bytes.size());
+        target.device_id = identity->second.device_id;
+        target.backend = VDISPLAY::ensure_display_backend_e::sudovda;
+        result.push_back(std::move(target));
+      }
+      return result;
+    }
+
+    bool tracked_display_cleanup_target_matches(
+      const std::array<std::uint8_t, 16> &guid_bytes,
+      const std::string &device_id) {
+      if (device_id.empty()) return false;
+      uuid_util::uuid_t guid_uuid {};
+      std::memcpy(guid_uuid.b8, guid_bytes.data(), guid_bytes.size());
+      std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
+      if (!active_virtual_display_tracker().contains(guid_uuid)) return false;
+      const auto identity = g_owned_display_identities.find(guid_uuid.string());
+      return identity != g_owned_display_identities.end() &&
+             boost::iequals(identity->second.device_id, device_id);
+    }
+
+    bool remove_tracked_display_cleanup_target(const VDISPLAY::TrackedDisplayCleanupTarget &target) {
+      if (target.backend != VDISPLAY::ensure_display_backend_e::sudovda || target.device_id.empty()) return false;
+      std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
+      if (!tracked_display_cleanup_target_matches(target.guid_bytes, target.device_id)) return false;
+      GUID guid {};
+      static_assert(sizeof(guid) == sizeof(target.guid_bytes));
+      std::memcpy(&guid, target.guid_bytes.data(), sizeof(guid));
+      return remove_virtual_display_impl(guid, true, {}, false);
     }
 
     std::vector<uuid_util::uuid_t> collect_conflicting_virtual_displays(const uuid_util::uuid_t &guid) {
@@ -3190,7 +3236,10 @@ namespace VDISPLAY_SUDOVDA {
     RegCloseKey(key);
   }
 
-  static DRIVER_STATUS open_vdisplay_device_impl(std::stop_token stop_token, bool allow_reinstall) {
+  static DRIVER_STATUS open_vdisplay_device_impl(
+    std::stop_token stop_token,
+    bool allow_reinstall,
+    bool allow_driver_recovery) {
     std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
     if (stop_token.stop_requested()) {
       return DRIVER_STATUS::FAILED;
@@ -3221,7 +3270,8 @@ namespace VDISPLAY_SUDOVDA {
         if (retryInterval > 320) {
           if (!attempted_recovery) {
             attempted_recovery = true;
-            if (ensure_driver_is_ready_impl(RestartCooldownBehavior::wait, stop_token, allow_reinstall)) {
+            if (allow_driver_recovery &&
+                ensure_driver_is_ready_impl(RestartCooldownBehavior::wait, stop_token, allow_reinstall)) {
               retryInterval = 20;
               continue;
             }
@@ -3256,9 +3306,12 @@ namespace VDISPLAY_SUDOVDA {
     return DRIVER_STATUS::OK;
   }
 
-  static DRIVER_STATUS open_vdisplay_device_with_status(std::stop_token stop_token, bool allow_reinstall) {
+  static DRIVER_STATUS open_vdisplay_device_with_status(
+    std::stop_token stop_token,
+    bool allow_reinstall,
+    bool allow_driver_recovery) {
     proc::setVDisplayDriverStatus(DRIVER_STATUS::UNKNOWN, VDISPLAY::DRIVER_SELECTION::UNKNOWN);
-    const auto status = open_vdisplay_device_impl(stop_token, allow_reinstall);
+    const auto status = open_vdisplay_device_impl(stop_token, allow_reinstall, allow_driver_recovery);
     proc::setVDisplayDriverStatus(status, VDISPLAY::DRIVER_SELECTION::SUDOVDA);
     return status;
   }
@@ -4604,7 +4657,8 @@ namespace VDISPLAY_SUDOVDA {
   static bool remove_virtual_display_impl(
     const GUID &guid,
     bool cancel_recovery_monitor,
-    std::stop_token stop_token
+    std::stop_token stop_token,
+    bool allow_driver_recovery
   ) {
     const auto guid_uuid = guid_to_uuid(guid);
     // A recovery-owned rollback must complete removal even after its monitor
@@ -4642,7 +4696,7 @@ namespace VDISPLAY_SUDOVDA {
     }
 
     const bool initial_handle_invalid = (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE);
-    const bool allow_reinstall = !stop_token.stop_possible();
+    const bool allow_reinstall = allow_driver_recovery && !stop_token.stop_possible();
     bool opened_handle = false;
 
     auto ensure_handle = [&]() -> bool {
@@ -4650,7 +4704,7 @@ namespace VDISPLAY_SUDOVDA {
         return true;
       }
       if ((cancel_recovery_monitor && stop_token.stop_requested()) ||
-          open_vdisplay_device_with_status(reopen_stop_token, allow_reinstall) != DRIVER_STATUS::OK) {
+          open_vdisplay_device_with_status(reopen_stop_token, allow_reinstall, allow_driver_recovery) != DRIVER_STATUS::OK) {
         printf("[SUDOVDA] Failed to open driver while removing virtual display.\n");
         return false;
       }
@@ -4680,7 +4734,7 @@ namespace VDISPLAY_SUDOVDA {
       printf("[SUDOVDA] Driver handle became invalid while removing virtual display; retrying.\n");
       closeVDisplayDevice();
       if ((!cancel_recovery_monitor || !stop_token.stop_requested()) &&
-          open_vdisplay_device_with_status(reopen_stop_token, allow_reinstall) == DRIVER_STATUS::OK) {
+          open_vdisplay_device_with_status(reopen_stop_token, allow_reinstall, allow_driver_recovery) == DRIVER_STATUS::OK) {
         opened_handle = true;
         auto retry_result = perform_remove();
         removed = retry_result.first;
@@ -5011,30 +5065,30 @@ namespace VDISPLAY_SUDOVDA {
     return std::nullopt;
   }
 
-  bool is_virtual_display_output(const std::string &output_identifier) {
-    if (output_identifier.empty()) {
-      return false;
-    }
-
+  std::optional<bool> classify_virtual_display_output(const std::string &output_identifier) {
+    if (output_identifier.empty()) return std::nullopt;
     const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     if (!devices) {
-      return false;
+      return std::nullopt;
     }
 
+    bool matched = false;
     for (const auto &device : *devices) {
-      if (!is_virtual_display_device(device)) {
-        continue;
-      }
-
-      if (!device.m_device_id.empty() && equals_ci(device.m_device_id, output_identifier)) {
-        return true;
-      }
-      if (!device.m_display_name.empty() && equals_ci(device.m_display_name, output_identifier)) {
-        return true;
+      const bool same_device_id = !device.m_device_id.empty() && equals_ci(device.m_device_id, output_identifier);
+      const bool same_display_name = !device.m_display_name.empty() && equals_ci(device.m_display_name, output_identifier);
+      if (!same_device_id && !same_display_name) continue;
+      matched = true;
+      if (is_virtual_display_device(device)) return true;
+      // Missing identity fields cannot establish that this is a physical output.
+      if (device.m_monitor_device_path.empty() || device.m_friendly_name.empty() || !device.m_edid) {
+        return std::nullopt;
       }
     }
+    return matched ? std::optional<bool>(false) : std::nullopt;
+  }
 
-    return false;
+  bool is_virtual_display_output(const std::string &output_identifier) {
+    return classify_virtual_display_output(output_identifier).value_or(false);
   }
 
   bool is_virtual_display_selection(const std::string &output_identifier) {

@@ -4987,6 +4987,44 @@ namespace VDISPLAY_SUNSHINE {
     return is_virtual_display_guid_tracked(guid_to_uuid(guid));
   }
 
+  std::vector<VDISPLAY::TrackedDisplayCleanupTarget> tracked_display_cleanup_targets() {
+    std::vector<VDISPLAY::TrackedDisplayCleanupTarget> result;
+    for (const auto &guid_uuid : active_virtual_display_tracker().all()) {
+      const auto lease = driver_lease_tracker().get(guid_uuid);
+      if (!lease || !lease->device_id || lease->device_id->empty()) {
+        continue;
+      }
+      VDISPLAY::TrackedDisplayCleanupTarget target;
+      static_assert(sizeof(GUID) == target.guid_bytes.size());
+      std::memcpy(target.guid_bytes.data(), guid_uuid.b8, target.guid_bytes.size());
+      target.device_id = *lease->device_id;
+      target.backend = VDISPLAY::ensure_display_backend_e::sunshine;
+      result.push_back(std::move(target));
+    }
+    return result;
+  }
+
+  bool tracked_display_cleanup_target_matches(
+    const std::array<std::uint8_t, 16> &guid_bytes,
+    const std::string &device_id) {
+    if (device_id.empty()) return false;
+    uuid_util::uuid_t guid_uuid {};
+    std::memcpy(guid_uuid.b8, guid_bytes.data(), guid_bytes.size());
+    if (!active_virtual_display_tracker().contains(guid_uuid)) return false;
+    const auto lease = driver_lease_tracker().get(guid_uuid);
+    return lease && lease->device_id && boost::iequals(*lease->device_id, device_id);
+  }
+
+  bool remove_tracked_display_cleanup_target(const VDISPLAY::TrackedDisplayCleanupTarget &target) {
+    if (target.backend != VDISPLAY::ensure_display_backend_e::sunshine || target.device_id.empty()) return false;
+    std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
+    if (!tracked_display_cleanup_target_matches(target.guid_bytes, target.device_id)) return false;
+    GUID guid {};
+    static_assert(sizeof(guid) == sizeof(target.guid_bytes));
+    std::memcpy(&guid, target.guid_bytes.data(), sizeof(guid));
+    return removeVirtualDisplay(guid);
+  }
+
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params) {
     if (params.max_attempts == 0) {
       return;
@@ -8001,30 +8039,30 @@ namespace VDISPLAY_SUNSHINE {
     return std::nullopt;
   }
 
-  bool is_virtual_display_output(const std::string &output_identifier) {
-    if (output_identifier.empty()) {
-      return false;
-    }
-
+  std::optional<bool> classify_virtual_display_output(const std::string &output_identifier) {
+    if (output_identifier.empty()) return std::nullopt;
     const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     if (!devices) {
-      return false;
+      return std::nullopt;
     }
 
+    bool matched = false;
     for (const auto &device : *devices) {
-      if (!is_virtual_display_device(device)) {
-        continue;
-      }
-
-      if (!device.m_device_id.empty() && equals_ci(device.m_device_id, output_identifier)) {
-        return true;
-      }
-      if (!device.m_display_name.empty() && equals_ci(device.m_display_name, output_identifier)) {
-        return true;
+      const bool same_device_id = !device.m_device_id.empty() && equals_ci(device.m_device_id, output_identifier);
+      const bool same_display_name = !device.m_display_name.empty() && equals_ci(device.m_display_name, output_identifier);
+      if (!same_device_id && !same_display_name) continue;
+      matched = true;
+      if (is_virtual_display_device(device)) return true;
+      // Missing identity fields cannot establish that this is a physical output.
+      if (device.m_monitor_device_path.empty() || device.m_friendly_name.empty() || !device.m_edid) {
+        return std::nullopt;
       }
     }
+    return matched ? std::optional<bool>(false) : std::nullopt;
+  }
 
-    return false;
+  bool is_virtual_display_output(const std::string &output_identifier) {
+    return classify_virtual_display_output(output_identifier).value_or(false);
   }
 
   bool is_virtual_display_selection(const std::string &output_identifier) {

@@ -87,9 +87,13 @@ class ArchiveTests(unittest.TestCase):
         with package() as archive:
             members = deploy.inspect_archive(archive, VERSION)
         self.assertIn('usr/libexec/vibeshine/vibepollo-display-power', members)
+        self.assertIn('usr/libexec/vibeshine/vibepollo-display-observer', members)
 
     def test_missing_recovery_helper_fails_preflight(self):
         with package(omit=['usr/libexec/vibeshine/vibepollo-display-power']) as archive:
+            with self.assertRaises(deploy.DeployError):
+                deploy.inspect_archive(archive, VERSION)
+        with package(omit=['usr/libexec/vibeshine/vibepollo-display-observer']) as archive:
             with self.assertRaises(deploy.DeployError):
                 deploy.inspect_archive(archive, VERSION)
 
@@ -124,6 +128,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(deploy.install_mode('usr/libexec/vibeshine/vibepollo-display-power', 0o4777), 0o755)
         self.assertEqual(deploy.install_mode('usr/libexec/vibeshine/vibepollo-host', 0o7777), 0o750)
         self.assertEqual(deploy.install_mode('usr/libexec/vibeshine/vibepollo-session-broker', 0o7777), 0o700)
+        self.assertEqual(deploy.install_mode('usr/libexec/vibeshine/vibepollo-display-observer', 0o4777), 0o755)
         self.assertEqual(deploy.install_mode('usr/lib/libvibeshine-kwin-gpu.so'), 0o4755)
 
 

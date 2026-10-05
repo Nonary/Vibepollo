@@ -60,6 +60,8 @@
   #endif
 
   #include "src/platform/windows/display_restore_task.h"
+  #include "src/platform/windows/legacy_restore_event_policy.h"
+  #include "src/platform/windows/recovery_status.h"
 
   #include <comdef.h>
   #include <dbt.h>
@@ -177,6 +179,8 @@ namespace {
     ApplyResult = 6,  // payload: [u8 success][optional message...]
     Disarm = 7,  // cancel any pending restore requests/watchdogs
     SnapshotCurrent = 8,  // snapshot current session state (rotate current->previous) without applying
+    RecoveryStatus = 15,  // request: [u64 restore ticket][optional u8 park]
+    RecoveryStatusResult = 16,  // response: [u64 restore ticket][u8 status][u64 event revision][u8 parked]
     RefreshRate = 10,  // payload: [u32 numerator][u32 denominator][UTF-8 device id]
     RefreshRateResult = 11,  // payload: [u8 success]
     Ping = 0xFE,  // no payload, reply with Pong
@@ -198,6 +202,21 @@ namespace {
            (static_cast<std::uint32_t>(payload[offset + 1]) << 8u) |
            (static_cast<std::uint32_t>(payload[offset + 2]) << 16u) |
            (static_cast<std::uint32_t>(payload[offset + 3]) << 24u);
+  }
+
+  std::optional<std::uint64_t> read_u64_le(std::span<const std::uint8_t> payload, std::size_t offset) {
+    if (offset + 8 > payload.size()) return std::nullopt;
+    std::uint64_t value = 0;
+    for (unsigned int shift = 0; shift < 64; shift += 8) {
+      value |= static_cast<std::uint64_t>(payload[offset + shift / 8]) << shift;
+    }
+    return value;
+  }
+
+  void append_u64_le(std::vector<std::uint8_t> &payload, std::uint64_t value) {
+    for (unsigned int shift = 0; shift < 64; shift += 8) {
+      payload.push_back(static_cast<std::uint8_t>((value >> shift) & 0xffu));
+    }
   }
 
   // Wrap SettingsManager for easy use in this helper
@@ -1177,7 +1196,10 @@ namespace {
     }
 
     // Load snapshot from file with compatibility metadata.
-    std::optional<LoadedSnapshot> load_display_settings_snapshot_with_metadata(const std::filesystem::path &path) const {
+    std::optional<LoadedSnapshot> load_display_settings_snapshot_with_metadata(
+      const std::filesystem::path &path,
+      display_device::ActiveTopology *raw_topology = nullptr
+    ) const {
       std::error_code ec;
       if (!std::filesystem::exists(path, ec)) {
         return std::nullopt;
@@ -1219,6 +1241,9 @@ namespace {
       parse_hdr_field(hdr_s, snap);
       const auto origins_s = find_str_section(data, "origins");
       parse_origins_field(origins_s, snap);
+      if (raw_topology) {
+        *raw_topology = snap.m_topology;
+      }
 
       // Filter snapshot using current exclusion list and currently enumerated devices.
       // Note: `m_display_name` is only populated for active displays in libdisplaydevice, so
@@ -1380,6 +1405,63 @@ namespace {
       loaded.has_layout_data = has_layout_data;
       loaded.layout_rotations = std::move(layout_rotations);
       return loaded;
+    }
+
+    std::optional<std::set<std::string>> present_physical_restore_device_ids() const {
+      const auto devices = enumerate_nonempty_devices_known(display_device::DeviceEnumerationDetail::Minimal);
+      if (!devices) return std::nullopt;
+      std::set<std::string> exclusions;
+      for (auto id : snapshot_exclusions_copy()) {
+        id = normalize_device_id(std::move(id));
+        if (!id.empty()) exclusions.insert(std::move(id));
+      }
+
+      std::set<std::string> present;
+      for (const auto &device : *devices) {
+        const auto id = device.m_device_id.empty() ? device.m_display_name : device.m_device_id;
+        if (id.empty() || is_virtual_display_device(device)) continue;
+        const auto normalized = normalize_device_id(id);
+        if (!normalized.empty() && !exclusions.contains(normalized)) present.insert(normalized);
+      }
+      return present;
+    }
+
+    std::optional<std::set<std::string>> required_physical_restore_device_ids(
+      const std::array<std::filesystem::path, 3> &snapshot_paths
+    ) const {
+      const auto devices = enumerate_nonempty_devices_known(display_device::DeviceEnumerationDetail::Minimal);
+      if (!devices) return std::nullopt;
+      std::set<std::string> exclusions;
+      for (auto id : snapshot_exclusions_copy()) {
+        id = normalize_device_id(std::move(id));
+        if (!id.empty()) exclusions.insert(std::move(id));
+      }
+
+      std::set<std::string> known_virtual;
+      for (const auto &device : *devices) {
+        if (!is_virtual_display_device(device)) continue;
+        const auto id = device.m_device_id.empty() ? device.m_display_name : device.m_device_id;
+        if (!id.empty()) known_virtual.insert(normalize_device_id(id));
+      }
+
+      std::set<std::string> required;
+      for (const auto &path : snapshot_paths) {
+        display_device::ActiveTopology raw_topology;
+        // The output topology is populated before availability filtering, so a
+        // currently disconnected saved physical output remains a valid return
+        // candidate. This call only reads snapshot data and enumerates devices.
+        (void) load_display_settings_snapshot_with_metadata(path, &raw_topology);
+        for (const auto &group : raw_topology) {
+          for (const auto &id : group) {
+            const auto normalized = normalize_device_id(id);
+            if (normalized.empty() || exclusions.contains(normalized) || known_virtual.contains(normalized)) continue;
+            if (normalized.find("sunshinevirtualdisplay") != std::string::npos ||
+                normalized.find("sunshine virtual display") != std::string::npos) continue;
+            required.insert(normalized);
+          }
+        }
+      }
+      return required;
     }
 
     // Load snapshot from file.
@@ -1814,6 +1896,21 @@ namespace {
         return m_dd->enumAvailableDevices(detail);
       } catch (...) {
         return {};
+      }
+    }
+
+    std::optional<display_device::EnumeratedDeviceList> enumerate_nonempty_devices_known(
+      display_device::DeviceEnumerationDetail detail
+    ) const {
+      if (!ensure_initialized()) return std::nullopt;
+      try {
+        auto devices = m_dd->enumAvailableDevices(detail);
+        // libdisplaydevice documents an empty result for both no devices and
+        // an underlying Windows enumeration error. Treat it as unknown here.
+        if (devices.empty()) return std::nullopt;
+        return devices;
+      } catch (...) {
+        return std::nullopt;
       }
     }
 
@@ -2284,14 +2381,18 @@ namespace {
           }
           break;
         case WM_POWERBROADCAST:
-          if (wParam == PBT_POWERSETTINGCHANGE) {
+          if (wParam == PBT_APMRESUMEAUTOMATIC) {
+            self->signal("power_resume");
+          } else if (wParam == PBT_POWERSETTINGCHANGE) {
             const auto *ps = reinterpret_cast<const POWERBROADCAST_SETTING *>(lParam);
             if (ps && ps->PowerSetting == GUID_MONITOR_POWER_ON) {
               if (ps->DataLength == sizeof(DWORD)) {
                 const DWORD state = *reinterpret_cast<const DWORD *>(ps->Data);
-                if (state != 0) {
+                if (self->monitor_power_policy_.observe(true, state != 0)) {
                   self->signal("power_monitor_on");
                 }
+              } else {
+                (void) self->monitor_power_policy_.observe(false, false);
               }
             }
           }
@@ -2327,6 +2428,7 @@ namespace {
     }
 
     void thread_proc(std::stop_token st) {
+      monitor_power_policy_.reset();
       const auto hinst = GetModuleHandleW(nullptr);
       const wchar_t *klass = L"SunshineDisplayEventWindow";
 
@@ -2337,7 +2439,10 @@ namespace {
       wc.lpszClassName = klass;
       RegisterClassExW(&wc);
 
-      HWND hwnd = CreateWindowExW(0, klass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, hinst, this);
+      // WM_DISPLAYCHANGE is broadcast to top-level windows. A message-only
+      // HWND does not participate in that broadcast, so keep this window
+      // hidden but top-level for monitor wake/topology notifications.
+      HWND hwnd = CreateWindowExW(0, klass, L"", 0, 0, 0, 0, 0, nullptr, nullptr, hinst, this);
       if (!hwnd) {
         return;
       }
@@ -2376,6 +2481,7 @@ namespace {
     std::atomic<HWND> hwnd_ {nullptr};
     HPOWERNOTIFY power_cookie_ {nullptr};
     HDEVNOTIFY device_cookie_ {nullptr};
+    display_helper::recovery_status::monitor_power_edge_policy monitor_power_policy_;
   };
 
   bool create_restore_scheduled_task();
@@ -2393,6 +2499,8 @@ namespace {
     std::mutex restore_event_mutex;
     std::condition_variable restore_event_cv;
     bool restore_event_flag {false};
+    display_helper::legacy_restore_event_policy::deferred_physical_return_t deferred_physical_return;
+    std::atomic<long long> deferred_physical_return_ready_ms {0};
     std::atomic<long long> restore_active_until_ms {0};
     std::atomic<long long> last_restore_event_ms {0};
     std::atomic<bool> restore_stage_running {false};
@@ -2424,6 +2532,10 @@ namespace {
     // Track whether a revert/restore is currently pending
     std::atomic<bool> restore_requested {false};
     std::atomic<uint64_t> restore_cancel_generation {0};
+    std::mutex recovery_status_mutex;
+    std::function<void(std::uint64_t, display_helper::recovery_status::status, std::uint64_t)> recovery_notification;
+    display_helper::recovery_status::policy recovery_status;
+    std::atomic<long long> recovery_status_failed_at_ms {0};
     // True after the restore loop has made at least one restore attempt that has
     // not yet been confirmed. DISARM/SNAPSHOT_CURRENT from a later stream-start
     // probe must not cancel or overwrite that restore baseline.
@@ -2558,7 +2670,26 @@ namespace {
       }
     }
 
+    void record_recovery_status_liveness_ping() {
+      if (!heartbeat_monitor_active.load(std::memory_order_acquire)) {
+        return;
+      }
+      // Status polling keeps a live cached IPC connection from aging out, but
+      // it must not cancel a heartbeat recovery deadline once that deadline
+      // has been armed.
+      last_heartbeat_ms.store(steady_now_ms(), std::memory_order_release);
+    }
+
     bool check_heartbeat_timeout() {
+      {
+        std::lock_guard lock(recovery_status_mutex);
+        // A completed failed restore waits for display events, not stream
+        // heartbeats. A later APPLY/DISARM supersedes this exact ticket.
+        if (recovery_status.ticket() &&
+            recovery_status.value() == display_helper::recovery_status::status::failed &&
+            recovery_status.generation() == restore_cancel_generation.load(std::memory_order_acquire) &&
+            recovery_status.epoch() == current_connection_epoch()) return false;
+      }
       if (!heartbeat_monitor_active.load(std::memory_order_acquire)) {
         return false;
       }
@@ -2769,7 +2900,104 @@ namespace {
 
     void request_restore_cancel() {
       restore_cancel_generation.fetch_add(1, std::memory_order_acq_rel);
+      {
+        std::lock_guard lock(restore_event_mutex);
+        deferred_physical_return.clear();
+        deferred_physical_return_ready_ms.store(0, std::memory_order_release);
+      }
       signal_restore_event(nullptr);
+    }
+
+    bool begin_restore_stage_reconciliation(const std::uint64_t generation) {
+      if (generation != restore_cancel_generation.load(std::memory_order_acquire) ||
+          !restore_requested.load(std::memory_order_acquire)) {
+        return false;
+      }
+      {
+        std::lock_guard lock(restore_event_mutex);
+        if (generation != restore_cancel_generation.load(std::memory_order_acquire) ||
+            !restore_requested.load(std::memory_order_acquire)) {
+          return false;
+        }
+        deferred_physical_return.begin_observation(generation);
+        restore_stage_running.store(true, std::memory_order_release);
+      }
+
+      std::optional<std::set<std::string>> required;
+      std::optional<std::set<std::string>> present;
+      try {
+        required = controller.required_physical_restore_device_ids(
+          {golden_path, session_current_path, session_previous_path}
+        );
+        present = controller.present_physical_restore_device_ids();
+      } catch (...) {
+        // Observation failure only disables this retry hint; it must not
+        // prevent the already-authorized saved restore from running.
+      }
+      std::lock_guard lock(restore_event_mutex);
+      if (generation != restore_cancel_generation.load(std::memory_order_acquire) ||
+          !restore_requested.load(std::memory_order_acquire)) {
+        deferred_physical_return.clear();
+        restore_stage_running.store(false, std::memory_order_release);
+        return false;
+      }
+      const bool observations_known = required.has_value() && present.has_value();
+      (void) deferred_physical_return.install_observations(
+        generation,
+        required.value_or(std::set<std::string> {}),
+        present.value_or(std::set<std::string> {}),
+        observations_known
+      );
+      deferred_physical_return_ready_ms.store(0, std::memory_order_release);
+      return true;
+    }
+
+    bool finish_restore_stage_reconciliation(const std::uint64_t generation, const bool failed) {
+      std::lock_guard lock(restore_event_mutex);
+      restore_stage_running.store(false, std::memory_order_release);
+      const bool pending = deferred_physical_return.finish_attempt(generation, failed);
+      deferred_physical_return_ready_ms.store(
+        pending ? steady_now_ms() + kRestoreEventDebounce.count() : 0,
+        std::memory_order_release
+      );
+      return pending;
+    }
+
+    bool reconcile_deferred_physical_return(const std::uint64_t generation) {
+      const auto ready_ms = deferred_physical_return_ready_ms.load(std::memory_order_acquire);
+      if (ready_ms == 0 || steady_now_ms() < ready_ms) {
+        return false;
+      }
+      std::optional<std::set<std::string>> present;
+      try {
+        present = controller.present_physical_restore_device_ids();
+      } catch (...) {
+        std::lock_guard lock(restore_event_mutex);
+        deferred_physical_return.discard_pending(generation);
+        deferred_physical_return_ready_ms.store(0, std::memory_order_release);
+        return false;
+      }
+      if (!present) {
+        std::lock_guard lock(restore_event_mutex);
+        deferred_physical_return.discard_pending(generation);
+        deferred_physical_return_ready_ms.store(0, std::memory_order_release);
+        return false;
+      }
+      std::lock_guard lock(restore_event_mutex);
+      const auto current_generation = restore_cancel_generation.load(std::memory_order_acquire);
+      const bool returned = deferred_physical_return.reconcile(generation, current_generation, *present);
+      deferred_physical_return_ready_ms.store(0, std::memory_order_release);
+      if (returned) {
+        std::lock_guard status_lock(recovery_status_mutex);
+        (void) recovery_status.observe_event();
+        notify_recovery_status_locked();
+      }
+      return returned && current_generation == generation && restore_requested.load(std::memory_order_acquire);
+    }
+
+    bool deferred_physical_return_waiting_for_quiet_period() const {
+      const auto ready_ms = deferred_physical_return_ready_ms.load(std::memory_order_acquire);
+      return ready_ms != 0 && steady_now_ms() < ready_ms;
     }
 
     void register_restore_failure() {
@@ -3158,13 +3386,21 @@ namespace {
         return;
       }
 
-      if (force_start || reason) {
-        reset_restore_backoff();
+      if (!force_start && reason) {
+        std::lock_guard lock(restore_event_mutex);
+        const auto generation = restore_cancel_generation.load(std::memory_order_acquire);
+        if (deferred_physical_return.note_display_event(generation)) {
+          BOOST_LOG(debug) << "Deferring display event until failed restore physical-baseline reconciliation: " << reason;
+          return;
+        }
+        if (restore_stage_running.load(std::memory_order_acquire)) {
+          BOOST_LOG(debug) << "Dropping in-stage restore event because physical baseline observation is unknown: " << reason;
+          return;
+        }
       }
 
-      if (!force_start && reason && restore_stage_running.load(std::memory_order_acquire)) {
-        BOOST_LOG(debug) << "Dropping restore event while stage loop active: " << reason;
-        return;
+      if (force_start || reason) {
+        reset_restore_backoff();
       }
 
       const auto now = std::chrono::steady_clock::now();
@@ -3724,13 +3960,29 @@ namespace {
       bool pump_expected = false;
       if (event_pump_running.compare_exchange_strong(pump_expected, true, std::memory_order_acq_rel)) {
         event_pump.start([this](const char *event_reason) {
-          if (!restore_requested.load(std::memory_order_acquire)) {
-            return;
-          }
           if (disconnect_settlement_pending.load(std::memory_order_acquire)) {
             return;
           }
           const char *why = event_reason ? event_reason : "event";
+          if (!restore_requested.load(std::memory_order_acquire)) {
+            const auto failed_at = recovery_status_failed_at_ms.load(std::memory_order_acquire);
+            constexpr auto kTerminalEventQuiet = std::chrono::milliseconds(1500);
+            if (failed_at == 0 || steady_now_ms() < failed_at + kTerminalEventQuiet.count()) {
+              return;
+            }
+            const bool topology_hint = std::strcmp(why, "power_monitor_on") == 0 ||
+                                       std::strcmp(why, "power_resume") == 0 ||
+                                       std::strcmp(why, "wm_displaychange") == 0 ||
+                                       std::strcmp(why, "wm_devicechange") == 0;
+            if (!topology_hint) return;
+            std::lock_guard status_lock(recovery_status_mutex);
+            if (recovery_status.value() == display_helper::recovery_status::status::failed &&
+                recovery_status_failed_at_ms.load(std::memory_order_acquire) == failed_at) {
+              (void) recovery_status.observe_event();
+              notify_recovery_status_locked();
+            }
+            return;
+          }
           if (!restore_poll_active.load(std::memory_order_acquire)) {
             ensure_restore_polling(RestoreWindow::Event, why, true);
           } else {
@@ -3913,6 +4165,39 @@ namespace {
       return current_connection_epoch() == epoch;
     }
 
+    void supersede_recovery_status() {
+      std::lock_guard lock(recovery_status_mutex);
+      recovery_status.supersede();
+      recovery_status_failed_at_ms.store(0, std::memory_order_release);
+    }
+
+    void publish_recovery_status(
+      display_helper::recovery_status::status value,
+      std::uint64_t ticket,
+      std::uint64_t generation,
+      std::uint64_t epoch
+    ) {
+      std::lock_guard lock(recovery_status_mutex);
+      if (recovery_status.publish(value, ticket, generation, epoch)) {
+        recovery_status_failed_at_ms.store(
+          value == display_helper::recovery_status::status::failed ? steady_now_ms() : 0,
+          std::memory_order_release);
+        notify_recovery_status_locked();
+      }
+    }
+
+    void notify_recovery_status_locked() {
+      if (recovery_notification && recovery_status.ticket() &&
+          recovery_status.epoch() == current_connection_epoch()) {
+        recovery_notification(recovery_status.ticket(), recovery_status.value(), recovery_status.event_revision());
+      }
+    }
+
+    std::uint64_t current_recovery_ticket() {
+      std::lock_guard lock(recovery_status_mutex);
+      return recovery_status.ticket();
+    }
+
     void clear_restore_origin() {
       restore_origin_epoch.store(0, std::memory_order_release);
       prefer_golden_if_current_missing.store(true, std::memory_order_release);
@@ -3934,6 +4219,9 @@ namespace {
       const auto kLogThrottle = std::chrono::minutes(15);
       auto last_log = std::chrono::steady_clock::now() - kLogThrottle;  // allow immediate log
       const auto guard_generation = self->restore_cancel_generation.load(std::memory_order_acquire);
+      const auto status_epoch = self->restore_origin_epoch.load(std::memory_order_acquire);
+      auto last_attempt_ticket = self->current_recovery_ticket();
+      bool restore_attempt_completed = false;
       auto cancelled = [&]() {
         if (st.stop_requested()) {
           return true;
@@ -3982,6 +4270,11 @@ namespace {
           self->restore_poll_active.store(false, std::memory_order_release);
           self->restore_requested.store(false, std::memory_order_release);
           self->clear_restore_origin();
+          self->publish_recovery_status(
+            display_helper::recovery_status::status::unknown,
+            self->current_recovery_ticket(),
+            guard_generation,
+            status_epoch);
           return;
         }
       } catch (...) {
@@ -4000,9 +4293,17 @@ namespace {
       try {
         if (!cancelled() && self->await_restore_backoff(st) && !cancelled()) {
           initial_attempted = true;
+          last_attempt_ticket = self->current_recovery_ticket();
+          self->begin_restore_stage_reconciliation(guard_generation);
           initial_success = self->try_restore_once_if_valid(st, guard_generation);
+          restore_attempt_completed = true;
+          (void) self->finish_restore_stage_reconciliation(guard_generation, !initial_success);
         }
-      } catch (...) {}
+      } catch (...) {
+        if (initial_attempted) {
+          (void) self->finish_restore_stage_reconciliation(guard_generation, true);
+        }
+      }
 
       if (initial_success) {
         if (cancelled()) {
@@ -4048,6 +4349,11 @@ namespace {
         self->last_restore_event_ms.store(0, std::memory_order_release);
         self->restore_requested.store(false, std::memory_order_release);
         self->clear_restore_origin();
+        self->publish_recovery_status(
+          display_helper::recovery_status::status::restored,
+          last_attempt_ticket,
+          guard_generation,
+          status_epoch);
         return;
       }
 
@@ -4074,10 +4380,32 @@ namespace {
         const auto wait_timeout = active_window ? 500ms : kPoll;
 
         bool triggered = false;
+        long long physical_return_hint_deadline_ms = 0;
         try {
           triggered = self->wait_for_restore_event(st, wait_timeout);
         } catch (...) {}
-        if (!triggered && active_window && active_window_kind == RestoreWindow::Primary) {
+        if (!triggered && self->reconcile_deferred_physical_return(guard_generation)) {
+          const auto reconcile_now_ms = ServiceState::steady_now_ms();
+          const auto current_until_ms = self->restore_active_until_ms.load(std::memory_order_acquire);
+          const bool current_window_active = current_until_ms != 0 && reconcile_now_ms <= current_until_ms;
+          const auto action = display_helper::legacy_restore_event_policy::retry_action(true, current_window_active);
+          if (action == display_helper::legacy_restore_event_policy::retry_action_t::open_bounded_event_window) {
+            BOOST_LOG(info) << "Restore event confirmed a newly present physical baseline device; opening one bounded retry window.";
+            self->reset_restore_backoff();
+            physical_return_hint_deadline_ms = reconcile_now_ms +
+              std::chrono::duration_cast<std::chrono::milliseconds>(kRestoreWindowEvent).count();
+            self->restore_active_until_ms.store(physical_return_hint_deadline_ms, std::memory_order_release);
+            self->restore_active_window.store(RestoreWindow::Event, std::memory_order_release);
+            self->last_restore_event_ms.store(reconcile_now_ms, std::memory_order_release);
+          } else if (action == display_helper::legacy_restore_event_policy::retry_action_t::join_open_window) {
+            // Keep the current window and backoff. This worker already owns
+            // the attempt, so do not enqueue a second event-triggered attempt.
+            physical_return_hint_deadline_ms = current_until_ms;
+          }
+          triggered = true;
+        }
+        if (!triggered && active_window && active_window_kind == RestoreWindow::Primary &&
+            !self->deferred_physical_return_waiting_for_quiet_period()) {
           triggered = true;
         }
         if (cancelled()) {
@@ -4105,18 +4433,29 @@ namespace {
         if (cancelled()) {
           break;
         }
+        if (physical_return_hint_deadline_ms != 0 &&
+            !display_helper::legacy_restore_event_policy::hint_retry_admitted(
+              physical_return_hint_deadline_ms,
+              ServiceState::steady_now_ms()
+            )) {
+          std::lock_guard lock(self->restore_event_mutex);
+          self->deferred_physical_return.cancel_admission(guard_generation);
+          continue;
+        }
 
         const auto window_deadline_ms = self->restore_active_until_ms.load(std::memory_order_acquire);
-        self->restore_stage_running.store(true, std::memory_order_release);
+        last_attempt_ticket = self->current_recovery_ticket();
+        self->begin_restore_stage_reconciliation(guard_generation);
         bool success = false;
         try {
           success = self->try_restore_once_if_valid(st, guard_generation);
+          restore_attempt_completed = true;
         } catch (...) {
-          self->restore_stage_running.store(false, std::memory_order_release);
+          (void) self->finish_restore_stage_reconciliation(guard_generation, true);
           throw;
         }
 
-        self->restore_stage_running.store(false, std::memory_order_release);
+        (void) self->finish_restore_stage_reconciliation(guard_generation, !success);
         if (cancelled()) {
           break;
         }
@@ -4165,6 +4504,11 @@ namespace {
           self->last_restore_event_ms.store(0, std::memory_order_release);
           self->restore_requested.store(false, std::memory_order_release);
           self->clear_restore_origin();
+          self->publish_recovery_status(
+            display_helper::recovery_status::status::restored,
+            last_attempt_ticket,
+            guard_generation,
+            status_epoch);
           return;
         }
 
@@ -4188,6 +4532,18 @@ namespace {
 
       if (exit_due_to_timeout) {
         self->register_unresolved_golden_restore_request("restore window exhausted");
+        if (!restore_attempt_completed) {
+          self->event_pump.stop();
+          self->event_pump_running.store(false, std::memory_order_release);
+        }
+        self->restore_requested.store(false, std::memory_order_release);
+        self->clear_restore_origin();
+        self->publish_recovery_status(
+          restore_attempt_completed ? display_helper::recovery_status::status::failed
+                                    : display_helper::recovery_status::status::unknown,
+          last_attempt_ticket,
+          guard_generation,
+          status_epoch);
         return;
       }
 
@@ -4195,10 +4551,18 @@ namespace {
         self->register_unresolved_golden_restore_request("restore ended unresolved");
       }
 
-      self->event_pump.stop();
-      self->event_pump_running.store(false, std::memory_order_release);
+      if (!restore_attempt_completed) {
+        self->event_pump.stop();
+        self->event_pump_running.store(false, std::memory_order_release);
+      }
       self->restore_requested.store(false, std::memory_order_release);
       self->clear_restore_origin();
+      self->publish_recovery_status(
+        restore_attempt_completed ? display_helper::recovery_status::status::failed
+                                  : display_helper::recovery_status::status::unknown,
+        last_attempt_ticket,
+        guard_generation,
+        status_epoch);
     }
 
     void on_topology_changed() {
@@ -5133,6 +5497,7 @@ namespace {
   struct RevertOptions {
     bool prefer_golden_if_current_missing {true};
     std::optional<bool> always_restore_from_golden;
+    std::uint64_t restore_ticket {0};
   };
 
   RevertOptions parse_revert_payload(std::span<const uint8_t> payload) {
@@ -5156,6 +5521,11 @@ namespace {
       it = j.find("sunshine_always_restore_from_golden");
       if (it != j.end() && it->is_boolean()) {
         options.always_restore_from_golden = it->get<bool>();
+      }
+
+      it = j.find("sunshine_restore_ticket");
+      if (it != j.end() && it->is_number_unsigned()) {
+        options.restore_ticket = it->get<std::uint64_t>();
       }
     } catch (...) {
     }
@@ -5232,6 +5602,7 @@ namespace {
   bool handle_apply(ServiceState &state, std::span<const uint8_t> payload, std::string &error_msg) {
     // Cancel any ongoing restore activity since a new APPLY supersedes it
     state.stop_restore_polling();
+    state.supersede_recovery_status();
     state.cancel_delayed_reapply();
     state.cancel_post_apply_tasks();
     state.refresh_rate_override.store(0, std::memory_order_release);
@@ -5439,6 +5810,13 @@ namespace {
   void handle_revert(ServiceState &state, std::atomic<bool> &running, std::span<const uint8_t> payload) {
     state.clear_disconnect_settlement();
     const auto revert_options = parse_revert_payload(payload);
+    {
+      std::lock_guard lock(state.recovery_status_mutex);
+      state.recovery_status.begin(
+        revert_options.restore_ticket,
+        state.restore_cancel_generation.load(std::memory_order_acquire),
+        state.current_connection_epoch());
+    }
     BOOST_LOG(info) << "REVERT command received - initiating display settings restoration"
                     << (revert_options.prefer_golden_if_current_missing ? " (prefer golden if current missing)." : ".");
     state.retry_apply_on_topology.store(false, std::memory_order_release);
@@ -5467,6 +5845,83 @@ namespace {
     std::span<const uint8_t> payload,
     uint64_t worker_epoch
   ) {
+    if (type == MsgType::RecoveryStatus) {
+      const auto ticket = read_u64_le(payload, 0);
+      const bool valid_shape = ticket && (payload.size() == 8 || payload.size() == 9) &&
+                               (payload.size() == 8 || payload[8] <= 1);
+      const bool park = valid_shape && payload.size() == 9 && payload[8] != 0;
+      if (valid_shape) {
+        // A status poll proves IPC liveness only. It does not claim stream
+        // ownership or reset restore scheduling/backoff.
+        state.record_recovery_status_liveness_ping();
+      }
+      bool queued_operation = false;
+      {
+        std::lock_guard queue_lock(state.command_queue_mutex);
+        queued_operation = !state.command_queue.empty();
+      }
+
+      display_helper::recovery_status::status result = display_helper::recovery_status::status::unknown;
+      std::uint64_t event_revision = 0;
+      if (valid_shape) {
+        {
+          std::lock_guard status_lock(state.recovery_status_mutex);
+          result = state.recovery_status.query(
+            *ticket,
+            state.restore_cancel_generation.load(std::memory_order_acquire),
+            worker_epoch,
+            state.restore_cancel_generation.load(std::memory_order_acquire),
+            state.current_connection_epoch(),
+            state.restore_poll_active.load(std::memory_order_acquire) ||
+              state.restore_stage_running.load(std::memory_order_acquire),
+            queued_operation,
+            false);
+          event_revision = state.recovery_status.event_revision();
+        }
+
+        if (park && result == display_helper::recovery_status::status::failed) {
+          // Failed is published only at the terminal edge of the restore
+          // worker. Join it here so the response proves no mutation worker
+          // remains, then revalidate the ticket and live generation/epoch.
+          if (state.restore_poll_thread.joinable()) {
+            state.restore_poll_thread.join();
+          }
+          {
+            std::lock_guard queue_lock(state.command_queue_mutex);
+            queued_operation = !state.command_queue.empty();
+          }
+          std::lock_guard status_lock(state.recovery_status_mutex);
+          result = state.recovery_status.query(
+            *ticket,
+            state.restore_cancel_generation.load(std::memory_order_acquire),
+            worker_epoch,
+            state.restore_cancel_generation.load(std::memory_order_acquire),
+            state.current_connection_epoch(),
+            state.restore_poll_active.load(std::memory_order_acquire) ||
+              state.restore_stage_running.load(std::memory_order_acquire),
+            queued_operation,
+            true);
+          event_revision = state.recovery_status.event_revision();
+        }
+      }
+
+      std::vector<std::uint8_t> response;
+      append_u64_le(response, ticket.value_or(0));
+      response.push_back(static_cast<std::uint8_t>(result));
+      append_u64_le(response, event_revision);
+      bool parked_ack = false;
+      if (valid_shape && park && result == display_helper::recovery_status::status::failed) {
+        std::lock_guard status_lock(state.recovery_status_mutex);
+        parked_ack = state.recovery_status.ticket() == *ticket &&
+                     state.recovery_status.generation() == state.restore_cancel_generation.load(std::memory_order_acquire) &&
+                     state.recovery_status.epoch() == worker_epoch &&
+                     state.current_connection_epoch() == worker_epoch && state.recovery_status.parked();
+      }
+      response.push_back(parked_ack ? 1u : 0u);
+      send_framed_content(async_pipe, MsgType::RecoveryStatusResult, response);
+      return;
+    }
+
     if (auto exclusions = parse_snapshot_exclude_payload(payload)) {
       state.controller.set_snapshot_exclusions(*exclusions);
     }
@@ -5477,10 +5932,12 @@ namespace {
       }
       BOOST_LOG(info) << "Export golden restore snapshot result=" << (saved ? "true" : "false");
     } else if (type == MsgType::Reset) {
+      state.supersede_recovery_status();
       (void) state.controller.reset_persistence();
       state.retry_apply_on_topology.store(false, std::memory_order_release);
       state.retry_revert_on_topology.store(false, std::memory_order_release);
     } else if (type == MsgType::Disarm) {
+      state.supersede_recovery_status();
       const bool force = !payload.empty() && payload.front() != 0;
       if (!force &&
           state.restore_requested.load(std::memory_order_acquire) &&
@@ -5579,6 +6036,7 @@ namespace {
     auto still_current = [&]() {
       return state.is_connection_epoch_current(connection_epoch);
     };
+    state.supersede_recovery_status();
     // Pipe broken -> Sunshine might have crashed. Begin autonomous restore.
     state.retry_apply_on_topology.store(false, std::memory_order_release);
     state.cancel_delayed_reapply();
@@ -5880,6 +6338,19 @@ int run_legacy_helper(int argc, char *argv[]) {
     state.disarm_reconnect_exit_grace();
 
     const auto connection_epoch = state.begin_connection_epoch();
+    {
+      std::lock_guard lock(state.recovery_status_mutex);
+      state.recovery_notification = [&, connection_epoch](std::uint64_t ticket,
+          display_helper::recovery_status::status status, std::uint64_t event) {
+        if (!state.is_connection_epoch_current(connection_epoch)) return;
+        std::vector<std::uint8_t> payload;
+        append_u64_le(payload, ticket);
+        payload.push_back(static_cast<std::uint8_t>(status));
+        append_u64_le(payload, event);
+        payload.push_back(0); // Events never attest a requested park.
+        send_framed_content(async_pipe, MsgType::RecoveryStatusResult, payload);
+      };
+    }
     // Do not cancel restore polling merely because Sunshine connected. Stream start
     // often opens the helper first for SNAPSHOT_CURRENT/DISARM probes; cancelling
     // here can strand a prior, unconfirmed restore when a physical monitor is
@@ -6006,6 +6477,10 @@ int run_legacy_helper(int argc, char *argv[]) {
     {
       std::lock_guard<std::mutex> lg(state.command_queue_mutex);
       state.command_queue.clear();
+    }
+    {
+      std::lock_guard lock(state.recovery_status_mutex);
+      state.recovery_notification = {};
     }
     async_pipe.stop();
 

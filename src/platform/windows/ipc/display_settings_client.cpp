@@ -96,6 +96,8 @@ namespace platf::display_helper_client {
     RefreshRateResult = 11,  ///< Helper acknowledgement for RefreshRate (payload: [u8 success]).
     MutationState = 13,
     MutationAck = 14,
+    RecoveryStatus = 15,
+    RecoveryStatusResult = 16,
     SnapshotResult = 12,  ///< Helper acknowledgement for SnapshotCurrent (payload: [u8 success]).
     Ping = 0xFE,  ///< Health check message; expects a response.
     Stop = 0xFF  ///< Request helper process to terminate gracefully.
@@ -185,7 +187,8 @@ namespace platf::display_helper_client {
       return type == static_cast<uint8_t>(MsgType::ApplyResult) ||
              type == static_cast<uint8_t>(MsgType::VerificationResult) ||
              type == static_cast<uint8_t>(MsgType::RefreshRateResult) ||
-             type == static_cast<uint8_t>(MsgType::SnapshotResult);
+             type == static_cast<uint8_t>(MsgType::SnapshotResult) ||
+             type == static_cast<uint8_t>(MsgType::RecoveryStatusResult);
     }
 
     void buffer_response(const SessionPtr &session, std::span<const uint8_t> bytes) {
@@ -1727,7 +1730,7 @@ namespace platf::display_helper_client {
     return false;
   }
 
-  bool send_revert(const std::string &json_payload) {
+  bool send_revert(const std::string &json_payload, std::uint64_t *connection_generation_out) {
     BOOST_LOG(debug) << "Display helper IPC: REVERT request queued";
     const auto wait_generation = cancel_or_begin_apply_wait();
     const auto session = connected_session();
@@ -1736,7 +1739,13 @@ namespace platf::display_helper_client {
       return false;
     }
     std::vector<uint8_t> payload(json_payload.begin(), json_payload.end());
-    return send_serialized(session, MsgType::Revert, payload, std::nullopt, wait_generation);
+    return send_serialized(
+      session,
+      MsgType::Revert,
+      payload,
+      std::nullopt,
+      wait_generation,
+      connection_generation_out);
   }
 
   bool send_revert_within(
@@ -1781,6 +1790,119 @@ namespace platf::display_helper_client {
       false,
       operation_cancelled
     );
+  }
+
+  std::optional<RecoveryStatusResult> query_recovery_status(
+    const std::uint64_t ticket,
+    const std::uint64_t expected_connection_generation,
+    const bool park,
+    const std::chrono::milliseconds timeout,
+    const bool receive_only) {
+    if (ticket == 0 || timeout <= std::chrono::milliseconds::zero() || (park && receive_only)) {
+      return std::nullopt;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    const auto session = cached_connected_session_within(deadline);
+    if (!session || expected_connection_generation == 0 ||
+        session->generation != expected_connection_generation) {
+      return std::nullopt;
+    }
+    const auto cancelled = [session] { return !session_is_current(session); };
+    std::unique_lock<std::timed_mutex> response_lock;
+    if (!lock_response_reader_until(session, response_lock, deadline, cancelled)) {
+      return std::nullopt;
+    }
+
+    if (!receive_only) {
+      std::vector<std::uint8_t> payload;
+      append_u64_le(payload, ticket);
+      payload.push_back(park ? 1u : 0u);
+      if (!send_serialized_within(
+          session,
+          MsgType::RecoveryStatus,
+          payload,
+          deadline,
+          std::nullopt,
+          remaining_timeout_ms(deadline),
+          nullptr,
+          false,
+          cancelled)) {
+        return std::nullopt;
+      }
+    }
+
+    std::array<std::uint8_t, 65536> buffer {};
+    while (std::chrono::steady_clock::now() < deadline && !cancelled()) {
+      if (auto buffered = take_buffered_response(
+            session,
+            MsgType::RecoveryStatusResult,
+            [ticket, park](const std::span<const std::uint8_t> bytes) {
+              if (bytes.size() < 19) return false;
+              std::uint64_t response_ticket = 0;
+              for (unsigned int index = 0; index < 8; ++index) {
+                response_ticket |= static_cast<std::uint64_t>(bytes[index + 1]) << (index * 8);
+              }
+              if (response_ticket != ticket) return false;
+              const auto status = bytes[9];
+              return !park || status != static_cast<std::uint8_t>(RecoveryStatus::Failed) || bytes[18] == 1u;
+            })) {
+        const auto raw_status = (*buffered)[9];
+        if (raw_status <= static_cast<std::uint8_t>(RecoveryStatus::Restored) && (*buffered)[18] <= 1u) {
+          std::uint64_t event_revision = 0;
+          for (unsigned int index = 0; index < 8; ++index) {
+            event_revision |= static_cast<std::uint64_t>((*buffered)[index + 10]) << (index * 8);
+          }
+          const bool parked = (*buffered)[18] != 0;
+          if (!park || raw_status != static_cast<std::uint8_t>(RecoveryStatus::Failed) || parked) {
+            return RecoveryStatusResult {ticket, session->generation, static_cast<RecoveryStatus>(raw_status), event_revision, parked};
+          }
+        }
+        continue;
+      }
+
+      const int remaining = remaining_timeout_ms(deadline);
+      if (remaining <= 0) break;
+      std::size_t bytes_read = 0;
+      const auto received = session->pipe->receive(
+        buffer,
+        bytes_read,
+        std::clamp(remaining, 1, 100));
+      if (received == platf::dxgi::PipeResult::Timeout) continue;
+      if (received != platf::dxgi::PipeResult::Success || bytes_read == 0 || cancelled()) {
+        return std::nullopt;
+      }
+      if (consume_mutation_frame(session, std::span<const std::uint8_t>(buffer.data(), bytes_read))) continue;
+      if (buffer[0] == static_cast<std::uint8_t>(MsgType::RecoveryStatusResult)) {
+        if (bytes_read < 19) continue;
+        std::uint64_t response_ticket = 0;
+        for (unsigned int index = 0; index < 8; ++index) {
+          response_ticket |= static_cast<std::uint64_t>(buffer[index + 1]) << (index * 8);
+        }
+        const auto raw_status = buffer[9];
+        const bool parked = buffer[18] == 1u;
+        if (response_ticket == ticket && raw_status <= static_cast<std::uint8_t>(RecoveryStatus::Restored) &&
+            buffer[18] <= 1u &&
+            (!park || raw_status != static_cast<std::uint8_t>(RecoveryStatus::Failed) || parked)) {
+          std::uint64_t event_revision = 0;
+          for (unsigned int index = 0; index < 8; ++index) {
+            event_revision |= static_cast<std::uint64_t>(buffer[index + 10]) << (index * 8);
+          }
+          return RecoveryStatusResult {ticket, session->generation, static_cast<RecoveryStatus>(raw_status), event_revision, parked};
+        }
+        if (response_ticket == ticket && raw_status == static_cast<std::uint8_t>(RecoveryStatus::Failed) && park && !parked) {
+          // A delayed read-only response is not proof that the helper parked
+          // this ticket. Keep waiting for the park request's acknowledgement.
+          continue;
+        }
+        buffer_response(session, std::span<const std::uint8_t>(buffer.data(), bytes_read));
+        continue;
+      }
+      if (buffer[0] == static_cast<std::uint8_t>(MsgType::Ping)) continue;
+      if (is_bufferable_response(buffer[0])) {
+        buffer_response(session, std::span<const std::uint8_t>(buffer.data(), bytes_read));
+      }
+    }
+    return std::nullopt;
   }
 
   bool send_export_golden(const std::string &json_payload) {

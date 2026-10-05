@@ -278,6 +278,20 @@ int main(void) {
   user_service_fixture = false;
 
   CHECK(!check_display_cancellation());
+  char *observe_request[] = {"broker", "display-observe", NULL};
+  CHECK(display_observe_arguments_are_safe(2, observe_request));
+  CHECK(!display_observe_arguments_are_safe(3, observe_request));
+  observe_request[1] = "display-observe-extra";
+  CHECK(!display_observe_arguments_are_safe(2, observe_request));
+  observe_request[1] = "display-observe";
+  CHECK(display_request_uses_bounded_reply(2, observe_request));
+  CHECK(!display_request_is_mutating(observe_request[1]));
+  observe_request[1] = "display-observe-events";
+  CHECK(display_observe_arguments_are_safe(2, observe_request));
+  CHECK(!display_observe_arguments_are_safe(3, observe_request));
+  CHECK(!display_request_uses_bounded_reply(2, observe_request));
+  CHECK(!display_request_is_mutating(observe_request[1]));
+  CHECK(display_request_is_mutating("display-apply"));
   char *focus_request[] = {"broker", "managed-focus", "steam", "42", "3", "15", "0", NULL};
   CHECK(managed_focus_arguments_are_safe(7, focus_request));
   CHECK(!managed_focus_arguments_are_safe(6, focus_request));

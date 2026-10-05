@@ -70,6 +70,8 @@ namespace {
     RefreshRateResult = 11,
     MutationState = 13,
     MutationAck = 14,
+    RecoveryStatus = 15,
+    RecoveryStatusResult = 16,
     SnapshotResult = 12,
     Ping = 0xFE,
     Stop = 0xFF,
@@ -550,6 +552,11 @@ namespace {
       if (it != j.end() && it->is_boolean()) {
         out.always_restore_from_golden = it->get<bool>();
       }
+
+      it = j.find("sunshine_restore_ticket");
+      if (it != j.end() && it->is_number_unsigned()) {
+        out.restore_ticket = it->get<std::uint64_t>();
+      }
     } catch (...) {
     }
   }
@@ -878,6 +885,16 @@ int run_v2_helper(int argc, char *argv[]) {
     }
     response_pipe.send_for_epoch(origin_epoch, MsgType::RefreshRateResult, payload);
   });
+  state_machine.set_recovery_status_result_callback(
+    [&response_pipe](std::uint64_t ticket, display_helper::v2::RecoveryStatus status,
+                     std::uint64_t event_revision, bool parked, std::uint64_t origin_epoch) {
+      std::vector<std::uint8_t> payload;
+      append_u64_le(payload, ticket);
+      payload.push_back(static_cast<std::uint8_t>(status));
+      append_u64_le(payload, event_revision);
+      payload.push_back(parked ? 1u : 0u);
+      response_pipe.send_for_epoch(origin_epoch, MsgType::RecoveryStatusResult, payload);
+    });
 
   display_helper::v2::DebouncedTrigger debouncer(std::chrono::milliseconds(500));
   std::mutex debounce_mutex;
@@ -1070,6 +1087,18 @@ int run_v2_helper(int argc, char *argv[]) {
           revert.connection_epoch = epoch;
           restore_origin_epoch.store(epoch, std::memory_order_release);
           queue.push(revert);
+          break;
+        }
+        case MsgType::RecoveryStatus: {
+          const auto ticket = read_u64_le(payload, 0);
+          const bool valid_shape = ticket && (payload.size() == 8 || payload.size() == 9) &&
+                                   (payload.size() == 8 || payload[8] <= 1);
+          queue.push(display_helper::v2::RecoveryStatusCommand {
+            .ticket = valid_shape ? *ticket : 0,
+            .generation = cancellation.current_generation(),
+            .connection_epoch = epoch,
+            .park = valid_shape && payload.size() == 9 && payload[8] != 0,
+          });
           break;
         }
         case MsgType::Disarm:

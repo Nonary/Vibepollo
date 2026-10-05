@@ -710,6 +710,13 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(error) << "Platform failed to initialize"sv;
   }
 
+#ifdef _WIN32
+  display_helper_integration::start_orphan_recovery_monitor();
+  auto orphan_recovery_monitor_guard = util::fail_guard([]() {
+    display_helper_integration::shutdown_orphan_recovery_monitor();
+  });
+#endif
+
 #ifdef __linux__
   (void) platf::linux_display::backend().initialize();
   auto linux_private_display_guard = util::fail_guard([supervised_machine_host]() {
@@ -1043,6 +1050,8 @@ int main(int argc, char *argv[]) {
   // can publish more overrides. Both use configuration, the display helper,
   // and mail, all of which remain live until these joins complete.
   config::request_deferred_virtual_output_reapply_shutdown();
+  display_helper_integration::shutdown_orphan_recovery_monitor();
+  orphan_recovery_monitor_guard.disable();
   VDISPLAY::request_virtual_display_recovery_shutdown();
   config::join_deferred_virtual_output_reapply_worker();
   VDISPLAY::join_virtual_display_recovery_monitors();

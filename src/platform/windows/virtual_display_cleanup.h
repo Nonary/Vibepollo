@@ -80,6 +80,8 @@ namespace platf::virtual_display_cleanup {
   struct cleanup_result_t {
     bool virtual_displays_removed {false};
     bool helper_revert_dispatched {false};
+    // Only the synchronous database fallback can report this result. The
+    // helper's eventual restoration outcome is unknown to this caller.
     bool database_restore_applied {false};
     // Explicit termination observes an active physical output after recovery.
     bool physical_display_recovered {false};

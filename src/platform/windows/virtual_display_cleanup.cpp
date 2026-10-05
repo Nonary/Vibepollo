@@ -182,9 +182,8 @@ namespace platf::virtual_display_cleanup {
         prefer_golden_if_current_missing,
         cleanup_admission_policy == cleanup_admission_policy_t::override_managed_owners
       );
-      if (result.helper_revert_dispatched) {
-        result.database_restore_applied = true;
-      }
+      // REVERT is asynchronous. A successful send does not establish that the
+      // helper restored or verified the desktop; report dispatch separately.
     };
 
     bool teardown_completed = false;

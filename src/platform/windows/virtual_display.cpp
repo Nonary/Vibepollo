@@ -13,7 +13,9 @@
 #include <filesystem>
 #include <fstream>
 #include <icm.h>
+#include <iterator>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include <boost/algorithm/string/predicate.hpp>
@@ -461,6 +463,7 @@ namespace VDISPLAY {
 
 namespace VDISPLAY_SUNSHINE {
   using VDISPLAY::DRIVER_STATUS;
+  using VDISPLAY::TrackedDisplayCleanupTarget;
   using VDISPLAY::VirtualDisplayCreationResult;
   using VDISPLAY::VirtualDisplayInfo;
   using VDISPLAY::VirtualDisplayRecoveryParams;
@@ -506,6 +509,12 @@ namespace VDISPLAY_SUNSHINE {
   void request_virtual_display_recovery_shutdown();
   void join_virtual_display_recovery_monitors();
   bool is_virtual_display_guid_tracked(const GUID &guid);
+  std::vector<TrackedDisplayCleanupTarget> tracked_display_cleanup_targets();
+  bool tracked_display_cleanup_target_matches(
+    const std::array<std::uint8_t, 16> &guid_bytes,
+    const std::string &device_id);
+  bool remove_tracked_display_cleanup_target(const TrackedDisplayCleanupTarget &target);
+  std::optional<bool> classify_virtual_display_output(const std::string &output_identifier);
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
   std::optional<std::string> resolveVirtualDisplayDeviceIdForClient(const std::string &client_name);
   std::optional<std::string> resolveActiveVirtualDisplayDeviceId(const std::string &preferred_output_identifier, const std::string &client_name, bool allow_any_fallback);
@@ -539,6 +548,7 @@ namespace VDISPLAY_SUDOVDA {
   using VDISPLAY::VirtualDisplayInfo;
   using VDISPLAY::VirtualDisplayRecoveryParams;
   using VDISPLAY::ensure_display_result;
+  using VDISPLAY::TrackedDisplayCleanupTarget;
 
   void closeVDisplayDevice();
   DRIVER_STATUS openVDisplayDevice();
@@ -580,6 +590,12 @@ namespace VDISPLAY_SUDOVDA {
   void request_virtual_display_recovery_shutdown();
   void join_virtual_display_recovery_monitors();
   bool is_virtual_display_guid_tracked(const GUID &guid);
+  std::vector<TrackedDisplayCleanupTarget> tracked_display_cleanup_targets();
+  bool tracked_display_cleanup_target_matches(
+    const std::array<std::uint8_t, 16> &guid_bytes,
+    const std::string &device_id);
+  bool remove_tracked_display_cleanup_target(const TrackedDisplayCleanupTarget &target);
+  std::optional<bool> classify_virtual_display_output(const std::string &output_identifier);
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
   std::optional<std::string> resolveVirtualDisplayDeviceIdForClient(const std::string &client_name);
   std::optional<std::string> resolveActiveVirtualDisplayDeviceId(const std::string &preferred_output_identifier, const std::string &client_name, bool allow_any_fallback);
@@ -939,6 +955,52 @@ namespace VDISPLAY {
     // currently selected backend owns all retained state.
     return VDISPLAY_SUNSHINE::has_retained_ensure_display() ||
            VDISPLAY_SUDOVDA::has_retained_ensure_display();
+  }
+
+  std::vector<TrackedDisplayCleanupTarget> tracked_display_cleanup_targets() {
+    auto result = VDISPLAY_SUNSHINE::tracked_display_cleanup_targets();
+    auto sudovda = VDISPLAY_SUDOVDA::tracked_display_cleanup_targets();
+    result.insert(result.end(), std::make_move_iterator(sudovda.begin()), std::make_move_iterator(sudovda.end()));
+    return result;
+  }
+
+  bool tracked_display_cleanup_target_matches(const TrackedDisplayCleanupTarget &target) {
+    switch (target.backend) {
+      case ensure_display_backend_e::sunshine:
+        return VDISPLAY_SUNSHINE::tracked_display_cleanup_target_matches(target.guid_bytes, target.device_id);
+      case ensure_display_backend_e::sudovda:
+        return VDISPLAY_SUDOVDA::tracked_display_cleanup_target_matches(target.guid_bytes, target.device_id);
+      case ensure_display_backend_e::none:
+        return false;
+    }
+    return false;
+  }
+
+  bool remove_tracked_display_cleanup_target(const TrackedDisplayCleanupTarget &target) {
+    switch (target.backend) {
+      case ensure_display_backend_e::sunshine:
+        return VDISPLAY_SUNSHINE::remove_tracked_display_cleanup_target(target);
+      case ensure_display_backend_e::sudovda:
+        return VDISPLAY_SUDOVDA::remove_tracked_display_cleanup_target(target);
+      case ensure_display_backend_e::none:
+        return false;
+    }
+    return false;
+  }
+
+  std::optional<bool> is_any_managed_virtual_display_output(const std::string &output_identifier) {
+    if (output_identifier.empty()) return std::nullopt;
+    const auto tracked_targets = tracked_display_cleanup_targets();
+    if (std::any_of(tracked_targets.begin(), tracked_targets.end(), [&](const auto &target) {
+          return boost::iequals(target.device_id, output_identifier);
+        })) {
+      return true;
+    }
+    const auto sunshine = VDISPLAY_SUNSHINE::classify_virtual_display_output(output_identifier);
+    const auto sudovda = VDISPLAY_SUDOVDA::classify_virtual_display_output(output_identifier);
+    if ((sunshine && *sunshine) || (sudovda && *sudovda)) return true;
+    if (!sunshine || !sudovda) return std::nullopt;
+    return false;
   }
 
   void cleanup_retained_ensure_display() {

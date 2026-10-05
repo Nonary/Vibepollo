@@ -9,6 +9,7 @@ Source overrides allow each production side of the recovery behavior to be
 checked independently against a before/after file. Windows APIs are not used.
 """
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -32,7 +33,12 @@ ipc_path = pathlib.Path(args[3]) if len(args) > 3 else root / "src/platform/wind
 
 
 def function(source, signature):
-    start = source.index(signature)
+    # Formatting may wrap a production signature without changing its API.
+    tokens = re.findall(r"[A-Za-z_]\w*|::|[^\w\s]", signature)
+    match = re.search(r"\s*".join(re.escape(token) for token in tokens), source)
+    if match is None:
+        raise ValueError(f"Production function not found: {signature}")
+    start = match.start()
     brace = source.index("{", start)
     depth = 1
     end = brace + 1
@@ -72,10 +78,29 @@ ping_send = function(ipc_path.read_text(), "bool send_ping(std::optional<bool> s
 config_source = (root / "src/config.cpp").read_text()
 assert "display_helper_integration::revert(true, false, dd_was_enabled && dd_disabled_now);" in config_source, \
     "configuration disable transition must be the explicit disabled-recovery caller"
-has_disabled_recovery_parameter = "allow_disabled_recovery" in integration_source[
-    integration_source.index("bool revert(const bool prefer_golden_if_current_missing"):integration_source.index("{", integration_source.index("bool revert(const bool prefer_golden_if_current_missing"))
-]
+has_disabled_recovery_parameter = "allow_disabled_recovery" in integration[:integration.index("{")]
+has_recovery_ticket_parameter = "RecoveryTicket" in integration[:integration.index("{")]
 integration_wrapper = "" if has_disabled_recovery_parameter else "\n  bool revert(bool prefer, bool override_owner, bool) { return revert(prefer, override_owner); }\n"
+ticket_declaration = "" if not has_recovery_ticket_parameter else r'''
+  struct RecoveryTicket {
+    std::uint64_t id = 0;
+    std::uint64_t connection_generation = 0;
+  };
+  bool revert(bool, bool, bool, RecoveryTicket * = nullptr);
+  struct FakeOrphanRecoveryMonitor {
+    struct incident_t {
+      RecoveryTicket ticket;
+      std::vector<VDISPLAY::TrackedDisplayCleanupTarget> targets;
+      std::set<std::string> known_physical_output_ids;
+    };
+    std::optional<incident_t> published;
+    void publish(incident_t incident) { published = std::move(incident); }
+  };
+  FakeOrphanRecoveryMonitor &orphan_recovery_monitor() {
+    static FakeOrphanRecoveryMonitor monitor;
+    return monitor;
+  }
+'''
 
 program = r'''
 #include <atomic>
@@ -86,6 +111,7 @@ program = r'''
 #include <iostream>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <thread>
@@ -127,9 +153,24 @@ namespace remote_display_topology {
   Topology &instance() { static Topology topology; return topology; }
 }
 namespace proc { void defer_display_revert() {} }
-namespace VDISPLAY { void cancel_all_virtual_display_recovery_monitors() { ++integration_fake::cancels; } }
+namespace VDISPLAY {
+  enum class ensure_display_backend_e { none, sunshine, sudovda };
+  struct TrackedDisplayCleanupTarget {
+    std::array<std::uint8_t, 16> guid_bytes {};
+    std::string device_id;
+    ensure_display_backend_e backend {ensure_display_backend_e::none};
+  };
+  std::vector<TrackedDisplayCleanupTarget> targets;
+  std::vector<TrackedDisplayCleanupTarget> tracked_display_cleanup_targets() { return targets; }
+  void cancel_all_virtual_display_recovery_monitors() { ++integration_fake::cancels; }
+}
 namespace platf::display_helper_client {
-  bool send_revert(std::string) { ++integration_fake::revert_sends; return integration_fake::send_result; }
+  bool send_revert(std::string, std::uint64_t *connection_generation = nullptr) {
+    ++integration_fake::revert_sends;
+    if (connection_generation && integration_fake::send_result) *connection_generation = 7;
+    VDISPLAY::targets.push_back({{}, "created-during-dispatch"});
+    return integration_fake::send_result;
+  }
 }
 namespace {
   std::mutex &pending_apply_execution_mutex() { return integration_fake::execution_mutex; }
@@ -145,7 +186,10 @@ namespace {
     ++integration_fake::helper_starts;
     return integration_fake::helper_start_result;
   }
-  std::string build_revert_payload(bool prefer) { integration_fake::last_prefer_golden = prefer; return "{}"; }
+  std::string build_revert_payload(bool prefer, std::optional<std::uint64_t> = std::nullopt) {
+    integration_fake::last_prefer_golden = prefer; return "{}";
+  }
+  [[maybe_unused]] std::set<std::string> capture_known_physical_output_ids() { return {"physical"}; }
   long long now_steady_us() { return 42; }
   auto &g_restore_expected = integration_fake::restore_expected;
   auto &g_last_revert_us = integration_fake::last_revert;
@@ -153,7 +197,7 @@ namespace {
   void clear_active_session() { ++integration_fake::active_clears; }
 }
 namespace display_helper_integration {
-''' + integration + r'''
+''' + ticket_declaration + integration + r'''
 ''' + integration_wrapper + r'''
 }
 
@@ -204,8 +248,38 @@ static void test_failed_helper_start_and_failed_send_never_report_success() {
   reset(); send_result = false;
   assert(!display_helper_integration::revert(false, true, false));
   assert(helper_starts == 1 && revert_sends == 1 && !restore_expected.load());
+#if HAS_RECOVERY_TICKET
+  // A failed dispatch consumes its identity so a delayed completion cannot
+  // be attributed to a later request.
+  assert(restore_generation.load() == 1);
+#else
   assert(restore_generation.load() == 0);
+#endif
 }
+
+#if HAS_RECOVERY_TICKET
+static void test_incident_captures_targets_before_dispatch_and_rejects_failed_or_override_dispatch() {
+  using namespace integration_fake;
+  auto &monitor = display_helper_integration::orphan_recovery_monitor();
+  reset(); VDISPLAY::targets = {{{}, "pre-existing-orphan", VDISPLAY::ensure_display_backend_e::sunshine}};
+  monitor.published.reset();
+  display_helper_integration::RecoveryTicket ticket;
+  assert(display_helper_integration::revert(true, false, false, &ticket));
+  assert(ticket.id == 1 && ticket.connection_generation == 7);
+  assert(monitor.published && monitor.published->ticket.id == ticket.id);
+  assert(monitor.published->targets.size() == 1);
+  assert(monitor.published->targets.front().device_id == "pre-existing-orphan");
+  assert(monitor.published->targets.front().backend == VDISPLAY::ensure_display_backend_e::sunshine);
+
+  reset(); send_result = false; monitor.published.reset();
+  assert(!display_helper_integration::revert(true, false, false, &ticket));
+  assert(ticket.id == 0 && ticket.connection_generation == 0 && !monitor.published);
+
+  reset(); monitor.published.reset();
+  assert(display_helper_integration::revert(true, true, false, &ticket));
+  assert(!monitor.published);
+}
+#endif
 
 struct ServiceState {
   enum class RestoreWindow { Primary, Event };
@@ -247,6 +321,7 @@ struct ServiceState {
   void cancel_delayed_reapply() { ++reapply_cancels; }
   void cancel_post_apply_tasks() {}
   void request_restore_cancel() {}
+  void supersede_recovery_status() {}
   void reset_restore_backoff() {}
   void reset_pending_golden_session_fallbacks() {}
   void stop_and_join(std::jthread &, const char *) {}
@@ -464,6 +539,9 @@ int main() {
   test_ordinary_disabled_revert_does_not_start_or_send();
   test_foreign_owner_defers_without_touching_recovery();
   test_failed_helper_start_and_failed_send_never_report_success();
+#if HAS_RECOVERY_TICKET
+  test_incident_captures_targets_before_dispatch_and_rejects_failed_or_override_dispatch();
+#endif
   test_legacy_stale_epoch_and_no_mutation_paths();
   test_legacy_false_policy_disarms_without_changing_preference();
   test_legacy_explicit_restore_bypasses_policy_and_recent_apply_grace();
@@ -484,5 +562,5 @@ with tempfile.TemporaryDirectory(prefix="display-helper-recovery-") as temporary
         retained_source.parent.mkdir(parents=True, exist_ok=True)
         retained_source.write_text(program)
     binary = directory / "test"
-    subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", f"-DHAS_SETTLEMENT={int(has_settlement)}", f"-DHAS_DISABLED_RECOVERY={int(has_disabled_recovery_parameter)}", f"-DHAS_PRESERVE={int(has_preserve)}", "-I", str(root), str(source), "-o", str(binary)], check=True)
+    subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", f"-DHAS_SETTLEMENT={int(has_settlement)}", f"-DHAS_DISABLED_RECOVERY={int(has_disabled_recovery_parameter)}", f"-DHAS_RECOVERY_TICKET={int(has_recovery_ticket_parameter)}", f"-DHAS_PRESERVE={int(has_preserve)}", "-I", str(root), str(source), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

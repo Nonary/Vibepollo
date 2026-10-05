@@ -520,6 +520,10 @@ sunshine_register_component(NAME test_component_state_storage TEST_SOURCE unit/t
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/state_storage_policy.cpp"
     LINK_LIBRARIES Boost::property_tree nlohmann_json::nlohmann_json)
 sunshine_register_component(NAME test_component_virtual_display_scale TEST_SOURCE unit/test_virtual_display_scale.cpp)
+sunshine_register_component(NAME test_component_legacy_restore_event_policy TEST_SOURCE unit/test_legacy_restore_event_policy.cpp)
+sunshine_register_component(NAME test_component_recovery_status_policy TEST_SOURCE unit/test_recovery_status_policy.cpp)
+sunshine_register_component(NAME test_component_wake_recovery_cleanup_policy
+    TEST_SOURCE unit/platform/windows/test_wake_recovery_cleanup_policy.cpp)
 sunshine_register_component(NAME test_component_http_auth TEST_SOURCE unit/test_http_auth.cpp
     EXTRA_TEST_SOURCES "${CMAKE_CURRENT_LIST_DIR}/unit/test_confighttp.cpp"
     PRODUCT_SOURCES
@@ -594,6 +598,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     sunshine_register_component(NAME test_component_linux_kmsgrab_framebuffer TEST_SOURCE unit/platform/linux/test_kmsgrab_framebuffer.cpp)
     sunshine_register_component(NAME test_component_linux_private_display_cleanup_policy TEST_SOURCE unit/platform/linux/test_private_display_cleanup_policy.cpp
         LINK_LIBRARIES nlohmann_json::nlohmann_json)
+    sunshine_register_component(NAME test_component_linux_private_display_recovery_policy TEST_SOURCE unit/platform/linux/test_private_display_recovery_policy.cpp)
     sunshine_register_component(NAME test_component_linux_display_restore_dispatcher TEST_SOURCE unit/platform/linux/test_display_restore_dispatcher.cpp
         LINK_LIBRARIES Threads::Threads)
     sunshine_register_component(NAME test_component_linux_render_device TEST_SOURCE unit/platform/linux/test_render_device.cpp)
@@ -644,6 +649,39 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_helper_recovery.py"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}" --compiler "${CMAKE_CXX_COMPILER}")
         set_tests_properties(test_component_display_helper_recovery PROPERTIES LABELS "component")
+        add_test(NAME test_component_recovery_status_integration
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_recovery_status_integration.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+        set_tests_properties(test_component_recovery_status_integration PROPERTIES LABELS "component")
+        add_test(NAME test_component_recovery_status_liveness
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_recovery_status_liveness.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_recovery_status_liveness PROPERTIES LABELS "component")
+        add_test(NAME test_component_recovery_event_notifications
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_recovery_event_notifications.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_recovery_event_notifications PROPERTIES LABELS "component")
+        if(WAYLAND_FOUND)
+            add_test(NAME test_component_linux_display_event_observer
+                COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                    "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_display_event_observer.py"
+                    "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_BINARY_DIR}/generated-src"
+                    "${CMAKE_C_COMPILER}" "${CMAKE_CXX_COMPILER}")
+            set_tests_properties(test_component_linux_display_event_observer PROPERTIES LABELS "component")
+        endif()
+        add_test(NAME test_component_wake_recovery_observer
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_wake_recovery_observer.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_wake_recovery_observer PROPERTIES LABELS "component")
+        add_test(NAME test_component_recovery_status_ipc
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_recovery_status_ipc.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_recovery_status_ipc PROPERTIES LABELS "component")
         add_test(NAME test_component_linux_global_limiter
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_global_limiter.py")

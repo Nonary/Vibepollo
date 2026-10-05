@@ -5,6 +5,7 @@
 #include "src/platform/windows/virtual_display_policy.h"
 
 #include <chrono>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -221,6 +222,7 @@ namespace VDISPLAY {
   );
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
   bool is_virtual_display_output(const std::string &output_identifier);
+  std::optional<bool> is_any_managed_virtual_display_output(const std::string &output_identifier);
   bool is_virtual_display_selection(const std::string &output_identifier);
 
   uint64_t client_uuid_to_virtual_display_id(const GUID &client_guid);
@@ -243,6 +245,24 @@ namespace VDISPLAY {
     int height;
   };
 
+  enum class ensure_display_backend_e : std::uint8_t {
+    none,
+    sunshine,
+    sudovda,
+  };
+
+  struct TrackedDisplayCleanupTarget {
+    std::array<std::uint8_t, 16> guid_bytes {};
+    std::string device_id;
+    ensure_display_backend_e backend = ensure_display_backend_e::none;
+  };
+
+  // Snapshot exact in-process managed identities with their resolved driver
+  // lease device IDs. Targets without a resolved identity are omitted.
+  std::vector<TrackedDisplayCleanupTarget> tracked_display_cleanup_targets();
+  bool tracked_display_cleanup_target_matches(const TrackedDisplayCleanupTarget &target);
+  bool remove_tracked_display_cleanup_target(const TrackedDisplayCleanupTarget &target);
+
   bool isVirtualDisplayDriverInstalled();
   std::vector<VirtualDisplayInfo> enumerateVirtualDisplays();
 
@@ -256,12 +276,6 @@ namespace VDISPLAY {
     request_retained,
     target_enumerated,
     target_ready,
-  };
-
-  enum class ensure_display_backend_e : std::uint8_t {
-    none,
-    sunshine,
-    sudovda,
   };
 
   struct ensure_display_result {

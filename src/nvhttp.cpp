@@ -211,6 +211,11 @@ namespace nvhttp {
     forget_remote_owner(client_uuid, remote_session::role_e::monitor, generation);
   }
 
+  bool has_remote_role_owner() {
+    std::lock_guard lock {remote_role_owners_mutex};
+    return !remote_role_owners.empty();
+  }
+
   void reconcile_remote_monitor_owners() {
     std::vector<remote_role_owner_t> monitors;
     {

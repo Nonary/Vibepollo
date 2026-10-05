@@ -1236,6 +1236,20 @@ static bool managed_focus_arguments_are_safe(int argc, char **argv) {
          parse_number(argv[6], 0, 1, &first);
 }
 
+static bool display_observe_arguments_are_safe(int argc, char **argv) {
+  return argc == 2 && (!strcmp(argv[1], "display-observe") || !strcmp(argv[1], "display-observe-events"));
+}
+
+static bool display_request_uses_bounded_reply(int argc, char **argv) {
+  return argc >= 2 && (!strcmp(argv[1], "display-query") ||
+                       !strcmp(argv[1], "display-apply") ||
+                       (argc == 2 && !strcmp(argv[1], "display-observe")));
+}
+
+static bool display_request_is_mutating(const char *operation) {
+  return operation && !strcmp(operation, "display-apply");
+}
+
 static const char *steam_big_picture_uri(const char *command) {
   // These are the two commands shipped in the default Linux apps.json. Treat
   // them as fixed Steam actions: a fresh install creates its command manifest
@@ -1259,7 +1273,7 @@ static int execute_request(int argc, char **argv,
                            gid_t service_gid) {
   if (argc < 2) return 2;
   enum operation {
-    DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_POWER, DISPLAY_WAKE, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
+    DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_OBSERVE, DISPLAY_POWER, DISPLAY_WAKE, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
     AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS, MANAGED_FOCUS,
     PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, APP, APP_WAYLAND_HDR
   } operation;
@@ -1278,6 +1292,9 @@ static int execute_request(int argc, char **argv,
     if (!vibepollo_stream_environment_is_safe(stream_environment_count, stream_environment)) return 126;
   }
   if (!strcmp(argv[1], "display-query") && argc == 2) operation = DISPLAY_QUERY;
+#ifdef VIBEPOLLO_HAVE_WAYLAND_OBSERVER
+  else if (display_observe_arguments_are_safe(argc, argv)) operation = DISPLAY_OBSERVE;
+#endif
   else if (!strcmp(argv[1], "display-power") && argc == 2) operation = DISPLAY_POWER;
   else if (!strcmp(argv[1], "display-wake") && argc == 2) operation = DISPLAY_WAKE;
   else if (!strcmp(argv[1], "display-apply") && display_apply_arguments_are_safe(argc, argv)) operation = DISPLAY_APPLY;
@@ -1347,6 +1364,17 @@ static int execute_request(int argc, char **argv,
       execv("/usr/bin/kscreen-doctor", arguments);
       break;
     }
+    case DISPLAY_OBSERVE:
+#ifdef VIBEPOLLO_HAVE_WAYLAND_OBSERVER
+      {
+        char *const arguments[] = {"vibepollo-display-observer",
+          !strcmp(argv[1], "display-observe-events") ? "--watch" : NULL, NULL};
+        execv("/usr/libexec/vibeshine/vibepollo-display-observer", arguments);
+        break;
+      }
+#else
+      break;
+#endif
     case DISPLAY_APPLY:
       argv[1] = "kscreen-doctor";
       execv("/usr/bin/kscreen-doctor", &argv[1]);
@@ -1885,9 +1913,8 @@ int main(int argc, char **argv) {
     free(packet);
     return 126;
   }
-  const bool display_request = request.argc >= 2 &&
-    (!strcmp(request.argv[1], "display-query") || !strcmp(request.argv[1], "display-apply"));
-  const bool display_mutating = request.argc >= 2 && !strcmp(request.argv[1], "display-apply");
+  const bool display_request = display_request_uses_bounded_reply(request.argc, request.argv);
+  const bool display_mutating = request.argc >= 2 && display_request_is_mutating(request.argv[1]);
   const int result = relay_worker(STDIN_FILENO, worker, output_fd, &identity, service_gid,
                                  display_request, display_mutating);
   free(packet);

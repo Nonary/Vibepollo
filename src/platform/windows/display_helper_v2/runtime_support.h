@@ -426,6 +426,16 @@ namespace display_helper::v2 {
       recovery_deadline_.reset();
     }
 
+    /// Refresh transport liveness without cancelling a restore deadline that
+    /// was already armed after a missed heartbeat.
+    void record_liveness_ping() {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!armed_) {
+        return;
+      }
+      last_ping_ = clock_.now();
+    }
+
     bool check_timeout() {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!armed_) {

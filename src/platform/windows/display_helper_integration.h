@@ -33,6 +33,25 @@ namespace display_helper_integration {
     std::chrono::steady_clock::time_point startup_deadline {};
   };
 
+  struct RecoveryTicket {
+    std::uint64_t id {0};
+    std::uint64_t connection_generation {0};
+  };
+
+  enum class RecoveryStatus {
+    Unknown,
+    Active,
+    Failed,
+    Restored,
+  };
+  struct RecoveryStatusSnapshot {
+    std::uint64_t ticket {0};
+    std::uint64_t connection_generation {0};
+    RecoveryStatus status {RecoveryStatus::Unknown};
+    std::uint64_t event_revision {0};
+    bool parked {false};
+  };
+
   // Launch the helper (if needed) and process the provided builder request.
   // Returns true if the helper accepted the command; false to allow fallback.
   // A cancellation predicate interrupts helper IPC waits and disables the
@@ -69,8 +88,23 @@ namespace display_helper_integration {
   bool revert(
     bool prefer_golden_if_current_missing = true,
     bool override_managed_ownership = false,
-    bool allow_disabled_recovery = false
+    bool allow_disabled_recovery = false,
+    RecoveryTicket *recovery_ticket = nullptr
   );
+
+  std::optional<RecoveryStatusSnapshot> query_recovery_status(
+    const RecoveryTicket &ticket,
+    bool park,
+    std::chrono::milliseconds timeout,
+    bool receive_only = false);
+
+  // Start the incident-scoped observer before streaming begins. It remains
+  // idle until a tracked REVERT publishes a recovery ticket.
+  void start_orphan_recovery_monitor();
+
+  // Stop and join the event-driven failed-restore observer before
+  // virtual-display/global teardown begins.
+  void shutdown_orphan_recovery_monitor();
 
   // Attempt to cancel any pending restore/revert requests on a running helper.
   // Returns true if a DISARM command was sent successfully.

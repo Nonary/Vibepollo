@@ -13,12 +13,14 @@
   #include <cmath>
   #include <condition_variable>
   #include <cstdint>
+  #include <cstring>
   #include <exception>
   #include <filesystem>
   #include <functional>
   #include <limits>
   #include <mutex>
   #include <optional>
+  #include <set>
   #include <string>
   #include <string_view>
   #include <thread>
@@ -45,16 +47,20 @@
   #include "src/platform/windows/ipc/process_handler.h"
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
+  #include "src/platform/windows/virtual_display_cleanup.h"
   #include "src/process.h"
   #include "src/remote_display_topology.h"
   #include "src/state_storage.h"
   #include "src/stream.h"
   #include "src/webrtc_stream.h"
+  #include "src/nvhttp.h"
+  #include "src/platform/windows/wake_recovery_cleanup_policy.h"
 
   #include <display_device/noop_audio_context.h>
   #include <display_device/noop_settings_persistence.h>
   #include <display_device/windows/persistent_state.h>
   #include <display_device/windows/settings_manager.h>
+  #include <display_device/windows/settings_utils.h>
   #include <display_device/windows/types.h>
   #include <tlhelp32.h>
 
@@ -918,6 +924,399 @@ namespace {
   // instead of running after it has already expired.
   static std::atomic<std::int64_t> g_stream_start_deadline_us {0};
 
+  struct physical_settings_snapshot_t {
+    display_device::DisplaySettingsSnapshot settings;
+  };
+
+  static std::set<std::string> capture_known_physical_output_ids() {
+    try {
+      auto api = std::make_shared<display_device::WinApiLayer>();
+      const auto topology_data = api->queryDisplayConfig(display_device::QueryType::All);
+      if (!topology_data) return {};
+      std::set<std::string> result;
+      for (const auto &path : topology_data->m_paths) {
+        const auto device_id = api->getDeviceId(path);
+        if (device_id.empty()) return {};
+        const auto managed = VDISPLAY::is_any_managed_virtual_display_output(device_id);
+        if (!managed) return {};
+        if (!*managed) result.insert(device_id);
+      }
+      return result;
+    } catch (...) {
+      return {};
+    }
+  }
+
+  static std::optional<physical_settings_snapshot_t> capture_physical_settings_snapshot() {
+    try {
+      auto api = std::make_shared<display_device::WinApiLayer>();
+      auto win_dd = std::make_shared<display_device::WinDisplayDevice>(api);
+      auto dd = std::make_shared<display_device::ImpersonatingDisplayDevice>(win_dd);
+      physical_settings_snapshot_t result;
+      result.settings.m_topology = dd->getCurrentTopology();
+      std::set<std::string> physical_ids;
+      for (auto &group : result.settings.m_topology) {
+        std::vector<std::string> physical_group;
+        physical_group.reserve(group.size());
+        for (const auto &id : group) {
+          const auto managed = VDISPLAY::is_any_managed_virtual_display_output(id);
+          if (!managed) return std::nullopt;
+          if (*managed) continue;
+          physical_group.push_back(id);
+          physical_ids.insert(id);
+        }
+        group = std::move(physical_group);
+      }
+      std::erase_if(result.settings.m_topology, [](const auto &group) { return group.empty(); });
+      if (physical_ids.empty()) return std::nullopt;
+
+      result.settings.m_modes = dd->getCurrentDisplayModes(physical_ids);
+      if (result.settings.m_modes.size() != physical_ids.size()) return std::nullopt;
+      result.settings.m_hdr_states = dd->getCurrentHdrStates(physical_ids);
+      result.settings.m_primary_device = display_device::win_utils::getPrimaryDevice(*dd, result.settings.m_topology);
+      if (result.settings.m_primary_device.empty()) return std::nullopt;
+
+      const auto topology_data = api->queryDisplayConfig(display_device::QueryType::Active);
+      if (!topology_data) return std::nullopt;
+      for (const auto &path : topology_data->m_paths) {
+        const auto device_id = api->getDeviceId(path);
+        if (device_id.empty()) return std::nullopt;
+        const auto managed = VDISPLAY::is_any_managed_virtual_display_output(device_id);
+        if (!managed) return std::nullopt;
+        if (*managed || !physical_ids.contains(device_id)) continue;
+        const auto mode = std::find_if(
+          topology_data->m_modes.begin(),
+          topology_data->m_modes.end(),
+          [&](const DISPLAYCONFIG_MODE_INFO &candidate) {
+            return candidate.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE &&
+                   candidate.id == path.sourceInfo.id &&
+                   candidate.adapterId.HighPart == path.sourceInfo.adapterId.HighPart &&
+                   candidate.adapterId.LowPart == path.sourceInfo.adapterId.LowPart;
+          });
+        if (mode == topology_data->m_modes.end()) continue;
+        const auto &source = mode->sourceMode;
+        result.settings.m_origins[device_id] = {source.position.x, source.position.y};
+      }
+      if (result.settings.m_origins.size() != physical_ids.size()) return std::nullopt;
+      return result;
+    } catch (...) {
+      return std::nullopt;
+    }
+  }
+
+  static bool physical_settings_match(
+    const physical_settings_snapshot_t &expected,
+    const physical_settings_snapshot_t &actual) {
+    return expected.settings.m_topology == actual.settings.m_topology &&
+           expected.settings.m_modes == actual.settings.m_modes &&
+           expected.settings.m_hdr_states == actual.settings.m_hdr_states &&
+           expected.settings.m_primary_device == actual.settings.m_primary_device &&
+           expected.settings.m_origins == actual.settings.m_origins;
+  }
+
+  static bool restore_physical_settings_snapshot(const physical_settings_snapshot_t &snapshot) {
+    try {
+      auto api = std::make_shared<display_device::WinApiLayer>();
+      auto win_dd = std::make_shared<display_device::WinDisplayDevice>(api);
+      display_device::ImpersonatingDisplayDevice dd(win_dd);
+      if (!dd.setTopology(snapshot.settings.m_topology)) return false;
+      if (!dd.setDisplayModesTemporary(snapshot.settings.m_modes)) return false;
+      for (const auto &[device_id, origin] : snapshot.settings.m_origins) {
+        if (!dd.setDisplayOrigin(device_id, origin)) return false;
+      }
+      if (!dd.setAsPrimary(snapshot.settings.m_primary_device)) return false;
+      if (!snapshot.settings.m_hdr_states.empty() && !dd.setHdrStates(snapshot.settings.m_hdr_states)) return false;
+      const auto verified = capture_physical_settings_snapshot();
+      return verified && physical_settings_match(snapshot, *verified);
+    } catch (...) {
+      return false;
+    }
+  }
+
+  static std::string cleanup_target_key(const VDISPLAY::TrackedDisplayCleanupTarget &target) {
+    constexpr char kHex[] = "0123456789abcdef";
+    std::string key = std::to_string(static_cast<unsigned int>(target.backend));
+    key.push_back(':');
+    key.append(target.device_id);
+    key.push_back(':');
+    for (const auto byte : target.guid_bytes) {
+      key.push_back(kHex[byte >> 4]);
+      key.push_back(kHex[byte & 0x0f]);
+    }
+    return key;
+  }
+
+  using display_helper_integration::RecoveryTicket;
+  using display_helper_integration::RecoveryStatus;
+  using display_helper_integration::has_pending_apply;
+
+  class OrphanRecoveryMonitor {
+  public:
+    struct incident_t {
+      RecoveryTicket ticket;
+      std::vector<VDISPLAY::TrackedDisplayCleanupTarget> targets;
+      std::set<std::string> known_physical_output_ids;
+    };
+
+    void start() {
+      std::lock_guard lock(mutex_);
+      if (started_ || stopping_) return;
+      started_ = true;
+      worker_ = std::jthread([this](std::stop_token stop) { run(stop); });
+    }
+
+    void publish(incident_t incident) {
+      if (incident.ticket.id == 0 || incident.ticket.connection_generation == 0 || incident.targets.empty() ||
+          incident.known_physical_output_ids.empty()) return;
+      std::lock_guard lock(mutex_);
+      if (!started_ || stopping_) return;
+      incident_ = std::move(incident);
+      ++incident_revision_;
+      cv_.notify_all();
+    }
+
+    void stop() {
+      std::jthread worker;
+      {
+        std::lock_guard lock(mutex_);
+        if (!started_ || stopping_) return;
+        stopping_ = true;
+        incident_.reset();
+        worker_.request_stop();
+        worker = std::move(worker_);
+        cv_.notify_all();
+      }
+      if (worker.joinable() && worker.get_id() != std::this_thread::get_id()) worker.join();
+    }
+
+  private:
+    bool current_incident(std::uint64_t revision, std::stop_token stop) {
+      std::lock_guard lock(mutex_);
+      return !stop.stop_requested() && !stopping_ && incident_ && incident_revision_ == revision;
+    }
+
+    bool owners_clear_under_lifecycle() {
+      return rtsp_stream::session_count_no_cleanup() == 0 &&
+             !rtsp_stream::has_pending_launch_or_startup() &&
+             stream::session::running_sessions.load(std::memory_order_acquire) == 0 &&
+             stream::session::teardown_sessions.load(std::memory_order_acquire) == 0 &&
+             !webrtc_stream::has_active_or_pending_sessions() &&
+             !webrtc_stream::has_capture_active() &&
+             !webrtc_stream::has_teardown_in_progress() &&
+             !stream::session::has_capture_runtime_owner() &&
+             proc::proc.current_app_id() <= 0 &&
+             !nvhttp::has_remote_role_owner() &&
+             !platf::virtual_display_cleanup::in_progress() &&
+             !remote_display_topology::instance().has_live_managed_client_identity() &&
+             !VDISPLAY::has_retained_ensure_display() &&
+             !has_pending_apply();
+    }
+
+    void run_incident(const incident_t &incident, std::uint64_t revision, std::stop_token stop) {
+      using namespace std::chrono_literals;
+      constexpr auto kRetryPause = 1s;
+      constexpr auto kStatusTimeout = 250ms;
+      bool event_hint_pending = false;
+      platf::wake_recovery_cleanup_policy::state_t policy;
+      std::set<std::string> target_ids;
+      for (const auto &target : incident.targets) target_ids.insert(cleanup_target_key(target));
+      if (!policy.begin(incident.ticket.id, std::move(target_ids))) return;
+      if (!policy.set_event_baseline(incident.ticket.id, 0)) return;
+
+      while (!stop.stop_requested() && current_incident(revision, stop)) {
+        if (!g_restore_expected.load(std::memory_order_acquire) ||
+            g_restore_generation.load(std::memory_order_acquire) != incident.ticket.id) return;
+        // The existing helper event handler publishes changes. Wait for those
+        // messages instead of polling its recovery state or expiring failures.
+        const auto status = query_recovery_status(incident.ticket, false, kStatusTimeout, true);
+        if (!status || status->status == RecoveryStatus::Unknown) {
+          std::unique_lock lock(mutex_);
+          cv_.wait_for(lock, kRetryPause, [&] {
+            return stop.stop_requested() || stopping_ || incident_revision_ != revision;
+          });
+          continue;
+        }
+        if (status->event_revision != 0) {
+          event_hint_pending = policy.note_external_event(
+            incident.ticket.id,
+            status->event_revision,
+            false) || event_hint_pending;
+        }
+
+        switch (status->status) {
+          case RecoveryStatus::Restored:
+            return;
+          case RecoveryStatus::Active:
+            (void) policy.update_status(incident.ticket.id, platf::wake_recovery_cleanup_policy::helper_status_t::active);
+            break;
+          case RecoveryStatus::Failed:
+            (void) policy.update_status(incident.ticket.id, platf::wake_recovery_cleanup_policy::helper_status_t::failed);
+            break;
+          case RecoveryStatus::Unknown:
+            return;
+        }
+        if (!event_hint_pending || status->status != RecoveryStatus::Failed) {
+          std::unique_lock lock(mutex_);
+          cv_.wait_for(lock, kRetryPause, [&] {
+            return stop.stop_requested() || stopping_ || incident_revision_ != revision;
+          });
+          continue;
+        }
+
+        // Admission never waits behind lifecycle work: retain this event hint
+        // until another helper update arrives for the same incident.
+        std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex(), std::defer_lock);
+        if (!lifecycle_lock.try_lock()) {
+          std::this_thread::sleep_for(kRetryPause);
+          continue;
+        }
+        if (!current_incident(revision, stop) ||
+            !g_restore_expected.load(std::memory_order_acquire) ||
+            g_restore_generation.load(std::memory_order_acquire) != incident.ticket.id ||
+            !owners_clear_under_lifecycle()) {
+          lifecycle_lock.unlock();
+          std::this_thread::sleep_for(kRetryPause);
+          continue;
+        }
+
+        // Serialize against helper APPLY/REVERT/DISARM work. Nonblocking
+        // admission while lifecycle is held avoids lock-order deadlocks.
+        std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::defer_lock);
+        if (!execution_lock.try_lock()) {
+          lifecycle_lock.unlock();
+          std::this_thread::sleep_for(kRetryPause);
+          continue;
+        }
+
+        // Parking is only requested after the helper already reports a known
+        // failed result. A Failed reply confirms all helper mutation workers
+        // and queued retries for this ticket are quiescent.
+        const auto parked = query_recovery_status(incident.ticket, true, kStatusTimeout);
+        if (!parked || parked->status != RecoveryStatus::Failed || !parked->parked) {
+          if (parked && parked->status == RecoveryStatus::Restored) return;
+          execution_lock.unlock();
+          lifecycle_lock.unlock();
+          std::this_thread::sleep_for(kRetryPause);
+          continue;
+        }
+        (void) policy.update_status(incident.ticket.id, platf::wake_recovery_cleanup_policy::helper_status_t::failed);
+
+        bool retry_physical_verification = false;
+        for (const auto &target : incident.targets) {
+          if (!current_incident(revision, stop) ||
+              !g_restore_expected.load(std::memory_order_acquire) ||
+              g_restore_generation.load(std::memory_order_acquire) != incident.ticket.id) {
+            return;
+          }
+          if (!owners_clear_under_lifecycle()) return;
+          const bool tracked = VDISPLAY::tracked_display_cleanup_target_matches(target);
+          const auto id = cleanup_target_key(target);
+          const auto physical_before = capture_physical_settings_snapshot();
+          const bool required_physical_output_active = physical_before &&
+            std::any_of(
+              incident.known_physical_output_ids.begin(),
+              incident.known_physical_output_ids.end(),
+              [&](const auto &required_id) {
+                return std::any_of(
+                  physical_before->settings.m_modes.begin(),
+                  physical_before->settings.m_modes.end(),
+                  [&](const auto &active) { return boost::iequals(required_id, active.first); });
+              });
+          if (!physical_before || physical_before->settings.m_topology.empty() ||
+              physical_before->settings.m_modes.empty() || physical_before->settings.m_origins.empty() ||
+              !required_physical_output_active) {
+            BOOST_LOG(info) << "Wake recovery cleanup: preserving managed displays because fresh physical-output verification is unavailable.";
+            execution_lock.unlock();
+            lifecycle_lock.unlock();
+            std::this_thread::sleep_for(kRetryPause);
+            retry_physical_verification = true;
+            break;
+          }
+          if (!policy.authorize_target(
+                incident.ticket.id,
+                status->event_revision,
+                id,
+                true,
+                owners_clear_under_lifecycle(),
+                tracked)) {
+            continue;
+          }
+          if (!current_incident(revision, stop) ||
+              !g_restore_expected.load(std::memory_order_acquire) ||
+              g_restore_generation.load(std::memory_order_acquire) != incident.ticket.id ||
+              !owners_clear_under_lifecycle() ||
+              !VDISPLAY::tracked_display_cleanup_target_matches(target)) {
+            return;
+          }
+          policy.record_attempt(incident.ticket.id, id);
+          BOOST_LOG(info) << "Wake recovery cleanup: removing one captured managed virtual display after verified physical recovery.";
+          const bool removed = VDISPLAY::remove_tracked_display_cleanup_target(target);
+          const bool identity_gone = removed && !VDISPLAY::tracked_display_cleanup_target_matches(target);
+          if (!identity_gone) {
+            BOOST_LOG(warning) << "Wake recovery cleanup: targeted virtual display removal did not verify; preserving remaining targets.";
+          }
+
+          const auto physical_after = capture_physical_settings_snapshot();
+          if (!physical_after || !physical_settings_match(*physical_before, *physical_after)) {
+            BOOST_LOG(warning) << "Wake recovery cleanup: physical display state changed during targeted removal; restoring the just-verified pre-removal physical layout.";
+            if (!current_incident(revision, stop) ||
+                !g_restore_expected.load(std::memory_order_acquire) ||
+                g_restore_generation.load(std::memory_order_acquire) != incident.ticket.id) {
+              BOOST_LOG(warning) << "Wake recovery cleanup: restore ticket changed; not applying the prior physical snapshot.";
+              return;
+            }
+            if (!restore_physical_settings_snapshot(*physical_before)) {
+              BOOST_LOG(error) << "Wake recovery cleanup: unable to reapply and verify the pre-removal physical display state.";
+              return;
+            }
+          }
+        }
+        if (retry_physical_verification) {
+          continue;
+        }
+        return;
+      }
+    }
+
+    void run(std::stop_token stop) {
+      std::uint64_t handled_revision = 0;
+      while (!stop.stop_requested()) {
+        std::optional<incident_t> incident;
+        std::uint64_t revision = 0;
+        {
+          std::unique_lock lock(mutex_);
+          cv_.wait(lock, [&] { return stop.stop_requested() || stopping_ || (incident_ && incident_revision_ != handled_revision); });
+          if (stop.stop_requested() || stopping_) return;
+          incident = incident_;
+          revision = incident_revision_;
+          handled_revision = revision;
+        }
+        if (incident) {
+          try {
+            run_incident(*incident, revision, stop);
+          } catch (const std::exception &exception) {
+            BOOST_LOG(error) << "Wake recovery cleanup observer stopped this incident after an exception: " << exception.what();
+          } catch (...) {
+            BOOST_LOG(error) << "Wake recovery cleanup observer stopped this incident after an unknown exception.";
+          }
+        }
+      }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::optional<incident_t> incident_;
+    std::uint64_t incident_revision_ {0};
+    bool started_ {false};
+    bool stopping_ {false};
+    std::jthread worker_;
+  };
+
+  static OrphanRecoveryMonitor &orphan_recovery_monitor() {
+    static OrphanRecoveryMonitor monitor;
+    return monitor;
+  }
+
   static std::int64_t now_steady_us() {
     using namespace std::chrono;
     return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
@@ -1725,10 +2124,15 @@ namespace {
     return j.dump();
   }
 
-  std::string build_revert_payload(bool prefer_golden_if_current_missing) {
+  std::string build_revert_payload(
+    bool prefer_golden_if_current_missing,
+    std::optional<std::uint64_t> restore_ticket = std::nullopt) {
     nlohmann::json j = nlohmann::json::object();
     j["sunshine_prefer_golden_if_current_missing"] = prefer_golden_if_current_missing;
     j["sunshine_always_restore_from_golden"] = config::video.dd.always_restore_from_golden;
+    if (restore_ticket && *restore_ticket != 0) {
+      j["sunshine_restore_ticket"] = *restore_ticket;
+    }
     return j.dump();
   }
 
@@ -2227,7 +2631,12 @@ namespace display_helper_integration {
     );
   }
 
-  bool revert(const bool prefer_golden_if_current_missing, const bool override_managed_ownership, const bool allow_disabled_recovery) {
+  bool revert(
+    const bool prefer_golden_if_current_missing,
+    const bool override_managed_ownership,
+    const bool allow_disabled_recovery,
+    RecoveryTicket *recovery_ticket) {
+    if (recovery_ticket) *recovery_ticket = {};
     const bool managed_cleanup_allowed = remote_display_topology::instance().generic_virtual_display_cleanup_allowed();
     if (!managed_cleanup_allowed && !override_managed_ownership) {
       proc::defer_display_revert();
@@ -2258,15 +2667,75 @@ namespace display_helper_integration {
     }
     BOOST_LOG(info) << "Display helper: sending REVERT request"
                     << (prefer_golden_if_current_missing ? " (prefer golden if current missing)." : ".");
-    const bool ok = platf::display_helper_client::send_revert(build_revert_payload(prefer_golden_if_current_missing));
+    // Capture exact driver-owned GUID/device identities before REVERT can alter
+    // enumeration or retire tracker state. The observer never discovers or
+    // widens this list after the incident begins.
+    auto cleanup_targets = VDISPLAY::tracked_display_cleanup_targets();
+    auto known_physical_output_ids = capture_known_physical_output_ids();
+    // Ticket identity is allocated before dispatch and is echoed by the helper
+    // in status queries. A successful pipe write remains dispatch-only.
+    const auto ticket_id = g_restore_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    std::uint64_t connection_generation = 0;
+    const bool ok = platf::display_helper_client::send_revert(
+      build_revert_payload(prefer_golden_if_current_missing, ticket_id),
+      &connection_generation);
     BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
     if (ok) {
       g_restore_expected.store(true, std::memory_order_relaxed);
       g_last_revert_us.store(now_steady_us(), std::memory_order_relaxed);
-      g_restore_generation.fetch_add(1, std::memory_order_relaxed);
+      if (recovery_ticket && connection_generation != 0) {
+        *recovery_ticket = {ticket_id, connection_generation};
+      }
+      if (connection_generation != 0 && managed_cleanup_allowed && !override_managed_ownership) {
+        orphan_recovery_monitor().publish({
+          RecoveryTicket {ticket_id, connection_generation},
+          std::move(cleanup_targets),
+          std::move(known_physical_output_ids),
+        });
+      }
     }
     clear_active_session();
     return ok;
+  }
+
+  std::optional<RecoveryStatusSnapshot> query_recovery_status(
+    const RecoveryTicket &ticket,
+    const bool park,
+    const std::chrono::milliseconds timeout,
+    const bool receive_only) {
+    if (ticket.id == 0 || ticket.connection_generation == 0 ||
+        !g_restore_expected.load(std::memory_order_acquire) ||
+        g_restore_generation.load(std::memory_order_acquire) != ticket.id) {
+      return std::nullopt;
+    }
+    const auto result = platf::display_helper_client::query_recovery_status(
+      ticket.id,
+      ticket.connection_generation,
+      park,
+      timeout,
+      receive_only);
+    if (!result || result->ticket != ticket.id ||
+        result->connection_generation != ticket.connection_generation ||
+        !g_restore_expected.load(std::memory_order_acquire) ||
+        g_restore_generation.load(std::memory_order_acquire) != ticket.id) {
+      return std::nullopt;
+    }
+    RecoveryStatus status = RecoveryStatus::Unknown;
+    switch (result->status) {
+      case platf::display_helper_client::RecoveryStatus::Active: status = RecoveryStatus::Active; break;
+      case platf::display_helper_client::RecoveryStatus::Failed: status = RecoveryStatus::Failed; break;
+      case platf::display_helper_client::RecoveryStatus::Restored: status = RecoveryStatus::Restored; break;
+      case platf::display_helper_client::RecoveryStatus::Unknown: status = RecoveryStatus::Unknown; break;
+    }
+    return RecoveryStatusSnapshot {result->ticket, result->connection_generation, status, result->event_revision, result->parked};
+  }
+
+  void start_orphan_recovery_monitor() {
+    orphan_recovery_monitor().start();
+  }
+
+  void shutdown_orphan_recovery_monitor() {
+    orphan_recovery_monitor().stop();
   }
 
   bool run_terminal_physical_recovery(const std::function<bool()> &recover) {
@@ -2340,6 +2809,7 @@ namespace display_helper_integration {
   }
 
   bool export_golden_restore() {
+    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
     if (!ensure_helper_started()) {
       BOOST_LOG(info) << "Display helper unavailable; cannot export golden snapshot.";
       return false;
@@ -2351,6 +2821,7 @@ namespace display_helper_integration {
   }
 
   bool reset_persistence() {
+    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
     invalidate_apply_verification();
     if (!ensure_helper_started()) {
       BOOST_LOG(info) << "Display helper unavailable; cannot reset persistence.";
@@ -2365,6 +2836,10 @@ namespace display_helper_integration {
   bool snapshot_current_display_state(
     std::function<bool()> cancellation_predicate,
     const std::chrono::steady_clock::time_point operation_deadline) {
+    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::defer_lock);
+    if (!lock_pending_apply_execution(execution_lock, cancellation_predicate, operation_deadline)) {
+      return false;
+    }
     if (cancellation_requested(cancellation_predicate) ||
         operation_deadline_expired(operation_deadline)) {
       return false;
