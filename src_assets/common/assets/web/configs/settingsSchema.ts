@@ -168,6 +168,7 @@ export interface SettingsGroup {
   collapsed?: boolean;
   platform?: SettingsField['platform'];
   link?: string;
+  linkLabelKey?: string;
   visibleWhen?: SettingsVisibility;
 }
 
@@ -507,11 +508,11 @@ export const settingsCategories: SettingsCategory[] = [
     groups: [
       {
         id: 'everyday_display',
-        fields: [everydayDisplayFields()[0], virtualDisplayCustomizationFields()[0]],
-      },
-      {
-        id: 'everyday_appearance',
+        link: '/settings?category=display',
+        linkLabelKey: 'ui.settings.links.displays',
         fields: [
+          everydayDisplayFields()[0],
+          virtualDisplayCustomizationFields()[0],
           ...everydayDisplayFields().filter(
             (field) =>
               ![
@@ -520,7 +521,7 @@ export const settingsCategories: SettingsCategory[] = [
                 'dd_hdr_request_override',
               ].includes(field.key),
           ),
-          virtualDisplayCustomizationFields()[1],
+          ...virtualDisplayCustomizationFields().slice(1),
         ],
       },
       {
@@ -539,35 +540,150 @@ export const settingsCategories: SettingsCategory[] = [
       },
       {
         id: 'everyday_smoothness',
-        platform: 'windows',
+        link: '/settings?category=pacing',
+        linkLabelKey: 'ui.settings.links.pacing',
+        platform: ['windows', 'linux'],
         visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
         fields: [
           select('frame_limiter_auto_virtual_framegen', frameGenerationOptions, {
-            labelKey: 'ui.settings.fields.frame_limiter_auto_virtual_framegen.label',
-            recommended: true,
-            visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
-          }),
-          boolean('rtss_allow_virtual_display_override', {
-            labelKey: 'ui.settings.fields.rtss_allow_virtual_display_override.label',
-            descriptionKey: 'ui.settings.fields.rtss_allow_virtual_display_override.description',
-            warningKey: 'ui.settings.fields.rtss_allow_virtual_display_override.warning',
-            platform: 'windows',
+            platform: ['windows', 'linux'],
           }),
         ],
       },
-      { id: 'everyday_audio', link: '/settings?category=audio', fields: [boolean('stream_audio')] },
       {
-        id: 'everyday_input',
-        link: '/settings?category=input',
+        id: 'everyday_pyrowave',
+        platform: ['windows', 'linux'],
+        link: '/settings?category=video#setting-pyrowave_critical_fec_percentage',
+        linkLabelKey: 'ui.settings.links.pyrowave',
         fields: [
-          boolean('controller'),
-          select('gamepad', gamepadOptions, {
+          boolean('pyrowave', {
             platform: ['windows', 'linux'],
-            visibleWhen: { key: 'controller', equals: true },
+            descriptionKey: 'ui.settings.everyday_help.pyrowave',
           }),
-          boolean('keyboard'),
-          boolean('mouse'),
         ],
+      },
+      {
+        id: 'everyday_remote_monitor',
+        collapsed: true,
+        link: '/settings?category=display#setting-virtual_display_max_clients',
+        linkLabelKey: 'ui.settings.links.remote_monitor',
+        fields: remoteMonitorFields(),
+      },
+      {
+        id: 'everyday_integrations',
+        collapsed: true,
+        link: '/integrations',
+        linkLabelKey: 'ui.settings.links.integrations',
+        fields: [
+          ...everydayPacingFields().filter(
+            (field) =>
+              !['frame_limiter_auto_virtual_framegen', 'frame_limiter_disable_vsync'].includes(
+                field.key,
+              ),
+          ),
+          integrationPath('rtss_install_path', 'rtss', {
+            labelKey: 'ui.settings.fields.rtss_install_path.label',
+            descriptionKey: 'ui.settings.fields.rtss_install_path.description',
+          }),
+          integrationPath('lossless_scaling_path', 'lossless', {
+            labelKey: 'ui.settings.fields.lossless_scaling_path.label',
+            descriptionKey: 'ui.settings.fields.lossless_scaling_path.description',
+          }),
+        ],
+      },
+      {
+        id: 'everyday_compatibility',
+        collapsed: true,
+        link: '/settings?category=display',
+        linkLabelKey: 'ui.settings.links.displays',
+        fields: [
+          {
+            ...everydayDisplayFields().find((field) => field.key === 'dd_configuration_option')!,
+            platform: 'windows',
+          },
+          everydayDisplayFields().find((field) => field.key === 'dd_hdr_request_override')!,
+          select('capture', captureOptions, {
+            labelKey: 'ui.settings.fields.capture.label',
+            descriptionKey: 'ui.settings.fields.capture.description',
+            warningKey: 'config.capture_virtual_warning',
+            recommended: true,
+          }),
+        ],
+      },
+      {
+        id: 'everyday_resolution',
+        collapsed: true,
+        link: '/settings?category=display',
+        linkLabelKey: 'ui.settings.links.displays',
+        fields: [modeRemapping({ simple: true })],
+      },
+      {
+        id: 'everyday_encoding',
+        collapsed: true,
+        link: '/settings?category=video',
+        linkLabelKey: 'ui.settings.links.video',
+        fields: [
+          select('encoder', [option('', '_common.auto')], {
+            labelKey: 'ui.settings.fields.encoder.label',
+            descriptionKey: 'ui.settings.fields.encoder.description',
+            recommended: true,
+          }),
+          select(
+            'nvenc_preset',
+            [1, 2, 3, 4, 5, 6, 7].map((preset) =>
+              option(String(preset), `ui.settings.options.nvenc_preset.p${preset}`),
+            ),
+            { encoderFamily: 'nvidia' },
+          ),
+          extendedField('qsv_preset', { encoderFamily: 'intel', platform: 'windows' }),
+          extendedField('amd_quality', { encoderFamily: 'amd', platform: 'windows' }),
+          number('fec_percentage', {
+            min: 1,
+            max: 255,
+            step: 1,
+            labelKey: 'ui.settings.fields.fec_percentage.label',
+            descriptionKey: 'ui.settings.fields.fec_percentage.description',
+          }),
+        ],
+      },
+      {
+        id: 'everyday_recovery',
+        collapsed: true,
+        link: '/settings?category=display#setting-dd_config_revert_on_disconnect',
+        linkLabelKey: 'ui.settings.links.recovery',
+        fields: [
+          displayRecovery(),
+          boolean('dd_config_revert_on_disconnect', {
+            labelKey: 'ui.settings.fields.dd_config_revert_on_disconnect.label',
+            descriptionKey: 'ui.settings.fields.dd_config_revert_on_disconnect.description',
+            platform: ['windows', 'linux'],
+          }),
+          duration(
+            'dd_paused_virtual_display_timeout_secs',
+            [
+              option('0', 'ui.settings.options.paused_display_timeout.until_game_closes'),
+              option('1800', 'ui.settings.options.paused_display_timeout.thirty_minutes'),
+              option('3600', 'ui.settings.options.paused_display_timeout.one_hour'),
+              option('7200', 'ui.settings.options.paused_display_timeout.two_hours'),
+              option('14400', 'ui.settings.options.paused_display_timeout.four_hours'),
+            ],
+            {
+              labelKey: 'ui.settings.fields.dd_paused_virtual_display_timeout_secs.label',
+              descriptionKey:
+                'ui.settings.fields.dd_paused_virtual_display_timeout_secs.description',
+              warningKey: 'ui.settings.fields.dd_paused_virtual_display_timeout_secs.warning',
+              platform: ['windows', 'linux'],
+              visibleWhen: { key: 'dd_config_revert_on_disconnect', equals: false },
+            },
+          ),
+        ],
+      },
+      {
+        id: 'everyday_automation',
+        collapsed: true,
+        link: '/settings?category=host',
+        linkLabelKey: 'ui.settings.links.automation',
+        fields: [{ key: 'global_prep_cmd', kind: 'command-preparations', stacked: true }],
       },
     ],
   },
@@ -852,9 +968,14 @@ export const settingsCategories: SettingsCategory[] = [
           number('minimum_fps_target', { min: 0, max: 1000, step: 0.1 }),
           extendedField('min_threads', { min: 1, step: 1 }),
           number('qp', { min: 0, max: 51, step: 1 }),
-          number('fec_percentage', { min: 0, max: 255, step: 1 }),
+          number('fec_percentage', { min: 1, max: 255, step: 1 }),
           number('video_max_batch_size_kb', { min: 1, step: 1 }),
-          number('pyrowave_critical_fec_percentage', { min: 0, max: 255, step: 1, platform: ['windows', 'linux'] }),
+          number('pyrowave_critical_fec_percentage', {
+            min: 0,
+            max: 255,
+            step: 1,
+            platform: ['windows', 'linux'],
+          }),
         ],
       },
       ...advancedEncoderGroups,
@@ -1193,6 +1314,10 @@ export function optionsForPlatform(field: SettingsField, platform: string): Sett
         ),
       ),
     ];
+  if (field.key === 'frame_limiter_provider' && platform.toLowerCase().includes('windows'))
+    return (field.options ?? []).filter(
+      (choice) => !['proton', 'mangohud-proton'].includes(choice.value),
+    );
   return field.options ?? [];
 }
 

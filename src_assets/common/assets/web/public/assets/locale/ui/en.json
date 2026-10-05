@@ -1554,7 +1554,7 @@
           "label": "Displays"
         },
         "everyday": {
-          "description": "The essentials for your streaming screen, sound, and controls.",
+          "description": "Set up Vibeshine's virtual screens, smoother game capture, Remote Monitor, and stream automation. Use the other categories for detailed tuning.",
           "label": "Everyday setup"
         },
         "files": {
@@ -1583,6 +1583,7 @@
         }
       },
       "categories_label": "Settings categories",
+      "game_libraries": "Game library integrations",
       "dependency_inactive": "Currently inactive because “{setting}” is off or uses another mode.",
       "description": "Make this host work the way you stream.",
       "command_editor": {
@@ -1828,8 +1829,10 @@
           "not_detected": "RTSS was not found. Install it or enter its installation folder; automatic selection will use another limiter when available.",
           "path_missing": "The configured RTSS folder was not found. Choose another folder or clear the path to resume automatic detection.",
           "ready": "RTSS and its hooks are installed. Frame pacing is ready to use.",
-          "selected": "RTSS is selected and ready for the next stream."
-        }
+          "selected": "RTSS is selected and ready for the next stream.",
+          "saved_status_hint": "RTSS status checks the saved installation. Save path changes before rescanning; active streams may defer applying them."
+        },
+        "saved_ready": "Saved installation ready"
       },
       "groups": {
         "app_focus": {
@@ -1868,8 +1871,18 @@
           "title": "Capture, encoding, sound, and controllers"
         },
         "everyday_display": {
-          "description": "Choose the streaming screen, how it joins the host desktop, and how Vibepollo captures it.",
-          "title": "Screen used for streaming"
+          "title": "Your streaming screen",
+          "description": "Choose a virtual screen or your physical monitor, then match your client’s resolution, refresh rate, and HDR."
+        },
+        "everyday_integrations": {
+          "title": "Streaming integrations",
+          "description": "Connect frame limiting and Lossless Scaling to your stream.",
+          "description_linux": "Configure Proton or MangoHUD frame limiting and your performance overlay.",
+          "description_windows": "Configure frame limiting, RTSS, and Lossless Scaling."
+        },
+        "everyday_pyrowave": {
+          "title": "PyroWave",
+          "description": "Vibeshine’s alternative to H.264, HEVC, and AV1."
         },
         "everyday_encoding": {
           "description": "Use the preferred dedicated GPU automatically, then adjust only its relevant preset and stream recovery overhead.",
@@ -1896,8 +1909,8 @@
           "title": "Remote Monitor"
         },
         "everyday_smoothness": {
-          "description": "Vibepollo runs the virtual screen faster than your stream so each game frame is captured right after it's drawn, and caps games to the stream rate. Pick how fast below.",
-          "description_linux": "Vibepollo manages virtual-screen capture automatically. Manual Linux pacing overrides are available under Advanced capture and pacing.",
+          "description": "Choose faster virtual-screen capture timing and automatic game pacing, or turn them off.",
+          "description_linux": "Choose automatic virtual-screen pacing or compatibility mode. Configure Proton and MangoHUD under Streaming integrations below.",
           "title": "Smoother game capture"
         },
         "everyday_virtual_display": {
@@ -1987,6 +2000,10 @@
         "encoder_sw": {
           "title": "Software encoding",
           "description": "Advanced settings for this encoder. Automatic selection is verified by the host when streaming starts."
+        },
+        "everyday_compatibility": {
+          "title": "Display compatibility",
+          "description": "Override HDR requests or the capture method when troubleshooting."
         }
       },
       "loading": "Loading settings",
@@ -2171,7 +2188,8 @@
           "percent": "{value}%",
           "preserve": "@:config.virtual_display_scale_auto",
           "recommended": "@:config.virtual_display_scale_recommended"
-        }
+        },
+        "unsupported_saved": "Unsupported saved value ({value})"
       },
       "placeholders": {
         "follow_client": "0 · Follow the client",
@@ -2390,7 +2408,25 @@
         "port_range": "Choose a base port from 1029 through 65514 so all dependent listeners remain valid.",
         "resolution": "Enter a resolution such as 2560x1440.",
         "array": "Enter a JSON array; leave empty to use the default."
-      }
+      },
+      "everyday_help": {
+        "pyrowave": "Use Vibeshine’s GPU wavelet codec with a compatible client. Requires a compatible GPU and a fast wired network.",
+        "frame_limiter_auto_virtual_framegen": "Automatic and Compatibility use a faster virtual-screen refresh rate. Off follows the stream frame rate. Your stream frame rate stays the same.",
+        "dd_virtual_display_scale": "Change the size of text and controls on your virtual screen.",
+        "wayland_hdr_compatibility": "Use compatibility handling for HDR games on the managed Wayland display."
+      },
+      "links": {
+        "displays": "All display settings →",
+        "pacing": "Capture and pacing settings →",
+        "pyrowave": "PyroWave codec settings →",
+        "integrations": "Manage integrations →",
+        "remote_monitor": "All Remote Monitor settings →",
+        "video": "All video settings →",
+        "recovery": "All display recovery settings →",
+        "automation": "Host automation settings →"
+      },
+      "game_library_links": "Game libraries",
+      "legacy_fec_zero": "The saved zero is ignored by the host. Choose 1–255% to set standard FEC."
     },
     "api_tokens": {
       "active": {

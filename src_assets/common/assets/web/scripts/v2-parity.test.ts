@@ -144,31 +144,65 @@ test('Linux exposes Remote Monitor behavior controls', () => {
   }
 });
 
-test('Everyday prioritizes screen, appearance, audio and input on Linux', () => {
+test('Everyday keeps impactful stream choices together and detailed tuning in categories', () => {
   const everyday = settingsCategories.find((category) => category.id === 'everyday')!;
   const groups = everyday.groups.filter((group) => matchesPlatform(group, 'linux'));
   assert.deepEqual(
     groups.map((group) => group.id),
+<<<<<<< HEAD
     ['everyday_display', 'everyday_appearance', 'everyday_remote_monitor', 'everyday_resolution', 'everyday_audio', 'everyday_input'],
+=======
+    [
+      'everyday_display',
+      'everyday_smoothness',
+      'everyday_pyrowave',
+      'everyday_remote_monitor',
+      'everyday_integrations',
+      'everyday_compatibility',
+      'everyday_resolution',
+      'everyday_encoding',
+      'everyday_recovery',
+      'everyday_automation',
+    ],
   );
-  assert.ok(groups.every((group) => !group.collapsed));
-  const keys = groups.flatMap((group) => group.fields.map((field) => field.key));
+  assert.deepEqual(
+    groups.filter((group) => !group.collapsed).map((group) => group.id),
+    ['everyday_display', 'everyday_smoothness', 'everyday_pyrowave'],
+  );
+  const keys = groups.flatMap((group) =>
+    group.fields.filter((field) => matchesPlatform(field, 'linux')).map((field) => field.key),
+>>>>>>> 67c17bfdd (fix(ui): restore a focused Everyday settings workflow)
+  );
   for (const key of [
     'virtual_display_mode',
     'virtual_display_layout',
     'dd_resolution_option',
     'dd_refresh_rate_option',
     'dd_virtual_display_scale',
-    'stream_audio',
-    'controller',
+    'dd_hdr_request_override',
+    'capture',
+    'encoder',
+    'nvenc_preset',
+    'fec_percentage',
+    'dd_config_revert_on_disconnect',
+    'dd_paused_virtual_display_timeout_secs',
+    'frame_limiter_auto_virtual_framegen',
+    'frame_limiter_provider',
+    'mangohud_preset',
+    'pyrowave',
+    'virtual_display_max_clients',
+    'remote_monitor_mute_audio',
+    'dd_mode_remapping',
+    'global_prep_cmd',
   ])
     assert.ok(keys.includes(key));
   for (const key of [
-    'capture',
-    'encoder',
-    'fec_percentage',
-    'global_prep_cmd',
-    'frame_limiter_auto_virtual_framegen',
+    'stream_audio',
+    'dd_configuration_option',
+    'controller',
+    'nvenc_twopass',
+    'rtss_install_path',
+    'lossless_scaling_path',
   ])
     assert.ok(!keys.includes(key));
 });

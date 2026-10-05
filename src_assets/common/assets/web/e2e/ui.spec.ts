@@ -6,6 +6,7 @@ async function host(
   config: Record<string, unknown> = {},
   ready = true,
   providers: Record<string, boolean> = { steam: true, lutris: platform === 'linux', mangohud: platform === 'linux' },
+  metadata: Record<string, unknown> = {},
 ) {
   const patches: Record<string, unknown>[] = [];
   await page.route('**/api/**', async (route) => {
@@ -46,6 +47,7 @@ async function host(
         },
         linux: { session_role: 'desktop' },
         windows_build_number: 26100,
+        ...metadata,
       };
     else if (path === '/api/session/status')
       body = { status: true, activeSessions: 0, appRunning: false, lastEncoderProbeFailed: false };
@@ -77,13 +79,235 @@ test('Linux Everyday presents essentials and preserves unrelated values when sav
     'value',
     'per_client',
   );
-  await expect(page.locator('#setting-frame_limiter_auto_virtual_framegen')).toHaveCount(0);
-  await expect(page.locator('#setting-capture')).toHaveCount(0);
-  await expect(page.locator('#setting-controller')).toBeVisible();
-  await page.locator('#setting-stream_audio').uncheck();
+  await expect(page.locator('#setting-frame_limiter_auto_virtual_framegen')).toBeVisible();
+  await expect(page.locator('#setting-capture')).not.toBeVisible();
+  await expect(page.locator('#setting-encoder')).not.toBeVisible();
+  await expect(page.locator('#setting-fec_percentage')).not.toBeVisible();
+  await expect(page.locator('#setting-dd_config_revert_on_disconnect')).not.toBeVisible();
+  await expect(page.locator('#setting-controller')).toHaveCount(0);
+  await page.locator('#setting-pyrowave').uncheck();
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect.poll(() => patches.length).toBe(1);
-  expect(patches[0]).toEqual({ stream_audio: false });
+  expect(patches[0]).toEqual({ pyrowave: false });
+  await page.getByRole('button', { name: 'Audio', exact: true }).click();
+  await expect(page.locator('#setting-stream_audio')).toBeChecked();
+  await page.getByRole('button', { name: 'Input', exact: true }).click();
+  await expect(page.locator('#setting-controller')).toBeVisible();
+});
+
+test('Everyday restores impactful choices and shares drafts with detailed categories', async ({
+  page,
+}) => {
+  const patches = await host(page, 'linux', {
+    encoder: 'nvenc',
+    nvenc_twopass: 'full_res',
+    dd_paused_virtual_display_timeout_secs: 1234,
+  });
+  await page.goto('/v2/settings');
+  await page.locator('#settings-group-everyday-everyday_encoding summary').click();
+  await page.locator('#settings-group-everyday-everyday_recovery summary').click();
+  await page.locator('#settings-group-everyday-everyday_compatibility summary').click();
+  await expect(page.locator('#setting-dd_configuration_option')).toHaveCount(0);
+  await expect(page.locator('#setting-dd_hdr_request_override')).toBeVisible();
+  await expect(page.locator('#setting-nvenc_preset')).toBeVisible();
+  await expect(page.locator('#setting-dd_paused_virtual_display_timeout_secs')).toHaveValue('1234');
+  await expect(page.locator('#setting-rtss_install_path')).toHaveCount(0);
+  await expect(page.locator('#setting-nvenc_twopass')).toHaveCount(0);
+  await expect(page.locator('#settings-group-everyday-everyday_automation')).toBeVisible();
+
+  await page.locator('#setting-capture').selectOption('kwin');
+  await page.locator('#setting-nvenc_preset').selectOption('3');
+  await page.locator('#setting-fec_percentage').fill('10');
+  await page.locator('#setting-dd_config_revert_on_disconnect').check();
+  await expect(page.locator('#setting-dd_paused_virtual_display_timeout_secs')).toHaveCount(0);
+  await page.locator('#setting-dd_config_revert_on_disconnect').uncheck();
+  await expect(page.locator('#setting-dd_paused_virtual_display_timeout_secs')).toHaveValue('1234');
+  await page.locator('#setting-dd_paused_virtual_display_timeout_secs').selectOption('3600');
+
+  await page.locator('#settings-group-everyday-everyday_encoding a.settings-more').click();
+  await expect(page).toHaveURL(/category=video/);
+  await page.locator('#settings-group-video-encoder_nvenc summary').click();
+  await expect(page.locator('#setting-nvenc_preset')).toHaveValue('3');
+  await expect(page.locator('#setting-nvenc_twopass')).toHaveValue('full_res');
+  await page.getByRole('button', { name: 'Everyday setup', exact: true }).click();
+  await page.locator('#settings-group-everyday-everyday_compatibility summary').click();
+  await expect(page.locator('#setting-capture')).toHaveValue('kwin');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toEqual({
+    capture: 'kwin',
+    nvenc_preset: '3',
+    fec_percentage: 10,
+    dd_paused_virtual_display_timeout_secs: 3600,
+  });
+});
+
+test('Everyday encoder presets follow automatic GPU selection and explicit overrides', async ({
+  page,
+}) => {
+  await host(page, 'windows', { capture: '' }, true, undefined, {
+    gpus: [{ description: 'NVIDIA GPU', vendor_id: 0x10de, dedicated_video_memory: 8192 }],
+  });
+  await page.goto('/v2/settings');
+  await page.locator('#settings-group-everyday-everyday_encoding summary').click();
+  await expect(page.locator('#setting-nvenc_preset')).toBeVisible();
+  await expect(page.locator('#setting-qsv_preset')).toHaveCount(0);
+  await expect(page.locator('#setting-amd_quality')).toHaveCount(0);
+  await page.locator('#setting-encoder').selectOption('quicksync');
+  await expect(page.locator('#setting-qsv_preset')).toBeVisible();
+  await expect(page.locator('#setting-nvenc_preset')).toHaveCount(0);
+  await page.locator('#setting-encoder').selectOption('amdvce_ffmpeg');
+  await expect(page.locator('#setting-amd_quality')).toBeVisible();
+  await expect(page.locator('#setting-qsv_preset')).toHaveCount(0);
+});
+
+test('Everyday integrates Linux pacing tools and Remote Monitor with the shared save', async ({
+  page,
+}) => {
+  const patches = await host(page);
+  await page.goto('/v2/settings');
+  await expect(
+    page.locator('#setting-frame_limiter_auto_virtual_framegen option[value="vrr"]'),
+  ).toHaveCount(0);
+  await page.locator('#settings-group-everyday-everyday_integrations summary').click();
+  await expect(page.locator('#setting-rtss_install_path')).toHaveCount(0);
+  await expect(page.locator('#setting-lossless_scaling_path')).toHaveCount(0);
+  const libraries = page.getByRole('navigation', { name: 'Game library integrations' });
+  await expect(libraries.getByRole('link', { name: 'Steam' })).toHaveAttribute(
+    'href',
+    '/v2/integrations#integration-steam',
+  );
+  await expect(libraries.getByRole('link', { name: 'Lutris' })).toBeVisible();
+  await expect(libraries.getByRole('link', { name: /Playnite/ })).toHaveCount(0);
+  await page.locator('#setting-frame_limiter_enable').check();
+  await page.locator('#setting-frame_limiter_provider').selectOption('mangohud');
+  await page.locator('#setting-mangohud_limiter_method').selectOption('early');
+  await page.locator('#setting-frame_limiter_fps_limit').fill('119.88');
+  await page.locator('#setting-mangohud_preset').selectOption('3');
+  await page.locator('#settings-group-everyday-everyday_remote_monitor summary').click();
+  await page.locator('#setting-virtual_display_max_clients').fill('6');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toEqual({
+    frame_limiter_enable: true,
+    frame_limiter_provider: 'mangohud',
+    mangohud_limiter_method: 'early',
+    frame_limiter_fps_limit: 119.88,
+    mangohud_preset: '3',
+    virtual_display_max_clients: 6,
+  });
+});
+
+test('Everyday integrates Windows RTSS and Lossless Scaling paths', async ({ page }) => {
+  const patches = await host(page, 'windows');
+  await page.route('**/api/rtss/status', (route) =>
+    route.fulfill({
+      json: {
+        path_exists: true,
+        hooks_found: true,
+        configured_provider: 'auto',
+        resolved_path: 'C:\\RTSS',
+      },
+    }),
+  );
+  await page.goto('/v2/settings');
+  await page.locator('#settings-group-everyday-everyday_integrations summary').click();
+  await expect(page.locator('#setting-mangohud_preset')).toHaveCount(0);
+  await expect(page.locator('#setting-rtss_install_path')).toBeVisible();
+  await expect(page.locator('#setting-lossless_scaling_path')).toBeVisible();
+  const playnite = page
+    .getByRole('navigation', { name: 'Game library integrations' })
+    .getByRole('link', { name: /Playnite/ });
+  await expect(playnite).toHaveAttribute('href', '/v2/integrations#integration-playnite');
+  await expect(page.locator('#setting-frame_limiter_provider option[value="proton"]')).toHaveCount(
+    0,
+  );
+  await expect(
+    page.locator('#setting-frame_limiter_provider option[value="mangohud-proton"]'),
+  ).toHaveCount(0);
+  await page.locator('#setting-rtss_install_path').fill('C:\\Tools\\RTSS');
+  await page.locator('#setting-lossless_scaling_path').fill('C:\\Games\\LosslessScaling.exe');
+  await expect(page.getByText('Saved installation ready', { exact: true })).toBeVisible();
+  await expect(page.getByText(/RTSS status checks the saved installation/)).toBeVisible();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toEqual({
+    rtss_install_path: 'C:\\Tools\\RTSS',
+    lossless_scaling_path: 'C:\\Games\\LosslessScaling.exe',
+  });
+  await playnite.click();
+  await expect(page).toHaveURL(/integrations#integration-playnite/);
+  await expect(page.locator('#integration-playnite')).toBeVisible();
+});
+
+test('Windows identifies unsupported saved providers without silently rewriting them', async ({
+  page,
+}) => {
+  const patches = await host(page, 'windows', { frame_limiter_provider: 'proton' });
+  await page.goto('/v2/settings');
+  await page.locator('#settings-group-everyday-everyday_integrations summary').click();
+  await expect(page.locator('#setting-frame_limiter_provider')).toHaveValue('proton');
+  await expect(page.locator('#setting-frame_limiter_provider option:checked')).toHaveText(
+    'Unsupported saved value (proton)',
+  );
+  expect(patches).toHaveLength(0);
+  await page.locator('#setting-frame_limiter_provider').selectOption('auto');
+  await expect(page.locator('#setting-frame_limiter_provider option[value="proton"]')).toHaveCount(
+    0,
+  );
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toEqual({ frame_limiter_provider: 'auto' });
+});
+
+test('legacy saved FEC zero preserves unrelated saves and can be corrected explicitly', async ({
+  page,
+}) => {
+  const patches = await host(page, 'linux', { fec_percentage: 0, pyrowave: true });
+  await page.goto('/v2/settings');
+  await page.locator('#setting-pyrowave').uncheck();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toEqual({ pyrowave: false });
+  await page.locator('#settings-group-everyday-everyday_encoding summary').click();
+  await expect(page.getByText(/The saved zero is ignored by the host/)).toBeVisible();
+  await page.locator('#setting-fec_percentage').fill('1');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => patches.length).toBe(2);
+  expect(patches[1]).toEqual({ fec_percentage: 1 });
+  await page.locator('#setting-fec_percentage').fill('0');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect
+    .poll(() =>
+      page
+        .locator('#setting-fec_percentage')
+        .evaluate((input: HTMLInputElement) => input.validity.rangeUnderflow),
+    )
+    .toBe(true);
+  expect(patches).toHaveLength(2);
+});
+
+test('standard FEC rejects zero while PyroWave critical FEC saves zero', async ({ page }) => {
+  const patches = await host(page, 'linux', { pyrowave_critical_fec_percentage: 20 });
+  await page.goto('/v2/settings');
+  await page.locator('#settings-group-everyday-everyday_encoding summary').click();
+  await page.locator('#setting-fec_percentage').fill('0');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect
+    .poll(() =>
+      page
+        .locator('#setting-fec_percentage')
+        .evaluate((input: HTMLInputElement) => input.validity.rangeUnderflow),
+    )
+    .toBe(true);
+  expect(patches).toHaveLength(0);
+  await page.locator('#setting-fec_percentage').fill('1');
+  await page.getByRole('button', { name: 'Video & quality', exact: true }).click();
+  await expect(page.locator('#setting-fec_percentage')).toHaveAttribute('min', '1');
+  await page.locator('#setting-pyrowave_critical_fec_percentage').fill('0');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toEqual({ fec_percentage: 1, pyrowave_critical_fec_percentage: 0 });
 });
 
 test('settings deep links open advanced encoders and back navigation preserves drafts', async ({
@@ -127,9 +351,9 @@ test('HTTP save rejection retains the draft', async ({ page }) => {
     else await route.fallback();
   });
   await page.goto('/v2/settings');
-  await page.locator('#setting-stream_audio').uncheck();
+  await page.locator('#setting-pyrowave').uncheck();
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
-  await expect(page.locator('#setting-stream_audio')).not.toBeChecked();
+  await expect(page.locator('#setting-pyrowave')).not.toBeChecked();
   await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeEnabled();
 });
 
@@ -138,8 +362,8 @@ for (const width of [390, 768, 1100, 1440]) {
     await host(page);
     await page.setViewportSize({ width, height: 1000 });
     await page.goto('/v2/settings');
-    await expect(page.locator('#setting-stream_audio')).toBeVisible();
-    await page.locator('#setting-stream_audio').uncheck();
+    await expect(page.locator('#setting-pyrowave')).toBeVisible();
+    await page.locator('#setting-pyrowave').uncheck();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
@@ -183,9 +407,9 @@ for (const theme of ['dark', 'light']) {
     await page.addInitScript((theme) => localStorage.setItem('vibepollo.theme', theme), theme);
     await page.goto('/v2/settings');
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-    await page.locator('#setting-stream_audio').focus();
+    await page.locator('#setting-pyrowave').focus();
     await page.keyboard.press('Space');
-    await expect(page.locator('#setting-stream_audio')).not.toBeChecked();
+    await expect(page.locator('#setting-pyrowave')).not.toBeChecked();
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({
       path: `/tmp/vibeshine-ui-results/everyday-${theme}.png`,
@@ -276,10 +500,10 @@ test('failed configuration load keeps editing unavailable until retry succeeds',
   });
   await page.goto('/v2/settings');
   await expect(page.getByRole('alert')).toBeVisible();
-  await expect(page.locator('#setting-stream_audio')).toHaveCount(0);
+  await expect(page.locator('#setting-pyrowave')).toHaveCount(0);
   failed = false;
   await page.getByRole('button', { name: 'Reload', exact: true }).click();
-  await expect(page.locator('#setting-stream_audio')).toBeVisible();
+  await expect(page.locator('#setting-pyrowave')).toBeVisible();
 });
 
 test('edits made during a settings save remain unsaved', async ({ page }) => {
@@ -299,13 +523,13 @@ test('edits made during a settings save remain unsaved', async ({ page }) => {
     await route.fulfill({ json: { status: true } });
   });
   await page.goto('/v2/settings');
-  await page.locator('#setting-stream_audio').uncheck();
+  await page.locator('#setting-pyrowave').uncheck();
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect.poll(() => started).toBe(true);
-  await page.locator('#setting-mouse').uncheck();
+  await page.locator('#setting-wayland_hdr_compatibility').check();
   finish();
   await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeEnabled();
-  await expect(page.locator('#setting-mouse')).not.toBeChecked();
+  await expect(page.locator('#setting-wayland_hdr_compatibility')).toBeChecked();
   await expect(page.locator('.save-bar')).toContainText('1 unsaved change');
 });
 
@@ -334,9 +558,9 @@ test('settings reflow at a 200% zoom-equivalent viewport with forced colors and 
   // Browser zoom halves the CSS viewport; CSS zoom alone does not update media queries.
   await page.setViewportSize({ width: 640, height: 450 });
   await page.goto('/v2/settings');
-  await page.locator('#setting-stream_audio').focus();
+  await page.locator('#setting-pyrowave').focus();
   await page.keyboard.press('Space');
-  await expect(page.locator('#setting-stream_audio')).not.toBeChecked();
+  await expect(page.locator('#setting-pyrowave')).not.toBeChecked();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect(page.locator('.save-bar')).toHaveCount(0);
@@ -994,13 +1218,17 @@ test('initial library setup refreshes apps and persists editable settings', asyn
   await host(page, 'windows', {}, true, { steam: true });
   await page.route('**/api/playnite/status', route => route.fulfill({ json: { installed: false } }));
   let synced = false;
-  await page.route('**/api/steam/force_sync', route => {
+  await page.route('**/api/steam/force_sync', (route) => {
     synced = true;
     return route.fulfill({ json: { status: true } });
   });
-  await page.route('**/api/apps', route => route.fulfill({ json: {
-    apps: synced ? [{ name: 'Synced Steam game', uuid: 'steam-test', 'steam-id': '42' }] : [],
-  } }));
+  await page.route('**/api/apps', (route) =>
+    route.fulfill({
+      json: {
+        apps: synced ? [{ name: 'Synced Steam game', uuid: 'steam-test', 'steam-id': '42' }] : [],
+      },
+    }),
+  );
   await page.goto('/v2/library');
   await page.getByRole('button', { name: 'Setup Game Library Integration', exact: true }).click();
   const dialog = page.getByRole('dialog');
@@ -1010,11 +1238,15 @@ test('initial library setup refreshes apps and persists editable settings', asyn
   await dialog.getByRole('button', { name: 'Save settings', exact: true }).click();
   await dialog.getByRole('button', { name: 'Done', exact: true }).click();
   await expect(page.getByText('Synced Steam game', { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Setup Game Library Integration', exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Setup Game Library Integration', exact: true }),
+  ).toHaveCount(0);
   await page.reload();
   await page.getByRole('button', { name: 'Library manager settings', exact: true }).click();
   await dialog.getByRole('button', { name: 'Next: Library settings' }).click();
-  await expect(dialog.getByRole('spinbutton', { name: 'Recent games', exact: true })).toHaveValue('6');
+  await expect(dialog.getByRole('spinbutton', { name: 'Recent games', exact: true })).toHaveValue(
+    '6',
+  );
 });
 
 for (const platform of ['linux', 'windows'] as const) {

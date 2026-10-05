@@ -180,7 +180,12 @@ const statusTone = computed<StatusTone>(() => {
 const statusLabel = computed(() => {
   if (loading.value) return t('ui.settings.integrations.checking');
   if (loadError.value) return t('ui.settings.integrations.status_unavailable');
-  if (ready.value) return t('ui.settings.integrations.ready');
+  if (ready.value)
+    return t(
+      props.kind === 'rtss'
+        ? 'ui.settings.integrations.saved_ready'
+        : 'ui.settings.integrations.ready',
+    );
   if (notFound.value) return t('ui.settings.integrations.not_found');
   if (needsAttention.value) return t('ui.settings.integrations.needs_attention');
   return t('ui.settings.integrations.not_detected');
@@ -439,6 +444,9 @@ onBeforeUnmount(() => {
       />
     </div>
 
+    <p v-if="props.kind === 'rtss'" class="integration-path__hint">
+      {{ t('ui.settings.integrations.rtss.saved_status_hint') }}
+    </p>
     <p v-if="automaticHintVisible" class="integration-path__hint" :id="`${inputId}-status`">
       {{ t('ui.settings.integrations.automatic_path_hint') }}
     </p>
