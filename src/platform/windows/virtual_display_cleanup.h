@@ -81,6 +81,8 @@ namespace platf::virtual_display_cleanup {
     bool virtual_displays_removed {false};
     bool helper_revert_dispatched {false};
     bool database_restore_applied {false};
+    // Explicit termination observes an active physical output after recovery.
+    bool physical_display_recovered {false};
   };
 
   cleanup_result_t run(

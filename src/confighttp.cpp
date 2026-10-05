@@ -4949,12 +4949,14 @@ namespace confighttp {
     out["virtual_displays_removed"] = result.virtual_displays_removed;
     out["restore_dispatched"] = result.helper_revert_dispatched;
     out["database_restore_applied"] = result.database_restore_applied;
+    out["physical_display_recovered"] = result.physical_display_recovered;
     out["watchdogs_stopped"] = true;
 #else
     const auto result = platf::linux_private_display::terminate_all();
     out["status"] = result.virtual_displays_removed;
     out["virtual_displays_removed"] = result.virtual_displays_removed;
     out["topology_restored"] = result.topology_restored;
+    out["physical_display_recovered"] = result.physical_display_recovered;
 #endif
     if (!result.virtual_displays_removed) {
       out["error"] = "One or more managed virtual displays could not be removed.";

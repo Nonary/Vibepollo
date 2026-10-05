@@ -2269,6 +2269,34 @@ namespace display_helper_integration {
     return ok;
   }
 
+  bool run_terminal_physical_recovery(const std::function<bool()> &recover) {
+    std::unique_lock execution_lock(pending_apply_execution_mutex());
+    invalidate_apply_verification();
+    clear_pending_apply_queue_locked();
+    {
+      std::lock_guard helper_lock(helper_mutex());
+      const auto handle = helper_proc().get_process_handle();
+      if (handle) {
+        // Give the already-dispatched snapshot restore a short chance to finish.
+        // A wedged helper must be gone before native fallback can change topology.
+        const auto wait = WaitForSingleObject(handle, 3000);
+        if (wait == WAIT_TIMEOUT) {
+          helper_proc().terminate();
+          DWORD exit_code {};
+          if (!helper_proc().wait_for(exit_code, 5000)) return false;
+        } else if (wait != WAIT_OBJECT_0) {
+          return false;
+        }
+      } else if (g_restore_expected.load(std::memory_order_relaxed)) {
+        // A helper without an owned process handle cannot be safely quiesced.
+        return false;
+      }
+      g_restore_expected.store(false, std::memory_order_relaxed);
+      platf::display_helper_client::reset_connection();
+    }
+    return recover();
+  }
+
   bool disarm_pending_restore(
     std::function<bool()> cancellation_predicate,
     const std::chrono::steady_clock::time_point operation_deadline) {

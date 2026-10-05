@@ -18,6 +18,7 @@ import {
 } from '@/components/ui';
 import { useSystemStore, type HostMetadata } from '@/stores/system';
 import { formatBytes } from '@/utils/format';
+import { displayRecoveryNotice } from '@/utils/displayRecovery';
 import {
   crashBundlePartPath,
   parseContentDispositionFilename,
@@ -90,6 +91,7 @@ interface SessionsResponse {
 interface MutationResponse {
   status?: boolean;
   topology_restored?: boolean;
+  physical_display_recovered?: boolean;
   deleted?: boolean;
   error?: string;
   message?: string;
@@ -623,13 +625,7 @@ async function runConfirmedAction(): Promise<void> {
       if (result.status !== true) {
         throw new Error(result.error || t('ui.maintenance.errors.virtualDisplayTermination'));
       }
-      notice.value = t(
-        isLinux.value
-          ? result.topology_restored === false
-            ? 'ui.maintenance.notices.virtualDisplayTerminatedLinuxWithoutRestore'
-            : 'ui.maintenance.notices.virtualDisplayTerminatedLinux'
-          : 'ui.maintenance.notices.virtualDisplayTerminated',
-      );
+      notice.value = t(displayRecoveryNotice(result));
     } else if (action.kind === 'revoke-session') {
       await apiDelete<MutationResponse>(
         `/api/auth/sessions/${encodeURIComponent(action.session.id)}`,

@@ -393,7 +393,10 @@ test('Linux virtual display termination requires confirmation and avoids Windows
   await terminate.click();
   await dialog.getByRole('button', { name: 'Terminate virtual display', exact: true }).click();
   await expect(
-    page.getByText('Managed virtual displays were disconnected.', { exact: true }),
+    page.getByText(
+      'Virtual screens were terminated and the saved physical display layout was restored.',
+      { exact: true },
+    ),
   ).toBeVisible();
   expect(calls.displayTerminations).toBe(1);
   expect(calls.goldenStatusReads).toBe(0);
@@ -427,7 +430,10 @@ for (const status of [false, undefined]) {
         .first(),
     ).toBeVisible();
     await expect(
-      page.getByText('Managed virtual displays were disconnected.', { exact: true }),
+      page.getByText(
+        'Virtual screens were terminated and the saved physical display layout was restored.',
+        { exact: true },
+      ),
     ).toHaveCount(0);
     expect(calls.displayTerminations).toBe(1);
   });
@@ -448,7 +454,7 @@ test('Linux termination distinguishes successful removal from failed physical re
     .click();
   await expect(
     page.getByText(
-      'Managed virtual displays were disconnected, but the physical display layout could not be restored.',
+      'Virtual screens were terminated, but physical-display recovery could not be confirmed. Check that your monitor is connected and powered on, then try again.',
       { exact: true },
     ),
   ).toBeVisible();

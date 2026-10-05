@@ -198,4 +198,8 @@ namespace display_helper_integration {
   // reserved for process shutdown or an explicit user-requested restore.
   void stop_watchdog(bool force = false);
 
+  // Explicit killswitch fallback: stop and verify the owned helper, then run
+  // native physical recovery while APPLY/REVERT dispatch remains fenced.
+  bool run_terminal_physical_recovery(const std::function<bool()> &recover);
+
 }  // namespace display_helper_integration

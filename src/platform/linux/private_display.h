@@ -88,6 +88,7 @@ namespace platf::linux_private_display {
   struct termination_result_t {
     bool topology_restored {false};
     bool virtual_displays_removed {false};
+    bool physical_display_recovered {false};
   };
 
   /** Synchronously restore when possible and disconnect every managed kernel output, overriding owners. */

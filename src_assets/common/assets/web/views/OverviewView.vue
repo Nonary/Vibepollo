@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
+import VirtualDisplayRecovery from '@/components/VirtualDisplayRecovery.vue';
 import { ApiError, apiGet } from '@/api/client';
 import {
   AppButton,
@@ -17,6 +18,7 @@ import type { HostInfo, HostStatsSnapshot } from '@/types/host';
 import type { SessionStatus } from '@/types/sessions';
 import { useSystemStore, type HostMetadata } from '@/stores/system';
 import { formatBytes } from '@/utils/format';
+import { displayRecoverySupported } from '@/utils/displayRecovery';
 
 interface OverviewWarning {
   key: string;
@@ -345,6 +347,10 @@ onBeforeUnmount(() => {
       </template>
     </PageHeader>
     <div class="visually-hidden" aria-live="polite" aria-atomic="true">{{ readiness.label }}</div>
+    <VirtualDisplayRecovery
+      v-if="displayRecoverySupported(hostPlatform || system.metadata?.platform || '')"
+      @recovered="refresh(true)"
+    />
     <template v-if="loading">
       <LoadingSkeleton variant="block" height="184px" :label="t('ui.overview.loadingReadiness')" />
       <LoadingSkeleton variant="block" height="320px" :label="t('ui.overview.loadingReadiness')" />

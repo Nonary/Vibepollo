@@ -41,13 +41,15 @@ namespace platf::linux_private_display::cleanup_policy {
   terminal_result_t terminate_outputs(const Outputs &outputs, Restore restore, Disconnect disconnect, Verify verify, Allowed allowed) {
     terminal_result_t result;
     if (!allowed()) return result;
-    result.topology_restored = restore();
     bool removed = true;
     for (const auto &name : outputs) {
       // Unknown helper completion fences further mutation, even for the killswitch.
       if (!allowed()) return result;
       if (!disconnect(name)) removed = false;
     }
+    if (!allowed()) return result;
+    // The emergency action ends virtual scanout before a slow saved restore.
+    result.topology_restored = restore();
     result.virtual_displays_removed = allowed() && verify(outputs) && allowed() && removed;
     return result;
   }

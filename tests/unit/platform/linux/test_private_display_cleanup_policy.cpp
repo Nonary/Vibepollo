@@ -9,6 +9,9 @@
 #include <latch>
 #include <mutex>
 #include <src/platform/linux/private_display_cleanup_policy.h>
+#include <src/platform/linux/private_display_emergency_policy.h>
+
+#include <nlohmann/json.hpp>
 #include <src/platform/linux/display_restore_dispatcher.h>
 #include <string>
 #include <thread>
@@ -17,6 +20,72 @@
 using namespace std::chrono_literals;
 
 namespace policy = platf::linux_private_display::cleanup_policy;
+
+namespace {
+  nlohmann::json emergency_output(const std::string &name, const bool connected, const bool enabled) {
+    return {
+      {"name", name}, {"connected", connected}, {"enabled", enabled},
+      {"currentModeId", "old"}, {"preferredModes", {"native"}},
+      {"modes", nlohmann::json::array({
+        {{"id", "old"}, {"size", {{"width", 1920}, {"height", 1080}}}, {"refreshRate", 60.0}},
+        {{"id", "native"}, {"size", {{"width", 3840}, {"height", 2160}}}, {"refreshRate", 60.0}},
+      })},
+    };
+  }
+}
+
+TEST(LinuxPrivateDisplayEmergencyPolicy, RecoversConnectedDisabledPhysicalMonitorWithNativeSdrMode) {
+  namespace emergency = platf::linux_private_display::emergency_policy;
+  const nlohmann::json configuration {{"outputs", nlohmann::json::array({
+    emergency_output("Virtual-1", true, true),
+    emergency_output("HDMI-A-1", true, false),
+    emergency_output("DP-1", false, false),
+  })}};
+  const auto candidates = emergency::physical_candidates(configuration);
+  ASSERT_EQ(candidates.size(), 1);
+  EXPECT_EQ(candidates[0]["name"], "HDMI-A-1");
+  EXPECT_EQ(candidates[0]["currentModeId"], "native");
+  EXPECT_EQ(candidates[0]["scale"], 1.0);
+  EXPECT_EQ(candidates[0]["rotation"], 1);
+  EXPECT_EQ(candidates[0]["pos"], (nlohmann::json {{"x", 0}, {"y", 0}}));
+  EXPECT_EQ(candidates[0]["hdr"], false);
+  EXPECT_EQ(candidates[0]["enabled"], true);
+}
+
+TEST(LinuxPrivateDisplayEmergencyPolicy, PreservesAlreadyWorkingPhysicalLayout) {
+  namespace emergency = platf::linux_private_display::emergency_policy;
+  const nlohmann::json configuration {{"outputs", nlohmann::json::array({
+    emergency_output("HDMI-A-1", true, true), emergency_output("DP-1", true, false),
+  })}};
+  EXPECT_TRUE(emergency::physical_active(configuration));
+  EXPECT_TRUE(emergency::physical_candidates(configuration).empty());
+}
+
+TEST(LinuxPrivateDisplayEmergencyPolicy, NeverRecoversVirtualDisconnectedOrInvalidOutputs) {
+  namespace emergency = platf::linux_private_display::emergency_policy;
+  auto invalid_mode = emergency_output("HDMI-A-1", true, false);
+  invalid_mode["modes"] = {{{"id", "1;bad"}, {"size", {{"width", 0}, {"height", 0}}}, {"refreshRate", 0.0}}};
+  const nlohmann::json configuration {{"outputs", nlohmann::json::array({
+    emergency_output("Virtual-1", true, true), emergency_output("DP-1", false, false), invalid_mode,
+  })}};
+  EXPECT_FALSE(emergency::physical_active(configuration));
+  EXPECT_TRUE(emergency::physical_candidates(configuration).empty());
+  EXPECT_TRUE(emergency::physical_candidates(nlohmann::json {{"outputs", "invalid"}}).empty());
+}
+
+TEST(LinuxPrivateDisplayEmergencyPolicy, TriesEachPhysicalMonitorAndFallsBackFromUnavailablePreferredMode) {
+  namespace emergency = platf::linux_private_display::emergency_policy;
+  auto hdmi = emergency_output("HDMI-A-1", true, false);
+  hdmi["preferredModes"] = {"unavailable"};
+  auto dp = emergency_output("DP-1", true, false);
+  dp["preferredModes"] = {"unavailable"};
+  dp["currentModeId"] = "gone";
+  const nlohmann::json configuration {{"outputs", nlohmann::json::array({hdmi, dp})}};
+  const auto candidates = emergency::physical_candidates(configuration);
+  ASSERT_EQ(candidates.size(), 2);
+  EXPECT_EQ(candidates[0]["currentModeId"], "old");
+  EXPECT_EQ(candidates[1]["currentModeId"], "old");
+}
 
 TEST(LinuxPrivateDisplayCleanupPolicy, TerminalActionOverridesOwnersAndCompletesOutsideDisplayLock) {
   std::mutex lifecycle;
@@ -63,7 +132,7 @@ TEST(LinuxPrivateDisplayCleanupPolicy, TerminalRemovalContinuesWithoutPhysicalRe
     [] { return true; });
   EXPECT_FALSE(result.topology_restored);
   EXPECT_TRUE(result.virtual_displays_removed);
-  EXPECT_EQ(steps, (std::vector<std::string> {"restore", "Virtual-1", "Virtual-2", "verify"}));
+  EXPECT_EQ(steps, (std::vector<std::string> {"Virtual-1", "Virtual-2", "restore", "verify"}));
 }
 
 TEST(LinuxPrivateDisplayCleanupPolicy, TerminalRemovalAttemptsPeersButNeverReportsPartialOrUnverifiedSuccess) {
@@ -87,8 +156,22 @@ TEST(LinuxPrivateDisplayCleanupPolicy, TerminalRemovalPreservesUnknownHelperComp
     [&] { allowed = false; return false; },
     [&](const auto &) { disconnected = true; return true; },
     [&](const auto &) { verified = true; return true; }, [&] { return allowed; });
-  EXPECT_FALSE(disconnected);
+  EXPECT_TRUE(disconnected);
   EXPECT_FALSE(verified);
+  EXPECT_FALSE(result.virtual_displays_removed);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, UnknownDisconnectCompletionFencesRestoreAndRemainingOutputs) {
+  bool allowed = true;
+  bool restored = false;
+  int disconnected = 0;
+  const auto result = policy::terminate_outputs(std::array {"Virtual-1", "Virtual-2"},
+    [&] { restored = true; return true; },
+    [&](const auto &) { ++disconnected; allowed = false; return false; },
+    [&](const auto &) { ADD_FAILURE() << "Must not verify after unknown helper completion"; return true; },
+    [&] { return allowed; });
+  EXPECT_EQ(disconnected, 1);
+  EXPECT_FALSE(restored);
   EXPECT_FALSE(result.virtual_displays_removed);
 }
 

@@ -1140,6 +1140,22 @@
     "packetsize": "Network packet size"
   },
   "index": {
+    "display_recovery": {
+      "title": "Display recovery",
+      "description": "If your PC screen stays blank after streaming, terminate the virtual screen and try to recover a physical monitor.",
+      "action": "Terminate virtual screen",
+      "working": "Recovering displays…",
+      "introduction_title": "Know how to recover your PC screen",
+      "introduction": "Before your first stream, remember this recovery button. If a virtual screen gets stuck or the saved display layout cannot be restored, open this dashboard from another device and choose Terminate virtual screen. Vibepollo will remove its virtual screens and try to activate a connected physical monitor.",
+      "dismiss": "Got it",
+      "confirm_title": "Terminate virtual screens and recover your monitor?",
+      "confirm_description": "This immediately ends all Vibepollo virtual screens. Streams using them will lose video. Vibepollo will try the saved physical display layout, then try a connected physical monitor if recovery fails. Keep a physical monitor connected and powered on. New streams can create virtual screens again.",
+      "failed": "Virtual-screen termination could not be confirmed. Check the logs and try again.",
+      "restored": "Virtual screens were terminated and the saved physical display layout was restored.",
+      "recovered": "Virtual screens were terminated and a physical monitor is active. The saved layout may not have been restored.",
+      "without_restore": "Virtual screens were terminated, but physical-display recovery could not be confirmed. Check that your monitor is connected and powered on, then try again.",
+      "requested": "Virtual screens were terminated and physical-display recovery was requested. Check your PC screen."
+    },
     "description": "Vibepollo is a self-hosted game stream host for Moonlight.",
     "download": "Download",
     "view_notes": "Release Notes",

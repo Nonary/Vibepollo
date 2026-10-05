@@ -13,6 +13,7 @@
 #include "hdr_policy.h"
 #include "private_display_cleanup_policy.h"
 #include "private_display_configuration_policy.h"
+#include "private_display_emergency_policy.h"
 #include "private_display_mode_client.h"
 #include "private_display_mode_policy.h"
 #include "private_display_restore_policy.h"
@@ -2101,6 +2102,32 @@ namespace platf::linux_private_display {
     manager.restore_dispatcher.stop();
   }
 
+  static bool recover_emergency_physical_display() {
+    if (!restore_allowed()) return false;
+    auto current = query_configuration();
+    if (!current || !restore_allowed()) return false;
+    if (emergency_policy::physical_active(*current)) return true;
+    // The explicit emergency action authorizes activating a disabled monitor.
+    // Keep failed saved intent intact; this is a temporary usable desktop.
+    for (const auto &candidate : emergency_policy::physical_candidates(*current)) {
+      if (!restore_allowed()) return false;
+      current = query_configuration();
+      if (!current || !restore_allowed()) return false;
+      if (emergency_policy::physical_active(*current)) return true;
+      const auto name = candidate.value("name", std::string {});
+      const auto *present = find_output(*current, name);
+      if (!present || !connected(*present)) continue;
+      const auto arguments = output_activation_arguments(candidate, present, name);
+      if (arguments.empty() || !execute_configuration(arguments, "emergency physical recovery")) continue;
+      if (wait_for_snapshot_activation(json {{"outputs", json::array({candidate})}})) {
+        BOOST_LOG(info) << "Linux private display: emergency recovery activated physical output " << name << '.';
+        return true;
+      }
+    }
+    BOOST_LOG(warning) << "Linux private display: emergency recovery could not verify an active physical output.";
+    return false;
+  }
+
   termination_result_t terminate_all() {
     auto &manager = state();
     stream::session::cleanup_reservation_t cleanup_reservation;
@@ -2126,6 +2153,7 @@ namespace platf::linux_private_display {
         const auto outputs = discover_managed_outputs();
         const auto terminated = cleanup_policy::terminate_outputs(outputs,
           [&] {
+            context.deadline = std::min(deadline, std::chrono::steady_clock::now() + restore_operation_timeout);
             const bool restored = revert_locked(manager);
             context.deadline = deadline;
             return restored;
@@ -2149,6 +2177,7 @@ namespace platf::linux_private_display {
           }, [&] { return valid() && restore_allowed(); });
         result = {terminated.topology_restored, terminated.virtual_displays_removed};
         if (result.virtual_displays_removed) {
+          result.physical_display_recovered = recover_emergency_physical_display();
           manager.reservations.clear();
           manager.newly_connected_reservations.clear();
         }

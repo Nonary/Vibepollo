@@ -40,6 +40,8 @@
       </div>
     </section>
 
+    <VirtualDisplayRecovery v-if="displayRecoverySupported(configStore.metadata?.platform || '')" />
+
     <!-- Fatal startup errors moved into Version card to avoid layout shift -->
 
     <!-- Main Grid -->
@@ -511,6 +513,8 @@ import { ref, onMounted, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { NCard, NAlert, useMessage, useDialog } from 'naive-ui';
 import ResourceCard from '@/ResourceCard.vue';
+import VirtualDisplayRecovery from '@/components/VirtualDisplayRecovery.vue';
+import { displayRecoverySupported } from '../../web/utils/displayRecovery';
 import ChangelogPanel from '@/components/ChangelogPanel.vue';
 import PlayniteReinstallButton from '@/components/PlayniteReinstallButton.vue';
 import VibepolloVersion, { GitHubRelease } from '@/sunshine_version';

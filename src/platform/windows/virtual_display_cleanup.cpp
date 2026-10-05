@@ -241,16 +241,54 @@ namespace platf::virtual_display_cleanup {
     return result;
   }
 
+  static bool recover_emergency_physical_display(bool &database_restore_applied) {
+    try {
+      auto api = std::make_shared<display_device::WinApiLayer>();
+      auto win_dd = std::make_shared<display_device::WinDisplayDevice>(api);
+      display_device::ImpersonatingDisplayDevice device {win_dd};
+      const auto physical = [](const display_device::EnumeratedDevice &output) {
+        return !output.m_device_id.empty() &&
+               !VDISPLAY::is_virtual_display_monitor_path(platf::from_utf8(output.m_monitor_device_path)) &&
+               !(output.m_edid && (output.m_edid->m_manufacturer_id == "SDD" || output.m_edid->m_manufacturer_id == "SMK"));
+      };
+      const auto active = [&](const auto &outputs) {
+        return std::ranges::any_of(outputs, [&](const auto &output) { return physical(output) && output.m_info.has_value(); });
+      };
+      auto outputs = device.enumAvailableDevices();
+      if (active(outputs)) return true;
+      // The terminal dispatch fence has verified helper exit before this native
+      // fallback; a dispatched but failed REVERT cannot race the repair.
+      database_restore_applied = device.restoreMonitorSettings() || database_restore_applied;
+      outputs = device.enumAvailableDevices();
+      if (active(outputs)) return true;
+      // With no working physical layout left, try one connected physical target
+      // at a time. setTopology lets Windows choose a supported display mode.
+      for (const auto &output : outputs) {
+        if (!physical(output)) continue;
+        if (device.setTopology({{output.m_device_id}}) && active(device.enumAvailableDevices())) {
+          BOOST_LOG(info) << "Virtual display cleanup: emergency recovery activated a physical monitor.";
+          return true;
+        }
+      }
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "Virtual display cleanup: emergency physical recovery failed: " << e.what();
+    } catch (...) {
+      BOOST_LOG(warning) << "Virtual display cleanup: emergency physical recovery failed.";
+    }
+    return false;
+  }
+
   cleanup_result_t terminate_all(const std::string_view reason) {
     std::lock_guard terminal_lock {g_terminal_cleanup_mutex};
+    cleanup_reservation_t cleanup_reservation;
     // A previous ordinary cleanup may have queued a restore behind the same
     // managed-owner gate this terminal action intentionally overrides. This
     // action consumes that intent now, so it must not fire again later.
     proc::clear_deferred_display_revert();
-    const auto result = run(
+    auto result = run(
       reason,
       true,
-      revert_order_t::restore_before_remove,
+      revert_order_t::remove_before_restore,
       true,
       std::nullopt,
       recovery_monitor_policy_t::disengage_before_admission,
@@ -263,6 +301,11 @@ namespace platf::virtual_display_cleanup {
     // its ping/watchdog worker; a later new session may open it again.
     VDISPLAY::closeVDisplayDevice();
     display_helper_integration::stop_watchdog(true);
+    if (result.virtual_displays_removed) {
+      result.physical_display_recovered = display_helper_integration::run_terminal_physical_recovery([&] {
+        return recover_emergency_physical_display(result.database_restore_applied);
+      });
+    }
     BOOST_LOG(info) << "Virtual display cleanup: terminal driver and helper watchdog shutdown completed (reason="
                     << (reason.empty() ? "unspecified" : std::string(reason)) << ").";
     return result;
