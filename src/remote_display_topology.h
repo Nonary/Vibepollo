@@ -64,6 +64,11 @@ namespace remote_display_topology {
     // Total supported client identities, including retained normal/monitor owners.
     // Linux reports only provisioned managed outputs, never a desired pool size.
     std::function<std::size_t()> client_identity_capacity;
+    // Optional terminal monitor removal. Platforms supplying this callback
+    // remove the caller's output even when the remaining topology cannot apply.
+    // A false result retains ownership for retry; shared normal-game outputs
+    // and captures still prevent removal.
+    std::function<bool(const std::string &client_uuid)> terminate_owned_display;
   };
 
   struct activation_result_t {

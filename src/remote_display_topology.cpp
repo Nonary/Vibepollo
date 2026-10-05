@@ -692,11 +692,12 @@ namespace remote_display_topology {
       return;
     }
 
-    // Recompose only the remaining explicit owners.  This intentionally does
-    // not restore a saved/global topology or remove any peer identity.
+    // Recompose only the remaining explicit owners. Terminal monitor removal
+    // is independent of this best-effort topology handoff: a failed restore
+    // must not keep the caller's screen connected.
     if (callbacks_.apply_composed_topology) {
       std::vector<std::string> ignored;
-      if (!callbacks_.apply_composed_topology(compose_locked(ignored))) {
+      if (!callbacks_.apply_composed_topology(compose_locked(ignored)) && !callbacks_.terminate_owned_display) {
         state.remote_monitor = true;
         state.monitor_requested_mode = monitor_mode;
         state.lease_held = previous_lease;
@@ -707,7 +708,7 @@ namespace remote_display_topology {
         resolve_effective_mode_locked(client_uuid, state);
         return;
       }
-    } else if (remove_display) {
+    } else if (remove_display && !callbacks_.terminate_owned_display) {
       state.remote_monitor = true;
       state.monitor_requested_mode = monitor_mode;
       state.lease_held = previous_lease;
@@ -718,7 +719,8 @@ namespace remote_display_topology {
       resolve_effective_mode_locked(client_uuid, state);
       return;
     }
-    if (remove_display && callbacks_.remove_owned_display && !callbacks_.remove_owned_display(client_uuid)) {
+    const auto &remove = callbacks_.terminate_owned_display ? callbacks_.terminate_owned_display : callbacks_.remove_owned_display;
+    if (remove_display && remove && !remove(client_uuid)) {
       state.remote_monitor = true;
       state.monitor_requested_mode = monitor_mode;
       state.lease_held = previous_lease;
@@ -727,8 +729,10 @@ namespace remote_display_topology {
       state.monitor_release_pending = true;
       state.monitor_release_reason = reason;
       resolve_effective_mode_locked(client_uuid, state);
-      std::vector<std::string> ignored;
-      (void) callbacks_.apply_composed_topology(compose_locked(ignored));
+      if (!callbacks_.terminate_owned_display && callbacks_.apply_composed_topology) {
+        std::vector<std::string> ignored;
+        (void) callbacks_.apply_composed_topology(compose_locked(ignored));
+      }
       return;
     }
     state.monitor_release_pending = false;

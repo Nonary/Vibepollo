@@ -405,6 +405,19 @@ namespace nvhttp {
           return VDISPLAY::removeVirtualDisplay(guid);
         },
         .client_identity_capacity = [] { return static_cast<std::size_t>(config::video.virtual_display_max_clients); },
+        .terminate_owned_display = [](const std::string &client_uuid) {
+          const auto stable_uuid = VDISPLAY::virtualDisplayUuidFromStableId(client_uuid);
+          GUID guid {};
+          std::memcpy(&guid, stable_uuid.b8, sizeof(guid));
+          // This native removal cancels recovery for this exact screen. It
+          // neither depends on restoring the desktop nor removes peer screens.
+          const bool removed = VDISPLAY::removeVirtualDisplay(guid);
+          if (!removed) {
+            BOOST_LOG(error) << "Remote Monitor: terminal screen removal failed for client '" << client_uuid
+                             << "'; ownership retained for retry.";
+          }
+          return removed;
+        },
       });
       remote_display_topology::instance().set_plaintext_rtsp_warning_provider([](const std::string &) {
         return rtsp_stream::plaintext_route_warning();
@@ -425,7 +438,13 @@ namespace nvhttp {
           return remote_session::monitor_runtime_state_t {.accepted = state.accepted, .ready = state.ready, .retryable = state.retryable, .output = state.output, .error = state.error};
         },
         .explicit_release = [](std::string_view uuid, std::uint64_t generation, std::string_view reason) {
-          return remote_display_topology::instance().explicit_release(std::string {uuid}, generation, std::string {reason});
+          const bool released = remote_display_topology::instance().explicit_release(std::string {uuid}, generation, std::string {reason});
+          if (!released) {
+            BOOST_LOG(warning) << "Remote Monitor: release incomplete for client '" << uuid
+                               << "' (generation=" << generation << ", reason=" << reason
+                               << "); ownership retained for retry.";
+          }
+          return released;
         },
         .transport_lost = [](std::string_view uuid, std::uint64_t generation) {
           remote_display_topology::instance().transport_lost(std::string {uuid}, generation);
