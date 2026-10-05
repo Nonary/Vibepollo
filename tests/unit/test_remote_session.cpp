@@ -27,7 +27,7 @@ TEST(RemoteSession, SyntheticIdsAndLegacyIdsNeverFallThrough) {
   EXPECT_TRUE(remote_session::reserved_name("remote monitor"));
   EXPECT_TRUE(remote_session::reserved_name("    Remote Monitor"));
   EXPECT_TRUE(remote_session::reserved_name("Remote Input"));
-  EXPECT_TRUE(remote_session::reserved_name("Virtual Display"));
+  EXPECT_FALSE(remote_session::reserved_name("Virtual Display"));
   EXPECT_TRUE(remote_session::reserved_name("   Remote Input"));
   EXPECT_TRUE(remote_session::reserved_name("Terminate"));
   EXPECT_EQ(remote_session::synthetic(remote_session::control_e::monitor).title, "Remote Monitor");
@@ -113,7 +113,6 @@ TEST(RemoteSession, ConfiguredRemoteMarkersCannotShadowSyntheticControls) {
     {1, "one", "One", false},
     {2, "shadow-input", "Remote Input", false},
     {3, "shadow-monitor", "remote monitor", false},
-    {4, "legacy-virtual-display", "Virtual Display", false},
     {5, configured_input.uuid, configured_input.title, false},
     {6, configured_monitor.uuid, configured_monitor.title, false},
   };
@@ -122,6 +121,31 @@ TEST(RemoteSession, ConfiguredRemoteMarkersCannotShadowSyntheticControls) {
   EXPECT_EQ(idle.catalogue[0].title, "One");
   EXPECT_EQ(idle.catalogue[1].id, remote_session::input_id);
   EXPECT_EQ(idle.catalogue[2].id, remote_session::monitor_id);
+}
+
+TEST(RemoteSession, VirtualDisplayRemainsANormalLaunchableApp) {
+  const remote_session::app_t desktop {4, "8902CB19-674A-403D-A587-41B092E900BA", "Virtual Display", false};
+  const std::vector<remote_session::app_t> configured {desktop};
+  const auto idle = remote_session::project(caller("client"), {}, {}, configured, false);
+  ASSERT_EQ(idle.catalogue.size(), 3);
+  EXPECT_EQ(idle.catalogue[0].id, desktop.id);
+  EXPECT_EQ(idle.catalogue[0].uuid, desktop.uuid);
+  EXPECT_EQ(idle.catalogue[0].title, desktop.title);
+  EXPECT_FALSE(idle.catalogue[0].synthetic);
+  EXPECT_EQ(remote_session::identify(desktop.id, desktop.uuid), remote_session::control_e::none);
+
+  // Running a normal game must not hide the desktop launcher from either
+  // its owner or another client. Monitor ownership still limits its list.
+  for (const auto &client : {caller("owner"), caller("other")}) {
+    const auto active = remote_session::project(client, game(), {}, configured, false);
+    EXPECT_EQ(std::count_if(active.catalogue.begin(), active.catalogue.end(), [&](const auto &app) {
+      return app.uuid == desktop.uuid;
+    }), 1);
+  }
+  const auto monitor = remote_session::project(caller("client"), {}, {.role = remote_session::role_e::monitor}, configured, true);
+  EXPECT_EQ(monitor.catalogue.size(), 2);
+  EXPECT_EQ(monitor.catalogue[0].id, remote_session::resume_id);
+  EXPECT_EQ(monitor.catalogue[1].id, remote_session::disconnect_monitor_id);
 }
 
 TEST(RemoteSession, UngatedGameStaysLaunchableAndCancelableUntilSpecialSessionOwnership) {

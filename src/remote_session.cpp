@@ -69,7 +69,7 @@ namespace remote_session {
   bool reserved_name(const std::string_view name) {
     const auto first_visible = name.find_first_not_of(" \t\r\n");
     const auto visible_name = first_visible == std::string_view::npos ? std::string_view {} : name.substr(first_visible);
-    return equal_folded(visible_name, "Remote Input") || equal_folded(visible_name, "Remote Monitor") || equal_folded(visible_name, "Virtual Display") || equal_folded(visible_name, "Terminate");
+    return equal_folded(visible_name, "Remote Input") || equal_folded(visible_name, "Remote Monitor") || equal_folded(visible_name, "Terminate");
   }
 
   control_e identify(const std::int32_t id, const std::string_view uuid) {

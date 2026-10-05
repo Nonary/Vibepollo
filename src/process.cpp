@@ -4651,6 +4651,35 @@ namespace proc {
       apps.emplace_back(std::move(ctx));
     }
 
+    // Keep the familiar desktop launcher for hosts configured to stream a
+    // virtual display. It uses the normal app lifecycle and display policy.
+#if defined(_WIN32) || defined(__linux__)
+    if (config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled &&
+        std::none_of(apps.begin(), apps.end(), [](const auto &app) { return app.uuid == VIRTUAL_DISPLAY_UUID; })) {
+      proc::ctx_t ctx {};
+      ctx.idx = std::to_string(i);
+      ctx.uuid = VIRTUAL_DISPLAY_UUID;
+      ctx.name = "Virtual Display";
+      ctx.image_path = parse_env_val(this_env, "virtual_desktop.png");
+      ctx.virtual_display = true;
+      ctx.virtual_screen = true;
+      ctx.scale_factor = 100;
+      ctx.use_app_identity = false;
+      ctx.per_client_app_identity = false;
+      ctx.allow_client_commands = false;
+      ctx.terminate_on_pause = false;
+      ctx.elevated = false;
+      ctx.auto_detach = true;
+      ctx.wait_all = false;
+      ctx.exit_timeout = 5s;
+
+      auto possible_ids = calculate_app_id(ctx.name, ctx.uuid, ctx.image_path, i++);
+      ctx.id = ids.count(std::get<0>(possible_ids)) == 0 ? std::get<0>(possible_ids) : std::get<1>(possible_ids);
+      ids.insert(ctx.id);
+      apps.emplace_back(std::move(ctx));
+    }
+#endif
+
     // Terminate entry
     {
       proc::ctx_t ctx {};
