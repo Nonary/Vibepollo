@@ -68,8 +68,6 @@ namespace {
     VerificationResult = 9,
     RefreshRate = 10,
     RefreshRateResult = 11,
-    MutationState = 13,
-    MutationAck = 14,
     RecoveryStatus = 15,
     RecoveryStatusResult = 16,
     SnapshotResult = 12,
@@ -162,7 +160,6 @@ namespace {
       std::lock_guard<std::mutex> lock(mutex_);
       pipe_ = &pipe;
       epoch_ = epoch;
-      mutation_protocol_ = false;
     }
 
     void clear(std::uint64_t epoch) {
@@ -170,65 +167,7 @@ namespace {
       if (epoch_ == epoch) {
         pipe_ = nullptr;
         epoch_ = 0;
-        mutation_protocol_ = false;
-        mutation_cv_.notify_all();
       }
-    }
-
-    void enable_mutation_protocol(std::uint64_t epoch) {
-      std::lock_guard lock(mutex_);
-      if (epoch_ == epoch) mutation_protocol_ = true;
-    }
-
-    void acknowledge_mutation(std::uint64_t epoch, std::uint64_t generation) {
-      std::lock_guard lock(mutex_);
-      if (epoch_ == epoch && mutation_generation_ == generation) {
-        acknowledged_generation_ = generation;
-        mutation_cv_.notify_all();
-      }
-    }
-
-    bool mutation_admission(bool begin, display_helper::v2::IDisplaySettings &display) {
-      std::unique_lock lock(mutex_);
-      if (!begin) {
-        if (mutation_epoch_ && pipe_ && epoch_ == mutation_epoch_) {
-          auto state = nlohmann::json {{"generation", mutation_generation_}, {"active", false}}.dump();
-          send_framed_content(*pipe_, MsgType::MutationState,
-            std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(state.data()), state.size()));
-        }
-        mutation_epoch_ = 0;
-        return true;
-      }
-      if (!pipe_ || !mutation_protocol_) return true; // disconnected recovery / legacy peer
-      mutation_epoch_ = epoch_;
-      ++mutation_generation_;
-      nlohmann::json state {{"generation", mutation_generation_}, {"active", true}, {"all_outputs", true},
-                            {"device_ids", nlohmann::json::array()}, {"outputs", nlohmann::json::array()}};
-      // Mode/topology work can move or disable unrelated outputs; conservatively
-      // fence every capture and preserve the affected identity set in the frame.
-      try {
-        for (const auto &device : display.enumerate(display_device::DeviceEnumerationDetail::Minimal)) {
-          if (!device.m_display_name.empty()) {
-            state["device_ids"].push_back(device.m_device_id);
-            state["outputs"].push_back(device.m_display_name);
-          }
-        }
-      } catch (...) {}
-      const auto payload = state.dump();
-      send_framed_content(*pipe_, MsgType::MutationState,
-        std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(payload.data()), payload.size()));
-      const bool admitted = mutation_cv_.wait_for(lock, std::chrono::seconds(1), [&] {
-        return acknowledged_generation_ == mutation_generation_ || !pipe_ || epoch_ != mutation_epoch_;
-      });
-      if (admitted && acknowledged_generation_ == mutation_generation_ && pipe_ && epoch_ == mutation_epoch_) return true;
-      // An unacknowledged worker must not change a live capture source.
-      if (pipe_ && epoch_ == mutation_epoch_) {
-        const auto finished = nlohmann::json {{"generation", mutation_generation_}, {"active", false}}.dump();
-        send_framed_content(*pipe_, MsgType::MutationState,
-          std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(finished.data()), finished.size()));
-      }
-      mutation_epoch_ = 0;
-      return false;
     }
 
     void send_for_epoch(std::uint64_t epoch, MsgType type, std::span<const uint8_t> payload = {}) {
@@ -241,9 +180,6 @@ namespace {
 
   private:
     std::mutex mutex_;
-    std::condition_variable mutation_cv_;
-    bool mutation_protocol_ = false;
-    std::uint64_t mutation_generation_ = 0, acknowledged_generation_ = 0, mutation_epoch_ = 0;
     platf::dxgi::AsyncNamedPipe *pipe_ = nullptr;
     std::uint64_t epoch_ = 0;
   };
@@ -435,7 +371,6 @@ namespace {
           out_request.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::clamp<std::int64_t>(ms, 0, 15000));
           j.erase("sunshine_apply_budget_ms");
         }
-        j.erase("sunshine_capture_mutation_protocol");
         if (j.contains("wa_hdr_toggle")) {
           out_request.hdr_blank = j["wa_hdr_toggle"].get<bool>();
           j.erase("wa_hdr_toggle");
@@ -768,10 +703,6 @@ int run_v2_helper(int argc, char *argv[]) {
     clock
   );
 
-  dispatcher.set_mutation_admission([&response_pipe, &display_settings](bool begin) {
-    return response_pipe.mutation_admission(begin, display_settings);
-  });
-
   std::atomic<bool> running {true};
 
   // Adopt snapshots written by other contexts (SYSTEM vs user) or the legacy engine.
@@ -1054,10 +985,6 @@ int run_v2_helper(int argc, char *argv[]) {
         return;
       }
 
-      if (type == MsgType::MutationAck) {
-        if (const auto generation = read_u64_le(payload, 0)) response_pipe.acknowledge_mutation(epoch, *generation);
-        return;
-      }
       switch (type) {
         case MsgType::Apply: {
           display_helper::v2::ApplyRequest request;
@@ -1074,10 +1001,6 @@ int run_v2_helper(int argc, char *argv[]) {
             return;
           }
 
-          try {
-            const auto capabilities = nlohmann::json::parse(payload.begin(), payload.end());
-            if (capabilities.value("sunshine_capture_mutation_protocol", 0) == 1) response_pipe.enable_mutation_protocol(epoch);
-          } catch (...) {}
           queue.push(display_helper::v2::ApplyCommand {std::move(request), cancellation.current_generation(), epoch});
           break;
         }

@@ -5625,7 +5625,6 @@ namespace {
         // verification phase, so discard it before deserializing the public
         // display configuration and retain the original untagged response.
         j.erase("sunshine_apply_id");
-        j.erase("sunshine_capture_mutation_protocol");
         if (j.contains("sunshine_apply_budget_ms")) {
           apply_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(
             std::clamp<std::int64_t>(j["sunshine_apply_budget_ms"].get<std::int64_t>(), 0, 15000));

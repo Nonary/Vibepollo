@@ -1,7 +1,6 @@
 #include "src/platform/windows/display_helper_v2/async_dispatcher.h"
 
 #include "src/platform/windows/display_helper_v2/diagnostics.h"
-#include "src/utility.h"
 
 namespace display_helper::v2 {
   AsyncDispatcher::AsyncDispatcher(
@@ -39,13 +38,8 @@ namespace display_helper::v2 {
     std::chrono::milliseconds delay,
     bool reset_virtual_display,
     std::function<void(const ApplyOutcome &)> completion) {
-    const auto publish = completion;
-    completion = [this, publish](auto const &outcome) {
-      if (mutation_admission_) mutation_admission_(false);
-      publish(outcome);
-    };
-    const auto reject = completion;
-    enqueue_mutation_task([
+    const auto report_failure = completion;
+    enqueue_operation([
       this,
       request,
       token,
@@ -152,7 +146,7 @@ namespace display_helper::v2 {
       outcome.durable_recovery_attempted = outcome.durable_recovery_attempted ||
                                             virtual_reset_outcome.durable_recovery_attempted;
       completion(outcome);
-    }, [completion = reject] { completion(ApplyOutcome {}); });
+    }, [completion = report_failure] { completion(ApplyOutcome {}); });
   }
 
   void AsyncDispatcher::dispatch_verification(
@@ -231,13 +225,8 @@ namespace display_helper::v2 {
     const CancellationToken &token,
     std::chrono::milliseconds delay,
     std::function<void(const RecoveryOutcome &)> completion) {
-    const auto publish = completion;
-    completion = [this, publish](auto const &outcome) {
-      if (mutation_admission_) mutation_admission_(false);
-      publish(outcome);
-    };
-    const auto reject = completion;
-    enqueue_mutation_task([
+    const auto report_failure = completion;
+    enqueue_operation([
       this,
       token,
       delay,
@@ -258,7 +247,7 @@ namespace display_helper::v2 {
       }
 
       completion(recovery_operation_.run(token));
-    }, [completion = reject] { completion(RecoveryOutcome {}); });
+    }, [completion = report_failure] { completion(RecoveryOutcome {}); });
   }
 
   void AsyncDispatcher::dispatch_recovery_validation(
@@ -282,13 +271,8 @@ namespace display_helper::v2 {
     const CancellationToken &token,
     std::function<void(bool)> completion
   ) {
-    const auto publish = completion;
-    completion = [this, publish](auto const &outcome) {
-      if (mutation_admission_) mutation_admission_(false);
-      publish(outcome);
-    };
-    const auto reject = completion;
-    enqueue_mutation_task([
+    const auto report_failure = completion;
+    enqueue_operation([
       this,
       device_id = std::move(device_id),
       numerator,
@@ -301,16 +285,12 @@ namespace display_helper::v2 {
         return;
       }
       completion(apply_operation_.set_refresh_rate(device_id, numerator, denominator));
-    }, [completion = reject] { completion(false); });
+    }, [completion = report_failure] { completion(false); });
   }
 
-  void AsyncDispatcher::enqueue_mutation_task(std::function<void()> task, std::function<void()> rejected) {
-    enqueue_task([this, task = std::move(task), rejected = std::move(rejected)] {
-      if (mutation_admission_ && !mutation_admission_(true)) { rejected(); return; }
-      // Completion also runs for cancellation and exceptions. No helper-owned
-      // asynchronous HDR mutation may outlive this lease.
-      auto completed = util::fail_guard([this] { if (mutation_admission_) mutation_admission_(false); });
-      try { task(); } catch (...) { if (mutation_admission_) mutation_admission_(false); rejected(); }
+  void AsyncDispatcher::enqueue_operation(std::function<void()> task, std::function<void()> report_failure) {
+    enqueue_task([task = std::move(task), report_failure = std::move(report_failure)] {
+      try { task(); } catch (...) { report_failure(); }
     });
   }
 

@@ -633,13 +633,6 @@ namespace platf {
       return false;
     }
 
-    // Capture color state is immutable for one generation. Windows rejects
-    // encoder construction when a new observation or owned mutation supersedes it.
-    inline static std::atomic_uint64_t next_capture_color_generation {0};
-    const std::uint64_t capture_color_generation_ = ++next_capture_color_generation;
-    virtual std::uint64_t capture_color_generation() const { return capture_color_generation_; }
-    virtual bool capture_state_current() const { return true; }
-
     virtual void prepare_for_reinit() {
     }
 

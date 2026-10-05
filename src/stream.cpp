@@ -605,10 +605,6 @@ namespace stream {
 
     std::shared_ptr<input::input_t> input;
 
-#ifdef _WIN32
-    std::shared_future<rtsp_stream::launch_session_t::display_helper_gate_status_e> display_helper_gate;
-#endif
-
     std::thread audioThread;
     std::thread videoThread;
 
@@ -3054,35 +3050,6 @@ namespace stream {
     auto address = session->video.peer.address();
     session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
 
-#ifdef _WIN32
-    if (session->display_helper_gate.valid()) {
-      BOOST_LOG(debug) << "Display helper: waiting for apply/validation gate before starting capture.";
-      rtsp_stream::launch_session_t::display_helper_gate_status_e gate_status {};
-      try {
-        constexpr auto kGateTimeout = display_helper_integration::kApplyVerificationGateWaitTimeout;
-        if (session->display_helper_gate.wait_for(kGateTimeout) == std::future_status::ready) {
-          gate_status = session->display_helper_gate.get();
-        } else {
-          BOOST_LOG(warning) << "Display helper: gate wait timed out; proceeding with capture.";
-          gate_status = rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
-        }
-      } catch (const std::exception &e) {
-        BOOST_LOG(warning) << "Display helper: gate wait failed (" << e.what() << "); proceeding with capture.";
-        gate_status = rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
-      } catch (...) {
-        BOOST_LOG(warning) << "Display helper: gate wait failed (unknown); proceeding with capture.";
-        gate_status = rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
-      }
-
-      if (gate_status == rtsp_stream::launch_session_t::display_helper_gate_status_e::abort_failed) {
-        BOOST_LOG(error) << "Display helper validation failed; starting capture anyway.";
-      }
-      if (gate_status == rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup) {
-        BOOST_LOG(warning) << "Display helper verification result unavailable; starting capture anyway.";
-      }
-    }
-#endif
-
     BOOST_LOG(debug) << "Start capturing Video"sv;
     video::capture(session->mail, session->config.monitor, session);
   }
@@ -4001,7 +3968,6 @@ namespace stream {
       if (session->virtual_display.active) {
         VDISPLAY::setWatchdogFeedingEnabled(true);
       }
-      session->display_helper_gate = launch_session.display_helper_gate;
 #endif
 
       session->control.connect_data = launch_session.control_connect_data;

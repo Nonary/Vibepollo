@@ -914,9 +914,6 @@ namespace {
   // can add a stabilization delay before attempting to reinit after topology changes.
   static std::atomic<std::int64_t> g_last_apply_completed_us {0};
   static std::atomic<std::uint64_t> g_last_apply_generation {0};
-  static std::atomic<std::uint64_t> g_last_verified_apply_generation {0};
-  static std::atomic<std::uint64_t> g_capture_stable_eligible_apply_generation {0};
-  static std::atomic<std::uint64_t> g_hdr_requested_apply_generation {0};
 
   // Deadline of the most recent bounded stream-start APPLY in steady-clock
   // microseconds, or zero when the most recent APPLY was unbounded. Capture
@@ -1331,9 +1328,6 @@ namespace {
   // make a later APPLY depend on mutable global request identity.
   static void invalidate_apply_verification() {
     g_last_apply_generation.fetch_add(1, std::memory_order_acq_rel);
-    g_last_verified_apply_generation.store(0, std::memory_order_release);
-    g_capture_stable_eligible_apply_generation.store(0, std::memory_order_release);
-    g_hdr_requested_apply_generation.store(0, std::memory_order_release);
   }
   bool helper_start_failure_cooldown_active() {
     const auto last_us = g_last_helper_start_failure_us.load(std::memory_order_relaxed);
@@ -2307,21 +2301,6 @@ namespace display_helper_integration {
       if (verification_ticket) {
         verification_ticket->generation = apply_generation;
       }
-      const bool exclusive_virtual =
-        request.virtual_display_arrangement == VirtualDisplayArrangement::Exclusive;
-      const bool source_hdr_explicitly_disabled =
-        request.configuration && request.configuration->m_hdr_state == display_device::HdrState::Disabled;
-      g_capture_stable_eligible_apply_generation.store(
-        exclusive_virtual && source_hdr_explicitly_disabled ? apply_generation : 0,
-        std::memory_order_release
-      );
-      const bool source_hdr_requested =
-        request.configuration && request.configuration->m_hdr_state == display_device::HdrState::Enabled;
-      g_hdr_requested_apply_generation.store(
-        source_hdr_requested ? apply_generation : 0,
-        std::memory_order_release
-      );
-
       // Prefer the helper for APPLY, even when running as SYSTEM without an interactive user session.
       // In-process display APIs frequently return ERROR_ACCESS_DENIED in that context.
       const bool system_no_user_session = platf::is_running_as_system() && !user_session_ready();
@@ -2543,31 +2522,15 @@ namespace display_helper_integration {
       if (g_last_apply_generation.load(std::memory_order_acquire) != ticket.generation) {
         BOOST_LOG(debug) << "Display helper: verification gate superseded by a newer APPLY.";
       } else {
-        BOOST_LOG(warning) << "Display helper: verification result unavailable; proceeding with stream.";
+        BOOST_LOG(warning) << "Display helper: verification result unavailable.";
       }
       return ApplyVerificationStatus::Unknown;
     }
 
     if (*result && g_last_apply_generation.load(std::memory_order_acquire) == ticket.generation) {
-      g_last_verified_apply_generation.store(ticket.generation, std::memory_order_release);
       return ApplyVerificationStatus::Verified;
     }
     return *result ? ApplyVerificationStatus::Unknown : ApplyVerificationStatus::Failed;
-  }
-
-  bool last_apply_is_capture_stable() {
-    const auto before = g_last_apply_generation.load(std::memory_order_acquire);
-    const auto verified = g_last_verified_apply_generation.load(std::memory_order_acquire);
-    const auto eligible = g_capture_stable_eligible_apply_generation.load(std::memory_order_acquire);
-    const auto after = g_last_apply_generation.load(std::memory_order_acquire);
-    return before != 0 && before == after && verified == after && eligible == after;
-  }
-
-  bool last_apply_requested_hdr() {
-    const auto before = g_last_apply_generation.load(std::memory_order_acquire);
-    const auto hdr = g_hdr_requested_apply_generation.load(std::memory_order_acquire);
-    const auto after = g_last_apply_generation.load(std::memory_order_acquire);
-    return before != 0 && before == after && hdr == after;
   }
 
   std::optional<std::chrono::milliseconds> remaining_stream_start_budget() {
@@ -2620,15 +2583,30 @@ namespace display_helper_integration {
         statefile::remember_virtual_display_device(vd_id);
       }
     }
-    return apply_internal(
+    ApplyVerificationTicket capture_ticket;
+    auto *ticket = retry_policy == ApplyRetryPolicy::StreamStart ? &capture_ticket : verification_ticket;
+    const bool applied = apply_internal(
       request,
       true,
-      verification_ticket,
+      ticket,
       cancellation_predicate,
       retry_policy,
       startup_deadline,
       shutdown_class_caller
     );
+    if (!applied) return false;
+    if (retry_policy == ApplyRetryPolicy::StreamStart) {
+      // Legacy APPLY success already includes verification. V2 also returns a
+      // correlated verification result; require it before probing or capture.
+      if (ticket->uses_v2_helper &&
+          wait_for_apply_verification(*ticket, verification_timeout) != ApplyVerificationStatus::Verified) {
+        BOOST_LOG(error) << "Display helper: display setup was not verified before stream startup.";
+        return false;
+      }
+      if (startup_cancellation_predicate()) return false;
+      if (verification_ticket) *verification_ticket = *ticket;
+    }
+    return true;
   }
 
   bool revert(

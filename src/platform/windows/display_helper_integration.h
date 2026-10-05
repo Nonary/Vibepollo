@@ -53,7 +53,9 @@ namespace display_helper_integration {
   };
 
   // Launch the helper (if needed) and process the provided builder request.
-  // Returns true if the helper accepted the command; false to allow fallback.
+  // StreamStart returns only after display setup and verification complete;
+  // failure or timeout must abort startup before probing or capture.
+  // Other policies return true if the helper accepted the command.
   // A cancellation predicate interrupts helper IPC waits and disables the
   // potentially blocking in-process fallback for that caller. Stream starts
   // also supply one, so shutdown-class callers (owned recovery/teardown
@@ -172,23 +174,11 @@ namespace display_helper_integration {
   // before the client's first-video timeout, even when APPLY itself is slow.
   inline constexpr auto kStreamStartApplyVerificationTimeout =
     display_helper::v2::timing::kStreamStartApplyBudget;
-  inline constexpr auto kApplyVerificationGateWaitTimeout =
-    kStreamStartApplyVerificationTimeout + display_helper::v2::timing::kApplyGateConsumerSlack;
-
   // Wait for helper verification to finish after APPLY (v2 engine only).
   // Returns Unknown on timeout, legacy engine, or when verification is unavailable.
   ApplyVerificationStatus wait_for_apply_verification(
     const ApplyVerificationTicket &ticket,
     std::chrono::milliseconds timeout);
-
-  // True when the most recent successful APPLY is verified and has no pending
-  // HDR/topology workaround that requires the settling fallback.
-  bool last_apply_is_capture_stable();
-
-  // True when the most recent APPLY asked for HDR to be enabled. Capture start
-  // uses this to wait for HDR to actually come up rather than for a fixed
-  // interval, so a session never begins in SDR and transitions mid-stream.
-  bool last_apply_requested_hdr();
 
   // Milliseconds left in the bounded stream-start budget of the most recent
   // APPLY, clamped at zero, or nullopt when that APPLY was not a bounded stream

@@ -444,19 +444,7 @@ namespace platf::dxgi {
     sleep_overshoot_logger.reset();
 
     while (true) {
-      if (output_monitor && output_monitor->failed()) return capture_e::error;
       if (output_monitor && output_monitor->reinit_requested()) return capture_e::reinit;
-      if (output_monitor && !output_monitor->mutation_current() && !platf::display_helper_client::capture_mutations_pending()) return capture_e::reinit;
-      if (platf::display_helper_client::capture_mutations_pending() || (output_monitor && output_monitor->hold_frames())) {
-        // Maintain normal timeout/keepalive callbacks without forwarding source
-        // pixels that belong to a display mutation or uncommitted color state.
-        if (!push_captured_image_cb({}, false)) return capture_e::ok;
-        frame_pacing_group_start.reset();
-        frame_pacing_group_frames = 0;
-        last_pacing_slot.reset();
-        std::this_thread::sleep_for(25ms);
-        continue;
-      }
 
       if (auto diag_now = std::chrono::steady_clock::now(); diag_now - pacing_diag_last_log >= 10s) {
         if (pacing_bust_woke_late || pacing_bust_snapshot_miss || pacing_phase_preserved || pacing_phase_reanchored) {
@@ -591,14 +579,7 @@ namespace platf::dxgi {
         }
       }
 
-      if (platf::display_helper_client::capture_mutations_pending() || (output_monitor && output_monitor->hold_frames())) {
-        release_snapshot();
-        img_out.reset();
-        if (!push_captured_image_cb({}, false)) return capture_e::ok;
-        continue;
-      }
-
-      if (output_monitor && (output_monitor->reinit_requested() || !output_monitor->mutation_current())) {
+      if (output_monitor && output_monitor->reinit_requested()) {
         release_snapshot();
         return capture_e::reinit;
       }
@@ -634,11 +615,6 @@ namespace platf::dxgi {
 
   display_base_t::display_base_t() = default;
   display_base_t::~display_base_t() = default;
-
-  bool display_base_t::capture_state_current() const {
-    return !platf::display_helper_client::capture_mutations_pending() &&
-      (!output_monitor || (!output_monitor->reinit_requested() && !output_monitor->hold_frames() && output_monitor->mutation_current() && !output_monitor->failed()));
-  }
 
   void display_base_t::prepare_for_reinit() {
     release_snapshot();
@@ -746,9 +722,6 @@ namespace platf::dxgi {
     const bool skip_dd_test,
     const std::optional<LUID> &required_adapter_luid
   ) {
-    // Establish the generation before any output snapshot or D3D resources.
-    // A transaction completing during initialization must invalidate them.
-    const auto mutation_revision = platf::display_helper_client::capture_mutation_revision();
     static std::once_flag windows_cpp_once_flag;
 
     std::call_once(windows_cpp_once_flag, []() {
@@ -1179,12 +1152,8 @@ namespace platf::dxgi {
       return -1;
     }
 
-    refresh_only_changes_supported = skip_dd_test;
     output_monitor = std::make_unique<display_output_monitor_t>(captured_adapter_luid, captured_output_desc,
-      captured_hdr_state_valid, captured_hdr_state, offset_x, offset_y, env_width, env_height, mutation_revision);
-    // Initialization already runs outside frame pacing. Expose a validated
-    // generation to encoder probing and session construction, or retry init.
-    if (!output_monitor->wait_for_initial_validation(3s)) return -1;
+      captured_hdr_state_valid, captured_hdr_state, offset_x, offset_y, env_width, env_height);
 
     return 0;
   }
@@ -1198,46 +1167,6 @@ namespace platf::dxgi {
 
   bool display_base_t::is_hdr() {
     return captured_hdr_state_valid && captured_hdr_state;
-  }
-
-  bool is_hdr_active_for_output(const std::string &output_name) {
-    dxgi::factory1_t factory;
-    if (FAILED(CreateDXGIFactory1(IID_IDXGIFactory1, (void **) &factory))) {
-      return false;
-    }
-
-    dxgi::adapter_t::pointer adapter_p {};
-    for (int x = 0; factory->EnumAdapters1(x, &adapter_p) != DXGI_ERROR_NOT_FOUND; ++x) {
-      dxgi::adapter_t adapter {adapter_p};
-
-      dxgi::output_t::pointer output_p {};
-      for (int y = 0; adapter->EnumOutputs(y, &output_p) != DXGI_ERROR_NOT_FOUND; ++y) {
-        dxgi::output_t output {output_p};
-
-        DXGI_OUTPUT_DESC desc;
-        if (FAILED(output->GetDesc(&desc)) || !desc.AttachedToDesktop) {
-          continue;
-        }
-        if (!output_name.empty() && utf_utils::to_utf8(desc.DeviceName) != output_name) {
-          continue;
-        }
-
-        dxgi::output6_t output6 {};
-        if (FAILED(output->QueryInterface(IID_IDXGIOutput6, (void **) &output6))) {
-          continue;
-        }
-
-        DXGI_OUTPUT_DESC1 desc1;
-        if (FAILED(output6->GetDesc1(&desc1))) {
-          continue;
-        }
-        if (desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020) {
-          return true;
-        }
-      }
-    }
-
-    return false;
   }
 
   bool display_base_t::get_hdr_metadata(SS_HDR_METADATA &metadata) {

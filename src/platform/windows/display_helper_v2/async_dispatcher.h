@@ -124,13 +124,9 @@ namespace display_helper::v2 {
       const CancellationToken &token,
       std::function<void(bool)> completion) override;
 
-    using MutationAdmission = std::function<bool(bool begin)>;
-    void set_mutation_admission(MutationAdmission admission) { mutation_admission_ = std::move(admission); }
-
   private:
     void enqueue_task(std::function<void()> task);
-    void enqueue_mutation_task(std::function<void()> task, std::function<void()> rejected);
-    MutationAdmission mutation_admission_;
+    void enqueue_operation(std::function<void()> task, std::function<void()> report_failure);
     void enqueue_delayed_task(std::function<void(std::stop_token)> task);
     void worker_loop(std::stop_token st);
     void timer_loop(std::stop_token st);

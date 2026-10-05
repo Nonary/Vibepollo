@@ -26,7 +26,6 @@
   #include "display_settings_client.h"
   #include "src/globals.h"
   #include "src/logging.h"
-  #include "src/utility.h"
   #include "src/platform/windows/display_helper_v2/timing.h"
   #include "src/platform/windows/ipc/pipes.h"
 
@@ -94,8 +93,6 @@ namespace platf::display_helper_client {
     VerificationResult = 9,  ///< Helper acknowledgement for verification completion (payload: [u8 success]); v2 engine only.
     RefreshRate = 10,  ///< Change only one display's refresh rate.
     RefreshRateResult = 11,  ///< Helper acknowledgement for RefreshRate (payload: [u8 success]).
-    MutationState = 13,
-    MutationAck = 14,
     RecoveryStatus = 15,
     RecoveryStatusResult = 16,
     SnapshotResult = 12,  ///< Helper acknowledgement for SnapshotCurrent (payload: [u8 success]).
@@ -121,16 +118,10 @@ namespace platf::display_helper_client {
     // single ownership unit. A retired connection may still have a reader
     // finishing a short receive slice, but it can never clear or reclassify
     // the reply state of the connection that replaced it.
-    std::atomic_bool source_mutating {false};
-    std::atomic_uint64_t source_mutation_revision {0};
     struct ConnectionSession {
       ConnectionSession(PipePtr pipe_in, std::uint64_t generation_in)
-        : pipe(std::move(pipe_in)), generation(generation_in), mutation_revision(++next_mutation_revision) {
-        source_mutation_revision.store(mutation_revision, std::memory_order_release);
-        source_mutating.store(false, std::memory_order_release);
-      }
+        : pipe(std::move(pipe_in)), generation(generation_in) {}
 
-      inline static std::atomic_uint64_t next_mutation_revision {0};
       PipePtr pipe;
       const std::uint64_t generation;
       std::atomic<ApplyResponseProtocol> protocol {ApplyResponseProtocol::Unknown};
@@ -141,19 +132,10 @@ namespace platf::display_helper_client {
       std::atomic<bool> untagged_response_pending {false};
       std::timed_mutex response_mutex;
       std::mutex response_inbox_mutex;
-      std::mutex mutation_mutex;
-      std::uint64_t mutation_generation = 0;
-      std::uint64_t mutation_revision = 0;
-      bool mutation_active = false;
-      bool local_mutation_active = false;
-      bool mutation_failed = false;
-      std::chrono::steady_clock::time_point mutation_deadline {};
       std::deque<std::vector<uint8_t>> response_inbox;
     };
 
     using SessionPtr = std::shared_ptr<ConnectionSession>;
-
-    bool consume_mutation_frame(const SessionPtr &session, std::span<const std::uint8_t> bytes);
 
     constexpr std::size_t kMaxBufferedResponses = 32;
     constexpr std::size_t kMaxIssuedApplyRequestIds = 64;
@@ -369,7 +351,6 @@ namespace platf::display_helper_client {
           return std::nullopt;
         }
 
-        if (consume_mutation_frame(session, std::span<const uint8_t>(buffer.data(), bytes_read))) continue;
         const uint8_t msg_type = buffer[0];
         if (msg_type == static_cast<uint8_t>(MsgType::ApplyResult)) {
           const std::span<const uint8_t> frame(buffer.data(), bytes_read);
@@ -471,7 +452,6 @@ namespace platf::display_helper_client {
           return std::nullopt;
         }
 
-        if (consume_mutation_frame(session, std::span<const uint8_t>(buffer.data(), bytes_read))) continue;
         const uint8_t msg_type = buffer[0];
         if (msg_type == static_cast<uint8_t>(MsgType::VerificationResult)) {
           const std::span<const uint8_t> frame(buffer.data(), bytes_read);
@@ -556,7 +536,6 @@ namespace platf::display_helper_client {
           return std::nullopt;
         }
 
-        if (consume_mutation_frame(session, std::span<const uint8_t>(buffer.data(), bytes_read))) continue;
         const auto msg_type = buffer[0];
         if (msg_type == static_cast<uint8_t>(MsgType::RefreshRateResult)) {
           const std::span<const uint8_t> frame(buffer.data(), bytes_read);
@@ -639,7 +618,6 @@ namespace platf::display_helper_client {
           return std::nullopt;
         }
 
-        if (consume_mutation_frame(session, std::span<const uint8_t>(buffer.data(), bytes_read))) continue;
         const auto msg_type = buffer[0];
         if (msg_type == static_cast<uint8_t>(MsgType::SnapshotResult)) {
           const std::span<const uint8_t> frame(buffer.data(), bytes_read);
@@ -1391,75 +1369,6 @@ namespace platf::display_helper_client {
     return false;
   }
 
-  namespace {
-    bool consume_mutation_frame(const SessionPtr &session, std::span<const std::uint8_t> bytes) {
-      if (bytes.empty() || bytes[0] != static_cast<std::uint8_t>(MsgType::MutationState)) return false;
-      if (!session_is_current(session)) return true;
-      try {
-        const auto json = nlohmann::json::parse(bytes.begin() + 1, bytes.end());
-        const auto generation = json.at("generation").get<std::uint64_t>();
-        const bool active = json.at("active").get<bool>();
-        {
-          std::lock_guard lock(session->mutation_mutex);
-          if (generation < session->mutation_generation) return true;
-          if (generation == session->mutation_generation && active && !session->mutation_active) return true;
-          session->mutation_generation = generation;
-          session->mutation_active = active;
-          session->mutation_failed = false;
-          session->mutation_revision = ++ConnectionSession::next_mutation_revision;
-          source_mutation_revision.store(session->mutation_revision, std::memory_order_release);
-          session->mutation_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-          // Published before ACK. The capture thread checks this again before
-          // forwarding a snapshot, so an in-flight snapshot is also dropped.
-          source_mutating.store(active || session->local_mutation_active, std::memory_order_release);
-        }
-        if (active) {
-          std::vector<std::uint8_t> payload;
-          for (unsigned shift = 0; shift < 64; shift += 8) payload.push_back((generation >> shift) & 0xffu);
-          const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
-          send_serialized_within(session, MsgType::MutationAck, payload, deadline);
-        }
-      } catch (...) {
-        BOOST_LOG(error) << "Display helper IPC: malformed color-mutation state; refusing unsettled capture";
-        std::lock_guard lock(session->mutation_mutex);
-        session->mutation_failed = true;
-        source_mutating.store(true, std::memory_order_release);
-      }
-      return true;
-    }
-  }
-
-  bool capture_mutations_pending() { return source_mutating.load(std::memory_order_acquire); }
-  std::uint64_t capture_mutation_revision() { return source_mutation_revision.load(std::memory_order_acquire); }
-
-  CaptureMutationState capture_mutation_state(const std::string &) {
-    const auto session = current_session();
-    if (!session || !session->pipe->is_connected()) {
-      source_mutating.store(false, std::memory_order_release);
-      return {};
-    }
-    std::lock_guard lock(session->mutation_mutex);
-    if ((session->mutation_active || session->local_mutation_active) && std::chrono::steady_clock::now() >= session->mutation_deadline) {
-      session->mutation_failed = true;
-    }
-    source_mutating.store(session->mutation_active || session->local_mutation_active || session->mutation_failed, std::memory_order_release);
-    return {session->mutation_revision, session->mutation_active || session->local_mutation_active, session->mutation_failed};
-  }
-
-  void pump_mutation_notifications() {
-    const auto session = current_session();
-    if (!session || !session->pipe || !session->pipe->is_connected()) return;
-    std::unique_lock lock(session->response_mutex, std::try_to_lock);
-    if (!lock.owns_lock()) return;
-    std::array<std::uint8_t, 65536> bytes {};
-    std::size_t count = 0;
-    const auto result = session->pipe->receive(bytes, count, 1);
-    if (result == platf::dxgi::PipeResult::Success && count) {
-      const auto frame = std::span<const std::uint8_t>(bytes.data(), count);
-      if (!consume_mutation_frame(session, frame) && is_bufferable_response(bytes[0])) buffer_response(session, frame);
-    }
-  }
-
   bool uses_v2_response_protocol() {
     return current_apply_response_protocol(current_session()) == ApplyResponseProtocol::V2;
   }
@@ -1519,7 +1428,6 @@ namespace platf::display_helper_client {
         return false;
       }
       apply_json["sunshine_apply_id"] = request_id;
-      apply_json["sunshine_capture_mutation_protocol"] = 1;
       if (operation_is_bounded) apply_json["sunshine_apply_budget_ms"] = remaining_timeout_ms(operation_deadline);
       const auto serialized = apply_json.dump();
       payload.assign(serialized.begin(), serialized.end());
@@ -1583,24 +1491,6 @@ namespace platf::display_helper_client {
       const auto serialized = current_payload.dump();
       payload.assign(serialized.begin(), serialized.end());
     }
-    // Fence before the request is written, including an unknown/legacy peer
-    // whose synchronous APPLY reader cannot participate in helper admission ACKs.
-    {
-      std::lock_guard lock(session->mutation_mutex);
-      session->local_mutation_active = true;
-      session->mutation_revision = ++ConnectionSession::next_mutation_revision;
-      session->mutation_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-      source_mutation_revision.store(session->mutation_revision, std::memory_order_release);
-      source_mutating.store(true, std::memory_order_release);
-    }
-    auto release_local_mutation = util::fail_guard([session] {
-      if (!session_is_current(session)) return;
-      std::lock_guard lock(session->mutation_mutex);
-      session->local_mutation_active = false;
-      session->mutation_revision = ++ConnectionSession::next_mutation_revision;
-      source_mutation_revision.store(session->mutation_revision, std::memory_order_release);
-      source_mutating.store(session->mutation_active || session->mutation_failed, std::memory_order_release);
-    });
     const int send_cap = shutdown_class_caller ? kShutdownIpcTimeoutMs : kSendTimeoutMs;
     std::uint64_t sent_connection_generation = 0;
     if (!send_serialized_within(
@@ -1871,7 +1761,6 @@ namespace platf::display_helper_client {
       if (received != platf::dxgi::PipeResult::Success || bytes_read == 0 || cancelled()) {
         return std::nullopt;
       }
-      if (consume_mutation_frame(session, std::span<const std::uint8_t>(buffer.data(), bytes_read))) continue;
       if (buffer[0] == static_cast<std::uint8_t>(MsgType::RecoveryStatusResult)) {
         if (bytes_read < 19) continue;
         std::uint64_t response_ticket = 0;
