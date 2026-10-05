@@ -540,12 +540,12 @@ TEST(LinuxPrivateDisplayRestorePolicy, RetiresDisabledConnectedPrivateOutputAndK
             (std::set<std::string> {"Virtual-1", "Virtual-2"}));
 }
 
-TEST(LinuxPrivateDisplayRestorePolicy, RetirementPreservesPreexistingActivePrivateDesktop) {
+TEST(LinuxPrivateDisplayRestorePolicy, RetirementIgnoresVirtualTargetsInOlderSnapshots) {
   const json snapshot {{"outputs", {{{"name", "Virtual-1"}, {"connected", true}, {"enabled", true}}}}};
   auto current = snapshot;
   current["outputs"].push_back({{"name", "Virtual-2"}, {"connected", true}, {"enabled", true}});
   EXPECT_EQ(policy::retiring_outputs(snapshot, current, {"Virtual-1", "Virtual-2"}, {"Virtual-1", "Virtual-2"}),
-            (std::set<std::string> {"Virtual-2"}));
+            (std::set<std::string> {"Virtual-1", "Virtual-2"}));
 }
 
 TEST(LinuxPrivateDisplayRestorePolicy, RetirementDoesNotDisconnectPhysicalOutputsOrUnreservedDisconnectedPrivateOutputs) {
@@ -614,12 +614,12 @@ TEST(LinuxPrivateDisplayRestorePolicy, CandidateOwnsNameAfterOriginalChanges) {
   EXPECT_EQ(policy::select_guard(candidates), "HDMI-A-1");
 }
 
-TEST(LinuxPrivateDisplayRestorePolicy, FallsBackToPrivateGuardForPrivateBaseline) {
+TEST(LinuxPrivateDisplayRestorePolicy, RejectsPrivateGuardInOlderBaseline) {
   const std::array candidates {
     policy::candidate_t {"Virtual-2", true, true, true},
   };
 
-  EXPECT_EQ(policy::select_guard(candidates), "Virtual-2");
+  EXPECT_FALSE(policy::select_guard(candidates));
 }
 
 TEST(LinuxPrivateDisplayRestorePolicy, RetiringPrivateOutputCannotGuardItsOwnDisconnect) {
@@ -630,13 +630,13 @@ TEST(LinuxPrivateDisplayRestorePolicy, RetiringPrivateOutputCannotGuardItsOwnDis
   EXPECT_FALSE(policy::select_guard(candidates).has_value());
 }
 
-TEST(LinuxPrivateDisplayRestorePolicy, DistinctPrivateOutputCanGuardRetirement) {
+TEST(LinuxPrivateDisplayRestorePolicy, DistinctPrivateOutputCannotGuardPhysicalRestoration) {
   const std::array candidates {
     policy::candidate_t {"Virtual-1", true, true, true, true},
     policy::candidate_t {"Virtual-2", true, true, true, false},
   };
 
-  EXPECT_EQ(policy::select_guard(candidates), "Virtual-2");
+  EXPECT_FALSE(policy::select_guard(candidates));
 }
 
 TEST(LinuxPrivateDisplayRestorePolicy, RejectsDisabledAndDisconnectedGuards) {
@@ -718,6 +718,58 @@ TEST(LinuxPrivateDisplayRestorePolicy, DoesNotPreserveUncapturablePrivateConnect
 
 namespace snapshot_policy = platf::linux_private_display::snapshot_policy;
 
+TEST(LinuxPrivateDisplaySnapshot, CaptureExcludesActiveAndDormantVirtualOutputs) {
+  for (const bool physical_enabled : {false, true}) {
+    auto current = external_desktop();
+    current["outputs"][1]["enabled"] = physical_enabled;
+    current["outputs"].push_back({{"name", "Virtual-1"}, {"connected", true}, {"enabled", true}});
+    current["outputs"].push_back({{"name", "Virtual-10"}, {"connected", false}, {"enabled", false}});
+    std::optional<json> snapshot;
+    json persisted;
+    ASSERT_TRUE(snapshot_policy::capture(snapshot, current, {"Virtual-1"}, false, [&](const json &saved) {
+      persisted = saved;
+      return true;
+    }));
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(*snapshot, persisted);
+    ASSERT_EQ(persisted["outputs"].size(), 2U);
+    EXPECT_EQ(persisted["outputs"][1]["enabled"], physical_enabled);
+    EXPECT_EQ(persisted["outputs"][1]["name"], "DP-1");
+  }
+}
+
+TEST(LinuxPrivateDisplaySnapshot, PhysicalCaptureTargetStillBelongsToBaseline) {
+  const auto current = external_desktop();
+  std::optional<json> snapshot;
+  ASSERT_TRUE(snapshot_policy::capture(snapshot, current, {"DP-1"}, false, [](const json &) { return true; }));
+  ASSERT_TRUE(snapshot);
+  EXPECT_EQ(*snapshot, current);
+  EXPECT_EQ(snapshot_policy::live_fallback(current, {"DP-1"}), snapshot);
+}
+
+TEST(LinuxPrivateDisplaySnapshot, DecodeRemovesLegacyVirtualTargetsAndKeepsPhysicalSettings) {
+  for (const bool physical_enabled : {false, true}) {
+    auto topology = external_desktop();
+    topology["outputs"][1]["enabled"] = physical_enabled;
+    const auto physical = topology;
+    topology["outputs"].push_back({{"name", "Virtual-1"}, {"connected", true}, {"enabled", true}});
+    topology["outputs"].push_back({{"name", "Virtual-10"}, {"connected", false}, {"enabled", false}});
+    const auto disk = json {{"version", 1}, {"owner", "1000:desktop"}, {"restore_pending", true}, {"topology", topology}};
+    bool pending = false;
+    const auto decoded = snapshot_policy::decode<json>(disk.dump(), "1000:desktop", &pending);
+    ASSERT_TRUE(decoded);
+    EXPECT_TRUE(pending);
+    EXPECT_EQ(*decoded, physical);
+    EXPECT_EQ(snapshot_policy::retiring_outputs(*decoded, topology, {"Virtual-1", "Virtual-10"}),
+              (std::set<std::string> {"Virtual-1"}));
+  }
+}
+
+TEST(LinuxPrivateDisplayRestorePolicy, VirtualNameCannotMasqueradeAsPhysicalRestoreGuard) {
+  const std::array candidates {policy::candidate_t {"Virtual-1", true, true, false, false}};
+  EXPECT_FALSE(policy::select_guard(candidates));
+}
+
 TEST(LinuxPrivateDisplaySnapshot, RestartRestoresSavedIntentFromSerializedBaseline) {
   const auto original = external_desktop();
   std::optional<json> snapshot;
@@ -794,7 +846,7 @@ TEST(LinuxPrivateDisplaySnapshot, MissingOrInvalidBaselineUsesOnlyLiveEnabledPhy
   ASSERT_TRUE(fallback);
   EXPECT_FALSE((*fallback)["outputs"][0]["enabled"]);
   EXPECT_TRUE((*fallback)["outputs"][1]["enabled"]);
-  EXPECT_FALSE((*fallback)["outputs"][2]["enabled"]);
+  EXPECT_EQ((*fallback)["outputs"].size(), 2U);
   current["outputs"][1]["enabled"] = false;
   EXPECT_FALSE(snapshot_policy::live_fallback(current, {"Virtual-1"}));
 }
@@ -811,13 +863,13 @@ TEST(LinuxPrivateDisplaySnapshot, RejectsCorruptSchemaAndOtherSessionIntent) {
   }
 }
 
-TEST(LinuxPrivateDisplaySnapshot, StartupRetiresOnlyUnsavedOrDisabledManagedConnectors) {
+TEST(LinuxPrivateDisplaySnapshot, StartupRetiresManagedConnectorsEvenInOlderBaseline) {
   auto saved = external_desktop();
   saved["outputs"].push_back({{"name", "Virtual-2"}, {"connected", true}, {"enabled", true}});
   auto current = saved;
   current["outputs"].push_back({{"name", "Virtual-1"}, {"connected", true}, {"enabled", true}});
   current["outputs"].push_back({{"name", "Virtual-3"}, {"connected", false}, {"enabled", false}});
-  EXPECT_EQ(snapshot_policy::retiring_outputs(saved, current, {"Virtual-1", "Virtual-2", "Virtual-3"}), (std::set<std::string> {"Virtual-1"}));
+  EXPECT_EQ(snapshot_policy::retiring_outputs(saved, current, {"Virtual-1", "Virtual-2", "Virtual-3"}), (std::set<std::string> {"Virtual-1", "Virtual-2"}));
 }
 
 TEST(LinuxPrivateDisplaySnapshot, LiveFallbackRetiresPreviouslyRetainedPrivateBaseline) {
@@ -826,7 +878,7 @@ TEST(LinuxPrivateDisplaySnapshot, LiveFallbackRetiresPreviouslyRetainedPrivateBa
   saved["outputs"].push_back({{"name", "Virtual-1"}, {"connected", true}, {"enabled", true}});
   auto current = saved;
   current["outputs"][1]["enabled"] = true;
-  EXPECT_TRUE(snapshot_policy::retiring_outputs(saved, current, {"Virtual-1"}).empty());
+  EXPECT_EQ(snapshot_policy::retiring_outputs(saved, current, {"Virtual-1"}), (std::set<std::string> {"Virtual-1"}));
   const auto fallback = snapshot_policy::live_fallback(current, {"Virtual-1"});
   ASSERT_TRUE(fallback);
   EXPECT_EQ(snapshot_policy::retiring_outputs(*fallback, current, {"Virtual-1"}), (std::set<std::string> {"Virtual-1"}));

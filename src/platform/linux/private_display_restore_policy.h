@@ -4,6 +4,8 @@
  */
 #pragma once
 
+#include "private_display_mode_policy.h"
+
 #include <algorithm>
 #include <cmath>
 #include <optional>
@@ -192,10 +194,10 @@ namespace platf::linux_private_display::restore_policy {
         reserved_outputs.insert(name);
       }
     }
-    // A private desktop that was already active before streaming is part of
-    // the baseline, not a leaked streaming connector to be disconnected.
+    // Older snapshots may contain virtual outputs. They still belong to the
+    // streaming lifecycle, never to the physical desktop restore contract.
     for (const auto &saved : snapshot["outputs"]) {
-      if (saved.value("enabled", false)) {
+      if (saved.value("enabled", false) && !mode_policy::managed_connector_name(saved.value("name", std::string {}))) {
         reserved_outputs.erase(saved.value("name", std::string {}));
       }
     }
@@ -227,19 +229,18 @@ namespace platf::linux_private_display::restore_policy {
     bool retiring {false};
   };
 
-  /** Prefer a surviving physical output, falling back to a distinct surviving private output. */
+  /** Only a physical desktop output can guard baseline restoration. */
   inline std::optional<std::string> select_guard(const std::span<const candidate_t> candidates) {
     const auto eligible = [](const candidate_t &candidate) {
       return !candidate.name.empty() && candidate.enabled && candidate.connected && !candidate.retiring;
     };
     const auto physical = std::ranges::find_if(candidates, [&](const auto &candidate) {
-      return eligible(candidate) && !candidate.private_output;
+      return eligible(candidate) && !candidate.private_output && !mode_policy::managed_connector_name(candidate.name);
     });
     if (physical != candidates.end()) {
       return std::string {physical->name};
     }
-    const auto fallback = std::ranges::find_if(candidates, eligible);
-    return fallback == candidates.end() ? std::nullopt : std::make_optional(std::string {fallback->name});
+    return std::nullopt;
   }
 
   /** Resolve guard activation without allowing inconsistent compositor state to abort teardown. */

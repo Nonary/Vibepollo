@@ -646,6 +646,7 @@ namespace platf::linux_private_display {
           continue;
         }
         snapshot_names.insert(name);
+        if (mode_policy::managed_connector_name(name)) continue;
         const auto *present = find_output(current, name);
         const bool is_connected = present && connected(*present);
         if (!is_connected) {
@@ -658,8 +659,8 @@ namespace platf::linux_private_display {
         }
         auto activation = output_activation_arguments(saved, present, name);
         if (activation.empty()) continue;
-        guard_candidates.push_back({name, true, true, private_names.contains(name), retiring_outputs.contains(name)});
-        restored_non_private = restored_non_private || !private_names.contains(name);
+        guard_candidates.push_back({name, true, true, false, retiring_outputs.contains(name)});
+        restored_non_private = true;
         arguments.activate.insert(arguments.activate.end(), activation.begin(), activation.end());
         activation_by_output.emplace(name, std::move(activation));
       }

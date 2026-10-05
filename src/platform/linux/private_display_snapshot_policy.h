@@ -4,11 +4,14 @@
  */
 #pragma once
 
+#include "private_display_mode_policy.h"
+
 #include <algorithm>
 #include <cmath>
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 
 namespace platf::linux_private_display::snapshot_policy {
   inline bool safe_identifier(const std::string &value) {
@@ -99,6 +102,25 @@ namespace platf::linux_private_display::snapshot_policy {
     }
   }
 
+  /** Streaming connectors never belong to the physical desktop restore contract. */
+  template<typename Json>
+  Json physical_outputs(Json configuration) {
+    auto &outputs = configuration["outputs"];
+    outputs.erase(std::remove_if(outputs.begin(), outputs.end(), [](const auto &output) {
+      return mode_policy::managed_connector_name(output.value("name", std::string {}));
+    }), outputs.end());
+    return configuration;
+  }
+
+  template<typename Json>
+  Json baseline(Json configuration) {
+    configuration = physical_outputs(std::move(configuration));
+    for (auto &output : configuration["outputs"]) {
+      if (!output.value("connected", false)) output["enabled"] = false;
+    }
+    return configuration;
+  }
+
   template<typename Json>
   std::optional<Json> decode(const std::string &contents, const std::string &owner, bool *restore_pending = nullptr, bool *legacy_record = nullptr) {
     if (contents.size() > 1024 * 1024) {
@@ -118,24 +140,13 @@ namespace platf::linux_private_display::snapshot_policy {
       if (legacy_record) {
         *legacy_record = !saved.contains("restore_pending");
       }
-      return saved["topology"];
+      // Also sanitize older records captured while a retained virtual output
+      // was active. Their physical settings remain useful, but the virtual
+      // output must never become a restore target or prevent its retirement.
+      return physical_outputs(saved["topology"]);
     } catch (...) {
       return std::nullopt;
     }
-  }
-
-  template<typename Json>
-  Json baseline(Json configuration, const std::set<std::string> &private_names) {
-    const bool active_physical = std::ranges::any_of(configuration["outputs"], [&](const auto &output) {
-      return output.value("connected", false) && output.value("enabled", false) &&
-             !private_names.contains(output.value("name", std::string {}));
-    });
-    for (auto &output : configuration["outputs"]) {
-      if (!output.value("connected", false) || (active_physical && private_names.contains(output.value("name", std::string {})))) {
-        output["enabled"] = false;
-      }
-    }
-    return configuration;
   }
 
   template<typename Json>
@@ -154,7 +165,7 @@ namespace platf::linux_private_display::snapshot_policy {
     if (!valid(current)) {
       return false;
     }
-    auto replacement = baseline(current, private_names);
+    auto replacement = baseline(current);
     if (!valid(replacement) || !persist(replacement)) {
       return false;
     }
@@ -199,7 +210,7 @@ namespace platf::linux_private_display::snapshot_policy {
       const auto saved = std::ranges::find_if(snapshot["outputs"], [&](const auto &output) {
         return output.value("name", std::string {}) == name;
       });
-      if (saved == snapshot["outputs"].end() || !saved->value("enabled", false)) {
+      if (mode_policy::managed_connector_name(name) || saved == snapshot["outputs"].end() || !saved->value("enabled", false)) {
         result.insert(name);
       }
     }
@@ -216,13 +227,13 @@ namespace platf::linux_private_display::snapshot_policy {
 
   /** Missing/unusable snapshots may use live enabled monitors, never guess disabled intent. */
   template<typename Json>
-  std::optional<Json> live_fallback(const Json &current, const std::set<std::string> &private_names) {
+  std::optional<Json> live_fallback(const Json &current, const std::set<std::string> &) {
     if (!valid(current) || std::ranges::none_of(current["outputs"], [&](const auto &output) {
           return output.value("connected", false) && output.value("enabled", false) &&
-                 !private_names.contains(output.value("name", std::string {}));
+                 !mode_policy::managed_connector_name(output.value("name", std::string {}));
         })) {
       return std::nullopt;
     }
-    return baseline(current, private_names);
+    return baseline(current);
   }
 }  // namespace platf::linux_private_display::snapshot_policy
