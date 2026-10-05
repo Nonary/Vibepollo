@@ -8,6 +8,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <array>
+#include <stdexcept>
 
 namespace pyrowave::probe {
 constexpr int duration_ms = 2000;
@@ -23,7 +25,8 @@ inline result_t send(const boost::asio::ip::address &local,
                      const boost::asio::ip::udp::endpoint &peer,
                      int kbps, int packetsize, const std::string &token,
                      const std::function<void(std::chrono::steady_clock::time_point)> &wait_until =
-                       [](auto due) { std::this_thread::sleep_until(due); }) {
+                       [](auto due) { std::this_thread::sleep_until(due); },
+                     const std::function<void(unsigned short)> &announce_port = {}) {
   using namespace std::chrono;
   boost::asio::io_context io;
   boost::asio::ip::udp::socket socket(io);
@@ -32,6 +35,40 @@ inline result_t send(const boost::asio::ip::address &local,
   socket.non_blocking(true);
   boost::system::error_code ec;
   socket.set_option(boost::asio::socket_base::send_buffer_size(4 * 1024 * 1024), ec);
+  auto destination = peer;
+  if (announce_port) {
+    // Establish outbound state on the host too. This small warmup is never a
+    // measured packet, and may be dropped until the client sends its token.
+    socket.send_to(boost::asio::buffer(token), peer, 0, ec);
+    announce_port(socket.local_endpoint().port());
+    const auto deadline = steady_clock::now() + milliseconds(1500);
+    auto next_warmup = steady_clock::now() + milliseconds(100);
+    bool confirmed = false;
+    while (steady_clock::now() < deadline) {
+      std::array<char, 64> hello {};
+      boost::asio::ip::udp::endpoint source;
+      ec.clear();
+      const auto bytes = socket.receive_from(boost::asio::buffer(hello), source, 0, ec);
+      if (!ec && bytes == token.size() && source.address() == peer.address() &&
+          source.port() >= 1024 && std::equal(token.begin(), token.end(), hello.begin())) {
+        destination = source; // Retain the client's observed UDP return port.
+        confirmed = true;
+        break;
+      }
+      if (ec && ec != boost::asio::error::would_block && ec != boost::asio::error::try_again &&
+          ec != boost::asio::error::message_size && ec != boost::asio::error::connection_refused &&
+          ec != boost::asio::error::connection_reset) {
+        throw boost::system::system_error(ec);
+      }
+      const auto now = steady_clock::now();
+      if (now >= next_warmup) {
+        socket.send_to(boost::asio::buffer(token), peer, 0, ec);
+        next_warmup = now + milliseconds(100);
+      }
+      wait_until((std::min)(deadline, now + milliseconds(1)));
+    }
+    if (!confirmed) throw std::runtime_error("The client did not complete the UDP handshake");
+  }
   // Same worst-case wire charge as the streaming budget: packet + RTP,
   // encryption, UDP, IPv6, Ethernet preamble/gap/FCS (134 bytes).
   const int wire_bytes = packetsize + 134;
@@ -47,7 +84,7 @@ inline result_t send(const boost::asio::ip::address &local,
     for (; seq < end; ++seq) {
       for (int byte = 0; byte < 4; ++byte) packet[32 + byte] = seq >> (24 - byte * 8);
       ec.clear();
-      const auto bytes = socket.send_to(boost::asio::buffer(packet), peer, 0, ec);
+      const auto bytes = socket.send_to(boost::asio::buffer(packet), destination, 0, ec);
       if (!ec && bytes == packet.size()) ++result.sent;
     }
     // Bound overload rather than accumulating an arbitrarily long send queue.

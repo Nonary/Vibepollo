@@ -3998,6 +3998,7 @@ namespace nvhttp {
       tree.put("root.PyroWaveBandwidthProbeBytes", 32U * 1024U * 1024U);
       tree.put("root.PyroWaveWireBudgetVersion", 1);
       tree.put("root.PyroWaveUdpProbeVersion", 1);
+      tree.put("root.PyroWaveUdpHandshakeVersion", 1);
       tree.put("root.PyroWaveCriticalFecPercentage", config::stream.pyrowave_critical_fec_percentage);
       tree.put("root.PyroWaveMinParityShards", 2);
     }
@@ -6441,12 +6442,15 @@ namespace nvhttp {
     };
     const int kbps = parse("kbps"), port = parse("port"), packetsize = parse("packetsize");
     const auto token = get_arg(args, "token", "");
+    const auto handshake = get_arg(args, "handshake", "0");
     if (kbps < 5000 || kbps > 3000000 || port < 1024 || port > 65535 ||
         packetsize < 256 || packetsize > 1392 || token.size() != 32 ||
-        token.find_first_not_of("0123456789abcdef") != std::string::npos) {
+        token.find_first_not_of("0123456789abcdef") != std::string::npos ||
+        (handshake != "0" && handshake != "1")) {
       response->write(SimpleWeb::StatusCode::client_error_bad_request, "Invalid UDP probe parameters");
       return;
     }
+    bool announced = false;
     try {
       auto timer = platf::create_high_precision_timer();
       if (!timer || !*timer) throw std::runtime_error("Could not create the UDP pacing timer");
@@ -6455,7 +6459,20 @@ namespace nvhttp {
         [&](auto due) {
           const auto now = std::chrono::steady_clock::now();
           if (due > now) timer->sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(due - now));
-        });
+        }, handshake == "1" ? std::function<void(unsigned short)>([&](unsigned short udp_port) {
+            // Flush the paired HTTPS headers before awaiting the UDP token.
+            // Connection-close framing leaves the XML body unfinished until
+            // the handshake and the measured transfer have both completed.
+            response->close_connection_after_response = true;
+            SimpleWeb::CaseInsensitiveMultimap headers;
+            headers.emplace("Content-Type", "application/xml");
+            headers.emplace("Cache-Control", "no-store");
+            headers.emplace("Connection", "close");
+            headers.emplace("X-PyroWave-Udp-Port", std::to_string(udp_port));
+            response->write(SimpleWeb::StatusCode::success_ok, headers);
+            response->send();
+            announced = true;
+          }) : std::function<void(unsigned short)> {});
       pt::ptree tree;
       tree.put("root.<xmlattr>.status_code", 200);
       tree.put("root.expected", result.expected);
@@ -6463,11 +6480,20 @@ namespace nvhttp {
       tree.put("root.elapsedMs", result.elapsed_ms);
       std::ostringstream body;
       pt::write_xml(body, tree);
-      response->write(body.str());
+      if (announced) *response << body.str();
+      else response->write(body.str());
     }
     catch (const std::exception &error) {
       BOOST_LOG(warning) << "PyroWave UDP probe failed: " << error.what();
-      response->write(SimpleWeb::StatusCode::server_error_internal_server_error, "UDP probe failed");
+      if (announced) {
+        pt::ptree tree;
+        tree.put("root.<xmlattr>.status_code", 500);
+        tree.put("root.<xmlattr>.status_message", error.what());
+        std::ostringstream body;
+        pt::write_xml(body, tree);
+        *response << body.str();
+      }
+      else response->write(SimpleWeb::StatusCode::server_error_internal_server_error, "UDP probe failed");
     }
   }
 

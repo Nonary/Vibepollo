@@ -840,3 +840,11 @@ reduction. Client-reported receive speed still limits stream packet pacing.
 The existing encoder continues reserving critical FEC, headers, and audio
 inside the total allowance. See [the shared protocol](docs/pyrowave-protocol.md#fec-inclusive-recommendations-and-udp-calibration)
 for rate search, validation thresholds, packet layout, and limits of the test.
+
+The Windows calibration correction adds `PyroWaveUdpHandshakeVersion=1`.
+With `handshake=1`, the paired HTTPS response announces `X-PyroWave-Udp-Port`
+before its final XML body. The sender exchanges ungraded 32-byte tokens with
+the HTTPS peer for at most 1500 ms, then starts the measured two-second probe
+using the client's observed UDP source port. This establishes outbound UDP
+state on both peers without changing firewall rules. Warmups and handshake
+time are excluded from results; legacy clients retain the original transfer.

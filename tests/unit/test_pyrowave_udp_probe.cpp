@@ -3,6 +3,114 @@
 #include <future>
 #include <cstring>
 
+static void handshakeProbe(const char* address) {
+  using namespace boost::asio;
+  using namespace std::chrono;
+  io_context io;
+  const auto local = ip::make_address(address);
+  ip::udp::socket receiver(io, {local, 0});
+  receiver.non_blocking(true);
+  receiver.set_option(socket_base::receive_buffer_size(1024 * 1024));
+  const auto peer = receiver.local_endpoint();
+  const std::string token(32, 'b');
+  std::promise<unsigned short> announced;
+  auto port = announced.get_future();
+  auto sender = std::async(std::launch::async, [&] {
+    return pyrowave::probe::send(local, peer, 5000, 1392, token,
+      [](auto due) { std::this_thread::sleep_until(due); },
+      [&](unsigned short value) { announced.set_value(value); });
+  });
+  const auto sender_port = port.get();
+  const ip::udp::endpoint target(local, sender_port);
+  // A wrong token and a token from the wrong IP must not authorize sending.
+  const std::string wrong(32, 'c');
+  receiver.send_to(buffer(wrong), target);
+  receiver.send_to(buffer(token.data(), token.size() - 1), target);
+  if (local.is_v4()) {
+    ip::udp::socket stranger(io, {ip::make_address("127.0.0.2"), 0});
+    stranger.send_to(buffer(token), target);
+  }
+  const auto warmup_until = steady_clock::now() + milliseconds(250);
+  unsigned warmups = 0;
+  while (steady_clock::now() < warmup_until) {
+    unsigned char data[2048];
+    ip::udp::endpoint source;
+    boost::system::error_code error;
+    const auto bytes = receiver.receive_from(buffer(data), source, 0, error);
+    if (error == error::would_block || error == error::try_again) {
+      std::this_thread::sleep_for(microseconds(100));
+      continue;
+    }
+    ASSERT_FALSE(error);
+    ASSERT_EQ(bytes, token.size()) << "Measured transfer began before a valid UDP token";
+    ASSERT_EQ(std::memcmp(data, token.data(), token.size()), 0);
+    ASSERT_EQ(source.port(), sender_port);
+    ++warmups;
+  }
+  EXPECT_GE(warmups, 2u);
+  receiver.send_to(buffer(token), target);
+  constexpr unsigned expected = std::uint64_t(5000) * 2000 / (8 * (1392 + 134));
+  std::vector<bool> seen(expected, false);
+  unsigned received = 0;
+  const auto deadline = steady_clock::now() + milliseconds(2300);
+  while (steady_clock::now() < deadline) {
+    unsigned char data[2048];
+    ip::udp::endpoint source;
+    boost::system::error_code error;
+    const auto bytes = receiver.receive_from(buffer(data), source, 0, error);
+    if (error == error::would_block || error == error::try_again) {
+      std::this_thread::sleep_for(microseconds(100));
+      continue;
+    }
+    ASSERT_FALSE(error);
+    if (bytes == token.size()) continue;
+    ASSERT_EQ(bytes, 1392u + 48);
+    ASSERT_EQ(source.port(), sender_port);
+    ASSERT_EQ(std::memcmp(data, token.data(), token.size()), 0);
+    const auto seq = (std::uint32_t(data[32]) << 24) | (std::uint32_t(data[33]) << 16) |
+                     (std::uint32_t(data[34]) << 8) | data[35];
+    ASSERT_LT(seq, expected);
+    ASSERT_FALSE(seen[seq]);
+    seen[seq] = true;
+    ++received;
+  }
+  const auto result = sender.get();
+  EXPECT_EQ(result.expected, expected);
+  EXPECT_EQ(result.sent, expected);
+  EXPECT_EQ(received, expected);
+  EXPECT_GE(result.elapsed_ms, 2000);
+  EXPECT_LT(result.elapsed_ms, 2200); // Handshake wait is excluded from send timing.
+}
+
+TEST(PyroWaveUdpProbe, HandshakeIpv4) { handshakeProbe("127.0.0.1"); }
+TEST(PyroWaveUdpProbe, HandshakeIpv6) { handshakeProbe("::1"); }
+
+TEST(PyroWaveUdpProbe, MissingHandshakeIsBoundedAndSendsNoMeasuredPackets) {
+  using namespace boost::asio;
+  using namespace std::chrono;
+  io_context io;
+  const auto local = ip::make_address("127.0.0.1");
+  ip::udp::socket receiver(io, {local, 0});
+  receiver.non_blocking(true);
+  const auto start = steady_clock::now();
+  unsigned announcements = 0;
+  EXPECT_THROW(pyrowave::probe::send(local, receiver.local_endpoint(), 5000, 1392, std::string(32, 'a'),
+    [](auto due) { std::this_thread::sleep_until(due); },
+    [&](unsigned short) { ++announcements; }), std::runtime_error);
+  EXPECT_EQ(announcements, 1u);
+  const auto elapsed = duration_cast<milliseconds>(steady_clock::now() - start).count();
+  EXPECT_GE(elapsed, 1500);
+  EXPECT_LT(elapsed, 2200);
+  for (;;) {
+    unsigned char data[2048];
+    boost::system::error_code error;
+    const auto bytes = receiver.receive(buffer(data), 0, error);
+    if (error == error::would_block || error == error::try_again) break;
+    ASSERT_FALSE(error);
+    EXPECT_EQ(bytes, 32u);
+  }
+}
+
 TEST(PyroWaveUdpProbe, BoundedPacedPacketsHaveUniqueSequenceAndToken) {
   using namespace boost::asio;
   io_context io;

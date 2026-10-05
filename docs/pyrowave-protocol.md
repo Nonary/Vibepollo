@@ -404,7 +404,7 @@ HDR10. At 60 fps that is about 220 Mbps for 1080p and 290 Mbps for 1440p and 4K 
 
 Paired server info advertises `PyroWaveWireBudgetVersion=1`,
 `PyroWaveCriticalFecPercentage`, `PyroWaveMinParityShards=2`, and
-`PyroWaveUdpProbeVersion=1`. The bitrate applied by calibration is a total
+`PyroWaveUdpProbeVersion=1` and `PyroWaveUdpHandshakeVersion=1`. The bitrate applied by calibration is a total
 wire allowance. `pyrowavebandwidth.h` (Moonlight) and `pyrowave_bandwidth.h`
 (Vibeshine) share the conversion between it and the image allowance: reserve
 one maximum feasible critical FEC block, packet rounding, IPv6, encryption,
@@ -417,7 +417,17 @@ The paired client requests `/pyrowave-udp-probe?kbps=...&port=...&packetsize=...
 over pinned HTTPS. Parameters are 5000–3000000 kbps, a nonprivileged UDP port,
 a 256–1392 byte packet size, and a fresh 32-character lowercase hex token.
 The destination IP is always the authenticated HTTPS peer's IP; this is a
-LAN probe, and a NAT/firewall blocking its UDP port produces no recommendation.
+LAN probe. New Windows clients request `handshake=1`: the host binds its UDP
+sender, sends an ungraded 32-byte token warmup, and flushes
+`X-PyroWave-Udp-Port` over paired HTTPS while its final XML body remains
+pending. The client sends the token from its receiving socket to that port.
+The host retries warmups every 100 ms and allows at most 1500 ms for a matching
+token from the authenticated HTTPS peer's IP. It uses the observed UDP source
+port for the measured return traffic. This establishes outbound UDP state on
+both peers without unsolicited inbound allowances. Warmups and handshake time
+are excluded from delivery scores. The final XML uses connection-close framing;
+handshake failures after the initial headers return XML with `status_code=500`
+and a failure message. Missing or zero `handshake` retains the legacy probe.
 The host refuses probes during stream activity and serializes them with stream
 operations on the existing blocking worker. Each probe lasts two seconds and
 paces whole packets in 1 ms groups. Its UDP payload is `packetsize + 48` bytes:
