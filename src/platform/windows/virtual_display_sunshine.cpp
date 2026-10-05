@@ -1729,36 +1729,15 @@ namespace VDISPLAY_SUNSHINE {
       const color_profile_scope_e scope,
       LSTATUS *out_status = nullptr
     ) {
-      // Keep the legacy value populated first. Besides supporting older Windows builds,
-      // this preserves the existing scope-selection state before the modern API activates it.
-      LSTATUS registry_status = ERROR_SUCCESS;
-      const bool registry_success = write_color_profile_to_registry(
+      return VDISPLAY::associate_hdr_profile(
         device_path,
         profile_filename,
-        scope,
-        &registry_status
+        is_system_wide_profile_scope(scope),
+        [&](LSTATUS *status) {
+          return write_color_profile_to_registry(device_path, profile_filename, scope, status);
+        },
+        out_status
       );
-      const auto result = VDISPLAY::set_advanced_color_profile(
-        device_path,
-        profile_filename,
-        is_system_wide_profile_scope(scope)
-      );
-      if (out_status) {
-        *out_status = registry_status;
-      }
-      if (result.success) {
-        return true;
-      }
-      if (result.attempted) {
-        BOOST_LOG(warning) << "HDR profile: Advanced Color activation failed (add=0x"
-                           << std::hex << static_cast<unsigned long>(result.association_status)
-                           << ", default=0x" << static_cast<unsigned long>(result.default_status) << std::dec
-                           << ", scope=" << color_profile_scope_label(scope) << "); retained registry association only.";
-      } else if (result.api_available && !result.target_found) {
-        BOOST_LOG(warning) << "HDR profile: active DisplayConfig target was unavailable; retained registry association only"
-                           << " (scope=" << color_profile_scope_label(scope) << ").";
-      }
-      return result.api_available ? false : registry_success;
     }
 
     void apply_hdr_profile_if_available(
@@ -1775,12 +1754,13 @@ namespace VDISPLAY_SUNSHINE {
       if (stop_token.stop_requested()) {
         return;
       }
-      // Physical outputs are left untouched unless the user explicitly selected
-      // a profile. Virtual outputs are different: Windows can reuse a monitor
-      // class instance whose registry association belongs to an older display,
-      // so an empty selection must actively clear that stale association.
+      // The Vibeshine driver retains calibration associations by monitor identity.
+      // Never overwrite or clear its profiles from the host, including on reuse.
+      if (is_virtual_display) {
+        return;
+      }
       const bool has_profile_selection = hdr_profile_utf8 && !hdr_profile_utf8->empty();
-      if (!has_profile_selection && !is_virtual_display) {
+      if (!has_profile_selection) {
         return;
       }
 
@@ -1861,6 +1841,23 @@ namespace VDISPLAY_SUNSHINE {
           return;
         }
 
+        // A permanent driver monitor can also be selected through the physical
+        // output route. Its calibration association still belongs to the driver.
+        if (const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
+          for (const auto &device : *devices) {
+            if (!device.m_monitor_device_path.empty() &&
+                _wcsicmp(platf::from_utf8(device.m_monitor_device_path).c_str(), device_name_w->c_str()) == 0 &&
+                is_sunshine_virtual_display_identity(
+                  device.m_monitor_device_path,
+                  device.m_friendly_name,
+                  device.m_edid ? device.m_edid->m_manufacturer_id : "",
+                  device.m_edid ? device.m_edid->m_product_code : ""
+                )) {
+              return;
+            }
+          }
+        }
+
         bool success = false;
         bool already_associated = false;
         bool cleared_mismatched = false;
@@ -1933,7 +1930,11 @@ namespace VDISPLAY_SUNSHINE {
               _wcsicmp(fs::path(*existing).filename().c_str(), profile_filename.c_str()) == 0;
 
             if (desired_already_associated) {
-              already_associated = true;
+              const auto active = VDISPLAY::get_advanced_color_profile(*device_name_w, is_system_wide_profile_scope(scope));
+              if (active && _wcsicmp(fs::path(*active).filename().c_str(), profile_filename.c_str()) == 0) {
+                already_associated = true;
+                return {true, false};
+              }
             }
 
             BOOST_LOG(debug) << "HDR profile: applying '" << profile_path->filename().string() << "' for client '" << client_name << "'.";
@@ -6418,8 +6419,6 @@ namespace VDISPLAY_SUNSHINE {
 
       uuid_util::uuid_t requested_uuid {};
       std::memcpy(requested_uuid.b8, &guid, sizeof(requested_uuid.b8));
-      const std::optional<std::string> deferred_hdr_profile_worker_key =
-        stop_token.stop_possible() ? std::make_optional(requested_uuid.string()) : std::nullopt;
 
       // Log entry and inputs for deeper diagnostics
       BOOST_LOG(debug) << "createVirtualDisplay called: client_uid='" << (s_client_uid ? s_client_uid : "(null)")
@@ -6846,21 +6845,7 @@ namespace VDISPLAY_SUNSHINE {
             if (dpi_snapshot) {
               (void) apply_virtual_display_dpi_value(*dpi_snapshot);
             }
-            std::optional<std::string> hdr_profile;
-            if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
-              hdr_profile = std::string(s_hdr_profile);
-            }
-            apply_hdr_profile_if_available(
-              result.display_name,
-              result.device_id,
-              result.monitor_device_path,
-              result.client_name,
-              hdr_profile,
-              true,
-              true,
-              stop_token,
-              deferred_hdr_profile_worker_key
-            );
+            // HDR profile retention belongs to the driver; leave its association intact.
             if (stop_token.stop_requested()) {
               return std::nullopt;
             }
@@ -7167,21 +7152,7 @@ namespace VDISPLAY_SUNSHINE {
       if (confirmed_active) {
         result.ready_since = ready_since;
       }
-      std::optional<std::string> hdr_profile;
-      if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
-        hdr_profile = std::string(s_hdr_profile);
-      }
-      apply_hdr_profile_if_available(
-        result.display_name,
-        result.device_id,
-        result.monitor_device_path,
-        result.client_name,
-        hdr_profile,
-        true,
-        true,
-        stop_token,
-        deferred_hdr_profile_worker_key
-      );
+      // HDR profile retention belongs to the driver; leave its association intact.
       if (stop_token.stop_requested()) {
         rollback_created_display();
         return std::nullopt;

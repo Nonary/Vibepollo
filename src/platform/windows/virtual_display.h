@@ -26,7 +26,6 @@ namespace VDISPLAY {
     bool attempted = false;
     bool success = false;
     HRESULT association_status = E_NOTIMPL;
-    HRESULT default_status = E_NOTIMPL;
   };
 
   // Windows HDR calibration profiles are Advanced Color associations. These helpers use
@@ -40,6 +39,13 @@ namespace VDISPLAY {
     const std::wstring &monitor_device_path,
     const std::wstring &profile_name,
     bool system_wide
+  );
+  bool associate_hdr_profile(
+    const std::wstring &monitor_device_path,
+    const std::wstring &profile_name,
+    bool system_wide,
+    const std::function<bool(LSTATUS *)> &legacy_association,
+    LSTATUS *out_status = nullptr
   );
   advanced_color_profile_result_t remove_advanced_color_profile(
     const std::wstring &monitor_device_path,

@@ -520,6 +520,7 @@ sunshine_register_component(NAME test_component_state_storage TEST_SOURCE unit/t
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/state_storage_policy.cpp"
     LINK_LIBRARIES Boost::property_tree nlohmann_json::nlohmann_json)
 sunshine_register_component(NAME test_component_virtual_display_scale TEST_SOURCE unit/test_virtual_display_scale.cpp)
+sunshine_register_component(NAME test_component_color_profile_policy TEST_SOURCE unit/test_color_profile_policy.cpp)
 sunshine_register_component(NAME test_component_legacy_restore_event_policy TEST_SOURCE unit/test_legacy_restore_event_policy.cpp)
 sunshine_register_component(NAME test_component_recovery_status_policy TEST_SOURCE unit/test_recovery_status_policy.cpp)
 sunshine_register_component(NAME test_component_wake_recovery_cleanup_policy
@@ -1089,6 +1090,8 @@ if(Python3_Interpreter_FOUND AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_cuda_release_policy.py")
 endif()
 if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
+    add_test(NAME regression_windows_color_profile
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_windows_color_profile.py")
     add_test(NAME regression_delayed_mouse_release
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_delayed_mouse_release.py")
     add_test(NAME regression_windows_absolute_mouse

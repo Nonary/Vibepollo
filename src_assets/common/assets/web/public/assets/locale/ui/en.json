@@ -430,7 +430,7 @@
         "display_override": "Use a client-specific display route",
         "hdr_description": "Apply HDR calibration and virtual-display presentation settings for this client.",
         "hdr_peak_description": "Set a manual peak brightness for this client's virtual display and HDR stream, or leave it automatic.",
-        "hdr_profile_description": "Choose an installed Windows HDR color profile for this client, or leave it automatic.",
+        "hdr_profile_description": "The Vibeshine virtual display driver retains Windows HDR calibration profiles automatically. Select an override here only for physical displays or other virtual display drivers.",
         "name_helper": "Use a name that identifies the person or screen using this client.",
         "no_displays": "No displays were reported by this host",
         "no_hdr_profiles": "No installed HDR color profiles",

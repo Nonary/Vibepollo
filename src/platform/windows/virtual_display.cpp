@@ -1,6 +1,7 @@
 #include "virtual_display.h"
 
 #include "src/config.h"
+#include "src/color_profile_policy.h"
 #include "src/display_device.h"
 #include "src/logging.h"
 #include "src/platform/windows/display_helper_coordinator.h"
@@ -35,16 +36,14 @@ namespace {
   struct advanced_color_api_t {
     using add_fn_t = HRESULT(WINAPI *)(WCS_PROFILE_MANAGEMENT_SCOPE, PCWSTR, LUID, UINT32, BOOL, BOOL);
     using remove_fn_t = HRESULT(WINAPI *)(WCS_PROFILE_MANAGEMENT_SCOPE, PCWSTR, LUID, UINT32, BOOL);
-    using set_default_fn_t = HRESULT(WINAPI *)(WCS_PROFILE_MANAGEMENT_SCOPE, PCWSTR, COLORPROFILETYPE, COLORPROFILESUBTYPE, LUID, UINT32);
     using get_default_fn_t = HRESULT(WINAPI *)(WCS_PROFILE_MANAGEMENT_SCOPE, LUID, UINT32, COLORPROFILETYPE, COLORPROFILESUBTYPE, LPWSTR *);
 
     add_fn_t add {};
     remove_fn_t remove {};
-    set_default_fn_t set_default {};
     get_default_fn_t get_default {};
 
     bool available() const {
-      return add && remove && set_default && get_default;
+      return add && remove && get_default;
     }
   };
 
@@ -57,7 +56,6 @@ namespace {
       }
       result.add = reinterpret_cast<advanced_color_api_t::add_fn_t>(GetProcAddress(module, "ColorProfileAddDisplayAssociation"));
       result.remove = reinterpret_cast<advanced_color_api_t::remove_fn_t>(GetProcAddress(module, "ColorProfileRemoveDisplayAssociation"));
-      result.set_default = reinterpret_cast<advanced_color_api_t::set_default_fn_t>(GetProcAddress(module, "ColorProfileSetDisplayDefaultAssociation"));
       result.get_default = reinterpret_cast<advanced_color_api_t::get_default_fn_t>(GetProcAddress(module, "ColorProfileGetDisplayDefault"));
       return result;
     }();
@@ -276,16 +274,38 @@ namespace VDISPLAY {
       TRUE,
       TRUE
     );
-    result.default_status = api.set_default(
-      scope,
-      profile_name.c_str(),
-      CPT_ICC,
-      static_cast<COLORPROFILESUBTYPE>(CPST_EXTENDED_DISPLAY_COLOR_MODE),
-      target->target_adapter_id,
-      target->source_id
-    );
-    result.success = SUCCEEDED(result.association_status) || SUCCEEDED(result.default_status);
+    // add(setAsDefault=TRUE) already activates the profile. A second default
+    // assignment duplicates the display notification and can mask add failures.
+    result.success = SUCCEEDED(result.association_status);
     return result;
+  }
+
+  bool associate_hdr_profile(
+    const std::wstring &monitor_device_path,
+    const std::wstring &profile_name,
+    const bool system_wide,
+    const std::function<bool(LSTATUS *)> &legacy_association,
+    LSTATUS *out_status
+  ) {
+    return color_profile_policy::associate(
+      [&]() {
+        const auto result = set_advanced_color_profile(monitor_device_path, profile_name, system_wide);
+        if (out_status) {
+          *out_status = result.success ? ERROR_SUCCESS :
+                        !result.target_found ? ERROR_NOT_FOUND :
+                        HRESULT_FACILITY(result.association_status) == FACILITY_WIN32 ?
+                          HRESULT_CODE(result.association_status) : ERROR_GEN_FAILURE;
+        }
+        if (result.api_available && !result.success) {
+          BOOST_LOG(warning) << "HDR profile: Advanced Color activation failed (hr=0x"
+                             << std::hex << static_cast<unsigned long>(result.association_status) << std::dec
+                             << ", scope=" << (system_wide ? "system_wide" : "current_user")
+                             << "); no registry association written.";
+        }
+        return result;
+      },
+      [&]() { return legacy_association(out_status); }
+    );
   }
 
   advanced_color_profile_result_t remove_advanced_color_profile(

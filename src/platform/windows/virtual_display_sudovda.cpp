@@ -1611,36 +1611,15 @@ namespace VDISPLAY_SUDOVDA {
       const color_profile_scope_e scope,
       LSTATUS *out_status = nullptr
     ) {
-      // Keep the legacy value populated first. Besides supporting older Windows builds,
-      // this preserves the existing scope-selection state before the modern API activates it.
-      LSTATUS registry_status = ERROR_SUCCESS;
-      const bool registry_success = write_color_profile_to_registry(
+      return VDISPLAY::associate_hdr_profile(
         device_path,
         profile_filename,
-        scope,
-        &registry_status
+        is_system_wide_profile_scope(scope),
+        [&](LSTATUS *status) {
+          return write_color_profile_to_registry(device_path, profile_filename, scope, status);
+        },
+        out_status
       );
-      const auto result = VDISPLAY::set_advanced_color_profile(
-        device_path,
-        profile_filename,
-        is_system_wide_profile_scope(scope)
-      );
-      if (out_status) {
-        *out_status = registry_status;
-      }
-      if (result.success) {
-        return true;
-      }
-      if (result.attempted) {
-        BOOST_LOG(warning) << "HDR profile: Advanced Color activation failed (add=0x"
-                           << std::hex << static_cast<unsigned long>(result.association_status)
-                           << ", default=0x" << static_cast<unsigned long>(result.default_status) << std::dec
-                           << ", scope=" << color_profile_scope_label(scope) << "); retained registry association only.";
-      } else if (result.api_available && !result.target_found) {
-        BOOST_LOG(warning) << "HDR profile: active DisplayConfig target was unavailable; retained registry association only"
-                           << " (scope=" << color_profile_scope_label(scope) << ").";
-      }
-      return result.api_available ? false : registry_success;
     }
 
     void apply_hdr_profile_if_available(
@@ -1815,7 +1794,11 @@ namespace VDISPLAY_SUDOVDA {
               _wcsicmp(fs::path(*existing).filename().c_str(), profile_filename.c_str()) == 0;
 
             if (desired_already_associated) {
-              already_associated = true;
+              const auto active = VDISPLAY::get_advanced_color_profile(*device_name_w, is_system_wide_profile_scope(scope));
+              if (active && _wcsicmp(fs::path(*active).filename().c_str(), profile_filename.c_str()) == 0) {
+                already_associated = true;
+                return {true, false};
+              }
             }
 
             BOOST_LOG(debug) << "HDR profile: applying '" << profile_path->filename().string() << "' for client '" << client_name << "'.";
