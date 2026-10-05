@@ -26,6 +26,32 @@ namespace platf::linux_private_display::cleanup_policy {
     failed,
   };
 
+  enum class admission_e {
+    respect_owners,
+    override_owners,
+  };
+
+  struct terminal_result_t {
+    bool topology_restored {false};
+    bool virtual_displays_removed {false};
+  };
+
+  /** Explicit termination still retires outputs when no physical restore guard exists. */
+  template <typename Outputs, typename Restore, typename Disconnect, typename Verify, typename Allowed>
+  terminal_result_t terminate_outputs(const Outputs &outputs, Restore restore, Disconnect disconnect, Verify verify, Allowed allowed) {
+    terminal_result_t result;
+    if (!allowed()) return result;
+    result.topology_restored = restore();
+    bool removed = true;
+    for (const auto &name : outputs) {
+      // Unknown helper completion fences further mutation, even for the killswitch.
+      if (!allowed()) return result;
+      if (!disconnect(name)) removed = false;
+    }
+    result.virtual_displays_removed = allowed() && verify(outputs) && allowed() && removed;
+    return result;
+  }
+
   /** Failed reconnects preserve the same paused-display policy as stream teardown. */
   inline std::optional<std::chrono::milliseconds> failed_preparation_restore_delay(
     bool app_paused,
@@ -70,7 +96,8 @@ namespace platf::linux_private_display::cleanup_policy {
     Restore restore,
     std::stop_token stop = {},
     std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max(),
-    Complete complete = {}
+    Complete complete = {},
+    admission_e admission = admission_e::respect_owners
   ) {
     auto acquire = [&](std::unique_lock<std::mutex> &lock) {
       while (!lock.try_lock()) {
@@ -89,7 +116,7 @@ namespace platf::linux_private_display::cleanup_policy {
     if (generation.load(std::memory_order_acquire) != expected_generation) {
       return result_e::superseded;
     }
-    if (protected_owner()) {
+    if (admission == admission_e::respect_owners && protected_owner()) {
       return result_e::owned;
     }
     std::unique_lock display_lock {display_mutex, std::defer_lock};

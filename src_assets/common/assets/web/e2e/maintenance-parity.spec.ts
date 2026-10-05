@@ -7,6 +7,7 @@ interface HostOptions {
   playniteUndetected?: boolean;
   golden?: Record<string, unknown>;
   config?: Record<string, unknown>;
+  termination?: Record<string, unknown>;
 }
 
 async function setupHost(page: Page, options: HostOptions = {}) {
@@ -36,6 +37,7 @@ async function setupHost(page: Page, options: HostOptions = {}) {
     goldenExports: 0,
     goldenDeletes: 0,
     displayResets: 0,
+    displayTerminations: 0,
   };
   let failedPartTwo = true;
 
@@ -84,6 +86,9 @@ async function setupHost(page: Page, options: HostOptions = {}) {
       body = { status: true, deleted: true };
     } else if (path === '/api/reset-display-device-persistence' && method === 'POST') {
       calls.displayResets += 1;
+    } else if (path === '/api/display/terminate_virtual' && method === 'POST') {
+      calls.displayTerminations += 1;
+      body = options.termination ?? { status: true, topology_restored: true };
     } else if (path === '/api/apps') {
       body = { apps: currentApps };
     } else if (path === '/api/playnite/status') {
@@ -366,6 +371,87 @@ test('Linux integrations do not query or expose Playnite', async ({ page }) => {
   await expect(page.locator('.integrations-page')).toBeVisible();
   await expect(page.getByText('Playnite', { exact: true })).toHaveCount(0);
   expect(calls.playniteStatus).toBe(0);
+});
+
+test('Linux virtual display termination requires confirmation and avoids Windows recovery APIs', async ({
+  page,
+}) => {
+  const calls = await setupHost(page, { platform: 'linux' });
+  await page.goto('/v2/maintenance');
+  await expect(
+    page.getByRole('heading', { name: 'Virtual display recovery', exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Capture snapshot', exact: true })).toHaveCount(0);
+  const terminate = page.getByRole('button', { name: 'Terminate virtual display', exact: true });
+  await terminate.click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('Active streams using a virtual display will lose video.');
+  await expect(dialog).toContainText('A host without a working physical display may go blank.');
+  expect(calls.displayTerminations).toBe(0);
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  expect(calls.displayTerminations).toBe(0);
+  await terminate.click();
+  await dialog.getByRole('button', { name: 'Terminate virtual display', exact: true }).click();
+  await expect(
+    page.getByText('Managed virtual displays were disconnected.', { exact: true }),
+  ).toBeVisible();
+  expect(calls.displayTerminations).toBe(1);
+  expect(calls.goldenStatusReads).toBe(0);
+  expect(calls.goldenExports).toBe(0);
+  expect(calls.displayResets).toBe(0);
+  expect(calls.configPatches).toEqual([]);
+});
+
+for (const status of [false, undefined]) {
+  test(`Linux termination reports ${status === false ? 'failed' : 'unconfirmed'} removal as an error`, async ({
+    page,
+  }) => {
+    const calls = await setupHost(page, {
+      platform: 'linux',
+      termination: status === false ? { status, error: 'Connector removal failed' } : {},
+    });
+    await page.goto('/v2/maintenance');
+    await page.getByRole('button', { name: 'Terminate virtual display', exact: true }).click();
+    await page
+      .getByRole('dialog')
+      .getByRole('button', { name: 'Terminate virtual display', exact: true })
+      .click();
+    await expect(
+      page
+        .getByText(
+          status === false
+            ? 'Connector removal failed'
+            : 'One or more managed virtual displays could not be terminated.',
+          { exact: true },
+        )
+        .first(),
+    ).toBeVisible();
+    await expect(
+      page.getByText('Managed virtual displays were disconnected.', { exact: true }),
+    ).toHaveCount(0);
+    expect(calls.displayTerminations).toBe(1);
+  });
+}
+
+test('Linux termination distinguishes successful removal from failed physical restoration', async ({
+  page,
+}) => {
+  await setupHost(page, {
+    platform: 'linux',
+    termination: { status: true, topology_restored: false },
+  });
+  await page.goto('/v2/maintenance');
+  await page.getByRole('button', { name: 'Terminate virtual display', exact: true }).click();
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: 'Terminate virtual display', exact: true })
+    .click();
+  await expect(
+    page.getByText(
+      'Managed virtual displays were disconnected, but the physical display layout could not be restored.',
+      { exact: true },
+    ),
+  ).toBeVisible();
 });
 
 test('Playnite detection failure exposes a host directory picker and saves its selection', async ({

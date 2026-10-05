@@ -85,6 +85,14 @@ namespace platf::linux_private_display {
   /** Queue restoration and forget cached state only after successful completion. */
   bool reset_persistence();
 
+  struct termination_result_t {
+    bool topology_restored {false};
+    bool virtual_displays_removed {false};
+  };
+
+  /** Synchronously restore when possible and disconnect every managed kernel output, overriding owners. */
+  termination_result_t terminate_all();
+
   /** Generation-fenced delayed restore with a lifecycle-specific diagnostic reason. */
   void schedule_revert(std::chrono::milliseconds delay, std::string reason);
   void cancel_scheduled_revert();

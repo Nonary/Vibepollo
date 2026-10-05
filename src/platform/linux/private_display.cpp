@@ -2101,6 +2101,69 @@ namespace platf::linux_private_display {
     manager.restore_dispatcher.stop();
   }
 
+  termination_result_t terminate_all() {
+    auto &manager = state();
+    stream::session::cleanup_reservation_t cleanup_reservation;
+    const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    manager.restore_dispatcher.cancel(generation);
+    termination_result_t result;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds {90};
+    const auto outcome = cleanup_policy::run_delayed_restore(
+      nvhttp::stream_lifecycle_mutex(), manager.mutex, manager.cleanup_generation, generation,
+      [] { return true; },
+      [&] {
+        const auto claimed_generation = generation + 1;
+        auto valid = [&] {
+          return !process_shutdown_preserve_requested() &&
+                 manager.cleanup_generation.load(std::memory_order_acquire) == claimed_generation;
+        };
+        restore_context_t context {std::min(deadline, std::chrono::steady_clock::now() + restore_operation_timeout), valid};
+        restore_context = &context;
+        auto context_guard = util::fail_guard([] { restore_context = nullptr; });
+        manager.reset_generation.store(0, std::memory_order_release);
+        // Discover the entire driver pool, not only configured or reserved slots.
+        // Never send disconnect commands for physical or other drivers' outputs.
+        const auto outputs = discover_managed_outputs();
+        const auto terminated = cleanup_policy::terminate_outputs(outputs,
+          [&] {
+            const bool restored = revert_locked(manager);
+            context.deadline = deadline;
+            return restored;
+          },
+          [](const std::string &name) { return disconnect_managed_output(name); },
+          [&](const auto &names) {
+            const auto verify_deadline = std::min(deadline, std::chrono::steady_clock::now() + output_verification_timeout);
+            do {
+              if (!restore_allowed()) return false;
+              const bool disconnected = std::ranges::all_of(names, [](const auto &name) {
+                const auto path = connector_sysfs_path(name);
+                if (path.empty()) return false;
+                std::ifstream status {std::filesystem::path {path} / "status"};
+                std::string value;
+                return status >> value && value == "disconnected";
+              });
+              if (disconnected) return true;
+              std::this_thread::sleep_for(std::chrono::milliseconds {50});
+            } while (std::chrono::steady_clock::now() < verify_deadline);
+            return false;
+          }, [&] { return valid() && restore_allowed(); });
+        result = {terminated.topology_restored, terminated.virtual_displays_removed};
+        if (result.virtual_displays_removed) {
+          manager.reservations.clear();
+          manager.newly_connected_reservations.clear();
+        }
+        return result.virtual_displays_removed;
+      }, {}, deadline, [](const std::uint64_t) {
+        // Drop logical owners only after verified removal and outside the display
+        // lock. This avoids compositor callbacks recreating a terminated output.
+        remote_display_topology::instance().shutdown(true);
+      }, cleanup_policy::admission_e::override_owners);
+    result.virtual_displays_removed = outcome == cleanup_policy::result_e::restored;
+    BOOST_LOG(info) << "Linux private display: terminal cleanup removed=" << result.virtual_displays_removed
+                    << ", restored=" << result.topology_restored << '.';
+    return result;
+  }
+
   bool capable() {
     return doctor_path().has_value() && !configured_outputs().empty();
   }

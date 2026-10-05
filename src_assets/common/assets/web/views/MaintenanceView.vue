@@ -89,6 +89,7 @@ interface SessionsResponse {
 
 interface MutationResponse {
   status?: boolean;
+  topology_restored?: boolean;
   deleted?: boolean;
   error?: string;
   message?: string;
@@ -166,6 +167,10 @@ const isWindows = computed(() =>
   String(metadata.value?.platform ?? system.metadata?.platform ?? '')
     .toLocaleLowerCase()
     .includes('windows'),
+);
+const isLinux = computed(
+  () =>
+    String(metadata.value?.platform ?? system.metadata?.platform ?? '').toLowerCase() === 'linux',
 );
 
 function message(cause: unknown, fallback: string): string {
@@ -539,7 +544,11 @@ const dialogCopy = computed(() => {
   if (action?.kind === 'terminate-virtual-display') {
     return {
       title: t('ui.maintenance.confirm.terminateVirtualDisplayTitle'),
-      description: t('ui.maintenance.confirm.terminateVirtualDisplayDescription'),
+      description: t(
+        isLinux.value
+          ? 'ui.maintenance.confirm.terminateVirtualDisplayLinuxDescription'
+          : 'ui.maintenance.confirm.terminateVirtualDisplayDescription',
+      ),
       confirm: t('ui.maintenance.actions.terminateVirtualDisplay'),
       tone: 'danger' as const,
     };
@@ -611,10 +620,16 @@ async function runConfirmedAction(): Promise<void> {
       await load();
     } else if (action.kind === 'terminate-virtual-display') {
       const result = await apiPost<MutationResponse>('/api/display/terminate_virtual', {});
-      if (result.status === false) {
+      if (result.status !== true) {
         throw new Error(result.error || t('ui.maintenance.errors.virtualDisplayTermination'));
       }
-      notice.value = t('ui.maintenance.notices.virtualDisplayTerminated');
+      notice.value = t(
+        isLinux.value
+          ? result.topology_restored === false
+            ? 'ui.maintenance.notices.virtualDisplayTerminatedLinuxWithoutRestore'
+            : 'ui.maintenance.notices.virtualDisplayTerminatedLinux'
+          : 'ui.maintenance.notices.virtualDisplayTerminated',
+      );
     } else if (action.kind === 'revoke-session') {
       await apiDelete<MutationResponse>(
         `/api/auth/sessions/${encodeURIComponent(action.session.id)}`,
@@ -936,19 +951,25 @@ onBeforeUnmount(() => {
       </section>
 
       <section
-        v-if="isWindows"
+        v-if="isWindows || isLinux"
         class="maintenance-section"
         aria-labelledby="display-recovery-title"
       >
         <div class="maintenance-section__heading">
           <div>
-            <h2 id="display-recovery-title">{{ t('ui.maintenance.recovery.title') }}</h2>
-            <p>{{ goldenState.detail }}</p>
+            <h2 id="display-recovery-title">
+              {{
+                t(isLinux ? 'ui.maintenance.recovery.linuxTitle' : 'ui.maintenance.recovery.title')
+              }}
+            </h2>
+            <p>
+              {{ isLinux ? t('ui.maintenance.recovery.linuxDescription') : goldenState.detail }}
+            </p>
           </div>
-          <StatusBadge :label="goldenState.label" :tone="goldenState.tone" />
+          <StatusBadge v-if="isWindows" :label="goldenState.label" :tone="goldenState.tone" />
         </div>
         <p v-if="sessionRecoveryDetail" class="maintenance-muted">{{ sessionRecoveryDetail }}</p>
-        <p v-if="!displayMaintenanceAvailable" class="maintenance-muted" role="status">
+        <p v-if="isWindows && !displayMaintenanceAvailable" class="maintenance-muted" role="status">
           {{
             t(
               golden
@@ -980,8 +1001,9 @@ onBeforeUnmount(() => {
             <dd>{{ formatTimestamp(golden.restore_status_updated_at_unix_ms) }}</dd>
           </div>
         </dl>
-        <div v-if="isWindows" class="maintenance-actions">
+        <div class="maintenance-actions">
           <AppButton
+            v-if="isWindows"
             :label="
               golden?.exists
                 ? t('ui.maintenance.actions.replaceSnapshot')

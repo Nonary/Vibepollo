@@ -4926,9 +4926,9 @@ namespace confighttp {
     send_response(response, output_tree);
   }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   /**
-   * @brief Execute the same terminal virtual-display cleanup as the restore hotkey.
+   * @brief Terminate all managed virtual displays, overriding active ownership.
    * @api_examples{/api/display/terminate_virtual| POST| {"status":true}}
    */
   void postTerminateVirtualDisplay(resp_https_t response, req_https_t request) {
@@ -4941,6 +4941,7 @@ namespace confighttp {
     print_req(request);
 
     nlohmann::json out;
+#ifdef _WIN32
     const auto result = platf::virtual_display_cleanup::terminate_all("maintenance_api");
     out["status"] = result.virtual_displays_removed;
     out["driver_watchdog_stopped"] = true;
@@ -4949,12 +4950,20 @@ namespace confighttp {
     out["restore_dispatched"] = result.helper_revert_dispatched;
     out["database_restore_applied"] = result.database_restore_applied;
     out["watchdogs_stopped"] = true;
+#else
+    const auto result = platf::linux_private_display::terminate_all();
+    out["status"] = result.virtual_displays_removed;
+    out["virtual_displays_removed"] = result.virtual_displays_removed;
+    out["topology_restored"] = result.topology_restored;
+#endif
     if (!result.virtual_displays_removed) {
       out["error"] = "One or more managed virtual displays could not be removed.";
     }
     send_response(response, out, "no-store");
   }
+#endif
 
+#ifdef _WIN32
   /**
    * @brief Export the current Windows display settings as a golden restore snapshot.
    * @api_examples{/api/display/export_golden| POST| {"status":true}}
@@ -6230,8 +6239,10 @@ namespace confighttp {
     register_api_route("^/api/service/startup$", "POST", saveServiceStartup);
 #endif
     register_blocking_api_route("^/api/reset-display-device-persistence$", "POST", resetDisplayDevicePersistence);
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__linux__)
     register_blocking_api_route("^/api/display/terminate_virtual$", "POST", postTerminateVirtualDisplay);
+#endif
+#ifdef _WIN32
     register_blocking_api_route("^/api/display/export_golden$", "POST", postExportGoldenDisplay);
     register_blocking_api_route("^/api/display/golden_status$", "GET", getGoldenStatus);
     register_api_route("^/api/display/golden$", "DELETE", deleteGolden);

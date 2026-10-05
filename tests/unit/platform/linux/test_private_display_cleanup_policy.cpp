@@ -12,10 +12,85 @@
 #include <src/platform/linux/display_restore_dispatcher.h>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace std::chrono_literals;
 
 namespace policy = platf::linux_private_display::cleanup_policy;
+
+TEST(LinuxPrivateDisplayCleanupPolicy, TerminalActionOverridesOwnersAndCompletesOutsideDisplayLock) {
+  std::mutex lifecycle;
+  std::mutex display;
+  std::atomic<std::uint64_t> generation {1};
+  bool owner_queried = false;
+  bool completed = false;
+  EXPECT_EQ(policy::run_delayed_restore(lifecycle, display, generation, 1,
+    [&] { owner_queried = true; return true; }, [] { return true; }, {},
+    std::chrono::steady_clock::time_point::max(), [&](std::uint64_t) {
+      std::unique_lock display_lock {display, std::try_to_lock};
+      EXPECT_TRUE(display_lock.owns_lock());
+      completed = true;
+    }, policy::admission_e::override_owners), policy::result_e::restored);
+  EXPECT_FALSE(owner_queried);
+  EXPECT_TRUE(completed);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, TerminalActionCannotOverrideSupersedingLaunchOrFailedRemoval) {
+  std::mutex lifecycle;
+  std::mutex display;
+  std::atomic<std::uint64_t> generation {2};
+  bool invoked = false;
+  auto result = policy::run_delayed_restore(lifecycle, display, generation, 1,
+    [] { return true; }, [&] { invoked = true; return true; }, {},
+    std::chrono::steady_clock::time_point::max(), policy::no_completion_t {}, policy::admission_e::override_owners);
+  EXPECT_EQ(result, policy::result_e::superseded);
+  EXPECT_FALSE(invoked);
+  bool completed = false;
+  result = policy::run_delayed_restore(lifecycle, display, generation, 2,
+    [] { return true; }, [] { return false; }, {},
+    std::chrono::steady_clock::time_point::max(), [&](std::uint64_t) { completed = true; }, policy::admission_e::override_owners);
+  EXPECT_EQ(result, policy::result_e::failed);
+  EXPECT_FALSE(completed);
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, TerminalRemovalContinuesWithoutPhysicalRestoreAndVerifiesEverySlot) {
+  std::vector<std::string> steps;
+  const std::array outputs {"Virtual-1", "Virtual-2"};
+  const auto result = policy::terminate_outputs(outputs,
+    [&] { steps.emplace_back("restore"); return false; },
+    [&](const auto &name) { steps.emplace_back(name); return true; },
+    [&](const auto &names) { EXPECT_EQ(names, outputs); steps.emplace_back("verify"); return true; },
+    [] { return true; });
+  EXPECT_FALSE(result.topology_restored);
+  EXPECT_TRUE(result.virtual_displays_removed);
+  EXPECT_EQ(steps, (std::vector<std::string> {"restore", "Virtual-1", "Virtual-2", "verify"}));
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, TerminalRemovalAttemptsPeersButNeverReportsPartialOrUnverifiedSuccess) {
+  for (const bool disconnect_ok : {false, true}) {
+    int removals = 0;
+    const auto result = policy::terminate_outputs(std::array {"Virtual-1", "Virtual-2"},
+      [] { return true; },
+      [&](const auto &) { return ++removals != 1 || disconnect_ok; },
+      [&](const auto &) { return !disconnect_ok; }, [] { return true; });
+    EXPECT_EQ(removals, 2);
+    EXPECT_TRUE(result.topology_restored);
+    EXPECT_FALSE(result.virtual_displays_removed);
+  }
+}
+
+TEST(LinuxPrivateDisplayCleanupPolicy, TerminalRemovalPreservesUnknownHelperCompletionFence) {
+  bool allowed = true;
+  bool disconnected = false;
+  bool verified = false;
+  const auto result = policy::terminate_outputs(std::array {"Virtual-1"},
+    [&] { allowed = false; return false; },
+    [&](const auto &) { disconnected = true; return true; },
+    [&](const auto &) { verified = true; return true; }, [&] { return allowed; });
+  EXPECT_FALSE(disconnected);
+  EXPECT_FALSE(verified);
+  EXPECT_FALSE(result.virtual_displays_removed);
+}
 
 TEST(LinuxPrivateDisplayCleanupPolicy, FailedPreparationPreservesPausedRetentionAndTimeoutPreferences) {
   EXPECT_EQ(policy::failed_preparation_restore_delay(false, false, 0, 5s), 5s);

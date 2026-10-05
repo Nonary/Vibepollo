@@ -973,6 +973,7 @@
         "revokeSessionDescription": "That browser will need to sign in again before it can manage this host.",
         "revokeSessionTitle": "Revoke {browser}?",
         "terminateVirtualDisplayDescription": "Vibepollo will disengage automatic recovery, try to restore the physical display layout, remove every managed virtual display, and stop display watchdogs. Active streams using a virtual display will lose video.",
+        "terminateVirtualDisplayLinuxDescription": "Vibepollo will cancel pending display recovery, try to restore the physical display layout, and disconnect every managed virtual display. Active streams using a virtual display will lose video. A host without a working physical display may go blank. New sessions can create virtual displays again.",
         "terminateVirtualDisplayTitle": "Terminate every virtual display?"
       },
       "crash": {
@@ -1013,12 +1014,16 @@
         "sessionRevoked": "{browser} was revoked.",
         "snapshotCaptured": "The current display layout is now the recovery baseline.",
         "snapshotDeleted": "The display recovery snapshot was deleted.",
-        "virtualDisplayTerminated": "Automatic recovery was disengaged and managed virtual displays were terminated."
+        "virtualDisplayTerminated": "Automatic recovery was disengaged and managed virtual displays were terminated.",
+        "virtualDisplayTerminatedLinux": "Managed virtual displays were disconnected.",
+        "virtualDisplayTerminatedLinuxWithoutRestore": "Managed virtual displays were disconnected, but the physical display layout could not be restored."
       },
       "recovery": {
         "available": "Available",
         "availableDetail": "A known-good display layout is available for recovery.",
         "lastFailure": "Last failure",
+        "linuxTitle": "Virtual display recovery",
+        "linuxDescription": "Terminate managed virtual displays to recover from a display problem. Vibeshine will first try to restore the physical display layout.",
         "noneRecorded": "None recorded",
         "notCaptured": "Not captured",
         "notCapturedDetail": "No known-good display layout has been saved.",
@@ -1827,7 +1832,10 @@
         }
       },
       "groups": {
-        "app_focus": {"title": "Managed application focus", "description": "Automatically bring games from managed libraries to the foreground after launch."},
+        "app_focus": {
+          "title": "Managed application focus",
+          "description": "Automatically bring games from managed libraries to the foreground after launch."
+        },
         "audio_routing": {
           "title": "Audio routing"
         },
