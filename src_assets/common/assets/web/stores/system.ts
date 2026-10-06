@@ -108,8 +108,8 @@ export const useSystemStore = defineStore('system', () => {
     loadingHost.value = true;
     try {
       const [metadataResult, sessionResult] = await Promise.allSettled([
-        apiGet<HostMetadata>('/api/metadata'),
-        apiGet<SessionStatus>('/api/session/status'),
+        apiGet<HostMetadata>('/api/metadata', { signal: AbortSignal.timeout(5000) }),
+        apiGet<SessionStatus>('/api/session/status', { signal: AbortSignal.timeout(5000) }),
       ]);
       if (metadataResult.status === 'fulfilled') metadata.value = metadataResult.value;
       if (sessionResult.status === 'fulfilled') session.value = sessionResult.value;
@@ -130,7 +130,9 @@ export const useSystemStore = defineStore('system', () => {
     applyTheme();
     try {
       await fetchAuthStatus();
-      await refreshHost();
+      // Display capability discovery can wait on the driver during pause or
+      // topology changes. Authentication is sufficient to open the UI.
+      void refreshHost();
     } catch {
       error.value = 'ui.system.unreachable';
     } finally {
@@ -146,7 +148,7 @@ export const useSystemStore = defineStore('system', () => {
     });
     clearCsrfToken();
     await fetchAuthStatus();
-    await refreshHost();
+    void refreshHost();
   }
 
   async function createCredentials(

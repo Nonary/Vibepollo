@@ -6178,6 +6178,8 @@ namespace confighttp {
     server.default_resource["GET"] = getWebUi;
     thread_pool_util::ThreadPool blocking_route_pool;
     blocking_route_pool.start(1);
+    thread_pool_util::ThreadPool metadata_route_pool;
+    metadata_route_pool.start(1);
     clear_token_route_catalog();
     auto register_api_route = [&](const char *pattern, const char *method, const auto &handler) {
       server.resource[pattern][method] = [method, handler](resp_https_t response, req_https_t request) {
@@ -6192,12 +6194,13 @@ namespace confighttp {
       };
       record_token_route(normalize_route_pattern(pattern), method);
     };
-    auto register_blocking_api_route = [&](const char *pattern, const char *method, const auto &handler) {
-      register_api_route(pattern, method, [&blocking_route_pool, handler](resp_https_t response, req_https_t request) {
+    auto register_blocking_api_route = [&](const char *pattern, const char *method, const auto &handler, thread_pool_util::ThreadPool *route_pool = nullptr) {
+      auto *worker_pool = route_pool ? route_pool : &blocking_route_pool;
+      register_api_route(pattern, method, [worker_pool, handler](resp_https_t response, req_https_t request) {
         if (!authenticate(response, request)) {
           return;
         }
-        blocking_route_pool.push([handler, response = std::move(response), request = std::move(request)]() mutable {
+        worker_pool->push([handler, response = std::move(response), request = std::move(request)]() mutable {
           try {
             handler(response, request);
           } catch (const std::exception &e) {
@@ -6232,7 +6235,12 @@ namespace confighttp {
     // Partial updates for config settings; merges with existing file and
     // removes keys when value is null or empty string.
     register_api_route("^/api/config$", "PATCH", patchConfig);
-    register_api_route("^/api/metadata$", "GET", getMetadata);
+    // Capability cache lookup resolves the current output/adapter and can test
+    // desktop duplication. Keep display-driver waits off the HTTPS event loop,
+    // including while a paused application retains its virtual display.
+    // Use a separate worker so a stalled lookup also leaves display recovery
+    // and the other blocking management APIs available.
+    register_blocking_api_route("^/api/metadata$", "GET", getMetadata, &metadata_route_pool);
     register_api_route("^/api/configLocale$", "GET", getLocale);
     register_api_route("^/api/restart$", "POST", restart);
     register_api_route("^/api/quit$", "POST", quit);
@@ -6386,7 +6394,9 @@ namespace confighttp {
 
     tcp.join();
     blocking_route_pool.stop();
+    metadata_route_pool.stop();
     blocking_route_pool.join();
+    metadata_route_pool.join();
     webrtc_stream::shutdown_all_sessions();
     // std::jthread (cleanup_thread) auto-joins on destruction, no need for joinable/join
   }
