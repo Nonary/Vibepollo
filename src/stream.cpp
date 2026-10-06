@@ -45,6 +45,7 @@ extern "C" {
 #include "globals.h"
 #include "host_stats.h"
 #include "input.h"
+#include "jthread.h"
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
@@ -80,6 +81,9 @@ extern "C" {
   #include "platform/linux/private_display.h"
   #include "platform/linux/wayland_hdr_compatibility.h"
   #include "src/platform/linux/display_backend.h"
+#endif
+#ifdef __APPLE__
+  #include "platform/macos/virtual_display.h"
 #endif
 
 #define IDX_START_A 0
@@ -174,7 +178,7 @@ namespace stream {
       explicit join_deadline_t(std::shared_ptr<std::atomic<const char *>> hung_stage):
           hung_stage_ {std::move(hung_stage)} {
         try {
-          worker_ = std::jthread([this](std::stop_token) {
+          worker_ = util::jthread([this](util::stop_token) {
             run();
           });
         } catch (const std::system_error &e) {
@@ -237,7 +241,7 @@ namespace stream {
       std::mutex mutex_;
       std::condition_variable cv_;
       state_e state_ {state_e::armed};
-      std::jthread worker_;
+      util::jthread worker_;
     };
   }  // namespace
 
@@ -600,6 +604,9 @@ namespace stream {
 
 #ifdef _WIN32
     std::shared_future<rtsp_stream::launch_session_t::display_helper_gate_status_e> display_helper_gate;
+#endif
+#ifdef __APPLE__
+    std::shared_ptr<void> macos_virtual_display;  ///< Keeps this stream's virtual display alive.
 #endif
 
     std::thread audioThread;
@@ -1538,7 +1545,7 @@ namespace stream {
       input::passthrough(session->input, std::move(plaintext), session->permission);
     });
 
-    server->map(packetTypes[IDX_EXEC_SERVER_CMD], [server](session_t *session, const std::string_view &payload) {
+    server->map(packetTypes[IDX_EXEC_SERVER_CMD], [](session_t *session, const std::string_view &payload) {
       BOOST_LOG(debug) << "type [IDX_EXEC_SERVER_CMD]"sv;
 
       if (!(session->permission & crypto::PERM::server_cmd)) {
@@ -1575,7 +1582,7 @@ namespace stream {
       }
     });
 
-    server->map(packetTypes[IDX_SET_CLIPBOARD], [server](session_t *session, const std::string_view &payload) {
+    server->map(packetTypes[IDX_SET_CLIPBOARD], [](session_t *session, const std::string_view &payload) {
       BOOST_LOG(info) << "type [IDX_SET_CLIPBOARD]: "sv << payload << " size: " << payload.size();
 
       if (!(session->permission & crypto::PERM::clipboard_set)) {
@@ -1584,7 +1591,7 @@ namespace stream {
       }
     });
 
-    server->map(packetTypes[IDX_FILE_TRANSFER_NONCE_REQUEST], [server](session_t *session, const std::string_view &payload) {
+    server->map(packetTypes[IDX_FILE_TRANSFER_NONCE_REQUEST], [](session_t *session, const std::string_view &payload) {
       BOOST_LOG(info) << "type [IDX_FILE_TRANSFER_NONCE_REQUEST]: "sv << payload << " size: " << payload.size();
 
       if (!(session->permission & crypto::PERM::file_upload)) {
@@ -3233,9 +3240,9 @@ namespace stream {
         deferred_app_revert ||
         (!is_paused && shared_runtime_force_display_revert_when_idle);
       const int paused_timeout_secs = std::max(0, config::video.dd.paused_virtual_display_timeout_secs);
-      const bool delay_virtual_display_cleanup_due_to_pause =
+      [[maybe_unused]] const bool delay_virtual_display_cleanup_due_to_pause =
         is_paused && !display_restore_requested && paused_timeout_secs > 0;
-      const bool keep_virtual_display_due_to_pause =
+      [[maybe_unused]] const bool keep_virtual_display_due_to_pause =
         is_paused && !display_restore_requested && paused_timeout_secs == 0;
 
 #ifdef _WIN32
@@ -3472,6 +3479,11 @@ namespace stream {
       // Trapping on any of that is a false positive that would kill every other
       // live stream.
 
+#ifdef __APPLE__
+      // Capture and input have stopped, so the virtual display (and turned-off displays) can go back.
+      session.macos_virtual_display.reset();
+#endif
+
       // Serialize client cleanup and shared runtime finalization with lifecycle transitions.
       std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex(), std::defer_lock);
       if (!lifecycle_lock_held) {
@@ -3613,6 +3625,16 @@ namespace stream {
     }
 
     int start(session_t &session, const std::string &addr_string) {
+#ifdef __APPLE__
+      // Vibepollo's per-client virtual display, at the client's resolution and refresh rate. It
+      // must exist before input and capture pick their display. Released in join(). Remote Monitor
+      // and Remote Input streams have capture targets of their own.
+      if (session.config.monitor.capture_source == video::capture_source_e::active_output) {
+        session.macos_virtual_display = platf::macos_virtual_display::acquire(session.config.monitor);
+        // The display launch brought up is the session's now.
+        platf::macos_virtual_display::end_launch_hold();
+      }
+#endif
       session.input = input::alloc(session.mail);
 
       session.broadcast_ref = broadcast.ref();

@@ -16,7 +16,10 @@ set(MACOS_LINK_DIRECTORIES
         /usr/local/lib)
 
 foreach(dir ${MACOS_LINK_DIRECTORIES})
-    if(EXISTS ${dir})
+    # Honor CMAKE_IGNORE_PREFIX_PATH (e.g. /opt/local) so a stale package manager's
+    # libraries can't shadow the SDK's by bare name (-lcurl, -liconv).
+    get_filename_component(_prefix "${dir}" DIRECTORY)
+    if(EXISTS ${dir} AND NOT _prefix IN_LIST CMAKE_IGNORE_PREFIX_PATH)
         link_directories(${dir})
     endif()
 endforeach()
@@ -35,11 +38,23 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         ${CORE_MEDIA_LIBRARY}
         ${CORE_VIDEO_LIBRARY}
         ${FOUNDATION_LIBRARY}
+        ${IO_KIT_LIBRARY}
+        ${SCREEN_CAPTURE_KIT_LIBRARY}
+        ${SERVICE_MANAGEMENT_LIBRARY}
         ${VIDEO_TOOLBOX_LIBRARY})
+
+set_source_files_properties(
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/sc_video.m"
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/virtual_display.mm"
+        PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 
 set(APPLE_PLIST_TEMPLATE "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/build/Info.plist.in")
 set(APPLE_PLIST_FILE "${CMAKE_BINARY_DIR}/Info.plist")
 configure_file("${APPLE_PLIST_TEMPLATE}" "${APPLE_PLIST_FILE}" @ONLY)
+
+# The launchd agent behind the menu bar's Open at Login. SMAppService looks it up by file name.
+set(APPLE_LAUNCH_AGENT_FILE "${CMAKE_BINARY_DIR}/${PROJECT_FQDN}.plist")
+configure_file("${SUNSHINE_SOURCE_ASSETS_DIR}/macos/build/LaunchAgent.plist.in" "${APPLE_LAUNCH_AGENT_FILE}" @ONLY)
 
 set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/macos/av_audio.h"
@@ -58,6 +73,10 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/macos/nv12_zero_device.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/nv12_zero_device.h"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/publish.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/sc_video.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/sc_video.m"
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/virtual_display.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/virtual_display.mm"
         "${CMAKE_SOURCE_DIR}/third-party/TPCircularBuffer/TPCircularBuffer.c"
         "${CMAKE_SOURCE_DIR}/third-party/TPCircularBuffer/TPCircularBuffer.h"
         ${APPLE_PLIST_FILE})
@@ -65,6 +84,10 @@ set(PLATFORM_TARGET_FILES
 if(SUNSHINE_ENABLE_TRAY)
     list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
             ${COCOA})
+    # Used instead of third-party/tray/src/tray_darwin.m, which exits the process from tray_exit()
+    # and calls AppKit off the main thread (see the file header).
+    set_source_files_properties("${CMAKE_SOURCE_DIR}/src/platform/macos/tray.mm"
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     list(APPEND PLATFORM_TARGET_FILES
-            "${CMAKE_SOURCE_DIR}/third-party/tray/src/tray_darwin.m")
+            "${CMAKE_SOURCE_DIR}/src/platform/macos/tray.mm")
 endif()

@@ -9,17 +9,36 @@
 #endif
 
 // standard includes
+#include <chrono>
+#include <csignal>
+#include <cstdlib>
 #include <fcntl.h>
 #include <ifaddrs.h>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <vector>
 
 // platform includes
+#include <AppKit/AppKit.h>
 #include <arpa/inet.h>
+#include <crt_externs.h>
 #include <dlfcn.h>
 #include <Foundation/Foundation.h>
+#include <IOKit/IOKitKeys.h>
+#include <IOKit/IOMessage.h>
+#include <IOKit/pwr_mgt/IOPM.h>
+#include <IOKit/pwr_mgt/IOPMLib.h>
 #include <mach-o/dyld.h>
 #include <net/if_dl.h>
 #include <pwd.h>
+#include <ScreenCaptureKit/ScreenCaptureKit.h>
+#include <ServiceManagement/ServiceManagement.h>
+#include <spawn.h>
+#include <sys/file.h>
 #include <sys/qos.h>
+#include <sys/wait.h>
 
 // lib includes
 #include <boost/asio/ip/address.hpp>
@@ -60,7 +79,329 @@ namespace platf {
     return screen_capture_allowed;
   }
 
+  void ensure_appkit_session() {
+    static std::once_flag once;
+    std::call_once(once, []() {
+      [NSApplication sharedApplication];
+      [NSApp finishLaunching];
+    });
+  }
+
+  void run_main_event_loop(const std::function<bool()> &should_exit) {
+    ensure_appkit_session();
+    while (!should_exit()) {
+      @autoreleasepool {
+        NSDate *until = [NSDate dateWithTimeIntervalSinceNow:0.5];
+        NSEvent *event = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:until inMode:NSDefaultRunLoopMode dequeue:YES];
+        if (event != nil) {
+          [NSApp sendEvent:event];
+        }
+      }
+    }
+  }
+
+  namespace {
+    SMAppService *login_agent() API_AVAILABLE(macos(13.0)) {
+      // Contents/Library/LaunchAgents/<this>, whose Label is also PROJECT_FQDN.
+      return [SMAppService agentServiceWithPlistName:@PROJECT_FQDN ".plist"];
+    }
+
+    // launchd stops the login agent when it's unregistered, so carry on in a copy of our own.
+    void launch_replacement() {
+      NSWorkspaceOpenConfiguration *configuration = [NSWorkspaceOpenConfiguration configuration];
+      configuration.createsNewApplicationInstance = YES;
+      configuration.activates = NO;
+      [NSWorkspace.sharedWorkspace openApplicationAtURL:NSBundle.mainBundle.bundleURL
+                                          configuration:configuration
+                                      completionHandler:^(NSRunningApplication *, NSError *launch_error) {
+                                        if (launch_error != nil) {
+                                          BOOST_LOG(error) << "Couldn't start Vibepollo again without Open at Login: "sv << launch_error.localizedDescription.UTF8String;
+                                        }
+                                      }];
+    }
+
+    int run(const std::vector<std::string> &args) {
+      std::vector<char *> argv;
+      for (const auto &arg : args) {
+        argv.push_back(const_cast<char *>(arg.c_str()));
+      }
+      argv.push_back(nullptr);
+
+      pid_t pid;
+      if (posix_spawn(&pid, argv[0], nullptr, nullptr, argv.data(), *_NSGetEnviron()) != 0) {
+        return -1;
+      }
+      int status = 0;
+      while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+      return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    }
+  }  // namespace
+
+  bool is_login_agent() {
+    // launchd names the job it started in XPC_SERVICE_NAME. Restarting from the menu bar
+    // re-executes in place, so it survives that too.
+    const char *service = getenv("XPC_SERVICE_NAME");
+    return service != nullptr && std::string_view {service} == PROJECT_FQDN;
+  }
+
+  bool opens_at_login() {
+    if (@available(macOS 13.0, *)) {
+      return login_agent().status == SMAppServiceStatusEnabled;
+    }
+    return false;
+  }
+
+  bool set_opens_at_login(bool enabled) {
+    if (@available(macOS 13.0, *)) {
+      SMAppService *agent = login_agent();
+      NSError *error = nil;
+      if (enabled) {
+        // launchd starts the agent right away, and it takes over from this copy.
+        if (![agent registerAndReturnError:&error]) {
+          BOOST_LOG(warning) << "Couldn't turn on Open at Login: "sv << error.localizedDescription.UTF8String;
+        }
+
+        // If the user turned Vibepollo off in System Settings, only they can turn it back on.
+        if (agent.status == SMAppServiceStatusRequiresApproval) {
+          BOOST_LOG(info) << "Opening Login Items so the user can allow Vibepollo in the background"sv;
+          [SMAppService openSystemSettingsLoginItems];
+        }
+        return opens_at_login();
+      }
+
+      bool replace = is_login_agent();
+      if (![agent unregisterAndReturnError:&error]) {
+        BOOST_LOG(warning) << "Couldn't turn off Open at Login: "sv << error.localizedDescription.UTF8String;
+        return false;
+      }
+      if (replace) {
+        launch_replacement();
+      }
+      return true;
+    }
+
+    BOOST_LOG(warning) << "Open at Login requires macOS 13 or later"sv;
+    return false;
+  }
+
+  namespace {
+    fs::path instance_lock_path() {
+      return appdata() / "vibepollo.lock";
+    }
+
+    // Whether another process holds the instance lock, as the login agent does once it runs.
+    bool instance_lock_held_elsewhere() {
+      int fd = open(instance_lock_path().c_str(), O_RDONLY | O_CLOEXEC);
+      if (fd < 0) {
+        return false;
+      }
+      const bool held = flock(fd, LOCK_EX | LOCK_NB) != 0;
+      close(fd);
+      return held;
+    }
+
+    // Starts the agent unless it's already running, and waits for it to take over.
+    bool start_login_agent(const std::string &service) {
+      if (run({"/bin/launchctl", "kickstart", service}) != 0) {
+        return false;
+      }
+      // kickstart succeeds even when launchd then fails to spawn the agent.
+      const auto deadline = std::chrono::steady_clock::now() + 5s;
+      while (!instance_lock_held_elsewhere()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+          return false;
+        }
+        std::this_thread::sleep_for(100ms);
+      }
+      return true;
+    }
+  }  // namespace
+
+  bool defer_to_login_agent() {
+    if (is_login_agent() || !opens_at_login()) {
+      return false;
+    }
+
+    auto service = "gui/"s + std::to_string(getuid()) + "/" PROJECT_FQDN;
+    if (!start_login_agent(service)) {
+      // launchd only starts the agent for the build that registered it, so an update can leave it
+      // unable to. Turning Open at Login off and on again registers it for this build.
+      BOOST_LOG(warning) << "Couldn't start "sv << service << ", so running without it"sv;
+      BOOST_LOG(warning) << "If Vibepollo was just updated, turn Open at Login off and on again"sv;
+      return false;
+    }
+    BOOST_LOG(info) << "Open at Login is on, so leaving it to "sv << service << " to run Vibepollo"sv;
+    return true;
+  }
+
+  bool acquire_instance_lock(std::chrono::milliseconds timeout) {
+    std::error_code ec;
+    fs::create_directories(appdata(), ec);
+    auto path = instance_lock_path();
+
+    // Held until the process exits. O_CLOEXEC keeps launched apps from holding it after that, and
+    // restarting from the menu bar closes it before re-executing.
+    int fd = open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) {
+      BOOST_LOG(warning) << "Couldn't open "sv << path << ", so not checking for other copies of Vibepollo: "sv << strerror(errno);
+      return true;
+    }
+
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+      // The login agent takes over from other copies, like the one that just turned Open at Login on.
+      char pid[16] = {};
+      if (is_login_agent() && pread(fd, pid, sizeof(pid) - 1, 0) > 0 && std::atoi(pid) > 0) {
+        BOOST_LOG(info) << "Asking the copy of Vibepollo with PID "sv << pid << " to quit"sv;
+        kill(std::atoi(pid), SIGTERM);
+      }
+
+      BOOST_LOG(info) << "Waiting for another copy of Vibepollo to quit"sv;
+      auto deadline = std::chrono::steady_clock::now() + timeout;
+      while (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+          close(fd);
+          return false;
+        }
+        std::this_thread::sleep_for(100ms);
+      }
+    }
+
+    auto pid = std::to_string(getpid());
+    if (ftruncate(fd, 0) != 0 || pwrite(fd, pid.data(), pid.size(), 0) < 0) {
+      BOOST_LOG(warning) << "Couldn't record this process in "sv << path;
+    }
+    return true;
+  }
+
+  namespace {
+    // A sleeping display drops out of the active list, and during a dark wake every display does.
+    bool displays_awake() {
+      uint32_t count = 0;
+      return CGGetActiveDisplayList(0, nullptr, &count) == kCGErrorSuccess && count > 0 && !CGDisplayIsAsleep(CGMainDisplayID());
+    }
+  }  // namespace
+
+  bool wake_displays(const std::chrono::milliseconds timeout) {
+    if (displays_awake()) {
+      return true;
+    }
+
+    // Declaring user activity finishes a dark wake and turns the displays on. The assertion
+    // expires on its own after the display sleep delay.
+    IOPMAssertionID activity = kIOPMNullAssertionID;
+    if (IOPMAssertionDeclareUserActivity(CFSTR("Vibepollo is waking the displays for a stream"), kIOPMUserActiveLocal, &activity) != kIOReturnSuccess) {
+      BOOST_LOG(warning) << "Couldn't wake the displays for capture"sv;
+      return false;
+    }
+
+    // A Mac without a screen of its own (a headless Mac mini, a closed MacBook) has none to wait for.
+    uint32_t online = 0;
+    if (CGGetOnlineDisplayList(0, nullptr, &online) != kCGErrorSuccess || online == 0) {
+      return false;
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    while (!displays_awake()) {
+      if (std::chrono::steady_clock::now() - start >= timeout) {
+        BOOST_LOG(warning) << "Displays are still asleep after "sv << timeout.count() << " ms; capture may fail"sv;
+        return false;
+      }
+      std::this_thread::sleep_for(50ms);
+    }
+    BOOST_LOG(info) << "Woke the displays for capture in "sv << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() << " ms"sv;
+    return true;
+  }
+
+  namespace {
+    struct sleep_watch_t {
+      io_connect_t root_port = MACH_PORT_NULL;
+      IONotificationPortRef port = nullptr;
+      io_object_t notifier = IO_OBJECT_NULL;
+      std::function<void()> handler;
+    } sleep_watch;
+
+    void system_power_changed(void *, io_service_t, natural_t message, void *argument) {
+      switch (message) {
+        case kIOMessageCanSystemSleep:
+          // Idle sleep: streaming holds its own assertions against it, so just answer.
+          IOAllowPowerChange(sleep_watch.root_port, reinterpret_cast<intptr_t>(argument));
+          break;
+        case kIOMessageSystemWillSleep:
+          sleep_watch.handler();
+          IOAllowPowerChange(sleep_watch.root_port, reinterpret_cast<intptr_t>(argument));
+          break;
+        default:
+          break;
+      }
+    }
+  }  // namespace
+
+  void on_system_will_sleep(std::function<void()> handler) {
+    static std::once_flag once;
+    std::call_once(once, [&handler]() {
+      sleep_watch.handler = std::move(handler);
+      sleep_watch.root_port = IORegisterForSystemPower(nullptr, &sleep_watch.port, system_power_changed, &sleep_watch.notifier);
+      if (sleep_watch.root_port == MACH_PORT_NULL) {
+        BOOST_LOG(warning) << "Couldn't watch for sleep; streams will just stop when the Mac sleeps"sv;
+        return;
+      }
+      IONotificationPortSetDispatchQueue(sleep_watch.port, dispatch_queue_create("dev.vibepollo.sleep", DISPATCH_QUEUE_SERIAL));
+    });
+  }
+
+  namespace {
+    struct lid_watch_t {
+      IONotificationPortRef port = nullptr;
+      io_object_t notifier = IO_OBJECT_NULL;
+      bool closed = false;
+      std::function<void()> handler;
+    } lid_watch;
+
+    void root_domain_message(void *, io_service_t, natural_t message, void *argument) {
+      if (message != kIOPMMessageClamshellStateChange) {
+        return;
+      }
+      // Also sent while the lid stays closed, when power or displays change: act on closing only.
+      const bool closed = (reinterpret_cast<uintptr_t>(argument) & kClamshellStateBit) != 0;
+      const bool just_closed = closed && !lid_watch.closed;
+      lid_watch.closed = closed;
+      if (just_closed) {
+        lid_watch.handler();
+      }
+    }
+  }  // namespace
+
+  void on_lid_closed(std::function<void()> handler) {
+    static std::once_flag once;
+    std::call_once(once, [&handler]() {
+      const io_service_t root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"));
+      if (root == IO_OBJECT_NULL) {
+        return;
+      }
+      const CFTypeRef state = IORegistryEntryCreateCFProperty(root, CFSTR("AppleClamshellState"), kCFAllocatorDefault, 0);
+      lid_watch.closed = state == kCFBooleanTrue;
+      if (state != nullptr) {
+        CFRelease(state);
+      }
+      lid_watch.handler = std::move(handler);
+      lid_watch.port = IONotificationPortCreate(kIOMainPortDefault);
+      IONotificationPortSetDispatchQueue(lid_watch.port, dispatch_queue_create("dev.vibepollo.lid", DISPATCH_QUEUE_SERIAL));
+      if (IOServiceAddInterestNotification(lid_watch.port, root, kIOGeneralInterest, root_domain_message, nullptr, &lid_watch.notifier) != KERN_SUCCESS) {
+        BOOST_LOG(warning) << "Couldn't watch the lid; closing it won't end streams"sv;
+      }
+      IOObjectRelease(root);
+    });
+  }
+
   std::unique_ptr<deinit_t> init() {
+    // Remote mouse and keyboard input is posted as synthetic events, which macOS only delivers
+    // for apps allowed under Privacy & Security > Accessibility. Streaming works without it.
+    const bool can_post_events = CGPreflightPostEventAccess();
+    if (!can_post_events) {
+      BOOST_LOG(warning) << "No accessibility permission; remote mouse and keyboard input will be ignored"sv;
+      BOOST_LOG(warning) << "Please allow it in 'System Settings' -> 'Privacy & Security'"sv;
+    }
+
     // This will generate a warning about CGPreflightScreenCaptureAccess and
     // CGRequestScreenCaptureAccess being unavailable before macOS 10.15, but
     // we have a guard to prevent it from being called on those earlier systems.
@@ -80,11 +421,19 @@ namespace platf {
         CGPreflightScreenCaptureAccess != nullptr && CGRequestScreenCaptureAccess != nullptr &&
         !CGPreflightScreenCaptureAccess()) {
       BOOST_LOG(error) << "No screen capture permission!"sv;
-      BOOST_LOG(error) << "Please activate it in 'System Preferences' -> 'Privacy' -> 'Screen Recording'"sv;
-      CGRequestScreenCaptureAccess();
+      BOOST_LOG(error) << "Please allow it in 'System Settings' -> 'Privacy & Security', then restart Vibepollo"sv;
+      // Asking ScreenCaptureKit shows the system prompt and lists the app under Privacy & Security.
+      // CGRequestScreenCaptureAccess() no longer does either on current macOS.
+      // macOS shows one privacy prompt at a time, so Accessibility waits for the next launch,
+      // which allowing screen recording needs anyway (macOS offers to quit and reopen).
+      [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *, NSError *) {
+      }];
       return nullptr;
     }
 #pragma clang diagnostic pop
+    if (!can_post_events) {
+      CGRequestPostEventAccess();
+    }
     // Record that we determined that we have the screen capture permission.
     screen_capture_allowed = true;
     return std::make_unique<deinit_t>();
@@ -228,7 +577,7 @@ namespace platf {
     try {
       if (group) {
         if (!working_dir.empty()) {
-          auto start = v2::start_dir(v2::filesystem::path(working_dir.string()));
+          auto start = v2::process_start_dir(v2::filesystem::path(working_dir.string()));
           auto proc = v2::process(exec, exe_path, args, start, stdio, env_init, bp::detail::posix_group_initer {group});
           return bp::child(std::move(proc));
         }
@@ -237,7 +586,7 @@ namespace platf {
       }
 
       if (!working_dir.empty()) {
-        auto start = v2::start_dir(v2::filesystem::path(working_dir.string()));
+        auto start = v2::process_start_dir(v2::filesystem::path(working_dir.string()));
         auto proc = v2::process(exec, exe_path, args, start, stdio, env_init);
         return bp::child(std::move(proc));
       }

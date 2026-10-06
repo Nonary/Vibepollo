@@ -16,6 +16,13 @@ if(WIN32)
     # tests that link the static FFmpeg archives must provide the system import
     # library because they do not inherit the application's platform libraries.
     list(APPEND SUNSHINE_TEST_FFMPEG_PLATFORM_LIBRARIES bcrypt)
+elseif(APPLE)
+    # FFmpeg's static archives include the VideoToolbox encoder and hardware context.
+    list(APPEND SUNSHINE_TEST_FFMPEG_PLATFORM_LIBRARIES
+        "-framework CoreFoundation"
+        "-framework CoreMedia"
+        "-framework CoreVideo"
+        "-framework VideoToolbox")
 endif()
 
 # Test categories make the dependency scope of a target visible at configuration

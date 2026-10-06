@@ -1901,7 +1901,7 @@ namespace config {
     string_f(vars, "output_name", video.output_name);
 
     const auto virtual_display_mode_it = vars.find("virtual_display_mode");
-    const bool virtual_display_mode_specified =
+    [[maybe_unused]] const bool virtual_display_mode_specified =
       virtual_display_mode_it != vars.end() && !virtual_display_mode_it->second.empty();
     generic_f(vars, "virtual_display_mode", video.virtual_display_mode, virtual_display_mode_from_view);
 #ifdef _WIN32

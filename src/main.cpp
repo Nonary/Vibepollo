@@ -25,11 +25,13 @@
 #include "globals.h"
 #include "host_stats.h"
 #include "httpcommon.h"
+#include "jthread.h"
 #include "logging.h"
 #include "main.h"
 #include "nvhttp.h"
 #include "process.h"
 #include "rtsp.h"
+#include "stream.h"
 #include "system_tray.h"
 #include "update.h"
 #include "upnp.h"
@@ -67,6 +69,13 @@
   #include "platform/windows/misc.h"
   #include "platform/windows/display_helper_integration.h"
   #include "platform/windows/virtual_display.h"
+#endif
+
+#ifdef __APPLE__
+  #include "platform/macos/misc.h"
+  #include "platform/macos/virtual_display.h"
+
+  #include <mach-o/dyld.h>
 #endif
 
 #define PROBE_DISPLAY_UUID "38F72B96-B00C-4F21-8B6C-E1BFF1602B0E"
@@ -113,7 +122,7 @@ namespace {
       // request was already made when the signal arrived, so a forced exit
       // after the deadline loses nothing that a graceful exit would keep.
       try {
-        worker_ = std::jthread([this](std::stop_token) {
+        worker_ = util::jthread([this](util::stop_token) {
           run();
         });
       } catch (const std::system_error &e) {
@@ -205,7 +214,7 @@ namespace {
     state_e state_ {state_e::idle};
     std::atomic_bool *signal_requested_ = nullptr;
     bool supervised_machine_host_ = false;
-    std::jthread worker_;
+    util::jthread worker_;
   };
 }  // namespace
 
@@ -272,6 +281,12 @@ WINAPI BOOL ConsoleCtrlHandler(DWORD type) {
 #endif
 
 int main(int argc, char *argv[]) {
+#ifdef __APPLE__
+  // Helper that turns physical displays back on if the main process dies mid-stream.
+  if (argc > 1 && argv[1] == platf::macos_virtual_display::restore_watchdog_arg) {
+    return platf::macos_virtual_display::run_restore_watchdog(argc, argv);
+  }
+#endif
 #ifdef __linux__
   #ifdef SUNSHINE_BUILD_STEAMOS
   if (platf::linux_cli::command(argc, argv)) {
@@ -351,6 +366,25 @@ int main(int argc, char *argv[]) {
 
   mail::man = std::make_shared<safe::mail_raw_t>();
 
+#ifdef __APPLE__
+  // Bundle assets are referenced relative to the executable
+  // (e.g. ../Resources/assets), so anchor cwd to Contents/MacOS.
+  {
+    char executable[2048];
+    uint32_t size = sizeof(executable);
+    if (_NSGetExecutablePath(executable, &size) == 0) {
+      std::error_code ec;
+      auto exec_dir = std::filesystem::weakly_canonical(std::filesystem::path {executable}, ec).parent_path();
+      if (!ec) {
+        std::filesystem::current_path(exec_dir, ec);
+      }
+      if (ec) {
+        std::cerr << "Failed to set working directory to executable path: " << ec.message() << '\n';
+      }
+    }
+  }
+#endif
+
   // parse config file
   if (config::parse(argc, argv)) {
     return 0;
@@ -429,6 +463,18 @@ int main(int argc, char *argv[]) {
 
     return fn->second(argv[0], config::sunshine.cmd.argc, config::sunshine.cmd.argv);
   }
+
+#ifdef __APPLE__
+  // With Open at Login on, only launchd's copy runs, so launchd can restart it if it crashes.
+  // Handing over to or from it starts the new copy before the old one has quit.
+  if (platf::defer_to_login_agent()) {
+    return 0;
+  }
+  if (!platf::acquire_instance_lock(std::chrono::seconds {30})) {
+    BOOST_LOG(fatal) << "Another copy of "sv << PROJECT_NAME << " is already running"sv;
+    return 1;
+  }
+#endif
 
   // Display configuration is managed by the external Windows helper; no in-process init.
 
@@ -778,10 +824,11 @@ int main(int argc, char *argv[]) {
 #ifdef _WIN32
   bool startup_probe_succeeded = false;
 #endif
-  auto startup_probe = [&shutdown_event
+  auto startup_probe = [
 #ifdef _WIN32
-                        , &startup_probe_succeeded
-                        , &has_startup_stream_activity
+                         &shutdown_event,
+                         &startup_probe_succeeded,
+                         &has_startup_stream_activity
 #endif
   ]() {
 #ifdef _WIN32
@@ -1014,6 +1061,50 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(fatal) << "GameStream is still enabled in GeForce Experience! This *will* cause streaming problems with Apollo!"sv;
     BOOST_LOG(fatal) << "Disable GameStream on the SHIELD tab in GeForce Experience or change the Port setting on the Advanced tab in the Apollo Web UI."sv;
   }
+#endif
+
+#ifdef __APPLE__
+  // End streams properly when the Mac is about to sleep, as from Apple menu > Sleep or a low
+  // battery. Otherwise clients just see their stream freeze. The app keeps running, so a client
+  // can resume once the Mac wakes.
+  platf::on_system_will_sleep([]() {
+    const auto sessions = rtsp_stream::get_sessions_snapshot();
+    if (sessions.empty()) {
+      return;
+    }
+    BOOST_LOG(info) << "The Mac is going to sleep; ending "sv << sessions.size() << " stream(s)"sv;
+    for (const auto &session : sessions) {
+      stream::session::graceful_stop(*session);
+    }
+    // Give the end-of-stream messages a moment to go out before the network sleeps.
+    std::this_thread::sleep_for(1s);
+  });
+
+  // Closing a MacBook's lid ends its streams and quits the app. While the virtual display is its
+  // only display, macOS would keep a plugged-in Mac streaming with the lid shut, but only for
+  // streams started with it open, and a closed Mac can't be woken back into a stream.
+  platf::on_lid_closed([]() {
+    if (rtsp_stream::session_count() == 0) {
+      return;
+    }
+    if (proc::proc.running() > 0) {
+      // As when an app exits, its clients are told the stream ended.
+      BOOST_LOG(info) << "The lid was closed; quitting the app to end the stream"sv;
+      proc::proc.terminate();
+    } else {
+      BOOST_LOG(info) << "The lid was closed; ending the stream"sv;
+      for (const auto &session : rtsp_stream::get_sessions_snapshot()) {
+        stream::session::graceful_stop(*session);
+      }
+    }
+  });
+
+  // AppKit only delivers events on the main thread, so it waits here instead: the menu bar and
+  // the virtual display's display configuration both depend on them.
+  platf::macos_virtual_display::recover_disabled_displays();
+  platf::run_main_event_loop([&shutdown_event]() {
+    return shutdown_event->peek();
+  });
 #endif
 
   // Wait for shutdown

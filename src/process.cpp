@@ -71,7 +71,6 @@
   #include "platform/windows/virtual_display_cleanup.h"
   #include "tools/playnite_launcher/focus_utils.h"
   #include "tools/playnite_launcher/lossless_scaling.h"
-  #include "tools/playnite_launcher/lossless_scaling_policy.h"
 
   #include <Psapi.h>
 #elif defined(__linux__)
@@ -94,6 +93,8 @@
 #include "httpcommon.h"
 #include "nvhttp.h"
 #include "process.h"
+// Header-only policy used by shared launch code; safe on every platform.
+#include "tools/playnite_launcher/lossless_scaling_policy.h"
 #ifdef _WIN32
   #include "platform/windows/virtual_display.h"
   #include "platform/windows/virtual_display_legacy.h"
@@ -128,7 +129,6 @@ namespace proc {
     constexpr const char *LOSSLESS_PROFILE_CUSTOM = "custom";
     constexpr int LOSSLESS_DEFAULT_FLOW_SCALE = 50;
     constexpr int LOSSLESS_DEFAULT_RESOLUTION_SCALE = 100;
-    constexpr bool LOSSLESS_DEFAULT_PERFORMANCE_MODE = true;
     constexpr int LOSSLESS_MIN_FLOW_SCALE = 0;
     constexpr int LOSSLESS_MAX_FLOW_SCALE = 100;
     constexpr int LOSSLESS_MIN_RESOLUTION_SCALE = 10;
@@ -153,6 +153,7 @@ namespace proc {
     constexpr const char *ENV_LOSSLESS_ANIME4K_VRS = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS";
     constexpr const char *ENV_LOSSLESS_LAUNCH_DELAY = "SUNSHINE_LOSSLESS_SCALING_LAUNCH_DELAY";
     constexpr const char *ENV_LOSSLESS_LEGACY_AUTO_DETECT = "SUNSHINE_LOSSLESS_SCALING_LEGACY_AUTO_DETECT";
+#ifdef _WIN32  // RTX Video HDR is Windows-only
     constexpr std::array<std::string_view, 6> RTX_HDR_LIVE_KEYS {
       "rtx_hdr"sv,
       "rtx_hdr_sdr_brightness"sv,
@@ -161,6 +162,7 @@ namespace proc {
       "rtx_hdr_middle_gray"sv,
       "rtx_hdr_peak_brightness"sv,
     };
+#endif
 
 #ifdef _WIN32
     std::optional<std::filesystem::path> lossless_to_path(const std::string &utf8) {
