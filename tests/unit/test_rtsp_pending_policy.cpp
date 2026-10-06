@@ -124,3 +124,13 @@ TEST(RtspPendingPolicy, StartedSessionGetsFreshHandshakeWindow) {
   // Never shorten a deadline that is already further out.
   EXPECT_EQ(launch_deadline_after_startup(now + 15s, now, 10s), now + 15s);
 }
+
+TEST(RtspPendingPolicy, BroadcastShutdownClearsSessionsButKeepsPendingLaunches) {
+  using rtsp_stream::pending_policy::rtsp_loop_clear;
+  using clear_t = rtsp_stream::pending_policy::loop_clear_t;
+
+  // The ending broadcast takes every active session with it, but a launch
+  // queued for the next stream must survive until its own ANNOUNCE.
+  EXPECT_EQ(rtsp_loop_clear(true), (clear_t {.all_sessions = true, .preserve_pending_launches = true}));
+  EXPECT_EQ(rtsp_loop_clear(false), (clear_t {.all_sessions = false, .preserve_pending_launches = true}));
+}

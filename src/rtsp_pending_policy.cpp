@@ -77,6 +77,13 @@ namespace rtsp_stream::pending_policy {
     return !startup_running && expires_at <= now;
   }
 
+  loop_clear_t rtsp_loop_clear(const bool broadcast_shutdown_raised) {
+    return {
+      .all_sessions = broadcast_shutdown_raised,
+      .preserve_pending_launches = true,
+    };
+  }
+
   std::chrono::steady_clock::time_point launch_deadline_after_startup(
     const std::chrono::steady_clock::time_point expires_at,
     const std::chrono::steady_clock::time_point now,
