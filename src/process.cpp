@@ -1381,7 +1381,8 @@ namespace proc {
       std::this_thread::sleep_for(1s);
     } else {
       // Ensure starting from a clean slate
-      const bool skip_display_revert = launch_session && launch_session->display_config_preapplied;
+      const bool skip_display_revert = launch_session &&
+                                      (launch_session->display_config_preapplied || launch_session->display_config_preapply_attempted);
       terminate(false, false, skip_display_revert, true, config_read_gate_held);
     }
 
@@ -3373,7 +3374,7 @@ namespace proc {
     if (should_dispatch_revert && skip_display_revert) {
 #ifdef _WIN32
       clear_deferred_display_revert();
-      BOOST_LOG(info) << "Skipping display revert during app replacement because the new session has already applied its display configuration.";
+      BOOST_LOG(info) << "Skipping display revert during app replacement because the new session owns startup display setup.";
 #endif
     } else if (should_dispatch_revert && !other_streaming_session_active) {
 #ifdef _WIN32

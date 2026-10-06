@@ -19,6 +19,26 @@ while depth:
     end += 1
 apply = source[start:end]
 
+# Compile the real launch/resume/WebRTC decision blocks too: APPLY must retain
+# its honest failure result without turning a display preference into a rejected
+# connection (in particular before the user can remotely unlock Windows).
+nvhttp = (root / "src/nvhttp.cpp").read_text()
+request_marker = "auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);"
+launch_start = nvhttp.rindex(request_marker, 0, nvhttp.index("// Wait for display setup"))
+launch_end = nvhttp.index("// Apply a per-client HDR profile", launch_start)
+launch_block = nvhttp[launch_start:launch_end]
+resume_start = nvhttp.index(request_marker, launch_end)
+resume_end = nvhttp.index("// Apply a per-client HDR profile", resume_start)
+resume_block = nvhttp[resume_start:resume_end]
+webrtc = (root / "src/webrtc_stream.cpp").read_text()
+webrtc_start = webrtc.index(request_marker, webrtc.index("Display helper: applying WebRTC display request"))
+webrtc_end = webrtc.index("        }\n#elif defined(__linux__)", webrtc_start)
+webrtc_block = webrtc[webrtc_start:webrtc_end]
+process = (root / "src/process.cpp").read_text()
+skip_start = process.index("    const bool skip_display_revert = launch_session")
+skip_end = process.index(";", skip_start) + 1
+skip_revert = process[skip_start:skip_end]
+
 program = r'''
 #include <cassert>
 #include <chrono>
@@ -38,19 +58,25 @@ namespace display_helper_integration {
     bool uses_v2_helper = false;
     std::chrono::steady_clock::time_point startup_deadline {};
   };
-  struct Session { std::string virtual_display_device_id; };
+  struct Session {
+    std::string virtual_display_device_id;
+    bool virtual_display = true;
+    bool display_config_preapplied = false;
+    bool display_config_preapply_attempted = false;
+  };
   struct Overrides { std::optional<std::string> device_id_override; };
   struct DisplayApplyRequest { Session *session = nullptr; Overrides session_overrides; };
   constexpr auto kStreamStartApplyVerificationTimeout = 100ms;
   constexpr auto kApplyVerificationTimeout = 100ms;
   namespace fake {
-    bool applied = true, v2 = true, hdr = false, cancelled = false;
+    bool applied = true, v2 = true, hdr = false, cancelled = false, has_request = true;
     bool cancel_on_verify = false;
     ApplyVerificationStatus verification = ApplyVerificationStatus::Verified;
     std::chrono::milliseconds blank_delay {0};
     std::vector<std::string> events;
     void reset() {
       applied = v2 = true;
+      has_request = true;
       hdr = cancelled = cancel_on_verify = false;
       verification = ApplyVerificationStatus::Verified;
       blank_delay = 0ms;
@@ -87,9 +113,38 @@ namespace display_helper_integration {
     if (std::chrono::steady_clock::now() >= ticket.startup_deadline) return ApplyVerificationStatus::Unknown;
     return fake::verification;
   }
+  namespace helpers {
+    std::optional<DisplayApplyRequest> build_request_from_session(int, Session &session) {
+      if (!fake::has_request) return std::nullopt;
+      return DisplayApplyRequest {&session, {}};
+    }
+  }
+  bool apply(const DisplayApplyRequest &, ApplyVerificationTicket *, std::function<bool()>,
+      ApplyRetryPolicy, std::chrono::steady_clock::time_point = {}, bool = false);
 '''
 program += apply + r'''
 }
+namespace config { int video = 0; }
+struct Tree {
+  template<class T> void put(const char *, const T &) { assert(false && "display setup rejected the stream"); }
+};
+'''
+for name, block in (("launch", launch_block), ("resume", resume_block), ("webrtc", webrtc_block)):
+    result_type = "std::optional<std::string>" if name == "webrtc" else "void"
+    program += f"{result_type} {name}_startup(display_helper_integration::Session *launch_session) {{\n"
+    program += r'''
+  Tree tree;
+  const auto display_startup_deadline = std::chrono::steady_clock::now() + 100ms;
+  const std::function<bool()> display_startup_cancelled = [] { return display_helper_integration::fake::cancelled; };
+'''
+    program += block
+    program += '  display_helper_integration::fake::events.emplace_back("capture");\n'
+    if name == "webrtc":
+        program += "  return std::nullopt;\n"
+    program += "}\n"
+program += "bool preserves_startup_setup(display_helper_integration::Session *launch_session) {\n"
+program += skip_revert + "\nreturn skip_display_revert;\n}\n"
+program += r'''
 int main() {
   using namespace display_helper_integration;
   const DisplayApplyRequest request;
@@ -105,7 +160,7 @@ int main() {
   fake::blank_delay = 20ms;
   assert(start_stream());
   assert((fake::events == std::vector<std::string>{"apply", "hdr-restored", "verify", "probe", "capture"}));
-  // A missing/failed verification must never become permission to capture.
+  // APPLY reports setup failure honestly; callers still admit the stream below.
   for (auto status : {ApplyVerificationStatus::Unknown, ApplyVerificationStatus::Failed}) {
     fake::reset(); fake::verification = status;
     assert(!start_stream());
@@ -136,6 +191,30 @@ int main() {
   fake::reset(); ApplyVerificationTicket ticket;
   assert(apply(request, &ticket, {}, ApplyRetryPolicy::StreamStart, {}, false));
   assert(ticket.uses_v2_helper);
+  // Reboot/login-screen failures, verification failures/timeouts, and missing
+  // requests all reach capture through every real startup decision block.
+  for (int scenario = 0; scenario < 6; ++scenario) {
+    for (int path = 0; path < 3; ++path) {
+      fake::reset();
+      if (scenario == 1) fake::applied = false; // lock-screen deferred APPLY
+      if (scenario == 2) fake::verification = ApplyVerificationStatus::Failed;
+      if (scenario == 3) fake::verification = ApplyVerificationStatus::Unknown;
+      if (scenario == 4) fake::has_request = false;
+      if (scenario == 5) fake::blank_delay = 110ms; // setup exceeds startup budget
+      Session session;
+      if (path == 0) launch_startup(&session);
+      if (path == 1) resume_startup(&session);
+      if (path == 2) assert(!webrtc_startup(&session));
+      assert(fake::events.back() == "capture");
+      if (path == 0) {
+        assert(session.display_config_preapplied == (scenario == 0));
+        assert(preserves_startup_setup(&session));
+      }
+    }
+  }
+  Session idle_session;
+  assert(!preserves_startup_setup(&idle_session));
+  assert(!preserves_startup_setup(nullptr));
 }
 '''
 with tempfile.TemporaryDirectory(prefix="vibeshine-capture-admission-") as temp:

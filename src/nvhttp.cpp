@@ -5127,18 +5127,14 @@ namespace nvhttp {
           display_startup_deadline
         );
         auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
+        launch_session->display_config_preapply_attempted = true;
         if (!request) {
-          if (launch_session->virtual_display) {
-            tree.put("root.<xmlattr>.status_code", 503);
-            tree.put("root.<xmlattr>.status_message", "The virtual display is not ready for stream startup.");
-            tree.put("root.gamesession", 0);
-            return;
-          }
           BOOST_LOG(warning) << "Display helper: no display configuration request; using the existing display.";
         }
 
         if (request) {
-          // Complete display setup before encoder probing and RTSP admission.
+          // Wait for display setup when possible, but keep locked-desktop access
+          // available when setup fails, times out, or is deferred until unlock.
           const bool applied = display_helper_integration::apply(
             *request,
             nullptr,
@@ -5147,10 +5143,7 @@ namespace nvhttp {
             display_startup_deadline);
           launch_session->display_config_preapplied = applied;
           if (!applied) {
-            tree.put("root.<xmlattr>.status_code", 503);
-            tree.put("root.<xmlattr>.status_message", "Display setup did not complete before stream startup.");
-            tree.put("root.gamesession", 0);
-            return;
+            BOOST_LOG(warning) << "Display helper: display setup did not complete; continuing stream startup with the existing display.";
           }
         }
 
@@ -5842,17 +5835,11 @@ namespace nvhttp {
         );
         auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
         if (!request) {
-          if (launch_session->virtual_display) {
-            tree.put("root.<xmlattr>.status_code", 503);
-            tree.put("root.<xmlattr>.status_message", "The virtual display is not ready for stream startup.");
-            tree.put("root.resume", 0);
-            return;
-          }
           BOOST_LOG(warning) << "Display helper: no display configuration request; using the existing display.";
         }
 
         if (request) {
-          // Complete display setup before encoder probing and RTSP admission.
+          // Display setup is best effort; a locked desktop must remain reachable.
           const bool applied = display_helper_integration::apply(
             *request,
             nullptr,
@@ -5860,10 +5847,7 @@ namespace nvhttp {
             display_helper_integration::ApplyRetryPolicy::StreamStart,
             display_startup_deadline);
           if (!applied) {
-            tree.put("root.<xmlattr>.status_code", 503);
-            tree.put("root.<xmlattr>.status_message", "Display setup did not complete before stream startup.");
-            tree.put("root.resume", 0);
-            return;
+            BOOST_LOG(warning) << "Display helper: display setup did not complete; continuing stream resume with the existing display.";
           }
         }
 

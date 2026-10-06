@@ -2597,10 +2597,11 @@ namespace display_helper_integration {
     if (!applied) return false;
     if (retry_policy == ApplyRetryPolicy::StreamStart) {
       // Legacy APPLY success already includes verification. V2 also returns a
-      // correlated verification result; require it before probing or capture.
+      // correlated verification result; wait before returning setup success.
+      // Startup callers may still stream with existing settings on failure.
       if (ticket->uses_v2_helper &&
           wait_for_apply_verification(*ticket, verification_timeout) != ApplyVerificationStatus::Verified) {
-        BOOST_LOG(error) << "Display helper: display setup was not verified before stream startup.";
+        BOOST_LOG(warning) << "Display helper: display setup was not verified before stream startup.";
         return false;
       }
       if (startup_cancellation_predicate()) return false;

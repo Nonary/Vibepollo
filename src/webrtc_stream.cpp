@@ -3333,13 +3333,10 @@ namespace webrtc_stream {
           (void) display_helper_integration::disarm_pending_restore();
           auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
           if (!request) {
-            if (launch_session->virtual_display) {
-              return std::string {"The virtual display is not ready for stream startup."};
-            }
             BOOST_LOG(warning) << "Display helper: no display configuration request; using the existing display.";
           } else if (!display_helper_integration::apply(
                        *request, nullptr, {}, display_helper_integration::ApplyRetryPolicy::StreamStart)) {
-            return std::string {"Display setup did not complete before stream startup."};
+            BOOST_LOG(warning) << "Display helper: display setup did not complete; continuing WebRTC stream startup with the existing display.";
           }
         }
 #elif defined(__linux__)
