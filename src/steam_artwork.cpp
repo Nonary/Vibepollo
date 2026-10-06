@@ -627,7 +627,23 @@ namespace {
   }
 #endif
 
-  fs::path obtain_remote_portrait(std::uint32_t app_id, const fs::path &appdata,
+  // Newer apps publish artwork only under a content-hash directory, so the
+  // fixed CDN path 404s. Steam caches them locally as <appid>/<hash>/<file>,
+  // and the CDN serves <file>_2x.jpg from the same hash directory.
+  std::string hashed_portrait_url(std::uint32_t app_id, const fs::path &local_source) {
+    const auto hash = local_source.parent_path().filename().string();
+    const auto stem = local_source.stem().string();
+    if (hash.size() != 40 || !std::all_of(hash.begin(), hash.end(), [](unsigned char ch) {
+          return std::isdigit(ch) || (ch >= 'a' && ch <= 'f');
+        }) ||
+        (stem != "library_600x900" && stem != "library_capsule")) {
+      return {};
+    }
+    return "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/" +
+           std::to_string(app_id) + "/" + hash + "/" + stem + "_2x.jpg";
+  }
+
+  fs::path obtain_remote_portrait(std::uint32_t app_id, const fs::path &local_source, const fs::path &appdata,
                                   const platf::steam::artwork::remote_fetcher_t &injected_fetcher) {
     if (app_id == 0) return {};
     const auto cache = platf::steam::artwork::remote_cache_path(appdata, app_id);
@@ -641,7 +657,10 @@ namespace {
     if (recent_failure_marker(failure)) return {};
 
     const auto fetcher = injected_fetcher ? injected_fetcher : fetch_remote;
-    const auto bytes = fetcher(platf::steam::artwork::remote_portrait_url(app_id));
+    auto bytes = fetcher(platf::steam::artwork::remote_portrait_url(app_id));
+    if (!bytes || bytes->empty()) {
+      if (const auto hashed = hashed_portrait_url(app_id, local_source); !hashed.empty()) bytes = fetcher(hashed);
+    }
     if (!bytes || bytes->empty() || bytes->size() > max_remote_bytes) {
       mark_remote_failure(failure);
       return {};
@@ -773,7 +792,7 @@ namespace platf::steam::artwork {
       // retaining the local image as an offline fallback.
       fs::path effective_source = source;
       if (source.empty() || !full_portrait(source)) {
-        const auto remote = obtain_remote_portrait(game.app_id, appdata, fetcher);
+        const auto remote = obtain_remote_portrait(game.app_id, game.artwork_path, appdata, fetcher);
         if (!remote.empty()) effective_source = remote;
       }
       // Keep the last converted cover through transient Steam cache/CDN failures.
