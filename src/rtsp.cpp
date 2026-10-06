@@ -928,7 +928,7 @@ namespace rtsp_stream {
           std::any_of(_launch_sessions.begin(), _launch_sessions.end(), [&launch_session, now](const launch_session_entry_t &entry) {
             return entry.session &&
                    !entry.session->rtsp_cipher &&
-                   entry.expires_at > now &&
+                   !pending_policy::launch_entry_expired(entry.startup_running, entry.expires_at, now) &&
                    entry.session->rtsp_source_address == launch_session->rtsp_source_address;
           });
         if (_launch_sessions.size() >= remote_session::max_client_vdds * 2) {
@@ -1045,7 +1045,7 @@ namespace rtsp_stream {
           return entry.session &&
                  entry.session->id == id &&
                  entry.session->unique_id == unique_id &&
-                 entry.expires_at > now;
+                 !pending_policy::launch_entry_expired(entry.startup_running, entry.expires_at, now);
         }
       );
     }
@@ -1068,21 +1068,55 @@ namespace rtsp_stream {
           return false;
         }
         entry.startup_claimed = true;
+        entry.startup_running = true;
         return true;
       }
       return false;
     }
 
     void release_launch_startup_claim(uint32_t id, std::string_view unique_id) {
-      std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
-      for (auto &entry : _launch_sessions) {
-        if (entry.session &&
-            entry.session->id == id &&
-            entry.session->unique_id == unique_id) {
-          entry.startup_claimed = false;
-          return;
+      {
+        std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
+        for (auto &entry : _launch_sessions) {
+          if (entry.session &&
+              entry.session->id == id &&
+              entry.session->unique_id == unique_id) {
+            entry.startup_claimed = false;
+            entry.startup_running = false;
+            break;
+          }
         }
       }
+      // The deadline may have passed while the claim suspended expiry.
+      asio::post(io_context, [this]() {
+        arm_launch_timer();
+      });
+    }
+
+    /**
+     * @brief Hand a claimed launch back to the expiry timer once its startup worker finishes.
+     * @param started Whether the stream session started. A started session gets a fresh
+     *                ping_timeout for PLAY and the control connection, which clears the launch.
+     */
+    void finish_launch_startup(uint32_t id, std::string_view unique_id, bool started) {
+      {
+        std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
+        const auto now = std::chrono::steady_clock::now();
+        for (auto &entry : _launch_sessions) {
+          if (entry.session &&
+              entry.session->id == id &&
+              entry.session->unique_id == unique_id) {
+            entry.startup_running = false;
+            if (started) {
+              entry.expires_at = pending_policy::launch_deadline_after_startup(entry.expires_at, now, config::stream.ping_timeout);
+            }
+            break;
+          }
+        }
+      }
+      asio::post(io_context, [this]() {
+        arm_launch_timer();
+      });
     }
 
     bool vulkan_hdr_layer_active_locked() {
@@ -1466,6 +1500,9 @@ namespace rtsp_stream {
       std::chrono::steady_clock::time_point expires_at;
       bool accepted = false;
       bool startup_claimed = false;
+      // Set while the ANNOUNCE startup worker owns this launch. The entry does
+      // not expire meanwhile; see pending_policy::launch_entry_expired().
+      bool startup_running = false;
       std::string remote_address;
     };
 
@@ -1635,7 +1672,7 @@ namespace rtsp_stream {
         expired_guids = expire_launch_sessions_locked(now, &expired_owners);
         for (auto &entry : _launch_sessions) {
           if (entry.session != candidate ||
-              entry.expires_at <= now ||
+              pending_policy::launch_entry_expired(entry.startup_running, entry.expires_at, now) ||
               !entry.session->rtsp_cipher ||
               entry.session->id != candidate->id ||
               entry.session->unique_id != candidate->unique_id) {
@@ -1676,7 +1713,7 @@ namespace rtsp_stream {
     ) {
       std::vector<std::array<std::uint8_t, 16>> expired_guids;
       for (auto it = _launch_sessions.begin(); it != _launch_sessions.end();) {
-        if (it->expires_at > now) {
+        if (!pending_policy::launch_entry_expired(it->startup_running, it->expires_at, now)) {
           ++it;
           continue;
         }
@@ -1699,19 +1736,20 @@ namespace rtsp_stream {
 
     void arm_launch_timer_locked() {
       raised_timer.cancel();
-      if (_launch_sessions.empty()) {
+
+      // Running startups cannot expire, and their deadline may already be in
+      // the past; finish_launch_startup() re-arms the timer for them.
+      std::optional<std::chrono::steady_clock::time_point> next_expiry;
+      for (const auto &entry : _launch_sessions) {
+        if (!entry.startup_running && (!next_expiry || entry.expires_at < *next_expiry)) {
+          next_expiry = entry.expires_at;
+        }
+      }
+      if (!next_expiry) {
         return;
       }
 
-      const auto next_expiry = std::min_element(
-        _launch_sessions.begin(),
-        _launch_sessions.end(),
-        [](const launch_session_entry_t &lhs, const launch_session_entry_t &rhs) {
-          return lhs.expires_at < rhs.expires_at;
-        }
-      )->expires_at;
-
-      raised_timer.expires_at(next_expiry);
+      raised_timer.expires_at(*next_expiry);
       raised_timer.async_wait([this](const boost::system::error_code &ec) {
         if (!ec) {
           arm_launch_timer();
@@ -2450,6 +2488,11 @@ namespace rtsp_stream {
       server->run_startup(
         launch_session->virtual_display_guid_bytes,
         [server, socket = std::move(socket), session = std::move(session), launch_session, config = std::move(config), remote_address = std::move(remote_address), client_uuid, sequence_number]() mutable {
+        // The claim suspends expiry, so hand the launch back to the timer on every exit.
+        auto startup_claim_guard = util::fail_guard([server, launch_session]() {
+          server->finish_launch_startup(launch_session->id, launch_session->unique_id, false);
+        });
+
         // Apply deferred updates and take the hot-apply gate on the startup worker so
         // display/config churn cannot stall the RTSP io_context.
         std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
@@ -2494,6 +2537,9 @@ namespace rtsp_stream {
         } catch (...) {
           startup_error = "unknown exception";
         }
+
+        startup_claim_guard.disable();
+        server->finish_launch_startup(launch_session->id, launch_session->unique_id, !startup_failed);
 
         const bool stream_hdr_enabled = activates_vulkan_hdr_layer_for_stream(config.monitor);
         if (!startup_failed) {

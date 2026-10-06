@@ -3,6 +3,7 @@
 #include "remote_session.h"
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -37,4 +38,13 @@ namespace rtsp_stream::pending_policy {
   bool disconnect_scope_matches(remote_session::role_e candidate_role, remote_session::role_e requested_role, bool client_matches, bool all_clients);
   std::vector<pending_owner_t> expired_remote_input_owners(const std::vector<pending_owner_t> &expired);
   std::vector<pending_owner_t> disconnect_input_owners_to_forget(const std::vector<pending_owner_t> &removed);
+
+  // A pending launch's ping_timeout starts when /launch queues it, but the
+  // client still needs it through ANNOUNCE, PLAY, and the control connection.
+  // An ANNOUNCE startup worker can wait seconds for the lifecycle gate, so a
+  // launch never expires while its startup runs, and a started session gets a
+  // fresh window for the remaining handshake instead of what was left of the
+  // original one.
+  bool launch_entry_expired(bool startup_running, std::chrono::steady_clock::time_point expires_at, std::chrono::steady_clock::time_point now);
+  std::chrono::steady_clock::time_point launch_deadline_after_startup(std::chrono::steady_clock::time_point expires_at, std::chrono::steady_clock::time_point now, std::chrono::milliseconds ping_timeout);
 }  // namespace rtsp_stream::pending_policy

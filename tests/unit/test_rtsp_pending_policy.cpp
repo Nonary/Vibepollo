@@ -2,6 +2,7 @@
 
 #include "src/rtsp_pending_policy.h"
 
+#include <chrono>
 #include <limits>
 #include <set>
 
@@ -97,4 +98,29 @@ TEST(RtspPendingPolicy, DisconnectCleanupDoesNotSelectPostRemovalInputGeneration
   for (const auto &owner : cleanup) remembered_generations.erase(owner.generation);
   EXPECT_FALSE(remembered_generations.contains(7));
   EXPECT_TRUE(remembered_generations.contains(8));
+}
+
+TEST(RtspPendingPolicy, RunningStartupKeepsLaunchPastItsDeadline) {
+  using rtsp_stream::pending_policy::launch_entry_expired;
+  using namespace std::chrono_literals;
+  const auto now = std::chrono::steady_clock::now();
+
+  EXPECT_FALSE(launch_entry_expired(false, now + 1ms, now));
+  EXPECT_TRUE(launch_entry_expired(false, now, now));
+  EXPECT_TRUE(launch_entry_expired(false, now - 1s, now));
+
+  // An ANNOUNCE worker waiting on the lifecycle gate must not lose its launch.
+  EXPECT_FALSE(launch_entry_expired(true, now - 1s, now));
+}
+
+TEST(RtspPendingPolicy, StartedSessionGetsFreshHandshakeWindow) {
+  using rtsp_stream::pending_policy::launch_deadline_after_startup;
+  using namespace std::chrono_literals;
+  const auto now = std::chrono::steady_clock::now();
+
+  // Startup finished after the original deadline: PLAY and the control
+  // connection still get a full ping_timeout.
+  EXPECT_EQ(launch_deadline_after_startup(now - 2s, now, 10s), now + 10s);
+  // Never shorten a deadline that is already further out.
+  EXPECT_EQ(launch_deadline_after_startup(now + 15s, now, 10s), now + 15s);
 }
