@@ -272,6 +272,7 @@ namespace config {
 
   struct stream_t {
     std::chrono::milliseconds ping_timeout;
+    std::chrono::milliseconds control_peer_timeout;  // ENet peer timeout of the control stream; 0 = ENet defaults
 
     std::string file_apps;
 

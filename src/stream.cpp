@@ -1086,6 +1086,12 @@ namespace stream {
           break;
         case ENET_EVENT_TYPE_CONNECT:
           BOOST_LOG(info) << "CLIENT CONNECTED"sv;
+          // Let the control peer survive short network drops instead of the ENet 5-30 s defaults
+          if (config::stream.control_peer_timeout.count() > 0) {
+            const auto timeout_ms = static_cast<enet_uint32>(config::stream.control_peer_timeout.count());
+            enet_peer_timeout(event.peer, ENET_PEER_TIMEOUT_LIMIT, timeout_ms, timeout_ms);
+            BOOST_LOG(info) << "Control peer timeout set to "sv << timeout_ms << " ms"sv;
+          }
           break;
         case ENET_EVENT_TYPE_DISCONNECT:
           BOOST_LOG(info) << "CLIENT DISCONNECTED"sv;
