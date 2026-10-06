@@ -4120,6 +4120,7 @@ namespace nvhttp {
 
           visible_apps.push_back(&app);
         }
+        proc::sort_for_clients(visible_apps);
 
         std::vector<remote_session::app_t> configured_apps;
         configured_apps.reserve(visible_apps.size());
@@ -4160,7 +4161,9 @@ namespace nvhttp {
           remote_gate.active
         );
 
-        const bool enable_legacy_ordering = config::sunshine.legacy_ordering && verified_client->enable_legacy_ordering;
+        // Grouping only means something to Moonlight with the ordering padding, so it turns the padding on too.
+        const bool enable_legacy_ordering = (config::sunshine.legacy_ordering || !config::sunshine.app_order.groups.empty()) &&
+                                            verified_client->enable_legacy_ordering;
         size_t bits = 0;
         if (enable_legacy_ordering && !projection.catalogue.empty()) {
           bits = zwpad::pad_width_for_count(projection.catalogue.size());

@@ -2227,6 +2227,17 @@ namespace config {
     bool_f(vars, "envvar_compatibility_mode", sunshine.envvar_compatibility_mode);
     bool_f(vars, "notify_pre_releases", sunshine.notify_pre_releases);
     bool_f(vars, "legacy_ordering", sunshine.legacy_ordering);
+    {
+      std::string groups;
+      std::string steam;
+      std::string playnite;
+      std::string lutris;
+      string_f(vars, "app_order_groups", groups);
+      string_f(vars, "app_order_steam", steam);
+      string_f(vars, "app_order_playnite", playnite);
+      string_f(vars, "app_order_lutris", lutris);
+      sunshine.app_order = proc::app_order::parse(groups, steam, playnite, lutris);
+    }
     bool_f(vars, "forward_rumble", input.forward_rumble);
 
     int port = sunshine.port;

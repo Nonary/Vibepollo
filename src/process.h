@@ -156,6 +156,9 @@ namespace proc {
     std::string playnite_id;
     // When true, launch Playnite in fullscreen mode via the helper.
     bool playnite_fullscreen;
+    // Play statistics written by the provider syncs; they order the client app list.
+    std::int64_t last_played {0};
+    std::int64_t playtime_minutes {0};
     bool frame_gen_limiter_fix;
     bool elevated;
     bool virtual_screen {false};
@@ -345,6 +348,8 @@ namespace proc {
   std::optional<std::string> read_validated_app_image(const std::string &validated_path);
   std::string calculate_app_cover_fingerprint(std::string app_image_path);
   void refresh(const std::string &file_name, bool needs_terminate = true);
+  // Reorders apps for /applist according to config::sunshine.app_order.
+  void sort_for_clients(std::vector<const ctx_t *> &apps);
   void migrate_apps(nlohmann::json *fileTree_p, nlohmann::json *inputTree_p);
   std::optional<proc::proc_t> parse(const std::string &file_name);
 

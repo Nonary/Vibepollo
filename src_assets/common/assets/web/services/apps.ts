@@ -28,11 +28,33 @@ const transientFields = new Set([
   'remote-session',
 ]);
 
-export async function fetchApps(): Promise<AppRecord[]> {
+export interface AppCatalog {
+  apps: AppRecord[];
+  /** App UUIDs in the order /applist sends them to clients. */
+  clientOrder: string[];
+}
+
+export async function fetchAppCatalog(): Promise<AppCatalog> {
   const payload = await apiGet<unknown>('/api/apps');
-  return asArray<AppRecord>(payload, 'apps').filter((app): app is AppRecord =>
-    Boolean(app && typeof app === 'object' && !Array.isArray(app)),
-  );
+  return {
+    apps: asArray<AppRecord>(payload, 'apps').filter((app): app is AppRecord =>
+      Boolean(app && typeof app === 'object' && !Array.isArray(app)),
+    ),
+    clientOrder: Array.isArray(payload)
+      ? []
+      : asArray<unknown>(payload, 'client_order').filter(
+          (uuid): uuid is string => typeof uuid === 'string',
+        ),
+  };
+}
+
+export async function fetchApps(): Promise<AppRecord[]> {
+  return (await fetchAppCatalog()).apps;
+}
+
+/** Rewrites the apps.json order; UUIDs left out keep their relative order at the end. */
+export function reorderApps(order: string[]): Promise<AppMutationResult> {
+  return apiPost<AppMutationResult>('/api/apps/reorder', { order });
 }
 
 export function appUuid(app: AppRecord): string {

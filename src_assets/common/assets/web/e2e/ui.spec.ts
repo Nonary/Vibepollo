@@ -523,6 +523,108 @@ test('library placeholders preserve search, keyboard selection, and list prefere
   await expect(page.getByRole('searchbox', { name: 'Search applications' })).toHaveValue('dolphin');
 });
 
+test('app order page arranges groups and saves the custom order', async ({ page }) => {
+  const patches = await host(page, 'windows', {
+    app_order_groups: 'custom,steam',
+    app_order_steam: 'recent',
+  });
+  const reorders: unknown[] = [];
+  await page.route('**/api/apps', (route) =>
+    route.fulfill({
+      json: {
+        apps: [
+          { uuid: 'big-picture', name: 'Steam Big Picture' },
+          { uuid: 'hades', name: 'Hades II', 'steam-id': '1145350', 'last-played': 1727800000 },
+          { uuid: 'desktop', name: 'Desktop' },
+          { uuid: 'elden', name: 'Elden Ring', 'steam-id': '1245620', 'last-played': 1727000000 },
+          { uuid: 'virtual-display', name: 'Virtual Display' },
+        ],
+        client_order: ['big-picture', 'desktop', 'hades', 'elden'],
+      },
+    }),
+  );
+  await page.route('**/api/apps/reorder', async (route) => {
+    reorders.push(route.request().postDataJSON());
+    await route.fulfill({ json: { status: true } });
+  });
+  await page.route('**/api/apps/*/cover', (route) => route.fulfill({ status: 404, body: '' }));
+  await page.goto('/v2/library');
+  await page.getByRole('link', { name: 'App order' }).click();
+  await expect(page).toHaveURL(/\/v2\/library\/order$/);
+
+  const custom = page.locator('[data-group="custom"]');
+  await expect(custom.locator('.app-order-app__name')).toHaveText(['Steam Big Picture', 'Desktop']);
+  const steam = page.locator('[data-group="steam"]');
+  await expect(steam.locator('.app-order-group__heading span')).toHaveText('2 apps');
+  await expect(page.getByText('Virtual Display')).toHaveCount(0);
+  await steam.getByText('Show all 2 in order').click();
+  await expect(steam.locator('.app-order-preview__all li > span')).toHaveText([
+    'Hades II',
+    'Elden Ring',
+  ]);
+  await expect(page.getByRole('combobox', { name: 'Order Steam by' })).toHaveValue('recent');
+
+  await custom.getByRole('button', { name: 'Move Desktop up' }).click();
+  await expect.poll(() => reorders).toEqual([{ order: ['desktop', 'big-picture'] }]);
+  await page.getByRole('button', { name: 'Move Steam up' }).click();
+  await expect.poll(() => patches.at(-1)).toEqual({ app_order_groups: 'steam,custom' });
+  await page.getByRole('combobox', { name: 'Order Steam by' }).selectOption('playtime');
+  await expect.poll(() => patches.at(-1)).toEqual({ app_order_steam: 'playtime' });
+});
+
+test('app order without grouping lists every app and offers grouping', async ({ page }) => {
+  const patches = await host(page, 'linux');
+  const reorders: unknown[] = [];
+  await page.route('**/api/apps', (route) =>
+    route.fulfill({
+      json: {
+        apps: [
+          { uuid: 'desktop', name: 'Desktop' },
+          { uuid: 'hades', name: 'Hades II', 'steam-id': '1145350' },
+        ],
+        client_order: ['desktop', 'hades'],
+      },
+    }),
+  );
+  await page.route('**/api/apps/reorder', async (route) => {
+    reorders.push(route.request().postDataJSON());
+    await route.fulfill({ json: { status: true } });
+  });
+  await page.route('**/api/apps/*/cover', (route) => route.fulfill({ status: 404, body: '' }));
+  await page.goto('/v2/library/order');
+
+  const all = page.locator('[data-group="custom"]');
+  await expect(all.getByRole('heading', { name: 'All applications' })).toBeVisible();
+  await expect(all.locator('.app-order-app__name')).toHaveText(['Desktop', 'Hades II']);
+  await all.getByRole('button', { name: 'Move Hades II up' }).click();
+  await expect.poll(() => reorders).toEqual([{ order: ['hades', 'desktop'] }]);
+  await page.getByRole('button', { name: 'Group by source' }).click();
+  await expect
+    .poll(() => patches.at(-1))
+    .toEqual({ app_order_groups: 'custom,steam,playnite,lutris' });
+});
+
+test('integrations edit the same per-source app order setting', async ({ page }) => {
+  const patches = await host(page, 'linux', { app_order_steam: 'recent' });
+  await page.goto('/v2/integrations');
+  const sort = page.getByRole('combobox', { name: 'Order Steam by' });
+  await expect(sort).toHaveValue('recent');
+  await sort.selectOption('playtime');
+  await expect.poll(() => patches.at(-1)).toEqual({ app_order_steam: 'playtime' });
+});
+
+test('a failed app order save keeps the saved sort selected', async ({ page }) => {
+  await host(page, 'linux', { app_order_steam: 'recent' });
+  await page.route('**/api/config', async (route) => {
+    if (route.request().method() !== 'PATCH') return route.fallback();
+    await route.fulfill({ status: 500, json: { error: 'nope' } });
+  });
+  await page.goto('/v2/integrations');
+  const sort = page.getByRole('combobox', { name: 'Order Steam by' });
+  await sort.selectOption('playtime');
+  await expect(sort).toHaveValue('recent');
+});
+
 for (const width of [320, 390, 768, 1100, 1440]) {
   test(`main workflows reflow without horizontal scrolling at ${width}px`, async ({
     page,
