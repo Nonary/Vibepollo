@@ -85,20 +85,24 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   EXPECT_EQ(monitor.catalogue[0].id, remote_session::resume_id);
   EXPECT_EQ(monitor.catalogue[1].id, remote_session::disconnect_monitor_id);
 
+  // Moonlight fetches the list while its Remote Input session is closing,
+  // so the tile stays listed for that client.
   const auto input = remote_session::project(caller("input"), {}, {.role = remote_session::role_e::input}, configured, true);
-  ASSERT_EQ(input.catalogue.size(), 3);
+  ASSERT_EQ(input.catalogue.size(), 4);
   EXPECT_EQ(input.catalogue[0].id, 1);
   EXPECT_EQ(input.catalogue[1].id, 2);
-  EXPECT_EQ(input.catalogue[2].id, remote_session::monitor_id);
+  EXPECT_EQ(input.catalogue[2].id, remote_session::input_id);
+  EXPECT_EQ(input.catalogue[3].id, remote_session::monitor_id);
 
   const auto input_during_game = remote_session::project(caller("input"), game(), {.role = remote_session::role_e::input}, configured, true);
-  ASSERT_EQ(input_during_game.catalogue.size(), 6);
+  ASSERT_EQ(input_during_game.catalogue.size(), 7);
   EXPECT_EQ(input_during_game.catalogue[0].id, remote_session::synthetic_running_game_id(42));
   EXPECT_EQ(input_during_game.catalogue[1].id, remote_session::secondary_resume_id);
   EXPECT_EQ(input_during_game.catalogue[2].id, remote_session::secondary_terminate_id);
   EXPECT_EQ(input_during_game.catalogue[3].title, "One");
   EXPECT_EQ(input_during_game.catalogue[4].title, "Two");
-  EXPECT_EQ(input_during_game.catalogue[5].id, remote_session::secondary_monitor_id);
+  EXPECT_EQ(input_during_game.catalogue[5].id, remote_session::secondary_input_id);
+  EXPECT_EQ(input_during_game.catalogue[6].id, remote_session::secondary_monitor_id);
 
   const auto game_owner_monitor = remote_session::project(caller("owner"), game(), {.role = remote_session::role_e::monitor, .retained = true}, configured, true);
   ASSERT_EQ(game_owner_monitor.catalogue.size(), 2);
@@ -289,6 +293,7 @@ TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {
   EXPECT_TRUE(ownerless_disconnect.already_complete);
   EXPECT_FALSE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::input).allowed);
   EXPECT_FALSE(remote_session::dispatch(caller("input"), {}, {.role = remote_session::role_e::input}, remote_session::control_e::monitor).allowed);
+  EXPECT_TRUE(remote_session::dispatch(caller("input"), {}, {.role = remote_session::role_e::input}, remote_session::control_e::input).allowed);
   const auto stale_monitor_launch = remote_session::dispatch(
     caller("monitor"),
     {},
