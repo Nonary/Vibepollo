@@ -1081,9 +1081,13 @@ namespace rtsp_stream {
       bool cleared = false;
       {
         std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
-        cleared = !_launch_sessions.empty();
-        for (const auto &session : _launch_sessions.clear()) {
+        const auto canceled = _launch_sessions.clear();
+        for (const auto &session : canceled) {
           note_virtual_display_guid(session->virtual_display_guid_bytes, virtual_display_guid_bytes);
+        }
+        cleared = !canceled.empty();
+        if (cleared) {
+          BOOST_LOG(info) << "Canceled "sv << canceled.size() << " pending RTSP launch(es) (reason="sv << reason << ").";
         }
       }
       raised_timer.cancel();
@@ -2535,12 +2539,10 @@ namespace rtsp_stream {
       while (!shutdown_event->peek() || server.startup_count() > 0) {
         server.iterate();
 
-        if (broadcast_shutdown_event->peek()) {
-          server.clear();
-        } else {
-          // cleanup all stopped sessions
-          server.clear(false);
-        }
+        // Clear every session while the broadcast shuts down, otherwise only
+        // stopped ones. Launches queued for the next stream are kept either way.
+        const auto clear = pending_policy::rtsp_loop_clear(broadcast_shutdown_event->peek());
+        server.clear(clear.all_sessions, clear.preserve_pending_launches);
       }
 
       server.clear();

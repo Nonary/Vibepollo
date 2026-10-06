@@ -46,5 +46,18 @@ namespace rtsp_stream::pending_policy {
   // fresh window for the remaining handshake instead of what was left of the
   // original one.
   bool launch_entry_expired(bool startup_running, std::chrono::steady_clock::time_point expires_at, std::chrono::steady_clock::time_point now);
+
+  struct loop_clear_t {
+    bool all_sessions;
+    bool preserve_pending_launches;
+    friend bool operator==(const loop_clear_t &, const loop_clear_t &) = default;
+  };
+
+  // What the RTSP loop clears on each iteration. A raised broadcast_shutdown
+  // means the current broadcast is ending, so every active session goes. A
+  // pending launch belongs to the next broadcast: its session cannot attach
+  // until end_broadcast() finishes and start_broadcast() resets the flag, so
+  // it must survive the teardown instead of being canceled with it.
+  loop_clear_t rtsp_loop_clear(bool broadcast_shutdown_raised);
   std::chrono::steady_clock::time_point launch_deadline_after_startup(std::chrono::steady_clock::time_point expires_at, std::chrono::steady_clock::time_point now, std::chrono::milliseconds ping_timeout);
 }  // namespace rtsp_stream::pending_policy
