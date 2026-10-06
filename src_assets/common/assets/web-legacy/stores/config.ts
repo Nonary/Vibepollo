@@ -104,6 +104,7 @@ const defaultGroups = [
       gamepad: 'auto',
       ds4_back_as_touchpad_click: 'enabled',
       proton_dualsense_compatibility: 'enabled',
+      dualsense_haptics_gain: 1,
       motion_as_ds4: 'enabled',
       touchpad_as_ds4: 'enabled',
       back_button_timeout: -1,

@@ -858,6 +858,8 @@
     "min_threads": "Minimum CPU Thread Count",
     "min_threads_desc": "Increasing the value slightly reduces encoding efficiency, but the tradeoff is usually worth it to gain the use of more CPU cores for encoding. The ideal value is the lowest value that can reliably encode at your desired streaming settings on your hardware.",
     "misc": "Miscellaneous options",
+    "dualsense_haptics_gain": "DualSense haptics strength",
+    "dualsense_haptics_gain_desc": "Native waveform strength: 1 preserves the original signal and 0 mutes it. Range: 0 to 4. Above 1, both active actuators receive the same lift in peak strength, preserving their strength gap. Available headroom limits the boost to avoid clipping. The quieter actuator sets the requested amplification. Does not affect ordinary rumble or adaptive triggers. Requires a client with waveform haptics support.",
     "proton_dualsense_compatibility": "DualSense compatibility for Proton games",
     "proton_dualsense_compatibility_desc": "Enable native DualSense haptics compatibility for games launched during streaming, including games started inside Steam. Enabled by default. Requires a compatible Proton build and native game support. Changes apply to new game launches after reconnecting the stream; explicit game launch options take priority.",
     "motion_as_ds4": "Emulate a DS4 gamepad if the client gamepad reports motion sensors are present",

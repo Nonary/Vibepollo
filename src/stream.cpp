@@ -45,6 +45,7 @@ extern "C" {
 #include "display_helper_integration.h"
 #include "globals.h"
 #include "host_stats.h"
+#include "haptics_gain.h"
 #include "input.h"
 #include "logging.h"
 #include "network.h"
@@ -664,6 +665,7 @@ namespace stream {
       std::uint32_t seq;
 
       platf::feedback_queue_t feedback_queue;
+      std::array<haptics_gain_t, platf::MAX_GAMEPADS> haptics_gains;
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
     } control;
 
@@ -1268,6 +1270,14 @@ namespace stream {
       MlHapticsWrite32(bytes + 4, msg.data.haptics.sequence);
       MlHapticsWrite16(bytes + 8, ML_HAPTICS_MAX_FRAMES);
       std::memcpy(bytes + ML_HAPTICS_HEADER_SIZE, msg.data.haptics.samples.data(), msg.data.haptics.samples.size());
+      if (msg.id < session->control.haptics_gains.size()) {
+        session->control.haptics_gains[msg.id].apply(
+          std::span(bytes + ML_HAPTICS_HEADER_SIZE, msg.data.haptics.samples.size()),
+          config::input.dualsense_haptics_gain,
+          msg.data.haptics.sequence,
+          std::chrono::steady_clock::now()
+        );
+      }
       std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size> encrypted_payload;
       payload = encode_control(session, std::string_view(reinterpret_cast<const char *>(plaintext.data()), plaintext.size()), encrypted_payload);
     } else if (msg.type == platf::gamepad_feedback_e::rumble) {

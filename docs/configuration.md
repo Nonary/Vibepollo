@@ -821,6 +821,41 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### dualsense_haptics_gain
+
+Strength control for native DualSense waveform haptics streamed from Windows
+or Linux. Default: `1.0`. Allowed range: `0.0` to `4.0`.
+
+Use `1.5` for a gentle boost, `2.0` for a stronger boost, or `0.0` to mute
+waveform haptics. Above `1.0`, the quieter active actuator sets the requested
+amplification. Both actuators receive the same increase in normalized peak
+strength, preserving the gap between their peaks within each 5 ms packet.
+For example, peaks of 20% and 90% can become 30% and 100% while keeping their
+70 percentage point gap. Available headroom limits the shared lift; a full-scale
+peak leaves both actuators unchanged. Silent actuators remain silent.
+
+Each channel's waveform is scaled linearly within the packet, preserving its
+shape and zero crossings without hard clipping or adding a sample offset.
+The strongest recent peak remains the headroom reference for 100 ms, then
+releases over 200 ms, retaining contrast when a quieter effect follows a strong
+one. Increases in lift ease over 20 ms; reductions apply immediately when
+headroom shrinks. Smoothing is independent per controller. Brief silent gaps
+retain recent peak history; 100 ms of silence, sequence gaps, packet gaps over
+50 ms, or strength changes reset it. No packets are buffered
+and no playback latency is added.
+
+This preserves the measured peak-strength gap between actuator channels, not
+the differences between individual game effects already mixed into one channel.
+Recent peak history helps preserve contrast across nearby effects, but future
+peaks cannot be predicted and exact gaps across time are not guaranteed. 16-bit
+rounding can change the measured gap by about one sample. At `1.0`, the signal is unchanged; below `1.0`, it is
+attenuated linearly. Ordinary rumble and adaptive triggers are unaffected.
+Requires a client and controller with waveform haptics support.
+
+```ini
+dualsense_haptics_gain = 1.5
+```
+
 ### proton_dualsense_compatibility
 
 <table>

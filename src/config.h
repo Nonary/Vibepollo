@@ -326,6 +326,8 @@ namespace config {
     bool ds5_inputtino_randomize_mac;
     // Apply native Sony audio endpoint compatibility to streamed Proton launches.
     bool proton_dualsense_compatibility;
+    // Strength lift for streamed native actuator waveforms; 1.0 is unchanged.
+    double dualsense_haptics_gain;
 
     bool keyboard;
     bool mouse;
