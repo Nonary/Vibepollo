@@ -1098,45 +1098,6 @@ namespace VDISPLAY_SUDOVDA {
       return active_virtual_display_tracker().contains(guid);
     }
 
-    std::vector<VDISPLAY::TrackedDisplayCleanupTarget> tracked_display_cleanup_targets() {
-      std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
-      std::vector<VDISPLAY::TrackedDisplayCleanupTarget> result;
-      for (const auto &guid_uuid : active_virtual_display_tracker().all()) {
-        const auto identity = g_owned_display_identities.find(guid_uuid.string());
-        if (identity == g_owned_display_identities.end() || identity->second.device_id.empty()) continue;
-        VDISPLAY::TrackedDisplayCleanupTarget target;
-        static_assert(sizeof(GUID) == target.guid_bytes.size());
-        std::memcpy(target.guid_bytes.data(), guid_uuid.b8, target.guid_bytes.size());
-        target.device_id = identity->second.device_id;
-        target.backend = VDISPLAY::ensure_display_backend_e::sudovda;
-        result.push_back(std::move(target));
-      }
-      return result;
-    }
-
-    bool tracked_display_cleanup_target_matches(
-      const std::array<std::uint8_t, 16> &guid_bytes,
-      const std::string &device_id) {
-      if (device_id.empty()) return false;
-      uuid_util::uuid_t guid_uuid {};
-      std::memcpy(guid_uuid.b8, guid_bytes.data(), guid_bytes.size());
-      std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
-      if (!active_virtual_display_tracker().contains(guid_uuid)) return false;
-      const auto identity = g_owned_display_identities.find(guid_uuid.string());
-      return identity != g_owned_display_identities.end() &&
-             boost::iequals(identity->second.device_id, device_id);
-    }
-
-    bool remove_tracked_display_cleanup_target(const VDISPLAY::TrackedDisplayCleanupTarget &target) {
-      if (target.backend != VDISPLAY::ensure_display_backend_e::sudovda || target.device_id.empty()) return false;
-      std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
-      if (!tracked_display_cleanup_target_matches(target.guid_bytes, target.device_id)) return false;
-      GUID guid {};
-      static_assert(sizeof(guid) == sizeof(target.guid_bytes));
-      std::memcpy(&guid, target.guid_bytes.data(), sizeof(guid));
-      return remove_virtual_display_impl(guid, true, {}, false);
-    }
-
     std::vector<uuid_util::uuid_t> collect_conflicting_virtual_displays(const uuid_util::uuid_t &guid) {
       auto result = active_virtual_display_tracker().other_than(guid);
       for (const auto &owned : owned_render_adapter_request_provenance_guids()) {
@@ -2999,6 +2960,45 @@ namespace VDISPLAY_SUDOVDA {
       }
     }
   }  // namespace
+
+  std::vector<VDISPLAY::TrackedDisplayCleanupTarget> tracked_display_cleanup_targets() {
+    std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
+    std::vector<VDISPLAY::TrackedDisplayCleanupTarget> result;
+    for (const auto &guid_uuid : active_virtual_display_tracker().all()) {
+      const auto identity = g_owned_display_identities.find(guid_uuid.string());
+      if (identity == g_owned_display_identities.end() || identity->second.device_id.empty()) continue;
+      VDISPLAY::TrackedDisplayCleanupTarget target;
+      static_assert(sizeof(GUID) == target.guid_bytes.size());
+      std::memcpy(target.guid_bytes.data(), guid_uuid.b8, target.guid_bytes.size());
+      target.device_id = identity->second.device_id;
+      target.backend = VDISPLAY::ensure_display_backend_e::sudovda;
+      result.push_back(std::move(target));
+    }
+    return result;
+  }
+
+  bool tracked_display_cleanup_target_matches(
+    const std::array<std::uint8_t, 16> &guid_bytes,
+    const std::string &device_id) {
+    if (device_id.empty()) return false;
+    uuid_util::uuid_t guid_uuid {};
+    std::memcpy(guid_uuid.b8, guid_bytes.data(), guid_bytes.size());
+    std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
+    if (!active_virtual_display_tracker().contains(guid_uuid)) return false;
+    const auto identity = g_owned_display_identities.find(guid_uuid.string());
+    return identity != g_owned_display_identities.end() &&
+           boost::iequals(identity->second.device_id, device_id);
+  }
+
+  bool remove_tracked_display_cleanup_target(const VDISPLAY::TrackedDisplayCleanupTarget &target) {
+    if (target.backend != VDISPLAY::ensure_display_backend_e::sudovda || target.device_id.empty()) return false;
+    std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
+    if (!tracked_display_cleanup_target_matches(target.guid_bytes, target.device_id)) return false;
+    GUID guid {};
+    static_assert(sizeof(guid) == sizeof(target.guid_bytes));
+    std::memcpy(&guid, target.guid_bytes.data(), sizeof(guid));
+    return remove_virtual_display_impl(guid, true, {}, false);
+  }
 
   void applyHdrProfileToOutput(const char *s_client_name, const char *s_hdr_profile, const char *s_device_id) {
     // Only apply HDR profiles when explicitly selected by the user.

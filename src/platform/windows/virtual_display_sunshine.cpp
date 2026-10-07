@@ -1854,7 +1854,7 @@ namespace VDISPLAY_SUNSHINE {
           for (const auto &device : *devices) {
             if (!device.m_monitor_device_path.empty() &&
                 _wcsicmp(platf::from_utf8(device.m_monitor_device_path).c_str(), device_name_w->c_str()) == 0 &&
-                is_sunshine_virtual_display_identity(
+                VDISPLAY::is_sunshine_virtual_display_identity(
                   device.m_monitor_device_path,
                   device.m_friendly_name,
                   device.m_edid ? device.m_edid->m_manufacturer_id : "",
