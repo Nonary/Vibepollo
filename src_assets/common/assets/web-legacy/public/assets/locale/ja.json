@@ -429,7 +429,7 @@
     "amd_preanalysis_desc": "これにより、レート制御の事前分析が可能になり、エンコード待ち時間の増加を犠牲にして品質が向上する可能性があります。",
     "amd_quality": "AMF品質",
     "amd_quality_balanced": "balanced -- 速度と品質のバランス",
-    "amd_quality_desc": "エンコード速度と品質のバランスを調整します。デフォルトは「balanced」です。「auto」ではこのプロパティを設定せず、選択した AMF 用途プリセットによって値が決定されます。",
+    "amd_quality_desc": "エンコード速度と品質のバランスを調整します。デフォルトは「speed」です。「auto」ではこのプロパティを設定せず、選択した AMF 用途プリセットによって値が決定されます。",
     "amd_quality_group": "AMF 品質設定（ネイティブ + FFmpeg）",
     "amd_quality_quality": "品質 -- 品質を優先",
     "amd_quality_speed": "スピード -- 速度を優先",

@@ -429,7 +429,7 @@
     "amd_preanalysis_desc": "Bu, artan kodlama gecikmesi pahasına kaliteyi artırabilecek hız kontrolü ön analizini mümkün kılar.",
     "amd_quality": "AMF Kalitesi",
     "amd_quality_balanced": "balanced -- hız ve kaliteyi dengele",
-    "amd_quality_desc": "Bu ayar, kodlama hızı ile kalite arasındaki dengeyi kontrol eder. Varsayılan seçenek `balanced` değeridir. `auto`, özelliğe bir değer atamaz; böylece seçili AMF kullanım ön ayarı değeri belirleyebilir.",
+    "amd_quality_desc": "Bu ayar, kodlama hızı ile kalite arasındaki dengeyi kontrol eder. Varsayılan seçenek `speed` değeridir. `auto`, özelliğe bir değer atamaz; böylece seçili AMF kullanım ön ayarı değeri belirleyebilir.",
     "amd_quality_group": "AMF Kalite Ayarları (yerel + FFmpeg)",
     "amd_quality_quality": "kalite -- kaliteyi tercih et",
     "amd_quality_speed": "hız -- hızı tercih et",

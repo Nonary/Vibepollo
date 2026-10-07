@@ -421,7 +421,7 @@
     "amd_preanalysis_desc": "Cela permet une préanalyse de contrôle de débit, ce qui peut augmenter la qualité au détriment d'une latence d'encodage accrue.",
     "amd_quality": "Qualité AMF",
     "amd_quality_balanced": "balanced -- équilibre entre vitesse et qualité",
-    "amd_quality_desc": "Contrôle l’équilibre entre la vitesse d’encodage et la qualité. Le réglage par défaut est Équilibré. Auto laisse la propriété non définie afin que le profil d’utilisation AMF sélectionné puisse en choisir la valeur.",
+    "amd_quality_desc": "Contrôle l’équilibre entre la vitesse d’encodage et la qualité. Le réglage par défaut est speed. Auto laisse la propriété non définie afin que le profil d’utilisation AMF sélectionné puisse en choisir la valeur.",
     "amd_quality_group": "Paramètres de qualité AMF (natif + FFmpeg)",
     "amd_quality_quality": "qualité -- préférer la qualité",
     "amd_quality_speed": "vitesse -- préférez la vitesse",

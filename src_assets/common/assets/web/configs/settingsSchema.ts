@@ -1077,7 +1077,7 @@ export const settingsDefaults: Record<string, unknown> = {
   ignore_encoder_probe_failure: false,
   nvenc_preset: 1,
   qsv_preset: 'medium',
-  amd_quality: 'balanced',
+  amd_quality: 'speed',
   wgc_pacing_smoothing: true,
   hevc_mode: 0,
   av1_mode: 0,

@@ -429,7 +429,7 @@
     "amd_preanalysis_desc": "Detta möjliggör föranalys av hastighetskontroll, vilket kan öka kvaliteten på bekostnad av ökad kodningstid.",
     "amd_quality": "AMF Kvalitet",
     "amd_quality_balanced": "balanced -- balansera hastighet och kvalitet",
-    "amd_quality_desc": "Detta styr balansen mellan kodningshastighet och kvalitet. Standardläget är Balanserad. Auto lämnar egenskapen ospecificerad så att den valda förinställningen för AMF-användning kan bestämma värdet.",
+    "amd_quality_desc": "Detta styr balansen mellan kodningshastighet och kvalitet. Standardläget är speed. Auto lämnar egenskapen ospecificerad så att den valda förinställningen för AMF-användning kan bestämma värdet.",
     "amd_quality_group": "AMF-kvalitetsinställningar (inbyggd kodare + FFmpeg)",
     "amd_quality_quality": "kvalitet – föredra kvalitet",
     "amd_quality_speed": "speed -- föredra hastighet",

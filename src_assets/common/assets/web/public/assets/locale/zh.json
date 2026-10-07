@@ -421,7 +421,7 @@
     "amd_preanalysis_desc": "启用码率控制预分析，可能会以增加编码延迟为代价提高质量。",
     "amd_quality": "AMF 质量",
     "amd_quality_balanced": "balanced -- 平衡速度与质量",
-    "amd_quality_desc": "此设置用于平衡编码速度和质量。默认值为“平衡”。选择 auto 时，该属性将保持未设置，由所选的 AMF 工作模式预设决定。",
+    "amd_quality_desc": "此设置用于平衡编码速度和质量。默认值为“speed”。选择 auto 时，该属性将保持未设置，由所选的 AMF 工作模式预设决定。",
     "amd_quality_group": "AMF 质量设置（原生 + FFmpeg）",
     "amd_quality_quality": "quality -- 偏好质量",
     "amd_quality_speed": "speed -- 偏好速度",

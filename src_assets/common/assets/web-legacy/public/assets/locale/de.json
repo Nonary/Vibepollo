@@ -429,7 +429,7 @@
     "amd_preanalysis_desc": "Dies ermöglicht die Vorabanalyse der Rate, wodurch die Qualität auf Kosten einer erhöhten Encoding-Latenz erhöht werden kann.",
     "amd_quality": "AMF-Qualität",
     "amd_quality_balanced": "balanced -- ausgewogenes Verhältnis zwischen Geschwindigkeit und Qualität",
-    "amd_quality_desc": "Dies steuert das Verhältnis zwischen Kodierungsgeschwindigkeit und Qualität. Der Standardwert ist „Ausgewogen“. Bei Auto bleibt die Eigenschaft ungesetzt, sodass die ausgewählte AMF-Nutzungsvoreinstellung sie festlegen kann.",
+    "amd_quality_desc": "Dies steuert das Verhältnis zwischen Kodierungsgeschwindigkeit und Qualität. Der Standardwert ist „speed“. Bei Auto bleibt die Eigenschaft ungesetzt, sodass die ausgewählte AMF-Nutzungsvoreinstellung sie festlegen kann.",
     "amd_quality_group": "AMF-Qualitätseinstellungen (nativ + FFmpeg)",
     "amd_quality_quality": "Qualität -- Qualität bevorzugen",
     "amd_quality_speed": "speed -- bevorzuge Geschwindigkeit",

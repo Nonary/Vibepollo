@@ -421,7 +421,7 @@
     "amd_preanalysis_desc": "Điều này cho phép thực hiện phân tích trước để kiểm soát tốc độ, có thể cải thiện chất lượng nhưng đồng thời làm tăng độ trễ mã hóa.",
     "amd_quality": "Chất lượng AMF",
     "amd_quality_balanced": "balanced -- cân bằng tốc độ và chất lượng",
-    "amd_quality_desc": "Điều chỉnh sự cân bằng giữa tốc độ mã hóa và chất lượng. Mặc định là balanced. auto không đặt thuộc tính này, để cấu hình sử dụng AMF đã chọn quyết định giá trị.",
+    "amd_quality_desc": "Điều chỉnh sự cân bằng giữa tốc độ mã hóa và chất lượng. Mặc định là speed. auto không đặt thuộc tính này, để cấu hình sử dụng AMF đã chọn quyết định giá trị.",
     "amd_quality_group": "Cài đặt chất lượng AMF (gốc + FFmpeg)",
     "amd_quality_quality": "chất lượng -- ưu tiên chất lượng",
     "amd_quality_speed": "Tốc độ -- Ưu tiên tốc độ",

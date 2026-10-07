@@ -55,6 +55,7 @@
 
 // local includes
 #include "misc.h"
+#include "power_throttling.h"
 #include "src/screen_saver_state.h"
 #include "src/platform/common_services.h"
 #include "nvprefs/nvprefs_interface.h"
@@ -1554,6 +1555,12 @@ namespace platf {
     // Enable MMCSS scheduling for DWM
     DwmEnableMMCSS(true);
 
+    // Keep full CPU QoS and make Windows honor the timer request below even
+    // though the host has no visible window while streaming.
+    if (!set_process_high_qos(true)) {
+      BOOST_LOG(debug) << "Could not opt out of process power throttling: "sv << GetLastError();
+    }
+
     // Reduce timer period to 0.5ms
     if (nt_set_timer_resolution_max()) {
       used_nt_set_timer_resolution = true;
@@ -1661,6 +1668,7 @@ namespace platf {
     }
     // Demote ourselves back to normal priority class
     SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+    (void) set_process_high_qos(false);
 
     // End our 0.5ms timer request
     if (used_nt_set_timer_resolution) {

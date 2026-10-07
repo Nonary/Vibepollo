@@ -23,6 +23,7 @@ extern "C" {
 }
 
 // lib includes
+#include "capture_gpu_policy.h"
 #include "display.h"
 #include "display_vram.h"
 #include "misc.h"
@@ -273,9 +274,19 @@ namespace platf::dxgi {
     }
 
     ~texture_lock_helper() {
+      unlock();
+    }
+
+    bool unlock() {
       if (_locked) {
-        _mutex->ReleaseSync(0);
+        _locked = false;
+        const auto status = _mutex->ReleaseSync(0);
+        if (FAILED(status)) {
+          BOOST_LOG(error) << "Failed to release texture mutex [0x"sv << util::hex(status).to_string_view() << ']';
+          return false;
+        }
       }
+      return true;
     }
 
     bool lock() {
@@ -283,12 +294,11 @@ namespace platf::dxgi {
         return true;
       }
       HRESULT status = _mutex->AcquireSync(0, 3000);
-      if (status == S_OK || status == WAIT_ABANDONED) {
-        if (status == WAIT_ABANDONED) {
-          BOOST_LOG(error) << "Keyed mutex was abandoned; continuing with lock held";
-        }
+      if (status == S_OK) {
         _locked = true;
       } else {
+        // WAIT_ABANDONED does not grant valid ownership: DXGI requires both
+        // the shared surface and mutex to be recreated by capture reinit.
         BOOST_LOG(error) << "Failed to acquire texture mutex [0x"sv << util::hex(status).to_string_view() << ']';
       }
       return _locked;
@@ -608,6 +618,12 @@ namespace platf::dxgi {
         return -1;
       }
 
+      // Border initialization touches only our output texture. Keep allocation,
+      // view setup and these draws outside the shared capture texture's lock.
+      if (!rtvs_cleared && !clear_output_to_black()) {
+        return -1;
+      }
+
       // Acquire encoder mutex to synchronize with capture code.
       // Use a finite timeout to avoid hard-deadlocks during display re-init / device loss.
       auto status = img_ctx.encoder_mutex->AcquireSync(0, 3000);
@@ -615,12 +631,9 @@ namespace platf::dxgi {
         BOOST_LOG(error) << "Timed out acquiring encoder mutex; capture/encoder sync likely wedged";
         return -1;
       }
-      if (status != S_OK && status != WAIT_ABANDONED) {
+      if (status != S_OK) {
         BOOST_LOG(error) << "Failed to acquire encoder mutex [0x"sv << util::hex(status).to_string_view() << ']';
         return -1;
-      }
-      if (status == WAIT_ABANDONED) {
-        BOOST_LOG(error) << "Encoder mutex was abandoned; continuing with lock held";
       }
 
       bool encoder_mutex_held = true;
@@ -628,22 +641,17 @@ namespace platf::dxgi {
         if (!encoder_mutex_held) {
           return true;
         }
+        encoder_mutex_held = false;
         const HRESULT hr = img_ctx.encoder_mutex->ReleaseSync(0);
         if (FAILED(hr)) {
           BOOST_LOG(warning) << "Failed to release encoder mutex [0x"sv << util::hex(hr).to_string_view() << ']';
           return false;
         }
-        encoder_mutex_held = false;
         return true;
       };
       auto release_encoder_mutex = util::fail_guard([&]() {
         (void) release_encoder_mutex_now();
       });
-
-      // Clear render target view(s) once so that the aspect ratio mismatch "bars" appear black
-      if (!rtvs_cleared && !clear_output_to_black()) {
-        return -1;
-      }
 
       // Draw captured frame. When RTX HDR (NVIDIA TrueHDR) is active and the target
       // colorspace is HDR but the captured frame is still in a supported SDR-compatible
@@ -724,6 +732,9 @@ namespace platf::dxgi {
             encode_input_res = &img_ctx.truehdr_input_res;
             truehdr_input_texture = img_ctx.truehdr_input_texture.get();
             truehdr_private_input_ready = release_encoder_mutex_now();
+            if (!truehdr_private_input_ready) {
+              return -1;
+            }
           } else if (!truehdr_failure_logged) {
             BOOST_LOG(warning) << "RTX HDR: streaming unconverted frame because private TrueHDR input setup failed.";
             truehdr_failure_logged = true;
@@ -859,12 +870,14 @@ namespace platf::dxgi {
         unbind_render_targets();
       }
 
-      // Release encoder mutex to allow capture code to reuse this image
-      if (release_encoder_mutex_now()) {
-        release_encoder_mutex.disable();
-      }
-
       unbind_shader_resource();
+
+      // Finish all shared-image references before releasing ownership. A failed
+      // handoff must reinitialize rather than publish an unsynchronized frame.
+      if (!release_encoder_mutex_now()) {
+        return -1;
+      }
+      release_encoder_mutex.disable();
 
       return 0;
     }
@@ -2325,6 +2338,7 @@ namespace platf::dxgi {
       amf_cfg.high_motion_quality_boost_enable = amf_tristate(config::video.amd.amd_high_motion_quality_boost);
       amf_cfg.av1_screen_content_tools = amf_tristate(config::video.amd.amd_av1_screen_content);
       amf_cfg.av1_encoding_latency_mode = config::video.amd.amd_av1_latency_mode;
+      amf_cfg.av1_tiles = config::video.amd.amd_av1_tiles;
 
       const auto concurrent_feature_plan = ::amf::lifecycle::resolve_concurrent_session_features(
         active_encoder_count,
@@ -2553,12 +2567,11 @@ namespace platf::dxgi {
         // We got a new frame from DesktopDuplication...
         if (blend_mouse_cursor_flag) {
           // ...and we need to blend the mouse cursor onto it.
-          // Copy the frame to intermediate surface so we can blend this and future mouse cursor updates
-          // without new frames from DesktopDuplication. We use direct3d surface directly here and not
-          // an image from pull_free_image_cb mainly because it's lighter (surface sharing between
-          // direct3d devices produce significant memory overhead).
+          // Prepare a cursor-free cache for subsequent mouse-only updates.
+          // Submit its copy only after handing the fresh encoder image off;
+          // otherwise that image waits on two serial full-frame GPU copies.
           last_frame_action = lfa::copy_src_to_surface;
-          // Copy the intermediate surface to a new image from pull_free_image_cb and blend the mouse cursor onto it.
+          // A fresh desktop can be copied directly into the encoder image.
           out_frame_action = ofa::copy_last_surface_and_blend_cursor;
         } else {
           // ...and we don't need to blend the mouse cursor.
@@ -2731,7 +2744,8 @@ namespace platf::dxgi {
               return capture_e::error;
             }
           }
-          device_ctx->CopyResource(p_surface->get(), src.get());
+          // The copy is deferred until submit_cursor_frame releases the shared
+          // output. Keep this private texture allocated before taking its lock.
           break;
         }
     }
@@ -2801,8 +2815,17 @@ namespace platf::dxgi {
             return capture_e::error;
           }
 
-          device_ctx->CopyResource(d3d_img->capture_texture.get(), p_surface->get());
-          blend_cursor(*d3d_img);
+          const bool submitted = capture_policy::submit_cursor_frame(
+            src.get() != nullptr,
+            [&](bool desktop_updated) {
+              device_ctx->CopyResource(d3d_img->capture_texture.get(), desktop_updated ? src.get() : p_surface->get());
+            },
+            [&]() { blend_cursor(*d3d_img); },
+            [&]() { return lock.unlock(); },
+            [&]() { device_ctx->CopyResource(p_surface->get(), src.get()); });
+          if (!submitted) {
+            return capture_e::error;
+          }
           break;
         }
 
