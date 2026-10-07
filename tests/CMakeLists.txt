@@ -829,6 +829,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_kmsgrab_initialization.py"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
         set_tests_properties(test_component_linux_kmsgrab_initialization PROPERTIES LABELS "component" TIMEOUT 30)
+        add_test(NAME test_component_virtual_display_startup_reconnect
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_virtual_display_startup_reconnect.py"
+                --repo "${SUNSHINE_TEST_REPOSITORY_ROOT}" --compiler "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_virtual_display_startup_reconnect PROPERTIES LABELS "component" TIMEOUT 30)
         add_test(NAME test_component_display_capture_admission
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_capture_admission.py"

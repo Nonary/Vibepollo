@@ -266,6 +266,7 @@ namespace {
   // that in-flight restore from a later stream-start probe; the helper will either
   // finish restoring or an explicit APPLY will supersede it.
   constexpr std::chrono::milliseconds kDisarmRestoreBudget {150};
+  constexpr std::chrono::milliseconds kStreamStartDisarmReconnectBudget {750};
   constexpr std::chrono::milliseconds kDisarmRetryThrottle {150};
   constexpr std::chrono::milliseconds kDeferredApplyInitialDelay {2000};
   constexpr std::chrono::milliseconds kDeferredApplyRetryBase {500};
@@ -1397,12 +1398,15 @@ namespace {
     if (!g_restore_expected.load(std::memory_order_relaxed)) {
       return false;
     }
-    if (helper_process_running(cancellation_predicate, operation_deadline)) {
+    const bool helper_running = helper_process_running(cancellation_predicate, operation_deadline);
+    if (shutdown_requested() ||
+        cancellation_requested(cancellation_predicate) ||
+        operation_deadline_expired(operation_deadline)) {
+      // An interrupted liveness probe cannot prove restoration has stopped.
       return true;
     }
-    if (cancellation_requested(cancellation_predicate) ||
-        operation_deadline_expired(operation_deadline)) {
-      return false;
+    if (helper_running) {
+      return true;
     }
     g_restore_expected.store(false, std::memory_order_relaxed);
     return false;
@@ -1445,7 +1449,9 @@ namespace {
   bool disarm_helper_restore_if_running(
     const std::function<bool()> &cancellation_predicate = {},
     const std::chrono::steady_clock::time_point operation_deadline =
-      std::chrono::steady_clock::time_point::max()) {
+      std::chrono::steady_clock::time_point::max(),
+    const bool reconnect_for_stream_start = false
+  ) {
     if (shutdown_requested() ||
         cancellation_requested(cancellation_predicate) ||
         operation_deadline_expired(operation_deadline)) {
@@ -1456,7 +1462,8 @@ namespace {
       cancellation_predicate,
       operation_deadline
     );
-    if (cancellation_requested(cancellation_predicate) ||
+    if (shutdown_requested() ||
+        cancellation_requested(cancellation_predicate) ||
         operation_deadline_expired(operation_deadline)) {
       return false;
     }
@@ -1472,7 +1479,7 @@ namespace {
     const auto last_attempt_us = g_last_disarm_attempt_us.load(std::memory_order_relaxed);
 
     // Don't spam DISARM frames (they share the helper's job/message queues with APPLY/REVERT).
-    if ((now_us - last_attempt_us) < (kDisarmRetryThrottle.count() * 1000)) {
+    if (!reconnect_for_stream_start && (now_us - last_attempt_us) < (kDisarmRetryThrottle.count() * 1000)) {
       const auto last_success_us = g_last_disarm_success_us.load(std::memory_order_relaxed);
       return (now_us - last_success_us) < (kDisarmRetryThrottle.count() * 1000);
     }
@@ -1489,15 +1496,35 @@ namespace {
     }
 
     g_last_disarm_attempt_us.store(now_us, std::memory_order_relaxed);
-    // The short recovery path intentionally makes one cache-only attempt. A
-    // reconnect or a synchronous reset can take seconds and would defeat the
-    // deadline that protects stream startup from a concurrent restore.
-    const bool ok = platf::display_helper_client::send_disarm_restore_fast(
+    // Adapted from AR / whoisarpit, Vibepollo PR #572 (5ad0ae88).
+    // Background recovery stays cache-only. Admission may reconnect once when
+    // a live helper owns an unconfirmed restore and its cached pipe is stale.
+    const auto operation_cancelled = [&] {
+      return shutdown_requested() ||
+             cancellation_requested(cancellation_predicate) ||
+             operation_deadline_expired(operation_deadline);
+    };
+    auto disarm_deadline = operation_deadline;
+    bool ok = platf::display_helper_client::send_disarm_restore_fast(
       static_cast<int>(kDisarmRestoreBudget.count()),
-      operation_deadline);
+      operation_deadline
+    );
+    if (!ok && reconnect_for_stream_start && restore_expected && !operation_cancelled()) {
+      BOOST_LOG(info) << "Display helper: reconnecting restore IPC before virtual display startup.";
+      const auto reconnect_deadline = std::min(
+        operation_deadline,
+        std::chrono::steady_clock::now() + kStreamStartDisarmReconnectBudget
+      );
+      disarm_deadline = reconnect_deadline;
+      if (platf::display_helper_client::reset_connection_cancellable(operation_cancelled, reconnect_deadline) && platf::display_helper_client::send_ping_cancellable(static_cast<int>(kStreamStartDisarmReconnectBudget.count()), operation_cancelled, reconnect_deadline) && !operation_cancelled() && !operation_deadline_expired(reconnect_deadline)) {
+        ok = platf::display_helper_client::send_disarm_restore_fast(
+          static_cast<int>(kDisarmRestoreBudget.count()),
+          reconnect_deadline
+        );
+      }
+    }
 
-    if (cancellation_requested(cancellation_predicate) ||
-        operation_deadline_expired(operation_deadline)) {
+    if (operation_cancelled() || operation_deadline_expired(disarm_deadline)) {
       return false;
     }
 
@@ -1507,6 +1534,12 @@ namespace {
       g_restore_expected.store(false, std::memory_order_relaxed);
       BOOST_LOG(info) << "Display helper: DISARM dispatched (fast).";
       return true;
+    }
+
+    // Admission failure is not evidence that restoration stopped. Leave the
+    // guard intact rather than treating a failed dispatch as restored state.
+    if (reconnect_for_stream_start) {
+      return false;
     }
 
     // Fail-safe: if we recently initiated a helper restore, and DISARM couldn't be delivered quickly,
@@ -2792,7 +2825,9 @@ namespace display_helper_integration {
 
   bool disarm_pending_restore(
     std::function<bool()> cancellation_predicate,
-    const std::chrono::steady_clock::time_point operation_deadline) {
+    const std::chrono::steady_clock::time_point operation_deadline,
+    const bool reconnect_for_stream_start
+  ) {
     if ((cancellation_predicate && cancellation_predicate()) ||
         operation_deadline_expired(operation_deadline)) {
       return false;
@@ -2807,21 +2842,28 @@ namespace display_helper_integration {
     invalidate_apply_verification();
     return disarm_helper_restore_if_running(
       cancellation_predicate,
-      operation_deadline
+      operation_deadline,
+      reconnect_for_stream_start
     );
   }
 
   bool restore_in_progress(
     std::function<bool()> cancellation_predicate,
     const std::chrono::steady_clock::time_point operation_deadline) {
+    if (shutdown_requested()) {
+      return true;
+    }
     if ((cancellation_predicate && cancellation_predicate()) ||
         operation_deadline_expired(operation_deadline)) {
-      return false;
+      return g_restore_expected.load(std::memory_order_relaxed);
     }
-    return restore_expected_with_live_helper(
+    const bool restoring = restore_expected_with_live_helper(
       cancellation_predicate,
       operation_deadline
     );
+    // The query may block on helper liveness, or find no outstanding restore.
+    // Either result still needs the shutdown fence before mutation admission.
+    return shutdown_requested() || restoring;
   }
 
   bool maintenance_available() {

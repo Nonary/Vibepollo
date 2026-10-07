@@ -882,17 +882,19 @@ namespace platf::display_helper_client {
     // Create fresh pipe - try anonymous first, then named fallback. The
     // normal connection path is allowed to negotiate the anonymous transport;
     // fast paths below intentionally never call this function.
-    if (remaining_ms() > 0 && create_session([]() -> std::unique_ptr<platf::dxgi::INamedPipe> {
-          platf::dxgi::FramedPipeFactory ff(std::make_unique<platf::dxgi::AnonymousPipeFactory>());
-          return ff.create_client("sunshine_display_helper");
+    if (remaining_ms() > 0 && create_session([cancelled, connect_deadline]() -> std::unique_ptr<platf::dxgi::INamedPipe> {
+          platf::dxgi::AnonymousPipeFactory factory;
+          auto pipe = factory.create_client("sunshine_display_helper", cancelled, connect_deadline);
+          return pipe ? std::make_unique<platf::dxgi::FramedPipe>(std::move(pipe)) : nullptr;
         })) {
       return true;
     }
     if (remaining_ms() > 0) {
       BOOST_LOG(debug) << "Display helper IPC: anonymous connect failed; trying named fallback";
-      if (create_session([]() -> std::unique_ptr<platf::dxgi::INamedPipe> {
-            platf::dxgi::FramedPipeFactory ff(std::make_unique<platf::dxgi::NamedPipeFactory>());
-            return ff.create_client("sunshine_display_helper");
+      if (create_session([cancelled, connect_deadline]() -> std::unique_ptr<platf::dxgi::INamedPipe> {
+            platf::dxgi::NamedPipeFactory factory;
+            auto pipe = factory.create_client("sunshine_display_helper", cancelled, connect_deadline);
+            return pipe ? std::make_unique<platf::dxgi::FramedPipe>(std::move(pipe)) : nullptr;
           })) {
         return true;
       }

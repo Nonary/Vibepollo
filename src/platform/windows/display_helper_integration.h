@@ -130,14 +130,18 @@ namespace display_helper_integration {
   void shutdown_orphan_recovery_monitor();
 
   // Attempt to cancel any pending restore/revert requests on a running helper.
-  // Returns true if a DISARM command was sent successfully.
+  // Returns true if a DISARM command was sent successfully. Stream admission
+  // may opt into one bounded reconnect; background recovery stays cache-only.
   bool disarm_pending_restore(
     std::function<bool()> cancellation_predicate = {},
     std::chrono::steady_clock::time_point operation_deadline =
-      std::chrono::steady_clock::time_point::max());
+      std::chrono::steady_clock::time_point::max(),
+    bool reconnect_for_stream_start = false
+  );
 
-  // Returns true while a live helper still owns a requested REVERT. Virtual
-  // target teardown/creation must not overlap that restoration window.
+  // Reports the host's outstanding restore guard. Successful DISARM dispatch
+  // retires that guard without acknowledging helper worker completion. Shutdown
+  // fences mutation; interrupted liveness probes retain a known restore.
   bool restore_in_progress(
     std::function<bool()> cancellation_predicate = {},
     std::chrono::steady_clock::time_point operation_deadline =
