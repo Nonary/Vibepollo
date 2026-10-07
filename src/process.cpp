@@ -4784,14 +4784,11 @@ namespace proc {
       proc.terminate(false, false);
     }
 
-#ifdef _WIN32
-    // initVDisplayDriver() already performs one bounded readiness/recovery pass.
-    // Repeating it here can outlive the restart cooldown and launch a fresh PnP
-    // cycle on every parse, which stalls secondary instances for minutes.
-    if (vDisplayDriverStatus.load(std::memory_order_acquire) != VDISPLAY::DRIVER_STATUS::OK) {
-      initVDisplayDriver();
-    }
-#endif
+    // The virtual display driver is deliberately not initialized here. refresh()
+    // only parses apps.json, and web UI request handlers call it, so a driver
+    // readiness/recovery pass from this call stack stalled apps.json saves.
+    // main() initializes the driver once before the first parse, and every
+    // consumer initializes it lazily when it actually needs a virtual display.
 
     auto proc_opt = proc::parse(file_name);
 
