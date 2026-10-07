@@ -78,7 +78,9 @@ namespace platf::dualsense_usbip {
 
     // CM's list can change while it is being sized. Retry only a bounded
     // number of times, and open just the public released VHCI interface.
-    HANDLE open_driver() {
+    constexpr DEVPROPKEY instance_devkey {{0x78c34fc8, 0x104a, 0x4aca, {0x9e, 0xa4, 0x52, 0x4d, 0x52, 0x99, 0x6e, 0x57}}, 256};
+
+    HANDLE open_driver(DEVINST *node = nullptr) {
       auto guid = driver_abi::interface_guid;
       for (unsigned attempt = 0; attempt < 4; ++attempt) {
         ULONG count = 0;
@@ -100,6 +102,16 @@ namespace platf::dualsense_usbip {
           }
           const auto device = CreateFileW(paths.data() + offset, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
           if (device != INVALID_HANDLE_VALUE) {
+            if (node) {
+              std::array<wchar_t, MAX_DEVICE_ID_LEN> instance {};
+              DEVPROPTYPE type = 0;
+              ULONG size = sizeof(instance);
+              if (CM_Get_Device_Interface_PropertyW(paths.data() + offset, &instance_devkey, &type, reinterpret_cast<BYTE *>(instance.data()), &size, 0) != CR_SUCCESS || type != DEVPROP_TYPE_STRING || CM_Locate_DevNodeW(node, instance.data(), CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS) {
+                CloseHandle(device);
+                offset = static_cast<std::size_t>(end - paths.begin()) + 1;
+                continue;
+              }
+            }
             return device;
           }
           offset = static_cast<std::size_t>(end - paths.begin()) + 1;
@@ -229,6 +241,44 @@ namespace platf::dualsense_usbip {
       return serial;
     }
 
+    // The released UDE driver can expose a port-generated instance ID even
+    // when its attach request includes a serial. Find our port under the exact
+    // host controller we opened; matching VID/PID alone could select a physical
+    // DualSense or another session's controller. USB/IP's returned port is the
+    // Usb20PortNumber/Usb30PortNumber supplied to UdecxUsbDevicePlugIn.
+    bool controller_root(DEVINST host, int port, DEVINST &root) {
+      if (port <= 0) {
+        return false;
+      }
+      DEVINST hub = 0;
+      if (CM_Get_Child(&hub, host, 0) != CR_SUCCESS) {
+        return false;
+      }
+      for (unsigned hubs = 0; hubs < 32; ++hubs) {
+        DEVINST device = 0;
+        if (CM_Get_Child(&device, hub, 0) == CR_SUCCESS) {
+          for (unsigned devices = 0; devices < 256; ++devices) {
+            std::array<wchar_t, MAX_DEVICE_ID_LEN> instance {};
+            ULONG address = 0;
+            ULONG type = 0;
+            ULONG size = sizeof(address);
+            constexpr std::wstring_view prefix = L"USB\\VID_054C&PID_0CE6\\";
+            if (CM_Get_Device_IDW(device, instance.data(), instance.size(), 0) == CR_SUCCESS && _wcsnicmp(instance.data(), prefix.data(), prefix.size()) == 0 && CM_Get_DevNode_Registry_PropertyW(device, CM_DRP_ADDRESS, &type, &address, &size, 0) == CR_SUCCESS && type == REG_DWORD && size == sizeof(address) && address == static_cast<ULONG>(port)) {
+              root = device;
+              return true;
+            }
+            if (CM_Get_Sibling(&device, device, 0) != CR_SUCCESS) {
+              break;
+            }
+          }
+        }
+        if (CM_Get_Sibling(&hub, hub, 0) != CR_SUCCESS) {
+          break;
+        }
+      }
+      return false;
+    }
+
     // A present and started HID child proves hidusb/hidclass finished loading.
     bool hid_started(DEVINST root) {
       std::vector<std::pair<DEVINST, unsigned>> todo {{root, 0}};
@@ -312,6 +362,7 @@ namespace platf::dualsense_usbip {
     const std::string busid;
     const std::string serial;
     std::string service;
+    DEVINST host_node = 0;
     handle driver;
     SOCKET listener = INVALID_SOCKET;
     std::thread worker;
@@ -324,7 +375,7 @@ namespace platf::dualsense_usbip {
         protocol(slot, std::move(handlers)),
         busid(session::bus_id(slot)),
         serial(make_serial(slot)),
-        driver(open_driver()) {}
+        driver(open_driver(&host_node)) {}
 
     ~impl() {
       {
@@ -628,7 +679,6 @@ namespace platf::dualsense_usbip {
       return false;
     }
     com_ptr<IMMDeviceEnumerator> enumerator(raw_enumerator);
-    const auto id = std::wstring(L"USB\\VID_054C&PID_0CE6\\") + std::wstring(state_->serial.begin(), state_->serial.end());
     const auto deadline = std::chrono::steady_clock::now() + std::max(timeout, 0ms);
     do {
       if (!connected()) {
@@ -638,7 +688,7 @@ namespace platf::dualsense_usbip {
       GUID container {};
       DEVPROPTYPE type = 0;
       ULONG size = sizeof(container);
-      if (CM_Locate_DevNodeW(&root, const_cast<wchar_t *>(id.c_str()), CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS && hid_started(root) && CM_Get_DevNode_PropertyW(root, &container_devkey, &type, reinterpret_cast<BYTE *>(&container), &size, 0) == CR_SUCCESS && type == DEVPROP_TYPE_GUID && size == sizeof(container) && render_endpoint_ready(enumerator.get(), container)) {
+      if (controller_root(state_->host_node, state_->imported_port.load(), root) && hid_started(root) && CM_Get_DevNode_PropertyW(root, &container_devkey, &type, reinterpret_cast<BYTE *>(&container), &size, 0) == CR_SUCCESS && type == DEVPROP_TYPE_GUID && size == sizeof(container) && render_endpoint_ready(enumerator.get(), container)) {
         return true;
       }
       std::this_thread::sleep_for(25ms);
