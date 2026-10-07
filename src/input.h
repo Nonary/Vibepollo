@@ -20,6 +20,10 @@ namespace input {
   struct touch_port_t;
 
   void print(void *input);
+  /**
+   * @brief Permanently close a client's input queue and release its host input on the input worker.
+   * @details Safe to call repeatedly. Allocate a new context before accepting a new session's input.
+   */
   void reset(std::shared_ptr<input_t> &input);
   void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data, const crypto::PERM &permission);
 

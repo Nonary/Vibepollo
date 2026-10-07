@@ -1,0 +1,16 @@
+{
+  "env": {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+  },
+  "apps": [
+    {
+      "id": "156561670",
+      "image-path": "desktop.png",
+      "index": 0,
+      "name": "Desktop",
+      "virtual-display-layout": "exclusive",
+      "virtual-display-mode": "shared",
+      "uuid": "17BE8BA1-826A-7006-8598-397B7CD558FD"
+    }
+  ]
+}

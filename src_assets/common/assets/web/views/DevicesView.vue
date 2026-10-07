@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, toRaw } from 'vue';
+import { useUnsavedChanges } from '@/composables/useUnsavedChanges';
 import { useI18n } from 'vue-i18n';
 
 import { ApiError, apiGet, apiPost } from '@/api/client';
@@ -20,6 +21,7 @@ import ClientSettingsEditor, {
   type DisplayDevice,
   type HdrProfileEntry,
 } from '@/components/devices/ClientSettingsEditor.vue';
+import DisplayTopologyEditor from '@/components/devices/DisplayTopologyEditor.vue';
 import { settingsDefaults } from '@/configs/settingsSchema';
 import { formatRelativeTime } from '@/utils/format';
 
@@ -28,13 +30,14 @@ const { locale, t } = useI18n();
 interface PairedDevice {
   name: string;
   uuid: string;
+  enabled: boolean;
   connected: boolean;
   perm?: number | string;
   enable_legacy_ordering?: boolean;
   allow_client_commands?: boolean;
   do?: Array<{ cmd?: string; elevated?: boolean }>;
   undo?: Array<{ cmd?: string; elevated?: boolean }>;
-  last_seen?: number | string;
+  last_seen?: number | string | null;
   hdr_profile?: string | null;
   display_mode?: string;
   output_name_override?: string;
@@ -46,7 +49,7 @@ interface PairedDevice {
 }
 
 interface ClientsResponse {
-  named_certs?: PairedDevice[];
+  named_certs?: unknown[];
   status?: boolean;
   platform?: string;
 }
@@ -65,6 +68,27 @@ interface PendingAction {
   device: PairedDevice;
 }
 
+const unpairAllOpen = ref(false);
+const unpairAllBusy = ref(false);
+async function unpairAll(): Promise<void> {
+  if (unpairAllBusy.value) return;
+  unpairAllBusy.value = true;
+  try {
+    const result = await apiPost<MutationResponse>('/api/clients/unpair-all');
+    if (result.status !== true) throw new Error('unpair-rejected');
+    drafts.value = {};
+    draftOrigins.value = {};
+    openEditors.value = new Set();
+    unpairAllOpen.value = false;
+    notice.value = t('ui.devices.unpair_all.success');
+    await loadDevices(true);
+  } catch {
+    error.value = t('ui.devices.error.action');
+  } finally {
+    unpairAllBusy.value = false;
+  }
+}
+
 const devices = ref<PairedDevice[]>([]);
 const drafts = ref<Record<string, ClientDeviceDraft>>({});
 const draftOrigins = ref<Record<string, ClientDeviceDraft>>({});
@@ -81,6 +105,10 @@ const hdrProfilesLoading = ref(false);
 const hdrProfilesLoaded = ref(false);
 const hdrProfilesError = ref('');
 const query = ref('');
+type DeviceStatusFilter = 'all' | 'connected' | 'offline';
+type DeviceSortMode = 'recent' | 'name' | 'status';
+const statusFilter = ref<DeviceStatusFilter>('all');
+const sortMode = ref<DeviceSortMode>('recent');
 const loading = ref(true);
 const refreshing = ref(false);
 const error = ref('');
@@ -91,14 +119,144 @@ const pendingAction = ref<PendingAction | null>(null);
 const confirmOpen = ref(false);
 let refreshTimer: number | undefined;
 
+useUnsavedChanges(
+  computed(() =>
+    Object.keys(drafts.value).some(
+      (uuid) =>
+        draftOrigins.value[uuid] && !sameDraft(drafts.value[uuid], draftOrigins.value[uuid]),
+    ),
+  ),
+);
+
+function stringValue(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim();
+  return '';
+}
+
+function booleanValue(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLocaleLowerCase();
+    if (['1', 'true', 'yes', 'on', 'enabled'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off', 'disabled', ''].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function normalizeDevice(device: unknown, index: number): PairedDevice {
+  const raw =
+    device && typeof device === 'object' && !Array.isArray(device)
+      ? (device as Record<string, unknown>)
+      : {};
+  const configOverrides = recordValue(raw.config_overrides);
+  const fallbackIdentity = [
+    raw.name,
+    raw.display_mode,
+    raw.hdr_profile,
+    raw.output_name_override,
+    raw.last_seen,
+  ]
+    .map(stringValue)
+    .filter(Boolean)
+    .join('-')
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return {
+    ...raw,
+    // The API normally supplies both values. Keep a deterministic synthetic key
+    // for malformed entries so one bad device cannot break filtering or Vue keys.
+    uuid: stringValue(raw.uuid) || `unknown-device-${fallbackIdentity || index + 1}`,
+    name: stringValue(raw.name),
+    enabled: booleanValue(raw.enabled, true),
+    connected: booleanValue(raw.connected, false),
+    last_seen:
+      typeof raw.last_seen === 'number' || typeof raw.last_seen === 'string' ? raw.last_seen : null,
+    hdr_profile: stringValue(raw.hdr_profile) || null,
+    display_mode: stringValue(raw.display_mode),
+    output_name_override: stringValue(raw.output_name_override),
+    virtual_display_mode: stringValue(raw.virtual_display_mode),
+    virtual_display_layout: stringValue(raw.virtual_display_layout),
+    always_use_virtual_display: booleanValue(raw.always_use_virtual_display, false),
+    prefer_10bit_sdr: booleanValue(raw.prefer_10bit_sdr, false),
+    config_overrides: configOverrides ? structuredClone(toRaw(configOverrides)) : {},
+  };
+}
+
+function displayRoutingLabel(device: PairedDevice): string {
+  const physical = stringValue(device.output_name_override);
+  if (physical) return t('clients.display_route_physical', { display: physical });
+  const mode = stringValue(device.virtual_display_mode).toLocaleLowerCase();
+  if (device.always_use_virtual_display || (mode && mode !== 'disabled')) {
+    const translatedMode =
+      mode === 'shared'
+        ? t('config.virtual_display_mode_shared')
+        : mode === 'per_client'
+          ? t('config.virtual_display_mode_per_client')
+          : t('config.app_virtual_display_mode_follow_global');
+    return t('clients.display_route_virtual', { mode: translatedMode });
+  }
+  return t('clients.display_route_global');
+}
+
+function searchableDeviceText(device: PairedDevice): string {
+  return [
+    stringValue(device.name),
+    stringValue(device.uuid),
+    stringValue(device.display_mode),
+    stringValue(device.hdr_profile),
+    stringValue(device.output_name_override),
+    displayRoutingLabel(device),
+    device.connected ? t('clients.connected') : t('clients.offline'),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLocaleLowerCase(locale.value);
+}
+
+function normalizedLastSeen(device: PairedDevice): number {
+  const value = Number(device.last_seen);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  // The API has historically returned Unix seconds, while some deployments
+  // return Unix milliseconds. Compare both on one scale.
+  return value >= 1_000_000_000_000 ? value / 1000 : value;
+}
+
+function compareDeviceName(left: PairedDevice, right: PairedDevice): number {
+  const leftName = stringValue(left.name).toLocaleLowerCase(locale.value);
+  const rightName = stringValue(right.name).toLocaleLowerCase(locale.value);
+  if (!leftName && rightName) return 1;
+  if (leftName && !rightName) return -1;
+  const byName = leftName.localeCompare(rightName, locale.value);
+  return byName || stringValue(left.uuid).localeCompare(stringValue(right.uuid), locale.value);
+}
+
 const filteredDevices = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase(locale.value);
-  if (!needle) return devices.value;
-  return devices.value.filter((device) =>
-    [device.name, device.uuid].some((value) =>
-      value.toLocaleLowerCase(locale.value).includes(needle),
-    ),
-  );
+  const list = devices.value.filter((device) => {
+    if (statusFilter.value === 'connected' && !device.connected) return false;
+    if (statusFilter.value === 'offline' && device.connected) return false;
+    return !needle || searchableDeviceText(device).includes(needle);
+  });
+
+  list.sort((left, right) => {
+    if (sortMode.value === 'name') return compareDeviceName(left, right);
+    if (left.connected !== right.connected) return left.connected ? -1 : 1;
+    if (sortMode.value === 'recent') {
+      const byRecent = normalizedLastSeen(right) - normalizedLastSeen(left);
+      if (byRecent) return byRecent;
+    }
+    return compareDeviceName(left, right);
+  });
+  return list;
 });
 
 const PERMISSION_VIEW = 0x02000000;
@@ -114,6 +272,15 @@ function canViewStream(device: PairedDevice): boolean {
   return Boolean(permissionMask(device) & (PERMISSION_VIEW | PERMISSION_LAUNCH));
 }
 
+const hasDeviceFilters = computed(
+  () => query.value.trim().length > 0 || statusFilter.value !== 'all',
+);
+
+function clearDeviceFilters(): void {
+  query.value = '';
+  statusFilter.value = 'all';
+}
+
 const deviceCounts = computed(() => ({
   streaming: devices.value.filter((device) => device.connected && canViewStream(device)).length,
   blocked: devices.value.filter((device) => !canViewStream(device)).length,
@@ -123,14 +290,20 @@ const deviceCounts = computed(() => ({
 const confirmTitle = computed(() => {
   if (!pendingAction.value) return t('ui.devices.confirm.generic_title');
   return pendingAction.value.kind === 'unpair'
-    ? t('clients.confirm_remove_title_named', { name: pendingAction.value.device.name })
-    : t('ui.devices.confirm.disconnect_title', { name: pendingAction.value.device.name });
+    ? t('clients.confirm_remove_title_named', {
+        name: deviceDisplayName(pendingAction.value.device),
+      })
+    : t('ui.devices.confirm.disconnect_title', {
+        name: deviceDisplayName(pendingAction.value.device),
+      });
 });
 
 const confirmDescription = computed(() => {
   if (!pendingAction.value) return '';
   return pendingAction.value.kind === 'unpair'
-    ? t('clients.confirm_remove_message_named', { name: pendingAction.value.device.name })
+    ? t('clients.confirm_remove_message_named', {
+        name: deviceDisplayName(pendingAction.value.device),
+      })
     : t('ui.devices.confirm.disconnect_description');
 });
 
@@ -325,7 +498,9 @@ async function loadDevices(silent = false): Promise<void> {
   try {
     const response = await apiGet<ClientsResponse>('/api/clients/list');
     if (response.status === false) throw new Error(t('ui.devices.error.list_rejected'));
-    const incoming = Array.isArray(response.named_certs) ? response.named_certs : [];
+    const incoming = Array.isArray(response.named_certs)
+      ? response.named_certs.map((device, index) => normalizeDevice(device, index))
+      : [];
     platform.value = response.platform ?? platform.value;
     if (!metadata.value.platform && platform.value) {
       metadata.value = { ...metadata.value, platform: platform.value };
@@ -350,6 +525,10 @@ function statusFor(device: PairedDevice): { label: string; tone: StatusTone } {
   if (!canViewStream(device)) return { label: t('ui.devices.status.blocked'), tone: 'danger' };
   if (device.connected) return { label: t('ui.devices.status.streaming'), tone: 'success' };
   return { label: t('clients.offline'), tone: 'neutral' };
+}
+
+function deviceDisplayName(device: PairedDevice): string {
+  return stringValue(device.name) || t('troubleshooting.unpair_single_unknown');
 }
 
 function lastSeen(device: PairedDevice): string {
@@ -444,6 +623,8 @@ const draftScalarKeys = [
   'permissions',
   'enableLegacyOrdering',
   'allowClientCommands',
+  'doCommands',
+  'undoCommands',
   'displayMode',
   'displayOverrideEnabled',
   'displaySelection',
@@ -522,7 +703,9 @@ async function saveDevice(device: PairedDevice): Promise<void> {
     const origin = draftOrigins.value[device.uuid];
     const latestResponse = await apiGet<ClientsResponse>('/api/clients/list');
     if (latestResponse.status === false) throw new Error(t('ui.devices.error.list_rejected'));
-    const latestDevice = latestResponse.named_certs?.find((item) => item.uuid === device.uuid);
+    const latestDevice = latestResponse.named_certs
+      ?.map((item, index) => normalizeDevice(item, index))
+      .find((item) => item.uuid === device.uuid);
     if (origin && latestDevice) {
       const merged = mergeLatestDraft(origin, draft, draftFromDevice(latestDevice));
       if (merged.conflict || !merged.draft) {
@@ -581,8 +764,8 @@ async function confirmAction(): Promise<void> {
     }
     notice.value =
       action.kind === 'unpair'
-        ? t('ui.devices.notice.unpaired', { name: action.device.name })
-        : t('ui.devices.notice.disconnected', { name: action.device.name });
+        ? t('ui.devices.notice.unpaired', { name: deviceDisplayName(action.device) })
+        : t('ui.devices.notice.disconnected', { name: deviceDisplayName(action.device) });
     confirmOpen.value = false;
     pendingAction.value = null;
     await loadDevices(true);
@@ -617,7 +800,7 @@ onBeforeUnmount(() => {
       <template #meta>
         <StatusBadge
           :label="t('ui.devices.count.streaming', { count: deviceCounts.streaming })"
-          tone="success"
+          :tone="deviceCounts.streaming ? 'success' : 'neutral'"
           compact
         />
         <StatusBadge
@@ -685,10 +868,35 @@ onBeforeUnmount(() => {
               class="vs-input"
               type="search"
               autocomplete="off"
-              :placeholder="t('ui.devices.filters.search_placeholder')"
+              :placeholder="t('clients.search_placeholder')"
             />
           </span>
         </label>
+        <label class="vs-field device-filter" for="device-status">
+          <span class="vs-field__label">{{ t('clients.status_label') }}</span>
+          <select id="device-status" v-model="statusFilter" class="vs-input">
+            <option value="all">{{ t('ui.devices.filters.status_all') }}</option>
+            <option value="connected">{{ t('clients.status_connected') }}</option>
+            <option value="offline">{{ t('clients.status_offline') }}</option>
+          </select>
+        </label>
+        <label class="vs-field device-filter" for="device-sort">
+          <span class="vs-field__label">{{ t('clients.sort_label') }}</span>
+          <select id="device-sort" v-model="sortMode" class="vs-input">
+            <option value="recent">{{ t('clients.sort_recent') }}</option>
+            <option value="name">{{ t('clients.sort_name') }}</option>
+            <option value="status">{{ t('clients.sort_status') }}</option>
+          </select>
+        </label>
+        <button
+          v-if="hasDeviceFilters"
+          type="button"
+          class="device-filter-clear"
+          @click="clearDeviceFilters"
+        >
+          <UiIcon name="x" :size="14" aria-hidden="true" />
+          <span>{{ t('clients.filters_clear') }}</span>
+        </button>
         <p class="result-count" aria-live="polite">
           {{
             t(
@@ -734,7 +942,7 @@ onBeforeUnmount(() => {
               </div>
               <div class="device-row__identity">
                 <div class="device-row__title-line">
-                  <h2 :id="`device-name-${device.uuid}`">{{ device.name }}</h2>
+                  <h2 :id="`device-name-${device.uuid}`">{{ deviceDisplayName(device) }}</h2>
                   <StatusBadge
                     :label="statusFor(device).label"
                     :tone="statusFor(device).tone"
@@ -756,7 +964,9 @@ onBeforeUnmount(() => {
                   icon="stop"
                   size="compact"
                   :disabled="!device.connected || busyUuid === device.uuid"
-                  :aria-label="t('ui.devices.action.disconnect_named', { name: device.name })"
+                  :aria-label="
+                    t('ui.devices.action.disconnect_named', { name: deviceDisplayName(device) })
+                  "
                   @click="requestAction('disconnect', device)"
                 />
                 <AppButton
@@ -765,7 +975,9 @@ onBeforeUnmount(() => {
                   variant="tertiary"
                   size="compact"
                   :disabled="busyUuid === device.uuid"
-                  :aria-label="t('ui.devices.action.unpair_named', { name: device.name })"
+                  :aria-label="
+                    t('ui.devices.action.unpair_named', { name: deviceDisplayName(device) })
+                  "
                   @click="requestAction('unpair', device)"
                 />
               </div>
@@ -812,6 +1024,36 @@ onBeforeUnmount(() => {
       </ul>
     </div>
 
+    <details class="devices-layout">
+      <summary>
+        <UiIcon name="devices" :size="20" />
+        <span
+          ><strong>{{ t('ui.devices.layout.title') }}</strong
+          ><span>{{ t('ui.devices.layout.description') }}</span></span
+        >
+        <UiIcon class="devices-layout__chevron" name="chevron-down" />
+      </summary>
+      <DisplayTopologyEditor />
+    </details>
+
+    <section v-if="devices.length" class="devices-bulk-actions">
+      <AppButton
+        variant="tertiary"
+        :label="t('ui.devices.unpair_all.action')"
+        :disabled="Boolean(busyUuid)"
+        @click="unpairAllOpen = true"
+      />
+    </section>
+    <ConfirmDialog
+      v-model:open="unpairAllOpen"
+      :title="t('ui.devices.unpair_all.title')"
+      :description="t('ui.devices.unpair_all.description')"
+      :confirm-label="t('ui.devices.unpair_all.action')"
+      :busy="unpairAllBusy"
+      :close-on-confirm="false"
+      tone="danger"
+      @confirm="unpairAll"
+    />
     <ConfirmDialog
       v-model:open="confirmOpen"
       :title="confirmTitle"
@@ -833,6 +1075,51 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.devices-layout {
+  border: 1px solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-card);
+  background: var(--vs-color-bg-surface);
+}
+.devices-layout > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--vs-space-16);
+  padding: var(--vs-space-20);
+  list-style: none;
+  cursor: pointer;
+  color: var(--vs-color-text-muted);
+  border-radius: inherit;
+}
+.devices-layout > summary::-webkit-details-marker {
+  display: none;
+}
+.devices-layout > summary:hover {
+  background: var(--vs-color-bg-subtle);
+}
+.devices-layout > summary > span {
+  flex: 1;
+  min-width: 0;
+}
+.devices-layout strong {
+  display: block;
+  color: var(--vs-color-text-primary);
+  font-size: var(--vs-type-size-control);
+  font-weight: var(--vs-type-weight-medium);
+}
+.devices-layout > summary > span > span {
+  display: block;
+  margin-top: var(--vs-space-4);
+  font-size: var(--vs-type-size-metadata);
+}
+.devices-layout[open] .devices-layout__chevron {
+  transform: rotate(180deg);
+}
+.devices-layout :deep(.topology-editor) {
+  border: 0;
+  border-top: 1px solid var(--vs-color-border-subtle);
+  border-radius: 0 0 var(--vs-radius-card) var(--vs-radius-card);
+}
+
 .devices-page,
 .devices-stack {
   display: grid;
@@ -848,7 +1135,32 @@ onBeforeUnmount(() => {
 }
 
 .device-search {
-  width: min(100%, 32rem);
+  min-width: min(18rem, 100%);
+  flex: 1 1 24rem;
+}
+
+.device-filter {
+  flex: 0 1 13rem;
+}
+
+.device-filter-clear {
+  display: inline-flex;
+  min-height: var(--vs-size-control-md);
+  align-items: center;
+  justify-content: center;
+  gap: var(--vs-space-4);
+  padding: 0 var(--vs-space-8);
+  border: 0;
+  background: transparent;
+  color: var(--vs-color-accent-default);
+  font: inherit;
+  font-size: var(--vs-type-size-control);
+  cursor: pointer;
+}
+
+.device-filter-clear:hover {
+  color: var(--vs-color-accent-default);
+  text-decoration: underline;
 }
 
 .search-control {
@@ -978,6 +1290,12 @@ onBeforeUnmount(() => {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
+  }
+
+  .device-search,
+  .device-filter,
+  .device-filter-clear {
+    width: 100%;
   }
 
   .result-count {

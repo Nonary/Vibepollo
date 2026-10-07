@@ -10,6 +10,7 @@ export default defineConfig({
   plugins: [vue()],
   base: '/v2/',
   resolve: {
+    dedupe: ['vue', 'vue-i18n'],
     alias: {
       '@': fileURLToPath(new URL('.', import.meta.url)),
     },

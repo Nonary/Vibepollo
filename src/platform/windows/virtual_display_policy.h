@@ -19,8 +19,26 @@ namespace VDISPLAY::policy {
     return !session_uses_virtual_display;
   }
 
+  // Encoder discovery never owns a monitor. It uses an existing physical
+  // output or waits until a requesting client creates its own display.
+  constexpr bool should_create_host_probe_display() noexcept {
+    return false;
+  }
+
   constexpr bool should_prepare_display_for_new_session(const bool no_active_sessions) noexcept {
     return no_active_sessions;
+  }
+
+  // Composed multi-client topologies own each stable VDD independently. A
+  // peer-preserving create may neither remove other identities up front nor
+  // restart the shared adapter after failure, because both actions tear down
+  // displays that are still owned by other clients.
+  constexpr bool should_teardown_conflicting_virtual_displays(const bool preserve_peer_displays) noexcept {
+    return !preserve_peer_displays;
+  }
+
+  constexpr bool may_restart_adapter_after_create_failure(const bool preserve_peer_displays) noexcept {
+    return !preserve_peer_displays;
   }
 
   // The temporary output created by ensure_display() is probe-scoped. Once a
@@ -349,6 +367,28 @@ namespace VDISPLAY::policy {
     return elapsed_since_enumeration >= activation_grace;
   }
 
+  // The stable EDID product/serial is the authoritative per-client identity
+  // (the reuse path already trusts it for resurrection), so the readiness wait
+  // must treat a matching candidate as an exact target even when the OS never
+  // produced a name or path hint. A wedged identity enumerates nameless and
+  // inactive; adopting it here is what lets the display helper attempt an
+  // explicit activation instead of the host timing out into teardown.
+  constexpr bool readiness_candidate_is_exact_target(
+    const bool strong_identity_match,
+    const bool stable_edid_match
+  ) noexcept {
+    return strong_identity_match || stable_edid_match;
+  }
+
+  // Without any identity, selection defers until the complete enumeration
+  // proves there is exactly one virtual resolution match.
+  constexpr bool defer_unidentified_readiness_candidate(
+    const bool exact_target,
+    const bool has_dynamic_hints
+  ) noexcept {
+    return !exact_target && !has_dynamic_hints;
+  }
+
   struct advanced_color_state_t {
     bool supported = false;
     bool hdr_supported = false;
@@ -366,10 +406,10 @@ namespace VDISPLAY::policy {
   }
 
   constexpr bool should_reset_hdr_state_for_stream(
-    const bool hdr_requested,
+    const std::optional<bool> hdr_requested,
     const bool hdr_enabled
   ) noexcept {
-    return !hdr_requested && hdr_enabled;
+    return hdr_requested == false && hdr_enabled;
   }
 
   enum class hdr_activation_failure_action : std::uint8_t {

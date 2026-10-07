@@ -51,6 +51,19 @@ set(CPACK_WIX_CANDLE_EXTRA_FLAGS
   "-dVibeshineSemVer=${PROJECT_VERSION_FULL}"
 )
 
+# The patch fragment needs build-time defaults so it never invokes a missing
+# VHF package from an MSI built before the first signed driver release.
+if(NOT DEFINED SUNSHINE_VHF_GAMEPAD_WIX_BUNDLED)
+  set(SUNSHINE_VHF_GAMEPAD_WIX_BUNDLED 0)
+endif()
+if(NOT DEFINED SUNSHINE_VHF_GAMEPAD_WIX_ALLOW_LOCAL_TEST)
+  set(SUNSHINE_VHF_GAMEPAD_WIX_ALLOW_LOCAL_TEST 0)
+endif()
+list(APPEND CPACK_WIX_CANDLE_EXTRA_FLAGS
+  "-dVhfGamepadDriverBundled=${SUNSHINE_VHF_GAMEPAD_WIX_BUNDLED}"
+  "-dVhfGamepadAllowLocalTest=${SUNSHINE_VHF_GAMEPAD_WIX_ALLOW_LOCAL_TEST}"
+)
+
 
 set(CPACK_WIX_EXTRA_SOURCES
   "${CMAKE_SOURCE_DIR}/packaging/windows/wix/custom_actions.wxs"
@@ -61,7 +74,7 @@ set(CPACK_WIX_EXTRA_SOURCES
 set(CPACK_WIX_TEMPLATE "${CMAKE_SOURCE_DIR}/packaging/windows/wix/WIX.template.in")
 
 # uninstall.exe is packed into the MSI unsigned and signed as a nested PE by the
-# SignPath "msi-file" deep-sign (see docs/signpath/). There is intentionally no
+# consumer-MSI deep-signing policy (see docs/signpath/). There is intentionally no
 # CPACK_PRE_BUILD_SCRIPTS uninstaller-signing hook: a runner-local signature is
 # non-origin-verified and was a no-op in CI anyway (the token is deliberately
 # withheld from the MSI build step).

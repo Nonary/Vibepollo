@@ -1,0 +1,628 @@
+#define _GNU_SOURCE
+
+#include <stdio.h>
+#include <unistd.h>
+
+static int broker_fixture_execv(const char *path, char *const arguments[]);
+
+int vibepollo_session_broker_entrypoint(int argc, char **argv);
+#define main vibepollo_session_broker_entrypoint
+#define execv broker_fixture_execv
+#include "../../../../packaging/linux/vibepollo-session-broker.c"
+#undef execv
+#undef main
+
+static bool user_service_fixture = false;
+
+// Exercise the real exec_user_service()/supervise_user_service() argv path
+// without contacting the host's user manager. The manager fixture applies
+// --setenv literally and executes the requested shell command. Cleanup is an
+// isolated not-found unit fixture; no real application unit is modified.
+static int broker_fixture_execv(const char *path, char *const arguments[]) {
+  if (!user_service_fixture) return execv(path, arguments);
+  if (!strcmp(path, "/usr/bin/systemctl")) {
+    if (arguments[3] && !strcmp(arguments[3], "show")) {
+      static const char state[] = "LoadState=not-found\nMainPID=0\nControlGroup=\n";
+      if (write(STDOUT_FILENO, state, sizeof(state) - 1) != (ssize_t) sizeof(state) - 1) _exit(126);
+    }
+    _exit(0);
+  }
+  if (strcmp(path, "/usr/bin/systemd-run")) return execv(path, arguments);
+  size_t index = 1;
+  for (; arguments[index] && strcmp(arguments[index], "--"); ++index) {
+    if (!strcmp(arguments[index], "--setenv")) {
+      const char *assignment = arguments[++index];
+      const char *separator = assignment ? strchr(assignment, '=') : NULL;
+      if (!separator) _exit(126);
+      char *name = strndup(assignment, (size_t) (separator - assignment));
+      if (!name || setenv(name, separator + 1, 1)) _exit(126);
+      free(name);
+    } else if (!strcmp(arguments[index], "--unit") ||
+               !strcmp(arguments[index], "--working-directory")) {
+      if (!arguments[++index]) _exit(126);
+    }
+  }
+  if (!arguments[index] || !arguments[index + 1] ||
+      strcmp(arguments[index + 1], application_supervisor_path) ||
+      !arguments[index + 2] || strcmp(arguments[index + 2], "--") ||
+      !arguments[index + 3]) _exit(126);
+  return execv(arguments[index + 3], &arguments[index + 3]);
+}
+
+#define CHECK(expression) do { \
+  if (!(expression)) { \
+    fprintf(stderr, "FAIL: %s:%d: %s\n", __FILE__, __LINE__, #expression); \
+    return 1; \
+  } \
+} while (0)
+
+int main(void) {
+  char *stream_environment[] = {
+    "SUNSHINE_APP_ID=42", "SUNSHINE_APP_NAME=Literal $HOME; $(false) name=ok",
+    "SUNSHINE_CLIENT_WIDTH=3840", "SUNSHINE_CLIENT_HEIGHT=2160",
+    "SUNSHINE_CLIENT_FPS=59.940", "SUNSHINE_CLIENT_HDR=true",
+    "SUNSHINE_CLIENT_GCMAP=65535", "SUNSHINE_CLIENT_HOST_AUDIO=false",
+    "SUNSHINE_CLIENT_ENABLE_SOPS=true", "SUNSHINE_CLIENT_AUDIO_CONFIGURATION=7.1",
+    "SUNSHINE_CLIENT_AUDIO_SURROUND_PARAMS=85301234567",
+    "APOLLO_APP_ID=42", "APOLLO_APP_NAME=Literal $HOME; $(false) name=ok",
+    "APOLLO_APP_UUID=12345678-1234-1234-1234-123456789abc", "APOLLO_APP_STATUS=STARTING",
+    "APOLLO_CLIENT_UUID=unknown", "APOLLO_CLIENT_NAME=Steam Deck = OLED",
+    "APOLLO_CLIENT_WIDTH=3840", "APOLLO_CLIENT_HEIGHT=2160",
+    "APOLLO_CLIENT_RENDER_WIDTH=1920", "APOLLO_CLIENT_RENDER_HEIGHT=1080",
+    "APOLLO_CLIENT_SCALE_FACTOR=200", "APOLLO_CLIENT_FPS=59940",
+    "APOLLO_CLIENT_HDR=true", "APOLLO_CLIENT_GCMAP=65535",
+    "APOLLO_CLIENT_HOST_AUDIO=false", "APOLLO_CLIENT_ENABLE_SOPS=true",
+    "APOLLO_CLIENT_AUDIO_CONFIGURATION=7.1", "APOLLO_CLIENT_AUDIO_SURROUND_PARAMS=85301234567",
+    "PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE=1", "PROTON_SONY_WINDOWS_DEVICE_NAMES=0"
+  };
+  CHECK(sizeof(stream_environment) / sizeof(stream_environment[0]) == VIBEPOLLO_STREAM_ENVIRONMENT_FIELD_COUNT);
+  CHECK(vibepollo_stream_environment_is_safe(VIBEPOLLO_STREAM_ENVIRONMENT_FIELD_COUNT, stream_environment));
+  CHECK(vibepollo_stream_environment_is_safe(0, NULL));
+  CHECK(!vibepollo_stream_environment_is_safe(1, NULL));
+  CHECK(!vibepollo_stream_environment_is_safe(VIBEPOLLO_STREAM_ENVIRONMENT_MAX_ENTRIES + 1, NULL));
+  CHECK(vibepollo_stream_environment_entry_is_safe("SUNSHINE_CLIENT_FPS=60.000000", NULL));
+  CHECK(vibepollo_stream_environment_entry_is_safe("SUNSHINE_CLIENT_FPS=1000.000", NULL));
+  CHECK(vibepollo_stream_environment_entry_is_safe("APOLLO_CLIENT_FPS=1000000", NULL));
+  CHECK(vibepollo_stream_environment_entry_is_safe("APOLLO_CLIENT_GCMAP=-2147483648", NULL));
+  CHECK(vibepollo_stream_environment_entry_is_safe("APOLLO_CLIENT_WIDTH=4294967295", NULL));
+  CHECK(vibepollo_stream_environment_entry_is_safe("APOLLO_CLIENT_UUID=legacy-client-id", NULL));
+  CHECK(vibepollo_stream_environment_entry_is_safe("APOLLO_CLIENT_AUDIO_SURROUND_PARAMS=", NULL));
+  CHECK(vibepollo_stream_environment_entry_is_safe("APOLLO_CLIENT_AUDIO_SURROUND_PARAMS=invalid layout retained as text", NULL));
+  const char *statuses[] = {"STARTING", "RUNNING", "RESUMING", "PAUSING", "TERMINATING"};
+  for (size_t index = 0; index < sizeof(statuses) / sizeof(statuses[0]); ++index) {
+    char status[64];
+    CHECK(snprintf(status, sizeof(status), "APOLLO_APP_STATUS=%s", statuses[index]) > 0);
+    CHECK(vibepollo_stream_environment_entry_is_safe(status, NULL));
+  }
+  const char *invalid_environment[] = {
+    "SUNSHINE_CLIENT_WIDTH", "=value", "PATH=/tmp/untrusted", "HOME=/tmp/untrusted",
+    "LD_PRELOAD=/tmp/untrusted.so", "BASH_ENV=/tmp/untrusted", "SYSTEMD_UNIT_PATH=/tmp/untrusted",
+    "XDG_RUNTIME_DIR=/tmp/untrusted", "ENABLE_HDR_WSI=1", "SUNSHINE_UNKNOWN=value",
+    "APOLLO_APP_NAME=bad\nname", "APOLLO_CLIENT_NAME=bad\tname", "APOLLO_CLIENT_UUID=bad\177id",
+    "APOLLO_APP_STATUS=STOPPED", "APOLLO_CLIENT_HDR=1", "SUNSHINE_CLIENT_AUDIO_CONFIGURATION=9.1",
+    "SUNSHINE_CLIENT_FPS=60.0000000", "SUNSHINE_CLIENT_FPS=0.000", "SUNSHINE_CLIENT_FPS=NaN",
+    "SUNSHINE_CLIENT_FPS=60.", "SUNSHINE_CLIENT_FPS=.5", "SUNSHINE_CLIENT_FPS=+60",
+    "APOLLO_CLIENT_FPS=59.940", "APOLLO_CLIENT_WIDTH=4294967296", "APOLLO_CLIENT_WIDTH=-1",
+    "APOLLO_CLIENT_GCMAP=2147483648", "APOLLO_CLIENT_GCMAP=-2147483649",
+    "PROTON_SONY_WINDOWS_DEVICE_NAMES=2", "PROTON_SONY_WINDOWS_DEVICE_NAMES="
+  };
+  for (size_t index = 0; index < sizeof(invalid_environment) / sizeof(invalid_environment[0]); ++index) {
+    CHECK(!vibepollo_stream_environment_entry_is_safe(invalid_environment[index], NULL));
+  }
+  char *duplicate_environment[] = {"APOLLO_CLIENT_FPS=59940", "APOLLO_CLIENT_FPS=60000"};
+  CHECK(!vibepollo_stream_environment_is_safe(2, duplicate_environment));
+  char long_client_name[sizeof("APOLLO_CLIENT_NAME=") + 1025];
+  strcpy(long_client_name, "APOLLO_CLIENT_NAME=");
+  const size_t client_name_prefix = strlen(long_client_name);
+  memset(long_client_name + client_name_prefix, 'x', 1024);
+  long_client_name[client_name_prefix + 1024] = 0;
+  CHECK(vibepollo_stream_environment_entry_is_safe(long_client_name, NULL));
+  long_client_name[client_name_prefix + 1024] = 'x';
+  long_client_name[client_name_prefix + 1025] = 0;
+  CHECK(!vibepollo_stream_environment_entry_is_safe(long_client_name, NULL));
+
+  struct session_identity metadata_identity = {0};
+  strcpy(metadata_identity.role, "desktop");
+  char *invalid_metadata_request[] = {"broker", "app", "setsid steam steam://open/bigpicture", "LD_PRELOAD=/tmp/untrusted.so", NULL};
+  CHECK(execute_request(4, invalid_metadata_request, &metadata_identity, getgid()) == 126);
+  invalid_metadata_request[1] = "app-wayland-hdr";
+  CHECK(execute_request(4, invalid_metadata_request, &metadata_identity, getgid()) == 126);
+  char *duplicate_metadata_request[] = {"broker", "app", "setsid steam steam://open/bigpicture",
+    "APOLLO_CLIENT_FPS=59940", "APOLLO_CLIENT_FPS=60000", NULL};
+  CHECK(execute_request(5, duplicate_metadata_request, &metadata_identity, getgid()) == 126);
+  char *unexpected_metadata_request[] = {"broker", "audio-get-default", "APOLLO_CLIENT_FPS=59940", NULL};
+  CHECK(execute_request(3, unexpected_metadata_request, &metadata_identity, getgid()) == 126);
+  char *unauthorized_metadata_request[] = {"broker", "app", "/bin/true --unapproved-stream-fixture",
+    "APOLLO_CLIENT_FPS=59940", NULL};
+  CHECK(execute_request(4, unauthorized_metadata_request, &metadata_identity, getgid()) == 126);
+
+  // Match the broker's cleared session baseline, then exercise actual argv
+  // construction, fork, --setenv delivery and shell execution for prep/undo.
+  strcpy(metadata_identity.home, "/tmp/vibepollo-metadata-fixture-home");
+  strcpy(metadata_identity.user, "metadata-fixture");
+  strcpy(metadata_identity.runtime, "/tmp/vibepollo-metadata-fixture-runtime");
+  strcpy(metadata_identity.wayland_display, "wayland-0");
+  metadata_identity.generation = 7;
+  CHECK(!setenv("LD_PRELOAD", "/tmp/untrusted.so", 1));
+  CHECK(!setenv("APOLLO_CLIENT_FPS", "poisoned-host-value", 1));
+  CHECK(install_session_environment(&metadata_identity));
+  CHECK(!getenv("LD_PRELOAD") && !getenv("APOLLO_CLIENT_FPS"));
+  char *shell_fixture[] = {"/bin/sh", "-c",
+    "test \"$SUNSHINE_CLIENT_WIDTH/$SUNSHINE_CLIENT_HEIGHT/$SUNSHINE_CLIENT_FPS\" = 3840/2160/59.940 && "
+    "test \"$APOLLO_CLIENT_RENDER_WIDTH/$APOLLO_CLIENT_RENDER_HEIGHT/$APOLLO_CLIENT_FPS\" = 1920/1080/59940 && "
+    "test \"$APOLLO_CLIENT_UUID\" = unknown && test \"$APOLLO_CLIENT_NAME\" = 'Steam Deck = OLED' && "
+    "test \"$SUNSHINE_APP_NAME\" = 'Literal $HOME; $(false) name=ok' && test \"$APOLLO_APP_NAME\" = \"$SUNSHINE_APP_NAME\" && "
+    "test \"$APOLLO_CLIENT_AUDIO_CONFIGURATION/$APOLLO_CLIENT_AUDIO_SURROUND_PARAMS\" = 7.1/85301234567 && "
+    "test \"$SUNSHINE_CLIENT_HDR/$APOLLO_CLIENT_HDR\" = true/true && "
+    "test \"$PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE/$PROTON_SONY_WINDOWS_DEVICE_NAMES\" = 1/0 && "
+    "test \"$HOME/$USER\" = /tmp/vibepollo-metadata-fixture-home/metadata-fixture && "
+    "test -z \"${LD_PRELOAD+x}\" && test \"$APOLLO_APP_STATUS\" = \"$1\" && "
+    "test \"${ENABLE_HDR_WSI-}\" = \"$2\"",
+    "--", "STARTING", "", NULL};
+  user_service_fixture = true;
+  CHECK(exec_user_service(&metadata_identity, NULL, shell_fixture, false, false,
+                          VIBEPOLLO_STREAM_ENVIRONMENT_FIELD_COUNT, stream_environment) == 0);
+  stream_environment[14] = "APOLLO_APP_STATUS=TERMINATING";
+  shell_fixture[4] = "TERMINATING";
+  shell_fixture[5] = "1";
+  CHECK(exec_user_service(&metadata_identity, NULL, shell_fixture, false, true,
+                          VIBEPOLLO_STREAM_ENVIRONMENT_FIELD_COUNT, stream_environment) == 0);
+  CHECK(!getenv("APOLLO_CLIENT_FPS") && !getenv("ENABLE_HDR_WSI"));
+  user_service_fixture = false;
+
+  CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://open/bigpicture"), "steam://open/bigpicture"));
+  CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://close/bigpicture"), "steam://close/bigpicture"));
+  CHECK(!steam_big_picture_uri(NULL));
+  CHECK(!steam_big_picture_uri("setsid steam steam://open/bigpicture; touch /tmp/untrusted"));
+  CHECK(!steam_big_picture_uri("setsid steam steam://open/bigpicture\n/bin/true"));
+  CHECK(!steam_big_picture_uri("setsid steam steam://open/bigpicture --extra"));
+  CHECK(!steam_big_picture_uri("setsid steam steam://run/42"));
+  CHECK(!steam_big_picture_uri("/tmp/steam steam://open/bigpicture"));
+  CHECK(steam_big_picture_request("app", "setsid steam steam://open/bigpicture"));
+  CHECK(steam_big_picture_request("app-wayland-hdr", "setsid steam steam://close/bigpicture"));
+  CHECK(!steam_big_picture_request("app", "setsid steam steam://run/42"));
+  CHECK(!steam_big_picture_request("steam-direct", "setsid steam steam://open/bigpicture"));
+  CHECK(!steam_big_picture_request(NULL, "setsid steam steam://open/bigpicture"));
+  struct session_identity greeter_identity = {0};
+  strcpy(greeter_identity.role, "greeter");
+  char *big_picture_request[] = {"broker", "app", "setsid steam steam://open/bigpicture", NULL};
+  CHECK(execute_request(3, big_picture_request, &greeter_identity, getgid()) == 126);
+  big_picture_request[2] = "setsid steam steam://close/bigpicture";
+  CHECK(execute_request(3, big_picture_request, &greeter_identity, getgid()) == 126);
+  char *hdr_big_picture_request[] = {"broker", "app-wayland-hdr", "setsid steam steam://open/bigpicture", NULL};
+  CHECK(execute_request(3, hdr_big_picture_request, &greeter_identity, getgid()) == 126);
+
+  CHECK(artwork_request_is_safe("provider-steam-artwork:42", "provider-steam-artwork:", UINT32_MAX));
+  CHECK(!artwork_request_is_safe("provider-steam-artwork:0", "provider-steam-artwork:", UINT32_MAX));
+  CHECK(!artwork_request_is_safe("provider-steam-artwork:4294967296", "provider-steam-artwork:", UINT32_MAX));
+  CHECK(!artwork_request_is_safe("provider-steam-artwork:42/../../etc/passwd", "provider-steam-artwork:", UINT32_MAX));
+  CHECK(!artwork_request_is_safe("provider-lutris-artwork:42", "provider-steam-artwork:", UINT32_MAX));
+  unsigned long number = 0;
+  CHECK(!parse_number(NULL, 1, 10, &number));
+  CHECK(!parse_number("", 1, 10, &number));
+  CHECK(!parse_number("0", 1, 10, &number));
+  CHECK(!parse_number("11", 1, 10, &number));
+  CHECK(!parse_number("1x", 1, 10, &number));
+  CHECK(!parse_number("+1", 0, 10, &number));
+  CHECK(!parse_number("-0", 0, 10, &number));
+  CHECK(!parse_number(" 1", 0, 10, &number));
+  CHECK(!parse_number("1 ", 0, 10, &number));
+  CHECK(!parse_number("184467440737095516160", 0, ULONG_MAX, &number));
+  CHECK(parse_number("0", 0, 10, &number) && number == 0);
+  CHECK(parse_number("10", 1, 10, &number) && number == 10);
+
+  char *valid_steam_direct[] = {
+    "vibepollo-session-broker", "steam-direct", "1182900",
+    "mangohud-proton", "116000", "3", "1", "late", "0", "0", "1", "1", "0", "0", NULL
+  };
+  CHECK(steam_direct_arguments_are_safe(14, valid_steam_direct));
+  valid_steam_direct[3] = "proton";
+  valid_steam_direct[5] = "custom";
+  valid_steam_direct[6] = "0";
+  CHECK(steam_direct_arguments_are_safe(14, valid_steam_direct));
+  valid_steam_direct[3] = "disabled";
+  valid_steam_direct[4] = "0";
+  valid_steam_direct[8] = "1";
+  valid_steam_direct[9] = "1";
+  CHECK(steam_direct_arguments_are_safe(14, valid_steam_direct));
+  valid_steam_direct[9] = "2";
+  CHECK(!steam_direct_arguments_are_safe(14, valid_steam_direct));
+  valid_steam_direct[9] = "0";
+  valid_steam_direct[8] = "0";
+  valid_steam_direct[10] = "0";
+  CHECK(!steam_direct_arguments_are_safe(14, valid_steam_direct));
+  valid_steam_direct[11] = "0";
+  valid_steam_direct[12] = "1";
+  CHECK(steam_direct_arguments_are_safe(14, valid_steam_direct));
+  valid_steam_direct[12] = "2";
+  CHECK(!steam_direct_arguments_are_safe(14, valid_steam_direct));
+  valid_steam_direct[12] = "0";
+  valid_steam_direct[10] = "1";
+  CHECK(steam_direct_arguments_are_safe(14, valid_steam_direct));
+  valid_steam_direct[11] = "2";
+  CHECK(!steam_direct_arguments_are_safe(14, valid_steam_direct));
+  valid_steam_direct[11] = "0";
+  valid_steam_direct[10] = "2";
+  CHECK(!steam_direct_arguments_are_safe(14, valid_steam_direct));
+  valid_steam_direct[10] = "0";
+  valid_steam_direct[3] = "proton";
+  valid_steam_direct[4] = "116000";
+  valid_steam_direct[6] = "1";
+  CHECK(!steam_direct_arguments_are_safe(14, valid_steam_direct));
+  valid_steam_direct[6] = "0";
+  valid_steam_direct[4] = "116.0";
+  CHECK(!steam_direct_arguments_are_safe(14, valid_steam_direct));
+  valid_steam_direct[4] = "116000";
+  valid_steam_direct[2] = "0";
+  CHECK(!steam_direct_arguments_are_safe(14, valid_steam_direct));
+  valid_steam_direct[4] = "116000";
+  valid_steam_direct[2] = "1182900";
+  valid_steam_direct[12] = "0";
+  valid_steam_direct[13] = "1";
+  CHECK(!steam_direct_arguments_are_safe(14, valid_steam_direct));
+  valid_steam_direct[12] = "1";
+  CHECK(steam_direct_arguments_are_safe(14, valid_steam_direct));
+
+  char *global_limiter[] = {
+    "vibepollo-session-broker", "global-limiter", "proton", "59940", "custom", "0", "late", "sdr", "0", "1", NULL
+  };
+  CHECK(global_limiter_arguments_are_safe(10, global_limiter));
+  CHECK(!global_limiter_arguments_are_safe(9, global_limiter));
+  global_limiter[9] = "2";
+  CHECK(!global_limiter_arguments_are_safe(10, global_limiter));
+  global_limiter[9] = "0";
+  CHECK(global_limiter_arguments_are_safe(10, global_limiter));
+  global_limiter[7] = "sdr10";
+  CHECK(global_limiter_arguments_are_safe(10, global_limiter));
+  global_limiter[7] = "hdr";
+  global_limiter[8] = "1";
+  CHECK(global_limiter_arguments_are_safe(10, global_limiter));
+  global_limiter[7] = "pq";
+  CHECK(!global_limiter_arguments_are_safe(10, global_limiter));
+  global_limiter[7] = "sdr";
+  global_limiter[8] = "0";
+  global_limiter[2] = "mangohud";
+  global_limiter[6] = "early";
+  CHECK(global_limiter_arguments_are_safe(10, global_limiter));
+  global_limiter[3] = "59940;touch /tmp/untrusted";
+  CHECK(!global_limiter_arguments_are_safe(10, global_limiter));
+  global_limiter[3] = "0";
+  CHECK(!global_limiter_arguments_are_safe(10, global_limiter));
+  global_limiter[3] = "59940";
+  global_limiter[4] = "/tmp/preset";
+  CHECK(!global_limiter_arguments_are_safe(10, global_limiter));
+  global_limiter[2] = "disabled";
+  global_limiter[3] = "0";
+  global_limiter[4] = "custom";
+  global_limiter[6] = "late";
+  global_limiter[9] = "2";
+  CHECK(!global_limiter_arguments_are_safe(10, global_limiter));
+  global_limiter[9] = "0";
+  CHECK(global_limiter_arguments_are_safe(10, global_limiter));
+  global_limiter[7] = "sdr10";
+  CHECK(global_limiter_arguments_are_safe(10, global_limiter));
+
+  CHECK(xauthority_mode_is_safe(0600));
+  CHECK(xauthority_mode_is_safe(0400));
+  CHECK(!xauthority_mode_is_safe(0620));
+  CHECK(!xauthority_mode_is_safe(0602));
+  CHECK(!xauthority_mode_is_safe(0644));
+
+  struct session_identity xauthority_identity = {0};
+  CHECK(snprintf(xauthority_identity.runtime, sizeof(xauthority_identity.runtime),
+                 "/run/user/1000") > 0);
+  CHECK(snprintf(xauthority_identity.xauthority, sizeof(xauthority_identity.xauthority),
+                 "/run/user/1000/Xauthority") > 0);
+  CHECK(xauthority_path_is_confined(&xauthority_identity));
+  CHECK(snprintf(xauthority_identity.xauthority, sizeof(xauthority_identity.xauthority),
+                 "/run/user/1000/../1001/Xauthority") > 0);
+  CHECK(!xauthority_path_is_confined(&xauthority_identity));
+  CHECK(!validate_xauthority(&xauthority_identity));
+  CHECK(snprintf(xauthority_identity.xauthority, sizeof(xauthority_identity.xauthority),
+                 "/run/user/1000/cache/..") > 0);
+  CHECK(!xauthority_path_is_confined(&xauthority_identity));
+  CHECK(!validate_xauthority(&xauthority_identity));
+
+  CHECK(runtime_mode_is_safe(0700));
+  CHECK(!runtime_mode_is_safe(0710));
+  CHECK(!runtime_mode_is_safe(0770));
+  CHECK(!runtime_mode_is_safe(0701));
+  CHECK(!runtime_mode_is_safe(0600));
+
+  char shell_word[PATH_MAX] = {0};
+  char working_directory[PATH_MAX] = {0};
+  CHECK(parse_first_shell_word("  /usr/bin/game --flag", shell_word, sizeof(shell_word)));
+  CHECK(!strcmp(shell_word, "/usr/bin/game"));
+  CHECK(parse_first_shell_word("'/opt/Game Folder'/bin/game --flag", shell_word, sizeof(shell_word)));
+  CHECK(!strcmp(shell_word, "/opt/Game Folder/bin/game"));
+  CHECK(parse_first_shell_word("/opt/Game\\ Folder/bin/game --flag", shell_word, sizeof(shell_word)));
+  CHECK(!strcmp(shell_word, "/opt/Game Folder/bin/game"));
+  CHECK(parse_first_shell_word("\"/opt/a\\q/bin/game\" --flag", shell_word, sizeof(shell_word)));
+  CHECK(!strcmp(shell_word, "/opt/a\\q/bin/game"));
+  CHECK(parse_first_shell_word("\"$HOME/bin/game\" --flag", shell_word, sizeof(shell_word)));
+  CHECK(!strcmp(shell_word, "$HOME/bin/game"));
+  CHECK(!parse_first_shell_word("'/opt/game", shell_word, sizeof(shell_word)));
+  CHECK(!parse_first_shell_word("/opt/game\\", shell_word, sizeof(shell_word)));
+  CHECK(!parse_first_shell_word("\"\" --flag", shell_word, sizeof(shell_word)));
+  CHECK(!parse_first_shell_word("abcd", shell_word, 4));
+
+  CHECK(executable_parent_directory("\"/opt/Game Folder/bin/game\" --flag",
+                                    working_directory, sizeof(working_directory)));
+  CHECK(!strcmp(working_directory, "/opt/Game Folder/bin"));
+  CHECK(executable_parent_directory("systemd-run --version",
+                                    working_directory, sizeof(working_directory)));
+  CHECK(!strcmp(working_directory, "/usr/local/bin") ||
+        !strcmp(working_directory, "/usr/bin") || !strcmp(working_directory, "/bin"));
+  CHECK(!executable_parent_directory("https://example.invalid/game", working_directory,
+                                     sizeof(working_directory)) && !working_directory[0]);
+  CHECK(!executable_parent_directory("definitely-not-a-vibepollo-executable", working_directory,
+                                     sizeof(working_directory)) && !working_directory[0]);
+  CHECK(!executable_parent_directory("./relative-game", working_directory,
+                                     sizeof(working_directory)) && !working_directory[0]);
+
+  CHECK(wait_status_exit_code(0) == 0);
+  CHECK(wait_status_exit_code(7 << 8) == 7);
+  CHECK(wait_status_exit_code(SIGTERM) == 128 + SIGTERM);
+
+  char command_output[32] = {0};
+  char *const print_arguments[] = {"printf", "inactive\n", NULL};
+  CHECK(run_command_bounded("/usr/bin/printf", print_arguments, 500,
+                            command_output, sizeof(command_output)) == 0);
+  CHECK(application_unit_name_is_safe("vibepollo-app-7-1.service"));
+  CHECK(steam_launch_retry_is_safe(126, true, 0, 2));
+  CHECK(!steam_launch_retry_is_safe(126, false, 0, 2));
+  CHECK(!steam_launch_retry_is_safe(126, true, 1, 2));
+  CHECK(!steam_launch_retry_is_safe(126, true, 0, 1));
+  CHECK(!steam_launch_retry_is_safe(0, true, 0, 2));
+  termination_signal = SIGTERM;
+  CHECK(!steam_launch_retry_is_safe(126, true, 0, 2));
+  termination_signal = 0;
+  CHECK(application_unit_name_is_safe("vibepollo-app-7-1-2.service"));
+  CHECK(!application_unit_name_is_safe("vibepollo-app-7.service"));
+  CHECK(!application_unit_name_is_safe("vibepollo-app-7-1-x.service"));
+  CHECK(!application_unit_name_is_safe("vibepollo-app-7-1.service.extra"));
+  CHECK(!application_unit_name_is_safe("--all"));
+  CHECK(application_cgroup_path_is_safe(
+          "/user.slice/user-1000.slice/user@1000.service/app.slice/vibepollo-app-7-1.service"));
+  CHECK(!application_cgroup_path_is_safe("/user.slice/../system.slice"));
+  CHECK(!application_cgroup_path_is_safe("/user.slice//app.slice"));
+  CHECK(unit_state_is_quiescent(
+          "LoadState=not-found\nMainPID=0\nControlGroup=\n", "/sys/fs/cgroup"));
+  CHECK(!unit_state_is_quiescent(
+          "LoadState=not-found\nMainPID=1\nControlGroup=\n", "/sys/fs/cgroup"));
+  CHECK(!unit_state_is_quiescent(
+          "LoadState=loaded\nMainPID=0\nControlGroup=\n", "/sys/fs/cgroup"));
+  CHECK(!stop_user_service_using("/usr/bin/true", "--all", 100));
+
+  char cgroup_root[] = "/tmp/vibepollo-broker-cgroup.XXXXXX";
+  CHECK(mkdtemp(cgroup_root));
+  char test_cgroup[PATH_MAX] = {0}, test_events[PATH_MAX] = {0};
+  CHECK(snprintf(test_cgroup, sizeof(test_cgroup), "%s/test.service", cgroup_root) > 0);
+  CHECK(!mkdir(test_cgroup, 0700));
+  CHECK(snprintf(test_events, sizeof(test_events), "%s/cgroup.events", test_cgroup) > 0);
+  int events_fd = open(test_events, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  CHECK(events_fd >= 0);
+  static const char unpopulated_events[] = "populated 0\nfrozen 0\n";
+  CHECK(write(events_fd, unpopulated_events, sizeof(unpopulated_events) - 1) ==
+        (ssize_t) sizeof(unpopulated_events) - 1);
+  close(events_fd);
+  CHECK(unit_state_is_quiescent(
+          "LoadState=loaded\nMainPID=0\nControlGroup=/test.service\n", cgroup_root));
+  events_fd = open(test_events, O_WRONLY | O_TRUNC | O_CLOEXEC);
+  CHECK(events_fd >= 0);
+  static const char populated_events[] = "populated 1\nfrozen 0\n";
+  CHECK(write(events_fd, populated_events, sizeof(populated_events) - 1) ==
+        (ssize_t) sizeof(populated_events) - 1);
+  close(events_fd);
+  CHECK(!unit_state_is_quiescent(
+          "LoadState=loaded\nMainPID=0\nControlGroup=/test.service\n", cgroup_root));
+  CHECK(!unlink(test_events));
+  CHECK(!rmdir(test_cgroup));
+  CHECK(!rmdir(cgroup_root));
+
+  int watchdog_pipe[2] = {-1, -1};
+  CHECK(make_watchdog_pipe(watchdog_pipe));
+  CHECK((fcntl(watchdog_pipe[0], F_GETFD) & FD_CLOEXEC) != 0);
+  CHECK((fcntl(watchdog_pipe[1], F_GETFD) & FD_CLOEXEC) != 0);
+  CHECK((fcntl(watchdog_pipe[0], F_GETFL) & O_ACCMODE) == O_RDONLY);
+  CHECK((fcntl(watchdog_pipe[1], F_GETFL) & O_ACCMODE) == O_WRONLY);
+  close(watchdog_pipe[0]);
+  close(watchdog_pipe[1]);
+
+  char *const sleep_arguments[] = {"sleep", "5", NULL};
+  uint64_t bounded_started = monotonic_milliseconds();
+  CHECK(bounded_started);
+  CHECK(run_command_bounded("/usr/bin/sleep", sleep_arguments, 100, NULL, 0) ==
+        BOUNDED_COMMAND_TIMEOUT);
+  const uint64_t bounded_finished = monotonic_milliseconds();
+  CHECK(bounded_finished >= bounded_started && bounded_finished - bounded_started < 1000);
+  int reaped_status = 0;
+  errno = 0;
+  CHECK(waitpid(-1, &reaped_status, WNOHANG) < 0 && errno == ECHILD);
+
+  int child_ready[2] = {-1, -1};
+  CHECK(!pipe2(child_ready, O_CLOEXEC));
+  const pid_t stubborn_child = fork();
+  CHECK(stubborn_child >= 0);
+  if (!stubborn_child) {
+    close(child_ready[0]);
+    struct sigaction ignore = {.sa_handler = SIG_IGN};
+    if (sigemptyset(&ignore.sa_mask) || sigaction(SIGTERM, &ignore, NULL) ||
+        write(child_ready[1], "x", 1) != 1) _exit(1);
+    for (;;) pause();
+  }
+  close(child_ready[1]);
+  char ready_byte = 0;
+  CHECK(read(child_ready[0], &ready_byte, 1) == 1 && ready_byte == 'x');
+  close(child_ready[0]);
+  int stubborn_status = 0;
+  bounded_started = monotonic_milliseconds();
+  CHECK(terminate_and_reap_child(stubborn_child, SIGTERM, 50, &stubborn_status));
+  CHECK(WIFSIGNALED(stubborn_status) && WTERMSIG(stubborn_status) == SIGKILL);
+  CHECK(monotonic_milliseconds() - bounded_started < 1000);
+  errno = 0;
+  CHECK(waitpid(stubborn_child, &stubborn_status, WNOHANG) < 0 && errno == ECHILD);
+
+  CHECK(valid_xdisplay(":0"));
+  CHECK(valid_xdisplay(":12.3"));
+  CHECK(!valid_xdisplay("0"));
+  CHECK(!valid_xdisplay(":x"));
+  CHECK(!valid_xdisplay(":0.bad"));
+
+  const char *valid_display_arguments[] = {
+    "output.Virtual-1.enable",
+    "output.HDMI-A-1.disable",
+    "output.DP-1.rotation.none",
+    "output.DP-1.rotation.left",
+    "output.DP-1.rotation.inverted",
+    "output.DP-1.rotation.right",
+    "output.DP-1.rotation.flipped",
+    "output.DP-1.rotation.flipped90",
+    "output.DP-1.rotation.flipped180",
+    "output.DP-1.rotation.flipped270",
+    "output.Virtual-2.mode.123",
+    "output.Virtual-2.vrrpolicy.always",
+    "output.Virtual-2.hdr.enable",
+    "output.Virtual-2.hdr.disable",
+    "output.Virtual-2.scale.1.250000",
+    "output.Virtual-2.position.-3840,0",
+    "output.Virtual-2.priority.2",
+    "output.Virtual-2.addCustomMode.3840.2160.120000.reduced",
+  };
+  for (size_t index = 0; index < sizeof(valid_display_arguments) / sizeof(valid_display_arguments[0]); ++index) {
+    CHECK(display_argument_is_safe(valid_display_arguments[index]));
+  }
+
+  const char *invalid_display_arguments[] = {
+    "output.Virtual-1.enable;touch /tmp/x",
+    "output.Virtual-1.scale.-1",
+    "output.DP-1.rotation.foo",
+    "output.DP-1.rotation.none;touch /tmp/x",
+    "output.Virtual-1.mode../../bin/sh",
+    "output.Virtual-1.addCustomMode.0.2160.120000.reduced",
+    "output.Virtual-1.addCustomMode.3840.2160.0.reduced",
+    "output.Virtual-1.position.0,0\noutput.Virtual-2.enable",
+    "--help",
+  };
+  for (size_t index = 0; index < sizeof(invalid_display_arguments) / sizeof(invalid_display_arguments[0]); ++index) {
+    CHECK(!display_argument_is_safe(invalid_display_arguments[index]));
+  }
+
+  CHECK(sink_name_is_safe("alsa_output.pci-0000_01_00.1.hdmi-stereo@DEFAULT@"));
+  CHECK(!sink_name_is_safe("sink name"));
+  CHECK(!sink_name_is_safe("sink;command"));
+  CHECK(!sink_name_is_safe(""));
+
+  unsigned char mapping[8] = {0};
+  char formatted_mapping[192] = {0};
+  CHECK(parse_channel_mapping("0,1", 2, mapping));
+  CHECK(mapping[0] == 0 && mapping[1] == 1);
+  CHECK(format_channel_mapping(mapping, 2, "channel_map=", formatted_mapping, sizeof(formatted_mapping)));
+  CHECK(!strcmp(formatted_mapping, "channel_map=front-left,front-right"));
+
+  CHECK(parse_channel_mapping("1,0,2,3,5,4", 6, mapping));
+  CHECK(format_channel_mapping(mapping, 6, "--channel-map=", formatted_mapping, sizeof(formatted_mapping)));
+  CHECK(!strcmp(formatted_mapping,
+                "--channel-map=front-right,front-left,front-center,lfe,rear-right,rear-left"));
+  CHECK(parse_channel_mapping("0,0", 2, mapping));
+  CHECK(format_channel_mapping(mapping, 2, "channel_map=", formatted_mapping, sizeof(formatted_mapping)));
+  CHECK(!strcmp(formatted_mapping, "channel_map=front-left,front-left"));
+  CHECK(!parse_channel_mapping(NULL, 2, mapping));
+  CHECK(!parse_channel_mapping("0", 0, mapping));
+  CHECK(!parse_channel_mapping("0,1,2,3,4,5,6,7,0", 9, mapping));
+  CHECK(!parse_channel_mapping("", 2, mapping));
+  CHECK(!parse_channel_mapping("0", 2, mapping));
+  CHECK(!parse_channel_mapping("0,1,0", 2, mapping));
+  CHECK(!parse_channel_mapping("0,,1", 2, mapping));
+  CHECK(!parse_channel_mapping("0,", 2, mapping));
+  CHECK(!parse_channel_mapping("-1,0", 2, mapping));
+  CHECK(!parse_channel_mapping("0,2", 2, mapping));
+  CHECK(!parse_channel_mapping("0,1,2,3,4,6", 6, mapping));
+  CHECK(!parse_channel_mapping("0,1,2,3,4,5,6,8", 8, mapping));
+  CHECK(!parse_channel_mapping("0,x", 2, mapping));
+  CHECK(layout_channel_count("stereo") == 2);
+  CHECK(layout_channel_count("surround51") == 6);
+  CHECK(layout_channel_count("surround71") == 8);
+  CHECK(layout_channel_count("unknown") == 0);
+  CHECK(layout_channel_count(NULL) == 0);
+
+  unsigned char request_packet[256] = {0};
+  const char request_payload[] = "display-query";
+  struct vibepollo_session_message request_header = {
+    .magic = VIBEPOLLO_SESSION_PROTOCOL_MAGIC,
+    .version = VIBEPOLLO_SESSION_PROTOCOL_VERSION,
+    .type = VIBEPOLLO_SESSION_REQUEST,
+    .payload_length = sizeof(request_payload),
+    .argument_count = 1,
+    .generation = 7,
+  };
+  memcpy(request_packet, &request_header, sizeof(request_header));
+  memcpy(request_packet + sizeof(request_header), request_payload, sizeof(request_payload));
+  struct decoded_request decoded = {0};
+  const size_t request_length = sizeof(request_header) + sizeof(request_payload);
+  CHECK(decode_request(request_packet, request_length, &decoded));
+  CHECK(decoded.argc == 2 && !strcmp(decoded.argv[1], "display-query") && !decoded.argv[2]);
+  CHECK(decoded.header.generation == 7);
+
+  struct vibepollo_session_message *mutable_header =
+    (struct vibepollo_session_message *) request_packet;
+#define REJECT_HEADER(field, value) do { \
+  const __typeof__(mutable_header->field) saved = mutable_header->field; \
+  mutable_header->field = (value); \
+  CHECK(!decode_request(request_packet, request_length, &decoded)); \
+  mutable_header->field = saved; \
+} while (0)
+  REJECT_HEADER(magic, 0);
+  REJECT_HEADER(version, VIBEPOLLO_SESSION_PROTOCOL_VERSION + 1);
+  REJECT_HEADER(type, VIBEPOLLO_SESSION_STDOUT);
+  REJECT_HEADER(status, 1);
+  REJECT_HEADER(reserved, 1);
+  REJECT_HEADER(generation, 0);
+  REJECT_HEADER(argument_count, 0);
+  REJECT_HEADER(argument_count, VIBEPOLLO_SESSION_PROTOCOL_MAX_ARGUMENTS + 1);
+  REJECT_HEADER(payload_length, sizeof(request_payload) - 1);
+#undef REJECT_HEADER
+  request_packet[request_length - 1] = 'x';
+  CHECK(!decode_request(request_packet, request_length, &decoded));
+  request_packet[request_length - 1] = 0;
+  request_packet[sizeof(request_header) + 1] = '\n';
+  CHECK(!decode_request(request_packet, request_length, &decoded));
+  request_packet[sizeof(request_header) + 1] = 'i';
+  CHECK(!decode_request(request_packet, request_length + 1, &decoded));
+
+  int peers[2] = {-1, -1};
+  CHECK(!socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, peers));
+  CHECK(peer_is_authorized(peers[0], getuid(), getgid()));
+  CHECK(!peer_is_authorized(peers[0], getuid() ? 0 : 1, getgid()));
+  CHECK(!peer_is_authorized(peers[0], getuid(), getgid() ? 0 : 1));
+  CHECK(send(peers[1], request_packet, request_length, MSG_NOSIGNAL) ==
+        (ssize_t) request_length);
+  unsigned char received_request[256] = {0};
+  CHECK(receive_request(peers[0], received_request, sizeof(received_request)) ==
+        (ssize_t) request_length);
+  CHECK(decode_request(received_request, request_length, &decoded));
+  CHECK(decoded.header.generation == 7 && !strcmp(decoded.argv[1], "display-query"));
+  const char output_payload[] = "bounded output";
+  CHECK(send_frame(peers[0], VIBEPOLLO_SESSION_STDOUT, 7, 0,
+                   output_payload, sizeof(output_payload) - 1));
+  unsigned char response_packet[256] = {0};
+  const ssize_t response_length = recv(peers[1], response_packet, sizeof(response_packet), 0);
+  CHECK(response_length == (ssize_t) (sizeof(struct vibepollo_session_message) +
+                                      sizeof(output_payload) - 1));
+  struct vibepollo_session_message response_header = {0};
+  memcpy(&response_header, response_packet, sizeof(response_header));
+  CHECK(response_header.magic == VIBEPOLLO_SESSION_PROTOCOL_MAGIC);
+  CHECK(response_header.version == VIBEPOLLO_SESSION_PROTOCOL_VERSION);
+  CHECK(response_header.type == VIBEPOLLO_SESSION_STDOUT);
+  CHECK(response_header.payload_length == sizeof(output_payload) - 1);
+  CHECK(response_header.generation == 7 && response_header.status == 0);
+  CHECK(!memcmp(response_packet + sizeof(response_header), output_payload,
+                sizeof(output_payload) - 1));
+  CHECK(!send_frame(peers[0], VIBEPOLLO_SESSION_STDOUT, 7, 0, output_payload,
+                    VIBEPOLLO_SESSION_PROTOCOL_OUTPUT_CHUNK + 1));
+  close(peers[0]);
+  close(peers[1]);
+
+  puts("PASS: session broker protocol, peer credentials, and semantic policy");
+  return 0;
+}

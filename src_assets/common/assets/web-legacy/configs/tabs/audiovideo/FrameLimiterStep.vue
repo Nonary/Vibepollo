@@ -11,6 +11,11 @@ defineProps<{ stepLabel: string }>();
 const { t } = useI18n();
 const store = useConfigStore();
 const config = store.config;
+const isLinux = computed(() =>
+  String(config.platform || '')
+    .toLowerCase()
+    .includes('linux'),
+);
 const dummyPlugHdrActive = computed(() => !!config.dd_wa_dummy_plug_hdr10);
 
 // Mirror the virtual-display detection used in DisplayDeviceOptions so the capture-mode copy
@@ -56,6 +61,7 @@ interface FrameLimiterStatus {
   process_running?: boolean;
   can_bootstrap_profile?: boolean;
   profile_found?: boolean;
+  mangohud_available?: boolean;
 }
 
 const status = ref<FrameLimiterStatus>();
@@ -76,12 +82,24 @@ const frameLimiterProvider = computed({
   },
 });
 
-type VirtualCaptureMode = 'enabled' | 'disabled' | 'legacy';
+const mangohudOwnsLimiter = computed(
+  () => isLinux.value && frameLimiterProvider.value === 'mangohud',
+);
+
+const mangohudLimiterMethodOptions = computed(() => [
+  { label: t('frameLimiter.mangohudMethod.early'), value: 'early' },
+  { label: t('frameLimiter.mangohudMethod.late'), value: 'late' },
+]);
+
+type VirtualCaptureMode = 'vrr' | 'enabled' | 'disabled' | 'legacy';
 
 function normalizeVirtualCaptureMode(value: unknown): VirtualCaptureMode {
   const normalized = String(value ?? '')
     .toLowerCase()
     .trim();
+  if (['vrr', '1000hz', '1000', 'fixed-1000hz', 'fixed_1000hz'].includes(normalized)) {
+    return 'vrr';
+  }
   if (normalized === 'legacy' || normalized === '2x' || normalized === 'fixed-2x') {
     return 'legacy';
   }
@@ -104,6 +122,8 @@ const virtualCaptureMode = computed<VirtualCaptureMode>({
 
 const virtualCaptureSummary = computed(() => {
   switch (virtualCaptureMode.value) {
+    case 'vrr':
+      return t('frameLimiter.virtual.summaryVrr');
     case 'disabled':
       return t('frameLimiter.virtual.summaryDisabled');
     case 'legacy':
@@ -119,19 +139,36 @@ const providerLabelFor = (id: string) => {
       return t('frameLimiter.provider.nvcp');
     case 'rtss':
       return t('frameLimiter.provider.rtss');
+    case 'mangohud':
+      return t('frameLimiter.provider.mangohud');
+    case 'proton':
+      return t('frameLimiter.provider.proton');
+    case 'mangohud-proton':
+      return t('frameLimiter.provider.mangohudProton');
     case 'none':
       return t('frameLimiter.provider.none');
     case 'auto':
     default:
-      return t('frameLimiter.provider.auto');
+      return isLinux.value ? t('frameLimiter.provider.autoLinux') : t('frameLimiter.provider.auto');
   }
 };
 
-const providerOptions = computed(() => [
-  { label: providerLabelFor('auto'), value: 'auto' },
-  { label: providerLabelFor('rtss'), value: 'rtss' },
-  { label: providerLabelFor('nvidia-control-panel'), value: 'nvidia-control-panel' },
-]);
+const providerOptions = computed(() =>
+  isLinux.value
+    ? [
+        { label: providerLabelFor('auto'), value: 'auto' },
+        { label: providerLabelFor('mangohud-proton'), value: 'mangohud-proton' },
+        { label: providerLabelFor('proton'), value: 'proton' },
+        { label: providerLabelFor('mangohud'), value: 'mangohud' },
+        { label: providerLabelFor('none'), value: 'none' },
+      ]
+    : [
+        { label: providerLabelFor('auto'), value: 'auto' },
+        { label: providerLabelFor('rtss'), value: 'rtss' },
+        { label: providerLabelFor('nvidia-control-panel'), value: 'nvidia-control-panel' },
+        { label: providerLabelFor('none'), value: 'none' },
+      ],
+);
 
 const syncLimiterOptions = computed(() => [
   { label: t('frameLimiter.syncLimiter.keep'), value: '' },
@@ -202,6 +239,9 @@ const effectiveProvider = computed(() => {
   }
 
   const provider = frameLimiterProvider.value;
+  if (isLinux.value) {
+    return provider === 'auto' ? 'mangohud-proton' : provider;
+  }
   if (provider === 'auto') {
     if (status.value?.rtss_available || rtssDetected.value) {
       return 'rtss';
@@ -226,7 +266,7 @@ const rtssAutoLaunchPlanned = computed(() => {
 
 const shouldShowRtssConfig = computed(() => {
   const provider = frameLimiterProvider.value;
-  return provider === 'rtss' || provider === 'auto';
+  return !isLinux.value && (provider === 'rtss' || provider === 'auto');
 });
 
 // Wait for the status probe before claiming RTSS is missing so the hint doesn't flash
@@ -260,7 +300,11 @@ const virtualAutoCapCoversDisabledLimiter = computed(
   () =>
     usingVirtualDisplay.value &&
     autoVirtualLimiter.value &&
-    (rtssUsable.value || nvDriverFallbackReady.value),
+    (isLinux.value
+      ? effectiveProvider.value === 'proton' ||
+        effectiveProvider.value === 'mangohud-proton' ||
+        !!status.value?.mangohud_available
+      : rtssUsable.value || nvDriverFallbackReady.value),
 );
 
 const statusBadgeClass = computed(() => {
@@ -269,6 +313,19 @@ const statusBadgeClass = computed(() => {
   }
   if (!frameLimiterEnabled.value) {
     return virtualAutoCapCoversDisabledLimiter.value
+      ? 'bg-success/10 text-success'
+      : 'bg-warning/10 text-warning';
+  }
+  if (effectiveProvider.value === 'mangohud') {
+    return status.value.mangohud_available
+      ? 'bg-success/10 text-success'
+      : 'bg-warning/10 text-warning';
+  }
+  if (effectiveProvider.value === 'proton') {
+    return 'bg-success/10 text-success';
+  }
+  if (effectiveProvider.value === 'mangohud-proton') {
+    return status.value.mangohud_available
       ? 'bg-success/10 text-success'
       : 'bg-warning/10 text-warning';
   }
@@ -299,6 +356,19 @@ const statusMessage = computed(() => {
     return virtualAutoCapCoversDisabledLimiter.value
       ? t('frameLimiter.status.limiterDisabledVirtualAuto')
       : t('frameLimiter.status.limiterDisabled');
+  }
+  if (effectiveProvider.value === 'mangohud') {
+    return status.value.mangohud_available
+      ? t('frameLimiter.status.mangohudDetected')
+      : t('frameLimiter.status.mangohudNotDetected');
+  }
+  if (effectiveProvider.value === 'proton') {
+    return t('frameLimiter.status.protonReady');
+  }
+  if (effectiveProvider.value === 'mangohud-proton') {
+    return status.value.mangohud_available
+      ? t('frameLimiter.status.protonMangoHudReady')
+      : t('frameLimiter.status.protonReadyMangoHudMissing');
   }
   if (effectiveProvider.value === 'nvidia-control-panel') {
     if (!nvidiaDetected.value) {
@@ -337,7 +407,7 @@ async function refreshStatus() {
   loading.value = true;
   statusError.value = undefined;
   try {
-    const res = await http.get<FrameLimiterStatus>('/api/rtss/status', {
+    const res = await http.get<FrameLimiterStatus>('/api/frame-limiter/status', {
       params: { _ts: Date.now() },
     });
     status.value = res?.data ?? undefined;
@@ -436,11 +506,21 @@ onMounted(() => {
           v-model="frameLimiterProvider"
           setting-key="frame_limiter_provider"
           :label="t('frameLimiter.providerLabel')"
-          :desc="t('frameLimiter.providerHint')"
+          :desc="t(isLinux ? 'frameLimiter.providerHintLinux' : 'frameLimiter.providerHint')"
           :options="providerOptions"
           @update:show="handleProviderDropdown"
         />
       </div>
+
+      <ConfigFieldRenderer
+        v-if="mangohudOwnsLimiter"
+        v-model="config.mangohud_limiter_method"
+        setting-key="mangohud_limiter_method"
+        kind="select"
+        :label="t('frameLimiter.mangohudMethod.label')"
+        :desc="t('frameLimiter.mangohudMethod.hint')"
+        :options="mangohudLimiterMethodOptions"
+      />
 
       <ConfigFieldRenderer
         v-model="config.frame_limiter_fps_limit"
@@ -459,6 +539,7 @@ onMounted(() => {
       />
 
       <ConfigFieldRenderer
+        v-if="!isLinux"
         v-model="config.frame_limiter_disable_vsync"
         setting-key="frame_limiter_disable_vsync"
         :label="t('frameLimiter.vsyncUllmLabel')"
@@ -486,10 +567,7 @@ onMounted(() => {
         </p>
       </div>
 
-      <div
-        v-if="showSyncLimiterHelp"
-        class="rounded-lg bg-primary/5 p-3 text-[12px] sm:p-4"
-      >
+      <div v-if="showSyncLimiterHelp" class="rounded-lg bg-primary/5 p-3 text-[12px] sm:p-4">
         <ConfigFieldRenderer
           v-if="showSyncLimiterSelect"
           v-model="config.rtss_frame_limit_type"

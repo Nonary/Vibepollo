@@ -27,12 +27,18 @@ elseif(UNIX)
 endif()
 
 target_link_libraries(sunshine ${SUNSHINE_EXTERNAL_LIBRARIES} ${EXTRA_LIBS})
+if(TARGET sunshine_libvirtualdisplay_uapi)
+    target_link_libraries(sunshine sunshine_libvirtualdisplay_uapi)
+endif()
 target_compile_definitions(sunshine PUBLIC ${SUNSHINE_DEFINITIONS})
 
 # Logging integration flags are provided via SUNSHINE_DEFINITIONS to avoid duplicates
-set_target_properties(sunshine PROPERTIES CXX_STANDARD 23
-        VERSION ${PROJECT_VERSION}
-        SOVERSION ${PROJECT_VERSION_MAJOR})
+set_target_properties(sunshine PROPERTIES CXX_STANDARD 23)
+if(NOT SUNSHINE_BUILD_STEAMOS)
+    set_target_properties(sunshine PROPERTIES
+            VERSION ${PROJECT_VERSION}
+            SOVERSION ${PROJECT_VERSION_MAJOR})
+endif()
 
 # CLion complains about unknown flags after running cmake, and cannot add symbols to the index for cuda files
 if(CUDA_INHERIT_COMPILE_OPTIONS)

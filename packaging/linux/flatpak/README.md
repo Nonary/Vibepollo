@@ -1,22 +1,10 @@
-<div align="center">
-  <img src="https://raw.githubusercontent.com/LizardByte/Sunshine/master/sunshine.png" />
-  <h1 align="center">Sunshine</h1>
-  <h4 align="center">Self-hosted game stream host for Moonlight.</h4>
-</div>
+# Vibepollo Flatpak
 
-<div align="center">
-  <a href="https://flathub.org/apps/dev.lizardbyte.app.Sunshine"><img src="https://img.shields.io/flathub/downloads/dev.lizardbyte.app.Sunshine?style=for-the-badge&logo=flathub" alt="Flathub installs"></a>
-  <a href="https://flathub.org/apps/dev.lizardbyte.app.Sunshine"><img src="https://img.shields.io/flathub/v/dev.lizardbyte.app.Sunshine?style=for-the-badge&logo=flathub" alt="Flathub Version"></a>
-</div>
+Vibepollo is a self-hosted game-stream host for Moonlight. This directory contains the Flatpak
+manifest and support files for the `io.github.Nonary.vibepollo` application ID.
 
-## ℹ️ About
+Flatpak builds do not support direct KMS capture or the managed HDR virtual-display driver. Prefer
+the native Arch/CachyOS package when those features are required.
 
-Sunshine is a self-hosted game stream host for Moonlight.
-
-LizardByte has the full documentation hosted on [Read the Docs](https://docs.lizardbyte.dev/projects/sunshine)
-
-* [Stable](https://docs.lizardbyte.dev/projects/sunshine/latest/)
-* [Beta](https://docs.lizardbyte.dev/projects/sunshine/master/)
-
-This repo is synced from the upstream [Sunshine](https://github.com/LizardByte/Sunshine) repo.
-Please report issues and contribute to the upstream repo.
+Project documentation, releases, and issue tracking are available at
+[Nonary/vibepollo](https://github.com/Nonary/Vibepollo).

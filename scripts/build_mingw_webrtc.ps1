@@ -17,7 +17,8 @@ param(
   [int]$GclientJobs = 0,
   [ValidateSet("All", "Sync", "Build")]
   [string]$Stage = "All",
-  [string]$CMakeCache = ""
+  [string]$CMakeCache = "",
+  [switch]$RetainBuildSources
 )
 
 $ErrorActionPreference = "Stop"
@@ -184,15 +185,19 @@ if (-not $RootDir) {
 $RootDir = (Resolve-Path $RootDir).Path
 
 # Resolve a per-user shared cache root for libwebrtc build artifacts so the
-# multi-hour build is not coupled to any single sunshine build directory.
-# Override priority: VIBESHINE_DEPS_DIR env var > WEBRTC_BUILD_DIR/WEBRTC_OUT_DIR
-# (legacy, unchanged) > %LOCALAPPDATA%\Vibeshine\deps default.
-$DepsRoot = $env:VIBESHINE_DEPS_DIR
+# multi-hour build is not coupled to any single Vibepollo build directory.
+# Override priority: VIBEPOLLO_DEPS_DIR env var > legacy VIBESHINE_DEPS_DIR env
+# var > WEBRTC_BUILD_DIR/WEBRTC_OUT_DIR (legacy, unchanged) >
+# %LOCALAPPDATA%\Vibepollo\deps default.
+$DepsRoot = $env:VIBEPOLLO_DEPS_DIR
+if (-not $DepsRoot) {
+  $DepsRoot = $env:VIBESHINE_DEPS_DIR
+}
 if (-not $DepsRoot) {
   if ($env:LOCALAPPDATA) {
-    $DepsRoot = Join-Path $env:LOCALAPPDATA "Vibeshine\deps"
+    $DepsRoot = Join-Path $env:LOCALAPPDATA "Vibepollo\deps"
   } else {
-    $DepsRoot = Join-Path $RootDir ".vibeshine-deps"
+    $DepsRoot = Join-Path $RootDir ".vibepollo-deps"
   }
 }
 
@@ -488,10 +493,16 @@ $gnArgsString = $gnArgs -join " "
 $gnOutDir = Join-Path $BuildDir "src\out\mingw"
 Write-Step "Generating GN build files"
 gn gen $gnOutDir --root="$($BuildDir)\src" --args="$gnArgsString"
+if ($LASTEXITCODE -ne 0) {
+  throw "gn gen failed"
+}
 Patch-WebrtcToolchain -ToolchainPath (Join-Path $gnOutDir "toolchain.ninja") -SdkIncludeDirs $sdkIncludeDirs -SdkLibDirs $sdkLibDirs
 
 Write-Step "Building libwebrtc"
 ninja -C $gnOutDir libwebrtc
+if ($LASTEXITCODE -ne 0) {
+  throw "ninja libwebrtc build failed"
+}
 
 if (-not (Test-Path $OutDir)) {
   New-Item -ItemType Directory -Path $OutDir | Out-Null
@@ -529,8 +540,14 @@ if (Test-Path $dllA) {
   }
   $defFile = Join-Path $OutDir "lib\libwebrtc.def"
   & $gendef.Source $dll
+  if ($LASTEXITCODE -ne 0) {
+    throw "gendef failed to generate a libwebrtc definition file"
+  }
   Move-Item -Force (Join-Path (Get-Location) "libwebrtc.def") $defFile
   & $dlltool.Source -d $defFile -l (Join-Path $OutDir "lib\libwebrtc.dll.a") -D libwebrtc.dll
+  if ($LASTEXITCODE -ne 0) {
+    throw "dlltool failed to generate the MinGW libwebrtc import library"
+  }
 } else {
   throw "No import library found in $gnOutDir"
 }
@@ -547,4 +564,14 @@ if (Test-Path $cmakeBinaryDir) {
   Copy-Item -Force $dll (Join-Path $cmakeBinaryDir "libwebrtc.dll")
 }
 
-Write-Step "Done. Set WEBRTC_ROOT to $OutDir"
+Write-Step "Staged reusable WebRTC SDK. Set WEBRTC_ROOT to $OutDir"
+
+if ($Stage -ne "Sync" -and -not $RetainBuildSources) {
+  & (Join-Path $PSScriptRoot "cleanup_webrtc_build_sources.ps1") `
+    -BuildDir $BuildDir `
+    -OutDir $OutDir
+} elseif ($RetainBuildSources) {
+  Write-Step "Retaining WebRTC source workspace: $BuildDir"
+}
+
+Write-Step "Done."

@@ -1,0 +1,20 @@
+[Unit]
+Description=Vibepollo session execution broker socket
+Documentation=https://github.com/Nonary/Vibepollo
+After=vibepollo-session-controller.service
+# Keep admission alive until the GPU host has drained every already-accepted
+# compositor request during machine shutdown. Controller cleanup stops this
+# socket explicitly before requesting the host stop on manual transitions.
+Before=vibepollo.service
+
+[Socket]
+ListenSequentialPacket=/run/vibepollo/session-broker.sock
+SocketMode=0660
+SocketUser=root
+SocketGroup=vibepollo
+DirectoryMode=0755
+Accept=yes
+RemoveOnStop=yes
+Backlog=16
+MaxConnections=32
+MaxConnectionsPerSource=16

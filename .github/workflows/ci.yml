@@ -9,6 +9,10 @@ on:
         description: Tag to publish, for example v1.16.0-alpha.4
         required: false
         type: string
+      use_self_hosted:
+        description: Use the local Windows and Linux release runners
+        type: boolean
+        default: false
   push:
     branches:
       - '**'
@@ -68,9 +72,14 @@ jobs:
               for key, value in values.items():
                 print(f"{key}={value}", file=fh)
 
-          def skip(reason):
+          def skip(reason, *, release_version="", release_commit=""):
             print(f"::notice::{reason}")
-            output(should_release="false", tag_name="", release_version="", release_commit="")
+            output(
+              should_release="false",
+              tag_name="",
+              release_version=release_version,
+              release_commit=release_commit,
+            )
             sys.exit(0)
 
           def version_key(tag):
@@ -122,6 +131,9 @@ jobs:
           event_name = os.environ["EVENT_NAME"]
           if event_name not in {"push", "workflow_dispatch"}:
             skip("Release gate only applies to push and manual workflow_dispatch events.")
+
+          if event_name == "push" and os.environ.get("GITHUB_REF_TYPE") != "tag":
+            skip("Branch push: package builds wait for a release tag.")
 
           run("git", "fetch", "--force", "--tags")
 
@@ -187,6 +199,37 @@ jobs:
             valid_candidates.append((key, tag, notes_file, release_commit))
 
           if not valid_candidates:
+            # vibe-test is an installable Linux candidate before it is a release
+            # tag. Give that package the newest unreleased prerelease note version
+            # at HEAD while keeping should_release=false, so this path can never
+            # publish merely because release notes exist.
+            if event_name == "push" and os.environ.get("GITHUB_REF") == "refs/heads/vibe-test":
+              head_commit = run("git", "rev-parse", "HEAD")
+              branch_candidates = []
+              for candidate in Path("release_notes").glob("*.md"):
+                release_version = candidate.stem
+                key = version_key(release_version)
+                if key is None or not is_prerelease_key(key):
+                  continue
+                comparable_releases = [
+                  release_key for release_key in release_versions
+                  if is_prerelease_key(release_key)
+                ]
+                current_release_version = max(comparable_releases) if comparable_releases else None
+                if current_release_version is not None and key <= current_release_version:
+                  continue
+                notes_file = release_notes_for(release_version, head_commit)
+                if notes_file is not None:
+                  branch_candidates.append((key, release_version, notes_file))
+
+              if branch_candidates:
+                _, release_version, notes_file = max(branch_candidates, key=lambda item: item[0])
+                skip(
+                  f"Linux branch candidate: {release_version} ({head_commit}) using {notes_file}; no release tag exists yet.",
+                  release_version=release_version,
+                  release_commit=head_commit,
+                )
+
             skip("No unreleased newer tag with exact matching release notes was found.")
 
           _, tag_name, notes_file, release_commit = max(valid_candidates, key=lambda item: item[0])
@@ -205,16 +248,20 @@ jobs:
     name: Windows
     needs:
       - release-candidate
-    if: github.event_name != 'push' || needs.release-candidate.outputs.should_release == 'true'
+    # Branch pushes only select candidates. Build release artifacts once, on the tag push.
+    if: >-
+      ${{ github.event_name != 'push' ||
+          (github.ref_type == 'tag' && needs.release-candidate.outputs.should_release == 'true') }}
     permissions:
       actions: read
       contents: read
     uses: ./.github/workflows/ci-windows.yml
     with:
+      use_self_hosted: ${{ github.event_name == 'workflow_dispatch' && inputs.use_self_hosted }}
       build_only: ${{ needs.release-candidate.outputs.should_release == 'true' }}
-      build_tests: ${{ needs.release-candidate.outputs.should_release != 'true' }}
+      build_tests: false
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
-      release_version: ${{ needs.release-candidate.outputs.release_version || '0.0.0' }}
+      release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0' }}
       release_tag: ${{ needs.release-candidate.outputs.tag_name }}
       release_artifact_retention_days: ${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}
       symbol_product_name: Vibepollo
@@ -226,11 +273,29 @@ jobs:
       symbol_token: ${{ secrets.SYMBOL_TOKEN }}
       truehdr_runtime_token: ${{ secrets.TRUEHDR_RUNTIME_TOKEN }}
 
+  build-archlinux:
+    name: Arch Linux
+    needs:
+      - release-candidate
+    # Match Windows: release preparation must not build packages before the tag push.
+    if: >-
+      ${{ github.event_name != 'push' ||
+          (github.ref_type == 'tag' && needs.release-candidate.outputs.should_release == 'true') }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-archlinux.yml
+    with:
+      use_self_hosted: ${{ needs.release-candidate.outputs.should_release == 'true' || (github.event_name == 'workflow_dispatch' && inputs.use_self_hosted) }}
+      artifact_retention_days: ${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}
+      release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
+      release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0' }}
+
   awaiting-signing:
     name: Awaiting manual signing
     if: needs.release-candidate.outputs.should_release == 'true'
     needs:
       - release-candidate
+      - build-archlinux
       - build-windows
     permissions: {}
     runs-on: ubuntu-latest

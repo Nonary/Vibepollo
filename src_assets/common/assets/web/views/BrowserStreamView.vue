@@ -23,8 +23,14 @@ import {
   type BrowserVideoCapabilities,
   type WebRtcHostCapabilities,
 } from '@/services/webrtc';
+import {
+  applyGamepadFeedback,
+  attachBrowserGamepadCapture,
+  type BrowserGamepadCapture,
+} from '@/utils/webrtc/browserGamepad';
 import type { SessionStatus } from '@/types/sessions';
-import type { EncodingType, StreamConfig } from '@/types/webrtc';
+import type { EncodingType, StreamConfig, WebRtcStatsSnapshot } from '@/types/webrtc';
+import { formatBitrate } from '@/utils/format';
 
 interface LaunchableApp {
   coverUrl: string;
@@ -40,6 +46,9 @@ interface StreamLaunchForm {
   hdr: boolean;
   height: number;
   muteHostAudio: boolean;
+  videoMaxFrameAgeFrames: number;
+  videoPacingMode: PacingMode;
+  videoPacingSlackMs: number;
   width: number;
 }
 
@@ -106,9 +115,43 @@ interface StandaloneNavigator extends Navigator {
   standalone?: boolean;
 }
 
+type PacingMode = 'latency' | 'balanced' | 'smoothness';
+
 const { t } = useI18n();
 const codecs: EncodingType[] = ['h264', 'hevc', 'av1'];
 const browserSession = new BrowserWebRtcSession();
+
+const pacingPresets: Record<PacingMode, { slackMs: number; maxAgeFrames: number }> = {
+  latency: { slackMs: 0, maxAgeFrames: 1 },
+  balanced: { slackMs: 2, maxAgeFrames: 1 },
+  smoothness: { slackMs: 3, maxAgeFrames: 3 },
+};
+const minFrameAgeMs = 5;
+const maxFrameAgeMs = 100;
+const maxFrameAgeFrameCount = 10;
+
+function maxAllowedFramesForFps(fps: number): number {
+  const safeFps = Number.isFinite(fps) && fps > 0 ? fps : 60;
+  return Math.max(1, Math.min(maxFrameAgeFrameCount, Math.floor((maxFrameAgeMs * safeFps) / 1000)));
+}
+
+function clampFrameAgeFrames(
+  value: number | null | undefined,
+  fps: number,
+  mode: PacingMode,
+): number {
+  const preset = pacingPresets[mode].maxAgeFrames;
+  const maxAllowed = maxAllowedFramesForFps(fps);
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return Math.min(preset, maxAllowed);
+  }
+  return Math.min(maxAllowed, Math.max(1, Math.round(value)));
+}
+
+function frameAgeMsFromFrames(fps: number, frames: number): number {
+  const safeFps = Number.isFinite(fps) && fps > 0 ? fps : 60;
+  return Math.min(maxFrameAgeMs, Math.max(minFrameAgeMs, Math.round((1000 / safeFps) * frames)));
+}
 
 const appSearch = ref('');
 const apps = ref<AppRecord[]>([]);
@@ -117,10 +160,13 @@ const browserCapabilities = ref<BrowserVideoCapabilities>({
   hevc: { supported: false, hdr: false },
   av1: { supported: false, hdr: false },
 });
+const browserStats = ref<WebRtcStatsSnapshot>({});
 const connectionState = ref<RTCPeerConnectionState | 'idle'>('idle');
 const hostCapabilities = ref<WebRtcHostCapabilities>({ ...unavailableHostCapabilities });
 const inputChannelState = ref<RTCDataChannelState>('closed');
 const inputForwarding = ref(true);
+const windowFocused = ref(true);
+const showPerformanceOverlay = ref(false);
 const fullscreenExitHoldActive = ref(false);
 const installHelpOpen = ref(false);
 const isConnecting = ref(false);
@@ -129,6 +175,8 @@ const nativeFullscreen = ref(false);
 const nativeVideoFullscreen = ref(false);
 const playbackBlocked = ref(false);
 const pseudoFullscreen = ref(false);
+const autoFullscreen = ref(true);
+const streamCollapsed = ref(false);
 const refreshError = ref('');
 const sessionActionError = ref('');
 const sessionActionPending = ref(false);
@@ -161,6 +209,10 @@ let videoFrameCallbackHandle: number | undefined;
 let videoRenderOverloadedSince: number | null = null;
 let videoLatencyResetAt: number | null = null;
 let videoPlaybackStream: MediaStream | null = null;
+let gamepadCapture: BrowserGamepadCapture | null = null;
+let autoFullscreenAttempt = 0;
+let preserveAutoFullscreenDuringRestart = false;
+let streamSurfaceFocusedBeforeCollapse = false;
 
 const form = reactive<StreamLaunchForm>({
   appId: '',
@@ -170,8 +222,82 @@ const form = reactive<StreamLaunchForm>({
   hdr: false,
   height: 1080,
   muteHostAudio: true,
+  videoMaxFrameAgeFrames: pacingPresets.balanced.maxAgeFrames,
+  videoPacingMode: 'balanced',
+  videoPacingSlackMs: pacingPresets.balanced.slackMs,
   width: 1920,
 });
+
+const browserStreamSettingsStorageKey = 'sunshine.webrtc.session_config';
+
+function loadSavedForm(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const raw = window.localStorage.getItem(browserStreamSettingsStorageKey);
+    if (!raw) return;
+    const saved = JSON.parse(raw) as Record<string, unknown>;
+    if (!saved || typeof saved !== 'object') return;
+    const mode =
+      saved.videoPacingMode === 'latency' ||
+      saved.videoPacingMode === 'balanced' ||
+      saved.videoPacingMode === 'smoothness'
+        ? saved.videoPacingMode
+        : form.videoPacingMode;
+    const fps = typeof saved.fps === 'number' && Number.isFinite(saved.fps) ? saved.fps : form.fps;
+    const frameCount =
+      typeof saved.videoMaxFrameAgeFrames === 'number'
+        ? saved.videoMaxFrameAgeFrames
+        : typeof saved.videoMaxFrameAgeMs === 'number'
+          ? Math.round((saved.videoMaxFrameAgeMs / 1000) * fps)
+          : form.videoMaxFrameAgeFrames;
+    Object.assign(form, {
+      appId: typeof saved.appId === 'string' ? saved.appId : form.appId,
+      bitrateKbps:
+        typeof saved.bitrateKbps === 'number' && Number.isFinite(saved.bitrateKbps)
+          ? saved.bitrateKbps
+          : form.bitrateKbps,
+      encoding:
+        saved.encoding === 'h264' || saved.encoding === 'hevc' || saved.encoding === 'av1'
+          ? saved.encoding
+          : form.encoding,
+      fps,
+      hdr: typeof saved.hdr === 'boolean' ? saved.hdr : form.hdr,
+      height:
+        typeof saved.height === 'number' && Number.isFinite(saved.height)
+          ? saved.height
+          : form.height,
+      muteHostAudio:
+        typeof saved.muteHostAudio === 'boolean' ? saved.muteHostAudio : form.muteHostAudio,
+      videoMaxFrameAgeFrames: clampFrameAgeFrames(frameCount, fps, mode as PacingMode),
+      videoPacingMode: mode,
+      videoPacingSlackMs:
+        typeof saved.videoPacingSlackMs === 'number' && Number.isFinite(saved.videoPacingSlackMs)
+          ? Math.min(10, Math.max(0, Math.round(saved.videoPacingSlackMs)))
+          : pacingPresets[mode as PacingMode].slackMs,
+      width:
+        typeof saved.width === 'number' && Number.isFinite(saved.width) ? saved.width : form.width,
+    });
+    if (typeof saved.autoFullscreen === 'boolean') autoFullscreen.value = saved.autoFullscreen;
+  } catch {
+    // Settings are a convenience; malformed or unavailable storage uses defaults.
+  }
+}
+
+function persistForm(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      browserStreamSettingsStorageKey,
+      JSON.stringify({
+        ...form,
+        autoFullscreen: autoFullscreen.value,
+        videoMaxFrameAgeMs: undefined,
+      }),
+    );
+  } catch {
+    // Private browsing and storage quotas should not block starting a stream.
+  }
+}
 
 function unavailableCapabilities(reason: string): WebRtcHostCapabilities {
   return {
@@ -294,8 +420,19 @@ const connectionPending = computed(
     isConnecting.value || connectionState.value === 'new' || connectionState.value === 'connecting',
 );
 const inputReady = computed(
-  () => isConnected.value && inputForwarding.value && inputChannelState.value === 'open',
+  () =>
+    !streamCollapsed.value &&
+    isConnected.value &&
+    inputForwarding.value &&
+    inputChannelState.value === 'open',
 );
+
+const inputStatusLabel = computed(() => {
+  if (streamCollapsed.value) return t('ui.browser_stream.input_paused');
+  return inputReady.value
+    ? t('ui.browser_stream.input_ready')
+    : t('ui.browser_stream.input_unavailable');
+});
 
 const connectionLabel = computed(() => {
   if (isConnected.value) return t('ui.browser_stream.status.connected');
@@ -317,6 +454,29 @@ const connectionTone = computed<StatusTone>(() => {
 
 function codecLabel(codec: EncodingType): string {
   return t(`ui.browser_stream.codecs.${codec}`);
+}
+
+const pacingOptions = computed(() => [
+  { label: t('webrtc.pacing_latency'), value: 'latency' as const },
+  { label: t('webrtc.pacing_balanced'), value: 'balanced' as const },
+  { label: t('webrtc.pacing_smooth'), value: 'smoothness' as const },
+]);
+
+const maxFrameAgeFrames = computed({
+  get: () => clampFrameAgeFrames(form.videoMaxFrameAgeFrames, form.fps, form.videoPacingMode),
+  set: (value: number) => {
+    if (!Number.isFinite(value)) return;
+    form.videoMaxFrameAgeFrames = clampFrameAgeFrames(value, form.fps, form.videoPacingMode);
+  },
+});
+
+const maxFrameAgeMsLabel = computed(() => frameAgeMsFromFrames(form.fps, maxFrameAgeFrames.value));
+
+function applyPacingPreset(mode: PacingMode): void {
+  const preset = pacingPresets[mode];
+  form.videoPacingMode = mode;
+  form.videoPacingSlackMs = preset.slackMs;
+  form.videoMaxFrameAgeFrames = clampFrameAgeFrames(preset.maxAgeFrames, form.fps, mode);
 }
 
 function baseCodecAvailable(codec: EncodingType): boolean {
@@ -431,6 +591,26 @@ const validationError = computed(() => {
     return t('ui.browser_stream.reasons.invalid_bitrate', {
       min: limits.min_bitrate_kbps,
       max: limits.max_bitrate_kbps,
+    });
+  }
+  if (!['latency', 'balanced', 'smoothness'].includes(form.videoPacingMode)) {
+    return t('ui.browser_stream.reasons.invalid_pacing_mode');
+  }
+  if (
+    !Number.isInteger(form.videoPacingSlackMs) ||
+    form.videoPacingSlackMs < 0 ||
+    form.videoPacingSlackMs > 10
+  ) {
+    return t('ui.browser_stream.reasons.invalid_pacing_slack', { min: 0, max: 10 });
+  }
+  if (
+    !Number.isInteger(form.videoMaxFrameAgeFrames) ||
+    form.videoMaxFrameAgeFrames < 1 ||
+    form.videoMaxFrameAgeFrames > maxAllowedFramesForFps(form.fps)
+  ) {
+    return t('ui.browser_stream.reasons.invalid_frame_age', {
+      min: 1,
+      max: maxAllowedFramesForFps(form.fps),
     });
   }
   return '';
@@ -739,13 +919,14 @@ async function connect(resume: boolean): Promise<void> {
     height: form.height,
     muteHostAudio: form.muteHostAudio,
     resume,
-    videoMaxFrameAgeMs: Math.max(5, Math.min(100, Math.round(1000 / Math.max(1, form.fps)))),
-    videoPacingMode: 'latency',
-    videoPacingSlackMs: 0,
+    videoMaxFrameAgeFrames: form.videoMaxFrameAgeFrames,
+    videoPacingMode: form.videoPacingMode,
+    videoPacingSlackMs: form.videoPacingSlackMs,
     width: form.width,
   };
 
   try {
+    browserStats.value = {};
     await browserSession.connect(config, {
       onConnectionState: (state) => {
         connectionState.value = state;
@@ -754,21 +935,34 @@ async function connect(resume: boolean): Promise<void> {
           streamError.value = t('ui.browser_stream.errors.connection_failed');
         }
         if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+          cancelAutoFullscreen();
+          // A peer can disappear without delivering a data-channel close
+          // first. Clear browser-side pressed state and controller state on
+          // the connection transition as well.
+          releaseForwardedInput();
+          stopGamepadCapture();
           startSessionStatusPolling();
         }
       },
       onInputState: (state) => {
         if (state !== 'open') releaseForwardedInput();
         inputChannelState.value = state;
+        syncGamepadCapture();
       },
+      onInputMessage: applyGamepadFeedback,
       onRemoteStream: attachRemoteStream,
+      onStats: (stats) => {
+        browserStats.value = stats;
+      },
       onVideoPlayoutDelay: handleVideoPlayoutDelay,
     });
   } catch (error) {
     if (error instanceof WebRtcConnectionCanceledError) {
+      cancelAutoFullscreen();
       connectionState.value = 'idle';
       return;
     }
+    cancelAutoFullscreen();
     connectionState.value = 'failed';
     streamError.value = messageFromError(error, t('ui.browser_stream.errors.connect'));
   } finally {
@@ -778,11 +972,16 @@ async function connect(resume: boolean): Promise<void> {
 }
 
 async function requestPrimaryAction(): Promise<void> {
+  if (startDisabled.value) {
+    streamError.value = validationError.value || t('ui.browser_stream.errors.unavailable');
+    return;
+  }
   if (selectedAppId.value !== undefined && hasRunningSession.value) {
     startAfterTerminate.value = true;
     terminateOpen.value = true;
     return;
   }
+  requestAutoFullscreen();
   await connect(resumeAvailable.value);
 }
 
@@ -797,6 +996,13 @@ async function confirmTerminate(): Promise<void> {
   sessionActionPending.value = true;
   sessionActionError.value = '';
   const shouldStart = startAfterTerminate.value;
+  if (shouldStart) {
+    // The confirmation click is the last trusted activation before the close
+    // request. Keep the resulting fullscreen state through the intentional
+    // disconnect/reconnect handoff below.
+    preserveAutoFullscreenDuringRestart = true;
+    requestAutoFullscreen();
+  }
   try {
     const response = await apiPost<MutationResponse>('/api/apps/close', {});
     if (response.status !== true) {
@@ -808,17 +1014,25 @@ async function confirmTerminate(): Promise<void> {
     await fetchSessionStatus();
     if (shouldStart) {
       sessionActionPending.value = false;
+      preserveAutoFullscreenDuringRestart = false;
       await connect(false);
     }
   } catch (error) {
+    if (shouldStart) {
+      preserveAutoFullscreenDuringRestart = false;
+      cancelAutoFullscreen();
+    }
     sessionActionError.value = messageFromError(error, t('webrtc.termination_failed_desc'));
   } finally {
+    preserveAutoFullscreenDuringRestart = false;
     sessionActionPending.value = false;
   }
 }
 
 async function disconnect(restartStatusPolling = true): Promise<void> {
+  cancelAutoFullscreen();
   releaseForwardedInput();
+  stopGamepadCapture();
   stopVideoFrameLatencyMonitoring();
   resetVideoLatencyFence();
   videoLatencyResetAt = null;
@@ -830,6 +1044,7 @@ async function disconnect(restartStatusPolling = true): Promise<void> {
   videoPlaybackStream = null;
   audioPlaybackStream = null;
   playbackBlocked.value = false;
+  browserStats.value = {};
   connectionState.value = 'idle';
   if (restartStatusPolling) startSessionStatusPolling();
 }
@@ -837,6 +1052,30 @@ async function disconnect(restartStatusPolling = true): Promise<void> {
 function resumePlayback(): void {
   void playAttachedMedia();
 }
+
+function formatMetric(value: number | undefined, suffix = ''): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? `${Math.round(value * 10) / 10}${suffix}`
+    : '--';
+}
+
+function formatBitrateMetric(value: number | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value) ? formatBitrate(value) : '--';
+}
+
+const overlayLines = computed(() => {
+  const fps = formatMetric(browserStats.value.videoFps);
+  const bitrate = formatBitrateMetric(browserStats.value.videoBitrateKbps);
+  const latency = formatMetric(browserStats.value.roundTripTimeMs, ' ms RTT');
+  const dropped = formatMetric(browserStats.value.videoFramesDropped);
+  const codec = browserStats.value.videoCodec ?? '--';
+  const size = `${form.width}×${form.height}`;
+  return [
+    `${t('sessions.fps')}: ${fps} | ${t('sessions.bitrate')}: ${bitrate}`,
+    `${t('webrtc.metric_latency')}: ${latency} | ${t('webrtc.metric_dropped')}: ${dropped}`,
+    `${t('webrtc.encoding')}: ${codec} | ${t('webrtc.resolution')}: ${size}`,
+  ];
+});
 
 function modifiers(event: KeyboardEvent | MouseEvent | WheelEvent): Record<string, boolean> {
   return {
@@ -1119,18 +1358,134 @@ function releaseForwardedInput(): void {
   pressedKeys.clear();
 }
 
+function stopGamepadCapture(): void {
+  if (gamepadCapture) {
+    // Neutralize pressed controller state before the disconnect message. This
+    // covers input being disabled or the data channel closing without a page
+    // blur event.
+    gamepadCapture.release();
+    gamepadCapture.stop();
+  }
+  gamepadCapture = null;
+}
+
+function syncGamepadCapture(): void {
+  if (inputReady.value && windowFocused.value) {
+    if (!gamepadCapture) {
+      gamepadCapture = attachBrowserGamepadCapture((payload) => browserSession.sendInput(payload), {
+        // A hidden page must release controller state and wait for a fresh
+        // connect/state handshake when it becomes visible again.
+        enabled: () => inputReady.value && document.visibilityState === 'visible',
+      });
+    }
+    return;
+  }
+  stopGamepadCapture();
+}
+
 function onWindowBlur(): void {
+  windowFocused.value = false;
   cancelFullscreenExitHold();
   finishFullscreenExitSwipe();
   releaseForwardedInput();
+  stopGamepadCapture();
+}
+
+function onWindowFocus(): void {
+  windowFocused.value = true;
+  syncGamepadCapture();
 }
 
 function onVisibilityChange(): void {
   if (document.visibilityState !== 'visible') {
+    windowFocused.value = false;
     cancelFullscreenExitHold();
     finishFullscreenExitSwipe();
     releaseForwardedInput();
+    stopGamepadCapture();
+  } else {
+    windowFocused.value = true;
+    syncGamepadCapture();
   }
+}
+
+function requestAutoFullscreen(): void {
+  if (!autoFullscreen.value || fullscreenActive.value) return;
+
+  // The fullscreen request must start in the click/submit event. Clearing the
+  // collapsed presentation synchronously keeps the surface available to the
+  // browser before enterFullscreen reaches its first await.
+  revealStreamSurfaceForFullscreen();
+  const attempt = ++autoFullscreenAttempt;
+  void enterFullscreen()
+    .then(() => {
+      // A failed or cancelled connection must not leave a pseudo/fullscreen
+      // surface behind. The token check also handles a rejected native request
+      // that resolves after disconnect has already started.
+      if (
+        !preserveAutoFullscreenDuringRestart &&
+        (attempt !== autoFullscreenAttempt ||
+          connectionState.value === 'failed' ||
+          connectionState.value === 'disconnected' ||
+          connectionState.value === 'closed' ||
+          connectionState.value === 'idle')
+      ) {
+        return exitFullscreen();
+      }
+    })
+    .catch(() => {
+      // Fullscreen is an enhancement; connection startup still proceeds.
+    });
+}
+
+function cancelAutoFullscreen(): void {
+  if (preserveAutoFullscreenDuringRestart) return;
+  autoFullscreenAttempt += 1;
+  if (fullscreenActive.value) void exitFullscreen();
+}
+
+function toggleStreamCollapsed(): void {
+  if (fullscreenActive.value) return;
+
+  const collapsed = !streamCollapsed.value;
+  if (collapsed) {
+    streamSurfaceFocusedBeforeCollapse = document.activeElement === streamSurface.value;
+    // Collapsing a live stream is a presentation change. Release all held
+    // input and stop the gamepad poller while the surface is unavailable, but
+    // leave the media elements and WebRTC session mounted and running.
+    releaseForwardedInput();
+    stopGamepadCapture();
+    if (document.activeElement === streamSurface.value) streamSurface.value?.blur();
+  }
+  streamCollapsed.value = collapsed;
+
+  if (!collapsed && streamSurfaceFocusedBeforeCollapse && isConnected.value) {
+    window.requestAnimationFrame(() => {
+      if (!streamCollapsed.value && inputReady.value) {
+        try {
+          streamSurface.value?.focus({ preventScroll: true });
+        } catch {
+          streamSurface.value?.focus();
+        }
+      }
+    });
+  }
+}
+
+function requestManualFullscreen(): void {
+  if (fullscreenActive.value) return;
+  // Keep the request in the button's trusted activation. Vue will apply the
+  // v-show update after this handler, while the element is still requestable.
+  revealStreamSurfaceForFullscreen();
+  void enterFullscreen();
+}
+
+function revealStreamSurfaceForFullscreen(): void {
+  streamCollapsed.value = false;
+  // v-show applies its display update after the current event handler. Clear
+  // the previous hidden inline style now so a manual fullscreen request made
+  // from the collapsed state still sees a rendered element.
+  if (streamSurface.value) streamSurface.value.style.display = '';
 }
 
 async function enterFullscreen(): Promise<void> {
@@ -1201,6 +1556,13 @@ function releaseFullscreenKeyboardLock(): void {
 
 function onFullscreenChange(): void {
   nativeFullscreen.value = Boolean(currentFullscreenElement());
+  if (
+    nativeFullscreen.value &&
+    ['idle', 'failed', 'disconnected', 'closed'].includes(String(connectionState.value))
+  ) {
+    void exitFullscreen();
+    return;
+  }
   if (nativeFullscreen.value) {
     void requestFullscreenKeyboardLock();
   } else {
@@ -1212,6 +1574,9 @@ function onFullscreenChange(): void {
 
 function onNativeVideoFullscreenBegin(): void {
   nativeVideoFullscreen.value = true;
+  if (['idle', 'failed', 'disconnected', 'closed'].includes(String(connectionState.value))) {
+    void exitFullscreen();
+  }
 }
 
 function onNativeVideoFullscreenEnd(): void {
@@ -1287,13 +1652,29 @@ async function exitFullscreen(): Promise<void> {
 
 watch(inputForwarding, (enabled, wasEnabled) => {
   if (!enabled && wasEnabled) releaseForwardedInput();
+  syncGamepadCapture();
 });
 
+watch(inputReady, syncGamepadCapture);
+watch(
+  () => form.fps,
+  () => {
+    form.videoMaxFrameAgeFrames = clampFrameAgeFrames(
+      form.videoMaxFrameAgeFrames,
+      form.fps,
+      form.videoPacingMode,
+    );
+  },
+);
+watch([form, autoFullscreen], persistForm, { deep: true });
+
 onMounted(() => {
+  loadSavedForm();
   standaloneWebApp.value = runningAsStandaloneWebApp();
   void refresh();
   startSessionStatusPolling();
   window.addEventListener('blur', onWindowBlur);
+  window.addEventListener('focus', onWindowFocus);
   document.addEventListener('fullscreenchange', onFullscreenChange);
   document.addEventListener('webkitfullscreenchange', onFullscreenChange as EventListener);
   document.addEventListener('visibilitychange', onVisibilityChange);
@@ -1307,6 +1688,7 @@ onBeforeUnmount(() => {
   exitPseudoFullscreen();
   releaseFullscreenKeyboardLock();
   window.removeEventListener('blur', onWindowBlur);
+  window.removeEventListener('focus', onWindowFocus);
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   document.removeEventListener('webkitfullscreenchange', onFullscreenChange as EventListener);
   document.removeEventListener('visibilitychange', onVisibilityChange);
@@ -1491,17 +1873,34 @@ onBeforeUnmount(() => {
           <h2 id="browser-stream-stage-title">{{ selectedAppName }}</h2>
           <p>{{ t('ui.browser_stream.stage_description') }}</p>
         </div>
-        <StatusBadge :label="connectionLabel" :tone="connectionTone" announce="polite" />
+        <div class="stream-stage__heading-actions">
+          <StatusBadge :label="connectionLabel" :tone="connectionTone" announce="polite" />
+          <AppButton
+            v-if="!fullscreenActive"
+            icon="chevron-down"
+            :label="
+              streamCollapsed ? t('ui.browser_stream.expand') : t('ui.browser_stream.collapse')
+            "
+            variant="tertiary"
+            :aria-expanded="!streamCollapsed"
+            aria-controls="browser-stream-surface"
+            @click="toggleStreamCollapsed"
+          />
+        </div>
       </div>
 
       <div
         ref="streamSurface"
+        id="browser-stream-surface"
         class="stream-surface"
+        v-show="!streamCollapsed"
         :class="{
           'stream-surface--interactive': inputReady,
           'stream-surface--pseudo-fullscreen': pseudoFullscreen,
+          'stream-surface--touch-exit': showFullscreenSwipeExit,
         }"
-        tabindex="0"
+        :tabindex="streamCollapsed ? -1 : 0"
+        :aria-hidden="streamCollapsed ? 'true' : undefined"
         :aria-label="t('ui.browser_stream.stream_surface')"
         @keydown="sendKey($event, 'key_down')"
         @keyup="sendKey($event, 'key_up')"
@@ -1515,6 +1914,16 @@ onBeforeUnmount(() => {
       >
         <video ref="videoEl" autoplay muted playsinline disablepictureinpicture />
         <audio ref="audioEl" autoplay hidden />
+        <div
+          v-if="showPerformanceOverlay && isConnected"
+          class="stream-performance-overlay"
+          :aria-label="t('webrtc.show_performance_overlay')"
+          aria-live="off"
+        >
+          <div v-for="line in overlayLines" :key="line" class="stream-performance-overlay__line">
+            {{ line }}
+          </div>
+        </div>
         <div
           v-if="showFullscreenSwipeExit"
           class="stream-surface__exit-swipe"
@@ -1542,6 +1951,10 @@ onBeforeUnmount(() => {
           @pointermove.stop
           @pointerup.stop
         >
+          <label class="stream-surface__overlay-toggle">
+            <input v-model="showPerformanceOverlay" type="checkbox" />
+            <span>{{ t('webrtc.show_performance_overlay') }}</span>
+          </label>
           <AppButton
             icon="x"
             :label="fullscreenExitControlLabel"
@@ -1599,7 +2012,7 @@ onBeforeUnmount(() => {
           :label="t('ui.browser_stream.fullscreen')"
           variant="secondary"
           :disabled="!isConnected"
-          @click="enterFullscreen"
+          @click="requestManualFullscreen"
         />
         <AppButton
           v-if="showInstallWebAppAction"
@@ -1610,11 +2023,7 @@ onBeforeUnmount(() => {
         />
         <span class="stream-stage__input-status" :data-ready="inputReady">
           <UiIcon :name="inputReady ? 'check-circle' : 'info'" :size="16" />
-          {{
-            inputReady
-              ? t('ui.browser_stream.input_ready')
-              : t('ui.browser_stream.input_unavailable')
-          }}
+          {{ inputStatusLabel }}
         </span>
       </div>
     </section>
@@ -1722,6 +2131,67 @@ onBeforeUnmount(() => {
                 />
               </label>
             </div>
+
+            <div class="stream-pacing">
+              <div class="stream-pacing__heading">
+                <span class="vs-field__label">{{ t('webrtc.frame_pacing') }}</span>
+                <small>{{ t('webrtc.frame_pacing_desc') }}</small>
+              </div>
+              <div
+                class="stream-pacing__presets"
+                role="group"
+                :aria-label="t('webrtc.frame_pacing')"
+              >
+                <button
+                  v-for="option in pacingOptions"
+                  :key="option.value"
+                  class="stream-pacing__preset"
+                  :class="{
+                    'stream-pacing__preset--selected': form.videoPacingMode === option.value,
+                  }"
+                  type="button"
+                  :aria-pressed="form.videoPacingMode === option.value"
+                  @click="applyPacingPreset(option.value)"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
+              <div class="stream-form__numeric-grid stream-pacing__values">
+                <label class="vs-field" for="browser-stream-pacing-slack">
+                  <span class="vs-field__label">{{ t('webrtc.frame_pacing_slack') }}</span>
+                  <input
+                    id="browser-stream-pacing-slack"
+                    v-model.number="form.videoPacingSlackMs"
+                    class="vs-input"
+                    type="number"
+                    min="0"
+                    max="10"
+                    step="1"
+                  />
+                  <span class="vs-field__help">0–10 ms</span>
+                </label>
+                <label class="vs-field" for="browser-stream-max-frame-age">
+                  <span class="vs-field__label">{{ t('webrtc.frame_pacing_max_delay') }}</span>
+                  <input
+                    id="browser-stream-max-frame-age"
+                    v-model.number="maxFrameAgeFrames"
+                    class="vs-input"
+                    type="number"
+                    min="1"
+                    :max="maxAllowedFramesForFps(form.fps)"
+                    step="1"
+                  />
+                  <span class="vs-field__help">
+                    {{
+                      t('ui.browser_stream.settings.frame_age_help', {
+                        milliseconds: maxFrameAgeMsLabel,
+                        fps: form.fps,
+                      })
+                    }}
+                  </span>
+                </label>
+              </div>
+            </div>
           </fieldset>
 
           <label
@@ -1759,6 +2229,22 @@ onBeforeUnmount(() => {
           <span>
             <strong>{{ t('ui.browser_stream.controls.input') }}</strong>
             <small>{{ t('ui.browser_stream.controls.input_help') }}</small>
+          </span>
+        </label>
+
+        <label class="stream-form__check" :class="{ 'stream-form__check--disabled': !isConnected }">
+          <input v-model="showPerformanceOverlay" type="checkbox" :disabled="!isConnected" />
+          <span>
+            <strong>{{ t('webrtc.show_performance_overlay') }}</strong>
+            <small>{{ t('ui.browser_stream.controls.performance_overlay_help') }}</small>
+          </span>
+        </label>
+
+        <label class="stream-form__check">
+          <input v-model="autoFullscreen" type="checkbox" />
+          <span>
+            <strong>{{ t('webrtc.auto_fullscreen') }}</strong>
+            <small>{{ t('webrtc.auto_fullscreen_desc') }}</small>
           </span>
         </label>
 
@@ -1982,6 +2468,24 @@ onBeforeUnmount(() => {
   margin-bottom: 0;
 }
 
+.stream-stage__heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--vs-space-8);
+}
+
+.stream-stage__heading-actions [aria-controls='browser-stream-surface'] .vs-button__icon {
+  transition: transform 160ms ease;
+}
+
+.stream-stage__heading-actions
+  [aria-controls='browser-stream-surface'][aria-expanded='true']
+  .vs-button__icon {
+  transform: rotate(180deg);
+}
+
 .stream-surface {
   position: relative;
   display: grid;
@@ -2012,6 +2516,34 @@ onBeforeUnmount(() => {
   height: 100%;
   max-height: 42rem;
   object-fit: contain;
+}
+
+.stream-performance-overlay {
+  position: absolute;
+  z-index: 1;
+  top: var(--vs-space-12);
+  left: var(--vs-space-12);
+  max-width: calc(100% - var(--vs-space-24));
+  padding: var(--vs-space-8) var(--vs-space-12);
+  border: 1px solid rgb(255 255 255 / 0.16);
+  border-radius: var(--vs-radius-control);
+  background: rgb(0 0 0 / 0.72);
+  box-shadow: 0 0.25rem 1rem rgb(0 0 0 / 0.22);
+  color: rgb(255 255 255 / 0.9);
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}
+
+/* Keep Safari's top-edge fullscreen exit affordance visible on touch devices. */
+.stream-surface--touch-exit .stream-performance-overlay {
+  top: max(4.75rem, calc(env(safe-area-inset-top) + 3.25rem));
+}
+
+.stream-performance-overlay__line {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.72rem;
+  line-height: 1.55;
 }
 
 .stream-surface:fullscreen,
@@ -2059,10 +2591,36 @@ onBeforeUnmount(() => {
 
 .stream-surface__exit-fullscreen {
   position: absolute;
+  display: flex;
+  align-items: center;
+  gap: var(--vs-space-8);
   z-index: 2;
   right: max(var(--vs-space-16), env(safe-area-inset-right));
   bottom: max(var(--vs-space-16), env(safe-area-inset-bottom));
   cursor: default;
+}
+
+.stream-surface__overlay-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vs-space-4);
+  min-height: 2.25rem;
+  padding: 0 var(--vs-space-8);
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: var(--vs-radius-control);
+  background: rgb(10 12 18 / 0.68);
+  color: rgb(255 255 255 / 0.88);
+  cursor: pointer;
+  font-size: var(--vs-type-size-helper);
+  touch-action: manipulation;
+  backdrop-filter: blur(10px);
+}
+
+.stream-surface__overlay-toggle input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--vs-color-accent-default);
 }
 
 .stream-surface__exit-swipe {
@@ -2218,6 +2776,56 @@ onBeforeUnmount(() => {
   color: var(--vs-color-status-warning);
   font-size: var(--vs-type-size-helper);
   line-height: 1.4;
+}
+
+.stream-pacing {
+  display: grid;
+  gap: var(--vs-space-12);
+  padding-top: var(--vs-space-4);
+  border-top: 1px solid var(--vs-color-border-subtle);
+}
+
+.stream-pacing__heading {
+  display: grid;
+  gap: var(--vs-space-4);
+}
+
+.stream-pacing__heading small {
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+  line-height: 1.4;
+}
+
+.stream-pacing__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vs-space-8);
+}
+
+.stream-pacing__preset {
+  min-height: 2.25rem;
+  padding: 0 var(--vs-space-12);
+  border: 1px solid var(--vs-color-border-strong);
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-surface);
+  color: var(--vs-color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+}
+
+.stream-pacing__preset:hover,
+.stream-pacing__preset:focus-visible,
+.stream-pacing__preset--selected {
+  border-color: var(--vs-color-accent-default);
+  color: var(--vs-color-text-primary);
+}
+
+.stream-pacing__preset--selected {
+  background: color-mix(in srgb, var(--vs-color-accent-default) 14%, transparent);
+}
+
+.stream-pacing__values {
+  gap: var(--vs-space-12);
 }
 
 .browser-capabilities {

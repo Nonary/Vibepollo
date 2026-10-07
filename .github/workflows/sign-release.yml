@@ -34,6 +34,7 @@ jobs:
     name: Resolve built release
     runs-on: ubuntu-latest
     outputs:
+      arch_artifact_id: ${{ steps.resolve.outputs.arch_artifact_id }}
       build_run_id: ${{ steps.resolve.outputs.build_run_id }}
       release_commit: ${{ steps.resolve.outputs.release_commit }}
       release_version: ${{ steps.resolve.outputs.release_version }}
@@ -83,6 +84,7 @@ jobs:
           fi
 
           required_artifacts=(
+            "build-Archlinux"
             "windows-symbols-Windows"
             "unsigned-msi-package-Windows"
             # upload-artifact v7 uses the source filename as the artifact name
@@ -192,6 +194,16 @@ jobs:
             fi
             echo "::notice::Auto-resolved exact CI build ${build_run_id} for ${source_tag} at ${release_commit}."
           fi
+
+          artifacts_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${build_run_id}/artifacts?per_page=100" | jq -s '{artifacts: [.[].artifacts[]?]}')"
+          mapfile -t arch_artifact_ids < <(
+            jq -r '[.artifacts[] | select(.name == "build-Archlinux" and (.expired | not))] | .[].id' <<< "${artifacts_json}"
+          )
+          if (( ${#arch_artifact_ids[@]} != 1 )); then
+            echo "::error::Resolved CI run does not contain exactly one retained Arch package artifact."
+            exit 1
+          fi
+          arch_artifact_id="${arch_artifact_ids[0]}"
 
           signed_artifact_id=""
           signed_run_is_valid() {
@@ -317,6 +329,7 @@ jobs:
           fi
 
           {
+            echo "arch_artifact_id=${arch_artifact_id}"
             echo "build_run_id=${build_run_id}"
             echo "release_commit=${release_commit}"
             echo "release_version=${release_version}"
@@ -348,7 +361,7 @@ jobs:
       symbol_release_prefix: polo
       require_signpath_signing: true
       signpath_signing_policy_slug: release-signing
-      signpath_wait_for_completion_timeout_in_seconds: 600
+      signpath_wait_for_completion_timeout_in_seconds: 3600
       require_truehdr_runtime: true
     secrets:
       symbol_token: ${{ secrets.SYMBOL_TOKEN }}
@@ -546,6 +559,74 @@ jobs:
         with:
           name: build-Windows
           path: artifacts
+
+      - name: Download Arch Linux artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          artifact-ids: ${{ needs.resolve_release.outputs.arch_artifact_id }}
+          github-token: ${{ github.token }}
+          path: arch-artifacts
+          run-id: ${{ needs.resolve_release.outputs.build_run_id }}
+
+      - name: Include Arch Linux package
+        env:
+          NOTES_FILE: ${{ steps.release-metadata.outputs.notes_file }}
+          RELEASE_VERSION: ${{ steps.release-metadata.outputs.release_version }}
+          TAG_NAME: ${{ needs.resolve_release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          mapfile -t packages < <(find arch-artifacts -type f -name 'vibepollo-*.pkg.tar.zst' ! -name '*-debug-*' | sort)
+          if (( ${#packages[@]} != 1 )); then
+            echo "::error::Expected exactly one non-debug Arch package, found ${#packages[@]}."
+            find arch-artifacts -type f -print >&2
+            exit 1
+          fi
+          package_info="$(tar --zstd -xOf "${packages[0]}" .PKGINFO)"
+          # Arch pkgver disallows SemVer's prerelease separator. Keep this
+          # expectation aligned with special_package_configuration.cmake.
+          arch_package_version=${RELEASE_VERSION//-/}
+          arch_package_version=${arch_package_version//+/.}
+          if ! grep -qx "pkgver = ${arch_package_version}-1" <<< "${package_info}"; then
+            echo "::error::Arch package version does not match release ${RELEASE_VERSION}."
+            grep '^pkgver = ' <<< "${package_info}" >&2 || true
+            exit 1
+          fi
+
+          package_name="$(basename "${packages[0]}")"
+          cp -- "${packages[0]}" "artifacts/${package_name}"
+          package_hash="$(sha256sum "artifacts/${package_name}")"
+          package_hash="${package_hash%% *}"
+          provenance_tmp="$(mktemp)"
+          jq --arg name "${package_name}" --arg hash "${package_hash}" \
+            '.assets[$name] = $hash' \
+            artifacts/release-provenance.json > "${provenance_tmp}"
+          mv -- "${provenance_tmp}" artifacts/release-provenance.json
+
+          cat >>"${NOTES_FILE}" <<EOF
+
+          ## Arch Linux and CachyOS
+
+          Download [\`${package_name}\`](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}/${package_name}) and install it with:
+
+          \`\`\`bash
+          sudo pacman -U ./${package_name}
+          \`\`\`
+
+          Managed virtual displays require Linux 6.16 or newer. If matching headers are missing, the package prints the exact \`sudo pacman -S --needed <kernel-package>-headers\` command for the running kernel. Run it, then retry the driver setup:
+
+          \`\`\`bash
+          sudo /usr/libexec/vibeshine/vibeshine-drm-install install
+          \`\`\`
+
+          Or let the installer script handle headers, the package, and the firewall:
+
+          \`\`\`bash
+          curl -fsSLO https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG_NAME}/scripts/linux_install.sh
+          sudo bash linux_install.sh --version ${RELEASE_VERSION}
+          \`\`\`
+
+          See the [full Linux installation guide](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG_NAME}/docs/linux/install.md).
+          EOF
 
       - name: Debug artifacts
         run: ls -l artifacts

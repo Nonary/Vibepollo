@@ -546,6 +546,7 @@ const commit = ref('');
 const installedIsPrerelease = ref(false);
 // ViGEm health
 const vigemInstalled = ref<boolean | null>(null);
+const vigemRequired = ref<boolean | null>(null);
 const vigemVersion = ref('');
 // Vulkan HDR layer health (Windows only)
 const vulkanHdrLayer = ref<{ installed: boolean; enabled: boolean } | null>(null);
@@ -560,6 +561,7 @@ if (typeof window !== 'undefined') {
 // Playnite extension status
 type PlayniteStatus = {
   installed: boolean | null;
+  legacy_plugin?: boolean;
   active: boolean;
   extensions_dir?: string;
   installed_version?: string;
@@ -753,15 +755,19 @@ async function runVersionChecks() {
         const r = await http.get('/api/health/vigem', { validateStatus: () => true });
         if (r.status === 200 && r.data) {
           vigemInstalled.value = !!r.data.installed;
+          vigemRequired.value = typeof r.data.required === 'boolean' ? r.data.required : null;
           vigemVersion.value = r.data.version || '';
         } else {
           vigemInstalled.value = null;
+          vigemRequired.value = null;
         }
       } else {
         vigemInstalled.value = null;
+        vigemRequired.value = null;
       }
     } catch (e) {
       vigemInstalled.value = null;
+      vigemRequired.value = null;
     }
     await refreshVulkanHdrLayerStatus(plat);
     await refreshCrashDumpStatus(plat);
@@ -825,8 +831,9 @@ function triggerDownload(blob: Blob, filename: string) {
   window.URL.revokeObjectURL(url);
 }
 
-async function downloadCrashBundlePart(partIndex: number, filenameHint?: string) {
-  const r = await http.get(`/api/logs/export_crash?part=${partIndex}`, {
+async function downloadCrashBundlePart(partIndex: number, filenameHint?: string, snapshot?: string) {
+  const snapshotParam = snapshot ? `&snapshot=${encodeURIComponent(snapshot)}` : '';
+  const r = await http.get(`/api/logs/export_crash?part=${partIndex}${snapshotParam}`, {
     responseType: 'blob',
     validateStatus: () => true,
   });
@@ -847,12 +854,13 @@ async function exportCrashBundleAsync() {
       validateStatus: () => true,
     });
     const parts = Array.isArray(manifest.data?.parts) ? manifest.data.parts : [];
+    const snapshot = typeof manifest.data?.snapshot === 'string' ? manifest.data.snapshot : undefined;
     if (manifest.status === 200 && parts.length > 0) {
       const ordered = [...parts].sort((a, b) => Number(a.index) - Number(b.index));
       for (const part of ordered) {
         const index = Number(part.index) || 0;
         if (index <= 0) continue;
-        await downloadCrashBundlePart(index, part.filename);
+        await downloadCrashBundlePart(index, part.filename, snapshot);
       }
     } else {
       await downloadCrashBundlePart(1);
@@ -1124,7 +1132,12 @@ const showCrashDumpBanner = computed(() => {
 const showVigemBanner = computed(() => {
   const plat = (configStore.metadata?.platform || '').toLowerCase();
   const controllerEnabled = (configStore.config as any)?.controller === 'enabled';
-  return plat === 'windows' && controllerEnabled && vigemInstalled.value === false;
+  return (
+    plat === 'windows' &&
+    controllerEnabled &&
+    vigemInstalled.value === false &&
+    vigemRequired.value !== false
+  );
 });
 
 const showVulkanHdrLayerBanner = computed(() => {
@@ -1144,7 +1157,7 @@ const showGoldenSnapshotOutOfDateBanner = computed(() => {
 });
 
 const playniteUpdateAvailable = computed(() => {
-  return !!(playnite.value && playnite.value.installed && playnite.value.update_available);
+  return !!(playnite.value && playnite.value.update_available);
 });
 
 const playniteApps = computed(() => getAppsSnapshot().filter((app) => isPlayniteApp(app)));
@@ -1157,7 +1170,12 @@ const hasPlayniteFullscreenApp = computed(() => {
 const showPlayniteMissingPluginBanner = computed(() => {
   const plat = (configStore.metadata?.platform || '').toLowerCase();
   if (plat !== 'windows') return false;
-  if (!playnite.value || playnite.value.active === true || playnite.value.installed !== false)
+  if (
+    !playnite.value ||
+    playnite.value.active === true ||
+    playnite.value.installed !== false ||
+    playnite.value.legacy_plugin === true
+  )
     return false;
   return playniteAutoSyncedAppsCount.value > 0 || hasPlayniteFullscreenApp.value;
 });

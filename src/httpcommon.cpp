@@ -205,6 +205,7 @@ namespace http {
 
   std::string unique_id;
   uuid_util::uuid_t uuid;
+  bool credentials_created_this_run = false;
   net::net_e origin_web_ui_allowed;
 
 #ifdef _WIN32
@@ -224,8 +225,17 @@ namespace http {
       config::nvhttp.pkey = (dir / ("pkey-"s + unique_id)).string();
     }
 
-    if ((!fs::exists(config::nvhttp.pkey) || !fs::exists(config::nvhttp.cert)) &&
-        create_creds(config::nvhttp.pkey, config::nvhttp.cert)) {
+    const bool had_credential_material = fs::exists(config::nvhttp.pkey) || fs::exists(config::nvhttp.cert);
+    if ((!fs::exists(config::nvhttp.pkey) || !fs::exists(config::nvhttp.cert))) {
+      if (create_creds(config::nvhttp.pkey, config::nvhttp.cert)) {
+        return -1;
+      }
+      credentials_created_this_run = !had_credential_material;
+    }
+    // Credential inspection precedes nvhttp pairing-state startup. Restore its
+    // snapshot here, before malformed state could abort startup or enable setup.
+    if (!clean_slate && !statefile::recover_credentials(config::sunshine.credentials_file)) {
+      BOOST_LOG(error) << "Credential state and its recovery copy are unavailable; refusing credential setup.";
       return -1;
     }
     switch (user_creds_state(config::sunshine.credentials_file)) {
@@ -397,7 +407,10 @@ namespace http {
       return -1;
     }
 
-    fs::permissions(cert_path, fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read | fs::perms::owner_write, fs::perm_options::replace, err_code);
+    // Keep the certificate owner-only. Only this process reads it (clients
+    // receive it during pairing), and the Linux machine host refuses to start
+    // when anything under its state directory is readable by other accounts.
+    fs::permissions(cert_path, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, err_code);
 
     if (err_code) {
       BOOST_LOG(error) << "Couldn't change permissions of ["sv << config::nvhttp.cert << "] :"sv << err_code.message();

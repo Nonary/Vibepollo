@@ -7,6 +7,7 @@
 // standard includes
 #include "config.h"
 #include "framegen_policy.h"
+#include "remote_session.h"
 
 #include <array>
 #include <atomic>
@@ -39,12 +40,22 @@ namespace rtsp_stream {
   constexpr auto RTSP_SETUP_PORT = 21;
 
   struct launch_session_t {
+    // Pending Linux launches must keep the display awake before capture and
+    // until the active capture has acquired its own reference. Deliberately
+    // omitted from retained app/display-recovery snapshots.
+    std::shared_ptr<void> display_power_guard;
     struct resolution_override_t {
       int width;
       int height;
     };
 
     uint32_t id;
+    remote_session::role_e role {remote_session::role_e::game};
+    std::uint64_t role_generation {};
+    // The exact topology-owned capture target for Remote Monitor. Empty means
+    // no target was verified and must never fall back to a physical display.
+    std::optional<std::string> remote_capture_output;
+    std::string rtsp_source_address;
 
     crypto::aes_t gcm_key;
     crypto::aes_t iv;
@@ -66,6 +77,7 @@ namespace rtsp_stream {
     int height;
     int fps;
     int gcmap;
+    int playstation_gamepad_mask {};
 
     struct app_metadata_t {
       std::string id;
@@ -99,10 +111,18 @@ namespace rtsp_stream {
     // in millihertz. The existing fps field remains the legacy stream cadence.
     std::uint32_t client_display_refresh_millihz = 0;
     bool client_requests_virtual_display;
+    // A transport joining another client's running game cannot change host-wide stream settings.
+    bool secondary_game_client = false;
     // Present only when the client explicitly selected a virtual or physical display.
     std::optional<bool> client_virtual_display_override;
     bool virtual_display;
     uint32_t scale_factor = 100;
+    bool normal_vdd_capacity_rejected = false;
+    bool normal_vdd_identity_newly_reserved = false;
+    std::uint64_t normal_vdd_identity_token = 0;
+    // Linux resumes retain the running app's display owner across TLS clients.
+    // client_uuid remains the authenticated transport identity.
+    std::string normal_vdd_owner_uuid;
     // Host/display resolution derived from a launch-time client override. The RTSP
     // negotiated viewport remains in width/height.
     std::optional<resolution_override_t> resolution_override;
@@ -134,6 +154,8 @@ namespace rtsp_stream {
     std::optional<int> framegen_refresh_rate;
     std::optional<std::uint32_t> framegen_refresh_millihz;
     int framegen_refresh_multiplier = 1;
+    /// @brief framegen_refresh_millihz is the virtual display's own rate (VRR mode), not a stream multiple.
+    bool framegen_fixed_refresh = false;
     std::string frame_generation_provider;
     std::optional<double> lossless_scaling_target_fps;
     std::optional<int> lossless_scaling_rtss_limit;
@@ -163,7 +185,7 @@ namespace rtsp_stream {
      * @brief Build an isolated copy for the background RTSP startup worker.
      *
      * stream::session::alloc()/start() run on the startup thread while the io_context
-     * thread still owns and reuses the original launch session (reserve_launch_session,
+     * thread still owns and reuses the original launch session (reservation,
      * respond() cipher/IV, expiry). The worker must therefore operate on this clone
      * rather than the live original. launch_session_t is non-copyable (the move-only
      * rtsp_cipher), so the fields are copied explicitly.
@@ -174,6 +196,12 @@ namespace rtsp_stream {
      * where streaming sessions ran at PERM::_no and silently discarded all input).
      */
     [[nodiscard]] std::shared_ptr<launch_session_t> clone_for_startup() const;
+  };
+
+  struct client_disconnect_result_t {
+    bool disconnected {};
+    std::vector<remote_session::role_e> pending_roles;
+    std::vector<std::uint64_t> pending_generations;
   };
 
   /**
@@ -269,7 +297,8 @@ namespace rtsp_stream {
     std::string_view capture_mode,
     bool auto_capture_uses_wgc,
     bool auto_virtual_framegen_limiter,
-    int virtual_display_refresh_multiplier
+    int virtual_display_refresh_multiplier,
+    std::uint32_t virtual_display_fixed_refresh_millihz = 0
   ) {
     return framegen::make_stream_start_policy({
       .fps = session.fps,
@@ -286,10 +315,20 @@ namespace rtsp_stream {
       .auto_capture_uses_wgc = auto_capture_uses_wgc,
       .auto_virtual_framegen_limiter = auto_virtual_framegen_limiter,
       .virtual_display_refresh_multiplier = virtual_display_refresh_multiplier,
+      .virtual_display_fixed_refresh_millihz = virtual_display_fixed_refresh_millihz,
     });
   }
 
-  void launch_session_raise(std::shared_ptr<launch_session_t> launch_session);
+  // Returns false when the per-launch admission registry rejects the request.
+  // Encrypted launches are independent; plaintext remains one pending launch
+  // per source address because it has no cryptographic routing identity.
+  bool launch_session_raise(std::shared_ptr<launch_session_t> launch_session);
+
+  // Surface the actual plaintext admission warning in the topology UI without
+  // giving that UI a second, divergent notion of RTSP routing state.
+  std::string plaintext_route_warning();
+  bool disconnect_game_sessions(bool lifecycle_lock_held = false);
+  bool disconnect_remote_role_session(std::string_view client_uuid, remote_session::role_e role, std::uint64_t generation, bool lifecycle_lock_held = false);
 
   /**
    * @brief Clear state for the specified launch session.
@@ -349,6 +388,7 @@ namespace rtsp_stream {
    * @return True if one or more sessions were stopped.
    */
   bool disconnect_client_sessions(const std::string &client_uuid);
+  client_disconnect_result_t disconnect_client_sessions_with_result(const std::string &client_uuid);
 
   /**
    * @brief Runs the RTSP server loop.

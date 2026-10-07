@@ -24,6 +24,122 @@ TEST(HttpPairingClientNames, DisplayClientNameSkipsSelfPlaceholder) {
   ASSERT_EQ(pairing_policy::display_client_name("self", "", ""), "Sunshine");
 }
 
+TEST(HttpPairingAdmission, BoundsPendingState) {
+  constexpr std::string_view unique_id = "ABCDEF01-2345-6789-ABCD-EF0123456789";
+  constexpr std::string_view certificate = "AABB";
+  constexpr std::string_view salt = "00112233445566778899AABBCCDDEEFF";
+
+  ASSERT_TRUE(pairing_policy::admit_pending_session(unique_id, certificate, salt, 0, false, false).accepted);
+  ASSERT_FALSE(pairing_policy::admit_pending_session(unique_id, certificate, salt, pairing_policy::max_pending_sessions, false, false).accepted);
+  ASSERT_FALSE(pairing_policy::admit_pending_session(unique_id, certificate, salt, pairing_policy::max_pending_sessions, true, false).accepted);
+  // The same certificate may retry its own pending request without waiting for expiry.
+  ASSERT_TRUE(pairing_policy::admit_pending_session(unique_id, certificate, salt, pairing_policy::max_pending_sessions, true, true).accepted);
+  // Identity alone never bypasses the bound when nothing is being replaced.
+  ASSERT_FALSE(pairing_policy::admit_pending_session(unique_id, certificate, salt, pairing_policy::max_pending_sessions, false, true).accepted);
+  ASSERT_EQ(pairing_policy::max_pending_sessions, 1);
+}
+
+TEST(HttpPairingAdmission, PendingIdentityIsImmutableUntilCompletion) {
+  constexpr std::string_view first_id = "client-1";
+  constexpr std::string_view second_id = "client-2";
+  constexpr std::string_view certificate = "AABB";
+  constexpr std::string_view salt = "00112233445566778899AABBCCDDEEFF";
+
+  ASSERT_FALSE(pairing_policy::admit_pending_session(second_id, certificate, salt, 1, false, false).accepted);
+  ASSERT_FALSE(pairing_policy::admit_pending_session(first_id, "CCDD", "FFEEDDCCBBAA99887766554433221100", 1, true, false).accepted);
+}
+
+TEST(HttpPairingAdmission, RejectsMalformedOrOversizedFields) {
+  constexpr std::string_view unique_id = "client-1";
+  constexpr std::string_view certificate = "AABB";
+  constexpr std::string_view salt = "00112233445566778899AABBCCDDEEFF";
+
+  ASSERT_FALSE(pairing_policy::admit_pending_session("../client", certificate, salt, 0, false, false).accepted);
+  ASSERT_FALSE(pairing_policy::admit_pending_session(unique_id, "not-hex", salt, 0, false, false).accepted);
+  ASSERT_FALSE(pairing_policy::admit_pending_session(unique_id, certificate, "00", 0, false, false).accepted);
+  ASSERT_FALSE(pairing_policy::valid_hex_field(std::string(pairing_policy::max_pairing_hex_field_length + 2, 'A'), 2));
+}
+
+TEST(HttpPairingAuthorization, EveryEnabledPairedClientIsAuthorized) {
+  const std::array clients {
+    pairing_policy::paired_client_record_view_t {"2474C237-8089-AB2B-0793-E0367530227B", "cert-a", true},
+    pairing_policy::paired_client_record_view_t {"FDC285EF-3F84-B123-2690-6741DC8065F8", "cert-b", true},
+    pairing_policy::paired_client_record_view_t {"60D4A3B6-F7FB-C52D-4D11-4B2585061298", "cert-c", true},
+  };
+
+  ASSERT_TRUE(pairing_policy::paired_client_state_valid(clients));
+  const auto resolved = pairing_policy::resolve_paired_client(clients, "cert-c");
+  ASSERT_EQ(resolved.status, pairing_policy::paired_client_resolution_e::authorized);
+  ASSERT_EQ(resolved.index, 2u);
+}
+
+TEST(HttpPairingAuthorization, DisabledAndUnknownCertificatesAreRejected) {
+  const std::array clients {
+    pairing_policy::paired_client_record_view_t {"2474C237-8089-AB2B-0793-E0367530227B", "cert-a", false},
+  };
+
+  ASSERT_EQ(
+    pairing_policy::resolve_paired_client(clients, "cert-a").status,
+    pairing_policy::paired_client_resolution_e::disabled
+  );
+  ASSERT_EQ(
+    pairing_policy::resolve_paired_client(clients, "related-but-not-exact").status,
+    pairing_policy::paired_client_resolution_e::unknown_certificate
+  );
+}
+
+TEST(HttpPairingAuthorization, AmbiguousOrMalformedPairingStateFailsClosed) {
+  const std::array duplicate_uuid {
+    pairing_policy::paired_client_record_view_t {"2474C237-8089-AB2B-0793-E0367530227B", "cert-a", true},
+    pairing_policy::paired_client_record_view_t {"2474C237-8089-AB2B-0793-E0367530227B", "cert-b", true},
+  };
+  const std::array duplicate_certificate {
+    pairing_policy::paired_client_record_view_t {"2474C237-8089-AB2B-0793-E0367530227B", "cert-a", true},
+    pairing_policy::paired_client_record_view_t {"FDC285EF-3F84-B123-2690-6741DC8065F8", "cert-a", true},
+  };
+  const std::array malformed_uuid {
+    pairing_policy::paired_client_record_view_t {"not-a-uuid", "cert-a", true},
+  };
+
+  for (const auto status : {
+         pairing_policy::resolve_paired_client(duplicate_uuid, "cert-a").status,
+         pairing_policy::resolve_paired_client(duplicate_certificate, "cert-a").status,
+         pairing_policy::resolve_paired_client(malformed_uuid, "cert-a").status,
+       }) {
+    ASSERT_EQ(status, pairing_policy::paired_client_resolution_e::invalid_state);
+  }
+}
+
+TEST(HttpPairingAuthorization, PairingStateAndCertificateBoundsFailClosed) {
+  std::vector<std::string> uuids;
+  std::vector<std::string> certificates;
+  std::vector<pairing_policy::paired_client_record_view_t> too_many;
+  uuids.reserve(pairing_policy::max_paired_clients + 1);
+  certificates.reserve(pairing_policy::max_paired_clients + 1);
+  too_many.reserve(pairing_policy::max_paired_clients + 1);
+  for (std::size_t index = 0; index <= pairing_policy::max_paired_clients; ++index) {
+    const auto suffix = std::to_string(index);
+    uuids.emplace_back(
+      "00000000-0000-0000-0000-" + std::string(12 - suffix.size(), '0') + suffix
+    );
+    certificates.emplace_back("cert-" + suffix);
+    too_many.push_back({uuids.back(), certificates.back(), true});
+  }
+
+  ASSERT_TRUE(pairing_policy::paired_client_state_valid(std::span {too_many}.first(pairing_policy::max_paired_clients)));
+  ASSERT_FALSE(pairing_policy::paired_client_state_valid(too_many));
+
+  const std::string oversized_certificate(pairing_policy::max_paired_certificate_length + 1, 'x');
+  const std::array oversized {
+    pairing_policy::paired_client_record_view_t {
+      "2474C237-8089-AB2B-0793-E0367530227B",
+      oversized_certificate,
+      true,
+    },
+  };
+  ASSERT_FALSE(pairing_policy::paired_client_state_valid(oversized));
+}
+
 struct pairing_input {
   pairing_policy::session_state_t session;
   std::size_t salt_size = 0;
@@ -195,4 +311,100 @@ TEST(PairingTest, OutOfOrderCalls) {
   // Calling it again should fail.
   server_certificate = pairing_policy::begin_get_server_certificate(session, valid_salt_size);
   ASSERT_FALSE(server_certificate.accepted);
+}
+
+#include <src/paired_state_policy.h>
+
+namespace {
+  nlohmann::json paired_snapshot() {
+    return nlohmann::json::parse(R"({"username":"owner","password":"hash","salt":"salt","root":{"uniqueid":"11111111-1111-1111-1111-111111111111","api_tokens":[{"hash":"token"}],"named_devices":[{"uuid":"22222222-2222-2222-2222-222222222222","name":"client","cert":"certificate","perm":3,"enable_legacy_ordering":false,"allow_client_commands":false,"do":[{"cmd":"launch","elevated":true}],"undo":[{"cmd":"stop","elevated":false}],"config_overrides":{"fps":"60"},"future_setting":"keep"}]}})");
+  }
+}
+
+TEST(PairedStateRecovery, RetainsApolloPermissionsCommandsAndSharedState) {
+  auto snapshot = paired_snapshot();
+  const auto original = snapshot;
+  EXPECT_TRUE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  EXPECT_EQ(snapshot, original);
+  EXPECT_EQ(nlohmann::json::parse(snapshot.dump()), original);
+}
+
+TEST(PairedStateRecovery, RejectsMalformedPermissionRatherThanGrantingDefault) {
+  for (const auto &invalid : {nlohmann::json("bad"), nlohmann::json(-1), nlohmann::json(4294967296ULL), nlohmann::json::object()}) {
+    auto snapshot = paired_snapshot();
+    snapshot["root"]["named_devices"][0]["perm"] = invalid;
+    EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  }
+}
+
+TEST(PairedStateRecovery, RejectsInvalidIdentityAndDuplicateRecords) {
+  auto snapshot = paired_snapshot();
+  snapshot["root"]["uniqueid"] = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx";
+  EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  snapshot = paired_snapshot();
+  snapshot["root"]["named_devices"].push_back(snapshot["root"]["named_devices"][0]);
+  EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  snapshot = paired_snapshot();
+  snapshot["root"]["named_devices"] = "broken";
+  EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
+}
+
+TEST(PairedStateRecovery, ValidatesImportedEnabledFlagWithoutGrantingDefault) {
+  for (const auto &invalid : {nlohmann::json("bad"), nlohmann::json(2), nlohmann::json(nullptr), nlohmann::json::object()}) {
+    auto snapshot = paired_snapshot();
+    snapshot["root"]["named_devices"][0]["enabled"] = invalid;
+    EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  }
+  for (const auto &disabled : {nlohmann::json(false), nlohmann::json(0), nlohmann::json("false"), nlohmann::json("0")}) {
+    auto snapshot = paired_snapshot();
+    snapshot["root"]["named_devices"][0]["enabled"] = disabled;
+    ASSERT_TRUE(nvhttp::state_policy::normalize_snapshot(snapshot));
+    const auto &value = snapshot["root"]["named_devices"][0]["enabled"];
+    EXPECT_TRUE(value == false || value == "false" || value == "0");
+  }
+}
+
+TEST(PairedStateRecovery, AcceptsPropertyTreeEmptyContainersAndScalarValues) {
+  auto snapshot = paired_snapshot();
+  auto &client = snapshot["root"]["named_devices"][0];
+  client["perm"] = "3";
+  client["allow_client_commands"] = "false";
+  client["do"] = "";
+  client["undo"] = "";
+  client["config_overrides"] = "";
+  EXPECT_TRUE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  EXPECT_TRUE(client["do"].is_array());
+  EXPECT_TRUE(client["config_overrides"].is_object());
+  snapshot["root"]["named_devices"] = "";
+  EXPECT_TRUE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  EXPECT_TRUE(snapshot["root"]["named_devices"].empty());
+}
+
+TEST(PairedStateRecovery, RejectsMalformedCommandAndPolicyFlags) {
+  auto snapshot = paired_snapshot();
+  snapshot["root"]["named_devices"][0]["do"][0]["elevated"] = "invalid";
+  EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  snapshot = paired_snapshot();
+  snapshot["root"]["named_devices"][0]["allow_client_commands"] = "invalid";
+  EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
+}
+
+TEST(PairedStateRecovery, PrimaryWriterGuardIncludesApolloPermissionsAndCommands) {
+  const auto convert = [](const nlohmann::json &json) {
+    boost::property_tree::ptree tree;
+    std::istringstream input(json.dump());
+    boost::property_tree::read_json(input, tree);
+    return tree;
+  };
+  auto snapshot = paired_snapshot();
+  const auto backup = convert(snapshot);
+  EXPECT_TRUE(nvhttp::state_policy::valid_primary_tree(backup, false));
+  snapshot["root"]["named_devices"][0]["perm"] = "invalid";
+  EXPECT_FALSE(statefile::policy::primary_write_allowed(convert(snapshot), statefile::policy::load_result_e::loaded, backup, nvhttp::state_policy::valid_primary_tree));
+  snapshot = paired_snapshot();
+  snapshot["root"]["named_devices"][0]["do"][0]["elevated"] = "invalid";
+  EXPECT_FALSE(statefile::policy::primary_write_allowed(convert(snapshot), statefile::policy::load_result_e::loaded, backup, nvhttp::state_policy::valid_primary_tree));
+  const auto partial = convert(nlohmann::json::parse(R"({"root":{"display_helper_engine":"v2"}})"));
+  EXPECT_FALSE(statefile::policy::primary_write_allowed(partial, statefile::policy::load_result_e::loaded, backup, nvhttp::state_policy::valid_primary_tree));
+  EXPECT_TRUE(statefile::policy::primary_write_allowed(partial, statefile::policy::load_result_e::missing, {}, nvhttp::state_policy::valid_primary_tree));
 }

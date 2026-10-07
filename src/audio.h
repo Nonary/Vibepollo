@@ -93,6 +93,18 @@ namespace audio {
    */
   audio_ctx_ref_t get_audio_ctx_ref();
 
+  /** @brief Mark the current app as terminal and restore retained audio state. */
+  void app_termination_requested();
+
+  /** @brief Mark a newly assigned app as resumable for future disconnects. */
+  void app_started();
+
+  /** @brief Publish a capture's acquisition of shared audio ownership. */
+  void audio_owner_acquired();
+
+  /** @brief Publish a capture's release of shared audio ownership. */
+  void audio_owner_released();
+
   /**
    * @brief Check if the audio sink held by audio context is available.
    * @returns True if available (and can probably be restored), false otherwise.

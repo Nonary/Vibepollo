@@ -1,0 +1,9 @@
+[Desktop Entry]
+Categories=RemoteAccess;Network;
+Comment=@PROJECT_DESCRIPTION@
+Exec=vibepollo.sh
+Icon=@SUNSHINE_DESKTOP_ICON@
+Keywords=vibepollo;gamestream;stream;moonlight;remote play;
+Name=@PROJECT_NAME@
+Type=Application
+Version=1.0

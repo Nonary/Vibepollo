@@ -140,6 +140,10 @@ TEST(SunshineVirtualDisplay, EncoderProbeEnsureDisplaySkippedForPerClientVirtual
   EXPECT_FALSE(VDISPLAY::policy::should_ensure_probe_display(true));
 }
 
+TEST(SunshineVirtualDisplay, EncoderProbeNeverCreatesHostOwnedDisplay) {
+  EXPECT_FALSE(VDISPLAY::policy::should_create_host_probe_display());
+}
+
 TEST(SunshineVirtualDisplay, EnsureDisplayAppliesConfiguredRenderAdapterBeforeTemporaryCreation) {
   EXPECT_TRUE(VDISPLAY::policy::adapter_preference_allows_creation(true));
   EXPECT_FALSE(VDISPLAY::policy::adapter_preference_allows_creation(false));
@@ -209,6 +213,13 @@ TEST(SunshineVirtualDisplay, ActiveRtspJoinSkipsVirtualDisplayPreparation) {
   EXPECT_TRUE(VDISPLAY::policy::should_prepare_display_for_new_session(true));
 }
 
+TEST(SunshineVirtualDisplay, PeerPreservingCreateCannotTeardownOrRestartSharedAdapter) {
+  EXPECT_FALSE(VDISPLAY::policy::should_teardown_conflicting_virtual_displays(true));
+  EXPECT_FALSE(VDISPLAY::policy::may_restart_adapter_after_create_failure(true));
+  EXPECT_TRUE(VDISPLAY::policy::should_teardown_conflicting_virtual_displays(false));
+  EXPECT_TRUE(VDISPLAY::policy::may_restart_adapter_after_create_failure(false));
+}
+
 TEST(SunshineVirtualDisplay, StableIdentityResolverUsesEdidBeforeFriendlyName) {
   using kind = VDISPLAY::policy::identity_match_kind;
   EXPECT_EQ(VDISPLAY::policy::identity_resolution_order.front(), kind::stable_edid);
@@ -225,6 +236,23 @@ TEST(SunshineVirtualDisplay, StreamStartRemovesRetainedProbeDisplayRegardlessOfS
 TEST(SunshineVirtualDisplay, StreamReadinessAllowsHelperToActivateEnumeratedDisplay) {
   EXPECT_FALSE(VDISPLAY::policy::accept_enumerated_target(std::chrono::milliseconds {499}));
   EXPECT_TRUE(VDISPLAY::policy::accept_enumerated_target(std::chrono::milliseconds {500}));
+}
+
+TEST(SunshineVirtualDisplay, StableEdidMatchSelectsCandidateWithoutHints) {
+  // A wedged per-client identity enumerates nameless and inactive, so no
+  // dynamic hint can ever match it; the stable EDID match alone must make it
+  // the exact target so the display helper is handed the identity to activate.
+  EXPECT_TRUE(VDISPLAY::policy::readiness_candidate_is_exact_target(false, true));
+  EXPECT_TRUE(VDISPLAY::policy::readiness_candidate_is_exact_target(true, false));
+  EXPECT_TRUE(VDISPLAY::policy::readiness_candidate_is_exact_target(true, true));
+  EXPECT_FALSE(VDISPLAY::policy::readiness_candidate_is_exact_target(false, false));
+}
+
+TEST(SunshineVirtualDisplay, UnidentifiedReadinessCandidatesStayDeferred) {
+  EXPECT_TRUE(VDISPLAY::policy::defer_unidentified_readiness_candidate(false, false));
+  EXPECT_FALSE(VDISPLAY::policy::defer_unidentified_readiness_candidate(true, false));
+  EXPECT_FALSE(VDISPLAY::policy::defer_unidentified_readiness_candidate(true, true));
+  EXPECT_FALSE(VDISPLAY::policy::defer_unidentified_readiness_candidate(false, true));
 }
 
 TEST(SunshineVirtualDisplay, InactiveRetainedDisplayReusesAdvertisedSessionMode) {
@@ -320,6 +348,11 @@ TEST(SunshineVirtualDisplay, SdrRequestResetsPersistedHdrStateBeforeTheHelperRun
   EXPECT_TRUE(VDISPLAY::policy::should_reset_hdr_state_for_stream(false, true));
   EXPECT_FALSE(VDISPLAY::policy::should_reset_hdr_state_for_stream(false, false));
   EXPECT_FALSE(VDISPLAY::policy::should_reset_hdr_state_for_stream(true, true));
+}
+
+TEST(SunshineVirtualDisplay, UnmanagedHdrPreservesBothWindowsStates) {
+  EXPECT_FALSE(VDISPLAY::policy::should_reset_hdr_state_for_stream(std::nullopt, true));
+  EXPECT_FALSE(VDISPLAY::policy::should_reset_hdr_state_for_stream(std::nullopt, false));
 }
 
 TEST(SunshineVirtualDisplay, AvailabilityChecksStayPassive) {

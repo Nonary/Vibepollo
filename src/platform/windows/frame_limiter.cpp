@@ -87,7 +87,6 @@ namespace platf {
     bool g_prev_frame_limiter_enabled = false;
     std::string g_prev_frame_limiter_provider;
     bool g_prev_frame_limiter_provider_set = false;
-    bool g_prev_disable_vsync = false;
     std::string g_prev_rtss_frame_limit_type;
     bool g_prev_rtss_frame_limit_type_set = false;
     std::string g_prev_capture_mode;
@@ -229,20 +228,28 @@ namespace platf {
     const bool want_smooth_motion = policy.smooth_motion && nvidia_gpu_present;
 
     const bool provider_overridden = config::has_runtime_config_override("frame_limiter_provider");
-    const bool rtss_sync_overridden = config::has_runtime_config_override("rtss_frame_limit_type");
+    const bool runtime_rtss_sync_overridden = config::has_runtime_config_override("rtss_frame_limit_type");
+    const bool virtual_display_reflex_required = framegen::virtual_display_reflex_required(
+      policy,
+      config::rtss.allow_virtual_display_override,
+      runtime_rtss_sync_overridden
+    );
+    const bool virtual_display_sync_override =
+      policy.uses_virtual_display &&
+      config::rtss.allow_virtual_display_override &&
+      !virtual_display_reflex_required;
+    const bool rtss_sync_overridden = runtime_rtss_sync_overridden || virtual_display_sync_override;
     const auto configured_provider = parse_provider(config::frame_limiter.provider);
     const bool allow_framegen_default_provider = !provider_overridden && configured_provider == frame_limiter_provider::auto_detect;
     const bool default_policy_can_use_rtss =
       configured_provider == frame_limiter_provider::auto_detect || configured_provider == frame_limiter_provider::rtss;
 
-    // Frame generation policy: enable limiter/vsync defaults and tune RTSS sync unless explicitly overridden.
+    // Frame generation policy: enable the limiter and tune RTSS sync unless explicitly overridden.
     if (policy_overrides_enabled) {
       g_prev_frame_limiter_enabled = config::frame_limiter.enable;
       g_prev_frame_limiter_provider = config::frame_limiter.provider;
       g_prev_frame_limiter_provider_set = true;
-      g_prev_disable_vsync = config::frame_limiter.disable_vsync;
       config::frame_limiter.enable = true;
-      config::frame_limiter.disable_vsync = true;
       if ((capture_fix_enabled || physical_framegen_policy_enabled) && allow_framegen_default_provider) {
         config::frame_limiter.provider = "rtss";
       }
@@ -275,7 +282,9 @@ namespace platf {
       g_prev_capture_mode_set = false;
     }
 
-    const bool want_nv_vsync_override = (config::frame_limiter.disable_vsync || policy_overrides_enabled) && nvidia_gpu_present && nvcp_ready;
+    // Frame generation pacing must respect the separate VSYNC preference.
+    // The dummy-plug HDR workaround already sets this preference in config.
+    const bool want_nv_vsync_override = config::frame_limiter.disable_vsync && nvidia_gpu_present && nvcp_ready;
     g_nvcp_force_vsync_off = want_nv_vsync_override;
     g_nvcp_apply_smooth_motion = want_smooth_motion;
 
@@ -306,6 +315,8 @@ namespace platf {
                      << " effective_wgc_capture=" << policy.effective_wgc_capture
                      << " physical_framegen_capture=" << policy.physical_framegen_capture
                      << " auto_virtual_framegen_limiter=" << policy.auto_virtual_framegen_limiter
+                     << " rtss_virtual_display_override=" << config::rtss.allow_virtual_display_override
+                     << " rtss_virtual_display_reflex_required=" << virtual_display_reflex_required
                      << " nvidia_gpu=" << nvidia_gpu_present
                      << " amd_gpu=" << amd_gpu_present
                      << " nvcp_ready=" << nvcp_ready
@@ -502,7 +513,6 @@ namespace platf {
       if (g_prev_frame_limiter_provider_set) {
         config::frame_limiter.provider = g_prev_frame_limiter_provider;
       }
-      config::frame_limiter.disable_vsync = g_prev_disable_vsync;
       if (g_prev_rtss_frame_limit_type_set) {
         config::rtss.frame_limit_type = g_prev_rtss_frame_limit_type;
       }

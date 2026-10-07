@@ -1,0 +1,95 @@
+Pool the encoder scratch buffers instead of allocating four per frame.
+
+Upstream pyrowave_encoder_encode_gpu_synchronous() creates the meta and
+bitstream buffers (device and cached-host copies) on every call. Punktfunk
+measured the submit+fence wait of a 5120x1440 encode on an RTX 4090 at ~15 ms
+with per-frame allocation and ~1 ms pooled. Adapted from Punktfunk patch 0004.
+
+diff --git a/pyrowave_c.cpp b/pyrowave_c.cpp
+index 6edfb86f..57b613aa 100644
+--- a/pyrowave_c.cpp
++++ b/pyrowave_c.cpp
+@@ -850,6 +850,10 @@ struct pyrowave_encoder_opaque
+ 	Fence queued_fence;
+ 	BufferHandle queued_meta;
+ 	BufferHandle queued_bitstream;
++	// Device-local twins of queued_meta/queued_bitstream. All four are pooled
++	// here and only regrown, instead of being allocated on every encode.
++	BufferHandle queued_meta_gpu;
++	BufferHandle queued_bitstream_gpu;
+ 	ChromaSubsampling chroma = {};
+ 	int width = 0;
+ 	int height = 0;
+@@ -1002,42 +1006,46 @@ pyrowave_encoder_encode_gpu_synchronous_inner(pyrowave_encoder encoder,
+ 
+ 	Util::set_thread_logging_interface(&null_logger);
+ 
+-	BufferCreateInfo bufinfo = {};
+-	bufinfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+-	                VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+-	                VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+-
+-	bufinfo.size = encoder->encoder.get_meta_required_size();
+-	bufinfo.domain = BufferDomain::CachedHost;
+-	encoder->queued_meta = device->create_buffer(bufinfo);
+-
+-	if (!encoder->queued_meta)
+-		return PYROWAVE_ERROR_OUT_OF_HOST_MEMORY;
+-
+-	bufinfo.domain = BufferDomain::Device;
+-	auto queued_meta_gpu = device->create_buffer(bufinfo);
+-
+-	if (!queued_meta_gpu)
+-		return PYROWAVE_ERROR_OUT_OF_DEVICE_MEMORY;
+-
+ 	auto target_bitstream_size = rate_control->maximum_bitstream_size & ~VkDeviceSize(3u);
+ 
+ 	// Check for bogus sizes.
+ 	if (target_bitstream_size > UINT32_MAX || target_bitstream_size == 0)
+ 		return PYROWAVE_ERROR_INVALID_ARGUMENT;
+ 
+-	bufinfo.size = target_bitstream_size + encoder->encoder.get_meta_required_size();
+-	bufinfo.domain = BufferDomain::CachedHost;
+-	encoder->queued_bitstream = device->create_buffer(bufinfo);
++	// Reuse the scratch buffers across frames and only regrow them. Allocating
++	// all four per frame made the submit+fence wait of a large encode take
++	// ~15 ms on an RTX 4090 instead of ~1 ms (measured by Punktfunk). The
++	// encode is synchronous: compute_num_packets()/packetize() wait for the
++	// fence before the next encode can reuse a buffer.
++	const VkDeviceSize meta_size = encoder->encoder.get_meta_required_size();
++	const VkDeviceSize bitstream_size = target_bitstream_size + meta_size;
+ 
+-	if (!encoder->queued_bitstream)
+-		return PYROWAVE_ERROR_OUT_OF_HOST_MEMORY;
++	BufferCreateInfo bufinfo = {};
++	bufinfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
++	                VK_BUFFER_USAGE_TRANSFER_DST_BIT |
++	                VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+ 
+-	bufinfo.domain = BufferDomain::Device;
+-	auto queued_bitstream_gpu = device->create_buffer(bufinfo);
++	auto ensure_buffer = [&](BufferHandle &handle, VkDeviceSize size, BufferDomain domain) -> bool {
++		if (!handle || handle->get_create_info().size < size)
++		{
++			bufinfo.size = size;
++			bufinfo.domain = domain;
++			handle = device->create_buffer(bufinfo);
++		}
++		return bool(handle);
++	};
+ 
+-	if (!queued_bitstream_gpu)
++	if (!ensure_buffer(encoder->queued_meta, meta_size, BufferDomain::CachedHost))
++		return PYROWAVE_ERROR_OUT_OF_HOST_MEMORY;
++	if (!ensure_buffer(encoder->queued_meta_gpu, meta_size, BufferDomain::Device))
+ 		return PYROWAVE_ERROR_OUT_OF_DEVICE_MEMORY;
++	if (!ensure_buffer(encoder->queued_bitstream, bitstream_size, BufferDomain::CachedHost))
++		return PYROWAVE_ERROR_OUT_OF_HOST_MEMORY;
++	if (!ensure_buffer(encoder->queued_bitstream_gpu, bitstream_size, BufferDomain::Device))
++		return PYROWAVE_ERROR_OUT_OF_DEVICE_MEMORY;
++
++	auto &queued_meta_gpu = encoder->queued_meta_gpu;
++	auto &queued_bitstream_gpu = encoder->queued_bitstream_gpu;
+ 
+ 	Encoder::BitstreamBuffers bitstream_buffers = {};
+ 

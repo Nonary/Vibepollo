@@ -17,6 +17,7 @@ $infPath = Join-Path $scriptDir 'SunshineVirtualDisplayDriver.inf'
 $dllPath = Join-Path $scriptDir 'SunshineVirtualDisplayDriver.dll'
 $catPath = Join-Path $scriptDir 'SunshineVirtualDisplayDriver.cat'
 $certPath = Join-Path $scriptDir 'SunshineVirtualDisplayDriver.cer'
+$signPathSignerSubject = 'CN=SignPath Foundation, O=SignPath Foundation, L=Lewes, S=Delaware, C=US'
 $probePath = Join-Path $scriptDir 'virtualdisplay_probe.exe'
 $vulkanLayerDir = Join-Path $scriptDir 'vulkan-layer'
 $vulkanLayerDllPath = Join-Path $vulkanLayerDir 'VkLayer_sunshine_hdr.dll'
@@ -402,6 +403,46 @@ function Install-CertificateIfPresent {
             Write-Host "[SunshineVirtualDisplay] Certificate installed into LocalMachine\$StoreName."
         } else {
             Write-Host "[SunshineVirtualDisplay] Certificate already present in LocalMachine\$StoreName."
+        }
+    } finally {
+        $store.Close()
+    }
+}
+
+# Windows PnP needs a third-party driver publisher's end-entity certificate
+# in LocalMachine\TrustedPublisher to install its catalog without prompting.
+# Add only the expected, already-valid SignPath signer; local/test packages
+# continue using the bundled certificate path above.
+function Get-ExpectedCatalogSignerCertificate {
+    param([string]$CatalogPath = $catPath)
+
+    $signature = Get-AuthenticodeSignature -LiteralPath $CatalogPath
+    $signer = $signature.SignerCertificate
+    if (-not $signer -or $signature.Status -ne 'Valid') {
+        return
+    }
+    if (-not [string]::Equals($signer.Subject, $signPathSignerSubject, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return
+    }
+
+    return $signer
+}
+
+function Install-CatalogSignerCertificate {
+    $signer = Get-ExpectedCatalogSignerCertificate
+    if (-not $signer) {
+        return
+    }
+
+    $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('TrustedPublisher', 'LocalMachine')
+    try {
+        $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        $existing = $store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $signer.Thumbprint, $false)
+        if ($existing.Count -eq 0) {
+            $store.Add($signer)
+            Write-Host '[SunshineVirtualDisplay] SignPath publisher certificate installed into LocalMachine\TrustedPublisher for silent driver installation.'
+        } else {
+            Write-Host '[SunshineVirtualDisplay] SignPath publisher certificate already present in LocalMachine\TrustedPublisher.'
         }
     } finally {
         $store.Close()
@@ -1126,6 +1167,7 @@ if ($Uninstall) {
 
 Install-CertificateIfPresent -StoreName 'Root'
 Install-CertificateIfPresent -StoreName 'TrustedPublisher'
+Install-CatalogSignerCertificate
 Register-VulkanLayer
 
 $driverPackageRefreshNeeded = Test-DriverPackageRefreshNeeded

@@ -4,15 +4,30 @@
  */
 #include "../tests_common.h"
 
+#include <src/app_display_policy.h>
 #include <src/app_catalog_policy.h>
 #include <src/deferred_action.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <map>
 
 namespace {
   using proc::catalog::alias_state_t;
   using proc::catalog::app_identity_t;
+  using proc::display_policy::app_override_e;
+
+  TEST(ProcessDisplayPolicy, GlobalVirtualModeIsInheritedWithoutAppOverride) {
+    EXPECT_TRUE(proc::display_policy::resolve_virtual_display_request(true, app_override_e::inherit));
+  }
+
+  TEST(ProcessDisplayPolicy, ExplicitPhysicalAppOverrideWinsOverGlobalVirtualMode) {
+    EXPECT_FALSE(proc::display_policy::resolve_virtual_display_request(true, app_override_e::physical));
+  }
+
+  TEST(ProcessDisplayPolicy, ExplicitVirtualAppOverrideWinsOverGlobalPhysicalMode) {
+    EXPECT_TRUE(proc::display_policy::resolve_virtual_display_request(false, app_override_e::virtual_display));
+  }
 
   proc::catalog::byte_buffer_t png(std::uint8_t payload = 0) {
     return {0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, payload};
@@ -63,7 +78,28 @@ namespace {
       proc::catalog::asset_path(assets, "steam.png"));
   }
 
-  TEST(ProcessCatalog, FirstSeenUuidSeedsStableUuidOnlyId) {
+  TEST(ProcessArtwork, MachinePathsStayInsideImmutableAssetsOrSharedCovers) {
+    const auto fixture_root = std::filesystem::temp_directory_path() / "vibepollo-artwork-policy";
+    const std::string assets = (fixture_root / "assets").string();
+    const std::string covers = (fixture_root / "covers").string();
+
+    EXPECT_TRUE(proc::catalog::machine_image_path_is_confined("desktop.png", assets, covers));
+    EXPECT_TRUE(proc::catalog::machine_image_path_is_confined("./assets/steam.png", assets, covers));
+    EXPECT_TRUE(proc::catalog::machine_image_path_is_confined(
+      (std::filesystem::path(assets) / "remote-session/input.png").string(), assets, covers));
+    EXPECT_TRUE(proc::catalog::machine_image_path_is_confined(
+      (std::filesystem::path(covers) / "game.png").string(), assets, covers));
+    EXPECT_FALSE(proc::catalog::machine_image_path_is_confined(
+      covers, assets, covers));
+    EXPECT_FALSE(proc::catalog::machine_image_path_is_confined(
+      (std::filesystem::path(covers) / "../../secrets.png").string(), assets, covers));
+    EXPECT_FALSE(proc::catalog::machine_image_path_is_confined(
+      "../../home/chasep/.config/vibeshine/secret.png", assets, covers));
+    EXPECT_FALSE(proc::catalog::machine_image_path_is_confined(
+      "/home/chasep/custom.png", assets, covers));
+  }
+
+  TEST(ProcessCatalog, FirstSeenUuidVersionsArtworkAndRetainsLegacyLaunchId) {
     app_identity_t app {"Game", "11111111-1111-1111-1111-111111111111", "ignored-cover", "sha256:first"};
     std::set<std::string> ids;
     std::set<std::string> active;
@@ -71,9 +107,9 @@ namespace {
     bool changed = false;
 
     proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
-    EXPECT_EQ(app.id, std::get<0>(proc::catalog::calculate_ids(app.name, app.uuid, {}, 0)));
+    EXPECT_EQ(app.id, std::get<0>(proc::catalog::calculate_versioned_ids(app.uuid, app.art_version, 0)));
     EXPECT_EQ(app.art_version, "sha256:first");
-    EXPECT_TRUE(app.aliases.empty());
+    EXPECT_EQ(app.aliases, std::vector<std::string> {std::get<0>(proc::catalog::calculate_ids(app.name, app.uuid, {}, 0))});
     EXPECT_TRUE(changed);
   }
 
@@ -94,6 +130,40 @@ namespace {
     EXPECT_NE(second.id, first.id);
     EXPECT_NE(std::find(second.aliases.begin(), second.aliases.end(), first.id), second.aliases.end());
     EXPECT_TRUE(changed);
+  }
+
+  TEST(ProcessCatalog, ExistingUuidOnlyCoverMigratesOnce) {
+    app_identity_t app {"Steam game", "steam-uuid", {}, "sha256:cover"};
+    const auto legacy = std::get<0>(proc::catalog::calculate_ids(app.name, app.uuid, {}, 0));
+    std::map<std::string, alias_state_t> state {{app.uuid, {legacy, app.art_version, {}}}};
+    std::set<std::string> ids, active;
+    bool changed = false;
+    proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
+    EXPECT_NE(app.id, legacy);
+    EXPECT_EQ(proc::catalog::resolve_app({app}, legacy), 0u);
+    EXPECT_TRUE(changed);
+    const auto migrated = app.id;
+    ids.clear();
+    changed = false;
+    proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
+    EXPECT_EQ(app.id, migrated);
+    EXPECT_FALSE(changed);
+  }
+
+  TEST(ProcessCatalog, ReaddedGameDoesNotReusePlaceholderCacheId) {
+    std::map<std::string, alias_state_t> state;
+    std::set<std::string> ids, active;
+    bool changed = false;
+    app_identity_t app {"Steam game", "steam-uuid", {}, "sha256:steam-placeholder"};
+    proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
+    const auto placeholder_id = app.id;
+    std::vector<app_identity_t> empty;
+    proc::catalog::prune_and_filter_aliases(empty, state, {}, changed);
+    ASSERT_TRUE(state.empty());
+    ids.clear();
+    app.art_version = "sha256:real-cover";
+    proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
+    EXPECT_NE(app.id, placeholder_id);
   }
 
   TEST(ProcessCatalog, DeletedAppsAndConflictingAliasesArePruned) {

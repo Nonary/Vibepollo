@@ -47,9 +47,9 @@ namespace nvenc {
         if (auto get_max_ver = (decltype(NvEncodeAPIGetMaxSupportedVersion) *) GetProcAddress(dll, "NvEncodeAPIGetMaxSupportedVersion")) {
           uint32_t max_ver = 0;
           if (get_max_ver(&max_ver) == NV_ENC_SUCCESS) {
-            max_driver_api_version = max_ver;
+            max_driver_api_version = api::driver_max_to_api_version(max_ver);
             BOOST_LOG(info) << "NvEnc: driver supports up to API "
-                            << api::version_string(max_ver)
+                            << api::version_string(max_driver_api_version)
                             << ", compiled SDK " << NVENCAPI_MAJOR_VERSION << "." << NVENCAPI_MINOR_VERSION;
           } else {
             BOOST_LOG(warning) << "NvEnc: NvEncodeAPIGetMaxSupportedVersion() failed";

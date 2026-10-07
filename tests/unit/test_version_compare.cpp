@@ -18,6 +18,15 @@ TEST(VersionCompareTest, VLessReleaseTagsRemainCompatibleWithLegacyPrefixedTags)
   EXPECT_GT(version_compare::compare_semver("1.18.4-stable.2", "v1.18.4"), 0);
 }
 
+TEST(VersionCompareTest, NonReleaseTagsCannotThrowOrOutrankVersions) {
+  EXPECT_NO_THROW(version_compare::parse_semver("canary"));
+  EXPECT_NO_THROW(version_compare::parse_semver("amf-intra-refresh-experimental-7bb77154b"));
+  EXPECT_NO_THROW(version_compare::parse_semver("999999999999999999999.0.0"));
+  EXPECT_GT(version_compare::compare_semver("1.19.0-beta.3", "canary"), 0);
+  EXPECT_GT(version_compare::compare_semver("1.19.0-beta.3", "amf-intra-refresh-experimental-7bb77154b"), 0);
+  EXPECT_GT(version_compare::compare_semver("1.19.0-beta.3", "999999999999999999999.0.0"), 0);
+}
+
 TEST(VersionCompareTest, StandardPrereleasesStayBelowRelease) {
   EXPECT_LT(version_compare::compare_semver("1.14.14-alpha.1", "1.14.14"), 0);
   EXPECT_LT(version_compare::compare_semver("1.14.14-beta.1", "1.14.14"), 0);

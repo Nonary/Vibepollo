@@ -5,8 +5,32 @@
 #include <gtest/gtest.h>
 
 #ifdef _WIN32
+  #include <src/platform/windows/virtual_display.h>
   #include <src/platform/windows/virtual_display_cleanup.h>
   #include <src/platform/windows/virtual_display_policy.h>
+
+TEST(VirtualDisplayCleanupPolicy, OwnedProbeRequestDoesNotImplyCaptureReadiness) {
+  const VDISPLAY::ensure_display_result result {
+    .readiness = VDISPLAY::ensure_display_readiness_e::request_retained,
+    .tracks_temporary_for_probe = true,
+    .temporary_generation = 1,
+  };
+
+  EXPECT_TRUE(result.owns_temporary_probe_request());
+  EXPECT_FALSE(result.ready_for_capture());
+}
+
+TEST(VirtualDisplayCleanupPolicy, ExactPublishedTargetIsCaptureReady) {
+  const VDISPLAY::ensure_display_result result {
+    .readiness = VDISPLAY::ensure_display_readiness_e::target_ready,
+    .tracks_temporary_for_probe = true,
+    .temporary_generation = 1,
+    .display_name = R"(\\.\DISPLAY55)",
+  };
+
+  EXPECT_TRUE(result.owns_temporary_probe_request());
+  EXPECT_TRUE(result.ready_for_capture());
+}
 
 TEST(VirtualDisplayCleanupPolicy, RestoreBeforeRemoveKeepsHelperFirst) {
   const auto steps = platf::virtual_display_cleanup::ordered_restore_steps(
@@ -26,6 +50,28 @@ TEST(VirtualDisplayCleanupPolicy, RemoveBeforeRestoreKeepsTeardownOnlyOrder) {
   EXPECT_EQ(steps[1], platf::virtual_display_cleanup::cleanup_step_t::explicit_display_remove);
   EXPECT_EQ(steps[2], platf::virtual_display_cleanup::cleanup_step_t::helper_revert);
   EXPECT_EQ(steps[3], platf::virtual_display_cleanup::cleanup_step_t::database_restore);
+}
+
+TEST(VirtualDisplayCleanupPolicy, OnlyTerminalUserActionOverridesManagedOwnership) {
+  using platf::virtual_display_cleanup::cleanup_admission_policy_t;
+  using platf::virtual_display_cleanup::cleanup_admitted;
+
+  EXPECT_TRUE(cleanup_admitted(true, cleanup_admission_policy_t::respect_managed_owners));
+  EXPECT_FALSE(cleanup_admitted(false, cleanup_admission_policy_t::respect_managed_owners));
+  EXPECT_TRUE(cleanup_admitted(false, cleanup_admission_policy_t::override_managed_owners));
+}
+
+TEST(VirtualDisplayCleanupPolicy, IdleEndedOrPausedStreamDisengagesRecoveryMonitor) {
+  using platf::virtual_display_cleanup::idle_stream_cleanup_recovery_policy;
+  using platf::virtual_display_cleanup::idle_stream_disengages_recovery_monitor;
+  using platf::virtual_display_cleanup::recovery_monitor_policy_t;
+
+  EXPECT_TRUE(idle_stream_disengages_recovery_monitor(true));
+  EXPECT_FALSE(idle_stream_disengages_recovery_monitor(false));
+  EXPECT_EQ(
+    idle_stream_cleanup_recovery_policy(),
+    recovery_monitor_policy_t::disengage_before_admission
+  );
 }
 
 TEST(VirtualDisplayCleanupPolicy, SunshineLeaseOwnedGuidSurvivesMissingWindowsEnumeration) {

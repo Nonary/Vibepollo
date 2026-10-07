@@ -20,6 +20,13 @@ const platform = computed(() =>
       <ConfigFieldRenderer setting-key="gamepad" v-model="config.gamepad" />
     </div>
 
+    <ConfigFieldRenderer
+      v-if="platform === 'linux'"
+      setting-key="proton_dualsense_compatibility"
+      v-model="config.proton_dualsense_compatibility"
+      class="mb-3"
+    />
+
     <template v-if="config.controller === 'enabled'">
       <template
         v-if="

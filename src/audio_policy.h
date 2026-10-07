@@ -31,6 +31,13 @@ namespace audio::policy {
                           const std::string &configured_sink,
                           int channels,
                           bool host_audio_enabled);
+  std::string select_stream_sink(const sink_catalog_t &catalog,
+                                 const std::string &configured_sink,
+                                 const std::string &configured_virtual_sink,
+                                 int channels,
+                                 bool host_audio_enabled);
+
+  bool capture_sink_without_routing(bool enabled, const std::string &configured_sink, const std::string &configured_virtual_sink, const std::string &selected_sink);
 
   enum class sample_status_e {
     ok,

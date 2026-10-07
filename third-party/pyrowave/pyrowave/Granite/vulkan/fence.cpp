@@ -1,0 +1,155 @@
+/* Copyright (c) 2017-2026 Hans-Kristian Arntzen
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#include "fence.hpp"
+#include "device.hpp"
+
+namespace Vulkan
+{
+FenceHolder::~FenceHolder()
+{
+	if (fence != VK_NULL_HANDLE)
+	{
+		if (internal_sync)
+			device->reset_fence_nolock(fence, observed_wait);
+		else
+			device->reset_fence(fence, observed_wait);
+	}
+}
+
+const VkFence &FenceHolder::get_fence() const
+{
+	return fence;
+}
+
+void FenceHolder::wait()
+{
+	auto &table = device->get_device_table();
+
+	// Waiting for the same VkFence in parallel is not allowed, and there seems to be some shenanigans on Intel
+	// when waiting for a timeline semaphore in parallel with same value as well.
+	std::lock_guard<std::mutex> holder{lock};
+
+	if (observed_wait)
+		return;
+
+	if (timeline_value != 0)
+	{
+		VK_ASSERT(timeline_semaphore);
+		VkSemaphoreWaitInfo info = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
+		info.semaphoreCount = 1;
+		info.pSemaphores = &timeline_semaphore;
+		info.pValues = &timeline_value;
+
+		if (device->get_device_features().supports_post_mortem)
+		{
+			VkResult vr = table.vkWaitSemaphores(device->get_device(), &info, PostMortemTimeout);
+			if (vr == VK_TIMEOUT)
+				vr = table.vkWaitSemaphores(device->get_device(), &info, 0);
+			if (vr != VK_SUCCESS)
+			{
+				device->managers.breadcrumbs.notify_device_hung();
+				return;
+			}
+		}
+
+		if (table.vkWaitSemaphores(device->get_device(), &info, UINT64_MAX) != VK_SUCCESS)
+		{
+			LOGE("Failed to wait for timeline semaphore!\n");
+			device->managers.breadcrumbs.notify_device_hung();
+		}
+		else
+			observed_wait = true;
+	}
+	else
+	{
+		if (device->get_device_features().supports_post_mortem)
+		{
+			VkResult vr = table.vkWaitForFences(device->get_device(), 1, &fence, VK_TRUE, PostMortemTimeout);
+			if (vr == VK_TIMEOUT)
+				vr = table.vkWaitForFences(device->get_device(), 1, &fence, VK_TRUE, 0);
+			if (vr != VK_SUCCESS)
+			{
+				device->managers.breadcrumbs.notify_device_hung();
+				return;
+			}
+		}
+
+		if (table.vkWaitForFences(device->get_device(), 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+		{
+			LOGE("Failed to wait for fence!\n");
+			device->managers.breadcrumbs.notify_device_hung();
+		}
+		else
+			observed_wait = true;
+	}
+}
+
+bool FenceHolder::wait_timeout(uint64_t timeout)
+{
+	bool ret;
+	auto &table = device->get_device_table();
+
+	// Waiting for the same VkFence in parallel is not allowed, and there seems to be some shenanigans on Intel
+	// when waiting for a timeline semaphore in parallel with same value as well.
+	std::lock_guard<std::mutex> holder{lock};
+
+	if (observed_wait)
+		return true;
+
+	if (timeline_value != 0)
+	{
+		VK_ASSERT(timeline_semaphore);
+
+		if (timeout == 0)
+		{
+			uint64_t current_value = 0;
+			ret = table.vkGetSemaphoreCounterValue(device->get_device(), timeline_semaphore, &current_value) == VK_SUCCESS &&
+			      current_value >= timeline_value;
+		}
+		else
+		{
+			VkSemaphoreWaitInfo info = {VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+			info.semaphoreCount = 1;
+			info.pSemaphores = &timeline_semaphore;
+			info.pValues = &timeline_value;
+			ret = table.vkWaitSemaphores(device->get_device(), &info, timeout) == VK_SUCCESS;
+		}
+	}
+	else
+	{
+		if (timeout == 0)
+			ret = table.vkGetFenceStatus(device->get_device(), fence) == VK_SUCCESS;
+		else
+			ret = table.vkWaitForFences(device->get_device(), 1, &fence, VK_TRUE, timeout) == VK_SUCCESS;
+	}
+
+	if (ret)
+		observed_wait = true;
+	return ret;
+}
+
+void FenceHolderDeleter::operator()(Vulkan::FenceHolder *fence)
+{
+	fence->device->handle_pool.fences.free(fence);
+}
+}

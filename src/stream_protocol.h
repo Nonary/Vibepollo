@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -7,6 +8,10 @@
 #include <vector>
 
 namespace stream {
+  // Count the complete UDP payload, including the optional encryption prefix,
+  // against the 64 KiB Windows buffering limit and 64-segment Linux GSO limit.
+  std::size_t video_send_batch_size(std::size_t block_size, std::size_t prefix_size, std::size_t max_batch_bytes);
+
   inline std::string canonical_codec_name(std::string_view codec) {
     if (codec.empty()) {
       return {};

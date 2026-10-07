@@ -154,7 +154,7 @@ namespace {
     header.id = target.source_id;
   }
 
-  std::optional<std::size_t> scale_index(const std::int32_t index) {
+  std::optional<std::size_t> scale_index(const std::int64_t index) {
     if (index < 0 || static_cast<std::size_t>(index) >= kWindowsScalePercentages.size()) {
       return std::nullopt;
     }
@@ -347,24 +347,32 @@ namespace VDISPLAY {
     }
     result.queried = true;
 
-    const auto recommended_index = -get.min_scale_relative;
+    const auto recommended_index = -static_cast<std::int64_t>(get.min_scale_relative);
     const auto current_index = recommended_index + get.current_scale_relative;
     const auto recommended = scale_index(recommended_index);
     const auto current = scale_index(current_index);
-    if (!recommended || !current) {
+    if (!recommended) {
+      BOOST_LOG(warning) << "Virtual display scale: invalid Windows DPI range (min="
+                         << get.min_scale_relative << ", current=" << get.current_scale_relative
+                         << ", max=" << get.max_scale_relative << ").";
       result.status = ERROR_INVALID_DATA;
       return result;
     }
     result.recommended_percent = kWindowsScalePercentages[*recommended];
-    result.previous_percent = kWindowsScalePercentages[*current];
-    result.current_percent = result.previous_percent;
+    // Newly created displays can report an unknown current DPI (1234568).
+    // Only the recommendation is needed to calculate the write; leave the
+    // previous value unknown and apply the requested scale on this session.
+    if (current) {
+      result.previous_percent = kWindowsScalePercentages[*current];
+      result.current_percent = result.previous_percent;
+    }
 
     const auto desired_relative = desired_index - recommended_index;
     if (desired_relative < get.min_scale_relative || desired_relative > get.max_scale_relative) {
       result.status = ERROR_NOT_SUPPORTED;
       return result;
     }
-    if (current_index == desired_index) {
+    if (current && current_index == desired_index) {
       result.applied = true;
       result.status = ERROR_SUCCESS;
       return result;
@@ -372,7 +380,7 @@ namespace VDISPLAY {
 
     sunshine_displayconfig_set_dpi_scale_t set {};
     initialize_dpi_header(set.header, *target, kDisplayConfigSetDpiScale, sizeof(set));
-    set.scale_relative = desired_relative;
+    set.scale_relative = static_cast<std::int32_t>(desired_relative);
     result.status = DisplayConfigSetDeviceInfo(&set.header);
     if (result.status != ERROR_SUCCESS) {
       return result;
@@ -387,7 +395,7 @@ namespace VDISPLAY {
       if (DisplayConfigGetDeviceInfo(&get.header) != ERROR_SUCCESS) {
         continue;
       }
-      const auto verified_index = scale_index(-get.min_scale_relative + get.current_scale_relative);
+      const auto verified_index = scale_index(-static_cast<std::int64_t>(get.min_scale_relative) + get.current_scale_relative);
       if (verified_index) {
         result.current_percent = kWindowsScalePercentages[*verified_index];
       }
@@ -483,15 +491,17 @@ namespace VDISPLAY_SUNSHINE {
     uint32_t base_fps_millihz,
     bool framegen_refresh_active,
     int framegen_refresh_multiplier,
-    bool hdr_requested,
+    std::optional<bool> hdr_requested,
     bool allow_pending_enumeration,
-    bool replace_existing
+    bool replace_existing,
+    bool preserve_peer_displays
   );
   void applyHdrProfileToOutput(const char *s_client_name, const char *s_hdr_profile, const char *s_device_id);
   void restorePhysicalHdrProfiles();
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
+  void cancel_virtual_display_recovery_monitor(const GUID &guid);
   void cancel_all_virtual_display_recovery_monitors();
   void request_virtual_display_recovery_shutdown();
   void join_virtual_display_recovery_monitors();
@@ -555,14 +565,17 @@ namespace VDISPLAY_SUDOVDA {
     uint32_t base_fps_millihz,
     bool framegen_refresh_active,
     int framegen_refresh_multiplier,
-    bool hdr_requested,
-    bool replace_existing
+    std::optional<bool> hdr_requested,
+    bool allow_pending_enumeration,
+    bool replace_existing,
+    bool preserve_peer_displays
   );
   void applyHdrProfileToOutput(const char *s_client_name, const char *s_hdr_profile, const char *s_device_id);
   void restorePhysicalHdrProfiles();
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
+  void cancel_virtual_display_recovery_monitor(const GUID &guid);
   void cancel_all_virtual_display_recovery_monitors();
   void request_virtual_display_recovery_shutdown();
   void join_virtual_display_recovery_monitors();
@@ -731,14 +744,15 @@ namespace VDISPLAY {
     uint32_t base_fps_millihz,
     bool framegen_refresh_active,
     int framegen_refresh_multiplier,
-    bool hdr_requested,
+    std::optional<bool> hdr_requested,
     bool allow_pending_enumeration,
-    bool replace_existing
+    bool replace_existing,
+    bool preserve_peer_displays
   ) {
     if (use_sunshine_driver()) {
-      return VDISPLAY_SUNSHINE::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, framegen_refresh_multiplier, hdr_requested, allow_pending_enumeration, replace_existing);
+      return VDISPLAY_SUNSHINE::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, framegen_refresh_multiplier, hdr_requested, allow_pending_enumeration, replace_existing, preserve_peer_displays);
     }
-    return VDISPLAY_SUDOVDA::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, framegen_refresh_multiplier, hdr_requested, replace_existing);
+    return VDISPLAY_SUDOVDA::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, framegen_refresh_multiplier, hdr_requested, allow_pending_enumeration, replace_existing, preserve_peer_displays);
   }
 
   void applyHdrProfileToOutput(const char *s_client_name, const char *s_hdr_profile, const char *s_device_id) {
@@ -768,6 +782,13 @@ namespace VDISPLAY {
     } else {
       VDISPLAY_SUDOVDA::schedule_virtual_display_recovery_monitor(params);
     }
+  }
+
+  void cancel_virtual_display_recovery_monitor(const GUID &guid) {
+    // The display may have been created by either backend before a
+    // configuration change, so cancel the matching identity in both.
+    VDISPLAY_SUNSHINE::cancel_virtual_display_recovery_monitor(guid);
+    VDISPLAY_SUDOVDA::cancel_virtual_display_recovery_monitor(guid);
   }
 
   void cancel_all_virtual_display_recovery_monitors() {

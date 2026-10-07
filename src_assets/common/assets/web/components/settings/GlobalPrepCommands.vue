@@ -42,7 +42,6 @@ const isWindows = computed(() => props.platform.toLocaleLowerCase().includes('wi
 
 <template>
   <div class="global-prep-commands">
-    <p class="settings-row__description">{{ t('config.global_prep_cmd_desc') }}</p>
     <div v-if="rows.length" class="global-prep-commands__list">
       <section v-for="(row, index) in rows" :key="index" class="global-prep-commands__row">
         <header class="global-prep-commands__header">
@@ -58,6 +57,7 @@ const isWindows = computed(() => props.platform.toLocaleLowerCase().includes('wi
             </label>
             <AppButton
               :label="t('_common.remove')"
+              :aria-label="t('ui.settings.command_editor.remove', { number: index + 1 })"
               icon="trash"
               variant="tertiary"
               size="compact"
@@ -87,7 +87,8 @@ const isWindows = computed(() => props.platform.toLocaleLowerCase().includes('wi
         </div>
       </section>
     </div>
-    <AppButton :label="t('config.add')" icon="plus" size="compact" @click="add" />
+    <p v-else class="global-prep-commands__empty">{{ t('ui.settings.command_editor.empty') }}</p>
+    <AppButton :label="t('_common.add')" icon="plus" size="compact" @click="add" />
   </div>
 </template>
 
@@ -120,6 +121,14 @@ const isWindows = computed(() => props.platform.toLocaleLowerCase().includes('wi
 .global-prep-commands__fields {
   display: grid;
   gap: var(--vs-space-8);
+}
+.global-prep-commands__empty {
+  margin: 0;
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-metadata);
+}
+.global-prep-commands > :deep(.vs-button) {
+  justify-self: start;
 }
 .vs-switch-label {
   display: inline-flex;

@@ -17,7 +17,7 @@ endif()
 
 set(PROJECT_LICENSE "GPL-3.0-only")
 
-set(PROJECT_FQDN "dev.lizardbyte.app.Sunshine")
+set(PROJECT_FQDN "io.github.Nonary.vibepollo")
 set(WINDOWS_APP_USER_MODEL_ID "Nonary.Vibepollo")
 
 set(PROJECT_BRIEF_DESCRIPTION "GameStream host for Artemis")  # must be <= 35 characters
@@ -58,6 +58,20 @@ include(${CMAKE_MODULE_PATH}/prep/options.cmake)
 
 # initial prep
 include(${CMAKE_MODULE_PATH}/prep/init.cmake)
+
+# Resolve libvirtualdisplay before platform package templates consume its
+# driver-owned assets. The dependency target itself is added later.
+include(${CMAKE_MODULE_PATH}/dependencies/libvirtualdisplay_source.cmake)
+
+# Native Linux package templates need this value before dependency targets are
+# added. Keep it in the cache so libvirtualdisplay sees the same decision.
+if(SUNSHINE_BUILD_STEAMOS)
+    set(BUILD_VIBESHINE_KWIN_GPU_BRIDGE OFF CACHE BOOL
+            "Build the Vibepollo KWin GPU-association bridge" FORCE)
+else()
+    set(BUILD_VIBESHINE_KWIN_GPU_BRIDGE ON CACHE BOOL
+        "Build the Vibepollo KWin GPU-association bridge" FORCE)
+endif()
 
 # configure special package files, such as sunshine.desktop, Flatpak manifest, Portfile , etc.
 include(${CMAKE_MODULE_PATH}/prep/special_package_configuration.cmake)

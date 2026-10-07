@@ -93,13 +93,13 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" >"incoming/${package_name}"
 
           package_info="$(bsdtar -xOf "incoming/${package_name}" .PKGINFO)"
-          grep -qx 'pkgname = vibepollo' <<<"${package_info}"
+          grep -Fqx 'pkgname = vibepollo' <<<"${package_info}"
           # Keep this aligned with special_package_configuration.cmake: Arch
           # pkgver strips SemVer's prerelease separator.
           arch_package_version=${release_version//-/}
           arch_package_version=${arch_package_version//+/.}
-          grep -qx "pkgver = ${arch_package_version}-1" <<<"${package_info}"
-          grep -qx 'arch = x86_64' <<<"${package_info}"
+          grep -Fqx "pkgver = ${arch_package_version}-1" <<<"${package_info}"
+          grep -Fqx 'arch = x86_64' <<<"${package_info}"
 
           echo "package_name=${package_name}" >>"${GITHUB_OUTPUT}"
           echo "release_version=${release_version}" >>"${GITHUB_OUTPUT}"
@@ -179,9 +179,13 @@ jobs:
             "${publication_dir}/x86_64/"
 
           cd "${publication_dir}/x86_64"
-          rm -f vibepollo.db vibepollo.db.sig vibepollo.db.tar.gz.sig \
-            vibepollo.files vibepollo.files.sig vibepollo.files.tar.gz.sig
-          repo-add --remove vibepollo.db.tar.gz ./*.pkg.tar.zst
+          # This repository publishes exactly the verified release package.
+          # Rebuild both indexes so stale entries cannot survive publication.
+          rm -f vibepollo.db vibepollo.db.sig vibepollo.db.tar.gz \
+            vibepollo.db.tar.gz.sig vibepollo.db.tar.gz.old vibepollo.db.tar.gz.old.sig \
+            vibepollo.files vibepollo.files.sig vibepollo.files.tar.gz \
+            vibepollo.files.tar.gz.sig vibepollo.files.tar.gz.old vibepollo.files.tar.gz.old.sig
+          repo-add vibepollo.db.tar.gz "${PACKAGE_NAME}"
           printf '%s' "${SIGNING_PASSPHRASE}" | gpg \
             --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
             --local-user "${FINGERPRINT}" --detach-sign vibepollo.db.tar.gz
@@ -194,6 +198,14 @@ jobs:
           cp vibepollo.db.tar.gz.sig vibepollo.db.sig
           cp vibepollo.files.tar.gz vibepollo.files
           cp vibepollo.files.tar.gz.sig vibepollo.files.sig
+
+          # Prune older payloads only after the new indexes have been signed.
+          shopt -s nullglob
+          for old_package in vibepollo-*.pkg.tar.zst vibepollo-*.pkg.tar.zst.sig; do
+            if [[ "${old_package}" != "${PACKAGE_NAME}" && "${old_package}" != "${PACKAGE_NAME}.sig" ]]; then
+              rm -f -- "${old_package}"
+            fi
+          done
 
       - name: Commit published repository
         shell: bash

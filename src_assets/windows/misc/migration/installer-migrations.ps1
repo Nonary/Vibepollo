@@ -377,6 +377,7 @@ function Repair-ConfigAclInheritance {
 
     $configFiles = @(
         (Join-Path $configDir 'sunshine_state.json'),
+        (Join-Path $configDir 'sunshine_state.json.bak'),
         (Join-Path $configDir 'vibeshine_state.json'),
         (Join-Path $configDir 'sunshine.conf'),
         (Join-Path $configDir 'apps.json')
@@ -413,7 +414,9 @@ $candidateJsonFiles = @(
     (Join-Path $rootDir 'config\apps.json'),
     (Join-Path $rootDir 'apps.json'),
     (Join-Path $rootDir 'config\sunshine_state.json'),
+    (Join-Path $rootDir 'config\sunshine_state.json.bak'),
     (Join-Path $rootDir 'sunshine_state.json'),
+    (Join-Path $rootDir 'sunshine_state.json.bak'),
     (Join-Path $rootDir 'config\vibeshine_state.json'),
     (Join-Path $rootDir 'vibeshine_state.json')
 ) | Select-Object -Unique

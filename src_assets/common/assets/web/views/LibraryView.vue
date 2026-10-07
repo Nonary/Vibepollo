@@ -1,9 +1,11 @@
 <script setup lang="ts">
+import GameLibrarySetup from '../../web-legacy/components/GameLibrarySetup.vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
 
-import { ApiError } from '@/api/client';
+import { useSystemStore } from '@/stores/system';
+import { ApiError, apiGet, apiPatch, apiPost } from '@/api/client';
 import {
   AppButton,
   ConfirmDialog,
@@ -26,6 +28,13 @@ import {
 
 type ViewMode = 'grid' | 'list';
 type SortMode = 'name' | 'name-desc' | 'source';
+type AppProvider = 'playnite' | 'steam' | 'lutris';
+
+interface ProviderInfo {
+  id: AppProvider;
+  name: string;
+  managed: boolean;
+}
 
 const PAGE_SIZE = 72;
 const VIEW_STORAGE_KEY = 'vibepollo.library.view';
@@ -34,6 +43,7 @@ const validSortModes = new Set<SortMode>(['name', 'name-desc', 'source']);
 const route = useRoute();
 const router = useRouter();
 const { locale, t } = useI18n();
+const system = useSystemStore();
 const apps = ref<AppRecord[]>([]);
 const loading = ref(true);
 const error = ref('');
@@ -53,6 +63,9 @@ const deleteTarget = ref<AppRecord | null>(null);
 const deleteOpen = ref(false);
 const deleteBusy = ref(false);
 const deleteError = ref('');
+const purgePlayniteOpen = ref(false);
+const purgePlayniteBusy = ref(false);
+const purgePlayniteError = ref('');
 let queryTimer: number | undefined;
 let observer: IntersectionObserver | undefined;
 
@@ -79,14 +92,97 @@ function readStoredView(): ViewMode {
 }
 
 function commandSummary(app: AppRecord): string {
+  if (providerInfo(app)) return '';
   if (Array.isArray(app.cmd)) return app.cmd.filter((part) => typeof part === 'string').join(' ');
   if (typeof app.cmd === 'string' && app.cmd.trim()) return app.cmd;
   if (typeof app.output === 'string' && app.output.trim()) return app.output;
   return '';
 }
 
+function providerInfo(app: AppRecord): ProviderInfo | null {
+  if (typeof app['playnite-id'] === 'string' && app['playnite-id'].trim()) {
+    return {
+      id: 'playnite',
+      name: 'Playnite',
+      managed: app['playnite-managed'] === 'auto',
+    };
+  }
+  if (typeof app['steam-id'] === 'string' && app['steam-id'].trim()) {
+    return { id: 'steam', name: 'Steam', managed: app['steam-managed'] === 'auto' };
+  }
+  if (typeof app['lutris-id'] === 'string' && app['lutris-id'].trim()) {
+    return { id: 'lutris', name: 'Lutris', managed: app['lutris-managed'] === 'auto' };
+  }
+  return null;
+}
+
+const isWindows = computed(() =>
+  String(system.metadata?.platform ?? '')
+    .toLocaleLowerCase()
+    .includes('windows'),
+);
+
+function isPlayniteFullscreenEntry(app: AppRecord): boolean {
+  if (app['playnite-fullscreen'] === true) return true;
+  if (app.name === 'Playnite (Fullscreen)') return true;
+  const command = Array.isArray(app.cmd)
+    ? app.cmd.filter((part): part is string => typeof part === 'string').join(' ')
+    : typeof app.cmd === 'string'
+      ? app.cmd
+      : '';
+  const normalized = command.toLocaleLowerCase();
+  return normalized.includes('playnite-launcher') && normalized.includes('--fullscreen');
+}
+
+function isPlayniteEntry(app: AppRecord): boolean {
+  return providerInfo(app)?.id === 'playnite' || isPlayniteFullscreenEntry(app);
+}
+
+const purgeablePlayniteEntries = computed(() =>
+  apps.value.filter((app) => isPlayniteEntry(app) && Boolean(appUuid(app))),
+);
+
+function providerLabel(app: AppRecord): string {
+  const provider = providerInfo(app);
+  if (!provider) return t('ui.library.providers.custom');
+  return provider.managed
+    ? t('ui.library.providers.managed', { provider: provider.name })
+    : provider.name;
+}
+
+function providerSortName(app: AppRecord): string {
+  return providerInfo(app)?.name ?? t('ui.library.providers.custom');
+}
+
+function searchSummary(app: AppRecord): string {
+  return [
+    commandSummary(app),
+    providerLabel(app),
+    app['playnite-id'],
+    app['steam-id'],
+    app['lutris-id'],
+    app['steam-install-dir'],
+    app['lutris-directory'],
+  ]
+    .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+    .join(' ');
+}
+
 function displayName(app: AppRecord): string {
   return appName(app) || t('ui.library.unnamed');
+}
+
+function appInitials(app: AppRecord): string {
+  return displayName(app)
+    .split(/\s+/u)
+    .slice(0, 2)
+    .map((part) => Array.from(part)[0])
+    .join('')
+    .toLocaleUpperCase(locale.value);
+}
+
+function isRemoteSessionApp(app: AppRecord): boolean {
+  return app['remote-session'] === 'input' || app['remote-session'] === 'monitor';
 }
 
 function serviceError(cause: unknown, fallbackKey: string): string {
@@ -103,12 +199,21 @@ const filteredApps = computed(() => {
     .map((app, sourceIndex) => ({ app, sourceIndex }))
     .filter(({ app }) => {
       if (!query) return true;
-      return `${displayName(app)} ${commandSummary(app)}`
+      return `${displayName(app)} ${searchSummary(app)}`
         .toLocaleLowerCase(locale.value)
         .includes(query);
     });
 
-  if (sort.value === 'source') return candidates.map(({ app }) => app);
+  if (sort.value === 'source') {
+    candidates.sort((left, right) => {
+      const sourceResult = collator.value.compare(
+        providerSortName(left.app),
+        providerSortName(right.app),
+      );
+      return sourceResult || collator.value.compare(displayName(left.app), displayName(right.app));
+    });
+    return candidates.map(({ app }) => app);
+  }
 
   candidates.sort((left, right) => {
     const result = collator.value.compare(displayName(left.app), displayName(right.app));
@@ -143,8 +248,12 @@ function syncQuery(): void {
   void router.replace({ query });
 }
 
-async function load(): Promise<void> {
-  loading.value = true;
+let refreshing = false;
+let refreshTimer: number | undefined;
+async function load(silent = false): Promise<void> {
+  if (refreshing) return;
+  refreshing = true;
+  if (!silent) loading.value = true;
   error.value = '';
   try {
     apps.value = await fetchApps();
@@ -154,9 +263,10 @@ async function load(): Promise<void> {
     if (!liveIds.has(focusedUuid.value))
       focusedUuid.value = appUuid(apps.value[0] ?? ({} as AppRecord));
   } catch (cause) {
-    error.value = serviceError(cause, 'ui.library.errors.load');
+    if (!silent) error.value = serviceError(cause, 'ui.library.errors.load');
   } finally {
     loading.value = false;
+    refreshing = false;
   }
 }
 
@@ -349,6 +459,35 @@ async function confirmDelete(): Promise<void> {
   }
 }
 
+function requestPurgePlaynite(): void {
+  if (!isWindows.value || purgePlayniteBusy.value || !purgeablePlayniteEntries.value.length) return;
+  purgePlayniteError.value = '';
+  purgePlayniteOpen.value = true;
+}
+
+async function confirmPurgePlaynite(): Promise<void> {
+  if (purgePlayniteBusy.value) return;
+  const targets = [...purgeablePlayniteEntries.value];
+  if (!targets.length) {
+    purgePlayniteOpen.value = false;
+    return;
+  }
+  purgePlayniteBusy.value = true;
+  purgePlayniteError.value = '';
+  try {
+    for (const app of targets) {
+      const result = await deleteApp(appUuid(app));
+      if (result.status === false) throw new Error(t('ui.library.purgePlaynite.failed'));
+    }
+    purgePlayniteOpen.value = false;
+    await load();
+  } catch (cause) {
+    purgePlayniteError.value = serviceError(cause, 'ui.library.purgePlaynite.failed');
+  } finally {
+    purgePlayniteBusy.value = false;
+  }
+}
+
 function loadMore(): void {
   renderLimit.value = Math.min(renderLimit.value + PAGE_SIZE, filteredApps.value.length);
 }
@@ -385,6 +524,9 @@ watch(loadMoreSentinel, (current, previous) => {
 });
 
 onMounted(() => {
+  refreshTimer = window.setInterval(() => {
+    if (!document.hidden && !deleteBusy.value && !librarySetupOpen.value) void load(true);
+  }, 5000);
   if ('IntersectionObserver' in window) {
     observer = new IntersectionObserver(
       (entries) => {
@@ -399,16 +541,53 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  window.clearInterval(refreshTimer);
   window.clearTimeout(queryTimer);
   observer?.disconnect();
   document.removeEventListener('pointerdown', onDocumentPointerDown);
 });
+const librarySetupOpen = ref(false);
+const libraryConfigured = ref(false);
+function libraryRequest(
+  method: 'GET' | 'POST' | 'PATCH',
+  path: string,
+  body?: Record<string, unknown>,
+): Promise<any> {
+  return method === 'GET'
+    ? apiGet(path)
+    : method === 'PATCH'
+      ? apiPatch(path, body ?? {})
+      : apiPost(path, body ?? {});
+}
 </script>
 
 <template>
   <div class="vs-page vs-page--dashboard library-page">
+    <GameLibrarySetup
+      v-model:open="librarySetupOpen"
+      :platform="system.metadata?.platform || ''"
+      :metadata="system.metadata"
+      :request="libraryRequest"
+      @configured="libraryConfigured = $event"
+      @saved="load()"
+    />
     <PageHeader :title="t('ui.library.page.title')" :description="t('ui.library.page.description')">
       <template #actions>
+        <AppButton
+          icon="integrations"
+          :label="libraryConfigured ? 'Library manager settings' : 'Setup Game Library Integration'"
+          @click="librarySetupOpen = true"
+        />
+        <RouterLink class="button button--secondary" to="/integrations"
+          ><UiIcon name="integrations" />{{ t('ui.library.actions.sources') }}</RouterLink
+        >
+        <AppButton
+          v-if="isWindows && purgeablePlayniteEntries.length"
+          icon="trash"
+          variant="tertiary"
+          :label="t('ui.library.actions.removePlaynite')"
+          @click="requestPurgePlaynite"
+        />
         <AppButton
           icon="plus"
           variant="primary"
@@ -430,7 +609,7 @@ onBeforeUnmount(() => {
           icon="refresh"
           size="compact"
           :label="t('ui.library.actions.tryAgain')"
-          @click="load"
+          @click="load()"
         />
       </template>
     </InlineAlert>
@@ -453,29 +632,37 @@ onBeforeUnmount(() => {
         <select v-model="sort" class="vs-select" :aria-label="t('ui.library.sort.label')">
           <option value="name">{{ t('ui.library.sort.nameAsc') }}</option>
           <option value="name-desc">{{ t('ui.library.sort.nameDesc') }}</option>
-          <option value="source">{{ t('ui.library.sort.configured') }}</option>
+          <option value="source">{{ t('ui.library.sort.provider') }}</option>
         </select>
       </label>
 
       <div class="library-view-toggle" role="group" :aria-label="t('ui.library.view.label')">
         <AppButton
-          size="compact"
+          size="default"
+          icon="overview"
+          icon-only
+          :title="t('ui.library.view.grid')"
           :variant="viewMode === 'grid' ? 'secondary' : 'tertiary'"
           :label="t('ui.library.view.grid')"
           :aria-pressed="viewMode === 'grid'"
           @click="setView('grid')"
         />
         <AppButton
-          size="compact"
+          size="default"
+          icon="list"
+          icon-only
+          :title="t('ui.library.view.list')"
           :variant="viewMode === 'list' ? 'secondary' : 'tertiary'"
           :label="t('ui.library.view.list')"
           :aria-pressed="viewMode === 'list'"
           @click="setView('list')"
         />
       </div>
-
-      <span class="library-result-count" role="status" aria-live="polite">{{ resultLabel }}</span>
     </section>
+    <div class="library-collection-heading">
+      <h2>{{ t('ui.library.collection.label') }}</h2>
+      <span class="library-result-count" role="status" aria-live="polite">{{ resultLabel }}</span>
+    </div>
 
     <div v-if="selectedUuids.size" class="library-selection" role="status">
       <StatusBadge tone="info">
@@ -577,25 +764,66 @@ onBeforeUnmount(() => {
                 v-else
                 class="library-item__artwork-fallback"
                 role="img"
-                :aria-label="t('ui.library.cover.unavailableLabel', { name: displayName(app) })"
+                :aria-label="t('ui.library.cover.fallbackLabel', { name: displayName(app) })"
               >
-                <UiIcon name="gamepad" :size="32" aria-hidden="true" />
-                <span>{{ t('ui.library.cover.unavailable') }}</span>
+                <UiIcon
+                  v-if="isRemoteSessionApp(app)"
+                  name="devices"
+                  :size="48"
+                  aria-hidden="true"
+                />
+                <span v-else class="library-item__monogram" aria-hidden="true">{{
+                  appInitials(app)
+                }}</span>
+                <span>{{
+                  t(
+                    isRemoteSessionApp(app)
+                      ? 'ui.library.cover.desktop'
+                      : 'ui.library.cover.application',
+                  )
+                }}</span>
               </span>
               <span v-if="selectedUuids.has(appUuid(app))" class="library-item__selected-mark">
                 <UiIcon name="check" :size="16" aria-hidden="true" />
                 <span class="vs-sr-only">{{ t('ui.library.selection.selected') }}</span>
               </span>
+              <span
+                v-if="providerInfo(app)"
+                class="library-item__provider-mark"
+                role="img"
+                :aria-label="providerLabel(app)"
+                :title="providerLabel(app)"
+              >
+                <svg
+                  v-if="providerInfo(app)?.id === 'steam'"
+                  viewBox="0 0 16 16"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M12.5 2a3.5 3.5 0 0 0-3.453 2.941L6.568 9.057A3 3 0 0 0 6 9a3 3 0 0 0-1.307.303L.268 6.748A10 10 0 0 0 0 9c0 .371.025.738.072 1.1l2.936 1.693L3 12a3 3 0 1 0 5.984-.283l4.377-2.83A3.5 3.5 0 1 0 12.5 2Zm0 1A2.5 2.5 0 1 1 10 5.5 2.5 2.5 0 0 1 12.5 3Zm0 1A1.5 1.5 0 1 0 14 5.5 1.5 1.5 0 0 0 12.5 4ZM6 10a2 2 0 1 1-1.959 2.389l.705.408a1.5 1.5 0 0 0 1.5-2.598l-.338-.195A2 2 0 0 1 6 10Z"
+                  />
+                </svg>
+                <svg
+                  v-else-if="providerInfo(app)?.id === 'lutris'"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M21.231 18.89c-1.293 3.243-5.218 5.232-9.446 5.105C5.3 23.993 0 18.48 0 11.906S5.276.001 11.785.001c1.793 0 3.493.406 5.015 1.13.081-.177.271-.544.451-.557.238-.017.374.137.526.309.154.172.46.429.46.429s1.393-.481 2.955.377c1.563.858 1.783 1.116 2.09 1.716.152.301.195.829.2 1.282a.796.796 0 0 0-.07-.003c-.496 0-.96.455-.96 1.08 0 .263.082.496.215.678l-.01.007a1.505 1.505 0 0 0-.132.01 18.704 18.704 0 0 0-.389-.142 2.53 2.53 0 0 1-.82-.472 1.402 1.402 0 0 0-1.196-2.112c-.383 0-.73.156-.982.41-.472-.271-1.174-.482-2.527-.565l-.407-.011c-2.282.012-3.611.279-5.979 1.301-.603.283-1.206.615-1.785 1.001-.423.3-.639.67-.709 1.137a1.326 1.326 0 0 0 1.23 1.373h.042c1.27.06 2.039 1.99 2.063 2.497.004.05.004.023.003.08-.032.727-.37 1.267-1.088 1.246a1.231 1.231 0 0 1-.976-.494c-.063-.077-.103-.172-.159-.254-.666-1.081-1.732-1.36-2.771-1.523-.438-.068-1.073-.122-1.31.25a8.28 8.28 0 0 0-.577 3.063c-.02 5.036 4.041 9.118 9.026 9.118 2.575 0 5.349-.952 6.993-2.7-1.772 1.473-4.66 1.941-6.027 1.941-4.302 0-7.818-3.232-7.818-7.578 0-1.276.288-2.396.814-3.36.495.183.947.483 1.28 1.022l.013.021c.064.092.111.197.182.284.424.524.881.658 1.342.68h.01c.43.013.768-.12 1.024-.342.347-.3.55-.79.577-1.382v-.014c.002-.085 0-.053-.004-.112-.024-.376-.333-1.318-.906-2.027-.266-.331-.587-.607-.95-.774l.12-.074c.756-.457 2.364-.977 4.592-.638 1.13.173 2.055.419 3.483.879 1.657.534 2.579 1.279 3.854 1.427.15.017.301.018.45.003.41 1.129.634 2.35.634 3.621 0 2.068-.59 3.995-1.611 5.62Zm1.947-12.274s-.115.201-.364.322c-.103.05-.282-.075-.45.1-.359.726.516 1.332.923 1.315.408-.017.73-.432.712-.793-.017-.558-.82-.944-.82-.944Zm.234-1.432c.255 0 .462.26.462.58 0 .32-.207.58-.462.58-.254 0-.46-.26-.46-.58 0-.32.206-.58.46-.58Zm-3.292-.951c.492 0 .89.403.89.9a.895.895 0 0 1-.89.898.895.895 0 0 1-.89-.899c0-.496.399-.899.89-.899Z"
+                  />
+                </svg>
+                <svg v-else viewBox="0 0 1024 1024" aria-hidden="true">
+                  <path
+                    d="M966.686 623.899c-9.773-81.666-29.323-161.25-54.514-239.447-13.759-42.709-30.419-84.189-56.091-121.452-31.701-46.014-74.789-72.958-130.812-78.579-29.631-2.973-57.785 4.118-85.677 12.35-61.172 18.056-123.359 25.124-186.493 14.903-30.919-5.006-61.308-13.526-91.743-21.225-76.445-19.338-145.323 4.995-191.165 69.261-11.441 16.04-21.194 33.543-29.78 51.312-25.091 51.925-40.443 107.249-54.53 162.924-18.822 74.393-33.019 149.491-33.664 226.571 0 7.184-.342 14.386.061 21.547 1.557 27.727 4.354 55.289 16.045 80.97 15.334 33.68 45.905 46.725 79.471 31.198 18.291-8.461 36.293-19.857 50.766-33.743 24.597-23.598 46.616-49.934 69.125-75.64 17.934-20.481 39.086-35.301 66.115-40.203 15.779-2.862 31.802-6.006 47.736-6.118 87.888-.62 175.783-.602 263.673-.278 51.4.189 93.314 19.382 124.091 62.134 12.518 17.388 27.83 32.889 42.78 48.371 18.598 19.259 38.974 36.431 64.412 46.39 32.967 12.907 62.547 1.677 77.882-30.198 3.965-8.242 6.963-17.122 9.155-26.017 12.67-51.446 9.346-103.373 3.158-155.081ZM315.471 527.643c-44.289.213-80.733-36.32-80.847-81.045-.115-45.048 35.472-81.194 80.197-81.458 44.521-.263 80.718 35.897 80.884 80.801.166 44.73-35.932 81.488-80.234 81.702Zm393.386-208.342c21.859.06 39.486 17.884 39.471 39.91-.015 22.133-17.489 39.677-39.523 39.682-22.045.005-39.456-17.53-39.444-39.724.011-22.044 17.728-39.928 39.496-39.868ZM622.269 486.36c-21.542.085-39.7-18.08-39.808-39.822-.108-21.888 17.617-39.622 39.62-39.641 22.066-.018 39.759 17.552 39.718 39.442-.041 21.866-17.89 39.936-39.53 40.021Zm86.698 86.973c-21.823.096-39.537-17.668-39.611-39.721-.074-22.079 17.523-39.992 39.338-40.044 21.715-.052 39.597 17.908 39.645 39.816.047 22.093-17.456 39.853-39.372 39.949Zm86.785-86.971c-21.764.155-39.671-17.882-39.651-39.938.021-22.15 17.628-39.639 39.793-39.525 22.091.114 39.527 17.993 39.155 40.152-.363 21.682-17.833 39.158-39.297 39.311Z"
+                  />
+                </svg>
+              </span>
             </span>
             <span class="library-item__copy">
-              <span class="library-item__title">{{ displayName(app) }}</span>
-              <span
-                v-if="commandSummary(app)"
-                class="library-item__command vs-monospace"
-                :title="commandSummary(app)"
-              >
-                {{ commandSummary(app) }}
+              <span class="library-item__title-line">
+                <span class="library-item__title">{{ displayName(app) }}</span>
               </span>
+              <span class="library-item__source">{{ providerLabel(app) }}</span>
             </span>
           </button>
 
@@ -637,6 +865,7 @@ onBeforeUnmount(() => {
               @click="openApp(app)"
             />
             <AppButton
+              v-if="!isRemoteSessionApp(app)"
               role="menuitem"
               size="compact"
               variant="tertiary"
@@ -690,6 +919,35 @@ onBeforeUnmount(() => {
         {{ deleteError }}
       </InlineAlert>
     </ConfirmDialog>
+
+    <ConfirmDialog
+      v-model:open="purgePlayniteOpen"
+      :title="t('ui.library.purgePlaynite.title')"
+      :description="
+        t(
+          purgeablePlayniteEntries.length === 1
+            ? 'ui.library.purgePlaynite.descriptionOne'
+            : 'ui.library.purgePlaynite.descriptionOther',
+          { count: purgeablePlayniteEntries.length },
+        )
+      "
+      :confirm-label="t('ui.library.purgePlaynite.confirm')"
+      :cancel-label="t('_common.cancel')"
+      :busy-label="t('ui.library.purgePlaynite.busy')"
+      tone="danger"
+      :busy="purgePlayniteBusy"
+      :close-on-confirm="false"
+      @confirm="confirmPurgePlaynite"
+    >
+      <InlineAlert
+        v-if="purgePlayniteError"
+        tone="danger"
+        :title="t('ui.library.purgePlaynite.errorTitle')"
+        announce="assertive"
+      >
+        {{ purgePlayniteError }}
+      </InlineAlert>
+    </ConfirmDialog>
   </div>
 </template>
 
@@ -699,8 +957,29 @@ onBeforeUnmount(() => {
   gap: var(--vs-space-20);
 }
 
-.library-page :deep(.vs-page-header) {
-  padding-block-end: 0;
+.library-collection-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vs-space-8);
+  margin-top: var(--vs-space-8);
+}
+.library-collection-heading h2 {
+  font-size: var(--vs-type-size-control);
+  font-weight: var(--vs-type-weight-medium);
+}
+.library-page :deep(.vs-empty-state) {
+  width: 100%;
+  max-inline-size: none;
+  min-block-size: 22rem;
+  border: 1px solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-card);
+  background: var(--vs-color-bg-surface);
+}
+.library-view-toggle :deep([aria-pressed='true']) {
+  background: var(--vs-color-bg-raised);
+  border-color: transparent;
 }
 
 .library-toolbar,
@@ -721,8 +1000,7 @@ onBeforeUnmount(() => {
   padding: var(--vs-space-12);
   border: var(--vs-border-width) solid var(--vs-color-border-subtle);
   border-radius: var(--vs-radius-card);
-  background: color-mix(in srgb, var(--vs-color-bg-canvas) 92%, transparent);
-  backdrop-filter: blur(10px);
+  background: var(--vs-color-bg-surface);
 }
 
 .library-search {
@@ -860,8 +1138,22 @@ onBeforeUnmount(() => {
   gap: var(--vs-space-8);
   padding: var(--vs-space-16);
   color: var(--vs-color-text-muted);
+  background: color-mix(in srgb, var(--vs-color-accent-default) 5%, var(--vs-color-bg-surface));
   font-size: var(--vs-type-size-helper);
   text-align: center;
+}
+.library-item__monogram {
+  color: color-mix(in srgb, var(--vs-color-accent-default) 70%, var(--vs-color-text-muted));
+  font-size: 56px;
+  line-height: 1.2;
+  font-weight: var(--vs-type-weight-medium);
+  letter-spacing: -0.06em;
+}
+.library-collection--list .library-item__monogram {
+  font-size: 24px;
+}
+.library-collection--list .library-item__artwork-fallback > span:last-child {
+  display: none;
 }
 
 .library-item__selected-mark {
@@ -875,6 +1167,28 @@ onBeforeUnmount(() => {
   border-radius: var(--vs-radius-pill);
   background: var(--vs-color-accent-default);
   color: var(--vs-color-text-on-accent);
+}
+
+.library-item__provider-mark {
+  position: absolute;
+  inset-block-end: var(--vs-space-8);
+  inset-inline-start: var(--vs-space-8);
+  display: grid;
+  inline-size: 2rem;
+  block-size: 2rem;
+  place-items: center;
+  border: var(--vs-border-width) solid var(--vs-color-border-strong);
+  border-radius: var(--vs-radius-control);
+  background: color-mix(in srgb, var(--vs-color-bg-canvas) 82%, transparent);
+  box-shadow: var(--vs-shadow-raised);
+  color: var(--vs-color-text-primary);
+  backdrop-filter: blur(8px);
+}
+
+.library-item__provider-mark svg {
+  inline-size: 1.25rem;
+  block-size: 1.25rem;
+  fill: currentColor;
 }
 
 .library-item__copy {
@@ -892,7 +1206,20 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.library-item__command {
+.library-item__title-line {
+  display: flex;
+  min-inline-size: 0;
+  align-items: center;
+  gap: var(--vs-space-8);
+}
+
+.library-item__title-line .library-item__title {
+  min-inline-size: 0;
+  flex: 1 1 auto;
+}
+
+.library-item__source {
+  font-size: var(--vs-type-size-helper);
   overflow: hidden;
   color: var(--vs-color-text-muted);
   text-overflow: ellipsis;
@@ -1008,10 +1335,6 @@ onBeforeUnmount(() => {
   .library-grid,
   .library-collection--grid {
     grid-template-columns: repeat(auto-fill, minmax(var(--vs-game-card-min-width-mobile), 1fr));
-  }
-
-  .library-item__command {
-    display: none;
   }
 }
 

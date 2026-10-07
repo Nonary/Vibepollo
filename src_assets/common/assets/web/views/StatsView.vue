@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { configBoolean } from '@/utils/settings';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import { ApiError, apiDelete, apiGet, apiPost } from '@/api/client';
@@ -17,7 +18,13 @@ import MetricGauge from '@/components/stats/MetricGauge.vue';
 import SessionDetailDialog from '@/components/stats/SessionDetailDialog.vue';
 import SessionPerformanceCharts from '@/components/stats/SessionPerformanceCharts.vue';
 import HostComputeChart from '@/components/stats/HostComputeChart.vue';
-import type { PerformancePoint } from '@/components/stats/types';
+import HostMemoryChart from '@/components/stats/HostMemoryChart.vue';
+import {
+  groupSessionSummaries,
+  parseHistoryPage,
+  type SessionHistoryRow,
+} from '@/components/stats/historyUtils';
+import type { ChartValuePoint, PerformancePoint } from '@/components/stats/types';
 import type { HostInfo, HostStatsSnapshot } from '@/types/host';
 import type { RTSPSession, SessionSummary, WebRTCSession } from '@/types/sessions';
 import { formatBitrate, formatBytes, formatDuration, formatRelativeTime } from '@/utils/format';
@@ -75,12 +82,15 @@ const histories = ref<Record<string, PerformancePoint[]>>({});
 const counterSnapshots = new Map<string, CounterSnapshot>();
 const sessionHistory = ref<SessionSummary[]>([]);
 const selectedHistory = ref<SessionSummary | null>(null);
+const selectedHistoryMembers = ref<SessionSummary[]>([]);
+const historyPage = ref(1);
+const historyTotal = ref(0);
+const historyHasMore = ref(false);
+const historyLoading = ref(false);
+const historyError = ref('');
 const detailOpen = ref(false);
 const stopConfirmOpen = ref(false);
 const pendingStop = ref<ActiveVisualSession | null>(null);
-const historyDeleteOpen = ref(false);
-const pendingHistoryDelete = ref<SessionSummary | null>(null);
-const deletingHistoryUuid = ref('');
 const ready = ref(false);
 const refreshing = ref(false);
 const error = ref('');
@@ -89,24 +99,30 @@ const lastUpdated = ref<number | null>(null);
 const stoppingSessionKey = ref('');
 let refreshTimer: number | undefined;
 let refreshInFlight = false;
+let historyRequestGeneration = 0;
+let disposed = false;
 
-const statsEnabled = computed(() => Boolean(config.value.realtime_stats_enabled ?? true));
+const HISTORY_PAGE_SIZE = 12;
+
+const statsEnabled = computed(() => configBoolean(config.value.realtime_stats_enabled, true));
 const showActiveSessions = computed(() =>
-  Boolean(config.value.realtime_stats_show_active_sessions ?? true),
+  configBoolean(config.value.realtime_stats_show_active_sessions, true),
 );
-const showHostStats = computed(() => Boolean(config.value.realtime_stats_show_host_stats ?? true));
+const showHostStats = computed(() =>
+  configBoolean(config.value.realtime_stats_show_host_stats, true),
+);
 const showHostCharts = computed(() =>
-  Boolean(config.value.realtime_stats_show_host_charts ?? true),
+  configBoolean(config.value.realtime_stats_show_host_charts, true),
 );
 const showSessionHistory = computed(() =>
-  Boolean(config.value.realtime_stats_show_session_history ?? true),
+  configBoolean(config.value.realtime_stats_show_session_history, true),
 );
 const pollInterval = computed(() => {
   const configured = Number(config.value.realtime_stats_poll_interval_ms ?? 2000);
   return Math.max(1000, Math.min(10000, Number.isFinite(configured) ? configured : 2000));
 });
 const pauseWhenHidden = computed(() =>
-  Boolean(config.value.realtime_stats_pause_when_hidden ?? true),
+  configBoolean(config.value.realtime_stats_pause_when_hidden, true),
 );
 const maxHistoryPoints = computed(() => {
   const configured = Number(config.value.realtime_stats_max_history_points ?? 300);
@@ -128,7 +144,10 @@ const activeSessions = computed<ActiveVisualSession[]>(() => [
     targetFps: session.fps,
     bitrateKbps: session.encoder_bitrate_kbps,
     duration: formatDuration(session.uptime_seconds, locale.value),
-    latencyMs: Number.isFinite(session.encode_latency_ms) ? session.encode_latency_ms : null,
+    latencyMs:
+      Number.isFinite(session.encode_latency_ms) && session.encode_latency_ms >= 0
+        ? session.encode_latency_ms
+        : null,
     points: histories.value[`rtsp:${session.uuid}`] ?? [],
     hdr: session.hdr,
   })),
@@ -167,18 +186,82 @@ const stopConfirmDescription = computed(() => {
     : t('ui.sessions.confirm.stop_rtsp_description');
 });
 
-const networkHistory = computed(() =>
-  hostHistory.value.map((point) => (point.net_tx_bps ?? 0) / 1_000_000),
+const networkTxPoints = computed<ChartValuePoint[]>(() =>
+  hostHistory.value.map((point) => ({
+    timestamp: point.timestamp,
+    value:
+      typeof point.net_tx_bps === 'number' && point.net_tx_bps >= 0
+        ? point.net_tx_bps / 1_000_000
+        : null,
+  })),
+);
+const networkRxPoints = computed<ChartValuePoint[]>(() =>
+  hostHistory.value.map((point) => ({
+    timestamp: point.timestamp,
+    value:
+      typeof point.net_rx_bps === 'number' && point.net_rx_bps >= 0
+        ? point.net_rx_bps / 1_000_000
+        : null,
+  })),
 );
 const comparableHostHistory = computed(() => downsampleHostHistory(hostHistory.value));
+const historyRows = computed<SessionHistoryRow[]>(() =>
+  groupSessionSummaries(sessionHistory.value),
+);
+const historyPageCount = computed(() =>
+  historyTotal.value > 0
+    ? Math.max(1, Math.ceil(historyTotal.value / HISTORY_PAGE_SIZE))
+    : historyHasMore.value
+      ? historyPage.value + 1
+      : 1,
+);
+const historyCanNext = computed(
+  () => historyHasMore.value || historyPage.value < historyPageCount.value,
+);
+const historyCountLabel = computed(() => {
+  const count = historyTotal.value || sessionHistory.value.length;
+  return historyHasMore.value ? `${count}+` : String(count);
+});
 const hostCurrent = computed(() => ({
-  cpu: hostStats.value?.cpu_percent ?? null,
-  gpu: hostStats.value?.gpu_percent ?? null,
-  encoder: hostStats.value?.gpu_encoder_percent ?? null,
+  cpu: percentValue(hostStats.value?.cpu_percent),
+  gpu: percentValue(hostStats.value?.gpu_percent),
+  encoder: percentValue(hostStats.value?.gpu_encoder_percent),
+}));
+const hostMemoryCurrent = computed(() => ({
+  ram: percentValue(hostStats.value?.ram_percent),
+  vram: percentValue(hostStats.value?.vram_percent),
 }));
 
-function percent(value: number | undefined): string {
-  return Number.isFinite(value) ? `${Math.round(value ?? 0)}%` : '—';
+watch(statsEnabled, (enabled) => {
+  if (enabled) return;
+  // A disabled live dashboard must not present the last pre-pause sample as
+  // current, and its counter baseline must not span the disabled interval.
+  histories.value = {};
+  hostHistory.value = [];
+  hostStats.value = null;
+  hostInfo.value = null;
+  counterSnapshots.clear();
+});
+
+function percentValue(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.min(100, value)
+    : null;
+}
+
+function bytes(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? formatBytes(value, locale.value)
+    : '—';
+}
+
+function memoryDetail(used: unknown, total: unknown): string {
+  return `${bytes(used)} / ${bytes(total)}`;
+}
+
+function networkMbps(value: unknown): string {
+  const number = typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+  return number == null ? '—' : `${(number / 1_000_000).toFixed(2)} Mbps`;
 }
 
 function temperature(value: number | undefined): string {
@@ -193,11 +276,14 @@ function appendPerformance(
   latencyMs: number | null,
   fallbackFps: number,
   fallbackMbps: number,
+  dropped?: { video: number; audio: number },
 ): void {
   const previous = counterSnapshots.get(key);
   let fps = fallbackFps;
   let throughputMbps = fallbackMbps;
   let qualityEvents = 0;
+  let videoDropped = 0;
+  let audioDropped = 0;
   if (previous) {
     const seconds = (current.timestamp - previous.timestamp) / 1000;
     if (seconds > 0) {
@@ -207,6 +293,10 @@ function appendPerformance(
         Math.max(0, current.losses - previous.losses) +
         Math.max(0, current.recovery - previous.recovery);
     }
+    if (dropped) {
+      videoDropped = Math.max(0, dropped.video - previous.losses);
+      audioDropped = Math.max(0, dropped.audio - previous.recovery);
+    }
   }
   counterSnapshots.set(key, current);
   const point: PerformancePoint = {
@@ -215,6 +305,7 @@ function appendPerformance(
     throughputMbps: Math.round(throughputMbps * 100) / 100,
     qualityEvents,
     fps: Math.round(fps * 10) / 10,
+    ...(dropped ? { videoDropped, audioDropped } : {}),
   };
   const cutoff = current.timestamp - retentionMs.value;
   histories.value = {
@@ -226,6 +317,12 @@ function appendPerformance(
 }
 
 function recordSessionSamples(now: number): void {
+  if (!statsEnabled.value) {
+    // A disabled sampler must not leave a stale baseline that turns the first
+    // post-pause sample into an artificial rate spike.
+    counterSnapshots.clear();
+    return;
+  }
   for (const session of rtspSessions.value) {
     appendPerformance(
       `rtsp:${session.uuid}`,
@@ -236,7 +333,9 @@ function recordSessionSamples(now: number): void {
         losses: session.client_reported_losses,
         recovery: session.idr_requests + session.invalidate_ref_count,
       },
-      Number.isFinite(session.encode_latency_ms) ? session.encode_latency_ms : null,
+      Number.isFinite(session.encode_latency_ms) && session.encode_latency_ms >= 0
+        ? session.encode_latency_ms
+        : null,
       session.fps,
       session.encoder_bitrate_kbps / 1000,
     );
@@ -254,6 +353,7 @@ function recordSessionSamples(now: number): void {
       null,
       session.fps ?? 0,
       (session.encoder_bitrate_kbps ?? 0) / 1000,
+      { video: session.video_dropped, audio: session.audio_dropped },
     );
   }
 }
@@ -261,7 +361,9 @@ function recordSessionSamples(now: number): void {
 function scheduleRefresh(): void {
   if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
   refreshTimer = window.setTimeout(async () => {
+    if (disposed) return;
     if (!document.hidden || !pauseWhenHidden.value) await refresh(true);
+    if (disposed) return;
     scheduleRefresh();
   }, pollInterval.value);
 }
@@ -274,6 +376,64 @@ async function loadConfig(): Promise<void> {
   }
 }
 
+async function loadHistoryPage(page: number, silent = false): Promise<void> {
+  const nextPage = Math.max(1, Math.floor(page));
+  const generation = ++historyRequestGeneration;
+  if (!silent) historyLoading.value = true;
+  try {
+    const offset = (nextPage - 1) * HISTORY_PAGE_SIZE;
+    const payload = await apiGet<SessionsPayload<SessionSummary> & Record<string, unknown>>(
+      `/api/history/sessions?limit=${HISTORY_PAGE_SIZE + 1}&offset=${offset}`,
+    );
+    if (generation !== historyRequestGeneration || disposed) return;
+    const parsed = parseHistoryPage(payload, HISTORY_PAGE_SIZE);
+    if (!parsed.sessions.length && nextPage > 1) {
+      await loadHistoryPage(nextPage - 1, silent);
+      return;
+    }
+    sessionHistory.value = parsed.sessions;
+    historyPage.value = nextPage;
+    if (parsed.total != null) {
+      historyTotal.value = Math.max(0, parsed.total);
+    } else if (parsed.hasMore) {
+      historyTotal.value = Math.max(historyTotal.value, offset + HISTORY_PAGE_SIZE + 1);
+    } else {
+      historyTotal.value = offset + parsed.sessions.length;
+    }
+    historyHasMore.value =
+      parsed.hasMore && (parsed.total == null || offset + HISTORY_PAGE_SIZE < historyTotal.value);
+    historyError.value = '';
+  } catch {
+    if (generation === historyRequestGeneration) {
+      historyError.value = t('ui.sessions.alert.partial_failure_description');
+    }
+  } finally {
+    if (generation === historyRequestGeneration) historyLoading.value = false;
+  }
+}
+
+function openHistory(row: SessionHistoryRow): void {
+  selectedHistory.value = row.summary;
+  selectedHistoryMembers.value = row.members;
+  detailOpen.value = true;
+}
+
+async function changeHistoryPage(page: number): Promise<void> {
+  if (page < 1 || page > historyPageCount.value || page === historyPage.value) return;
+  await loadHistoryPage(page);
+}
+
+async function onHistoryDeleted(uuid: string): Promise<void> {
+  selectedHistoryMembers.value = [];
+  sessionHistory.value = sessionHistory.value.filter((session) => session.uuid !== uuid);
+  historyTotal.value = Math.max(0, historyTotal.value - 1);
+  const page =
+    historyPage.value > 1 && sessionHistory.value.length === 0
+      ? historyPage.value - 1
+      : historyPage.value;
+  await loadHistoryPage(page, true);
+}
+
 async function refresh(silent = false): Promise<void> {
   if (refreshInFlight) return;
   refreshInFlight = true;
@@ -282,24 +442,27 @@ async function refresh(silent = false): Promise<void> {
   const requests: Promise<unknown>[] = [
     apiGet<SessionsPayload<RTSPSession>>('/api/rtsp/sessions'),
     apiGet<SessionsPayload<WebRTCSession>>('/api/webrtc/sessions'),
-    apiGet<SessionsPayload<SessionSummary>>('/api/history/sessions?limit=50&offset=0'),
   ];
   if (statsEnabled.value) {
     requests.push(apiGet<HostStatsSnapshot>('/api/host/stats'), apiGet<HostInfo>('/api/host/info'));
   }
 
+  const historyRequest = loadHistoryPage(historyPage.value, silent || ready.value);
   const results = await Promise.allSettled(requests);
+  await historyRequest;
+  if (disposed) {
+    refreshing.value = false;
+    refreshInFlight = false;
+    return;
+  }
   const rtspResult = results[0] as PromiseSettledResult<SessionsPayload<RTSPSession>>;
   const webRtcResult = results[1] as PromiseSettledResult<SessionsPayload<WebRTCSession>>;
-  const historyResult = results[2] as PromiseSettledResult<SessionsPayload<SessionSummary>>;
   if (rtspResult.status === 'fulfilled') rtspSessions.value = rtspResult.value.sessions ?? [];
   if (webRtcResult.status === 'fulfilled') webRtcSessions.value = webRtcResult.value.sessions ?? [];
-  if (historyResult.status === 'fulfilled')
-    sessionHistory.value = historyResult.value.sessions ?? [];
 
   if (statsEnabled.value) {
-    const statsResult = results[3] as PromiseSettledResult<HostStatsSnapshot>;
-    const infoResult = results[4] as PromiseSettledResult<HostInfo>;
+    const statsResult = results[2] as PromiseSettledResult<HostStatsSnapshot>;
+    const infoResult = results[3] as PromiseSettledResult<HostInfo>;
     if (statsResult.status === 'fulfilled') {
       hostStats.value = statsResult.value;
       const timestamp = Date.now();
@@ -320,54 +483,6 @@ async function refresh(silent = false): Promise<void> {
   ready.value = true;
   refreshing.value = false;
   refreshInFlight = false;
-}
-
-function openHistory(history: SessionSummary): void {
-  selectedHistory.value = history;
-  detailOpen.value = true;
-}
-
-function requestHistoryDelete(history: SessionSummary): void {
-  pendingHistoryDelete.value = history;
-  historyDeleteOpen.value = true;
-}
-
-function clearPendingHistoryDelete(): void {
-  if (!deletingHistoryUuid.value) pendingHistoryDelete.value = null;
-}
-
-async function confirmHistoryDelete(): Promise<void> {
-  const history = pendingHistoryDelete.value;
-  if (!history) return;
-
-  error.value = '';
-  notice.value = '';
-  deletingHistoryUuid.value = history.uuid;
-  try {
-    const response = await apiDelete<MutationResponse>(
-      `/api/history/sessions/${encodeURIComponent(history.uuid)}`,
-    );
-    if (response.status !== true && response.status !== 'true' && response.status !== 'ok') {
-      throw new Error(response.error || t('ui.sessions.error.action'));
-    }
-    sessionHistory.value = sessionHistory.value.filter((row) => row.uuid !== history.uuid);
-    if (selectedHistory.value?.uuid === history.uuid) {
-      detailOpen.value = false;
-      selectedHistory.value = null;
-    }
-    notice.value = t('ui.sessions.notice.history_deleted');
-    historyDeleteOpen.value = false;
-    pendingHistoryDelete.value = null;
-  } catch (cause) {
-    error.value =
-      cause instanceof ApiError
-        ? t('ui.sessions.error.action')
-        : cause instanceof Error
-          ? cause.message
-          : t('ui.sessions.error.action');
-  } finally {
-    deletingHistoryUuid.value = '';
-  }
 }
 
 function requestStop(session: ActiveVisualSession): void {
@@ -422,12 +537,17 @@ function historyDate(history: SessionSummary): string {
 }
 
 onMounted(async () => {
+  disposed = false;
   await loadConfig();
+  if (disposed) return;
   await refresh();
+  if (disposed) return;
   scheduleRefresh();
 });
 
 onBeforeUnmount(() => {
+  disposed = true;
+  historyRequestGeneration += 1;
   if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
 });
 </script>
@@ -530,13 +650,13 @@ onBeforeUnmount(() => {
           <MetricGauge
             :label="t('ui.stats.host_ram')"
             :value="hostStats.ram_percent"
-            :detail="`${formatBytes(hostStats.ram_used_bytes, locale)} / ${formatBytes(hostStats.ram_total_bytes, locale)}`"
+            :detail="memoryDetail(hostStats.ram_used_bytes, hostStats.ram_total_bytes)"
             color="var(--vs-color-status-warning)"
           />
           <MetricGauge
             :label="t('ui.stats.host_vram')"
             :value="hostStats.vram_percent"
-            :detail="`${formatBytes(hostStats.vram_used_bytes, locale)} / ${formatBytes(hostStats.vram_total_bytes, locale)}`"
+            :detail="memoryDetail(hostStats.vram_used_bytes, hostStats.vram_total_bytes)"
             color="var(--vs-color-data-accent)"
           />
         </div>
@@ -562,16 +682,24 @@ onBeforeUnmount(() => {
             :points="comparableHostHistory"
             :current="hostCurrent"
           />
+          <HostMemoryChart
+            :title="t('sessions.chart_host_memory')"
+            :points="comparableHostHistory"
+            :current="hostMemoryCurrent"
+          />
+          <MetricChart
+            :title="t('sessions.chart_host_net_rx')"
+            :value="networkMbps(hostStats?.net_rx_bps)"
+            :points="networkRxPoints"
+            unit=" Mbps"
+            color="var(--vs-color-status-success)"
+          />
           <MetricChart
             :title="t('sessions.chart_host_net_tx')"
-            :value="
-              hostStats?.net_tx_bps == null
-                ? '—'
-                : `${(hostStats.net_tx_bps / 1_000_000).toFixed(2)} Mbps`
-            "
-            :values="networkHistory"
+            :value="networkMbps(hostStats?.net_tx_bps)"
+            :points="networkTxPoints"
             unit=" Mbps"
-            color="var(--vs-color-status-warning)"
+            color="var(--vs-color-status-info)"
           />
         </div>
         <EmptyState v-else :title="t('stats.history_empty')" icon="activity" compact />
@@ -658,6 +786,10 @@ onBeforeUnmount(() => {
               :points="session.points"
               :protocol="session.protocol"
               :target-fps="session.targetFps"
+              :session-id="session.id"
+              mode="live"
+              :live-enabled="statsEnabled"
+              :pause-when-hidden="pauseWhenHidden"
             />
           </article>
         </div>
@@ -673,40 +805,81 @@ onBeforeUnmount(() => {
             <h2 id="visual-history-title">{{ t('sessions.history_title') }}</h2>
             <p>{{ t('ui.sessions.history.description') }}</p>
           </div>
-          <span>{{ sessionHistory.length }}</span>
+          <span>{{ historyCountLabel }}</span>
         </div>
+        <InlineAlert
+          v-if="historyError"
+          tone="warning"
+          :title="t('ui.sessions.alert.partial_failure_title')"
+        >
+          {{ historyError }}
+        </InlineAlert>
         <EmptyState
-          v-if="ready && !sessionHistory.length"
+          v-if="ready && !historyLoading && !sessionHistory.length"
           :title="t('sessions.history_empty')"
           icon="logs"
           compact
         />
+        <div v-else-if="historyLoading && !sessionHistory.length" class="history-loading">
+          <LoadingSkeleton v-for="item in 3" :key="item" variant="block" height="8rem" />
+        </div>
         <div v-else class="history-card-grid">
           <button
-            v-for="history in sessionHistory"
-            :key="history.uuid"
+            v-for="history in historyRows"
+            :key="history.key"
             class="history-card"
             type="button"
             @click="openHistory(history)"
           >
             <span class="history-card__topline">
               <StatusBadge
-                :label="(history.protocol || t('_common.unknown')).toUpperCase()"
+                :label="
+                  history.isGroup
+                    ? t('sessions.history_group_title', { count: history.members.length })
+                    : (history.summary.protocol || t('_common.unknown')).toUpperCase()
+                "
                 tone="info"
                 compact
               />
-              <time>{{ historyDate(history) }}</time>
+              <time>{{ historyDate(history.summary) }}</time>
             </span>
-            <strong>{{ history.app_name || t('ui.sessions.value.desktop_stream') }}</strong>
+            <strong>{{ history.summary.app_name || t('ui.sessions.value.desktop_stream') }}</strong>
             <span>{{
-              history.client_name || history.device_name || t('ui.sessions.value.unknown_client')
+              history.summary.client_name ||
+              history.summary.device_name ||
+              t('ui.sessions.value.unknown_client')
             }}</span>
             <span class="history-card__stream"
-              >{{ history.width }} × {{ history.height }} @ {{ history.target_fps }} ·
-              {{ history.codec }}</span
+              >{{ history.summary.width }} × {{ history.summary.height }} @
+              {{ history.summary.target_fps }} · {{ history.summary.codec }}</span
             >
             <span class="history-card__action">{{ t('sessions.history_view_detail') }} →</span>
           </button>
+        </div>
+        <div
+          v-if="sessionHistory.length"
+          class="history-pagination"
+          role="navigation"
+          :aria-label="t('sessions.history_title')"
+        >
+          <AppButton
+            :label="t('ui.sessions.history.previous_page', 'Previous page')"
+            icon="chevron-left"
+            size="compact"
+            variant="secondary"
+            :disabled="historyPage <= 1 || historyLoading"
+            @click="changeHistoryPage(historyPage - 1)"
+          />
+          <span aria-live="polite">{{ historyPage }} / {{ historyPageCount }}</span>
+          <AppButton
+            :label="t('ui.sessions.history.next_page', 'Next page')"
+            icon="chevron-right"
+            icon-position="end"
+            size="compact"
+            variant="secondary"
+            :disabled="!historyCanNext || historyLoading"
+            @click="changeHistoryPage(historyPage + 1)"
+          />
         </div>
       </section>
     </div>
@@ -714,7 +887,8 @@ onBeforeUnmount(() => {
     <SessionDetailDialog
       v-model:open="detailOpen"
       :summary="selectedHistory"
-      @delete="requestHistoryDelete"
+      :members="selectedHistoryMembers"
+      @deleted="onHistoryDeleted"
     />
     <ConfirmDialog
       v-model:open="stopConfirmOpen"
@@ -727,19 +901,6 @@ onBeforeUnmount(() => {
       :close-on-confirm="false"
       @confirm="confirmStop"
       @cancel="clearPendingStop"
-    />
-    <ConfirmDialog
-      v-model:open="historyDeleteOpen"
-      :title="t('ui.sessions.confirm.delete_title')"
-      :description="t('sessions.history_delete_confirm')"
-      :confirm-label="t('ui.sessions.action.delete_record')"
-      :cancel-label="t('_common.cancel')"
-      tone="danger"
-      :busy="Boolean(pendingHistoryDelete && deletingHistoryUuid === pendingHistoryDelete.uuid)"
-      :busy-label="t('ui.sessions.action.working')"
-      :close-on-confirm="false"
-      @confirm="confirmHistoryDelete"
-      @cancel="clearPendingHistoryDelete"
     />
   </div>
 </template>
@@ -850,6 +1011,21 @@ onBeforeUnmount(() => {
   gap: var(--vs-space-12);
 }
 
+.history-loading {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--vs-space-12);
+}
+
+.history-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--vs-space-12);
+  color: var(--vs-color-text-muted);
+  font-size: var(--vs-type-size-helper);
+}
+
 .history-card {
   display: grid;
   min-width: 0;
@@ -920,6 +1096,10 @@ onBeforeUnmount(() => {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .history-loading {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .visual-session__header {
     align-items: flex-start;
     flex-direction: column;
@@ -933,7 +1113,8 @@ onBeforeUnmount(() => {
 @media (max-width: 639px) {
   .gauge-grid,
   .host-chart-grid,
-  .history-card-grid {
+  .history-card-grid,
+  .history-loading {
     grid-template-columns: minmax(0, 1fr);
   }
 

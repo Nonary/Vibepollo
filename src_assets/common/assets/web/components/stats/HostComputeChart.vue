@@ -21,25 +21,93 @@ const series = [
 ] as const;
 
 const peak = computed(() => hostHistoryPeaks(props.points));
+const timeDomain = computed(() => {
+  const timestamps = props.points
+    .map((point) => point.timestamp)
+    .filter((timestamp) => Number.isFinite(timestamp));
+  const minimum = timestamps.length ? Math.min(...timestamps) : 0;
+  const maximum = timestamps.length ? Math.max(...timestamps) : minimum + 1;
+  return { minimum, maximum: maximum === minimum ? minimum + 1 : maximum };
+});
+const gapThreshold = computed(() => {
+  const deltas = props.points
+    .slice(1)
+    .map((point, index) => point.timestamp - (props.points[index]?.timestamp ?? point.timestamp))
+    .filter((delta) => delta > 0 && Number.isFinite(delta))
+    .sort((left, right) => left - right);
+  if (!deltas.length) return Number.POSITIVE_INFINITY;
+  const median = deltas[Math.floor(deltas.length / 2)] ?? 0;
+  return Math.max(15_000, median * 3);
+});
+
+function valueFor(point: HostHistoryPoint, key: (typeof series)[number]['key']): number | null {
+  const raw = point[`${key}_percent` as keyof HostHistoryPoint];
+  if (raw == null) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? Math.min(100, value) : null;
+}
+
+function xFor(timestamp: number): number {
+  const span = timeDomain.value.maximum - timeDomain.value.minimum;
+  return padding + ((timestamp - timeDomain.value.minimum) / span) * (width - padding * 2);
+}
+
 const seriesPoints = computed(() =>
   series.map((entry) => {
-    const values = props.points.map((point) =>
-      Number(point[`${entry.key}_percent` as keyof HostHistoryPoint]),
-    );
-    const finite = values.map((value) => (Number.isFinite(value) ? value : 0));
-    const points = finite.map((value, index) => {
-      const x =
-        padding +
-        (finite.length <= 1
-          ? width - padding * 2
-          : (index / (finite.length - 1)) * (width - padding * 2));
-      const y =
-        height - padding - (Math.max(0, Math.min(100, value)) / 100) * (height - padding * 2);
-      return `${x.toFixed(2)},${y.toFixed(2)}`;
-    });
-    return { ...entry, points: points.join(' ') };
+    const segments: string[] = [];
+    let current: string[] = [];
+    let previousTimestamp: number | undefined;
+    for (const point of props.points) {
+      const value = valueFor(point, entry.key);
+      const gap =
+        previousTimestamp != null && point.timestamp - previousTimestamp > gapThreshold.value;
+      if (value == null || gap) {
+        if (current.length) segments.push(current.join(' '));
+        current = [];
+      }
+      if (value != null) {
+        const x = xFor(point.timestamp);
+        const y =
+          height - padding - (Math.max(0, Math.min(100, value)) / 100) * (height - padding * 2);
+        current.push(`${x.toFixed(2)},${y.toFixed(2)}`);
+      }
+      previousTimestamp = point.timestamp;
+    }
+    if (current.length) segments.push(current.join(' '));
+    return { ...entry, segments };
   }),
 );
+
+const axisLabels = computed(() => {
+  const domain = timeDomain.value;
+  const compact = domain.maximum - domain.minimum < 5_000;
+  return [0, 0.5, 1].map((fraction) => {
+    const timestamp = domain.minimum + (domain.maximum - domain.minimum) * fraction;
+    return {
+      x: Math.max(22, Math.min(width - 22, xFor(timestamp))),
+      label: formatTimestamp(timestamp, compact),
+      show: !compact || fraction !== 0.5,
+    };
+  });
+});
+
+function formatTimestamp(timestamp: number, includeMilliseconds = false): string {
+  if (timestamp < 100_000_000) return `#${Math.round(timestamp) + 1}`;
+  const options: Intl.DateTimeFormatOptions = {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  };
+  if (includeMilliseconds) options.fractionalSecondDigits = 3;
+  return new Intl.DateTimeFormat(undefined, options).format(new Date(timestamp));
+}
+
+function axisLabelStyle(axis: { x: number }, index: number): Record<string, string> {
+  const left = `${(axis.x / width) * 100}%`;
+  if (index === 0) return { left, textAlign: 'left' };
+  if (index === 2) return { left, transform: 'translateX(-100%)', textAlign: 'right' };
+  return { left, transform: 'translateX(-50%)', textAlign: 'center' };
+}
 
 function value(value: number | null | undefined): string {
   return value == null || !Number.isFinite(value) ? '--' : `${Math.round(value)}%`;
@@ -56,33 +124,49 @@ function value(value: number | null | undefined): string {
         </span>
       </div>
     </header>
-    <svg
-      viewBox="0 0 320 124"
-      preserveAspectRatio="none"
-      role="img"
-      :aria-label="title"
-      class="host-compute-chart__plot"
-    >
-      <line
-        v-for="grid in [32, 62, 92]"
-        :key="grid"
-        x1="0"
-        :y1="grid"
-        x2="320"
-        :y2="grid"
-        class="host-compute-chart__grid"
-      />
-      <text x="4" y="14" class="host-compute-chart__axis">100%</text>
-      <text x="4" y="120" class="host-compute-chart__axis">0%</text>
-      <polyline
-        v-for="entry in seriesPoints"
-        :key="entry.key"
-        :points="entry.points"
-        fill="none"
-        :stroke="entry.color"
-        class="host-compute-chart__line"
-      />
-    </svg>
+    <div class="host-compute-chart__plot">
+      <div class="host-compute-chart__surface">
+        <svg viewBox="0 0 320 124" preserveAspectRatio="none" role="img" :aria-label="title">
+          <line
+            v-for="grid in [32, 62, 92]"
+            :key="grid"
+            x1="0"
+            :y1="grid"
+            x2="320"
+            :y2="grid"
+            class="host-compute-chart__grid"
+          />
+          <template v-for="entry in seriesPoints" :key="entry.key">
+            <polyline
+              v-for="segment in entry.segments"
+              :key="`${entry.key}:${segment}`"
+              :points="segment"
+              fill="none"
+              :stroke="entry.color"
+              class="host-compute-chart__line"
+            />
+          </template>
+        </svg>
+        <span class="host-compute-chart__y-axis host-compute-chart__y-axis--top" aria-hidden="true"
+          >100%</span
+        >
+        <span
+          class="host-compute-chart__y-axis host-compute-chart__y-axis--bottom"
+          aria-hidden="true"
+          >0%</span
+        >
+      </div>
+      <div class="host-compute-chart__axis-row" aria-hidden="true">
+        <template v-for="(axis, index) in axisLabels" :key="`${axis.label}:${index}`">
+          <span
+            v-if="axis.show"
+            class="host-compute-chart__axis"
+            :style="axisLabelStyle(axis, index)"
+            >{{ axis.label }}</span
+          >
+        </template>
+      </div>
+    </div>
     <footer class="host-compute-chart__footer">
       <span
         >CPU · {{ t('stats.current') }} {{ value(current.cpu) }} · {{ t('stats.peak') }}
@@ -135,10 +219,21 @@ function value(value: number | null | undefined): string {
   border-radius: 50%;
 }
 .host-compute-chart__plot {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 10.5rem;
+  padding: 0 var(--vs-space-12);
+}
+.host-compute-chart__surface {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.host-compute-chart__surface svg {
   display: block;
   width: 100%;
-  height: 9rem;
-  padding: 0 var(--vs-space-12);
+  height: 100%;
 }
 .host-compute-chart__grid {
   stroke: var(--vs-color-border-subtle);
@@ -147,7 +242,39 @@ function value(value: number | null | undefined): string {
 }
 .host-compute-chart__axis {
   fill: var(--vs-color-text-muted);
-  font-size: 8px;
+  font-size: 11px;
+}
+.host-compute-chart__y-axis {
+  position: absolute;
+  left: 0;
+  color: var(--vs-color-text-muted);
+  font-size: var(--vs-type-size-helper);
+  line-height: 1;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.host-compute-chart__y-axis--top {
+  top: 0.15rem;
+}
+.host-compute-chart__y-axis--bottom {
+  bottom: 0.15rem;
+}
+.host-compute-chart__axis-row {
+  position: relative;
+  flex: none;
+  height: 1.5rem;
+  color: var(--vs-color-text-muted);
+  font-size: var(--vs-type-size-helper);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25rem;
+  white-space: nowrap;
+}
+.host-compute-chart__axis-row .host-compute-chart__axis {
+  position: absolute;
+  top: 0;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
 }
 .host-compute-chart__line {
   stroke-width: 2;

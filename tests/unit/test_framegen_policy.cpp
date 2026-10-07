@@ -124,6 +124,40 @@ namespace {
     EXPECT_EQ(policy.refresh_multiplier, 2);
   }
 
+  TEST(FramegenPolicy, VrrVirtualCaptureModeUsesFixedThousandHertzInsteadOfMultiplier) {
+    const auto policy = framegen::make_stream_start_policy({
+      .fps = 116,
+      .frame_generation_provider = "lossless-scaling",
+      .uses_virtual_display = true,
+      .auto_capture_uses_wgc = true,
+      .auto_virtual_framegen_limiter = true,
+      .virtual_display_refresh_multiplier = 4,
+      .virtual_display_fixed_refresh_millihz = 1'000'000,
+    });
+
+    EXPECT_TRUE(policy.fixed_refresh);
+    ASSERT_TRUE(policy.framegen_refresh_millihz.has_value());
+    EXPECT_EQ(*policy.framegen_refresh_millihz, 1'000'000u);
+    ASSERT_TRUE(policy.framegen_refresh_rate.has_value());
+    EXPECT_EQ(*policy.framegen_refresh_rate, 1000);
+    EXPECT_EQ(policy.refresh_multiplier, 1);
+    // The game cap still follows the stream rate, not the display refresh.
+    EXPECT_TRUE(policy.auto_virtual_framegen_limiter);
+  }
+
+  TEST(FramegenPolicy, FixedRefreshDoesNotApplyToPhysicalDisplays) {
+    const auto policy = framegen::make_stream_start_policy({
+      .fps = 116,
+      .frame_generation_provider = "lossless-scaling",
+      .uses_virtual_display = false,
+      .virtual_display_fixed_refresh_millihz = 1'000'000,
+    });
+
+    EXPECT_FALSE(policy.fixed_refresh);
+    EXPECT_FALSE(policy.framegen_refresh_millihz.has_value());
+    EXPECT_EQ(policy.refresh_multiplier, 1);
+  }
+
   TEST(FramegenPolicy, LosslessProviderAloneDoesNotEnableFrameGeneration) {
     const auto policy = make_policy("lossless-scaling", true, "", false);
 
@@ -151,6 +185,21 @@ namespace {
     EXPECT_FALSE(policy.frame_generation_enabled);
     EXPECT_TRUE(policy.uses_virtual_display);
     EXPECT_FALSE(policy.auto_virtual_framegen_limiter);
+    EXPECT_FALSE(framegen::virtual_display_reflex_required(policy, false, false));
+  }
+
+  TEST(FramegenPolicy, VirtualDisplayReflexOverrideRequiresOptInAndPreservesGameProvidedReflex) {
+    const auto generic_policy = make_policy("lossless-scaling", true, "");
+    EXPECT_TRUE(framegen::virtual_display_reflex_required(generic_policy, false, false));
+    EXPECT_FALSE(framegen::virtual_display_reflex_required(generic_policy, true, false));
+    EXPECT_FALSE(framegen::virtual_display_reflex_required(generic_policy, true, true));
+
+    const auto game_provided_policy = make_policy("game-provided", true, "");
+    EXPECT_TRUE(framegen::virtual_display_reflex_required(game_provided_policy, true, false));
+    EXPECT_FALSE(framegen::virtual_display_reflex_required(game_provided_policy, true, true));
+
+    const auto physical_policy = make_policy("lossless-scaling", false, "");
+    EXPECT_FALSE(framegen::virtual_display_reflex_required(physical_policy, false, false));
   }
 
   TEST(FramegenPolicy, PhysicalDisplayWithoutFrameGenerationDoesNotAutoEnableLimiter) {

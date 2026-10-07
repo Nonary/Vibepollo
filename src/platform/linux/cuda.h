@@ -6,6 +6,7 @@
 
 #if defined(SUNSHINE_BUILD_CUDA)
   // standard includes
+  #include <cstddef>
   #include <cstdint>
   #include <memory>
   #include <optional>
@@ -17,8 +18,15 @@
 
 namespace platf {
   struct avcodec_encode_device_t;
+  class display_t;
+  struct nvenc_encode_device_t;
   struct img_t;
+  enum class pix_fmt_e;
 }  // namespace platf
+
+namespace video {
+  struct config_t;
+}
 
 namespace cuda {
 
@@ -38,6 +46,21 @@ namespace cuda {
    */
   std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_gl_encode_device(int width, int height, int offset_x, int offset_y);
 
+  /** Create the experimental native NVENC device for a GL/DMA-BUF capture source. */
+  std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_gl_encode_device(
+    int width,
+    int height,
+    int offset_x,
+    int offset_y,
+    platf::pix_fmt_e pix_fmt
+  );
+
+  /** Create a blank GL/CUDA display used only for hardware encoder probing. */
+  std::shared_ptr<platf::display_t> make_nvenc_probe_display(const video::config_t &config);
+
+  /** Create a paced blank GL/CUDA display for a Remote Input transport. */
+  std::shared_ptr<platf::display_t> make_black_display(const video::config_t &config);
+
   int init();
 }  // namespace cuda
 
@@ -52,7 +75,6 @@ typedef __location__(device_builtin) unsigned long long cudaTextureObject_t;
   #endif /* !defined(__CUDACC__) */
 
 namespace cuda {
-
   class freeCudaPtr_t {
   public:
     void operator()(void *ptr);

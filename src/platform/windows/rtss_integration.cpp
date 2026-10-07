@@ -256,7 +256,11 @@ namespace platf {
         return false;
       }
 
-      const bool supported = major > 7 ||
+      // The official RTSS 7.3.7 build 28314 ships RTSS.exe with both its
+      // file and product version still stamped 7.3.5.28314. Recognize that
+      // exact release without enabling fractional SDK writes on older 7.3.5.
+      const bool rtss_737_stale_version = major == 7 && minor == 3 && build == 5 && revision == 28314;
+      const bool supported = rtss_737_stale_version || major > 7 ||
                              (major == 7 && (minor > 3 || (minor == 3 && build >= 7)));
       if (!supported) {
         BOOST_LOG(info) << "RTSS " << version << " predates fractional profile SDK support in 7.3.7; using the profile file.";

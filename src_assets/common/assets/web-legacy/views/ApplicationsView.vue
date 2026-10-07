@@ -29,19 +29,14 @@
             <i class="fas fa-rotate-right" />
             <span>{{ $t('playnite.force_sync') }}</span>
           </n-button>
-
-          <n-button
-            v-else
-            size="medium"
-            type="default"
-            strong
-            class="apps-header__action"
-            @click="gotoPlaynite"
-          >
-            <i class="fas fa-puzzle-piece" />
-            <span>{{ $t('playnite.setup_integration') }}</span>
-          </n-button>
         </template>
+
+        <n-button size="medium" class="apps-header__action" @click="librarySetupOpen = true">
+          <i class="fas fa-puzzle-piece" />
+          <span>{{
+            libraryConfigured ? 'Library manager settings' : 'Setup Game Library Integration'
+          }}</span>
+        </n-button>
 
         <n-button
           type="primary"
@@ -70,12 +65,12 @@
         >
           <div class="apps-row__art" aria-hidden="true">
             <img
-              v-if="appHasPlayniteIcon(app)"
+              v-if="appHasArtwork(app)"
               class="apps-row__icon"
-              :src="playniteIconUrl(app)"
+              :src="appArtworkUrl(app)"
               :alt="app.name || $t('apps.app_name')"
               loading="lazy"
-              @error="onPlayniteIconError(app)"
+              @error="onArtworkError(app)"
             />
             <i
               v-else
@@ -92,6 +87,12 @@
                 <span v-if="playniteSourceLabel(app)" class="apps-row__badge-detail">
                   · {{ playniteSourceLabel(app) }}
                 </span>
+              </span>
+              <span
+                v-else-if="app['steam-id'] || app['lutris-id']"
+                class="apps-row__badge apps-row__badge--playnite"
+              >
+                {{ app['steam-id'] ? 'Steam' : 'Lutris' }}
               </span>
               <span v-else class="apps-row__badge apps-row__badge--custom">{{
                 $t('apps.custom_badge')
@@ -120,30 +121,35 @@
             <span>{{ $t('apps.add_application') }}</span>
           </n-button>
           <n-button
-            v-if="isWindows && !playniteEnabled"
+            v-if="!libraryConfigured"
             size="medium"
             type="default"
-            @click="gotoPlaynite"
+            @click="librarySetupOpen = true"
           >
             <i class="fas fa-puzzle-piece" />
-            <span>{{ $t('playnite.setup_integration') }}</span>
+            <span>{{
+              libraryConfigured ? 'Library manager settings' : 'Setup Game Library Integration'
+            }}</span>
           </n-button>
         </div>
       </div>
     </section>
 
-    <AppEditModal
-      v-model="showModal"
-      :app="currentApp"
-      :index="currentAppIndex"
-      @saved="reload"
-      @deleted="reload"
+    <GameLibrarySetup
+      v-model:open="librarySetupOpen"
+      :platform="configStore.metadata?.platform || ''"
+      :metadata="configStore.metadata"
+      :request="libraryRequest"
+      @configured="libraryConfigured = $event"
+      @saved="librariesSaved"
     />
+    <AppEditModal v-model="showModal" :app="currentApp" :index="currentAppIndex" @saved="reload" @deleted="reload" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
+import GameLibrarySetup from '@/components/GameLibrarySetup.vue';
 import AppEditModal from '@/components/AppEditModal.vue';
 import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
@@ -162,6 +168,19 @@ const auth = useAuthStore();
 const router = useRouter();
 const { t } = useI18n();
 
+const librarySetupOpen = ref(false);
+const libraryConfigured = ref(false);
+async function libraryRequest(
+  method: 'GET' | 'POST' | 'PATCH',
+  path: string,
+  body?: Record<string, unknown>,
+) {
+  const response = await http.request({ method, url: path, data: body });
+  return response.data;
+}
+async function librariesSaved() {
+  await Promise.all([reload(), configStore.fetchConfig(true), fetchPlayniteStatus()]);
+}
 const syncBusy = ref(false);
 const isWindows = computed(
   () => (configStore.metadata?.platform || '').toLowerCase() === 'windows',
@@ -174,7 +193,7 @@ const playniteEnabled = computed(() => playniteInstalled.value);
 const showModal = ref(false);
 const currentApp = ref<App | null>(null);
 const currentAppIndex = ref(-1);
-const failedPlayniteIconKeys = ref<Set<string>>(new Set());
+const failedArtworkKeys = ref<Set<string>>(new Set());
 
 async function reload(): Promise<void> {
   await appsStore.loadApps(true);
@@ -204,29 +223,30 @@ function firstString(...values: unknown[]): string {
   return '';
 }
 
-function playniteIconKey(app: App): string {
+function appArtworkKey(app: App): string {
   const identity = firstString(app.uuid, app['playnite-id'], app.name);
-  return `${identity}|${app['playnite-icon-path'] || ''}|${app['playnite-icon-version'] || ''}`;
+  return `${identity}|${app['playnite-icon-path'] || app['image-path'] || ''}|${app['playnite-icon-version'] || app['image-version'] || ''}`;
 }
 
-function appHasPlayniteIcon(app: App): boolean {
-  const key = playniteIconKey(app);
-  if (!app.uuid || !key || failedPlayniteIconKeys.value.has(key)) return false;
-  return !!app['playnite-icon-path'];
+function appHasArtwork(app: App): boolean {
+  const key = appArtworkKey(app);
+  if (!app.uuid || !key || failedArtworkKeys.value.has(key)) return false;
+  return !!(app['playnite-icon-path'] || app['image-path']);
 }
 
-function playniteIconUrl(app: App): string {
-  const version = app['playnite-icon-version'];
-  const base = `/api/apps/${encodeURIComponent(app.uuid || '')}/icon`;
+function appArtworkUrl(app: App): string {
+  const icon = !!app['playnite-icon-path'];
+  const version = icon ? app['playnite-icon-version'] : app['image-version'];
+  const base = `/api/apps/${encodeURIComponent(app.uuid || '')}/${icon ? 'icon' : 'cover'}`;
   return version ? `${base}?v=${version}` : base;
 }
 
-function onPlayniteIconError(app: App): void {
-  const key = playniteIconKey(app);
+function onArtworkError(app: App): void {
+  const key = appArtworkKey(app);
   if (!key) return;
-  const next = new Set(failedPlayniteIconKeys.value);
+  const next = new Set(failedArtworkKeys.value);
   next.add(key);
-  failedPlayniteIconKeys.value = next;
+  failedArtworkKeys.value = next;
 }
 
 function appSubtitle(app: App): string {
@@ -263,14 +283,6 @@ async function forceSync(): Promise<void> {
   }
 }
 
-function gotoPlaynite(): void {
-  try {
-    router.push({ path: '/settings', query: { sec: 'playnite' } });
-  } catch {
-    // ignore navigation errors
-  }
-}
-
 async function fetchPlayniteStatus(): Promise<void> {
   if (!auth.isAuthenticated) return;
   try {
@@ -293,7 +305,19 @@ async function fetchPlayniteStatus(): Promise<void> {
   }
 }
 
+let refreshTimer: number | undefined;
+let refreshing = false;
+onBeforeUnmount(() => window.clearInterval(refreshTimer));
 onMounted(async () => {
+  refreshTimer = window.setInterval(async () => {
+    if (document.hidden || refreshing || showModal.value || librarySetupOpen.value) return;
+    refreshing = true;
+    try {
+      await reload();
+    } finally {
+      refreshing = false;
+    }
+  }, 5000);
   try {
     await configStore.fetchConfig?.();
   } catch {}

@@ -3,24 +3,15 @@
     <div class="flex items-center justify-between gap-3">
       <div>
         <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
-          {{ $t('apps.framegen.lossless_title') }}
+          {{ $t('apps.framegen.scaling_title') }}
         </div>
         <p class="text-[11px] opacity-60">
-          {{ $t('apps.framegen.lossless_subtitle') }}
+          {{ $t('apps.framegen.scaling_subtitle') }}
         </p>
       </div>
       <n-switch v-model:value="form.losslessScalingEnabled" size="small" />
     </div>
 
-    <n-alert
-      v-if="form.losslessScalingEnabled && !isPlayniteManaged"
-      type="warning"
-      :show-icon="true"
-      size="small"
-      class="text-xs"
-    >
-      {{ $t('apps.framegen.lossless_unmanaged_warning') }}
-    </n-alert>
     <n-alert
       v-if="
         form.losslessScalingEnabled &&
@@ -276,7 +267,6 @@ const losslessAnimeSizeModel = defineModel<Anime4kSize>('losslessAnimeSize', { r
 const losslessAnimeVrsModel = defineModel<boolean>('losslessAnimeVrs', { required: true });
 
 const props = defineProps<{
-  isPlayniteManaged: boolean;
   showLosslessResolution: boolean;
   showLosslessSharpening: boolean;
   showLosslessAnimeOptions: boolean;
@@ -286,7 +276,6 @@ const props = defineProps<{
   resetActiveLosslessProfile: () => void;
 }>();
 
-const isPlayniteManaged = toRef(props, 'isPlayniteManaged');
 const showLosslessResolution = toRef(props, 'showLosslessResolution');
 const showLosslessSharpening = toRef(props, 'showLosslessSharpening');
 const showLosslessAnimeOptions = toRef(props, 'showLosslessAnimeOptions');

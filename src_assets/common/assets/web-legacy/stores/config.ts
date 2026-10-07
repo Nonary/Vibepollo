@@ -103,6 +103,7 @@ const defaultGroups = [
       controller: 'enabled',
       gamepad: 'auto',
       ds4_back_as_touchpad_click: 'enabled',
+      proton_dualsense_compatibility: 'enabled',
       motion_as_ds4: 'enabled',
       touchpad_as_ds4: 'enabled',
       back_button_timeout: -1,
@@ -125,6 +126,7 @@ const defaultGroups = [
     name: 'Audio/Video',
     options: {
       audio_sink: '',
+      audio_sink_capture_only: 'disabled',
       virtual_sink: '',
       install_steam_audio_drivers: 'enabled',
       stream_audio: 'enabled',
@@ -135,6 +137,11 @@ const defaultGroups = [
       output_name: '',
       virtual_display_mode: 'per_client',
       virtual_display_layout: 'exclusive',
+      remote_monitor_mute_audio: false,
+      remote_monitor_disconnect_on_stream_end: false,
+      remote_monitor_disconnect_on_client_disconnect: false,
+      remote_monitor_terminate_on_first_request: false,
+      remote_monitor_confirm_app_replacement: true,
       dd_configuration_option: 'verify_only',
       dd_resolution_option: 'auto',
       dd_manual_resolution: '',
@@ -152,8 +159,9 @@ const defaultGroups = [
       dd_snapshot_restore_hotkey_modifiers: 'ctrl+alt+shift',
       dd_use_sunshine_virtual_display_driver: true,
       vulkan_hdr_layer: true,
+      wayland_hdr_compatibility: false,
       dd_activate_virtual_display: false,
-      dd_virtual_display_scale: -1,
+      dd_virtual_display_scale: 0,
       dd_virtual_display_permanent_count: 0,
       dd_mode_remapping: {
         mixed: [] as Array<Record<string, string>>,
@@ -190,6 +198,7 @@ const defaultGroups = [
       wan_encryption_mode: 1,
       ping_timeout: 10000,
       video_max_batch_size_kb: 64,
+      pyrowave_critical_fec_percentage: 20,
     },
   },
   {
@@ -239,6 +248,7 @@ const defaultGroups = [
       min_threads: 2,
       hevc_mode: 0,
       av1_mode: 0,
+      pyrowave: true,
       envvar_compatibility_mode: 'disabled',
       legacy_ordering: 'disabled',
       ignore_encoder_probe_failure: 'disabled',
@@ -253,6 +263,7 @@ const defaultGroups = [
       frame_limiter_enable: false,
       frame_limiter_provider: 'auto',
       frame_limiter_fps_limit: 0,
+      mangohud_limiter_method: 'late',
       frame_limiter_auto_virtual_framegen: 'enabled',
       rtss_install_path: '',
       rtss_frame_limit_type: 'async',
@@ -612,6 +623,9 @@ export const useConfigStore = defineStore('config', () => {
       if (!Object.prototype.hasOwnProperty.call(data, 'frame_limiter_provider')) {
         (data as Record<string, unknown>)['frame_limiter_provider'] = 'auto';
       }
+      if (!Object.prototype.hasOwnProperty.call(data, 'mangohud_limiter_method')) {
+        (data as Record<string, unknown>)['mangohud_limiter_method'] = 'late';
+      }
       const virtualCaptureKey = 'frame_limiter_auto_virtual_framegen';
       if (!Object.prototype.hasOwnProperty.call(data, virtualCaptureKey)) {
         (data as Record<string, unknown>)[virtualCaptureKey] = 'enabled';
@@ -621,7 +635,9 @@ export const useConfigStore = defineStore('config', () => {
           .toLowerCase()
           .trim();
         (data as Record<string, unknown>)[virtualCaptureKey] =
-          normalized === 'legacy' || normalized === '2x' || normalized === 'fixed-2x'
+          ['vrr', '1000hz', '1000', 'fixed-1000hz', 'fixed_1000hz'].includes(normalized)
+            ? 'vrr'
+            : normalized === 'legacy' || normalized === '2x' || normalized === 'fixed-2x'
             ? 'legacy'
             : raw === false ||
                 raw === 0 ||
@@ -657,6 +673,7 @@ export const useConfigStore = defineStore('config', () => {
       'frame_limiter_disable_vsync',
       'dd_use_sunshine_virtual_display_driver',
       'vulkan_hdr_layer',
+      'wayland_hdr_compatibility',
       'dd_wa_dummy_plug_hdr10',
       'realtime_stats_enabled',
       'realtime_stats_pause_when_hidden',

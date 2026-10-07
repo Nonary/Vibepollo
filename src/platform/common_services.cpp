@@ -75,6 +75,6 @@ namespace platf::services {
   std::filesystem::path home_config_root(const std::optional<std::filesystem::path> &home,
                                          const std::filesystem::path &fallback_home) {
     const auto &root = home && !home->empty() ? *home : fallback_home;
-    return root / ".config" / "sunshine";
+    return root / ".config" / "vibepollo";
   }
 }  // namespace platf::services

@@ -104,18 +104,20 @@ add_subdirectory("${CMAKE_SOURCE_DIR}/third-party/glad/cmake" glad2-cmake)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
 if(NOT GLAD_SKIP_PIP_INSTALL)
-    # Check whether jinja2 and pkg_resources (setuptools) are already importable.
-    # pkg_resources is provided by setuptools, which is no longer bundled with Python 3.12+
-    # on several distros (Debian Trixie, Arch Linux, COPR, FreeBSD, etc.).
+    # Jinja is glad's only external runtime dependency on supported Python
+    # versions. Glad uses importlib.metadata and importlib.resources when they
+    # are available, with a filesystem fallback for resources, so requiring the
+    # removed pkg_resources compatibility module would reject modern
+    # setuptools releases even though generation works without it.
     execute_process(
-            COMMAND "${Python_EXECUTABLE}" -c "import jinja2; import pkg_resources"
+            COMMAND "${Python_EXECUTABLE}" -c "import jinja2"
             RESULT_VARIABLE _glad_deps_import_result
             OUTPUT_QUIET
             ERROR_QUIET
     )
 
     if(NOT _glad_deps_import_result EQUAL 0)
-        message(STATUS "glad: jinja2 or setuptools not found in ${Python_EXECUTABLE}, installing via pip...")
+        message(STATUS "glad: jinja2 not found in ${Python_EXECUTABLE}, installing via pip...")
 
         # Some system Python installations (e.g. FreeBSD ports) ship without pip.
         # Try to bootstrap it via ensurepip before falling back to the pip install.
@@ -144,12 +146,11 @@ if(NOT GLAD_SKIP_PIP_INSTALL)
                 COMMAND "${Python_EXECUTABLE}" -m pip install
                     --upgrade
                     --requirement "${CMAKE_SOURCE_DIR}/third-party/glad/requirements.txt"
-                    "setuptools<81"
                     --quiet
                 COMMAND_ERROR_IS_FATAL ANY
         )
     else()
-        message(STATUS "glad: jinja2 and setuptools already available in ${Python_EXECUTABLE}, skipping pip install")
+        message(STATUS "glad: jinja2 already available in ${Python_EXECUTABLE}, skipping pip install")
     endif()
 endif()
 

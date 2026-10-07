@@ -87,6 +87,16 @@ namespace VDISPLAY {
     WATCHDOG_FAILED = -3
   };
 
+  // Identifies the driver whose status was most recently observed by the
+  // runtime. This is deliberately separate from the current config choice:
+  // changing the setting does not retroactively change an already-observed
+  // probe result.
+  enum class DRIVER_SELECTION {
+    UNKNOWN,
+    VIBESHINE,
+    SUDOVDA,
+  };
+
   extern HANDLE VIRTUAL_DISPLAY_DRIVER_HANDLE;
 
   void closeVDisplayDevice();
@@ -136,7 +146,9 @@ namespace VDISPLAY {
     uint32_t base_fps_millihz = 0;
     bool framegen_refresh_active = false;
     int framegen_refresh_multiplier = 1;
-    bool hdr_requested = false;
+    // Unset preserves Windows' HDR setting, including during recovery.
+    // Explicit true/false requests HDR/SDR respectively.
+    std::optional<bool> hdr_requested = std::nullopt;
     std::string client_uid;
     std::string client_name;
     std::optional<std::string> hdr_profile;
@@ -153,6 +165,7 @@ namespace VDISPLAY {
     std::function<bool()> should_abort;
   };
 
+  // hdr_requested: nullopt leaves HDR unchanged; true enables it; false disables it.
   std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
     const char *s_client_uid,
     const char *s_client_name,
@@ -164,9 +177,10 @@ namespace VDISPLAY {
     uint32_t base_fps_millihz = 0,
     bool framegen_refresh_active = false,
     int framegen_refresh_multiplier = 1,
-    bool hdr_requested = false,
+    std::optional<bool> hdr_requested = std::nullopt,
     bool allow_pending_enumeration = false,
-    bool replace_existing = true
+    bool replace_existing = true,
+    bool preserve_peer_displays = false
   );
 
   // Apply an HDR color profile to a physical output (best-effort).
@@ -183,6 +197,8 @@ namespace VDISPLAY {
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
+  // Stop recovery for one ended display without removing or untracking it.
+  void cancel_virtual_display_recovery_monitor(const GUID &guid);
   // Stop session recovery workers without removing or untracking their displays.
   // Unlike process shutdown, later sessions may schedule fresh monitors.
   void cancel_all_virtual_display_recovery_monitors();
@@ -258,17 +274,23 @@ namespace VDISPLAY {
     std::string device_id;
     std::string display_name;
 
-    [[nodiscard]] bool ready_for_probe() const {
+    [[nodiscard]] bool ready_for_capture() const {
       return readiness == ensure_display_readiness_e::existing_display ||
              (readiness == ensure_display_readiness_e::target_ready && !display_name.empty());
+    }
+
+    [[nodiscard]] bool owns_temporary_probe_request() const {
+      return tracks_temporary_for_probe && temporary_generation != 0;
     }
 
   };
 
   /**
-   * @brief Ensures a display is available for capture/encoding.
-   * If no active physical displays exist, automatically creates a temporary virtual display.
-   * @return Ownership, exact target identity, and readiness for encoder probing.
+   * @brief Creates or acquires an owned temporary display for encoder probing.
+   * @details Encoder capability validation uses synthetic surfaces and does not
+   *          wait for this target to receive a GDI/DXGI capture identity.
+   *          ready_for_capture() reports the separate publication state.
+   * @return Driver ownership and the currently observed capture readiness.
    */
   ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid = std::nullopt);
 

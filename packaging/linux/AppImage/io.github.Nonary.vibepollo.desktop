@@ -1,0 +1,13 @@
+[Desktop Entry]
+Categories=RemoteAccess;Network;
+Comment=@PROJECT_DESCRIPTION@
+Exec=vibepollo
+Icon=io.github.Nonary.vibepollo
+Keywords=vibepollo;gamestream;stream;moonlight;remote play;
+Name=@PROJECT_NAME@
+Terminal=true
+Type=Application
+Version=1.0
+X-AppImage-Arch=x86_64
+X-AppImage-Name=vibepollo
+X-AppImage-Version=@PROJECT_VERSION@

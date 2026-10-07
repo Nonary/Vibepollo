@@ -1,0 +1,27 @@
+Reject blocks shorter than their header in Decoder::push_packet.
+
+A duplicate block_index with payload_words == 0 returns early from
+decode_packet() and the parse cursor never advances, so hostile or corrupted
+network input spins the decoder forever. From Punktfunk patch 0008.
+
+diff --git a/pyrowave_decoder.cpp b/pyrowave_decoder.cpp
+index f300dc2c..03091014 100644
+--- a/pyrowave_decoder.cpp
++++ b/pyrowave_decoder.cpp
+@@ -214,6 +214,16 @@ bool Decoder::Impl::push_packet(const void *data_, size_t size)
+ 
+ 		size_t packet_size = header->payload_words * sizeof(uint32_t);
+ 
++		// A block is at least its own header. Without this check a duplicate
++		// block_index with payload_words == 0 passes decode_packet()'s duplicate
++		// early-out and the cursor never advances, spinning the decoder forever
++		// on network input (found by Punktfunk's security review).
++		if (header->payload_words < sizeof(*header) / sizeof(uint32_t))
++		{
++			LOGE("payload_words (%u) is smaller than the block header.\n", unsigned(header->payload_words));
++			return false;
++		}
++
+ 		if (packet_size > size)
+ 		{
+ 			LOGE("Packet header states %zu bytes, but only %zu bytes left to parse.\n", packet_size, size);

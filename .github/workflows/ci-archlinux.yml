@@ -5,6 +5,18 @@ permissions: {}
 on:
   workflow_call:
     inputs:
+      use_self_hosted:
+        required: false
+        type: boolean
+        default: false
+      build_tests:
+        required: false
+        type: boolean
+        default: false
+      artifact_retention_days:
+        required: false
+        type: number
+        default: 1
       release_commit:
         required: true
         type: string
@@ -17,16 +29,18 @@ jobs:
     name: Archlinux
     env:
       _use_cuda: true
+      # Ninja does not honor MAKEFLAGS; bound both CMake and make builds.
+      CMAKE_BUILD_PARALLEL_LEVEL: 6
       BRANCH: ${{ github.head_ref || github.ref_name }}
       BUILD_VERSION: ${{ inputs.release_version }}
       CLONE_URL: ${{ github.event.repository.clone_url }}
       COMMIT: ${{ inputs.release_commit }}
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.use_self_hosted && github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Linux", "X64", "linux-release"]') || fromJSON('["ubuntu-latest"]') }}
     container:
       image: archlinux/archlinux:base-devel
-      options: --cpus 4 --memory 8g
+      options: --cpus 8 --memory 16g
     steps:
 
       - name: Update keyring
@@ -48,8 +62,7 @@ jobs:
       - name: Patch build flags
         shell: bash
         run: |
-          # shellcheck disable=SC2016
-          sed -i 's,#MAKEFLAGS="-j2",MAKEFLAGS="-j$(nproc)",g' /etc/makepkg.conf
+          echo "MAKEFLAGS=\"-j${CMAKE_BUILD_PARALLEL_LEVEL}\"" >> /etc/makepkg.conf
 
       - name: Install dependencies
         shell: bash
@@ -57,13 +70,125 @@ jobs:
           pacman -Syu --disable-download-timeout --needed --noconfirm \
             base-devel \
             cmake \
-            cuda \
+            curl \
+            dkms \
             git \
-            namcap
+            kmod \
+            linux-headers \
+            namcap \
+            openssl \
+            python
           pacman -Scc --noconfirm
+
+      - name: Install Pascal-compatible host compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GCC 14 is no longer in rolling Arch repos. Verify the archive's
+          # detached signatures before installing these versioned packages.
+          compiler_stage="$(mktemp -d)"
+          gcc14_version='14.3.1+r416+g44d5743651c4-2'
+          for package in gcc14-libs gcc14; do
+            archive="${package}-${gcc14_version}-x86_64.pkg.tar.zst"
+            url="https://archive.archlinux.org/packages/g/${package}/${archive}"
+            curl --fail --location --retry 3 "$url" -o "${compiler_stage}/${archive}"
+            curl --fail --location --retry 3 "${url}.sig" -o "${compiler_stage}/${archive}.sig"
+            pacman-key --verify "${compiler_stage}/${archive}.sig" "${compiler_stage}/${archive}"
+          done
+          pacman -U --needed --noconfirm "${compiler_stage}"/*.pkg.tar.zst
+          gcc-14 --version
+          g++-14 --version
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ inputs.release_commit }}
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Verify CUDA release policy
+        if: inputs.build_tests
+        shell: bash
+        run: python3 tests/unit/test_cuda_release_policy.py
+
+      - name: Compile Vibepollo DRM against Arch kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t kernel_build_dirs < <(
+            find /usr/lib/modules -mindepth 2 -maxdepth 2 -type d -name build -print | sort
+          )
+          if (( ${#kernel_build_dirs[@]} != 1 )); then
+            echo "::error::Expected exactly one Arch kernel header tree, found ${#kernel_build_dirs[@]}."
+            printf '%s\n' "${kernel_build_dirs[@]}" >&2
+            exit 1
+          fi
+
+          kernel_release="$(basename "$(dirname "${kernel_build_dirs[0]}")")"
+          write_drm_version_header() {
+            local module_source=$1
+            local module_version=$2
+            printf '#define VIBESHINE_DRM_VERSION "%s"\n' "${module_version}" \
+              >"${module_source}/vibeshine_drm_version.h"
+          }
+
+          module_build_dir="${RUNNER_TEMP}/vibeshine-drm-${kernel_release}"
+          cp -a third-party/libvirtualdisplay/linux/vibeshine-drm "${module_build_dir}"
+          write_drm_version_header "${module_build_dir}" "0.0.0"
+          MAKEFLAGS="-j${CMAKE_BUILD_PARALLEL_LEVEL}" \
+            "${module_build_dir}/build-module" "${kernel_release}" "${module_build_dir}"
+          test -s "${module_build_dir}/vibeshine_drm.ko"
+
+          signing_key="${RUNNER_TEMP}/vibeshine-drm-mok.key"
+          signing_certificate="${RUNNER_TEMP}/vibeshine-drm-mok.pub"
+          openssl req -new -x509 -nodes -days 1 \
+            -subj '/CN=Vibeshine CI module signing key/' \
+            -newkey rsa:2048 -keyout "${signing_key}" \
+            -addext 'extendedKeyUsage=codeSigning' \
+            -outform DER -out "${signing_certificate}" >/dev/null 2>&1
+          "${kernel_build_dirs[0]}/scripts/sign-file" sha256 \
+            "${signing_key}" "${signing_certificate}" "${module_build_dir}/vibeshine_drm.ko"
+
+          certificate_serial="$(openssl x509 -inform DER -in "${signing_certificate}" -noout -serial)"
+          certificate_serial="${certificate_serial#serial=}"
+          module_sig_key="$(modinfo -F sig_key "${module_build_dir}/vibeshine_drm.ko")"
+          module_sig_key="${module_sig_key//:/}"
+          [[ "${module_sig_key^^}" == "${certificate_serial^^}" ]]
+          [[ "$(modinfo -F signer "${module_build_dir}/vibeshine_drm.ko")" == \
+             'Vibeshine CI module signing key' ]]
+
+          dkms_ci_version=0.0.1
+          dkms_source="/usr/src/vibeshine-drm-${dkms_ci_version}"
+          cp -a third-party/libvirtualdisplay/linux/vibeshine-drm "${dkms_source}"
+          write_drm_version_header "${dkms_source}" "${dkms_ci_version}"
+          sed "s/@PROJECT_VERSION_NUMERIC@/${dkms_ci_version}/g" \
+            "${dkms_source}/dkms.conf.in" >"${dkms_source}/dkms.conf"
+          printf 'try_sign_modules=true\n' >/etc/dkms/framework.conf.d/vibeshine-ci.conf
+          dkms add -m vibeshine-drm -v "${dkms_ci_version}"
+          MAKEFLAGS="-j${CMAKE_BUILD_PARALLEL_LEVEL}" dkms build \
+            -m vibeshine-drm -v "${dkms_ci_version}" -k "${kernel_release}"
+          dkms install -m vibeshine-drm -v "${dkms_ci_version}" -k "${kernel_release}"
+
+          mapfile -t dkms_modules < <(
+            find "/usr/lib/modules/${kernel_release}" -type f \
+              \( -name 'vibeshine_drm.ko' -o -name 'vibeshine_drm.ko.*' \) \
+              -print | sort
+          )
+          if (( ${#dkms_modules[@]} != 1 )); then
+            echo "::error::Expected exactly one DKMS-installed Vibeshine DRM module, found ${#dkms_modules[@]}."
+            printf '%s\n' "${dkms_modules[@]}" >&2
+            exit 1
+          fi
+          dkms_module="${dkms_modules[0]}"
+          dkms_certificate_serial="$(openssl x509 -inform DER \
+            -in /var/lib/dkms/mok.pub -noout -serial)"
+          dkms_certificate_serial="${dkms_certificate_serial#serial=}"
+          dkms_sig_key="$(modinfo -F sig_key "${dkms_module}")"
+          dkms_sig_key="${dkms_sig_key//:/}"
+          [[ -n "$(modinfo -F signer "${dkms_module}")" ]]
+          [[ "${dkms_sig_key^^}" == "${dkms_certificate_serial^^}" ]]
+          dkms remove -m vibeshine-drm -v "${dkms_ci_version}" --all
 
       - name: Fix workspace permissions
         shell: bash
@@ -76,7 +201,9 @@ jobs:
         run: |
           # Calculate sub_version
           sub_version=""
-          if [[ "${BRANCH}" != "master" ]]; then
+          # Branch candidates share the upcoming prerelease version but retain
+          # a commit suffix until the exact commit receives its release tag.
+          if [[ "${BRANCH}" == "vibe-test" ]]; then
             sub_version=".r${COMMIT}"
           fi
 
@@ -98,28 +225,30 @@ jobs:
           # Create pkg directory and move files (as root)
           mkdir -p pkg
           mv build/PKGBUILD pkg/
-          mv build/sunshine.install pkg/
+          mv build/vibepollo.install pkg/
 
           # Change ownership to builder
           chown -R builder:builder pkg
 
           # Run makepkg as builder user
           cd pkg
-          sudo -u builder makepkg --printsrcinfo | tee .SRCINFO
+          sudo -u builder env _use_cuda="${_use_cuda}" makepkg --printsrcinfo | tee .SRCINFO
 
           # create a PKGBUILD archive
           cd ..
-          tar -czf sunshine.pkg.tar.gz -C pkg .
+          tar -czf vibepollo.pkg.tar.gz -C pkg .
 
       - name: Build PKGBUILD
         id: build
         shell: bash
         working-directory: pkg
+        env:
+          _build_tests: ${{ inputs.build_tests && 'ON' || 'OFF' }}
         run: |
           # Add problem matcher
           echo "::add-matcher::.github/matchers/gcc.json"
 
-          source /etc/profile  # ensure cuda is in the PATH
+          # PKGBUILD installs the pinned CUDA toolkit into its build directory.
 
           # Check PKGBUILD
           sudo -u builder namcap -i PKGBUILD
@@ -130,13 +259,103 @@ jobs:
           # Build the package as builder user (pass through environment variables)
           sudo -u builder env \
             _use_cuda="${_use_cuda}" \
+            _build_tests="${_build_tests}" \
+            CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL}" \
             makepkg -si --noconfirm
 
           # Remove debug package
-          rm -f sunshine-debug*.pkg.tar.zst
+          rm -f vibepollo-debug*.pkg.tar.zst
 
           # Remove problem matcher
           echo "::remove-matcher owner=gcc::"
+
+      - name: Verify Arch package contract
+        shell: bash
+        working-directory: pkg
+        run: |
+          set -euo pipefail
+
+          mapfile -t packages < <(find . -maxdepth 1 -type f -name 'vibepollo-*.pkg.tar.zst' ! -name '*-debug-*' | sort)
+          if (( ${#packages[@]} != 1 )); then
+            echo "::error::Expected exactly one non-debug Arch package, found ${#packages[@]}."
+            printf '%s\n' "${packages[@]}" >&2
+            exit 1
+          fi
+
+          package="${packages[0]}"
+          package_info="$(bsdtar -xOf "${package}" .PKGINFO)"
+          package_files="$(bsdtar -tf "${package}")"
+          grep -qx 'pkgname = vibepollo' <<< "${package_info}"
+          grep -qx 'provides = sunshine' <<< "${package_info}"
+          grep -qx 'conflict = sunshine' <<< "${package_info}"
+          grep -qx 'depend = dkms' <<< "${package_info}"
+          grep -qx 'depend = mokutil>=0.7.2' <<< "${package_info}"
+          grep -qx 'depend = wayland-utils' <<< "${package_info}"
+          grep -qx 'depend = xorg-xdpyinfo' <<< "${package_info}"
+          grep -qx $'\tmakedepends = nodejs' .SRCINFO
+          grep -qx $'\tmakedepends = npm' .SRCINFO
+          grep -qx $'\tmakedepends = ninja' .SRCINFO
+          grep -qx 'usr/bin/vibepollo' <<< "${package_files}"
+          if grep -qx 'usr/bin/sunshine' <<< "${package_files}"; then
+            echo "::error::The Vibepollo package unexpectedly contains the legacy Sunshine executable."
+            exit 1
+          fi
+          grep -qx 'usr/lib/systemd/system/vibepollo-session-controller.service' <<< "${package_files}"
+          grep -qx 'usr/lib/systemd/system/vibepollo-session-exec.socket' <<< "${package_files}"
+          grep -qx 'usr/lib/systemd/system/vibepollo-session-exec@.service' <<< "${package_files}"
+          grep -qx 'usr/lib/systemd/system/vibepollo.service' <<< "${package_files}"
+          grep -qx 'usr/libexec/vibeshine/vibepollo-session-controller' <<< "${package_files}"
+          grep -qx 'usr/libexec/vibeshine/vibepollo-session-exec' <<< "${package_files}"
+          grep -qx 'usr/libexec/vibeshine/vibepollo-session-broker' <<< "${package_files}"
+          grep -qx 'usr/libexec/vibeshine/vibepollo-provider-scan' <<< "${package_files}"
+          grep -qx 'usr/libexec/vibeshine/vibepollo-profile-import' <<< "${package_files}"
+          grep -qx 'usr/lib/sysusers.d/vibepollo.conf' <<< "${package_files}"
+
+          # Extract only the two network-facing execution-chain binaries and
+          # verify that the package archive does not grant either file
+          # capabilities. systemd supplies the host's narrowly bounded runtime
+          # capabilities; the session client must remain entirely unprivileged.
+          capability_check_root="$(mktemp -d)"
+          bsdtar --xattrs -xpf "${package}" -C "${capability_check_root}" \
+            usr/bin/vibepollo \
+            usr/libexec/vibeshine/vibepollo-session-exec
+          for capability_path in \
+            "${capability_check_root}/usr/bin/vibepollo" \
+            "${capability_check_root}/usr/libexec/vibeshine/vibepollo-session-exec"; do
+            if [[ -n "$(getcap -n "${capability_path}" 2>/dev/null)" ]]; then
+              echo "::error::The package unexpectedly grants file capabilities to ${capability_path#${capability_check_root}/}."
+              exit 1
+            fi
+          done
+          for obsolete_path in \
+            usr/lib/systemd/system/vibepollo-machine-prepare.service \
+            usr/lib/systemd/system/vibepollo-prelogin.service \
+            usr/lib/systemd/system/vibepollo-session-restore@.service \
+            usr/libexec/vibeshine/vibepollo-prelogin-sync \
+            usr/libexec/vibeshine/vibepollo-session-handoff \
+            usr/libexec/vibeshine/vibepollo-session-ready; do
+            if grep -qx "${obsolete_path}" <<< "${package_files}"; then
+              echo "::error::The Vibeshine package unexpectedly contains obsolete login-path file ${obsolete_path}."
+              exit 1
+            fi
+          done
+          if grep -Eq '(^|/)pam_vibepollo_session\.so$' <<< "${package_files}"; then
+            echo "::error::The Vibeshine package unexpectedly contains the obsolete PAM handoff module."
+            exit 1
+          fi
+          if grep -qx 'usr/lib/systemd/user/app-io.github.Nonary.vibepollo.service' <<< "${package_files}"; then
+            echo "::error::The native package unexpectedly contains the legacy per-user host service."
+            exit 1
+          fi
+          grep -qx 'usr/share/applications/io.github.Nonary.vibepollo.desktop' <<< "${package_files}"
+          grep -qx 'usr/libexec/vibeshine/vibeshine-drm-install' <<< "${package_files}"
+          grep -qx 'usr/src/vibeshine-drm-[^/]*/dkms.conf' <<< "${package_files}"
+          bsdtar -xOf "${package}" usr/libexec/vibeshine/vibeshine-drm-install | bash -n
+          bsdtar -xOf "${package}" usr/libexec/vibeshine/vibepollo-session-controller | bash -n
+          bsdtar -xOf "${package}" usr/libexec/vibeshine/vibepollo-machine-host | bash -n
+          package_install_script="$(bsdtar -xOf "${package}" .INSTALL)"
+          bash -n <<< "${package_install_script}"
+          grep -Fq 'vibeshine-drm-install install-package' <<< "${package_install_script}"
 
       - name: Copy Artifacts
         shell: bash
@@ -145,8 +364,8 @@ jobs:
           mkdir -p artifacts
 
           # Copy built packages to artifacts
-          cp pkg/sunshine*.pkg.tar.zst artifacts/
-          cp sunshine.pkg.tar.gz artifacts/
+          cp pkg/vibepollo*.pkg.tar.zst artifacts/
+          cp vibepollo.pkg.tar.gz artifacts/
 
           # List artifacts
           ls -la artifacts/
@@ -157,3 +376,13 @@ jobs:
           name: build-Archlinux
           path: artifacts/
           if-no-files-found: error
+          retention-days: ${{ inputs.artifact_retention_days }}
+
+      - name: Restore self-hosted workspace ownership
+        if: always() && runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          # The container writes as root and builder, but the persistent runner
+          # must be able to clean its workspace and temporary files after a job.
+          runner_owner="$(stat -c '%u:%g' "${RUNNER_TEMP}/..")"
+          chown -R "${runner_owner}" "${GITHUB_WORKSPACE}" "${RUNNER_TEMP}"

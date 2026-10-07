@@ -15,6 +15,9 @@
 #include <system_error>
 #include <vector>
 
+// lib includes
+#include <boost/asio/ip/address.hpp>
+
 // platform includes
 #include <WinSock2.h>
 #include <Windows.h>
@@ -23,6 +26,17 @@
 #include "utf_utils.h"
 
 namespace platf {
+  /// Interface resolved by routed_link_bps(), for diagnostics.
+  struct routed_link_info_t {
+    std::uint64_t luid = 0;
+    std::string alias;
+    unsigned long if_type = 0;
+    std::uint64_t transmit_bps = 0;
+  };
+
+  /// Current transmit speed of the routed interface, or zero when unavailable.
+  std::uint64_t routed_link_bps(const boost::asio::ip::address &source, const boost::asio::ip::address &target, routed_link_info_t *info = nullptr);
+
   void print_status(const std::string_view &prefix, HRESULT status);
   HDESK syncThreadDesktop();
 
@@ -66,12 +80,6 @@ namespace platf {
   bool is_lock_screen_active();
 
   /**
-   * @brief Check whether the active input desktop is the normal interactive desktop.
-   * @return true when the current desktop is Default, false otherwise.
-   */
-  bool is_default_input_desktop_active();
-
-  /**
    * @brief Cache the interactive user's screen saver enabled state before launching an app.
    * @details Repeated calls preserve the first captured value until it is restored.
    */
@@ -81,6 +89,10 @@ namespace platf {
    * @brief Restore the screen saver enabled state cached by cache_screen_saver_state().
    */
   void restore_screen_saver_state();
+
+  // Register a pause worker before restoring immediately. Invoke the returned
+  // completion once it exits, or if it cannot start; active resumes are kept.
+  std::function<void()> deferred_screen_saver_restore();
 
   /**
    * @brief Launch a process with user impersonation (for use when running as SYSTEM).
@@ -160,6 +172,14 @@ namespace platf {
    * @return true if the ViGEmBus driver file is present, false otherwise.
    */
   bool is_vigem_installed(std::string *version_out = nullptr);
+
+  /**
+   * @brief Check whether Vibepollo's own virtual gamepad driver is usable.
+   * @details Probes the driver's private control interface, so it reports what a stream would
+   *          actually get rather than merely whether files are present.
+   * @return true when a virtual controller can be created without ViGEmBus.
+   */
+  bool is_virtual_gamepad_driver_available();
 
   /**
    * @brief Check whether the Sunshine Vulkan HDR implicit layer is registered for the system.

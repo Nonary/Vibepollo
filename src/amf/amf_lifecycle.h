@@ -227,19 +227,50 @@ namespace amf::lifecycle {
   };
 
   struct encoder_selection_policy_t {
-    bool include_legacy = false;
+    bool include_experimental = false;
     bool fail_closed = false;
   };
 
+  inline constexpr std::string_view canonical_encoder_name(
+    std::string_view requested_encoder) noexcept {
+    if (requested_encoder == "amdvce_legacy") {
+      return "amdvce_ffmpeg";
+    }
+    if (requested_encoder == "amdvce") {
+      return "amdvce_experimental";
+    }
+    return requested_encoder;
+  }
+
   inline constexpr encoder_selection_policy_t encoder_selection_policy(
     std::string_view requested_encoder) noexcept {
-    // Native AMF and the FFmpeg AMF implementation are separate, explicit
-    // contracts. Automatic probing must never make a native feature/property
-    // failure look successful by selecting the legacy encoder behind the user.
+    // The FFmpeg AMF implementation is the supported default. The native AMF
+    // implementation has limited hardware coverage and is only considered when
+    // the user explicitly opts into the experimental encoder.
+    const auto canonical_encoder = canonical_encoder_name(requested_encoder);
     return {
-      requested_encoder == "amdvce_legacy",
-      requested_encoder == "amdvce",
+      canonical_encoder == "amdvce_experimental",
+      canonical_encoder == "amdvce_experimental",
     };
+  }
+
+  inline constexpr int hevc_gdr_gop_frames = 120;
+
+  inline constexpr std::optional<int64_t> hevc_gdr_ctbs_per_slot(
+    bool requested,
+    int video_format,
+    int width,
+    int height) noexcept {
+    if (!requested || video_format != 1 || width <= 0 || height <= 0) {
+      return std::nullopt;
+    }
+
+    // Preserve the row-based refresh used by the Xbox workaround, with AMF's
+    // documented 64x64 CTBs and the dimensions passed to encoder Init().
+    const int64_t ctbs_wide = (static_cast<int64_t>(width) + 63) / 64;
+    const int64_t ctbs_high = (static_cast<int64_t>(height) + 63) / 64;
+    const int64_t rows_per_slot = (ctbs_high + hevc_gdr_gop_frames - 1) / hevc_gdr_gop_frames;
+    return rows_per_slot * ctbs_wide;
   }
 
   inline constexpr int intra_refresh_period_frames = 300;
