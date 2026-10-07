@@ -3,6 +3,7 @@
 // boundary is replaced, so controller state, Sony reports, feedback queues,
 // capability checks, and callback ownership use their actual implementation.
 #include "src/platform/windows/dualsense_usbip_gamepad.h"
+#include "src/platform/windows/dualsense_usbip_gamepad_policy.h"
 #include "src/platform/windows/dualsense_usbip_transport.h"
 #include "third-party/libvirtualgamepad/driver/src/dualsense.h"
 
@@ -188,6 +189,30 @@ namespace {
   };
 }  // namespace
 
+TEST(DualSenseUsbipSelectionTests, DualSenseUsesUsbAudioWithoutApplicationOptIn) {
+  for (const auto setting : {"auto", "vhf", "vhf_ds5"}) {
+    const auto profile = platf::vhf_gamepad::select_desired_profile(setting, LI_CTYPE_PS, LI_CCAP_HAPTICS_PCM, true, true);
+    EXPECT_TRUE(sessions::select_composite_dualsense(setting, profile, false, true)) << setting;
+    EXPECT_FALSE(sessions::select_composite_dualsense(setting, profile, false, false)) << setting;
+  }
+}
+
+TEST(DualSenseUsbipSelectionTests, ExplicitOtherProfilesAndOtherControllersKeepTheirBackend) {
+  for (const auto setting : {"x360", "ds4", "vhf_xbox", "vhf_xbox_one", "vhf_ds4", "vhf_switch"}) {
+    const auto profile = platf::vhf_gamepad::select_desired_profile(setting, LI_CTYPE_PS, LI_CCAP_HAPTICS_PCM, true, true);
+    EXPECT_FALSE(sessions::select_composite_dualsense(setting, profile, false, true)) << setting;
+  }
+  for (const auto type : {LI_CTYPE_XBOX, LI_CTYPE_NINTENDO, LI_CTYPE_UNKNOWN}) {
+    const auto profile = platf::vhf_gamepad::select_desired_profile("auto", type, 0, true, true);
+    EXPECT_FALSE(sessions::select_composite_dualsense("auto", profile, false, true)) << type;
+  }
+}
+
+TEST(DualSenseUsbipSelectionTests, ExplicitUsbAudioRequestsNeverFallBackWhenTransportIsMissing) {
+  EXPECT_TRUE(sessions::select_composite_dualsense("usbip_ds5", platf::vhf_profile_e::automatic, false, false));
+  EXPECT_TRUE(sessions::select_composite_dualsense("x360", platf::vhf_profile_e::automatic, true, false));
+}
+
 TEST_F(DualSenseUsbipGamepadTests, ScopeRequiresInstalledTransportWithoutCreatingHardware) {
   fake_transport::installed = false;
   EXPECT_FALSE(sessions::start_session());
@@ -353,6 +378,34 @@ TEST_F(DualSenseUsbipGamepadTests, GlobalSelectionForwardsPcmWithoutApplicationS
   ASSERT_EQ(messages.size(), 1);
   EXPECT_EQ(messages[0].id, 4);
   EXPECT_EQ(messages[0].data.haptics.samples, samples(44));
+}
+
+TEST_F(DualSenseUsbipGamepadTests, AutomaticDualSenseForwardsPcmWithoutApplicationScope) {
+  for (const auto setting : {"auto", "vhf", "vhf_ds5"}) {
+    config::input.gamepad = setting;
+    platf::usbip_gamepad_t backend;
+    auto feedback = queue();
+    ASSERT_EQ(backend.alloc({2, 4}, arrival(), feedback), 0);
+    ASSERT_FALSE(sessions::enabled());
+    fake_transport::current[2]->pcm(samples(45));
+    auto messages = drain(feedback);
+    ASSERT_EQ(messages.size(), 1) << setting;
+    EXPECT_EQ(messages[0].type, platf::gamepad_feedback_e::haptics_pcm);
+    EXPECT_EQ(messages[0].id, 4);
+    EXPECT_EQ(messages[0].data.haptics.samples, samples(45));
+  }
+}
+
+TEST_F(DualSenseUsbipGamepadTests, AutomaticDualSenseStillRequiresClientWaveformCapability) {
+  platf::usbip_gamepad_t backend;
+  auto feedback = queue();
+  ASSERT_EQ(backend.alloc({2, 4}, arrival(LI_CCAP_RUMBLE), feedback), 0);
+  fake_transport::current[2]->pcm(samples(46));
+  EXPECT_TRUE(drain(feedback).empty());
+  fake_transport::current[2]->hid(rumble_report());
+  auto messages = drain(feedback);
+  ASSERT_EQ(messages.size(), 1);
+  EXPECT_EQ(messages[0].type, platf::gamepad_feedback_e::rumble);
 }
 
 TEST_F(DualSenseUsbipGamepadTests, StalledFeedbackQueueDropsOnlyThisControllersOldPcm) {
@@ -567,7 +620,7 @@ TEST_F(DualSenseUsbipGamepadTests, TeardownRejectsInFlightCallbacksAndCannotReac
   EXPECT_EQ(messages[0].data.haptics.samples, samples(75));
 }
 
-TEST_F(DualSenseUsbipGamepadTests, FinalApplicationScopeRemovesQueuedAndPartialPcm) {
+TEST_F(DualSenseUsbipGamepadTests, FinalApplicationScopeClearsOldPcmWithoutDisablingControllerHaptics) {
   auto scope = sessions::start_session();
   auto other_scope = sessions::start_session();
   platf::usbip_gamepad_t backend;
@@ -585,7 +638,9 @@ TEST_F(DualSenseUsbipGamepadTests, FinalApplicationScopeRemovesQueuedAndPartialP
   EXPECT_FALSE(sessions::enabled());
   EXPECT_TRUE(drain(feedback).empty());
   endpoint->pcm(samples(84));
-  EXPECT_TRUE(drain(feedback).empty());
+  auto outside_scope = drain(feedback);
+  ASSERT_EQ(outside_scope.size(), 1);
+  EXPECT_EQ(outside_scope[0].data.haptics.samples, samples(84));
 
   auto resumed_scope = sessions::start_session();
   const auto fresh = samples(85);

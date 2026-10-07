@@ -13,11 +13,14 @@ that connection does not change the wired USB identity exposed to Windows games.
 1. In the Vibepollo installer, select the optional **DualSense USB audio and
    haptics** component. It is off by default and installs the bundled
    Microsoft-signed usbip-win2 transport. Restart Windows if the installer requests it.
-2. Enable **DualSense waveform haptics** in an application's editor. The option
-   is saved as `dualsense-haptics` in `apps.json` and defaults to false. It selects
-   the composite DualSense for that application without changing the saved global
-   controller preference. To select it for every stream, choose **DualSense with
-   waveform haptics** (`gamepad = usbip_ds5`) in Settings → Input instead.
+2. Windows automatically uses the composite USB/audio backend whenever controller
+   selection chooses DualSense and the optional transport is available. This includes
+   Automatic with a PlayStation controller and the saved `vhf_ds5` profile; desktop
+   and Steam Big Picture streams do not need an application opt-in. Explicit Xbox,
+   DualShock 4, and Switch profiles keep their selected identity. The application
+   **DualSense waveform haptics** option (`dualsense-haptics` in `apps.json`) can
+   still force DualSense and delay game launch until its audio endpoint is ready.
+   **DualSense with waveform haptics** (`gamepad = usbip_ds5`) also forces this backend.
 3. Start a new stream so controllers are allocated on the composite backend.
    Use a Moonlight client with waveform support and a compatible DualSense renderer.
    Stock clients without this extension cannot render native waveform feedback.
@@ -30,8 +33,9 @@ Vibepollo waits up to 30 seconds for a waveform-capable streamed controller and
 its HID and active audio endpoint before running preparation commands or starting
 the game. Global `usbip_ds5` selection creates the device when a controller arrives;
 a desktop stream can still start with only a mouse and keyboard.
-Games launched outside Vibepollo can also use the endpoint
-while the composite controller is connected. The per-application option does
+Games launched outside Vibepollo can also use the endpoint and send waveform
+haptics while the composite controller is connected, including after an opted-in
+application ends. The per-application option does
 not require a special game-launch helper or an injected audio DLL.
 
 If the optional transport is unavailable, the per-application option reports an

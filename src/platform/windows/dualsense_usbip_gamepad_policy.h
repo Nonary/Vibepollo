@@ -2,6 +2,7 @@
 #pragma once
 
 #include "third-party/libvirtualgamepad/driver/src/dualsense.h"
+#include "vhf_gamepad_policy.h"
 
 #include <algorithm>
 #include <array>
@@ -11,6 +12,19 @@
 #include <span>
 
 namespace platf::dualsense_usbip_gamepad {
+  // A DualSense needs its matching USB audio function for native haptics.
+  // Application opt-in only forces that profile and delays launch until ready;
+  // it is not required when normal controller selection already chose DualSense.
+  [[nodiscard]] inline bool select_composite_dualsense(
+    std::string_view configured_gamepad,
+    vhf_profile_e selected_profile,
+    bool application_requested,
+    bool transport_available) {
+    return configured_gamepad == "usbip_ds5" || application_requested ||
+           (transport_available && selected_profile == vhf_profile_e::dualsense &&
+            configured_gamepad != "x360" && configured_gamepad != "ds4");
+  }
+
   struct output_update {
     lvg::playstation_output_feedback state {};
     bool accepted = false;

@@ -26,6 +26,7 @@
 #include "src/platform/common.h"
 #include "vhf_gamepad.h"
 #include "dualsense_usbip_gamepad.h"
+#include "dualsense_usbip_gamepad_policy.h"
 #include "vhf_gamepad_policy.h"
 
 #ifdef __MINGW32__
@@ -1315,9 +1316,13 @@ namespace platf {
       return -1;
     }
 
-    // Composite USB is an explicit selection or an application-scoped
-    // waveform-haptics requirement. It never replaces Automatic globally.
-    if (config::input.gamepad == "usbip_ds5"sv || dualsense_usbip_gamepad::enabled()) {
+    // Give every selected DualSense its audio function when the transport is
+    // installed, including controllers arriving through Desktop or Big Picture.
+    if (dualsense_usbip_gamepad::select_composite_dualsense(
+          config::input.gamepad,
+          vhf_desired_profile(metadata),
+          dualsense_usbip_gamepad::enabled(),
+          raw->usbip != nullptr && raw->usbip->available())) {
       if (raw->usbip && raw->usbip->alloc(id, metadata, feedback_queue) == 0) {
         raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::usbip;
         return 0;

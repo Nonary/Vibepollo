@@ -3,7 +3,6 @@
 
 #include "dualsense_usbip_gamepad_policy.h"
 #include "dualsense_usbip_transport.h"
-#include "src/config.h"
 #include "src/logging.h"
 #include "vhf_gamepad_policy.h"
 
@@ -29,9 +28,9 @@ namespace platf {
       std::mutex mutex;
       bool active = true;
       bool ready = false;
-      bool always_waveform = false;
       bool waveform_capable = false;
       bool persist_after_disconnect = false;
+      bool nonzero_pcm_received = false;
       std::uint16_t client_index = 0;
       std::uint8_t global_index = 0;
       feedback_queue_t feedback_queue;
@@ -156,7 +155,11 @@ namespace platf {
     void usb_slot::haptics_pcm(std::span<const std::uint8_t> bytes) {
       std::lock_guard lock {mutex};
       flush_output();
-      if (!active || !ready || !waveform_capable || !feedback_queue || (!always_waveform && !dualsense_usbip_gamepad::enabled())) {
+      if (!nonzero_pcm_received && std::any_of(bytes.begin(), bytes.end(), [](auto byte) { return byte != 0; })) {
+        nonzero_pcm_received = true;
+        BOOST_LOG(debug) << "Composite DualSense " << global_index << " received nonzero USB actuator PCM";
+      }
+      if (!active || !ready || !waveform_capable || !feedback_queue) {
         pcm.reset();
         return;
       }
@@ -313,7 +316,6 @@ namespace platf {
     std::unique_lock lifecycle_lock {slot->lifecycle};
     slot->client_index = id.clientRelativeIndex;
     slot->global_index = id.globalIndex;
-    slot->always_waveform = config::input.gamepad == "usbip_ds5";
     slot->waveform_capable = (metadata.capabilities & LI_CCAP_HAPTICS_PCM) != 0;
     slot->persist_after_disconnect = metadata.persist_after_disconnect;
     slot->feedback_queue = feedback_queue;
@@ -388,7 +390,8 @@ namespace platf {
     if (!slot->waveform_capable && dualsense_usbip_gamepad::enabled()) {
       BOOST_LOG(warning) << "Gamepad " << id.globalIndex << " does not support waveform haptics; waiting for a capable client controller before launching this app";
     }
-    BOOST_LOG(info) << "Gamepad " << id.globalIndex << " created as a composite DualSense with USB audio";
+    BOOST_LOG(debug) << "Gamepad " << id.globalIndex << " created as a composite DualSense with USB audio; client waveform haptics "
+                    << (slot->waveform_capable ? "supported" : "unsupported");
     return 0;
   }
 
