@@ -122,3 +122,35 @@ TEST(WgcInputGeometry, UnavailableMetricsDoNotForceCaptureReinitialization) {
   }
   EXPECT_EQ(assess_input_geometry(captured, 1920, 0, {0, 0, 4480, 1600}), input_geometry_change_e::unchanged);
 }
+
+TEST(WgcHelperPublication, DirectPublishOnlyWhenNothingOlderIsInFlight) {
+  using platf::dxgi::wgc_policy::may_publish_directly;
+  EXPECT_TRUE(may_publish_directly(false, false, false));
+  // A queued or mid-delivery scratch frame is older and must be published first.
+  EXPECT_FALSE(may_publish_directly(false, true, false));
+  EXPECT_FALSE(may_publish_directly(false, false, true));
+  EXPECT_FALSE(may_publish_directly(true, false, false));
+}
+
+TEST(WgcDirectEncoderInput, EncodesEachSharedFrameOnce) {
+  using platf::dxgi::wgc_policy::direct_frame_cursor_t;
+  using platf::dxgi::wgc_policy::take_direct_frame;
+  direct_frame_cursor_t cursor;
+  EXPECT_TRUE(take_direct_frame(cursor, 1, 7));
+  // The capture thread claimed frame 8, but the helper published 9 before the
+  // encoder locked the texture: the encoder converts 9, stamped as 9.
+  EXPECT_TRUE(take_direct_frame(cursor, 1, 9));
+  // The image claimed for frame 9 then finds the same pixels.
+  EXPECT_FALSE(take_direct_frame(cursor, 1, 9));
+  EXPECT_TRUE(take_direct_frame(cursor, 1, 10));
+}
+
+TEST(WgcDirectEncoderInput, RestartedHelperRestartsFrameIds) {
+  using platf::dxgi::wgc_policy::direct_frame_cursor_t;
+  using platf::dxgi::wgc_policy::take_direct_frame;
+  direct_frame_cursor_t cursor;
+  EXPECT_TRUE(take_direct_frame(cursor, 1, 500));
+  EXPECT_TRUE(take_direct_frame(cursor, 2, 1));
+  EXPECT_FALSE(take_direct_frame(cursor, 2, 1));
+  EXPECT_TRUE(take_direct_frame(cursor, 2, 2));
+}

@@ -25,7 +25,9 @@ extern "C" {
 // lib includes
 #include "display.h"
 #include "display_vram.h"
+#include "ipc/ipc_session.h"
 #include "misc.h"
+#include "wgc_capture_policy.h"
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
   #include "game_activity.h"
   #include "nv_truehdr.h"
@@ -502,7 +504,9 @@ namespace platf::dxgi {
       display = std::move(restored_display);
     }
 
-    int convert(platf::img_t &img_base) {
+    int convert(platf::img_t &img_base, platf::converted_frame_t &converted) {
+      converted = {};
+
       // Garbage collect mapped capture images whose weak references have expired
       for (auto it = img_ctx_map.begin(); it != img_ctx_map.end();) {
         if (it->second.img_weak.expired()) {
@@ -639,6 +643,27 @@ namespace platf::dxgi {
       auto release_encoder_mutex = util::fail_guard([&]() {
         (void) release_encoder_mutex_now();
       });
+
+      // An image that aliases the WGC helper's shared texture can hold a newer
+      // frame than the one the capture thread claimed: the helper may publish
+      // again before this lock. Holding the keyed mutex pins the pixels, so
+      // report the frame actually being converted, and stop at pixels this
+      // device already converted instead of encoding the same frame twice.
+      if (img.direct_frame_record) {
+        std::uint64_t frame_id = 0;
+        std::uint64_t frame_qpc = 0;
+        if (img.direct_frame_record->read(frame_id, frame_qpc)) {
+          if (!wgc_policy::take_direct_frame(direct_frame_cursor, img.direct_frame_record->generation(), frame_id)) {
+            converted.repeats_previous = true;
+            return 0;
+          }
+          if (frame_id != img.direct_frame_id) {
+            const auto now = std::chrono::steady_clock::now();
+            converted.frame_timestamp = now - qpc_time_difference(qpc_counter(), static_cast<std::int64_t>(frame_qpc));
+            converted.host_processing_timestamp = now;
+          }
+        }
+      }
 
       // Clear render target view(s) once so that the aspect ratio mismatch "bars" appear black
       if (!rtvs_cleared && !clear_output_to_black()) {
@@ -1931,6 +1956,11 @@ namespace platf::dxgi {
     // amongst multiple hwdevice_t objects (and therefore multiple ID3D11Devices).
     std::map<uint32_t, encoder_img_ctx_t> img_ctx_map;
 
+    // Newest WGC helper frame this device converted from images that alias the
+    // shared texture. Kept per device for the same reason: one image can reach
+    // several encoders, and each must encode every helper frame exactly once.
+    wgc_policy::direct_frame_cursor_t direct_frame_cursor;
+
     // NOTE: `display` is intentionally declared near the top of this member list (not here) so it is
     // destroyed last. See the comment on its declaration above.
 
@@ -2003,7 +2033,7 @@ namespace platf::dxgi {
     }
 
     int convert(platf::img_t &img_base) override {
-      return base.convert(img_base);
+      return base.convert(img_base, converted_frame);
     }
 
     void apply_colorspace() override {
@@ -2141,7 +2171,7 @@ namespace platf::dxgi {
     }
 
     int convert(platf::img_t &img_base) override {
-      return base.convert(img_base);
+      return base.convert(img_base, converted_frame);
     }
 
   private:
@@ -2378,8 +2408,8 @@ namespace platf::dxgi {
         return -1;
       }
 
-      const auto result = base.convert(img_base);
-      if (result != 0) {
+      const auto result = base.convert(img_base, converted_frame);
+      if (result != 0 || converted_frame.repeats_previous) {
         amf_d3d->cancel_input_texture_for_render();
       }
       return result;
@@ -2978,10 +3008,12 @@ namespace platf::dxgi {
       return -1;
     }
 
-    // Reset the image (in case this was previously a dummy)
+    // Reset the image (in case this was previously a dummy or aliased the WGC shared texture)
     img->capture_texture.reset();
     img->capture_rt.reset();
     img->capture_mutex.reset();
+    img->direct_frame_record.reset();
+    img->direct_frame_id = 0;
     img->data = nullptr;
     if (img->encoder_texture_handle) {
       CloseHandle(img->encoder_texture_handle);
