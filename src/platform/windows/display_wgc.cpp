@@ -426,11 +426,13 @@ namespace platf::dxgi {
   int display_wgc_ipc_vram_t::alias_shared_frame(img_d3d_t &img) {
     const auto shared = _ipc_session->shared_texture();
     const HANDLE shared_handle = _ipc_session->shared_texture_handle();
-    if (!shared || !shared_handle) {
+    auto frame_record = _ipc_session->frame_record();
+    if (!shared || !shared_handle || !frame_record) {
       return -1;
     }
 
     if (img.capture_texture.get() == shared.get() && img.encoder_texture_handle && !img.dummy) {
+      img.direct_frame_record = std::move(frame_record);
       img.blank = false;
       return 0;
     }
@@ -450,6 +452,7 @@ namespace platf::dxgi {
     img.encoder_texture_handle = image_handle;
     shared->AddRef();
     img.capture_texture.reset(shared.get());
+    img.direct_frame_record = std::move(frame_record);
     img.dummy = false;
     img.blank = false;
     img.format = capture_format;
@@ -473,12 +476,17 @@ namespace platf::dxgi {
     // No keyed mutex and no GPU work here: the encoder acquires the shared
     // frame's keyed mutex on its own device, which orders its conversion after
     // the helper's copy. That removes a full-frame copy on the capture device
-    // and the capture-to-encoder device hand-off from every frame.
+    // and the capture-to-encoder device hand-off from every frame. The helper
+    // may publish again before the encoder locks the texture, so these stamps
+    // describe the claimed frame; the encoder re-reads the frame record under
+    // the keyed mutex and reports the frame it actually converted.
+    uint64_t frame_id = 0;
     uint64_t frame_qpc = 0;
-    const auto claim_status = _ipc_session->claim_latest_frame(frame_qpc);
+    const auto claim_status = _ipc_session->claim_latest_frame(frame_id, frame_qpc);
     if (claim_status != capture_e::ok) {
       return claim_status;
     }
+    d3d_img->direct_frame_id = frame_id;
 
     const auto host_processing_timestamp = std::chrono::steady_clock::now();
     const auto host_processing_qpc = qpc_counter();

@@ -139,7 +139,46 @@ namespace platf::dxgi {
 
       return false;
     }
+
+    std::atomic<std::uint64_t> g_frame_record_generation {0};
   }  // namespace
+
+  std::shared_ptr<wgc_frame_record_t> wgc_frame_record_t::open(HANDLE metadata_mapping) {
+    const auto *metadata = static_cast<const frame_metadata_t *>(MapViewOfFile(
+      metadata_mapping,
+      FILE_MAP_READ,
+      0,
+      0,
+      sizeof(frame_metadata_t)
+    ));
+    if (!metadata) {
+      BOOST_LOG(error) << "Failed to map the WGC frame record for direct encoder input: " << GetLastError();
+      return nullptr;
+    }
+
+    const auto generation = g_frame_record_generation.fetch_add(1, std::memory_order_relaxed) + 1;
+    return std::shared_ptr<wgc_frame_record_t>(new wgc_frame_record_t(metadata, generation));
+  }
+
+  wgc_frame_record_t::wgc_frame_record_t(const frame_metadata_t *metadata, const std::uint64_t generation):
+      _metadata {metadata},
+      _generation {generation} {
+  }
+
+  wgc_frame_record_t::~wgc_frame_record_t() {
+    UnmapViewOfFile(_metadata);
+  }
+
+  bool wgc_frame_record_t::read(std::uint64_t &frame_id, std::uint64_t &frame_qpc) const {
+    frame_metadata_snapshot_t snapshot;
+    if (!read_frame_metadata_snapshot(_metadata, snapshot)) {
+      return false;
+    }
+
+    frame_id = static_cast<std::uint64_t>(snapshot.frame_id);
+    frame_qpc = static_cast<std::uint64_t>(snapshot.frame_qpc);
+    return true;
+  }
 
   void note_wgc_desktop_switch() {
     record_recent_wgc_desktop_switch();
@@ -182,6 +221,7 @@ namespace platf::dxgi {
 
       _shared_texture = nullptr;
       _shared_texture_handle.close();
+      _frame_record.reset();
       _keyed_mutex = nullptr;
       _frame_ready_event.close();
       _frame_metadata_mapping.close();
@@ -253,6 +293,7 @@ namespace platf::dxgi {
     _frame_metadata_mapping.close();
     _shared_texture = nullptr;
     _shared_texture_handle.close();
+    _frame_record.reset();
     _keyed_mutex = nullptr;
     _last_frame_id = 0;
     _frame_qpc = 0;
@@ -463,6 +504,7 @@ namespace platf::dxgi {
       }
       _shared_texture = nullptr;
       _shared_texture_handle.close();
+      _frame_record.reset();
       _keyed_mutex = nullptr;
       _frame_ready_event.close();
       _frame_metadata_mapping.close();
@@ -705,7 +747,7 @@ namespace platf::dxgi {
     return capture_e::ok;
   }
 
-  capture_e ipc_session_t::claim_latest_frame(uint64_t &frame_qpc_out) {
+  capture_e ipc_session_t::claim_latest_frame(uint64_t &frame_id_out, uint64_t &frame_qpc_out) {
     if (!_shared_texture || !_frame_metadata) {
       _force_reinit = true;
       _initialized = false;
@@ -726,6 +768,7 @@ namespace platf::dxgi {
     }
     _frames_acquired.fetch_add(1, std::memory_order_relaxed);
 
+    frame_id_out = static_cast<uint64_t>(_last_frame_id);
     frame_qpc_out = _frame_qpc;
     return capture_e::ok;
   }
@@ -830,6 +873,11 @@ namespace platf::dxgi {
       UnmapViewOfFile(metadata);
     });
 
+    auto frame_record = wgc_frame_record_t::open(duplicated_metadata_handle.get());
+    if (!frame_record) {
+      return false;
+    }
+
     _shared_texture = texture;
     _width = handle_data.width;
     _height = handle_data.height;
@@ -847,6 +895,7 @@ namespace platf::dxgi {
     _frame_metadata_mapping = std::move(duplicated_metadata_handle);
     _shared_texture_handle = std::move(duplicated_texture_handle);
     _frame_metadata = metadata;
+    _frame_record = std::move(frame_record);
     frame_metadata_snapshot_t snapshot;
     _last_frame_id = read_frame_metadata_snapshot(_frame_metadata, snapshot) ? snapshot.frame_id : 0;
     metadata_guard.disable();

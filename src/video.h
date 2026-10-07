@@ -273,6 +273,13 @@ namespace video {
 
     virtual int convert(platf::img_t &img) = 0;
 
+    /**
+     * @brief What the last convert() actually read from the capture image.
+     */
+    virtual platf::converted_frame_t converted_frame() const {
+      return {};
+    }
+
     virtual void request_idr_frame() = 0;
 
     virtual void request_normal_frame() = 0;

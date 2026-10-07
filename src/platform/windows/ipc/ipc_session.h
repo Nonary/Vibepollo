@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <winsock2.h>
 #include <d3d11.h>
 #include <memory>
@@ -38,6 +39,49 @@ namespace platf::dxgi {
    * probe from the main process) so the DXGI-fallback grace window applies.
    */
   void note_wgc_desktop_switch();
+
+  /**
+   * @brief Which helper frame the shared WGC texture holds, for encoders that read it directly.
+   * @details The helper publishes a frame's id and QPC timestamp while it holds the texture's
+   *          keyed mutex, so a reader holding the same mutex gets the id and timestamp of exactly
+   *          the pixels it is about to read. The record maps its own view of the helper's metadata,
+   *          so images still queued for an encoder stay valid across a session reinit.
+   */
+  class wgc_frame_record_t {
+  public:
+    /**
+     * @brief Map a read-only view of the helper's frame metadata.
+     * @param metadata_mapping The frame metadata mapping duplicated from the helper.
+     * @return The record, or nullptr if the view cannot be mapped.
+     */
+    static std::shared_ptr<wgc_frame_record_t> open(HANDLE metadata_mapping);
+
+    ~wgc_frame_record_t();
+
+    wgc_frame_record_t(const wgc_frame_record_t &) = delete;
+    wgc_frame_record_t &operator=(const wgc_frame_record_t &) = delete;
+
+    /**
+     * @brief Distinguishes records: a restarted helper starts its frame ids again.
+     */
+    std::uint64_t generation() const {
+      return _generation;
+    }
+
+    /**
+     * @brief Read the id and QPC timestamp of the frame in the shared texture.
+     * @details Call only while holding the shared texture's keyed mutex.
+     * @return `true` if a consistent record was read.
+     */
+    bool read(std::uint64_t &frame_id, std::uint64_t &frame_qpc) const;
+
+  private:
+    wgc_frame_record_t(const frame_metadata_t *metadata, std::uint64_t generation);
+
+    const frame_metadata_t *_metadata;
+    std::uint64_t _generation;
+  };
+
   /**
    * @brief Shared WGC IPC session encapsulating helper process, control pipe, shared texture and sync primitives.
    * Manages lifecycle & communication with the helper process, duplication of shared textures, keyed mutex
@@ -93,13 +137,21 @@ namespace platf::dxgi {
     /**
      * @brief Mark the newest published frame as consumed without taking the keyed mutex.
      * @details Used when the encoder reads the shared texture directly. The encoder's own
-     *          keyed-mutex acquire orders its GPU reads after the helper's copy, so the
-     *          capture thread only needs the frame id and timestamp. The encoder may read
-     *          a newer frame if the helper publishes again first; that frame is fresher.
+     *          keyed-mutex acquire orders its GPU reads after the helper's copy. The helper
+     *          can publish again before the encoder locks the texture, so the encoder takes
+     *          the frame it actually reads from frame_record() rather than from this claim.
+     * @param frame_id_out Output for the claimed frame's id.
      * @param frame_qpc_out Output for the claimed frame's QPC timestamp.
      * @return capture_e::ok if a new frame was claimed, capture_e::timeout otherwise.
      */
-    capture_e claim_latest_frame(uint64_t &frame_qpc_out);
+    capture_e claim_latest_frame(uint64_t &frame_id_out, uint64_t &frame_qpc_out);
+
+    /**
+     * @brief The record of which frame the shared texture holds. Null when not initialized.
+     */
+    std::shared_ptr<wgc_frame_record_t> frame_record() const {
+      return _frame_record;
+    }
 
     /**
      * @brief NT handle of the helper's shared texture, owned by this session.
@@ -218,6 +270,7 @@ namespace platf::dxgi {
     winrt::handle _frame_ready_event;  ///< Duplicated auto-reset event signaled by the helper per frame.
     winrt::handle _frame_metadata_mapping;  ///< Duplicated shared-memory mapping for frame metadata.
     frame_metadata_t *_frame_metadata = nullptr;  ///< Mapped frame metadata view.
+    std::shared_ptr<wgc_frame_record_t> _frame_record;  ///< Frame record handed to images that alias the shared texture.
     LONG64 _last_frame_id {0};  ///< Last frame id consumed from shared metadata.
     uint64_t _frame_qpc {0};  ///< QPC timestamp of latest frame.
     std::atomic<bool> _initializing {false};  ///< True while an initialization attempt is in progress.

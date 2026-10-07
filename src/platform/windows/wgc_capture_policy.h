@@ -123,6 +123,32 @@ namespace platf::dxgi::wgc_policy {
     return !stopping && !frame_pending && !frame_delivering;
   }
 
+  /**
+   * How far an encoder reading the helper's shared texture directly has got:
+   * the frame-record generation and the newest frame id it converted.
+   */
+  struct direct_frame_cursor_t {
+    std::uint64_t generation = 0;
+    std::uint64_t frame_id = 0;
+  };
+
+  /**
+   * Advance the cursor to the frame now in the shared texture. Returns false
+   * when the encoder already converted that frame, so encoding it again would
+   * repeat it. A new record generation (a restarted helper) restarts frame ids.
+   */
+  constexpr bool take_direct_frame(direct_frame_cursor_t &cursor, const std::uint64_t generation, const std::uint64_t frame_id) noexcept {
+    if (cursor.generation != generation) {
+      cursor = {generation, frame_id};
+      return true;
+    }
+    if (frame_id <= cursor.frame_id) {
+      return false;
+    }
+    cursor.frame_id = frame_id;
+    return true;
+  }
+
   constexpr bool buffer_pool_is_quiet(
     const bool allow_decrease,
     const bool has_recent_drop,

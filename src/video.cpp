@@ -1222,6 +1222,10 @@ namespace video {
       return device->convert(img);
     }
 
+    platf::converted_frame_t converted_frame() const override {
+      return device ? device->converted_frame : platf::converted_frame_t {};
+    }
+
     void request_idr_frame() override {
       if (device && device->frame) {
         auto &frame = device->frame;
@@ -1319,6 +1323,10 @@ namespace video {
       return device->convert(img);
     }
 
+    platf::converted_frame_t converted_frame() const override {
+      return device ? device->converted_frame : platf::converted_frame_t {};
+    }
+
     void request_idr_frame() override {
       force_idr = true;
     }
@@ -1379,10 +1387,14 @@ namespace video {
         return -1;
       }
       const auto result = device->convert(img);
-      if (result == 0) {
+      if (result == 0 && !device->converted_frame.repeats_previous) {
         fresh_conversion_pending = true;
       }
       return result;
+    }
+
+    platf::converted_frame_t converted_frame() const override {
+      return device ? device->converted_frame : platf::converted_frame_t {};
     }
 
     void request_idr_frame() override {
@@ -5273,6 +5285,7 @@ namespace video {
       uint64_t pop_timeouts = 0;
       uint64_t gate_skipped = 0;
       uint64_t converted = 0;
+      uint64_t repeated_inputs = 0;
       uint64_t encoded = 0;
       uint64_t dropped_submissions = 0;
       std::chrono::steady_clock::time_point last_log = std::chrono::steady_clock::now();
@@ -5286,6 +5299,7 @@ namespace video {
                          << " pop_timeouts=" << loop_stats.pop_timeouts
                          << " gate_skipped=" << loop_stats.gate_skipped
                          << " converted=" << loop_stats.converted
+                         << " repeated_inputs=" << loop_stats.repeated_inputs
                          << " encoded=" << loop_stats.encoded
                          << " dropped_submissions=" << loop_stats.dropped_submissions
                          << " frame_nr=" << frame_nr;
@@ -5443,6 +5457,20 @@ namespace video {
             break;
           }
           ++loop_stats.converted;
+
+          // Direct WGC input reads the helper's live frame, so the conversion reports
+          // which frame it actually got. Pixels this session already sent would only
+          // repeat that frame; wait for the next capture instead.
+          const auto converted = session->converted_frame();
+          if (converted.repeats_previous) {
+            ++loop_stats.repeated_inputs;
+            continue;
+          }
+          if (!placeholder_input && converted.frame_timestamp) {
+            capture_timestamp = converted.frame_timestamp;
+            frame_timestamp = capture_timestamp;
+            host_processing_timestamp = converted.host_processing_timestamp;
+          }
 
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
           if (refresh_rtx_hdr_metadata_if_needed(
@@ -5981,6 +6009,18 @@ namespace video {
               ctx->shutdown_event->raise(true);
 
               continue;
+            }
+
+            // Direct WGC input: encode the frame the conversion actually read, and
+            // skip pixels this session already sent rather than repeating them.
+            const auto converted = pos->session->converted_frame();
+            if (converted.repeats_previous) {
+              ++pos;
+              continue;
+            }
+            if (!placeholder_input && converted.frame_timestamp) {
+              capture_timestamp = converted.frame_timestamp;
+              host_processing_timestamp = converted.host_processing_timestamp;
             }
 
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
