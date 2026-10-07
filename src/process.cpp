@@ -4787,8 +4787,8 @@ namespace proc {
     // The virtual display driver is deliberately not initialized here. refresh()
     // only parses apps.json, and web UI request handlers call it, so a driver
     // readiness/recovery pass from this call stack stalled apps.json saves.
-    // Every consumer initializes the driver lazily when it actually needs a
-    // virtual display.
+    // main() initializes the driver once before the first parse, and every
+    // consumer initializes it lazily when it actually needs a virtual display.
 
     auto proc_opt = proc::parse(file_name);
 
