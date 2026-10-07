@@ -55,6 +55,13 @@ samples into 240 stereo frames (5 ms) and forwards them through the existing
 gamepad feedback queue and encrypted `0x5601` control extension. PCM admission is
 bounded so audio cannot clear pending rumble, LED, or adaptive-trigger messages.
 Slot teardown discards outstanding samples before that controller index is reused.
+Moonlight's **keep controllers attached after disconnect** setting (`gcpersist`)
+also preserves the composite controller's USB audio endpoint while the application
+is paused. Resume reuses that endpoint and routes feedback to the new client
+connection, so the game can keep its existing haptics audio connection. Feedback
+is discarded during the pause, and ending the application removes retained devices.
+Without that setting, disconnect removes the controller and its audio endpoint;
+games that do not reopen controller audio after device removal may require a restart.
 
 Buttons, axes, touchpad, motion, and battery state arrive from the client through
 the composite HID interface. HID output reports carry ordinary rumble, LEDs, and

@@ -3650,7 +3650,7 @@ namespace stream {
     }
 
     int start(session_t &session, const std::string &addr_string) {
-      session.input = input::alloc(session.mail);
+      session.input = input::alloc(session.mail, session.config.gcpersist);
 
       session.broadcast_ref = broadcast.ref();
       if (!session.broadcast_ref) {
@@ -3904,6 +3904,7 @@ namespace stream {
       session->undo_cmds = std::move(launch_session.client_undo_cmds);
 
       session->config = config;
+      session->config.gcpersist = launch_session.gcpersist;
       session->stream_fps = session->config.monitor.framerate;
       session->stream_fps_scaled = session->config.monitor.encodingFramerate;
       if (launch_session.fps > 0) {

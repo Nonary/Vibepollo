@@ -66,6 +66,7 @@ namespace stream {
     uint32_t encryptionFlagsEnabled;
 
     std::optional<int> gcmap;
+    bool gcpersist = false;
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;
     bool frame_generation_enabled;

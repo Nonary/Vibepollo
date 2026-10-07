@@ -31,6 +31,7 @@ namespace platf {
       bool ready = false;
       bool always_waveform = false;
       bool waveform_capable = false;
+      bool persist_after_disconnect = false;
       std::uint16_t client_index = 0;
       std::uint8_t global_index = 0;
       feedback_queue_t feedback_queue;
@@ -97,9 +98,6 @@ namespace platf {
 
       void hid_output(std::span<const std::uint8_t> bytes) {
         std::lock_guard lock {mutex};
-        if (!active || !feedback_queue) {
-          return;
-        }
         const auto change = output.apply(bytes);
         if (!change.accepted) {
           return;
@@ -124,6 +122,7 @@ namespace platf {
     };
 
     std::atomic<unsigned> session_count {0};
+    std::atomic<bool> application_active {false};
     // A reused client-relative slot must not restart sequence zero while a
     // previous stream still has in-flight network packets for that slot.
     std::array<std::atomic<std::uint32_t>, MAX_GAMEPADS> pcm_sequence {};
@@ -185,6 +184,26 @@ namespace platf {
   }  // namespace
 
   namespace dualsense_usbip_gamepad {
+    void set_application_active(bool active) {
+      application_active.store(active, std::memory_order_release);
+      if (active) {
+        return;
+      }
+      for (const auto &slot : live_slots()) {
+        std::lock_guard lifecycle_lock {slot->lifecycle};
+        std::unique_ptr<dualsense_usbip::controller> controller;
+        {
+          std::lock_guard lock {slot->mutex};
+          if (!slot->active) {
+            slot->ready = false;
+            controller = std::move(slot->controller);
+          }
+        }
+        // Joining transport callbacks must happen outside their mutex.
+        controller.reset();
+      }
+    }
+
     session_scope::session_scope() {
       session_count.fetch_add(1, std::memory_order_acq_rel);
     }
@@ -243,7 +262,7 @@ namespace platf {
 
   usbip_gamepad_t::~usbip_gamepad_t() {
     for (int nr = 0; nr < MAX_GAMEPADS; ++nr) {
-      free(nr);
+      free(nr, false);
     }
   }
 
@@ -263,12 +282,40 @@ namespace platf {
     if (id.globalIndex < 0 || id.globalIndex >= MAX_GAMEPADS) {
       return -1;
     }
+    if (const auto retained = impl->find(id.globalIndex)) {
+      {
+        std::lock_guard lifecycle_lock {retained->lifecycle};
+        std::lock_guard lock {retained->mutex};
+        if (retained->active) {
+          return -1;
+        }
+        if (retained->ready && retained->controller && retained->controller->connected()) {
+          retained->client_index = id.clientRelativeIndex;
+          retained->waveform_capable = (metadata.capabilities & LI_CCAP_HAPTICS_PCM) != 0;
+          retained->persist_after_disconnect = metadata.persist_after_disconnect;
+          retained->feedback_queue = feedback_queue;
+          retained->clear_pcm();
+          retained->active = true;
+          retained->pending_accel_request = (metadata.capabilities & LI_CCAP_ACCEL) != 0;
+          retained->pending_gyro_request = (metadata.capabilities & LI_CCAP_GYRO) != 0;
+          retained->pending_rumble = true;
+          retained->pending_rgb = retained->last_output.has_rgb;
+          retained->pending_triggers = retained->last_output.has_trigger_effects ?
+                                         DS_EFFECT_LEFT_TRIGGER | DS_EFFECT_RIGHT_TRIGGER : 0;
+          retained->submit();
+          BOOST_LOG(info) << "Composite DualSense " << id.globalIndex << " rebound to resumed client";
+          return 0;
+        }
+      }
+      free(id.globalIndex, false);
+    }
     auto slot = std::make_shared<usb_slot>();
     std::unique_lock lifecycle_lock {slot->lifecycle};
     slot->client_index = id.clientRelativeIndex;
     slot->global_index = id.globalIndex;
     slot->always_waveform = config::input.gamepad == "usbip_ds5";
     slot->waveform_capable = (metadata.capabilities & LI_CCAP_HAPTICS_PCM) != 0;
+    slot->persist_after_disconnect = metadata.persist_after_disconnect;
     slot->feedback_queue = feedback_queue;
     slot->state.reset();
     slot->input.header.size = sizeof(slot->input);
@@ -345,7 +392,7 @@ namespace platf {
     return 0;
   }
 
-  void usbip_gamepad_t::free(int nr) {
+  void usbip_gamepad_t::free(int nr, bool retain_for_resume) {
     if (nr < 0 || nr >= MAX_GAMEPADS) {
       return;
     }
@@ -365,10 +412,22 @@ namespace platf {
     {
       std::lock_guard lock {slot->mutex};
       slot->active = false;
-      slot->ready = false;
       slot->clear_pcm();
-      controller = std::move(slot->controller);
       slot->feedback_queue.reset();
+      slot->state.reset();
+      slot->contacts.clear();
+      slot->free_contacts = 3;
+      slot->input = vhf_gamepad::make_input_state(nr, {});
+      if (slot->controller) {
+        const auto report = lvg::driver::encode_ds5_input(slot->input, &slot->state);
+        std::ignore = slot->controller->set_input_report({reinterpret_cast<const std::uint8_t *>(&report), sizeof(report)});
+      }
+      if (retain_for_resume && slot->persist_after_disconnect && application_active.load(std::memory_order_acquire) && slot->ready && slot->controller && slot->controller->connected()) {
+        BOOST_LOG(info) << "Composite DualSense " << nr << " retained while application is paused";
+        return;
+      }
+      slot->ready = false;
+      controller = std::move(slot->controller);
     }
     // Detach and join callbacks after releasing their mutex. A pending
     // callback can finish but cannot publish into this released client slot.

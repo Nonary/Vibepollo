@@ -180,6 +180,7 @@ namespace {
     }
 
     void TearDown() override {
+      sessions::set_application_active(false);
       EXPECT_FALSE(sessions::enabled());
       EXPECT_FALSE(sessions::has_ready_controller());
       fake_transport::reset();
@@ -455,6 +456,75 @@ TEST_F(DualSenseUsbipGamepadTests, IndependentTriggerCommandsKeepEnablesAndOrder
   EXPECT_EQ(messages[0].data.adaptive_triggers.event_flags, DS_EFFECT_LEFT_TRIGGER | DS_EFFECT_RIGHT_TRIGGER);
   EXPECT_EQ(messages[0].data.adaptive_triggers.type_left, 0x01);
   EXPECT_EQ(messages[0].data.adaptive_triggers.type_right, 0);
+}
+
+TEST_F(DualSenseUsbipGamepadTests, PausePreservesAudioEndpointAndResumeRebindsFeedback) {
+  auto scope = sessions::start_session();
+  sessions::set_application_active(true);
+  platf::usbip_gamepad_t backend;
+  auto old_feedback = queue();
+  auto persistent_arrival = arrival();
+  persistent_arrival.persist_after_disconnect = true;
+  ASSERT_EQ(backend.alloc({0, 0}, persistent_arrival, old_feedback), 0);
+  auto endpoint = fake_transport::current[0];
+  endpoint->pcm(samples(1));
+  backend.free(0);
+  EXPECT_TRUE(endpoint->connected);
+  EXPECT_EQ(endpoint->destroyed.load(), 0u);
+  EXPECT_FALSE(sessions::has_ready_controller());
+  endpoint->pcm(samples(2));
+  endpoint->hid(rumble_report(90, 45));
+  EXPECT_TRUE(drain(old_feedback).empty());
+
+  auto resumed_feedback = queue();
+  ASSERT_EQ(backend.alloc({0, 3}, persistent_arrival, resumed_feedback), 0);
+  EXPECT_EQ(fake_transport::create_count, 1u);
+  EXPECT_EQ(fake_transport::current[0], endpoint);
+  auto replay = drain(resumed_feedback);
+  ASSERT_FALSE(replay.empty());
+  EXPECT_EQ(replay[0].id, 3);
+  EXPECT_EQ(replay[0].data.rumble.lowfreq, 90u << 8);
+  endpoint->pcm(samples(3));
+  auto messages = drain(resumed_feedback);
+  ASSERT_EQ(messages.size(), 1);
+  EXPECT_EQ(messages[0].id, 3);
+  EXPECT_EQ(messages[0].data.haptics.samples, samples(3));
+  EXPECT_TRUE(drain(old_feedback).empty());
+
+  backend.free(0);
+  sessions::set_application_active(false);
+  EXPECT_FALSE(endpoint->connected);
+  EXPECT_EQ(endpoint->destroyed.load(), 1u);
+  ASSERT_EQ(backend.alloc({0, 0}, arrival(), resumed_feedback), 0);
+  EXPECT_EQ(fake_transport::create_count, 2u);
+}
+
+TEST_F(DualSenseUsbipGamepadTests, ClientWithoutPersistenceStillRemovesControllerWhileApplicationRuns) {
+  sessions::set_application_active(true);
+  platf::usbip_gamepad_t backend;
+  auto feedback = queue();
+  ASSERT_EQ(backend.alloc({0, 0}, arrival(), feedback), 0);
+  auto endpoint = fake_transport::current[0];
+  backend.free(0);
+  EXPECT_FALSE(endpoint->connected);
+  EXPECT_EQ(endpoint->destroyed.load(), 1u);
+}
+
+TEST_F(DualSenseUsbipGamepadTests, ResumeRefreshesCapabilitiesAndCanDisablePersistence) {
+  sessions::set_application_active(true);
+  platf::usbip_gamepad_t backend;
+  auto feedback = queue();
+  auto metadata = arrival();
+  metadata.persist_after_disconnect = true;
+  ASSERT_EQ(backend.alloc({0, 0}, metadata, feedback), 0);
+  auto endpoint = fake_transport::current[0];
+  backend.free(0);
+  ASSERT_EQ(backend.alloc({0, 1}, arrival(0), feedback), 0);
+  drain(feedback);
+  endpoint->pcm(samples(4));
+  EXPECT_TRUE(drain(feedback).empty());
+  backend.free(0);
+  EXPECT_EQ(endpoint->destroyed.load(), 1u);
 }
 
 TEST_F(DualSenseUsbipGamepadTests, TeardownRejectsInFlightCallbacksAndCannotReachReusedSlot) {

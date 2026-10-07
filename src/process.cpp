@@ -1399,6 +1399,7 @@ namespace proc {
     _app_id = util::from_view(app.id);
     audio::app_started();
 #ifdef _WIN32
+    platf::dualsense_usbip_gamepad::set_application_active(true);
     // A replacement app owns the streaming display configuration. Any
     // restore deferred by the previous app must not fire at this session's end.
     clear_deferred_display_revert();
@@ -3406,6 +3407,9 @@ namespace proc {
     _active_client_vdd_identity_token = 0;
     _app_launch_time = {};
     _app_id = -1;
+#ifdef _WIN32
+    platf::dualsense_usbip_gamepad::set_application_active(false);
+#endif
     _app_name.clear();
     _app = {};
     display_name.clear();

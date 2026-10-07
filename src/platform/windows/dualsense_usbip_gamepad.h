@@ -22,6 +22,8 @@ namespace platf::dualsense_usbip_gamepad {
   // Returns empty when the optional signed transport is not installed.
   std::shared_ptr<session_scope> start_session();
   bool enabled();
+  // End the lifetime of idle endpoints retained at the client's request.
+  void set_application_active(bool active);
   // A USB/IP import alone is insufficient: both this controller's HID child
   // and its active four-channel Windows audio endpoint must be ready.
   bool has_ready_controller();
@@ -38,7 +40,7 @@ namespace platf {
     bool probe();
     bool available() const;
     int alloc(const gamepad_id_t &id, const gamepad_arrival_t &metadata, feedback_queue_t &feedback_queue);
-    void free(int nr);
+    void free(int nr, bool retain_for_resume = true);
     void update(int nr, const gamepad_state_t &state);
     void touch(int nr, const gamepad_touch_t &event);
     void motion(int nr, const gamepad_motion_t &event);

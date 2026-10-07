@@ -35,6 +35,7 @@ namespace {
     ls.client_name = "client-name";
     ls.device_name = "device-name";
     ls.input_only = true;
+    ls.gcpersist = true;
     ls.perm = crypto::PERM::_all;
     ls.fps = 120;
     ls.client_do_cmds.push_back(crypto::command_entry_t {"do-cmd", true});
@@ -89,6 +90,7 @@ TEST(RtspStartupSnapshot, CopiesAllConsumedFields) {
   EXPECT_EQ(clone->client_name, source.client_name);
   EXPECT_EQ(clone->device_name, source.device_name);
   EXPECT_EQ(clone->input_only, source.input_only);
+  EXPECT_EQ(clone->gcpersist, source.gcpersist);
   EXPECT_EQ(clone->perm, source.perm);
   EXPECT_EQ(clone->fps, source.fps);
 
@@ -110,4 +112,12 @@ TEST(RtspStartupSnapshot, CopiesAllConsumedFields) {
   // The clone intentionally does NOT copy rtsp_cipher: it is move-only and only the
   // io_context respond() path uses it, never the startup worker.
   EXPECT_FALSE(clone->rtsp_cipher.has_value());
+}
+
+TEST(RtspStartupSnapshot, DoesNotEnableUnrequestedControllerPersistence) {
+  auto source = make_populated_launch_session();
+  source.gcpersist = false;
+  const auto clone = source.clone_for_startup();
+  ASSERT_TRUE(clone != nullptr);
+  EXPECT_FALSE(clone->gcpersist);
 }
