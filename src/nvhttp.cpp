@@ -1736,7 +1736,9 @@ namespace nvhttp {
             }
           }
         }
-        if (allow_display_changes) {
+        // A missing resume target must be recreated even when disconnect
+        // restoration is disabled.
+        if (allow_display_changes || launch_session->virtual_display_recreated_on_demand) {
           apply_framegen_refresh_policy(request_virtual_display);
 
           if (request_virtual_display) {
@@ -1749,14 +1751,17 @@ namespace nvhttp {
                 [&] {
                   (void) display_helper_integration::disarm_pending_restore(
                     display_startup_cancelled,
-                    display_startup_deadline
+                    display_startup_deadline,
+                    true
                   );
                 },
                 [&] {
-                  return display_helper_integration::restore_in_progress(
-                    display_startup_cancelled,
-                    display_startup_deadline
-                  );
+                  // Deadline expiry is not proof that restoration has stopped.
+                  return display_startup_cancelled() ||
+                         display_helper_integration::restore_in_progress(
+                           display_startup_cancelled,
+                           display_startup_deadline
+                         );
                 }
               );
             if (!virtual_display_mutation_allowed) {
