@@ -15,6 +15,9 @@
 #include <system_error>
 #include <vector>
 
+// lib includes
+#include <boost/asio/ip/address.hpp>
+
 // platform includes
 #include <WinSock2.h>
 #include <Windows.h>
@@ -23,6 +26,17 @@
 #include "utf_utils.h"
 
 namespace platf {
+  /// Interface resolved by routed_link_bps(), for diagnostics.
+  struct routed_link_info_t {
+    std::uint64_t luid = 0;
+    std::string alias;
+    unsigned long if_type = 0;
+    std::uint64_t transmit_bps = 0;
+  };
+
+  /// Current transmit speed of the routed interface, or zero when unavailable.
+  std::uint64_t routed_link_bps(const boost::asio::ip::address &source, const boost::asio::ip::address &target, routed_link_info_t *info = nullptr);
+
   void print_status(const std::string_view &prefix, HRESULT status);
   HDESK syncThreadDesktop();
 
@@ -66,12 +80,6 @@ namespace platf {
   bool is_lock_screen_active();
 
   /**
-   * @brief Check whether the active input desktop is the normal interactive desktop.
-   * @return true when the current desktop is Default, false otherwise.
-   */
-  bool is_default_input_desktop_active();
-
-  /**
    * @brief Cache the interactive user's screen saver enabled state before launching an app.
    * @details Repeated calls preserve the first captured value until it is restored.
    */
@@ -81,6 +89,10 @@ namespace platf {
    * @brief Restore the screen saver enabled state cached by cache_screen_saver_state().
    */
   void restore_screen_saver_state();
+
+  // Register a pause worker before restoring immediately. Invoke the returned
+  // completion once it exits, or if it cannot start; active resumes are kept.
+  std::function<void()> deferred_screen_saver_restore();
 
   /**
    * @brief Launch a process with user impersonation (for use when running as SYSTEM).
@@ -162,6 +174,14 @@ namespace platf {
   bool is_vigem_installed(std::string *version_out = nullptr);
 
   /**
+   * @brief Check whether Vibepollo's own virtual gamepad driver is usable.
+   * @details Probes the driver's private control interface, so it reports what a stream would
+   *          actually get rather than merely whether files are present.
+   * @return true when a virtual controller can be created without ViGEmBus.
+   */
+  bool is_virtual_gamepad_driver_available();
+
+  /**
    * @brief Check whether the Sunshine Vulkan HDR implicit layer is registered for the system.
    * @details Reads HKLM\SOFTWARE\Khronos\Vulkan\ImplicitLayers (64-bit view) and confirms a value
    *          pointing at VkLayer_sunshine_hdr.json whose manifest still exists on disk.
@@ -190,9 +210,39 @@ namespace platf {
 
   struct gpu_info_t {
     std::string description;
+    // Persistent Windows device-instance identity. Empty means the identity
+    // could not be queried; the GPU remains usable through legacy name matching.
+    std::string pnp_id;
     std::uint32_t vendor_id = 0;
     std::uint32_t device_id = 0;
     std::uint64_t dedicated_video_memory = 0;
+  };
+
+  enum class adapter_resolution_status_e {
+    automatic,
+    resolved,
+    not_found,
+    unknown,
+    ambiguous,
+  };
+
+  struct adapter_resolution_t {
+    adapter_resolution_status_e status = adapter_resolution_status_e::unknown;
+    std::optional<LUID> luid;
+    std::string description;
+    std::string pnp_id;
+    std::uint64_t dedicated_video_memory = 0;
+    std::uint64_t shared_system_memory = 0;
+
+    explicit operator bool() const {
+      return status == adapter_resolution_status_e::resolved && luid.has_value();
+    }
+  };
+
+  enum class adapter_output_match_e {
+    match,
+    no_match,
+    unknown,
   };
 
   struct windows_version_info_t {
@@ -207,6 +257,61 @@ namespace platf {
 
   std::vector<gpu_info_t> enumerate_gpus();
   bool has_nvidia_gpu();
+
+  /**
+   * Resolve a configured capture-adapter pair to the current DXGI LUID.
+   *
+   * A non-empty PnP ID is authoritative and must match exactly one adapter.
+   * An empty PnP ID preserves legacy behavior by selecting the first adapter
+   * whose DXGI description exactly matches adapter_name.
+   */
+  adapter_resolution_t resolve_adapter(
+    std::string_view adapter_name,
+    std::string_view adapter_pnp_id
+  );
+
+  /**
+   * Resolve a current GDI output name (for example, \\.\DISPLAY1) to the
+   * adapter that owns it.
+   *
+   * The returned LUID is process-local but authoritative for the lifetime of
+   * the encoder capability cache. A missing or currently unenumerated output
+   * is reported as not_found/unknown instead of falling back to another GPU.
+   */
+  adapter_resolution_t resolve_output_adapter(std::string_view output_name);
+
+  /**
+   * Resolve the effective virtual-display render-adapter preference without
+   * mutating either driver.
+   *
+   * Exact PnP identity is authoritative when present, legacy name-only
+   * selection keeps first-match behavior, and an empty pair selects the
+   * hardware adapter with the greatest dedicated (then shared) memory.
+   */
+  adapter_resolution_t resolve_preferred_render_adapter(
+    std::string_view adapter_name,
+    std::string_view adapter_pnp_id
+  );
+  std::string_view adapter_resolution_status_name(adapter_resolution_status_e status);
+  bool adapter_luid_equal(const LUID &lhs, const LUID &rhs);
+
+  /**
+   * Determine whether an exact adapter LUID drives any selected active CCD
+   * output. CCD/API failures produce unknown rather than a false no-match.
+   */
+  adapter_output_match_e adapter_drives_any_output(
+    const LUID &adapter_luid,
+    const std::vector<std::string> &output_names
+  );
+
+  /**
+   * Scope active-physical-display detection to the configured capture adapter.
+   * Unknown or stale identity fails open (physical display considered present);
+   * actual capture and virtual-display binding use resolve_adapter() directly
+   * and fail closed.
+   */
+  bool configured_capture_adapter_has_output(const std::vector<std::string> &display_names);
+
   windows_version_info_t query_windows_version();
   bool is_windows_11_or_later();
 }  // namespace platf

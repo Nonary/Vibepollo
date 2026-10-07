@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -22,6 +23,8 @@
 #include "crypto.h"
 #include "thread_safe.h"
 #include "video.h"
+#include "stream_protocol.h"
+#include "remote_session.h"
 
 namespace rtsp_stream {
   struct launch_session_t;
@@ -40,37 +43,11 @@ namespace stream {
         return "HEVC";
       case 2:
         return "AV1";
+      case 3:
+        return "PyroWave";
       default:
         return "Unknown";
     }
-  }
-
-  inline std::string canonical_codec_name(std::string_view codec) {
-    if (codec.empty()) {
-      return {};
-    }
-
-    std::string lowered;
-    lowered.reserve(codec.size());
-    for (char ch : codec) {
-      if (ch >= 'A' && ch <= 'Z') {
-        lowered.push_back(static_cast<char>(ch - 'A' + 'a'));
-      } else {
-        lowered.push_back(ch);
-      }
-    }
-
-    if (lowered == "h264" || lowered == "h.264") {
-      return "H.264";
-    }
-    if (lowered == "h265" || lowered == "hevc") {
-      return "HEVC";
-    }
-    if (lowered == "av1") {
-      return "AV1";
-    }
-
-    return std::string(codec);
   }
 
   struct session_t;
@@ -100,6 +77,44 @@ namespace stream {
 
   namespace session {
     extern std::atomic_uint running_sessions;
+    // Counts RTSP joins through their complete post-session cleanup tail.
+    // Observers use this instead of entering blocking session cleanup.
+    extern std::atomic_uint teardown_sessions;
+    extern std::atomic_uint cleanup_reservations;
+
+    class cleanup_reservation_t {
+    public:
+      cleanup_reservation_t();
+      ~cleanup_reservation_t();
+
+      cleanup_reservation_t(const cleanup_reservation_t &) = delete;
+      cleanup_reservation_t &operator=(const cleanup_reservation_t &) = delete;
+    };
+
+    struct shared_runtime_finalize_context_t {
+      bool ignore_current_rtsp_teardown {false};
+      bool ignore_current_webrtc_teardown {false};
+      bool apply_deferred_config {true};
+      bool force_display_revert_when_idle {false};
+      std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes;
+    };
+
+    /**
+     * These helpers require nvhttp::stream_lifecycle_mutex() to be held.
+     */
+    bool has_capture_runtime_owner(const shared_runtime_finalize_context_t &context = {});
+    bool has_shared_runtime_owner(const shared_runtime_finalize_context_t &context = {});
+    void arm_shared_runtime_cleanup(
+      std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes = std::nullopt
+    );
+    void start_shared_platform_if_needed();
+    // Called after all game transports stop, while the lifecycle mutex is held.
+    // Remote Monitor and Remote Input ownership survives this terminal action.
+    void release_terminated_game_displays();
+    bool finalize_shared_runtime_if_idle(
+      std::string_view reason,
+      const shared_runtime_finalize_context_t &context = {}
+    );
 
     enum class state_e : int {
       STOPPED,  ///< The session is stopped
@@ -112,10 +127,12 @@ namespace stream {
     std::string uuid(const session_t &session);
     bool uuid_match(const session_t &session, const std::string_view &uuid);
     bool update_device_info(session_t &session, const std::string &name, const crypto::PERM &newPerm);
+    bool remote_role_match(const session_t &session, remote_session::role_e role, std::optional<std::uint64_t> generation = std::nullopt);
+    void mark_client_disconnected(session_t &session);
     int start(session_t &session, const std::string &addr_string);
     void stop(session_t &session);
     void graceful_stop(session_t &session);
-    void join(session_t &session);
+    void join(session_t &session, bool lifecycle_lock_held = false);
     state_e state(session_t &session);
     inline bool send(session_t &session, const std::string_view &payload);
   }  // namespace session
@@ -149,15 +166,6 @@ namespace stream {
     std::int64_t last_frame_index;
     double uptime_seconds;
   };
-
-  struct control_packet_view_t {
-    std::uint16_t type = 0;
-    std::string_view payload;
-  };
-
-#ifdef SUNSHINE_TESTS
-  std::optional<control_packet_view_t> decode_control_packet_for_tests(std::string_view packet_bytes);
-#endif
 
   std::vector<session_info_t> get_all_session_info();
 

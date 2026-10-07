@@ -1,4 +1,5 @@
 #include "tools/playnite_launcher/lossless_scaling.h"
+#include "tools/playnite_launcher/lossless_scaling_policy.h"
 
 #include "src/logging.h"
 #include "src/platform/windows/ipc/misc_utils.h"
@@ -587,27 +588,11 @@ namespace playnite_launcher::lossless {
       return executables;
     }
 
-    std::wstring join_executable_filter(const std::vector<std::wstring> &exe_names) {
-      std::wstring filter;
-      for (const auto &name : exe_names) {
-        std::wstring lowered = name;
-        lowercase_inplace(lowered);
-        if (lowered.empty()) {
-          continue;
-        }
-        if (!filter.empty()) {
-          filter.push_back(L';');
-        }
-        filter.append(lowered);
-      }
-      return filter;
-    }
-
     std::string lossless_build_filter(const std::vector<std::wstring> &exe_names) {
       if (exe_names.empty()) {
         return std::string();
       }
-      auto filter = join_executable_filter(exe_names);
+      auto filter = policy::build_executable_filter(exe_names);
       if (filter.empty()) {
         return std::string();
       }
@@ -717,10 +702,10 @@ namespace playnite_launcher::lossless {
     std::optional<std::wstring> discover_lossless_scaling_exe(const lossless_scaling_runtime_state &state);
 
     std::optional<std::wstring> select_lossless_launch_exe(const lossless_scaling_runtime_state &state, const std::string &exe_path_utf8) {
-      if (auto path = exe_from_explicit_path(exe_path_utf8)) {
-        return path;
-      }
-      return discover_lossless_scaling_exe(state);
+      return policy::select_launch_executable({
+        .lossless_scaling = discover_lossless_scaling_exe(state),
+        .game = exe_from_explicit_path(exe_path_utf8),
+      });
     }
 
     std::optional<std::wstring> discover_lossless_scaling_exe(const lossless_scaling_runtime_state &state) {
@@ -1534,7 +1519,10 @@ namespace playnite_launcher::lossless {
 
   lossless_scaling_options lossless_scaling_env_loader::load() const {
     lossless_scaling_options opt;
-    opt.enabled = parse_env_flag(std::getenv("SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"));
+    opt.enabled = policy::should_enable_runtime(
+      parse_env_flag(std::getenv("SUNSHINE_LOSSLESS_SCALING_ENABLED")),
+      parse_env_flag(std::getenv("SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"))
+    );
     opt.target_fps = parse_env_double(std::getenv("SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"));
     opt.rtss_limit = parse_env_int(std::getenv("SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"));
     opt.active_profile = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_ACTIVE_PROFILE"));
@@ -1604,8 +1592,6 @@ namespace playnite_launcher::lossless {
     return loader.load();
   }
 
-  bool should_accept_focus_candidate(bool has_filter, bool path_matches, bool has_main_window);
-
   std::optional<DWORD> lossless_scaling_select_focus_pid(const std::string &install_dir_utf8, const std::string &exe_path_utf8, std::optional<DWORD> preferred_pid) {
     auto install_dir_norm = normalize_utf8_path(install_dir_utf8);
     auto exe_path_norm = normalize_utf8_path(exe_path_utf8);
@@ -1635,7 +1621,7 @@ namespace playnite_launcher::lossless {
       }
       bool has_main_window = focus::find_main_window_for_pid(pid) != nullptr;
       bool path_matches = has_filter && path_matches_filter(*path, install_dir_norm, exe_path_norm);
-      if (should_accept_focus_candidate(has_filter, path_matches, has_main_window)) {
+      if (policy::should_accept_focus_candidate(has_filter, path_matches, has_main_window)) {
         initial_candidates.push_back(pid);
       }
     }
@@ -1883,40 +1869,6 @@ namespace playnite_launcher::lossless {
     return handled;
   }
 
-  bool should_launch_new_instance(const lossless_scaling_runtime_state &state, bool force_launch) {
-    if (force_launch) {
-      return true;
-    }
-    if (state.running_pids.empty()) {
-      return true;
-    }
-    return state.stopped;
-  }
-
-  bool should_accept_focus_candidate(bool has_filter, bool path_matches, bool has_main_window) {
-    if (!has_main_window) {
-      return false;
-    }
-    return !has_filter || path_matches;
-  }
-#ifdef SUNSHINE_TESTS
-  bool should_accept_focus_candidate_for_tests(bool has_filter, bool path_matches, bool has_main_window) {
-    return should_accept_focus_candidate(has_filter, path_matches, has_main_window);
-  }
-
-  std::optional<std::wstring> select_lossless_launch_exe_for_tests(const lossless_scaling_runtime_state &state, const std::string &exe_path_utf8) {
-    return select_lossless_launch_exe(state, exe_path_utf8);
-  }
-
-  std::string build_executable_filter_for_tests(const std::optional<std::filesystem::path> &base_dir, const std::optional<std::filesystem::path> &explicit_exe) {
-    return build_executable_filter(base_dir, explicit_exe);
-  }
-
-  bool should_launch_new_instance_for_tests(const lossless_scaling_runtime_state &state, bool force_launch) {
-    return should_launch_new_instance(state, force_launch);
-  }
-#endif
-
   static bool focus_with_retry(DWORD pid, int attempts, std::chrono::milliseconds delay) {
     if (!pid) {
       return false;
@@ -2137,7 +2089,7 @@ namespace playnite_launcher::lossless {
 
   void lossless_scaling_restart_foreground(const lossless_scaling_runtime_state &state, bool force_launch, const std::string &install_dir_utf8, const std::string &exe_path_utf8, DWORD focused_game_pid, bool legacy_auto_detect) {
     focus_and_minimize_existing_instances(state, !legacy_auto_detect);
-    const bool should_launch = should_launch_new_instance(state, force_launch);
+    const bool should_launch = policy::should_launch_new_instance({state.running_pids.size(), state.stopped}, force_launch);
     DWORD target_pid = focused_game_pid;
     if (!target_pid) {
       if (auto selected = lossless_scaling_select_focus_pid(install_dir_utf8, exe_path_utf8, std::nullopt)) {

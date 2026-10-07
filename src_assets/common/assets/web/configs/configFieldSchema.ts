@@ -2,7 +2,7 @@ import {
   getConfigSelectOptions,
   type ConfigSelectOption,
   type ConfigSelectOptionsContext,
-} from './configSelectOptions';
+} from './configSelectOptions.ts';
 
 export type ConfigFieldKind =
   | 'checkbox'

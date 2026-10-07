@@ -21,6 +21,13 @@ namespace platf::fullscreen_detector {
     constexpr LONG EDGE_TOLERANCE = 2;
     constexpr auto SHELL_CACHE_LIFETIME = 5s;
 
+    bool rect_covers_capture_display(const RECT &window_rect, const RECT &capture_rect) {
+      return window_rect.left <= capture_rect.left + EDGE_TOLERANCE &&
+             window_rect.top <= capture_rect.top + EDGE_TOLERANCE &&
+             window_rect.right >= capture_rect.right - EDGE_TOLERANCE &&
+             window_rect.bottom >= capture_rect.bottom - EDGE_TOLERANCE;
+    }
+
     bool window_covers_capture_display(HWND hwnd, const RECT &capture_rect) {
       if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
         return false;
@@ -43,10 +50,7 @@ namespace platf::fullscreen_detector {
         return false;
       }
 
-      return window_rect.left <= capture_rect.left + EDGE_TOLERANCE &&
-             window_rect.top <= capture_rect.top + EDGE_TOLERANCE &&
-             window_rect.right >= capture_rect.right - EDGE_TOLERANCE &&
-             window_rect.bottom >= capture_rect.bottom - EDGE_TOLERANCE;
+      return rect_covers_capture_display(window_rect, capture_rect);
     }
 
     bool obvious_passive_overlay(HWND hwnd) {
@@ -343,46 +347,31 @@ namespace platf::fullscreen_detector {
       return notification;
     }
 
-    // The Shell hook can distinguish a second fullscreen application from an
-    // overlay composed above the tracked game. Relative to that tracked game,
-    // a different rude-app PID is desktop evidence.
+    // Sample the remaining providers once, then evaluate the four fullscreen
+    // strategies in order. Only a positive fullscreen result short-circuits;
+    // negative evidence is retained for the final verdict after every provider
+    // has had a chance to recognize the visible surface.
     const auto shell = shell_hook_monitor().sample(capture_rect);
-    if (attributed_game_window &&
-        shell.verdict == verdict_e::fullscreen &&
-        shell.pid != 0 &&
-        foreground.foreground_pid != 0 &&
-        shell.pid != foreground.foreground_pid) {
-      return {
-        .verdict = verdict_e::desktop,
-        .source = source_e::shell_hook,
-        .pid = shell.pid,
-      };
-    }
 
-    // A matching full-monitor game can remain composed beneath another
+    // Provider 1: a matching full-monitor game can remain composed beneath another
     // top-level window. Normal framed applications and definite desktop
-    // surfaces demote immediately; borderless, passive, and small popups are
-    // preserved without executable or vendor allowlists.
-    if (attributed_game_window &&
-        foreground.matches_active_app &&
-        foreground.fullscreen_on_capture_display) {
+    // surfaces make this provider decline; borderless, passive, and small
+    // popups preserve the positive result without executable or vendor allowlists.
+    const bool tracked_fullscreen_window =
+      attributed_game_window &&
+      foreground.matches_active_app &&
+      foreground.fullscreen_on_capture_display;
+    constexpr double SMALL_OVERLAY_COVERAGE_PERCENT = 15.0;
+    const bool tracked_window_definitely_blocked =
+      tracked_fullscreen_window &&
+      foreground.blocker_present &&
+      (foreground.definite_desktop_blocker_present ||
+       (foreground.blocker_framed && !foreground.blocker_passive_overlay) ||
+       (foreground.blocker_desktop_ui &&
+        !foreground.blocker_passive_overlay &&
+        foreground.blocker_coverage_percent > SMALL_OVERLAY_COVERAGE_PERCENT));
+    if (tracked_fullscreen_window && !tracked_window_definitely_blocked) {
       if (foreground.blocker_present) {
-        constexpr double SMALL_OVERLAY_COVERAGE_PERCENT = 15.0;
-        const bool definite_desktop =
-          foreground.definite_desktop_blocker_present ||
-          (foreground.blocker_framed && !foreground.blocker_passive_overlay) ||
-          (foreground.blocker_desktop_ui &&
-           !foreground.blocker_passive_overlay &&
-           foreground.blocker_coverage_percent > SMALL_OVERLAY_COVERAGE_PERCENT);
-        if (definite_desktop) {
-          return {
-            .verdict = verdict_e::desktop,
-            .source = source_e::desktop_window,
-            .pid = foreground.definite_desktop_blocker_pid != 0 ?
-                     foreground.definite_desktop_blocker_pid :
-                     foreground.blocker_pid,
-          };
-        }
         return {
           .verdict = verdict_e::fullscreen,
           .source = source_e::overlay_preserved,
@@ -396,19 +385,57 @@ namespace platf::fullscreen_detector {
       };
     }
 
-    // Once a game is being tracked, absence of its visible full-monitor window
-    // is a definite demotion. This prevents stale Shell/notification evidence
-    // from preserving a minimized, removed, or windowed game.
-    if (foreground.tracks_active_app_window && !foreground.matching_game_fullscreen) {
+    // Provider 2: Shell fullscreen activation is event-driven and display-scoped.
+    // A different PID can be the game that a tracked launcher just handed off to.
+    if (shell.verdict == verdict_e::fullscreen) {
+      return shell;
+    }
+
+    // Provider 3: exact exclusive-D3D state is a session-wide positive signal.
+    if (notification.verdict == verdict_e::fullscreen) {
+      return notification;
+    }
+
+    // Provider 4: generic borderless/exclusive geometry is direct evidence on
+    // this display. Active-app attribution can remain on a launcher when its
+    // handoff signal is unavailable, so also inspect the opaque topmost blocker
+    // that the attributed-window scan declined.
+    if (foreground.source == "fullscreen-visible" &&
+        foreground.valid_window &&
+        foreground.fullscreen_on_capture_display) {
       return {
-        .verdict = verdict_e::desktop,
-        .source = source_e::desktop_window,
+        .verdict = verdict_e::fullscreen,
+        .source = source_e::borderless_window,
+        .pid = foreground.foreground_pid,
+      };
+    }
+    const bool generic_fullscreen_blocker =
+      foreground.source == "desktop-visible" &&
+      foreground.blocker_present &&
+      foreground.blocker_opaque &&
+      !foreground.blocker_framed &&
+      !foreground.blocker_passive_overlay &&
+      !foreground.blocker_desktop_ui &&
+      rect_covers_capture_display(foreground.blocker_rect, capture_rect);
+    if (generic_fullscreen_blocker) {
+      return {
+        .verdict = verdict_e::fullscreen,
+        .source = source_e::borderless_window,
         .pid = foreground.blocker_pid,
       };
     }
 
-    // Display-local desktop evidence outranks cached Shell activation and the
-    // session-wide exclusive-D3D notification state.
+    // All four fullscreen providers declined. Only now may direct desktop
+    // evidence or the absence of the tracked game's full-monitor window demote.
+    if (tracked_window_definitely_blocked) {
+      return {
+        .verdict = verdict_e::desktop,
+        .source = source_e::desktop_window,
+        .pid = foreground.definite_desktop_blocker_pid != 0 ?
+                 foreground.definite_desktop_blocker_pid :
+                 foreground.blocker_pid,
+      };
+    }
     if (foreground.source == "desktop-visible" &&
         (foreground.blocker_reason == "desktop-ui" || foreground.blocker_opaque)) {
       return {
@@ -417,28 +444,11 @@ namespace platf::fullscreen_detector {
         .pid = foreground.blocker_pid,
       };
     }
-
-    // Shell fullscreen activation is event-driven and display-scoped.
-    if (shell.verdict != verdict_e::unknown) {
-      return shell;
-    }
-
-    // The exclusive-D3D notification is authoritative only after display-local
-    // evidence had a chance to reject it.
-    if (notification.verdict == verdict_e::fullscreen) {
-      return notification;
-    }
-
-    // Generic borderless/exclusive geometry is direct evidence on this display.
-    const bool generic_fullscreen_window =
-      foreground.source == "fullscreen-visible";
-    if (generic_fullscreen_window &&
-        foreground.valid_window &&
-        foreground.fullscreen_on_capture_display) {
+    if (foreground.tracks_active_app_window && !foreground.matching_game_fullscreen) {
       return {
-        .verdict = verdict_e::fullscreen,
-        .source = source_e::borderless_window,
-        .pid = foreground.foreground_pid,
+        .verdict = verdict_e::desktop,
+        .source = source_e::desktop_window,
+        .pid = foreground.blocker_pid,
       };
     }
 

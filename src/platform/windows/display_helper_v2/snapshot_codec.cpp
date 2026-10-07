@@ -1,4 +1,5 @@
 #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
+#include "src/platform/windows/display_helper_v2/topology_policy.h"
 
 #ifdef _WIN32
 
@@ -9,7 +10,7 @@
 
   #include <nlohmann/json.hpp>
 
-  #include "src/logging.h"
+#include "src/platform/windows/display_helper_v2/diagnostics.h"
 
 namespace display_helper::v2::codec {
   namespace {
@@ -397,12 +398,14 @@ namespace display_helper::v2::codec {
     if (canonical_topology(a.m_topology) != canonical_topology(b.m_topology)) {
       return false;
     }
-    if (!(a.m_modes == b.m_modes && a.m_hdr_states == b.m_hdr_states && a.m_primary_device == b.m_primary_device)) {
+    if (!topology::equal_display_modes(a.m_modes, b.m_modes) ||
+        a.m_hdr_states != b.m_hdr_states ||
+        a.m_primary_device != b.m_primary_device) {
       return false;
     }
     // Origins are optional for backward compatibility with older snapshots
     if (!a.m_origins.empty() && !b.m_origins.empty()) {
-      return a.m_origins == b.m_origins;
+      return topology::equal_origins(a.m_origins, b.m_origins);
     }
     return true;
   }
@@ -887,70 +890,6 @@ namespace display_helper::v2::codec {
     return loaded;
   }
 
-  bool write_text_atomically(const std::string &text, const std::filesystem::path &path) {
-    if (path.empty()) {
-      return false;
-    }
-
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-
-    auto temp_path = path;
-    temp_path += L".tmp";
-
-    {
-      FILE *f = _wfopen(temp_path.wstring().c_str(), L"wb");
-      if (!f) {
-        return false;
-      }
-      auto guard = std::unique_ptr<FILE, int (*)(FILE *)>(f, fclose);
-      const auto written = fwrite(text.data(), 1, text.size(), f);
-      if (written != text.size()) {
-        guard.reset();
-        std::error_code ec_rm_tmp;
-        std::filesystem::remove(temp_path, ec_rm_tmp);
-        return false;
-      }
-    }
-
-    std::error_code ec_exist;
-    const bool target_exists = std::filesystem::exists(path, ec_exist) && !ec_exist;
-    if (!target_exists) {
-      std::error_code ec_move;
-      std::filesystem::rename(temp_path, path, ec_move);
-      if (!ec_move) {
-        return true;
-      }
-    }
-
-    std::error_code ec_copy;
-    std::filesystem::copy_file(temp_path, path, std::filesystem::copy_options::overwrite_existing, ec_copy);
-    if (ec_copy) {
-      return false;
-    }
-
-    std::error_code ec_rm_tmp;
-    std::filesystem::remove(temp_path, ec_rm_tmp);
-    return true;
-  }
-
-  std::optional<std::string> read_file_text(const std::filesystem::path &path) {
-    std::error_code ec;
-    if (!std::filesystem::exists(path, ec) || ec) {
-      return std::nullopt;
-    }
-    FILE *f = _wfopen(path.wstring().c_str(), L"rb");
-    if (!f) {
-      return std::nullopt;
-    }
-    auto guard = std::unique_ptr<FILE, int (*)(FILE *)>(f, fclose);
-    std::string data;
-    char buf[4096];
-    while (size_t n = fread(buf, 1, sizeof(buf), f)) {
-      data.append(buf, n);
-    }
-    return data;
-  }
 }  // namespace display_helper::v2::codec
 
 #endif  // _WIN32

@@ -1,5 +1,3 @@
-require "language/node"
-
 class Sunshine < Formula
   include Language::Python::Virtualenv
 
@@ -46,7 +44,6 @@ class Sunshine < Formula
   depends_on "cmake" => :build
   depends_on "doxygen" => :build if build.with? "docs"
   depends_on "graphviz" => :build if build.with? "docs"
-  depends_on "node" => :build
   depends_on "pkgconf" => :build
   depends_on "boost"
   depends_on "curl"
@@ -172,9 +169,9 @@ class Sunshine < Formula
       -DOPENSSL_ROOT_DIR=#{Formula["openssl"].opt_prefix}
       -DSUNSHINE_ASSETS_DIR=sunshine/assets
       -DSUNSHINE_BUILD_HOMEBREW=ON
-      -DSUNSHINE_PUBLISHER_NAME='LizardByte'
-      -DSUNSHINE_PUBLISHER_WEBSITE='https://app.lizardbyte.dev'
-      -DSUNSHINE_PUBLISHER_ISSUE_URL='https://app.lizardbyte.dev/support'
+      -DSUNSHINE_PUBLISHER_NAME='Nonary'
+      -DSUNSHINE_PUBLISHER_WEBSITE='https://github.com/Nonary/Vibepollo'
+      -DSUNSHINE_PUBLISHER_ISSUE_URL='https://github.com/Nonary/Vibepollo/issues'
     ]
     # Point cmake at the venv Python that has jinja2 installed (set up in setup_build_environment)
     args << "-DPython_EXECUTABLE=#{@glad_python}" if @glad_python
@@ -182,8 +179,8 @@ class Sunshine < Formula
   end
 
   def add_test_args(args)
-    args << "-DBUILD_TESTS=OFF"
-    ohai "Building tests: disabled by repository policy"
+    args << "-DBUILD_TESTS=ON"
+    ohai "Building tests: enabled"
   end
 
   def add_docs_args(args)

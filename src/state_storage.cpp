@@ -1,6 +1,9 @@
 #include "state_storage.h"
+#include "state_storage_policy.h"
 
 #include "config.h"
+#include "crypto.h"
+#include "paired_state_policy.h"
 #include "file_handler.h"
 #include "logging.h"
 #include "utility.h"
@@ -10,13 +13,14 @@
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <chrono>
+#include <cmath>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <set>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -35,12 +39,9 @@ namespace statefile {
 
     std::once_flag migration_once;
 
-    enum class json_load_result_e {
-      loaded,   ///< File existed and parsed cleanly.
-      missing,  ///< File (or its content) was absent/blank; safe to create fresh.
-      corrupt,  ///< File was readable but its content was not valid JSON; safe to discard and recreate.
-      failed,   ///< File could not be inspected/opened (I/O, permission, or not-a-regular-file); do NOT overwrite.
-    };
+    using policy_load_result_e = policy::load_result_e;
+
+    void write_json_atomic_direct(const std::string &path, const nlohmann::json &tree);
 
     /**
      * @brief Best-effort rename of an unparseable state file out of the way so a
@@ -79,97 +80,121 @@ namespace statefile {
       return it->second;
     }
 
-    json_load_result_e load_tree_for_update(const fs::path &path, pt::ptree &out) {
-      out = {};
+    policy::read_result_t read_state_file(const std::string &path_string) {
+      const fs::path path(path_string);
       if (path.empty()) {
         BOOST_LOG(error) << "statefile: refusing to update empty state path";
-        return json_load_result_e::failed;
+        return {policy::read_status_e::failed, {}};
       }
 
       std::error_code ec;
       if (!fs::exists(path, ec)) {
         if (ec) {
           BOOST_LOG(error) << "statefile: unable to inspect "sv << path.string() << ": "sv << ec.message();
-          return json_load_result_e::failed;
+          return {policy::read_status_e::failed, {}};
         }
-        return json_load_result_e::missing;
+        return {policy::read_status_e::missing, {}};
       }
-
       if (!fs::is_regular_file(path, ec) || ec) {
-        if (ec) {
-          BOOST_LOG(error) << "statefile: unable to inspect "sv << path.string() << ": "sv << ec.message();
-        } else {
-          BOOST_LOG(error) << "statefile: refusing to update non-file state path "sv << path.string();
-        }
-        return json_load_result_e::failed;
+        BOOST_LOG(error) << "statefile: refusing to update non-file state path "sv << path.string();
+        return {policy::read_status_e::failed, {}};
       }
 
-      // Read the raw bytes ourselves so we can tell an I/O/permission failure
-      // (which must NOT clobber the on-disk state) apart from genuinely malformed
-      // content (which is safe to discard and recreate). boost::read_json folds
-      // both cases into a single json_parser_error, so it cannot disambiguate them.
-      // The read is done by size and validated against gcount so that a truncated
-      // or failed read is reported as 'failed' (refuse), never mistaken for corrupt.
-      std::string content;
-      {
-        std::ifstream in(path, std::ios::binary);
-        if (!in.is_open()) {
-          BOOST_LOG(error) << "statefile: refusing to update "sv << path.string()
-                           << " - could not open it for reading"sv;
-          return json_load_result_e::failed;
+      std::ifstream in(path, std::ios::binary);
+      if (!in.is_open()) {
+        BOOST_LOG(error) << "statefile: refusing to update "sv << path.string() << " - could not open it for reading"sv;
+        return {policy::read_status_e::failed, {}};
+      }
+      in.seekg(0, std::ios::end);
+      const std::streamoff size = in.tellg();
+      if (size < 0) {
+        BOOST_LOG(error) << "statefile: refusing to update "sv << path.string() << " - could not determine file size"sv;
+        return {policy::read_status_e::failed, {}};
+      }
+
+      std::string contents;
+      if (size > 0) {
+        in.seekg(0, std::ios::beg);
+        contents.resize(static_cast<size_t>(size));
+        in.read(contents.data(), size);
+        if (in.bad() || in.gcount() != size) {
+          BOOST_LOG(error) << "statefile: refusing to update "sv << path.string() << " - read error or short read"sv;
+          return {policy::read_status_e::failed, {}};
         }
-        in.seekg(0, std::ios::end);
-        const std::streamoff size = in.tellg();
-        if (size < 0) {
-          BOOST_LOG(error) << "statefile: refusing to update "sv << path.string()
-                           << " - could not determine file size"sv;
-          return json_load_result_e::failed;
+      }
+      return {policy::read_status_e::loaded, std::move(contents)};
+    }
+
+    bool is_primary_state_path(const std::string &path) {
+      return !path.empty() && (path == sunshine_state_path() ||
+        (path == vibeshine_state_path() && share_state_file()));
+    }
+
+    bool valid_primary_snapshot(const pt::ptree &tree, bool allow_bootstrap) {
+      if (!nvhttp::state_policy::valid_primary_tree(tree, allow_bootstrap)) return false;
+      std::set<std::string> identities;
+      const auto certificate = [&identities](const std::string &pem) {
+        auto parsed = crypto::x509(pem);
+        return parsed && identities.insert(crypto::pem(parsed)).second;
+      };
+      if (const auto devices = tree.get_child_optional("root.named_devices")) {
+        for (const auto &[key, device] : *devices) {
+          if (!certificate(device.get<std::string>("cert"))) return false;
         }
-        if (size > 0) {
-          in.seekg(0, std::ios::beg);
-          content.resize(static_cast<size_t>(size));
-          in.read(content.data(), size);
-          if (in.bad() || in.gcount() != size) {
-            BOOST_LOG(error) << "statefile: refusing to update "sv << path.string()
-                             << " - read error or short read"sv;
-            return json_load_result_e::failed;
+      }
+      if (const auto devices = tree.get_child_optional("root.devices")) {
+        for (const auto &[key, device] : *devices) {
+          if (const auto certs = device.get_child_optional("certs")) {
+            for (const auto &[cert_key, cert] : *certs) {
+              if (!certificate(cert.get_value<std::string>())) return false;
+            }
           }
         }
       }
+      return true;
+    }
 
-      // Strip a leading UTF-8 BOM so a BOM-prefixed but otherwise valid file is
-      // parsed (and preserved) rather than discarded as corrupt.
-      if (content.size() >= 3 &&
-          static_cast<unsigned char>(content[0]) == 0xEF &&
-          static_cast<unsigned char>(content[1]) == 0xBB &&
-          static_cast<unsigned char>(content[2]) == 0xBF) {
-        content.erase(0, 3);
-      }
+    bool is_auxiliary_state(const std::string &path) {
+      return !path.empty() && path == vibeshine_state_path() && !share_state_file();
+    }
 
-      // A blank/whitespace-only file is a benign partial-write artifact; treat it
-      // like a missing file so the caller recreates valid content.
-      if (content.find_first_not_of(" \t\r\n\f\v"sv) == std::string::npos) {
-        return json_load_result_e::missing;
+    policy_load_result_e load_auxiliary_state(const std::string &path, pt::ptree &out) {
+      const auto result = policy::load_vibeshine_state(
+        path, out, read_state_file,
+        [](const std::string &target, const std::string &contents) {
+          return file_handler::write_file(target.c_str(), contents) == 0;
+        });
+      if (result == policy::load_result_e::failed) {
+        BOOST_LOG(error) << "statefile: refusing to replace unavailable auxiliary state " << path;
       }
+      return result;
+    }
 
-      try {
-        pt::ptree parsed;
-        std::istringstream is(content);
-        pt::read_json(is, parsed);
-        out = std::move(parsed);
-        return json_load_result_e::loaded;
-      } catch (const std::exception &e) {
-        // Readable but not valid JSON: discard it so the user is not permanently
-        // wedged (e.g. an un-dismissable crash banner) by a single bad file.
-        BOOST_LOG(error) << "statefile: "sv << path.string()
-                         << " contains malformed JSON ("sv << e.what()
-                         << "); quarantining it and recreating from current state"sv;
-        quarantine_corrupt_state(path);
-        return json_load_result_e::corrupt;
+    policy_load_result_e load_tree_for_update(const fs::path &path, pt::ptree &out) {
+      if (is_primary_state_path(path.string())) {
+        return policy::load_primary_state_for_update(sunshine_state_path(), out, read_state_file,
+          [](const std::string &target, const std::string &contents) {
+            return file_handler::write_file(target.c_str(), contents) == 0;
+          }, valid_primary_snapshot, nvhttp::state_policy::valid_primary_json);
       }
+      if (is_auxiliary_state(path.string())) {
+        return load_auxiliary_state(path.string(), out);
+      }
+      return policy::load_json_for_update(
+        path.string(),
+        out,
+        read_state_file,
+        [](const std::string &corrupt_path) {
+          BOOST_LOG(error) << "statefile: "sv << corrupt_path
+                           << " contains malformed JSON; quarantining it and recreating from current state"sv;
+          quarantine_corrupt_state(fs::path(corrupt_path));
+        });
     }
 
     bool load_tree_if_exists(const fs::path &path, pt::ptree &out) {
+      if (is_auxiliary_state(path.string())) {
+        return load_auxiliary_state(path.string(), out) == policy::load_result_e::loaded;
+      }
       if (!fs::exists(path)) {
         return false;
       }
@@ -183,31 +208,21 @@ namespace statefile {
     }
 
     void write_tree(const fs::path &path, const pt::ptree &tree) {
-      write_json_atomic(path.string(), tree);
-    }
-
-    bool parse_json_file(const fs::path &path, pt::ptree *tree = nullptr) {
-      try {
-        pt::ptree parsed;
-        pt::read_json(path.string(), parsed);
-        if (tree) {
-          *tree = std::move(parsed);
-        }
-        return true;
-      } catch (...) {
-        return false;
+      if (path.string() == sunshine_state_path()) {
+        write_sunshine_state_atomic(tree);
+      } else {
+        write_json_atomic(path.string(), tree);
       }
     }
 
-    bool parse_json_string(const std::string &contents) {
-      try {
-        std::istringstream in(contents);
-        pt::ptree parsed;
-        pt::read_json(in, parsed);
-        return true;
-      } catch (...) {
-        return false;
-      }
+    void write_json_atomic_direct(const std::string &path, const pt::ptree &tree) {
+      policy::write_json_atomic(
+        path,
+        tree,
+        [](const std::string &target, const std::string &contents) {
+          return file_handler::write_file(target.c_str(), contents) == 0;
+        },
+        read_state_file);
     }
 
 #ifdef _WIN32
@@ -478,6 +493,13 @@ namespace statefile {
       }
     }
 #endif
+
+    policy_load_result_e load_tree_for_read(const fs::path &path, pt::ptree &out) {
+      if (is_auxiliary_state(path.string())) {
+        return load_auxiliary_state(path.string(), out);
+      }
+      return policy::load_json_for_read(path.string(), out, read_state_file);
+    }
   }  // namespace
 
   std::mutex &state_mutex() {
@@ -486,29 +508,162 @@ namespace statefile {
   }
 
   void write_json_atomic(const std::string &path, const pt::ptree &tree) {
-    if (path.empty()) {
-      throw std::runtime_error("atomic JSON write path is empty");
+    // All callers use this entry point for JSON updates, including credentials
+    // and API-token persistence. Route the primary through the paired-state
+    // writer so those updates refresh the recovery copy too.
+    if (is_primary_state_path(path)) {
+      write_sunshine_state_atomic(tree);
+      return;
     }
-
-    std::ostringstream out;
-    pt::write_json(out, tree);
-    const std::string contents = out.str();
-    if (!parse_json_string(contents)) {
-      throw std::runtime_error("refusing to write malformed JSON");
+    if (is_auxiliary_state(path)) {
+      policy::write_vibeshine_state(
+        path, tree,
+        [](const std::string &target, const std::string &contents) {
+          return file_handler::write_file(target.c_str(), contents) == 0;
+        }, read_state_file);
+      return;
     }
-
-    const fs::path target(path);
-    if (file_handler::write_file(path.c_str(), contents) != 0) {
-      throw std::runtime_error("atomic JSON write failed");
-    }
-
-    if (!parse_json_file(target)) {
-      throw std::runtime_error("atomic JSON write verification failed");
+    write_json_atomic_direct(path, tree);
+    if (!path.empty() && path == config::sunshine.credentials_file) {
+      // A custom credential path must have its own recovery copy; never use
+      // the host-state credentials when the administrator selected another file.
+      try {
+        write_json_atomic_direct(path + ".bak", tree);
+      } catch (const std::exception &e) {
+        BOOST_LOG(error) << "statefile: failed to refresh custom credential backup: " << e.what();
+      }
     }
   }
 
+  std::string sunshine_state_backup_path() {
+    const auto &path = sunshine_state_path();
+    return path.empty() ? std::string {} : path + ".bak";
+  }
+
+  void write_sunshine_state_atomic(const pt::ptree &tree) {
+    const auto &path = sunshine_state_path();
+    pt::ptree backup;
+    const auto backup_status = policy::load_json_for_read(sunshine_state_backup_path(), backup, read_state_file);
+    if (!policy::primary_write_allowed(tree, backup_status, backup, valid_primary_snapshot)) {
+      throw std::runtime_error("refusing to replace primary state with an invalid or partial snapshot");
+    }
+    nlohmann::json typed;
+    if (!nvhttp::state_policy::primary_tree_json(tree, typed)) {
+      throw std::runtime_error("refusing to replace primary state with an invalid timestamp");
+    }
+    write_json_atomic_direct(path, typed);
+
+    const auto backup_path = sunshine_state_backup_path();
+    if (backup_path.empty()) {
+      return;
+    }
+    try {
+      write_json_atomic_direct(backup_path, typed);
+    } catch (const std::exception &e) {
+      // The primary snapshot is already durable. Keep serving it, but report
+      // that the recovery copy could not be refreshed so the next save can
+      // retry it.
+      BOOST_LOG(error) << "statefile: failed to refresh Vibepollo state backup "sv
+                       << backup_path << ": "sv << e.what();
+    }
+  }
+
+  json_load_result_e load_json(const std::string &path, pt::ptree &tree) {
+    const auto result = load_tree_for_read(fs::path {path}, tree);
+    switch (result) {
+      case policy::load_result_e::loaded:
+        return json_load_result_e::loaded;
+      case policy::load_result_e::missing:
+        return json_load_result_e::missing;
+      case policy::load_result_e::corrupt:
+        return json_load_result_e::corrupt;
+      case policy::load_result_e::failed:
+        return json_load_result_e::failed;
+    }
+    return json_load_result_e::failed;
+  }
+
+  json_load_result_e load_json(const std::string &path, nlohmann::json &tree) {
+    tree = nlohmann::json::object();
+    const auto result = read_state_file(path);
+    if (result.status == policy::read_status_e::missing) return json_load_result_e::missing;
+    if (result.status == policy::read_status_e::failed) return json_load_result_e::failed;
+    try {
+      tree = nlohmann::json::parse(result.contents);
+      return json_load_result_e::loaded;
+    } catch (...) {
+      tree = nlohmann::json::object();
+      return json_load_result_e::corrupt;
+    }
+  }
+
+  namespace {
+    void write_json_atomic_direct(const std::string &path, const nlohmann::json &tree) {
+      if (path.empty() || file_handler::write_file(path.c_str(), tree.dump(4)) != 0) {
+        throw std::runtime_error("atomic paired state write failed");
+      }
+      nlohmann::json written;
+      if (load_json(path, written) != json_load_result_e::loaded || written != tree) {
+        throw std::runtime_error("atomic paired state write verification failed");
+      }
+    }
+  }
+
+  void write_sunshine_state_atomic(const nlohmann::json &tree) {
+    if (!nvhttp::state_policy::valid_primary_json(tree.dump())) {
+      throw std::runtime_error("refusing to replace primary state with invalid client field types");
+    }
+    pt::ptree candidate;
+    std::istringstream input(tree.dump());
+    pt::read_json(input, candidate);
+    pt::ptree backup;
+    const auto backup_status = policy::load_json_for_read(sunshine_state_backup_path(), backup, read_state_file);
+    if (!policy::primary_write_allowed(candidate, backup_status, backup, valid_primary_snapshot)) {
+      throw std::runtime_error("refusing to replace primary state with an invalid or partial snapshot");
+    }
+    write_json_atomic_direct(sunshine_state_path(), tree);
+    try {
+      write_json_atomic_direct(sunshine_state_backup_path(), tree);
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "statefile: failed to refresh Vibepollo paired state backup: " << e.what();
+    }
+  }
+
+  void write_json_atomic(const std::string &path, const nlohmann::json &tree) {
+    if (is_primary_state_path(path)) {
+      write_sunshine_state_atomic(tree);
+    } else {
+      write_json_atomic_direct(path, tree);
+    }
+  }
+
+  json_load_result_e load_primary_state(pt::ptree &tree) {
+    const auto result = load_tree_for_update(fs::path {sunshine_state_path()}, tree);
+    switch (result) {
+      case policy::load_result_e::loaded: return json_load_result_e::loaded;
+      case policy::load_result_e::missing: return json_load_result_e::missing;
+      case policy::load_result_e::corrupt: return json_load_result_e::corrupt;
+      case policy::load_result_e::failed: return json_load_result_e::failed;
+    }
+    return json_load_result_e::failed;
+  }
+
+  json_load_result_e load_primary_state(nlohmann::json &tree) {
+    pt::ptree selected;
+    const auto result = load_primary_state(selected);
+    tree = nlohmann::json::object();
+    if (result != json_load_result_e::loaded) return result;
+    // The selector restored/validated the canonical file while the caller
+    // holds state_mutex(). Re-read those bytes to preserve Apollo JSON types.
+    const auto loaded = load_json(sunshine_state_path(), tree);
+    if (loaded == json_load_result_e::loaded && tree.contains("root") && tree["root"] == "") {
+      tree["root"] = nlohmann::json::object();  // Historical empty ptree bootstrap.
+    }
+    return loaded;
+  }
+
   bool load_json_for_update(const std::string &path, pt::ptree &tree) {
-    return load_tree_for_update(fs::path(path), tree) != json_load_result_e::failed;
+    return load_tree_for_update(fs::path(path), tree) != policy::load_result_e::failed;
   }
 
   const std::string &sunshine_state_path() {
@@ -520,6 +675,17 @@ namespace statefile {
       return config::nvhttp.vibeshine_file_state;
     }
     return config::nvhttp.file_state;
+  }
+
+  bool recover_credentials(const std::string &path) {
+    std::lock_guard<std::mutex> lock(state_mutex());
+    const auto result = policy::recover_credentials(path, read_state_file,
+      [](const std::string &target, const std::string &contents) {
+        return file_handler::write_file(target.c_str(), contents) == 0;
+      }, !is_primary_state_path(path) && path != vibeshine_state_path());
+    // Managed state seeds its backup only after full pairing/auxiliary-state
+    // validation. Custom credential files have no later startup validator.
+    return result == policy::load_result_e::loaded || result == policy::load_result_e::missing;
   }
 
   bool secure_private_directory(const std::string &path) {
@@ -726,11 +892,16 @@ namespace statefile {
     add_file_if_in_root(config_files, config_roots, config::stream.file_apps);
     add_file_if_in_root(config_files, config_roots, config::nvhttp.file_state);
     add_file_if_in_root(config_files, config_roots, config::nvhttp.vibeshine_file_state);
+    if (!config::nvhttp.vibeshine_file_state.empty()) {
+      add_file_if_in_root(config_files, config_roots, config::nvhttp.vibeshine_file_state + ".bak");
+    }
     add_file_if_in_root(config_files, config_roots, config::sunshine.credentials_file);
 
     static constexpr std::string_view known_config_files[] {
       "sunshine_state.json"sv,
+      "sunshine_state.json.bak"sv,
       "vibeshine_state.json"sv,
+      "vibeshine_state.json.bak"sv,
       "sunshine.conf"sv,
       "apps.json"sv,
     };
@@ -767,21 +938,23 @@ namespace statefile {
       std::lock_guard<std::mutex> guard(state_mutex());
 
       pt::ptree old_tree;
+      // Recover the primary before moving shared keys, without quarantining it
+      // or ever turning malformed host state into an empty metadata snapshot.
       const auto old_load_result = load_tree_for_update(old_path, old_tree);
-      if (old_load_result == json_load_result_e::failed) {
+      if (old_load_result == policy::load_result_e::failed) {
         return;
       }
 
       pt::ptree new_tree;
-      const auto new_load_result = load_tree_for_update(new_path, new_tree);
-      if (new_load_result == json_load_result_e::failed) {
+      const auto new_load_result = load_tree_for_read(new_path, new_tree);
+      if (new_load_result == policy::load_result_e::failed) {
         return;
       }
 
       bool old_modified = false;
       bool new_modified = false;
 
-      if (old_load_result == json_load_result_e::loaded) {
+      if (old_load_result == policy::load_result_e::loaded) {
         auto old_root_it = old_tree.find("root");
         if (old_root_it != old_tree.not_found()) {
           auto &old_root = old_root_it->second;
@@ -892,7 +1065,7 @@ namespace statefile {
     const fs::path path(path_str);
 
     pt::ptree root;
-    if (load_tree_for_update(path, root) == json_load_result_e::failed) {
+    if (load_tree_for_update(path, root) == policy::load_result_e::failed) {
       return;
     }
 
@@ -969,7 +1142,7 @@ namespace statefile {
     const fs::path path(path_str);
 
     pt::ptree root;
-    if (load_tree_for_update(path, root) == json_load_result_e::failed) {
+    if (load_tree_for_update(path, root) == policy::load_result_e::failed) {
       return;
     }
 
@@ -1074,7 +1247,7 @@ namespace statefile {
     const fs::path path(path_str);
 
     pt::ptree root;
-    if (load_tree_for_update(path, root) == json_load_result_e::failed) {
+    if (load_tree_for_update(path, root) == policy::load_result_e::failed) {
       return;
     }
 
@@ -1091,6 +1264,121 @@ namespace statefile {
       return;
     }
     BOOST_LOG(info) << "statefile: persisted display helper engine '" << engine << "' to vibeshine state";
+  }
+
+  namespace {
+    constexpr std::size_t kMaxVirtualDisplayScales = 32;
+
+    bool valid_virtual_display_scale(const double scale) {
+      return std::isfinite(scale) && scale >= 0.25 && scale <= 5.0;
+    }
+  }  // namespace
+
+  void save_virtual_display_scale(const std::string &identity, const double scale) {
+    if (identity.empty() || !valid_virtual_display_scale(scale)) {
+      return;
+    }
+    migrate_recent_state_keys();
+    const auto &path_str = vibeshine_state_path();
+    if (path_str.empty()) {
+      return;
+    }
+
+    std::lock_guard<std::mutex> guard(state_mutex());
+    const fs::path path(path_str);
+    pt::ptree root;
+    if (load_tree_for_update(path, root) == policy::load_result_e::failed) {
+      return;
+    }
+
+    auto &root_node = ensure_root(root);
+    std::vector<std::pair<std::string, double>> scales;
+    if (auto scales_node = root_node.get_child_optional("virtual_display_scales")) {
+      for (const auto &item : *scales_node) {
+        const auto saved_identity = item.second.get_optional<std::string>("identity");
+        const auto saved_scale = item.second.get_optional<double>("scale");
+        if (saved_identity && saved_scale && !saved_identity->empty() &&
+            valid_virtual_display_scale(*saved_scale) && *saved_identity != identity) {
+          scales.emplace_back(*saved_identity, *saved_scale);
+        }
+      }
+    }
+    scales.emplace_back(identity, scale);
+    if (scales.size() > kMaxVirtualDisplayScales) {
+      scales.erase(scales.begin(), scales.end() - kMaxVirtualDisplayScales);
+    }
+
+    pt::ptree scales_node;
+    for (const auto &[saved_identity, saved_scale] : scales) {
+      pt::ptree item;
+      item.put("identity", saved_identity);
+      item.put("scale", saved_scale);
+      scales_node.push_back({"", item});
+    }
+    root_node.put_child("virtual_display_scales", scales_node);
+    try {
+      write_tree(path, root);
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "statefile: failed to persist virtual display scale: " << e.what();
+    }
+  }
+
+  std::optional<double> load_virtual_display_scale(const std::string &identity) {
+    if (identity.empty()) {
+      return std::nullopt;
+    }
+    migrate_recent_state_keys();
+    const auto &path_str = vibeshine_state_path();
+    if (path_str.empty()) {
+      return std::nullopt;
+    }
+
+    std::lock_guard<std::mutex> guard(state_mutex());
+    pt::ptree root;
+    if (!load_tree_if_exists(fs::path(path_str), root)) {
+      return std::nullopt;
+    }
+    try {
+      const auto scales_node = root.get_child_optional("root.virtual_display_scales");
+      if (!scales_node) {
+        return std::nullopt;
+      }
+      for (auto item = scales_node->rbegin(); item != scales_node->rend(); ++item) {
+        const auto saved_identity = item->second.get_optional<std::string>("identity");
+        if (!saved_identity || *saved_identity != identity) {
+          continue;
+        }
+        const auto scale = item->second.get_optional<double>("scale");
+        return scale && valid_virtual_display_scale(*scale) ?
+                 std::make_optional(*scale) :
+                 std::nullopt;
+      }
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "statefile: failed to read virtual display scale: " << e.what();
+    }
+    return std::nullopt;
+  }
+
+  void clear_virtual_display_scales() {
+    migrate_recent_state_keys();
+    const auto &path_str = vibeshine_state_path();
+    if (path_str.empty()) {
+      return;
+    }
+
+    std::lock_guard<std::mutex> guard(state_mutex());
+    const fs::path path(path_str);
+    pt::ptree root;
+    if (load_tree_for_update(path, root) == policy::load_result_e::failed) {
+      return;
+    }
+    auto &root_node = ensure_root(root);
+    root_node.erase("virtual_display_scales");
+    try {
+      write_tree(path, root);
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "statefile: failed to clear virtual display scales: " << e.what();
+    }
   }
 
 }  // namespace statefile

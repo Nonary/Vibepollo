@@ -114,8 +114,8 @@ namespace platf {
     // TODO: if has_uinput
     caps |= platform_caps::pen_touch;
 
-    // We support controller touchpad input only when emulating the PS5 controller
-    if (config::input.gamepad == "ds5"sv || config::input.gamepad == "auto"sv) {
+    // Both Sony virtual controllers expose a touchpad. Auto can select either.
+    if (config::input.gamepad == "ds4"sv || config::input.gamepad == "ds5"sv || config::input.gamepad == "auto"sv) {
       caps |= platform_caps::controller_touch;
     }
 

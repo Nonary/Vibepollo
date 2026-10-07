@@ -7,6 +7,7 @@
 // standard includes
 #include "config.h"
 #include "framegen_policy.h"
+#include "remote_session.h"
 
 #include <array>
 #include <atomic>
@@ -39,7 +40,22 @@ namespace rtsp_stream {
   constexpr auto RTSP_SETUP_PORT = 21;
 
   struct launch_session_t {
+    // Pending Linux launches must keep the display awake before capture and
+    // until the active capture has acquired its own reference. Deliberately
+    // omitted from retained app/display-recovery snapshots.
+    std::shared_ptr<void> display_power_guard;
+    struct resolution_override_t {
+      int width;
+      int height;
+    };
+
     uint32_t id;
+    remote_session::role_e role {remote_session::role_e::game};
+    std::uint64_t role_generation {};
+    // The exact topology-owned capture target for Remote Monitor. Empty means
+    // no target was verified and must never fall back to a physical display.
+    std::optional<std::string> remote_capture_output;
+    std::string rtsp_source_address;
 
     crypto::aes_t gcm_key;
     crypto::aes_t iv;
@@ -61,6 +77,7 @@ namespace rtsp_stream {
     int height;
     int fps;
     int gcmap;
+    int playstation_gamepad_mask {};
 
     struct app_metadata_t {
       std::string id;
@@ -75,21 +92,45 @@ namespace rtsp_stream {
     int surround_info;
     std::string surround_params;
     bool continuous_audio;
+    // The client's `hdrMode=1` launch flag. Every Moonlight client derives this bit from
+    // `supportedVideoFormats & VIDEO_FORMAT_MASK_10BIT`, so it is also the only wire signal
+    // telling us the client negotiated a 10-bit decoder profile.
     bool enable_hdr;
-    // Resolved global/per-client preference for Main10 SDR when the client requests SDR.
+    // Per-client opt-in: stream an HDR-requesting client as 10-bit SDR instead. The display
+    // stays out of HDR and the encode stays Main10, which the client can decode because it
+    // asked for HDR in the first place.
     bool prefer_sdr_10bit = false;
     // Explicit HDR-off override. Unlike prefer_sdr_10bit, this does not request Main10.
     bool force_sdr = false;
     bool enable_sops;
+    // Moonlight's VRR request passed its launch-time VSync, display-refresh,
+    // and adaptive-headroom checks. The renderer may still fall back later.
+    bool client_vrr_requested = false;
     bool client_display_mode_override;
     // Exact refresh requested by a per-client display-mode override, expressed
     // in millihertz. The existing fps field remains the legacy stream cadence.
     std::uint32_t client_display_refresh_millihz = 0;
     bool client_requests_virtual_display;
+    // A transport joining another client's running game cannot change host-wide stream settings.
+    bool secondary_game_client = false;
+    // Present only when the client explicitly selected a virtual or physical display.
+    std::optional<bool> client_virtual_display_override;
     bool virtual_display;
-    uint32_t scale_factor;
+    uint32_t scale_factor = 100;
+    bool normal_vdd_capacity_rejected = false;
+    bool normal_vdd_identity_newly_reserved = false;
+    std::uint64_t normal_vdd_identity_token = 0;
+    // Linux resumes retain the running app's display owner across TLS clients.
+    // client_uuid remains the authenticated transport identity.
+    std::string normal_vdd_owner_uuid;
+    // Host/display resolution derived from a launch-time client override. The RTSP
+    // negotiated viewport remains in width/height.
+    std::optional<resolution_override_t> resolution_override;
     bool virtual_display_failed;
     bool virtual_display_detach_with_app;
+    // True only after the NVHTTP display-preparation path has resolved the
+    // effective virtual/physical output request for this launch.
+    bool virtual_display_request_resolved = false;
     std::optional<config::video_t::virtual_display_mode_e> virtual_display_mode_override;
     std::optional<config::video_t::virtual_display_layout_e> virtual_display_layout_override;
     std::optional<config::video_t::dd_t::config_option_e> dd_config_option_override;
@@ -98,6 +139,7 @@ namespace rtsp_stream {
     std::array<std::uint8_t, 16> virtual_display_guid_bytes {};
     std::string virtual_display_device_id;
     std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
+    std::optional<bool> virtual_display_hdr_enabled;
     bool virtual_display_recreated_on_demand = false;
     bool virtual_display_needs_resume_apply = false;
     std::optional<std::vector<std::vector<std::string>>> virtual_display_topology_snapshot;
@@ -112,6 +154,8 @@ namespace rtsp_stream {
     std::optional<int> framegen_refresh_rate;
     std::optional<std::uint32_t> framegen_refresh_millihz;
     int framegen_refresh_multiplier = 1;
+    /// @brief framegen_refresh_millihz is the virtual display's own rate (VRR mode), not a stream multiple.
+    bool framegen_fixed_refresh = false;
     std::string frame_generation_provider;
     std::optional<double> lossless_scaling_target_fps;
     std::optional<int> lossless_scaling_rtss_limit;
@@ -141,7 +185,7 @@ namespace rtsp_stream {
      * @brief Build an isolated copy for the background RTSP startup worker.
      *
      * stream::session::alloc()/start() run on the startup thread while the io_context
-     * thread still owns and reuses the original launch session (reserve_launch_session,
+     * thread still owns and reuses the original launch session (reservation,
      * respond() cipher/IV, expiry). The worker must therefore operate on this clone
      * rather than the live original. launch_session_t is non-copyable (the move-only
      * rtsp_cipher), so the fields are copied explicitly.
@@ -154,20 +198,63 @@ namespace rtsp_stream {
     [[nodiscard]] std::shared_ptr<launch_session_t> clone_for_startup() const;
   };
 
-  inline bool effective_hdr_requested(const bool client_hdr_requested, const bool force_sdr) {
-    return client_hdr_requested && !force_sdr;
+  struct client_disconnect_result_t {
+    bool disconnected {};
+    std::vector<remote_session::role_e> pending_roles;
+    std::vector<std::uint64_t> pending_generations;
+  };
+
+  /**
+   * @brief Whether the session should put the display (and the stream) into HDR.
+   *
+   * `prefer_sdr_10bit` deliberately suppresses this: the whole point of that opt-in is to
+   * take an HDR request and serve it as 10-bit SDR, so the display must never be switched
+   * to HDR for such a session.
+   */
+  inline bool effective_hdr_requested(
+    const bool client_hdr_requested,
+    const bool prefer_sdr_10bit,
+    const bool force_sdr
+  ) {
+    return client_hdr_requested && !prefer_sdr_10bit && !force_sdr;
   }
 
   inline bool effective_hdr_requested(const launch_session_t &session) {
-    return effective_hdr_requested(session.enable_hdr, session.force_sdr);
+    return effective_hdr_requested(session.enable_hdr, session.prefer_sdr_10bit, session.force_sdr);
   }
 
+  /**
+   * @brief Whether the current app/client runtime policy enables RTX HDR.
+   */
+  inline bool rtx_hdr_enabled(const config::video_t &video_config) {
+    return config::runtime_config_override_enabled("rtx_hdr") &&
+           video_config.rtx_hdr.enabled;
+  }
+
+  /**
+   * @brief Whether RTX HDR conversion is active for this launch session.
+   *
+   * RTX HDR is app/client opt-in and requires an HDR stream, but its source content must
+   * remain SDR so TrueHDR performs the only SDR-to-HDR conversion.
+   */
+  inline bool rtx_hdr_conversion_requested(const launch_session_t &session, const config::video_t &video_config) {
+    return effective_hdr_requested(session) &&
+           rtx_hdr_enabled(video_config);
+  }
+
+  /**
+   * @brief Whether the session should be encoded as Main10 with an SDR colorspace.
+   *
+   * Requires the client to have requested HDR, because that flag is also the client's only
+   * statement that it negotiated a 10-bit decoder. Promoting a client that asked for SDR
+   * would hand a Main10 bitstream to a decoder configured for an 8-bit profile.
+   */
   inline bool effective_10bit_sdr_requested(
     const bool prefer_sdr_10bit,
     const bool client_hdr_requested,
     const bool force_sdr
   ) {
-    return prefer_sdr_10bit && !effective_hdr_requested(client_hdr_requested, force_sdr);
+    return prefer_sdr_10bit && client_hdr_requested && !force_sdr;
   }
 
   inline bool effective_10bit_sdr_requested(const launch_session_t &session) {
@@ -210,7 +297,8 @@ namespace rtsp_stream {
     std::string_view capture_mode,
     bool auto_capture_uses_wgc,
     bool auto_virtual_framegen_limiter,
-    int virtual_display_refresh_multiplier
+    int virtual_display_refresh_multiplier,
+    std::uint32_t virtual_display_fixed_refresh_millihz = 0
   ) {
     return framegen::make_stream_start_policy({
       .fps = session.fps,
@@ -227,16 +315,31 @@ namespace rtsp_stream {
       .auto_capture_uses_wgc = auto_capture_uses_wgc,
       .auto_virtual_framegen_limiter = auto_virtual_framegen_limiter,
       .virtual_display_refresh_multiplier = virtual_display_refresh_multiplier,
+      .virtual_display_fixed_refresh_millihz = virtual_display_fixed_refresh_millihz,
     });
   }
 
-  void launch_session_raise(std::shared_ptr<launch_session_t> launch_session);
+  // Returns false when the per-launch admission registry rejects the request.
+  // Encrypted launches are independent; plaintext remains one pending launch
+  // per source address because it has no cryptographic routing identity.
+  bool launch_session_raise(std::shared_ptr<launch_session_t> launch_session);
+
+  // Surface the actual plaintext admission warning in the topology UI without
+  // giving that UI a second, divergent notion of RTSP routing state.
+  std::string plaintext_route_warning();
+  bool disconnect_game_sessions(bool lifecycle_lock_held = false);
+  bool disconnect_remote_role_session(std::string_view client_uuid, remote_session::role_e role, std::uint64_t generation, bool lifecycle_lock_held = false);
 
   /**
    * @brief Clear state for the specified launch session.
    * @param launch_session_id The ID of the session to clear.
    */
   void launch_session_clear(uint32_t launch_session_id);
+  /**
+   * @brief Whether an RTSP launch or asynchronous session startup is pending.
+   */
+  bool has_pending_launch_or_startup();
+
   /**
    * @brief Publish whether an HDR stream launch is pending before the RTSP session is active.
    *
@@ -272,7 +375,7 @@ namespace rtsp_stream {
   /**
    * @brief Terminates all running streaming sessions.
    */
-  void terminate_sessions();
+  void terminate_sessions(bool preserve_pending_launch = false);
   void terminate_sessions_by_cert(std::string_view cert);
 
   /**
@@ -285,6 +388,7 @@ namespace rtsp_stream {
    * @return True if one or more sessions were stopped.
    */
   bool disconnect_client_sessions(const std::string &client_uuid);
+  client_disconnect_result_t disconnect_client_sessions_with_result(const std::string &client_uuid);
 
   /**
    * @brief Runs the RTSP server loop.

@@ -8,8 +8,15 @@
 
 namespace display_helper_integration {
 
+  DisplayApplyBuilder &DisplayApplyBuilder::set_session(rtsp_stream::launch_session_t &session) {
+    session_ = &session;
+    mutable_session_ = &session;
+    return *this;
+  }
+
   DisplayApplyBuilder &DisplayApplyBuilder::set_session(const rtsp_stream::launch_session_t &session) {
     session_ = &session;
+    mutable_session_ = nullptr;
     return *this;
   }
 
@@ -65,6 +72,7 @@ namespace display_helper_integration {
     request.attach_hdr_toggle_flag = attach_hdr_toggle_flag_;
     request.topology = topology_;
     request.session = session_;
+    request.mutable_session = mutable_session_;
     request.virtual_display_arrangement = virtual_display_arrangement_;
     return request;
   }

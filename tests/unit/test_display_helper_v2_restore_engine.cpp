@@ -12,34 +12,16 @@
   #include "src/platform/windows/display_helper_v2/operations.h"
   #include "src/platform/windows/display_helper_v2/snapshot.h"
   #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
+  #include "src/platform/windows/display_helper_v2/topology_policy.h"
 
   #include <chrono>
-  #include <filesystem>
   #include <functional>
-  #include <fstream>
 
   #include <nlohmann/json.hpp>
 
 namespace codec = display_helper::v2::codec;
 
 namespace {
-  struct TempDir {
-    std::filesystem::path path;
-
-    TempDir() {
-      std::error_code ec;
-      const auto base = std::filesystem::temp_directory_path(ec);
-      const auto token = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-      path = (ec ? std::filesystem::path(".") : base) / ("sunshine_display_helper_v2_restore_test_" + token);
-      std::filesystem::create_directories(path, ec);
-    }
-
-    ~TempDir() {
-      std::error_code ec;
-      std::filesystem::remove_all(path, ec);
-    }
-  };
-
   display_device::DisplaySettingsSnapshot make_snapshot(const std::vector<std::vector<std::string>> &topology) {
     display_device::DisplaySettingsSnapshot snapshot;
     snapshot.m_topology = topology;
@@ -132,7 +114,7 @@ TEST(DisplayHelperV2Codec, SerializeParseRoundTrip) {
   EXPECT_TRUE(loaded.has_layout_data);
   EXPECT_EQ(loaded.layout_rotations, layouts);
   EXPECT_TRUE(codec::equal_snapshots_strict(loaded.snapshot, snap));
-  EXPECT_EQ(loaded.snapshot.m_origins, snap.m_origins);
+  EXPECT_TRUE(display_helper::v2::topology::equal_origins(loaded.snapshot.m_origins, snap.m_origins));
 }
 
 TEST(DisplayHelperV2Codec, LegacyV1SchemaParsesWithoutLayouts) {
@@ -331,22 +313,22 @@ TEST(DisplayHelperV2Codec, FilterSaveRejectsAllExcluded) {
 // --- golden health (8f062f99: stale warnings only after failures persist) ---
 
 TEST(DisplayHelperV2GoldenHealth, WarnsOnlyAfterThresholdAndWindow) {
-  TempDir temp;
-  const auto status_path = temp.path / "display_golden_restore_status.json";
+  display_helper::v2::InMemoryTextStorage status_storage;
+  const std::string status_key = "display_golden_restore_status.json";
 
   long long fake_now_ms = 1'000'000;
-  display_helper::v2::GoldenHealth health(status_path, [&]() {
+  display_helper::v2::GoldenHealth health(status_storage, status_key, [&]() {
     return fake_now_ms;
   });
 
   auto read_status = [&]() {
-    std::ifstream file(status_path, std::ios::binary);
-    return nlohmann::json::parse(file, nullptr, false);
+    const auto text = status_storage.read(status_key);
+    return text ? nlohmann::json::parse(*text, nullptr, false) : nlohmann::json {};
   };
 
   // No issue noted: nothing written.
   health.register_unresolved("noop");
-  EXPECT_FALSE(std::filesystem::exists(status_path));
+  EXPECT_FALSE(status_storage.exists(status_key));
 
   // Two failures inside the window: marker exists but no out-of-date warning.
   health.note_issue("restore_not_confirmed");
@@ -354,7 +336,7 @@ TEST(DisplayHelperV2GoldenHealth, WarnsOnlyAfterThresholdAndWindow) {
   health.note_issue("restore_not_confirmed");
   health.register_unresolved("test");
 
-  ASSERT_TRUE(std::filesystem::exists(status_path));
+  ASSERT_TRUE(status_storage.exists(status_key));
   auto status = read_status();
   ASSERT_TRUE(status.is_object());
   EXPECT_FALSE(status["snapshot_out_of_date"].get<bool>());
@@ -371,7 +353,7 @@ TEST(DisplayHelperV2GoldenHealth, WarnsOnlyAfterThresholdAndWindow) {
 
   // Confirmed restore clears the marker.
   health.clear_status("restore confirmed");
-  EXPECT_FALSE(std::filesystem::exists(status_path));
+  EXPECT_FALSE(status_storage.exists(status_key));
 }
 
 // --- recovery engine semantics (legacy try_restore_once_if_valid) ---
@@ -462,12 +444,6 @@ namespace {
       return true;
     }
 
-    std::optional<display_device::ActiveTopology> compute_expected_topology(
-      const display_device::SingleDisplayConfiguration &,
-      const std::optional<display_device::ActiveTopology> &) override {
-      return std::nullopt;
-    }
-
     bool is_topology_same(const display_device::ActiveTopology &lhs, const display_device::ActiveTopology &rhs) override {
       return codec::canonical_topology(lhs) == codec::canonical_topology(rhs);
     }
@@ -475,6 +451,23 @@ namespace {
     bool reset_staged_apply_state() override {
       ++reset_staged_apply_state_calls;
       return reset_staged_apply_state_result;
+    }
+
+    bool apply_layout_rotations(const codec::layout_rotation_map_t &layout_rotations) override {
+      rotation_apply_calls.push_back(layout_rotations);
+      return apply_layout_rotations_result;
+    }
+
+    bool current_layout_matches(const codec::layout_rotation_map_t &) override {
+      if (on_current_layout_matches) {
+        on_current_layout_matches();
+      }
+      return layout_matches_result;
+    }
+
+    bool reassert_layout_rotations(const codec::layout_rotation_map_t &layout_rotations) override {
+      reassert_calls.push_back(layout_rotations);
+      return reassert_result;
     }
 
     static std::string first_id(const display_device::DisplaySettingsSnapshot &snapshot) {
@@ -493,21 +486,59 @@ namespace {
     std::set<std::string> ineffective_ids;
     std::vector<std::string> apply_order;
     std::vector<std::string> transition_order;
+    std::vector<codec::layout_rotation_map_t> rotation_apply_calls;
+    std::vector<codec::layout_rotation_map_t> reassert_calls;
     int apply_calls = 0;
     int topology_calls = 0;
     int enumerate_calls = 0;
     int reset_staged_apply_state_calls = 0;
     bool reset_staged_apply_state_result = true;
+    bool apply_layout_rotations_result = true;
+    bool layout_matches_result = true;
+    bool reassert_result = true;
     std::function<void()> on_topology_applied;
     std::function<void()> on_enumerate;
+    std::function<void()> on_current_layout_matches;
+  };
+
+  /// In-memory storage that also carries layout-rotation metadata so tests can
+  /// drive the layout branches of RecoveryOperation (the plain in-memory
+  /// storage always reports has_layout_data=false).
+  class LayoutSnapshotStorage final : public display_helper::v2::InMemorySnapshotStorage {
+  public:
+    using display_helper::v2::InMemorySnapshotStorage::save;
+
+    bool save(
+      display_helper::v2::SnapshotTier tier,
+      const display_device::DisplaySettingsSnapshot &snapshot,
+      const codec::layout_rotation_map_t &layout_rotations) override {
+      layouts_[tier] = layout_rotations;
+      return display_helper::v2::InMemorySnapshotStorage::save(tier, snapshot);
+    }
+
+    std::optional<codec::ParsedSnapshot> load_with_metadata(display_helper::v2::SnapshotTier tier) override {
+      auto loaded = display_helper::v2::ISnapshotStorage::load_with_metadata(tier);
+      if (!loaded) {
+        return std::nullopt;
+      }
+      const auto it = layouts_.find(tier);
+      if (it != layouts_.end() && !it->second.empty()) {
+        loaded->layout_rotations = it->second;
+        loaded->has_layout_data = true;
+      }
+      return loaded;
+    }
+
+  private:
+    std::map<display_helper::v2::SnapshotTier, codec::layout_rotation_map_t> layouts_;
   };
 
   struct RecoveryHarness {
     EngineClock clock;
     EngineDisplayFake display;
-    display_helper::v2::InMemorySnapshotStorage storage;
-    TempDir temp;
-    display_helper::v2::GoldenHealth golden_health {temp.path / "golden_status.json"};
+    LayoutSnapshotStorage storage;
+    display_helper::v2::InMemoryTextStorage golden_status_storage;
+    display_helper::v2::GoldenHealth golden_health {golden_status_storage, "golden_status.json"};
     display_helper::v2::RestoreState state;
     display_helper::v2::RecoveryOperation recovery {display, storage, golden_health, state, clock};
     display_helper::v2::CancellationSource cancellation;
@@ -536,7 +567,10 @@ TEST(DisplayHelperV2RecoveryEngine, TerminatesWithoutApplyOnFirstConfirmedMatch)
 
   EXPECT_TRUE(outcome.success);
   EXPECT_EQ(harness.display.apply_calls, 0);
+  EXPECT_EQ(harness.display.topology_calls, 0);
   EXPECT_EQ(harness.display.reset_staged_apply_state_calls, 1);
+  // No layout metadata -> nothing to reassert.
+  EXPECT_TRUE(harness.display.reassert_calls.empty());
 }
 
 TEST(DisplayHelperV2RecoveryEngine, StopsBeforeSettingsWhenTopologyStageIsCancelled) {
@@ -599,9 +633,9 @@ TEST(DisplayHelperV2RecoveryEngine, PrefersGoldenWhenCurrentMissing) {
   EXPECT_FALSE(harness.storage.exists(display_helper::v2::SnapshotTier::Previous));
 }
 
-// d1c2230e / 59802f34: in golden-first mode, a confirmed session fallback is only
-// accepted after three consecutive golden-first attempts keep failing.
-TEST(DisplayHelperV2RecoveryEngine, GoldenFirstAcceptsSessionFallbackAfterThreeMisses) {
+// A usable session fallback is only a bootstrap state. The configured golden
+// snapshot remains authoritative until every baseline device can be restored.
+TEST(DisplayHelperV2RecoveryEngine, GoldenFirstKeepsCompleteBaselinePendingAfterRepeatedFallbacks) {
   RecoveryHarness harness;
   harness.add_device("G");
   harness.add_device("C");
@@ -622,27 +656,208 @@ TEST(DisplayHelperV2RecoveryEngine, GoldenFirstAcceptsSessionFallbackAfterThreeM
   EXPECT_FALSE(harness.storage.exists(display_helper::v2::SnapshotTier::Current));
   EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Previous));
 
+  // Step past the 60 s session-restore cooldown so every run genuinely
+  // attempts golden instead of being skipped by should_skip_golden.
+  harness.clock.advance(std::chrono::seconds(61));
   harness.display.current = make_snapshot({{"X"}});  // drift again before next attempt
   auto second = harness.recovery.run(harness.cancellation.token());
   EXPECT_FALSE(second.success);
   EXPECT_EQ(harness.state.golden_pending_session_fallbacks.load(), 2u);
 
+  harness.clock.advance(std::chrono::seconds(61));
   harness.display.current = make_snapshot({{"X"}});
   auto third = harness.recovery.run(harness.cancellation.token());
-  EXPECT_TRUE(third.success);
-  EXPECT_EQ(harness.state.golden_pending_session_fallbacks.load(), 0u);
+  EXPECT_FALSE(third.success);
+  EXPECT_EQ(harness.state.golden_pending_session_fallbacks.load(), 3u);
+}
+
+// The golden file must remain pending when a required baseline device is
+// temporarily unavailable. A filtered load rejects that golden snapshot, but
+// the unfiltered snapshot is still present and must keep recovery unresolved.
+TEST(DisplayHelperV2RecoveryEngine, KeepsGoldenPendingWhenBaselineDeviceIsMissing) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+
+  harness.state.always_restore_from_golden.store(true);
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, make_snapshot({{"A"}, {"B"}})));
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, make_snapshot({{"A"}})));
+  harness.display.current = make_snapshot({{"X"}});
+
+  for (std::size_t attempt = 1; attempt <= 4; ++attempt) {
+    harness.display.current = make_snapshot({{"X"}});
+    const auto outcome = harness.recovery.run(harness.cancellation.token());
+    EXPECT_FALSE(outcome.success);
+    EXPECT_EQ(harness.state.golden_pending_session_fallbacks.load(), attempt);
+  }
+  EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Golden));
+}
+
+// --- rotation reassert on the matching fast path (Vibepollo #406 class) ---
+
+// The OS can report a fully matching layout while the driver's pointer
+// transform is stale; a confirmed match with a non-default rotation must force
+// a same-value rotation refresh without touching topology or settings.
+TEST(DisplayHelperV2RecoveryEngine, ReassertsNonDefaultRotationOnMatchingFastPath) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+  harness.add_device("B");
+
+  auto baseline = make_snapshot({{"A"}, {"B"}});
+  ASSERT_TRUE(harness.storage.save(
+    display_helper::v2::SnapshotTier::Current, baseline, codec::layout_rotation_map_t {{"A", 270}, {"B", 0}}));
+
+  harness.display.current = make_snapshot({{"B"}, {"A"}});
+  harness.display.current.m_primary_device = baseline.m_primary_device;
+
+  const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+  EXPECT_TRUE(outcome.success);
+  EXPECT_EQ(harness.display.apply_calls, 0);
+  EXPECT_EQ(harness.display.topology_calls, 0);
+  ASSERT_EQ(harness.display.reassert_calls.size(), 1u);
+  EXPECT_EQ(harness.display.reassert_calls.front().at("A"), 270);
+}
+
+// An all-default layout has no stale transform to refresh; the fast path must
+// stay a pure no-op.
+TEST(DisplayHelperV2RecoveryEngine, SkipsReassertWhenLayoutIsAllDefault) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+  harness.add_device("B");
+
+  auto baseline = make_snapshot({{"A"}, {"B"}});
+  ASSERT_TRUE(harness.storage.save(
+    display_helper::v2::SnapshotTier::Current, baseline, codec::layout_rotation_map_t {{"A", 0}, {"B", 0}}));
+
+  harness.display.current = make_snapshot({{"B"}, {"A"}});
+  harness.display.current.m_primary_device = baseline.m_primary_device;
+
+  const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+  EXPECT_TRUE(outcome.success);
+  EXPECT_TRUE(harness.display.reassert_calls.empty());
+  EXPECT_EQ(harness.display.apply_calls, 0);
+}
+
+// The reassert is best-effort: its failure must never fail a restore that was
+// already confirmed on screen.
+TEST(DisplayHelperV2RecoveryEngine, ReassertFailureDoesNotFailConfirmedRestore) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+
+  auto baseline = make_snapshot({{"A"}});
+  ASSERT_TRUE(harness.storage.save(
+    display_helper::v2::SnapshotTier::Current, baseline, codec::layout_rotation_map_t {{"A", 90}}));
+
+  harness.display.current = baseline;
+  harness.display.reassert_result = false;
+
+  const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+  EXPECT_TRUE(outcome.success);
+  ASSERT_EQ(harness.display.reassert_calls.size(), 1u);
+  EXPECT_EQ(harness.display.reset_staged_apply_state_calls, 1);
+}
+
+// A cancellation that lands during the final layout check must suppress both
+// the reassert side effect and the success bookkeeping.
+TEST(DisplayHelperV2RecoveryEngine, CancelledDuringConfirmSkipsReassert) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+
+  auto baseline = make_snapshot({{"A"}});
+  ASSERT_TRUE(harness.storage.save(
+    display_helper::v2::SnapshotTier::Current, baseline, codec::layout_rotation_map_t {{"A", 270}}));
+
+  harness.display.current = baseline;
+  harness.display.on_current_layout_matches = [&] {
+    harness.cancellation.cancel();
+  };
+
+  const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+  EXPECT_FALSE(outcome.success);
+  EXPECT_TRUE(harness.display.reassert_calls.empty());
+  EXPECT_EQ(harness.display.apply_calls, 0);
+  EXPECT_EQ(harness.display.topology_calls, 0);
+  EXPECT_EQ(harness.display.reset_staged_apply_state_calls, 0);
+}
+
+// The full restore path owns rotation application; the forced reassert belongs
+// to the matching fast path only.
+TEST(DisplayHelperV2RecoveryEngine, FullRestoreAppliesRotationsWithoutReassert) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+  harness.add_device("B");
+
+  auto baseline = make_snapshot({{"A"}});
+  ASSERT_TRUE(harness.storage.save(
+    display_helper::v2::SnapshotTier::Current, baseline, codec::layout_rotation_map_t {{"A", 270}}));
+
+  harness.display.current = make_snapshot({{"B"}});
+
+  const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+  EXPECT_TRUE(outcome.success);
+  EXPECT_EQ(harness.display.topology_calls, 1);
+  ASSERT_EQ(harness.display.rotation_apply_calls.size(), 1u);
+  EXPECT_EQ(harness.display.rotation_apply_calls.front().at("A"), 270);
+  EXPECT_TRUE(harness.display.reassert_calls.empty());
+}
+
+// A failed rotation stage whose rotation nevertheless landed (verify-level
+// layout match) must confirm via the second confirm_matches pass and still
+// perform the driver reassert there.
+TEST(DisplayHelperV2RecoveryEngine, SecondConfirmMatchReassertsAfterLateSettle) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+  harness.add_device("B");
+
+  auto baseline = make_snapshot({{"A"}});
+  ASSERT_TRUE(harness.storage.save(
+    display_helper::v2::SnapshotTier::Current, baseline, codec::layout_rotation_map_t {{"A", 270}}));
+
+  harness.display.current = make_snapshot({{"B"}});
+  harness.display.apply_layout_rotations_result = false;
+
+  const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+  EXPECT_TRUE(outcome.success);
+  EXPECT_EQ(harness.display.topology_calls, 1);
+  ASSERT_EQ(harness.display.rotation_apply_calls.size(), 1u);
+  ASSERT_EQ(harness.display.reassert_calls.size(), 1u);
+  EXPECT_EQ(harness.display.reassert_calls.front().at("A"), 270);
+}
+
+// Documents current policy: when the rotation stage fails and the layout never
+// matches, the restore fails after both apply attempts (no silent success).
+TEST(DisplayHelperV2RecoveryEngine, RotationStageFailureFailsRestoreWhenLayoutNeverMatches) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+  harness.add_device("B");
+
+  auto baseline = make_snapshot({{"A"}});
+  ASSERT_TRUE(harness.storage.save(
+    display_helper::v2::SnapshotTier::Current, baseline, codec::layout_rotation_map_t {{"A", 270}}));
+
+  harness.display.current = make_snapshot({{"B"}});
+  harness.display.apply_layout_rotations_result = false;
+  harness.display.layout_matches_result = false;
+
+  const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+  EXPECT_FALSE(outcome.success);
+  EXPECT_EQ(harness.display.topology_calls, 2);
+  EXPECT_EQ(harness.display.rotation_apply_calls.size(), 2u);
+  EXPECT_TRUE(harness.display.reassert_calls.empty());
 }
 
 // --- storage round trip in the legacy file format ---
 
 TEST(DisplayHelperV2FileStorage, LegacyFormatRoundTripWithLayouts) {
-  TempDir temp;
-  display_helper::v2::SnapshotPaths paths {
-    temp.path / "display_session_current.json",
-    temp.path / "display_session_previous.json",
-    temp.path / "display_golden_restore.json",
-  };
-  display_helper::v2::FileSnapshotStorage storage(paths);
+  display_helper::v2::InMemoryTextStorage text_storage;
+  display_helper::v2::TextSnapshotStorage storage(
+    {"display_session_current.json", "display_session_previous.json", "display_golden_restore.json"}, text_storage);
 
   auto snap = make_snapshot({{"A", "B"}});
   snap.m_hdr_states["A"] = display_device::HdrState::Enabled;
@@ -659,7 +874,7 @@ TEST(DisplayHelperV2FileStorage, LegacyFormatRoundTripWithLayouts) {
   EXPECT_TRUE(loaded->has_layout_data);
   EXPECT_EQ(loaded->layout_rotations, layouts);
   EXPECT_TRUE(codec::equal_snapshots_strict(loaded->snapshot, snap));
-  EXPECT_EQ(loaded->snapshot.m_origins, snap.m_origins);
+  EXPECT_TRUE(display_helper::v2::topology::equal_origins(loaded->snapshot.m_origins, snap.m_origins));
 
   EXPECT_TRUE(storage.remove(display_helper::v2::SnapshotTier::Golden));
   EXPECT_FALSE(storage.exists(display_helper::v2::SnapshotTier::Golden));

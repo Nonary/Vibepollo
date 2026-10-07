@@ -5,9 +5,11 @@
 #pragma once
 
 #include "foreground_app.h"
+#include "game_activity_policy.h"
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -18,29 +20,9 @@
 
 namespace platf::game_activity {
 
-  enum class signal_source_e : std::uint8_t {
-    none = 0,
-    // The detector middleware reported fullscreen but could not attribute the
-    // launched game, so it ranks below every identity-bearing signal.
-    shell_fullscreen = 5,
-    fullscreen_foreground = 10,
-    tracked_process = 20,
-    playnite = 30,
-  };
-
-  struct signal_t {
-    signal_source_e source {signal_source_e::none};
-    bool active {false};
-    DWORD pid {0};
-    std::string executable;
-  };
-
-  struct state_t {
-    bool active {false};
-    signal_source_e source {signal_source_e::none};
-    DWORD pid {0};
-    std::string executable;
-  };
+  using signal_source_e = game_activity_policy::signal_source_e;
+  using signal_t = game_activity_policy::signal_t;
+  using state_t = game_activity_policy::state_t;
 
   state_t reduce_signals(std::span<const signal_t> signals);
   const char *source_name(signal_source_e source);
@@ -69,6 +51,10 @@ namespace platf::game_activity {
     std::uint32_t high_refresh_numerator {0};
     std::uint32_t high_refresh_denominator {1};
     bool initial_high {false};
+    // When supplied, update capture admission instead of changing the display mode.
+    // It must not touch display-mode or capture-device state; it runs on the
+    // activity worker.
+    std::function<bool(bool)> apply_activity_state;
   };
 
   class refresh_target_t {
@@ -77,11 +63,6 @@ namespace platf::game_activity {
 
     refresh_target_t(const refresh_target_t &) = delete;
     refresh_target_t &operator=(const refresh_target_t &) = delete;
-
-    // Called by WGC when DXGI reports a display change. If a refresh-only request is
-    // in flight, wait for it to settle and authorize soft output refreshes while that
-    // mode-set finishes propagating through DXGI.
-    bool wait_for_expected_refresh_change(std::chrono::milliseconds timeout);
 
   private:
     struct impl_t;

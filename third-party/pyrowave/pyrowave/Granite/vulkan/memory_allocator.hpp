@@ -1,0 +1,439 @@
+/* Copyright (c) 2017-2026 Hans-Kristian Arntzen
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#pragma once
+
+#include "intrusive.hpp"
+#include "object_pool.hpp"
+#include "slab_allocator.hpp"
+#include "intrusive_list.hpp"
+#include "vulkan_headers.hpp"
+#include "logging.hpp"
+#include "bitops.hpp"
+#include "enum_cast.hpp"
+#include "vulkan_common.hpp"
+#include "arena_allocator.hpp"
+#include <assert.h>
+#include <memory>
+#include <stddef.h>
+#include <stdint.h>
+#include <vector>
+
+namespace Vulkan
+{
+class Device;
+
+enum class ImageLayout;
+
+enum class MemoryClass : uint8_t
+{
+	Small = 0,
+	Medium,
+	Large,
+	Huge,
+	Count
+};
+
+enum class AllocationMode : uint8_t
+{
+	LinearHostMappable = 0,
+	LinearDevice,
+	LinearDeviceHighPriority,
+	OptimalResource,
+	OptimalRenderTarget,
+	External,
+	Count
+};
+
+enum MemoryAccessFlag : uint32_t
+{
+	MEMORY_ACCESS_WRITE_BIT = 1,
+	MEMORY_ACCESS_READ_BIT = 2,
+	MEMORY_ACCESS_READ_WRITE_BIT = MEMORY_ACCESS_WRITE_BIT | MEMORY_ACCESS_READ_BIT
+};
+using MemoryAccessFlags = uint32_t;
+
+struct DeviceAllocation;
+class DeviceAllocator;
+
+class ClassAllocator;
+class DeviceAllocator;
+class Allocator;
+class Device;
+
+using MiniHeap = Util::LegionHeap<DeviceAllocation>;
+
+struct DeviceAllocation
+{
+	friend class Util::ArenaAllocator<ClassAllocator, DeviceAllocation>;
+	friend class ClassAllocator;
+	friend class Allocator;
+	friend class DeviceAllocator;
+	friend class Device;
+	friend class ImageResourceHolder;
+
+public:
+	inline VkDeviceMemory get_memory() const
+	{
+		return base;
+	}
+
+	inline bool allocation_is_global() const
+	{
+		return !alloc && base;
+	}
+
+	inline uint32_t get_offset() const
+	{
+		return offset;
+	}
+
+	inline uint32_t get_size() const
+	{
+		return size;
+	}
+
+	inline uint32_t get_mask() const
+	{
+		return mask;
+	}
+
+	inline bool is_host_allocation() const
+	{
+		return host_base != nullptr;
+	}
+
+	static DeviceAllocation make_imported_allocation(VkDeviceMemory memory, VkDeviceSize size, uint32_t memory_type);
+
+	ExternalHandle export_handle(Device &device);
+
+private:
+	VkDeviceMemory base = VK_NULL_HANDLE;
+	uint8_t *host_base = nullptr;
+	ClassAllocator *alloc = nullptr;
+	Util::IntrusiveList<MiniHeap>::Iterator heap = {};
+	uint32_t offset = 0;
+	uint32_t mask = 0;
+	uint32_t size = 0;
+	VkExternalMemoryHandleTypeFlags exportable_types = 0;
+
+	AllocationMode mode = AllocationMode::Count;
+	uint8_t memory_type = 0;
+
+	void free_global(DeviceAllocator &allocator, uint32_t size, uint32_t memory_type);
+	void free_immediate();
+	void free_immediate(DeviceAllocator &allocator);
+};
+
+class DeviceAllocationOwner;
+struct DeviceAllocationDeleter
+{
+	void operator()(DeviceAllocationOwner *owner);
+};
+
+class DeviceAllocationOwner : public Util::IntrusivePtrEnabled<DeviceAllocationOwner, DeviceAllocationDeleter, HandleCounter>
+{
+public:
+	friend class Util::ObjectPool<DeviceAllocationOwner>;
+	friend struct DeviceAllocationDeleter;
+
+	~DeviceAllocationOwner();
+	const DeviceAllocation &get_allocation() const;
+
+private:
+	DeviceAllocationOwner(Device *device, const DeviceAllocation &alloc);
+	Device *device;
+	DeviceAllocation alloc;
+};
+using DeviceAllocationOwnerHandle = Util::IntrusivePtr<DeviceAllocationOwner>;
+
+struct MemoryAllocateInfo
+{
+	VkMemoryRequirements requirements = {};
+	VkMemoryPropertyFlags required_properties = 0;
+	AllocationMode mode = {};
+};
+
+class ClassAllocator : public Util::ArenaAllocator<ClassAllocator, DeviceAllocation>
+{
+public:
+	friend class Util::ArenaAllocator<ClassAllocator, DeviceAllocation>;
+
+	inline void set_global_allocator(DeviceAllocator *allocator, AllocationMode mode, uint32_t memory_type_)
+	{
+		global_allocator = allocator;
+		global_allocator_mode = mode;
+		memory_type = memory_type_;
+	}
+
+	inline void set_parent(ClassAllocator *allocator)
+	{
+		parent = allocator;
+	}
+
+private:
+	ClassAllocator *parent = nullptr;
+	uint32_t memory_type = 0;
+	DeviceAllocator *global_allocator = nullptr;
+	AllocationMode global_allocator_mode = AllocationMode::Count;
+
+	// Implements curious recurring template pattern calls.
+	bool allocate_backing_heap(DeviceAllocation *allocation);
+	void free_backing_heap(DeviceAllocation *allocation);
+	void prepare_allocation(DeviceAllocation *allocation, Util::IntrusiveList<MiniHeap>::Iterator heap_itr,
+	                        const Util::SuballocationResult &suballoc);
+};
+
+class Allocator
+{
+public:
+	Allocator(Util::ObjectPool<MiniHeap> &object_pool, bool lean_memory_config);
+	void operator=(const Allocator &) = delete;
+	Allocator(const Allocator &) = delete;
+
+	bool allocate(uint32_t size, uint32_t alignment, AllocationMode mode, DeviceAllocation *alloc);
+	bool allocate_global(uint32_t size, AllocationMode mode, DeviceAllocation *alloc);
+	bool allocate_dedicated(uint32_t size, AllocationMode mode, DeviceAllocation *alloc,
+	                        VkObjectType object_type, uint64_t object, ExternalHandle *external);
+
+	inline ClassAllocator &get_class_allocator(MemoryClass clazz, AllocationMode mode)
+	{
+		return classes[unsigned(clazz)][unsigned(mode)];
+	}
+
+	static void free(DeviceAllocation *alloc)
+	{
+		alloc->free_immediate();
+	}
+
+	void set_global_allocator(DeviceAllocator *allocator, uint32_t memory_type_)
+	{
+		memory_type = memory_type_;
+		for (auto &sub : classes)
+			for (int i = 0; i < Util::ecast(AllocationMode::Count); i++)
+				sub[i].set_global_allocator(allocator, AllocationMode(i), memory_type);
+		global_allocator = allocator;
+	}
+
+private:
+	ClassAllocator classes[Util::ecast(MemoryClass::Count)][Util::ecast(AllocationMode::Count)];
+	DeviceAllocator *global_allocator = nullptr;
+	uint32_t memory_type = 0;
+};
+
+struct HeapBudget
+{
+	VkDeviceSize max_size;
+	VkDeviceSize budget_size;
+	VkDeviceSize tracked_usage;
+	VkDeviceSize device_usage;
+};
+
+class DeviceAllocator
+{
+public:
+	void init(Device *device);
+
+	~DeviceAllocator();
+
+	bool allocate_generic_memory(uint32_t size, uint32_t alignment, AllocationMode mode, uint32_t memory_type,
+	                             DeviceAllocation *alloc);
+	bool allocate_buffer_memory(uint32_t size, uint32_t alignment, AllocationMode mode, uint32_t memory_type,
+	                            VkBuffer buffer, DeviceAllocation *alloc, ExternalHandle *external);
+	bool allocate_image_memory(uint32_t size, uint32_t alignment, AllocationMode mode, uint32_t memory_type,
+	                           VkImage image, bool force_no_dedicated, DeviceAllocation *alloc, ExternalHandle *external);
+
+	static AllocationMode normalize_allocation_mode(AllocationMode mode);
+
+	void garbage_collect();
+	void *map_memory(const DeviceAllocation &alloc, MemoryAccessFlags flags, VkDeviceSize offset, VkDeviceSize length);
+	void unmap_memory(const DeviceAllocation &alloc, MemoryAccessFlags flags, VkDeviceSize offset, VkDeviceSize length);
+
+	void get_memory_budget(HeapBudget *heaps);
+
+	bool internal_allocate(uint32_t size, uint32_t memory_type, AllocationMode mode,
+	                       VkDeviceMemory *memory, uint8_t **host_memory,
+	                       VkObjectType object_type, uint64_t dedicated_object, ExternalHandle *external);
+	void internal_free(uint32_t size, uint32_t memory_type, AllocationMode mode, VkDeviceMemory memory, bool is_mapped);
+	void internal_free_no_recycle(uint32_t size, uint32_t memory_type, VkDeviceMemory memory);
+
+private:
+	Util::ObjectPool<MiniHeap> object_pool;
+	std::vector<std::unique_ptr<Allocator>> allocators;
+	Device *device = nullptr;
+	const VolkDeviceTable *table = nullptr;
+	VkPhysicalDeviceMemoryProperties mem_props;
+	VkDeviceSize atom_alignment = 1;
+	struct Allocation
+	{
+		VkDeviceMemory memory;
+		uint32_t size;
+		uint32_t type;
+		AllocationMode mode;
+	};
+
+	struct Heap
+	{
+		uint64_t size = 0;
+		std::vector<Allocation> blocks;
+		void garbage_collect(Device *device);
+	};
+
+	std::vector<Heap> heaps;
+	bool memory_heap_is_budget_critical[VK_MAX_MEMORY_HEAPS] = {};
+	void get_memory_budget_nolock(HeapBudget *heaps);
+};
+
+// Avoid cross-dependency in header.
+class Buffer;
+
+struct DescriptorBufferAllocation
+{
+	inline VkDeviceSize get_offset() const { return backing_slice.offset; }
+	inline VkDeviceSize get_size() const { return backing_slice.count; }
+
+	// Internal detail.
+	Util::AllocatedSlice backing_slice;
+};
+
+using DescriptorCopyFunc = void (*)(uint8_t *, const uint8_t *, size_t size);
+using DescriptorCopyNFunc = void (*)(uint8_t *, const uint8_t * const *, size_t count, size_t size);
+
+struct CachedDescriptorPayload
+{
+	uint8_t *ptr;
+	VkDescriptorType type;
+	uint32_t heap_index;
+	explicit operator bool() const { return ptr != nullptr; }
+};
+
+struct CachedImageView
+{
+	VkImageView view; // For legacy and descriptor buffer.
+
+	// For DB, this is used all the time. For heap, only occasionally as needed,
+	// usually for bindless.
+	CachedDescriptorPayload sampled; // SHADER_READ_ONLY
+	CachedDescriptorPayload input_attachment; // INPUT_ATTACHMENT + read only (if applicable)
+	CachedDescriptorPayload input_attachment_feedback; // INPUT_ATTACHMENT + GENERAL (if applicable)
+	CachedDescriptorPayload storage; // For storage image, always GENERAL layout.
+};
+
+struct CachedBufferView
+{
+	VkBufferView view;
+	CachedDescriptorPayload uniform;
+	CachedDescriptorPayload storage;
+};
+
+struct BufferViewCreateInfo;
+
+class DescriptorBufferAllocator : private Util::SliceAllocator
+{
+public:
+	bool init(Device *device);
+	~DescriptorBufferAllocator();
+
+	void teardown();
+
+	struct HeapInfo
+	{
+		VkDeviceAddress va;
+		uint8_t *mapped;
+		VkDeviceSize reserved_offset;
+		VkDeviceSize size;
+	};
+
+	HeapInfo get_resource_heap() const { return resource_heap; }
+	// Only for descriptor_heap.
+	HeapInfo get_sampler_heap() const { return sampler_heap; }
+
+	DescriptorBufferAllocation allocate(VkDeviceSize size);
+	void free(const DescriptorBufferAllocation &alloc);
+	void free(const DescriptorBufferAllocation *alloc, size_t count);
+
+	uint32_t get_descriptor_size_for_type(VkDescriptorType type) const;
+
+	bool create_image_view(const VkImageViewCreateInfo &info, VkImageUsageFlags usage,
+	                       ImageLayout layout, CachedImageView &view);
+	void free_image_view(const CachedImageView &view);
+
+	bool create_buffer_view(const BufferViewCreateInfo &info, CachedBufferView &view);
+	void free_buffer_view(const CachedBufferView &view);
+
+#define IMPL_TYPE(type, desc_type) \
+	inline void copy_##type(uint8_t *dst, const uint8_t *src) const { type##_copy.func(dst, src, type##_copy.size); } \
+	inline void copy_##type##_n(uint8_t *dst, const uint8_t * const *src, size_t count) const { type##_copy.func_n(dst, src, count, type##_copy.size); } \
+	inline CachedDescriptorPayload alloc_##type() { return { type##_copy.slab.allocate(), desc_type }; } \
+	inline void free_##type(uint8_t *ptr) { type##_copy.slab.free(ptr); }
+
+	IMPL_TYPE(combined_image, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+	IMPL_TYPE(sampled_image, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)
+	IMPL_TYPE(storage_image, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+	IMPL_TYPE(sampler, VK_DESCRIPTOR_TYPE_SAMPLER)
+	IMPL_TYPE(input_attachment, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT)
+	IMPL_TYPE(ubo, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+	IMPL_TYPE(ssbo, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+	IMPL_TYPE(uniform_texel, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER)
+	IMPL_TYPE(storage_texel, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER)
+
+	void free_cached_descriptors(const CachedDescriptorPayload *payloads, size_t count);
+
+	// On heap, this is a dummy handle.
+	VkSampler create_sampler(const VkSamplerCreateInfo *info);
+	void destroy_sampler(VkSampler sampler);
+
+private:
+	Device *device = nullptr;
+	Buffer *resource_buffer = nullptr;
+	Buffer *sampler_buffer = nullptr;
+	Util::SliceBackingAllocatorVA backing_va;
+	VkDeviceSize alignment = 0;
+	VkDeviceSize sub_block_size = 0;
+	std::mutex lock;
+
+	HeapInfo resource_heap = {}, sampler_heap = {};
+
+	struct DescriptorTypeInfo
+	{
+		DescriptorCopyFunc func;
+		DescriptorCopyNFunc func_n;
+		size_t size;
+		Util::ThreadSafeSlabAllocator slab;
+	};
+	DescriptorTypeInfo sampled_image_copy, storage_image_copy, combined_image_copy, sampler_copy, input_attachment_copy;
+	DescriptorTypeInfo ubo_copy, ssbo_copy, uniform_texel_copy, storage_texel_copy;
+	void init_copy_func(DescriptorTypeInfo &info, VkDescriptorType type) const;
+
+	VkDeviceSize total_size = 0;
+	VkDeviceSize high_water_mark = 0;
+	std::vector<uint32_t> heap_resource_indices;
+	std::vector<uint32_t> heap_sampler_indices;
+
+	// For descriptor heap.
+	uint32_t allocate_single_resource_heap_entry();
+	void free_single_resource_heap_entry(uint32_t index);
+};
+
+void take_ownership_imported_external_memory_handle(const ExternalHandle &handle);
+void take_ownership_imported_external_semaphore_handle(const ExternalHandle &handle);
+}

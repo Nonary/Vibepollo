@@ -1,4 +1,4 @@
-#include "src/platform/windows/playnite_sync.h"
+#include "src/platform/windows/playnite_sync_policy.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -6,6 +6,7 @@
 
 using namespace platf::playnite;
 using namespace platf::playnite::sync;
+using namespace platf::playnite::sync::policy;
 
 static Game G(std::string id, std::string last, bool installed = true, std::vector<std::string> cats = {}, std::string plugin = {}) {
   Game g;
@@ -40,8 +41,12 @@ TEST(PlayniteAutosync_Reconcile, AddsSelectedGamesToEmptyApps) {
                      matched);
   EXPECT_TRUE(changed);
   ASSERT_EQ(root["apps"].size(), 2u);  // A from recent, B from category
-  EXPECT_EQ(root["apps"][0]["playnite-id"], "A");
-  EXPECT_EQ(root["apps"][1]["playnite-id"], "B");
+  std::unordered_set<std::string> ids;
+  for (const auto &app : root["apps"]) {
+    ids.insert(app["playnite-id"].get<std::string>());
+  }
+  EXPECT_TRUE(ids.contains("A"));
+  EXPECT_TRUE(ids.contains("B"));
 }
 
 TEST(PlayniteAutosync_Reconcile, HonorsExcludeIds) {

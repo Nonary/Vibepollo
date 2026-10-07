@@ -25,6 +25,7 @@ extern "C" {
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
+#include "mouse_input.h"
 #include "platform/common.h"
 #include "thread_pool.h"
 #include "utility.h"
@@ -39,8 +40,6 @@ using namespace std::literals;
 namespace input {
 
   constexpr auto MAX_GAMEPADS = std::min((std::size_t) platf::MAX_GAMEPADS, sizeof(std::int16_t) * 8);
-#define DISABLE_LEFT_BUTTON_DELAY ((thread_pool_util::ThreadPool::task_id_t) 0x01)
-#define ENABLE_LEFT_BUTTON_DELAY nullptr
 
   constexpr auto VKEY_SHIFT = 0x10;
   constexpr auto VKEY_LSHIFT = 0xA0;
@@ -75,20 +74,6 @@ namespace input {
     gamepad_mask[id] = false;
   }
 
-  typedef uint32_t key_press_id_t;
-
-  key_press_id_t make_kpid(uint16_t vk, uint8_t flags) {
-    return (key_press_id_t) vk << 8 | flags;
-  }
-
-  uint16_t vk_from_kpid(key_press_id_t kpid) {
-    return kpid >> 8;
-  }
-
-  uint8_t flags_from_kpid(key_press_id_t kpid) {
-    return kpid & 0xFF;
-  }
-
   /**
    * @brief Convert a little-endian netfloat to a native endianness float.
    * @param f Netfloat value.
@@ -109,11 +94,53 @@ namespace input {
     return std::clamp(from_netfloat(f), min, max);
   }
 
-  static task_pool_util::TaskPool::task_id_t key_press_repeat_id {};
-  static std::unordered_map<key_press_id_t, bool> key_press {};
-  static std::array<std::uint8_t, 5> mouse_press {};
+  struct held_key_t {
+    uint16_t host_key;
+    uint8_t flags;
+    uint8_t modifiers;
+  };
+
+  struct host_key_t {
+    unsigned owners = 0;
+    uint16_t key = 0;
+    uint8_t flags = 0;
+  };
+  // Keyboard devices are global, but presses and repeat timers belong to clients.
+  static std::unordered_map<uint16_t, host_key_t> host_keys;
+  static std::array<std::uint8_t, BUTTON_X2 + 1> mouse_press {};
+  // The logical release may precede the host release by 10 ms. Keep ownership
+  // until the host receives the release, including during session cleanup.
+  static std::array<input_t *, BUTTON_X2 + 1> mouse_press_owner {};
 
   static platf::input_t platf_input;
+  class platform_mouse_backend_t: public mouse_input::backend_t {
+  public:
+    explicit platform_mouse_backend_t(platf::input_t &input):
+        _input(input) {}
+
+    mouse_input::point_t position() const override {
+      auto &input = const_cast<platf::input_t &>(_input);
+      const auto position = platf::get_mouse_loc(input);
+      return {
+        static_cast<int>(position.x),
+        static_cast<int>(position.y),
+      };
+    }
+
+    void move_relative(mouse_input::point_t delta) override {
+      platf::move_mouse(_input, delta.x, delta.y);
+    }
+
+    void move_absolute(const mouse_input::viewport_t &viewport, mouse_input::absolute_position_t position) override {
+      const platf::touch_port_t port {viewport.offset_x, viewport.offset_y, viewport.width, viewport.height};
+      platf::abs_mouse(_input, port, position.x, position.y);
+    }
+
+  private:
+    platf::input_t &_input;
+  };
+  static std::unique_ptr<platform_mouse_backend_t> mouse_backend;
+  static std::unique_ptr<mouse_input::controller_t> mouse_controller;
   static std::bitset<platf::MAX_GAMEPADS> gamepadMask {};
 
   void free_gamepad(platf::input_t &platf_input, int id) {
@@ -153,6 +180,19 @@ namespace input {
     button_state_e back_button_state;
   };
 
+  void reset_gamepad(gamepad_t &gamepad) {
+    if (gamepad.back_timeout_id) {
+      task_pool.cancel(gamepad.back_timeout_id);
+      gamepad.back_timeout_id = nullptr;
+    }
+    if (gamepad.id >= 0) {
+      free_gamepad(platf_input, gamepad.id);
+      gamepad.id = -1;
+    }
+    gamepad.gamepad_state = {};
+    gamepad.back_button_state = button_state_e::NONE;
+  }
+
   struct input_t {
     enum shortkey_e {
       CTRL = 0x1,  ///< Control key
@@ -179,6 +219,9 @@ namespace input {
 
     // Keep track of alt+ctrl+shift key combo
     int shortcutFlags;
+    std::unordered_map<uint16_t, held_key_t> keys;
+    task_pool_util::TaskPool::task_id_t key_press_repeat_id {};
+    uint16_t repeating_key = 0;
 
     std::vector<gamepad_t> gamepads;
     std::unique_ptr<platf::client_input_t> client_context;
@@ -189,8 +232,11 @@ namespace input {
     std::list<std::vector<uint8_t>> input_queue;
     std::mutex input_queue_lock;
     std::atomic_bool input_queue_task_scheduled;
+    // Protected by input_queue_lock; reset permanently closes this context.
+    bool input_closed = false;
 
     thread_pool_util::ThreadPool::task_id_t mouse_left_button_timeout;
+    bool mouse_left_button_delay = true;
 
     input::touch_port_t touch_port;
 
@@ -534,8 +580,8 @@ namespace input {
       return;
     }
 
-    input->mouse_left_button_timeout = DISABLE_LEFT_BUTTON_DELAY;
-    platf::move_mouse(platf_input, util::endian::big(packet->deltaX), util::endian::big(packet->deltaY));
+    input->mouse_left_button_delay = false;
+    mouse_controller->move_relative({util::endian::big(packet->deltaX), util::endian::big(packet->deltaY)});
   }
 
   /**
@@ -548,8 +594,10 @@ namespace input {
   std::optional<std::pair<float, float>> client_to_touchport(std::shared_ptr<input_t> &input, const std::pair<float, float> &val, const std::pair<float, float> &size) {
     auto &touch_port_event = input->touch_port_event;
     auto &touch_port = input->touch_port;
-    if (touch_port_event->peek()) {
-      touch_port = *touch_port_event->pop();
+    // Browser viewers have separate input ownership but share capture metadata.
+    // Read the latest port without consuming it or blocking the input worker.
+    if (auto latest_port = touch_port_event->view(0ms)) {
+      touch_port = *latest_port;
     }
     if (!touch_port) {
       BOOST_LOG(verbose) << "Ignoring early absolute input without a touch port"sv;
@@ -639,9 +687,7 @@ namespace input {
       return;
     }
 
-    if (input->mouse_left_button_timeout == DISABLE_LEFT_BUTTON_DELAY) {
-      input->mouse_left_button_timeout = ENABLE_LEFT_BUTTON_DELAY;
-    }
+    input->mouse_left_button_delay = true;
 
     float x = util::endian::big(packet->x);
     float y = util::endian::big(packet->y);
@@ -681,17 +727,28 @@ namespace input {
       touch_port_dim_y
     };
 
-    platf::abs_mouse(platf_input, abs_port, tpcoords->first, tpcoords->second);
+    mouse_controller->move_absolute(
+      {abs_port.offset_x, abs_port.offset_y, abs_port.width, abs_port.height},
+      {tpcoords->first, tpcoords->second}
+    );
   }
 
   void passthrough(std::shared_ptr<input_t> &input, PNV_MOUSE_BUTTON_PACKET packet) {
-    if (!config::input.mouse) {
+    auto release = util::endian::little(packet->header.magic) == MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5;
+    if (!config::input.mouse && !release) {
       return;
     }
-
-    auto release = util::endian::little(packet->header.magic) == MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5;
     auto button = util::endian::big(packet->button);
+    if (button <= 0 || button >= mouse_press.size()) {
+      return;
+    }
     if (button > 0 && button < mouse_press.size()) {
+      // An overlapping press from another client may have been ignored below.
+      // Its release must not change the accepted owner's logical state or
+      // leave that owner's delayed host release without a responsible timer.
+      if (release && mouse_press_owner[button] != input.get()) {
+        return;
+      }
       if (mouse_press[button] != release) {
         // button state is already what we want
         return;
@@ -710,20 +767,18 @@ namespace input {
      *
      * Try to make sure BUTTON_RIGHT gets called before BUTTON_LEFT is released.
      *
-     * input->mouse_left_button_timeout can only be nullptr
-     * when the last mouse coordinates were absolute
+     * Keep the coordinate mode separate from the pending task so a mouse
+     * move cannot discard the handle needed to cancel a delayed release.
      */
-    if (button == BUTTON_LEFT && release && !input->mouse_left_button_timeout) {
-      auto f = [=]() {
-        auto left_released = mouse_press[BUTTON_LEFT];
-        if (left_released) {
-          // Already released left button
+    if (button == BUTTON_LEFT && release && input->mouse_left_button_delay && !input->mouse_left_button_timeout) {
+      auto f = [input]() {
+        input->mouse_left_button_timeout = nullptr;
+        if (mouse_press[BUTTON_LEFT] || mouse_press_owner[BUTTON_LEFT] != input.get()) {
+          // A newer press must not be released by this old timer.
           return;
         }
-        platf::button_mouse(platf_input, BUTTON_LEFT, release);
-
-        mouse_press[BUTTON_LEFT] = false;
-        input->mouse_left_button_timeout = nullptr;
+        platf::button_mouse(platf_input, BUTTON_LEFT, true);
+        mouse_press_owner[BUTTON_LEFT] = nullptr;
       };
 
       input->mouse_left_button_timeout = task_pool.pushDelayed(std::move(f), 10ms).task_id;
@@ -731,18 +786,22 @@ namespace input {
       return;
     }
     if (
-      button == BUTTON_RIGHT && !release &&
-      input->mouse_left_button_timeout > DISABLE_LEFT_BUTTON_DELAY
+      button == BUTTON_RIGHT && !release && input->mouse_left_button_delay &&
+      input->mouse_left_button_timeout
     ) {
       platf::button_mouse(platf_input, BUTTON_RIGHT, false);
       platf::button_mouse(platf_input, BUTTON_RIGHT, true);
 
       mouse_press[BUTTON_RIGHT] = false;
+      mouse_press_owner[BUTTON_RIGHT] = nullptr;
 
       return;
     }
 
     platf::button_mouse(platf_input, button, release);
+    if (button > 0 && button < mouse_press_owner.size()) {
+      mouse_press_owner[button] = release ? nullptr : input.get();
+    }
   }
 
   short map_keycode(short keycode) {
@@ -806,101 +865,140 @@ namespace input {
     }
   }
 
-  void send_key_and_modifiers(uint16_t key_code, bool release, uint8_t flags, uint8_t synthetic_modifiers) {
-    if (!release) {
-      // Press any synthetic modifiers required for this key
-      if (synthetic_modifiers & MODIFIER_SHIFT) {
-        platf::keyboard_update(platf_input, VKEY_SHIFT, false, flags);
-      }
-      if (synthetic_modifiers & MODIFIER_CTRL) {
-        platf::keyboard_update(platf_input, VKEY_CONTROL, false, flags);
-      }
-      if (synthetic_modifiers & MODIFIER_ALT) {
-        platf::keyboard_update(platf_input, VKEY_MENU, false, flags);
-      }
-    }
-
-    platf::keyboard_update(platf_input, map_keycode(key_code), release, flags);
-
-    if (!release) {
-      // Raise any synthetic modifier keys we pressed
-      if (synthetic_modifiers & MODIFIER_SHIFT) {
-        platf::keyboard_update(platf_input, VKEY_SHIFT, true, flags);
-      }
-      if (synthetic_modifiers & MODIFIER_CTRL) {
-        platf::keyboard_update(platf_input, VKEY_CONTROL, true, flags);
-      }
-      if (synthetic_modifiers & MODIFIER_ALT) {
-        platf::keyboard_update(platf_input, VKEY_MENU, true, flags);
-      }
+  // Generic modifiers and their left-hand aliases address the same host key.
+  uint16_t host_keycode(uint16_t key) {
+    switch (key) {
+      case VKEY_SHIFT:
+        return VKEY_LSHIFT;
+      case VKEY_CONTROL:
+        return VKEY_LCONTROL;
+      case VKEY_MENU:
+        return VKEY_LMENU;
+      default:
+        return key;
     }
   }
 
-  void repeat_key(uint16_t key_code, uint8_t flags, uint8_t synthetic_modifiers) {
-    // If key no longer pressed, stop repeating
-    if (!key_press[make_kpid(key_code, flags)]) {
-      key_press_repeat_id = nullptr;
+  void refresh_shortcut_flags(input_t &input) {
+    input.shortcutFlags = 0;
+    for (const auto &[key, held] : input.keys) {
+      // Match the host key injected at key-down, even if its mapping changes.
+      update_shortcutFlags(&input.shortcutFlags, held.host_key, false);
+    }
+  }
+
+  void release_key(const held_key_t &key) {
+    auto it = host_keys.find(host_keycode(key.host_key));
+    if (it != host_keys.end() && --it->second.owners == 0) {
+      platf::keyboard_update(platf_input, it->second.key, true, it->second.flags);
+      host_keys.erase(it);
+    }
+  }
+
+  void send_key_and_modifiers(const held_key_t &key, int shortcut_flags) {
+    // Synthetic modifiers are temporary. Never release a real host modifier
+    // owned by this or another client (including a remapped ordinary key).
+    uint8_t synthetic = 0;
+    const auto inject = [&](uint8_t mask, int shortcut, uint16_t generic, uint16_t left, uint16_t right) {
+      if ((key.modifiers & mask) && !(shortcut_flags & shortcut) &&
+          !host_keys.contains(left) && !host_keys.contains(right)) {
+        synthetic |= mask;
+        platf::keyboard_update(platf_input, generic, false, key.flags);
+      }
+    };
+    inject(MODIFIER_SHIFT, input_t::SHIFT, VKEY_SHIFT, VKEY_LSHIFT, VKEY_RSHIFT);
+    inject(MODIFIER_CTRL, input_t::CTRL, VKEY_CONTROL, VKEY_LCONTROL, VKEY_RCONTROL);
+    inject(MODIFIER_ALT, input_t::ALT, VKEY_MENU, VKEY_LMENU, VKEY_RMENU);
+    platf::keyboard_update(platf_input, key.host_key, false, key.flags);
+    if (synthetic & MODIFIER_SHIFT) {
+      platf::keyboard_update(platf_input, VKEY_SHIFT, true, key.flags);
+    }
+    if (synthetic & MODIFIER_CTRL) {
+      platf::keyboard_update(platf_input, VKEY_CONTROL, true, key.flags);
+    }
+    if (synthetic & MODIFIER_ALT) {
+      platf::keyboard_update(platf_input, VKEY_MENU, true, key.flags);
+    }
+  }
+
+  void repeat_key(std::shared_ptr<input_t> input, uint16_t key_code) {
+    auto it = input->keys.find(key_code);
+    if (it == input->keys.end()) {
+      input->key_press_repeat_id = nullptr;
       return;
     }
-
-    send_key_and_modifiers(key_code, false, flags, synthetic_modifiers);
-
-    key_press_repeat_id = task_pool.pushDelayed(repeat_key, config::input.key_repeat_period, key_code, flags, synthetic_modifiers).task_id;
+    auto held = it->second;
+    const auto &host = host_keys.at(host_keycode(held.host_key));
+    held.host_key = host.key;
+    held.flags = host.flags;
+    send_key_and_modifiers(held, input->shortcutFlags);
+    input->key_press_repeat_id = task_pool.pushDelayed(repeat_key, config::input.key_repeat_period, input, key_code).task_id;
   }
 
   void passthrough(std::shared_ptr<input_t> &input, PNV_KEYBOARD_PACKET packet) {
-    if (!config::input.keyboard) {
+    const bool release = util::endian::little(packet->header.magic) == KEY_UP_EVENT_MAGIC;
+    const uint16_t key_code = packet->keyCode & 0x00FF;
+    auto it = input->keys.find(key_code);
+    if (release) {
+      if (it == input->keys.end()) {
+        return;
+      }
+      if (input->repeating_key == key_code) {
+        task_pool.cancel(input->key_press_repeat_id);
+        input->key_press_repeat_id = nullptr;
+      }
+      release_key(it->second);
+      input->keys.erase(it);
+      refresh_shortcut_flags(*input);
+      return;
+    }
+    if (!config::input.keyboard || it != input->keys.end()) {
+      return;
+    }
+    if (input->shortcutFlags == input_t::SHORTCUT && apply_shortcut(key_code) > 0) {
       return;
     }
 
-    auto release = util::endian::little(packet->header.magic) == KEY_UP_EVENT_MAGIC;
-    auto keyCode = packet->keyCode & 0x00FF;
-
-    // Set synthetic modifier flags if the keyboard packet is requesting modifier
-    // keys that are not current pressed.
     uint8_t synthetic_modifiers = 0;
-    if (!release && !is_modifier(keyCode)) {
-      if (!(input->shortcutFlags & input_t::SHIFT) && (packet->modifiers & MODIFIER_SHIFT)) {
+    if (!is_modifier(key_code)) {
+      // A held client modifier can be remapped to a different host key. Do not
+      // reintroduce its original modifier from the packet's modifier mask.
+      int client_modifier_flags = 0;
+      for (const auto &[client_key, held] : input->keys) {
+        update_shortcutFlags(&client_modifier_flags, client_key, false);
+      }
+      if ((packet->modifiers & MODIFIER_SHIFT) && !(client_modifier_flags & input_t::SHIFT)) {
         synthetic_modifiers |= MODIFIER_SHIFT;
       }
-      if (!(input->shortcutFlags & input_t::CTRL) && (packet->modifiers & MODIFIER_CTRL)) {
+      if ((packet->modifiers & MODIFIER_CTRL) && !(client_modifier_flags & input_t::CTRL)) {
         synthetic_modifiers |= MODIFIER_CTRL;
       }
-      if (!(input->shortcutFlags & input_t::ALT) && (packet->modifiers & MODIFIER_ALT)) {
+      if ((packet->modifiers & MODIFIER_ALT) && !(client_modifier_flags & input_t::ALT)) {
         synthetic_modifiers |= MODIFIER_ALT;
       }
     }
-
-    auto &pressed = key_press[make_kpid(keyCode, packet->flags)];
-    if (!pressed) {
-      if (!release) {
-        // A new key has been pressed down, we need to check for key combo's
-        // If a key-combo has been pressed down, don't pass it through
-        if (input->shortcutFlags == input_t::SHORTCUT && apply_shortcut(keyCode) > 0) {
-          return;
-        }
-
-        if (key_press_repeat_id) {
-          task_pool.cancel(key_press_repeat_id);
-        }
-
-        if (config::input.key_repeat_delay.count() > 0) {
-          key_press_repeat_id = task_pool.pushDelayed(repeat_key, config::input.key_repeat_delay, keyCode, packet->flags, synthetic_modifiers).task_id;
-        }
-      } else {
-        // Already released
-        return;
-      }
-    } else if (!release) {
-      // Already pressed down key
-      return;
+    // Save the exact host key and flags at key-down. Configuration or packet
+    // flags may change before key-up or disconnect. Only repeat modifiers that
+    // were synthetic at key-down, not real modifiers since released by the client.
+    held_key_t held {
+      static_cast<uint16_t>(map_keycode(key_code)),
+      static_cast<uint8_t>(packet->flags),
+      synthetic_modifiers,
+    };
+    input->keys.emplace(key_code, held);
+    auto &host = host_keys[host_keycode(held.host_key)];
+    if (host.owners++ == 0) {
+      host.key = held.host_key;
+      host.flags = held.flags;
+      send_key_and_modifiers(held, input->shortcutFlags);
     }
-
-    pressed = !release;
-
-    send_key_and_modifiers(keyCode, release, packet->flags, synthetic_modifiers);
-
-    update_shortcutFlags(&input->shortcutFlags, map_keycode(keyCode), release);
+    refresh_shortcut_flags(*input);
+    task_pool.cancel(input->key_press_repeat_id);
+    input->key_press_repeat_id = nullptr;
+    input->repeating_key = key_code;
+    if (config::input.key_repeat_delay.count() > 0) {
+      input->key_press_repeat_id = task_pool.pushDelayed(repeat_key, config::input.key_repeat_delay, input, key_code).task_id;
+    }
   }
 
   /**
@@ -1241,6 +1339,15 @@ namespace input {
       return;
     }
 
+    // The mask is the client's full controller inventory. A removed controller
+    // may never send another packet under its own controller number.
+    for (std::size_t i = 0; i < input->gamepads.size(); ++i) {
+      if (!(packet->activeGamepadMask & (1 << i)) &&
+          (input->gamepads[i].id >= 0 || input->gamepads[i].back_timeout_id)) {
+        reset_gamepad(input->gamepads[i]);
+      }
+    }
+
     auto &gamepad = input->gamepads[packet->controllerNumber];
 
     // If this is an event for a new gamepad, create the gamepad now. Ideally, the client would
@@ -1257,11 +1364,6 @@ namespace input {
       }
 
       gamepad.id = id;
-    } else if (!(packet->activeGamepadMask & (1 << packet->controllerNumber)) && gamepad.id >= 0) {
-      // If this is the final event for a gamepad being removed, free the gamepad and return.
-      free_gamepad(platf_input, gamepad.id);
-      gamepad.id = -1;
-      return;
     }
 
     // If this gamepad has not been initialized, ignore it.
@@ -1808,6 +1910,9 @@ namespace input {
     }
     {
       std::lock_guard<std::mutex> lg(input->input_queue_lock);
+      if (input->input_closed) {
+        return;
+      }
       input->input_queue.push_back(std::move(input_data));
       schedule_input_task = !input->input_queue_task_scheduled.exchange(true, std::memory_order_acq_rel);
     }
@@ -1827,38 +1932,70 @@ namespace input {
 #endif
 
   void reset(std::shared_ptr<input_t> &input) {
-    task_pool.cancel(key_press_repeat_id);
-    task_pool.cancel(input->mouse_left_button_timeout);
+    if (!input) {
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lg(input->input_queue_lock);
+      if (input->input_closed) {
+        return;
+      }
+      input->input_closed = true;
+      input->input_queue.clear();
+    }
 
-    // Ensure input is synchronous, by using the task_pool
-    task_pool.push([]() {
-      for (int x = 0; x < mouse_press.size(); ++x) {
-        if (mouse_press[x]) {
+    // Finish any in-flight packet on the single input worker, then release.
+    // No producer may enqueue another press after the queue is sealed above.
+    task_pool.push([input]() {
+      task_pool.cancel(input->key_press_repeat_id);
+      input->key_press_repeat_id = nullptr;
+      task_pool.cancel(input->mouse_left_button_timeout);
+      input->mouse_left_button_timeout = nullptr;
+      for (int x = 1; x < mouse_press.size(); ++x) {
+        if (mouse_press_owner[x] == input.get()) {
           platf::button_mouse(platf_input, x, true);
           mouse_press[x] = false;
+          mouse_press_owner[x] = nullptr;
         }
       }
-
-      for (auto &kp : key_press) {
-        if (!kp.second) {
-          // already released
-          continue;
-        }
-        platf::keyboard_update(platf_input, vk_from_kpid(kp.first) & 0x00FF, true, flags_from_kpid(kp.first));
-        key_press[kp.first] = false;
+      for (const auto &[client_key, held] : input->keys) {
+        release_key(held);
       }
+      input->keys.clear();
+      input->shortcutFlags = 0;
+      for (auto &gamepad : input->gamepads) {
+        reset_gamepad(gamepad);
+      }
+      if (input->client_context) {
+        platf::touch_input_t touch {};
+        touch.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
+        platf::touch_update(input->client_context.get(), {}, touch);
+        platf::pen_input_t pen {};
+        pen.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
+        platf::pen_update(input->client_context.get(), {}, pen);
+        // Destroy per-client devices and cancel backend repeat timers on the
+        // same worker, even if transport callbacks still retain input_t.
+        input->client_context.reset();
+      }
+      input->accumulated_vscroll_delta = 0;
+      input->accumulated_hscroll_delta = 0;
+      BOOST_LOG(debug) << "Released disconnected client's keyboard, mouse, controllers, touch and pen input";
     });
   }
 
   class deinit_t: public platf::deinit_t {
   public:
     ~deinit_t() override {
+      mouse_controller.reset();
+      mouse_backend.reset();
       platf_input.reset();
     }
   };
 
   [[nodiscard]] std::unique_ptr<platf::deinit_t> init() {
     platf_input = platf::input();
+    mouse_backend = std::make_unique<platform_mouse_backend_t>(platf_input);
+    mouse_controller = std::make_unique<mouse_input::controller_t>(*mouse_backend);
 
     return std::make_unique<deinit_t>();
   }
@@ -1882,8 +2019,10 @@ namespace input {
 
     // Workaround to ensure new frames will be captured when a client connects
     task_pool.pushDelayed([]() {
-      platf::move_mouse(platf_input, 1, 1);
-      platf::move_mouse(platf_input, -1, -1);
+      if (mouse_controller) {
+        mouse_controller->move_relative({1, 1});
+        mouse_controller->move_relative({-1, -1});
+      }
     },
                           100ms);
 

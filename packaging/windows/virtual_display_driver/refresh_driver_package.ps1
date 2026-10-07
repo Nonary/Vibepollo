@@ -182,7 +182,15 @@ function Resolve-PackageVersionFromGit {
         return ''
     }
 
-    $describe = & $git.Source -C $Path describe --tags --long --match 'v[0-9]*' 2>$null
+    # A shallow or tagless checkout makes `git describe` fail on stderr. Under
+    # $ErrorActionPreference = 'Stop' Windows PowerShell turns that redirected
+    # stderr into a terminating NativeCommandError, so treat it as "no version".
+    $describe = ''
+    try {
+        $describe = & $git.Source -C $Path describe --tags --long --match 'v[0-9]*' 2>$null
+    } catch {
+        return ''
+    }
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($describe)) {
         return ''
     }

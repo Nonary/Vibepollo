@@ -1,0 +1,13 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=@CMAKE_INSTALL_PREFIX@
+libdir=@PYROWAVE_INSTALL_LIB_DIR@
+sharedlibdir=@PYROWAVE_INSTALL_LIB_DIR@
+includedir=@PYROWAVE_INSTALL_INC_DIR@
+
+Name: pyrowave-shared
+Description: C API for pyrowave
+Version: @PYROWAVE_API_VERSION@
+
+Requires:
+Libs: -L${libdir} -L${sharedlibdir} -lpyrowave-shared
+Cflags: -I${includedir}

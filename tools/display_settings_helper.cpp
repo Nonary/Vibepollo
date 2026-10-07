@@ -116,7 +116,7 @@ namespace {
   }
 
   std::wstring build_restore_task_name(const std::wstring &username) {
-    return L"VibeshineDisplayRestore";
+    return L"VibepolloDisplayRestore";
   }
 
   // Trigger a more robust Explorer/shell refresh so that desktop/taskbar icons
@@ -2393,8 +2393,8 @@ namespace {
     std::atomic<bool> restore_attempted_unconfirmed {false};
     // Guard: if a session restore succeeded recently, suppress Golden for a cooldown
     std::atomic<long long> last_session_restore_success_ms {0};
-    // After a few consecutive confirmed session fallbacks, stop forcing golden
-    // retries within the same restore request.
+    // Track confirmed session fallbacks for diagnostics while the configured
+    // golden baseline remains pending.
     std::atomic<size_t> golden_pending_session_fallbacks {0};
     // When true, prefer golden snapshot over session snapshots during restore (reduces stuck virtual screens)
     std::atomic<bool> always_restore_from_golden {false};
@@ -2430,7 +2430,6 @@ namespace {
     static constexpr auto kHeartbeatMissWindow = std::chrono::seconds(30);
     static constexpr auto kHeartbeatRecoveryWindow = std::chrono::minutes(2);
     static constexpr auto kVerificationSettleDelay = std::chrono::milliseconds(250);
-    static constexpr size_t kGoldenFallbackCompletionThreshold = 3;
     static constexpr size_t kGoldenOutOfDateFailureThreshold = 3;
     static constexpr auto kGoldenOutOfDateFailureWindow = std::chrono::hours(72);
     std::mutex golden_restore_issue_mutex;
@@ -3630,8 +3629,8 @@ namespace {
           return true;
         }
         // Golden failed. Session snapshots can keep the machine usable, but
-        // only retry golden a few times within the same restore request before
-        // accepting the confirmed session fallback.
+        // they cannot complete a request whose configured authoritative
+        // baseline is still pending.
         if (!try_session_snapshots()) {
           reset_pending_golden_session_fallbacks();
           return false;
@@ -3639,16 +3638,9 @@ namespace {
 
         if (controller.load_display_settings_snapshot(golden_path)) {
           const auto fallback_count = note_pending_golden_session_fallback();
-          if (fallback_count < kGoldenFallbackCompletionThreshold) {
-            BOOST_LOG(info) << "Restore: session fallback applied while golden snapshot remains pending; continuing polling (attempt "
-                            << fallback_count << '/' << kGoldenFallbackCompletionThreshold << ").";
-            return false;
-          }
-
-          reset_pending_golden_session_fallbacks();
-          BOOST_LOG(info) << "Restore: session fallback confirmed while golden snapshot remains pending; accepting session restore after "
-                          << kGoldenFallbackCompletionThreshold << " consecutive golden-first attempts.";
-          return true;
+          BOOST_LOG(info) << "Restore: session fallback applied while golden snapshot remains pending; continuing polling (attempt "
+                          << fallback_count << ").";
+          return false;
         }
 
         register_unresolved_golden_restore_request("session fallback accepted");
@@ -4562,7 +4554,7 @@ namespace {
   }
 
   bool create_restore_scheduled_task() {
-    BOOST_LOG(info) << "Attempting to create scheduled task 'VibeshineDisplayRestore'...";
+    BOOST_LOG(info) << "Attempting to create scheduled task 'VibepolloDisplayRestore'...";
 
     const DWORD active_session_id = WTSGetActiveConsoleSessionId();
 
@@ -4610,7 +4602,7 @@ namespace {
     IRegistrationInfo *reg_info = nullptr;
     hr = task->get_RegistrationInfo(&reg_info);
     if (SUCCEEDED(hr)) {
-      reg_info->put_Author(_bstr_t(L"Sunshine Display Helper"));
+      reg_info->put_Author(_bstr_t(L"Vibepollo Display Helper"));
       reg_info->put_Description(_bstr_t(L"Automatically restores display settings after reboot"));
       reg_info->Release();
     }
@@ -4707,7 +4699,7 @@ namespace {
     hr = trigger->QueryInterface(IID_ILogonTrigger, (void **) &logon_trigger);
     trigger->Release();
     if (SUCCEEDED(hr)) {
-      logon_trigger->put_Id(_bstr_t(L"SunshineDisplayHelperLogonTrigger"));
+      logon_trigger->put_Id(_bstr_t(L"VibepolloDisplayHelperLogonTrigger"));
       logon_trigger->put_Enabled(VARIANT_TRUE);
       if (has_username) {
         logon_trigger->put_UserId(_bstr_t(username.c_str()));
@@ -5094,6 +5086,9 @@ namespace {
         // verification phase, so discard it before deserializing the public
         // display configuration and retain the original untagged response.
         j.erase("sunshine_apply_id");
+        // The legacy helper completes APPLY synchronously and does not have the
+        // v2 initial-repair ladder controlled by this private metadata.
+        j.erase("sunshine_omit_final_initial_hdr_reapply");
         if (j.contains("wa_hdr_toggle")) {
           wa_hdr_toggle = j["wa_hdr_toggle"].get<bool>();
           j.erase("wa_hdr_toggle");
@@ -5315,7 +5310,9 @@ namespace {
       state.retry_apply_on_topology.store(false, std::memory_order_release);
       state.retry_revert_on_topology.store(false, std::memory_order_release);
     } else if (type == MsgType::Disarm) {
-      if (state.restore_requested.load(std::memory_order_acquire) &&
+      const bool force = !payload.empty() && payload.front() != 0;
+      if (!force &&
+          state.restore_requested.load(std::memory_order_acquire) &&
           state.restore_attempted_unconfirmed.load(std::memory_order_acquire)) {
         BOOST_LOG(info) << "DISARM command ignored because an unconfirmed restore attempt is still pending.";
         return;

@@ -1,0 +1,227 @@
+<script setup lang="ts">
+import { computed, ref } from 'vue';
+import { $tp } from '@/platform-i18n';
+import { useI18n } from 'vue-i18n';
+import PlatformLayout from '@/PlatformLayout.vue';
+import { NInput, NSelect } from 'naive-ui';
+import { useConfigStore } from '@/stores/config';
+import { http } from '@/http';
+
+type DisplayDevice = {
+  device_id?: string;
+  display_name?: string; // e.g. \\ \\.\\DISPLAY1
+  friendly_name?: string; // e.g. ROG PG279Q
+  // Present when device is currently active; shape mirrors libdisplaydevice types but we only check presence
+  info?: unknown;
+};
+
+const store = useConfigStore();
+const config = store.config;
+// Read platform directly from store metadata to avoid timing/race on wrapper
+const platform = computed(() => (store.metadata && store.metadata.platform) || '');
+
+const devices = ref<DisplayDevice[]>([]);
+const loading = ref(false);
+const loadError = ref('');
+const { t } = useI18n();
+
+const outputNameLabel = computed(() => t('config.output_name'));
+const outputNameDefaultLabel = computed(() => t('config.output_name_default'));
+const outputNameDesc = computed(() => {
+  const description = $tp('config.output_name_desc', '');
+  if (description) return description;
+  return $tp('offline.output_name_desc', '');
+});
+
+async function loadDisplayDevices() {
+  loading.value = true;
+  loadError.value = '';
+  try {
+    const res = await http.get<DisplayDevice[]>('/api/display-devices', {
+      params: { detail: 'full' },
+    });
+    const arr = Array.isArray(res.data) ? res.data : [];
+    devices.value = arr;
+  } catch {
+    // Non-fatal: keep manual entry available as fallback
+    loadError.value = t('config.display_devices_load_failed');
+    devices.value = [];
+  } finally {
+    loading.value = false;
+  }
+}
+
+const outputNamePlaceholder = computed(() =>
+  platform.value === 'windows' ? '{de9bb7e2-186e-505b-9e93-f48793333810}' : '0',
+);
+
+function toOptions() {
+  // First option represents default behavior (primary display)
+  const opts: Array<{
+    label: string;
+    value: string;
+    displayName?: string;
+    id?: string;
+  }> = [
+    {
+      label: outputNameDefaultLabel.value,
+      value: '',
+      displayName: outputNameDefaultLabel.value,
+      id: '',
+    },
+  ];
+
+  for (const d of devices.value) {
+    // Prefer a human-friendly name for the first line, fall back to display_name
+    const displayName = d.friendly_name || d.display_name || t('_common.display');
+    // For the ID line prefer device_id, fall back to the raw display_name
+    const guid = d.device_id || '';
+    const dispName = d.display_name || '';
+    const id = guid || dispName;
+    // Compose label to include identifying info even if slots are not applied
+    const parts: string[] = [displayName];
+    if (guid) parts.push(guid);
+    if (dispName) parts.push(dispName + (d.info ? ` (${t('_common.active')})` : ''));
+    const label = parts.join(' — ');
+    // Only include entries that can be selected by config: prefer device_id, else display_name
+    const value = d.device_id || d.display_name || '';
+    if (value)
+      opts.push({
+        label,
+        value,
+        displayName,
+        id: guid && dispName ? `${guid} — ${dispName}` : guid || dispName,
+      });
+  }
+
+  // Keep an existing manual value visible until the user opens the selector
+  // and the deferred device lookup supplies its friendly label.
+  const selectedOutput = String(config.output_name || '').trim();
+  if (selectedOutput && !opts.some((option) => option.value === selectedOutput)) {
+    opts.push({
+      label: selectedOutput,
+      value: selectedOutput,
+      displayName: selectedOutput,
+      id: selectedOutput,
+    });
+  }
+
+  return opts;
+}
+</script>
+
+<template>
+  <div class="mb-4">
+    <label for="output_name" class="form-label">{{ outputNameLabel }}</label>
+
+    <!-- Windows: dropdown of available displays from API -->
+    <PlatformLayout>
+      <template #windows>
+        <n-select
+          id="output_name"
+          v-model:value="config.output_name"
+          :options="toOptions()"
+          :loading="loading"
+          @focus="
+            () => {
+              if (!loading && devices.length === 0) void loadDisplayDevices();
+            }
+          "
+          clearable
+          filterable
+          :placeholder="outputNameLabel"
+        >
+          <!-- Render each option with the friendly/display name on top and the id underneath in monospace -->
+          <template #option="{ option }">
+            <div class="leading-tight">
+              <div class="">{{ option?.displayName || option?.label }}</div>
+              <div class="text-[12px] opacity-60 font-mono">
+                {{ option?.id || option?.value }}
+              </div>
+            </div>
+          </template>
+
+          <!-- Show the selected value similarly: name then id -->
+          <template #value="{ option }">
+            <div class="leading-tight">
+              <div class="">{{ option?.displayName || option?.label }}</div>
+              <div class="text-[12px] opacity-60 font-mono">
+                {{ option?.id || option?.value }}
+              </div>
+            </div>
+          </template>
+        </n-select>
+      </template>
+      <template #freebsd>
+        <n-input
+          id="output_name"
+          v-model:value="config.output_name"
+          type="text"
+          :placeholder="outputNamePlaceholder"
+        />
+      </template>
+      <template #linux>
+        <n-input
+          id="output_name"
+          v-model:value="config.output_name"
+          type="text"
+          :placeholder="outputNamePlaceholder"
+        />
+      </template>
+      <template #macos>
+        <n-input
+          id="output_name"
+          v-model:value="config.output_name"
+          type="text"
+          :placeholder="outputNamePlaceholder"
+        />
+      </template>
+    </PlatformLayout>
+    <div class="text-[11px] opacity-60">
+      {{ outputNameDesc }}<br />
+      <template v-if="platform === 'windows' && loadError">
+        <span class="text-red-500">{{ loadError }}</span
+        ><br />
+      </template>
+      <PlatformLayout>
+        <template #windows>
+          <pre style="white-space: pre-line">
+            <b>&nbsp;&nbsp;{</b>
+            <b>&nbsp;&nbsp;&nbsp;&nbsp;"device_id": "{de9bb7e2-186e-505b-9e93-f48793333810}"</b>
+            <b>&nbsp;&nbsp;&nbsp;&nbsp;"display_name": "\\\\.\\DISPLAY1"</b>
+            <b>&nbsp;&nbsp;&nbsp;&nbsp;"friendly_name": "ROG PG279Q"</b>
+            <b>&nbsp;&nbsp;&nbsp;&nbsp;...</b>
+            <b>&nbsp;&nbsp;}</b>
+          </pre>
+        </template>
+        <template #freebsd>
+          <pre style="white-space: pre-line">
+            Info: Detecting displays
+            Info: Detected display: DVI-D-0 (id: 0) connected: false
+            Info: Detected display: HDMI-0 (id: 1) connected: true
+            Info: Detected display: DP-0 (id: 2) connected: true
+            Info: Detected display: DP-1 (id: 3) connected: false
+            Info: Detected display: DVI-D-1 (id: 4) connected: false
+          </pre>
+        </template>
+        <template #linux>
+          <pre style="white-space: pre-line">
+            Info: Detecting displays
+            Info: Detected display: DVI-D-0 (id: 0) connected: false
+            Info: Detected display: HDMI-0 (id: 1) connected: true
+            Info: Detected display: DP-0 (id: 2) connected: true
+            Info: Detected display: DP-1 (id: 3) connected: false
+            Info: Detected display: DVI-D-1 (id: 4) connected: false
+          </pre>
+        </template>
+        <template #macos>
+          <pre style="white-space: pre-line">
+            Info: Detecting displays
+            Info: Detected display: Monitor-0 (id: 3) connected: true
+            Info: Detected display: Monitor-1 (id: 2) connected: true
+          </pre>
+        </template>
+      </PlatformLayout>
+    </div>
+  </div>
+</template>

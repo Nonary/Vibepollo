@@ -13,6 +13,7 @@
 #include "config.h"
 #include "confighttp.h"
 #include "entry_handler.h"
+#include "entry_metadata.h"
 #include "globals.h"
 #include "httpcommon.h"
 #include "logging.h"
@@ -71,8 +72,18 @@ namespace lifetime {
     int zero = 0;
     desired_exit_code.compare_exchange_strong(zero, exit_code);
 
-    // Raise SIGINT to start termination
-    std::raise(SIGINT);
+    // Internal shutdown requests already run in ordinary thread context. Wake
+    // main directly instead of synchronously executing the process signal
+    // handler on an HTTP or tray thread. The latter performs logging and other
+    // lock-taking work and can therefore stall the caller before shutdown is
+    // ever published.
+    if (mail::man) {
+      mail::man->event<bool>(mail::shutdown)->raise(true);
+    } else {
+      // main() constructs process mail before any runtime caller can request
+      // shutdown. Keep a startup fallback for defensive completeness.
+      std::raise(SIGINT);
+    }
 
     // Termination will happen asynchronously, but the caller may
     // have wanted synchronous behavior.
@@ -97,9 +108,14 @@ namespace lifetime {
 }  // namespace lifetime
 
 void log_publisher_data() {
-  BOOST_LOG(info) << "Package Publisher: "sv << SUNSHINE_PUBLISHER_NAME;
-  BOOST_LOG(info) << "Publisher Website: "sv << SUNSHINE_PUBLISHER_WEBSITE;
-  BOOST_LOG(info) << "Get support: "sv << SUNSHINE_PUBLISHER_ISSUE_URL;
+  const auto log_lines = entry_metadata::publisher_log_lines({
+    SUNSHINE_PUBLISHER_NAME,
+    SUNSHINE_PUBLISHER_WEBSITE,
+    SUNSHINE_PUBLISHER_ISSUE_URL,
+  });
+  for (const auto &line : log_lines) {
+    BOOST_LOG(info) << line;
+  }
 }
 
 #ifdef _WIN32
@@ -230,9 +246,9 @@ namespace service_ctrl {
   }
 
   bool wait_for_ui_ready() {
-    std::cout << "Waiting for Web UI to be ready...";
+    std::cout << "Waiting for configuration API to be ready...";
 
-    // Wait up to 30 seconds for the web UI to start
+    // Wait up to 30 seconds for the configuration API to start.
     for (int i = 0; i < 30; i++) {
       PMIB_TCPTABLE tcp_table = nullptr;
       ULONG table_size = 0;
@@ -243,7 +259,7 @@ namespace service_ctrl {
       });
 
       do {
-        // Query all open TCP sockets to look for our web UI port
+        // Query all open TCP sockets to look for the configuration API port.
         err = GetTcpTable(tcp_table, &table_size, false);
         if (err == ERROR_INSUFFICIENT_BUFFER) {
           free(tcp_table);

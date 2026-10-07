@@ -1170,7 +1170,11 @@ namespace platf::dxgi {
         }
       }
     } else if (waitResult == WAIT_TIMEOUT) {
-      BOOST_LOG(error) << "ConnectNamedPipe timeout after " << (milliseconds > 0 ? milliseconds : 5000) << "ms";
+      // A timeout is expected for polling callers such as the v2 display
+      // helper, which uses short waits to keep recovery timers advancing while
+      // it waits for Sunshine to reconnect. It is not a pipe failure; cancel
+      // this attempt and let the caller retry without emitting an error for
+      // every polling interval.
       CancelIoEx(_pipe.get(), ctx.get());
       // Wait for cancellation to complete to ensure OVERLAPPED structure safety
       DWORD transferred = 0;

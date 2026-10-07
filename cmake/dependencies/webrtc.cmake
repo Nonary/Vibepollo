@@ -7,26 +7,29 @@ endif()
 # Resolve a default shared cache for libwebrtc artifacts so the multi-hour
 # build is not coupled to any one CMake build directory. Priority:
 #   1. Explicit -DWEBRTC_ROOT=...        (user override)
-#   2. $ENV{VIBESHINE_DEPS_DIR}/libwebrtc/out
-#   3. $ENV{LOCALAPPDATA}/Vibeshine/deps/libwebrtc/out  (Windows default)
-#   4. ${CMAKE_BINARY_DIR}/libwebrtc                    (legacy fallback)
+#   2. $ENV{VIBEPOLLO_DEPS_DIR}/libwebrtc/out
+#   3. $ENV{VIBESHINE_DEPS_DIR}/libwebrtc/out           (legacy override)
+#   4. $ENV{LOCALAPPDATA}/Vibepollo/deps/libwebrtc/out  (Windows default)
+#   5. ${CMAKE_BINARY_DIR}/libwebrtc                    (legacy fallback)
 # build_mingw_webrtc.ps1 uses the same defaults so a single rebuild populates
-# the location every sunshine build dir / worktree on this machine sees.
-set(_vibeshine_default_webrtc_root "")
-if(DEFINED ENV{VIBESHINE_DEPS_DIR} AND NOT "$ENV{VIBESHINE_DEPS_DIR}" STREQUAL "")
-    set(_vibeshine_default_webrtc_root "$ENV{VIBESHINE_DEPS_DIR}/libwebrtc/out")
+# the location every Vibepollo build dir / worktree on this machine sees.
+set(_vibepollo_default_webrtc_root "")
+if(DEFINED ENV{VIBEPOLLO_DEPS_DIR} AND NOT "$ENV{VIBEPOLLO_DEPS_DIR}" STREQUAL "")
+    set(_vibepollo_default_webrtc_root "$ENV{VIBEPOLLO_DEPS_DIR}/libwebrtc/out")
+elseif(DEFINED ENV{VIBESHINE_DEPS_DIR} AND NOT "$ENV{VIBESHINE_DEPS_DIR}" STREQUAL "")
+    set(_vibepollo_default_webrtc_root "$ENV{VIBESHINE_DEPS_DIR}/libwebrtc/out")
 elseif(WIN32 AND DEFINED ENV{LOCALAPPDATA} AND NOT "$ENV{LOCALAPPDATA}" STREQUAL "")
-    set(_vibeshine_default_webrtc_root "$ENV{LOCALAPPDATA}/Vibeshine/deps/libwebrtc/out")
+    set(_vibepollo_default_webrtc_root "$ENV{LOCALAPPDATA}/Vibepollo/deps/libwebrtc/out")
 endif()
 
-if(_vibeshine_default_webrtc_root AND EXISTS "${_vibeshine_default_webrtc_root}/include")
-    set(WEBRTC_ROOT "${_vibeshine_default_webrtc_root}"
+if(_vibepollo_default_webrtc_root AND EXISTS "${_vibepollo_default_webrtc_root}/include")
+    set(WEBRTC_ROOT "${_vibepollo_default_webrtc_root}"
             CACHE PATH "Path to libwebrtc root (contains include/ and lib/).")
 else()
     set(WEBRTC_ROOT "${CMAKE_BINARY_DIR}/libwebrtc"
             CACHE PATH "Path to libwebrtc root (contains include/ and lib/).")
 endif()
-unset(_vibeshine_default_webrtc_root)
+unset(_vibepollo_default_webrtc_root)
 set(WEBRTC_LIBRARY "" CACHE FILEPATH "Path to libwebrtc library file.")
 set(WEBRTC_INCLUDE_DIR "" CACHE PATH "Path to libwebrtc include directory.")
 set(WEBRTC_EXTRA_LIBRARIES "" CACHE STRING "Extra libraries required by libwebrtc.")
@@ -173,9 +176,10 @@ if(NOT WEBRTC_INCLUDE_DIR OR NOT WEBRTC_LIBRARY)
                 "libwebrtc not found.\n"
                 "  Build it once with:\n"
                 "    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_mingw_webrtc.ps1\n"
-                "  By default this caches artifacts to %LOCALAPPDATA%\\Vibeshine\\deps\\libwebrtc,\n"
-                "  shared across every sunshine build dir / worktree on this machine.\n"
-                "  Override the cache root with the VIBESHINE_DEPS_DIR env var, or set\n"
+                "  By default this caches artifacts to %LOCALAPPDATA%\\Vibepollo\\deps\\libwebrtc,\n"
+                "  shared across every Vibepollo build dir / worktree on this machine.\n"
+                "  Override the cache root with VIBEPOLLO_DEPS_DIR (or the legacy\n"
+                "  VIBESHINE_DEPS_DIR env var), or set\n"
                 "  WEBRTC_ROOT (or WEBRTC_INCLUDE_DIR / WEBRTC_LIBRARY) explicitly.\n"
                 "  See docs/building.md for full prerequisites.")
     else()

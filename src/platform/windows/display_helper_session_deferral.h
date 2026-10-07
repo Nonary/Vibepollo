@@ -66,7 +66,16 @@ namespace display_helper_integration {
 
     explicit SessionDeferralManager(NowFn now_fn);
 
+    // The core owns only a value snapshot. Runtime adapters convert live
+    // sessions before handing work to it, which keeps retry scheduling
+    // independent of RTSP and the application runtime.
     void set_pending(const DisplayApplyRequest &request);
+    void set_pending(
+      const DisplayApplyRequest &request,
+      PendingSessionSnapshot session_snapshot,
+      std::uint32_t session_id,
+      bool has_session
+    );
     TakeResult take_ready(bool session_ready);
     RescheduleResult reschedule(PendingApplyState pending);
     void clear();
@@ -77,7 +86,12 @@ namespace display_helper_integration {
     static int max_attempts();
 
   private:
-    PendingApplyState make_state(const DisplayApplyRequest &request) const;
+    PendingApplyState make_state(
+      const DisplayApplyRequest &request,
+      PendingSessionSnapshot session_snapshot,
+      std::uint32_t session_id,
+      bool has_session
+    ) const;
 
     NowFn now_fn_;
     mutable std::mutex mutex_;

@@ -20,10 +20,10 @@
 
 #include <atomic>
 #include <chrono>
-#include <future>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <utility>
 
 namespace platf::dxgi {
 
@@ -84,6 +84,14 @@ namespace platf::dxgi {
     }
   }  // namespace
 
+  struct nv_truehdr_t::init_state_t {
+    std::mutex mutex;
+    std::chrono::steady_clock::time_point started_at {std::chrono::steady_clock::now()};
+    void *handle = nullptr;
+    bool completed = false;
+    bool abandoned = false;
+  };
+
   nv_truehdr_t::~nv_truehdr_t() {
     release();
   }
@@ -95,50 +103,78 @@ namespace platf::dxgi {
     if (initialized) {
       return true;
     }
-    if (g_shim_wedged.load(std::memory_order_acquire)) {
+    if (init_failed || g_shim_wedged.load(std::memory_order_acquire)) {
       return false;
     }
 
     // Creating the NGX feature reaches into D3D11 and the display stack. On a virtual
     // display whose mode is mid-change -- which is what an alt-tab out of a fullscreen
     // game looks like -- that call can block in the kernel for as long as the mode
-    // change takes, and nothing bounds that. Running it inline on the encode thread
-    // froze the stream outright, and because the caller held the process-global mutex
-    // across the hang, it froze every other client's convert() with it. So: create on
-    // a helper thread and abandon it if it overruns. An abandoned create leaks its
-    // thread and (if it ever completes) its feature handle; that is the deliberate
-    // trade for the host surviving. The successful handle is destroyed later by
-    // release() on the owning capture thread, which the shim serializes internally.
+    // change takes. Run it on a helper thread and poll from later frames so the encode
+    // thread keeps streaming through SDR-to-PQ while creation is pending. A timed-out
+    // or released owner marks the result abandoned; the helper destroys a late handle
+    // instead of publishing it back into a dead session.
     //
     // The helper thread holds its own reference: once we abandon it, the encoder that
     // asked for the feature is free to drop the device while the call is still inside
     // the driver.
-    auto created = std::make_shared<std::promise<void *>>();
-    auto handle_future = created->get_future();
-    device->AddRef();
-    std::thread {[device, created]() {
-      void *handle = nullptr;
-      {
-        std::scoped_lock lock {g_truehdr_mutex};
-        if (resolve_shim_locked()) {
-          handle = g_create(device);
+    if (!init_state) {
+      init_state = std::make_shared<init_state_t>();
+      device->AddRef();
+      std::thread {[device, state = init_state]() {
+        void *handle = nullptr;
+        {
+          std::scoped_lock lock {g_truehdr_mutex};
+          if (resolve_shim_locked()) {
+            handle = g_create(device);
+          }
         }
-      }
-      device->Release();
-      created->set_value(handle);
-    }}.detach();
+        device->Release();
 
-    if (handle_future.wait_for(kCreateTimeout) != std::future_status::ready) {
-      g_shim_wedged.store(true, std::memory_order_release);
-      BOOST_LOG(error) << "RTX HDR: TrueHDR feature creation did not complete within "
-                       << std::chrono::duration_cast<std::chrono::seconds>(kCreateTimeout).count()
-                       << "s (display stack likely mid-mode-change); abandoning it and disabling "
-                          "TrueHDR for this process. Streaming continues on the SDR-to-PQ path.";
+        void *abandoned_handle = nullptr;
+        {
+          std::scoped_lock lock {state->mutex};
+          if (state->abandoned) {
+            abandoned_handle = handle;
+          } else {
+            state->handle = handle;
+          }
+          state->completed = true;
+        }
+        // The owner can disappear while feature creation is still inside the
+        // driver. In that case, clean up on this detached worker instead of
+        // publishing a handle that nobody can release.
+        if (abandoned_handle && g_destroy) {
+          g_destroy(abandoned_handle);
+        }
+      }}.detach();
+      BOOST_LOG(debug) << "RTX HDR: TrueHDR feature creation started asynchronously; "
+                          "streaming through SDR-to-PQ until it is ready.";
       return false;
     }
 
-    shim_handle = handle_future.get();
+    auto state = init_state;
+    {
+      std::scoped_lock lock {state->mutex};
+      if (!state->completed) {
+        if (std::chrono::steady_clock::now() - state->started_at < kCreateTimeout) {
+          return false;
+        }
+        state->abandoned = true;
+        init_state.reset();
+        init_failed = true;
+        g_shim_wedged.store(true, std::memory_order_release);
+        BOOST_LOG(error) << "RTX HDR: TrueHDR feature creation did not complete within "
+                         << std::chrono::duration_cast<std::chrono::seconds>(kCreateTimeout).count()
+                         << "s (display stack likely mid-mode-change); abandoning it and disabling "
+                            "TrueHDR for this process. Streaming continues on the SDR-to-PQ path.";
+        return false;
+      }
+      shim_handle = std::exchange(state->handle, nullptr);
+    }
+    init_state.reset();
     if (!shim_handle) {
+      init_failed = true;
       BOOST_LOG(info) << "RTX HDR: TrueHDR unavailable on this GPU/driver/runtime.";
       return false;
     }
@@ -166,6 +202,21 @@ namespace platf::dxgi {
   }
 
   void nv_truehdr_t::release() {
+    if (init_state) {
+      auto state = std::move(init_state);
+      void *completed_handle = nullptr;
+      {
+        std::scoped_lock lock {state->mutex};
+        state->abandoned = true;
+        if (state->completed) {
+          completed_handle = std::exchange(state->handle, nullptr);
+        }
+      }
+      if (completed_handle && g_destroy) {
+        g_destroy(completed_handle);
+      }
+    }
+
     // Snapshot+clear the handle under the lock, then call the shim destroy WITHOUT g_truehdr_mutex
     // held. VBSTrueHDR_Destroy releases the encoder's D3D11 device, and on a virtual display whose
     // mode is mid-change (alt-tab) or that is being removed (disconnect), that device's
@@ -176,7 +227,7 @@ namespace platf::dxgi {
     // same object, and the NGX same-thread shutdown constraint (nv_truehdr.h) is preserved.
     void *local_handle = nullptr;
     destroy_fn local_destroy = nullptr;
-    {
+    if (shim_handle) {
       std::unique_lock lock {g_truehdr_mutex, std::defer_lock};
       // A wedged shim never returns the mutex, and calling into it would hang this
       // thread too. Drop our own state and leak the feature instead.

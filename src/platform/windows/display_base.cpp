@@ -12,6 +12,7 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <utility>
 
 // platform includes
 #include <winsock2.h>
@@ -40,9 +41,9 @@ typedef enum _D3DKMT_GPU_PREFERENCE_QUERY_STATE : DWORD {
 #include "src/display_device.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
-#include "src/platform/windows/virtual_display.h"
 #include "src/video.h"
 #include "utf_utils.h"
+#include "wgc_capture_policy.h"
 
 namespace platf {
   using namespace std::literals;
@@ -52,8 +53,23 @@ namespace platf::dxgi {
   namespace {
     constexpr std::uint32_t WINDOWS_23H2_BUILD = 22631;
 
+    wgc_policy::input_geometry_change_e current_input_geometry_change(const display_base_t &display) {
+      const auto &rect = display.captured_output_desc.DesktopCoordinates;
+      return wgc_policy::assess_input_geometry(
+        {display.offset_x, display.offset_y, display.env_width, display.env_height},
+        static_cast<int>(rect.left),
+        static_cast<int>(rect.top),
+        {
+          GetSystemMetrics(SM_XVIRTUALSCREEN),
+          GetSystemMetrics(SM_YVIRTUALSCREEN),
+          GetSystemMetrics(SM_CXVIRTUALSCREEN),
+          GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        }
+      );
+    }
+
     std::mutex g_adapter_luid_mutex;
-    std::optional<LUID> g_last_wgc_adapter_luid;
+    std::optional<wgc_adapter_identity_t> g_last_wgc_adapter_identity;
     std::optional<LUID> g_dxgi_adapter_luid_override;
 
     void sleep_until_capture_target(high_precision_timer *timer, const std::chrono::steady_clock::time_point &sleep_target) {
@@ -218,14 +234,29 @@ namespace platf::dxgi {
     return 0;
   }
 
-  void set_last_wgc_adapter_luid(std::optional<LUID> luid) {
+  void set_last_wgc_adapter_luid(std::optional<LUID> luid, std::string output_name) {
     std::lock_guard<std::mutex> lock(g_adapter_luid_mutex);
-    g_last_wgc_adapter_luid = luid;
+    if (luid) {
+      g_last_wgc_adapter_identity = wgc_adapter_identity_t {
+        .luid = *luid,
+        .output_name = std::move(output_name),
+      };
+    } else {
+      g_last_wgc_adapter_identity.reset();
+    }
   }
 
   std::optional<LUID> get_last_wgc_adapter_luid() {
     std::lock_guard<std::mutex> lock(g_adapter_luid_mutex);
-    return g_last_wgc_adapter_luid;
+    if (!g_last_wgc_adapter_identity) {
+      return std::nullopt;
+    }
+    return g_last_wgc_adapter_identity->luid;
+  }
+
+  std::optional<wgc_adapter_identity_t> get_last_wgc_adapter_identity() {
+    std::lock_guard<std::mutex> lock(g_adapter_luid_mutex);
+    return g_last_wgc_adapter_identity;
   }
 
   void set_dxgi_adapter_luid_override(std::optional<LUID> luid) {
@@ -425,23 +456,72 @@ namespace platf::dxgi {
 
     sleep_overshoot_logger.reset();
 
+    auto next_output_refresh_attempt = std::chrono::steady_clock::time_point::min();
+    bool output_refresh_deferred = false;
+    // DXGI can report a stale factory while an HDR transition is settling. The
+    // continuation path below may therefore accept a replacement output while
+    // it still reports the old colorspace. Re-enumerate the output periodically
+    // so a transition missed during that window still tears down the fixed
+    // capture resources and recreates them with the correct HDR state.
+    auto next_hdr_state_check = std::chrono::steady_clock::time_point::min();
+
     while (true) {
-      // This will return false if the HDR state changes or for any number of other
-      // display or GPU changes. We should reinit to examine the updated state of
-      // the display subsystem. It is recommended to call this once per frame.
+      // Moving another monitor can change absolute-input normalization even
+      // while WGC's capture item and DXGI factory remain usable. Recreate the
+      // display so make_port() publishes fresh geometry to every stream.
+      if (refresh_only_changes_supported && current_input_geometry_change(*this) == wgc_policy::input_geometry_change_e::changed) {
+        BOOST_LOG(info) << "WGC capture reinitializing because desktop input geometry changed";
+        return platf::capture_e::reinit;
+      }
+
+      // A stale factory can mean either a harmless refresh-only change or a
+      // structural display/GPU change. WGC can keep its capture item for the
+      // former. Never wait for a display mode-set on this thread: WGC remains
+      // valid during refresh-only changes, so keep consuming frames and retry
+      // output validation on a later frame if DXGI is still settling.
       if (!factory->IsCurrent()) {
-        const bool expected_refresh_change =
-          refresh_only_changes_supported && game_refresh_target &&
-          game_refresh_target->wait_for_expected_refresh_change(5s);
-        if (!expected_refresh_change || !refresh_output_after_expected_mode_change()) {
+        if (!refresh_only_changes_supported) {
           return platf::capture_e::reinit;
         }
 
-        frame_pacing_group_start.reset();
-        frame_pacing_group_frames = 0;
-        last_pacing_slot.reset();
-        BOOST_LOG(info) << "Capture continued after refresh-only virtual display mode change";
-        continue;
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_output_refresh_attempt) {
+          const auto refresh_result = refresh_output_after_nonstructural_change();
+
+          switch (refresh_result) {
+            case output_refresh_e::refreshed:
+              frame_pacing_group_start.reset();
+              frame_pacing_group_frames = 0;
+              last_pacing_slot.reset();
+              output_refresh_deferred = false;
+              BOOST_LOG(info) << "WGC capture continued after non-structural display change";
+              continue;
+
+            case output_refresh_e::retry_later:
+              next_output_refresh_attempt = std::chrono::steady_clock::now() + 50ms;
+              if (!output_refresh_deferred) {
+                output_refresh_deferred = true;
+                BOOST_LOG(debug) << "WGC output refresh deferred while DXGI settles; capture remains active";
+              }
+              break;
+
+            case output_refresh_e::structural_change:
+              return platf::capture_e::reinit;
+          }
+        }
+      }
+
+      if (refresh_only_changes_supported && captured_hdr_state_valid) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_hdr_state_check) {
+          next_hdr_state_check = now + 1s;
+
+          const auto refresh_result = refresh_output_after_nonstructural_change();
+          if (refresh_result == output_refresh_e::structural_change) {
+            BOOST_LOG(info) << "Display state changed during periodic WGC validation; requesting reinitialization";
+            return platf::capture_e::reinit;
+          }
+        }
       }
 
       if (auto diag_now = std::chrono::steady_clock::now(); diag_now - pacing_diag_last_log >= 10s) {
@@ -615,99 +695,97 @@ namespace platf::dxgi {
     }
   }
 
-  bool display_base_t::refresh_output_after_expected_mode_change() {
-    for (int attempt = 0; attempt < 5; ++attempt) {
-      factory1_t replacement_factory;
-      if (FAILED(CreateDXGIFactory1(IID_IDXGIFactory1, reinterpret_cast<void **>(&replacement_factory)))) {
-        return false;
+  display_base_t::output_refresh_e display_base_t::refresh_output_after_nonstructural_change() {
+    factory1_t replacement_factory;
+    if (FAILED(CreateDXGIFactory1(IID_IDXGIFactory1, reinterpret_cast<void **>(&replacement_factory)))) {
+      return output_refresh_e::retry_later;
+    }
+
+    adapter_t replacement_adapter;
+    output_t replacement_output;
+    DXGI_OUTPUT_DESC replacement_desc {};
+    for (UINT adapter_index = 0; !replacement_adapter; ++adapter_index) {
+      adapter_t::pointer adapter_ptr = nullptr;
+      const auto adapter_status = replacement_factory->EnumAdapters1(adapter_index, &adapter_ptr);
+      if (adapter_status == DXGI_ERROR_NOT_FOUND) {
+        break;
       }
-
-      adapter_t replacement_adapter;
-      output_t replacement_output;
-      DXGI_OUTPUT_DESC replacement_desc {};
-      for (UINT adapter_index = 0; !replacement_adapter; ++adapter_index) {
-        adapter_t::pointer adapter_ptr = nullptr;
-        const auto adapter_status = replacement_factory->EnumAdapters1(adapter_index, &adapter_ptr);
-        if (adapter_status == DXGI_ERROR_NOT_FOUND) {
-          break;
-        }
-        if (FAILED(adapter_status) || !adapter_ptr) {
-          continue;
-        }
-
-        adapter_t candidate_adapter {adapter_ptr};
-        DXGI_ADAPTER_DESC1 adapter_desc {};
-        if (FAILED(candidate_adapter->GetDesc1(&adapter_desc)) ||
-            !luid_equal(adapter_desc.AdapterLuid, captured_adapter_luid)) {
-          continue;
-        }
-
-        for (UINT output_index = 0;; ++output_index) {
-          output_t::pointer output_ptr = nullptr;
-          const auto output_status = candidate_adapter->EnumOutputs(output_index, &output_ptr);
-          if (output_status == DXGI_ERROR_NOT_FOUND) {
-            break;
-          }
-          if (FAILED(output_status) || !output_ptr) {
-            continue;
-          }
-
-          output_t candidate_output {output_ptr};
-          DXGI_OUTPUT_DESC desc {};
-          if (FAILED(candidate_output->GetDesc(&desc)) ||
-              std::wcscmp(desc.DeviceName, captured_output_desc.DeviceName) != 0) {
-            continue;
-          }
-          replacement_adapter = std::move(candidate_adapter);
-          replacement_output = std::move(candidate_output);
-          replacement_desc = desc;
-          break;
-        }
-      }
-
-      if (!replacement_adapter || !replacement_output) {
-        std::this_thread::sleep_for(50ms);
+      if (FAILED(adapter_status) || !adapter_ptr) {
         continue;
       }
 
-      const auto &old_rect = captured_output_desc.DesktopCoordinates;
-      const auto &new_rect = replacement_desc.DesktopCoordinates;
-      const bool geometry_unchanged = replacement_desc.AttachedToDesktop &&
-                                      replacement_desc.Rotation == captured_output_desc.Rotation &&
-                                      old_rect.left == new_rect.left && old_rect.top == new_rect.top &&
-                                      old_rect.right == new_rect.right && old_rect.bottom == new_rect.bottom;
-      if (!geometry_unchanged) {
-        BOOST_LOG(info) << "Refresh-only capture continuation rejected because output geometry changed";
-        return false;
+      adapter_t candidate_adapter {adapter_ptr};
+      DXGI_ADAPTER_DESC1 adapter_desc {};
+      if (FAILED(candidate_adapter->GetDesc1(&adapter_desc)) ||
+          !luid_equal(adapter_desc.AdapterLuid, captured_adapter_luid)) {
+        continue;
       }
 
-      output6_t replacement_output6;
-      const bool replacement_hdr_valid = SUCCEEDED(
-        replacement_output->QueryInterface(IID_IDXGIOutput6, reinterpret_cast<void **>(&replacement_output6))
-      );
-      bool replacement_hdr = false;
-      if (replacement_hdr_valid) {
-        DXGI_OUTPUT_DESC1 desc1 {};
-        if (FAILED(replacement_output6->GetDesc1(&desc1))) {
-          return false;
+      for (UINT output_index = 0;; ++output_index) {
+        output_t::pointer output_ptr = nullptr;
+        const auto output_status = candidate_adapter->EnumOutputs(output_index, &output_ptr);
+        if (output_status == DXGI_ERROR_NOT_FOUND) {
+          break;
         }
-        replacement_hdr = desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
-      }
-      if (captured_hdr_state_valid != replacement_hdr_valid ||
-          (captured_hdr_state_valid && captured_hdr_state != replacement_hdr)) {
-        BOOST_LOG(info) << "Refresh-only capture continuation rejected because HDR state changed";
-        return false;
-      }
+        if (FAILED(output_status) || !output_ptr) {
+          continue;
+        }
 
-      factory = std::move(replacement_factory);
-      adapter = std::move(replacement_adapter);
-      output = std::move(replacement_output);
-      captured_output_desc = replacement_desc;
-      return true;
+        output_t candidate_output {output_ptr};
+        DXGI_OUTPUT_DESC desc {};
+        if (FAILED(candidate_output->GetDesc(&desc)) ||
+            std::wcscmp(desc.DeviceName, captured_output_desc.DeviceName) != 0) {
+          continue;
+        }
+        replacement_adapter = std::move(candidate_adapter);
+        replacement_output = std::move(candidate_output);
+        replacement_desc = desc;
+        break;
+      }
     }
 
-    BOOST_LOG(warning) << "Refresh-only capture continuation could not reacquire the DXGI output";
-    return false;
+    if (!replacement_adapter || !replacement_output) {
+      return output_refresh_e::retry_later;
+    }
+
+    const auto &old_rect = captured_output_desc.DesktopCoordinates;
+    const auto &new_rect = replacement_desc.DesktopCoordinates;
+    const auto input_geometry_change = current_input_geometry_change(*this);
+    if (input_geometry_change == wgc_policy::input_geometry_change_e::unavailable) {
+      return output_refresh_e::retry_later;
+    }
+    const bool geometry_unchanged = input_geometry_change == wgc_policy::input_geometry_change_e::unchanged && replacement_desc.AttachedToDesktop &&
+                                    replacement_desc.Rotation == captured_output_desc.Rotation &&
+                                    old_rect.left == new_rect.left && old_rect.top == new_rect.top &&
+                                    old_rect.right == new_rect.right && old_rect.bottom == new_rect.bottom;
+    if (!geometry_unchanged) {
+      BOOST_LOG(info) << "WGC capture continuation rejected because output or desktop input geometry changed";
+      return output_refresh_e::structural_change;
+    }
+
+    output6_t replacement_output6;
+    const bool replacement_hdr_valid = SUCCEEDED(
+      replacement_output->QueryInterface(IID_IDXGIOutput6, reinterpret_cast<void **>(&replacement_output6))
+    );
+    bool replacement_hdr = false;
+    if (replacement_hdr_valid) {
+      DXGI_OUTPUT_DESC1 desc1 {};
+      if (FAILED(replacement_output6->GetDesc1(&desc1))) {
+        return output_refresh_e::retry_later;
+      }
+      replacement_hdr = desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+    }
+    if (captured_hdr_state_valid != replacement_hdr_valid ||
+        (captured_hdr_state_valid && captured_hdr_state != replacement_hdr)) {
+      BOOST_LOG(info) << "WGC capture continuation rejected because HDR state changed";
+      return output_refresh_e::structural_change;
+    }
+
+    factory = std::move(replacement_factory);
+    adapter = std::move(replacement_adapter);
+    output = std::move(replacement_output);
+    captured_output_desc = replacement_desc;
+    return output_refresh_e::refreshed;
   }
 
   /**
@@ -801,7 +879,12 @@ namespace platf::dxgi {
     }
   }
 
-  int display_base_t::init(const ::video::config_t &config, const std::string &display_name, bool skip_dd_test) {
+  int display_base_t::init(
+    const ::video::config_t &config,
+    const std::string &display_name,
+    const bool skip_dd_test,
+    const std::optional<LUID> &required_adapter_luid
+  ) {
     static std::once_flag windows_cpp_once_flag;
 
     std::call_once(windows_cpp_once_flag, []() {
@@ -852,28 +935,108 @@ namespace platf::dxgi {
     auto output_name = utf_utils::from_utf8(display_name);
 
     const auto adapter_luid_override = dxgi::get_dxgi_adapter_luid_override();
+    std::optional<LUID> selected_adapter_luid;
+    std::optional<platf::adapter_resolution_t> configured_adapter;
+    if (!config::video.adapter_pnp_id.empty()) {
+      configured_adapter = platf::resolve_adapter(
+        config::video.adapter_name,
+        config::video.adapter_pnp_id
+      );
+      if (!*configured_adapter) {
+        BOOST_LOG(error)
+          << "Configured adapter_pnp_id '" << config::video.adapter_pnp_id
+          << "' could not be resolved uniquely (status="
+          << platf::adapter_resolution_status_name(configured_adapter->status)
+          << "). Capture will not fall back to a same-name or higher-memory GPU.";
+        return -1;
+      }
+      selected_adapter_luid = configured_adapter->luid;
+      if (required_adapter_luid &&
+          !platf::adapter_luid_equal(*required_adapter_luid, *configured_adapter->luid)) {
+        BOOST_LOG(error)
+          << "Required encoder-probe adapter does not match configured persistent PnP identity '"
+          << configured_adapter->pnp_id << "'. Capture will not switch adapters.";
+        return -1;
+      }
+      if (adapter_luid_override &&
+          !platf::adapter_luid_equal(
+            *adapter_luid_override,
+            *configured_adapter->luid)) {
+        BOOST_LOG(warning)
+          << "Ignoring stale WGC adapter handoff because configured persistent PnP identity '"
+          << configured_adapter->pnp_id
+          << "' resolved to a different current LUID.";
+      }
+      BOOST_LOG(info)
+        << "Resolved configured capture adapter '" << configured_adapter->description
+        << "' by persistent PnP identity '" << configured_adapter->pnp_id << "'.";
+    } else if (required_adapter_luid) {
+      selected_adapter_luid = required_adapter_luid;
+    } else {
+      // WGC's runtime handoff is authoritative only when no exact persistent
+      // identity is configured. With a PnP identity, the handoff may be stale
+      // after driver restart or GPU re-enumeration.
+      selected_adapter_luid = adapter_luid_override;
+    }
+
+    // An exact LUID (persistent PnP resolution first, otherwise WGC handoff)
+    // is authoritative. Do not conjunct it with the display description:
+    // descriptions are mutable and may be duplicated.
+    const bool use_legacy_adapter_name =
+      !selected_adapter_luid && !adapter_name.empty();
+    bool configured_adapter_present = false;
+    bool configured_adapter_has_output = false;
     adapter_t::pointer adapter_p;
     for (int tries = 0; tries < 2; ++tries) {
-      for (int x = 0; factory->EnumAdapters1(x, &adapter_p) != DXGI_ERROR_NOT_FOUND; ++x) {
+      for (int x = 0;; ++x) {
+        adapter_p = nullptr;
+        const auto enumerate_adapter_status = factory->EnumAdapters1(x, &adapter_p);
+        if (enumerate_adapter_status == DXGI_ERROR_NOT_FOUND) {
+          break;
+        }
+        if (FAILED(enumerate_adapter_status) || !adapter_p) {
+          BOOST_LOG(error) << "Failed to enumerate DXGI adapter " << x
+                           << " [0x" << util::hex(enumerate_adapter_status).to_string_view() << ']';
+          break;
+        }
         dxgi::adapter_t adapter_tmp {adapter_p};
 
-        DXGI_ADAPTER_DESC1 adapter_desc;
-        adapter_tmp->GetDesc1(&adapter_desc);
-
-        if (adapter_luid_override && !luid_equal(adapter_desc.AdapterLuid, *adapter_luid_override)) {
+        DXGI_ADAPTER_DESC1 adapter_desc {};
+        if (FAILED(adapter_tmp->GetDesc1(&adapter_desc))) {
           continue;
         }
 
-        if (!adapter_name.empty() && adapter_desc.Description != adapter_name) {
+        if (selected_adapter_luid && !luid_equal(adapter_desc.AdapterLuid, *selected_adapter_luid)) {
           continue;
         }
+
+        if (use_legacy_adapter_name && adapter_desc.Description != adapter_name) {
+          continue;
+        }
+        configured_adapter_present = true;
 
         dxgi::output_t::pointer output_p;
-        for (int y = 0; adapter_tmp->EnumOutputs(y, &output_p) != DXGI_ERROR_NOT_FOUND; ++y) {
+        for (int y = 0;; ++y) {
+          output_p = nullptr;
+          const auto enumerate_output_status = adapter_tmp->EnumOutputs(y, &output_p);
+          if (enumerate_output_status == DXGI_ERROR_NOT_FOUND) {
+            break;
+          }
+          if (FAILED(enumerate_output_status) || !output_p) {
+            BOOST_LOG(error) << "Failed to enumerate DXGI output " << y
+                             << " [0x" << util::hex(enumerate_output_status).to_string_view() << ']';
+            break;
+          }
           dxgi::output_t output_tmp {output_p};
 
-          DXGI_OUTPUT_DESC desc;
-          output_tmp->GetDesc(&desc);
+          DXGI_OUTPUT_DESC desc {};
+          if (FAILED(output_tmp->GetDesc(&desc))) {
+            continue;
+          }
+
+          if (desc.AttachedToDesktop) {
+            configured_adapter_has_output = true;
+          }
 
           if (!output_name.empty() && desc.DeviceName != output_name) {
             continue;
@@ -925,8 +1088,35 @@ namespace platf::dxgi {
     }
 
     if (!output) {
-      if (adapter_luid_override) {
-        BOOST_LOG(warning) << "DXGI adapter override did not match any adapter for output '" << display_name << '\'';
+      if (!config::video.adapter_pnp_id.empty()) {
+        BOOST_LOG(error)
+          << "Configured adapter_pnp_id '" << config::video.adapter_pnp_id
+          << "' resolved to '" << configured_adapter->description
+          << "' but that exact adapter "
+          << (configured_adapter_present ?
+                (configured_adapter_has_output ?
+                   "does not expose the requested capture output" :
+                   "has no display attached to the desktop") :
+                "disappeared before capture initialization")
+          << ". Capture will not switch adapters.";
+      } else if (required_adapter_luid) {
+        BOOST_LOG(error)
+          << "Required encoder-probe adapter did not provide capture output '"
+          << display_name << "'; probe will not switch adapters.";
+      } else if (adapter_luid_override) {
+        BOOST_LOG(error)
+          << "WGC-selected DXGI adapter did not provide capture output '"
+          << display_name << "'; capture will not switch adapters.";
+      } else if (use_legacy_adapter_name) {
+        if (!configured_adapter_present) {
+          BOOST_LOG(error)
+            << "Configured adapter_name '" << config::video.adapter_name
+            << "' does not match any GPU. Correct or clear Adapter Name.";
+        } else if (!configured_adapter_has_output) {
+          BOOST_LOG(error)
+            << "Configured adapter_name '" << config::video.adapter_name
+            << "' has no display attached to the desktop. Capture will not switch GPUs.";
+        }
       }
       BOOST_LOG(error) << "Failed to locate an output device"sv;
       return -1;
@@ -1125,39 +1315,15 @@ namespace platf::dxgi {
     }
 
     refresh_only_changes_supported = skip_dd_test;
-    if (config::frame_limiter.game_aware_virtual_display_refresh_enabled() &&
-        config::video.dd.refresh_rate_option != config::video_t::dd_t::refresh_rate_option_e::manual &&
-        config.framerate > 0 && VDISPLAY::is_virtual_display_output(display_name)) {
-      if (const auto device_id = VDISPLAY::resolveVirtualDisplayDeviceId(captured_output_desc.DeviceName)) {
-        const auto base_refresh = static_cast<std::uint32_t>(config.framerate);
-        const auto high_refresh = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-          static_cast<std::uint64_t>(base_refresh) * 4ull,
-          (std::numeric_limits<std::uint32_t>::max)()
-        ));
-
-        DEVMODEW current_mode {};
-        current_mode.dmSize = sizeof(current_mode);
-        const bool has_current_mode = EnumDisplaySettingsExW(
-          captured_output_desc.DeviceName,
-          ENUM_CURRENT_SETTINGS,
-          &current_mode,
-          0
-        ) != FALSE;
-        const bool initial_high = has_current_mode && current_mode.dmDisplayFrequency > base_refresh;
-        game_refresh_target = platf::game_activity::make_refresh_target({
-          .display_name = display_name,
-          .device_id = *device_id,
-          .capture_rect = captured_output_desc.DesktopCoordinates,
-          .base_refresh_numerator = base_refresh,
-          .base_refresh_denominator = 1,
-          .high_refresh_numerator = high_refresh,
-          .high_refresh_denominator = 1,
-          .initial_high = initial_high,
-        });
-      }
-    }
 
     return 0;
+  }
+
+  std::optional<adapter_id_t> display_base_t::capture_adapter_id() const {
+    return adapter_id_t {
+      .high_part = captured_adapter_luid.HighPart,
+      .low_part = captured_adapter_luid.LowPart,
+    };
   }
 
   bool display_base_t::is_hdr() {
@@ -1449,7 +1615,153 @@ namespace platf::dxgi {
 }  // namespace platf::dxgi
 
 namespace platf {
-  std::shared_ptr<display_t> display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
+  namespace {
+    std::vector<dxgi::capture_output_identity_t> enumerate_capture_outputs(
+      const bool log_details,
+      const bool stop_after_first,
+      const std::optional<adapter_id_t> &required_adapter
+    ) {
+      std::vector<dxgi::capture_output_identity_t> outputs;
+
+      HRESULT status;
+
+      if (log_details) {
+        BOOST_LOG(debug) << "Detecting monitors..."sv;
+      }
+
+      // We sync the thread desktop once before we start the enumeration process
+      // to ensure test_dxgi_duplication() returns consistent results for all GPUs
+      // even if the current desktop changes during our enumeration process.
+      // It is critical that we either fully succeed in enumeration or fully fail,
+      // otherwise it can lead to the capture code switching monitors unexpectedly.
+      syncThreadDesktop();
+
+      dxgi::factory1_t factory;
+      status = CreateDXGIFactory1(IID_IDXGIFactory1, (void **) &factory);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Failed to create DXGIFactory1 [0x"sv << util::hex(status).to_string_view() << ']';
+        return {};
+      }
+
+      dxgi::adapter_t::pointer adapter_p;
+      for (int x = 0;; ++x) {
+        adapter_p = nullptr;
+        const auto adapter_status = factory->EnumAdapters1(x, &adapter_p);
+        if (adapter_status == DXGI_ERROR_NOT_FOUND) {
+          break;
+        }
+        if (FAILED(adapter_status) || !adapter_p) {
+          BOOST_LOG(error) << "Failed to enumerate DXGI adapter " << x
+                           << " [0x" << util::hex(adapter_status).to_string_view() << ']';
+          return {};
+        }
+        dxgi::adapter_t adapter {adapter_p};
+        DXGI_ADAPTER_DESC1 adapter_desc {};
+        const auto adapter_desc_status = adapter->GetDesc1(&adapter_desc);
+        if (FAILED(adapter_desc_status)) {
+          BOOST_LOG(error) << "Failed to describe DXGI adapter " << x
+                           << " [0x" << util::hex(adapter_desc_status).to_string_view() << ']';
+          return {};
+        }
+
+        const adapter_id_t adapter_id {
+          .high_part = adapter_desc.AdapterLuid.HighPart,
+          .low_part = adapter_desc.AdapterLuid.LowPart,
+        };
+        if (required_adapter && adapter_id != *required_adapter) {
+          continue;
+        }
+
+        if (log_details) {
+          BOOST_LOG(debug)
+            << std::endl
+            << "====== ADAPTER ====="sv << std::endl
+            << "Device Name      : "sv << utf_utils::to_utf8(adapter_desc.Description) << std::endl
+            << "Device Vendor ID : 0x"sv << util::hex(adapter_desc.VendorId).to_string_view() << std::endl
+            << "Device Device ID : 0x"sv << util::hex(adapter_desc.DeviceId).to_string_view() << std::endl
+            << "Device Video Mem : "sv << adapter_desc.DedicatedVideoMemory / 1048576 << " MiB"sv << std::endl
+            << "Device Sys Mem   : "sv << adapter_desc.DedicatedSystemMemory / 1048576 << " MiB"sv << std::endl
+            << "Share Sys Mem    : "sv << adapter_desc.SharedSystemMemory / 1048576 << " MiB"sv << std::endl
+            << std::endl
+            << "    ====== OUTPUT ======"sv << std::endl;
+        }
+
+        dxgi::output_t::pointer output_p;
+        for (int y = 0;; ++y) {
+          output_p = nullptr;
+          const auto output_status = adapter->EnumOutputs(y, &output_p);
+          if (output_status == DXGI_ERROR_NOT_FOUND) {
+            break;
+          }
+          if (FAILED(output_status) || !output_p) {
+            BOOST_LOG(error) << "Failed to enumerate DXGI output " << y
+                             << " [0x" << util::hex(output_status).to_string_view() << ']';
+            return {};
+          }
+          dxgi::output_t output {output_p};
+
+          DXGI_OUTPUT_DESC desc {};
+          const auto output_desc_status = output->GetDesc(&desc);
+          if (FAILED(output_desc_status)) {
+            BOOST_LOG(error) << "Failed to describe DXGI output " << y
+                             << " [0x" << util::hex(output_desc_status).to_string_view() << ']';
+            return {};
+          }
+
+          auto device_name = utf_utils::to_utf8(desc.DeviceName);
+
+          if (log_details) {
+            const auto width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
+            const auto height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
+            BOOST_LOG(debug)
+              << "    Output Name       : "sv << device_name << std::endl
+              << "    AttachedToDesktop : "sv << (desc.AttachedToDesktop ? "yes"sv : "no"sv) << std::endl
+              << "    Resolution        : "sv << width << 'x' << height << std::endl
+              << std::endl;
+          }
+
+          // Don't include the display in the list if we can't actually capture it.
+          if (desc.AttachedToDesktop && dxgi::test_dxgi_duplication(adapter, output, true)) {
+            outputs.emplace_back(dxgi::capture_output_identity_t {
+              .output_name = std::move(device_name),
+              .adapter_id = adapter_id,
+            });
+            if (stop_after_first) {
+              return outputs;
+            }
+          }
+        }
+      }
+
+      return outputs;
+    }
+  }  // namespace
+
+  std::optional<dxgi::capture_output_identity_t> dxgi::resolve_automatic_capture_output(
+    mem_type_e,
+    const std::optional<adapter_id_t> &required_adapter
+  ) {
+    auto outputs = enumerate_capture_outputs(false, true, required_adapter);
+    if (outputs.empty()) {
+      return std::nullopt;
+    }
+    return std::move(outputs.front());
+  }
+
+  std::shared_ptr<display_t> display(
+    mem_type_e hwdevice_type,
+    const std::string &display_name,
+    const video::config_t &config,
+    const std::optional<adapter_id_t> &required_adapter
+  ) {
+    std::optional<LUID> required_adapter_luid;
+    if (required_adapter) {
+      required_adapter_luid = LUID {
+        .LowPart = required_adapter->low_part,
+        .HighPart = required_adapter->high_part,
+      };
+    }
+
     const auto &capture_mode = config::video.capture;
     const bool user_requested_ddx = capture_mode == "ddx";
     const bool default_to_wgc = dxgi::should_use_wgc_default();
@@ -1458,26 +1770,26 @@ namespace platf {
 
     if (hwdevice_type == mem_type_e::dxgi) {
       if (prefer_wgc_backend) {
-        auto disp = dxgi::display_wgc_ipc_vram_t::create(config, display_name);
+        auto disp = dxgi::display_wgc_ipc_vram_t::create(config, display_name, required_adapter_luid);
         if (disp || wgc_requested) {
           return disp;
         }
       }
 
       auto disp = std::make_shared<dxgi::display_ddup_vram_t>();
-      if (!disp->init(config, display_name)) {
+      if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
     } else if (hwdevice_type == mem_type_e::system) {
       if (prefer_wgc_backend) {
-        auto disp = dxgi::display_wgc_ipc_ram_t::create(config, display_name);
+        auto disp = dxgi::display_wgc_ipc_ram_t::create(config, display_name, required_adapter_luid);
         if (disp || wgc_requested) {
           return disp;
         }
       }
 
       auto disp = std::make_shared<dxgi::display_ddup_ram_t>();
-      if (!disp->init(config, display_name)) {
+      if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
     }
@@ -1488,65 +1800,9 @@ namespace platf {
   std::vector<std::string> display_names(mem_type_e) {
     std::vector<std::string> display_names;
 
-    HRESULT status;
-
-    BOOST_LOG(debug) << "Detecting monitors..."sv;
-
-    // We sync the thread desktop once before we start the enumeration process
-    // to ensure test_dxgi_duplication() returns consistent results for all GPUs
-    // even if the current desktop changes during our enumeration process.
-    // It is critical that we either fully succeed in enumeration or fully fail,
-    // otherwise it can lead to the capture code switching monitors unexpectedly.
-    syncThreadDesktop();
-
-    dxgi::factory1_t factory;
-    status = CreateDXGIFactory1(IID_IDXGIFactory1, (void **) &factory);
-    if (FAILED(status)) {
-      BOOST_LOG(error) << "Failed to create DXGIFactory1 [0x"sv << util::hex(status).to_string_view() << ']';
-      return {};
-    }
-
-    dxgi::adapter_t::pointer adapter_p;
-    for (int x = 0; factory->EnumAdapters1(x, &adapter_p) != DXGI_ERROR_NOT_FOUND; ++x) {
-      dxgi::adapter_t adapter {adapter_p};
-      DXGI_ADAPTER_DESC1 adapter_desc;
-      adapter->GetDesc1(&adapter_desc);
-
-      BOOST_LOG(debug)
-        << std::endl
-        << "====== ADAPTER ====="sv << std::endl
-        << "Device Name      : "sv << utf_utils::to_utf8(adapter_desc.Description) << std::endl
-        << "Device Vendor ID : 0x"sv << util::hex(adapter_desc.VendorId).to_string_view() << std::endl
-        << "Device Device ID : 0x"sv << util::hex(adapter_desc.DeviceId).to_string_view() << std::endl
-        << "Device Video Mem : "sv << adapter_desc.DedicatedVideoMemory / 1048576 << " MiB"sv << std::endl
-        << "Device Sys Mem   : "sv << adapter_desc.DedicatedSystemMemory / 1048576 << " MiB"sv << std::endl
-        << "Share Sys Mem    : "sv << adapter_desc.SharedSystemMemory / 1048576 << " MiB"sv << std::endl
-        << std::endl
-        << "    ====== OUTPUT ======"sv << std::endl;
-
-      dxgi::output_t::pointer output_p {};
-      for (int y = 0; adapter->EnumOutputs(y, &output_p) != DXGI_ERROR_NOT_FOUND; ++y) {
-        dxgi::output_t output {output_p};
-
-        DXGI_OUTPUT_DESC desc;
-        output->GetDesc(&desc);
-
-        auto device_name = utf_utils::to_utf8(desc.DeviceName);
-
-        auto width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
-        auto height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
-
-        BOOST_LOG(debug)
-          << "    Output Name       : "sv << device_name << std::endl
-          << "    AttachedToDesktop : "sv << (desc.AttachedToDesktop ? "yes"sv : "no"sv) << std::endl
-          << "    Resolution        : "sv << width << 'x' << height << std::endl
-          << std::endl;
-
-        // Don't include the display in the list if we can't actually capture it
-        if (desc.AttachedToDesktop && dxgi::test_dxgi_duplication(adapter, output, true)) {
-          display_names.emplace_back(std::move(device_name));
-        }
-      }
+    auto capture_outputs = enumerate_capture_outputs(true, false, std::nullopt);
+    for (auto &capture_output : capture_outputs) {
+      display_names.emplace_back(std::move(capture_output.output_name));
     }
 
     return display_names;

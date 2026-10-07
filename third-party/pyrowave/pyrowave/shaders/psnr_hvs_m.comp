@@ -1,0 +1,225 @@
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+#extension GL_EXT_debug_printf : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_ARB_gpu_shader_int64 : require
+//#pragma optimize off
+
+// A direct port of psnrhvsm.m from https://www.ponomarenko.info/psnrhvsm.m.
+// Optimized for readability and verifiability against the original.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(constant_id = 0) const int STRIDE = 4;
+layout(set = 0, binding = 0) uniform texture2D TexA;
+layout(set = 0, binding = 1) uniform texture2D TexB;
+
+layout(set = 0, binding = 2, std430) uniform CSF
+{
+    float csf[8][8];
+    float mask_coeffs[8][8];
+    float inv_mask_coeffs[8][8];
+};
+
+layout(set = 0, binding = 3) buffer ErrorBuffer
+{
+    uint64_t total_square_error_atomic[];
+};
+
+layout(push_constant) uniform Registers
+{
+    uvec2 resolution;
+    uint bucket_index;
+};
+
+// Adapted from https://fgiesen.wordpress.com/2013/11/04/bink-2-2-integer-dct-design-part-1/.
+void butterfly(inout float a, inout float b)
+{
+    float pos = a + b;
+    float neg = a - b;
+    a = pos;
+    b = neg;
+}
+
+void butterfly(inout float a, inout float b, float c, float s)
+{
+    float pos = a * c + b * s;
+    float neg = b * c - a * s;
+    a = pos;
+    b = neg;
+}
+
+const float c7 = 0.19509032201612833;
+const float s7 = 0.9807852804032304;
+const float c6 = 0.38268343236508984;
+const float s6 = 0.9238795325112867;
+const float c5 = 0.5555702330196023;
+const float s5 = 0.8314696123025452;
+
+void dct8(out float dct[8], float sig[8])
+{
+    butterfly(sig[0], sig[7]);
+    butterfly(sig[1], sig[6]);
+    butterfly(sig[2], sig[5]);
+    butterfly(sig[3], sig[4]);
+    butterfly(sig[0], sig[3]);
+    butterfly(sig[1], sig[2]);
+    butterfly(sig[0], sig[1]);
+    butterfly(sig[2], sig[3], c6, s6);
+
+    butterfly(sig[4], sig[7], c7, s7);
+    butterfly(sig[5], sig[6], c5, s5);
+    butterfly(sig[4], sig[5]);
+    butterfly(sig[6], sig[7]);
+    butterfly(sig[5], sig[6]);
+
+    sig[0] *= sqrt(1.0f / 8.0f);
+    sig[1] *= sqrt(1.0f / 8.0f);
+    sig[2] *= sqrt(2.0f / 8.0f);
+    sig[3] *= sqrt(2.0f / 8.0f);
+    sig[4] *= sqrt(2.0f / 8.0f);
+    sig[5] *= sqrt(1.0f / 8.0f);
+    sig[6] *= sqrt(1.0f / 8.0f);
+    sig[7] *= -sqrt(2.0f / 8.0f);
+
+    dct[0] = sig[0];
+    dct[1] = sig[4];
+    dct[2] = sig[2];
+    // The final 5/6 butterfly is more like "c4" which is a 45-degree rotate, so we complete that rotation here.
+    // It also affects the final scaling factor, since the rotation should have had a sqrt(1/2) scale.
+    dct[3] = sig[5];
+    dct[4] = sig[1];
+    dct[5] = sig[6];
+    dct[6] = sig[3];
+    dct[7] = sig[7];
+}
+
+float sqr(float x)
+{
+    return x * x;
+}
+
+float vari(float E, float E2, int count)
+{
+    return max(E2 * float(count) - sqr(E), 0.0) / float(count - 1);
+}
+
+float maskeff(float sig[8][8], float dct[8][8])
+{
+    float m = 0.0;
+    for (int y = 0; y < 8; y++)
+        for (int x = 0; x < 8; x++)
+            m += sqr(dct[y][x]) * mask_coeffs[y][x];
+
+    float sum_e2[2][2];
+    float sum_e[2][2];
+    float sum_e2_total = 0.0;
+    float sum_e_total = 0.0;
+
+    for (int y = 0; y < 2; y++)
+    {
+        for (int x = 0; x < 2; x++)
+        {
+            sum_e2[y][x] = 0.0;
+            sum_e[y][x] = 0.0;
+
+            for (int suby = 0; suby < 4; suby++)
+            {
+                for (int subx = 0; subx < 4; subx++)
+                {
+                    float v = sig[y * 4 + suby][x * 4 + subx];
+                    sum_e[y][x] += v;
+                    sum_e2[y][x] += sqr(v);
+                }
+            }
+
+            sum_e_total += sum_e[y][x];
+            sum_e2_total += sum_e2[y][x];
+        }
+    }
+
+    float pop = vari(sum_e_total, sum_e2_total, 8 * 8);
+
+    if (pop != 0.0)
+    {
+        pop = (vari(sum_e[0][0], sum_e2[0][0], 4 * 4) +
+               vari(sum_e[1][0], sum_e2[1][0], 4 * 4) +
+               vari(sum_e[0][1], sum_e2[0][1], 4 * 4) +
+               vari(sum_e[1][1], sum_e2[1][1], 4 * 4)) / pop;
+    }
+
+    return sqrt(m * pop) / 32.0;
+}
+
+void dct8x8(out float dct[8][8], float sig[8][8])
+{
+    // Horiz
+    for (int row = 0; row < 8; row++)
+        dct8(dct[row], sig[row]);
+
+    // Vert
+    for (int col = 0; col < 8; col++)
+    {
+        float tmp_sig[8];
+        float tmp_dct[8];
+        for (int i = 0; i < 8; i++)
+            tmp_sig[i] = dct[i][col];
+        dct8(tmp_dct, tmp_sig);
+        for (int i = 0; i < 8; i++)
+            dct[i][col] = tmp_dct[i];
+    }
+}
+
+float dct_error(float a[8][8], float b[8][8], float mask)
+{
+    float total_square_weighted_error = 0.0;
+
+    for (int y = 0; y < 8; y++)
+    {
+        for (int x = 0; x < 8; x++)
+        {
+            // Error in frequency domain.
+            float dct_e = abs(a[y][x] - b[y][x]);
+
+            // PSNR-HVS-M insight. Strong frequency components mask errors in other components.
+            // InvCoeff for DC is 0.0.
+            float masking = mask * inv_mask_coeffs[y][x];
+            dct_e = max(dct_e - masking, 0.0);
+
+            // PSNR-HVS. Error per frequency band is weighted by the CSF, such that high-frequency error is
+            // less important than low-mid frequency error.
+            total_square_weighted_error += sqr(dct_e * csf[y][x]);
+        }
+    }
+
+    return total_square_weighted_error;
+}
+
+void main()
+{
+    ivec2 img_coord = ivec2(gl_GlobalInvocationID) * STRIDE;
+
+    float sig[8][8];
+    float dct_a[8][8];
+    float dct_b[8][8];
+
+    for (int y = 0; y < 8; y++)
+        for (int x = 0; x < 8; x++)
+            sig[y][x] = texelFetch(TexA, img_coord + ivec2(x, y), 0).x;
+    dct8x8(dct_a, sig);
+    float mask_a = maskeff(sig, dct_a);
+
+    for (int y = 0; y < 8; y++)
+        for (int x = 0; x < 8; x++)
+            sig[y][x] = texelFetch(TexB, img_coord + ivec2(x, y), 0).x;
+    dct8x8(dct_b, sig);
+    float mask_b = maskeff(sig, dct_b);
+    float mask = max(mask_a, mask_b);
+    float total_square_error = dct_error(dct_a, dct_b, mask);
+
+    if (all(lessThan(gl_GlobalInvocationID.xy, resolution)))
+    {
+        uint64_t total_error_fixed_point = uint64_t(ldexp(total_square_error, 24));
+        atomicAdd(total_square_error_atomic[bucket_index], total_error_fixed_point);
+    }
+}

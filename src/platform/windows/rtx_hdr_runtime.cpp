@@ -59,20 +59,21 @@ namespace platf::rtx_hdr {
     }
 
     runtime_values_t desktop_runtime_values() {
-      runtime_values_t values;
-      values.contrast = 100;
-      values.saturation = 100;
-      if (!config::runtime_config_override_enabled("rtx_hdr") || !config::video.rtx_hdr.enabled) {
-        return values;
-      }
+      return policy::desktop_values(config_runtime_values(), config::runtime_config_override_enabled("rtx_hdr"));
+    }
 
-      // Desktop/non-matching content should stay in the neutral SDR-to-PQ path.
-      // Carry the configured SDR brightness boost for the encoder fallback,
-      // but do not enable NVIDIA TrueHDR conversion for desktop frames.
-      values.sdr_brightness = config::video.rtx_hdr.sdr_brightness;
-      values.peak_brightness = config::video.rtx_hdr.peak_brightness;
-      values.source = profile_source_e::config;
-      return values;
+    policy::overrides_t runtime_overrides() {
+      return {
+        config::runtime_config_override_enabled("rtx_hdr"),
+        config::has_runtime_config_override("rtx_hdr_contrast"),
+        config::has_runtime_config_override("rtx_hdr_saturation"),
+        config::has_runtime_config_override("rtx_hdr_middle_gray"),
+        config::has_runtime_config_override("rtx_hdr_peak_brightness"),
+      };
+    }
+
+    policy::foreground_state_t policy_foreground(const platf::foreground_app::state_t &foreground) {
+      return {foreground.has_active_app, foreground.matches_active_app, foreground.foreground_exe, foreground.active_app_exe, foreground.active_app_name, foreground.source};
     }
 
     std::string identity_key(const platf::foreground_app::state_t &foreground) {
@@ -110,10 +111,7 @@ namespace platf::rtx_hdr {
   }  // namespace
 
   float sdr_brightness_to_white_nits(int brightness) {
-    const auto clamped_brightness = static_cast<float>(std::clamp(brightness, 0, 100));
-    const auto t = clamped_brightness / 100.0f;
-    return SDR_BRIGHTNESS_NEUTRAL_WHITE_NITS +
-           (SDR_BRIGHTNESS_MAX_WHITE_NITS - SDR_BRIGHTNESS_NEUTRAL_WHITE_NITS) * t;
+    return policy::sdr_brightness_to_white_nits(brightness);
   }
 
   struct runtime_t::backend_t {
@@ -154,6 +152,7 @@ namespace platf::rtx_hdr {
     std::optional<profile_job_t> pending_profile_job;
     bool profile_lookup_in_flight {false};
     std::string in_flight_identity_key;
+    policy::scheduler_t scheduler_policy;
   };
 
   namespace {
@@ -236,6 +235,9 @@ namespace platf::rtx_hdr {
       if (state->stopping) {
         return;
       }
+
+      const auto policy_now = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch());
+      state->scheduler_policy.observe_foreground(policy_foreground(foreground), policy_now, config_runtime_values(), runtime_overrides());
 
       if (foreground.source != state->cached_frame_state.foreground_source ||
           foreground.matches_active_app != state->cached_frame_state.foreground_matches) {
@@ -345,6 +347,9 @@ namespace platf::rtx_hdr {
         state->consecutive_slow_or_failed_lookups = 0;
         state->profile_refresh_interval = PROFILE_REFRESH_INTERVAL;
       }
+
+      state->scheduler_policy.complete_profile_lookup(resolved, elapsed, std::chrono::duration_cast<std::chrono::milliseconds>(finish.time_since_epoch()), config_runtime_values(), runtime_overrides());
+      state->profile_refresh_interval = state->scheduler_policy.refresh_interval();
 
       // A transient driver read failure (NvAPI unavailable for one refresh) should not flicker an
       // already-active conversion off and back on; keep the last-known-good state until a lookup

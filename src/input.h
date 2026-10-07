@@ -20,16 +20,15 @@ namespace input {
   struct touch_port_t;
 
   void print(void *input);
+  /**
+   * @brief Permanently close a client's input queue and release its host input on the input worker.
+   * @details Safe to call repeatedly. Allocate a new context before accepting a new session's input.
+   */
   void reset(std::shared_ptr<input_t> &input);
   void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data, const crypto::PERM &permission);
 
 #ifdef SUNSHINE_TESTS
   bool validate_packet_for_tests(const std::vector<std::uint8_t> &input_data);
-#endif
-
-#ifdef SUNSHINE_TESTS
-  bool validate_packet_for_tests(const std::vector<std::uint8_t> &input_data);
-  std::optional<platf::touch_port_t> monitor_touch_port_for_tests(const input::touch_port_t &touch_port, std::pair<float, float> &coords);
 #endif
 
   [[nodiscard]] std::unique_ptr<platf::deinit_t> init();

@@ -11,9 +11,10 @@
 
 #include <algorithm>
 #include <atomic>
-#include <condition_variable>
+#include <cctype>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -54,6 +55,16 @@ namespace platf::game_activity {
     // refresh target that owns the transition.
     std::atomic<int> g_mode_changes_in_flight {0};
     std::atomic<long long> g_mode_change_settled_at_ms {0};
+
+    std::mutex g_refresh_targets_mutex;
+    std::unordered_map<std::string, std::weak_ptr<refresh_target_t>> g_refresh_targets;
+
+    std::string refresh_target_key(std::string device_id) {
+      std::ranges::transform(device_id, device_id.begin(), [](const unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+      });
+      return device_id;
+    }
 
     long long steady_now_ms() {
       return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -204,17 +215,7 @@ namespace platf::game_activity {
   }  // namespace
 
   state_t reduce_signals(std::span<const signal_t> signals) {
-    state_t result;
-    for (const auto &signal : signals) {
-      if (!signal.active || signal.source <= result.source) {
-        continue;
-      }
-      result.active = true;
-      result.source = signal.source;
-      result.pid = signal.pid;
-      result.executable = signal.executable;
-    }
-    return result;
+    return game_activity_policy::reduce_signals(signals);
   }
 
   const char *source_name(const signal_source_e source) {
@@ -238,21 +239,22 @@ namespace platf::game_activity {
     const bool transition_settling,
     const bool minimum_hold_active
   ) {
-    if (!last_confirmed.fullscreen_on_capture_display) {
-      return false;
-    }
-    if (minimum_hold_active &&
-        (sample.source == "desktop-visible" ||
-         sample.source == "visibility-unknown")) {
-      return true;
-    }
-    if (!transition_settling) {
-      return false;
-    }
-    if (sample.source == "visibility-unknown") {
-      return true;
-    }
-    return sample.source == "desktop-visible" && sample.matching_window_seen;
+    const auto policy_sample = game_activity_policy::foreground_sample_t {
+      .fullscreen_on_capture_display = sample.fullscreen_on_capture_display,
+      .matching_window_seen = sample.matching_window_seen,
+      .source = sample.source,
+    };
+    const auto policy_last_confirmed = game_activity_policy::foreground_sample_t {
+      .fullscreen_on_capture_display = last_confirmed.fullscreen_on_capture_display,
+      .matching_window_seen = last_confirmed.matching_window_seen,
+      .source = last_confirmed.source,
+    };
+    return game_activity_policy::preserve_confirmed_game_during_display_transition(
+      policy_sample,
+      policy_last_confirmed,
+      transition_settling,
+      minimum_hold_active
+    );
   }
 
   foreground_app::state_t foreground_snapshot(const std::optional<RECT> &capture_rect) {
@@ -379,7 +381,7 @@ namespace platf::game_activity {
         signals.push_back(playnite_foreground_signal(foreground, playnite_games));
         signals.push_back(foreground_signal(foreground));
 
-        auto resolved = reduce_signals(signals);
+        auto resolved = game_activity_policy::reduce_signals(signals);
         if (detection.verdict == fullscreen_detector::verdict_e::fullscreen) {
           if (resolved.source == signal_source_e::none) {
             resolved = {
@@ -503,27 +505,41 @@ namespace platf::game_activity {
             now >= retry_after) {
           const auto numerator = candidate_high ? options.high_refresh_numerator : options.base_refresh_numerator;
           const auto denominator = candidate_high ? options.high_refresh_denominator : options.base_refresh_denominator;
-          begin_expected_transition();
-          const bool applied = display_helper_client::send_refresh_rate(options.device_id, numerator, denominator);
-          finish_expected_transition(applied);
+          const bool changes_display_mode = !options.apply_activity_state;
+          if (changes_display_mode) {
+            begin_mode_change();
+          }
+          const bool applied = options.apply_activity_state ?
+                                 options.apply_activity_state(candidate_high) :
+                                 display_helper_client::send_refresh_rate(options.device_id, numerator, denominator);
+          if (changes_display_mode) {
+            finish_mode_change();
+          }
           if (applied) {
             applied_high = candidate_high;
             const auto applied_at = std::chrono::steady_clock::now();
             ++flap_count;
-            hold_until = applied_at + DISPLAY_TRANSITION_SETTLE_TIME;
-            if (candidate_high) {
-              display_transition_minimum_hold_until = applied_at + DISPLAY_TRANSITION_MINIMUM_HOLD;
-              display_transition_settle_until = applied_at + DISPLAY_TRANSITION_SETTLE_TIME;
+            if (changes_display_mode) {
+              hold_until = applied_at + DISPLAY_TRANSITION_SETTLE_TIME;
+              if (candidate_high) {
+                display_transition_minimum_hold_until = applied_at + DISPLAY_TRANSITION_MINIMUM_HOLD;
+                display_transition_settle_until = applied_at + DISPLAY_TRANSITION_SETTLE_TIME;
+              }
             }
-            BOOST_LOG(info) << "Virtual display refresh: display='" << options.display_name
+            BOOST_LOG(info) << (changes_display_mode ? "Virtual display refresh: display='" : "WGC activity admission: display='")
+                            << options.display_name
                             << "' source=" << source_name(resolved.source)
                             << " detector=" << fullscreen_detector::source_name(detection.source)
                             << " visibility=" << foreground.source
                             << " rate=" << numerator << '/' << denominator;
           } else {
             retry_after = now + RETRY_DELAY;
-            BOOST_LOG(warning) << "Virtual display refresh: failed to apply " << numerator << '/' << denominator
-                               << " to device='" << options.device_id << "'";
+            if (changes_display_mode) {
+              BOOST_LOG(warning) << "Virtual display refresh: failed to apply " << numerator << '/' << denominator
+                                 << " to device='" << options.device_id << "'";
+            } else {
+              BOOST_LOG(warning) << "WGC activity admission: failed to apply " << numerator << '/' << denominator;
+            }
           }
         }
 
@@ -531,53 +547,17 @@ namespace platf::game_activity {
       }
     }
 
-    void begin_expected_transition() {
+    void begin_mode_change() {
       g_mode_changes_in_flight.fetch_add(1, std::memory_order_acq_rel);
-      std::scoped_lock lock {transition_mutex};
-      transition_expected = true;
-      transition_in_progress = true;
-      transition_succeeded = false;
-      transition_deadline = std::chrono::steady_clock::now() + EXPECTED_TRANSITION_LIFETIME;
     }
 
-    void finish_expected_transition(const bool success) {
+    void finish_mode_change() {
       g_mode_change_settled_at_ms.store(
         steady_now_ms() +
           std::chrono::duration_cast<std::chrono::milliseconds>(DISPLAY_TRANSITION_SETTLE_TIME).count(),
         std::memory_order_release
       );
       g_mode_changes_in_flight.fetch_sub(1, std::memory_order_acq_rel);
-      {
-        std::scoped_lock lock {transition_mutex};
-        transition_in_progress = false;
-        transition_succeeded = success;
-        if (success) {
-          // A single Windows display mode-set can invalidate more than one DXGI
-          // factory as the display stack settles. Keep authorizing soft output
-          // refreshes for this request; each caller still verifies that adapter,
-          // output geometry, rotation, and HDR state are unchanged.
-          transition_deadline = std::chrono::steady_clock::now() + EXPECTED_TRANSITION_LIFETIME;
-        } else {
-          transition_expected = false;
-        }
-      }
-      transition_cv.notify_all();
-    }
-
-    bool wait_for_expected_refresh_change(const std::chrono::milliseconds timeout) {
-      std::unique_lock lock {transition_mutex};
-      if (!transition_expected || std::chrono::steady_clock::now() > transition_deadline) {
-        transition_expected = false;
-        return false;
-      }
-      if (transition_in_progress) {
-        transition_cv.wait_for(lock, timeout, [&] {
-          return !transition_in_progress;
-        });
-      }
-      const bool accepted = transition_expected && !transition_in_progress && transition_succeeded &&
-                            std::chrono::steady_clock::now() <= transition_deadline;
-      return accepted;
     }
 
     refresh_target_options_t options;
@@ -586,13 +566,6 @@ namespace platf::game_activity {
     std::chrono::steady_clock::time_point candidate_since {};
     std::chrono::steady_clock::time_point flap_window_start {std::chrono::steady_clock::now()};
     int flap_count {0};
-
-    std::mutex transition_mutex;
-    std::condition_variable transition_cv;
-    bool transition_expected {false};
-    bool transition_in_progress {false};
-    bool transition_succeeded {false};
-    std::chrono::steady_clock::time_point transition_deadline {};
 
     std::jthread worker;
   };
@@ -603,22 +576,45 @@ namespace platf::game_activity {
 
   refresh_target_t::~refresh_target_t() = default;
 
-  bool refresh_target_t::wait_for_expected_refresh_change(const std::chrono::milliseconds timeout) {
-    return impl_ && impl_->wait_for_expected_refresh_change(timeout);
-  }
-
   bool display_mode_change_in_flight() {
     return g_mode_changes_in_flight.load(std::memory_order_acquire) > 0 ||
            steady_now_ms() < g_mode_change_settled_at_ms.load(std::memory_order_acquire);
   }
 
   std::shared_ptr<refresh_target_t> make_refresh_target(refresh_target_options_t options) {
-    if (options.device_id.empty() || options.base_refresh_numerator == 0 ||
+    const bool session_bound_admission = static_cast<bool>(options.apply_activity_state);
+    const auto target_identity = session_bound_admission ? options.display_name : options.device_id;
+    if (target_identity.empty() || options.base_refresh_numerator == 0 ||
         options.base_refresh_denominator == 0 || options.high_refresh_numerator == 0 ||
         options.high_refresh_denominator == 0) {
       return {};
     }
-    return std::shared_ptr<refresh_target_t>(new refresh_target_t(std::move(options)));
+
+    // WGC admission callbacks close over one ipc_session_t. Reusing a controller
+    // by display name would retain the original session after a second capture
+    // instance takes over that display, so keep those controllers session-bound.
+    if (session_bound_admission) {
+      return std::shared_ptr<refresh_target_t>(new refresh_target_t(std::move(options)));
+    }
+
+    const auto target_key = refresh_target_key(target_identity);
+    std::scoped_lock lock {g_refresh_targets_mutex};
+    std::erase_if(g_refresh_targets, [](const auto &entry) {
+      return entry.second.expired();
+    });
+    if (const auto existing = g_refresh_targets.find(target_key);
+        existing != g_refresh_targets.end()) {
+      if (auto target = existing->second.lock()) {
+        BOOST_LOG(debug) << "Virtual display refresh: display='" << options.display_name
+                         << "' reusing active controller for target='" << target_identity
+                         << "'; original stream retains refresh policy ownership";
+        return target;
+      }
+    }
+
+    auto target = std::shared_ptr<refresh_target_t>(new refresh_target_t(std::move(options)));
+    g_refresh_targets[target_key] = target;
+    return target;
   }
 
 }  // namespace platf::game_activity

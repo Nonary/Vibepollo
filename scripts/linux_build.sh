@@ -1,14 +1,15 @@
 #!/bin/bash
 set -e
 
+# Release CUDA stays on 12.9 to retain Maxwell/Pascal/Volta support.
 # Version requirements - centralized for easy maintenance
 cmake_min="3.25.0"
 target_cmake_version="3.30.1"
 doxygen_min="1.10.0"
 _doxygen_min="${doxygen_min//\./_}"  # Convert dots to underscores for URL
 doxygen_max="1.12.0"
-default_cuda_version="13.1.1"
-default_cuda_build="590.48.01"
+default_cuda_version="12.9.1"
+default_cuda_build="575.57.08"
 
 # Default value for arguments
 appimage_build=0
@@ -17,7 +18,7 @@ cuda_build="$default_cuda_build"
 cuda_patches=0
 cuda_system_package=0
 cuda_system_package_name=""
-force_cuda_runfile=0
+force_cuda_runfile=1
 num_processors=$(nproc)
 publisher_name="Third Party Publisher"
 publisher_website=""
@@ -36,7 +37,7 @@ DOXYGEN="doxygen"
 
 function setup_cuda_system_package_environment() {
   if [[ "$cuda_system_package" == 1 ]]; then
-    # Ubuntu CUDA 13 packages install nvcc here but do not add it to PATH.
+    # Versioned CUDA packages install nvcc here but do not add it to PATH.
     local cuda_bin_path
     cuda_bin_path="$(cuda_system_toolkit_path)/bin"
     if [[ ":${PATH}:" != *":${cuda_bin_path}:"* ]]; then
@@ -125,6 +126,15 @@ function apply_cuda_patches() {
   fi
 }
 
+# Reject stale cached toolkits before patching headers or configuring a release.
+function validate_cuda_toolkit() {
+  local nvcc_path=$1
+  if ! "$nvcc_path" --version | grep -Fq 'release 12.9,'; then
+    echo "Release builds require CUDA 12.9; incompatible toolkit at $nvcc_path" >&2
+    return 1
+  fi
+}
+
 # Reusable function to detect nvcc path
 function detect_nvcc_path() {
   local nvcc_path=""
@@ -146,25 +156,6 @@ function detect_nvcc_path() {
   return 1
 }
 
-# Reusable function to setup NVM environment
-function setup_nvm_environment() {
-  # Only setup NVM if it should be used for this distro
-  if [[ "$nvm_node" == 1 ]]; then
-    # Check if NVM is installed and source it
-    if [[ -f "$HOME/.nvm/nvm.sh" ]]; then
-      # shellcheck source=/dev/null
-      source "$HOME/.nvm/nvm.sh"
-      # Use the default node version installed by NVM
-      nvm use default 2>/dev/null || nvm use node 2>/dev/null || true
-      echo "Using NVM Node.js version: $(node --version 2>/dev/null || echo 'not available')"
-      echo "Using NVM npm version: $(npm --version 2>/dev/null || echo 'not available')"
-    else
-      echo "NVM not found, using system Node.js if available"
-    fi
-  fi
-  return 0
-}
-
 function _usage() {
   local exit_code=$1
 
@@ -182,7 +173,7 @@ Options:
   --cuda-patches           Apply cuda patches. Enabled automatically on Ubuntu 26.04.
   --cuda-runfile           Force CUDA installation from the NVIDIA runfile.
   --cuda-system-package=*  The CUDA package to install when system CUDA is enabled.
-                           Default for Ubuntu 26.04 is cuda-toolkit-13-1.
+                           Must provide CUDA 12.9; the pinned runfile is the default.
   --num-processors         The number of processors to use for compilation. Default is the value of 'nproc'.
   --publisher-name         The name of the publisher (not developer) of the application.
   --publisher-website      The URL of the publisher's website.
@@ -224,10 +215,13 @@ while getopts ":hs-:" opt; do
           cuda_patches=1
           ;;
         cuda-runfile)
+          cuda_system_package=0
           force_cuda_runfile=1
           ;;
         cuda-system-package=*)
           cuda_system_package_name="${OPTARG#*=}"
+          cuda_system_package=1
+          force_cuda_runfile=0
           ;;
         num-processors=*)
           num_processors="${OPTARG#*=}"
@@ -294,8 +288,6 @@ function add_arch_deps() {
     'libxtst'
     'miniupnpc'
     'ninja'
-    'nodejs'
-    'npm'
     'numactl'
     'openssl'
     'opus'
@@ -313,11 +305,7 @@ function add_arch_deps() {
     )
   fi
 
-  if [[ "$skip_cuda" == 0 ]]; then
-    dependencies+=(
-      "cuda"  # VA-API
-    )
-  fi
+  # CUDA is installed from the pinned runfile, not Arch's rolling toolkit.
   return 0
 }
 
@@ -362,7 +350,6 @@ function add_debian_based_deps() {
     "libvulkan-dev"  # Vulkan
     "glslang-tools"  # Vulkan shader compiler
     "ninja-build"
-    "npm"  # web-ui
     "python3-jinja2"  # glad OpenGL/EGL loader generator
     "python3-setuptools"  # glad OpenGL/EGL loader generated, v2.0.0
     "systemd"
@@ -448,7 +435,6 @@ function add_fedora_deps() {
     "mesa-libgbm-devel"
     "miniupnpc-devel"
     "ninja-build"
-    "npm"
     "numactl-devel"
     "openssl-devel"
     "opus-devel"
@@ -476,9 +462,11 @@ function install_cuda() {
 
   # Check if CUDA is already available
   if [[ "$force_cuda_runfile" == 1 ]] && [[ -f "${build_dir}/cuda/bin/nvcc" ]]; then
+    validate_cuda_toolkit "${build_dir}/cuda/bin/nvcc"
     apply_cuda_patches "${build_dir}/cuda"
     return
   elif [[ "$force_cuda_runfile" == 0 ]] && detect_nvcc_path > /dev/null 2>&1; then
+    validate_cuda_toolkit "$(detect_nvcc_path)"
     if [[ "$cuda_system_package" == 1 ]]; then
       apply_cuda_patches "$(cuda_system_toolkit_path)"
     fi
@@ -529,6 +517,7 @@ function install_cuda() {
   "${build_dir}/cuda.run" --silent --toolkit --toolkitpath="${build_dir}/cuda" --no-opengl-libs --no-man-page --no-drm "$cuda_override_arg"
   rm "${build_dir}/cuda.run"
 
+  validate_cuda_toolkit "${build_dir}/cuda/bin/nvcc"
   apply_cuda_patches "${build_dir}/cuda"
   return 0
 }
@@ -631,18 +620,6 @@ function run_step_deps() {
     fi
   fi
 
-  # install node from nvm
-  if [[ "$nvm_node" == 1 ]]; then
-    nvm_url="https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh"
-    echo "nvm url: ${nvm_url}"
-    wget -qO- ${nvm_url} | bash
-
-    # shellcheck source=/dev/null  # we don't care that shellcheck cannot find nvm.sh
-    source "$HOME/.nvm/nvm.sh"
-    nvm install node
-    nvm use node
-  fi
-
   # run the cuda install
   if [[ "$skip_cuda" == 0 ]]; then
     install_cuda
@@ -653,8 +630,6 @@ function run_step_deps() {
 function run_step_cmake() {
   echo "Running step: CMake configure"
 
-  # Setup NVM environment if needed (for web UI builds)
-  setup_nvm_environment
   setup_cuda_system_package_environment
   if [[ "$skip_cuda" == 0 ]] && [[ "$cuda_system_package" == 1 ]]; then
     apply_cuda_patches "$(cuda_system_toolkit_path)"
@@ -663,11 +638,12 @@ function run_step_cmake() {
   # Detect CUDA path using the reusable function
   nvcc_path=""
   if [[ "$skip_cuda" == 0 ]]; then
-    if [[ "$force_cuda_runfile" == 1 ]] && [[ -f "${build_dir}/cuda/bin/nvcc" ]]; then
+    if [[ "$force_cuda_runfile" == 1 ]]; then
       nvcc_path="${build_dir}/cuda/bin/nvcc"
     else
       nvcc_path=$(detect_nvcc_path)
     fi
+    validate_cuda_toolkit "$nvcc_path"
   fi
 
   #set gcc version based on distros
@@ -679,12 +655,12 @@ function run_step_cmake() {
     "-B=build"
     "-G=Ninja"
     "-S=."
-    "-DBUILD_TESTS=OFF"
+    "-DBUILD_TESTS=ON"
     "-DBUILD_WERROR=ON"
     "-DCMAKE_BUILD_TYPE=Release"
     "-DCMAKE_INSTALL_PREFIX=/usr"
-    "-DSUNSHINE_ASSETS_DIR=share/sunshine"
-    "-DSUNSHINE_EXECUTABLE_PATH=/usr/bin/sunshine"
+    "-DSUNSHINE_ASSETS_DIR=share/vibepollo"
+    "-DSUNSHINE_EXECUTABLE_PATH=/usr/bin/vibepollo"
     "-DSUNSHINE_ENABLE_DRM=ON"
     "-DSUNSHINE_ENABLE_KWIN=ON"
     "-DSUNSHINE_ENABLE_PORTAL=ON"
@@ -714,7 +690,7 @@ function run_step_cmake() {
 
   # Handle CUDA
   if [[ "$skip_cuda" == 0 ]]; then
-    cmake_args+=("-DSUNSHINE_ENABLE_CUDA=ON")
+    cmake_args+=("-DSUNSHINE_ENABLE_CUDA=ON" "-DSUNSHINE_REQUIRE_CUDA_PASCAL=ON")
     if [[ -n "$nvcc_path" ]]; then
       cmake_args+=("-DCMAKE_CUDA_COMPILER:PATH=$nvcc_path")
       cmake_args+=("-DCMAKE_CUDA_HOST_COMPILER=gcc-${gcc_version}")
@@ -735,20 +711,17 @@ function run_step_validation() {
   echo "Running step: Validation"
 
   # Run appstream validation, etc.
-  appstreamcli validate "build/dev.lizardbyte.app.Sunshine.metainfo.xml"
-  appstream-util validate "build/dev.lizardbyte.app.Sunshine.metainfo.xml"
-  desktop-file-validate "build/dev.lizardbyte.app.Sunshine.desktop"
+  appstreamcli validate "build/io.github.Nonary.vibepollo.metainfo.xml"
+  appstream-util validate "build/io.github.Nonary.vibepollo.metainfo.xml"
+  desktop-file-validate "build/io.github.Nonary.vibepollo.desktop"
   if [[ "$appimage_build" == 0 ]]; then
-    desktop-file-validate "build/dev.lizardbyte.app.Sunshine.terminal.desktop"
+    desktop-file-validate "build/io.github.Nonary.vibepollo.terminal.desktop"
   fi
   return 0
 }
 
 function run_step_build() {
   echo "Running step: Build"
-
-  # Setup NVM environment if needed (for web UI builds)
-  setup_nvm_environment
 
   # Build the project
   ninja -C "build"
@@ -824,7 +797,6 @@ if grep -q "Arch Linux" /etc/os-release; then
   version=""
   package_update_command="${sudo_cmd} pacman -Syu --noconfirm"
   package_install_command="${sudo_cmd} pacman -Sy --needed"
-  nvm_node=0
   gcc_version="14"
 elif grep -q "Debian GNU/Linux 12 (bookworm)" /etc/os-release; then
   distro="debian"
@@ -832,86 +804,67 @@ elif grep -q "Debian GNU/Linux 12 (bookworm)" /etc/os-release; then
   package_update_command="${sudo_cmd} apt-get update"
   package_install_command="${sudo_cmd} apt-get install -y"
   gcc_version="13"
-  nvm_node=0
 elif grep -q "Debian GNU/Linux 13 (trixie)" /etc/os-release; then
   distro="debian"
   version="13"
   package_update_command="${sudo_cmd} apt-get update"
   package_install_command="${sudo_cmd} apt-get install -y"
   gcc_version="14"
-  nvm_node=0
 elif grep -q "PLATFORM_ID=\"platform:f42\"" /etc/os-release; then
   distro="fedora"
   version="42"
   package_update_command="${sudo_cmd} dnf update -y"
   package_install_command="${sudo_cmd} dnf install -y"
   gcc_version="14"
-  nvm_node=0
 elif grep -q '^ID=fedora$' /etc/os-release && grep -q '^VERSION_ID=43$' /etc/os-release; then
   distro="fedora"
   version="43"
   package_update_command="${sudo_cmd} dnf update -y"
   package_install_command="${sudo_cmd} dnf install -y"
   gcc_version="14"
-  nvm_node=0
 elif grep -q '^ID=fedora$' /etc/os-release && grep -q '^VERSION_ID=44$' /etc/os-release; then
   distro="fedora"
   version="44"
   package_update_command="${sudo_cmd} dnf update -y"
   package_install_command="${sudo_cmd} dnf install -y"
   gcc_version="14"
-  nvm_node=0
 elif grep -q '^ID=fedora$' /etc/os-release && grep -q '^VERSION_ID=45$' /etc/os-release; then
   distro="fedora"
   version="45"
   package_update_command="${sudo_cmd} dnf update -y"
   package_install_command="${sudo_cmd} dnf install -y"
-  cuda_version="13.1.1"
-  cuda_build="590.48.01"
-  gcc_version="15"
-  nvm_node=0
+  gcc_version="14"
 elif grep -q "Ubuntu 22.04" /etc/os-release; then
   distro="ubuntu"
   version="22.04"
   package_update_command="${sudo_cmd} apt-get update"
   package_install_command="${sudo_cmd} apt-get install -y"
   gcc_version="14"
-  nvm_node=1
 elif grep -q "Ubuntu 24.04" /etc/os-release; then
   distro="ubuntu"
   version="24.04"
   package_update_command="${sudo_cmd} apt-get update"
   package_install_command="${sudo_cmd} apt-get install -y"
   gcc_version="14"
-  nvm_node=1
 elif grep -q "Ubuntu 25.04" /etc/os-release; then
   distro="ubuntu"
   version="25.04"
   package_update_command="${sudo_cmd} apt-get update"
   package_install_command="${sudo_cmd} apt-get install -y"
   gcc_version="14"
-  nvm_node=0
 elif grep -q "Ubuntu 25.10" /etc/os-release; then
   distro="ubuntu"
   version="25.10"
   package_update_command="${sudo_cmd} apt-get update"
   package_install_command="${sudo_cmd} apt-get install -y"
   gcc_version="14"
-  nvm_node=0
 elif grep -q 'VERSION_ID="26.04"' /etc/os-release; then
   distro="ubuntu"
   version="26.04"
   package_update_command="${sudo_cmd} apt-get update"
   package_install_command="${sudo_cmd} apt-get install -y"
   cuda_patches=1
-  if [[ "$force_cuda_runfile" == 0 ]]; then
-    cuda_system_package=1
-    if [[ -z "$cuda_system_package_name" ]]; then
-      cuda_system_package_name="cuda-toolkit-13-1"
-    fi
-  fi
   gcc_version="14"
-  nvm_node=0
 else
   echo "Unsupported Distro or Version"
   exit 1

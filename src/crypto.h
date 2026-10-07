@@ -114,8 +114,8 @@ namespace crypto {
     bool enable_legacy_ordering;
     bool allow_client_commands;
     bool always_use_virtual_display;
-    // When unset, the client inherits the global prefer_10bit_sdr value.
-    std::optional<bool> prefer_10bit_sdr;
+    // Per-client opt-in to serve HDR requests as 10-bit SDR.
+    bool prefer_10bit_sdr = false;
     std::optional<std::int64_t> last_seen;
     std::unordered_map<std::string, std::string> config_overrides;
   };

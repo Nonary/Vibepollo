@@ -2,6 +2,7 @@
 
 #include "src/utility.h"
 #include "src/uuid.h"
+#include "src/platform/windows/virtual_display_policy.h"
 
 #include <chrono>
 #include <cstdint>
@@ -56,11 +57,23 @@ namespace VDISPLAY {
     LONG status = ERROR_NOT_SUPPORTED;
   };
 
+  // Only monitor paths identified as one of our virtual display devices may be
+  // passed to the Windows DPI setter.
+  bool is_virtual_display_monitor_path(const std::wstring &monitor_device_path);
+
   // Set the exact Windows scale for an active monitor. The monitor EDID's physical size is
   // also chosen to make this value Windows' recommended scale for new virtual displays.
   display_scale_result_t set_display_scale_percent(
     const std::wstring &monitor_device_path,
     std::uint32_t scale_percent
+  );
+
+  // Resolve the configured virtual-display scale. -1 selects a resolution-based
+  // recommendation, 0 preserves Windows' existing choice, and positive values are exact.
+  std::uint32_t effective_virtual_display_scale_percent(
+    int configured_scale_percent,
+    std::uint32_t width,
+    std::uint32_t height
   );
 
   // Read the MHC2 peak-luminance value from a Windows HDR calibration profile selection.
@@ -74,6 +87,16 @@ namespace VDISPLAY {
     WATCHDOG_FAILED = -3
   };
 
+  // Identifies the driver whose status was most recently observed by the
+  // runtime. This is deliberately separate from the current config choice:
+  // changing the setting does not retroactively change an already-observed
+  // probe result.
+  enum class DRIVER_SELECTION {
+    UNKNOWN,
+    VIBESHINE,
+    SUDOVDA,
+  };
+
   extern HANDLE VIRTUAL_DISPLAY_DRIVER_HANDLE;
 
   void closeVDisplayDevice();
@@ -81,8 +104,21 @@ namespace VDISPLAY {
   bool ensure_driver_is_ready();
   bool startPingThread(std::function<void()> failCb);
   void setWatchdogFeedingEnabled(bool enable);
+  bool setRenderAdapterByLuid(
+    const LUID &adapter_luid,
+    const std::wstring &adapter_name,
+    std::uint64_t dedicated_video_memory,
+    std::uint64_t shared_system_memory
+  );
   bool setRenderAdapterByName(const std::wstring &adapterName);
   bool setRenderAdapterWithMostDedicatedMemory();
+  bool applyConfiguredRenderAdapterPreference(std::string_view context);
+  /**
+   * Compare an owned display's stored render-adapter request provenance with
+   * the currently configured preference. This does not issue a driver request
+   * and does not claim to observe the adapter used by AssignSwapChain.
+   */
+  bool configuredRenderAdapterMatchesVirtualDisplay(const GUID &guid, std::string_view context);
   void ensureVirtualDisplayRegistryDefaults();
 
   struct VirtualDisplayCreationResult {
@@ -92,6 +128,10 @@ namespace VDISPLAY {
     std::optional<std::wstring> monitor_device_path;
     bool reused_existing;
     bool confirmed_active = false;
+    // Set when direct HDR handling confirms the target state. `false` means
+    // the target was confirmed SDR; an unset value means direct handling was
+    // unavailable or activation was deferred to the display helper.
+    std::optional<bool> hdr_enabled;
     // Set only when this exact target was observed active. Consumers treat it as
     // an activation hint and skip their own activation wait, so publishing it for
     // a merely-enumerated target lets them skip a wait that was never satisfied.
@@ -106,7 +146,9 @@ namespace VDISPLAY {
     uint32_t base_fps_millihz = 0;
     bool framegen_refresh_active = false;
     int framegen_refresh_multiplier = 1;
-    bool hdr_requested = false;
+    // Unset preserves Windows' HDR setting, including during recovery.
+    // Explicit true/false requests HDR/SDR respectively.
+    std::optional<bool> hdr_requested = std::nullopt;
     std::string client_uid;
     std::string client_name;
     std::optional<std::string> hdr_profile;
@@ -123,6 +165,7 @@ namespace VDISPLAY {
     std::function<bool()> should_abort;
   };
 
+  // hdr_requested: nullopt leaves HDR unchanged; true enables it; false disables it.
   std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
     const char *s_client_uid,
     const char *s_client_name,
@@ -134,9 +177,10 @@ namespace VDISPLAY {
     uint32_t base_fps_millihz = 0,
     bool framegen_refresh_active = false,
     int framegen_refresh_multiplier = 1,
-    bool hdr_requested = false,
+    std::optional<bool> hdr_requested = std::nullopt,
     bool allow_pending_enumeration = false,
-    bool replace_existing = true
+    bool replace_existing = true,
+    bool preserve_peer_displays = false
   );
 
   // Apply an HDR color profile to a physical output (best-effort).
@@ -153,6 +197,11 @@ namespace VDISPLAY {
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
+  // Stop recovery for one ended display without removing or untracking it.
+  void cancel_virtual_display_recovery_monitor(const GUID &guid);
+  // Stop session recovery workers without removing or untracking their displays.
+  // Unlike process shutdown, later sessions may schedule fresh monitors.
+  void cancel_all_virtual_display_recovery_monitors();
   void request_virtual_display_recovery_shutdown();
   void join_virtual_display_recovery_monitors();
   bool is_virtual_display_guid_tracked(const GUID &guid);
@@ -201,27 +250,71 @@ namespace VDISPLAY {
   bool has_active_physical_display();
   bool should_auto_enable_virtual_display();
 
+  enum class ensure_display_readiness_e : std::uint8_t {
+    unavailable,
+    existing_display,
+    request_retained,
+    target_enumerated,
+    target_ready,
+  };
+
+  enum class ensure_display_backend_e : std::uint8_t {
+    none,
+    sunshine,
+    sudovda,
+  };
+
   struct ensure_display_result {
-    bool success;
-    bool created_temporary;
-    bool tracks_temporary_for_probe;
-    GUID temporary_guid;
+    ensure_display_readiness_e readiness = ensure_display_readiness_e::unavailable;
+    ensure_display_backend_e backend = ensure_display_backend_e::none;
+    bool created_temporary = false;
+    bool tracks_temporary_for_probe = false;
+    std::uint64_t temporary_generation = 0;
+    GUID temporary_guid {};
+    std::string device_id;
+    std::string display_name;
+
+    [[nodiscard]] bool ready_for_capture() const {
+      return readiness == ensure_display_readiness_e::existing_display ||
+             (readiness == ensure_display_readiness_e::target_ready && !display_name.empty());
+    }
+
+    [[nodiscard]] bool owns_temporary_probe_request() const {
+      return tracks_temporary_for_probe && temporary_generation != 0;
+    }
+
   };
 
   /**
-   * @brief Ensures a display is available for capture/encoding.
-   * If no active physical displays exist, automatically creates a temporary virtual display.
-   * @return Result indicating success and whether a temporary display was created.
+   * @brief Creates or acquires an owned temporary display for encoder probing.
+   * @details Encoder capability validation uses synthetic surfaces and does not
+   *          wait for this target to receive a GDI/DXGI capture identity.
+   *          ready_for_capture() reports the separate publication state.
+   * @return Driver ownership and the currently observed capture readiness.
    */
-  ensure_display_result ensure_display();
+  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid = std::nullopt);
 
   /**
-   * @brief Cleans up temporary display created by ensure_display().
-   * @param result The result from ensure_display() call.
-   * @param probe_succeeded True when probe finished successfully.
-   * @param allow_temporary_teardown False keeps the temporary display retained.
+   * @brief Resolve an exact Windows device id to a usable GDI display name.
+   * @details Devices with a blank display name are intentionally rejected even
+   * if Windows publishes mode or other device information for them.
    */
-  void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown = true);
+  std::optional<std::string> resolveUsableDisplayName(const std::string &device_id);
+
+  /**
+   * @brief Removes the temporary display created by a completed ensure_display() probe.
+   * @param result The result from ensure_display() call.
+   * @details Probe displays have no idle owner. Call this on every terminal
+   *          probe path, including unavailable and failed probes.
+   */
+  void cleanup_ensure_display(const ensure_display_result &result);
+
+  /**
+   * @brief Removes the retained encoder-probe temporary display, if any.
+   * @details Includes a display accepted by the driver before Windows publishes
+   * a monitor identity.
+   */
+  void cleanup_retained_ensure_display();
 
   /**
    * @brief Returns true when ensure_display() is currently retaining a temporary display for probe retries.

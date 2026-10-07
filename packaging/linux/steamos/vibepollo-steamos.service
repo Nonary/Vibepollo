@@ -1,0 +1,25 @@
+[Unit]
+Description=Vibepollo game-streaming host (SteamOS user session)
+Documentation=https://github.com/Nonary/Vibepollo
+Wants=pipewire.service wireplumber.service
+After=graphical-session.target gamescope-session.service pipewire.service wireplumber.service
+PartOf=graphical-session.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/vibepollo-steamos-session
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+KillMode=mixed
+UMask=0077
+
+# Vibepollo launches stream-owned applications. Do not add process sandboxing
+# here without validating its inheritance through Steam and pressure-vessel.
+
+[Install]
+# SteamOS can retain graphical-session.target across a mode switch while
+# stopping its services. Game Mode must pull the host in directly as well.
+WantedBy=graphical-session.target gamescope-session.target

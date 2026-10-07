@@ -96,7 +96,11 @@ namespace display_helper::v2 {
         if (!best->m_device_id.empty()) {
           return best->m_device_id;
         }
-        return best->m_display_name;
+        // A display name can appear before Windows publishes the stable device
+        // id and then change again during the same IDD transition. Treat that
+        // intermediate observation as unavailable so it cannot trigger an
+        // old-id -> display-name -> stable-id Apply chain.
+        return {};
       } catch (...) {
         return {};
       }

@@ -23,6 +23,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -43,7 +44,6 @@
   #include <vector>
   #include <Windows.h>
 #endif
-
 // local includes
 #include "config.h"
 #include "confighttp.h"
@@ -58,17 +58,26 @@
 
 #endif
 #include "logging.h"
+#include "log_export.h"
 #include "network.h"
 #include "nvhttp.h"
+#include "remote_display_topology.h"
+#include "remote_session.h"
 #include "platform/common.h"
 #include "rtsp.h"
 #include "session_history.h"
 #include "stream.h"
 #include "host_stats.h"
+#include "video.h"
 #include "webrtc_stream.h"
 
 #ifdef _WIN32
   #include "platform/windows/virtual_display_cleanup.h"
+  #include "platform/windows/virtual_display.h"
+#elif defined(__linux__)
+  #include "platform/linux/capture_status.h"
+  #include "platform/linux/private_display.h"
+  #include "src/platform/linux/display_backend.h"
 #endif
 
 #include <nlohmann/json.hpp>
@@ -103,6 +112,18 @@ using namespace std::literals;
 namespace pt = boost::property_tree;
 
 namespace confighttp {
+#ifdef _WIN32
+  /**
+   * @brief Reports whether ViGEmBus is needed for the configured gamepad backend.
+   * @return `true` unless a selected VHF backend is ready to provide controllers.
+   */
+  static bool is_vigem_required() {
+    const bool vhf_allowed = config::input.gamepad == "auto" ||
+                             config::input.gamepad.starts_with("vhf");
+    return !vhf_allowed || !platf::is_virtual_gamepad_driver_available();
+  }
+#endif
+
   // Global MIME type lookup used for static file responses
   const std::map<std::string, std::string> mime_types = {
     {"css", "text/css"},
@@ -114,11 +135,14 @@ namespace confighttp {
     {"jpg", "image/jpeg"},
     {"js", "application/javascript"},
     {"json", "application/json"},
+    {"map", "application/json"},
     {"png", "image/png"},
     {"webp", "image/webp"},
     {"svg", "image/svg+xml"},
     {"ttf", "font/ttf"},
     {"txt", "text/plain"},
+    {"wasm", "application/wasm"},
+    {"webmanifest", "application/manifest+json"},
     {"woff2", "font/woff2"},
     {"xml", "text/xml"},
   };
@@ -153,6 +177,52 @@ namespace confighttp {
     return std::nullopt;
   }
 
+  remote_session::control_e configurable_remote_session(std::string_view uuid) {
+    const auto control = remote_session::identify(0, uuid);
+    return control == remote_session::control_e::input || control == remote_session::control_e::monitor
+             ? control
+             : remote_session::control_e::none;
+  }
+
+  bool ensure_remote_session_apps(nlohmann::json &file_tree) {
+    if (!file_tree.contains("apps") || !file_tree["apps"].is_array()) {
+      file_tree["apps"] = nlohmann::json::array();
+    }
+
+    bool changed = false;
+    for (const auto control : {remote_session::control_e::input, remote_session::control_e::monitor}) {
+      const auto synthetic = remote_session::synthetic(control);
+      const auto artwork = remote_session::synthetic_artwork_filename(control);
+      if (!artwork) {
+        continue;
+      }
+
+      const auto default_image = std::string {"remote-session/"} + std::string {*artwork};
+      const auto configured_name = control == remote_session::control_e::input ? "Remote Input" : "Remote Monitor";
+      const auto index = find_app_index_by_uuid(file_tree["apps"], synthetic.uuid);
+      if (!index) {
+        file_tree["apps"].push_back({
+          {"name", configured_name},
+          {"uuid", synthetic.uuid},
+          {"image-path", default_image},
+        });
+        changed = true;
+        continue;
+      }
+
+      auto &app = file_tree["apps"][*index];
+      if (app.value("name", std::string {}) != configured_name) {
+        app["name"] = configured_name;
+        changed = true;
+      }
+      if (!app.contains("image-path") || !app["image-path"].is_string() || app["image-path"].get<std::string>().empty()) {
+        app["image-path"] = default_image;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   std::optional<size_t> resolve_app_index_token(const nlohmann::json &apps_node, const std::string &token) {
     if (auto uuid_index = find_app_index_by_uuid(apps_node, token)) {
       return uuid_index;
@@ -172,7 +242,13 @@ namespace confighttp {
     return std::nullopt;
   }
 
+  std::recursive_mutex &apps_file_mutex() {
+    static std::recursive_mutex mutex;
+    return mutex;
+  }
+
   bool refresh_client_apps_cache(nlohmann::json &file_tree, bool sort_by_name) {
+    std::lock_guard lock {apps_file_mutex()};
     try {
       if (sort_by_name) {
         sort_apps_by_name(file_tree);
@@ -406,11 +482,61 @@ namespace confighttp {
              key == "rtx_hdr_peak_brightness";
     }
 
+#ifdef _WIN32
     std::string encode_config_override_value(const nlohmann::json &value) {
       if (value.is_string()) {
         return value.get<std::string>();
       }
       return value.dump();
+    }
+#endif
+
+    void normalize_adapter_config_pair(nlohmann::json &config_object) {
+      if (!config_object.is_object()) {
+        return;
+      }
+
+      const auto adapter_name = config_object.find("adapter_name");
+      if (adapter_name == config_object.end() ||
+          !adapter_name->is_string() ||
+          adapter_name->get_ref<const std::string &>().empty()) {
+        config_object.erase("adapter_pnp_id");
+        return;
+      }
+
+      const auto adapter_pnp_id = config_object.find("adapter_pnp_id");
+      if (adapter_pnp_id == config_object.end() ||
+          !adapter_pnp_id->is_string() ||
+          adapter_pnp_id->get_ref<const std::string &>().empty()) {
+        config_object.erase("adapter_pnp_id");
+      }
+    }
+
+    void normalize_adapter_config_patch(nlohmann::json &patch_object) {
+      if (!patch_object.is_object()) {
+        return;
+      }
+
+      const auto adapter_name = patch_object.find("adapter_name");
+      if (adapter_name == patch_object.end()) {
+        // A PnP identity cannot independently replace half of the pair.
+        patch_object.erase("adapter_pnp_id");
+        return;
+      }
+
+      const bool name_is_nonempty =
+        adapter_name->is_string() &&
+        !adapter_name->get_ref<const std::string &>().empty();
+      const auto adapter_pnp_id = patch_object.find("adapter_pnp_id");
+      const bool pnp_is_nonempty =
+        adapter_pnp_id != patch_object.end() &&
+        adapter_pnp_id->is_string() &&
+        !adapter_pnp_id->get_ref<const std::string &>().empty();
+      if (!name_is_nonempty || !pnp_is_nonempty) {
+        // A name-only patch explicitly selects legacy matching and must clear
+        // any persistent identity inherited from the existing file.
+        patch_object["adapter_pnp_id"] = nullptr;
+      }
     }
 
     bool can_hot_apply_during_session(const std::set<std::string> &keys) {
@@ -420,6 +546,10 @@ namespace confighttp {
 
       for (const auto &key : keys) {
         if (key.rfind("playnite_", 0) == 0) {
+          continue;
+        }
+
+        if (key.rfind("steam_", 0) == 0) {
           continue;
         }
 
@@ -450,15 +580,17 @@ namespace confighttp {
 
   static std::string get_web_ui_host_for_local_open() {
     const auto address_family = net::af_from_enum_string(config::sunshine.address_family);
-    const auto bind_address = boost::algorithm::trim_copy(config::sunshine.bind_address);
-    if (bind_address.empty()) {
-      return address_family == net::IPV4 ? "127.0.0.1"s : "localhost"s;
-    }
+    // Derive the advertised host from the same accessor the listeners bind through.
+    // Resolving the configured value independently let an unparseable bind_address
+    // be advertised verbatim while the acceptors had already degraded to the family
+    // wildcard, so the logged/tray URL pointed at an address nothing listens on.
+    const auto bind_address = net::get_bind_address(address_family);
 
     boost::system::error_code ec;
     const auto address = boost::asio::ip::make_address(bind_address, ec);
     if (ec) {
-      return bind_address;
+      // get_bind_address only returns a validated address or the family wildcard.
+      return address_family == net::IPV4 ? "127.0.0.1"s : "localhost"s;
     }
 
     if (address.is_unspecified()) {
@@ -479,6 +611,25 @@ namespace confighttp {
   void bad_request(resp_https_t response, req_https_t request, const std::string &error_message);
   void getAppCover(resp_https_t response, req_https_t request);
 
+#if defined(_WIN32) || defined(__linux__)
+  // Platform-neutral frame limiter status (RTSS/NVCP on Windows, MangoHUD on Linux).
+  void getFrameLimiterStatus(resp_https_t response, req_https_t request);
+#endif
+
+  // Steam provider endpoints are available on every supported host. The
+  // handlers remain provider-local in confighttp_steam.cpp.
+  void getSteamStatus(resp_https_t response, req_https_t request);
+  void getSteamGames(resp_https_t response, req_https_t request);
+  void postSteamForceSync(resp_https_t response, req_https_t request);
+  void postSteamLaunch(resp_https_t response, req_https_t request);
+
+#ifdef __linux__
+  void getLutrisStatus(resp_https_t response, req_https_t request);
+  void getLutrisGames(resp_https_t response, req_https_t request);
+  void postLutrisForceSync(resp_https_t response, req_https_t request);
+  void postLutrisLaunch(resp_https_t response, req_https_t request);
+#endif
+
 #ifdef _WIN32
   // Forward declarations for Playnite handlers implemented in confighttp_playnite.cpp
   void getPlayniteStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
@@ -487,6 +638,7 @@ namespace confighttp {
   void getPlayniteGames(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void getPlayniteCategories(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void postPlayniteForceSync(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void postPlayniteCover(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void postPlayniteLaunch(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   // Helper to keep confighttp.cpp free of Playnite details
   void enhance_app_with_playnite_cover(nlohmann::json &input_tree);
@@ -565,11 +717,18 @@ namespace confighttp {
    * @param response The HTTP response object.
    * @param output_tree The JSON tree to send.
    */
-  void send_response(resp_https_t response, const nlohmann::json &output_tree) {
+  void send_response(resp_https_t response, const nlohmann::json &output_tree, std::string_view cache_control) {
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "application/json; charset=utf-8");
+    if (!cache_control.empty()) {
+      headers.emplace("Cache-Control", cache_control);
+    }
     add_cors_headers(headers);
     response->write(success_ok, output_tree.dump(), headers);
+  }
+
+  void send_response(resp_https_t response, const nlohmann::json &output_tree) {
+    send_response(response, output_tree, {});
   }
 
   nlohmann::json load_webrtc_ice_servers() {
@@ -860,7 +1019,7 @@ namespace confighttp {
    */
   void send_unauthorized(resp_https_t response, req_https_t request) {
     auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
-    BOOST_LOG(info) << "Web UI: ["sv << address << "] -- not authorized"sv;
+    BOOST_LOG(info) << "Configuration API: ["sv << address << "] -- not authorized"sv;
 
     constexpr auto code = client_error_unauthorized;
 
@@ -1101,6 +1260,8 @@ namespace confighttp {
       bool installed = platf::is_vigem_installed(&version);
       nlohmann::json out;
       out["installed"] = installed;
+      // ViGEmBus is only a requirement when nothing else can provide a virtual controller.
+      out["required"] = is_vigem_required();
       if (!version.empty()) {
         out["version"] = version;
       }
@@ -1210,12 +1371,16 @@ namespace confighttp {
   }
 
   std::string generate_csrf_token(const std::string &client_id) {
-    std::string token = crypto::rand_alphabet(CSRF_TOKEN_SIZE);
     const auto now = std::chrono::steady_clock::now();
     std::scoped_lock lock(csrf_tokens_mutex);
     std::erase_if(csrf_tokens, [&now](const auto &entry) {
       return entry.second.expiration < now;
     });
+    if (const auto existing = csrf_tokens.find(client_id); existing != csrf_tokens.end()) {
+      return existing->second.token;
+    }
+
+    std::string token = crypto::rand_alphabet(CSRF_TOKEN_SIZE);
     csrf_tokens[client_id] = csrf_token_t {token, now + CSRF_TOKEN_LIFETIME};
     return token;
   }
@@ -1276,9 +1441,9 @@ namespace confighttp {
   }
 
   void getCSRFToken(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
+    // The browser needs a token before login. Issuing one does not grant any
+    // authority: it is bound to the request's client identity and every API
+    // handler still performs its own authentication and authorization checks.
     nlohmann::json output_tree;
     output_tree["csrf_token"] = generate_csrf_token(get_client_id(request));
     send_response(response, output_tree);
@@ -1379,38 +1544,117 @@ namespace confighttp {
    */
   // Consolidated redirect helper: use the const char* variant below.
 
-  /**
-   * @brief SPA entry responder - serves the single-page app shell (index.html)
-   * for any non-API and non-static-asset GET requests. Allows unauthenticated
-   * access so the frontend can render login/first-run flows. Static and API
-   * routes are expected to be registered explicitly; this function returns
-   * a 404 for reserved prefixes to avoid accidentally exposing files.
-   */
-  void getSpaEntry(resp_https_t response, req_https_t request) {
-    print_req(request);
+  namespace {
+    bool is_safe_web_path(std::string_view relative_path) {
+      if (relative_path.empty() || relative_path.front() == '/' || relative_path.find('\\') != std::string_view::npos ||
+          relative_path.find('%') != std::string_view::npos || relative_path.find(':') != std::string_view::npos ||
+          relative_path.find('\0') != std::string_view::npos) {
+        return false;
+      }
 
-    const std::string &p = request->path;
-    // Reserved prefixes that should not be handled by the SPA entry
-    static const std::vector<std::string> reserved = {"/api", "/assets", "/covers", "/images", "/images/"};
-    for (const auto &r : reserved) {
-      if (p.rfind(r, 0) == 0) {
-        // Let explicit handlers or default not_found handle these
+      const fs::path path {relative_path};
+      if (path.is_absolute() || path.has_root_name() || path.has_root_directory()) {
+        return false;
+      }
+      return std::ranges::none_of(path, [](const fs::path &part) {
+        return part == "..";
+      });
+    }
+
+    SimpleWeb::CaseInsensitiveMultimap web_headers(std::string_view content_type, bool cache_immutable) {
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("Content-Type", std::string {content_type});
+      headers.emplace("Cache-Control", cache_immutable ? "public, max-age=31536000, immutable" : "no-cache");
+      headers.emplace("Content-Security-Policy",
+                      "default-src 'self'; base-uri 'self'; connect-src 'self' https://api.github.com https://raw.githubusercontent.com wss:; font-src 'self'; "
+                      "form-action 'self'; frame-ancestors 'none'; img-src 'self' https://images.igdb.com data: blob:; media-src 'self' blob:; "
+                      "object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:");
+      headers.emplace("Referrer-Policy", "no-referrer");
+      headers.emplace("X-Content-Type-Options", "nosniff");
+      headers.emplace("X-Frame-Options", "DENY");
+      return headers;
+    }
+
+    void serve_web_file(resp_https_t response, req_https_t request, std::string_view relative_path) {
+      if (!is_safe_web_path(relative_path)) {
         not_found(response, request);
         return;
       }
-    }
 
-    // Serve the SPA shell (index.html) without server-side auth so frontend
-    // can manage routing and authentication flows.
-    std::string content = file_handler::read_file(WEB_DIR "index.html");
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "text/html; charset=utf-8");
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(content, headers);
+      const fs::path file_path = fs::path {WEB_DIR} / fs::path {relative_path};
+      std::error_code error;
+      if (!fs::is_regular_file(file_path, error) || error) {
+        not_found(response, request);
+        return;
+      }
+
+      auto extension = file_path.extension().string();
+      if (!extension.empty() && extension.front() == '.') {
+        extension.erase(0, 1);
+      }
+      boost::algorithm::to_lower(extension);
+      const auto mime_type = mime_types.find(extension);
+      if (mime_type == mime_types.end()) {
+        not_found(response, request);
+        return;
+      }
+
+      std::ifstream input {file_path, std::ios::binary};
+      if (!input) {
+        not_found(response, request);
+        return;
+      }
+
+      const bool cache_immutable = extension == "css" || extension == "js" || extension == "woff2";
+      response->write(success_ok, input, web_headers(mime_type->second, cache_immutable));
+    }
+  }  // namespace
+
+  /**
+   * @brief Serve a built browser asset from the isolated web root.
+   */
+  void getWebAsset(resp_https_t response, req_https_t request) {
+    print_req(request);
+    if (request->path.size() <= 1) {
+      not_found(response, request);
+      return;
+    }
+    const std::string relative_path = request->path.substr(1);
+    serve_web_file(std::move(response), std::move(request), relative_path);
   }
 
-  // legacy per-page handlers removed; SPA entry handles these routes
+  /**
+   * @brief Serve the Vue application shell for browser navigation routes.
+   */
+  void getWebUi(resp_https_t response, req_https_t request) {
+    print_req(request);
+
+    const std::string &path = request->path;
+    const std::string_view path_view {path};
+    static constexpr std::array reserved_prefixes {"/api"sv, "/assets"sv, "/covers"sv, "/images"sv};
+    if (std::ranges::any_of(reserved_prefixes, [&path](std::string_view prefix) {
+          return std::string_view {path}.starts_with(prefix);
+        })) {
+      not_found(response, request);
+      return;
+    }
+
+    const bool is_v2_route = path_view == "/v2" || path_view.starts_with("/v2/");
+    const bool is_v2_static_path = path_view == "/v2/assets" || path_view.starts_with("/v2/assets/") ||
+                                   path_view == "/v2/images" || path_view.starts_with("/v2/images/");
+    if (is_v2_static_path) {
+      not_found(response, request);
+      return;
+    }
+
+    // Missing files should remain 404s. Extension-free paths are client-side
+    // navigation routes and receive the single application shell.
+    if (fs::path {path}.has_extension()) {
+      not_found(response, request);
+      return;
+    }
+    serve_web_file(std::move(response), std::move(request), is_v2_route ? "v2/index.html" : "index.html");
+  }
 
   /**
    * @brief Get the favicon image.
@@ -1515,6 +1759,7 @@ namespace confighttp {
     print_req(request);
 
     try {
+      std::lock_guard apps_lock {apps_file_mutex()};
       std::string content = file_handler::read_file(config::stream.file_apps.c_str());
       nlohmann::json file_tree = nlohmann::json::parse(content);
 
@@ -1538,6 +1783,7 @@ namespace confighttp {
         "allow-client-commands",
         "use-app-identity",
         "per-client-app-identity",
+        "prefer-10bit-sdr",
         "gen1-framegen-fix",
         "gen2-framegen-fix",
         "dlss-framegen-capture-fix",  // backward compatibility
@@ -1555,7 +1801,7 @@ namespace confighttp {
         "lossless-scaling-launch-delay"
       };
 
-      bool mutated = false;
+      bool mutated = ensure_remote_session_apps(file_tree);
       auto normalize_lossless_profile_overrides = [](nlohmann::json &node) -> bool {
         if (!node.is_object()) {
           return false;
@@ -1652,7 +1898,18 @@ namespace confighttp {
         }
       }
 
-      // Add computed app ids for UI clients (best-effort, do not persist).
+      // If any normalization occurred, persist back to disk
+      if (mutated) {
+        try {
+          file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
+          proc::refresh(config::stream.file_apps, false);
+        } catch (std::exception &e) {
+          BOOST_LOG(warning) << "GetApps persist normalization failed: "sv << e.what();
+        }
+      }
+
+      // Add computed app ids for UI clients only after normalized records are
+      // persisted. These fields are response metadata and must never enter apps.json.
       if (file_tree.contains("apps") && file_tree["apps"].is_array()) {
         try {
           const auto apps_snapshot = proc::proc.get_apps();
@@ -1663,15 +1920,6 @@ namespace confighttp {
             app["index"] = static_cast<int>(idx);
           }
         } catch (...) {
-        }
-      }
-
-      // If any normalization occurred, persist back to disk
-      if (mutated) {
-        try {
-          file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
-        } catch (std::exception &e) {
-          BOOST_LOG(warning) << "GetApps persist normalization failed: "sv << e.what();
         }
       }
 
@@ -1700,6 +1948,10 @@ namespace confighttp {
               if (v) {
                 app["image-version"] = v;
               }
+            }
+            const auto control = configurable_remote_session(app.value("uuid", ""));
+            if (control != remote_session::control_e::none) {
+              app["remote-session"] = control == remote_session::control_e::input ? "input" : "monitor";
             }
           } catch (...) {
           }
@@ -1757,6 +2009,7 @@ namespace confighttp {
 
     BOOST_LOG(info) << config::stream.file_apps;
     try {
+      std::lock_guard apps_lock {apps_file_mutex()};
       // TODO: Input Validation
 
       // Read the input JSON from the request body.
@@ -1776,6 +2029,7 @@ namespace confighttp {
           overrides["nvenc_split_encode"] = overrides["nvenc_force_split_encode"];
         }
         overrides.erase("nvenc_force_split_encode");
+        normalize_adapter_config_pair(overrides);
       }
 
       // If image-path omitted but we have a Playnite id, let Playnite helper resolve a cover (Windows)
@@ -1786,7 +2040,7 @@ namespace confighttp {
         if (input_tree.contains("playnite-id") && input_tree["playnite-id"].is_string()) {
           const auto playnite_id = input_tree["playnite-id"].get<std::string>();
           if (!playnite_id.empty()) {
-            input_tree["uuid"] = platf::playnite::sync::canonical_playnite_app_uuid(playnite_id);
+            input_tree["uuid"] = platf::playnite::sync::policy::canonical_playnite_app_uuid(playnite_id);
           }
         }
       } catch (...) {}
@@ -1810,6 +2064,14 @@ namespace confighttp {
       // Remove old field to avoid duplication
       input_tree.erase("dlss-framegen-capture-fix");
 #endif
+
+      const auto remote_control = configurable_remote_session(input_tree.value("uuid", ""));
+      input_tree.erase("remote-session");
+      if (remote_control != remote_session::control_e::none) {
+        const auto synthetic = remote_session::synthetic(remote_control);
+        input_tree["uuid"] = synthetic.uuid;
+        input_tree["name"] = synthetic.title;
+      }
 
       auto &apps_node = file_tree["apps"];
       if (!apps_node.is_array()) {
@@ -2248,26 +2510,8 @@ namespace confighttp {
 
     std::optional<size_t> target_index = index_from_body ? index_from_body : index_from_path;
 
-    // Detect if the app being removed is the Playnite fullscreen launcher
-    auto is_playnite_fullscreen = [](const nlohmann::json &app) -> bool {
-      try {
-        if (app.contains("playnite-fullscreen") && app["playnite-fullscreen"].is_boolean() && app["playnite-fullscreen"].get<bool>()) {
-          return true;
-        }
-        if (app.contains("cmd") && app["cmd"].is_string()) {
-          auto s = app["cmd"].get<std::string>();
-          if (s.find("playnite-launcher") != std::string::npos && s.find("--fullscreen") != std::string::npos) {
-            return true;
-          }
-        }
-        if (app.contains("name") && app["name"].is_string() && app["name"].get<std::string>() == "Playnite (Fullscreen)") {
-          return true;
-        }
-      } catch (...) {}
-      return false;
-    };
-
     try {
+      std::lock_guard apps_lock {apps_file_mutex()};
       std::string content = file_handler::read_file(config::stream.file_apps.c_str());
       nlohmann::json file_tree = nlohmann::json::parse(content);
       if (!file_tree.contains("apps") || !file_tree["apps"].is_array()) {
@@ -2289,8 +2533,41 @@ namespace confighttp {
         }
       }
 
+      std::optional<size_t> protected_index;
+      if (uuid && !uuid->empty()) {
+        protected_index = find_app_index_by_uuid(apps_node, *uuid);
+      } else if (target_index && *target_index < apps_node.size()) {
+        protected_index = *target_index;
+      }
+      if (protected_index &&
+          configurable_remote_session(apps_node[*protected_index].value("uuid", "")) != remote_session::control_e::none) {
+        bad_request(response, request, "Remote session applications cannot be deleted");
+        return;
+      }
+
       nlohmann::json::array_t new_apps;
       new_apps.reserve(apps_node.size());
+
+#ifdef _WIN32
+      // Detect if the app being removed is the Playnite fullscreen launcher
+      auto is_playnite_fullscreen = [](const nlohmann::json &app) -> bool {
+        try {
+          if (app.contains("playnite-fullscreen") && app["playnite-fullscreen"].is_boolean() && app["playnite-fullscreen"].get<bool>()) {
+            return true;
+          }
+          if (app.contains("cmd") && app["cmd"].is_string()) {
+            auto s = app["cmd"].get<std::string>();
+            if (s.find("playnite-launcher") != std::string::npos && s.find("--fullscreen") != std::string::npos) {
+              return true;
+            }
+          }
+          if (app.contains("name") && app["name"].is_string() && app["name"].get<std::string>() == "Playnite (Fullscreen)") {
+            return true;
+          }
+        } catch (...) {}
+        return false;
+      };
+#endif
 
       bool removed = false;
       bool disabled_fullscreen_flag = false;
@@ -2377,7 +2654,75 @@ namespace confighttp {
 #endif
     output_tree["status"] = true;
     output_tree["platform"] = SUNSHINE_PLATFORM;
-    send_response(response, output_tree);
+    // The list changes immediately after pair/unpair. Avoid serving an old empty
+    // list from an HTTP cache after the client state has changed.
+    send_response(response, output_tree, "no-store");
+  }
+
+  void refresh_remote_display_physical_baseline() {
+    try {
+      const auto devices = nlohmann::json::parse(display_helper_integration::enumerate_devices_json(display_device::DeviceEnumerationDetail::Full));
+      if (!devices.is_array()) return;
+      std::vector<remote_display_topology::node_t> nodes;
+      for (const auto &device : devices) {
+        const auto id = device.value("device_id", "");
+        const auto label = device.value("friendly_name", device.value("display_name", id));
+        if (id.empty()) continue;
+#ifdef __linux__
+        if (platf::linux_private_display::is_private_output(id)) continue;
+#else
+        if (boost::algorithm::icontains(label, "virtual display")) continue;
+#endif
+        remote_display_topology::node_t node;
+        node.id = id;
+        node.label = label;
+        node.physical = true;
+        const auto info = device.value("info", nlohmann::json::object());
+        node.active = info.value("active", true);
+        node.primary = info.value("primary", false);
+        nodes.push_back(std::move(node));
+      }
+      remote_display_topology::instance().set_physical_baseline(std::move(nodes));
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "Remote display layout could not refresh physical monitor baseline: " << e.what();
+    }
+  }
+
+  void getClientDisplayLayout(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) return;
+    print_req(request);
+    refresh_remote_display_physical_baseline();
+    const auto clients = nvhttp::get_all_clients();
+    std::vector<nlohmann::json> client_nodes;
+    for (const auto &client : clients) client_nodes.push_back(client);
+    auto output = remote_display_topology::instance().snapshot(client_nodes);
+    output["layout"] = nvhttp::get_remote_display_layout();
+    send_response(response, output, "no-store");
+  }
+
+  void putClientDisplayLayout(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json") || !authenticate(response, request)) return;
+    print_req(request);
+    refresh_remote_display_physical_baseline();
+    try {
+      std::stringstream body;
+      body << request->content.rdbuf();
+      const auto layout = nlohmann::json::parse(body);
+      std::string error;
+      if (!nvhttp::set_remote_display_layout(layout, error)) {
+        bad_request(response, request, error);
+        return;
+      }
+      const auto clients = nvhttp::get_all_clients();
+      std::vector<nlohmann::json> client_nodes;
+      for (const auto &client : clients) client_nodes.push_back(client);
+      auto output = remote_display_topology::instance().snapshot(client_nodes);
+      output["layout"] = nvhttp::get_remote_display_layout();
+      output["applies_on_next_activation"] = true;
+      send_response(response, output, "no-store");
+    } catch (const std::exception &e) {
+      bad_request(response, request, e.what());
+    }
   }
 
 #ifdef _WIN32
@@ -2580,11 +2925,9 @@ namespace confighttp {
       bool enable_legacy_ordering = input_tree.value("enable_legacy_ordering", true);
       bool allow_client_commands = input_tree.value("allow_client_commands", true);
       bool always_use_virtual_display = input_tree.value("always_use_virtual_display", false);
-      std::optional<bool> prefer_10bit_sdr;
+      bool prefer_10bit_sdr = false;
       if (input_tree.contains("prefer_10bit_sdr") && !input_tree["prefer_10bit_sdr"].is_null()) {
         prefer_10bit_sdr = util::get_non_string_json_value<bool>(input_tree, "prefer_10bit_sdr", false);
-      } else {
-        prefer_10bit_sdr.reset();
       }
       std::optional<std::unordered_map<std::string, std::string>> config_overrides;
       if (input_tree.contains("config_overrides")) {
@@ -2704,10 +3047,10 @@ namespace confighttp {
 
     print_req(request);
 
-    nvhttp::erase_all_clients();
+    const bool persisted = nvhttp::erase_all_clients();
     proc::proc.terminate();
     nlohmann::json output_tree;
-    output_tree["status"] = true;
+    output_tree["status"] = persisted;
     send_response(response, output_tree);
   }
 
@@ -2768,7 +3111,92 @@ namespace confighttp {
 #endif
     // Build/release date provided by CMake (ISO 8601 when available)
     output_tree["release_date"] = PROJECT_RELEASE_DATE;
+    output_tree["providers"]["steam"] = true;
+#if defined(__linux__)
+    output_tree["providers"]["lutris"] = true;
+    output_tree["providers"]["mangohud"] = true;
+    const char *session_role = std::getenv("VIBEPOLLO_SESSION_ROLE");
+    const std::string role = session_role ? session_role : "unknown";
+    output_tree["linux"] = {{"session_role", role == "desktop" || role == "greeter" ? role : "unknown"}};
+    const bool managed_active = platf::linux_capture_status::managed_event_capture_active();
+    output_tree["capture_status"] = {
+      {"configured_backend", config::video.capture},
+      {"observed_backend", managed_active ? "kms" : "unknown"},
+      {"managed_event_driven", managed_active},
+      {"virtual_display_configured", config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled},
+    };
+    const auto display_capabilities = platf::linux_display::backend().capabilities();
+    const bool virtual_capable = display_capabilities.independent_outputs;
+    const bool virtual_ready = display_capabilities.independent_outputs_ready;
+    output_tree["virtual_display"] = {
+      {"capable", virtual_capable},
+      {"ready", virtual_ready},
+      {"reason", virtual_ready ? "" : virtual_capable ? "session_or_output_unavailable" : "driver_or_outputs_unavailable"},
+      {"backend", display_capabilities.backend_name},
+      {"modes", {"per_client", "shared"}},
+      {"layouts", {"exclusive", "extended", "extended_primary", "extended_isolated", "extended_primary_isolated"}},
+      {"display_enumeration", true},
+      {"dynamic_modes", true},
+      {"hdr", "per_output"},
+      {"scale", true},
+      {"reset_persistence", true},
+    };
+#endif
+
+    // UI status reads must never start a capture or probe an encoder.
+    bool probe_complete = false;
+    const auto encoder_caps = video::advertised_encoder_capabilities(false, &probe_complete);
+    output_tree["encoder_status"] = {
+      {"state", probe_complete ? "ready" : video::has_attempted_encoder_probe() ? "failed" : "unknown"},
+      {"h264", probe_complete},
+      {"hevc", probe_complete && encoder_caps.hevc_mode >= 2},
+      {"av1", probe_complete && encoder_caps.av1_mode >= 2},
+    };
 #if defined(_WIN32)
+    output_tree["providers"]["playnite_toggle"] = true;
+    const auto driver_snapshot = proc::vDisplayDriverStatusSnapshot();
+    const auto driver_status = driver_snapshot.status;
+    const auto active_driver = driver_snapshot.selection;
+    const auto driver_status_name = [](const VDISPLAY::DRIVER_STATUS status) {
+      switch (status) {
+        case VDISPLAY::DRIVER_STATUS::OK:
+          return "ready";
+        case VDISPLAY::DRIVER_STATUS::FAILED:
+          return "failed";
+        case VDISPLAY::DRIVER_STATUS::VERSION_INCOMPATIBLE:
+          return "version_incompatible";
+        case VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED:
+          return "watchdog_failed";
+        case VDISPLAY::DRIVER_STATUS::UNKNOWN:
+        default:
+          return "unknown";
+      }
+    };
+    const auto driver_selection_name = [](const VDISPLAY::DRIVER_SELECTION selection) -> const char * {
+      switch (selection) {
+        case VDISPLAY::DRIVER_SELECTION::VIBESHINE:
+          return "vibeshine";
+        case VDISPLAY::DRIVER_SELECTION::SUDOVDA:
+          return "sudovda";
+        case VDISPLAY::DRIVER_SELECTION::UNKNOWN:
+        default:
+          return nullptr;
+      }
+    };
+    const auto configured_driver = config::video.dd.use_sunshine_virtual_display_driver
+                                     ? "vibeshine"
+                                     : "sudovda";
+    nlohmann::json driver_metadata = {
+      {"configured", configured_driver},
+      {"status", driver_status_name(driver_status)},
+      {"status_code", static_cast<int>(driver_status)},
+    };
+    if (const auto active_name = driver_selection_name(active_driver)) {
+      driver_metadata["active"] = active_name;
+    } else {
+      driver_metadata["active"] = nullptr;
+    }
+    output_tree["virtual_display_driver"] = std::move(driver_metadata);
     try {
       const auto gpus = platf::enumerate_gpus();
       if (!gpus.empty()) {
@@ -2780,6 +3208,7 @@ namespace confighttp {
         for (const auto &gpu : gpus) {
           nlohmann::json gpu_entry;
           gpu_entry["description"] = gpu.description;
+          gpu_entry["pnp_id"] = gpu.pnp_id;
           gpu_entry["vendor_id"] = gpu.vendor_id;
           gpu_entry["device_id"] = gpu.device_id;
           gpu_entry["dedicated_video_memory"] = gpu.dedicated_video_memory;
@@ -2913,6 +3342,7 @@ namespace confighttp {
       std::stringstream config_stream;
       nlohmann::json output_tree;
       nlohmann::json input_tree = nlohmann::json::parse(ss);
+      normalize_adapter_config_pair(input_tree);
       std::set<std::string> changed_keys;
       for (const auto &[k, v] : input_tree.items()) {
         changed_keys.insert(k);
@@ -2996,6 +3426,7 @@ namespace confighttp {
         bad_request(response, request, "PATCH body must be a JSON object");
         return;
       }
+      normalize_adapter_config_patch(patch_tree);
 
       // Load existing config into a map
       std::unordered_map<std::string, std::string> current = config::parse_config(
@@ -3087,12 +3518,13 @@ namespace confighttp {
     print_req(request);
 
     nlohmann::json output_tree;
-    const int active = rtsp_stream::session_count();
+    const int active = rtsp_stream::session_count() + static_cast<int>(webrtc_stream::active_session_count());
     const bool app_running = proc::proc.running() > 0;
     output_tree["activeSessions"] = active;
     output_tree["appRunning"] = app_running;
     output_tree["appName"] = app_running ? proc::proc.get_last_run_app_name() : "";
     output_tree["paused"] = app_running && active == 0;
+    output_tree["lastEncoderProbeFailed"] = video::last_encoder_probe_failed();
     output_tree["status"] = true;
     send_response(response, output_tree);
   }
@@ -3104,10 +3536,10 @@ namespace confighttp {
     }
     print_req(request);
 
-    send_response(response, host_stats_to_json(host_stats::latest()));
+    send_response(response, host_stats_to_json(host_stats::latest_for_consumer()));
   }
 
-  // Static host info — model strings + total RAM/VRAM, sampled once.
+  // Static host info â€” model strings + total RAM/VRAM, sampled once.
   void getHostInfo(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
       return;
@@ -3144,7 +3576,7 @@ namespace confighttp {
     send_response(response, output);
   }
 
-  // ── Session History endpoints ────────────────────────────────────
+  // â”€â”€ Session History endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   void listSessionHistory(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
@@ -3246,10 +3678,79 @@ namespace confighttp {
     send_response(response, output);
   }
 
+  void getWebRTCCapabilities(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    nlohmann::json output;
+#ifndef SUNSHINE_ENABLE_WEBRTC
+    output["enabled"] = false;
+    output["availability"] = {
+      {"state", "disabled"},
+      {"reason", "WebRTC support is disabled in this build"},
+    };
+    send_response(response, output);
+    return;
+#else
+    const auto capabilities = nvhttp::get_web_stream_capabilities();
+    constexpr int kMaxWebRtcDimension = 16384;
+    constexpr int kMaxWebRtcFps = 1000;
+    constexpr int kAbsoluteMaxWebRtcBitrateKbps = 500000;
+    const int max_bitrate_kbps = config::video.max_bitrate > 0 ?
+                                      std::min(config::video.max_bitrate, kAbsoluteMaxWebRtcBitrateKbps) :
+                                      kAbsoluteMaxWebRtcBitrateKbps;
+
+    bool hdr_policy_allows = true;
+    std::string_view hdr_policy = "automatic";
+#ifdef _WIN32
+    using hdr_request_override_e = config::video_t::dd_t::hdr_request_override_e;
+    switch (config::video.dd.hdr_request_override) {
+      case hdr_request_override_e::force_on:
+        hdr_policy = "force_on";
+        break;
+      case hdr_request_override_e::force_off:
+        hdr_policy = "force_off";
+        hdr_policy_allows = false;
+        break;
+      case hdr_request_override_e::automatic:
+        break;
+    }
+#endif
+
+    output["enabled"] = true;
+    output["availability"] = {
+      {"state", capabilities.probe_complete ? "ready" : "unverified"},
+      {"reason", capabilities.probe_complete ? "" : "The selected capture adapter has not reported a usable encoder."},
+    };
+    output["codecs"] = {
+      {"h264", {{"supported", capabilities.h264}, {"hdr", false}}},
+      {"hevc", {{"supported", capabilities.hevc}, {"hdr", capabilities.hevc_hdr}}},
+      {"av1", {{"supported", capabilities.av1}, {"hdr", capabilities.av1_hdr}}},
+    };
+    output["hdr_policy_allows"] = hdr_policy_allows;
+    output["hdr_policy"] = std::string {hdr_policy};
+    output["limits"] = {
+      {"min_dimension", 64},
+      {"max_dimension", kMaxWebRtcDimension},
+      {"min_fps", 1},
+      {"max_fps", kMaxWebRtcFps},
+      {"min_bitrate_kbps", 0},
+      {"max_bitrate_kbps", max_bitrate_kbps},
+    };
+    send_response(response, output);
+#endif
+  }
+
   void createWebRTCSession(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
       return;
     }
+
+#ifndef SUNSHINE_ENABLE_WEBRTC
+    service_unavailable(response, "WebRTC support is disabled in this build");
+    return;
+#endif
 
     BOOST_LOG(debug) << "WebRTC: create session request received";
 
@@ -3391,6 +3892,12 @@ namespace confighttp {
           }
         }
         if (options.hdr.value_or(false)) {
+#ifdef _WIN32
+          if (config::video.dd.hdr_request_override == config::video_t::dd_t::hdr_request_override_e::force_off) {
+            bad_request(response, request, "HDR is disabled by the host display policy");
+            return;
+          }
+#endif
           if (!options.encoded) {
             bad_request(response, request, "HDR requires encoded video for WebRTC sessions");
             return;
@@ -3400,15 +3907,38 @@ namespace confighttp {
             return;
           }
         }
-        if (options.hdr.value_or(false)) {
-          if (!options.encoded) {
-            bad_request(response, request, "HDR requires encoded video for WebRTC sessions");
-            return;
-          }
-          if (!options.codec || (*options.codec != "hevc" && *options.codec != "av1")) {
-            bad_request(response, request, "HDR requires HEVC or AV1 video encoding");
-            return;
-          }
+#ifdef _WIN32
+        if (config::video.dd.hdr_request_override == config::video_t::dd_t::hdr_request_override_e::force_on &&
+            (!options.codec || (*options.codec != "hevc" && *options.codec != "av1"))) {
+          bad_request(response, request, "The host HDR display policy requires HEVC or AV1 video encoding");
+          return;
+        }
+#endif
+
+        constexpr int kMinWebRtcDimension = 64;
+        constexpr int kMaxWebRtcDimension = 16384;
+        constexpr int kMaxWebRtcFps = 1000;
+        constexpr int kAbsoluteMaxWebRtcBitrateKbps = 500000;
+        const int max_bitrate_kbps = config::video.max_bitrate > 0 ?
+                                          std::min(config::video.max_bitrate, kAbsoluteMaxWebRtcBitrateKbps) :
+                                          kAbsoluteMaxWebRtcBitrateKbps;
+        const auto valid_dimension = [=](const std::optional<int> &dimension) {
+          return !dimension ||
+                 (*dimension >= kMinWebRtcDimension &&
+                  *dimension <= kMaxWebRtcDimension &&
+                  *dimension % 2 == 0);
+        };
+        if (!valid_dimension(options.width) || !valid_dimension(options.height)) {
+          bad_request(response, request, "WebRTC width and height must be even values between 64 and 16384");
+          return;
+        }
+        if (options.fps && (*options.fps < 1 || *options.fps > kMaxWebRtcFps)) {
+          bad_request(response, request, "WebRTC fps must be between 1 and 1000");
+          return;
+        }
+        if (options.bitrate_kbps && (*options.bitrate_kbps < 0 || *options.bitrate_kbps > max_bitrate_kbps)) {
+          bad_request(response, request, "WebRTC bitrate_kbps exceeds this host's allowed range");
+          return;
         }
       } catch (const std::exception &e) {
         bad_request(response, request, e.what());
@@ -3417,18 +3947,29 @@ namespace confighttp {
     }
 
     BOOST_LOG(debug) << "WebRTC: creating session";
-    if (auto error = webrtc_stream::ensure_capture_started(options)) {
+    std::optional<std::string> capture_start_error;
 #ifdef _WIN32
-      // Lifecycle gap: if capture start fails after a virtual display was created/applied but
-      // before a session exists, ensure we don't leave the virtual display behind.
-      if (rtsp_stream::session_count() == 0 && !webrtc_stream::has_active_or_pending_sessions()) {
-        (void) platf::virtual_display_cleanup::run(
-          "webrtc_session_start_failed",
-          config::video.dd.config_revert_on_disconnect
-        );
+    {
+      // Publish the cleanup tail before capture startup mutates any display or
+      // runtime configuration. The lifecycle gate below then closes the gap
+      // between the failed start releasing its gate and direct VDD cleanup.
+      stream::session::cleanup_reservation_t cleanup_reservation;
+      capture_start_error = webrtc_stream::ensure_capture_started(options);
+      if (capture_start_error) {
+        std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
+        if (!stream::session::has_shared_runtime_owner()) {
+          (void) platf::virtual_display_cleanup::run(
+            "webrtc_session_start_failed",
+            config::video.dd.config_revert_on_disconnect
+          );
+        }
       }
+    }
+#else
+    capture_start_error = webrtc_stream::ensure_capture_started(options);
 #endif
-      bad_request(response, request, error->c_str());
+    if (capture_start_error) {
+      bad_request(response, request, capture_start_error->c_str());
       return;
     }
     auto session = webrtc_stream::create_session(options);
@@ -3511,7 +4052,8 @@ namespace confighttp {
         if (!webrtc_stream::get_session(session_id)) {
           output["error"] = "Session not found";
         } else {
-          output["error"] = "Failed to process offer";
+          const auto negotiation_error = webrtc_stream::get_negotiation_error(session_id);
+          output["error"] = negotiation_error.empty() ? "Failed to process offer" : negotiation_error;
         }
         send_response(response, output);
         return;
@@ -3834,8 +4376,8 @@ namespace confighttp {
         return;
       }
 
-      std::ifstream in(validated_path, std::ios::binary);
-      if (!in) {
+      const auto image = proc::read_validated_app_image(validated_path);
+      if (!image) {
         BOOST_LOG(warning) << "Unable to read cover image file: " << validated_path;
         bad_request(response, request, "Unable to read cover image file");
         return;
@@ -3846,7 +4388,7 @@ namespace confighttp {
       headers.emplace("X-Frame-Options", "DENY");
       headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
 
-      response->write(SimpleWeb::StatusCode::success_ok, in, headers);
+      response->write(SimpleWeb::StatusCode::success_ok, *image, headers);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "GetCover: "sv << e.what();
       bad_request(response, request, e.what());
@@ -3952,7 +4494,7 @@ namespace confighttp {
         }
       }
 #else
-      // Non-Windows: we can’t transcode here; accept only already-PNG data
+      // Non-Windows: we canâ€™t transcode here; accept only already-PNG data
       if (file_is_png(src_tmp)) {
         std::error_code ec {};
 
@@ -4007,6 +4549,7 @@ namespace confighttp {
     print_req(request);
 
     try {
+      std::lock_guard apps_lock {apps_file_mutex()};
       nlohmann::json output_tree;
       nlohmann::json new_apps = nlohmann::json::array();
       std::string file = file_handler::read_file(config::stream.file_apps.c_str());
@@ -4034,6 +4577,71 @@ namespace confighttp {
       bad_request(response, request, e.what());
     }
   }
+
+#ifndef _WIN32
+  void downloadLogs(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    try {
+      logging::log_flush();
+      std::vector<std::pair<std::filesystem::path, std::filesystem::file_time_type>> candidates;
+      for (const auto &path : logging::recent_session_logs(30)) {
+        std::error_code ec;
+        const auto mtime = std::filesystem::last_write_time(path, ec);
+        if (!ec) {
+          candidates.emplace_back(path, mtime);
+        }
+      }
+      // Snapshot timestamps before sorting: the active log can change during collection.
+      // Match the Windows support bundle limits, selecting newest files first.
+      std::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) {
+        return a.second != b.second ? a.second > b.second : a.first < b.first;
+      });
+      constexpr std::size_t max_files = 32;
+      constexpr std::size_t max_bytes = 64 * 1024 * 1024;
+      std::size_t bytes = 0;
+      log_export::export_log_sanitizer_t sanitizer;
+      std::vector<log_export::ZipDataEntry> entries;
+      for (const auto &[path, mtime] : candidates) {
+        if (entries.size() >= max_files || bytes >= max_bytes) {
+          break;
+        }
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(path, ec))) {
+          continue;
+        }
+        const auto size = std::filesystem::file_size(path, ec);
+        if (ec || size > max_bytes - bytes) {
+          continue;
+        }
+        std::ifstream file(path, std::ios::binary);
+        if (!file) {
+          continue;
+        }
+        // Bound reads even if the active file grows during collection.
+        std::string data(static_cast<std::size_t>(size), '\0');
+        file.read(data.data(), static_cast<std::streamsize>(data.size()));
+        data.resize(static_cast<std::size_t>(file.gcount()));
+        bytes += data.size();
+        entries.push_back(log_export::make_export_log_entry(sanitizer, path.filename().string(), std::move(data), mtime));
+      }
+      if (entries.empty()) {
+        bad_request(response, request, "No retained log files are available");
+        return;
+      }
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("Content-Type", "application/zip");
+      headers.emplace("Content-Disposition", "attachment; filename=\"vibepollo_logs.zip\"");
+      headers.emplace("Cache-Control", "no-store");
+      headers.emplace("X-Frame-Options", "DENY");
+      headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+      response->write(success_ok, log_export::build_zip_from_entries(entries), headers);
+    } catch (const std::exception &e) {
+      bad_request(response, request, e.what());
+    }
+  }
+#endif
 
   /**
    * @brief Get the logs from the log file.
@@ -4079,6 +4687,40 @@ namespace confighttp {
     if (!handled) {
       read_sunshine_log(content);
     }
+
+    // The logs page polls this endpoint. Returning the complete file on every poll
+    // can overwhelm the browser once a long-running host has accumulated a large log.
+    // Keep the legacy full response unless the caller explicitly requests a tail.
+    if (const auto it = query.find("tail"); it != query.end()) {
+      try {
+        constexpr std::size_t kMaxTailLines = 10000;
+        const auto requested = std::stoull(it->second);
+        const auto tail_lines = std::min<std::size_t>(requested, kMaxTailLines);
+        if (tail_lines > 0 && !content.empty()) {
+          std::size_t cursor = content.size();
+          if (content.back() == '\n') {
+            --cursor;
+          }
+
+          std::size_t tail_start = 0;
+          for (std::size_t line = 0; line < tail_lines && cursor > 0; ++line) {
+            const auto separator = content.rfind('\n', cursor - 1);
+            if (separator == std::string::npos) {
+              tail_start = 0;
+              break;
+            }
+            tail_start = separator + 1;
+            cursor = separator;
+          }
+          if (tail_start > 0) {
+            content.erase(0, tail_start);
+          }
+        }
+      } catch (const std::exception &) {
+        // Invalid tail values preserve the legacy full-log response.
+      }
+    }
+
     SimpleWeb::CaseInsensitiveMultimap headers;
     std::string contentType = "text/plain";
 #ifdef _WIN32
@@ -4270,6 +4912,34 @@ namespace confighttp {
   }
 
 #ifdef _WIN32
+  /**
+   * @brief Execute the same terminal virtual-display cleanup as the restore hotkey.
+   * @api_examples{/api/display/terminate_virtual| POST| {"status":true}}
+   */
+  void postTerminateVirtualDisplay(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+
+    nlohmann::json out;
+    const auto result = platf::virtual_display_cleanup::terminate_all("maintenance_api");
+    out["status"] = result.virtual_displays_removed;
+    out["driver_watchdog_stopped"] = true;
+    out["recovery_disengaged"] = true;
+    out["virtual_displays_removed"] = result.virtual_displays_removed;
+    out["restore_dispatched"] = result.helper_revert_dispatched;
+    out["database_restore_applied"] = result.database_restore_applied;
+    out["watchdogs_stopped"] = true;
+    if (!result.virtual_displays_removed) {
+      out["error"] = "One or more managed virtual displays could not be removed.";
+    }
+    send_response(response, out, "no-store");
+  }
+
   /**
    * @brief Export the current Windows display settings as a golden restore snapshot.
    * @api_examples{/api/display/export_golden| POST| {"status":true}}
@@ -4778,6 +5448,13 @@ namespace confighttp {
     std::string current_mismatch_reason;
     std::optional<golden_restore_status_t> restore_status;
     try {
+      const auto query = request->parse_query_string();
+      const auto compare_current_it = query.find("compare_current");
+      const bool compare_current = compare_current_it != query.end() &&
+                                   (boost::iequals(compare_current_it->second, "1") ||
+                                    boost::iequals(compare_current_it->second, "true") ||
+                                    boost::iequals(compare_current_it->second, "yes"));
+
       for (const auto &p : golden_snapshot_candidates()) {
         if (file_exists_nofail(p)) {
           exists = true;
@@ -4790,7 +5467,11 @@ namespace confighttp {
             if (needs_layout_upgrade) {
               out_of_date_reason = "schema_upgrade_required";
             }
-            if (!has_active_stream_sessions()) {
+            // A current-topology comparison walks QDC_ALL_PATHS. On a system
+            // with stale CCD paths, doing that for every ordinary Settings
+            // status refresh can monopolize the single HTTPS I/O thread. It
+            // is diagnostic-only, so retain it behind an explicit request.
+            if (compare_current && !has_active_stream_sessions()) {
               if (auto mismatch = snapshot_current_mismatch_reason(*root)) {
                 comparison_available = true;
                 if (!mismatch->empty()) {
@@ -5105,6 +5786,8 @@ namespace confighttp {
             .perm = crypto::PERM::_all,
           };
           BOOST_LOG(info) << "Launching app ["sv << app.name << "] from web UI"sv;
+          (void) proc::proc.running();
+          std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
           auto launch_session = nvhttp::make_launch_session(true, false, request->parse_query_string(), &named_cert);
           auto err = proc::proc.execute(app, launch_session);
           if (err) {
@@ -5192,12 +5875,16 @@ namespace confighttp {
     output_tree["version"] = version_str;
     output_tree["version_compatible"] = version_compatible;
     output_tree["packaged_version"] = VIGEMBUS_PACKAGED_VERSION;
+    // Drives whether the UI presents a missing ViGEmBus as a problem or as an
+    // unused option: Vibepollo's own driver provides controllers without it.
+    output_tree["required"] = is_vigem_required();
 #else
     output_tree["error"] = "ViGEmBus is only available on Windows";
     output_tree["installed"] = false;
     output_tree["version"] = "";
     output_tree["version_compatible"] = false;
     output_tree["packaged_version"] = "";
+    output_tree["required"] = false;
 #endif
 
     send_response(response, output_tree);
@@ -5403,20 +6090,12 @@ namespace confighttp {
       bad_request(response, request);
     };
 
-    // Serve the SPA shell for any unmatched GET route. Explicit static and API
-    // routes are registered below; UI page routes are deprecated server-side
-    // and are handled by the SPA entry responder so frontend can manage
-    // authentication and routing.
-    server.default_resource["GET"] = getSpaEntry;
-    server.resource["^/$"]["GET"] = getSpaEntry;
-    server.resource["^/pin/?$"]["GET"] = getSpaEntry;
-    server.resource["^/apps/?$"]["GET"] = getSpaEntry;
-    server.resource["^/clients/?$"]["GET"] = getSpaEntry;
-    server.resource["^/config/?$"]["GET"] = getSpaEntry;
-    server.resource["^/password/?$"]["GET"] = getSpaEntry;
-    server.resource["^/welcome/?$"]["GET"] = getSpaEntry;
-    server.resource["^/login/?$"]["GET"] = getSpaEntry;
-    server.resource["^/troubleshooting/?$"]["GET"] = getSpaEntry;
+    // Static browser assets are public; every state-changing API below still
+    // passes through the existing authentication and CSRF gates.
+    server.resource["^/(assets|images)/.+$"]["GET"] = getWebAsset;
+    server.resource["^/v2/(assets|images)/.+$"]["GET"] = getWebAsset;
+    server.resource["^/v2/[^/]+\\.webmanifest$"]["GET"] = getWebAsset;
+    server.default_resource["GET"] = getWebUi;
     thread_pool_util::ThreadPool blocking_route_pool;
     blocking_route_pool.start(1);
     clear_token_route_catalog();
@@ -5479,8 +6158,9 @@ namespace confighttp {
     register_api_route("^/api/quit$", "POST", quit);
     register_blocking_api_route("^/api/reset-display-device-persistence$", "POST", resetDisplayDevicePersistence);
 #if defined(_WIN32)
+    register_blocking_api_route("^/api/display/terminate_virtual$", "POST", postTerminateVirtualDisplay);
     register_blocking_api_route("^/api/display/export_golden$", "POST", postExportGoldenDisplay);
-    register_api_route("^/api/display/golden_status$", "GET", getGoldenStatus);
+    register_blocking_api_route("^/api/display/golden_status$", "GET", getGoldenStatus);
     register_api_route("^/api/display/golden$", "DELETE", deleteGolden);
 #endif
     register_api_route("^/api/password$", "POST", savePassword);
@@ -5499,6 +6179,8 @@ namespace confighttp {
     register_api_route("^/api/apps/([0-9]+)$", "DELETE", deleteApp);
     register_api_route("^/api/clients/unpair-all$", "POST", unpairAll);
     register_api_route("^/api/clients/list$", "GET", getClients);
+    register_api_route("^/api/clients/display-layout$", "GET", getClientDisplayLayout);
+    register_api_route("^/api/clients/display-layout$", "PUT", putClientDisplayLayout);
     register_api_route("^/api/clients/hdr-profiles$", "GET", getHdrProfiles);
     register_api_route("^/api/clients/update$", "POST", updateClient);
     register_api_route("^/api/clients/unpair$", "POST", unpair);
@@ -5508,6 +6190,7 @@ namespace confighttp {
     register_api_route("^/api/host/stats$", "GET", getHostStats);
     register_api_route("^/api/host/info$", "GET", getHostInfo);
     register_api_route("^/api/rtsp/sessions$", "GET", listRTSPSessions);
+    register_blocking_api_route("^/api/webrtc/capabilities$", "GET", getWebRTCCapabilities);
     register_api_route("^/api/webrtc/sessions$", "GET", listWebRTCSessions);
     register_api_route("^/api/history/sessions$", "GET", listSessionHistory);
     register_api_route("^/api/history/sessions/active$", "GET", getActiveSessionHistory);
@@ -5528,6 +6211,19 @@ namespace confighttp {
     register_api_route("^/api/vigembus/status$", "GET", getViGEmBusStatus);
     register_api_route("^/api/vigembus/install$", "POST", installViGEmBus);
     register_api_route("^/api/apps/purge_autosync$", "POST", purgeAutoSyncedApps);
+#if defined(_WIN32) || defined(__linux__)
+    register_api_route("^/api/frame-limiter/status$", "GET", getFrameLimiterStatus);
+#endif
+    register_api_route("^/api/steam/status$", "GET", getSteamStatus);
+    register_api_route("^/api/steam/games$", "GET", getSteamGames);
+    register_api_route("^/api/steam/force_sync$", "POST", postSteamForceSync);
+    register_api_route("^/api/steam/launch$", "POST", postSteamLaunch);
+#ifdef __linux__
+    register_api_route("^/api/lutris/status$", "GET", getLutrisStatus);
+    register_api_route("^/api/lutris/games$", "GET", getLutrisGames);
+    register_api_route("^/api/lutris/force_sync$", "POST", postLutrisForceSync);
+    register_api_route("^/api/lutris/launch$", "POST", postLutrisLaunch);
+#endif
 #ifdef _WIN32
     register_api_route("^/api/playnite/status$", "GET", getPlayniteStatus);
     register_api_route("^/api/rtss/status$", "GET", getRtssStatus);
@@ -5537,11 +6233,16 @@ namespace confighttp {
     register_api_route("^/api/playnite/games$", "GET", getPlayniteGames);
     register_api_route("^/api/playnite/categories$", "GET", getPlayniteCategories);
     register_api_route("^/api/playnite/force_sync$", "POST", postPlayniteForceSync);
+    register_blocking_api_route("^/api/playnite/cover$", "POST", postPlayniteCover);
     register_api_route("^/api/playnite/launch$", "POST", postPlayniteLaunch);
-    // Export logs bundle (Windows only)
-    register_api_route("^/api/logs/export$", "GET", downloadPlayniteLogs);
-    register_api_route("^/api/logs/export_crash/manifest$", "GET", getCrashBundleManifest);
-    register_api_route("^/api/logs/export_crash$", "GET", downloadCrashBundle);
+    // Export logs bundle (Windows only). Collection and sanitizing can take
+    // seconds on large log sets; keep it off the single io thread so the rest
+    // of the WebUI stays responsive during an export.
+    register_blocking_api_route("^/api/logs/export$", "GET", downloadPlayniteLogs);
+    register_blocking_api_route("^/api/logs/export_crash/manifest$", "GET", getCrashBundleManifest);
+    register_blocking_api_route("^/api/logs/export_crash$", "GET", downloadCrashBundle);
+#else
+    register_blocking_api_route("^/api/logs/export$", "GET", downloadLogs);
 #endif
     server.resource["^/images/sunshine.ico$"]["GET"] = getFaviconImage;
     server.resource["^/images/logo-apollo-45.png$"]["GET"] = getApolloLogoImage;
@@ -5635,14 +6336,8 @@ namespace confighttp {
    * @return TokenScope The corresponding TokenScope enum value.
    * @throws std::invalid_argument If the input string does not match any known scope.
    */
-  TokenScope scope_from_string(std::string_view s) {
-    if (s == "Read" || s == "read") {
-      return TokenScope::Read;
-    }
-    if (s == "Write" || s == "write") {
-      return TokenScope::Write;
-    }
-    throw std::invalid_argument("Unknown TokenScope: " + std::string(s));
+  TokenScope scope_from_string(std::string_view scope) {
+    return policy::scope_from_string(scope);
   }
 
   /**
@@ -5651,14 +6346,7 @@ namespace confighttp {
    * @return The string representation of the scope.
    */
   std::string scope_to_string(TokenScope scope) {
-    switch (scope) {
-      case TokenScope::Read:
-        return "Read";
-      case TokenScope::Write:
-        return "Write";
-      default:
-        throw std::invalid_argument("Unknown TokenScope enum value");
-    }
+    return policy::scope_to_string(scope);
   }
 
   /**

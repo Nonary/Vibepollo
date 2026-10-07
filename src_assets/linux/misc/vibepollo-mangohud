@@ -1,0 +1,198 @@
+#!/bin/sh
+# Last-mile Steam wrapper for Vibepollo's stream-owned MangoHud frame limit.
+set -eu
+
+if [ "${1-}" != "--appid" ] || [ "$#" -lt 4 ] || [ "${3-}" != "--" ]; then
+  echo "usage: vibepollo-mangohud --appid APPID -- COMMAND [ARG ...]" >&2
+  exit 64
+fi
+
+appid=$2
+case "$appid" in
+  ''|0|*[!0-9]*)
+    echo "vibepollo-mangohud: invalid Steam app ID" >&2
+    exit 64
+    ;;
+esac
+shift 3
+
+if [ -n "${VIBEPOLLO_MANGOHUD_STATE_DIR-}" ]; then
+  state_dir=$VIBEPOLLO_MANGOHUD_STATE_DIR
+elif [ -n "${XDG_RUNTIME_DIR-}" ]; then
+  state_dir=$XDG_RUNTIME_DIR/vibepollo/mangohud
+elif [ -n "${XDG_CONFIG_HOME-}" ]; then
+  state_dir=$XDG_CONFIG_HOME/vibepollo/mangohud-runtime
+else
+  state_dir=${HOME:?}/.config/vibepollo/mangohud-runtime
+fi
+state_file=$state_dir/$appid.state
+
+# With no active Vibepollo stream, this wrapper is a transparent pass-through.
+if [ ! -f "$state_file" ]; then
+  exec "$@"
+fi
+
+version=
+provider=mangohud
+limit=
+preset=custom
+always_show_graph=0
+limiter_method=late
+owner_pid=0
+expires=0
+while IFS='=' read -r key value; do
+  case "$key" in
+    version) version=$value ;;
+    provider) provider=$value ;;
+    limit) limit=$value ;;
+    preset) preset=$value ;;
+    always_show_graph) always_show_graph=$value ;;
+    limiter_method) limiter_method=$value ;;
+    owner_pid) owner_pid=$value ;;
+    expires) expires=$value ;;
+  esac
+done < "$state_file"
+
+case "$limit" in
+  ''|.*|*[^0-9.]*|*.*.*) exec "$@" ;;
+esac
+case "$expires" in
+  ''|*[!0-9]*) exec "$@" ;;
+esac
+case "$owner_pid" in
+  ''|0|*[!0-9]*) exec "$@" ;;
+esac
+now=$(date +%s)
+if { [ "$version" != 1 ] && [ "$version" != 2 ]; } || [ "$expires" -lt "$now" ] || ! kill -0 "$owner_pid" 2>/dev/null; then
+  exec "$@"
+fi
+
+# A managed per-application policy takes precedence over the global launch hook.
+case "$provider" in
+  proton|mangohud-proton|mangohud)
+    VIBEPOLLO_LIMITER_MANAGED=1
+    export VIBEPOLLO_LIMITER_MANAGED
+    ;;
+esac
+
+if [ "$provider" = proton ] || [ "$provider" = mangohud-proton ]; then
+  # Apply the built-in renderer limits after Steam Launch Options so stale
+  # user values cannot win. vkd3d-proton owns D3D12; DXVK owns D3D9-11.
+  VKD3D_FRAME_RATE=$limit
+  export VKD3D_FRAME_RATE
+
+  # Current DXVK accepts only whole-number limits. Round fractional stream
+  # rates to the nearest FPS, while vkd3d-proton retains the exact value.
+  dxvk_limit=${limit%%.*}
+  case "$limit" in
+    *.*)
+      fraction=${limit#*.}
+      case "$fraction" in
+        [5-9]*) dxvk_limit=$((dxvk_limit + 1)) ;;
+      esac
+      ;;
+  esac
+  # Older DXVK and GE protonfixes read this before DXVK_CONFIG. Override
+  # stale Launch Options here as well as the newer configuration keys.
+  DXVK_FRAME_RATE=$dxvk_limit
+  export DXVK_FRAME_RATE
+  dxvk_override="dxvk.maxFrameRate = $dxvk_limit; dxgi.maxFrameRate = $dxvk_limit; d3d9.maxFrameRate = $dxvk_limit"
+  if [ -n "${DXVK_CONFIG-}" ]; then
+    DXVK_CONFIG="$DXVK_CONFIG; $dxvk_override"
+  else
+    DXVK_CONFIG=$dxvk_override
+  fi
+  export DXVK_CONFIG
+
+  if [ "$provider" = mangohud-proton ]; then
+    # Keep MangoHUD visible for telemetry, but make its limiter inert so the
+    # Proton renderer remains the sole pacing authority.
+    managed_config=read_cfg
+    if [ -n "${MANGOHUD_CONFIG-}" ]; then
+      managed_config=$managed_config,$MANGOHUD_CONFIG
+    fi
+    case "$preset" in
+      1|2|3|4) managed_config=$managed_config,preset=$preset ;;
+    esac
+    managed_config=$managed_config,no_display=0
+    if [ "$always_show_graph" = 1 ]; then
+      managed_config=$managed_config,frame_timing=1
+    fi
+    MANGOHUD_CONFIG=$managed_config,fps_limit=0
+    MANGOHUD=1
+    export MANGOHUD_CONFIG MANGOHUD
+    unset MANGOHUD_FPS_LIMIT
+  else
+    # Suppress MangoHUD for an unambiguous built-in-limiter mode, including
+    # when the user's Launch Options wrapped %command% in mangohud.
+    unset MANGOHUD MANGOHUD_CONFIG MANGOHUD_FPS_LIMIT
+  fi
+
+  shim='/usr/$LIB/mangohud/libMangoHud_shim.so'
+  filtered_preload=
+  old_ifs=$IFS
+  IFS=:
+  for item in ${LD_PRELOAD-}; do
+    if [ -n "$item" ] && { [ "$provider" = mangohud-proton ] || [ "$item" != "$shim" ]; }; then
+      if [ -n "$filtered_preload" ]; then
+        filtered_preload=$filtered_preload:$item
+      else
+        filtered_preload=$item
+      fi
+    fi
+  done
+  IFS=$old_ifs
+  if [ "$provider" = mangohud-proton ]; then
+    case ":$filtered_preload:" in
+      *":$shim:"*) LD_PRELOAD=$filtered_preload ;;
+      ::) LD_PRELOAD=$shim ;;
+      *) LD_PRELOAD=$filtered_preload:$shim ;;
+    esac
+    export LD_PRELOAD
+  elif [ -n "$filtered_preload" ]; then
+    LD_PRELOAD=$filtered_preload
+    export LD_PRELOAD
+  else
+    unset LD_PRELOAD
+  fi
+  exec "$@"
+fi
+
+[ "$provider" = mangohud ] || exec "$@"
+
+case "$limiter_method" in
+  early|late) ;;
+  *) limiter_method=late ;;
+esac
+
+# Preserve the user's HUD choices, then append Vibepollo's settings so its
+# stream-owned limit is the final value parsed by MangoHud.
+managed_config=read_cfg
+if [ -n "${MANGOHUD_CONFIG-}" ]; then
+  managed_config=$managed_config,$MANGOHUD_CONFIG
+fi
+case "$preset" in
+  1|2|3|4) managed_config=$managed_config,preset=$preset,no_display=0 ;;
+esac
+if [ "$always_show_graph" = 1 ]; then
+  managed_config=$managed_config,no_display=0,frame_timing=1
+fi
+MANGOHUD_CONFIG=$managed_config,fps_limit_method=$limiter_method,fps_limit=$limit
+MANGOHUD=1
+export MANGOHUD_CONFIG MANGOHUD
+
+# MangoHud 0.8.4 truncates this compatibility variable to an integer. Exact
+# fractional limits are carried solely by MANGOHUD_CONFIG.
+case "$limit" in
+  *.*) unset MANGOHUD_FPS_LIMIT ;;
+  *) MANGOHUD_FPS_LIMIT=$limit; export MANGOHUD_FPS_LIMIT ;;
+esac
+
+shim='/usr/$LIB/mangohud/libMangoHud_shim.so'
+case ":${LD_PRELOAD-}:" in
+  *":$shim:"*) ;;
+  ::) LD_PRELOAD=$shim ;;
+  *) LD_PRELOAD=${LD_PRELOAD}:$shim ;;
+esac
+export LD_PRELOAD
+exec "$@"

@@ -51,10 +51,13 @@ namespace session_history::storage {
 
   bool open_write_db(const std::string &db_path, db_ptr &out_db);
   bool open_read_db(const std::string &db_path, db_ptr &out_db);
+  bool open_memory_db(db_ptr &out_db);
   bool apply_schema_and_migrations(sqlite3 *db, int schema_version);
 
   bool process_begin(sqlite3 *db, const session_metadata_t &metadata);
+  bool process_begin_at(sqlite3 *db, const session_metadata_t &metadata, double start_time_unix);
   bool process_end(sqlite3 *db, const std::string &uuid);
+  bool process_end_at(sqlite3 *db, const std::string &uuid, double end_time_unix);
   bool process_sample(sqlite3 *db, const session_sample_t &sample, int max_samples_per_session);
   bool process_event(sqlite3 *db, const session_event_t &event, int max_events_per_session);
   delete_apply_e process_delete(sqlite3 *db, const std::string &uuid);

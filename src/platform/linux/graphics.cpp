@@ -3,18 +3,24 @@
  * @brief Definitions for graphics related functions.
  */
 // standard includes
+#include <atomic>
 #include <fcntl.h>
+#include <limits>
+#include <mutex>
 
 // local includes
 #include "graphics.h"
 #include "src/file_handler.h"
 #include "src/logging.h"
 #include "src/video.h"
+#if !defined(__FreeBSD__)
+  #include "scoped_capability.h"
+#endif
 
 // platform includes
-#if !defined(__FreeBSD__)
-  #include <sys/capability.h>
-#endif
+#include <linux/dma-buf.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
 
 extern "C" {
 #include <libavutil/pixdesc.h>
@@ -27,6 +33,14 @@ extern "C" {
 #define fourcc_code(a, b, c, d) ((std::uint32_t) (a) | ((std::uint32_t) (b) << 8) | ((std::uint32_t) (c) << 16) | ((std::uint32_t) (d) << 24))
 #define fourcc_mod_code(vendor, val) ((((uint64_t) vendor) << 56) | ((val) & 0x00ffffffffffffffULL))
 #define DRM_FORMAT_MOD_INVALID fourcc_mod_code(0, ((1ULL << 56) - 1))
+#define DRM_FORMAT_ARGB8888 fourcc_code('A', 'R', '2', '4')
+#define DRM_FORMAT_XRGB8888 fourcc_code('X', 'R', '2', '4')
+#define DRM_FORMAT_ABGR8888 fourcc_code('A', 'B', '2', '4')
+#define DRM_FORMAT_XBGR8888 fourcc_code('X', 'B', '2', '4')
+#define DRM_FORMAT_ARGB2101010 fourcc_code('A', 'R', '3', '0')
+#define DRM_FORMAT_XRGB2101010 fourcc_code('X', 'R', '3', '0')
+#define DRM_FORMAT_ABGR2101010 fourcc_code('A', 'B', '3', '0')
+#define DRM_FORMAT_XBGR2101010 fourcc_code('X', 'B', '3', '0')
 
 #if !defined(SUNSHINE_SHADERS_DIR)  // for testing this needs to be defined in cmake as we don't do an install
   #define SUNSHINE_SHADERS_DIR SUNSHINE_ASSETS_DIR "/shaders/opengl"
@@ -35,9 +49,46 @@ extern "C" {
 using namespace std::literals;
 
 namespace gl {
-  GladGLContext ctx;
+  namespace {
+    std::mutex context_seed_mutex;
+    GladGLContext context_seed {};
+    PFNGLEGLIMAGETARGETTEXTURE2DOESPROC egl_image_target_texture_2d_seed = nullptr;
 
-  static PFNGLEGLIMAGETARGETTEXTURE2DOESPROC egl_image_target_texture_2d_fn = nullptr;
+    GladGLContext initial_context_dispatch() {
+      std::lock_guard lock {context_seed_mutex};
+      return context_seed;
+    }
+
+    PFNGLEGLIMAGETARGETTEXTURE2DOESPROC initial_egl_image_target_texture_2d() {
+      std::lock_guard lock {context_seed_mutex};
+      return egl_image_target_texture_2d_seed;
+    }
+  }  // namespace
+
+  // OpenGL dispatch is context/vendor-specific. Each owner thread loads its own
+  // table instead of rewriting pointers underneath active encoder threads. The
+  // seed leaves legacy cross-thread cleanup with callable dispatch stubs even
+  // though GL objects are still expected to be destroyed by their owner.
+  thread_local GladGLContext ctx = initial_context_dispatch();
+
+  static thread_local PFNGLEGLIMAGETARGETTEXTURE2DOESPROC egl_image_target_texture_2d_fn = initial_egl_image_target_texture_2d();
+
+  bool load_context_dispatch() {
+    GladGLContext loaded_context {};
+    if (!gladLoadGLContext(&loaded_context, eglGetProcAddress)) {
+      return false;
+    }
+
+    auto loaded_egl_image_target =
+      (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC) (GLADapiproc) eglGetProcAddress("glEGLImageTargetTexture2DOES");
+    ctx = loaded_context;
+    egl_image_target_texture_2d_fn = loaded_egl_image_target;
+
+    std::lock_guard lock {context_seed_mutex};
+    context_seed = loaded_context;
+    egl_image_target_texture_2d_seed = loaded_egl_image_target;
+    return true;
+  }
 
   PFNGLEGLIMAGETARGETTEXTURE2DOESPROC egl_image_target_texture_2d() {
     return egl_image_target_texture_2d_fn;
@@ -97,15 +148,20 @@ namespace gl {
   }
 
   std::string shader_t::err_str() {
-    int length;
+    GLint length = 0;
     ctx.GetShaderiv(handle(), GL_INFO_LOG_LENGTH, &length);
 
+    if (length <= 0) {
+      return {};
+    }
+
     std::string string;
-    string.resize(length);
+    string.resize(static_cast<std::size_t>(length));
 
-    ctx.GetShaderInfoLog(handle(), length, &length, string.data());
+    GLsizei written = 0;
+    ctx.GetShaderInfoLog(handle(), length, &written, string.data());
 
-    string.resize(length - 1);
+    string.resize(static_cast<std::size_t>(std::max<GLsizei>(written, 0)));
 
     return string;
   }
@@ -173,15 +229,20 @@ namespace gl {
   }
 
   std::string program_t::err_str() {
-    int length;
+    GLint length = 0;
     ctx.GetProgramiv(handle(), GL_INFO_LOG_LENGTH, &length);
 
+    if (length <= 0) {
+      return {};
+    }
+
     std::string string;
-    string.resize(length);
+    string.resize(static_cast<std::size_t>(length));
 
-    ctx.GetShaderInfoLog(handle(), length, &length, string.data());
+    GLsizei written = 0;
+    ctx.GetProgramInfoLog(handle(), length, &written, string.data());
 
-    string.resize(length - 1);
+    string.resize(static_cast<std::size_t>(std::max<GLsizei>(written, 0)));
 
     return string;
   }
@@ -309,6 +370,33 @@ namespace gbm {
 
 namespace egl {
 
+  namespace {
+    // GLAD's EGL and GL dispatch tables are process-global. Load each table
+    // exactly once after a real display/context is available so a second
+    // encoder session cannot rewrite function pointers while another session
+    // is using them. Failed first attempts remain retryable.
+    std::mutex egl_dispatch_mutex;
+    bool egl_client_dispatch_loaded = false;
+    bool egl_display_dispatch_loaded = false;
+
+    bool ensure_loader_locked() {
+      if (egl_client_dispatch_loaded) {
+        return true;
+      }
+      if (!gladLoaderLoadEGL(EGL_NO_DISPLAY)) {
+        BOOST_LOG(error) << "Failed to load EGL library symbols"sv;
+        return false;
+      }
+      egl_client_dispatch_loaded = true;
+      return true;
+    }
+  }  // namespace
+
+  bool ensure_loader() {
+    std::lock_guard lock {egl_dispatch_mutex};
+    return ensure_loader_locked();
+  }
+
   bool fail() {
     return eglGetError() != EGL_SUCCESS;
   }
@@ -317,6 +405,14 @@ namespace egl {
    * @memberof egl::display_t
    */
   display_t make_display(std::variant<gbm::gbm_t::pointer, wl_display *, _XDisplay *> native_display) {
+    // Keep initial display creation behind the same lock as the one process-wide
+    // initialized-display reload. Once it succeeds, later calls skip the GLAD
+    // write and the short initialization-only critical section is harmless.
+    std::lock_guard dispatch_lock {egl_dispatch_mutex};
+    if (!ensure_loader_locked()) {
+      return nullptr;
+    }
+
     int egl_platform;
     void *native_display_p;
 
@@ -361,15 +457,22 @@ namespace egl {
       return nullptr;
     }
 
-    if (!gladLoaderLoadEGL(display.get())) {
-      BOOST_LOG(error) << "Failed to reload EGL for initialized display"sv;
-      return nullptr;
+    if (!egl_display_dispatch_loaded) {
+      if (!gladLoaderLoadEGL(display.get())) {
+        BOOST_LOG(error) << "Failed to reload EGL for initialized display"sv;
+        return nullptr;
+      }
     }
 
     const char *extension_st = eglQueryString(display.get(), EGL_EXTENSIONS);
     const char *version = eglQueryString(display.get(), EGL_VERSION);
     const char *vendor = eglQueryString(display.get(), EGL_VENDOR);
     const char *apis = eglQueryString(display.get(), EGL_CLIENT_APIS);
+
+    if (!extension_st) {
+      BOOST_LOG(error) << "Couldn't query EGL display extensions"sv;
+      return nullptr;
+    }
 
     BOOST_LOG(debug) << "EGL: ["sv << vendor << "]: version ["sv << version << ']';
     BOOST_LOG(debug) << "API's supported: ["sv << apis << ']';
@@ -387,22 +490,13 @@ namespace egl {
         return nullptr;
       }
     }
+    egl_display_dispatch_loaded = true;
 
     return display;
   }
 
   std::optional<ctx_t> make_ctx(display_t::pointer display) {
     bool nice_warning = false;
-#if !defined(__FreeBSD__)
-    cap_t caps = cap_get_proc();
-
-    cap_value_t sys_nice = CAP_SYS_NICE;
-    if (cap_set_flag(caps, CAP_EFFECTIVE, 1, &sys_nice, CAP_SET) || cap_set_proc(caps)) {
-      BOOST_LOG(debug) << "Failed to gain CAP_SYS_NICE"sv;
-      nice_warning = true;
-    }
-    cap_free(caps);
-#endif
 
     constexpr int conf_attr[] {
       EGL_RENDERABLE_TYPE,
@@ -410,10 +504,15 @@ namespace egl {
       EGL_NONE
     };
 
-    int count;
-    EGLConfig conf;
+    int count = 0;
+    EGLConfig conf = nullptr;
     if (!eglChooseConfig(display, conf_attr, &conf, 1, &count)) {
       BOOST_LOG(error) << "Couldn't set config attributes: ["sv << util::hex(eglGetError()).to_string_view() << ']';
+      return std::nullopt;
+    }
+
+    if (count == 0 || conf == nullptr) {
+      BOOST_LOG(error) << "No EGL configuration supports OpenGL on the selected display"sv;
       return std::nullopt;
     }
 
@@ -429,14 +528,41 @@ namespace egl {
     attr.push_back(3);
 
     // Only add the high priority attribute if the driver explicitly supports it
-    if (extension_st && std::string_view(extension_st).contains("EGL_IMG_context_priority"sv)) {
+    const bool high_priority_supported =
+      extension_st && std::string_view(extension_st).contains("EGL_IMG_context_priority"sv);
+    if (high_priority_supported) {
       BOOST_LOG(debug) << "EGL: High priority context supported"sv;
+    }
+
+    EGLContext raw_ctx = EGL_NO_CONTEXT;
+#if !defined(__FreeBSD__)
+    if (high_priority_supported) {
+      platf::linux_security::scoped_effective_capability nice {CAP_SYS_NICE};
+      if (nice.state() == platf::linux_security::scoped_effective_capability::state_e::failed) {
+        BOOST_LOG(error) << "Failed to safely raise CAP_SYS_NICE for EGL context creation"sv;
+        return std::nullopt;
+      }
+      if (nice.active()) {
+        attr.push_back(EGL_CONTEXT_PRIORITY_LEVEL_IMG);
+        attr.push_back(EGL_CONTEXT_PRIORITY_HIGH_IMG);
+      } else {
+        nice_warning = true;
+        BOOST_LOG(debug) << "CAP_SYS_NICE is not permitted; creating an EGL context at default priority"sv;
+      }
+      attr.push_back(EGL_NONE);
+      raw_ctx = eglCreateContext(display, conf, EGL_NO_CONTEXT, attr.data());
+    } else {
+      attr.push_back(EGL_NONE);
+      raw_ctx = eglCreateContext(display, conf, EGL_NO_CONTEXT, attr.data());
+    }
+#else
+    if (high_priority_supported) {
       attr.push_back(EGL_CONTEXT_PRIORITY_LEVEL_IMG);
       attr.push_back(EGL_CONTEXT_PRIORITY_HIGH_IMG);
     }
     attr.push_back(EGL_NONE);
-
-    EGLContext raw_ctx = eglCreateContext(display, conf, EGL_NO_CONTEXT, attr.data());
+    raw_ctx = eglCreateContext(display, conf, EGL_NO_CONTEXT, attr.data());
+#endif
     if (raw_ctx == EGL_NO_CONTEXT) {
       BOOST_LOG(error) << "Couldn't create EGL context: ["sv << util::hex(eglGetError()).to_string_view() << ']';
       return std::nullopt;
@@ -462,14 +588,11 @@ namespace egl {
       return std::nullopt;
     }
 
-    if (!gladLoadGLContext(&gl::ctx, eglGetProcAddress)) {
+    if (!gl::load_context_dispatch()) {
       BOOST_LOG(error) << "Couldn't load OpenGL library"sv;
       return std::nullopt;
     }
-
-    gl::egl_image_target_texture_2d_fn =
-      (gl::PFNGLEGLIMAGETARGETTEXTURE2DOESPROC) (GLADapiproc) eglGetProcAddress("glEGLImageTargetTexture2DOES");
-    if (!gl::egl_image_target_texture_2d_fn) {
+    if (!gl::egl_image_target_texture_2d()) {
       BOOST_LOG(warning) << "GL: glEGLImageTargetTexture2DOES not available; DMA-BUF import will fail"sv;
     }
 
@@ -491,14 +614,6 @@ namespace egl {
     BOOST_LOG(debug) << "GL: shader: "sv << gl_shader;
 
     gl::ctx.PixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-#if !defined(__FreeBSD__)
-    caps = cap_get_proc();
-    if (cap_set_flag(caps, CAP_EFFECTIVE, 1, &sys_nice, CAP_CLEAR) || cap_set_proc(caps)) {
-      BOOST_LOG(debug) << "Failed to drop CAP_SYS_NICE"sv;
-    }
-    cap_free(caps);
-#endif
 
     return ctx;
   }
@@ -613,12 +728,133 @@ namespace egl {
       BOOST_LOG(error) << "glEGLImageTargetTexture2DOES is not available; cannot import RGB DMA-BUF"sv;
       return std::nullopt;
     }
+    // GL errors are sticky. Discard errors from earlier conversion work so
+    // only this DMA-BUF binding decides whether the import succeeded.
+    while (gl::ctx.GetError() != GL_NO_ERROR) {
+    }
     gl::egl_image_target_texture_2d()(GL_TEXTURE_2D, rgb->xrgb8);
-
+    const auto import_error = gl::ctx.GetError();
     gl::ctx.BindTexture(GL_TEXTURE_2D, 0);
 
-    gl_drain_errors;
+    if (import_error != GL_NO_ERROR) {
+      static std::atomic_bool warned {false};
+      if (!warned.exchange(true, std::memory_order_relaxed)) {
+        BOOST_LOG(warning) << "GL rejected imported RGB DMA-BUF texture (fourcc="
+                           << util::hex(xrgb.fourcc).to_string_view() << ", error="
+                           << util::hex(import_error).to_string_view()
+                           << ", modifier=" << util::hex(xrgb.modifier).to_string_view() << ").";
+      }
+      return std::nullopt;
+    }
 
+    return rgb;
+  }
+
+  std::optional<rgb_t> upload_source(display_t::pointer egl_display, const surface_descriptor_t &xrgb) {
+    if (xrgb.direct_import_required) {
+      static std::atomic_bool warned {false};
+      if (!warned.exchange(true, std::memory_order_relaxed)) {
+        BOOST_LOG(warning) << "Managed virtual framebuffer rejected direct GPU import (fourcc="
+                           << util::hex(xrgb.fourcc).to_string_view() << ", modifier="
+                           << util::hex(xrgb.modifier).to_string_view()
+                           << "); using the linear CPU upload fallback.";
+      }
+    }
+    if (xrgb.modifier != 0 && xrgb.modifier != DRM_FORMAT_MOD_INVALID) {
+      BOOST_LOG(error) << "CPU DMA-BUF upload requires a linear framebuffer modifier.";
+      return std::nullopt;
+    }
+    if (xrgb.fds[0] < 0 || xrgb.width <= 0 || xrgb.height <= 0 || xrgb.pitches[0] == 0 || xrgb.pitches[0] % sizeof(std::uint32_t) != 0) {
+      return std::nullopt;
+    }
+
+    GLenum internal_format;
+    GLenum external_format;
+    GLenum external_type;
+    switch (xrgb.fourcc) {
+      case DRM_FORMAT_ARGB8888:
+      case DRM_FORMAT_XRGB8888:
+        internal_format = GL_RGBA8;
+        external_format = GL_BGRA;
+        external_type = GL_UNSIGNED_BYTE;
+        break;
+      case DRM_FORMAT_ABGR8888:
+      case DRM_FORMAT_XBGR8888:
+        internal_format = GL_RGBA8;
+        external_format = GL_RGBA;
+        external_type = GL_UNSIGNED_BYTE;
+        break;
+      case DRM_FORMAT_ARGB2101010:
+      case DRM_FORMAT_XRGB2101010:
+        internal_format = GL_RGB10_A2;
+        external_format = GL_BGRA;
+        external_type = GL_UNSIGNED_INT_2_10_10_10_REV;
+        break;
+      case DRM_FORMAT_ABGR2101010:
+      case DRM_FORMAT_XBGR2101010:
+        internal_format = GL_RGB10_A2;
+        external_format = GL_RGBA;
+        external_type = GL_UNSIGNED_INT_2_10_10_10_REV;
+        break;
+      default:
+        BOOST_LOG(error) << "CPU DMA-BUF upload does not support fourcc "
+                         << util::hex(xrgb.fourcc).to_string_view();
+        return std::nullopt;
+    }
+
+    const auto row_bytes = static_cast<std::size_t>(xrgb.pitches[0]);
+    const auto height = static_cast<std::size_t>(xrgb.height);
+    const auto offset = static_cast<std::size_t>(xrgb.offsets[0]);
+    if (height > std::numeric_limits<std::size_t>::max() / row_bytes || offset > std::numeric_limits<std::size_t>::max() - row_bytes * height) {
+      return std::nullopt;
+    }
+    const auto mapped_size = offset + row_bytes * height;
+    void *mapped = mmap(nullptr, mapped_size, PROT_READ, MAP_SHARED, xrgb.fds[0], 0);
+    if (mapped == MAP_FAILED) {
+      BOOST_LOG(error) << "Couldn't map RGB DMA-BUF for CPU upload: " << strerror(errno);
+      return std::nullopt;
+    }
+
+    dma_buf_sync sync {.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ};
+    (void) ioctl(xrgb.fds[0], DMA_BUF_IOCTL_SYNC, &sync);
+    auto cleanup = util::fail_guard([&]() {
+      sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+      (void) ioctl(xrgb.fds[0], DMA_BUF_IOCTL_SYNC, &sync);
+      munmap(mapped, mapped_size);
+      gl::ctx.PixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+      gl::ctx.BindTexture(GL_TEXTURE_2D, 0);
+    });
+
+    rgb_t rgb {
+      egl_display,
+      EGL_NO_IMAGE,
+      gl::tex_t::make(1)
+    };
+    gl::ctx.BindTexture(GL_TEXTURE_2D, rgb->tex[0]);
+    gl::ctx.TexStorage2D(GL_TEXTURE_2D, 1, internal_format, xrgb.width, xrgb.height);
+    gl::ctx.PixelStorei(GL_UNPACK_ROW_LENGTH, xrgb.pitches[0] / sizeof(std::uint32_t));
+    gl::ctx.TexSubImage2D(
+      GL_TEXTURE_2D,
+      0,
+      0,
+      0,
+      xrgb.width,
+      xrgb.height,
+      external_format,
+      external_type,
+      static_cast<const std::uint8_t *>(mapped) + offset
+    );
+    const auto upload_error = gl::ctx.GetError();
+    if (upload_error != GL_NO_ERROR) {
+      BOOST_LOG(error) << "CPU DMA-BUF texture upload failed: "
+                       << util::hex(upload_error).to_string_view();
+      return std::nullopt;
+    }
+
+    static std::atomic_bool warned {false};
+    if (!warned.exchange(true, std::memory_order_relaxed)) {
+      BOOST_LOG(warning) << "Using CPU DMA-BUF upload fallback for cross-device KMS capture.";
+    }
     return rgb;
   }
 
@@ -781,6 +1017,29 @@ namespace egl {
     program[1].bind(color_matrix);
   }
 
+  void sws_t::apply_output_lut(const std::shared_ptr<const img_descriptor_t::gamma_lut_t> &lut, std::uint64_t serial) {
+    if (serial == output_lut_serial) {
+      return;
+    }
+
+    static constexpr std::array<std::array<std::uint16_t, 3>, 2> identity {{
+      {{0, 0, 0}},
+      {{65535, 65535, 65535}},
+    }};
+    const auto *data = identity.data();
+    auto width = static_cast<GLsizei>(identity.size());
+    if (lut && lut->size() >= 2) {
+      data = lut->data();
+      width = static_cast<GLsizei>(lut->size());
+    }
+
+    gl::ctx.ActiveTexture(GL_TEXTURE1);
+    gl::ctx.BindTexture(GL_TEXTURE_2D, output_lut[0]);
+    gl::ctx.TexImage2D(GL_TEXTURE_2D, 0, GL_RGB16, width, 1, 0, GL_RGB, GL_UNSIGNED_SHORT, data);
+    gl::ctx.ActiveTexture(GL_TEXTURE0);
+    output_lut_serial = serial;
+  }
+
   std::optional<sws_t> sws_t::make(int in_width, int in_height, int out_width, int out_height, gl::tex_t &&tex) {
     sws_t sws;
 
@@ -827,8 +1086,15 @@ namespace egl {
       bool error_flag = false;
       for (int x = 0; x < count; ++x) {
         auto &compiled_source = compiled_sources[x];
+        auto shader_source = file_handler::read_file(sources[x]);
 
-        compiled_source = gl::shader_t::compile(file_handler::read_file(sources[x]), shader_type[x % 2]);
+        if (shader_source.empty()) {
+          BOOST_LOG(error) << "OpenGL shader source is missing, unreadable, or empty: ["sv << sources[x] << ']';
+          error_flag = true;
+          continue;
+        }
+
+        compiled_source = gl::shader_t::compile(shader_source, shader_type[x % 2]);
         gl_drain_errors;
 
         if (compiled_source.has_right()) {
@@ -896,8 +1162,32 @@ namespace egl {
 
     sws.tex = std::move(tex);
 
+    sws.output_lut = gl::tex_t::make(1);
+    gl::ctx.ActiveTexture(GL_TEXTURE1);
+    gl::ctx.BindTexture(GL_TEXTURE_2D, sws.output_lut[0]);
+    gl::ctx.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gl::ctx.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    gl::ctx.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl::ctx.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    gl::ctx.ActiveTexture(GL_TEXTURE0);
+    sws.output_lut_serial = std::numeric_limits<std::uint64_t>::max();
+    sws.apply_output_lut({}, 0);
+
+    for (auto index = 0; index < 2; ++index) {
+      gl::ctx.UseProgram(sws.program[index].handle());
+      const auto image_location = gl::ctx.GetUniformLocation(sws.program[index].handle(), "image");
+      const auto lut_location = gl::ctx.GetUniformLocation(sws.program[index].handle(), "output_lut");
+      if (image_location < 0 || lut_location < 0) {
+        BOOST_LOG(error) << "Couldn't bind RGB conversion texture uniforms"sv;
+        return std::nullopt;
+      }
+      gl::ctx.Uniform1i(image_location, 0);
+      gl::ctx.Uniform1i(lut_location, 1);
+    }
+
     sws.cursor_framebuffer = gl::frame_buf_t::make(1);
     sws.cursor_framebuffer.bind(&sws.tex[0], &sws.tex[1]);
+    sws.copy_framebuffer = gl::frame_buf_t::make(1);
 
     sws.program[0].bind(sws.color_matrix);
     sws.program[1].bind(sws.color_matrix);
@@ -968,11 +1258,10 @@ namespace egl {
     // When only a sub-part of the image must be encoded...
     const bool copy = offset_x || offset_y || img.sd.width != in_width || img.sd.height != in_height;
     if (copy) {
-      auto framebuf = gl::frame_buf_t::make(1);
-      framebuf.bind(&texture, &texture + 1);
+      copy_framebuffer.bind(&texture, &texture + 1);
 
       loaded_texture = tex[0];
-      framebuf.copy(0, loaded_texture, offset_x, offset_y, in_width, in_height);
+      copy_framebuffer.copy(0, loaded_texture, offset_x, offset_y, in_width, in_height);
     } else {
       loaded_texture = texture;
     }
@@ -1024,6 +1313,7 @@ namespace egl {
   }
 
   int sws_t::convert(gl::frame_buf_t &fb) {
+    gl::ctx.ActiveTexture(GL_TEXTURE0);
     gl::ctx.BindTexture(GL_TEXTURE_2D, loaded_texture);
 
     GLenum attachments[] {

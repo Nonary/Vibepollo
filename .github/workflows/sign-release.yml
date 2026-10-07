@@ -1,0 +1,815 @@
+---
+name: Sign and publish release
+permissions: {}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing source tag to sign and publish, for example 1.18.4
+        required: true
+        type: string
+      build_run_id:
+        description: Optional recovery override. Leave empty to select the newest valid successful CI tag build for this exact release tag and commit.
+        required: false
+        type: string
+        default: ''
+      signed_run_id:
+        description: Optional recovery override for a prior run with finalized signed artifacts. Leave empty to auto-reuse an exact provenance match when available.
+        required: false
+        type: string
+        default: ''
+      release_draft:
+        description: Create or update the signed GitHub release as an unpublished draft for manual review.
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: "sign-release-${{ inputs.release_tag }}"
+  cancel-in-progress: false
+
+jobs:
+  resolve_release:
+    name: Resolve built release
+    runs-on: ubuntu-latest
+    outputs:
+      arch_artifact_id: ${{ steps.resolve.outputs.arch_artifact_id }}
+      build_run_id: ${{ steps.resolve.outputs.build_run_id }}
+      release_commit: ${{ steps.resolve.outputs.release_commit }}
+      release_version: ${{ steps.resolve.outputs.release_version }}
+      signed_artifact_id: ${{ steps.resolve.outputs.signed_artifact_id }}
+      signed_run_id: ${{ steps.resolve.outputs.signed_run_id }}
+      tag_name: ${{ steps.resolve.outputs.tag_name }}
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag and successful build
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          REQUESTED_SIGNED_RUN_ID: ${{ inputs.signed_run_id }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          git fetch --force --tags
+
+          requested_tag="${REQUESTED_TAG#refs/tags/}"
+          source_tag="${requested_tag#v}"
+          if ! git show-ref --verify --quiet "refs/tags/${source_tag}"; then
+            echo "::error::V-less release source tag '${source_tag}' does not exist."
+            exit 1
+          fi
+
+          release_commit="$(git rev-list -n 1 "${source_tag}")"
+          release_version="${source_tag#v}"
+          tag_name="${source_tag}"
+          if [[ ! "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Unsupported release tag '${source_tag}'."
+            exit 1
+          fi
+
+          notes_file="release_notes/${release_version}.md"
+          if ! git cat-file -e "${release_commit}:${notes_file}"; then
+            echo "::error::Exact release notes '${notes_file}' are missing from ${source_tag}."
+            exit 1
+          fi
+
+          required_artifacts=(
+            "build-Archlinux"
+            "windows-symbols-Windows"
+            "unsigned-msi-package-Windows"
+            # upload-artifact v7 uses the source filename as the artifact name
+            # when archive is false, which SignPath requires for a direct MSI.
+            "Vibepollo.msi"
+            "windows-versioninfo-Windows"
+          )
+
+          source_run_is_valid() {
+            local candidate_run_id="$1"
+            local artifacts_json
+            local artifact_name
+            local artifact_count
+            local run_json
+            local source_branch
+            local source_conclusion
+            local source_event
+            local source_path
+            local source_sha
+            local source_status
+
+            if [[ ! "${candidate_run_id}" =~ ^[0-9]+$ ]]; then
+              echo "CI run ID '${candidate_run_id}' is not a decimal run ID." >&2
+              return 1
+            fi
+
+            if ! run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}")"; then
+              echo "Could not read CI run ${candidate_run_id}." >&2
+              return 1
+            fi
+
+            source_branch="$(jq -r '.head_branch // empty' <<< "${run_json}")"
+            source_conclusion="$(jq -r '.conclusion // empty' <<< "${run_json}")"
+            source_event="$(jq -r '.event // empty' <<< "${run_json}")"
+            source_path="$(jq -r '.path // empty' <<< "${run_json}")"
+            source_sha="$(jq -r '.head_sha // empty' <<< "${run_json}")"
+            source_status="$(jq -r '.status // empty' <<< "${run_json}")"
+
+            if [[ "${source_path}" != ".github/workflows/ci.yml" && "${source_path}" != ".github/workflows/ci.yml@"* ]]; then
+              echo "CI run ${candidate_run_id} does not identify .github/workflows/ci.yml (optionally @ref)." >&2
+              return 1
+            fi
+
+            if [[ "${source_status}" != "completed" || "${source_conclusion}" != "success" || "${source_event}" != "push" || "${source_sha}" != "${release_commit}" || "${source_branch}" != "${source_tag}" ]]; then
+              echo "CI run ${candidate_run_id} does not match completed successful ci.yml tag build ${source_tag} at ${release_commit}." >&2
+              return 1
+            fi
+
+            if ! artifacts_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}/artifacts?per_page=100" | jq -s '{artifacts: [.[].artifacts[]?]}')"; then
+              echo "Could not read retained artifacts for CI run ${candidate_run_id}." >&2
+              return 1
+            fi
+
+            for artifact_name in "${required_artifacts[@]}"; do
+              artifact_count="$(jq -r --arg name "${artifact_name}" '[.artifacts[] | select(.name == $name and (.expired | not))] | length' <<< "${artifacts_json}")"
+              if [[ "${artifact_count}" != "1" ]]; then
+                echo "CI run ${candidate_run_id} does not have exactly one unexpired ${artifact_name} artifact." >&2
+                return 1
+              fi
+            done
+          }
+
+          build_run_id="${REQUESTED_BUILD_RUN_ID}"
+          if [[ -n "${build_run_id}" ]]; then
+            if ! source_run_is_valid "${build_run_id}"; then
+              echo "::error::The supplied build_run_id is not a valid retained CI build for ${source_tag} at ${release_commit}."
+              exit 1
+            fi
+            echo "::notice::Using explicitly requested exact CI build ${build_run_id}."
+          else
+            matching_runs="$(
+              gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?event=push&status=completed&head_sha=${release_commit}&per_page=100" |
+                jq -rs --arg release_commit "${release_commit}" --arg source_tag "${source_tag}" '
+                  [
+                    .[]
+                    | .workflow_runs[]?
+                    | select(
+                        .status == "completed"
+                        and .conclusion == "success"
+                        and .event == "push"
+                        and (
+                          .path == ".github/workflows/ci.yml"
+                          or ((.path // "") | startswith(".github/workflows/ci.yml@"))
+                        )
+                        and .head_sha == $release_commit
+                        and .head_branch == $source_tag
+                      )
+                  ]
+                  | sort_by([.run_started_at // "", .id])
+                  | reverse
+                  | .[].id
+                '
+            )"
+
+            while IFS= read -r candidate_run_id; do
+              [[ -z "${candidate_run_id}" ]] && continue
+              if source_run_is_valid "${candidate_run_id}"; then
+                build_run_id="${candidate_run_id}"
+                break
+              fi
+              echo "::notice::Skipping CI run ${candidate_run_id}; it no longer has the required retained release artifacts."
+            done <<< "${matching_runs}"
+
+            if [[ -z "${build_run_id}" ]]; then
+              echo "::error::No retained successful ci.yml tag build matched ${source_tag} at ${release_commit}. Re-run CI for this tag or provide a valid build_run_id recovery override."
+              exit 1
+            fi
+            echo "::notice::Auto-resolved exact CI build ${build_run_id} for ${source_tag} at ${release_commit}."
+          fi
+
+          artifacts_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${build_run_id}/artifacts?per_page=100" | jq -s '{artifacts: [.[].artifacts[]?]}')"
+          mapfile -t arch_artifact_ids < <(
+            jq -r '[.artifacts[] | select(.name == "build-Archlinux" and (.expired | not))] | .[].id' <<< "${artifacts_json}"
+          )
+          if (( ${#arch_artifact_ids[@]} != 1 )); then
+            echo "::error::Resolved CI run does not contain exactly one retained Arch package artifact."
+            exit 1
+          fi
+          arch_artifact_id="${arch_artifact_ids[0]}"
+
+          signed_artifact_id=""
+          signed_run_is_valid() {
+            local candidate_run_id="$1"
+            local allow_legacy="$2"
+            local artifacts_json
+            local candidate_artifact_id
+            local candidate_provenance_artifact_id
+            local jobs_json
+            local provenance
+            local resolver_job_id
+            local resolver_log
+            local run_json
+            local run_event
+            local run_path
+            local run_repository
+            local run_status
+            local provenance_zip
+
+            if [[ ! "${candidate_run_id}" =~ ^[0-9]+$ || "${candidate_run_id}" == "${GITHUB_RUN_ID}" ]]; then
+              return 1
+            fi
+
+            if ! run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}")"; then
+              return 1
+            fi
+            run_event="$(jq -r '.event // empty' <<< "${run_json}")"
+            run_path="$(jq -r '.path // empty' <<< "${run_json}")"
+            run_repository="$(jq -r '.head_repository.full_name // empty' <<< "${run_json}")"
+            run_status="$(jq -r '.status // empty' <<< "${run_json}")"
+            if [[ "${run_status}" != "completed" || "${run_event}" != "workflow_dispatch" || "${run_repository}" != "${GITHUB_REPOSITORY}" ]]; then
+              return 1
+            fi
+            if [[ "${run_path}" != ".github/workflows/sign-release.yml" && "${run_path}" != ".github/workflows/sign-release.yml@"* ]]; then
+              return 1
+            fi
+
+            artifacts_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}/artifacts?per_page=100" | jq -s '{artifacts: [.[].artifacts[]?]}')"
+            mapfile -t candidate_artifact_ids < <(
+              jq -r '[.artifacts[] | select(.name == "build-Windows" and (.expired | not))] | .[].id' <<< "${artifacts_json}"
+            )
+            if (( ${#candidate_artifact_ids[@]} != 1 )); then
+              return 1
+            fi
+            candidate_artifact_id="${candidate_artifact_ids[0]}"
+            mapfile -t candidate_provenance_artifact_ids < <(
+              jq -r '[.artifacts[] | select(.name == "release-provenance" and (.expired | not))] | .[].id' <<< "${artifacts_json}"
+            )
+            provenance=""
+            if (( ${#candidate_provenance_artifact_ids[@]} == 1 )); then
+              candidate_provenance_artifact_id="${candidate_provenance_artifact_ids[0]}"
+              provenance_zip="${RUNNER_TEMP}/release-provenance-${candidate_run_id}.zip"
+              if ! gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${candidate_provenance_artifact_id}/zip" > "${provenance_zip}"; then
+                return 1
+              fi
+              provenance="$(unzip -p "${provenance_zip}" release-provenance.json 2>/dev/null || true)"
+            elif (( ${#candidate_provenance_artifact_ids[@]} > 1 )); then
+              return 1
+            fi
+            if [[ -n "${provenance}" ]]; then
+              if ! jq -e \
+                --arg release_tag "${source_tag}" \
+                --arg release_commit "${release_commit}" \
+                --arg source_build_run_id "${build_run_id}" \
+                '.schema_version == 1
+                 and .release_tag == $release_tag
+                 and .release_commit == $release_commit
+                 and .source_build_run_id == $source_build_run_id
+                 and (.assets | type == "object" and length > 0)' \
+                <<< "${provenance}" >/dev/null; then
+                return 1
+              fi
+            elif [[ "${allow_legacy}" == "true" ]]; then
+              # Artifacts created before provenance support are accepted only by
+              # explicit run ID, after validating every successful signing stage
+              # and the resolver's exact tag/build/commit binding from GitHub logs.
+              jobs_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}/jobs?per_page=100" | jq -s '{jobs: [.[].jobs[]?]}')"
+              for required_job in \
+                "Sign Windows release / Sign Windows MSI" \
+                "Sign Windows release / Package Windows" \
+                "Sign Windows release / Sign Windows installer" \
+                "Sign Windows release / Finalize Windows artifacts"; do
+                if ! jq -e --arg name "${required_job}" '[.jobs[] | select(.name == $name and .conclusion == "success")] | length == 1' <<< "${jobs_json}" >/dev/null; then
+                  return 1
+                fi
+              done
+              resolver_job_id="$(jq -r '[.jobs[] | select(.name == "Resolve built release" and .conclusion == "success")] | if length == 1 then .[0].id else empty end' <<< "${jobs_json}")"
+              if [[ -z "${resolver_job_id}" ]]; then
+                return 1
+              fi
+              resolver_log="$(gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${resolver_job_id}/logs")"
+              if ! grep -Fq "Release ${source_tag} will resume from CI run ${build_run_id} at ${release_commit}." <<< "${resolver_log}"; then
+                return 1
+              fi
+              echo "::warning::Explicitly reusing legacy signed run ${candidate_run_id}; its successful signing jobs and exact resolver log were validated."
+            else
+              return 1
+            fi
+
+            signed_artifact_id="${candidate_artifact_id}"
+          }
+
+          signed_run_id="${REQUESTED_SIGNED_RUN_ID}"
+          if [[ -n "${signed_run_id}" ]]; then
+            if ! signed_run_is_valid "${signed_run_id}" true; then
+              echo "::error::The supplied signed_run_id is not a finalized signed artifact for ${source_tag}, CI run ${build_run_id}, and commit ${release_commit}."
+              exit 1
+            fi
+            echo "::notice::Reusing explicitly requested finalized signed artifacts from run ${signed_run_id}."
+          else
+            matching_signed_runs="$(
+              gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/sign-release.yml/runs?event=workflow_dispatch&status=completed&per_page=100" |
+                jq -rs '[.[] | .workflow_runs[]?] | sort_by([.run_started_at // "", .id]) | reverse | .[].id'
+            )"
+            while IFS= read -r candidate_run_id; do
+              [[ -z "${candidate_run_id}" ]] && continue
+              if signed_run_is_valid "${candidate_run_id}" false; then
+                signed_run_id="${candidate_run_id}"
+                echo "::notice::Auto-reusing provenance-matched signed artifacts from run ${signed_run_id}."
+                break
+              fi
+            done <<< "${matching_signed_runs}"
+          fi
+
+          {
+            echo "arch_artifact_id=${arch_artifact_id}"
+            echo "build_run_id=${build_run_id}"
+            echo "release_commit=${release_commit}"
+            echo "release_version=${release_version}"
+            echo "signed_artifact_id=${signed_artifact_id}"
+            echo "signed_run_id=${signed_run_id}"
+            echo "tag_name=${tag_name}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "Release ${tag_name} will resume from CI run ${build_run_id} at ${release_commit}."
+
+  build-windows:
+    name: Sign Windows release
+    needs:
+      - resolve_release
+    if: needs.resolve_release.outputs.signed_run_id == ''
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/ci-windows.yml
+    with:
+      artifact_source_run_id: ${{ needs.resolve_release.outputs.build_run_id }}
+      build_only: false
+      release_commit: ${{ needs.resolve_release.outputs.release_commit }}
+      release_version: ${{ needs.resolve_release.outputs.release_version }}
+      release_tag: ${{ needs.resolve_release.outputs.tag_name }}
+      symbol_product_name: Vibepollo
+      publish_symbols: true
+      symbol_release_draft: true
+      symbol_release_prefix: polo
+      require_signpath_signing: true
+      signpath_signing_policy_slug: release-signing
+      signpath_wait_for_completion_timeout_in_seconds: 3600
+      require_truehdr_runtime: true
+    secrets:
+      symbol_token: ${{ secrets.SYMBOL_TOKEN }}
+      signpath_api_token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      truehdr_runtime_token: ${{ secrets.TRUEHDR_RUNTIME_TOKEN }}
+
+  reuse-windows:
+    name: Reuse signed Windows release
+    needs:
+      - resolve_release
+    if: needs.resolve_release.outputs.signed_run_id != ''
+    permissions:
+      actions: read
+      contents: read
+    runs-on: windows-2022
+    steps:
+      - name: Download finalized signed artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          artifact-ids: ${{ needs.resolve_release.outputs.signed_artifact_id }}
+          github-token: ${{ github.token }}
+          path: artifacts
+          run-id: ${{ needs.resolve_release.outputs.signed_run_id }}
+
+      - name: Verify reused signed artifacts and provenance
+        shell: pwsh
+        env:
+          RELEASE_COMMIT: ${{ needs.resolve_release.outputs.release_commit }}
+          RELEASE_TAG: ${{ needs.resolve_release.outputs.tag_name }}
+          SIGNED_RUN_ID: ${{ needs.resolve_release.outputs.signed_run_id }}
+          SOURCE_BUILD_RUN_ID: ${{ needs.resolve_release.outputs.build_run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactRoot = Join-Path $PWD 'artifacts'
+          $manifestPath = Join-Path $artifactRoot 'release-provenance.json'
+          $assets = @(Get-ChildItem -LiteralPath $artifactRoot -File | Where-Object { $_.Name -ne 'release-provenance.json' })
+          $setups = @($assets | Where-Object { $_.Name -like 'VibepolloSetup*.exe' })
+          if ($setups.Count -ne 1) {
+            throw "Expected exactly one finalized Vibepollo setup executable; found $($setups.Count)."
+          }
+
+          $signature = Get-AuthenticodeSignature -LiteralPath $setups[0].FullName
+          if ($null -eq $signature.SignerCertificate -or $signature.Status -ne 'Valid') {
+            throw "Reused setup executable does not have a valid production Authenticode signature (status=$($signature.Status))."
+          }
+
+          if (Test-Path -LiteralPath $manifestPath) {
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            if ($manifest.schema_version -ne 1 -or
+                $manifest.release_tag -ne $env:RELEASE_TAG -or
+                $manifest.release_commit -ne $env:RELEASE_COMMIT -or
+                $manifest.source_build_run_id -ne $env:SOURCE_BUILD_RUN_ID) {
+              throw 'Signed artifact provenance does not match this release request.'
+            }
+            $recordedAssets = @($manifest.assets.PSObject.Properties)
+            if ($recordedAssets.Count -ne $assets.Count) {
+              throw 'Signed artifact provenance asset count does not match the downloaded artifact.'
+            }
+            foreach ($recorded in $recordedAssets) {
+              $path = Join-Path $artifactRoot $recorded.Name
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                throw "Provenance asset is missing: $($recorded.Name)"
+              }
+              $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($actualHash -ne ([string]$recorded.Value).ToLowerInvariant()) {
+                throw "Provenance hash mismatch for $($recorded.Name)."
+              }
+            }
+          }
+
+          $assetHashes = [ordered]@{}
+          foreach ($asset in $assets) {
+            $assetHashes[$asset.Name] = (Get-FileHash -LiteralPath $asset.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+          $provenance = [ordered]@{
+            schema_version = 1
+            release_tag = $env:RELEASE_TAG
+            release_commit = $env:RELEASE_COMMIT
+            source_build_run_id = $env:SOURCE_BUILD_RUN_ID
+            reused_from_run_id = $env:SIGNED_RUN_ID
+            assets = $assetHashes
+          }
+          $provenance | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+          Write-Host "Reused verified signed artifacts from run $($env:SIGNED_RUN_ID)."
+
+      - name: Upload reusable finalized artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: build-Windows
+          path: artifacts/
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Upload reusable release provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: release-provenance
+          path: artifacts/release-provenance.json
+          if-no-files-found: error
+          overwrite: true
+
+  release:
+    name: Release
+    needs:
+      - resolve_release
+      - build-windows
+      - reuse-windows
+    if: >-
+      ${{ always() && !cancelled() && needs.resolve_release.result == 'success' &&
+          (needs.build-windows.result == 'success' || needs.reuse-windows.result == 'success') }}
+    permissions:
+      actions: read
+      contents: write
+      issues: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ needs.resolve_release.outputs.release_commit }}
+
+      - name: Resolve release metadata
+        id: release-metadata
+        env:
+          TAG_NAME: ${{ needs.resolve_release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${TAG_NAME}" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)([-.][0-9A-Za-z.-]+)?$ ]]; then
+            base_version="${BASH_REMATCH[1]}"
+            release_version="${TAG_NAME#v}"
+          else
+            echo "::error::Unsupported release tag '${TAG_NAME}'. Use a version tag like 1.15.4, v1.15.4, or 1.15.4-beta.1."
+            exit 1
+          fi
+
+          tag_lower="$(printf '%s' "${release_version}" | tr '[:upper:]' '[:lower:]')"
+          prerelease=false
+          channel=stable
+          if [[ "${tag_lower}" == *alpha* ]]; then
+            prerelease=true
+            channel=alpha
+          elif [[ "${tag_lower}" == *beta* ]]; then
+            prerelease=true
+            channel=beta
+          elif [[ "${tag_lower}" == *rc* ]]; then
+            prerelease=true
+            channel=rc
+          elif [[ "${tag_lower}" == *stable* ]]; then
+            prerelease=false
+            channel=stable
+          fi
+
+          if [[ "${prerelease}" == "true" ]]; then
+            make_latest=false
+          else
+            make_latest=true
+          fi
+
+          product_name="Vibepollo"
+
+          notes_file=""
+          for candidate in \
+            "release_notes/${release_version}.md" \
+            "release_notes/${TAG_NAME}.md"; do
+            if [[ -f "${candidate}" ]]; then
+              notes_file="${candidate}"
+              break
+            fi
+          done
+
+          if [[ -z "${notes_file}" ]]; then
+            echo "::error::Release notes file not found. Expected exact release notes at release_notes/${release_version}.md or release_notes/${TAG_NAME}.md"
+            exit 1
+          fi
+
+          release_body_file="${RUNNER_TEMP}/release-notes-${release_version}.md"
+          python .github/scripts/compose_release_notes.py \
+            --release-version "${release_version}" \
+            --notes-dir release_notes \
+            --product-name "${product_name}" \
+            --output "${release_body_file}"
+
+          echo "Using stable-line release notes: ${release_body_file}"
+          echo "base_version=${base_version}" >> "${GITHUB_OUTPUT}"
+          echo "channel=${channel}" >> "${GITHUB_OUTPUT}"
+          echo "make_latest=${make_latest}" >> "${GITHUB_OUTPUT}"
+          echo "notes_file=${release_body_file}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+          echo "product_name=${product_name}" >> "${GITHUB_OUTPUT}"
+          echo "release_version=${release_version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          name: build-Windows
+          path: artifacts
+
+      - name: Download Arch Linux artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          artifact-ids: ${{ needs.resolve_release.outputs.arch_artifact_id }}
+          github-token: ${{ github.token }}
+          path: arch-artifacts
+          run-id: ${{ needs.resolve_release.outputs.build_run_id }}
+
+      - name: Include Arch Linux package
+        env:
+          NOTES_FILE: ${{ steps.release-metadata.outputs.notes_file }}
+          RELEASE_VERSION: ${{ steps.release-metadata.outputs.release_version }}
+          TAG_NAME: ${{ needs.resolve_release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          mapfile -t packages < <(find arch-artifacts -type f -name 'vibepollo-*.pkg.tar.zst' ! -name '*-debug-*' | sort)
+          if (( ${#packages[@]} != 1 )); then
+            echo "::error::Expected exactly one non-debug Arch package, found ${#packages[@]}."
+            find arch-artifacts -type f -print >&2
+            exit 1
+          fi
+          package_info="$(tar --zstd -xOf "${packages[0]}" .PKGINFO)"
+          # Arch pkgver disallows SemVer's prerelease separator. Keep this
+          # expectation aligned with special_package_configuration.cmake.
+          arch_package_version=${RELEASE_VERSION//-/}
+          arch_package_version=${arch_package_version//+/.}
+          if ! grep -qx "pkgver = ${arch_package_version}-1" <<< "${package_info}"; then
+            echo "::error::Arch package version does not match release ${RELEASE_VERSION}."
+            grep '^pkgver = ' <<< "${package_info}" >&2 || true
+            exit 1
+          fi
+
+          package_name="$(basename "${packages[0]}")"
+          cp -- "${packages[0]}" "artifacts/${package_name}"
+          package_hash="$(sha256sum "artifacts/${package_name}")"
+          package_hash="${package_hash%% *}"
+          provenance_tmp="$(mktemp)"
+          jq --arg name "${package_name}" --arg hash "${package_hash}" \
+            '.assets[$name] = $hash' \
+            artifacts/release-provenance.json > "${provenance_tmp}"
+          mv -- "${provenance_tmp}" artifacts/release-provenance.json
+
+          cat >>"${NOTES_FILE}" <<EOF
+
+          ## Arch Linux and CachyOS
+
+          Download [\`${package_name}\`](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}/${package_name}) and install it with:
+
+          \`\`\`bash
+          sudo pacman -U ./${package_name}
+          \`\`\`
+
+          Managed virtual displays require Linux 6.16 or newer. If matching headers are missing, the package prints the exact \`sudo pacman -S --needed <kernel-package>-headers\` command for the running kernel. Run it, then retry the driver setup:
+
+          \`\`\`bash
+          sudo /usr/libexec/vibeshine/vibeshine-drm-install install
+          \`\`\`
+
+          Or let the installer script handle headers, the package, and the firewall:
+
+          \`\`\`bash
+          curl -fsSLO https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG_NAME}/scripts/linux_install.sh
+          sudo bash linux_install.sh --version ${RELEASE_VERSION}
+          \`\`\`
+
+          See the [full Linux installation guide](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG_NAME}/docs/linux/install.md).
+          EOF
+
+      - name: Debug artifacts
+        run: ls -l artifacts
+
+      - name: Create or update GitHub release
+        id: create-release
+        env:
+          BASE_VERSION: ${{ steps.release-metadata.outputs.base_version }}
+          CHANNEL: ${{ steps.release-metadata.outputs.channel }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          MAKE_LATEST: ${{ steps.release-metadata.outputs.make_latest }}
+          NOTES_FILE: ${{ steps.release-metadata.outputs.notes_file }}
+          PRERELEASE: ${{ steps.release-metadata.outputs.prerelease }}
+          PRODUCT_NAME: ${{ steps.release-metadata.outputs.product_name }}
+          RELEASE_DRAFT: ${{ inputs.release_draft }}
+          RELEASE_VERSION: ${{ steps.release-metadata.outputs.release_version }}
+          TAG_NAME: ${{ needs.resolve_release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          release_title="v${RELEASE_VERSION}"
+          legacy_tag="v${RELEASE_VERSION}"
+          # Keep the installer release asset aligned with the full tag version.
+          # This preserves prerelease/patch-channel suffixes such as
+          # -alpha.1, -beta.2, or -stable.3, while plain stable tags fall back
+          # to just the numeric version (for example, v1.2.3).
+          versioned_setup="artifacts/${PRODUCT_NAME}Setup-v${RELEASE_VERSION}.exe"
+
+          mapfile -t setup_assets < <(find artifacts -maxdepth 1 -type f -name "${PRODUCT_NAME}Setup*.exe" | sort)
+          if (( ${#setup_assets[@]} != 1 )); then
+            echo "::error::Expected exactly one ${PRODUCT_NAME} setup artifact, found ${#setup_assets[@]}."
+            find artifacts -maxdepth 2 -type f -print >&2 || true
+            exit 1
+          fi
+
+          if [[ "${setup_assets[0]}" != "${versioned_setup}" ]]; then
+            mv -f "${setup_assets[0]}" "${versioned_setup}"
+          fi
+
+          release_match="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" |
+              jq -s \
+                --arg source_tag "${TAG_NAME}" \
+                --arg legacy_tag "${legacy_tag}" \
+                '[
+                  .[] | .[]?
+                  | select(.tag_name == $source_tag or .tag_name == $legacy_tag)
+                ]
+                | sort_by(.tag_name != $source_tag)
+                | first // {}'
+          )"
+          release_id="$(jq -r '.id // empty' <<< "${release_match}")"
+          publish_tag="$(jq -r --arg source_tag "${TAG_NAME}" '.tag_name // $source_tag' <<< "${release_match}")"
+
+          release_make_latest="${MAKE_LATEST}"
+          if [[ "${RELEASE_DRAFT}" == "true" ]]; then
+            release_make_latest=false
+          fi
+
+          release_payload="$(
+            jq -n \
+              --arg tag_name "${publish_tag}" \
+              --arg name "${release_title}" \
+              --rawfile body "${NOTES_FILE}" \
+              --argjson draft "${RELEASE_DRAFT}" \
+              --argjson prerelease "${PRERELEASE}" \
+              --arg make_latest "${release_make_latest}" \
+              '{
+                tag_name: $tag_name,
+                name: $name,
+                body: $body,
+                draft: $draft,
+                prerelease: $prerelease,
+                make_latest: $make_latest
+              }'
+          )"
+
+          if [[ -n "${release_id}" ]]; then
+            release_json="$(
+              gh api \
+                --method PATCH \
+                "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+                --input - <<< "${release_payload}"
+            )"
+          else
+            release_json="$(
+              gh api \
+                --method POST \
+                "repos/${GITHUB_REPOSITORY}/releases" \
+                --input - <<< "${release_payload}"
+            )"
+          fi
+
+          release_id="$(jq -r '.id // empty' <<< "${release_json}")"
+          upload_url="$(jq -r '.upload_url // "" | split("{")[0]' <<< "${release_json}")"
+          if [[ -z "${release_id}" || -z "${upload_url}" ]]; then
+            echo "::error::Failed to resolve release id/upload URL for ${publish_tag}."
+            exit 1
+          fi
+
+          release_url="$(jq -r '.html_url // empty' <<< "${release_json}")"
+          if [[ -z "${release_url}" ]]; then
+            echo "::error::Failed to resolve release URL for ${publish_tag}."
+            exit 1
+          fi
+
+          {
+            echo "release_id=${release_id}"
+            echo "release_name=${release_title}"
+            echo "release_url=${release_url}"
+          } >> "${GITHUB_OUTPUT}"
+
+          existing_asset_ids="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
+              --jq '.[].id'
+          )"
+          while IFS= read -r asset_id; do
+            [[ -z "${asset_id}" ]] && continue
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" >/dev/null
+          done <<< "${existing_asset_ids}"
+
+          for asset in artifacts/*; do
+            [[ -f "${asset}" ]] || continue
+            asset_name="$(basename "${asset}")"
+            [[ "${asset_name}" == "release-provenance.json" ]] && continue
+            encoded_asset_name="$(jq -rn --arg name "${asset_name}" '$name|@uri')"
+            gh api \
+              --method POST \
+              "${upload_url}?name=${encoded_asset_name}" \
+              -H "Content-Type: application/octet-stream" \
+              --input "${asset}" \
+              >/dev/null
+          done
+
+      - name: Close fixed issues for release
+        if: inputs.release_draft == false
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.create-release.outputs.release_id }}
+          RELEASE_NAME: ${{ steps.create-release.outputs.release_name }}
+          RELEASE_URL: ${{ steps.create-release.outputs.release_url }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${RELEASE_ID}" || -z "${RELEASE_NAME}" || -z "${RELEASE_URL}" ]]; then
+            echo "::error::Release metadata outputs were not set."
+            exit 1
+          fi
+
+          label_name="fixed"
+          release_marker="<!-- fixed-release-follow-up:${RELEASE_ID} -->"
+          encoded_label="$(jq -rn --arg label "${label_name}" '$label|@uri')"
+
+          mapfile -t issue_numbers < <(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/issues?state=open&labels=${encoded_label}&per_page=100" \
+              --jq '.[] | select(.pull_request | not) | .number'
+          )
+
+          if (( ${#issue_numbers[@]} == 0 )); then
+            echo "No open issues with the '${label_name}' label to close."
+            exit 0
+          fi
+
+          for issue_number in "${issue_numbers[@]}"; do
+            comments_file="$(mktemp)"
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${issue_number}/comments?per_page=100" \
+              --jq '.[].body' > "${comments_file}"
+
+            if ! grep -Fq "${release_marker}" "${comments_file}"; then
+              comment_body="${release_marker}"$'\n'"This issue has been fixed in the latest release, [${RELEASE_NAME}](${RELEASE_URL}). Closing this issue now that the release containing the fix is available."
+              gh api \
+                --method POST \
+                "repos/${GITHUB_REPOSITORY}/issues/${issue_number}/comments" \
+                -f "body=${comment_body}" \
+                >/dev/null
+            fi
+            rm -f "${comments_file}"
+
+            gh api \
+              --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/issues/${issue_number}" \
+              -f state=closed \
+              -f state_reason=completed \
+              >/dev/null
+
+            echo "Closed fixed issue #${issue_number} for ${RELEASE_NAME}."
+          done

@@ -12,7 +12,9 @@
 #include "src/config_playnite.h"
 #include "src/confighttp.h"
 #include "src/file_handler.h"
+#include "src/globals.h"
 #include "src/logging.h"
+#include "src/nvhttp.h"
 #include "src/platform/windows/frame_limiter.h"
 #include "src/platform/windows/image_convert.h"
 #include "src/platform/windows/ipc/misc_utils.h"
@@ -27,6 +29,7 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cstdint>
 #include <ctime>
 #include <filesystem>
 #include <iomanip>
@@ -42,6 +45,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <UserEnv.h>
 #include <vector>
 #include <Windows.h>
@@ -64,6 +68,7 @@ namespace platf::playnite {
     std::mutex g_active_game_mutex;
     active_game_status_t g_active_game;
     std::vector<active_game_status_t> g_active_games;
+    std::mutex g_plugin_install_mutex;
 
     std::string lower_copy(std::string s) {
       std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
@@ -138,12 +143,33 @@ namespace platf::playnite {
   struct playnite_session_tracker_t {
     std::mutex mtx;
     std::string last_started_id;
+    std::string requested_stop_id;
     bool seen_started {false};
 
     void on_started(const std::string &id) {
       std::scoped_lock lk(mtx);
       last_started_id = id;
+      requested_stop_id.clear();
       seen_started = true;
+    }
+
+    void on_stop_requested(const std::string &id) {
+      std::scoped_lock lk(mtx);
+      requested_stop_id = lower_copy(id);
+    }
+
+    bool consume_requested_stop(const std::string &id) {
+      std::scoped_lock lk(mtx);
+      if (requested_stop_id.empty()) {
+        return false;
+      }
+      if (!id.empty() && lower_copy(id) != requested_stop_id) {
+        return false;
+      }
+      requested_stop_id.clear();
+      seen_started = false;
+      last_started_id.clear();
+      return true;
     }
 
     bool allow_stop(const std::string &id) {
@@ -163,6 +189,7 @@ namespace platf::playnite {
       std::scoped_lock lk(mtx);
       seen_started = false;
       last_started_id.clear();
+      requested_stop_id.clear();
     }
   };
 
@@ -291,7 +318,7 @@ namespace platf::playnite {
         return false;
       }
       std::filesystem::path d(dir);
-      return std::filesystem::exists(d / "extension.yaml") && std::filesystem::exists(d / "SunshinePlaynite.psm1");
+      return std::filesystem::exists(d / "extension.yaml") && std::filesystem::exists(d / "VibepolloPlaynite.dll");
     } catch (...) {
       return false;
     }
@@ -369,6 +396,43 @@ namespace platf::playnite {
       BOOST_LOG(info) << "Playnite: " << (wait_for_snapshot ? "manual" : "non-blocking")
                       << " library sync " << sync_summary(stats);
       return stats.success;
+    }
+
+    bool set_game_cover(const std::string &playnite_id, const std::string &image_path) {
+      const auto request_id = "cover-" + std::to_string(++command_request_counter_);
+      nlohmann::json request;
+      request["type"] = "command";
+      request["command"] = "set-cover";
+      request["requestId"] = request_id;
+      request["id"] = playnite_id;
+      request["path"] = image_path;
+      {
+        std::scoped_lock lock(command_result_mutex_);
+        pending_command_requests_.insert(request_id);
+      }
+      if (!send_cmd_json_line(request.dump())) {
+        std::scoped_lock lock(command_result_mutex_);
+        pending_command_requests_.erase(request_id);
+        return false;
+      }
+
+      std::unique_lock lock(command_result_mutex_);
+      const bool received = command_result_cv_.wait_for(lock, kCommandResultWait, [&]() {
+        return command_results_.contains(request_id);
+      });
+      if (!received) {
+        pending_command_requests_.erase(request_id);
+        BOOST_LOG(warning) << "Playnite: timed out waiting for set-cover result";
+        return false;
+      }
+      const bool success = command_results_[request_id];
+      if (!success) {
+        BOOST_LOG(warning) << "Playnite: set-cover failed: " << command_errors_[request_id];
+      }
+      command_results_.erase(request_id);
+      command_errors_.erase(request_id);
+      pending_command_requests_.erase(request_id);
+      return success;
     }
 
     void snapshot_games(std::vector<platf::playnite::Game> &out) {
@@ -672,9 +736,9 @@ namespace platf::playnite {
           for (const auto &p : msg.plugins) {
             std::string key;
             if (!p.id.empty()) {
-              key = platf::playnite::sync::to_lower_copy(p.id);
+              key = sync::policy::to_lower_copy(p.id);
             } else if (!p.name.empty()) {
-              key = "name:" + platf::playnite::sync::to_lower_copy(p.name);
+              key = "name:" + sync::policy::to_lower_copy(p.name);
             }
             if (key.empty()) {
               continue;
@@ -807,6 +871,25 @@ namespace platf::playnite {
           line << " auto_sync disabled";
         }
         BOOST_LOG(info) << line.str();
+      } else if (msg.type == MT::CommandResult) {
+        if (msg.command_name != "set-cover") {
+          BOOST_LOG(warning) << "Playnite: ignoring result for unexpected command '" << msg.command_name << "'";
+          return;
+        }
+        if (msg.command_request_id.empty()) {
+          BOOST_LOG(warning) << "Playnite: command result omitted its request ID";
+          return;
+        }
+        {
+          std::scoped_lock lock(command_result_mutex_);
+          if (!pending_command_requests_.contains(msg.command_request_id)) {
+            BOOST_LOG(debug) << "Playnite: ignoring late command result for request '" << msg.command_request_id << "'";
+            return;
+          }
+          command_results_[msg.command_request_id] = msg.command_success;
+          command_errors_[msg.command_request_id] = msg.command_error;
+        }
+        command_result_cv_.notify_all();
       } else if (msg.type == MT::Status) {
         BOOST_LOG(debug) << "Playnite: status '" << msg.status_name
                          << "' id='" << msg.status_game_id
@@ -834,6 +917,10 @@ namespace platf::playnite {
                              << "' (active Playnite id='" << guard.playnite_id << "')";
             return;
           }
+          if (playnite_session_tracker().consume_requested_stop(msg.status_game_id)) {
+            BOOST_LOG(debug) << "Playnite: received gameStopped acknowledgment for requested stop";
+            return;
+          }
           if (!playnite_session_tracker().allow_stop(msg.status_game_id)) {
             BOOST_LOG(debug) << "Playnite: ignoring gameStopped because no prior gameStarted for this session";
             return;
@@ -844,8 +931,26 @@ namespace platf::playnite {
             BOOST_LOG(debug) << "Playnite: ignoring gameStopped within session guard window";
             return;
           }
-          BOOST_LOG(debug) << "Playnite: received gameStopped; terminating active process";
-          proc::proc.terminate();
+          // This callback runs on the IPC pipe worker. Terminating the active
+          // process stops that same pipe and would make its worker join itself.
+          // Keep the session identity so a queued stale stop cannot terminate a
+          // game that was launched after this status message was received.
+          task_pool.push([expected_guard = std::move(guard)]() {
+            // A launch must not replace this session between validation and teardown.
+            std::unique_lock<std::mutex> lifecycle_lock {nvhttp::stream_lifecycle_mutex()};
+            const auto current_guard = proc::proc.active_session_guard();
+            if (!current_guard.has_active_app ||
+                !current_guard.uses_playnite ||
+                current_guard.playnite_id != expected_guard.playnite_id ||
+                current_guard.client_uuid != expected_guard.client_uuid ||
+                current_guard.launch_started_at != expected_guard.launch_started_at) {
+              BOOST_LOG(debug) << "Playnite: ignoring queued gameStopped for a stale session";
+              return;
+            }
+
+            BOOST_LOG(debug) << "Playnite: received gameStopped; terminating active process";
+            proc::proc.terminate(false, true, false, true);
+          });
         }
       } else {
         // Truncate and log a preview of the raw message for diagnostics
@@ -862,6 +967,7 @@ namespace platf::playnite {
 
     SyncStats sync_apps_metadata() try {
       using nlohmann::json;
+      std::lock_guard apps_lock {confighttp::apps_file_mutex()};
       const std::string path = config::stream.file_apps;
       SyncStats stats;
 
@@ -893,7 +999,7 @@ namespace platf::playnite {
       int delete_after_days = std::max(0, config::playnite.autosync_delete_after_days);
       bool changed = false;
       std::size_t matched = 0;
-      platf::playnite::sync::autosync_reconcile(root, all, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_all_installed, config::playnite.sync_categories, config::playnite.sync_plugins, config::playnite.exclude_categories, config::playnite.exclude_games, config::playnite.exclude_plugins, config::playnite.autosync_remove_uninstalled, changed, matched);
+      platf::playnite::sync::autosync_reconcile(root, all, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_all_installed, config::playnite.sync_categories, config::playnite.sync_plugins, config::playnite.exclude_categories, config::playnite.exclude_games, config::playnite.exclude_plugins, config::playnite.autosync_remove_uninstalled, changed, matched, config::playnite.auto_sync);
       if (changed) {
         platf::playnite::sync::write_and_refresh_apps(root, config::stream.file_apps);
       }
@@ -966,6 +1072,12 @@ namespace platf::playnite {
     bool snapshot_markers_supported_ = false;  // Plugin sends snapshotStart/snapshotComplete (reset per connection)
     uint64_t snapshot_generation_ = 0;  // Incremented on every completed snapshot
     std::condition_variable snapshot_cv_;  // Signals snapshot completion (paired with mutex_)
+    std::atomic<uint64_t> command_request_counter_ {0};
+    std::mutex command_result_mutex_;
+    std::condition_variable command_result_cv_;
+    std::unordered_set<std::string> pending_command_requests_;
+    std::unordered_map<std::string, bool> command_results_;
+    std::unordered_map<std::string, std::string> command_errors_;
     std::unordered_set<std::string> game_ids_;  // Track unique IDs during accumulation
     std::vector<platf::playnite::Category> last_categories_;  // Last known categories (id+name)
     SnapshotProgress snapshot_progress_;
@@ -978,6 +1090,7 @@ namespace platf::playnite {
     static constexpr auto kInactivityCheckInterval = std::chrono::seconds(5);
     // How long a manual sync waits for a requested library snapshot to complete
     static constexpr auto kManualSyncSnapshotWait = std::chrono::seconds(10);
+    static constexpr auto kCommandResultWait = std::chrono::seconds(10);
 
     std::atomic<bool> api_started_ {false};  // True if client was started for API (not session)
     std::atomic<bool> session_active_ {false};  // True if a game session is active (overrides API timeout)
@@ -1507,10 +1620,18 @@ namespace platf::playnite {
     if (!playnite_id.empty()) {
       j["id"] = playnite_id;
     }
-    return inst->send_cmd_json_line(j.dump());
+    const bool sent = inst->send_cmd_json_line(j.dump());
+    if (sent) {
+      playnite_session_tracker().on_stop_requested(playnite_id);
+    }
+    return sent;
   }
 
   bool force_sync(const bool wait_for_snapshot) {
+    if (!config::playnite.enabled) {
+      BOOST_LOG(debug) << "Playnite: sync skipped because integration is disabled";
+      return false;
+    }
     if (!is_plugin_installed()) {
       BOOST_LOG(debug) << "Playnite: sync skipped because the plugin is not installed";
       return false;
@@ -1521,6 +1642,18 @@ namespace platf::playnite {
     }
     inst->ensure_started_for_api();
     return inst->trigger_sync(wait_for_snapshot);
+  }
+
+  bool set_game_cover(const std::string &playnite_id, const std::string &image_path) {
+    if (playnite_id.empty() || image_path.empty() || !is_plugin_installed()) {
+      return false;
+    }
+    auto inst = g_instance.load(std::memory_order_acquire);
+    if (!inst) {
+      return false;
+    }
+    inst->ensure_started_for_api();
+    return inst->set_game_cover(playnite_id, image_path);
   }
 
   bool get_cover_png_for_playnite_game(const std::string &playnite_id, std::string &out_path) {
@@ -1670,18 +1803,31 @@ namespace platf::playnite {
     return false;
   }
 
-  // Close by posting WM_CLOSE to windows owned by process name, then kill leftovers
-  static void close_then_kill_by_name(const wchar_t *exeName) {
+  // Close windows owned by a process name, then terminate and wait for leftovers.
+  static bool close_then_kill_by_name(const wchar_t *exeName) {
     struct Ctx {
       const wchar_t *name;
       std::vector<DWORD> pids;
     } ctx {exeName, {}};
+    std::vector<winrt::handle> processes;
 
     // Build a set of target PIDs by name
     try {
       auto ids = platf::dxgi::find_process_ids_by_name(exeName);
-      ctx.pids.insert(ctx.pids.end(), ids.begin(), ids.end());
-    } catch (...) {}
+      for (DWORD pid : ids) {
+        winrt::handle process {OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid)};
+        if (!process) {
+          if (GetLastError() == ERROR_INVALID_PARAMETER) {
+            continue;  // The process exited before its handle could be opened.
+          }
+          return false;
+        }
+        ctx.pids.push_back(pid);
+        processes.emplace_back(std::move(process));
+      }
+    } catch (...) {
+      return false;
+    }
 
     if (!ctx.pids.empty()) {
       BOOST_LOG(debug) << "Playnite: posting WM_CLOSE to " << ctx.pids.size() << " window(s) for '" << platf::to_utf8(std::wstring(exeName)) << "'";
@@ -1703,57 +1849,50 @@ namespace platf::playnite {
                   reinterpret_cast<LPARAM>(&ctx));
     }
 
-    Sleep(1200);
-
-    // Kill any remaining processes by name
-    try {
-      auto ids = platf::dxgi::find_process_ids_by_name(exeName);
-      if (!ids.empty()) {
-        BOOST_LOG(debug) << "Playnite: terminating remaining processes for '" << platf::to_utf8(std::wstring(exeName)) << "' count=" << ids.size();
-      }
-      for (DWORD pid : ids) {
-        HANDLE hp = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        if (!hp) {
-          continue;
+    // Playnite drains plugins, startup scripts and its database after WM_CLOSE.
+    // Wait on the original process handles, with one shared grace deadline,
+    // rather than killing a healthy shutdown after a fixed 1.2-second sleep.
+    constexpr auto graceful_timeout = std::chrono::seconds(15);
+    const auto deadline = std::chrono::steady_clock::now() + graceful_timeout;
+    bool stopped = true;
+    for (auto &process : processes) {
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+      const DWORD wait_ms = static_cast<DWORD>(std::max<std::int64_t>(0, remaining));
+      const DWORD result = WaitForSingleObject(process.get(), wait_ms);
+      if (result == WAIT_TIMEOUT) {
+        BOOST_LOG(warning) << "Playnite: graceful shutdown timed out for '" << platf::to_utf8(std::wstring(exeName)) << "'; terminating the original process";
+        if (!TerminateProcess(process.get(), 1) || WaitForSingleObject(process.get(), 5000) != WAIT_OBJECT_0) {
+          stopped = false;
         }
-        DWORD code = 0;
-        if (!GetExitCodeProcess(hp, &code) || code == STILL_ACTIVE) {
-          TerminateProcess(hp, 1);
-        }
-        CloseHandle(hp);
-      }
-    } catch (...) {}
-  }
-
-  bool restart_playnite() {
-    // 1) Collect current state and attempt graceful-then-force close from the user's session
-    std::vector<DWORD> pids;
-    std::wstring running_exe;
-    collect_playnite_state(pids, running_exe);
-    // Gracefully request close then kill stragglers, native
-    close_then_kill_by_name(L"Playnite.DesktopApp.exe");
-    close_then_kill_by_name(L"Playnite.FullscreenApp.exe");
-
-    // 2) Determine exe path to start
-    std::wstring exe;
-    if (!running_exe.empty()) {
-      exe = running_exe;
-    } else {
-      // Prefer URL association (per-user) to determine the Playnite executable
-      if (!resolve_playnite_exe_via_assoc(exe) && !resolve_playnite_exe_path(exe)) {
-        BOOST_LOG(warning) << "Playnite restart: could not resolve Playnite executable path";
-        // Even if we couldn't resolve path, treat close attempt as success
-        return false;
+      } else if (result != WAIT_OBJECT_0) {
+        stopped = false;
       }
     }
+    try {
+      if (!platf::dxgi::find_process_ids_by_name(exeName).empty()) {
+        stopped = false;
+      }
+    } catch (...) {
+      stopped = false;
+    }
+    return stopped;
+  }
 
-    // 3) Launch Playnite (impersonates active user when running as SYSTEM)
+  static bool resolve_playnite_launch_exe(std::wstring &exe) {
+    std::vector<DWORD> pids;
+    collect_playnite_state(pids, exe);
+    if (exe.empty() && !resolve_playnite_exe_via_assoc(exe) && !resolve_playnite_exe_path(exe)) {
+      BOOST_LOG(warning) << "Playnite restart: could not resolve Playnite executable path";
+      return false;
+    }
+    return true;
+  }
+
+  static bool launch_playnite(const std::wstring &exe) {
     std::filesystem::path exePath = exe;
     std::filesystem::path startDir = exePath.parent_path();
-    // Quote the command to survive paths with spaces (new bp::run_command expects a full command line)
     std::string cmd = "\"" + platf::to_utf8(exe) + "\"";
     std::error_code ec_launch;
-    // platf::run_command expects a boost::filesystem::path&
     boost::filesystem::path boostStartDir = boost::filesystem::path(startDir.wstring());
     if (platf::dxgi::is_running_as_system()) {
       HANDLE tok = acquire_preferred_user_token_for_playnite();
@@ -1761,34 +1900,45 @@ namespace platf::playnite {
         bool ok = launch_exe_as_token(tok, exe, startDir.wstring());
         CloseHandle(tok);
         if (!ok) {
-          BOOST_LOG(warning) << "Playnite restart: CreateProcessAsUser failed";
+          BOOST_LOG(warning) << "Playnite launch: CreateProcessAsUser failed";
           return false;
         }
-        BOOST_LOG(info) << "Playnite restart: launched (token) " << cmd;
+        BOOST_LOG(info) << "Playnite launch: launched (token) " << cmd;
         return true;
       }
-      BOOST_LOG(warning) << "Playnite restart: no suitable user token found; falling back";
+      BOOST_LOG(warning) << "Playnite launch: no suitable user token found; falling back";
     }
 
-    // Non-SYSTEM or fallback path
-    {
-      auto env = bp::this_process::env();
-      auto child2 = platf::run_command(false, true, cmd, boostStartDir, env, nullptr, ec_launch, nullptr);
-      if (ec_launch) {
-        BOOST_LOG(warning) << "Playnite restart: launch failed: " << ec_launch.message();
-        return false;
-      }
-      child2.detach();
-      BOOST_LOG(info) << "Playnite restart: launched " << cmd;
-      return true;
+    auto env = bp::this_process::env();
+    auto child = platf::run_command(false, true, cmd, boostStartDir, env, nullptr, ec_launch, nullptr);
+    if (ec_launch) {
+      BOOST_LOG(warning) << "Playnite launch: failed: " << ec_launch.message();
+      return false;
     }
+    child.detach();
+    BOOST_LOG(info) << "Playnite launch: launched " << cmd;
+    return true;
+  }
+
+  static bool stop_playnite() {
+    bool desktop_stopped = close_then_kill_by_name(L"Playnite.DesktopApp.exe");
+    bool fullscreen_stopped = close_then_kill_by_name(L"Playnite.FullscreenApp.exe");
+    return desktop_stopped && fullscreen_stopped;
+  }
+
+  bool restart_playnite() {
+    std::wstring exe;
+    if (!resolve_playnite_launch_exe(exe) || !stop_playnite()) {
+      return false;
+    }
+    return launch_playnite(exe);
   }
 
   // explicit launch-only helper removed; use restart_playnite()
 
-  static bool do_install_plugin_impl(const std::string &dest_override, std::string &error_out) {
+  static bool do_install_plugin_impl(const std::string &dest_override, bool restart, std::string &error_out) {
+    std::scoped_lock install_lock(g_plugin_install_mutex);
     try {
-      // Determine source directory: alongside the Sunshine executable under plugins/playnite/SunshinePlaynite
       std::wstring exePath;
       exePath.resize(MAX_PATH);
       GetModuleFileNameW(nullptr, exePath.data(), (DWORD) exePath.size());
@@ -1798,9 +1948,15 @@ namespace platf::playnite {
       BOOST_LOG(debug) << "Playnite installer: srcDir=" << srcDir.string();
       BOOST_LOG(debug) << "Playnite installer: src exists? " << (std::filesystem::exists(srcDir) ? "yes" : "no");
       BOOST_LOG(debug) << "Playnite installer: src file(extension.yaml) exists? " << (std::filesystem::exists(srcDir / L"extension.yaml") ? "yes" : "no");
-      BOOST_LOG(debug) << "Playnite installer: src file(SunshinePlaynite.psm1) exists? " << (std::filesystem::exists(srcDir / L"SunshinePlaynite.psm1") ? "yes" : "no");
-      if (!std::filesystem::exists(srcDir)) {
-        error_out = "Plugin source not found: " + srcDir.string();
+      BOOST_LOG(debug) << "Playnite installer: src file(VibepolloPlaynite.dll) exists? " << (std::filesystem::exists(srcDir / L"VibepolloPlaynite.dll") ? "yes" : "no");
+      BOOST_LOG(debug) << "Playnite installer: src file(icon.png) exists? " << (std::filesystem::exists(srcDir / L"icon.png") ? "yes" : "no");
+      const auto srcManifest = srcDir / L"extension.yaml";
+      const auto srcDll = srcDir / L"VibepolloPlaynite.dll";
+      const auto srcIcon = srcDir / L"icon.png";
+      if (!std::filesystem::is_regular_file(srcManifest) ||
+          !std::filesystem::is_regular_file(srcDll) ||
+          !std::filesystem::is_regular_file(srcIcon)) {
+        error_out = "Required plugin files were not found in " + srcDir.string();
         return false;
       }
 
@@ -1825,23 +1981,115 @@ namespace platf::playnite {
         return false;
       }
 
-      auto copy_one = [&](const wchar_t *name) {
+      std::wstring playniteExe;
+      if (restart && !resolve_playnite_launch_exe(playniteExe)) {
+        error_out = "Could not resolve the Playnite executable before installation.";
+        return false;
+      }
+      if (!stop_playnite()) {
+        error_out = "Could not stop Playnite before installing the plugin.";
+        return false;
+      }
+      bool launch_attempted = false;
+      auto relaunch_guard = util::fail_guard([&]() {
+        if (restart && !launch_attempted) {
+          try {
+            launch_playnite(playniteExe);
+          } catch (...) {}
+        }
+      });
+
+      const auto destManifest = destDir / L"extension.yaml";
+      const auto destDll = destDir / L"VibepolloPlaynite.dll";
+      const auto destIcon = destDir / L"icon.png";
+      const auto tempManifest = destDir / L"extension.yaml.vibepollo-new";
+      const auto tempDll = destDir / L"VibepolloPlaynite.dll.vibepollo-new";
+      const auto tempIcon = destDir / L"icon.png.vibepollo-new";
+      auto cleanup_temps = [&]() {
+        std::error_code cleanup_ec;
+        std::filesystem::remove(tempManifest, cleanup_ec);
+        cleanup_ec.clear();
+        std::filesystem::remove(tempDll, cleanup_ec);
+        cleanup_ec.clear();
+        std::filesystem::remove(tempIcon, cleanup_ec);
+      };
+      cleanup_temps();
+      auto cleanup_guard = util::fail_guard([&]() {
+        cleanup_temps();
+      });
+
+      auto copy_to_temp = [&](const std::filesystem::path &src, const std::filesystem::path &dst) {
         ec.clear();
-        auto src = srcDir / name;
-        auto dst = destDir / name;
-        std::wstring wname(name);
-        std::string sname(wname.begin(), wname.end());
-        BOOST_LOG(debug) << "Playnite installer: copying " << sname << " from " << src.string() << " to " << dst.string();
+        BOOST_LOG(debug) << "Playnite installer: staging " << src.string() << " to " << dst.string();
         std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing, ec);
         return !ec;
       };
-
-      if (!copy_one(L"extension.yaml") || !copy_one(L"SunshinePlaynite.psm1")) {
-        error_out = "Failed to copy plugin files to " + destDir.string();
+      auto same_size = [](const std::filesystem::path &src, const std::filesystem::path &dst) {
+        std::error_code src_ec;
+        std::error_code dst_ec;
+        auto src_size = std::filesystem::file_size(src, src_ec);
+        auto dst_size = std::filesystem::file_size(dst, dst_ec);
+        return !src_ec && !dst_ec && src_size > 0 && src_size == dst_size;
+      };
+      auto replace_file = [&](const std::filesystem::path &src, const std::filesystem::path &dst) {
+        if (MoveFileExW(src.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+          return true;
+        }
+        ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
         return false;
+      };
+
+      bool deployed = copy_to_temp(srcDll, tempDll) &&
+                      copy_to_temp(srcIcon, tempIcon) &&
+                      copy_to_temp(srcManifest, tempManifest);
+      if (deployed) {
+        deployed = same_size(srcDll, tempDll) &&
+                   same_size(srcIcon, tempIcon) &&
+                   same_size(srcManifest, tempManifest);
       }
-      BOOST_LOG(info) << "Playnite installer: deployed plugin to " << destDir.string();
-      return true;
+      if (deployed) {
+        deployed = replace_file(tempDll, destDll) &&
+                   replace_file(tempIcon, destIcon) &&
+                   replace_file(tempManifest, destManifest);
+      }
+      if (deployed) {
+        deployed = same_size(srcDll, destDll) &&
+                   same_size(srcIcon, destIcon) &&
+                   same_size(srcManifest, destManifest);
+      }
+      cleanup_temps();
+      cleanup_guard.disable();
+      if (deployed) {
+        ec.clear();
+        std::filesystem::remove(destDir / L"SunshinePlaynite.dll", ec);
+        deployed = !ec;
+      }
+      if (deployed) {
+        ec.clear();
+        std::filesystem::remove(destDir / L"VibeshinePlaynite.dll", ec);
+        deployed = !ec;
+      }
+      if (deployed) {
+        ec.clear();
+        std::filesystem::remove(destDir / L"SunshinePlaynite.psm1", ec);
+        deployed = !ec;
+      }
+      if (!deployed) {
+        error_out = "Failed to deploy and verify plugin files in " + destDir.string();
+      } else {
+        BOOST_LOG(info) << "Playnite installer: deployed plugin to " << destDir.string();
+      }
+
+      launch_attempted = restart;
+      bool relaunched = !restart || launch_playnite(playniteExe);
+      relaunch_guard.disable();
+      if (!relaunched) {
+        if (!error_out.empty()) {
+          error_out += " ";
+        }
+        error_out += "Playnite could not be relaunched.";
+      }
+      return deployed && relaunched;
     } catch (const std::exception &e) {
       BOOST_LOG(error) << "Playnite installer: exception: " << e.what();
       error_out = e.what();
@@ -1849,15 +2097,16 @@ namespace platf::playnite {
     }
   }
 
-  bool install_plugin(std::string &error) {
-    return do_install_plugin_impl(std::string(), error);
+  bool install_plugin(std::string &error, bool restart) {
+    return do_install_plugin_impl(std::string(), restart, error);
   }
 
-  bool install_plugin_to(const std::string &dest_dir, std::string &error) {
-    return do_install_plugin_impl(dest_dir, error);
+  bool install_plugin_to(const std::string &dest_dir, std::string &error, bool restart) {
+    return do_install_plugin_impl(dest_dir, restart, error);
   }
 
-  static bool do_uninstall_plugin_impl(std::string &error) {
+  static bool do_uninstall_plugin_impl(std::string &error, bool restart) {
+    std::scoped_lock install_lock(g_plugin_install_mutex);
     try {
       std::string target;
       if (!platf::playnite::get_extension_target_dir(target)) {
@@ -1870,6 +2119,26 @@ namespace platf::playnite {
         BOOST_LOG(info) << "Playnite uninstaller: target does not exist; nothing to do";
         return true;
       }
+
+      std::wstring playniteExe;
+      if (restart && !resolve_playnite_launch_exe(playniteExe)) {
+        error = "Could not resolve the Playnite executable before uninstalling the plugin.";
+        return false;
+      }
+      if (!stop_playnite()) {
+        error = "Could not stop Playnite before uninstalling the plugin.";
+        return false;
+      }
+
+      bool launch_attempted = false;
+      auto relaunch_guard = util::fail_guard([&]() {
+        if (restart && !launch_attempted) {
+          try {
+            launch_playnite(playniteExe);
+          } catch (...) {}
+        }
+      });
+
       std::error_code ec;
       auto removed = std::filesystem::remove_all(destDir, ec);
       if (ec) {
@@ -1878,7 +2147,14 @@ namespace platf::playnite {
         return false;
       }
       BOOST_LOG(info) << "Playnite uninstaller: removed files count=" << removed << " path=" << destDir.string();
-      return true;
+
+      launch_attempted = restart;
+      bool relaunched = !restart || launch_playnite(playniteExe);
+      relaunch_guard.disable();
+      if (!relaunched) {
+        error = "Playnite plugin was removed, but Playnite could not be relaunched.";
+      }
+      return relaunched;
     } catch (const std::exception &e) {
       error = e.what();
       BOOST_LOG(warning) << "Playnite uninstaller: exception: " << e.what();
@@ -1890,8 +2166,8 @@ namespace platf::playnite {
     }
   }
 
-  bool uninstall_plugin(std::string &error) {
-    return do_uninstall_plugin_impl(error);
+  bool uninstall_plugin(std::string &error, bool restart) {
+    return do_uninstall_plugin_impl(error, restart);
   }
 
   // --- Version helpers ---

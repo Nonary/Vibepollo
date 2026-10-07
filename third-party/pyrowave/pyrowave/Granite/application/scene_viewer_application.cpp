@@ -1,0 +1,1618 @@
+/* Copyright (c) 2017-2026 Hans-Kristian Arntzen
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#include "scene_viewer_application.hpp"
+#include "light_export.hpp"
+#include "muglm/matrix_helper.hpp"
+#include "post/hdr.hpp"
+#include "post/ssao.hpp"
+#include "post/spd.hpp"
+#include "rapidjson_wrapper.hpp"
+#include "task_composer.hpp"
+#include "thread_group.hpp"
+#include "utils/image_utils.hpp"
+#include "ocean.hpp"
+#include "post/ssr.hpp"
+#include <float.h>
+#include <stdexcept>
+
+using namespace Vulkan;
+
+namespace Granite
+{
+
+static vec3 light_direction()
+{
+	return normalize(vec3(0.5f, 1.2f, 0.8f));
+}
+
+void SceneViewerApplication::read_lights()
+{
+	std::string json;
+	if (!GRANITE_FILESYSTEM()->read_file_to_string("assets://lights.json", json))
+		return;
+
+	auto &scene = scene_loader.get_scene();
+	rapidjson::Document doc;
+	doc.Parse(json);
+
+	if (doc.HasMember("directional"))
+	{
+		auto &dir = doc["directional"];
+		auto &dir_lights = scene.get_entity_pool().get_component_group<DirectionalLightComponent>();
+		DirectionalLightComponent *comp;
+
+		if (dir_lights.empty())
+		{
+			auto light = scene.create_entity();
+			comp = light->allocate_component<DirectionalLightComponent>();
+		}
+		else
+			comp = get_component<DirectionalLightComponent>(dir_lights.front());
+
+		for (int i = 0; i < 3; i++)
+		{
+			comp->direction[i] = -dir["direction"][i].GetFloat();
+			comp->color[i] = dir["color"][i].GetFloat();
+		}
+	}
+
+	if (doc.HasMember("spot"))
+	{
+		auto &spots = doc["spot"];
+		for (auto itr = spots.Begin(); itr != spots.End(); ++itr)
+		{
+			auto &spot = *itr;
+			SceneFormats::LightInfo info;
+			info.type = SceneFormats::LightInfo::Type::Spot;
+			info.inner_cone = spot["innerCone"].GetFloat();
+			info.outer_cone = spot["outerCone"].GetFloat();
+			for (int i = 0; i < 3; i++)
+				info.color[i] = spot["color"][i].GetFloat();
+			if (spot.HasMember("range"))
+				info.range = spot["range"].GetFloat();
+
+			auto node = scene.create_node();
+			for (int i = 0; i < 3; i++)
+				node->get_transform().translation[i] = spot["position"][i].GetFloat();
+
+			auto &dir = spot["direction"];
+			node->get_transform().rotation = conjugate(look_at_arbitrary_up(vec3(
+					dir[0].GetFloat(), dir[1].GetFloat(), dir[2].GetFloat())));
+			scene.get_root_node()->add_child(node);
+			auto entity = scene.create_light(info, node.get());
+			entity->allocate_component<IrradianceAffectingComponent>();
+		}
+	}
+
+	if (doc.HasMember("point"))
+	{
+		auto &points = doc["point"];
+		for (auto itr = points.Begin(); itr != points.End(); ++itr)
+		{
+			auto &point = *itr;
+			SceneFormats::LightInfo info;
+			info.type = SceneFormats::LightInfo::Type::Point;
+			for (int i = 0; i < 3; i++)
+				info.color[i] = point["color"][i].GetFloat();
+			if (point.HasMember("range"))
+				info.range = point["range"].GetFloat();
+
+			auto node = scene.create_node();
+			for (int i = 0; i < 3; i++)
+				node->get_transform().translation[i] = point["position"][i].GetFloat();
+			scene.get_root_node()->add_child(node);
+			auto entity = scene.create_light(info, node.get());
+			entity->allocate_component<IrradianceAffectingComponent>();
+		}
+	}
+}
+
+void SceneViewerApplication::read_quirks(const std::string &path)
+{
+	std::string json;
+	if (!GRANITE_FILESYSTEM()->read_file_to_string(path, json))
+	{
+		LOGE("Failed to read quirks file. Assuming defaults.\n");
+		return;
+	}
+
+	rapidjson::Document doc;
+	doc.Parse(json);
+
+	if (doc.HasMember("instanceDeferredLights"))
+		ImplementationQuirks::get().instance_deferred_lights = doc["instanceDeferredLights"].GetBool();
+	if (doc.HasMember("mergeSubpasses"))
+		ImplementationQuirks::get().merge_subpasses = doc["mergeSubpasses"].GetBool();
+	if (doc.HasMember("useTransientColor"))
+		ImplementationQuirks::get().use_transient_color = doc["useTransientColor"].GetBool();
+	if (doc.HasMember("useTransientDepthStencil"))
+		ImplementationQuirks::get().use_transient_depth_stencil = doc["useTransientDepthStencil"].GetBool();
+	if (doc.HasMember("queueWaitOnSubmission"))
+		ImplementationQuirks::get().queue_wait_on_submission = doc["queueWaitOnSubmission"].GetBool();
+	if (doc.HasMember("useAsyncComputePost"))
+		ImplementationQuirks::get().use_async_compute_post = doc["useAsyncComputePost"].GetBool();
+	if (doc.HasMember("renderGraphForceSingleQueue"))
+		ImplementationQuirks::get().render_graph_force_single_queue = doc["renderGraphForceSingleQueue"].GetBool();
+	if (doc.HasMember("forceNoSubgroups"))
+		ImplementationQuirks::get().force_no_subgroups = doc["forceNoSubgroups"].GetBool();
+	if (doc.HasMember("forceNoSubgroupShuffle"))
+		ImplementationQuirks::get().force_no_subgroup_shuffle = doc["forceNoSubgroupShuffle"].GetBool();
+	if (doc.HasMember("forceNoSubgroupSizeControl"))
+		ImplementationQuirks::get().force_no_subgroup_size_control = doc["forceNoSubgroupSizeControl"].GetBool();
+}
+
+void SceneViewerApplication::read_config(const std::string &path)
+{
+	std::string json;
+	if (!GRANITE_FILESYSTEM()->read_file_to_string(path, json))
+	{
+		LOGE("Failed to read config file. Assuming defaults.\n");
+		return;
+	}
+
+	rapidjson::Document doc;
+	doc.Parse(json);
+
+	if (doc.HasMember("renderer"))
+	{
+		auto *renderer = doc["renderer"].GetString();
+		if (strcmp(renderer, "forward") == 0)
+			config.renderer_type = RendererType::GeneralForward;
+		else if (strcmp(renderer, "deferred") == 0)
+			config.renderer_type = RendererType::GeneralDeferred;
+		else
+			throw std::invalid_argument("Invalid renderer option.");
+	}
+
+	if (doc.HasMember("msaa"))
+		config.msaa = doc["msaa"].GetUint();
+
+	if (doc.HasMember("ssao"))
+		config.ssao = doc["ssao"].GetBool();
+
+	if (doc.HasMember("ssr"))
+		config.ssr = doc["ssr"].GetBool();
+
+	if (doc.HasMember("debugProbes"))
+		config.debug_probes = doc["debugProbes"].GetBool();
+
+	if (doc.HasMember("directionalLightShadows"))
+		config.directional_light_shadows = doc["directionalLightShadows"].GetBool();
+
+	if (doc.HasMember("directionalLightShadowsCascaded"))
+		config.directional_light_cascaded_shadows = doc["directionalLightShadowsCascaded"].GetBool();
+
+	if (doc.HasMember("directionalLightShadowsVSM"))
+		config.directional_light_shadows_vsm = doc["directionalLightShadowsVSM"].GetBool();
+
+	if (doc.HasMember("PCFKernelWide"))
+	{
+		bool wide = doc["PCFKernelWide"].GetBool();
+		if (wide)
+			config.pcf_flags = SCENE_RENDERER_SHADOW_PCF_WIDE_BIT;
+		else
+			config.pcf_flags = 0;
+		renderer_suite_config.pcf_wide = wide;
+	}
+	if (doc.HasMember("clusteredLightsShadows"))
+		config.clustered_lights_shadows = doc["clusteredLightsShadows"].GetBool();
+	if (doc.HasMember("clusteredLightsShadowsResolution"))
+		config.clustered_lights_shadow_resolution = doc["clusteredLightsShadowsResolution"].GetUint();
+	if (doc.HasMember("clusteredLightsShadowsVSM"))
+		config.clustered_lights_shadows_vsm = doc["clusteredLightsShadowsVSM"].GetBool();
+	if (doc.HasMember("hdrBloom"))
+		config.hdr_bloom = doc["hdrBloom"].GetBool();
+	if (doc.HasMember("hdrBloomDynamicExposure"))
+		config.hdr_bloom_dynamic_exposure = doc["hdrBloomDynamicExposure"].GetBool();
+	if (doc.HasMember("showUi"))
+		config.show_ui = doc["showUi"].GetBool();
+	if (doc.HasMember("forwardDepthPrepass"))
+		config.forward_depth_prepass = doc["forwardDepthPrepass"].GetBool();
+
+	if (doc.HasMember("shadowMapResolution"))
+		config.shadow_map_resolution = doc["shadowMapResolution"].GetFloat();
+
+	if (doc.HasMember("renderTargetFp16"))
+		config.rt_fp16 = doc["renderTargetFp16"].GetBool();
+
+	if (doc.HasMember("rescaleScene"))
+		config.rescale_scene = doc["rescaleScene"].GetBool();
+
+	if (doc.HasMember("postAA"))
+	{
+		auto *aa = doc["postAA"].GetString();
+		config.postaa_type = string_to_post_antialiasing_type(aa);
+	}
+
+	if (doc.HasMember("resolutionScale"))
+		config.resolution_scale = doc["resolutionScale"].GetFloat();
+	if (doc.HasMember("resolutionScaleSharpen"))
+		config.resolution_scale_sharpen = doc["resolutionScaleSharpen"].GetBool();
+
+	if (doc.HasMember("lodBias"))
+		config.lod_bias = doc["lodBias"].GetFloat();
+
+	if (doc.HasMember("volumetricFog"))
+		config.volumetric_fog = doc["volumetricFog"].GetBool();
+	if (doc.HasMember("volumetricDiffuse"))
+		config.volumetric_diffuse = doc["volumetricDiffuse"].GetBool();
+}
+
+SceneViewerApplication::SceneViewerApplication(const std::string &path, const std::string &config_path,
+                                               const std::string &quirks_path, const CLIConfig &cli_config_)
+	: cli_config(cli_config_)
+{
+	GRANITE_ASSET_MANAGER()->enable_mesh_assets();
+
+	renderer_suite.set_default_renderers();
+	if (!renderer_suite.load_variant_cache("assets://renderer_suite_variants.json"))
+		renderer_suite.load_variant_cache("cache://renderer_suite_variants.json");
+
+	if (!config_path.empty())
+		read_config(config_path);
+	if (!quirks_path.empty())
+		read_quirks(quirks_path);
+	renderer_suite_config.cascaded_directional_shadows = config.directional_light_cascaded_shadows;
+	renderer_suite_config.directional_light_vsm = config.directional_light_shadows_vsm;
+
+	scene_loader.load_scene(path);
+	read_lights();
+
+	scene_transform_manager.init(scene_loader.get_scene());
+
+	if (cli_config.ocean)
+	{
+		OceanConfig ocean_config = {};
+		//ocean_config.grid_count = 4;
+		//ocean_config.ocean_size = vec2(32.0f, 32.0f);
+		//ocean_config.fft_resolution = ocean_config.grid_count * ocean_config.grid_resolution;
+		//ocean_config.heightmap = true;
+		//ocean_config.lod_bias = -2.0f;
+		//auto &scene = scene_loader.get_scene();
+		//auto node = scene.create_node();
+		//node->transform.translation = vec3(30.0f, -5.0f, 40.0f);
+		//node->invalidate_cached_transform();
+		//Ocean::add_to_scene(scene_loader.get_scene(), ocean_config, node);
+		Ocean::add_to_scene(scene_loader.get_scene(), ocean_config);
+		//scene.get_root_node()->add_child(std::move(node));
+	}
+
+	if (false && config.volumetric_diffuse)
+	{
+		auto &scene = scene_loader.get_scene();
+		auto node = scene.create_node();
+		node->get_transform().scale = vec3(32.0f, 8.0f, 32.0f);
+		node->get_transform().translation = vec3(0.0f, 3.5f, 0.0f);
+		node->invalidate_cached_transform();
+		scene.create_volumetric_diffuse_light(uvec3(32, 8, 32), node.get());
+		scene.get_root_node()->add_child(std::move(node));
+	}
+
+	if (config.volumetric_fog_regions && config.volumetric_fog)
+	{
+		auto &scene = scene_loader.get_scene();
+		auto node = scene.create_node();
+		node->get_transform().scale = vec3(40.0f);
+		node->get_transform().translation = vec3(0.0f, 20.0f, 0.0f);
+		node->invalidate_cached_transform();
+		scene.create_volumetric_fog_region(node.get());
+		scene.get_root_node()->add_child(std::move(node));
+	}
+
+#if 0
+	for (int z = -8; z <= 8; z++)
+	{
+		for (int x = -8; x <= 8; x++)
+		{
+			auto &scene = scene_loader.get_scene();
+			auto node = scene.create_node();
+			node->transform.scale = vec3(1.0f);
+			node->transform.translation = vec3(2.0f * x, 0.4f, 2.0f * z);
+			node->transform.rotation = angleAxis(half_pi<float>(), vec3(1.0f, 0.0f, 0.0f));
+			node->invalidate_cached_transform();
+			scene.create_volumetric_decal(node.get());
+			scene.get_root_node()->add_child(std::move(node));
+		}
+	}
+#endif
+
+	animation_system = scene_loader.consume_animation_system();
+	context.set_lighting_parameters(&lighting);
+	scene_transform_manager.register_persistent_render_context(&context);
+	fallback_depth_context.set_lighting_parameters(&fallback_lighting);
+
+	scene_transform_manager.register_persistent_render_context(&fallback_depth_context);
+	for (auto &d : depth_contexts)
+		scene_transform_manager.register_persistent_render_context(&d);
+	cam.set_depth_range_infinite(1.0f / 16.0f);
+
+	// Create a dummy background if there isn't any background.
+	if (scene_loader.get_scene().get_entity_pool().get_component_group<BackgroundComponent>().empty())
+	{
+		auto dome = Util::make_handle<Skybox>();
+		scene_loader.get_scene().create_renderable(dome, nullptr);
+	}
+
+	auto *environment = scene_loader.get_scene().get_environment();
+	if (environment)
+		lighting.fog = environment->fog;
+	else
+		lighting.fog = {};
+
+	cam.look_at(vec3(0.0f, 0.0f, 8.0f), vec3(0.0f));
+
+	// Pick a camera to show.
+	selected_camera = &cam;
+
+	if (cli_config.camera_index >= 0)
+	{
+		auto &scene_cameras = scene_loader.get_scene().get_entity_pool().get_component_group<CameraComponent>();
+		if (!scene_cameras.empty())
+		{
+			if (unsigned(cli_config.camera_index) < scene_cameras.size())
+				selected_camera = &get_component<CameraComponent>(scene_cameras[cli_config.camera_index])->camera;
+			else
+				LOGE("Camera index is out of bounds, using normal camera.");
+		}
+	}
+
+	// Pick a directional light.
+	default_directional_light.color = vec3(6.0f, 5.5f, 4.5f);
+	default_directional_light.direction = light_direction();
+	auto &dir_lights = scene_loader.get_scene().get_entity_pool().get_component_group<DirectionalLightComponent>();
+	if (!dir_lights.empty())
+		selected_directional = get_component<DirectionalLightComponent>(dir_lights.front());
+	else
+		selected_directional = &default_directional_light;
+
+	{
+		cluster = std::make_unique<LightClusterer>();
+		auto entity = scene_loader.get_scene().create_entity();
+		auto *refresh = entity->allocate_component<PerFrameUpdateComponent>();
+		refresh->refresh = cluster.get();
+
+		auto *rp = entity->allocate_component<RenderPassComponent>();
+		rp->creator = cluster.get();
+		lighting.cluster = cluster.get();
+
+		cluster->set_enable_shadows(config.clustered_lights_shadows);
+		cluster->set_shadow_resolution(config.clustered_lights_shadow_resolution);
+		cluster->set_enable_volumetric_fog(config.volumetric_fog && config.volumetric_fog_regions);
+
+		if (config.clustered_lights_shadows_vsm)
+			cluster->set_shadow_type(LightClusterer::ShadowType::VSM);
+		else
+			cluster->set_shadow_type(LightClusterer::ShadowType::PCF);
+
+		cluster->set_resolution(128, 64, 4 * 1024);
+	}
+
+	if (config.volumetric_fog)
+	{
+		volumetric_fog = std::make_unique<VolumetricFog>();
+		volumetric_fog->set_resolution(160, 92, 128);
+		volumetric_fog->set_z_range(80.0f);
+		lighting.volumetric_fog = volumetric_fog.get();
+		auto entity = scene_loader.get_scene().create_entity();
+		auto *rp = entity->allocate_component<RenderPassComponent>();
+		rp->creator = volumetric_fog.get();
+
+		volumetric_fog->add_storage_buffer_dependency("cluster-bitmask");
+		volumetric_fog->add_storage_buffer_dependency("cluster-range");
+		volumetric_fog->add_storage_buffer_dependency("cluster-transforms");
+
+		if (config.directional_light_shadows)
+			volumetric_fog->add_texture_dependency("shadow-main");
+	}
+
+	if (config.volumetric_diffuse)
+	{
+		volumetric_diffuse = std::make_unique<VolumetricDiffuseLightManager>();
+		lighting.volumetric_diffuse = volumetric_diffuse.get();
+
+		auto entity = scene_loader.get_scene().create_entity();
+
+		auto *rp = entity->allocate_component<RenderPassComponent>();
+		rp->creator = volumetric_diffuse.get();
+
+		auto *update = entity->allocate_component<PerFrameUpdateComponent>();
+		// Must come before clusterer since we're modifying volumetric light textures,
+		// which will affect clustering, since it writes new descriptors.
+		update->dependency_order = -1;
+		update->refresh = volumetric_diffuse.get();
+
+		volumetric_diffuse->set_fallback_render_context(&fallback_depth_context);
+	}
+
+	if (cluster)
+	{
+		cluster->set_enable_volumetric_diffuse(config.volumetric_diffuse);
+		cluster->set_enable_volumetric_decals(false);
+	}
+
+	context.set_camera(*selected_camera);
+
+	graph.enable_timestamps(cli_config.timestamp);
+
+	if (config.rescale_scene)
+		rescale_scene(10.0f);
+
+	EVENT_MANAGER_REGISTER_LATCH(SceneViewerApplication, on_swapchain_changed, on_swapchain_destroyed,
+	                             SwapchainParameterEvent);
+	EVENT_MANAGER_REGISTER_LATCH(SceneViewerApplication, on_device_created, on_device_destroyed, DeviceCreatedEvent);
+	EVENT_MANAGER_REGISTER(SceneViewerApplication, on_key_down, KeyboardEvent);
+}
+
+void SceneViewerApplication::export_lights()
+{
+	auto lights = export_lights_to_json(lighting.directional, scene_loader.get_scene());
+	if (!GRANITE_FILESYSTEM()->write_string_to_file("cache://lights.json", lights))
+		LOGE("Failed to export light data.\n");
+}
+
+void SceneViewerApplication::export_cameras()
+{
+	auto cameras = export_cameras_to_json(recorded_cameras);
+	if (!GRANITE_FILESYSTEM()->write_string_to_file("cache://cameras.json", cameras))
+		LOGE("Failed to export camera data.\n");
+}
+
+SceneViewerApplication::~SceneViewerApplication()
+{
+	export_lights();
+	export_cameras();
+	renderer_suite.save_variant_cache("cache://renderer_suite_variants.json");
+}
+
+void SceneViewerApplication::loop_animations()
+{
+}
+
+void SceneViewerApplication::rescale_scene(float radius)
+{
+	scene_loader.get_scene().update_all_transforms();
+
+	AABB aabb(vec3(FLT_MAX), vec3(-FLT_MAX));
+	auto &objects = scene_loader.get_scene()
+	                    .get_entity_pool()
+	                    .get_component_group<RenderInfoComponent, RenderableComponent>();
+	for (auto &caster : objects)
+		aabb.expand(get_component<RenderInfoComponent>(caster)->get_aabb());
+
+	float scale_factor = radius / aabb.get_radius();
+	auto root_node = scene_loader.get_scene().get_root_node();
+	auto new_root_node = scene_loader.get_scene().create_node();
+	new_root_node->get_transform().scale = vec3(scale_factor);
+	new_root_node->add_child(root_node);
+	scene_loader.get_scene().set_root_node(new_root_node);
+}
+
+void SceneViewerApplication::on_device_created(const DeviceCreatedEvent &device)
+{
+	graph.set_device(&device.get_device());
+	context.set_device(&device.get_device());
+	fallback_depth_context.set_device(&device.get_device());
+}
+
+void SceneViewerApplication::on_device_destroyed(const DeviceCreatedEvent &)
+{
+	graph.set_device(nullptr);
+}
+
+bool SceneViewerApplication::on_key_down(const KeyboardEvent &e)
+{
+	if (e.get_key_state() != KeyState::Pressed)
+		return true;
+
+	switch (e.get_key())
+	{
+	case Key::O:
+		selected_camera->set_ortho(!selected_camera->get_ortho(), 5.0f);
+		break;
+
+	case Key::X:
+	{
+		vec3 pos = selected_camera->get_position();
+		auto &scene = scene_loader.get_scene();
+		auto node = scene.create_node();
+		scene.get_root_node()->add_child(node);
+
+		SceneFormats::LightInfo light;
+		light.type = SceneFormats::LightInfo::Type::Spot;
+		light.outer_cone = 0.9f;
+		light.inner_cone = 0.92f;
+		light.color = vec3(10.0f);
+
+		node->get_transform().translation = pos;
+		node->get_transform().rotation = conjugate(look_at_arbitrary_up(selected_camera->get_front()));
+
+		auto *entity = scene.create_light(light, node.get());
+		entity->allocate_component<IrradianceAffectingComponent>();
+		break;
+	}
+
+	case Key::C:
+	{
+		vec3 pos = selected_camera->get_position();
+		auto &scene = scene_loader.get_scene();
+		auto node = scene.create_node();
+		scene.get_root_node()->add_child(node);
+
+		SceneFormats::LightInfo light;
+		light.type = SceneFormats::LightInfo::Type::Point;
+		light.color = vec3(10.0f);
+		node->get_transform().translation = pos;
+
+		auto *entity = scene.create_light(light, node.get());
+		entity->allocate_component<IrradianceAffectingComponent>();
+		break;
+	}
+
+	case Key::V:
+	{
+		default_directional_light.direction = -selected_camera->get_front();
+		selected_directional = &default_directional_light;
+		need_shadow_map_update = true;
+		break;
+	}
+
+	case Key::B:
+	{
+		float fovy = selected_camera->get_fovy();
+		float aspect = selected_camera->get_aspect();
+		float znear = selected_camera->get_znear();
+		float zfar = selected_camera->get_zfar();
+
+		RecordedCamera camera;
+		camera.direction = selected_camera->get_front();
+		camera.position = selected_camera->get_position();
+		camera.up = selected_camera->get_up();
+		camera.aspect = aspect;
+		camera.fovy = fovy;
+		camera.znear = znear;
+		camera.zfar = zfar;
+		recorded_cameras.push_back(camera);
+		break;
+	}
+
+	case Key::R:
+	{
+		auto &scene = scene_loader.get_scene();
+		scene.remove_entities_with_component<PositionalLightComponent>();
+		break;
+	}
+
+	case Key::K:
+	{
+		capture_environment_probe();
+		break;
+	}
+
+	case Key::Space:
+	{
+		auto mode = get_wsi().get_present_mode();
+		if (mode == PresentMode::SyncToVBlank)
+			get_wsi().set_present_mode(PresentMode::UnlockedMaybeTear);
+		else
+			get_wsi().set_present_mode(PresentMode::SyncToVBlank);
+		break;
+	}
+
+	case Key::M:
+	{
+		get_wsi().set_backbuffer_srgb(!get_wsi().get_backbuffer_srgb());
+		break;
+	}
+
+	case Key::H:
+	{
+		get_wsi().set_backbuffer_format(get_wsi().get_backbuffer_format() == Vulkan::BackbufferFormat::HDR10 ?
+				Vulkan::BackbufferFormat::sRGB : Vulkan::BackbufferFormat::HDR10);
+		break;
+	}
+
+	default:
+		break;
+	}
+
+	return true;
+}
+
+void SceneViewerApplication::capture_environment_probe()
+{
+	ImageCreateInfo info = ImageCreateInfo::render_target(512, 512, VK_FORMAT_R16G16B16A16_SFLOAT);
+	info.levels = 1;
+	info.layers = 6;
+	info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+	info.initial_layout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
+	auto &device = get_wsi().get_device();
+
+	auto handle = device.create_image(info, nullptr);
+	auto cmd = device.request_command_buffer();
+
+	VisibilityList visible;
+
+	for (unsigned face = 0; face < 6; face++)
+	{
+		ImageViewCreateInfo view_info = {};
+		view_info.layers = 1;
+		view_info.base_layer = face;
+		view_info.format = info.format;
+		view_info.levels = 1;
+		view_info.image = handle.get();
+		auto rt_view = device.create_image_view(view_info);
+
+		mat4 proj, view;
+		compute_cube_render_transform(selected_camera->get_position(), face, proj, view, 0.1f, 300.0f);
+		context.set_camera(proj, view);
+
+		RenderPassInfo rp = {};
+		rp.num_color_attachments = 1;
+		rp.color_attachments[0] = rt_view.get();
+		rp.store_attachments = 1;
+		rp.clear_attachments = 1;
+
+		auto depth_att = device.get_transient_attachment(512, 512, device.get_default_depth_format(), 0);
+		rp.depth_stencil = &depth_att->get_view();
+		rp.op_flags = RENDER_PASS_OP_CLEAR_DEPTH_STENCIL_BIT;
+		rp.clear_depth_stencil.depth = 0.0f;
+		rp.clear_depth_stencil.stencil = 0;
+		rp.clear_color[0].float32[0] = 0.0f;
+		rp.clear_color[0].float32[1] = 0.0f;
+		rp.clear_color[0].float32[2] = 0.0f;
+		rp.clear_color[0].float32[3] = 1.0f;
+		cmd->begin_render_pass(rp);
+
+		auto &scene = scene_loader.get_scene();
+		visible.clear();
+		scene.gather_visible_opaque_renderables(context.get_visibility_frustum(), visible);
+		scene.gather_visible_render_pass_sinks(context.get_render_parameters().camera_position, visible);
+		scene.gather_unbounded_renderables(visible);
+
+		auto &forward_renderer = renderer_suite.get_renderer(RendererSuite::Type::ForwardOpaque);
+		forward_renderer.set_mesh_renderer_options_from_lighting(lighting);
+		forward_renderer.set_mesh_renderer_options(forward_renderer.get_mesh_renderer_options() | config.pcf_flags);
+
+		forward_renderer.begin(queue);
+		queue.push_renderables(context, visible.data(), visible.size());
+
+		Renderer::RendererOptionFlags opt = Renderer::FRONT_FACE_CLOCKWISE_BIT;
+		forward_renderer.flush(*cmd, queue, context, opt);
+
+		cmd->end_render_pass();
+	}
+
+	cmd->image_barrier(*handle, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+	                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+	                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+	device.submit(cmd);
+	auto buffer = save_image_to_cpu_buffer(device, *handle, CommandBuffer::Type::Generic);
+	save_image_buffer_to_gtx(device, buffer, "cache://environment.gtx");
+}
+
+static inline std::string tagcat(const std::string &a, const std::string &b)
+{
+	return a + "-" + b;
+}
+
+void SceneViewerApplication::add_mv_pass(const std::string &tag, const std::string &depth, bool full_mv)
+{
+	AttachmentInfo mv;
+	mv.size_class = SizeClass::InputRelative;
+	mv.size_relative_name = depth;
+	mv.format = VK_FORMAT_R16G16_SFLOAT;
+
+	auto &mv_pass = graph.add_pass(tagcat("mv", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+	mv_pass.set_depth_stencil_input(depth);
+	mv_pass.add_color_output(tagcat("mv", tag), mv);
+	culling_passes_info.motion_vector_pass = &mv_pass;
+
+	if (full_mv)
+		mv_pass.add_attachment_input(depth);
+
+	auto renderer = Util::make_handle<RenderPassSceneRenderer>();
+	RenderPassSceneRenderer::Setup setup = {};
+	setup.scene = &scene_loader.get_scene();
+	setup.context = &context;
+	setup.suite = &renderer_suite;
+	setup.flags = SCENE_RENDERER_MOTION_VECTOR_BIT;
+	if (full_mv)
+		setup.flags |= SCENE_RENDERER_MOTION_VECTOR_FULL_BIT;
+
+	// After normal rendering, the occlusion state buffer is exactly what we want.
+	// Main downside is that we have to split render pass if we're doing forward rendering with task,
+	// but that's fairly minor.
+	renderer->set_extra_flush_flags(Renderer::MESH_ASSET_PHASE_1_BIT);
+
+	renderer->init(setup);
+
+	mv_pass.set_render_pass_interface(std::move(renderer));
+}
+
+void SceneViewerApplication::add_main_pass_forward(Device &device, const std::string &tag)
+{
+	AttachmentInfo color, depth;
+	depth.format = device.get_default_depth_format();
+
+	color.size_x = config.resolution_scale;
+	color.size_y = config.resolution_scale;
+	depth.size_x = config.resolution_scale;
+	depth.size_y = config.resolution_scale;
+
+	//bool use_ssao = config.forward_depth_prepass && config.ssao && config.msaa == 1;
+	const bool use_ssao = false;
+
+	auto &phase1 = graph.add_pass(tagcat("depth-phase1", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+	phase1.set_depth_stencil_output(tagcat("depth-prepass", tag), depth);
+	culling_passes_info.phase1_depth_output = tagcat("depth-prepass", tag);
+
+	scene_loader.get_scene().add_render_pass_dependencies(graph, phase1,
+														  RenderPassCreator::GEOMETRY_BIT |
+														  RenderPassCreator::MATERIAL_BIT);
+
+	{
+		auto renderer = Util::make_handle<RenderPassSceneRenderer>();
+		RenderPassSceneRenderer::Setup setup = {};
+		setup.scene = &scene_loader.get_scene();
+		setup.context = &context;
+		setup.suite = &renderer_suite;
+		setup.flags = SCENE_RENDERER_Z_PREPASS_BIT;
+		if (config.debug_probes)
+			setup.flags |= SCENE_RENDERER_DEBUG_PROBES_BIT;
+		renderer->set_extra_flush_flags(Renderer::MESH_ASSET_PHASE_1_BIT);
+		renderer->init(setup);
+		phase1.set_render_pass_interface(std::move(renderer));
+	}
+
+	if (use_ssao)
+	{
+		auto &prepass_depth = graph.add_pass(tagcat("depth-transient", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+		prepass_depth.set_depth_stencil_output(tagcat("depth-transient", tag), depth);
+		auto renderer = Util::make_handle<RenderPassSceneRenderer>();
+		RenderPassSceneRenderer::Setup setup = {};
+		setup.scene = &scene_loader.get_scene();
+		setup.context = &context;
+		setup.suite = &renderer_suite;
+		setup.flags = SCENE_RENDERER_Z_PREPASS_BIT;
+		renderer->init(setup);
+
+		// TODO: Find a good way to let the prepass renderer share renderer with opaque / transparent passes.
+		prepass_depth.set_render_pass_interface(std::move(renderer));
+		scene_loader.get_scene().add_render_pass_dependencies(graph, prepass_depth, RenderPassCreator::GEOMETRY_BIT);
+		setup_ffx_cacao(graph, context, tagcat("ssao-output", tag), tagcat("depth-transient", tag), "");
+	}
+
+	bool supports_32bpp =
+			device.image_format_is_supported(VK_FORMAT_B10G11R11_UFLOAT_PACK32,
+			                                 VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT);
+
+	if (config.hdr_bloom || get_wsi().get_backbuffer_color_space() == VK_COLOR_SPACE_HDR10_ST2084_EXT)
+		color.format =
+		    (config.rt_fp16 || !supports_32bpp) ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+	else
+		color.format = VK_FORMAT_UNDEFINED; // Swapchain format.
+
+	color.samples = config.msaa;
+	depth.samples = config.msaa;
+
+	auto resolved = color;
+	resolved.samples = 1;
+
+	auto &lighting_pass = graph.add_pass(tagcat("lighting", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+
+	culling_passes_info.phase1_pass = &phase1;
+	culling_passes_info.phase2_pass = &lighting_pass;
+	culling_passes_info.force_visible_phase2 = true;
+
+	if (color.samples > 1)
+	{
+		lighting_pass.add_color_output(tagcat("HDR-MS", tag), color);
+		lighting_pass.add_resolve_output(tagcat("HDR", tag), resolved);
+	}
+	else
+		lighting_pass.add_color_output(tagcat("HDR", tag), color);
+
+	if (use_ssao)
+	{
+		ssao_output = &lighting_pass.add_texture_input(tagcat("ssao-output", tag));
+		lighting_pass.set_depth_stencil_input(tagcat("depth-transient", tag));
+		lighting_pass.add_fake_resource_write_alias(tagcat("depth-transient", tag), tagcat("depth", tag));
+	}
+	else
+	{
+		ssao_output = nullptr;
+		lighting_pass.set_depth_stencil_output(tagcat("depth", tag), depth);
+	}
+
+	auto renderer = Util::make_handle<RenderPassSceneRenderer>();
+	RenderPassSceneRenderer::Setup setup = {};
+	setup.scene = &scene_loader.get_scene();
+	setup.context = &context;
+	setup.suite = &renderer_suite;
+	setup.flags = SCENE_RENDERER_FORWARD_OPAQUE_BIT | SCENE_RENDERER_FORWARD_TRANSPARENT_BIT | config.pcf_flags;
+	if (config.forward_depth_prepass && !use_ssao)
+		setup.flags |= SCENE_RENDERER_Z_PREPASS_BIT;
+	else if (config.forward_depth_prepass)
+		setup.flags |= SCENE_RENDERER_Z_EXISTING_PREPASS_BIT;
+
+	if (config.debug_probes)
+		setup.flags |= SCENE_RENDERER_DEBUG_PROBES_BIT;
+
+	renderer->set_extra_flush_flags(Renderer::MESH_ASSET_PHASE_2_BIT | Renderer::MESH_ASSET_FORCE_ALL_VISIBLE_BIT);
+	renderer->init(setup);
+
+	lighting_pass.set_render_pass_interface(std::move(renderer));
+
+	shadows = nullptr;
+	if (config.directional_light_shadows)
+		shadows = &lighting_pass.add_texture_input("shadow-main");
+	scene_loader.get_scene().add_render_pass_dependencies(graph, lighting_pass,
+	                                                      RenderPassCreator::LIGHTING_BIT |
+	                                                      RenderPassCreator::GEOMETRY_BIT |
+	                                                      RenderPassCreator::MATERIAL_BIT);
+}
+
+void SceneViewerApplication::add_main_pass_deferred(Device &device, const std::string &tag)
+{
+	bool supports_32bpp =
+	    device.image_format_is_supported(VK_FORMAT_B10G11R11_UFLOAT_PACK32, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT);
+	AttachmentInfo emissive, albedo, normal, pbr, depth;
+	if (config.hdr_bloom || get_wsi().get_backbuffer_color_space() == VK_COLOR_SPACE_HDR10_ST2084_EXT)
+		emissive.format =
+		    (config.rt_fp16 || !supports_32bpp) ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+	else
+		emissive.format = VK_FORMAT_UNDEFINED;
+
+	const auto set_scale = [&](AttachmentInfo &info) {
+		info.size_x = config.resolution_scale;
+		info.size_y = config.resolution_scale;
+	};
+	set_scale(emissive);
+	set_scale(albedo);
+	set_scale(normal);
+	set_scale(pbr);
+	set_scale(depth);
+
+	albedo.format = VK_FORMAT_R8G8B8A8_SRGB;
+	normal.format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+	pbr.format = VK_FORMAT_R8G8_UNORM;
+	depth.format = device.get_default_depth_format();
+
+	culling_passes_info.phase1_depth_output = tagcat("depth-prepass", tag);
+
+	auto &phase1 = graph.add_pass(tagcat("gbuffer-phase1", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+	phase1.set_depth_stencil_output(culling_passes_info.phase1_depth_output, depth);
+
+	scene_loader.get_scene().add_render_pass_dependencies(graph, phase1,
+	                                                      RenderPassCreator::GEOMETRY_BIT |
+	                                                      RenderPassCreator::MATERIAL_BIT);
+
+	{
+		auto renderer = Util::make_handle<RenderPassSceneRenderer>();
+		RenderPassSceneRenderer::Setup setup = {};
+		setup.scene = &scene_loader.get_scene();
+		setup.context = &context;
+		setup.suite = &renderer_suite;
+		setup.flags = SCENE_RENDERER_Z_PREPASS_BIT;
+		if (config.debug_probes)
+			setup.flags |= SCENE_RENDERER_DEBUG_PROBES_BIT;
+		renderer->set_extra_flush_flags(Renderer::MESH_ASSET_PHASE_1_BIT);
+		renderer->init(setup);
+		phase1.set_render_pass_interface(std::move(renderer));
+	}
+
+	auto &gbuffer = graph.add_pass(tagcat("gbuffer", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+	gbuffer.add_color_output(tagcat("emissive", tag), emissive);
+	gbuffer.add_color_output(tagcat("albedo", tag), albedo);
+	gbuffer.add_color_output(tagcat("normal", tag), normal);
+	gbuffer.add_color_output(tagcat("pbr", tag), pbr);
+	gbuffer.set_depth_stencil_output(tagcat("depth-transient", tag), depth);
+	gbuffer.set_depth_stencil_input(tagcat("depth-prepass", tag));
+
+	culling_passes_info.phase1_pass = &phase1;
+	culling_passes_info.phase2_pass = &gbuffer;
+
+	{
+		auto renderer = Util::make_handle<RenderPassSceneRenderer>();
+		RenderPassSceneRenderer::Setup setup = {};
+		setup.scene = &scene_loader.get_scene();
+		setup.context = &context;
+		setup.suite = &renderer_suite;
+		setup.flags = SCENE_RENDERER_DEFERRED_GBUFFER_BIT;
+		if (config.debug_probes)
+			setup.flags |= SCENE_RENDERER_DEBUG_PROBES_BIT;
+		renderer->set_extra_flush_flags(Renderer::MESH_ASSET_PHASE_2_BIT | Renderer::MESH_ASSET_FORCE_ALL_VISIBLE_BIT);
+		renderer->init(setup);
+		gbuffer.set_render_pass_interface(std::move(renderer));
+	}
+
+	if (config.ssao)
+	{
+		setup_ffx_cacao(graph, context, tagcat("ssao-output", tag), tagcat("depth-transient", tag),
+		                tagcat("normal", tag));
+	}
+
+	auto &lighting_pass = graph.add_pass(tagcat("lighting", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+	lighting_pass.add_color_output(tagcat("HDR", tag), emissive, tagcat("emissive", tag));
+	lighting_pass.add_attachment_input(tagcat("albedo", tag));
+	lighting_pass.add_attachment_input(tagcat("normal", tag));
+	lighting_pass.add_attachment_input(tagcat("pbr", tag));
+	lighting_pass.add_attachment_input(tagcat("depth-transient", tag));
+	lighting_pass.set_depth_stencil_input(tagcat("depth-transient", tag));
+	lighting_pass.add_fake_resource_write_alias(tagcat("depth-transient", tag), tagcat("depth", tag));
+
+	{
+		auto renderer = Util::make_handle<RenderPassSceneRenderer>();
+		RenderPassSceneRenderer::Setup setup = {};
+		setup.scene = &scene_loader.get_scene();
+		setup.context = &context;
+		setup.suite = &renderer_suite;
+		setup.flags = SCENE_RENDERER_DEFERRED_LIGHTING_BIT | SCENE_RENDERER_FORWARD_TRANSPARENT_BIT | config.pcf_flags;
+		renderer->init(setup);
+
+		lighting_pass.set_render_pass_interface(std::move(renderer));
+	}
+
+	if (config.ssao)
+		ssao_output = &lighting_pass.add_texture_input(tagcat("ssao-output", tag));
+	else
+		ssao_output = nullptr;
+
+	shadows = nullptr;
+	if (config.directional_light_shadows)
+		shadows = &lighting_pass.add_texture_input("shadow-main");
+
+	scene_loader.get_scene().add_render_pass_dependencies(graph, gbuffer,
+	                                                      RenderPassCreator::GEOMETRY_BIT |
+	                                                      RenderPassCreator::MATERIAL_BIT);
+	scene_loader.get_scene().add_render_pass_dependencies(graph, lighting_pass,
+	                                                      RenderPassCreator::LIGHTING_BIT);
+}
+
+void SceneViewerApplication::add_main_pass(Device &device, const std::string &tag)
+{
+	switch (config.renderer_type)
+	{
+	case RendererType::GeneralForward:
+		add_main_pass_forward(device, tag);
+		break;
+
+	case RendererType::GeneralDeferred:
+		add_main_pass_deferred(device, tag);
+		break;
+
+	default:
+		break;
+	}
+}
+
+void SceneViewerApplication::add_shadow_pass_fallback(Vulkan::Device &, const std::string &tag)
+{
+	AttachmentInfo shadowmap;
+	shadowmap.format = VK_FORMAT_D16_UNORM;
+	shadowmap.size_class = SizeClass::Absolute;
+	shadowmap.size_x = 2048;
+	shadowmap.size_y = 2048;
+
+	auto &shadowpass = graph.add_pass(tagcat("shadow", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+	fallback_shadows = &shadowpass.set_depth_stencil_output(tagcat("shadow", tag), shadowmap);
+
+	RenderPassSceneRenderer::Setup setup = {};
+	setup.scene = &scene_loader.get_scene();
+	setup.suite = &renderer_suite;
+	setup.flags = SCENE_RENDERER_DEPTH_BIT | SCENE_RENDERER_DEPTH_DYNAMIC_BIT | SCENE_RENDERER_FALLBACK_DEPTH_BIT;
+	setup.context = &fallback_depth_context;
+
+	auto handle = Util::make_handle<RenderPassSceneRenderer>();
+	handle->init(setup);
+	shadowpass.set_render_pass_interface(std::move(handle));
+
+	scene_loader.get_scene().add_render_pass_dependencies(graph, shadowpass,
+	                                                      RenderPassCreator::GEOMETRY_BIT |
+	                                                      RenderPassCreator::MATERIAL_BIT);
+}
+
+void SceneViewerApplication::add_shadow_pass(Device &, const std::string &tag)
+{
+	AttachmentInfo shadowmap;
+	shadowmap.format = VK_FORMAT_D16_UNORM;
+	shadowmap.samples = config.directional_light_shadows_vsm ? 4 : 1;
+	shadowmap.size_class = SizeClass::Absolute;
+	shadowmap.size_x = config.shadow_map_resolution;
+	shadowmap.size_y = config.shadow_map_resolution;
+
+	if (config.directional_light_cascaded_shadows)
+		shadowmap.layers = NumShadowCascades;
+
+	CullingPassesInfo culling = {};
+	culling.phase1_depth_output = tagcat("shadow-prepass", tag);
+	culling.tag = "depth";
+
+	auto &phase1 = graph.add_pass(tagcat("shadow-phase1", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+	phase1.set_depth_stencil_output(culling.phase1_depth_output, shadowmap);
+
+	{
+		Util::IntrusivePtr<RenderPassSceneRenderer> handle;
+		RenderPassSceneRenderer::Setup setup = {};
+		setup.scene = &scene_loader.get_scene();
+		setup.suite = &renderer_suite;
+		setup.flags = SCENE_RENDERER_DEPTH_BIT;
+
+		setup.context = depth_contexts;
+		setup.flags |= SCENE_RENDERER_DEPTH_DYNAMIC_BIT;
+		setup.flags |= SCENE_RENDERER_SEPARATE_PER_LAYER_BIT;
+		setup.layers = NumShadowCascades;
+
+		handle = Util::make_handle<RenderPassSceneRenderer>();
+		handle->set_extra_flush_flags(Renderer::MESH_ASSET_PHASE_1_BIT);
+		handle->init(setup);
+		phase1.set_render_pass_interface(std::move(handle));
+	}
+
+	scene_loader.get_scene().add_render_pass_dependencies(graph, phase1,
+	                                                      RenderPassCreator::GEOMETRY_BIT |
+	                                                      RenderPassCreator::MATERIAL_BIT);
+
+	auto &shadowpass = graph.add_pass(tagcat("shadow", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+
+	culling.phase1_pass = &phase1;
+	culling.phase2_pass = &shadowpass;
+	culling.contexts = depth_contexts;
+	culling.num_contexts = NumShadowCascades;
+	hiz_depth = &setup_culling_passes(graph, culling);
+
+	if (config.directional_light_shadows_vsm)
+	{
+		auto shadowmap_vsm_color = shadowmap;
+		auto shadowmap_vsm_resolved_color = shadowmap;
+		shadowmap_vsm_color.format = VK_FORMAT_R32G32_SFLOAT;
+		shadowmap_vsm_color.samples = 4;
+		shadowmap_vsm_resolved_color.format = VK_FORMAT_R32G32_SFLOAT;
+		shadowmap_vsm_resolved_color.samples = 1;
+
+		auto shadowmap_vsm_half = shadowmap_vsm_resolved_color;
+		shadowmap_vsm_half.size_x *= 0.5f;
+		shadowmap_vsm_half.size_y *= 0.5f;
+
+		shadowpass.set_depth_stencil_output(tagcat("shadow-depth", tag), shadowmap);
+		shadowpass.set_depth_stencil_input(tagcat("shadow-prepass", tag));
+		shadowpass.add_color_output(tagcat("shadow-msaa", tag), shadowmap_vsm_color);
+		shadowpass.add_resolve_output(tagcat("shadow-raw", tag), shadowmap_vsm_resolved_color);
+
+		auto &down_pass = graph.add_pass(tagcat("shadow-down", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+		down_pass.add_color_output(tagcat("shadow-down", tag), shadowmap_vsm_half);
+		auto &down_pass_res = down_pass.add_texture_input(tagcat("shadow-raw", tag));
+
+		auto &up_pass = graph.add_pass(tagcat("shadow-up", tag), RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+		up_pass.add_color_output(tagcat("shadow", tag), shadowmap_vsm_resolved_color);
+		auto &up_pass_res = up_pass.add_texture_input(tagcat("shadow-down", tag));
+
+		down_pass.set_build_render_pass([&, layered = shadowmap.layers > 1](CommandBuffer &cmd) {
+			auto &input = graph.get_physical_texture_resource(down_pass_res);
+			vec2 inv_size(1.0f / input.get_image().get_create_info().width,
+			              1.0f / input.get_image().get_create_info().height);
+			cmd.push_constants(&inv_size, 0, sizeof(inv_size));
+			cmd.set_texture(0, 0, input, StockSampler::LinearClamp);
+			CommandBufferUtil::draw_fullscreen_quad(cmd, "builtin://shaders/quad.vert",
+			                                        "builtin://shaders/post/vsm_down_blur.frag",
+			                                        {{ "LAYERED", layered ? 1 : 0 }});
+		});
+
+		up_pass.set_build_render_pass([&, layered = shadowmap.layers > 1](CommandBuffer &cmd) {
+			auto &input = graph.get_physical_texture_resource(up_pass_res);
+			vec2 inv_size(1.0f / input.get_image().get_create_info().width,
+			              1.0f / input.get_image().get_create_info().height);
+			cmd.set_texture(0, 0, input, StockSampler::LinearClamp);
+			cmd.push_constants(&inv_size, 0, sizeof(inv_size));
+			CommandBufferUtil::draw_fullscreen_quad(cmd, "builtin://shaders/quad.vert",
+			                                        "builtin://shaders/post/vsm_up_blur.frag",
+			                                        {{ "LAYERED", layered ? 1 : 0 }});
+		});
+	}
+	else
+	{
+		shadowpass.set_depth_stencil_output(tagcat("shadow", tag), shadowmap);
+		shadowpass.set_depth_stencil_input(tagcat("shadow-prepass", tag));
+	}
+
+	Util::IntrusivePtr<RenderPassSceneRenderer> handle;
+	RenderPassSceneRenderer::Setup setup = {};
+	setup.scene = &scene_loader.get_scene();
+	setup.suite = &renderer_suite;
+	setup.flags = SCENE_RENDERER_DEPTH_BIT;
+	if (config.directional_light_shadows_vsm)
+		setup.flags |= SCENE_RENDERER_SHADOW_VSM_BIT;
+
+	setup.context = depth_contexts;
+	setup.flags |= SCENE_RENDERER_DEPTH_DYNAMIC_BIT;
+	setup.flags |= SCENE_RENDERER_SEPARATE_PER_LAYER_BIT;
+	setup.layers = NumShadowCascades;
+
+	handle = Util::make_handle<RenderPassSceneRenderer>();
+	handle->set_extra_flush_flags(Renderer::MESH_ASSET_PHASE_2_BIT);
+	handle->init(setup);
+
+	VkClearColorValue value = {};
+	value.float32[0] = 1.0f;
+	value.float32[1] = 1.0f;
+	handle->set_clear_color(value);
+	shadowpass.set_render_pass_interface(std::move(handle));
+
+	scene_loader.get_scene().add_render_pass_dependencies(graph, shadowpass,
+	                                                      RenderPassCreator::GEOMETRY_BIT |
+	                                                      RenderPassCreator::MATERIAL_BIT);
+}
+
+void SceneViewerApplication::bake_render_graph(const SwapchainParameterEvent &swap)
+{
+	auto physical_buffers = graph.consume_physical_buffers();
+
+	shadows = nullptr;
+	ssao_output = nullptr;
+	const bool hdr10 = swap.get_color_space() == VK_COLOR_SPACE_HDR10_ST2084_EXT;
+
+	graph.reset();
+
+	// Reclaims memory released by graph.reset(), before we bake and start allocating more.
+	//swap.get_device().wait_idle();
+	swap.get_device().next_frame_context();
+
+	graph.set_device(&swap.get_device());
+
+	swap.get_device().configure_default_geometry_samplers(8.0f, config.lod_bias);
+
+	ResourceDimensions dim;
+	dim.width = swap.get_width();
+	dim.height = swap.get_height();
+	dim.format = swap.get_format();
+	dim.transform = swap.get_prerotate();
+	graph.set_backbuffer_dimensions(dim);
+
+	const char *ui_source = "HDR-main";
+
+	scene_loader.get_scene().add_render_passes(graph);
+
+	if (config.directional_light_shadows)
+	{
+		add_shadow_pass(swap.get_device(), "main");
+		add_shadow_pass_fallback(swap.get_device(), "fallback");
+	}
+
+	add_main_pass(swap.get_device(), "main");
+
+	const char *light_output = "HDR-main";
+
+	if (config.renderer_type == RendererType::GeneralDeferred && config.ssr)
+	{
+		setup_ssr_pass(graph, context, "depth-transient-main",
+		               "albedo-main", "normal-main", "pbr-main",
+		               light_output, "SSR");
+		light_output = "SSR";
+	}
+
+	if (config.postaa_type == PostAAType::TAA_Low ||
+	    config.postaa_type == PostAAType::TAA_Medium ||
+	    config.postaa_type == PostAAType::TAA_High ||
+	    config.postaa_type == PostAAType::TAA_FSR2)
+	{
+		add_mv_pass("main", "depth-main", config.postaa_type == PostAAType::TAA_FSR2);
+	}
+
+	culling_passes_info.contexts = &context;
+	culling_passes_info.num_contexts = 1;
+	culling_passes_info.tag = "main";
+	culling_passes_info.force_visible_phase2 = true;
+	hiz_main = &setup_culling_passes(graph, culling_passes_info);
+
+	if (config.hdr_bloom || hdr10)
+	{
+		bool resolved = setup_before_post_chain_antialiasing(config.postaa_type, graph, jitter, context, config.resolution_scale,
+		                                                     light_output, "depth-main", "mv-main", "HDR-resolved");
+
+		if (!hdr10)
+		{
+			HDROptions opts;
+			opts.dynamic_exposure = config.hdr_bloom_dynamic_exposure;
+
+			if (ImplementationQuirks::get().use_async_compute_post)
+			{
+				setup_hdr_postprocess_compute(graph, context.get_frame_parameters(),
+				                              resolved ? "HDR-resolved" : light_output, "tonemapped", opts);
+			}
+			else
+			{
+				setup_hdr_postprocess(graph, context.get_frame_parameters(), resolved ? "HDR-resolved" : light_output,
+				                      "tonemapped", opts);
+			}
+
+			ui_source = "tonemapped";
+		}
+		else
+		{
+			ui_source = "HDR-resolved";
+		}
+	}
+
+	if (setup_after_post_chain_antialiasing(config.postaa_type, graph, jitter, config.resolution_scale,
+	                                        ui_source, "depth-main", "post-aa-output"))
+	{
+		ui_source = "post-aa-output";
+	}
+
+	if (config.resolution_scale < 1.0f && config.postaa_type != PostAAType::TAA_FSR2 &&
+	    setup_after_post_chain_upscaling(graph, ui_source, "post-scale-output",
+	                                     config.resolution_scale_sharpen))
+	{
+		ui_source = "post-scale-output";
+	}
+
+	if (config.show_ui)
+	{
+		auto &ui = graph.add_pass("ui", config.hdr_bloom || config.postaa_type != PostAAType::None ?
+		                                RenderGraph::get_default_post_graphics_queue() :
+		                                RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+		AttachmentInfo ui_info;
+
+		if (hdr10)
+		{
+			ui.add_color_output("ui-temporary", ui_info, ui_source);
+			ui_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+
+			// TODO: Make this dynamic.
+			HDR10PQEncodingConfig hdr10_config = {};
+			hdr10_config.hdr_pre_exposure = 500.0f;
+			hdr10_config.ui_pre_exposure = 400.0f;
+			setup_hdr10_pq_encoding(graph, "ui-output", ui_source, "ui-temporary", hdr10_config,
+			                        get_wsi().get_hdr_metadata());
+		}
+		else
+		{
+			ui_info.flags |= ATTACHMENT_INFO_SUPPORTS_PREROTATE_BIT;
+			ui.add_color_output("ui-output", ui_info, ui_source);
+		}
+
+		graph.set_backbuffer_source("ui-output");
+
+		ui.set_get_clear_color([](unsigned, VkClearColorValue *value) {
+			value->float32[0] = 0.0f;
+			value->float32[1] = 0.0f;
+			value->float32[2] = 0.0f;
+			value->float32[3] = 1.0f;
+			return true;
+		});
+
+		ui.set_build_render_pass([this](CommandBuffer &cmd) { render_ui(cmd); });
+	}
+	else
+		graph.set_backbuffer_source(ui_source);
+
+	scene_loader.get_scene().add_render_pass_dependencies(graph);
+	graph.bake();
+#ifdef VULKAN_DEBUG
+	graph.log();
+#endif
+	graph.install_physical_buffers(std::move(physical_buffers));
+
+	need_shadow_map_update = true;
+}
+
+void SceneViewerApplication::on_swapchain_changed(const Vulkan::SwapchainParameterEvent &e)
+{
+	pending_swapchain = &e;
+}
+
+void SceneViewerApplication::on_swapchain_destroyed(const SwapchainParameterEvent &)
+{
+	pending_swapchain = nullptr;
+}
+
+void SceneViewerApplication::update_shadow_scene_aabb()
+{
+	// Get the scene AABB for shadow casters.
+	auto &scene = scene_loader.get_scene();
+	auto &shadow_casters =
+	    scene.get_entity_pool()
+	        .get_component_group<RenderInfoComponent, RenderableComponent, CastsStaticShadowComponent>();
+	AABB aabb(vec3(FLT_MAX), vec3(-FLT_MAX));
+	for (auto &caster : shadow_casters)
+		aabb.expand(get_component<RenderInfoComponent>(caster)->get_aabb());
+	shadow_scene_aabb = aabb;
+}
+
+void SceneViewerApplication::setup_shadow_map()
+{
+	mat4 view = mat4_cast(look_at(-selected_directional->direction, vec3(0.0f, 1.0f, 0.0f)));
+	AABB ortho_range_depth = shadow_scene_aabb.transform(view);
+
+	// For fallback context, we render the entire scene bounds.
+	// This is not going to work well for large scenes, but oh well.
+	fallback_depth_context.set_camera(ortho(ortho_range_depth), view);
+	fallback_lighting.shadow.transforms[0] =
+			translate(vec3(0.5f, 0.5f, 0.0f)) *
+			scale(vec3(0.5f, 0.5f, 1.0f)) *
+			fallback_depth_context.get_render_parameters().view_projection;
+
+	// Project the scene AABB into the light and find our ortho ranges.
+	// This will serve as the culling bounding box.
+	// TODO: Make configurable.
+	constexpr float FIRST_SLICE_CUTOFF = 10.0f;
+	constexpr float BEGIN_LERP_FRACT = 0.8f;
+
+	const float cascade_log_bias = 1.0f - muglm::log2(FIRST_SLICE_CUTOFF);
+	const auto compute_z = [&](float slice) -> float {
+		float slice_z = FIRST_SLICE_CUTOFF * muglm::exp2(slice - 1.0f);
+		return slice_z;
+	};
+
+	lighting.shadow.cascade_log_bias = cascade_log_bias;
+
+	if (config.directional_light_cascaded_shadows)
+	{
+		for (int i = 0; i < NumShadowCascades; i++)
+		{
+			float cascade_cutoffs_lo;
+			float cascade_cutoffs_hi = compute_z(float(i + 1));
+			if (i == 0)
+				cascade_cutoffs_lo = 0.0001f;
+			else
+				cascade_cutoffs_lo = compute_z(float(i - 1) + BEGIN_LERP_FRACT);
+
+			auto near_camera = *selected_camera;
+			near_camera.set_depth_range(cascade_cutoffs_lo, cascade_cutoffs_hi);
+			vec4 sphere = Frustum::get_bounding_sphere(inverse(near_camera.get_projection()), inverse(near_camera.get_view()));
+			vec2 center_xy = (view * vec4(sphere.xyz(), 1.0f)).xy();
+			sphere.w *= 1.01f;
+
+			vec2 texel_size = vec2(2.0f * sphere.w) * vec2(1.0f / lighting.shadows->get_image().get_create_info().width,
+			                                               1.0f / lighting.shadows->get_image().get_create_info().height);
+
+			// Snap to texel grid.
+			center_xy = round(center_xy / texel_size) * texel_size;
+
+			AABB ortho_range = AABB(vec3(center_xy - vec2(sphere.w), ortho_range_depth.get_minimum().z),
+			                        vec3(center_xy + vec2(sphere.w), ortho_range_depth.get_maximum().z));
+
+			mat4 proj = ortho(ortho_range);
+			mat4 cascade_transform = proj * view;
+			lighting.shadow.transforms[i] =
+					translate(vec3(0.5f, 0.5f, 0.0f)) *
+					scale(vec3(0.5f, 0.5f, 1.0f)) *
+					cascade_transform;
+
+			depth_contexts[i].set_camera(proj, view);
+		}
+	}
+	else
+	{
+		mat4 proj = ortho(ortho_range_depth);
+		depth_contexts[0].set_camera(proj, view);
+		lighting.shadow.transforms[0] =
+				translate(vec3(0.5f, 0.5f, 0.0f)) *
+				scale(vec3(0.5f, 0.5f, 1.0f)) *
+				proj * view;
+	}
+}
+
+void SceneViewerApplication::update_scene(TaskComposer &composer, double frame_time, double elapsed_time)
+{
+	auto &scene = scene_loader.get_scene();
+
+	animation_system->animate(composer, frame_time, elapsed_time);
+	scene.update_transform_tree(composer);
+
+	constexpr unsigned NumTasks = 8;
+	Threaded::scene_update_cached_transforms(scene, composer, NumTasks);
+
+	// Perform updates which depend on node transforms.
+	auto &updates = composer.begin_pipeline_stage();
+	updates.set_desc("scene-updates");
+	updates.enqueue_task([this, need_update = need_shadow_map_update]() {
+		jitter.step(selected_camera->get_projection(), selected_camera->get_view());
+		context.set_camera(jitter.get_jittered_projection(), selected_camera->get_view());
+		context.set_motion_vector_projections(jitter);
+
+		lighting.directional.direction = selected_directional->direction;
+		lighting.directional.color = selected_directional->color;
+
+		if (lighting.shadows)
+		{
+			if (need_update)
+				update_shadow_scene_aabb();
+			setup_shadow_map();
+		}
+	});
+
+	need_shadow_map_update = false;
+	scene.refresh_per_frame(context, composer);
+}
+
+void SceneViewerApplication::render_ui(CommandBuffer &cmd)
+{
+	auto &device = cmd.get_device();
+	flat_renderer.begin();
+
+	unsigned count = std::min<unsigned>(last_frame_index, FrameWindowSize);
+	float total_time = 0.0f;
+	float min_time = FLT_MAX;
+	float max_time = 0.0f;
+	for (unsigned i = 0; i < count; i++)
+	{
+		total_time += last_frame_times[i];
+		min_time = std::min(min_time, last_frame_times[i]);
+		max_time = std::max(max_time, last_frame_times[i]);
+	}
+
+	char avg_text[64];
+	sprintf(avg_text, "Frame: %10.3f ms", (total_time / count) * 1000.0f);
+
+	char min_text[64];
+	sprintf(min_text, "Min: %10.3f ms", min_time * 1000.0f);
+
+	char max_text[64];
+	sprintf(max_text, "Max: %10.3f ms", max_time * 1000.0f);
+
+	char colorspace_text[64];
+	sprintf(colorspace_text, "%s",
+	        get_wsi().get_backbuffer_color_space() == VK_COLOR_SPACE_HDR10_ST2084_EXT ? "ST.2084 / PQ" : "sRGB");
+
+	char pos_text[256];
+	char rot_text[256];
+	char tex_text[256];
+	auto cam_pos = selected_camera->get_position();
+	auto cam_ori = selected_camera->get_rotation();
+	snprintf(pos_text, sizeof(pos_text), "Pos: %.3f, %.3f, %.3f", cam_pos.x, cam_pos.y, cam_pos.z);
+	snprintf(rot_text, sizeof(rot_text), "Rot: %.3f, %.3f, %.3f, %.3f", cam_ori.x, cam_ori.y, cam_ori.z, cam_ori.w);
+	snprintf(tex_text, sizeof(tex_text), "Texture: %u MiB",
+	         unsigned(GRANITE_ASSET_MANAGER()->get_current_total_consumed() / (1024 * 1024)));
+
+	vec3 offset(5.0f, 5.0f, 0.0f);
+	vec2 size(cmd.get_viewport().width - 10.0f, cmd.get_viewport().height - 10.0f);
+	vec4 color(1.0f, 1.0f, 0.0f, 1.0f);
+	Font::Alignment alignment = Font::Alignment::TopRight;
+
+	flat_renderer.render_text(GRANITE_UI_MANAGER()->get_font(UI::FontSize::Large), avg_text, offset, size, color,
+	                          alignment);
+	flat_renderer.render_text(GRANITE_UI_MANAGER()->get_font(UI::FontSize::Large), min_text,
+	                          offset + vec3(0.0f, 20.0f, 0.0f), size, color, alignment);
+	flat_renderer.render_text(GRANITE_UI_MANAGER()->get_font(UI::FontSize::Large), max_text,
+	                          offset + vec3(0.0f, 40.0f, 0.0f), size, color, alignment);
+	flat_renderer.render_text(GRANITE_UI_MANAGER()->get_font(UI::FontSize::Normal), colorspace_text,
+	                          offset + vec3(0.0f, 65.0f, 0.0f), size, color, alignment);
+	flat_renderer.render_text(GRANITE_UI_MANAGER()->get_font(UI::FontSize::Normal), pos_text,
+	                          offset + vec3(0.0f, 80.0f, 0.0f), size, color, alignment);
+	flat_renderer.render_text(GRANITE_UI_MANAGER()->get_font(UI::FontSize::Normal), rot_text,
+	                          offset + vec3(0.0f, 95.0f, 0.0f), size, color, alignment);
+	flat_renderer.render_text(GRANITE_UI_MANAGER()->get_font(UI::FontSize::Normal), tex_text,
+	                          offset + vec3(0.0f, 110.0f, 0.0f), size, color, alignment);
+
+	HeapBudget budgets[VK_MAX_MEMORY_HEAPS];
+	device.get_memory_budget(budgets);
+	for (uint32_t i = 0; i < device.get_memory_properties().memoryHeapCount; i++)
+	{
+		char heap_text[256];
+		sprintf(heap_text, "Heap #%u: (%.1f MiB / %.1f MiB) [%.1f / %.1f]", i,
+		        double(budgets[i].device_usage) / double(1024 * 1024),
+		        double(budgets[i].budget_size) / double(1024 * 1024),
+		        double(budgets[i].tracked_usage) / double(1024 * 1024),
+		        double(budgets[i].max_size) / double(1024 * 1024));
+		flat_renderer.render_text(GRANITE_UI_MANAGER()->get_font(UI::FontSize::Normal), heap_text,
+		                          offset + vec3(0.0f, 145.0f + 15.0f * float(i), 0.0f),
+		                          size, color, alignment);
+	}
+
+	flat_renderer.flush(cmd, vec3(0.0f), vec3(cmd.get_viewport().width, cmd.get_viewport().height, 1.0f));
+}
+
+void SceneViewerApplication::render_scene(TaskComposer &composer)
+{
+	auto &wsi = get_wsi();
+	auto &device = wsi.get_device();
+	graph.enqueue_render_passes(device, composer);
+}
+
+void SceneViewerApplication::post_frame()
+{
+	Application::post_frame();
+	scene_loader.get_scene().destroy_queued_entities();
+}
+
+void SceneViewerApplication::render_frame(double frame_time, double elapsed_time)
+{
+	TaskComposer composer(*GRANITE_THREAD_GROUP());
+
+	if (pending_swapchain)
+	{
+		GRANITE_SCOPED_TIMELINE_EVENT("bake-render-graph");
+		bake_render_graph(*pending_swapchain);
+		pending_swapchain = nullptr;
+	}
+
+	FrameParameters frame;
+	frame.elapsed_time = elapsed_time;
+	frame.frame_time = frame_time;
+	context.set_frame_parameters(frame);
+
+	// Set up handles before we kick of task graph.
+	auto &device = get_wsi().get_device();
+	auto &scene = scene_loader.get_scene();
+
+#if 0
+	// Hack to test per-object motion easily.
+	auto &t = scene.get_root_node()->get_transform();
+	t.translation.x = std::sin(elapsed_time);
+	scene.get_root_node()->invalidate_cached_transform();
+#endif
+
+	last_frame_times[last_frame_index++ & FrameWindowSizeMask] = float(frame_time);
+
+	graph.setup_attachments(device, &device.get_swapchain_view());
+	lighting.shadows = graph.maybe_get_physical_texture_resource(shadows);
+	lighting.ambient_occlusion = graph.maybe_get_physical_texture_resource(ssao_output);
+	context.set_scene_hiz_view(graph.maybe_get_physical_texture_resource(hiz_main), 1);
+
+	// Somewhat crude.
+	if (auto *hiz = graph.maybe_get_physical_texture_resource(hiz_depth))
+	{
+		hiz_depth_peel.clear();
+		for (unsigned layer = 0; layer < hiz->get_create_info().layers; layer++)
+		{
+			auto info = hiz->get_create_info();
+			info.view_type = VK_IMAGE_VIEW_TYPE_2D;
+			info.layers = 1;
+			info.base_layer = layer;
+			hiz_depth_peel.emplace_back(device.create_image_view(info));
+			depth_contexts[layer].set_scene_hiz_view(hiz_depth_peel.back().get(), 1);
+		}
+	}
+
+	scene_loader.get_scene().set_render_pass_data(&renderer_suite, &context);
+	scene.bind_render_graph_resources(graph);
+	renderer_suite.update_mesh_rendering_options(context, renderer_suite_config);
+
+	fallback_lighting.shadows = graph.maybe_get_physical_texture_resource(fallback_shadows);
+	fallback_lighting.directional = lighting.directional;
+	fallback_lighting.cluster = lighting.cluster;
+	fallback_lighting.volumetric_diffuse = lighting.volumetric_diffuse;
+
+	{
+		GRANITE_SCOPED_TIMELINE_EVENT("update-scene-enqueue");
+		update_scene(composer, frame_time, elapsed_time);
+	}
+
+	{
+		GRANITE_SCOPED_TIMELINE_EVENT("render-scene-enqueue");
+		render_scene(composer);
+	}
+
+	GRANITE_SCOPED_TIMELINE_EVENT("render-scene-wait");
+	auto final = composer.get_outgoing_task();
+	final->wait();
+}
+
+std::string SceneViewerApplication::get_name()
+{
+	return "scene-viewer";
+}
+
+} // namespace Granite

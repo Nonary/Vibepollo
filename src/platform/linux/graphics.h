@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <array>
 #include <optional>
 #include <string_view>
 
@@ -13,6 +14,7 @@
 #include <glad/gl.h>
 
 // local includes
+#include "dmabuf_surface.h"
 #include "misc.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -35,7 +37,7 @@ void free_frame(AVFrame *frame);
 using frame_t = util::safe_ptr<AVFrame, free_frame>;
 
 namespace gl {
-  extern GladGLContext ctx;
+  extern thread_local GladGLContext ctx;
 
   // glEGLImageTargetTexture2DOES (GL_OES_EGL_image) is not part of desktop GL —
   // it is a GLES extension that must be loaded manually via eglGetProcAddress.
@@ -234,21 +236,21 @@ namespace egl {
     }
   });
 
-  struct surface_descriptor_t {
-    int width;
-    int height;
-    int fds[4];
-    std::uint32_t fourcc;
-    std::uint64_t modifier;
-    std::uint32_t pitches[4];
-    std::uint32_t offsets[4];
-  };
+  /** Load the process-wide EGL dispatch table when platform initialization did not. */
+  bool ensure_loader();
 
   display_t make_display(std::variant<gbm::gbm_t::pointer, wl_display *, _XDisplay *> native_display);
   std::optional<ctx_t> make_ctx(display_t::pointer display);
 
   std::optional<rgb_t>
     import_source(
+      display_t::pointer egl_display,
+      const surface_descriptor_t &xrgb
+    );
+
+  /** Upload a linear DMA-BUF through the CPU for explicitly compatible capture sources. */
+  std::optional<rgb_t>
+    upload_source(
       display_t::pointer egl_display,
       const surface_descriptor_t &xrgb
     );
@@ -291,19 +293,20 @@ namespace egl {
     }
 
     void reset() {
-      for (auto x = 0; x < 4; ++x) {
-        if (sd.fds[x] >= 0) {
-          close(sd.fds[x]);
-
-          sd.fds[x] = -1;
-        }
-      }
+      reset_surface(sd);
     }
 
     surface_descriptor_t sd;
+    std::string capture_render_device;
+    int capture_offset_x = 0;
+    int capture_offset_y = 0;
 
     // Increment sequence when new rgb_t needs to be created
     std::uint64_t sequence;
+
+    using gamma_lut_t = std::vector<std::array<std::uint16_t, 3>>;
+    std::shared_ptr<const gamma_lut_t> crtc_gamma_lut;
+    std::uint64_t crtc_gamma_lut_serial {};
 
     // Frame is vertically flipped (GL convention)
     bool y_invert {false};
@@ -330,10 +333,12 @@ namespace egl {
     void load_vram(img_descriptor_t &img, int offset_x, int offset_y, int texture);
 
     void apply_colorspace(const video::sunshine_colorspace_t &colorspace);
+    void apply_output_lut(const std::shared_ptr<const img_descriptor_t::gamma_lut_t> &lut, std::uint64_t serial);
 
     // The first texture is the monitor image.
     // The second texture is the cursor image
     gl::tex_t tex;
+    gl::tex_t output_lut;
 
     // The cursor image will be blended into this framebuffer
     gl::frame_buf_t cursor_framebuffer;
@@ -355,6 +360,7 @@ namespace egl {
 
     // Store latest cursor for load_vram
     std::uint64_t serial;
+    std::uint64_t output_lut_serial;
   };
 
   bool fail();

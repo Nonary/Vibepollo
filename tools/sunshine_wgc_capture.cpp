@@ -31,6 +31,7 @@
 #include "src/logging.h"
 #include "src/platform/windows/ipc/misc_utils.h"
 #include "src/platform/windows/ipc/pipes.h"
+#include "src/platform/windows/wgc_capture_policy.h"
 #include "src/utility.h"  // For RAII utilities
 
 // platform includes
@@ -132,9 +133,11 @@ const int INITIAL_LOG_LEVEL = 2;
 constexpr uint32_t DEFAULT_WGC_IPC_FLAGS =
   platf::dxgi::WGC_IPC_FLAG_DRAIN_TO_LATEST |
   platf::dxgi::WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE;
-static platf::dxgi::config_data_t g_config = {0, 0, 0, L"", {0, 0}, 10000, 60, 1, 2, DEFAULT_WGC_IPC_FLAGS};
+static platf::dxgi::config_data_t g_config = {0, 0, 0, L"", {0, 0}, 10000, 60, 1, 2, DEFAULT_WGC_IPC_FLAGS, 120};
 static std::mutex g_config_mutex;
 static std::condition_variable g_config_cv;
+static std::atomic<int32_t> g_activity_admission_fps {120};
+static std::atomic<uint32_t> g_activity_admission_generation {0};
 
 /**
  * @brief Flag indicating whether configuration data has been received from main process.
@@ -637,56 +640,60 @@ public:
   /**
    * @brief Selects a monitor for capture based on the provided configuration.
    *
-   * If a display name is specified in the config, attempts to find and select the monitor matching that name.
-   * If not found, or if no display name is provided, falls back to selecting the primary monitor.
+   * If a display name is specified, waits briefly for that monitor to appear.
+   * Selects the primary monitor only when no display name is provided.
    *
    * @param config The configuration data containing the desired display name (if any).
    * @return true if a monitor was successfully selected; false if monitor selection failed.
    */
   bool select_monitor(const platf::dxgi::config_data_t &config) {
-    if (config.display_name[0] != L'\0') {
-      auto find_monitor_by_name = [&](const wchar_t *target_name) -> HMONITOR {
-        struct EnumData {
-          const wchar_t *target_name;
-          HMONITOR found_monitor;
-        };
-
-        EnumData enum_data = {target_name, nullptr};
-
-        auto enum_proc = +[](HMONITOR h_mon, HDC /*hdc*/, RECT * /*rc*/, LPARAM l_param) {
-          auto *data = static_cast<EnumData *>(reinterpret_cast<void *>(l_param));
-          if (MONITORINFOEXW m_info = {sizeof(MONITORINFOEXW)}; GetMonitorInfoW(h_mon, &m_info) && wcsncmp(m_info.szDevice, data->target_name, 32) == 0) {
-            data->found_monitor = h_mon;
-            return FALSE;  // Stop enumeration
-          }
-          return TRUE;
-        };
-
-        EnumDisplayMonitors(nullptr, nullptr, enum_proc, static_cast<LPARAM>(reinterpret_cast<std::uintptr_t>(&enum_data)));
-        return enum_data.found_monitor;
+    auto find_requested_monitor = [&]() -> HMONITOR {
+      struct EnumData {
+        const wchar_t *target_name;
+        HMONITOR found_monitor;
       };
 
-      _selected_monitor = find_monitor_by_name(config.display_name);
-      if (!_selected_monitor) {
-        // During virtual display topology transitions, monitor enumeration can lag briefly.
-        // Wait a short amount of time before falling back so we avoid capture bouncing.
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
-        while (!_selected_monitor && std::chrono::steady_clock::now() < deadline) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
-          _selected_monitor = find_monitor_by_name(config.display_name);
+      EnumData enum_data = {config.display_name, nullptr};
+
+      auto enum_proc = +[](HMONITOR h_mon, HDC /*hdc*/, RECT * /*rc*/, LPARAM l_param) {
+        auto *data = static_cast<EnumData *>(reinterpret_cast<void *>(l_param));
+        if (MONITORINFOEXW m_info = {sizeof(MONITORINFOEXW)}; GetMonitorInfoW(h_mon, &m_info) && wcsncmp(m_info.szDevice, data->target_name, 32) == 0) {
+          data->found_monitor = h_mon;
+          return FALSE;  // Stop enumeration
         }
+        return TRUE;
+      };
+
+      EnumDisplayMonitors(nullptr, nullptr, enum_proc, static_cast<LPARAM>(reinterpret_cast<std::uintptr_t>(&enum_data)));
+      return enum_data.found_monitor;
+    };
+
+    // Monitor enumeration can lag during virtual display topology transitions.
+    // If the bounded wait expires, let the host reinitialize capture instead of
+    // streaming another display with the intended target's input coordinates.
+    const bool has_requested_monitor = config.display_name[0] != L'\0';
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    _selected_monitor = platf::dxgi::wgc_policy::select_monitor(
+      has_requested_monitor,
+      find_requested_monitor,
+      [] { return MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY); },
+      [&] {
+        if (std::chrono::steady_clock::now() >= deadline) {
+          return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return true;
       }
-      if (!_selected_monitor) {
-        BOOST_LOG(warning) << "Could not find monitor with name '" << winrt::to_string(config.display_name) << "', falling back to primary.";
-      }
-    }
+    );
 
     if (!_selected_monitor) {
-      _selected_monitor = MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
-      if (!_selected_monitor) {
+      if (has_requested_monitor) {
+        BOOST_LOG(warning) << "Could not find requested monitor '" << winrt::to_string(config.display_name)
+                           << "'; capture must be reinitialized when the target is available.";
+      } else {
         BOOST_LOG(error) << "Failed to get primary monitor";
-        return false;
       }
+      return false;
     }
     return true;
   }
@@ -1086,6 +1093,7 @@ private:
   std::atomic<uint64_t> _slow_shared_mutex_holds {0};
   std::atomic<uint64_t> _slow_copy_submissions {0};
   std::atomic<uint64_t> _published_frames {0};
+  std::atomic<uint64_t> _activity_rate_limited_frames {0};
   uint64_t _last_diagnostics_captured_frames = 0;
   uint64_t _last_diagnostics_published_frames = 0;
   uint64_t _last_diagnostics_empty_drops = 0;
@@ -1096,6 +1104,9 @@ private:
   uint64_t _last_diagnostics_slow_mutex = 0;
   uint64_t _last_diagnostics_slow_hold = 0;
   uint64_t _last_diagnostics_slow_copy = 0;
+  uint64_t _last_diagnostics_activity_rate_limited = 0;
+  uint32_t _activity_admission_generation = 0;
+  std::chrono::steady_clock::time_point _last_activity_admitted {};
   std::mutex _delivery_mutex;
   std::condition_variable _delivery_cv;
   std::jthread _delivery_thread;
@@ -1342,10 +1353,21 @@ public:
       try {
         auto surface = frame.Surface();
 
-        // Get frame timing information from the WGC frame
-        uint64_t frame_qpc = frame.SystemRelativeTime().count();
+        // Get frame timing information from the WGC frame. The consumer treats
+        // it as QPC ticks, so convert from the TimeSpan's 100 ns units.
+        static const int64_t qpc_frequency = [] {
+          LARGE_INTEGER frequency {};
+          QueryPerformanceFrequency(&frequency);
+          return static_cast<int64_t>(frequency.QuadPart);
+        }();
+        uint64_t frame_qpc = platf::dxgi::wgc_policy::system_relative_time_to_qpc(
+          frame.SystemRelativeTime().count(),
+          qpc_frequency
+        );
         record_frame_arrival(drained_frames);
-        queue_frame_for_delivery(std::move(frame), surface, frame_qpc);
+        if (admit_activity_frame()) {
+          queue_frame_for_delivery(std::move(frame), surface, frame_qpc);
+        }
       } catch (const winrt::hresult_error &ex) {
         // Log error
         BOOST_LOG(error) << "WinRT error in frame processing: " << ex.code() << " - " << winrt::to_string(ex.message());
@@ -1435,6 +1457,7 @@ private:
       const auto slow_mutex = _slow_mutex_waits.load(std::memory_order_relaxed);
       const auto slow_hold = _slow_shared_mutex_holds.load(std::memory_order_relaxed);
       const auto slow_copy = _slow_copy_submissions.load(std::memory_order_relaxed);
+      const auto activity_rate_limited = _activity_rate_limited_frames.load(std::memory_order_relaxed);
 
       const auto captured_delta = captured - _last_diagnostics_captured_frames;
       const auto published_delta = published - _last_diagnostics_published_frames;
@@ -1446,6 +1469,7 @@ private:
       const auto slow_mutex_delta = slow_mutex - _last_diagnostics_slow_mutex;
       const auto slow_hold_delta = slow_hold - _last_diagnostics_slow_hold;
       const auto slow_copy_delta = slow_copy - _last_diagnostics_slow_copy;
+      const auto activity_rate_limited_delta = activity_rate_limited - _last_diagnostics_activity_rate_limited;
 
       _last_diagnostics_captured_frames = captured;
       _last_diagnostics_published_frames = published;
@@ -1457,6 +1481,7 @@ private:
       _last_diagnostics_slow_mutex = slow_mutex;
       _last_diagnostics_slow_hold = slow_hold;
       _last_diagnostics_slow_copy = slow_copy;
+      _last_diagnostics_activity_rate_limited = activity_rate_limited;
 
       BOOST_LOG(info) << "WGC capture diagnostics: interval_s=" << interval_s
                       << " buffer=" << _current_buffer_size << "/" << _max_buffer_size
@@ -1464,6 +1489,7 @@ private:
                       << " capture_fps=" << (static_cast<double>(captured_delta) / interval_s)
                       << " publish_fps=" << (static_cast<double>(published_delta) / interval_s)
                       << " drained=" << drained_delta
+                      << " activity_rate_limited=" << activity_rate_limited_delta
                       << " empty_drops=" << empty_drop_delta
                       << " delivery_replaced=" << replaced_delta
                       << " scratch_dropped=" << scratch_dropped_delta
@@ -1473,6 +1499,30 @@ private:
                       << " slow_copy=" << slow_copy_delta;
       return;
     }
+  }
+
+  bool admit_activity_frame() {
+    const auto generation = g_activity_admission_generation.load(std::memory_order_acquire);
+    if (generation != _activity_admission_generation) {
+      _activity_admission_generation = generation;
+      _last_activity_admitted = {};
+    }
+
+    const auto admission_fps = g_activity_admission_fps.load(std::memory_order_relaxed);
+    if (admission_fps <= 0) {
+      return true;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto minimum_interval = std::chrono::nanoseconds(std::chrono::seconds(1)) / admission_fps;
+    if (_last_activity_admitted.time_since_epoch().count() != 0 &&
+        now - _last_activity_admitted < minimum_interval) {
+      _activity_rate_limited_frames.fetch_add(1, std::memory_order_relaxed);
+      return false;
+    }
+
+    _last_activity_admitted = now;
+    return true;
   }
 
   /**
@@ -1520,9 +1570,13 @@ private:
     const auto quiet_period_us = std::chrono::duration_cast<std::chrono::microseconds>(quiet_period).count();
     const bool recent_pool_pressure = last_pressure_us > 0 &&
                                       steady_time_us(now) - last_pressure_us < quiet_period_us;
-    bool is_quiet = _drop_timestamps.empty() &&
-                    !recent_pool_pressure &&
-                    _peak_outstanding.load() <= static_cast<int>(_current_buffer_size) - 1;
+    const bool is_quiet = platf::dxgi::wgc_policy::buffer_pool_is_quiet(
+      allow_buffer_decrease(),
+      !_drop_timestamps.empty(),
+      recent_pool_pressure,
+      _peak_outstanding.load(),
+      _current_buffer_size
+    );
 
     if (!is_quiet) {
       _last_quiet_start = now;  // Reset quiet timer
@@ -2092,6 +2146,20 @@ std::string get_temp_log_path() {
  *
  */
 void handle_ipc_message(std::span<const uint8_t> message) {
+  if (message.size() == sizeof(platf::dxgi::activity_admission_data_t)) {
+    platf::dxgi::activity_admission_data_t update {};
+    memcpy(&update, message.data(), sizeof(update));
+    if (update.magic != platf::dxgi::WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC || update.admission_fps <= 0) {
+      BOOST_LOG(warning) << "Ignoring invalid WGC activity admission update";
+      return;
+    }
+
+    g_activity_admission_fps.store(update.admission_fps, std::memory_order_release);
+    g_activity_admission_generation.fetch_add(1, std::memory_order_acq_rel);
+    BOOST_LOG(info) << "WGC activity admission updated to " << update.admission_fps << "fps";
+    return;
+  }
+
   // Handle config data message
   if (message.size() == sizeof(platf::dxgi::config_data_t)) {
     std::lock_guard lock(g_config_mutex);
@@ -2101,6 +2169,8 @@ void handle_ipc_message(std::span<const uint8_t> message) {
 
     memcpy(&g_config, message.data(), sizeof(platf::dxgi::config_data_t));
     g_config_received = true;
+    g_activity_admission_fps.store(g_config.activity_admission_fps, std::memory_order_release);
+    g_activity_admission_generation.fetch_add(1, std::memory_order_acq_rel);
     // If log_level in config differs from current, update log filter
     if (INITIAL_LOG_LEVEL != g_config.log_level) {
       // Update log filter to new log level
@@ -2114,6 +2184,7 @@ void handle_ipc_message(std::span<const uint8_t> message) {
                     << ", adapter LUID: " << std::hex << g_config.adapter_luid.HighPart
                     << ":" << g_config.adapter_luid.LowPart << std::dec
                     << ", target_fps: " << g_config.target_fps
+                    << ", activity_admission_fps: " << g_config.activity_admission_fps
                     << ", min_update_interval_100ns: " << g_config.min_update_interval_100ns
                     << ", initial_buffers: " << g_config.initial_frame_buffer_size
                     << ", max_buffers: " << g_config.max_frame_buffer_size
@@ -2333,13 +2404,19 @@ int main(int argc, char *argv[]) {
   // Use FP16 whenever the stream is HDR or the target output is already in
   // Advanced Color, except when the main process asks for SDR-compatible
   // capture so RTX HDR/TrueHDR can synthesize the HDR frame itself.
-  DXGI_FORMAT capture_format = DXGI_FORMAT_B8G8R8A8_UNORM;
   const bool force_sdr_capture =
     g_config_received &&
     ((g_config.flags & platf::dxgi::WGC_IPC_FLAG_FORCE_SDR_CAPTURE_FORMAT) != 0);
-  if (g_config_received && !force_sdr_capture && (g_config.dynamic_range || g_config.advanced_color_capture)) {
-    capture_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-  }
+  const auto capture_surface_format = platf::dxgi::wgc_policy::select_capture_surface_format(
+    g_config_received,
+    force_sdr_capture,
+    g_config.dynamic_range,
+    g_config.advanced_color_capture
+  );
+  const DXGI_FORMAT capture_format =
+    capture_surface_format == platf::dxgi::wgc_policy::capture_surface_format::rgba16_float ?
+      DXGI_FORMAT_R16G16B16A16_FLOAT :
+      DXGI_FORMAT_B8G8R8A8_UNORM;
 
   // Create shared resource manager for texture, keyed mutex, and metadata
   SharedResourceManager shared_resource_manager;

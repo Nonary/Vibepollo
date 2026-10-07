@@ -1,10 +1,11 @@
 #pragma once
 
 #include <chrono>
-#include <filesystem>
 #include <functional>
 #include <mutex>
 #include <string>
+
+#include "src/platform/windows/display_helper_v2/text_storage.h"
 
 /**
  * @file golden_health.h
@@ -22,7 +23,7 @@ namespace display_helper::v2 {
 
     using NowMsProvider = std::function<long long()>;
 
-    explicit GoldenHealth(std::filesystem::path status_path, NowMsProvider now_ms = {});
+    GoldenHealth(ITextStorage &status_storage, std::string status_key, NowMsProvider now_ms = {});
 
     /// Remove the status marker (restore confirmed / snapshot exported) and reset tracking.
     void clear_status(const char *reason);
@@ -38,7 +39,8 @@ namespace display_helper::v2 {
     void register_unresolved(const char *context);
 
   private:
-    std::filesystem::path status_path_;
+    ITextStorage &status_storage_;
+    std::string status_key_;
     NowMsProvider now_ms_;
     std::mutex mutex_;
     bool had_issue_this_request_ {false};

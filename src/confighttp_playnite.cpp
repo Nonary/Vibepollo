@@ -14,9 +14,13 @@
   #include <cwctype>
   #include <filesystem>
   #include <fstream>
+  #include <iterator>
   #include <limits>
+  #include <map>
+  #include <memory>
   #include <mutex>
   #include <optional>
+  #include <regex>
   #include <sstream>
   #include <string>
   #include <string_view>
@@ -34,15 +38,19 @@
   // local includes
   #include "config_playnite.h"
   #include "confighttp.h"
+  #include "httpcommon.h"
   #include "logging.h"
+  #include "log_export.h"
   #include "src/platform/windows/ipc/misc_utils.h"
   #include "src/platform/windows/playnite_integration.h"
   #include "state_storage.h"
+  #include "uuid.h"
 
   // Windows headers
   #include <KnownFolders.h>
   #include <ShlObj.h>
   #include <windows.h>
+  #include <ws2tcpip.h>
 
   // boost
   #include <boost/crc.hpp>
@@ -58,10 +66,12 @@ namespace confighttp {
   void print_req(const req_https_t &request);
   void send_response(resp_https_t response, const nlohmann::json &output_tree);
   void bad_request(resp_https_t response, req_https_t request, const std::string &error_message = "Bad Request");
+  void conflict(resp_https_t response, const std::string &error_message);
   bool check_content_type(resp_https_t response, req_https_t request, const std::string_view &contentType);
 
   struct playnite_install_state_t {
     std::optional<bool> installed;
+    bool legacy_plugin = false;
     std::filesystem::path extensions_dir;
   };
 
@@ -74,9 +84,14 @@ namespace confighttp {
       std::string destPath;
       if (platf::playnite::get_extension_target_dir(destPath)) {
         state.extensions_dir = destPath;
-        state.installed =
-          std::filesystem::exists(state.extensions_dir / "extension.yaml") &&
-          std::filesystem::exists(state.extensions_dir / "SunshinePlaynite.psm1");
+        const bool has_manifest = std::filesystem::exists(state.extensions_dir / "extension.yaml");
+        const bool has_dll = std::filesystem::exists(state.extensions_dir / "VibepolloPlaynite.dll");
+        const bool has_legacy_sunshine_dll = std::filesystem::exists(state.extensions_dir / "SunshinePlaynite.dll");
+        const bool has_legacy_vibeshine_dll = std::filesystem::exists(state.extensions_dir / "VibeshinePlaynite.dll");
+        const bool has_legacy_module = std::filesystem::exists(state.extensions_dir / "SunshinePlaynite.psm1");
+        state.installed = has_manifest && has_dll;
+        state.legacy_plugin = has_manifest && !has_dll &&
+                              (has_legacy_sunshine_dll || has_legacy_vibeshine_dll || has_legacy_module);
       } else if (active) {
         state.installed = true;
       }
@@ -124,6 +139,10 @@ namespace confighttp {
       return;
     }
     print_req(request);
+    if (!config::playnite.enabled) {
+      send_response(response, nlohmann::json{{"active", false}, {"enabled", false}, {"available", false}, {"installed", false}, {"update_available", false}});
+      return;
+    }
     // Keep the Playnite IPC client alive when the UI refreshes status.
     // This updates the inactivity timer and ensures a fresh connection.
     platf::playnite::ensure_client_for_api();
@@ -142,6 +161,7 @@ namespace confighttp {
       out["installed"] = nullptr;
     }
     out["extensions_dir"] = dest.string();
+    out["legacy_plugin"] = install_state.legacy_plugin;
     // Version info and update flag
     auto normalize_ver = [](std::string s) {
       // strip leading 'v' and whitespace
@@ -200,7 +220,9 @@ namespace confighttp {
     if (have_packaged) {
       out["packaged_version"] = packaged_ver;
     }
-    bool update_available = false;
+    // A script or differently named DLL needs migration even if its manifest
+    // version is equal to the bundled compiled connector's version.
+    bool update_available = install_state.legacy_plugin;
     if (out["installed"].is_boolean() && out["installed"].get<bool>() && have_installed && have_packaged) {
       update_available = semver_cmp(installed_ver, packaged_ver) < 0;
     }
@@ -316,25 +338,25 @@ namespace confighttp {
     print_req(request);
     std::string err;
     nlohmann::json out;
-    bool request_restart = false;
+    bool request_restart = true;
     try {
       std::stringstream ss;
       ss << request->content.rdbuf();
       if (ss.rdbuf()->in_avail() > 0) {
         auto in = nlohmann::json::parse(ss);
-        request_restart = in.value("restart", false);
+        request_restart = in.value("restart", true);
       }
     } catch (...) {
-      // ignore body parse errors; treat as no-restart
+      // Keep the safe restart default when the optional body cannot be parsed.
     }
     // Prefer same resolved dir as status
     std::string target;
     bool have_target = platf::playnite::get_extension_target_dir(target);
     bool ok = false;
     if (have_target) {
-      ok = platf::playnite::install_plugin_to(target, err);
+      ok = platf::playnite::install_plugin_to(target, err, request_restart);
     } else {
-      ok = platf::playnite::install_plugin(err);
+      ok = platf::playnite::install_plugin(err, request_restart);
     }
     std::ostringstream log_msg;
     log_msg << "Playnite install: " << (ok ? "success" : "failed");
@@ -350,10 +372,8 @@ namespace confighttp {
     if (!ok) {
       out["error"] = err;
     }
-    // Optionally close and restart Playnite to pick up the new plugin
-    if (ok && request_restart) {
-      bool restarted = platf::playnite::restart_playnite();
-      out["restarted"] = restarted;
+    if (request_restart) {
+      out["restarted"] = ok;
     }
     send_response(response, out);
   }
@@ -379,7 +399,7 @@ namespace confighttp {
     } catch (...) {
       // ignore body parse errors; treat as no-restart
     }
-    bool ok = platf::playnite::uninstall_plugin(err);
+    bool ok = platf::playnite::uninstall_plugin(err, request_restart);
     {
       std::ostringstream log_msg;
       log_msg << "Playnite uninstall: " << (ok ? "success" : "failed")
@@ -393,9 +413,8 @@ namespace confighttp {
     if (!ok) {
       out["error"] = err;
     }
-    if (ok && request_restart) {
-      bool restarted = platf::playnite::restart_playnite();
-      out["restarted"] = restarted;
+    if (request_restart) {
+      out["restarted"] = ok;
     }
     send_response(response, out);
   }
@@ -405,10 +424,60 @@ namespace confighttp {
       return;
     }
     print_req(request);
+    if (!config::playnite.enabled) {
+      send_response(response, nlohmann::json{{"status", false}, {"error", "Playnite integration is disabled"}});
+      return;
+    }
     nlohmann::json out;
     bool ok = platf::playnite::force_sync();
     out["status"] = ok;
     send_response(response, out);
+  }
+
+  void postPlayniteCover(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+
+    try {
+      std::stringstream stream;
+      stream << request->content.rdbuf();
+      const auto input = nlohmann::json::parse(stream);
+      const auto playnite_id = input.value("playnite_id", "");
+      const auto cover_key = input.value("cover_key", "");
+      if (playnite_id.empty() || cover_key.empty()) {
+        bad_request(response, request, "Playnite game ID and cover key are required");
+        return;
+      }
+
+      const auto cover_path = platf::appdata() / "covers" / (http::url_escape(cover_key) + ".png");
+      std::error_code error;
+      if (!std::filesystem::is_regular_file(cover_path, error) || error) {
+        bad_request(response, request, "Uploaded cover was not found");
+        return;
+      }
+      if (!platf::playnite::set_game_cover(playnite_id, cover_path.generic_string())) {
+        bad_request(response, request, "Playnite did not confirm the cover metadata update");
+        return;
+      }
+      if (!platf::playnite::force_sync()) {
+        bad_request(response, request, "Playnite did not confirm a refreshed metadata snapshot");
+        return;
+      }
+
+      const nlohmann::json output {
+        {"status", true},
+        {"path", cover_path.generic_string()}
+      };
+      send_response(response, output);
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "SetPlayniteCover: " << e.what();
+      bad_request(response, request, e.what());
+    }
   }
 
   void postPlayniteLaunch(resp_https_t response, req_https_t request) {
@@ -423,167 +492,7 @@ namespace confighttp {
     send_response(response, out);
   }
 
-  // --- Collect Playnite-related logs into a ZIP and stream to browser ---
-  static inline void write_le16(std::string &out, uint16_t v) {
-    out.push_back(static_cast<char>(v & 0xFF));
-    out.push_back(static_cast<char>((v >> 8) & 0xFF));
-  }
-
-  static inline void write_le32(std::string &out, uint32_t v) {
-    out.push_back(static_cast<char>(v & 0xFF));
-    out.push_back(static_cast<char>((v >> 8) & 0xFF));
-    out.push_back(static_cast<char>((v >> 16) & 0xFF));
-    out.push_back(static_cast<char>((v >> 24) & 0xFF));
-  }
-
-  static inline void current_dos_datetime(uint16_t &dos_time, uint16_t &dos_date) {
-    std::time_t tt = std::time(nullptr);
-    std::tm tm {};
-  #ifdef _WIN32
-    localtime_s(&tm, &tt);
-  #else
-    localtime_r(&tt, &tm);
-  #endif
-    dos_time = static_cast<uint16_t>(((tm.tm_hour & 0x1F) << 11) | ((tm.tm_min & 0x3F) << 5) | ((tm.tm_sec / 2) & 0x1F));
-    int year = tm.tm_year + 1900;
-    if (year < 1980) {
-      year = 1980;
-    }
-    if (year > 2107) {
-      year = 2107;
-    }
-    dos_date = static_cast<uint16_t>(((year - 1980) << 9) | (((tm.tm_mon + 1) & 0x0F) << 5) | (tm.tm_mday & 0x1F));
-  }
-
-  static bool deflate_buffer(const char *data, std::size_t size, std::string &out) {
-    z_stream zs {};
-    if (deflateInit2(&zs, Z_BEST_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
-      deflateEnd(&zs);
-      return false;
-    }
-    std::array<unsigned char, 16384> buf {};
-    out.clear();
-    std::size_t offset = 0;
-    int ret = Z_OK;
-    do {
-      if (zs.avail_in == 0 && offset < size) {
-        std::size_t chunk = std::min<std::size_t>(size - offset, static_cast<std::size_t>(std::numeric_limits<uInt>::max()));
-        zs.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(data + offset));
-        zs.avail_in = static_cast<uInt>(chunk);
-        offset += chunk;
-      }
-      zs.next_out = buf.data();
-      zs.avail_out = static_cast<uInt>(buf.size());
-      int flush = (offset >= size && zs.avail_in == 0) ? Z_FINISH : Z_NO_FLUSH;
-      ret = deflate(&zs, flush);
-      if (ret == Z_STREAM_ERROR) {
-        deflateEnd(&zs);
-        return false;
-      }
-      std::size_t produced = buf.size() - zs.avail_out;
-      if (produced > 0) {
-        out.append(reinterpret_cast<char *>(buf.data()), produced);
-      }
-    } while (ret != Z_STREAM_END);
-    deflateEnd(&zs);
-    return true;
-  }
-
-  static std::chrono::system_clock::time_point file_time_to_system_clock(std::filesystem::file_time_type ft);
-  static void to_dos_datetime(std::chrono::system_clock::time_point tp, uint16_t &dos_time, uint16_t &dos_date);
-
-  struct ZipDataEntry {
-    std::string name;
-    std::string data;
-    std::optional<std::filesystem::file_time_type> write_time;
-  };
-
-  static std::string build_zip_from_entries(const std::vector<ZipDataEntry> &entries) {
-    std::string out;
-
-    struct CdEnt {
-      std::string name;
-      uint32_t crc;
-      uint32_t comp_size;
-      uint32_t uncomp_size;
-      uint16_t method;
-      uint32_t offset;
-      uint16_t dostime;
-      uint16_t dosdate;
-    };
-
-    std::vector<CdEnt> cd;
-    for (const auto &e : entries) {
-      const std::string &name = e.name;
-      const std::string &data = e.data;
-      boost::crc_32_type crc;
-      crc.process_bytes(data.data(), data.size());
-      uint32_t crc32 = crc.checksum();
-      uint32_t uncomp_size = static_cast<uint32_t>(data.size());
-      std::string compressed;
-      bool use_deflate = deflate_buffer(data.data(), data.size(), compressed) && compressed.size() < data.size();
-      const std::string &payload = use_deflate ? compressed : data;
-      uint16_t method = use_deflate ? 8 : 0;
-      uint32_t comp_size = static_cast<uint32_t>(payload.size());
-      uint16_t dostime = 0, dosdate = 0;
-      if (e.write_time) {
-        to_dos_datetime(file_time_to_system_clock(*e.write_time), dostime, dosdate);
-      } else {
-        current_dos_datetime(dostime, dosdate);
-      }
-      uint32_t offset = static_cast<uint32_t>(out.size());
-      write_le32(out, 0x04034b50u);
-      write_le16(out, 20);
-      write_le16(out, 0);
-      write_le16(out, method);
-      write_le16(out, dostime);
-      write_le16(out, dosdate);
-      write_le32(out, crc32);
-      write_le32(out, comp_size);
-      write_le32(out, uncomp_size);
-      write_le16(out, static_cast<uint16_t>(name.size()));
-      write_le16(out, 0);
-      out.append(name.data(), name.size());
-      out.append(payload.data(), payload.size());
-      cd.push_back(CdEnt {name, crc32, comp_size, uncomp_size, method, offset, dostime, dosdate});
-    }
-
-    uint32_t cd_start = static_cast<uint32_t>(out.size());
-    uint32_t cd_size = 0;
-    for (const auto &e : cd) {
-      std::string rec;
-      write_le32(rec, 0x02014b50u);
-      write_le16(rec, 20);
-      write_le16(rec, 20);
-      write_le16(rec, 0);
-      write_le16(rec, e.method);
-      write_le16(rec, e.dostime);
-      write_le16(rec, e.dosdate);
-      write_le32(rec, e.crc);
-      write_le32(rec, e.comp_size);
-      write_le32(rec, e.uncomp_size);
-      write_le16(rec, static_cast<uint16_t>(e.name.size()));
-      write_le16(rec, 0);
-      write_le16(rec, 0);
-      write_le16(rec, 0);
-      write_le16(rec, 0);
-      write_le32(rec, 0);
-      write_le32(rec, e.offset);
-      rec.append(e.name.data(), e.name.size());
-      cd_size += static_cast<uint32_t>(rec.size());
-      out.append(rec);
-    }
-
-    write_le32(out, 0x06054b50u);
-    write_le16(out, 0);
-    write_le16(out, 0);
-    write_le16(out, static_cast<uint16_t>(cd.size()));
-    write_le16(out, static_cast<uint16_t>(cd.size()));
-    write_le32(out, cd_size);
-    write_le32(out, cd_start);
-    write_le16(out, 0);
-    return out;
-  }
+  using namespace log_export;
 
   namespace {
     namespace fs = std::filesystem;
@@ -612,12 +521,11 @@ namespace confighttp {
       }
       std::lock_guard<std::mutex> lock(statefile::state_mutex());
       fs::path path(path_str);
-      if (!fs::exists(path)) {
-        return std::nullopt;
-      }
       pt::ptree tree;
       try {
-        pt::read_json(path.string(), tree);
+        if (statefile::load_json(path.string(), tree) != statefile::json_load_result_e::loaded) {
+          return std::nullopt;
+        }
       } catch (const std::exception &e) {
         BOOST_LOG(warning) << "Crash dismissal: failed to read state file: " << e.what();
         return std::nullopt;
@@ -839,8 +747,12 @@ namespace confighttp {
     return read_file_if_exists(*latest, out);
   }
 
+  constexpr std::uint64_t kCrashBundleMaxBytes = 30ull * 1024ull * 1024ull;
+  static std::uint64_t estimate_zip_entry_size(std::size_t name_len, std::uint64_t data_size);
+
   static std::vector<ZipDataEntry> collect_support_logs() {
     std::vector<ZipDataEntry> entries;
+    export_log_sanitizer_t sanitizer;
 
     auto add_recent_logs = [&](const std::filesystem::path &dir, const std::string &prefix, const std::string &suffix, std::size_t limit, const std::string &zip_prefix) {
       std::vector<log_candidate_t> candidates;
@@ -875,15 +787,21 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(candidate.path, data, &mtime)) {
-          entries.push_back(ZipDataEntry {zip_prefix + candidate.path.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, zip_prefix + candidate.path.filename().string(), std::move(data), mtime));
         }
       }
     };
 
-    // Sunshine log directory (session logging)
+    // Vibepollo log directory (session logging). Retention keeps up to ~30
+    // sessions x 5 rollover files here; exporting all of them made the bundle
+    // hundreds of megabytes and blew past the HTTP content deadline. Newest
+    // files win, bounded by both a file count and a total byte budget.
+    constexpr std::size_t k_max_session_export_files = 32;
+    constexpr std::uintmax_t k_max_session_export_bytes = 64ull * 1024ull * 1024ull;
     try {
       bool collected_directory = false;
       if (auto log_dir = logging::session_log_directory()) {
+        std::vector<log_candidate_t> candidates;
         std::error_code ec;
         for (std::filesystem::directory_iterator it(*log_dir, ec); it != std::filesystem::directory_iterator(); ++it) {
           if (ec) {
@@ -893,10 +811,31 @@ namespace confighttp {
           if (!it->is_regular_file(file_ec)) {
             continue;
           }
+          add_log_candidate(it->path(), candidates);
+        }
+        std::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) {
+          return a.mtime > b.mtime;
+        });
+        std::uintmax_t budget_used = 0;
+        std::size_t files_added = 0;
+        for (const auto &candidate : candidates) {
+          if (files_added >= k_max_session_export_files) {
+            break;
+          }
+          std::error_code size_ec;
+          const auto size = std::filesystem::file_size(candidate.path, size_ec);
+          if (size_ec || size > k_max_session_export_bytes - budget_used) {
+            continue;
+          }
           std::string data;
           std::optional<std::filesystem::file_time_type> mtime;
-          if (read_file_if_exists(it->path(), data, &mtime)) {
-            entries.push_back(ZipDataEntry {it->path().filename().string(), std::move(data), mtime});
+          if (read_file_if_exists(candidate.path, data, &mtime)) {
+            if (data.size() > k_max_session_export_bytes - budget_used) {
+              continue;
+            }
+            budget_used += data.size();
+            ++files_added;
+            entries.push_back(make_export_log_entry(sanitizer, candidate.path.filename().string(), std::move(data), mtime));
             collected_directory = true;
           }
         }
@@ -907,7 +846,7 @@ namespace confighttp {
           std::string data;
           std::optional<std::filesystem::file_time_type> mtime;
           if (read_file_if_exists(current_log, data, &mtime)) {
-            entries.push_back(ZipDataEntry {current_log.filename().string(), std::move(data), mtime});
+            entries.push_back(make_export_log_entry(sanitizer, current_log.filename().string(), std::move(data), mtime));
           }
         }
       }
@@ -924,7 +863,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
     } catch (...) {}
@@ -940,7 +879,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
     } catch (...) {}
@@ -952,7 +891,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
     } catch (...) {}
@@ -964,7 +903,7 @@ namespace confighttp {
         auto p = base / L"playnite.log";
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
           any = true;
         }
       }
@@ -973,7 +912,7 @@ namespace confighttp {
         auto p = base / L"extensions.log";
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
           any = true;
         }
       }
@@ -982,7 +921,7 @@ namespace confighttp {
         auto p = base / L"launcher.log";
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
           any = true;
         }
       }
@@ -1022,7 +961,12 @@ namespace confighttp {
       } catch (...) {}
     }
 
-    auto add_session_logs_with_prefix = [&](const std::filesystem::path &dir, const std::string &prefix) {
+    // One scan per directory, newest few files per helper prefix. The previous
+    // shape re-enumerated the directory once per prefix and read every session
+    // file ever rotated, which multiplied into the export slowdown.
+    constexpr std::size_t k_max_helper_logs_per_prefix = 6;
+    auto add_session_logs_with_prefixes = [&](const std::filesystem::path &dir, const std::vector<std::string> &prefixes) {
+      std::map<std::string, std::vector<log_candidate_t>> per_prefix;
       std::error_code ec;
       for (std::filesystem::directory_iterator it(dir, ec); it != std::filesystem::directory_iterator(); ++it) {
         if (ec) {
@@ -1033,25 +977,53 @@ namespace confighttp {
           continue;
         }
         const auto filename = it->path().filename().string();
-        if (filename.rfind(prefix, 0) != 0) {
-          continue;
+        for (const auto &prefix : prefixes) {
+          if (filename.rfind(prefix, 0) == 0) {
+            add_log_candidate(it->path(), per_prefix[prefix]);
+            break;
+          }
         }
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(it->path(), data, &mtime)) {
-          entries.push_back(ZipDataEntry {filename, std::move(data), mtime});
+      }
+      for (auto &[prefix, candidates] : per_prefix) {
+        std::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) {
+          return a.mtime > b.mtime;
+        });
+        if (candidates.size() > k_max_helper_logs_per_prefix) {
+          candidates.resize(k_max_helper_logs_per_prefix);
+        }
+        for (const auto &candidate : candidates) {
+          std::string data;
+          std::optional<std::filesystem::file_time_type> mtime;
+          if (read_file_if_exists(candidate.path, data, &mtime)) {
+            entries.push_back(make_export_log_entry(sanitizer, candidate.path.filename().string(), std::move(data), mtime));
+          }
         }
       }
     };
 
+    // The known-folder and CSIDL passes below resolve to the same directories
+    // when Vibepollo runs in a user session; without dedup every helper log was
+    // read from disk and regex-sanitized twice.
+    std::unordered_set<std::wstring> visited_helper_bases;
+    auto mark_base_visited = [&](const std::filesystem::path &base) {
+      std::error_code ec;
+      auto canonical = std::filesystem::weakly_canonical(base, ec);
+      std::wstring key = (ec ? base : canonical).native();
+      std::transform(key.begin(), key.end(), key.begin(), ::towlower);
+      return visited_helper_bases.insert(key).second;
+    };
+
     auto add_user_helper_logs = [&](const std::filesystem::path &base) {
+      if (!mark_base_visited(base)) {
+        return;
+      }
       // Legacy single-file helper logs (kept for backwards compatibility).
       {
         std::filesystem::path p = base / L"sunshine_playnite.log";
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
       {
@@ -1059,7 +1031,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
       {
@@ -1067,7 +1039,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
       {
@@ -1075,7 +1047,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
       {
@@ -1083,17 +1055,19 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
 
       // Session-mode helper logs live under Roaming/LocalAppData\\Sunshine\\logs.
-      const auto log_dir = base / L"logs";
-      add_session_logs_with_prefix(log_dir, "sunshine_playnite-");
-      add_session_logs_with_prefix(log_dir, "sunshine_playnite_launcher-");
-      add_session_logs_with_prefix(log_dir, "sunshine_launcher-");
-      add_session_logs_with_prefix(log_dir, "sunshine_display_helper-");
-      add_session_logs_with_prefix(log_dir, "sunshine_wgc_helper-");
+      static const std::vector<std::string> helper_log_prefixes {
+        "sunshine_playnite_launcher-",
+        "sunshine_playnite-",
+        "sunshine_launcher-",
+        "sunshine_display_helper-",
+        "sunshine_wgc_helper-",
+      };
+      add_session_logs_with_prefixes(base / L"logs", helper_log_prefixes);
     };
 
     try {
@@ -1129,7 +1103,7 @@ namespace confighttp {
       std::string data;
       std::optional<std::filesystem::file_time_type> mtime;
       if (read_file_if_exists(p, data, &mtime)) {
-        entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+        entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
       }
     } catch (...) {}
 
@@ -1162,6 +1136,28 @@ namespace confighttp {
       }
       entries.swap(dedup);
     }
+
+    // A crash-bundle part is capped at 30 MiB. Keep its in-memory log corpus
+    // within that exact uncompressed ZIP estimate, so logs never force an
+    // oversized first part before crash dumps are considered.
+    constexpr std::uint64_t kZipEndOfCentralDirectorySize = 22;
+    std::uint64_t estimated_log_size = kZipEndOfCentralDirectorySize;
+    std::size_t omitted_logs = 0;
+    std::vector<ZipDataEntry> bounded;
+    bounded.reserve(entries.size());
+    for (auto &entry : entries) {
+      const auto entry_size = estimate_zip_entry_size(entry.name.size(), static_cast<std::uint64_t>(entry.data.size()));
+      if (entry_size > kCrashBundleMaxBytes - estimated_log_size) {
+        ++omitted_logs;
+        continue;
+      }
+      estimated_log_size += entry_size;
+      bounded.emplace_back(std::move(entry));
+    }
+    if (omitted_logs != 0) {
+      BOOST_LOG(warning) << "Crash bundle omitted " << omitted_logs << " log entries to keep each part below 30 MiB.";
+    }
+    entries.swap(bounded);
 
     return entries;
   }
@@ -1227,7 +1223,6 @@ namespace confighttp {
   }};
 
   constexpr std::uint64_t kMinCrashDumpSunshineBytes = 10ull * 1024ull * 1024ull;
-  constexpr std::uint64_t kCrashBundleMaxBytes = 30ull * 1024ull * 1024ull;
 
   static std::wstring to_lower_wstring(std::wstring value) {
     std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
@@ -1383,25 +1378,6 @@ namespace confighttp {
     }
 
     return roots;
-  }
-
-  static std::chrono::system_clock::time_point file_time_to_system_clock(std::filesystem::file_time_type ft) {
-    return std::chrono::time_point_cast<std::chrono::system_clock::duration>(ft - decltype(ft)::clock::now() + std::chrono::system_clock::now());
-  }
-
-  static void to_dos_datetime(std::chrono::system_clock::time_point tp, uint16_t &dos_time, uint16_t &dos_date) {
-    std::time_t tt = std::chrono::system_clock::to_time_t(tp);
-    std::tm tm {};
-    localtime_s(&tm, &tt);
-    dos_time = static_cast<uint16_t>(((tm.tm_hour & 0x1F) << 11) | ((tm.tm_min & 0x3F) << 5) | ((tm.tm_sec / 2) & 0x1F));
-    int year = tm.tm_year + 1900;
-    if (year < 1980) {
-      year = 1980;
-    }
-    if (year > 2107) {
-      year = 2107;
-    }
-    dos_date = static_cast<uint16_t>(((year - 1980) << 9) | (((tm.tm_mon + 1) & 0x0F) << 5) | (tm.tm_mday & 0x1F));
   }
 
   static std::string to_iso8601(const std::chrono::system_clock::time_point &tp) {
@@ -1762,9 +1738,13 @@ namespace confighttp {
     for (const auto &dump : dumps) {
       ZipFileEntry entry {dump.path.filename().string(), dump.path, dump.write_time, dump.size};
       const std::uint64_t entry_est = estimate_zip_entry_size(entry.name.size(), entry.size);
+      if (entry_est > kCrashBundleMaxBytes - estimate_zip_size({}, {})) {
+        BOOST_LOG(warning) << "Crash bundle skipped oversized dump " << entry.name << " to keep each part below 30 MiB.";
+        continue;
+      }
       CrashBundlePartPlan *part = &parts.back();
-      const bool part_has_payload = part->include_logs ? !logs.empty() : !part->files.empty();
-      if (part->estimated_size + entry_est > kCrashBundleMaxBytes && part_has_payload) {
+      const bool part_has_payload = (part->include_logs && !logs.empty()) || !part->files.empty();
+      if (part_has_payload && part->estimated_size > kCrashBundleMaxBytes - entry_est) {
         add_new_part(false);
         part = &parts.back();
       }
@@ -1776,6 +1756,77 @@ namespace confighttp {
       parts[i].filename = crash_bundle_filename(base, i + 1, parts.size());
     }
     return parts;
+  }
+
+  struct CrashBundleSnapshot {
+    std::vector<ZipDataEntry> logs;
+    std::vector<CrashDumpInfo> dumps;
+    std::vector<CrashBundlePartPlan> plan;
+    std::chrono::steady_clock::time_point expires_at {};
+    std::string id;
+  };
+
+  struct CrashBundleSnapshotCache {
+    std::mutex mutex;
+    std::unordered_map<std::string, std::shared_ptr<const CrashBundleSnapshot>> snapshots;
+  };
+
+  constexpr auto kCrashBundleSnapshotTtl = std::chrono::minutes {5};
+  constexpr std::size_t kMaxCrashBundleSnapshots = 4;
+
+  static CrashBundleSnapshotCache &crash_bundle_snapshot_cache() {
+    static CrashBundleSnapshotCache cache;
+    return cache;
+  }
+
+  static void prune_crash_bundle_snapshots(CrashBundleSnapshotCache &cache, std::chrono::steady_clock::time_point now) {
+    for (auto it = cache.snapshots.begin(); it != cache.snapshots.end();) {
+      if (it->second->expires_at <= now) {
+        it = cache.snapshots.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  // The manifest freezes the sanitized logs, discovered dumps, part plan, and
+  // filenames. Download requests refer to its opaque id, so a newly-created
+  // dump cannot shift a later part onto different content.
+  static std::shared_ptr<const CrashBundleSnapshot> create_crash_bundle_snapshot() {
+    auto snapshot = std::make_shared<CrashBundleSnapshot>();
+    snapshot->logs = collect_support_logs();
+    snapshot->dumps = find_recent_crash_dumps(std::chrono::hours(24 * 7));
+    snapshot->plan = build_crash_bundle_plan(snapshot->logs, snapshot->dumps);
+    snapshot->id = uuid_util::uuid_t::generate().string();
+    snapshot->expires_at = std::chrono::steady_clock::now() + kCrashBundleSnapshotTtl;
+
+    auto &cache = crash_bundle_snapshot_cache();
+    std::lock_guard lock(cache.mutex);
+    const auto now = std::chrono::steady_clock::now();
+    prune_crash_bundle_snapshots(cache, now);
+    while (cache.snapshots.size() >= kMaxCrashBundleSnapshots) {
+      const auto oldest = std::min_element(cache.snapshots.begin(), cache.snapshots.end(), [](const auto &left, const auto &right) {
+        return left.second->expires_at < right.second->expires_at;
+      });
+      cache.snapshots.erase(oldest);
+    }
+    cache.snapshots.insert_or_assign(snapshot->id, snapshot);
+    return snapshot;
+  }
+
+  static std::shared_ptr<const CrashBundleSnapshot> find_crash_bundle_snapshot(std::string_view id) {
+    auto &cache = crash_bundle_snapshot_cache();
+    std::lock_guard lock(cache.mutex);
+    const auto now = std::chrono::steady_clock::now();
+    prune_crash_bundle_snapshots(cache, now);
+    const auto it = cache.snapshots.find(std::string(id));
+    return it == cache.snapshots.end() ? nullptr : it->second;
+  }
+
+  static bool crash_bundle_plan_has_dump(const CrashBundleSnapshot &snapshot) {
+    return std::any_of(snapshot.plan.begin(), snapshot.plan.end(), [](const auto &part) {
+      return !part.files.empty();
+    });
   }
 
   static inline void write_le16(std::ostream &out, uint16_t v) {
@@ -1865,6 +1916,17 @@ namespace confighttp {
       std::error_code ec {};
       if (!std::filesystem::exists(entry.path, ec) || !std::filesystem::is_regular_file(entry.path, ec)) {
         error = "Crash dump no longer exists";
+        return false;
+      }
+      std::error_code metadata_ec {};
+      const auto current_size = std::filesystem::file_size(entry.path, metadata_ec);
+      if (metadata_ec) {
+        error = "Crash dump changed since the manifest was created";
+        return false;
+      }
+      const auto current_write_time = std::filesystem::last_write_time(entry.path, metadata_ec);
+      if (metadata_ec || current_size != entry.size || current_write_time != entry.write_time) {
+        error = "Crash dump changed since the manifest was created";
         return false;
       }
       if (entry.size > std::numeric_limits<uint32_t>::max()) {
@@ -2051,20 +2113,23 @@ namespace confighttp {
     }
     print_req(request);
     try {
-      auto dumps = find_recent_crash_dumps(std::chrono::hours(24 * 7));
-      if (dumps.empty()) {
+      auto snapshot = create_crash_bundle_snapshot();
+      if (snapshot->dumps.empty()) {
         bad_request(response, request, "No recent crash dumps found (within last 7 days)");
         return;
       }
-      auto entries = collect_support_logs();
-      auto plan = build_crash_bundle_plan(entries, dumps);
+      if (!crash_bundle_plan_has_dump(*snapshot)) {
+        bad_request(response, request, "Recent crash dumps exceed the 30 MiB crash-bundle limit");
+        return;
+      }
       nlohmann::json out;
+      out["snapshot"] = snapshot->id;
       out["parts"] = nlohmann::json::array();
-      for (std::size_t i = 0; i < plan.size(); ++i) {
+      for (std::size_t i = 0; i < snapshot->plan.size(); ++i) {
         nlohmann::json part;
         part["index"] = static_cast<int>(i + 1);
-        part["filename"] = plan[i].filename;
-        part["estimated_size_bytes"] = plan[i].estimated_size;
+        part["filename"] = snapshot->plan[i].filename;
+        part["estimated_size_bytes"] = snapshot->plan[i].estimated_size;
         out["parts"].push_back(part);
       }
       send_response(response, out);
@@ -2094,20 +2159,33 @@ namespace confighttp {
         }
       }
 
-      auto dumps = find_recent_crash_dumps(std::chrono::hours(24 * 7));
-      if (dumps.empty()) {
+      std::shared_ptr<const CrashBundleSnapshot> snapshot;
+      if (const auto snapshot_param = query.find("snapshot"); snapshot_param != query.end() && !snapshot_param->second.empty()) {
+        snapshot = find_crash_bundle_snapshot(snapshot_param->second);
+        if (!snapshot) {
+          conflict(response, "Crash bundle snapshot expired. Please request a new crash-bundle manifest.");
+          return;
+        }
+      } else {
+        // Preserve the legacy direct-download endpoint used by older Web UI
+        // bundles and bookmarked links. New clients always send a snapshot id.
+        snapshot = create_crash_bundle_snapshot();
+      }
+      if (snapshot->dumps.empty()) {
         bad_request(response, request, "No recent crash dumps found (within last 7 days)");
         return;
       }
-      auto entries = collect_support_logs();
-      auto plan = build_crash_bundle_plan(entries, dumps);
-      if (part_index > plan.size()) {
+      if (!crash_bundle_plan_has_dump(*snapshot)) {
+        bad_request(response, request, "Recent crash dumps exceed the 30 MiB crash-bundle limit");
+        return;
+      }
+      if (part_index > snapshot->plan.size()) {
         bad_request(response, request, "Invalid crash bundle part index");
         return;
       }
-      const auto &selected = plan[part_index - 1];
+      const auto &selected = snapshot->plan[part_index - 1];
       const std::vector<ZipDataEntry> empty_entries;
-      const auto &data_entries = selected.include_logs ? entries : empty_entries;
+      const auto &data_entries = selected.include_logs ? snapshot->logs : empty_entries;
 
       wchar_t tmpDir[MAX_PATH] = {};
       wchar_t tmpFile[MAX_PATH] = {};

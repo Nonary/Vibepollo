@@ -11,6 +11,7 @@
  */
 #import "av_audio.h"
 
+#include "av_audio_policy.h"
 #include "coreaudio_helpers.h"
 #include "src/logging.h"
 #include "src/utility.h"
@@ -34,25 +35,25 @@ namespace platf {
    */
   OSStatus audioConverterComplexInputProc(AudioConverterRef inAudioConverter, UInt32 *ioNumberDataPackets, AudioBufferList *ioData, AudioStreamPacketDescription **outDataPacketDescription, void *inUserData) {
     auto *inputInfo = static_cast<AudioConverterInputData *>(inUserData);
-
-    // Check if we've already provided all available frames
-    if (inputInfo->framesProvided >= inputInfo->inputFrames) {
+    av_audio_policy::converter_input_t input {
+      inputInfo->inputData,
+      inputInfo->inputFrames,
+      inputInfo->framesProvided,
+      inputInfo->deviceChannels
+    };
+    const auto chunk = av_audio_policy::next_converter_chunk(input, *ioNumberDataPackets);
+    inputInfo->framesProvided = input.provided_frames;
+    if (chunk.frames == 0) {
       *ioNumberDataPackets = 0;
       return noErr;
     }
 
-    // Calculate how many frames we can provide (don't exceed remaining frames)
-    UInt32 framesToProvide = std::min(*ioNumberDataPackets, inputInfo->inputFrames - inputInfo->framesProvided);
-
     // Set up the output buffer with the audio data
     ioData->mNumberBuffers = 1;
-    ioData->mBuffers[0].mNumberChannels = inputInfo->deviceChannels;
-    ioData->mBuffers[0].mDataByteSize = framesToProvide * inputInfo->deviceChannels * sizeof(float);
-    ioData->mBuffers[0].mData = inputInfo->inputData + (inputInfo->framesProvided * inputInfo->deviceChannels);
-
-    // Update the tracking of how many frames we've provided
-    inputInfo->framesProvided += framesToProvide;
-    *ioNumberDataPackets = framesToProvide;
+    ioData->mBuffers[0].mNumberChannels = chunk.channels;
+    ioData->mBuffers[0].mDataByteSize = static_cast<UInt32>(chunk.bytes());
+    ioData->mBuffers[0].mData = chunk.data;
+    *ioNumberDataPackets = chunk.frames;
 
     return noErr;
   }
@@ -482,7 +483,7 @@ namespace platf {
   TPCircularBufferCleanup(&self->audioSampleBuffer);
 
   // Size the buffer to hold 30ms of audio (6 packets of 240 32-bit samples per channel)
-  int ringBufferSize = 6 * 240 * channels * sizeof(float);
+  const auto ringBufferSize = static_cast<int>(platf::av_audio_policy::ring_buffer_bytes(channels));
 
   // Initialize the circular buffer with proper size for the channel count
   TPCircularBufferInit(&self->audioSampleBuffer, ringBufferSize);

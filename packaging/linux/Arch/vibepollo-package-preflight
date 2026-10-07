@@ -1,0 +1,5 @@
+#!/usr/bin/bash
+# ALPM discovers this hook before replacing package files. A failed quiesce
+# must stop the transaction before the old executable or units are overwritten.
+. /usr/share/vibepollo/arch-package-hooks || exit 1
+vibepollo_quiesce_or_abort

@@ -199,7 +199,10 @@ namespace amf {
     int preanalysis_lookahead_depth = 0;
     bool query_timeout_supported = false;
     bool user_configured_rate_control = false;
+    std::optional<int> configured_rate_control_mode;
+    bool skip_frame_control_verified = false;
     bool enforce_hrd_enabled = false;
+    bool max_au_size_supported = false;
 
     // Statistics feedback state
     bool statistics_enabled = false;

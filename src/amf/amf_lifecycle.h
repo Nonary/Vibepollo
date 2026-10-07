@@ -227,19 +227,50 @@ namespace amf::lifecycle {
   };
 
   struct encoder_selection_policy_t {
-    bool include_legacy = false;
+    bool include_experimental = false;
     bool fail_closed = false;
   };
 
+  inline constexpr std::string_view canonical_encoder_name(
+    std::string_view requested_encoder) noexcept {
+    if (requested_encoder == "amdvce_legacy") {
+      return "amdvce_ffmpeg";
+    }
+    if (requested_encoder == "amdvce") {
+      return "amdvce_experimental";
+    }
+    return requested_encoder;
+  }
+
   inline constexpr encoder_selection_policy_t encoder_selection_policy(
     std::string_view requested_encoder) noexcept {
-    // Native AMF and the FFmpeg AMF implementation are separate, explicit
-    // contracts. Automatic probing must never make a native feature/property
-    // failure look successful by selecting the legacy encoder behind the user.
+    // The FFmpeg AMF implementation is the supported default. The native AMF
+    // implementation has limited hardware coverage and is only considered when
+    // the user explicitly opts into the experimental encoder.
+    const auto canonical_encoder = canonical_encoder_name(requested_encoder);
     return {
-      requested_encoder == "amdvce_legacy",
-      requested_encoder == "amdvce",
+      canonical_encoder == "amdvce_experimental",
+      canonical_encoder == "amdvce_experimental",
     };
+  }
+
+  inline constexpr int hevc_gdr_gop_frames = 120;
+
+  inline constexpr std::optional<int64_t> hevc_gdr_ctbs_per_slot(
+    bool requested,
+    int video_format,
+    int width,
+    int height) noexcept {
+    if (!requested || video_format != 1 || width <= 0 || height <= 0) {
+      return std::nullopt;
+    }
+
+    // Preserve the row-based refresh used by the Xbox workaround, with AMF's
+    // documented 64x64 CTBs and the dimensions passed to encoder Init().
+    const int64_t ctbs_wide = (static_cast<int64_t>(width) + 63) / 64;
+    const int64_t ctbs_high = (static_cast<int64_t>(height) + 63) / 64;
+    const int64_t rows_per_slot = (ctbs_high + hevc_gdr_gop_frames - 1) / hevc_gdr_gop_frames;
+    return rows_per_slot * ctbs_wide;
   }
 
   inline constexpr int intra_refresh_period_frames = 300;
@@ -330,6 +361,51 @@ namespace amf::lifecycle {
     return mode >= 4 && mode <= 6;  // QVBR, HQVBR, HQCBR
   }
 
+  // PEAK_CONSTRAINED_VBR. Among the rate controls that do not require
+  // PreAnalysis, this is the only one whose numeric value is identical across
+  // all three AMF encoders — 2 in VideoEncoderVCE.h
+  // (AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR),
+  // VideoEncoderHEVC.h and VideoEncoderAV1.h alike. LATENCY_CONSTRAINED_VBR is
+  // deliberately not used here: it is 3 for AVC but 1 for HEVC/AV1, so it would
+  // require a per-codec map. PEAK_CONSTRAINED_VBR is also the mode AMD's own
+  // PRE_ANALYSIS_ENABLE documentation names as PA's companion, so every runtime
+  // that implements PA implements this mode too.
+  inline constexpr int preanalysis_free_rate_control = 2;
+
+  // AMD documents QVBR/HQVBR/HQCBR as legal only while PreAnalysis is enabled
+  // (AMF_Video_Encode_API.md:1082, AMF_Video_Encode_HEVC_API.md:950 and
+  // AMF_Video_Encode_AV1_API.md:952 all state "QVBR, HQVBR and HQCBR are only
+  // supported if PreAnalysis is enabled"), while the PA component itself
+  // "accepts raw input images in NV12 format" (AMF_Video_PreAnalysis_API.md:71)
+  // — that is, 8-bit only. A 10-bit session that asks for one of those modes
+  // therefore has no legal configuration at all: leaving PA on fails Init with
+  // AMF_NOT_SUPPORTED, and turning PA off alone leaves a rate control the
+  // runtime refuses for exactly the same reason. Demote the mode as well so the
+  // HDR session can initialize instead of losing 10-bit entirely.
+  // nullopt == no demotion required; keep the requested mode.
+  inline std::optional<int> demoted_rate_control_for_10bit(
+    const std::optional<int> &rate_control,
+    bool suppress_preanalysis) noexcept {
+    if (!suppress_preanalysis || !rate_control ||
+        !rate_control_requires_preanalysis(*rate_control)) {
+      return std::nullopt;
+    }
+    return preanalysis_free_rate_control;
+  }
+
+  // The single source of truth for the rate-control mode actually written to the
+  // encoder. Configure-time application and post-Init readback verification must
+  // both use this; comparing the readback against the raw request would fail the
+  // session closed on our own substitution.
+  inline std::optional<int> effective_rate_control(
+    const std::optional<int> &rate_control,
+    bool suppress_preanalysis) noexcept {
+    if (const auto demoted = demoted_rate_control_for_10bit(rate_control, suppress_preanalysis)) {
+      return demoted;
+    }
+    return rate_control;
+  }
+
   inline bool rate_control_supports_adaptive_quantization(const std::optional<int> &rate_control) noexcept {
     // All three AMF encoders use zero for CONSTANT_QP. AMD documents VBAQ/CAQ
     // as incompatible with CQP, so an enabled-by-default AQ setting must not turn
@@ -390,8 +466,18 @@ namespace amf::lifecycle {
   };
 
   inline preanalysis_plan_t resolve_preanalysis(const std::optional<int> &rate_control,
-                                                const std::optional<int> &explicit_preanalysis) noexcept {
+                                                const std::optional<int> &explicit_preanalysis,
+                                                bool suppress_preanalysis = false) noexcept {
     const bool required_by_rate_control = rate_control && rate_control_requires_preanalysis(*rate_control);
+    // AMF cannot run PreAnalysis on a 10-bit pipeline: the PA component consumes
+    // NV12 (AMF_Video_PreAnalysis_API.md:71). Force PA off regardless of whether
+    // it was selected explicitly or implied by rate control. The rate-control
+    // mode is NOT preserved in that case — a PA-requiring mode is equally
+    // unsupported without PA, so callers must pair this with
+    // effective_rate_control() and write the demoted mode instead.
+    if (suppress_preanalysis) {
+      return {};
+    }
     const bool explicitly_enabled = explicit_preanalysis && *explicit_preanalysis != 0;
     const bool enabled = required_by_rate_control || explicitly_enabled;
     return {

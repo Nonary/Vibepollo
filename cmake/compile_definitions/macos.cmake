@@ -44,6 +44,8 @@ configure_file("${APPLE_PLIST_TEMPLATE}" "${APPLE_PLIST_FILE}" @ONLY)
 set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/macos/av_audio.h"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/av_audio.mm"
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/av_audio_policy.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/av_audio_policy.h"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/av_img_t.h"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/av_video.h"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/av_video.m"

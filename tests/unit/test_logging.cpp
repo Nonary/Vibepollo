@@ -1,25 +1,28 @@
 /**
  * @file tests/unit/test_logging.cpp
- * @brief Test src/logging.*.
+ * @brief Test the production logging record rendering policy.
  */
 #include "../tests_common.h"
-#include "../tests_log_checker.h"
 
-#include <format>
-#include <random>
-#include <src/logging.h>
+#include <array>
+#include <string>
+#include <string_view>
+#include <tuple>
+
+#include <src/logging_policy.h>
 
 namespace {
   std::array log_levels = {
-    std::tuple("verbose", &verbose),
-    std::tuple("debug", &debug),
-    std::tuple("info", &info),
-    std::tuple("warning", &warning),
-    std::tuple("error", &error),
-    std::tuple("fatal", &fatal),
+    std::tuple("verbose", logging::policy::level::verbose, "Verbose: "),
+    std::tuple("debug", logging::policy::level::debug, "Debug: "),
+    std::tuple("info", logging::policy::level::info, "Info: "),
+    std::tuple("warning", logging::policy::level::warning, "Warning: "),
+    std::tuple("error", logging::policy::level::error, "Error: "),
+    std::tuple("fatal", logging::policy::level::fatal, "Fatal: "),
   };
 
-  constexpr auto log_file = "test_sunshine.log";
+  constexpr std::string_view timestamp = "2026-08-07 00:00:00.123";
+  constexpr std::string_view message = "logging policy message";
 }  // namespace
 
 struct LogLevelsTest: testing::TestWithParam<decltype(log_levels)::value_type> {};
@@ -34,14 +37,11 @@ INSTANTIATE_TEST_SUITE_P(
 );
 
 TEST_P(LogLevelsTest, PutMessage) {
-  auto [label, plogger] = GetParam();
-  ASSERT_TRUE(plogger);
-  auto &logger = *plogger;
+  const auto [label, level, prefix] = GetParam();
+  const logging::policy::record_t record {static_cast<int>(level), message};
 
-  std::random_device rand_dev;
-  std::mt19937_64 rand_gen(rand_dev());
-  auto test_message = std::format("{}{}", rand_gen(), rand_gen());
-  BOOST_LOG(logger) << test_message;
-
-  ASSERT_TRUE(log_checker::line_contains(log_file, test_message));
+  EXPECT_EQ(
+    logging::policy::format_line(timestamp, record),
+    std::string("[") + std::string(timestamp) + "]: " + prefix + std::string(message)
+  );
 }

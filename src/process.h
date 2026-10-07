@@ -27,6 +27,7 @@
 #include "config.h"
 #include "platform/common.h"
 #include "rtsp.h"
+#include "steam_process_tracker.h"
 #include "utility.h"
 
 #ifdef _WIN32
@@ -35,6 +36,7 @@
 
 namespace VDISPLAY {
   enum class DRIVER_STATUS;
+  enum class DRIVER_SELECTION;
 }
 
 #endif
@@ -52,6 +54,14 @@ namespace proc {
 
 #ifdef _WIN32
   extern std::atomic<VDISPLAY::DRIVER_STATUS> vDisplayDriverStatus;
+  extern std::atomic<VDISPLAY::DRIVER_SELECTION> vDisplayDriverSelection;
+  struct vdisplay_driver_status_snapshot_t {
+    VDISPLAY::DRIVER_STATUS status;
+    VDISPLAY::DRIVER_SELECTION selection;
+  };
+  vdisplay_driver_status_snapshot_t vDisplayDriverStatusSnapshot();
+  void setVDisplayDriverStatus(VDISPLAY::DRIVER_STATUS status);
+  void setVDisplayDriverStatus(VDISPLAY::DRIVER_STATUS status, VDISPLAY::DRIVER_SELECTION selection);
   void initVDisplayDriver();
 #endif
 
@@ -64,6 +74,7 @@ namespace proc {
     bool uses_playnite {false};
     std::string playnite_id;
     std::string client_uuid;
+    std::uint64_t normal_vdd_identity_token {0};
     std::chrono::steady_clock::time_point launch_started_at {};
   };
 
@@ -132,6 +143,15 @@ namespace proc {
     std::string gamepad;
     std::string art_version;
     std::vector<std::string> id_aliases;
+    // Provider metadata used by the Steam-owned process lifecycle boundary.
+    // These remain strings because the catalog/API stores Steam IDs and paths
+    // as JSON strings for compatibility with older app entries.
+    std::string steam_id;
+    std::string steam_install_dir;
+    // Lutris also launches through a short-lived broker. Its game directory
+    // lets the shared process tracker own the real Wine/native process.
+    std::string lutris_id;
+    std::string lutris_directory;
     // When present, this app should be launched via Playnite instead of direct cmd.
     std::string playnite_id;
     // When true, launch Playnite in fullscreen mode via the helper.
@@ -139,6 +159,8 @@ namespace proc {
     bool frame_gen_limiter_fix;
     bool elevated;
     bool virtual_screen {false};
+    // Unset inherits the device preference; false allows normal client HDR requests.
+    std::optional<bool> prefer_10bit_sdr;
     std::optional<config::video_t::virtual_display_mode_e> virtual_display_mode_override;
     std::optional<config::video_t::virtual_display_layout_e> virtual_display_layout_override;
     bool auto_detach;
@@ -199,6 +221,11 @@ namespace proc {
      */
     int running();
 
+    /**
+     * @return A side-effect-free snapshot of the current application ID.
+     */
+    int current_app_id() const;
+
     ~proc_t();
 
     // Return a snapshot copy to avoid concurrent access races
@@ -211,8 +238,13 @@ namespace proc {
     std::string get_running_app_uuid();
     bp::environment get_env();
     void resume();
-    void pause();
-    void terminate(bool immediate = false, bool needs_refresh = true, bool skip_display_revert = false);
+    void pause(bool stream_lifecycle_lock_held = false);
+    void terminate(
+      bool immediate = false,
+      bool needs_refresh = true,
+      bool skip_display_revert = false,
+      bool stream_lifecycle_lock_held = false
+    );
     bool last_run_app_frame_gen_limiter_fix() const;
     bool is_launch_deferred() const;
     bool has_trackable_running_app() const;
@@ -237,23 +269,34 @@ namespace proc {
     bp::environment release_env();
 
   private:
-    int launch_app_commands();
+    int launch_app_commands(bool stream_lifecycle_lock_held);
 
-    int _app_id = 0;
+    std::atomic<int> _app_id {0};
     std::string _app_name;
 
     bp::environment _env;
     std::shared_ptr<rtsp_stream::launch_session_t> _launch_session;
     std::shared_ptr<config::input_t> _saved_input_config;
+    // Entries inserted by a prior stream must not leak into a later launch,
+    // while values loaded from apps.json remain explicit user configuration.
+    std::unordered_set<std::string> _stream_owned_environment_keys;
     std::vector<ctx_t> _apps;
     ctx_t _app;
     std::chrono::steady_clock::time_point _app_launch_time;
     std::string _active_client_uuid;
+    std::uint64_t _active_client_vdd_identity_token {0};
 
     mutable std::mutex _apps_mutex;
 
     // If no command associated with _app_id, yet it's still running
     bool placebo {};
+
+    platf::steam::lifecycle::tracker _steam_tracker;
+    std::shared_ptr<platf::steam::lifecycle::process_controller> _steam_process_controller;
+    bool _steam_tracking_active {false};
+    bool _steam_tracking_associated {false};
+    std::chrono::steady_clock::time_point _steam_tracking_deadline {};
+    std::chrono::steady_clock::time_point _steam_last_tracking_poll {};
 
 #ifdef _WIN32
     bool _deferred_launch {false};
@@ -267,6 +310,7 @@ namespace proc {
 #ifdef _WIN32
     GUID _virtual_display_guid {};
     bool _virtual_display_active {false};
+    std::optional<config::runtime_output_override_lease_t> _runtime_output_override_lease;
 #endif
 
     file_t _pipe;
@@ -298,6 +342,7 @@ namespace proc {
 
   bool check_valid_png(const std::filesystem::path &path);
   std::string validate_app_image_path(std::string app_image_path);
+  std::optional<std::string> read_validated_app_image(const std::string &validated_path);
   std::string calculate_app_cover_fingerprint(std::string app_image_path);
   void refresh(const std::string &file_name, bool needs_terminate = true);
   void migrate_apps(nlohmann::json *fileTree_p, nlohmann::json *inputTree_p);

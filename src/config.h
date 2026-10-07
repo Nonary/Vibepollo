@@ -12,6 +12,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -62,7 +63,7 @@ namespace config {
 
     int hevc_mode;
     int av1_mode;
-    bool prefer_10bit_sdr;
+    bool pyrowave;  ///< Advertise PyroWave (bitStreamFormat 3) when the capture GPU can encode it.
 
     int min_threads;  // Minimum number of threads/slices for CPU encoding
 
@@ -83,6 +84,7 @@ namespace config {
       int h264_coder;
       int aq;
       int vbv_percentage_increase;
+      int split_encode_mode;
     } nv_legacy;
 
     struct {
@@ -106,7 +108,7 @@ namespace config {
       std::optional<int> amd_preanalysis;
       std::optional<int> amd_vbaq;  // nullopt = follow usage-preset default
       int amd_coder;
-      // Native AMF encoder (amdvce) tuning knobs.
+      // Native AMF encoder (amdvce_experimental) tuning knobs.
       int amd_ltr_frames;  // Long-term reference frames for RFI (0 = off)
       int amd_input_queue_size;  // AMF input queue depth (0 = driver default)
       // Curated tri-state native-AMF feature knobs. nullopt (auto) leaves the
@@ -152,10 +154,17 @@ namespace config {
     std::string capture;
     std::string encoder;
     std::string adapter_name;
+    std::string adapter_pnp_id;
     std::string output_name;
 
     virtual_display_mode_e virtual_display_mode;
     virtual_display_layout_e virtual_display_layout;
+
+    bool remote_monitor_mute_audio;  ///< Do not capture or transmit audio for Remote Monitor sessions.
+    bool remote_monitor_disconnect_on_stream_end;  ///< Release a Remote Monitor when its RTSP stream ends.
+    bool remote_monitor_disconnect_on_client_disconnect;  ///< Release a Remote Monitor when its paired client transport disconnects.
+    bool remote_monitor_terminate_on_first_request;  ///< Let extra clients terminate the active game with one Terminate request.
+    bool remote_monitor_confirm_app_replacement;  ///< Require confirmation before an ungated launch replaces the active game.
 
     struct dd_t {
       struct workarounds_t {
@@ -229,13 +238,15 @@ namespace config {
       std::uint32_t snapshot_restore_hotkey_modifiers;  ///< Modifier flags for the restore hotkey.
       bool use_sunshine_virtual_display_driver;  ///< Use the Vibepollo Display Driver instead of rollback drivers such as SudoVDA.
       bool activate_virtual_display;  ///< Auto-activate Sunshine virtual display when selected as the target output.
-      int virtual_display_scale_percent;  ///< Windows scale for virtual displays (0 preserves Windows' existing choice).
+      int virtual_display_scale_percent;  ///< Virtual-display scale percent (-1 is automatic; 0 preserves the compositor's choice).
       int virtual_display_permanent_count;  ///< Number of always-present Sunshine virtual displays to request when explicitly configured.
       bool virtual_display_permanent_count_configured;  ///< False preserves installs that predate this setting.
+      std::vector<std::string> virtual_display_outputs;  ///< Linux connector names reserved for private streaming displays; empty enables managed-VKMS discovery.
       std::vector<std::string> snapshot_exclude_devices;  ///< Device IDs to skip when saving display snapshots.
       mode_remapping_t mode_remapping;
       workarounds_t wa;
       bool vulkan_hdr_layer;  ///< Register the Vulkan HDR implicit layer that exposes HDR surface formats on virtual displays. Disable to recover from Vulkan access violations in third-party apps.
+      bool wayland_hdr_compatibility;  ///< Opt in to native KDE/Wayland HDR launch environment compatibility for resolved HDR streams.
     } dd;
 
     int max_bitrate;  // Maximum bitrate, sets ceiling in kbps for bitrate requested from client
@@ -252,6 +263,7 @@ namespace config {
     bool install_steam_drivers;
     bool keep_default;
     bool auto_capture;
+    bool sink_capture_only;  ///< Capture the selected Windows audio sink without changing default outputs.
   };
 
   constexpr int ENCRYPTION_MODE_NEVER = 0;  // Never use video encryption, even if the client supports it
@@ -265,6 +277,7 @@ namespace config {
 
     int fec_percentage;
     int video_max_batch_size_kb;
+    int pyrowave_critical_fec_percentage;  ///< Parity on the PyroWave shards holding the coarsest wavelet level (at least 2 shards); 0 = none.
 
     // Video encryption settings for LAN and WAN streams
     int lan_encryption_mode;
@@ -309,6 +322,8 @@ namespace config {
     // When forcing DS5 emulation via Inputtino, randomize the virtual controller MAC
     // to avoid client-side config mixing when controllers are swapped.
     bool ds5_inputtino_randomize_mac;
+    // Apply native Sony audio endpoint compatibility to streamed Proton launches.
+    bool proton_dualsense_compatibility;
 
     bool keyboard;
     bool mouse;
@@ -328,24 +343,39 @@ namespace config {
       enabled,
       disabled,
       legacy,
+      vrr,  ///< Fixed 1000 Hz virtual display.
     };
 
     bool enable {false};
 
-    // Provider selector. Supported values: "auto", "nvidia-control-panel", "rtss".
+    // Provider selector. Linux defaults to Proton with a MangoHUD overlay;
+    // Windows defaults to RTSS or NVIDIA Control Panel.
+    // Supported values: "auto", "mangohud", "proton", "mangohud-proton",
+    // "nvidia-control-panel", "rtss", "none".
     std::string provider;
 
     // Optional FPS limit override in millihertz. 0 uses the stream's requested FPS.
     std::uint32_t fps_limit_millihz {0};
+
+    // Linux MangoHUD overlay presentation. "custom" preserves the user's
+    // configuration; 1-4 select MangoHUD's standard built-in presets.
+    std::string mangohud_preset {"custom"};
+    bool mangohud_always_show_graph {false};
+    // MangoHUD's own limiter timing. Early favors smooth pacing; late favors latency.
+    std::string mangohud_limiter_method {"late"};
 
     // When enabled, Sunshine forces the NVIDIA driver VSYNC setting to Off during streams when available.
     // When NVIDIA overrides are unavailable, the display helper falls back to the highest refresh rate instead.
     // Restores the previous VSYNC state when streaming stops.
     bool disable_vsync {false};
 
-    // Virtual-display capture policy. Enabled dynamically switches between 1x desktop and
-    // 4x game refresh with a matching limiter; legacy uses a fixed 2x refresh; disabled
-    // leaves both automatic refresh adjustment and the virtual-display limiter off.
+    // Virtual-display capture policy. Enabled keeps the virtual display at a fixed 4x
+    // refresh and lets WGC admit 2x desktop / 4x game frames without changing the mode.
+    // VRR holds the virtual display at a fixed 1000 Hz regardless of stream FPS, with the
+    // same WGC admission: DWM composes and WGC timestamps frames on the display's refresh
+    // grid, so 1000 Hz keeps every frame within 1 ms of when the game presented it for
+    // clients that pace playback from RTP timestamps.
+    // Legacy uses a fixed 2x refresh; disabled leaves the automatic policy off.
     virtual_display_capture_mode_e virtual_display_capture_mode {
       virtual_display_capture_mode_e::enabled
     };
@@ -355,11 +385,24 @@ namespace config {
     }
 
     [[nodiscard]] bool game_aware_virtual_display_refresh_enabled() const {
-      return virtual_display_capture_mode == virtual_display_capture_mode_e::enabled;
+      return virtual_display_capture_mode == virtual_display_capture_mode_e::enabled ||
+             virtual_display_capture_mode == virtual_display_capture_mode_e::vrr;
     }
 
     [[nodiscard]] int fixed_virtual_display_refresh_multiplier() const {
-      return virtual_display_capture_mode == virtual_display_capture_mode_e::legacy ? 2 : 1;
+      if (virtual_display_capture_mode == virtual_display_capture_mode_e::legacy) {
+        return 2;
+      }
+      return virtual_display_capture_mode == virtual_display_capture_mode_e::enabled ? 4 : 1;
+    }
+
+    // Exact virtual-display refresh that replaces the multiplier; 0 when unused. VRR mode
+    // always uses it; Automatic uses it when the client requested VRR presentation
+    // (clientVrrRequested), because such clients pace playback from the RTP timestamps.
+    [[nodiscard]] std::uint32_t fixed_virtual_display_refresh_millihz(const bool client_vrr_requested = false) const {
+      const bool vrr = virtual_display_capture_mode == virtual_display_capture_mode_e::vrr ||
+                       (client_vrr_requested && virtual_display_capture_mode == virtual_display_capture_mode_e::enabled);
+      return vrr ? 1'000'000u : 0u;
     }
   };
 
@@ -371,6 +414,11 @@ namespace config {
     // SyncLimiter mode. One of: "async", "front edge sync", "back edge sync", "nvidia reflex".
     // If empty or unrecognized, SyncLimiter is not modified.
     std::string frame_limit_type;
+
+    // When enabled, the configured SyncLimiter mode may replace the automatic NVIDIA Reflex
+    // policy for virtual-display streams. Game-provided frame generation still selects Reflex
+    // unless the app/client supplies an explicit RTSS mode override.
+    bool allow_virtual_display_override {false};
   };
 
   struct lossless_scaling_t {
@@ -476,6 +524,22 @@ namespace config {
   int parse(int argc, char *argv[]);
   std::unordered_map<std::string, std::string> parse_config(const std::string_view &file_content);
 
+  /**
+   * Merge one raw configuration layer into another while treating the Windows
+   * capture-adapter name and persistent PnP identity as a single value.
+   *
+   * A layer that supplies adapter_name without adapter_pnp_id intentionally
+   * selects legacy name-only behavior and clears an inherited PnP identity.
+   * adapter_pnp_id without adapter_name is ignored.
+   */
+  void merge_config_overrides(
+    std::unordered_map<std::string, std::string> &base,
+    const std::unordered_map<std::string, std::string> &overrides
+  );
+  bool adapter_config_overrides_compatible_with_active(
+    const std::unordered_map<std::string, std::string> &requested_overrides
+  );
+
   // Hot-reload helpers
   void apply_config_now();
   void mark_deferred_reload();
@@ -483,6 +547,7 @@ namespace config {
 
   // Gate helpers so session start/resume can hold a shared lock while apply holds a unique lock.
   std::shared_lock<std::shared_mutex> acquire_apply_read_gate();
+  void record_active_adapter_config();
 
   // Runtime, non-persisted config overrides (e.g. per-application overrides).
   // Values use the same raw representation as the config file (strings for string keys,
@@ -498,7 +563,6 @@ namespace config {
   std::optional<std::string> runtime_output_name_override();
   std::string get_active_output_name();
 
-#ifdef _WIN32
   // A recovery worker can publish a temporary virtual-output override.  The
   // lease makes rollback conditional so an older recovery cannot erase an
   // override installed by a newer session.
@@ -506,6 +570,7 @@ namespace config {
   runtime_output_override_lease_t set_runtime_output_name_override_with_lease(std::string output_name);
   bool clear_runtime_output_name_override_if_lease(runtime_output_override_lease_t lease);
 
+#ifdef _WIN32
   // The lock-screen virtual-output retry worker is owned work.  Main stops
   // and joins it before configuration, display-helper, and mail teardown.
   void request_deferred_virtual_output_reapply_shutdown();

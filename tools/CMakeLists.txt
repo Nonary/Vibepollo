@@ -15,6 +15,7 @@ include_directories(
 
 set(TOOL_SOURCES
         "${CMAKE_SOURCE_DIR}/src/logging.cpp"
+        "${CMAKE_SOURCE_DIR}/src/logging_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.cpp"
 )
 
@@ -56,12 +57,14 @@ add_executable(playnite-launcher
         playnite_launcher/cleanup.cpp
         playnite_launcher/focus_utils.cpp
         playnite_launcher/lossless_scaling.cpp
+        playnite_launcher/lossless_scaling_policy.cpp
         playnite_launcher/playnite_process.cpp)
 set_target_properties(playnite-launcher PROPERTIES CXX_STANDARD 23)
 set_target_properties(playnite-launcher PROPERTIES WIN32_EXECUTABLE TRUE)
 target_include_directories(playnite-launcher PRIVATE ${CMAKE_SOURCE_DIR}/tools/playnite_launcher)
 target_sources(playnite-launcher PRIVATE
         ${CMAKE_SOURCE_DIR}/src/logging.cpp
+        ${CMAKE_SOURCE_DIR}/src/logging_policy.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_protocol.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.cpp
@@ -86,7 +89,8 @@ add_executable(sunshine_wgc_capture
         sunshine_wgc_capture.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/misc_utils.cpp
-        ${CMAKE_SOURCE_DIR}/src/logging.cpp)
+        ${CMAKE_SOURCE_DIR}/src/logging.cpp
+        ${CMAKE_SOURCE_DIR}/src/logging_policy.cpp)
 set_target_properties(sunshine_wgc_capture PROPERTIES CXX_STANDARD 23)
 
 # Define helper build flag to conditionally compile logging
@@ -115,19 +119,26 @@ add_executable(sunshine_display_helper
         display_settings_helper_main.cpp
         display_settings_helper.cpp
         display_settings_helper_v2.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/diagnostics.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/diagnostics_boost.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/file_text_storage.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/topology_policy.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/async_dispatcher.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/golden_health.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/operations.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/snapshot.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/snapshot_codec.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/snapshot_file_storage.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/state_machine.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_display_settings.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_event_pump.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_platform_workarounds.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_shell_refresh_policy.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_scheduled_task_manager.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/misc_utils.cpp
-        ${CMAKE_SOURCE_DIR}/src/logging.cpp)
+        ${CMAKE_SOURCE_DIR}/src/logging.cpp
+        ${CMAKE_SOURCE_DIR}/src/logging_policy.cpp)
 set_target_properties(sunshine_display_helper PROPERTIES CXX_STANDARD 23)
 target_compile_definitions(sunshine_display_helper PRIVATE SETUP_LIBDISPLAYDEVICE_LOGGING)
 target_include_directories(sunshine_display_helper PRIVATE ${CMAKE_SOURCE_DIR}/third-party)

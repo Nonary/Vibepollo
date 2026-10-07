@@ -59,6 +59,9 @@ namespace display_helper_integration {
   struct DisplayTopologyDefinition {
     std::vector<std::vector<std::string>> topology;
     std::map<std::string, display_device::Point> monitor_positions;
+    // A remote composed topology is applied as one operation and may select a
+    // saved client display as primary after its target is part of that topology.
+    std::optional<std::string> primary_device;
     /// Pre-VD-creation refresh rates for physical monitors: device_id → {numerator, denominator}.
     std::map<std::string, std::pair<unsigned int, unsigned int>> device_refresh_rate_overrides;
   };
@@ -73,6 +76,10 @@ namespace display_helper_integration {
     bool enable_virtual_display_watchdog {false};
     bool attach_hdr_toggle_flag {false};
     const rtsp_stream::launch_session_t *session {nullptr};
+    // Linux applies synchronously and publishes the verified display/HDR state
+    // back to the live launch session. Kept separate from the read-only
+    // session pointer used by the asynchronous Windows helper.
+    rtsp_stream::launch_session_t *mutable_session {nullptr};
     DisplayTopologyDefinition topology {};
     std::optional<VirtualDisplayArrangement> virtual_display_arrangement;
   };
@@ -82,6 +89,7 @@ namespace display_helper_integration {
    */
   class DisplayApplyBuilder {
   public:
+    DisplayApplyBuilder &set_session(rtsp_stream::launch_session_t &session);
     DisplayApplyBuilder &set_session(const rtsp_stream::launch_session_t &session);
     DisplayApplyBuilder &set_action(DisplayApplyAction action);
     DisplayApplyBuilder &set_configuration(const display_device::SingleDisplayConfiguration &config);
@@ -97,6 +105,7 @@ namespace display_helper_integration {
 
   private:
     const rtsp_stream::launch_session_t *session_ {nullptr};
+    rtsp_stream::launch_session_t *mutable_session_ {nullptr};
     DisplayApplyAction action_ {DisplayApplyAction::Skip};
     std::optional<display_device::SingleDisplayConfiguration> configuration_;
     ActiveSessionState session_overrides_ {};

@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <span>
 #include <string_view>
 #include <thread>
@@ -22,6 +23,7 @@
 #include "src/logging.h"
 #include "src/platform/windows/display.h"
 #include "src/platform/windows/misc.h"
+#include "src/platform/windows/wgc_capture_policy.h"
 #include "src/utility.h"
 
 // platform includes
@@ -37,8 +39,6 @@ namespace platf::dxgi {
     constexpr auto kHelperHandleWaitTimeout = std::chrono::seconds(15);
     constexpr auto kHelperHandleProgressInterval = std::chrono::seconds(3);
     constexpr std::int64_t kWgcMinUpdateInterval100ns = 10000;  // 1 ms
-    constexpr uint32_t kWgcLowLatencyInitialBufferSize = 1;
-    constexpr uint32_t kWgcAdaptiveMaxBufferSize = 2;
     constexpr uint32_t kWgcAdaptiveFramePoolFlags =
       WGC_IPC_FLAG_DRAIN_TO_LATEST |
       WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE;
@@ -65,6 +65,13 @@ namespace platf::dxgi {
       return 60;
     }
 
+    int wgc_initial_activity_admission_fps(const ::video::config_t &config) {
+      const auto target_fps = wgc_target_fps(config);
+      return target_fps > (std::numeric_limits<int>::max)() / 2 ?
+               (std::numeric_limits<int>::max)() :
+               target_fps * 2;
+    }
+
     std::int64_t wgc_min_update_interval_100ns(const ::video::config_t & /*config*/) {
       // Keep WGC's producer cadence latency-first. The stream-aware half-frame
       // interval used in 2efebf12f reduced callback pressure, but the helper then
@@ -88,11 +95,13 @@ namespace platf::dxgi {
     }
 
     uint32_t wgc_initial_frame_buffer_size() {
-      return kWgcLowLatencyInitialBufferSize;
+      return wgc_policy::low_latency_initial_buffer_size;
     }
 
-    uint32_t wgc_max_frame_buffer_size() {
-      return kWgcAdaptiveMaxBufferSize;
+    uint32_t wgc_max_frame_buffer_size(const ::video::config_t &config) {
+      // A launch-qualified VRR session explicitly trades burst resilience for
+      // newest-frame latency. Other sessions retain adaptive growth to two.
+      return wgc_policy::maximum_buffer_size(config.vrr_low_latency);
     }
 
     struct frame_metadata_snapshot_t {
@@ -196,6 +205,7 @@ namespace platf::dxgi {
     _display_name = display_name;
     _device.copy_from(device);
     _advanced_color_capture = advanced_color_capture;
+    _activity_admission_fps = wgc_initial_activity_admission_fps(_config);
     return 0;
   }
 
@@ -318,14 +328,21 @@ namespace platf::dxgi {
 
     // Send config data to helper process
     config_data_t config_data = {};
-    config_data.dynamic_range = _config.dynamicRange;
+    // `dynamicRange` also carries the Main10 bit-depth request for preferred
+    // 10-bit SDR streams. The WGC helper uses this field only to choose an
+    // HDR-capable FP16 capture pool, so do not let SDR Main10 select that
+    // different capture path. `force_sdr` is an explicit HDR-off override, so
+    // it must suppress the HDR pool too; every other effective-HDR predicate
+    // in the tree excludes both flags.
+    config_data.dynamic_range = _config.dynamicRange && !_config.prefer_sdr_10bit && !_config.force_sdr;
     config_data.advanced_color_capture = _advanced_color_capture ? 1u : 0u;
     config_data.log_level = config::sunshine.min_log_level;
     config_data.min_update_interval_100ns = wgc_min_update_interval_100ns(_config);
     config_data.target_fps = wgc_target_fps(_config);
     config_data.flags = wgc_ipc_flags(_config);
     config_data.initial_frame_buffer_size = wgc_initial_frame_buffer_size();
-    config_data.max_frame_buffer_size = wgc_max_frame_buffer_size();
+    config_data.max_frame_buffer_size = wgc_max_frame_buffer_size(_config);
+    config_data.activity_admission_fps = _activity_admission_fps.load(std::memory_order_relaxed);
 
     // Convert display_name (std::string) to wchar_t[32]
     if (!_display_name.empty()) {
@@ -460,6 +477,29 @@ namespace platf::dxgi {
 
     cleanup_on_failure.disable();
     _initialized = true;
+    if (_activity_admission_fps.load(std::memory_order_relaxed) != config_data.activity_admission_fps) {
+      (void) set_activity_admission_fps(_activity_admission_fps.load(std::memory_order_relaxed));
+    }
+  }
+
+  bool ipc_session_t::set_activity_admission_fps(const int fps) {
+    if (fps <= 0) {
+      return false;
+    }
+    _activity_admission_fps.store(fps, std::memory_order_relaxed);
+    if (!_pipe || !_initialized) {
+      return true;
+    }
+    if (!_pipe->is_connected()) {
+      return false;
+    }
+
+    const activity_admission_data_t update {
+      .magic = WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC,
+      .admission_fps = fps,
+    };
+    _pipe->send(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&update), sizeof(update)));
+    return true;
   }
 
   capture_e ipc_session_t::wait_for_frame(std::chrono::milliseconds timeout) {
@@ -547,7 +587,7 @@ namespace platf::dxgi {
     }
 
     luid_out = desc.AdapterLuid;
-    set_last_wgc_adapter_luid(luid_out);
+    set_last_wgc_adapter_luid(luid_out, _display_name);
     return true;
   }
 
@@ -794,8 +834,9 @@ namespace platf::dxgi {
 
     DWORD exit_code = 0;
     _process_helper->terminate();  // best effort
-    if (!_process_helper->wait_for(exit_code, 3000)) {
-      BOOST_LOG(warning) << "WGC helper did not exit within 3000ms after termination request; continuing teardown.";
+    if (!_process_helper->wait_for(exit_code, wgc_policy::helper_stop_timeout_ms)) {
+      BOOST_LOG(warning) << "WGC helper did not exit within " << wgc_policy::helper_stop_timeout_ms
+                         << "ms after termination request; continuing teardown.";
       _process_helper = std::make_unique<ProcessHandler>();
     }
     _last_helper_stop = std::chrono::steady_clock::now();

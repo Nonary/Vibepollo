@@ -4,15 +4,21 @@
  */
 // standard includes
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <csignal>
 #include <filesystem>
 #include <iomanip>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
 #include <sstream>
+#include <string>
 #include <vector>
 
 // lib includes
@@ -31,6 +37,7 @@
 #include <WinSock2.h>
 #include <Windows.h>
 #include <WinUser.h>
+#include <setupapi.h>
 #include <wlanapi.h>
 #include <WS2tcpip.h>
 #include <WtsApi32.h>
@@ -43,10 +50,16 @@
 #define NTDDI_VERSION NTDDI_WIN10
 #include <Shlwapi.h>
 
+// lib includes
+#include <libvirtualgamepad/client.h>
+
 // local includes
 #include "misc.h"
+#include "src/screen_saver_state.h"
+#include "src/platform/common_services.h"
 #include "nvprefs/nvprefs_interface.h"
 #include "src/boost_process_shim.h"
+#include "src/config.h"
 #include "src/display_helper_integration.h"
 #include "src/entry_handler.h"
 #include "src/globals.h"
@@ -81,8 +94,11 @@ extern "C" {
 namespace {
 
   std::atomic<bool> used_nt_set_timer_resolution = false;
-  std::mutex screen_saver_state_mutex;
-  std::optional<bool> screen_saver_active_before_app;
+  struct screen_saver_context_t {
+    std::mutex mutex;
+    platf::screen_saver_state_t state;
+  };
+  const auto screen_saver_context = std::make_shared<screen_saver_context_t>();
 
   bool nt_set_timer_resolution_max() {
     ULONG maximum;
@@ -117,6 +133,7 @@ using namespace std::literals;
 namespace platf {
   using adapteraddrs_t = util::c_ptr<IP_ADAPTER_ADDRESSES>;
 
+  std::mutex mouse_keys_mutex;
   bool enabled_mouse_keys = false;
   MOUSEKEYS previous_mouse_keys_state;
 
@@ -168,39 +185,53 @@ namespace platf {
   }  // namespace
 
   void cache_screen_saver_state() {
-    auto lock = std::lock_guard(screen_saver_state_mutex);
-    if (screen_saver_active_before_app) {
-      return;
-    }
+    const auto context = screen_saver_context;
+    auto lock = std::lock_guard(context->mutex);
+    context->state.begin([]() -> std::optional<bool> {
+      BOOL active = FALSE;
+      DWORD winerr = ERROR_SUCCESS;
+      if (!update_screen_saver_state(SPI_GETSCREENSAVEACTIVE, 0, &active, winerr)) {
+        BOOST_LOG(warning) << "Unable to cache the screen saver state before app launch: " << winerr;
+        return std::nullopt;
+      }
+      BOOST_LOG(debug) << "Cached screen saver state before app launch: " << (active ? "enabled" : "disabled");
+      return active != FALSE;
+    });
+  }
 
-    BOOL screen_saver_active = FALSE;
+  static bool apply_screen_saver_state(bool previous_state) {
     DWORD winerr = ERROR_SUCCESS;
-    if (!update_screen_saver_state(SPI_GETSCREENSAVEACTIVE, 0, &screen_saver_active, winerr)) {
-      BOOST_LOG(warning) << "Unable to cache the screen saver state before app launch: "sv << winerr;
-      return;
+    if (!update_screen_saver_state(SPI_SETSCREENSAVEACTIVE, previous_state ? TRUE : FALSE, nullptr, winerr)) {
+      BOOST_LOG(warning) << "Unable to restore the screen saver state after app/session teardown: " << winerr;
+      return false;
     }
+    BOOST_LOG(info) << "Restored screen saver state after app/session teardown: " << (previous_state ? "enabled" : "disabled");
+    return true;
+  }
 
-    screen_saver_active_before_app = screen_saver_active != FALSE;
-    BOOST_LOG(debug) << "Cached screen saver state before app launch: "
-                     << (*screen_saver_active_before_app ? "enabled" : "disabled");
+  std::function<void()> deferred_screen_saver_restore() {
+    const auto context = screen_saver_context;
+    auto lock = std::lock_guard(context->mutex);
+    const auto token = context->state.defer();
+    auto release_on_failure = util::fail_guard([&] {
+      context->state.finish(token, apply_screen_saver_state);
+    });
+    std::function<void()> completion = [weak_context = std::weak_ptr {context}, token] {
+      // Pause commands may outlive normal host teardown. Do not dereference
+      // destroyed globals; an in-flight completion retains its own context.
+      if (const auto retained_context = weak_context.lock()) {
+        auto state_lock = std::lock_guard(retained_context->mutex);
+        retained_context->state.finish(token, apply_screen_saver_state);
+      }
+    };
+    release_on_failure.disable();
+    return completion;
   }
 
   void restore_screen_saver_state() {
-    auto lock = std::lock_guard(screen_saver_state_mutex);
-    if (!screen_saver_active_before_app) {
-      return;
-    }
-
-    DWORD winerr = ERROR_SUCCESS;
-    const auto previous_state = *screen_saver_active_before_app;
-    if (!update_screen_saver_state(SPI_SETSCREENSAVEACTIVE, previous_state ? TRUE : FALSE, nullptr, winerr)) {
-      BOOST_LOG(warning) << "Unable to restore the screen saver state after app/session teardown: "sv << winerr;
-      return;
-    }
-
-    screen_saver_active_before_app.reset();
-    BOOST_LOG(info) << "Restored screen saver state after app/session teardown: "
-                    << (previous_state ? "enabled" : "disabled");
+    const auto context = screen_saver_context;
+    auto lock = std::lock_guard(context->mutex);
+    context->state.restore(apply_screen_saver_state);
   }
 
   std::filesystem::path appdata() {
@@ -323,6 +354,17 @@ namespace platf {
     }
 
     return local_ip;
+  }
+
+  bool is_virtual_gamepad_driver_available() {
+    // Opening the control interface is the only honest test: the driver package
+    // can be staged while the source device is not started, and a stream would
+    // fail in exactly that case.
+    lvg::client probe;
+    if (probe.connect() != ERROR_SUCCESS) {
+      return false;
+    }
+    return probe.available_profiles() != 0;
   }
 
   bool is_vigem_installed(std::string *version_out) {
@@ -693,23 +735,6 @@ namespace platf {
 
     CloseDesktop(hDesk);
     return locked;
-  }
-
-  bool is_default_input_desktop_active() {
-    HDESK hDesk = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
-    if (!hDesk) {
-      return false;
-    }
-
-    bool is_default = false;
-    wchar_t name[256] {};
-    DWORD needed = 0;
-    if (GetUserObjectInformationW(hDesk, UOI_NAME, name, sizeof(name), &needed)) {
-      is_default = (_wcsicmp(name, L"Default") == 0);
-    }
-
-    CloseDesktop(hDesk);
-    return is_default;
   }
 
   // Note: This does NOT append a null terminator
@@ -1588,6 +1613,14 @@ namespace platf {
   }
 
   void enable_mouse_keys() {
+    // Capture threads check every frame, including concurrent streams. Keep the
+    // original snapshot until restoration succeeds instead of saving our own
+    // temporary settings on the next check.
+    const auto lock = std::lock_guard(mouse_keys_mutex);
+    if (enabled_mouse_keys) {
+      return;
+    }
+
     // If there is no mouse connected, enable Mouse Keys to force the cursor to appear
     if (!GetSystemMetrics(SM_MOUSEPRESENT)) {
       BOOST_LOG(info) << "A mouse was not detected. Sunshine will enable Mouse Keys while streaming to force the mouse cursor to appear.";
@@ -1620,7 +1653,7 @@ namespace platf {
     // If the client disconnected without /cancel, Sunshine can leave the app running to allow /resume.
     // In that "paused" state, we must keep feeding the display helper heartbeat to prevent it from
     // autonomously reverting the virtual display configuration.
-    const bool is_paused = (proc::proc.running() > 0);
+    const bool is_paused = proc::proc.current_app_id() > 0;
     if (!is_paused) {
       display_helper_integration::stop_watchdog();
     } else {
@@ -1649,11 +1682,13 @@ namespace platf {
     }
 
     // Restore Mouse Keys back to the previous settings if we turned it on
+    const auto lock = std::lock_guard(mouse_keys_mutex);
     if (enabled_mouse_keys) {
-      enabled_mouse_keys = false;
       if (!SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &previous_mouse_keys_state, 0)) {
         auto winerr = GetLastError();
         BOOST_LOG(warning) << "Unable to restore original state of Mouse Keys: "sv << winerr;
+      } else {
+        enabled_mouse_keys = false;
       }
     }
   }
@@ -1693,11 +1728,11 @@ namespace platf {
   }
 
   int set_env(const std::string &name, const std::string &value) {
-    return _putenv_s(name.c_str(), value.c_str());
+    return services::process_environment().set(name, value);
   }
 
   int unset_env(const std::string &name) {
-    return _putenv_s(name.c_str(), "");
+    return services::process_environment().unset(name);
   }
 
   struct enum_wnd_context_t {
@@ -1809,6 +1844,48 @@ namespace platf {
     return saddr_v6;
   }
 
+  std::uint64_t routed_link_bps(const boost::asio::ip::address &source, const boost::asio::ip::address &target, routed_link_info_t *info) {
+    auto socket_address = [](const boost::asio::ip::address &address) {
+      SOCKADDR_INET result {};
+      if (address.is_v6() && !address.to_v6().is_v4_mapped()) {
+        result.Ipv6 = to_sockaddr(address.to_v6(), 0);
+      } else {
+        const auto ipv4 = address.is_v4() ? address.to_v4() :
+                                          boost::asio::ip::make_address_v4(boost::asio::ip::v4_mapped, address.to_v6());
+        result.Ipv4 = to_sockaddr(ipv4, 0);
+      }
+      return result;
+    };
+    const auto destination = socket_address(target);
+    const auto local = socket_address(source);
+    if (local.si_family != destination.si_family) {
+      return 0;
+    }
+    MIB_IPFORWARD_ROW2 route {};
+    SOCKADDR_INET selected_source {};
+    if (GetBestRoute2(nullptr, 0, source.is_unspecified() ? nullptr : &local,
+                      &destination, 0, &route, &selected_source) != NO_ERROR) {
+      return 0;
+    }
+    MIB_IF_ROW2 interface_row {};
+    interface_row.InterfaceLuid = route.InterfaceLuid;
+    const auto entry_status = GetIfEntry2(&interface_row);
+    if (info) {
+      info->luid = route.InterfaceLuid.Value;
+      if (entry_status == NO_ERROR) {
+        info->alias = to_utf8(interface_row.Alias);
+        info->if_type = interface_row.Type;
+        info->transmit_bps = interface_row.TransmitLinkSpeed;
+      }
+    }
+    if (entry_status != NO_ERROR || interface_row.OperStatus != IfOperStatusUp ||
+        interface_row.TransmitLinkSpeed == std::numeric_limits<std::uint64_t>::max()) {
+      return 0;
+    }
+    // Tunnel and Wi-Fi link rates are not usable estimates of packet throughput.
+    return interface_row.Type == IF_TYPE_ETHERNET_CSMACD ? interface_row.TransmitLinkSpeed : 0;
+  }
+
   // Use UDP segmentation offload if it is supported by the OS. If the NIC is capable, this will use
   // hardware acceleration to reduce CPU usage. Support for USO was introduced in Windows 10 20H1.
   bool send_batch(batched_send_info_t &send_info) {
@@ -1911,7 +1988,28 @@ namespace platf {
 
     // If USO is not supported, this will fail and the caller will fall back to unbatched sends.
     DWORD bytes_sent;
-    return WSASendMsg((SOCKET) send_info.native_socket, &msg, 0, &bytes_sent, nullptr, nullptr) != SOCKET_ERROR;
+    if (WSASendMsg((SOCKET) send_info.native_socket, &msg, 0, &bytes_sent, nullptr, nullptr) != SOCKET_ERROR) {
+      return true;
+    }
+
+    const auto winerr = WSAGetLastError();
+    // A rejected batch otherwise turns into dozens of individual sends with
+    // no explanation at normal log levels. Bound reporting so an unsupported
+    // offload path cannot spend its send budget flooding the log.
+    thread_local std::chrono::steady_clock::time_point next_failure_log {};
+    thread_local std::uint64_t failed_batches = 0;
+    ++failed_batches;
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next_failure_log) {
+      BOOST_LOG(warning) << "WSASendMsg() batch failed: "sv << winerr
+                         << "; packets="sv << send_info.block_count
+                         << "; bytes="sv << send_info.block_count * (send_info.header_size + send_info.payload_size)
+                         << "; failed batches since previous report="sv << failed_batches
+                         << "; falling back to individual sends"sv;
+      failed_batches = 0;
+      next_failure_log = now + 5s;
+    }
+    return false;
   }
 
   bool send(send_info_t &send_info) {
@@ -1987,7 +2085,21 @@ namespace platf {
     DWORD bytes_sent;
     if (WSASendMsg((SOCKET) send_info.native_socket, &msg, 0, &bytes_sent, nullptr, nullptr) == SOCKET_ERROR) {
       auto winerr = WSAGetLastError();
-      BOOST_LOG(warning) << "WSASendMsg() failed: "sv << winerr;
+      // A session stuck in a bad state fails every FEC shard of every frame,
+      // which used to flood the log with thousands of identical lines and
+      // drown out the actual failure. Log the first occurrence, then a
+      // suppressed-count summary at most once per 5 seconds.
+      static std::atomic<std::int64_t> last_log_tick {std::numeric_limits<std::int64_t>::min()};
+      static std::atomic<std::uint64_t> suppressed_count {0};
+      const auto now_tick = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+      auto last = last_log_tick.load(std::memory_order_relaxed);
+      if (now_tick - last >= 5 && last_log_tick.compare_exchange_strong(last, now_tick, std::memory_order_relaxed)) {
+        const auto suppressed = suppressed_count.exchange(0, std::memory_order_relaxed);
+        BOOST_LOG(warning) << "WSASendMsg() failed: "sv << winerr
+                           << (suppressed ? " (" + std::to_string(suppressed) + " similar failures suppressed)" : std::string {});
+      } else {
+        suppressed_count.fetch_add(1, std::memory_order_relaxed);
+      }
       return false;
     }
 
@@ -2165,42 +2277,228 @@ namespace platf {
   }
 
   std::string get_host_name() {
-    WCHAR hostname[256];
-    if (GetHostNameW(hostname, ARRAYSIZE(hostname)) == SOCKET_ERROR) {
-      BOOST_LOG(error) << "GetHostNameW() failed: "sv << WSAGetLastError();
-      return "Apollo"s;
-    }
-    return utf_utils::to_utf8(hostname);
+    services::function_host_name_provider_t provider {[]() -> std::optional<std::string> {
+      WCHAR hostname[256];
+      if (GetHostNameW(hostname, ARRAYSIZE(hostname)) == SOCKET_ERROR) {
+        BOOST_LOG(error) << "GetHostNameW() failed: "sv << WSAGetLastError();
+        return std::nullopt;
+      }
+      return utf_utils::to_utf8(hostname);
+    }};
+    return services::host_name_or(provider, "Apollo");
   }
+
+  namespace {
+    struct enumerated_adapter_t {
+      DXGI_ADAPTER_DESC1 desc {};
+      std::optional<std::string> pnp_id;
+    };
+
+    struct adapter_enumeration_t {
+      std::vector<enumerated_adapter_t> adapters;
+      bool enumeration_complete = true;
+      bool identity_complete = true;
+    };
+
+    std::optional<std::string> query_adapter_pnp_id(const LUID &adapter_luid) {
+      DISPLAYCONFIG_ADAPTER_NAME adapter_name {};
+      adapter_name.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADAPTER_NAME;
+      adapter_name.header.size = sizeof(adapter_name);
+      adapter_name.header.adapterId = adapter_luid;
+      adapter_name.header.id = 0;
+      if (DisplayConfigGetDeviceInfo(&adapter_name.header) != ERROR_SUCCESS ||
+          adapter_name.adapterDevicePath[0] == L'\0' ||
+          std::find(
+            std::begin(adapter_name.adapterDevicePath),
+            std::end(adapter_name.adapterDevicePath),
+            L'\0'
+          ) == std::end(adapter_name.adapterDevicePath)) {
+        return std::nullopt;
+      }
+
+      HDEVINFO device_info_set = SetupDiCreateDeviceInfoList(nullptr, nullptr);
+      if (device_info_set == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
+      }
+      const auto destroy_device_info_set = util::fail_guard([&]() {
+        SetupDiDestroyDeviceInfoList(device_info_set);
+      });
+
+      SP_DEVICE_INTERFACE_DATA interface_data {};
+      interface_data.cbSize = sizeof(interface_data);
+      if (!SetupDiOpenDeviceInterfaceW(
+            device_info_set,
+            adapter_name.adapterDevicePath,
+            0,
+            &interface_data
+          )) {
+        return std::nullopt;
+      }
+
+      DWORD detail_size = 0;
+      SetLastError(ERROR_SUCCESS);
+      if (SetupDiGetDeviceInterfaceDetailW(
+            device_info_set,
+            &interface_data,
+            nullptr,
+            0,
+            &detail_size,
+            nullptr
+          ) ||
+          GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+          detail_size < offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath) + sizeof(wchar_t)) {
+        return std::nullopt;
+      }
+
+      // SetupAPI requires an aligned variable-sized detail structure. Leave
+      // enough headroom for std::align() instead of relying on byte-vector
+      // element alignment.
+      std::vector<std::byte> detail_storage(
+        static_cast<std::size_t>(detail_size) +
+        alignof(SP_DEVICE_INTERFACE_DETAIL_DATA_W) - 1
+      );
+      void *detail_pointer = detail_storage.data();
+      std::size_t detail_space = detail_storage.size();
+      if (!std::align(
+            alignof(SP_DEVICE_INTERFACE_DETAIL_DATA_W),
+            static_cast<std::size_t>(detail_size),
+            detail_pointer,
+            detail_space
+          )) {
+        return std::nullopt;
+      }
+
+      auto *detail = static_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W *>(detail_pointer);
+      detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
+      SP_DEVINFO_DATA device_info {};
+      device_info.cbSize = sizeof(device_info);
+      if (!SetupDiGetDeviceInterfaceDetailW(
+            device_info_set,
+            &interface_data,
+            detail,
+            detail_size,
+            nullptr,
+            &device_info
+          )) {
+        return std::nullopt;
+      }
+
+      const auto path_character_count =
+        (static_cast<std::size_t>(detail_size) -
+         offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath)) /
+        sizeof(wchar_t);
+      if (std::find(
+            detail->DevicePath,
+            detail->DevicePath + path_character_count,
+            L'\0'
+          ) == detail->DevicePath + path_character_count) {
+        return std::nullopt;
+      }
+
+      DWORD instance_id_size = 0;
+      SetLastError(ERROR_SUCCESS);
+      if (SetupDiGetDeviceInstanceIdW(
+            device_info_set,
+            &device_info,
+            nullptr,
+            0,
+            &instance_id_size
+          ) ||
+          GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+          instance_id_size < 2) {
+        return std::nullopt;
+      }
+
+      std::vector<wchar_t> instance_id(instance_id_size, L'\0');
+      if (!SetupDiGetDeviceInstanceIdW(
+            device_info_set,
+            &device_info,
+            instance_id.data(),
+            instance_id_size,
+            nullptr
+          )) {
+        return std::nullopt;
+      }
+
+      const auto terminator = std::find(instance_id.begin(), instance_id.end(), L'\0');
+      if (terminator == instance_id.begin() || terminator == instance_id.end()) {
+        return std::nullopt;
+      }
+
+      auto result = to_utf8(std::wstring(instance_id.begin(), terminator));
+      if (result.empty()) {
+        return std::nullopt;
+      }
+      return result;
+    }
+
+    adapter_enumeration_t enumerate_dxgi_adapters() {
+      adapter_enumeration_t result;
+
+      Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+      if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())))) {
+        result.enumeration_complete = false;
+        result.identity_complete = false;
+        return result;
+      }
+
+      for (UINT index = 0;; ++index) {
+        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+        const HRESULT enum_result = factory->EnumAdapters1(index, adapter.GetAddressOf());
+        if (enum_result == DXGI_ERROR_NOT_FOUND) {
+          break;
+        }
+        if (FAILED(enum_result) || !adapter) {
+          result.enumeration_complete = false;
+          result.identity_complete = false;
+          break;
+        }
+
+        DXGI_ADAPTER_DESC1 desc {};
+        if (FAILED(adapter->GetDesc1(&desc))) {
+          result.enumeration_complete = false;
+          result.identity_complete = false;
+          continue;
+        }
+        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+          continue;
+        }
+
+        auto pnp_id = query_adapter_pnp_id(desc.AdapterLuid);
+        if (!pnp_id) {
+          result.identity_complete = false;
+        }
+        result.adapters.push_back(enumerated_adapter_t {
+          .desc = desc,
+          .pnp_id = std::move(pnp_id),
+        });
+      }
+
+      return result;
+    }
+
+    adapter_resolution_t resolved_adapter(const enumerated_adapter_t &adapter) {
+      return adapter_resolution_t {
+        .status = adapter_resolution_status_e::resolved,
+        .luid = adapter.desc.AdapterLuid,
+        .description = to_utf8(adapter.desc.Description),
+        .pnp_id = adapter.pnp_id.value_or(std::string {}),
+        .dedicated_video_memory = adapter.desc.DedicatedVideoMemory,
+        .shared_system_memory = adapter.desc.SharedSystemMemory,
+      };
+    }
+  }  // namespace
 
   std::vector<gpu_info_t> enumerate_gpus() {
     std::vector<gpu_info_t> result;
 
-    Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
-    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())))) {
-      return result;
-    }
-
-    for (UINT index = 0;; ++index) {
-      Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
-      if (factory->EnumAdapters1(index, adapter.GetAddressOf()) == DXGI_ERROR_NOT_FOUND) {
-        break;
-      }
-
-      DXGI_ADAPTER_DESC1 desc {};
-      if (FAILED(adapter->GetDesc1(&desc))) {
-        continue;
-      }
-
-      if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
-        continue;
-      }
-
+    for (const auto &adapter : enumerate_dxgi_adapters().adapters) {
       gpu_info_t info {};
-      info.description = to_utf8(std::wstring {desc.Description});
-      info.vendor_id = desc.VendorId;
-      info.device_id = desc.DeviceId;
-      info.dedicated_video_memory = desc.DedicatedVideoMemory;
+      info.description = to_utf8(adapter.desc.Description);
+      info.pnp_id = adapter.pnp_id.value_or(std::string {});
+      info.vendor_id = adapter.desc.VendorId;
+      info.device_id = adapter.desc.DeviceId;
+      info.dedicated_video_memory = adapter.desc.DedicatedVideoMemory;
       result.emplace_back(std::move(info));
     }
 
@@ -2215,6 +2513,339 @@ namespace platf {
       }
     }
     return false;
+  }
+
+  adapter_resolution_t resolve_adapter(
+    const std::string_view adapter_name,
+    const std::string_view adapter_pnp_id
+  ) {
+    if (adapter_name.empty() && adapter_pnp_id.empty()) {
+      return adapter_resolution_t {
+        .status = adapter_resolution_status_e::automatic,
+      };
+    }
+    const auto enumeration = enumerate_dxgi_adapters();
+    if (adapter_pnp_id.empty()) {
+      const auto wanted_name = from_utf8(std::string(adapter_name));
+      for (const auto &adapter : enumeration.adapters) {
+        if (std::wstring_view(adapter.desc.Description) == wanted_name) {
+          return resolved_adapter(adapter);
+        }
+      }
+      return adapter_resolution_t {
+        .status = enumeration.enumeration_complete ?
+                    adapter_resolution_status_e::not_found :
+                    adapter_resolution_status_e::unknown,
+      };
+    }
+
+    const enumerated_adapter_t *match = nullptr;
+    std::size_t match_count = 0;
+    bool identity_unknown =
+      !enumeration.enumeration_complete ||
+      !enumeration.identity_complete;
+    for (const auto &adapter : enumeration.adapters) {
+      if (!adapter.pnp_id) {
+        identity_unknown = true;
+        continue;
+      }
+      if (!boost::iequals(*adapter.pnp_id, adapter_pnp_id)) {
+        continue;
+      }
+      ++match_count;
+      if (!match) {
+        match = &adapter;
+      }
+    }
+
+    if (match_count > 1) {
+      return adapter_resolution_t {
+        .status = adapter_resolution_status_e::ambiguous,
+      };
+    }
+    if (match_count == 1 && match) {
+      // A unique exact match is conclusive even if another adapter failed an
+      // unrelated identity query or enumeration ended incompletely.
+      return resolved_adapter(*match);
+    }
+    if (identity_unknown) {
+      return adapter_resolution_t {
+        .status = adapter_resolution_status_e::unknown,
+      };
+    }
+    return adapter_resolution_t {
+      .status = adapter_resolution_status_e::not_found,
+    };
+  }
+
+  adapter_resolution_t resolve_output_adapter(const std::string_view output_name) {
+    if (output_name.empty()) {
+      return adapter_resolution_t {
+        .status = adapter_resolution_status_e::not_found,
+      };
+    }
+
+    Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())))) {
+      return adapter_resolution_t {
+        .status = adapter_resolution_status_e::unknown,
+      };
+    }
+
+    const auto wanted_output = from_utf8(std::string(output_name));
+    bool enumeration_incomplete = false;
+    for (UINT adapter_index = 0;; ++adapter_index) {
+      Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+      const auto adapter_status = factory->EnumAdapters1(adapter_index, adapter.GetAddressOf());
+      if (adapter_status == DXGI_ERROR_NOT_FOUND) {
+        break;
+      }
+      if (FAILED(adapter_status) || !adapter) {
+        enumeration_incomplete = true;
+        break;
+      }
+
+      DXGI_ADAPTER_DESC1 adapter_desc {};
+      if (FAILED(adapter->GetDesc1(&adapter_desc))) {
+        enumeration_incomplete = true;
+        continue;
+      }
+      if (adapter_desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+        continue;
+      }
+
+      for (UINT output_index = 0;; ++output_index) {
+        Microsoft::WRL::ComPtr<IDXGIOutput> output;
+        const auto output_status = adapter->EnumOutputs(output_index, output.GetAddressOf());
+        if (output_status == DXGI_ERROR_NOT_FOUND) {
+          break;
+        }
+        if (FAILED(output_status) || !output) {
+          enumeration_incomplete = true;
+          break;
+        }
+
+        DXGI_OUTPUT_DESC output_desc {};
+        if (FAILED(output->GetDesc(&output_desc))) {
+          enumeration_incomplete = true;
+          continue;
+        }
+        if (_wcsicmp(output_desc.DeviceName, wanted_output.c_str()) != 0) {
+          continue;
+        }
+
+        return adapter_resolution_t {
+          .status = adapter_resolution_status_e::resolved,
+          .luid = adapter_desc.AdapterLuid,
+          .description = to_utf8(adapter_desc.Description),
+          .pnp_id = query_adapter_pnp_id(adapter_desc.AdapterLuid).value_or(std::string {}),
+          .dedicated_video_memory = adapter_desc.DedicatedVideoMemory,
+          .shared_system_memory = adapter_desc.SharedSystemMemory,
+        };
+      }
+    }
+
+    return adapter_resolution_t {
+      .status = enumeration_incomplete ?
+                  adapter_resolution_status_e::unknown :
+                  adapter_resolution_status_e::not_found,
+    };
+  }
+
+  adapter_resolution_t resolve_preferred_render_adapter(
+    const std::string_view adapter_name,
+    const std::string_view adapter_pnp_id
+  ) {
+    if (!adapter_name.empty() || !adapter_pnp_id.empty()) {
+      return resolve_adapter(adapter_name, adapter_pnp_id);
+    }
+
+    const auto enumeration = enumerate_dxgi_adapters();
+    if (!enumeration.enumeration_complete) {
+      return adapter_resolution_t {
+        .status = adapter_resolution_status_e::unknown,
+      };
+    }
+
+    const enumerated_adapter_t *best = nullptr;
+    for (const auto &adapter : enumeration.adapters) {
+      if (!best ||
+          adapter.desc.DedicatedVideoMemory > best->desc.DedicatedVideoMemory ||
+          (adapter.desc.DedicatedVideoMemory == best->desc.DedicatedVideoMemory &&
+           adapter.desc.SharedSystemMemory > best->desc.SharedSystemMemory)) {
+        best = &adapter;
+      }
+    }
+    if (!best) {
+      return adapter_resolution_t {
+        .status = adapter_resolution_status_e::not_found,
+      };
+    }
+    return resolved_adapter(*best);
+  }
+
+  std::string_view adapter_resolution_status_name(const adapter_resolution_status_e status) {
+    switch (status) {
+      case adapter_resolution_status_e::automatic:
+        return "automatic";
+      case adapter_resolution_status_e::resolved:
+        return "resolved";
+      case adapter_resolution_status_e::not_found:
+        return "not-found";
+      case adapter_resolution_status_e::unknown:
+        return "unknown";
+      case adapter_resolution_status_e::ambiguous:
+        return "ambiguous";
+    }
+    return "unknown";
+  }
+
+  bool adapter_luid_equal(const LUID &lhs, const LUID &rhs) {
+    return lhs.LowPart == rhs.LowPart && lhs.HighPart == rhs.HighPart;
+  }
+
+  adapter_output_match_e adapter_drives_any_output(
+    const LUID &adapter_luid,
+    const std::vector<std::string> &output_names
+  ) {
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+    LONG query_result = ERROR_INSUFFICIENT_BUFFER;
+    constexpr int max_query_attempts = 3;
+    for (int attempt = 0; attempt < max_query_attempts && query_result == ERROR_INSUFFICIENT_BUFFER; ++attempt) {
+      UINT32 path_count = 0;
+      UINT32 mode_count = 0;
+      if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count) != ERROR_SUCCESS) {
+        return adapter_output_match_e::unknown;
+      }
+
+      path_count = std::max<UINT32>(path_count, 1);
+      mode_count = std::max<UINT32>(mode_count, 1);
+      paths.resize(path_count);
+      modes.resize(mode_count);
+      query_result = QueryDisplayConfig(
+        QDC_ONLY_ACTIVE_PATHS,
+        &path_count,
+        paths.data(),
+        &mode_count,
+        modes.data(),
+        nullptr
+      );
+      if (query_result == ERROR_SUCCESS) {
+        paths.resize(path_count);
+      }
+    }
+    if (query_result != ERROR_SUCCESS) {
+      return adapter_output_match_e::unknown;
+    }
+
+    bool relevant_name_query_failed = false;
+    for (const auto &path : paths) {
+      // targetInfo is the physical output owner. sourceInfo is used only to
+      // recover the GDI display name exposed by display enumeration.
+      if (!adapter_luid_equal(path.targetInfo.adapterId, adapter_luid)) {
+        continue;
+      }
+      if (output_names.empty()) {
+        return adapter_output_match_e::match;
+      }
+
+      DISPLAYCONFIG_SOURCE_DEVICE_NAME source_name {};
+      source_name.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+      source_name.header.size = sizeof(source_name);
+      source_name.header.adapterId = path.sourceInfo.adapterId;
+      source_name.header.id = path.sourceInfo.id;
+      if (DisplayConfigGetDeviceInfo(&source_name.header) != ERROR_SUCCESS ||
+          source_name.viewGdiDeviceName[0] == L'\0' ||
+          std::find(
+            std::begin(source_name.viewGdiDeviceName),
+            std::end(source_name.viewGdiDeviceName),
+            L'\0'
+          ) == std::end(source_name.viewGdiDeviceName)) {
+        relevant_name_query_failed = true;
+        continue;
+      }
+
+      const auto device_name_end = std::find(
+        std::begin(source_name.viewGdiDeviceName),
+        std::end(source_name.viewGdiDeviceName),
+        L'\0'
+      );
+      const auto device_name = to_utf8(std::wstring(
+        std::begin(source_name.viewGdiDeviceName),
+        device_name_end
+      ));
+      if (device_name.empty()) {
+        relevant_name_query_failed = true;
+        continue;
+      }
+      if (std::ranges::any_of(output_names, [&](const auto &candidate) {
+            return boost::iequals(candidate, device_name);
+          })) {
+        return adapter_output_match_e::match;
+      }
+    }
+
+    return relevant_name_query_failed ?
+             adapter_output_match_e::unknown :
+             adapter_output_match_e::no_match;
+  }
+
+  bool configured_capture_adapter_has_output(const std::vector<std::string> &display_names) {
+    if (display_names.empty()) {
+      return false;
+    }
+    if (config::video.adapter_name.empty()) {
+      return true;
+    }
+
+    // These predicates are polled from several places. Log only when their
+    // adapter-scoping result changes.
+    static std::atomic<int> last_logged_state {-1};
+    const auto log_once = [&](const int state, auto &&emit) {
+      if (last_logged_state.exchange(state) != state) {
+        emit();
+      }
+    };
+
+    const auto adapter = resolve_adapter(
+      config::video.adapter_name,
+      config::video.adapter_pnp_id
+    );
+    if (!adapter) {
+      log_once(2, [&]() {
+        BOOST_LOG(warning)
+          << "Configured capture adapter identity could not be resolved (status="
+          << adapter_resolution_status_name(adapter.status)
+          << "); treating active physical displays as present rather than creating a virtual display on an arbitrary GPU.";
+      });
+      return true;
+    }
+
+    const auto output_match = adapter_drives_any_output(*adapter.luid, display_names);
+    if (output_match == adapter_output_match_e::unknown) {
+      log_once(3, [&]() {
+        BOOST_LOG(warning)
+          << "Could not determine whether configured capture adapter '"
+          << adapter.description
+          << "' drives an active physical display; preserving the physical-display result.";
+      });
+      return true;
+    }
+    if (output_match == adapter_output_match_e::no_match) {
+      log_once(0, [&]() {
+        BOOST_LOG(info)
+          << "Active physical display(s) belong to a different GPU than configured capture adapter '"
+          << adapter.description
+          << "'. Treating this host as displayless so virtual-display creation can submit the configured render-adapter request.";
+      });
+      return false;
+    }
+
+    log_once(1, [&]() {
+      BOOST_LOG(debug) << "Configured capture adapter '" << adapter.description << "' drives an active physical display.";
+    });
+    return true;
   }
 
   windows_version_info_t query_windows_version() {
@@ -2481,4 +3112,3 @@ static int setClipboardData(const std::wstring &utf16Str) {
 
   return 0;
 }
-

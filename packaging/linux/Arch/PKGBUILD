@@ -1,4 +1,4 @@
-# Edit on github: https://github.com/LizardByte/Sunshine/blob/master/packaging/linux/Arch/PKGBUILD
+# Edit on GitHub: https://github.com/Nonary/Vibepollo/blob/master/packaging/linux/Arch/PKGBUILD
 # Reference: https://wiki.archlinux.org/title/PKGBUILD
 
 ## options
@@ -6,18 +6,18 @@
 
 : "${_commit:=@GITHUB_COMMIT@}"
 
-pkgname='sunshine'
-pkgver=@PROJECT_VERSION@@SUNSHINE_SUB_VERSION@
+pkgname='vibepollo'
+pkgver=@SUNSHINE_ARCH_PKGVER@@SUNSHINE_SUB_VERSION@
 pkgrel=1
 pkgdesc="@PROJECT_DESCRIPTION@"
 arch=('x86_64' 'aarch64')
 url=@PROJECT_HOMEPAGE_URL@
 license=('GPL-3.0-only')
-install=sunshine.install
+install=vibepollo.install
 
-# this variable remains for future cases where we need an older version of gcc for cuda compatibility
-_gcc_version=15
-_versioned_gcc=false  # set to true if we need a versioned gcc, e.g. gcc14
+# CUDA 12.9 supports GCC through 14 and retains GTX 10-series support.
+_gcc_version=14
+_versioned_gcc=true
 
 _gcc_dep_suffix=""
 _gcc_env_suffix=""
@@ -29,10 +29,15 @@ fi
 depends=(
   'avahi'
   'curl'
+  'dkms'
+  'iproute2'
+  'jq'
+  'kmod'
   'libayatana-appindicator'
   'libcap'
   'libdrm'
   'libevdev'
+  'libkscreen'
   'libmfx'
   'libnotify'
   'libpipewire'
@@ -43,13 +48,19 @@ depends=(
   'libxfixes'
   'libxrandr'
   'libxtst'
+  'make'
   'miniupnpc'
+  'mokutil>=0.7.2'
   'numactl'
   'openssl'
   'opus'
+  'python>=3.9'
+  'socat'
   'udev'
+  'util-linux'
   'vulkan-icd-loader'
-  'which'
+  'wayland-utils'
+  'xorg-xdpyinfo'
 )
 
 makedepends=(
@@ -60,19 +71,27 @@ makedepends=(
   "gcc${_gcc_dep_suffix}"
   'git'
   'make'
+  'ninja'
   'nodejs'
   'npm'
   'python-jinja'  # required by the glad OpenGL/EGL loader generator
-  'python-setuptools'  # required for glad OpenGL/EGL loader generated, v2.0.0
   'shaderc'
 )
 
 optdepends=(
+  'intel-media-driver: Intel GPU encoding support'
   'libva-mesa-driver: AMD GPU encoding support'
+  'linux-cachyos-headers: build the virtual-display module for the standard CachyOS kernel'
+  'linux-cachyos-lts-headers: build the virtual-display module for the CachyOS LTS kernel'
+  'linux-headers: build the virtual-display module for the standard Arch kernel'
+  'linux-lts-headers: build the virtual-display module for the Arch LTS kernel'
+  'linux-zen-headers: build the virtual-display module for the Arch zen kernel'
+  'plasma-workspace: KDE Plasma Wayland desktop that the machine host streams'
+  'shim-signed: provide a signed shim boot chain for MOK trust on strict Secure Boot systems'
 )
 
-provides=()
-conflicts=()
+provides=('sunshine')
+conflicts=('sunshine')
 
 source=("$pkgname::git+@GITHUB_CLONE_URL@#commit=${_commit}")
 sha256sums=('SKIP')
@@ -83,8 +102,19 @@ if [[ "${_use_cuda::1}" == "d" ]] && pacman -Qi cuda &> /dev/null; then
 fi
 
 if [[ "${_use_cuda::1}" == "t" ]]; then
+  # The pinned CUDA installer requires the libxml2.so.2 ABI.
+  makedepends+=('libxml2-legacy')
+  # Build-only toolkit: never follow Arch's rolling CUDA package (13+ drops Pascal).
+  source_x86_64=("cuda-x86_64.run::https://developer.download.nvidia.com/compute/cuda/12.9.1/local_installers/cuda_12.9.1_575.57.08_linux.run")
+  sha256sums_x86_64=('0f6d806ddd87230d2adbe8a6006a9d20144fdbda9de2d6acc677daa5d036417a')
+  source_aarch64=("cuda-aarch64.run::https://developer.download.nvidia.com/compute/cuda/12.9.1/local_installers/cuda_12.9.1_575.57.08_linux_sbsa.run")
+  sha256sums_aarch64=('64f47ab791a76b6889702425e0755385f5fa216c5a9f061875c7deed5f08cdb6')
+  noextract=('cuda-x86_64.run' 'cuda-aarch64.run')
+  # NVENC and NvFBC are loaded at runtime from the driver's libnvidia-encode /
+  # libnvidia-fbc, so the toolkit is a build-time need only.
   optdepends+=(
-    'cuda: Nvidia GPU encoding support'
+    'nvidia-utils: Nvidia GPU encoding (NVENC) and pre-login streaming'
+    'nvidia-modprobe: initialize Nvidia devices for pre-login streaming'
   )
 fi
 
@@ -104,6 +134,13 @@ fi
 prepare() {
     cd "$pkgname"
     git submodule update --recursive --init
+    if [[ "${_use_cuda::1}" == "t" ]]; then
+      sh "${srcdir}/cuda-${CARCH}.run" --silent --toolkit --override \
+        --toolkitpath="${srcdir}/cuda" --no-opengl-libs --no-man-page --no-drm
+      # Match CUDA 12.9 headers to Arch's glibc 2.41+ declarations.
+      patch -p2 --forward --directory="${srcdir}/cuda" \
+        < "packaging/linux/patches/${CARCH}/cuda-12-math_functions.patch"
+    fi
 }
 
 build() {
@@ -122,50 +159,52 @@ build() {
     local _cmake_options=(
       -S "$pkgname"
       -B build
+      -G Ninja
       -Wno-dev
       -D BUILD_DOCS=OFF
       -D BUILD_WERROR=ON
       -D CMAKE_INSTALL_PREFIX=/usr
-      -D SUNSHINE_EXECUTABLE_PATH=/usr/bin/sunshine
-      -D SUNSHINE_ASSETS_DIR="share/sunshine"
-      -D SUNSHINE_PUBLISHER_NAME='LizardByte'
-      -D SUNSHINE_PUBLISHER_WEBSITE='https://app.lizardbyte.dev'
-      -D SUNSHINE_PUBLISHER_ISSUE_URL='https://app.lizardbyte.dev/support'
+      -D SUNSHINE_EXECUTABLE_PATH=/usr/bin/vibepollo
+      -D SUNSHINE_ASSETS_DIR="share/vibepollo"
+      -D SUNSHINE_PUBLISHER_NAME='Nonary'
+      -D SUNSHINE_PUBLISHER_WEBSITE='https://github.com/Nonary/Vibepollo'
+      -D SUNSHINE_PUBLISHER_ISSUE_URL='https://github.com/Nonary/Vibepollo/issues'
     )
 
     if [[ "${_use_cuda::1}" != "t" ]]; then
       _cmake_options+=(-DSUNSHINE_ENABLE_CUDA=OFF -DCUDA_FAIL_ON_MISSING=OFF)
     else
-      # If cuda has just been installed, its variables will not be available in the environment
-      # therefore, set them manually to the expected values on Arch Linux
-      if [ -z "${CUDA_PATH:-}" ] && pacman -Qi cuda &> /dev/null; then
-        local _cuda_gcc_version
-        _cuda_gcc_version="$(LC_ALL=C pacman -Si cuda | grep -Pom1 '^Depends On\s*:.*\bgcc\K[0-9]+\b' || true)"
-
-        export CUDA_PATH=/opt/cuda
-        if [ -n "$_cuda_gcc_version" ]; then
-          export NVCC_CCBIN="/usr/bin/g++-${_cuda_gcc_version}"
-        else
-          export NVCC_CCBIN="/usr/bin/g++"
-        fi
-      fi
+      _cmake_options+=(
+        -DSUNSHINE_ENABLE_CUDA=ON
+        -DSUNSHINE_REQUIRE_CUDA_PASCAL=ON
+        "-DCMAKE_CUDA_COMPILER=${srcdir}/cuda/bin/nvcc"
+        "-DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++${_gcc_env_suffix}"
+      )
     fi
 
-    _cmake_options+=(-DBUILD_TESTS=OFF)
+    _cmake_options+=(-DBUILD_TESTS="${_build_tests:-ON}")
 
     cmake "${_cmake_options[@]}"
 
-    appstreamcli validate "build/dev.lizardbyte.app.Sunshine.metainfo.xml"
-    appstream-util validate "build/dev.lizardbyte.app.Sunshine.metainfo.xml"
-    desktop-file-validate "build/dev.lizardbyte.app.Sunshine.desktop"
-    desktop-file-validate "build/dev.lizardbyte.app.Sunshine.terminal.desktop"
+    appstreamcli validate "build/io.github.Nonary.vibepollo.metainfo.xml"
+    appstream-util validate "build/io.github.Nonary.vibepollo.metainfo.xml"
+    desktop-file-validate "build/io.github.Nonary.vibepollo.desktop"
+    desktop-file-validate "build/io.github.Nonary.vibepollo.terminal.desktop"
 
     cmake --build build
 }
 
 check() {
     cd "${srcdir}/build"
-    ./sunshine --version
+    ./vibepollo --version
+    if [[ "${_use_cuda::1}" == "t" ]]; then
+      # Verify the final binary actually contains native Pascal device code.
+      "${srcdir}/cuda/bin/cuobjdump" --list-elf ./vibepollo > cuda-device-code.txt
+      grep -q 'sm_61\.' cuda-device-code.txt
+    fi
+    if [[ "${_build_tests:-ON}" != "OFF" ]]; then
+      ctest --test-dir . --output-on-failure -j2
+    fi
 }
 
 package() {

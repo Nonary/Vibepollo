@@ -93,9 +93,7 @@ export function emptyLosslessProfileState(): Record<LosslessProfileKey, Lossless
 }
 
 export function normalizeFrameGenerationProvider(value: unknown): FrameGenerationProvider {
-  if (typeof value !== 'string') {
-    return 'lossless-scaling';
-  }
+  if (typeof value !== 'string') return 'lossless-scaling';
   const compact = value
     .toLowerCase()
     .split('')
@@ -104,127 +102,84 @@ export function normalizeFrameGenerationProvider(value: unknown): FrameGeneratio
   if (compact === 'nvidiasmoothmotion' || compact === 'smoothmotion' || compact === 'nvidia') {
     return 'nvidia-smooth-motion';
   }
-  if (compact === 'gameprovided' || compact === 'game') {
-    return 'game-provided';
-  }
-  if (compact === 'losslessscaling' || compact === 'lossless') {
-    return 'lossless-scaling';
-  }
+  if (compact === 'gameprovided' || compact === 'game') return 'game-provided';
+  if (compact === 'losslessscaling' || compact === 'lossless') return 'lossless-scaling';
   return 'lossless-scaling';
 }
 
 export function parseFrameGenerationMode(value: unknown): FrameGenerationMode | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
+  if (typeof value !== 'string') return null;
   const compact = value
     .toLowerCase()
     .split('')
     .filter((ch) => /[a-z0-9]/.test(ch))
     .join('');
-  if (compact === 'off' || compact === 'none') {
-    return 'off';
-  }
+  if (compact === 'off' || compact === 'none' || compact === 'disabled') return 'off';
   if (compact === 'nvidiasmoothmotion' || compact === 'smoothmotion' || compact === 'nvidia') {
     return 'nvidia-smooth-motion';
   }
-  if (compact === 'gameprovided' || compact === 'game') {
-    return 'game-provided';
-  }
-  if (compact === 'losslessscaling' || compact === 'lossless') {
-    return 'lossless-scaling';
-  }
+  if (compact === 'gameprovided' || compact === 'game') return 'game-provided';
+  if (compact === 'losslessscaling' || compact === 'lossless') return 'lossless-scaling';
   return null;
 }
 
 export function parseNumeric(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (trimmed.length === 0) return null;
-    const parsed = Number(trimmed);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-  return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export function clampFlow(value: number | null): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  const rounded = Math.round(value);
-  return Math.min(LOSSLESS_FLOW_MAX, Math.max(LOSSLESS_FLOW_MIN, rounded));
+  return Math.min(LOSSLESS_FLOW_MAX, Math.max(LOSSLESS_FLOW_MIN, Math.round(value)));
 }
 
 export function clampResolution(value: number | null): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  const rounded = Math.round(value);
-  return Math.min(LOSSLESS_RESOLUTION_MAX, Math.max(LOSSLESS_RESOLUTION_MIN, rounded));
+  return Math.min(LOSSLESS_RESOLUTION_MAX, Math.max(LOSSLESS_RESOLUTION_MIN, Math.round(value)));
 }
 
 export function clampSharpness(value: number | null): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  const rounded = Math.round(value);
-  return Math.min(LOSSLESS_SHARPNESS_MAX, Math.max(LOSSLESS_SHARPNESS_MIN, rounded));
+  return Math.min(LOSSLESS_SHARPNESS_MAX, Math.max(LOSSLESS_SHARPNESS_MIN, Math.round(value)));
 }
 
 export function defaultRtssFromTarget(target: number | null): number | null {
-  if (typeof target !== 'number' || !Number.isFinite(target) || target <= 0) {
-    return null;
-  }
+  if (typeof target !== 'number' || !Number.isFinite(target) || target <= 0) return null;
   return Math.min(360, Math.max(1, Math.round(target / 2)));
 }
 
 export function parseLosslessProfileKey(value: unknown): LosslessProfileKey {
-  if (typeof value === 'string') {
-    const normalized = value.toLowerCase();
-    if (normalized === 'custom') {
-      return 'custom';
-    }
-    if (normalized === 'recommended') {
-      return 'recommended';
-    }
-  }
+  if (typeof value === 'string' && value.toLowerCase() === 'custom') return 'custom';
   return 'recommended';
 }
 
 export function parseLosslessOverrides(input: unknown): LosslessProfileOverrides {
   const overrides = emptyLosslessOverrides();
-  if (!input || typeof input !== 'object') {
-    return overrides;
-  }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return overrides;
   const source = input as Record<string, unknown>;
   if (typeof source['performance-mode'] === 'boolean') {
-    overrides.performanceMode = source['performance-mode'] as boolean;
+    overrides.performanceMode = source['performance-mode'];
   }
-  const rawFlow = clampFlow(parseNumeric(source['flow-scale']));
-  if (rawFlow !== null) {
-    overrides.flowScale = rawFlow;
+  const flow = clampFlow(parseNumeric(source['flow-scale']));
+  if (flow !== null) overrides.flowScale = flow;
+  const resolution = clampResolution(parseNumeric(source['resolution-scale']));
+  if (resolution !== null) overrides.resolutionScale = resolution;
+  const mode =
+    typeof source['scaling-type'] === 'string' ? source['scaling-type'].toLowerCase() : '';
+  if (LOSSLESS_SCALING_OPTIONS.some((option) => option.value === mode)) {
+    overrides.scalingMode = mode as LosslessScalingMode;
   }
-  const rawResolution = clampResolution(parseNumeric(source['resolution-scale']));
-  if (rawResolution !== null) {
-    overrides.resolutionScale = rawResolution;
+  const sharpening = clampSharpness(parseNumeric(source.sharpening));
+  if (sharpening !== null) overrides.sharpening = sharpening;
+  const animeSize =
+    typeof source['anime4k-size'] === 'string' ? source['anime4k-size'].toUpperCase() : '';
+  if (LOSSLESS_ANIME_SIZES.some((option) => option.value === animeSize)) {
+    overrides.anime4kSize = animeSize as Anime4kSize;
   }
-  const modeRaw = typeof source['scaling-type'] === 'string' ? source['scaling-type'] : null;
-  if (modeRaw) {
-    const normalized = modeRaw.toLowerCase() as LosslessScalingMode;
-    if (LOSSLESS_SCALING_OPTIONS.some((o) => o.value === normalized)) {
-      overrides.scalingMode = normalized;
-    }
-  }
-  const rawSharpness = clampSharpness(parseNumeric(source['sharpening']));
-  if (rawSharpness !== null) {
-    overrides.sharpening = rawSharpness;
-  }
-  const animeSizeRaw =
-    typeof source['anime4k-size'] === 'string' ? source['anime4k-size'].toUpperCase() : null;
-  if (animeSizeRaw && LOSSLESS_ANIME_SIZES.some((o) => o.value === animeSizeRaw)) {
-    overrides.anime4kSize = animeSizeRaw as Anime4kSize;
-  }
-  if (typeof source['anime4k-vrs'] === 'boolean') {
-    overrides.anime4kVrs = source['anime4k-vrs'] as boolean;
-  }
+  if (typeof source['anime4k-vrs'] === 'boolean') overrides.anime4kVrs = source['anime4k-vrs'];
   return overrides;
 }

@@ -5,13 +5,17 @@
 #pragma once
 
 // standard includes
+#include <algorithm>
 #include <bitset>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <thread>
 
 // lib includes
 #include <boost/core/noncopyable.hpp>
@@ -22,6 +26,7 @@
 // local includes
 #include "src/boost_process_shim.h"
 #include "src/config.h"
+#include "src/host_stats_types.h"
 #include "src/logging.h"
 #include "src/thread_safe.h"
 #include "src/utility.h"
@@ -54,6 +59,13 @@ namespace amf {
 
 namespace platf {
   class display_t;
+
+  struct adapter_id_t {
+    std::int32_t high_part = 0;
+    std::uint32_t low_part = 0;
+
+    bool operator==(const adapter_id_t &) const = default;
+  };
 
   // Limited by bits in activeGamepadMask
   constexpr auto MAX_GAMEPADS = 16;
@@ -92,6 +104,7 @@ namespace platf {
     set_motion_event_state,  ///< Set motion event state
     set_rgb_led,  ///< Set RGB LED
     set_adaptive_triggers,  ///< Set adaptive triggers
+    haptics_pcm,  ///< 5 ms of 48 kHz S16LE stereo actuator samples
   };
 
   struct gamepad_feedback_msg_t {
@@ -140,6 +153,10 @@ namespace platf {
     std::uint16_t id;
 
     union {
+      struct {
+        std::uint32_t sequence;
+        std::array<std::uint8_t, 960> samples;
+      } haptics;
       struct {
         std::uint16_t lowfreq;
         std::uint16_t highfreq;
@@ -217,6 +234,7 @@ namespace platf {
     dxgi,  ///< DXGI
     cuda,  ///< CUDA
     videotoolbox,  ///< VideoToolbox
+    vulkan,  ///< Vulkan
     unknown  ///< Unknown
   };
 
@@ -463,6 +481,10 @@ namespace platf {
   struct nvenc_encode_device_t: encode_device_t {
     virtual bool init_encoder(const video::config_t &client_config, const video::sunshine_colorspace_t &colorspace) = 0;
 
+    virtual bool prepare_to_destroy() {
+      return true;
+    }
+
     nvenc::nvenc_base *nvenc = nullptr;
   };
 
@@ -551,6 +573,43 @@ namespace platf {
 
     virtual int dummy_img(img_t *img) = 0;
 
+    /**
+     * @brief Produce encoder-compatible black frames without opening a capture target.
+     * @details Remote Input needs a protocol video stream on every platform, but the
+     *          capture lifetime and pacing are platform-independent. Subclasses only
+     *          provide their native image allocation and dummy-image initialization.
+     */
+    capture_e capture_synthetic_black(
+      const push_captured_image_cb_t &push_captured_image_cb,
+      const pull_free_image_cb_t &pull_free_image_cb,
+      int frame_rate
+    ) {
+      const auto cadence = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::seconds {1}) /
+                           std::max(1, frame_rate);
+
+      for (;;) {
+        std::shared_ptr<img_t> image;
+        if (!pull_free_image_cb(image) || !image) {
+          return capture_e::ok;
+        }
+        if (dummy_img(image.get()) != 0) {
+          return capture_e::error;
+        }
+
+        const auto captured_at = std::chrono::steady_clock::now();
+        image->frame_timestamp = captured_at;
+        image->host_processing_timestamp = captured_at;
+        if (!push_captured_image_cb(std::move(image), true)) {
+          return capture_e::ok;
+        }
+
+        std::this_thread::sleep_for(std::max(
+          cadence,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::milliseconds {1})
+        ));
+      }
+    }
+
     virtual std::unique_ptr<avcodec_encode_device_t> make_avcodec_encode_device(pix_fmt_e pix_fmt) {
       return nullptr;
     }
@@ -576,6 +635,23 @@ namespace platf {
     virtual void prepare_for_reinit() {
     }
 
+    /**
+     * @brief Ask a sparse capture source for one fresh image.
+     * @details Fixed-rate sources may ignore this because another image is
+     *          already scheduled.
+     */
+    virtual void request_refresh() {
+    }
+
+    /**
+     * @brief Whether capture delivery is driven by source presentation events.
+     * @details Event-driven sources need explicit refresh requests when a new
+     *          consumer joins. Fixed-rate sources retain the normal queue flow.
+     */
+    [[nodiscard]] virtual bool is_event_driven_capture() const {
+      return false;
+    }
+
     virtual bool get_hdr_metadata(SS_HDR_METADATA &metadata) {
       std::memset(&metadata, 0, sizeof(metadata));
       return false;
@@ -589,6 +665,15 @@ namespace platf {
      */
     virtual bool is_codec_supported(std::string_view name, const ::video::config_t &config) {
       return true;
+    }
+
+    /**
+     * @brief Return the adapter that owns this initialized capture display.
+     * @details Platforms without a stable adapter identity leave this empty;
+     * callers must preserve their established platform-level cache identity.
+     */
+    virtual std::optional<adapter_id_t> capture_adapter_id() const {
+      return std::nullopt;
     }
 
     virtual ~display_t() = default;
@@ -617,6 +702,11 @@ namespace platf {
   public:
     virtual int set_sink(const std::string &sink) = 0;
 
+    // Select a loopback endpoint without changing system routing, when supported.
+    virtual int set_capture_sink([[maybe_unused]] const std::string &sink) {
+      return -1;
+    }
+
     virtual std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous, bool host_audio_enabled) = 0;
 
     /**
@@ -627,6 +717,15 @@ namespace platf {
     virtual bool is_sink_available(const std::string &sink) = 0;
 
     virtual std::optional<sink_t> sink_info() = 0;
+
+    /**
+     * @brief Restores the host audio sink after streaming stops.
+     * @note Most platforms restore a single sink. Windows overrides this to
+     *       restore the endpoint captured for each audio role.
+     */
+    virtual int restore_sink(const std::string &sink) {
+      return set_sink(sink);
+    }
 
     /**
      * @brief Resets the default audio device away from virtual streaming speakers.
@@ -666,10 +765,16 @@ namespace platf {
    * @param config Stream configuration
    * @return The display_t instance based on hwdevice_type.
    */
-  std::shared_ptr<display_t> display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
+  std::shared_ptr<display_t> display(
+    mem_type_e hwdevice_type,
+    const std::string &display_name,
+    const video::config_t &config,
+    const std::optional<adapter_id_t> &required_adapter = std::nullopt
+  );
 
-  // A list of names of displays accepted as display_name with the mem_type_e
-  std::vector<std::string> display_names(mem_type_e hwdevice_type);
+  // A list of names accepted as display_name. Omitting the memory type asks
+  // the active platform capture backend for its unfiltered/default view.
+  std::vector<std::string> display_names(mem_type_e hwdevice_type = mem_type_e::unknown);
 
   /**
    * @brief Check if GPUs/drivers have changed since the last call to this function.
@@ -962,63 +1067,6 @@ namespace platf {
     set_clipboard(const std::string &content);
 
   /**
-   * @brief Snapshot of host system performance counters.
-   *
-   * Any field that cannot be sampled on the current platform is left at the
-   * default sentinel (-1.f for percentages/temperatures, 0 for byte counts).
-   */
-  struct host_stats_t {
-    float cpu_percent = -1.f;
-    float cpu_temp_c = -1.f;
-    std::uint64_t ram_used_bytes = 0;
-    std::uint64_t ram_total_bytes = 0;
-    float gpu_percent = -1.f;
-    float gpu_encoder_percent = -1.f;
-    float gpu_temp_c = -1.f;
-    std::uint64_t vram_used_bytes = 0;
-    std::uint64_t vram_total_bytes = 0;
-    // Network throughput on the chosen primary interface, in bits/sec.
-    // -1 means "no measurement yet" (e.g. first sample after start, or
-    // platform without an implementation).
-    double net_rx_bps = -1.0;
-    double net_tx_bps = -1.0;
-  };
-
-  /**
-   * @brief Static information about the host (cached, sampled once at startup).
-   */
-  struct host_info_t {
-    std::string cpu_model;
-    std::string gpu_model;
-    int cpu_logical_cores = 0;
-    std::uint64_t ram_total_bytes = 0;
-    std::uint64_t vram_total_bytes = 0;
-    // Friendly name of the network interface used for throughput sampling
-    // (empty if none was selectable).
-    std::string net_interface;
-    // Reported link speed in Mbps (0 if unknown).
-    std::uint64_t net_link_speed_mbps = 0;
-  };
-
-  /**
-   * @brief Per-platform host stats provider.
-   *
-   * Implementations live in src/platform/<os>/host_stats.cpp and are
-   * instantiated through @ref create_host_stats_provider. The provider is
-   * polled from a single sampler thread owned by @ref host_stats.
-   */
-  class host_stats_provider_t {
-  public:
-    virtual ~host_stats_provider_t() = default;
-
-    /** @brief Sample the current host stats. */
-    virtual host_stats_t sample() = 0;
-
-    /** @brief Return the static host info (called once, may be cached). */
-    virtual host_info_t info() = 0;
-  };
-
-  /**
    * @brief Factory for the platform-specific host stats provider.
    *
    * Always returns a usable provider; on platforms without a real
@@ -1027,8 +1075,10 @@ namespace platf {
   std::unique_ptr<host_stats_provider_t>
     create_host_stats_provider();
 
+  /** Resolve the render device path used for hardware encoding. */
   std::string resolve_render_device();
   bool has_elevated_privileges(bool all_caps = true);
-  void drop_elevated_privileges(bool all_caps = true);
+  [[nodiscard]] bool drop_elevated_privileges(bool all_caps = true);
+  [[nodiscard]] bool drop_effective_elevated_privileges(bool all_caps = true);
 
 }  // namespace platf

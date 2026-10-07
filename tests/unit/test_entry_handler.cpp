@@ -1,18 +1,21 @@
 /**
  * @file tests/unit/test_entry_handler.cpp
- * @brief Test src/entry_handler.*.
+ * @brief Deterministic publisher metadata formatting contracts.
  */
 #include "../tests_common.h"
-#include "../tests_log_checker.h"
 
-#include <src/entry_handler.h>
+#include <src/entry_metadata.h>
 
-TEST(EntryHandlerTests, LogPublisherDataTest) {
-  // call log_publisher_data
-  log_publisher_data();
+namespace {
+  TEST(EntryMetadata, PublisherValuesAreFormattedForStartupLogs) {
+    const auto lines = entry_metadata::publisher_log_lines({
+      "Test Publisher",
+      "https://example.test/publisher",
+      "https://example.test/support",
+    });
 
-  // check if specific log messages exist
-  ASSERT_TRUE(log_checker::line_starts_with("test_sunshine.log", "Info: Package Publisher: "));
-  ASSERT_TRUE(log_checker::line_starts_with("test_sunshine.log", "Info: Publisher Website: "));
-  ASSERT_TRUE(log_checker::line_starts_with("test_sunshine.log", "Info: Get support: "));
-}
+    EXPECT_EQ(lines[0], "Package Publisher: Test Publisher");
+    EXPECT_EQ(lines[1], "Publisher Website: https://example.test/publisher");
+    EXPECT_EQ(lines[2], "Get support: https://example.test/support");
+  }
+}  // namespace

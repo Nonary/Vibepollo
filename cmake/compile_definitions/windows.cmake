@@ -40,8 +40,31 @@ file(GLOB NVPREFS_FILES CONFIGURE_DEPENDS
 # vigem
 include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include")
 include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party")
+
+# libvirtualgamepad: the control-protocol client for Vibepollo's own UMDF/VHF gamepad driver.
+# Only the header-only protocol and the small SetupAPI client are compiled here; the driver
+# itself is consumed as an independently released signed package.
+set(SUNSHINE_LIBVIRTUALGAMEPAD_SOURCE_DIR "" CACHE PATH "Path to libvirtualgamepad source")
+if(NOT SUNSHINE_LIBVIRTUALGAMEPAD_SOURCE_DIR)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/third-party/libvirtualgamepad/include/libvirtualgamepad/protocol.h")
+        set(SUNSHINE_LIBVIRTUALGAMEPAD_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third-party/libvirtualgamepad")
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/../libvirtualgamepad/include/libvirtualgamepad/protocol.h")
+        set(SUNSHINE_LIBVIRTUALGAMEPAD_SOURCE_DIR "${CMAKE_SOURCE_DIR}/../libvirtualgamepad")
+    endif()
+endif()
+
+if(NOT SUNSHINE_LIBVIRTUALGAMEPAD_SOURCE_DIR OR
+   NOT EXISTS "${SUNSHINE_LIBVIRTUALGAMEPAD_SOURCE_DIR}/include/libvirtualgamepad/protocol.h")
+    message(FATAL_ERROR "libvirtualgamepad source not found. Initialize third-party/libvirtualgamepad "
+                        "or set SUNSHINE_LIBVIRTUALGAMEPAD_SOURCE_DIR.")
+endif()
+
+set(SUNSHINE_LIBVIRTUALGAMEPAD_INCLUDE_DIR "${SUNSHINE_LIBVIRTUALGAMEPAD_SOURCE_DIR}/include")
+include_directories(SYSTEM "${SUNSHINE_LIBVIRTUALGAMEPAD_INCLUDE_DIR}")
+
 set(SUNSHINE_WINDOWS_VDISPLAY_SOURCES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_identity.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_sunshine.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_sudovda.cpp")
 
@@ -169,21 +192,31 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_coordinator.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_request_helpers.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_request_helpers.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_request_policy.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_request_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_integration.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_integration.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_session_deferral.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_session_deferral.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_session_deferral_rtsp.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_watchdog.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_watchdog.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/diagnostics.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/diagnostics_boost.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/text_storage.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/file_text_storage.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/topology_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/async_dispatcher.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/golden_health.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/operations.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/snapshot.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/snapshot_file_storage.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/snapshot_codec.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/state_machine.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_display_settings.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_event_pump.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_platform_workarounds.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_shell_refresh_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_scheduled_task_manager.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_cleanup.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_cleanup.cpp"
@@ -193,12 +226,17 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_protocol.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_protocol.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_sync_policy.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_sync_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_sync.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_sync.cpp"
         "${CMAKE_SOURCE_DIR}/src/config_playnite.h"
+        "${CMAKE_SOURCE_DIR}/src/config_playnite_parse.cpp"
         "${CMAKE_SOURCE_DIR}/src/config_playnite.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_integration.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_integration.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity_policy.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/foreground_app.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/foreground_app.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/fullscreen_detector.h"
@@ -210,6 +248,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_base.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/nv_truehdr.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/nv_truehdr.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_policy.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_profile.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_profile.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_runtime.h"
@@ -217,6 +257,9 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_ram.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_vram.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_wgc.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/present_timing.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/present_timing.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/present_timing_policy.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/audio.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display.h"
         ${SUNSHINE_WINDOWS_VDISPLAY_SOURCES}
@@ -237,8 +280,16 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/ipc_session.cpp"
         "${CMAKE_SOURCE_DIR}/tools/playnite_launcher/focus_utils.cpp"
         "${CMAKE_SOURCE_DIR}/tools/playnite_launcher/lossless_scaling.cpp"
+        "${CMAKE_SOURCE_DIR}/tools/playnite_launcher/lossless_scaling_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad_policy.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad_policy.cpp"
+        "${SUNSHINE_LIBVIRTUALGAMEPAD_SOURCE_DIR}/client/client.cpp"
+        "${SUNSHINE_LIBVIRTUALGAMEPAD_INCLUDE_DIR}/libvirtualgamepad/client.h"
+        "${SUNSHINE_LIBVIRTUALGAMEPAD_INCLUDE_DIR}/libvirtualgamepad/protocol.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/src/ViGEmClient.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Client.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Common.h"
@@ -260,6 +311,7 @@ set(OPENSSL_LIBRARIES
 
 list(PREPEND PLATFORM_LIBRARIES
         ${CURL_STATIC_LIBRARIES}
+        advapi32
         avrt
         d3d11
         D3DCompiler
@@ -288,4 +340,13 @@ list(PREPEND PLATFORM_LIBRARIES
 if(SUNSHINE_ENABLE_TRAY)
     list(APPEND PLATFORM_TARGET_FILES
             "${CMAKE_SOURCE_DIR}/third-party/tray/src/tray_windows.c")
+endif()
+
+# PyroWave host encoder: D3D11 colour conversion into the Vulkan encoder. Without
+# it, src/pyrowave_host.cpp provides the unavailable stub.
+if(SUNSHINE_ENABLE_PYROWAVE)
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_d3d11_core.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_d3d11_core.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_encode.cpp")
 endif()

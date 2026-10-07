@@ -1,0 +1,56 @@
+[Unit]
+Description=Vibepollo machine session controller
+Documentation=https://github.com/Nonary/Vibepollo
+Wants=display-manager.service systemd-logind.service systemd-user-sessions.service vibeshine-vkms.service
+After=display-manager.service systemd-logind.service systemd-user-sessions.service vibeshine-vkms.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/vibeshine/vibepollo-session-controller run
+ExecStopPost=/usr/libexec/vibeshine/vibepollo-session-controller cleanup
+Restart=always
+RestartSec=1
+RestartSteps=7
+RestartMaxDelaySec=30
+TimeoutStopSec=35
+MemoryMax=512M
+TasksMax=128
+UMask=0077
+RuntimeDirectory=vibepollo
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+
+User=root
+SupplementaryGroups=vibepollo
+CapabilityBoundingSet=CAP_SETGID CAP_SETUID
+AmbientCapabilities=CAP_SETUID
+NoNewPrivileges=yes
+
+DevicePolicy=closed
+PrivateDevices=yes
+PrivateTmp=yes
+PrivateMounts=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=/run/user
+ProtectProc=invisible
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+SystemCallFilter=~@clock @debug @module @mount @raw-io @reboot @swap
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+IPAddressDeny=any
+
+[Install]
+WantedBy=graphical.target

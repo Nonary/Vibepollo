@@ -1,0 +1,20 @@
+apply plugin: 'com.android.library'
+
+android {
+    namespace = 'net.themaister.granite'
+    compileSdkVersion = 34
+	buildFeatures.prefab = true
+
+    defaultConfig {
+        minSdkVersion = 26
+        targetSdkVersion = 34
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.5.1'
+    implementation 'com.google.android.material:material:1.7.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    implementation 'androidx.core:core:1.9.0'
+    implementation 'androidx.games:games-activity:4.0.0'
+}

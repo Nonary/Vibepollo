@@ -28,6 +28,7 @@
 #include "crypto.h"
 #include "file_handler.h"
 #include "httpcommon.h"
+#include "http_policy.h"
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
@@ -204,6 +205,7 @@ namespace http {
 
   std::string unique_id;
   uuid_util::uuid_t uuid;
+  bool credentials_created_this_run = false;
   net::net_e origin_web_ui_allowed;
 
 #ifdef _WIN32
@@ -223,16 +225,25 @@ namespace http {
       config::nvhttp.pkey = (dir / ("pkey-"s + unique_id)).string();
     }
 
-    if ((!fs::exists(config::nvhttp.pkey) || !fs::exists(config::nvhttp.cert)) &&
-        create_creds(config::nvhttp.pkey, config::nvhttp.cert)) {
+    const bool had_credential_material = fs::exists(config::nvhttp.pkey) || fs::exists(config::nvhttp.cert);
+    if ((!fs::exists(config::nvhttp.pkey) || !fs::exists(config::nvhttp.cert))) {
+      if (create_creds(config::nvhttp.pkey, config::nvhttp.cert)) {
+        return -1;
+      }
+      credentials_created_this_run = !had_credential_material;
+    }
+    // Credential inspection precedes nvhttp pairing-state startup. Restore its
+    // snapshot here, before malformed state could abort startup or enable setup.
+    if (!clean_slate && !statefile::recover_credentials(config::sunshine.credentials_file)) {
+      BOOST_LOG(error) << "Credential state and its recovery copy are unavailable; refusing credential setup.";
       return -1;
     }
     switch (user_creds_state(config::sunshine.credentials_file)) {
       case creds_state::missing_file:
-        BOOST_LOG(info) << "Open the Web UI to set your new username and password and getting started";
+        BOOST_LOG(info) << "Use the configuration API to set your new username and password before getting started";
         break;
       case creds_state::missing_fields:
-        BOOST_LOG(warning) << "Credential file is missing required fields; open the Web UI to set your username and password: "
+        BOOST_LOG(warning) << "Credential file is missing required fields; use the configuration API to set your username and password: "
                            << config::sunshine.credentials_file;
         break;
       case creds_state::configured:
@@ -242,7 +253,7 @@ namespace http {
         break;
       case creds_state::unreadable:
       case creds_state::malformed:
-        BOOST_LOG(error) << "Credential file cannot be used; refusing to start Web UI credential setup from "
+        BOOST_LOG(error) << "Credential file cannot be used; refusing to start configuration API credential setup from "
                          << config::sunshine.credentials_file;
         return -1;
     }
@@ -396,7 +407,10 @@ namespace http {
       return -1;
     }
 
-    fs::permissions(cert_path, fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read | fs::perms::owner_write, fs::perm_options::replace, err_code);
+    // Keep the certificate owner-only. Only this process reads it (clients
+    // receive it during pairing), and the Linux machine host refuses to start
+    // when anything under its state directory is readable by other accounts.
+    fs::permissions(cert_path, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, err_code);
 
     if (err_code) {
       BOOST_LOG(error) << "Couldn't change permissions of ["sv << config::nvhttp.cert << "] :"sv << err_code.message();

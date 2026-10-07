@@ -260,7 +260,7 @@ namespace display_helper::v2 {
   }
 
   std::wstring WinScheduledTaskManager::build_restore_task_name(const std::wstring &) {
-    return L"VibeshineDisplayRestore";
+    return L"VibepolloDisplayRestore";
   }
 
   bool WinScheduledTaskManager::create_restore_task(const std::wstring &username) {
@@ -310,7 +310,7 @@ namespace display_helper::v2 {
     }
 
     if (IRegistrationInfo *reg_info = nullptr; SUCCEEDED(task->get_RegistrationInfo(&reg_info))) {
-      reg_info->put_Author(_bstr_t(L"Sunshine Display Helper"));
+      reg_info->put_Author(_bstr_t(L"Vibepollo Display Helper"));
       reg_info->put_Description(_bstr_t(L"Automatically restores display settings after reboot"));
       reg_info->Release();
     }
@@ -346,7 +346,7 @@ namespace display_helper::v2 {
     }
 
     if (ILogonTrigger *logon_trigger = nullptr; SUCCEEDED(trigger->QueryInterface(IID_ILogonTrigger, (void **) &logon_trigger))) {
-      logon_trigger->put_Id(_bstr_t(L"SunshineDisplayHelperLogonTrigger"));
+      logon_trigger->put_Id(_bstr_t(L"VibepolloDisplayHelperLogonTrigger"));
       logon_trigger->put_Enabled(VARIANT_TRUE);
       if (has_user_sid) {
         logon_trigger->put_UserId(_bstr_t(user_sid.c_str()));

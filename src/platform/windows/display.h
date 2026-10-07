@@ -35,6 +35,10 @@ namespace platf::game_activity {
 }
 
 namespace platf::dxgi {
+  namespace present_timing {
+    class capture_stamper_t;
+  }
+
   extern const char *format_str[];
 
   // Add D3D11_CREATE_DEVICE_DEBUG here to enable the D3D11 debug runtime.
@@ -49,8 +53,32 @@ namespace platf::dxgi {
   using factory1_t = util::safe_ptr<IDXGIFactory1, Release<IDXGIFactory1>>;
   using dxgi_t = util::safe_ptr<IDXGIDevice, Release<IDXGIDevice>>;
 
-  void set_last_wgc_adapter_luid(std::optional<LUID> luid);
+  struct wgc_adapter_identity_t {
+    LUID luid {};
+    // Stable configured/runtime output identity observed when WGC created its
+    // D3D device. This prevents a sticky LUID from being reused after capture
+    // moves to another output.
+    std::string output_name;
+  };
+
+  struct capture_output_identity_t {
+    std::string output_name;
+    adapter_id_t adapter_id;
+  };
+
+  /**
+   * Resolve Automatic display selection to the first output normal capture
+   * enumeration would use, together with the exact adapter that owns it. When
+   * required_adapter is present, consider outputs on that adapter only.
+   */
+  std::optional<capture_output_identity_t> resolve_automatic_capture_output(
+    mem_type_e hwdevice_type,
+    const std::optional<adapter_id_t> &required_adapter = std::nullopt
+  );
+
+  void set_last_wgc_adapter_luid(std::optional<LUID> luid, std::string output_name = {});
   std::optional<LUID> get_last_wgc_adapter_luid();
+  std::optional<wgc_adapter_identity_t> get_last_wgc_adapter_identity();
   void set_dxgi_adapter_luid_override(std::optional<LUID> luid);
   std::optional<LUID> get_dxgi_adapter_luid_override();
   bool should_use_wgc_default();
@@ -178,11 +206,23 @@ namespace platf::dxgi {
 
   class display_base_t: public display_t {
   public:
-    int init(const ::video::config_t &config, const std::string &display_name, bool skip_dd_test = false);
+    enum class output_refresh_e {
+      refreshed,
+      retry_later,
+      structural_change,
+    };
+
+    int init(
+      const ::video::config_t &config,
+      const std::string &display_name,
+      bool skip_dd_test = false,
+      const std::optional<LUID> &required_adapter_luid = std::nullopt
+    );
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override;
     void prepare_for_reinit() override;
-    bool refresh_output_after_expected_mode_change();
+    std::optional<adapter_id_t> capture_adapter_id() const override;
+    output_refresh_e refresh_output_after_nonstructural_change();
 
     factory1_t factory;
     adapter_t adapter;
@@ -337,7 +377,11 @@ namespace platf::dxgi {
    */
   class display_ddup_ram_t: public display_ram_t {
   public:
-    int init(const ::video::config_t &config, const std::string &display_name);
+    int init(
+      const ::video::config_t &config,
+      const std::string &display_name,
+      const std::optional<LUID> &required_adapter_luid = std::nullopt
+    );
     capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) override;
     capture_e release_snapshot() override;
 
@@ -350,7 +394,11 @@ namespace platf::dxgi {
    */
   class display_ddup_vram_t: public display_vram_t {
   public:
-    int init(const ::video::config_t &config, const std::string &display_name);
+    int init(
+      const ::video::config_t &config,
+      const std::string &display_name,
+      const std::optional<LUID> &required_adapter_luid = std::nullopt
+    );
     capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) override;
     capture_e release_snapshot() override;
 
@@ -434,7 +482,11 @@ namespace platf::dxgi {
      * @param display_name Name of the display to capture.
      * @return Instance of the display backend, using WGC IPC if available, or a secure desktop fallback if not.
      */
-    static std::shared_ptr<display_t> create(const ::video::config_t &config, const std::string &display_name);
+    static std::shared_ptr<display_t> create(
+      const ::video::config_t &config,
+      const std::string &display_name,
+      const std::optional<LUID> &required_adapter_luid = std::nullopt
+    );
 
     /**
      * @brief Initializes the WGC IPC VRAM display backend.
@@ -443,7 +495,11 @@ namespace platf::dxgi {
      * @param display_name Name of the display to capture.
      * @return 0 on success, negative on failure.
      */
-    int init(const ::video::config_t &config, const std::string &display_name);
+    int init(
+      const ::video::config_t &config,
+      const std::string &display_name,
+      const std::optional<LUID> &required_adapter_luid = std::nullopt
+    );
 
     /**
      * @brief Captures a snapshot of the display.
@@ -489,6 +545,7 @@ namespace platf::dxgi {
     std::shared_ptr<platf::img_t> _last_cached_frame;
     std::chrono::steady_clock::time_point _wgc_stall_start {};  ///< Start of the current frame-wait stall (zero when frames are flowing).
     std::chrono::steady_clock::time_point _last_secure_desktop_probe {};  ///< Last secure-desktop probe performed during a stall.
+    std::shared_ptr<present_timing::capture_stamper_t> _present_stamper;  ///< Refines composition-quantized RTP timestamps at send time.
   };
 
   class display_wgc_ipc_ram_t: public display_ram_t {
@@ -511,7 +568,11 @@ namespace platf::dxgi {
      * @param display_name Name of the display to capture.
      * @return Instance of the display backend.
      */
-    static std::shared_ptr<display_t> create(const ::video::config_t &config, const std::string &display_name);
+    static std::shared_ptr<display_t> create(
+      const ::video::config_t &config,
+      const std::string &display_name,
+      const std::optional<LUID> &required_adapter_luid = std::nullopt
+    );
 
     /**
      * @brief Initializes the WGC IPC RAM display backend.
@@ -519,7 +580,11 @@ namespace platf::dxgi {
      * @param display_name Name of the display to capture.
      * @return 0 on success, negative on failure.
      */
-    int init(const ::video::config_t &config, const std::string &display_name);
+    int init(
+      const ::video::config_t &config,
+      const std::string &display_name,
+      const std::optional<LUID> &required_adapter_luid = std::nullopt
+    );
 
     /**
      * @brief Captures a snapshot of the display.
@@ -583,6 +648,11 @@ namespace platf::dxgi {
      * @brief Last secure-desktop probe performed during a stall.
      */
     std::chrono::steady_clock::time_point _last_secure_desktop_probe {};
+
+    /**
+     * @brief Refines composition-quantized RTP timestamps at send time.
+     */
+    std::shared_ptr<present_timing::capture_stamper_t> _present_stamper;
   };
 
   /**

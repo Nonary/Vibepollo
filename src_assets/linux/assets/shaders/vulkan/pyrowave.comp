@@ -1,0 +1,70 @@
+#version 450
+layout(local_size_x=16, local_size_y=16) in;
+layout(set=0,binding=0) uniform sampler2D source_image;
+layout(set=0,binding=1,r16) writeonly uniform image2D y_plane;
+layout(set=0,binding=2,r16) writeonly uniform image2D u_plane;
+layout(set=0,binding=3,r16) writeonly uniform image2D v_plane;
+layout(set=0,binding=4) uniform sampler2D cursor_image;
+layout(set=0,binding=5) uniform sampler2D gamma_lut;
+layout(std140,set=0,binding=6) uniform Params {
+  vec4 y, u, v;
+  ivec4 crop;
+  ivec4 cursor_rect;
+  ivec2 output_size;
+  int subsampled;
+  int invert_y;
+  int use_lut;
+  int transfer; // 0: native, 1: scRGB -> SDR, 2: scRGB -> PQ, 3: SDR -> PQ
+  int output_hdr;
+} p;
+vec3 srgb_to_linear(vec3 c) {
+  return mix(c / 12.92, pow(max((c + 0.055) / 1.055, 0.0), vec3(2.4)), greaterThan(c, vec3(0.04045)));
+}
+vec3 pq(vec3 nits) {
+  vec3 x = pow(max(nits / 10000.0, 0.0), vec3(2610.0/16384.0));
+  return pow((3424.0/4096.0 + 2413.0/128.0*x) / (1.0 + 2392.0/128.0*x), vec3(2523.0/32.0));
+}
+vec3 to_2020(vec3 c) {
+  return vec3(dot(c, vec3(0.627404,0.329283,0.043313)),
+              dot(c, vec3(0.069097,0.919540,0.011362)),
+              dot(c, vec3(0.016391,0.088013,0.895595)));
+}
+vec3 sample_rgb(ivec2 pos) {
+  vec2 uv = (vec2(p.crop.xy) + (vec2(pos)+0.5)*vec2(p.crop.zw)/vec2(p.output_size)) / vec2(textureSize(source_image,0));
+  if (p.invert_y != 0) uv.y = 1.0-uv.y;
+  vec3 rgb = texture(source_image,uv).rgb;
+  if (p.use_lut != 0) {
+    float n = float(textureSize(gamma_lut,0).x);
+    vec3 coord = (clamp(rgb,0.0,1.0)*(n-1.0)+0.5)/n;
+    rgb = vec3(texture(gamma_lut,vec2(coord.r,0.5)).r,
+               texture(gamma_lut,vec2(coord.g,0.5)).g,
+               texture(gamma_lut,vec2(coord.b,0.5)).b);
+  }
+  if (p.transfer == 1) rgb = mix(12.92*max(rgb,0.0),1.055*pow(max(rgb,0.0),vec3(1.0/2.4))-0.055,greaterThan(rgb,vec3(0.0031308)));
+  if (p.transfer == 2) rgb = pq(to_2020(rgb)*80.0);
+  if (p.transfer == 3) rgb = pq(to_2020(srgb_to_linear(rgb))*100.0);
+  ivec2 cp = pos-p.cursor_rect.xy;
+  if (p.cursor_rect.z>0 && all(greaterThanEqual(cp,ivec2(0))) && all(lessThan(cp,p.cursor_rect.zw))) {
+    vec4 c = texture(cursor_image,(vec2(cp)+0.5)/vec2(p.cursor_rect.zw));
+    // DRM cursors contain premultiplied alpha; convert their unassociated SDR
+    // color to the output transfer function before compositing an HDR frame.
+    if (p.output_hdr != 0 && c.a > 0.0)
+      c.rgb = pq(to_2020(srgb_to_linear(c.rgb/c.a))*100.0)*c.a;
+    rgb = c.rgb + rgb*(1.0-c.a);
+  }
+  return rgb;
+}
+void main() {
+  ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+  if (any(greaterThanEqual(pos,p.output_size))) return;
+  vec3 rgb = sample_rgb(pos);
+  imageStore(y_plane,pos,vec4(dot(p.y,vec4(rgb,1.0))));
+  ivec2 cp=pos;
+  if (p.subsampled != 0) {
+    if ((pos.x&1)!=0 || (pos.y&1)!=0) return;
+    rgb = (rgb+sample_rgb(pos+ivec2(1,0))+sample_rgb(pos+ivec2(0,1))+sample_rgb(pos+ivec2(1,1)))*0.25;
+    cp >>= 1;
+  }
+  imageStore(u_plane,cp,vec4(dot(p.u,vec4(rgb,1.0))));
+  imageStore(v_plane,cp,vec4(dot(p.v,vec4(rgb,1.0))));
+}

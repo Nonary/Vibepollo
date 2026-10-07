@@ -43,7 +43,18 @@ namespace playnite_launcher::focus {
       if (dir.empty()) {
         return false;
       }
-      return has_prefix_with_boundary(normalize_path(path), normalize_path(dir));
+      auto normalized_dir = normalize_path(dir);
+      // Never strip a bare drive root down to its designator: "d:\" would become
+      // "d:", and the boundary check below would then accept every path on that
+      // volume. Matches the guard in playnite_process.cpp's normalizer.
+      while (
+        normalized_dir.size() > 1 &&
+        normalized_dir.back() == L'\\' &&
+        !(normalized_dir.size() == 3 && normalized_dir[1] == L':')
+      ) {
+        normalized_dir.pop_back();
+      }
+      return has_prefix_with_boundary(normalize_path(path), normalized_dir);
     }
 
     bool is_candidate_window(HWND hwnd, DWORD pid) {

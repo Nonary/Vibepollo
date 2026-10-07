@@ -17,6 +17,7 @@
 #include "stream.h"
 #include "session_history_sampler.h"
 #include "session_history_storage.h"
+#include "session_history_storage_diagnostics.h"
 #include "session_history_writer.h"
 
 #ifdef _WIN32
@@ -45,10 +46,28 @@ namespace session_history {
       return writer::is_enabled() && writer::is_available();
     }
 
+    void log_storage_diagnostic(storage::diagnostics::level_e level, const std::string &message) {
+      switch (level) {
+        case storage::diagnostics::level_e::debug:
+          BOOST_LOG(debug) << message;
+          break;
+        case storage::diagnostics::level_e::info:
+          BOOST_LOG(info) << message;
+          break;
+        case storage::diagnostics::level_e::warning:
+          BOOST_LOG(warning) << message;
+          break;
+        case storage::diagnostics::level_e::error:
+          BOOST_LOG(error) << message;
+          break;
+      }
+    }
+
   }  // namespace
 
   void init(const std::string &db_path) {
     std::scoped_lock lk {g_lifecycle_mutex};
+    storage::diagnostics::set_sink(log_storage_diagnostic);
     g_history_db_path = db_path;
     writer::update_settings(current_writer_settings());
     writer::init(g_history_db_path);

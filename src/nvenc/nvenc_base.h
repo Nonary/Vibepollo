@@ -59,7 +59,7 @@ namespace nvenc {
      * @brief Destroy the encoder.
      *        Derived classes classes call it in the destructor.
      */
-    void destroy_encoder();
+    bool destroy_encoder();
 
     /**
      * @brief Encode the next frame using platform-specific input surface.
@@ -94,6 +94,40 @@ namespace nvenc {
     void set_hdr_metadata(const SS_HDR_METADATA &metadata);
 
   protected:
+    /** Enter/leave a platform device context around complete NVENC API transactions. */
+    virtual bool enter_context() {
+      return true;
+    }
+    virtual void leave_context() {
+    }
+
+    /** Native backends may retain the session handle to quarantine dependent resources after teardown failure. */
+    virtual bool preserve_encoder_on_destroy_failure() const noexcept {
+      return false;
+    }
+
+    class context_guard_t {
+    public:
+      explicit context_guard_t(nvenc_base &owner):
+          owner(owner),
+          active(owner.enter_context()) {
+      }
+
+      ~context_guard_t() {
+        if (active) {
+          owner.leave_context();
+        }
+      }
+
+      explicit operator bool() const noexcept {
+        return active;
+      }
+
+    private:
+      nvenc_base &owner;
+      bool active;
+    };
+
     /**
      * @brief Required. Used for loading NvEnc library and setting `nvenc` variable with `NvEncodeAPICreateInstance()`.
      *        Called during `create_encoder()` if `nvenc` variable is not initialized.
@@ -165,6 +199,7 @@ namespace nvenc {
       bool rfi_needs_confirmation = false;
       std::pair<uint64_t, uint64_t> last_rfi_range;
       logging::min_max_avg_periodic_logger<double> frame_size_logger = {debug, "NvEnc: encoded frame sizes in kB", ""};
+      logging::min_max_avg_periodic_logger<double> encode_latency_logger = {debug, "NvEnc: native encode call latency", "ms"};
     } encoder_state;
 
     // Saved during create_encoder() so set_bitrate() can drive nvEncReconfigureEncoder().

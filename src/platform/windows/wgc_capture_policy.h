@@ -1,0 +1,129 @@
+#pragma once
+
+#include <cstdint>
+
+namespace platf::dxgi::wgc_policy {
+  inline constexpr std::uint32_t low_latency_initial_buffer_size = 1;
+  inline constexpr std::uint32_t adaptive_max_buffer_size = 2;
+  inline constexpr std::uint32_t helper_stop_timeout_ms = 3000;
+
+  // Absolute input uses the whole virtual desktop, not just the captured
+  // monitor. A neighbouring monitor can change these values without moving
+  // or resizing the capture target itself.
+  struct input_geometry_t {
+    int offset_x;
+    int offset_y;
+    int desktop_width;
+    int desktop_height;
+
+    constexpr bool operator==(const input_geometry_t &) const = default;
+  };
+
+  struct desktop_bounds_t {
+    int origin_x;
+    int origin_y;
+    int width;
+    int height;
+  };
+
+  enum class input_geometry_change_e {
+    unchanged,
+    changed,
+    unavailable,
+  };
+
+  constexpr input_geometry_change_e assess_input_geometry(
+    const input_geometry_t &captured,
+    const int monitor_x,
+    const int monitor_y,
+    const desktop_bounds_t &current
+  ) noexcept {
+    // GetSystemMetrics returns zero on failure. Preserve capture while the
+    // desktop is temporarily unavailable, as with other DXGI settle retries.
+    if (current.width <= 0 || current.height <= 0) {
+      return input_geometry_change_e::unavailable;
+    }
+    const bool unchanged =
+      captured.offset_x == static_cast<std::int64_t>(monitor_x) - current.origin_x &&
+      captured.offset_y == static_cast<std::int64_t>(monitor_y) - current.origin_y &&
+      captured.desktop_width == current.width && captured.desktop_height == current.height;
+    return unchanged ? input_geometry_change_e::unchanged : input_geometry_change_e::changed;
+  }
+
+  /**
+   * Select only the requested monitor, allowing transient enumeration failures
+   * to settle. A missing explicit target must never turn into primary capture.
+   * The caller supplies the bounded wait and the platform monitor lookups.
+   */
+  template<class FindRequested, class FindPrimary, class WaitForRetry>
+  auto select_monitor(
+    const bool has_requested_monitor,
+    FindRequested find_requested,
+    FindPrimary find_primary,
+    WaitForRetry wait_for_retry
+  ) {
+    if (!has_requested_monitor) {
+      return find_primary();
+    }
+
+    auto monitor = find_requested();
+    while (!monitor && wait_for_retry()) {
+      monitor = find_requested();
+    }
+    return monitor;
+  }
+
+  enum class capture_surface_format : std::uint8_t {
+    bgra8,
+    rgba16_float,
+  };
+
+  constexpr capture_surface_format select_capture_surface_format(
+    const bool config_received,
+    const bool force_sdr_capture,
+    const bool dynamic_range,
+    const bool advanced_color_capture
+  ) noexcept {
+    return config_received &&
+             !force_sdr_capture &&
+             (dynamic_range || advanced_color_capture) ?
+             capture_surface_format::rgba16_float :
+             capture_surface_format::bgra8;
+  }
+
+  /**
+   * Direct3D11CaptureFrame::SystemRelativeTime is a TimeSpan: 100 ns units on
+   * the QPC timebase, not raw QPC ticks. The two only coincide when the
+   * performance counter runs at 10 MHz.
+   */
+  constexpr std::uint64_t system_relative_time_to_qpc(const std::int64_t hundred_ns, const std::int64_t frequency) noexcept {
+    constexpr std::int64_t units_per_second = 10'000'000;
+    if (hundred_ns <= 0) {
+      return 0;
+    }
+    if (frequency <= 0 || frequency == units_per_second) {
+      return static_cast<std::uint64_t>(hundred_ns);
+    }
+    return static_cast<std::uint64_t>(
+      (hundred_ns / units_per_second) * frequency +
+      (hundred_ns % units_per_second) * frequency / units_per_second
+    );
+  }
+
+  constexpr std::uint32_t maximum_buffer_size(const bool vrr_low_latency) noexcept {
+    return vrr_low_latency ? low_latency_initial_buffer_size : adaptive_max_buffer_size;
+  }
+
+  constexpr bool buffer_pool_is_quiet(
+    const bool allow_decrease,
+    const bool has_recent_drop,
+    const bool recent_pool_pressure,
+    const int peak_outstanding,
+    const std::uint32_t current_buffer_size
+  ) noexcept {
+    return allow_decrease &&
+           !has_recent_drop &&
+           !recent_pool_pressure &&
+           peak_outstanding <= static_cast<int>(current_buffer_size) - 1;
+  }
+}  // namespace platf::dxgi::wgc_policy

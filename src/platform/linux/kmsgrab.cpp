@@ -3,6 +3,7 @@
  * @brief Definitions for KMS screen capture.
  */
 // standard includes
+#include <array>
 #include <errno.h>
 #include <fcntl.h>
 #include <filesystem>
@@ -12,15 +13,25 @@
 // platform includes
 #include <drm_fourcc.h>
 #include <linux/dma-buf.h>
-#include <sys/capability.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
+#include <vibeshine_drm_uapi.h>
+
 // local includes
+#include "capture_status.h"
 #include "cuda.h"
 #include "graphics.h"
+#include "hdr_policy.h"
+#include "kms_capture_client.h"
+#include "kmsgrab_framebuffer.h"
+#include "kmsgrab_pacing.h"
+#include "kmsgrab_selection.h"
+#include "scoped_capability.h"
 #include "src/config.h"
+#include "src/drm_timing_trace.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/round_robin.h"
@@ -37,27 +48,43 @@ namespace platf {
 
   namespace kms {
 
-    class cap_sys_admin {
-    public:
-      cap_sys_admin() {
-        caps = cap_get_proc();
+#define DRM_IOCTL_VIBESHINE_WAIT_PRESENT \
+  DRM_IOWR(DRM_COMMAND_BASE + DRM_VIBESHINE_WAIT_PRESENT, struct vibeshine_drm_wait_present)
+#define DRM_IOCTL_VIBESHINE_GET_FRAME \
+  DRM_IOWR(DRM_COMMAND_BASE + DRM_VIBESHINE_GET_FRAME, struct vibeshine_drm_frame)
+#define DRM_IOCTL_VIBESHINE_GET_PRESENT_TRACE \
+  DRM_IOWR(DRM_COMMAND_BASE + DRM_VIBESHINE_GET_PRESENT_TRACE, struct vibeshine_drm_present_trace)
 
-        cap_value_t sys_admin = CAP_SYS_ADMIN;
-        if (cap_set_flag(caps, CAP_EFFECTIVE, 1, &sys_admin, CAP_SET) || cap_set_proc(caps)) {
-          BOOST_LOG(error) << "Failed to gain CAP_SYS_ADMIN";
-        }
+    static_assert(sizeof(vibeshine_drm_wait_present) == 48);
+    static_assert(sizeof(vibeshine_drm_frame) == 152);
+    static_assert(sizeof(vibeshine_drm_present_trace) == 1088);
+
+    constexpr auto PRESENT_WAIT_IDLE_TIMEOUT = std::chrono::milliseconds(16);
+
+    template<typename Duration>
+    std::int64_t timing_trace_ns(Duration value) {
+      return std::chrono::duration_cast<std::chrono::nanoseconds>(value).count();
+    }
+
+    std::int64_t timing_trace_ns(std::chrono::steady_clock::time_point value) {
+      return timing_trace_ns(value.time_since_epoch());
+    }
+
+    void wait_until_capture_deadline(std::chrono::steady_clock::time_point deadline) {
+      constexpr auto sleep_guard = 250us;
+      constexpr auto yield_guard = 50us;
+
+      auto now = std::chrono::steady_clock::now();
+      if (deadline - now > sleep_guard) {
+        std::this_thread::sleep_until(deadline - sleep_guard);
       }
 
-      ~cap_sys_admin() {
-        cap_value_t sys_admin = CAP_SYS_ADMIN;
-        if (cap_set_flag(caps, CAP_EFFECTIVE, 1, &sys_admin, CAP_CLEAR) || cap_set_proc(caps)) {
-          BOOST_LOG(error) << "Failed to drop CAP_SYS_ADMIN";
+      while ((now = std::chrono::steady_clock::now()) < deadline) {
+        if (deadline - now > yield_guard) {
+          std::this_thread::yield();
         }
-        cap_free(caps);
       }
-
-      cap_t caps;
-    };
+    }
 
     class wrapper_fb {
     public:
@@ -91,13 +118,11 @@ namespace platf {
       }
 
       ~wrapper_fb() {
-        std::ranges::for_each(handles, [&](auto &handle) {
-          if (handle) {
-            struct drm_gem_close close_args = {};
-            close_args.handle = handle;
+        close_framebuffer_handles(handles, [&](std::uint32_t handle) {
+          struct drm_gem_close close_args = {};
+          close_args.handle = handle;
 
-            drmIoctl(card_fd, DRM_IOCTL_GEM_CLOSE, &close_args);
-          }
+          drmIoctl(card_fd, DRM_IOCTL_GEM_CLOSE, &close_args);
         });
 
         if (fb) {
@@ -131,8 +156,6 @@ namespace platf {
     using prop_blob_t = util::safe_ptr<drmModePropertyBlobRes, drmModeFreePropertyBlob>;
     using version_t = util::safe_ptr<drmVersion, drmFreeVersion>;
 
-    using conn_type_count_t = std::map<std::uint32_t, std::uint32_t>;
-
     static int env_width;
     static int env_height;
 
@@ -162,6 +185,9 @@ namespace platf {
       // For example HDMI-A-{index} or HDMI-{index}
       std::uint32_t index;
 
+      // Kernel/Wayland connector name, for example HDMI-A-1 or Virtual-1
+      std::string name;
+
       // ID of the connector
       std::uint32_t connector_id;
 
@@ -172,9 +198,10 @@ namespace platf {
       // Connector attributes
       std::uint32_t type;
       std::uint32_t index;
+      std::string connector_name;
 
       // Monitor index in the global list
-      std::uint32_t monitor_index;
+      std::optional<std::uint32_t> monitor_index;
 
       platf::touch_port_t viewport;
     };
@@ -186,6 +213,7 @@ namespace platf {
     };
 
     static std::vector<card_descriptor_t> card_descriptors;
+    static std::vector<selection::named_monitor_t> named_monitors;
 
     static std::uint32_t from_view(const std::string_view &string) {
 #define _CONVERT(x, y) \
@@ -319,8 +347,13 @@ namespace platf {
       using connector_interal_t = util::safe_ptr<drmModeConnector, drmModeFreeConnector>;
 
       int init(const char *path) {
-        cap_sys_admin admin;
-        fd.el = open(path, O_RDWR);
+        vulkan_device_path = path;
+        linux_security::scoped_effective_capability admin {CAP_SYS_ADMIN};
+        if (!admin.active() && !admin.unavailable()) {
+          BOOST_LOG(error) << "Cannot safely raise the permitted KMS capability."sv;
+          return -1;
+        }
+        fd.el = open(path, O_RDWR | O_CLOEXEC);
 
         if (fd.el < 0) {
           BOOST_LOG(error) << "Couldn't open: "sv << path << ": "sv << strerror(errno);
@@ -328,23 +361,37 @@ namespace platf {
         }
 
         version_t ver {drmGetVersion(fd.el)};
-        BOOST_LOG(info) << path << " -> "sv << ((ver && ver->name) ? ver->name : "UNKNOWN");
-
-        // Open the render node for this card to share with libva.
-        // If it fails, we'll just share the primary node instead.
-        char *rendernode_path = drmGetRenderDeviceNameFromFd(fd.el);
-        if (rendernode_path) {
-          BOOST_LOG(debug) << "Opening render node: "sv << rendernode_path;
-          render_fd.el = open(rendernode_path, O_RDWR);
-          if (render_fd.el < 0) {
-            BOOST_LOG(warning) << "Couldn't open render node: "sv << rendernode_path << ": "sv << strerror(errno);
-            render_fd.el = dup(fd.el);
-          }
-          free(rendernode_path);
-        } else {
-          BOOST_LOG(warning) << "No render device name for: "sv << path;
-          render_fd.el = dup(fd.el);
+        auto validated_driver_name = selection::normalize_driver_name(
+          ver ? ver->name : nullptr,
+          ver ? static_cast<std::size_t>(ver->name_len) : 0
+        );
+        if (!validated_driver_name) {
+          BOOST_LOG(error) << "Couldn't obtain a valid DRM driver identity for: "sv << path;
+          return -1;
         }
+        driver_name = std::move(*validated_driver_name);
+        // Opening any dormant primary node can make capture DRM master, even
+        // when we only opened a physical GPU to enumerate its outputs. Never
+        // retain that role: logind/KWin must be able to reclaim every GPU on
+        // resume. GETFB uses the narrowly raised capability, not DRM master.
+        if (drmIsMaster(fd.el) && drmDropMaster(fd.el) != 0) {
+          BOOST_LOG(error) << "Cannot release capture modesetting ownership on "sv << path;
+          return -1;
+        }
+        if (!admin.active()) {
+          // The SteamOS host stays capability-free. Only the managed virtual
+          // driver can use the separately installed, restricted capture helper.
+          if (driver_name != "vibeshine_drm") {
+            return -1;
+          }
+          capture_helper = kms_capture::client_t::open(fd.el);
+          if (!capture_helper) {
+            BOOST_LOG(error) << "The private display capture helper is unavailable: "sv << strerror(errno);
+            return -1;
+          }
+        }
+        BOOST_LOG(info) << path << " -> "sv << driver_name << " "sv
+                         << ver->version_major << '.' << ver->version_minor << '.' << ver->version_patchlevel;
 
         if (drmSetClientCap(fd.el, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1)) {
           BOOST_LOG(error) << "GPU driver doesn't support universal planes: "sv << path;
@@ -374,19 +421,96 @@ namespace platf {
       }
 
       fb_t fb(plane_t::pointer plane) {
-        cap_sys_admin admin;
+        if (capture_helper) {
+          drmModeFB2 metadata {};
+          std::array<int, 4> buffers {-1, -1, -1, -1};
+          if (capture_helper->framebuffer(plane->plane_id, plane->crtc_id, plane->fb_id, metadata, buffers) != 0) {
+            return nullptr;
+          }
+          // Import into our own DRM file: GEM handles are file-local, while
+          // the helper transfers only real DMA-BUF descriptors over IPC.
+          auto *owned = static_cast<drmModeFB2 *>(std::calloc(1, sizeof(drmModeFB2)));
+          if (!owned) {
+            for (const auto buffer : buffers) {
+              if (buffer >= 0) close(buffer);
+            }
+            return nullptr;
+          }
+          *owned = metadata;
+          auto result = std::make_unique<wrapper_fb>(fd.el, owned);
+          bool success = true;
+          for (std::size_t i = 0; i < buffers.size(); ++i) {
+            if (buffers[i] >= 0) {
+              if (drmPrimeFDToHandle(fd.el, buffers[i], &result->handles[i]) != 0) {
+                success = false;
+              }
+              close(buffers[i]);
+            }
+          }
+          return success ? std::move(result) : nullptr;
+        }
+        drmModeFB2 *fb2 = nullptr;
+        drmModeFB *fb = nullptr;
+        {
+          linux_security::scoped_effective_capability admin {CAP_SYS_ADMIN};
+          if (!admin.active()) {
+            BOOST_LOG(error) << "Cannot inspect a KMS framebuffer because CAP_SYS_ADMIN "sv
+                             << (admin.unavailable() ? "is not permitted"sv : "could not be raised safely"sv);
+            return nullptr;
+          }
+          fb2 = drmModeGetFB2(fd.el, plane->fb_id);
+          if (!fb2) {
+            fb = drmModeGetFB(fd.el, plane->fb_id);
+          }
+        }
 
-        auto fb2 = drmModeGetFB2(fd.el, plane->fb_id);
         if (fb2) {
           return std::make_unique<wrapper_fb>(fd.el, fb2);
         }
-
-        auto fb = drmModeGetFB(fd.el, plane->fb_id);
         if (fb) {
           return std::make_unique<wrapper_fb>(fd.el, fb);
         }
 
         return nullptr;
+      }
+
+      int init_renderer(const char *path) {
+        // Display-only Vibeshine cards export the physical renderer's buffers;
+        // their own node cannot initialize an encoder. Keep the capture fd on
+        // the virtual card and use the selected GPU only for VAAPI/Vulkan.
+        const bool separate_renderer_required = selection::driver_requires_direct_import(driver_name);
+        const auto selected_render_node = separate_renderer_required ? resolve_render_device() : std::string {};
+        char *rendernode_path = drmGetRenderDeviceNameFromFd(fd.el);
+        const auto renderer_path = selection::render_device_path(
+          driver_name,
+          path,
+          rendernode_path ? rendernode_path : "",
+          selected_render_node
+        );
+        free(rendernode_path);
+        if (separate_renderer_required || renderer_path != path) {
+          BOOST_LOG(debug) << "Opening render node: "sv << renderer_path;
+          render_fd.el = open(renderer_path.c_str(), O_RDWR | O_CLOEXEC);
+          if (render_fd.el < 0) {
+            if (separate_renderer_required) {
+              BOOST_LOG(error) << "Cannot encode the private display using render node "sv
+                               << renderer_path << ": "sv << strerror(errno);
+              return -1;
+            }
+            BOOST_LOG(warning) << "Couldn't open render node: "sv << renderer_path << ": "sv << strerror(errno);
+            render_fd.el = dup(fd.el);
+          }
+          if (separate_renderer_required && drmGetNodeTypeFromFd(render_fd.el) != DRM_NODE_RENDER) {
+            BOOST_LOG(error) << "The private display requires a physical GPU render node; selected "sv << renderer_path;
+            return -1;
+          }
+          vulkan_device_path = renderer_path;
+        } else {
+          BOOST_LOG(warning) << "No render device name for: "sv << path;
+          render_fd.el = dup(fd.el);
+        }
+
+        return 0;
       }
 
       crtc_t crtc(std::uint32_t id) {
@@ -402,8 +526,19 @@ namespace platf {
       }
 
       bool is_nvidia() {
-        version_t ver {drmGetVersion(fd.el)};
-        return ver && ver->name && strncmp(ver->name, "nvidia-drm", 10) == 0;
+        return selection::driver_is_nvidia(driver_name);
+      }
+
+      bool supports_cuda_import() {
+        return selection::driver_supports_cuda_import(driver_name);
+      }
+
+      bool requires_direct_import() {
+        return selection::driver_requires_direct_import(driver_name);
+      }
+
+      bool requires_presentation_events() {
+        return selection::driver_requires_presentation_events(driver_name);
       }
 
       bool is_cursor(std::uint32_t plane_id) {
@@ -452,10 +587,13 @@ namespace platf {
       }
 
       connector_interal_t connector(std::uint32_t id) {
-        return drmModeGetConnector(fd.el, id);
+        // Observe the topology published by the compositor/DRM hotplug path.
+        // drmModeGetConnector forces a hardware reprobe when called by master;
+        // capture discovery must not modeset or wake a sleeping physical GPU.
+        return drmModeGetConnectorCurrent(fd.el, id);
       }
 
-      std::vector<connector_t> monitors(conn_type_count_t &conn_type_count) {
+      std::vector<connector_t> monitors() {
         auto resources = res();
         if (!resources) {
           BOOST_LOG(error) << "Couldn't get connector resources"sv;
@@ -463,8 +601,12 @@ namespace platf {
         }
 
         std::vector<connector_t> monitors;
-        std::for_each_n(resources->connectors, resources->count_connectors, [this, &conn_type_count, &monitors](std::uint32_t id) {
+        std::for_each_n(resources->connectors, resources->count_connectors, [this, &monitors](std::uint32_t id) {
           auto conn = connector(id);
+          if (!conn) {
+            BOOST_LOG(error) << "Couldn't get drm connector ["sv << id << "]: "sv << strerror(errno);
+            return;
+          }
 
           std::uint32_t crtc_id = 0;
 
@@ -475,12 +617,16 @@ namespace platf {
             }
           }
 
-          auto index = ++conn_type_count[conn->connector_type];
+          const auto *type_name = drmModeGetConnectorTypeName(conn->connector_type);
+          std::string connector_name = type_name ? type_name : "Unknown";
+          connector_name += '-';
+          connector_name += std::to_string(conn->connector_type_id);
 
           monitors.emplace_back(connector_t {
             conn->connector_type,
             crtc_id,
-            index,
+            conn->connector_type_id,
+            std::move(connector_name),
             conn->connector_id,
             conn->connection == DRM_MODE_CONNECTED,
           });
@@ -492,7 +638,14 @@ namespace platf {
       file_t handleFD(std::uint32_t handle) {
         file_t fb_fd;
 
-        auto status = drmPrimeHandleToFD(fd.el, handle, 0 /* flags */, &fb_fd.el);
+        // For an imported GEM, DRM core deliberately returns
+        // obj->import_attach->dmabuf here rather than exporting a new
+        // shmem-backed object. Keep this PRIME step as the capture boundary:
+        // the encoder GPU receives the original producer's DMA-BUF and its
+        // modifier, preserving zero-copy NVIDIA scanout when EGL can import
+        // that modifier. CLOEXEC prevents the per-frame fd from escaping into
+        // child processes; it does not alter the underlying DMA-BUF object.
+        auto status = drmPrimeHandleToFD(fd.el, handle, DRM_CLOEXEC /* flags */, &fb_fd.el);
         if (status) {
           return {};
         }
@@ -545,17 +698,26 @@ namespace platf {
       }
 
       file_t fd;
+      std::unique_ptr<kms_capture::client_t> capture_helper;
       file_t render_fd;
       plane_res_t plane_res;
+      std::string driver_name;
+      std::string vulkan_device_path;
     };
 
     std::map<std::uint32_t, monitor_t> map_crtc_to_monitor(const std::vector<connector_t> &connectors) {
       std::map<std::uint32_t, monitor_t> result;
 
       for (auto &connector : connectors) {
+        // Disconnected connectors have no CRTC and would all collide at key 0.
+        // Only an active CRTC can have a framebuffer that kmsgrab can capture.
+        if (!connector.crtc_id) {
+          continue;
+        }
         result.emplace(connector.crtc_id, monitor_t {
                                             connector.type,
                                             connector.index,
+                                            connector.name,
                                           });
       }
 
@@ -603,16 +765,54 @@ namespace platf {
 
     class display_t: public platf::display_t {
     public:
+      struct exported_frame_t {
+        vibeshine_drm_frame descriptor {};
+        std::array<file_t, VIBESHINE_DRM_FRAME_MAX_PLANES> dma_buf_fds;
+        std::array<file_t, VIBESHINE_DRM_FRAME_MAX_PLANES> sync_files;
+        std::chrono::steady_clock::time_point timestamp;
+      };
+
+      enum class frame_export_e {
+        ready,
+        empty,
+        unsupported,
+      };
+
       display_t(mem_type_e mem_type):
           platf::display_t(),
           mem_type {mem_type} {
       }
 
       int init(const std::string &display_name, const ::video::config_t &config) {
-        delay = std::chrono::nanoseconds {1s} / config.framerate;
+        if (config.framerateX100 > 0) {
+          const auto frame_rate = ::video::framerateX100_to_rational(config.framerateX100);
+          delay = pacing::interval_from_frame_rate(frame_rate.num, frame_rate.den);
+        } else {
+          delay = pacing::interval_from_frame_rate(config.framerate, 1);
+        }
+        if (delay <= std::chrono::nanoseconds::zero()) {
+          BOOST_LOG(error) << "Invalid KMS capture frame interval."sv;
+          return -1;
+        }
+        presentation_rate_limiter.set_interval(delay);
 
-        int monitor_index = util::from_view(display_name);
-        int monitor = 0;
+        // Empty historically selected monitor 0. Explicit decimal names remain
+        // legacy aliases, while every other value resolves through the stable
+        // connector names produced by kms_display_names().
+        auto numeric_alias = display_name.empty() ? std::optional<std::uint32_t> {0} : selection::parse_numeric_alias(display_name);
+        std::optional<selection::monitor_t> selected_monitor;
+        if (!numeric_alias) {
+          selected_monitor = selection::resolve_named_monitor(display_name, named_monitors);
+          if (!selected_monitor) {
+            // The capture worker owns rate-limited retry diagnostics.
+            return -1;
+          }
+
+          BOOST_LOG(debug) << "Resolved DRM connector ["sv << display_name << "] to monitor ["sv
+                           << selected_monitor->monitor_index << "] on "sv << selected_monitor->card_path;
+        }
+
+        std::uint32_t monitor = 0;
 
         fs::path card_dir {"/dev/dri"sv};
         for (auto &entry : fs::directory_iterator {card_dir}) {
@@ -622,17 +822,20 @@ namespace platf {
           if (filestring.size() < 4 || std::string_view {filestring}.substr(0, 4) != "card"sv) {
             continue;
           }
+          if (selected_monitor && selected_monitor->card_path != filestring) {
+            continue;
+          }
 
           kms::card_t card;
           if (card.init(entry.path().c_str())) {
             continue;
           }
 
-          // Skip non-Nvidia cards if we're looking for CUDA devices
-          // unless NVENC is selected manually by the user
-          if (mem_type == mem_type_e::cuda && !card.is_nvidia()) {
-            BOOST_LOG(debug) << file << " is not a CUDA device"sv;
-            if (config::video.encoder != "nvenc") {
+          // Skip cards whose scanout buffers are not known to support the CUDA
+          // import path unless NVENC was explicitly selected by the user.
+          if (mem_type == mem_type_e::cuda && !card.supports_cuda_import()) {
+            BOOST_LOG(debug) << file << " does not support CUDA framebuffer import"sv;
+            if (config::video.encoder != "nvenc" && config::video.encoder != "nvenc_legacy") {
               continue;
             }
           }
@@ -656,9 +859,15 @@ namespace platf {
               continue;
             }
 
-            if (monitor != monitor_index) {
-              ++monitor;
-              continue;
+            if (selected_monitor) {
+              if (plane->crtc_id != selected_monitor->crtc_id) {
+                continue;
+              }
+            } else {
+              if (monitor != *numeric_alias) {
+                ++monitor;
+                continue;
+              }
             }
 
             auto fb = card.fb(plane.get());
@@ -688,6 +897,12 @@ namespace platf {
             if (!crtc) {
               BOOST_LOG(error) << "Couldn't get CRTC info: "sv << strerror(errno);
               continue;
+            }
+
+            // Only an actual capture needs the renderer. Output discovery and
+            // resume readiness must not open a second GPU as a side effect.
+            if (card.init_renderer(entry.path().c_str())) {
+              return -1;
             }
 
             BOOST_LOG(info) << "Found monitor for DRM screencasting"sv;
@@ -760,8 +975,7 @@ namespace platf {
             crtc_index = card.get_crtc_index_by_id(plane->crtc_id);
 
             // Find the connector for this CRTC
-            kms::conn_type_count_t conn_type_count;
-            for (auto &connector : card.monitors(conn_type_count)) {
+            for (auto &connector : card.monitors()) {
               if (connector.crtc_id == crtc_id) {
                 BOOST_LOG(info) << "Found connector ID ["sv << connector.connector_id << ']';
 
@@ -772,12 +986,13 @@ namespace platf {
               }
             }
 
+            direct_import_required = card.requires_direct_import();
             this->card = std::move(card);
             goto break_loop;
           }
         }
 
-        BOOST_LOG(error) << "Couldn't find monitor ["sv << monitor_index << ']';
+        // The capture worker owns rate-limited retry diagnostics.
         return -1;
 
       // Neatly break from nested for loop
@@ -813,7 +1028,44 @@ namespace platf {
           BOOST_LOG(warning) << "No KMS cursor plane found. Cursor may not be displayed while streaming!"sv;
         }
 
+        initialize_presentation_events();
+        if (!presentation_mode.event_capture_enabled() && !presentation_mode.fixed_rate_allowed()) {
+          return -1;
+        }
+
         return 0;
+      }
+
+      capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
+        if (presentation_mode.event_capture_enabled()) {
+          const linux_capture_status::managed_capture_scope observed_capture;
+          if (auto result = capture_presentation_events(push_captured_image_cb, pull_free_image_cb, cursor)) {
+            return *result;
+          }
+          BOOST_LOG(error) << "Vibepollo DRM presentation events became unavailable; refusing fixed-rate KMS fallback."sv;
+          presentation_mode.deactivate();
+          return capture_e::error;
+        }
+
+        if (!presentation_mode.fixed_rate_allowed()) {
+          return capture_e::error;
+        }
+
+        return capture_fixed_rate(push_captured_image_cb, pull_free_image_cb, cursor);
+      }
+
+      void request_refresh() override {
+        if (presentation_mode.event_capture_enabled()) {
+          presentation_latch.request_capture();
+          if (!presentation_pending && presentation_latch.capture_ready()) {
+            presentation_timestamp.reset();
+            presentation_pending = true;
+          }
+        }
+      }
+
+      [[nodiscard]] bool is_event_driven_capture() const override {
+        return presentation_mode.event_capture_enabled();
       }
 
       bool is_hdr() {
@@ -843,22 +1095,22 @@ namespace platf {
           return false;
         }
 
-        // We only support Traditional Gamma SDR or SMPTE 2084 PQ HDR EOTFs.
-        // Print a warning if we encounter any others.
+        // HDR10 capture requires SMPTE ST 2084. Do not mislabel traditional
+        // gamma HDR or HLG scanout as PQ on the encoded stream.
         switch (raw_metadata->hdmi_metadata_type1.eotf) {
           case 0:  // HDMI_EOTF_TRADITIONAL_GAMMA_SDR
             return false;
           case 1:  // HDMI_EOTF_TRADITIONAL_GAMMA_HDR
             BOOST_LOG(warning) << "Unsupported HDR EOTF: Traditional Gamma"sv;
-            return true;
+            return false;
           case 2:  // HDMI_EOTF_SMPTE_ST2084
-            return true;
+            return linux_hdr::is_hdr10_eotf(raw_metadata->hdmi_metadata_type1.eotf);
           case 3:  // HDMI_EOTF_BT_2100_HLG
             BOOST_LOG(warning) << "Unsupported HDR EOTF: HLG"sv;
-            return true;
+            return false;
           default:
             BOOST_LOG(warning) << "Unsupported HDR EOTF: "sv << raw_metadata->hdmi_metadata_type1.eotf;
-            return true;
+            return false;
         }
       }
 
@@ -1069,7 +1321,8 @@ namespace platf {
         }
       }
 
-      inline capture_e refresh(file_t *file, egl::surface_descriptor_t *sd, std::optional<std::chrono::steady_clock::time_point> &frame_timestamp) {
+      inline capture_e refresh(egl::owned_surface_t &surface, std::optional<std::chrono::steady_clock::time_point> &frame_timestamp) {
+        auto *sd = &surface.sd;
         // Check for a change in HDR metadata
         if (connector_id) {
           auto connector_props = card.connector_props(*connector_id);
@@ -1079,8 +1332,41 @@ namespace platf {
           }
         }
 
+        if (pending_exported_frame) {
+          auto exported = std::move(*pending_exported_frame);
+          pending_exported_frame.reset();
+          const auto &frame = exported.descriptor;
+
+          std::fill_n(sd->fds, VIBESHINE_DRM_FRAME_MAX_PLANES, -1);
+          for (std::uint32_t plane = 0; plane < frame.plane_count; ++plane) {
+            sd->fds[plane] = exported.dma_buf_fds[plane].release();
+            sd->offsets[plane] = frame.offsets[plane];
+            sd->pitches[plane] = frame.pitches[plane];
+          }
+
+          sd->width = frame.width;
+          sd->height = frame.height;
+          sd->modifier = frame.modifier;
+          sd->fourcc = frame.fourcc;
+          sd->direct_import_required = true;
+          frame_timestamp = exported.timestamp;
+
+          if (frame.width != img_width || frame.height != img_height) {
+            return capture_e::reinit;
+          }
+
+          update_cursor();
+          return capture_e::ok;
+        }
+
         plane_t plane = drmModeGetPlane(card.fd.el, plane_id);
         frame_timestamp = std::chrono::steady_clock::now();
+
+        // A disconnected output temporarily has no plane framebuffer. End this
+        // capture generation instead of retrying and logging at the frame rate.
+        if (!plane || plane->fb_id == 0) {
+          return capture_e::reinit;
+        }
 
         auto fb = card.fb(plane.get());
         if (!fb) {
@@ -1105,13 +1391,13 @@ namespace platf {
             continue;
           }
 
-          file[y] = card.handleFD(fb->handles[y]);
-          if (file[y].el < 0) {
+          auto fd = card.handleFD(fb->handles[y]);
+          if (fd.el < 0) {
             BOOST_LOG(error) << "Couldn't get primary file descriptor for Framebuffer ["sv << fb->fb_id << "]: "sv << strerror(errno);
             return capture_e::error;
           }
 
-          sd->fds[y] = file[y].el;
+          sd->fds[y] = fd.release();
           sd->offsets[y] = fb->offsets[y];
           sd->pitches[y] = fb->pitches[y];
         }
@@ -1120,6 +1406,7 @@ namespace platf {
         sd->height = fb->height;
         sd->modifier = fb->modifier;
         sd->fourcc = fb->pixel_format;
+        sd->direct_import_required = direct_import_required;
 
         if (
           fb->width != img_width ||
@@ -1132,6 +1419,656 @@ namespace platf {
 
         return capture_e::ok;
       }
+
+      void update_crtc_gamma_lut(egl::img_descriptor_t &img) {
+        const auto crtc_properties = card.crtc_props(crtc_id);
+        const auto blob_id = card.prop_value_by_name(crtc_properties, "GAMMA_LUT"sv).value_or(0);
+        if (blob_id != crtc_gamma_lut_blob_id) {
+          crtc_gamma_lut_blob_id = blob_id;
+          crtc_gamma_lut.reset();
+
+          if (blob_id != 0) {
+            prop_blob_t blob = drmModeGetPropertyBlob(card.fd.el, blob_id);
+            if (!blob || blob->length < 2 * sizeof(drm_color_lut) || blob->length % sizeof(drm_color_lut) != 0) {
+              BOOST_LOG(warning) << "Ignoring invalid CRTC GAMMA_LUT blob ["sv << blob_id << ']';
+            } else {
+              const auto count = blob->length / sizeof(drm_color_lut);
+              auto lut = std::make_shared<egl::img_descriptor_t::gamma_lut_t>();
+              lut->reserve(count);
+              const auto *entries = static_cast<const drm_color_lut *>(blob->data);
+              for (std::size_t index = 0; index < count; ++index) {
+                lut->push_back({entries[index].red, entries[index].green, entries[index].blue});
+              }
+              crtc_gamma_lut = std::move(lut);
+              BOOST_LOG(info) << "Applying "sv << count << "-entry CRTC GAMMA_LUT during KMS capture."sv;
+            }
+          }
+        }
+
+        img.crtc_gamma_lut = crtc_gamma_lut;
+        img.crtc_gamma_lut_serial = crtc_gamma_lut_blob_id;
+      }
+
+      enum class presentation_wait_e {
+        changed,
+        timeout,
+        unsupported,
+      };
+
+      frame_export_e dequeue_presentation_frame() {
+        vibeshine_drm_frame request {};
+        request.abi_version = VIBESHINE_DRM_FRAME_ABI_VERSION;
+        request.crtc_id = static_cast<std::uint32_t>(crtc_id);
+
+        int ioctl_error = 0;
+        if (card.capture_helper) {
+          if (card.capture_helper->frame(request) != 0) {
+            ioctl_error = errno;
+          }
+        } else {
+          linux_security::scoped_effective_capability admin {CAP_SYS_ADMIN};
+          if (!admin.active()) {
+            BOOST_LOG(error) << "Cannot export a KMS presentation frame because CAP_SYS_ADMIN "sv
+                             << (admin.unavailable() ? "is not permitted"sv : "could not be raised safely"sv);
+            return frame_export_e::unsupported;
+          }
+          if (::ioctl(card.fd.el, DRM_IOCTL_VIBESHINE_GET_FRAME, &request) < 0) {
+            ioctl_error = errno;
+          }
+        }
+        if (ioctl_error != 0) {
+          BOOST_LOG(error) << "Failed to export Vibepollo DRM presentation frame: "sv << strerror(ioctl_error);
+          return frame_export_e::unsupported;
+        }
+
+        exported_frame_t exported;
+        exported.descriptor = request;
+        for (std::size_t plane = 0; plane < exported.dma_buf_fds.size(); ++plane) {
+          exported.dma_buf_fds[plane].el = request.dma_buf_fds[plane];
+          exported.sync_files[plane].el = request.sync_file_fds[plane];
+        }
+
+        const bool common_fields_valid =
+          request.abi_version == VIBESHINE_DRM_FRAME_ABI_VERSION &&
+          request.crtc_id == static_cast<std::uint32_t>(crtc_id) &&
+          request.reserved_u32 == 0 &&
+          std::ranges::all_of(request.reserved, [](std::uint64_t value) { return value == 0; });
+        if (!common_fields_valid) {
+          BOOST_LOG(error) << "Vibepollo DRM returned an invalid frame ABI response."sv;
+          return frame_export_e::unsupported;
+        }
+
+        if (request.flags == VIBESHINE_DRM_FRAME_EMPTY) {
+          const bool empty_descriptor = request.width == 0 && request.height == 0 &&
+                                        request.fourcc == 0 && request.modifier == 0 &&
+                                        request.plane_count == 0 &&
+                                        std::ranges::all_of(request.dma_buf_fds, [](std::int32_t fd) { return fd == -1; }) &&
+                                        std::ranges::all_of(request.sync_file_fds, [](std::int32_t fd) { return fd == -1; }) &&
+                                        std::ranges::all_of(request.pitches, [](std::uint32_t value) { return value == 0; }) &&
+                                        std::ranges::all_of(request.offsets, [](std::uint32_t value) { return value == 0; });
+          if (!empty_descriptor) {
+            BOOST_LOG(error) << "Vibepollo DRM returned a malformed empty frame."sv;
+            return frame_export_e::unsupported;
+          }
+          pending_exported_frame.reset();
+          return frame_export_e::empty;
+        }
+
+        if (request.flags != VIBESHINE_DRM_FRAME_READY || request.sequence == 0 ||
+            request.width == 0 || request.height == 0 || request.fourcc == 0 ||
+            request.plane_count == 0 || request.plane_count > VIBESHINE_DRM_FRAME_MAX_PLANES) {
+          BOOST_LOG(error) << "Vibepollo DRM returned a malformed presentation frame."sv;
+          return frame_export_e::unsupported;
+        }
+
+        for (std::uint32_t plane = 0; plane < VIBESHINE_DRM_FRAME_MAX_PLANES; ++plane) {
+          const bool active = plane < request.plane_count;
+          if ((active && (request.dma_buf_fds[plane] < 0 || request.sync_file_fds[plane] < -1)) ||
+              (!active && (request.dma_buf_fds[plane] != -1 || request.sync_file_fds[plane] != -1 ||
+                           request.pitches[plane] != 0 || request.offsets[plane] != 0))) {
+            BOOST_LOG(error) << "Vibepollo DRM returned an invalid DMA-BUF plane descriptor."sv;
+            return frame_export_e::unsupported;
+          }
+        }
+
+        auto timestamp = pacing::validate_timestamp(
+          request.timestamp_ns,
+          std::chrono::steady_clock::now(),
+          0ns,
+          last_presentation_timestamp
+        );
+        if (!timestamp) {
+          BOOST_LOG(error) << "Vibepollo DRM returned an invalid frame presentation timestamp."sv;
+          return frame_export_e::unsupported;
+        }
+
+        exported.timestamp = *timestamp;
+        presentation_sequence = request.sequence;
+        presentation_timestamp = *timestamp;
+        last_presentation_timestamp = *timestamp;
+        pending_exported_frame = std::move(exported);
+        return frame_export_e::ready;
+      }
+
+      void initialize_presentation_events() {
+        presentation_mode = pacing::presentation_mode_t {card.requires_presentation_events()};
+        if (presentation_mode.fixed_rate_allowed()) {
+          return;
+        }
+
+        presentation_sequence = 0;
+        if (wait_for_presentation(0ms) == presentation_wait_e::unsupported) {
+          BOOST_LOG(error) << "The loaded vibeshine_drm module does not provide a valid presentation ABI. Rebuild and reload the module; refusing fixed-rate KMS fallback."sv;
+          return;
+        }
+        if (dequeue_presentation_frame() != frame_export_e::ready) {
+          BOOST_LOG(error) << "The loaded vibeshine_drm module cannot export its completed primary framebuffer; refusing KMS polling fallback."sv;
+          return;
+        }
+
+        presentation_mode.activate();
+        presentation_rate_limiter.reset();
+        last_source_presentation_timestamp.reset();
+        last_capture_delivery_timestamp.reset();
+        last_selected_presentation_sequence.reset();
+        sleep_overshoot_logger.reset();
+        presentation_latch.request_capture();
+        presentation_pending = presentation_latch.capture_ready();
+        presentation_trace_sequence = presentation_sequence;
+        presentation_trace_available = true;
+        BOOST_LOG(info) << "Using event-driven KMS capture for Vibepollo DRM CRTC ["sv << crtc_id << "]."sv;
+        if (drm_timing_trace::writer().available()) {
+          BOOST_LOG(info) << "Always-on DRM timing trace is buffered in "sv << drm_timing_trace::TRACE_PATH
+                          << " and bounded to two 128 MiB tmpfs files."sv;
+        } else {
+          BOOST_LOG(error) << "Cannot open always-on DRM timing trace ["sv << drm_timing_trace::TRACE_PATH << "]."sv;
+        }
+        const auto trace_start_timestamp = std::chrono::steady_clock::now();
+        const auto trace_start_wall_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                           std::chrono::system_clock::now().time_since_epoch()
+        ).count();
+        drm_timing_trace::write([&](auto &trace) {
+          trace << "kind=trace_start crtc=" << crtc_id
+                << " seq=" << presentation_sequence
+                << " raw_ns=" << timing_trace_ns(*presentation_timestamp)
+                << " mono_ns=" << timing_trace_ns(trace_start_timestamp)
+                << " wall_ns=" << trace_start_wall_ns
+                << " target_interval_ns=" << timing_trace_ns(delay);
+        });
+      }
+
+      void drain_presentation_trace() {
+        if (!presentation_trace_available) {
+          return;
+        }
+
+        while (true) {
+          vibeshine_drm_present_trace request {};
+          request.abi_version = VIBESHINE_DRM_TRACE_ABI_VERSION;
+          request.crtc_id = static_cast<std::uint32_t>(crtc_id);
+          request.after_sequence = presentation_trace_sequence;
+
+          int ioctl_error = 0;
+          {
+            linux_security::scoped_effective_capability admin {CAP_SYS_ADMIN};
+            if (!admin.active()) {
+              ioctl_error = admin.unavailable() ? EACCES : EPERM;
+            } else if (::ioctl(card.fd.el, DRM_IOCTL_VIBESHINE_GET_PRESENT_TRACE, &request) < 0) {
+              ioctl_error = errno;
+            }
+          }
+          if (ioctl_error != 0) {
+            drm_timing_trace::write([&](auto &trace) {
+              trace << "kind=trace_error crtc=" << crtc_id
+                    << " after_seq=" << presentation_trace_sequence
+                    << " errno=" << ioctl_error;
+            });
+            presentation_trace_available = false;
+            return;
+          }
+
+          bool valid = request.abi_version == VIBESHINE_DRM_TRACE_ABI_VERSION &&
+                       request.crtc_id == static_cast<std::uint32_t>(crtc_id) &&
+                       request.after_sequence == presentation_trace_sequence &&
+                       request.count <= VIBESHINE_DRM_TRACE_MAX_EVENTS &&
+                       (request.flags & ~VIBESHINE_DRM_TRACE_OVERFLOW) == 0 &&
+                       request.reserved[0] == 0 && request.reserved[1] == 0 &&
+                       request.reserved[2] == 0 && request.reserved[3] == 0;
+          std::uint64_t previous_sequence = presentation_trace_sequence;
+          for (std::uint32_t index = 0; valid && index < request.count; ++index) {
+            valid = request.events[index].sequence > previous_sequence &&
+                    request.events[index].sequence <= request.newest_sequence &&
+                    request.events[index].timestamp_ns != 0;
+            previous_sequence = request.events[index].sequence;
+          }
+          if (!valid) {
+            drm_timing_trace::write([&](auto &trace) {
+              trace << "kind=trace_error crtc=" << crtc_id
+                    << " after_seq=" << presentation_trace_sequence
+                    << " error=invalid_response";
+            });
+            presentation_trace_available = false;
+            return;
+          }
+
+          const auto receipt_timestamp = std::chrono::steady_clock::now();
+          if ((request.flags & VIBESHINE_DRM_TRACE_OVERFLOW) != 0) {
+            drm_timing_trace::write([&](auto &trace) {
+              trace << "kind=trace_overflow crtc=" << crtc_id
+                    << " after_seq=" << presentation_trace_sequence
+                    << " first_seq=" << (request.count ? request.events[0].sequence : 0)
+                    << " newest_seq=" << request.newest_sequence
+                    << " receipt_ns=" << timing_trace_ns(receipt_timestamp);
+            });
+          }
+          for (std::uint32_t index = 0; index < request.count; ++index) {
+            const auto &event = request.events[index];
+            drm_timing_trace::write([&](auto &trace) {
+              trace << "kind=drm_event crtc=" << crtc_id
+                    << " seq=" << event.sequence
+                    << " raw_ns=" << event.timestamp_ns
+                    << " receipt_ns=" << timing_trace_ns(receipt_timestamp);
+            });
+            presentation_trace_sequence = event.sequence;
+          }
+          if (request.count == 0 || presentation_trace_sequence >= request.newest_sequence) {
+            return;
+          }
+        }
+      }
+
+      presentation_wait_e wait_for_presentation(std::chrono::milliseconds timeout) {
+        const auto requested_sequence = presentation_sequence;
+        const auto wait_deadline = std::chrono::steady_clock::now() + timeout;
+        unsigned int retry_count = 0;
+
+        while (true) {
+          auto remaining = timeout;
+          if (timeout > 0ms) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= wait_deadline) {
+              if (retry_count > 0) {
+                return wait_for_presentation(0ms);
+              }
+              return presentation_wait_e::timeout;
+            }
+            remaining = std::chrono::ceil<std::chrono::milliseconds>(wait_deadline - now);
+          }
+
+          vibeshine_drm_wait_present request {};
+          const auto requested_timeout_ms = static_cast<std::uint32_t>(std::clamp<std::int64_t>(
+            remaining.count(),
+            0,
+            VIBESHINE_DRM_PRESENT_MAX_TIMEOUT_MS
+          ));
+          request.abi_version = VIBESHINE_DRM_PRESENT_ABI_VERSION;
+          request.crtc_id = static_cast<std::uint32_t>(crtc_id);
+          request.sequence = requested_sequence;
+          request.timeout_ms = requested_timeout_ms;
+
+          int ioctl_error = 0;
+          if (card.capture_helper) {
+            if (card.capture_helper->wait(request) != 0) {
+              ioctl_error = errno;
+            }
+          } else {
+            linux_security::scoped_effective_capability admin {CAP_SYS_ADMIN};
+            if (!admin.active()) {
+              BOOST_LOG(error) << "Cannot wait for KMS presentation because CAP_SYS_ADMIN "sv
+                               << (admin.unavailable() ? "is not permitted"sv : "could not be raised safely"sv);
+              presentation_mode.deactivate();
+              return presentation_wait_e::unsupported;
+            }
+            if (::ioctl(card.fd.el, DRM_IOCTL_VIBESHINE_WAIT_PRESENT, &request) < 0) {
+              ioctl_error = errno;
+            }
+          }
+          if (ioctl_error != 0) {
+            switch (pacing::classify_ioctl_error(ioctl_error, timeout > 0ms)) {
+              case pacing::presentation_ioctl_error_e::retry:
+                {
+                  ++retry_count;
+                  if (retry_count >= 4) {
+                    std::this_thread::sleep_until(wait_deadline);
+                    return wait_for_presentation(0ms);
+                  }
+                  const auto backoff = std::chrono::milliseconds {1U << (retry_count - 1)};
+                  const auto retry_at = std::min(wait_deadline, std::chrono::steady_clock::now() + backoff);
+                  std::this_thread::sleep_until(retry_at);
+                  continue;
+                }
+              case pacing::presentation_ioctl_error_e::transient_timeout:
+                std::this_thread::sleep_until(wait_deadline);
+                return wait_for_presentation(0ms);
+              case pacing::presentation_ioctl_error_e::unsupported:
+                presentation_mode.deactivate();
+                return presentation_wait_e::unsupported;
+            }
+          }
+
+          if (request.abi_version != VIBESHINE_DRM_PRESENT_ABI_VERSION ||
+              request.crtc_id != static_cast<std::uint32_t>(crtc_id) ||
+              request.timeout_ms != requested_timeout_ms ||
+              request.reserved[0] != 0 || request.reserved[1] != 0) {
+            presentation_mode.deactivate();
+            return presentation_wait_e::unsupported;
+          }
+
+          switch (pacing::classify_response(
+            request.flags,
+            VIBESHINE_DRM_PRESENT_CHANGED,
+            VIBESHINE_DRM_PRESENT_TIMEOUT,
+            VIBESHINE_DRM_PRESENT_PENDING,
+            requested_sequence,
+            request.sequence
+          )) {
+            case pacing::presentation_response_e::changed:
+              {
+                const auto receipt_timestamp = std::chrono::steady_clock::now();
+                auto timestamp = pacing::validate_timestamp(
+                  request.timestamp_ns,
+                  receipt_timestamp,
+                  0ns,
+                  last_presentation_timestamp
+                );
+                if (!timestamp) {
+                  presentation_mode.deactivate();
+                  return presentation_wait_e::unsupported;
+                }
+                const auto missed = request.sequence > requested_sequence ?
+                                      request.sequence - requested_sequence - 1 :
+                                      0;
+                drm_timing_trace::write([&](auto &trace) {
+                  trace << "kind=wait_response crtc=" << crtc_id
+                        << " requested_seq=" << requested_sequence
+                        << " seq=" << request.sequence
+                        << " missed=" << missed
+                        << " raw_ns=" << request.timestamp_ns
+                        << " receipt_ns=" << timing_trace_ns(receipt_timestamp)
+                        << " pending=" << ((request.flags & VIBESHINE_DRM_PRESENT_PENDING) != 0 ? 1 : 0);
+                });
+                presentation_sequence = request.sequence;
+                presentation_timestamp = *timestamp;
+                last_presentation_timestamp = *timestamp;
+                drain_presentation_trace();
+                presentation_latch.observe_response(
+                  pacing::presentation_response_e::changed,
+                  (request.flags & VIBESHINE_DRM_PRESENT_PENDING) != 0,
+                  std::chrono::steady_clock::now()
+                );
+                return presentation_wait_e::changed;
+              }
+            case pacing::presentation_response_e::timeout:
+              presentation_latch.observe_response(
+                pacing::presentation_response_e::timeout,
+                (request.flags & VIBESHINE_DRM_PRESENT_PENDING) != 0,
+                std::chrono::steady_clock::now()
+              );
+              if (timeout > 0ms) {
+                std::this_thread::sleep_until(wait_deadline);
+              }
+              return presentation_wait_e::timeout;
+            case pacing::presentation_response_e::invalid:
+              presentation_mode.deactivate();
+              return presentation_wait_e::unsupported;
+          }
+
+          presentation_mode.deactivate();
+          return presentation_wait_e::unsupported;
+        }
+      }
+
+      std::optional<capture_e> capture_presentation_events(
+        const push_captured_image_cb_t &push_captured_image_cb,
+        const pull_free_image_cb_t &pull_free_image_cb,
+        bool *cursor
+      ) {
+        while (presentation_mode.event_capture_enabled()) {
+          if (presentation_pending) {
+            const auto decision_timestamp = std::chrono::steady_clock::now();
+            const auto limiter_before = presentation_rate_limiter.diagnostic_state(decision_timestamp);
+            const auto delivery_deadline = limiter_before.next_delivery;
+            const auto sequence_at_decision = presentation_sequence;
+            const bool waited_for_credit = delivery_deadline > decision_timestamp;
+            if (const auto now = std::chrono::steady_clock::now(); delivery_deadline > now) {
+              wait_until_capture_deadline(delivery_deadline);
+              sleep_overshoot_logger.first_point(delivery_deadline);
+              sleep_overshoot_logger.second_point_now_and_log();
+            }
+
+            /*
+             * Refresh the sequence only after the source-locked client-rate
+             * deadline. The driver returns its newest completed framebuffer,
+             * so genuine oversupply is coalesced without imposing a competing
+             * clock on same-rate compositor presentations.
+             */
+            if (wait_for_presentation(0ms) == presentation_wait_e::unsupported) {
+              return std::nullopt;
+            }
+            if (presentation_latch.state_pending()) {
+              if (presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), pacing::PRESENT_PENDING_HANG_TIMEOUT)) {
+                return std::nullopt;
+              }
+            }
+
+            // Re-export at the delivery slot even when initialization cached a
+            // frame. GET_FRAME coalesces completed sequences and guarantees that
+            // the framebuffer, sequence, and timestamp all describe the newest
+            // coherent presentation.
+            switch (dequeue_presentation_frame()) {
+              case frame_export_e::ready:
+                break;
+              case frame_export_e::empty:
+                return platf::capture_e::reinit;
+              case frame_export_e::unsupported:
+                return std::nullopt;
+            }
+
+            const auto captured_timestamp = presentation_timestamp;
+            const auto captured_sequence = presentation_sequence;
+            const auto captured_generation = presentation_latch.capture_generation();
+            std::shared_ptr<platf::img_t> img_out;
+            std::optional<std::chrono::steady_clock::time_point> capture_delivery_timestamp;
+            auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
+            if (status == platf::capture_e::reinit ||
+                status == platf::capture_e::error ||
+                status == platf::capture_e::interrupted) {
+              return status;
+            }
+
+            const auto post_capture_presentation = wait_for_presentation(0ms);
+            if (post_capture_presentation == presentation_wait_e::unsupported) {
+              img_out.reset();
+              if (!push_captured_image_cb({}, false)) {
+                return platf::capture_e::ok;
+              }
+              return std::nullopt;
+            }
+
+            if (presentation_latch.state_pending()) {
+              if (presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), pacing::PRESENT_PENDING_HANG_TIMEOUT)) {
+                return std::nullopt;
+              }
+            }
+
+            if (status == platf::capture_e::ok && img_out && captured_timestamp) {
+              if (last_source_presentation_timestamp) {
+                source_presentation_interval_logger.collect_and_log(
+                  std::chrono::duration<double, std::milli>(
+                    *captured_timestamp - *last_source_presentation_timestamp
+                  ).count()
+                );
+              }
+              last_source_presentation_timestamp = captured_timestamp;
+
+              if (!img_out->host_processing_timestamp) {
+                BOOST_LOG(error) << "KMS snapshot is missing its host capture timestamp."sv;
+                return std::nullopt;
+              }
+
+              capture_delivery_timestamp = std::chrono::steady_clock::now();
+              if (last_capture_delivery_timestamp) {
+                capture_delivery_interval_logger.collect_and_log(
+                  std::chrono::duration<double, std::milli>(
+                    *capture_delivery_timestamp - *last_capture_delivery_timestamp
+                  ).count()
+                );
+              }
+              last_capture_delivery_timestamp = capture_delivery_timestamp;
+              presentation_to_capture_latency_logger.collect_and_log(
+                std::chrono::duration<double, std::milli>(
+                  *capture_delivery_timestamp - *captured_timestamp
+                ).count()
+              );
+
+              // Presentation time remains source metadata. Actual pacing is
+              // controlled by capture delivery, because GameStream clients do
+              // not schedule frame display from this RTP timestamp.
+              img_out->frame_timestamp = captured_timestamp;
+              img_out->capture_pacing_timestamp = capture_delivery_timestamp;
+            }
+
+            switch (status) {
+              case platf::capture_e::timeout:
+                if (!push_captured_image_cb(std::move(img_out), false)) {
+                  return platf::capture_e::ok;
+                }
+                break;
+              case platf::capture_e::ok:
+                {
+                  if (!captured_timestamp) {
+                    BOOST_LOG(error) << "Vibepollo DRM presentation is missing its validated timestamp."sv;
+                    return std::nullopt;
+                  }
+                  if (!img_out || !img_out->host_processing_timestamp || !capture_delivery_timestamp) {
+                    BOOST_LOG(error) << "KMS capture is missing its actual delivery timestamp."sv;
+                    return std::nullopt;
+                  }
+                  presentation_rate_limiter.mark_delivered(*capture_delivery_timestamp);
+                  const auto limiter_after = presentation_rate_limiter.diagnostic_state(*capture_delivery_timestamp);
+                  const auto coalesced = last_selected_presentation_sequence &&
+                                             captured_sequence > *last_selected_presentation_sequence ?
+                                           captured_sequence - *last_selected_presentation_sequence - 1 :
+                                           0;
+                  const bool stall_reset = limiter_before.last_delivery &&
+                                           *capture_delivery_timestamp >= *limiter_before.last_delivery &&
+                                           *capture_delivery_timestamp - *limiter_before.last_delivery >=
+                                             limiter_before.interval + limiter_before.interval;
+                  drm_timing_trace::write([&](auto &trace) {
+                    trace << "kind=selection crtc=" << crtc_id
+                          << " decision_seq=" << sequence_at_decision
+                          << " selected_seq=" << captured_sequence
+                          << " coalesced=" << coalesced
+                          << " raw_ns=" << timing_trace_ns(*captured_timestamp)
+                          << " decision_ns=" << timing_trace_ns(decision_timestamp)
+                          << " target_interval_ns=" << timing_trace_ns(limiter_before.interval)
+                          << " stored_credit_before_ns=" << timing_trace_ns(limiter_before.stored_credit)
+                          << " available_credit_before_ns=" << timing_trace_ns(limiter_before.available_credit)
+                          << " deadline_ns=" << timing_trace_ns(delivery_deadline)
+                          << " delivery_ns=" << timing_trace_ns(*capture_delivery_timestamp)
+                          << " delivery_lateness_ns=" << timing_trace_ns(*capture_delivery_timestamp - delivery_deadline)
+                          << " stored_credit_after_ns=" << timing_trace_ns(limiter_after.stored_credit)
+                          << " available_credit_after_ns=" << timing_trace_ns(limiter_after.available_credit)
+                          << " waited=" << (waited_for_credit ? 1 : 0)
+                          << " stall_reset=" << (stall_reset ? 1 : 0)
+                          << " latch_generation=" << captured_generation;
+                  });
+                  last_selected_presentation_sequence = captured_sequence;
+                  presentation_latch.mark_delivered(captured_generation);
+                  presentation_pending = presentation_latch.capture_ready();
+                  if (!presentation_pending) {
+                    presentation_timestamp.reset();
+                  }
+                  if (!push_captured_image_cb(std::move(img_out), true)) {
+                    return platf::capture_e::ok;
+                  }
+                  break;
+                }
+              case platf::capture_e::reinit:
+              case platf::capture_e::error:
+              case platf::capture_e::interrupted:
+                return status;
+              default:
+                BOOST_LOG(error) << "Unrecognized capture status ["sv << static_cast<int>(status) << ']';
+                return status;
+            }
+            continue;
+          }
+
+          switch (wait_for_presentation(PRESENT_WAIT_IDLE_TIMEOUT)) {
+            case presentation_wait_e::changed:
+            case presentation_wait_e::timeout:
+              if (presentation_latch.state_pending() &&
+                  presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), pacing::PRESENT_PENDING_HANG_TIMEOUT)) {
+                return std::nullopt;
+              }
+              if (presentation_latch.capture_ready()) {
+                presentation_pending = true;
+              } else if (!presentation_pending && !push_captured_image_cb({}, false)) {
+                return platf::capture_e::ok;
+              }
+              break;
+            case presentation_wait_e::unsupported:
+              return std::nullopt;
+          }
+        }
+
+        return std::nullopt;
+      }
+
+      capture_e capture_fixed_rate(
+        const push_captured_image_cb_t &push_captured_image_cb,
+        const pull_free_image_cb_t &pull_free_image_cb,
+        bool *cursor
+      ) {
+        auto next_frame = std::chrono::steady_clock::now();
+
+        sleep_overshoot_logger.reset();
+
+        while (true) {
+          auto now = std::chrono::steady_clock::now();
+
+          if (next_frame > now) {
+            std::this_thread::sleep_for(next_frame - now);
+            sleep_overshoot_logger.first_point(next_frame);
+            sleep_overshoot_logger.second_point_now_and_log();
+          }
+
+          next_frame += delay;
+          if (next_frame < now) {
+            next_frame = now + delay;
+          }
+
+          std::shared_ptr<platf::img_t> img_out;
+          auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
+          switch (status) {
+            case platf::capture_e::reinit:
+            case platf::capture_e::error:
+            case platf::capture_e::interrupted:
+              return status;
+            case platf::capture_e::timeout:
+              if (!push_captured_image_cb(std::move(img_out), false)) {
+                return platf::capture_e::ok;
+              }
+              break;
+            case platf::capture_e::ok:
+              if (!push_captured_image_cb(std::move(img_out), true)) {
+                return platf::capture_e::ok;
+              }
+              break;
+            default:
+              BOOST_LOG(error) << "Unrecognized capture status ["sv << static_cast<int>(status) << ']';
+              return status;
+          }
+        }
+      }
+
+      virtual capture_e snapshot(
+        const pull_free_image_cb_t &pull_free_image_cb,
+        std::shared_ptr<platf::img_t> &img_out,
+        std::chrono::milliseconds timeout,
+        bool cursor
+      ) = 0;
 
       mem_type_e mem_type;
 
@@ -1148,6 +2085,37 @@ namespace platf {
 
       std::optional<uint32_t> connector_id;
       std::optional<uint64_t> hdr_metadata_blob_id;
+      bool direct_import_required {false};
+      pacing::presentation_mode_t presentation_mode;
+      pacing::presentation_rate_limiter_t presentation_rate_limiter;
+      bool presentation_pending {false};
+      pacing::presentation_latch_t presentation_latch;
+      std::uint64_t presentation_sequence {};
+      std::optional<std::chrono::steady_clock::time_point> presentation_timestamp;
+      std::optional<std::chrono::steady_clock::time_point> last_presentation_timestamp;
+      std::optional<std::chrono::steady_clock::time_point> last_source_presentation_timestamp;
+      std::optional<std::chrono::steady_clock::time_point> last_capture_delivery_timestamp;
+      std::optional<std::uint64_t> last_selected_presentation_sequence;
+      std::optional<exported_frame_t> pending_exported_frame;
+      std::uint64_t presentation_trace_sequence {};
+      bool presentation_trace_available {false};
+      logging::min_max_avg_periodic_logger<double> source_presentation_interval_logger {
+        debug,
+        "Vibepollo DRM source presentation interval",
+        "ms"
+      };
+      logging::min_max_avg_periodic_logger<double> capture_delivery_interval_logger {
+        debug,
+        "Vibepollo DRM capture delivery interval",
+        "ms"
+      };
+      logging::min_max_avg_periodic_logger<double> presentation_to_capture_latency_logger {
+        debug,
+        "Vibepollo DRM presentation-to-capture latency",
+        "ms"
+      };
+      std::uint64_t crtc_gamma_lut_blob_id {};
+      std::shared_ptr<const egl::img_descriptor_t::gamma_lut_t> crtc_gamma_lut;
 
       int cursor_plane_id;
       cursor_t captured_cursor {};
@@ -1190,51 +2158,6 @@ namespace platf {
         ctx = std::move(*ctx_opt);
 
         return 0;
-      }
-
-      capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
-        auto next_frame = std::chrono::steady_clock::now();
-
-        sleep_overshoot_logger.reset();
-
-        while (true) {
-          auto now = std::chrono::steady_clock::now();
-
-          if (next_frame > now) {
-            std::this_thread::sleep_for(next_frame - now);
-            sleep_overshoot_logger.first_point(next_frame);
-            sleep_overshoot_logger.second_point_now_and_log();
-          }
-
-          next_frame += delay;
-          if (next_frame < now) {  // some major slowdown happened; we couldn't keep up
-            next_frame = now + delay;
-          }
-
-          std::shared_ptr<platf::img_t> img_out;
-          auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
-          switch (status) {
-            case platf::capture_e::reinit:
-            case platf::capture_e::error:
-            case platf::capture_e::interrupted:
-              return status;
-            case platf::capture_e::timeout:
-              if (!push_captured_image_cb(std::move(img_out), false)) {
-                return platf::capture_e::ok;
-              }
-              break;
-            case platf::capture_e::ok:
-              if (!push_captured_image_cb(std::move(img_out), true)) {
-                return platf::capture_e::ok;
-              }
-              break;
-            default:
-              BOOST_LOG(error) << "Unrecognized capture status ["sv << (int) status << ']';
-              return status;
-          }
-        }
-
-        return capture_e::ok;
       }
 
       std::unique_ptr<avcodec_encode_device_t> make_avcodec_encode_device(pix_fmt_e pix_fmt) override {
@@ -1301,21 +2224,23 @@ namespace platf {
         }
       }
 
-      capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor) {
-        file_t fb_fd[4];
-
-        egl::surface_descriptor_t sd;
+      capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor) override {
+        const auto host_processing_timestamp = std::chrono::steady_clock::now();
+        egl::owned_surface_t surface;
 
         std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
-        auto status = refresh(fb_fd, &sd, frame_timestamp);
+        auto status = refresh(surface, frame_timestamp);
         if (status != capture_e::ok) {
           return status;
         }
 
-        auto rgb_opt = egl::import_source(display.get(), sd);
+        auto rgb_opt = egl::import_source(display.get(), surface.sd);
 
         if (!rgb_opt) {
-          return capture_e::error;
+          rgb_opt = egl::upload_source(display.get(), surface.sd);
+          if (!rgb_opt) {
+            return capture_e::error;
+          }
         }
 
         auto &rgb = *rgb_opt;
@@ -1336,6 +2261,7 @@ namespace platf {
         gl::ctx.GetTextureSubImage(rgb->tex[0], 0, img_offset_x, img_offset_y, 0, width, height, 1, GL_BGRA, GL_UNSIGNED_BYTE, img_out->height * img_out->row_pitch, img_out->data);
 
         img_out->frame_timestamp = frame_timestamp;
+        img_out->host_processing_timestamp = host_processing_timestamp;
 
         if (cursor && captured_cursor.visible) {
           blend_cursor(*img_out);
@@ -1379,7 +2305,7 @@ namespace platf {
 
 #ifdef SUNSHINE_BUILD_VULKAN
         if (mem_type == mem_type_e::vulkan) {
-          return vk::make_avcodec_encode_device_vram(width, height, img_offset_x, img_offset_y);
+          return vk::make_avcodec_encode_device_vram(width, height, img_offset_x, img_offset_y, card.vulkan_device_path);
         }
 #endif
 
@@ -1393,6 +2319,15 @@ namespace platf {
         return nullptr;
       }
 
+      std::unique_ptr<nvenc_encode_device_t> make_nvenc_encode_device(pix_fmt_e pix_fmt) override {
+#ifdef SUNSHINE_BUILD_CUDA
+        if (mem_type == mem_type_e::cuda) {
+          return cuda::make_nvenc_gl_encode_device(width, height, img_offset_x, img_offset_y, pix_fmt);
+        }
+#endif
+        return nullptr;
+      }
+
       std::shared_ptr<img_t> alloc_img() override {
         auto img = std::make_shared<egl::img_descriptor_t>();
 
@@ -1402,6 +2337,9 @@ namespace platf {
         img->data = nullptr;
         img->pixel_pitch = 4;
 
+        img->capture_render_device = card.vulkan_device_path;
+        img->capture_offset_x = img_offset_x;
+        img->capture_offset_y = img_offset_y;
         img->sequence = 0;
         std::fill_n(img->sd.fds, 4, -1);
 
@@ -1413,53 +2351,9 @@ namespace platf {
         return 0;
       }
 
-      capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) {
-        auto next_frame = std::chrono::steady_clock::now();
-
-        sleep_overshoot_logger.reset();
-
-        while (true) {
-          auto now = std::chrono::steady_clock::now();
-
-          if (next_frame > now) {
-            std::this_thread::sleep_for(next_frame - now);
-            sleep_overshoot_logger.first_point(next_frame);
-            sleep_overshoot_logger.second_point_now_and_log();
-          }
-
-          next_frame += delay;
-          if (next_frame < now) {  // some major slowdown happened; we couldn't keep up
-            next_frame = now + delay;
-          }
-
-          std::shared_ptr<platf::img_t> img_out;
-          auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
-          switch (status) {
-            case platf::capture_e::reinit:
-            case platf::capture_e::error:
-            case platf::capture_e::interrupted:
-              return status;
-            case platf::capture_e::timeout:
-              if (!push_captured_image_cb(std::move(img_out), false)) {
-                return platf::capture_e::ok;
-              }
-              break;
-            case platf::capture_e::ok:
-              if (!push_captured_image_cb(std::move(img_out), true)) {
-                return platf::capture_e::ok;
-              }
-              break;
-            default:
-              BOOST_LOG(error) << "Unrecognized capture status ["sv << (int) status << ']';
-              return status;
-          }
-        }
-
-        return capture_e::ok;
-      }
-
-      capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds /* timeout */, bool cursor) {
-        file_t fb_fd[4];
+      capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds /* timeout */, bool cursor) override {
+        const auto host_processing_timestamp = std::chrono::steady_clock::now();
+        egl::owned_surface_t surface;
 
         if (!pull_free_image_cb(img_out)) {
           return platf::capture_e::interrupted;
@@ -1467,11 +2361,16 @@ namespace platf {
         auto img = (egl::img_descriptor_t *) img_out.get();
         img->reset();
 
-        auto status = refresh(fb_fd, &img->sd, img->frame_timestamp);
+        auto status = refresh(surface, img->frame_timestamp);
         if (status != capture_e::ok) {
           return status;
         }
 
+        // Transfer ownership before any later operation can throw. Failed
+        // refreshes leave the image empty and only the local surface cleans up.
+        img->sd = surface.release();
+        update_crtc_gamma_lut(*img);
+        img->host_processing_timestamp = host_processing_timestamp;
         img->sequence = ++sequence;
 
         if (cursor && captured_cursor.visible) {
@@ -1494,9 +2393,6 @@ namespace platf {
           img->data = nullptr;
         }
 
-        for (auto x = 0; x < 4; ++x) {
-          fb_fd[x].release();
-        }
         return capture_e::ok;
       }
 
@@ -1564,49 +2460,68 @@ namespace platf {
 
     for (auto &monitor : monitors) {
       std::string_view name = monitor->name;
+      std::vector<kms::monitor_t *> candidates;
 
-      // Try to convert names in the format:
-      // {type}-{index}
-      // {index} is n'th occurrence of {type}
-      auto index_begin = name.find_last_of('-');
-
-      std::uint32_t index;
-      if (index_begin == std::string_view::npos) {
-        index = 1;
-      } else {
-        index = std::max<int64_t>(1, util::from_view(name.substr(index_begin + 1)));
-      }
-
-      auto type = kms::from_view(name.substr(0, index_begin));
-
+      // Prefer the kernel connector name. This uses connector_type_id rather
+      // than an enumeration counter, so it remains correct across DRM cards.
       for (auto &card_descriptor : cds) {
         for (auto &[_, monitor_descriptor] : card_descriptor.crtc_to_monitor) {
-          if (monitor_descriptor.index == index && monitor_descriptor.type == type) {
-            monitor_descriptor.viewport.offset_x = monitor->viewport.offset_x;
-            monitor_descriptor.viewport.offset_y = monitor->viewport.offset_y;
-            monitor_descriptor.viewport.logical_width = monitor->viewport.logical_width;
-            monitor_descriptor.viewport.logical_height = monitor->viewport.logical_height;
-
-            // A sanity check, it's guesswork after all.
-            if (
-              monitor_descriptor.viewport.width != monitor->viewport.width ||
-              monitor_descriptor.viewport.height != monitor->viewport.height
-            ) {
-              BOOST_LOG(warning)
-                << "Mismatch on expected Resolution compared to actual resolution: "sv
-                << monitor_descriptor.viewport.width << 'x' << monitor_descriptor.viewport.height
-                << " vs "sv
-                << monitor->viewport.width << 'x' << monitor->viewport.height;
-            }
-
-            BOOST_LOG(info) << "Monitor " << monitor_descriptor.monitor_index << " is "sv << name << ": "sv << monitor->description;
-            goto break_for_loop;
+          if (monitor_descriptor.monitor_index && kms::selection::ascii_iequals(monitor_descriptor.connector_name, name)) {
+            candidates.emplace_back(&monitor_descriptor);
           }
         }
       }
-    break_for_loop:
 
-      BOOST_LOG(verbose) << "Reduced to name: "sv << name << ": "sv << index;
+      // Some compositors use connector type aliases (for example HDMI-1).
+      // Retain the old type/index fallback, now backed by the DRM-provided
+      // connector_type_id rather than a process-global occurrence count.
+      if (candidates.empty()) {
+        const auto index_begin = name.find_last_of('-');
+        const auto index = index_begin == std::string_view::npos ? 1 : std::max<int64_t>(1, util::from_view(name.substr(index_begin + 1)));
+        const auto type = kms::from_view(name.substr(0, index_begin));
+
+        for (auto &card_descriptor : cds) {
+          for (auto &[_, monitor_descriptor] : card_descriptor.crtc_to_monitor) {
+            if (monitor_descriptor.monitor_index && monitor_descriptor.index == index && monitor_descriptor.type == type) {
+              candidates.emplace_back(&monitor_descriptor);
+            }
+          }
+        }
+      }
+
+      // Matching dimensions can safely disambiguate identical connector names
+      // exposed by different GPUs. If that is still ambiguous, do not attach
+      // one output's desktop coordinates to another output.
+      if (candidates.size() > 1) {
+        std::erase_if(candidates, [&](const auto *candidate) {
+          return candidate->viewport.width != monitor->viewport.width || candidate->viewport.height != monitor->viewport.height;
+        });
+      }
+
+      if (candidates.size() != 1) {
+        BOOST_LOG(warning) << "Couldn't uniquely correlate Wayland output ["sv << name << "] to a DRM connector"sv;
+        continue;
+      }
+
+      auto &monitor_descriptor = *candidates.front();
+      monitor_descriptor.viewport.offset_x = monitor->viewport.offset_x;
+      monitor_descriptor.viewport.offset_y = monitor->viewport.offset_y;
+      monitor_descriptor.viewport.logical_width = monitor->viewport.logical_width;
+      monitor_descriptor.viewport.logical_height = monitor->viewport.logical_height;
+
+      // A sanity check, it's guesswork after all.
+      if (
+        monitor_descriptor.viewport.width != monitor->viewport.width ||
+        monitor_descriptor.viewport.height != monitor->viewport.height
+      ) {
+        BOOST_LOG(warning)
+          << "Mismatch on expected Resolution compared to actual resolution: "sv
+          << monitor_descriptor.viewport.width << 'x' << monitor_descriptor.viewport.height
+          << " vs "sv
+          << monitor->viewport.width << 'x' << monitor->viewport.height;
+      }
+
+      BOOST_LOG(info) << "Monitor " << *monitor_descriptor.monitor_index << " is "sv << name << ": "sv << monitor->description;
     }
 
     BOOST_LOG(info) << "--------- End of KMS monitor list ---------"sv;
@@ -1614,7 +2529,7 @@ namespace platf {
 
   // A list of names of displays accepted as display_name
   std::vector<std::string> kms_display_names(mem_type_e hwdevice_type) {
-    int count = 0;
+    std::uint32_t count = 0;
 
     if (!fs::exists("/dev/dri")) {
       BOOST_LOG(warning) << "Couldn't find /dev/dri, kmsgrab won't be enabled"sv;
@@ -1626,10 +2541,7 @@ namespace platf {
       return {};
     }
 
-    kms::conn_type_count_t conn_type_count;
-
     std::vector<kms::card_descriptor_t> cds;
-    std::vector<std::string> display_names;
 
     fs::path card_dir {"/dev/dri"sv};
     for (auto &entry : fs::directory_iterator {card_dir}) {
@@ -1645,11 +2557,11 @@ namespace platf {
         continue;
       }
 
-      // Skip non-Nvidia cards if we're looking for CUDA devices
-      // unless NVENC is selected manually by the user
-      if (hwdevice_type == mem_type_e::cuda && !card.is_nvidia()) {
-        BOOST_LOG(debug) << file << " is not a CUDA device"sv;
-        if (config::video.encoder == "nvenc") {
+      // Skip cards whose scanout buffers are not known to support the CUDA
+      // import path unless NVENC was explicitly selected by the user.
+      if (hwdevice_type == mem_type_e::cuda && !card.supports_cuda_import()) {
+        BOOST_LOG(debug) << file << " does not support CUDA framebuffer import"sv;
+        if (config::video.encoder == "nvenc" || config::video.encoder == "nvenc_legacy") {
           BOOST_LOG(warning) << "Using NVENC with your display connected to a different GPU may not work properly!"sv;
         } else {
           continue;
@@ -1664,7 +2576,7 @@ namespace platf {
         continue;
       }
 
-      auto crtc_to_monitor = kms::map_crtc_to_monitor(card.monitors(conn_type_count));
+      auto crtc_to_monitor = kms::map_crtc_to_monitor(card.monitors());
 
       auto end = std::end(card);
       for (auto plane = std::begin(card); plane != end; ++plane) {
@@ -1707,7 +2619,9 @@ namespace platf {
             (int) crtc->width,
             (int) crtc->height,
           };
-          it->second.monitor_index = count;
+          if (!it->second.monitor_index) {
+            it->second.monitor_index = count;
+          }
         }
 
         kms::env_width = std::max(kms::env_width, (int) (crtc->x + crtc->width));
@@ -1715,7 +2629,7 @@ namespace platf {
 
         kms::print(plane.get(), fb.get(), crtc.get());
 
-        display_names.emplace_back(std::to_string(count++));
+        ++count;
       }
 
       cds.emplace_back(kms::card_descriptor_t {
@@ -1737,6 +2651,9 @@ namespace platf {
 
     for (auto &card_descriptor : cds) {
       for (auto &[_, monitor_descriptor] : card_descriptor.crtc_to_monitor) {
+        if (!monitor_descriptor.monitor_index) {
+          continue;
+        }
         BOOST_LOG(debug) << "Monitor description"sv;
         BOOST_LOG(debug) << "Resolution: "sv << monitor_descriptor.viewport.width << 'x' << monitor_descriptor.viewport.height;
         BOOST_LOG(debug) << "Offset: "sv << monitor_descriptor.viewport.offset_x << 'x' << monitor_descriptor.viewport.offset_y;
@@ -1751,7 +2668,44 @@ namespace platf {
 
     BOOST_LOG(debug) << "Desktop resolution: "sv << kms::env_width << 'x' << kms::env_height;
 
+    std::vector<kms::selection::monitor_t> active_monitors;
+    for (const auto &card_descriptor : cds) {
+      for (const auto &[crtc_id, monitor_descriptor] : card_descriptor.crtc_to_monitor) {
+        if (!monitor_descriptor.monitor_index) {
+          continue;
+        }
+        active_monitors.emplace_back(kms::selection::monitor_t {
+          card_descriptor.path,
+          monitor_descriptor.connector_name,
+          crtc_id,
+          *monitor_descriptor.monitor_index,
+        });
+      }
+    }
+
+    auto named_monitors = kms::selection::name_monitors(std::move(active_monitors));
+
+    // The generic capture loop selects configured outputs by comparing them to
+    // this name list. Keep an old numeric configuration working without
+    // publishing duplicate numeric entries: move that monitor's stable name to
+    // the default position for this enumeration.
+    if (const auto numeric_alias = kms::selection::parse_numeric_alias(config::get_active_output_name()); numeric_alias) {
+      const auto selected = std::ranges::find(named_monitors, *numeric_alias, [](const auto &named_monitor) {
+        return named_monitor.monitor.monitor_index;
+      });
+      if (selected != named_monitors.end()) {
+        std::rotate(named_monitors.begin(), selected, std::next(selected));
+      }
+    }
+
+    std::vector<std::string> display_names;
+    display_names.reserve(named_monitors.size());
+    for (const auto &named_monitor : named_monitors) {
+      display_names.emplace_back(named_monitor.display_name);
+    }
+
     kms::card_descriptors = std::move(cds);
+    kms::named_monitors = std::move(named_monitors);
 
     return display_names;
   }

@@ -1,0 +1,61 @@
+#pragma once
+
+#include <array>
+#include <string_view>
+
+namespace sunshine::virtual_display_package_contract {
+  inline constexpr auto required_driver_files = std::to_array<std::string_view>({@SUNSHINE_VDD_DRIVER_REQUIRED_FILES_CPP@});
+  inline constexpr auto optional_driver_files = std::to_array<std::string_view>({@SUNSHINE_VDD_DRIVER_OPTIONAL_FILES_CPP@});
+  inline constexpr auto vulkan_layer_files = std::to_array<std::string_view>({@SUNSHINE_VDD_VULKAN_LAYER_FILES_CPP@});
+  inline constexpr auto truehdr_files = std::to_array<std::string_view>({@SUNSHINE_VDD_TRUEHDR_FILES_CPP@});
+  inline constexpr auto conflict_product_names = std::to_array<std::string_view>({@SUNSHINE_VDD_CONFLICT_PRODUCT_NAMES_CPP@});
+  inline constexpr auto msi_install_operations = std::to_array<std::string_view>({@SUNSHINE_VDD_MSI_INSTALL_OPERATIONS_CPP@});
+  inline constexpr auto driver_reboot_markers = std::to_array<std::string_view>({@SUNSHINE_VDD_DRIVER_REBOOT_MARKERS_CPP@});
+  inline constexpr auto render_adapter_selection_order = std::to_array<std::string_view>({@SUNSHINE_VDD_RENDER_ADAPTER_SELECTION_ORDER_CPP@});
+  inline constexpr auto health_recovery_sequence = std::to_array<std::string_view>({@SUNSHINE_VDD_HEALTH_RECOVERY_SEQUENCE_CPP@});
+  inline constexpr auto install_sequence = std::to_array<std::string_view>({@SUNSHINE_VDD_INSTALL_SEQUENCE_CPP@});
+  inline constexpr auto uninstall_sequence = std::to_array<std::string_view>({@SUNSHINE_VDD_UNINSTALL_SEQUENCE_CPP@});
+
+  inline constexpr std::string_view driver_destination = "@SUNSHINE_VDD_DRIVER_DESTINATION@";
+  inline constexpr std::string_view vulkan_layer_destination = "@SUNSHINE_VDD_VULKAN_LAYER_DESTINATION@";
+  inline constexpr std::string_view sudovda_destination = "@SUNSHINE_VDD_SUDOVDA_DESTINATION@";
+  inline constexpr std::string_view truehdr_repository = "@SUNSHINE_VDD_TRUEHDR_REPOSITORY@";
+  inline constexpr std::string_view truehdr_release_tag = "@SUNSHINE_VDD_TRUEHDR_RELEASE_TAG@";
+  inline constexpr std::string_view libvirtualdisplay_repository = "@SUNSHINE_VDD_LIBVIRTUALDISPLAY_REPOSITORY@";
+  inline constexpr std::string_view libvirtualdisplay_release_tag = "@SUNSHINE_VDD_LIBVIRTUALDISPLAY_RELEASE_TAG@";
+  inline constexpr std::string_view vulkan_layer_name = "@SUNSHINE_VDD_VULKAN_LAYER_NAME@";
+  inline constexpr std::string_view vulkan_layer_library = R"(@SUNSHINE_VDD_VULKAN_LAYER_LIBRARY@)";
+  inline constexpr std::string_view vulkan_layer_disable_environment = "@SUNSHINE_VDD_VULKAN_LAYER_DISABLE_ENVIRONMENT@";
+  inline constexpr std::string_view prebuilt_scope = "@SUNSHINE_VDD_PREBUILT_SCOPE@";
+  inline constexpr std::string_view local_signing_mode = "@SUNSHINE_VDD_LOCAL_SIGNING_MODE@";
+  inline constexpr std::string_view installer_powershell_architecture = "@SUNSHINE_VDD_INSTALLER_POWERSHELL_ARCHITECTURE@";
+  inline constexpr std::string_view command_line_quoting = "@SUNSHINE_VDD_COMMAND_LINE_QUOTING@";
+  inline constexpr std::string_view default_backend = "@SUNSHINE_VDD_DEFAULT_BACKEND@";
+  inline constexpr std::string_view rollback_backend = "@SUNSHINE_VDD_ROLLBACK_BACKEND@";
+
+  inline constexpr unsigned health_check_width = @SUNSHINE_VDD_HEALTH_CHECK_WIDTH@u;
+  inline constexpr unsigned health_check_height = @SUNSHINE_VDD_HEALTH_CHECK_HEIGHT@u;
+  inline constexpr unsigned health_check_refresh_hz = @SUNSHINE_VDD_HEALTH_CHECK_REFRESH_HZ@u;
+
+  inline constexpr bool refresh_before_msi = @SUNSHINE_VDD_REFRESH_BEFORE_MSI_CPP@;
+  inline constexpr bool installer_best_effort = @SUNSHINE_VDD_INSTALLER_BEST_EFFORT_CPP@;
+  inline constexpr bool force_kill_umdf = @SUNSHINE_VDD_FORCE_KILL_UMDF_CPP@;
+  inline constexpr bool remove_legacy_drivers = @SUNSHINE_VDD_REMOVE_LEGACY_DRIVERS_CPP@;
+  inline constexpr bool replace_only_changed_package = @SUNSHINE_VDD_REPLACE_ONLY_CHANGED_PACKAGE_CPP@;
+  inline constexpr bool require_valid_catalog_signature = @SUNSHINE_VDD_REQUIRE_VALID_CATALOG_SIGNATURE_CPP@;
+  inline constexpr bool msi_transactional_replacement = @SUNSHINE_VDD_MSI_TRANSACTIONAL_REPLACEMENT_CPP@;
+  inline constexpr bool msi_allow_downgrades = @SUNSHINE_VDD_MSI_ALLOW_DOWNGRADES_CPP@;
+  inline constexpr bool conflict_names_exact = @SUNSHINE_VDD_CONFLICT_NAMES_EXACT_CPP@;
+  inline constexpr bool factory_reset_requires_install_sentinel = @SUNSHINE_VDD_FACTORY_RESET_REQUIRES_INSTALL_SENTINEL_CPP@;
+  inline constexpr bool ci_requires_valid_release_signatures = @SUNSHINE_VDD_CI_REQUIRES_VALID_RELEASE_SIGNATURES_CPP@;
+  inline constexpr bool ci_self_sign_without_persistent_secret = @SUNSHINE_VDD_CI_SELF_SIGN_WITHOUT_PERSISTENT_SECRET_CPP@;
+  inline constexpr bool upgrade_shows_driver_choice = @SUNSHINE_VDD_UPGRADE_SHOWS_DRIVER_CHOICE_CPP@;
+  inline constexpr bool install_selection_seeds_runtime_flag = @SUNSHINE_VDD_INSTALL_SELECTION_SEEDS_RUNTIME_FLAG_CPP@;
+  inline constexpr bool cli_preserves_driver_selection = @SUNSHINE_VDD_CLI_PRESERVES_DRIVER_SELECTION_CPP@;
+  inline constexpr bool uninstall_passes_removal_choice = @SUNSHINE_VDD_UNINSTALL_PASSES_REMOVAL_CHOICE_CPP@;
+  inline constexpr bool forward_quoted_cli_arguments = @SUNSHINE_VDD_FORWARD_QUOTED_CLI_ARGUMENTS_CPP@;
+  inline constexpr bool direct_msi_conflicts_block = @SUNSHINE_VDD_DIRECT_MSI_CONFLICTS_BLOCK_CPP@;
+  inline constexpr bool admin_install_preuninstall = @SUNSHINE_VDD_ADMIN_INSTALL_PREUNINSTALL_CPP@;
+  inline constexpr bool driver_reboot_returns_3010 = @SUNSHINE_VDD_DRIVER_REBOOT_RETURNS_3010_CPP@;
+  inline constexpr bool runtime_sudovda_fallback_enabled = @SUNSHINE_VDD_RUNTIME_SUDOVDA_FALLBACK_ENABLED_CPP@;
+}  // namespace sunshine::virtual_display_package_contract

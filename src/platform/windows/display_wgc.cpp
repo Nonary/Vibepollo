@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <limits>
 #include <winsock2.h>
 #include <dxgi1_2.h>
 #include <optional>
@@ -19,7 +20,10 @@
 #include "src/logging.h"
 #include "src/platform/windows/display.h"
 #include "src/platform/windows/display_vram.h"
+#include "src/platform/windows/game_activity.h"
 #include "src/platform/windows/misc.h"
+#include "src/platform/windows/present_timing.h"
+#include "src/platform/windows/virtual_display.h"
 #include "src/utility.h"
 
 // platform includes
@@ -80,6 +84,44 @@ namespace platf::dxgi {
 
     bool is_wgc_constant_mode() {
       return config::video.capture == "wgcc";
+    }
+
+    std::shared_ptr<platf::game_activity::refresh_target_t> make_wgc_activity_admission_target(
+      ipc_session_t &ipc_session,
+      const ::video::config_t &config,
+      const std::string &display_name,
+      const RECT &capture_rect
+    ) {
+      if (!::config::frame_limiter.game_aware_virtual_display_refresh_enabled() ||
+          ::config::video.dd.refresh_rate_option == ::config::video_t::dd_t::refresh_rate_option_e::manual ||
+          config.framerate <= 0 || !VDISPLAY::is_virtual_display_output(display_name)) {
+        return {};
+      }
+
+      const auto base_rate = static_cast<std::uint64_t>(config.framerate);
+      const auto max_admission = static_cast<std::uint64_t>((std::numeric_limits<int>::max)());
+      const auto desktop_admission = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+        base_rate * 2ull,
+        max_admission
+      ));
+      const auto game_admission = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+        base_rate * 4ull,
+        max_admission
+      ));
+
+      return platf::game_activity::make_refresh_target({
+        .display_name = display_name,
+        .capture_rect = capture_rect,
+        .base_refresh_numerator = desktop_admission,
+        .base_refresh_denominator = 1,
+        .high_refresh_numerator = game_admission,
+        .high_refresh_denominator = 1,
+        .initial_high = false,
+        .apply_activity_state = [&ipc_session, desktop_admission, game_admission](const bool game_active) {
+          const auto admission = game_active ? game_admission : desktop_admission;
+          return ipc_session.set_activity_admission_fps(static_cast<int>(admission));
+        },
+      });
     }
 
     std::chrono::milliseconds effective_wgc_timeout(std::chrono::milliseconds timeout, int client_framerate) {
@@ -163,21 +205,33 @@ namespace platf::dxgi {
   display_wgc_ipc_vram_t::display_wgc_ipc_vram_t() = default;
 
   display_wgc_ipc_vram_t::~display_wgc_ipc_vram_t() {
+    present_timing::clear_active_stamper(_present_stamper.get());
+    game_refresh_target.reset();
     if (_frame_locked && _ipc_session) {
       _ipc_session->release();
       _frame_locked = false;
     }
   }
 
-  int display_wgc_ipc_vram_t::init(const ::video::config_t &config, const std::string &display_name) {
+  int display_wgc_ipc_vram_t::init(
+    const ::video::config_t &config,
+    const std::string &display_name,
+    const std::optional<LUID> &required_adapter_luid
+  ) {
     _config = config;
     _display_name = display_name;
 
-    if (display_base_t::init(config, display_name, true /* skip_dd_test: WGC doesn't use Desktop Duplication */)) {
+    if (display_base_t::init(
+          config,
+          display_name,
+          true /* skip_dd_test: WGC doesn't use Desktop Duplication */,
+          required_adapter_luid)) {
       return -1;
     }
 
     capture_format = DXGI_FORMAT_UNKNOWN;  // Start with unknown format (prevents race condition/crash on first frame)
+    _present_stamper = std::make_shared<present_timing::capture_stamper_t>(captured_output_desc.DeviceName);
+    present_timing::set_active_stamper(_present_stamper);
 
     const bool advanced_color_capture = is_hdr();
 
@@ -186,6 +240,12 @@ namespace platf::dxgi {
     if (_ipc_session->init(config, display_name, device.get(), advanced_color_capture)) {
       return -1;
     }
+    game_refresh_target = make_wgc_activity_admission_target(
+      *_ipc_session,
+      config,
+      display_name,
+      captured_output_desc.DesktopCoordinates
+    );
 
     return 0;
   }
@@ -304,7 +364,7 @@ namespace platf::dxgi {
     _frame_locked = true;
 
     const auto host_processing_timestamp = std::chrono::steady_clock::now();
-    auto frame_timestamp = host_processing_timestamp - qpc_time_difference(qpc_counter(), frame_qpc);
+    const auto host_processing_qpc = qpc_counter();
 
     // The IPC texture is a single mutable helper-owned surface. Snapshot it into
     // this pool-owned texture so queued encoder frames remain stable.
@@ -318,6 +378,10 @@ namespace platf::dxgi {
     // helper is free to publish the next frame as soon as we drop this mutex.
     _ipc_session->release();
     _frame_locked = false;
+
+    // The composition time; the send path refines it for RTP once the game's
+    // present events have been delivered.
+    const auto frame_timestamp = host_processing_timestamp - qpc_time_difference(host_processing_qpc, static_cast<std::int64_t>(frame_qpc));
 
     const auto copy_count = g_wgc_snapshot_copies.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto capture_mutex_wait_ms = std::chrono::duration<double, std::milli>(capture_mutex_wait).count();
@@ -381,19 +445,23 @@ namespace platf::dxgi {
     return complete_img(img_base, true);
   }
 
-  std::shared_ptr<display_t> display_wgc_ipc_vram_t::create(const ::video::config_t &config, const std::string &display_name) {
+  std::shared_ptr<display_t> display_wgc_ipc_vram_t::create(
+    const ::video::config_t &config,
+    const std::string &display_name,
+    const std::optional<LUID> &required_adapter_luid
+  ) {
     if (auto fallback_state = get_wgc_dxgi_fallback_state()) {
       log_wgc_dxgi_fallback_reason("VRAM", *fallback_state);
       adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
       auto disp = std::make_shared<temp_dxgi_vram_t>();
-      if (!disp->init(config, display_name)) {
+      if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
     } else {
       // Secure desktop not active, use WGC IPC
       BOOST_LOG(debug) << "Using WGC IPC implementation (VRAM)";
       auto disp = std::make_shared<display_wgc_ipc_vram_t>();
-      if (!disp->init(config, display_name)) {
+      if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
     }
@@ -403,20 +471,33 @@ namespace platf::dxgi {
 
   display_wgc_ipc_ram_t::display_wgc_ipc_ram_t() = default;
 
-  display_wgc_ipc_ram_t::~display_wgc_ipc_ram_t() = default;
+  display_wgc_ipc_ram_t::~display_wgc_ipc_ram_t() {
+    present_timing::clear_active_stamper(_present_stamper.get());
+    game_refresh_target.reset();
+  }
 
-  int display_wgc_ipc_ram_t::init(const ::video::config_t &config, const std::string &display_name) {
+  int display_wgc_ipc_ram_t::init(
+    const ::video::config_t &config,
+    const std::string &display_name,
+    const std::optional<LUID> &required_adapter_luid
+  ) {
     // Save config for later use
     _config = config;
     _display_name = display_name;
 
     // Initialize the base display class
-    if (display_base_t::init(config, display_name, true /* skip_dd_test: WGC doesn't use Desktop Duplication */)) {
+    if (display_base_t::init(
+          config,
+          display_name,
+          true /* skip_dd_test: WGC doesn't use Desktop Duplication */,
+          required_adapter_luid)) {
       return -1;
     }
 
     // Initialize capture format to unknown - will be determined from first frame
     capture_format = DXGI_FORMAT_UNKNOWN;
+    _present_stamper = std::make_shared<present_timing::capture_stamper_t>(captured_output_desc.DeviceName);
+    present_timing::set_active_stamper(_present_stamper);
 
     // Note: WGC captures at monitor native resolution, not the requested config resolution.
     // The display helper handles resolution changes before capture starts if needed.
@@ -429,6 +510,12 @@ namespace platf::dxgi {
     if (_ipc_session->init(config, display_name, device.get(), advanced_color_capture)) {
       return -1;
     }
+    game_refresh_target = make_wgc_activity_admission_target(
+      *_ipc_session,
+      config,
+      display_name,
+      captured_output_desc.DesktopCoordinates
+    );
 
     return 0;
   }
@@ -594,19 +681,23 @@ namespace platf::dxgi {
     return display_ram_t::dummy_img(img_base);
   }
 
-  std::shared_ptr<display_t> display_wgc_ipc_ram_t::create(const ::video::config_t &config, const std::string &display_name) {
+  std::shared_ptr<display_t> display_wgc_ipc_ram_t::create(
+    const ::video::config_t &config,
+    const std::string &display_name,
+    const std::optional<LUID> &required_adapter_luid
+  ) {
     if (auto fallback_state = get_wgc_dxgi_fallback_state()) {
       log_wgc_dxgi_fallback_reason("RAM", *fallback_state);
       adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
       auto disp = std::make_shared<temp_dxgi_ram_t>();
-      if (!disp->init(config, display_name)) {
+      if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
     } else {
       // Secure desktop not active, use WGC IPC
       BOOST_LOG(debug) << "Using WGC IPC implementation (RAM)";
       auto disp = std::make_shared<display_wgc_ipc_ram_t>();
-      if (!disp->init(config, display_name)) {
+      if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
     }

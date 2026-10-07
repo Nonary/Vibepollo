@@ -1,0 +1,1143 @@
+#!/usr/bin/bash
+
+set -euo pipefail
+umask 0077
+export LC_ALL=C
+
+readonly settings_file=/etc/vibepollo/machine.conf
+readonly legacy_settings_file=/etc/vibepollo/prelogin.conf
+readonly pam_file=/etc/pam.d/plasmalogin
+readonly service_user=vibepollo
+readonly machine_profile=/var/lib/vibepollo
+readonly profile_marker=$machine_profile/.machine-profile
+readonly session_file=/run/vibepollo/session.env
+readonly command_manifest=/etc/vibepollo/session-commands
+readonly command_manifest_header='# vibepollo-session-commands-v2'
+readonly session_controller=/usr/libexec/vibeshine/vibepollo-session-controller
+readonly profile_importer=/usr/libexec/vibeshine/vibepollo-profile-import
+readonly machine_host=/usr/libexec/vibeshine/vibepollo-machine-host
+readonly machine_host_executable=/usr/libexec/vibeshine/vibepollo-host
+readonly maximum_environment_entries=128
+readonly maximum_environment_value_bytes=4096
+readonly maximum_application_entries=2048
+readonly maximum_authorization_entries=4096
+readonly maximum_raw_directory_bytes=4095
+readonly maximum_raw_command_bytes=16384
+readonly maximum_normalized_command_bytes=65535
+readonly maximum_command_manifest_bytes=1048576
+
+desktop_user=''; desktop_uid=''; desktop_gid=''; desktop_home=''
+session_id=''; session_generation=''; session_user=''; session_uid=''; session_gid=''; session_home=''; session_runtime=''; session_display=''; session_xdisplay=''; session_xauthority=''; session_groups=''; session_role=''
+authorization_role=''; authorization_directory=''; authorization_command=''
+declare -A application_environment=()
+
+fail() { /usr/bin/printf 'vibepollo-machine-host: %s\n' "$*" >&2; return 1; }
+require_root() { ((EUID == 0)) || fail "$1 requires root"; }
+valid_user() { [[ "$1" =~ ^[a-z_][a-z0-9_-]*$ ]]; }
+
+capability_free_exec() {
+  # Administrative helpers and the service supervisor are capability-free.
+  # Only the separate, root-owned private host executable carries permitted
+  # capture capabilities.
+  /usr/bin/setpriv --no-new-privs --inh-caps=-all --ambient-caps=-all -- "$@"
+}
+
+capability_clean_exec() {
+  # The sandbox may need inheritable capabilities while systemd constructs
+  # its namespaces.  Revoke those before the private +p executable is entered,
+  # without setting no_new_privs early and suppressing its file capabilities.
+  # This runs only in the background host child. Keep its PID through exec so
+  # the supervisor can signal the host without signalling its broker clients.
+  exec /usr/bin/setpriv --inh-caps=-all --ambient-caps=-all -- "$@"
+}
+
+resolve_desktop_identity() {
+  local requested=$1 entry
+  valid_user "$requested" || { fail 'invalid desktop account name'; return 1; }
+  entry=$(/usr/bin/getent passwd "$requested") || { fail 'desktop account does not exist'; return 1; }
+  IFS=: read -r desktop_user _ desktop_uid desktop_gid _ desktop_home _ <<<"$entry"
+  [[ "$desktop_user" == "$requested" && "$desktop_uid" =~ ^[0-9]+$ && "$desktop_uid" -ge 1000 ]] || { fail 'desktop account is invalid'; return 1; }
+  [[ "$desktop_gid" =~ ^[0-9]+$ && "$desktop_home" == /* && -d "$desktop_home" && ! -L "$desktop_home" ]] || fail 'desktop home is unsafe'
+}
+
+read_desktop_user() {
+  local source=$1 attributes key value line selected=''
+  [[ -f "$source" && ! -L "$source" ]] || return 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$source") || return 1
+  [[ "$attributes" == 'root:root:600:regular file' ]] || { fail "$source must be root:root mode 0600"; return 1; }
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" && "$line" != \#* ]] || continue; key=${line%%=*}; value=${line#*=}
+    case "$key" in
+      desktop_user) [[ -z "$selected" ]] || { fail 'multiple desktop users selected'; return 1; }; selected=$value ;;
+      # Accept only a valid obsolete UUID while configure-auto atomically
+      # rewrites the policy to its canonical desktop-user-only form.
+      allowed_client_uuid)
+        value=${value^^}
+        [[ "$value" =~ ^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$ ]] ||
+          { fail 'invalid obsolete allowed client UUID'; return 1; }
+        ;;
+      *) fail "unknown setting in $source: $key"; return 1 ;;
+    esac
+  done <"$source"
+  [[ -n "$selected" ]] || { fail "$source does not select a desktop user"; return 1; }; /usr/bin/printf '%s\n' "$selected"
+}
+
+
+load_settings() {
+  local selected
+  selected=$(read_desktop_user "$settings_file") || { fail "missing settings: $settings_file"; return 1; }
+  resolve_desktop_identity "$selected"
+}
+
+write_settings() {
+  local requested_user=$1 temporary
+  require_root configure || return 1
+  resolve_desktop_identity "$requested_user" || return 1
+  /usr/bin/install -d -o root -g root -m 0755 /etc/vibepollo || return 1
+  temporary=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .machine.XXXXXX) || return 1
+  /usr/bin/printf 'desktop_user=%s\n' "$desktop_user" >"$temporary" || return 1
+  /usr/bin/chown root:root "$temporary" || return 1
+  /usr/bin/chmod 0600 "$temporary" || return 1
+  /usr/bin/mv -fT -- "$temporary" "$settings_file"
+}
+
+normalize_application_value() {
+  local remaining=$1 maximum=$2 result='' prefix suffix variable addition
+  [[ "$maximum" =~ ^[1-9][0-9]*$ ]] || {
+    fail 'invalid application expansion bound'
+    return 1
+  }
+  while [[ "$remaining" == *'$'* ]]; do
+    prefix=${remaining%%\$*}
+    ((${#prefix} <= maximum && ${#result} <= maximum - ${#prefix})) || {
+      fail 'expanded application value exceeds its bound'
+      return 1
+    }
+    result+=$prefix
+    remaining=${remaining#*\$}
+    if [[ "$remaining" == '$'* ]]; then
+      ((${#result} < maximum)) || {
+        fail 'expanded application value exceeds its bound'
+        return 1
+      }
+      result+='$'
+      remaining=${remaining:1}
+    elif [[ "$remaining" == '('* ]]; then
+      suffix=${remaining:1}
+      [[ "$suffix" == *')'* ]] || fail 'application variable reference is missing a closing parenthesis'
+      variable=${suffix%%)*}
+      [[ "$variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail 'application variable name is invalid'
+      [[ -v "application_environment[$variable]" ]] || fail "application variable is unavailable to the machine host: $variable"
+      addition=${application_environment[$variable]}
+      ((${#addition} <= maximum && ${#result} <= maximum - ${#addition})) || {
+        fail 'expanded application value exceeds its bound'
+        return 1
+      }
+      result+=$addition
+      remaining=${suffix#*)}
+    else
+      ((${#result} < maximum)) || {
+        fail 'expanded application value exceeds its bound'
+        return 1
+      }
+      result+='$'
+    fi
+  done
+  ((${#remaining} <= maximum && ${#result} <= maximum - ${#remaining})) || {
+    fail 'expanded application value exceeds its bound'
+    return 1
+  }
+  /usr/bin/printf '%s%s' "$result" "$remaining"
+}
+
+initialize_application_environment() {
+  local source=$1 encoded decoded key raw normalized entries entry_count=0
+  application_environment=(
+    [HOME]="$desktop_home"
+    [USER]="$desktop_user"
+    [LOGNAME]="$desktop_user"
+    [PATH]='/usr/local/sbin:/usr/local/bin:/usr/bin'
+    [LANG]='C.UTF-8'
+    [SHELL]='/bin/sh'
+    [XDG_CONFIG_HOME]="$desktop_home/.config"
+    [XDG_DATA_HOME]="$desktop_home/.local/share"
+    [VIBEPOLLO_MACHINE_HOST]='1'
+    [VIBEPOLLO_SESSION_HOME]="$desktop_home"
+    [VIBEPOLLO_SESSION_USER]="$desktop_user"
+  )
+  entries=$(user_exec "$service_user" /usr/bin/jq -r '
+      (.env // {})
+      | if type != "object" then error("application environment must be an object") else . end
+      | to_entries
+      | if length > 128 then error("too many application environment entries") else . end
+      | .[]
+      | if (.key | length) > 64 or
+           (.key | test("^[A-Za-z_][A-Za-z0-9_]*$") | not) or
+           (.value | type) != "string" or (.value | length) > 4096 or
+           (.value | test("[[:cntrl:]]"))
+        then error("application environment entry is unsafe")
+        else @base64
+        end
+    ' "$source") || fail "invalid application environment: $source"
+  while IFS= read -r encoded; do
+    [[ -n "$encoded" ]] || continue
+    ((++entry_count <= maximum_environment_entries)) || {
+      fail 'too many application environment entries'
+      return 1
+    }
+    decoded=$(/usr/bin/printf '%s' "$encoded" |
+      user_exec "$service_user" /usr/bin/base64 --decode) || return 1
+    key=$(/usr/bin/printf '%s' "$decoded" |
+      user_exec "$service_user" /usr/bin/jq -er '.key') || return 1
+    raw=$(/usr/bin/printf '%s' "$decoded" |
+      user_exec "$service_user" /usr/bin/jq -er '.value') || return 1
+    ((${#raw} <= maximum_environment_value_bytes)) || {
+      fail 'application environment value exceeds its bound'
+      return 1
+    }
+    normalized=$(normalize_application_value "$raw" "$maximum_environment_value_bytes") || return 1
+    application_environment[$key]=$normalized
+  done <<<"$entries"
+}
+
+extract_desktop_authorizations() {
+  local source=$1 destination=$2 entries encoded decoded raw_directory raw_command directory command size
+  local authorization_count=0 manifest_bytes=0 line_bytes
+  if [[ ! -e "$source" && ! -L "$source" ]]; then
+    # A fresh machine profile has no application list yet; authorize nothing.
+    : >"$destination"
+    return 0
+  fi
+  [[ -f "$source" && ! -L "$source" ]] || fail "unsafe application list: $source"
+  size=$(/usr/bin/stat -c '%s' -- "$source") || return 1
+  [[ "$size" =~ ^[0-9]+$ ]] && ((size > 0 && size <= 16777216)) ||
+    fail 'application list exceeds the administrator authorization limit'
+  initialize_application_environment "$source" || return 1
+  entries=$(user_exec "$service_user" /usr/bin/jq -r '
+        if (.apps | type) != "array" then error("application list must be an array") else . end
+        | if (.apps | length) > 2048 then error("too many applications") else . end
+        |
+        .apps[]? as $app
+        | ($app["working-dir"]? // "") as $directory
+        | [($app.cmd? // empty), ($app.detached[]? // empty),
+           ($app["prep-cmd"][]? | (.do? // empty), (.undo? // empty))][]
+        | select(type == "string" and length > 0) as $command
+        | if ($directory | type) != "string" or ($directory | length) > 4095 or
+             ($command | length) > 16384 or
+             any([$directory, $command][]; test("[[:cntrl:]]"))
+          then error("application command or working directory is unsafe")
+          else {directory: $directory, command: $command} | @base64
+          end
+    ' "$source") || fail "invalid application commands: $source"
+  : >"$destination"
+  while IFS= read -r encoded; do
+    [[ -n "$encoded" ]] || continue
+    ((++authorization_count <= maximum_authorization_entries)) || {
+      fail 'too many application command authorizations'
+      return 1
+    }
+    decoded=$(/usr/bin/printf '%s' "$encoded" |
+      user_exec "$service_user" /usr/bin/base64 --decode) || return 1
+    raw_directory=$(/usr/bin/printf '%s' "$decoded" |
+      user_exec "$service_user" /usr/bin/jq -er '.directory') || return 1
+    raw_command=$(/usr/bin/printf '%s' "$decoded" |
+      user_exec "$service_user" /usr/bin/jq -er '.command') || return 1
+    ((${#raw_directory} <= maximum_raw_directory_bytes &&
+       ${#raw_command} <= maximum_raw_command_bytes)) || {
+      fail 'raw application command or working directory exceeds its bound'
+      return 1
+    }
+    directory=$(normalize_application_value "$raw_directory" "$maximum_raw_directory_bytes") || return 1
+    command=$(normalize_application_value "$raw_command" "$maximum_normalized_command_bytes") || return 1
+    [[ -n "$command" && ( -z "$directory" || "$directory" == /* ) ]] ||
+      fail 'normalized application command or working directory is unsafe'
+    line_bytes=$((8 + ${#directory} + ${#command}))
+    ((line_bytes <= maximum_command_manifest_bytes &&
+      manifest_bytes <= maximum_command_manifest_bytes - line_bytes)) || {
+      fail 'application command manifest exceeds its bound'
+      return 1
+    }
+    /usr/bin/printf 'desktop\t%s\t%s\n' "$directory" "$command" >>"$destination"
+    ((manifest_bytes += line_bytes))
+  done <<<"$entries"
+}
+
+install_command_manifest() {
+  local body=$1 temporary size
+  size=$(/usr/bin/stat -c '%s' -- "$body") || return 1
+  [[ "$size" =~ ^[0-9]+$ ]] && ((size <= maximum_command_manifest_bytes)) ||
+    fail 'application command manifest exceeds its bound'
+  /usr/bin/awk -F '\t' '
+    NF != 3 || $1 != "desktop" || $3 == "" || ($2 != "" && substr($2, 1, 1) != "/") { exit 1 }
+    $3 in directory && directory[$3] != $2 { exit 1 }
+    { directory[$3] = $2 }
+  ' "$body" || fail 'a command is ambiguously authorized for multiple working directories'
+  temporary=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .commands.XXXXXX)
+  /usr/bin/printf '%s\n' "$command_manifest_header" >"$temporary"
+  if [[ -s "$body" ]]; then
+    LC_ALL=C /usr/bin/sort -u -- "$body" >>"$temporary"
+  fi
+  /usr/bin/chown root:"$service_user" "$temporary"; /usr/bin/chmod 0640 "$temporary"; /usr/bin/mv -fT -- "$temporary" "$command_manifest"
+}
+
+manifest_is_v2() {
+  local header size
+  size=$(/usr/bin/stat -c '%s' -- "$command_manifest") || return 1
+  [[ "$size" =~ ^[0-9]+$ ]] && ((size <= maximum_command_manifest_bytes)) || return 1
+  IFS= read -r header <"$command_manifest" || return 1
+  [[ "$header" == "$command_manifest_header" ]] || return 1
+  /usr/bin/awk -F '\t' '
+    NR == 1 { next }
+    NF != 3 || $1 != "desktop" || $3 == "" || ($2 != "" && substr($2, 1, 1) != "/") { exit 1 }
+    $3 in directory && directory[$3] != $2 { exit 1 }
+    { directory[$3] = $2 }
+  ' "$command_manifest"
+}
+
+authorize_commands() {
+  local extracted
+  require_root authorize-commands; load_settings
+  extracted=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .commands-json.XXXXXX)
+  extract_desktop_authorizations "$machine_profile/apps.json" "$extracted" || {
+    /usr/bin/rm -f -- "$extracted"
+    return 1
+  }
+  install_command_manifest "$extracted"
+  /usr/bin/rm -f -- "$extracted"
+}
+
+split_authorization_line() {
+  local line=$1 remainder
+  authorization_role=''; authorization_directory=''; authorization_command=''
+  [[ "$line" == *$'\t'* ]] || return 1
+  authorization_role=${line%%$'\t'*}
+  remainder=${line#*$'\t'}
+  [[ "$remainder" == *$'\t'* ]] || return 1
+  authorization_directory=${remainder%%$'\t'*}
+  authorization_command=${remainder#*$'\t'}
+  [[ "$authorization_role" == desktop && -n "$authorization_command" &&
+     ( -z "$authorization_directory" || "$authorization_directory" == /* ) ]]
+}
+
+migrate_legacy_command_manifest() {
+  local extracted selected line
+  extracted=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .commands-json.XXXXXX)
+  selected=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .commands-selected.XXXXXX)
+  extract_desktop_authorizations "$machine_profile/apps.json" "$extracted" || {
+    /usr/bin/rm -f -- "$extracted" "$selected"
+    return 1
+  }
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    split_authorization_line "$line" || continue
+    if /usr/bin/grep -Fqx -- "$authorization_command" "$command_manifest"; then
+      /usr/bin/printf '%s\t%s\t%s\n' "$authorization_role" "$authorization_directory" "$authorization_command" >>"$selected"
+    fi
+  done <"$extracted"
+  install_command_manifest "$selected"
+  /usr/bin/rm -f -- "$extracted" "$selected"
+  /usr/bin/printf 'vibepollo-machine-host: migrated the legacy command allowlist without authorizing new commands\n'
+}
+
+ensure_command_manifest() {
+  local attributes
+  if [[ -f "$command_manifest" && ! -L "$command_manifest" ]]; then
+    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$command_manifest") || return 1
+    [[ "$attributes" == "root:${service_user}:640:regular file" ]] || { fail 'administrator command manifest is unsafe'; return 1; }
+    manifest_is_v2 && return 0
+    migrate_legacy_command_manifest
+    return
+  fi
+  [[ ! -e "$command_manifest" && ! -L "$command_manifest" ]] || { fail 'administrator command manifest is unsafe'; return 1; }
+  authorize_commands
+}
+
+profile_is_safe() {
+  local unsafe
+  [[ -d "$1" && ! -L "$1" ]] || return 1
+  unsafe=$(/usr/bin/find "$1" -mindepth 1 ! -type d ! -type f -print -quit)
+  [[ -z "$unsafe" ]] || fail "profile contains an unsupported object: $unsafe"
+}
+
+profile_tree_is_sanitized() {
+  local root=$1 attributes unsafe
+  [[ -d "$root" && ! -L "$root" ]] || return 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$root") || return 1
+  [[ "$attributes" == "${service_user}:${service_user}:700:directory" ]] || return 1
+  unsafe=$(/usr/bin/find "$root" -xdev -mindepth 1 \
+    \( ! -type d ! -type f -o \
+       -type d \( ! -user "$service_user" -o ! -group "$service_user" -o ! -perm 0700 \) -o \
+       -type f \( ! -user "$service_user" -o ! -group "$service_user" -o ! -perm 0600 \) \) \
+    -print -quit) || return 1
+  [[ -z "$unsafe" ]]
+}
+
+rewrite_machine_cover_paths() {
+  local apps=$machine_profile/apps.json attributes temporary old_prefix legacy_prefix new_prefix size
+  local marker_line source_user entry account_name account_home
+  [[ $(/usr/bin/id -un) == "$service_user" ]] || fail 'cover migration requires the service account'
+  [[ -f "$profile_marker" && ! -L "$profile_marker" ]] || fail 'machine-profile marker is unsafe'
+  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$profile_marker") || return 1
+  [[ "$attributes" == "${service_user}:${service_user}:600:regular file" ]] ||
+    fail 'machine-profile marker ownership is unsafe'
+  IFS= read -r marker_line <"$profile_marker" || return 1
+  [[ "$marker_line" =~ ^source_user=([a-z_][a-z0-9_-]*)$ ]] || fail 'machine-profile marker is invalid'
+  source_user=${BASH_REMATCH[1]}
+  entry=$(/usr/bin/getent passwd "$source_user") || fail 'machine-profile source account is unavailable'
+  IFS=: read -r account_name _ _ _ _ account_home _ <<<"$entry"
+  [[ "$account_name" == "$source_user" && "$account_home" == /* ]] ||
+    fail 'machine-profile source account is invalid'
+  if [[ ! -e "$apps" && ! -L "$apps" ]]; then
+    # A fresh machine profile has no imported catalog. The host writes its
+    # default apps.json on first start, so there are no cover paths to rewrite.
+    return 0
+  fi
+  [[ -f "$apps" && ! -L "$apps" ]] || fail 'machine application catalog is unsafe'
+  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$apps") || return 1
+  [[ "$attributes" == "${service_user}:${service_user}:600:regular file" ]] ||
+    fail 'machine application catalog ownership is unsafe'
+  size=$(/usr/bin/stat -c '%s' -- "$apps") || return 1
+  [[ "$size" =~ ^[0-9]+$ ]] && ((size > 0 && size <= 16777216)) ||
+    fail 'machine application catalog exceeds the migration limit'
+  old_prefix=$account_home/.config/vibepollo/covers/
+  legacy_prefix=$account_home/.config/sunshine/covers/
+  new_prefix=$machine_profile/covers/
+  temporary=$(/usr/bin/mktemp --tmpdir="$machine_profile" .apps-migrate.XXXXXX)
+  /usr/bin/chmod 0600 "$temporary"
+  if ! capability_free_exec /usr/bin/timeout --signal=KILL 10 \
+      /usr/bin/jq --arg old "$old_prefix" --arg legacy_old "$legacy_prefix" --arg new "$new_prefix" '
+          def safe_suffix($value):
+            ($value | type) == "string" and
+            ($value | length) > 0 and
+            ($value | split("/") | all(. != "" and . != "." and . != ".."));
+          if (.apps | type) != "array" then error("application list must be an array") else . end
+          | .apps |= map(
+              if (has("image-path") | not) then .
+              elif (.["image-path"] | type) != "string" then
+                .["image-path"] = "box.png"
+              elif (.["image-path"] | startswith($old) or startswith($legacy_old)) then
+                (.["image-path"] | if startswith($old) then ltrimstr($old)
+                                   else ltrimstr($legacy_old) end) as $suffix
+                | .["image-path"] =
+                    (if safe_suffix($suffix) then $new + $suffix else "box.png" end)
+              elif (.["image-path"] | startswith($new)) then
+                (.["image-path"] | ltrimstr($new)) as $suffix
+                | .["image-path"] =
+                    (if safe_suffix($suffix) then $new + $suffix else "box.png" end)
+              elif (.["image-path"] | startswith("/usr/share/vibepollo/")) then
+                (.["image-path"] | ltrimstr("/usr/share/vibepollo/")) as $suffix
+                | if safe_suffix($suffix) then . else .["image-path"] = "box.png" end
+              elif (.["image-path"] == "./assets/steam.png") or
+                   (.["image-path"] | test("^[A-Za-z0-9._-]+\\.png$"; "i")) then .
+              else .["image-path"] = "box.png"
+              end)
+        ' "$apps" >"$temporary"; then
+    /usr/bin/rm -f -- "$temporary"
+    fail 'could not normalize shared catalog cover paths'
+  fi
+  size=$(/usr/bin/stat -c '%s' -- "$temporary") || { /usr/bin/rm -f -- "$temporary"; return 1; }
+  ((size > 0 && size <= 16777216)) || {
+    /usr/bin/rm -f -- "$temporary"
+    fail 'normalized application catalog exceeds the migration limit'
+  }
+  /usr/bin/mv -fT -- "$temporary" "$apps"
+}
+
+profile_tree_repair_modes() {
+  # The service-owned 0700 top directory already keeps every other account
+  # out, so modes beneath it only need normalizing, never refusing. The host
+  # itself wrote cacert.pem world-readable in earlier builds; repair anything
+  # this account owns instead of crash-looping on it.
+  local root=$1
+  [[ -d "$root" && ! -L "$root" ]] || return 0
+  /usr/bin/find "$root" -xdev -mindepth 1 -user "$service_user" ! -group "$service_user" \
+    -exec /usr/bin/chgrp -h "$service_user" '{}' + 2>/dev/null || true
+  /usr/bin/find "$root" -xdev -mindepth 1 -type d -user "$service_user" ! -perm 0700 \
+    -exec /usr/bin/chmod 0700 '{}' + 2>/dev/null || true
+  /usr/bin/find "$root" -xdev -mindepth 1 -type f -user "$service_user" ! -perm 0600 \
+    -exec /usr/bin/chmod 0600 '{}' + 2>/dev/null || true
+}
+
+prepare_service_profile() {
+  [[ $(/usr/bin/id -un) == "$service_user" ]] || fail 'profile preparation requires the service account'
+  profile_tree_repair_modes "$machine_profile"
+  profile_tree_is_sanitized "$machine_profile" || fail 'machine profile permissions are unsafe'
+  rewrite_machine_cover_paths
+}
+
+repair_profile_tree() {
+  # Root-side repair for package install and upgrade: give the whole machine
+  # profile back to the service account with the expected modes so an older
+  # install (or a stray root-owned file) cannot keep the host from starting.
+  require_root repair-profile || return 1
+  [[ -e "$machine_profile" || -L "$machine_profile" ]] || return 0
+  [[ -d "$machine_profile" && ! -L "$machine_profile" ]] || { fail 'machine profile is not a directory'; return 1; }
+  profile_is_safe "$machine_profile" || return 1
+  /usr/bin/chown "$service_user:$service_user" -- "$machine_profile" || return 1
+  /usr/bin/chmod 0700 -- "$machine_profile" || return 1
+  /usr/bin/find "$machine_profile" -xdev -mindepth 1 -exec /usr/bin/chown -h "$service_user:$service_user" '{}' + || return 1
+  /usr/bin/find "$machine_profile" -xdev -mindepth 1 -type d -exec /usr/bin/chmod 0700 '{}' + || return 1
+  /usr/bin/find "$machine_profile" -xdev -mindepth 1 -type f -exec /usr/bin/chmod 0600 '{}' + || return 1
+  profile_tree_is_sanitized "$machine_profile" || fail 'machine profile could not be repaired'
+}
+
+remove_root_staging() {
+  local staging=$1 attributes
+  [[ "$staging" =~ ^/var/lib/\.vibepollo-profile\.[A-Za-z0-9]+$ &&
+     -d "$staging" && ! -L "$staging" ]] || return 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$staging") || return 1
+  [[ "$attributes" == 'root:root:700:directory' ]] || return 1
+  /usr/bin/rm -rf --one-file-system -- "$staging"
+}
+
+publish_migrated_profile() (
+  local staging incoming attributes unsafe
+  staging=$(/usr/bin/mktemp -d --tmpdir=/var/lib .vibepollo-profile.XXXXXX) || exit 1
+  trap '[[ -z ${staging:-} ]] || remove_root_staging "$staging"' EXIT HUP INT TERM
+  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$staging") || exit 1
+  [[ "$attributes" == 'root:root:700:directory' ]] || exit 1
+
+  # The confined importer opens the profile beneath the account's home with
+  # openat2(RESOLVE_BENEATH|NO_SYMLINKS|NO_XDEV), permanently drops to that
+  # account before reading, and writes through an already-open descriptor into
+  # this root-inaccessible staging parent. Root never traverses the live user
+  # pathname, so a rename/symlink race cannot disclose privileged files.
+  incoming=$staging/incoming
+  /usr/bin/install -d -o "$desktop_uid" -g "$desktop_gid" -m 0700 "$incoming" || exit 1
+  [[ -x "$profile_importer" && ! -L "$profile_importer" ]] || exit 1
+  /usr/bin/timeout --signal=KILL 65 "$profile_importer" "$desktop_user" "$incoming" || exit 1
+
+  # Revoke the importer's ownership at the top before root validates or mutates
+  # any descendants. The staging parent has remained root:root 0700 throughout.
+  /usr/bin/chown root:root "$incoming" || exit 1
+  /usr/bin/chmod 0700 "$incoming" || exit 1
+  profile_is_safe "$incoming" || exit 1
+  /usr/bin/find "$incoming" -xdev -mindepth 1 -type d -exec /usr/bin/chown root:root '{}' +
+  /usr/bin/find "$incoming" -xdev -mindepth 1 -type d -exec /usr/bin/chmod 0700 '{}' +
+  /usr/bin/find "$incoming" -xdev -mindepth 1 -type f -exec /usr/bin/chown root:root '{}' +
+  /usr/bin/find "$incoming" -xdev -mindepth 1 -type f -exec /usr/bin/chmod 0600 '{}' +
+  /usr/bin/printf 'source_user=%s\n' "$desktop_user" >"$incoming/.machine-profile"
+  /usr/bin/chown root:root "$incoming/.machine-profile"
+  /usr/bin/chmod 0600 "$incoming/.machine-profile"
+  unsafe=$(/usr/bin/find "$incoming" -xdev -mindepth 1 \
+    \( ! -type d ! -type f -o ! -user root -o ! -group root -o \
+       -type d ! -perm 0700 -o -type f ! -perm 0600 \) -print -quit) || exit 1
+  [[ -z "$unsafe" ]] || exit 1
+
+  # Children can be prepared for their final owner while the root-owned 0700
+  # top directory still prevents that account from reaching or swapping them.
+  /usr/bin/find "$incoming" -xdev -mindepth 1 -exec /usr/bin/chown "$service_user:$service_user" '{}' +
+
+  if [[ -e "$machine_profile" || -L "$machine_profile" ]]; then
+    [[ -d "$machine_profile" && ! -L "$machine_profile" ]] || exit 1
+    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$machine_profile") || exit 1
+    [[ "$attributes" =~ ^(root:root|${service_user}:${service_user}):700:directory$ ]] || exit 1
+    [[ -z $(/usr/bin/find "$machine_profile" -mindepth 1 -print -quit) ]] || exit 1
+    /usr/bin/rmdir -- "$machine_profile" || exit 1
+  fi
+  /usr/bin/mv -T -- "$incoming" "$machine_profile" || exit 1
+  /usr/bin/rmdir -- "$staging" || exit 1
+  staging=''
+  /usr/bin/chown "$service_user:$service_user" "$machine_profile"
+  profile_tree_is_sanitized "$machine_profile"
+)
+
+migrate_profile() {
+  require_root migrate-profile || return 1
+  load_settings || return 1
+  /usr/bin/getent passwd "$service_user" >/dev/null || { fail "missing system account: $service_user"; return 1; }
+  if [[ -f "$profile_marker" && ! -L "$profile_marker" ]]; then
+    profile_tree_is_sanitized "$machine_profile" || fail 'existing machine profile is not sanitized'
+    return
+  fi
+  [[ ! -e "$profile_marker" && ! -L "$profile_marker" ]] || { fail 'unsafe machine-profile marker'; return 1; }
+  [[ $(/usr/bin/stat -c '%U:%G:%a:%F' -- /var/lib) == 'root:root:755:directory' ]] ||
+    { fail '/var/lib is not a safe migration parent'; return 1; }
+  publish_migrated_profile || { fail 'profile staging or atomic publication failed'; return 1; }
+  /usr/bin/printf 'vibepollo-machine-host: migrated the selected desktop profile into the machine profile\n'
+}
+
+configure_automatically() {
+  local home selected profile state user uid; local -a candidates=()
+  require_root configure-auto || return 1
+  if [[ -f "$settings_file" && ! -L "$settings_file" ]]; then
+    selected=$(read_desktop_user "$settings_file") || return 1
+  elif [[ -f "$legacy_settings_file" && ! -L "$legacy_settings_file" ]]; then
+    selected=$(read_desktop_user "$legacy_settings_file") || return 1
+  else
+    local -a accounts=()
+    while IFS=: read -r user _ uid _ _ home shell; do
+      [[ "$uid" =~ ^[0-9]+$ && "$uid" -ge 1000 && "$uid" -lt 60000 && "$home" == /* && -d "$home" && ! -L "$home" ]] || continue
+      valid_user "$user" || continue
+      case "$shell" in */nologin|*/false|'') continue ;; esac
+      accounts+=("$user")
+      # Match the importer's source priority. An existing canonical directory
+      # owns this account's state even when only the legacy directory is paired.
+      profile=$home/.config/vibepollo
+      if ! user_exec "$user" /usr/bin/test -e "$profile" && ! user_exec "$user" /usr/bin/test -L "$profile"; then
+        profile=$home/.config/sunshine
+      fi
+      for state in "$profile/vibeshine_state.json" "$profile/sunshine_state.json"; do
+        if user_exec "$user" /usr/bin/test -f "$state" && ! user_exec "$user" /usr/bin/test -L "$state"; then
+          candidates+=("$user")
+          break
+        fi
+      done
+    done < <(/usr/bin/getent passwd)
+    if ((${#candidates[@]} == 1)); then
+      selected=${candidates[0]}
+    elif ((${#candidates[@]} > 1)); then
+      fail "automatic setup found several desktop Vibepollo profiles (${candidates[*]}); choose one with: sudo vibepollo configure USER"; return 1
+    elif ((${#accounts[@]} == 1)); then
+      # First installation: the only interactive account owns the machine profile.
+      selected=${accounts[0]}
+    elif ((${#accounts[@]} == 0)); then
+      fail 'automatic setup found no interactive desktop account; choose one with: sudo vibepollo configure USER'; return 1
+    else
+      fail "automatic setup found several desktop accounts (${accounts[*]}); choose one with: sudo vibepollo configure USER"; return 1
+    fi
+  fi
+  write_settings "$selected" || return 1
+  prepare_upgrade_profile
+}
+
+prepare_upgrade_profile() {
+  # All native package formats use this same ordered upgrade path. Repair old
+  # ownership/modes before validating an existing profile; never re-import a
+  # marked machine profile or authorize additional commands during an upgrade.
+  # Explicit returns matter when configure_automatically is called in an if.
+  repair_profile_tree || return 1
+  migrate_profile || return 1
+  user_exec "$service_user" "$machine_host" prepare-profile || return 1
+  ensure_command_manifest || return 1
+}
+
+user_exec() {
+  local user=$1 uid gid; shift; uid=$(/usr/bin/id -u -- "$user"); gid=$(/usr/bin/id -g -- "$user")
+  /usr/bin/setpriv --reuid "$uid" --regid "$gid" --init-groups --no-new-privs -- "$@"
+}
+
+load_session() {
+  local attributes key value line entry account_name account_uid account_gid account_home
+  local -A seen=()
+  [[ -f "$session_file" && ! -L "$session_file" ]] || fail 'missing session environment'
+  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$session_file")
+  [[ "$attributes" == "root:${service_user}:640:regular file" ]] || fail 'untrusted session environment'
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == *=* ]] || fail 'malformed session environment'
+    key=${line%%=*}; value=${line#*=}
+    [[ "$key" =~ ^(session|generation|user|uid|gid|home|runtime|display|xdisplay|xauthority|groups|role)$ ]] || fail "unknown session key: $key"
+    [[ -z ${seen[$key]:-} ]] || fail "duplicate session key: $key"
+    seen[$key]=1
+    case "$key" in
+      session) session_id=$value ;;
+      generation) session_generation=$value ;;
+      user) session_user=$value ;;
+      uid) session_uid=$value ;;
+      gid) session_gid=$value ;;
+      home) session_home=$value ;;
+      runtime) session_runtime=$value ;;
+      display) session_display=$value ;;
+      xdisplay) session_xdisplay=$value ;;
+      xauthority) session_xauthority=$value ;;
+      groups) session_groups=$value ;;
+      role) session_role=$value ;;
+    esac
+  done <"$session_file"
+  ((${#seen[@]} == 12)) || fail 'incomplete session environment'
+  valid_user "$session_user"
+  [[ "$session_id" =~ ^[A-Za-z0-9_.-]+$ && "$session_generation" =~ ^[1-9][0-9]*$ &&
+     "$session_uid" =~ ^[1-9][0-9]*$ && "$session_gid" =~ ^[1-9][0-9]*$ &&
+     "$session_home" == /* && "$session_runtime" == "/run/user/$session_uid" &&
+     "$session_display" =~ ^wayland-[0-9]+$ && "$session_groups" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ &&
+     "$session_role" =~ ^(desktop|greeter)$ ]] || fail 'invalid session environment'
+  entry=$(/usr/bin/getent passwd "$session_uid") || fail 'session account does not exist'
+  IFS=: read -r account_name _ account_uid account_gid _ account_home _ <<<"$entry"
+  [[ "$account_name" == "$session_user" && "$account_uid" == "$session_uid" &&
+     "$account_gid" == "$session_gid" && "$account_home" == "$session_home" ]] || fail 'session account does not match the trusted record'
+  if [[ "$session_role" == desktop ]]; then
+    [[ "$session_xdisplay" =~ ^:[0-9]+(\.[0-9]+)?$ && "$session_xauthority" == "$session_runtime"/* &&
+       "$session_xauthority" != */../* && "$session_xauthority" != */.. ]] || fail 'desktop X11 record is invalid'
+  else
+    [[ -z "$session_xdisplay" && -z "$session_xauthority" ]] || fail 'greeter record must not contain X11 credentials'
+  fi
+}
+
+nvidia_gpu_present() {
+  local device vendor class
+  for device in /sys/bus/pci/devices/*; do
+    read -r vendor <"$device/vendor" 2>/dev/null || continue
+    read -r class <"$device/class" 2>/dev/null || continue
+    [[ "$vendor" == 0x10de && "$class" == 0x03* ]] && return 0
+  done
+  return 1
+}
+
+find_host_readiness_log() {
+  local host_log_directory=$1 expected_owner=$2
+  local candidate attributes count=0
+  local -n previous_logs=$3
+  host_log=''
+  [[ -d "$host_log_directory" && ! -L "$host_log_directory" ]] || return 1
+  for candidate in "$host_log_directory"/vibepollo-*.log; do
+    [[ -e "$candidate" || -L "$candidate" ]] || continue
+    [[ -z ${previous_logs[$candidate]:-} ]] || continue
+    ((count += 1))
+    ((count == 1)) || return 1
+    [[ "${candidate##*/}" =~ ^vibepollo-[0-9]{8}-[0-9]{6}-[0-9]{3}\.log$ &&
+       -f "$candidate" && ! -L "$candidate" ]] || return 1
+    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$candidate") || return 1
+    [[ "$attributes" == "${expected_owner}:600:regular file" ]] || return 1
+    host_log=$candidate
+  done
+  ((count == 1))
+}
+
+cleanup_host_clients() {
+  # The GPU-owning host has been reaped before this function runs. Detached
+  # session clients can still hold broker connections; close only members of
+  # this exact unit, using pidfds so PID reuse cannot signal another process.
+  "${host_cleanup_python:-/usr/bin/python3}" -I - "$BASHPID" "${1:-drain}" <<'PY'
+import os
+import pathlib
+import select
+import signal
+import sys
+import time
+
+supervisor = int(sys.argv[1])
+group = "/system.slice/vibepollo.service"
+members = pathlib.Path("/sys/fs/cgroup/system.slice/vibepollo.service/cgroup.procs")
+
+def belongs(pid):
+    try:
+        return f"0::{group}" in pathlib.Path(f"/proc/{pid}/cgroup").read_text().splitlines()
+    except FileNotFoundError:
+        return False
+
+pending = {}
+try:
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        raise RuntimeError("client cleanup requires Python 3.9 or newer with pidfd support")
+    if os.getppid() != supervisor or not belongs(supervisor) or not belongs("self"):
+        raise RuntimeError("refusing client cleanup outside the host service cgroup")
+    if sys.argv[2] == "check":
+        descriptor = os.pidfd_open(os.getpid())
+        try:
+            signal.pidfd_send_signal(descriptor, 0)
+        finally:
+            os.close(descriptor)
+        members.read_text()
+        sys.exit(0)
+    deadline = time.monotonic() + 5
+    while True:
+        for pid, descriptor in list(pending.items()):
+            if select.select([descriptor], [], [], 0)[0]:
+                os.close(descriptor)
+                del pending[pid]
+        for member in members.read_text().split():
+            pid = int(member)
+            if pid in (supervisor, os.getpid()) or pid in pending:
+                continue
+            try:
+                descriptor = os.pidfd_open(pid)
+            except ProcessLookupError:
+                continue
+            try:
+                if select.select([descriptor], [], [], 0)[0]:
+                    continue
+                if not belongs(pid):
+                    continue
+                signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+                pending[pid] = descriptor
+                descriptor = None
+            except ProcessLookupError:
+                pass
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+        if not pending:
+            # A member may fork and exit between the snapshot and pidfd_open.
+            # Confirm a fresh kernel snapshot contains no subordinate process
+            # before declaring the unit drained.
+            remaining = [int(member) for member in members.read_text().split()
+                         if int(member) not in (supervisor, os.getpid())]
+            if not remaining:
+                break
+        if time.monotonic() >= deadline:
+            raise RuntimeError("host exited but its remaining clients did not drain")
+        time.sleep(0.05)
+except (OSError, ValueError, RuntimeError) as error:
+    print(f"vibepollo-machine-host: {error}", file=sys.stderr)
+    sys.exit(1)
+finally:
+    for descriptor in pending.values():
+        os.close(descriptor)
+PY
+}
+
+run_host() {
+  local host_capabilities host_log='' host_log_directory=$machine_profile/logs
+  local host_log_prefix candidate readiness_attempt state status readiness_failed=0
+  # Bash unwinds function locals before an errexit EXIT trap. Keep only the
+  # process-lifetime shutdown state outside that stack so the guard can still
+  # stop and reap the real host when an unrelated supervisor command fails.
+  host_pid='' host_reaped=0 host_stop_sent=0 shutting_down=0 host_cleanup_python=''
+  local -A previous_host_logs=()
+  # Linux private displays are capture-ready through the Vibeshine DRM/KMS
+  # path.  Leaving desktop sessions to inherit a compositor capture setting
+  # makes a newly reserved output disappear during KWin's topology refresh,
+  # producing a connected session with no video.  Keep this aligned with the
+  # machine-wide Linux capture policy for every selected session role.
+  local -a overrides=('system_tray=disabled' 'capture=kms') environment
+  [[ $(/usr/bin/id -un) == "$service_user" ]] || fail "run requires $service_user"
+  load_session
+  capability_free_exec "$machine_host" prepare-profile
+  [[ -f "$machine_host_executable" && ! -L "$machine_host_executable" &&
+     $(/usr/bin/stat -c '%U:%G:%a:%F' -- "$machine_host_executable") == "root:${service_user}:750:regular file" ]] ||
+    fail 'private machine-host executable is unsafe'
+  host_capabilities=$(/usr/bin/getcap -n -- "$machine_host_executable") ||
+    fail 'could not inspect private machine-host capabilities'
+  [[ "$host_capabilities" == "$machine_host_executable cap_sys_admin,cap_sys_nice=p" ]] ||
+    fail 'private machine-host executable has unsafe capabilities'
+  # A stable basename lets the logger retain at most 30 launches across
+  # controller generations and boots, with up to 10 MiB per launch.
+  host_log_prefix=$machine_profile/vibepollo.log
+  [[ -d /run/vibepollo/host && ! -L /run/vibepollo/host &&
+     $(/usr/bin/stat -c '%U:%G:%a:%F' -- /run/vibepollo/host) == "${service_user}:${service_user}:700:directory" ]] ||
+    fail 'host runtime directory is unsafe'
+  if [[ ! -e "$host_log_directory" && ! -L "$host_log_directory" ]]; then
+    /usr/bin/mkdir -m 700 -- "$host_log_directory"
+  fi
+  [[ -d "$host_log_directory" && ! -L "$host_log_directory" &&
+     $(/usr/bin/stat -c '%U:%G:%a:%F' -- "$host_log_directory") == "${service_user}:${service_user}:700:directory" ]] ||
+    fail 'host readiness log directory is unsafe'
+  # Retained logs may already contain readiness messages. Snapshot their names
+  # before launch so only a newly created session log can make this host ready.
+  for candidate in "$host_log_directory"/vibepollo-*.log; do
+    [[ -e "$candidate" || -L "$candidate" ]] || continue
+    previous_host_logs["$candidate"]=1
+  done
+  overrides+=("log_path=$host_log_prefix")
+  if [[ "$session_role" == greeter ]]; then
+    # The greeter has no interactive fallback, so pin the proven NVENC path on
+    # NVIDIA hosts. Other GPUs keep automatic encoder selection (VAAPI/software).
+    if nvidia_gpu_present; then overrides+=('encoder=nvenc_experimental'); fi
+    # The Web UI must stay reachable from the LAN at the login screen: nobody
+    # can open a browser on the greeter itself, and pairing a new Moonlight
+    # client needs the PIN entered there. The Web UI login still gates it.
+    overrides+=('min_log_level=info' 'virtual_display_mode=shared' 'virtual_display_layout=exclusive' 'dd_config_revert_on_disconnect=enabled' 'dd_config_revert_delay=0' 'origin_web_ui_allowed=lan' 'session_history_enabled=disabled' 'frame_limiter_enable=false' 'file_apps=/usr/share/vibepollo/prelogin/apps.json'); fi
+  environment=("HOME=$machine_profile" "USER=$service_user" "LOGNAME=$service_user" "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin" "LANG=C.UTF-8" "SHELL=/bin/sh" \
+    "XDG_CONFIG_HOME=/var/lib" "XDG_RUNTIME_DIR=/run/vibepollo/host" "VIBEPOLLO_MACHINE_HOST=1" \
+    "VIBEPOLLO_SESSION_TYPE=wayland" \
+    "VIBEPOLLO_SESSION_ROLE=$session_role" "VIBEPOLLO_SESSION_USER=$session_user" "VIBEPOLLO_SESSION_UID=$session_uid" "VIBEPOLLO_SESSION_GID=$session_gid" "VIBEPOLLO_SESSION_GROUPS=$session_groups" \
+    "VIBEPOLLO_SESSION_ID=$session_id" "VIBEPOLLO_SESSION_GENERATION=$session_generation" "VIBEPOLLO_SESSION_HOME=$session_home")
+  request_host_shutdown() {
+    shutting_down=1
+    # A signal can arrive before the background child's PID is assigned. Keep
+    # the request pending, then forward it exactly once after assignment.
+    if ((host_reaped == 0)) && [[ -n "$host_pid" ]] && ((host_stop_sent == 0)); then
+      host_stop_sent=1
+      /usr/bin/kill -s TERM -- "$host_pid" 2>/dev/null || :
+    fi
+  }
+  # Leap retains an older default Python alongside the supported python311
+  # package. Select a trusted system interpreter before starting the GPU owner.
+  for candidate in /usr/bin/python3 /usr/bin/python3.11; do
+    if [[ -x "$candidate" ]] && "$candidate" -I -c \
+      'import os, signal; raise SystemExit(not (hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")))'; then
+      host_cleanup_python=$candidate
+      break
+    fi
+  done
+  [[ -n "$host_cleanup_python" ]] || { fail 'client cleanup requires Python 3.9 or newer with pidfd support'; return 1; }
+  cleanup_host_clients check || return 1
+  finish_host_supervisor() {
+    local result=$1
+    trap - EXIT
+    # An unexpected supervisor error must still let the GPU owner finish
+    # before touching any subordinate broker connection.
+    if ((host_reaped == 0)); then
+      request_host_shutdown
+      while /usr/bin/kill -0 "$host_pid" 2>/dev/null; do
+        wait "$host_pid" || :
+      done
+      wait "$host_pid" 2>/dev/null || :
+      host_reaped=1
+    fi
+    cleanup_host_clients || return 1
+    return "$result"
+  }
+  # KillMode=mixed sends TERM only to this supervisor. Broker clients must
+  # remain connected while the host drains capture and encoding; their early
+  # death cancels applications through the broker before that drain finishes.
+  trap request_host_shutdown TERM INT HUP
+  capability_clean_exec /usr/bin/env -i "${environment[@]}" \
+    "$machine_host_executable" "$machine_profile/vibepollo.conf" "${overrides[@]}" &
+  host_pid=$!
+  trap 'finish_host_supervisor "$?"' EXIT
+  if ((shutting_down)); then request_host_shutdown; fi
+
+  for ((readiness_attempt=0; readiness_attempt<400; ++readiness_attempt)); do
+    if ((shutting_down)); then break; fi
+    if ! /usr/bin/kill -0 "$host_pid" 2>/dev/null; then
+      wait "$host_pid" || status=$?
+      host_reaped=1
+      finish_host_supervisor "${status:-1}"
+      return "$?"
+    fi
+    state=$(/usr/bin/awk '{print $3}' "/proc/$host_pid/stat" 2>/dev/null) || state=''
+    if [[ "$state" == Z ]]; then
+      wait "$host_pid" || status=$?
+      host_reaped=1
+      finish_host_supervisor "${status:-1}"
+      return "$?"
+    fi
+    # KMS capture is instantiated by the first stream and is verified after a
+    # client connects; startup readiness proves the listener and the mandatory
+    # H.264 encoder. HEVC and AV1 depend on the GPU generation and are optional.
+    if find_host_readiness_log "$host_log_directory" "$service_user:$service_user" previous_host_logs &&
+       /usr/bin/grep -Fq 'Configuration UI available at' "$host_log" &&
+       /usr/bin/grep -Fq 'Found H.264 encoder:' "$host_log"; then
+      local codecs=H.264
+      /usr/bin/grep -Fq 'Found HEVC encoder:' "$host_log" && codecs+=', HEVC'
+      /usr/bin/grep -Fq 'Found AV1 encoder:' "$host_log" && codecs+=', AV1'
+      /usr/bin/systemd-notify --pid="$$" --ready \
+        --status="Vibepollo generation $session_generation is listening with $codecs encoders" || {
+          readiness_failed=1
+          request_host_shutdown
+          break
+        }
+      while /usr/bin/kill -0 "$host_pid" 2>/dev/null; do
+        wait "$host_pid" && status=0 || status=$?
+      done
+      host_reaped=1
+      ((shutting_down)) && status=0
+      finish_host_supervisor "${status:-0}"
+      return "$?"
+    fi
+    /usr/bin/sleep 0.1
+  done
+
+  # Readiness failures use the same idempotent stop as service termination.
+  ((shutting_down)) || readiness_failed=1
+  request_host_shutdown
+  while /usr/bin/kill -0 "$host_pid" 2>/dev/null; do
+    wait "$host_pid" || status=$?
+  done
+  host_reaped=1
+  if ((readiness_failed)); then
+    fail 'host did not complete encoder readiness or notify systemd before its readiness deadline' || :
+    finish_host_supervisor 1
+  else
+    finish_host_supervisor 0
+  fi
+}
+
+remove_pam_hook() {
+  local temporary; require_root remove-pam; [[ -f "$pam_file" && ! -L "$pam_file" ]] || return 0; temporary=$(/usr/bin/mktemp --tmpdir=/etc/pam.d .plasmalogin.XXXXXX)
+  /usr/bin/awk '$1=="session" && $2=="optional" && $3=="pam_vibepollo_session.so" {next} {print}' "$pam_file" >"$temporary"; /usr/bin/chown --reference="$pam_file" "$temporary"; /usr/bin/chmod --reference="$pam_file" "$temporary"; /usr/bin/mv -fT -- "$temporary" "$pam_file"
+}
+
+control_group_is_empty() {
+  local control_group=$1 cgroup_path
+  [[ -z "$control_group" ]] && return 0
+  [[ "$control_group" == /* && "$control_group" != *'/../'* &&
+     "$control_group" != */.. && "$control_group" != *$'\n'* ]] || return 1
+  cgroup_path=/sys/fs/cgroup$control_group
+  if [[ ! -e "$cgroup_path" && ! -L "$cgroup_path" ]]; then
+    return 0
+  fi
+  [[ -d "$cgroup_path" && ! -L "$cgroup_path" &&
+     -f "$cgroup_path/cgroup.events" && ! -L "$cgroup_path/cgroup.events" ]] || return 1
+  /usr/bin/grep -qx 'populated 0' "$cgroup_path/cgroup.events"
+}
+
+system_unit_is_quiescent() {
+  local unit=$1 properties line key value load='' active='' substate='' pid='' control_group=''
+  local -A seen=()
+  properties=$(/usr/bin/timeout --signal=KILL 5 /usr/bin/systemctl show "$unit" \
+    --property=LoadState --property=ActiveState --property=SubState \
+    --property=MainPID --property=ControlGroup 2>/dev/null) || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == *=* ]] || return 1
+    key=${line%%=*}; value=${line#*=}
+    [[ "$key" =~ ^(LoadState|ActiveState|SubState|MainPID|ControlGroup)$ &&
+       -z ${seen[$key]:-} ]] || return 1
+    seen[$key]=1
+    case "$key" in
+      LoadState) load=$value ;;
+      ActiveState) active=$value ;;
+      SubState) substate=$value ;;
+      MainPID) pid=$value ;;
+      ControlGroup) control_group=$value ;;
+    esac
+  done <<<"$properties"
+  [[ -n ${seen[LoadState]:-} && -n ${seen[ActiveState]:-} &&
+     -n ${seen[SubState]:-} && -n ${seen[ControlGroup]:-} ]] || return 1
+  # Socket units carry no MainPID property, so `systemctl show` omits it.
+  if [[ "$unit" == *.socket ]]; then
+    ((${#seen[@]} == 4 || ${#seen[@]} == 5)) || return 1
+    [[ -z ${seen[MainPID]:-} || "$pid" == 0 ]] || return 1
+  else
+    ((${#seen[@]} == 5)) || return 1
+    [[ "$pid" == 0 ]] || return 1
+  fi
+  case "$load:$active:$substate" in
+    loaded:inactive:dead|loaded:failed:failed|masked:inactive:dead|masked-runtime:inactive:dead|not-found:inactive:dead) ;;
+    *) return 1 ;;
+  esac
+  control_group_is_empty "$control_group"
+}
+
+broker_instances_are_quiescent() {
+  local output line unit load active substate
+  local -a fields=()
+  local -A seen=()
+  output=$(/usr/bin/timeout --signal=KILL 5 /usr/bin/systemctl list-units \
+    --all --plain --no-legend --no-pager --full \
+    'vibepollo-session-exec@*.service' 2>/dev/null |
+    /usr/bin/head -c 65537) || return 1
+  ((${#output} <= 65536)) || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" ]] || continue
+    [[ "$line" != *$'\r'* ]] || return 1
+    read -ra fields <<<"$line"
+    if [[ ${fields[0]:-} == '●' ]]; then
+      fields=("${fields[@]:1}")
+    fi
+    ((${#fields[@]} >= 5)) || return 1
+    unit=${fields[0]}; load=${fields[1]}; active=${fields[2]}; substate=${fields[3]}
+    [[ "$unit" =~ ^vibepollo-session-exec@[A-Za-z0-9_.:-]+\.service$ &&
+       "$load" == loaded && "$active" =~ ^[a-z-]+$ && "$substate" =~ ^[a-z-]+$ &&
+       -z ${seen[$unit]:-} ]] || return 1
+    seen[$unit]=1
+    ((${#seen[@]} <= 256)) || return 1
+    system_unit_is_quiescent "$unit" || return 1
+  done <<<"$output"
+}
+
+unit_load_state() {
+  local unit=$1 state
+  state=$(/usr/bin/timeout --signal=KILL 5 /usr/bin/systemctl show "$unit" \
+    --property=LoadState --value 2>/dev/null) || return 1
+  [[ "$state" =~ ^(loaded|masked|masked-runtime)$ ]] || return 1
+  /usr/bin/printf '%s' "$state"
+}
+
+restore_reset_unit_admission() {
+  local controller_was_active=$1 unit
+  /usr/bin/timeout --signal=KILL 15 /usr/bin/systemctl unmask --runtime \
+    vibepollo-session-exec.socket vibepollo.service \
+    vibepollo-session-controller.service >/dev/null || return 1
+  for unit in vibepollo-session-exec.socket vibepollo.service \
+              vibepollo-session-controller.service; do
+    [[ $(unit_load_state "$unit") == loaded ]] || return 1
+  done
+  if ((controller_was_active)); then
+    /usr/bin/timeout --signal=KILL 30 /usr/bin/systemctl start \
+      vibepollo-session-controller.service || return 1
+  fi
+}
+
+quiesce_machine_for_reset() {
+  local unit controller_state controller_was_active=0 controller_attributes
+  require_root reset
+  [[ -x /usr/bin/systemctl && -d /run/systemd/system ]] ||
+    fail 'reset requires a running systemd system manager'
+  [[ -f "$session_controller" && ! -L "$session_controller" ]] ||
+    fail 'reset requires the installed machine-session controller'
+  controller_attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$session_controller") || return 1
+  [[ "$controller_attributes" == 'root:root:755:regular file' ]] ||
+    fail 'the installed machine-session controller is unsafe'
+
+  for unit in vibepollo-session-exec.socket vibepollo.service \
+              vibepollo-session-controller.service; do
+    [[ $(unit_load_state "$unit") == loaded ]] ||
+      fail "$unit must be loaded and unmasked before reset"
+  done
+  controller_state=$(/usr/bin/timeout --signal=KILL 5 /usr/bin/systemctl show \
+    vibepollo-session-controller.service --property=ActiveState --value 2>/dev/null) || return 1
+  case "$controller_state" in
+    active|activating|reloading) controller_was_active=1 ;;
+    inactive|failed) ;;
+    *) fail 'the machine-session controller is in an unsafe transitional state' ;;
+  esac
+
+  # Runtime masks close every new activation path before shutdown begins. The
+  # native controller then performs its bounded exact-unit/broker convergence;
+  # reset never substitutes systemctl globs or state labels for cgroup proof.
+  for unit in vibepollo-session-exec.socket vibepollo.service \
+              vibepollo-session-controller.service; do
+    /usr/bin/timeout --signal=KILL 15 /usr/bin/systemctl mask --runtime "$unit" >/dev/null ||
+      fail "could not close reset admission for $unit"
+  done
+  /usr/bin/timeout --signal=KILL 30 /usr/bin/systemctl stop \
+    vibepollo-session-exec.socket vibepollo.service >/dev/null 2>&1 || :
+  /usr/bin/timeout --signal=KILL 40 /usr/bin/systemctl stop \
+    vibepollo-session-controller.service >/dev/null 2>&1 || :
+  /usr/bin/timeout --signal=KILL 40 "$session_controller" cleanup ||
+    fail 'session cleanup failed; persistent machine state was not removed'
+
+  for unit in vibepollo.service vibepollo-session-controller.service vibepollo-session-exec.socket; do
+    system_unit_is_quiescent "$unit" ||
+      fail "$unit is not fully quiescent; persistent machine state was not removed"
+  done
+  broker_instances_are_quiescent ||
+    fail 'a session broker is not fully quiescent; persistent machine state was not removed'
+  [[ ! -e "$session_file" && ! -L "$session_file" ]] ||
+    fail 'a live session binding remains; persistent machine state was not removed'
+  RESET_CONTROLLER_WAS_ACTIVE=$controller_was_active
+}
+
+remove_machine_profile() {
+  local attributes
+  [[ "$machine_profile" == /var/lib/vibepollo ]] || return 1
+  [[ -e "$machine_profile" || -L "$machine_profile" ]] || return 0
+  if [[ -L "$machine_profile" ]]; then
+    /usr/bin/rm -f -- "$machine_profile"
+    return
+  fi
+  if [[ -d "$machine_profile" ]]; then
+    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- /var/lib) || return 1
+    [[ "$attributes" == 'root:root:755:directory' ]] ||
+      fail 'refusing to remove machine state beneath an unsafe /var/lib'
+    if /usr/bin/mountpoint -q -- "$machine_profile"; then
+      fail 'refusing to recursively remove a mounted machine-state directory'
+    fi
+    /usr/bin/rm -rf --one-file-system -- "$machine_profile"
+    return
+  fi
+  /usr/bin/rm -f -- "$machine_profile"
+}
+
+reset_machine() {
+  require_root reset
+  RESET_CONTROLLER_WAS_ACTIVE=0
+  quiesce_machine_for_reset
+  remove_machine_profile || fail 'could not remove the machine profile'
+  /usr/bin/rm -f -- "$settings_file" "$legacy_settings_file" "$command_manifest"
+  /usr/bin/rmdir -- /etc/vibepollo 2>/dev/null || :
+  [[ ! -e "$machine_profile" && ! -L "$machine_profile" &&
+     ! -e "$settings_file" && ! -L "$settings_file" &&
+     ! -e "$legacy_settings_file" && ! -L "$legacy_settings_file" &&
+     ! -e "$command_manifest" && ! -L "$command_manifest" ]] ||
+    fail 'persistent machine state was not completely removed'
+  restore_reset_unit_admission "$RESET_CONTROLLER_WAS_ACTIVE" ||
+    fail 'machine state was removed but temporary reset unit masks could not be restored'
+  /usr/bin/printf 'vibepollo-machine-host: removed machine policy, credentials, pairings, and shared settings\n'
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-}" in
+    configure) [[ $# == 2 ]] || exit 2; shift; write_settings "$@"; prepare_upgrade_profile ;;
+    configure-auto) [[ $# == 1 ]] || exit 2; configure_automatically ;;
+    authorize-commands) [[ $# == 1 ]] || exit 2; authorize_commands ;;
+    migrate-profile) [[ $# == 1 ]] || exit 2; migrate_profile ;;
+    prepare-profile) [[ $# == 1 ]] || exit 2; prepare_service_profile ;;
+    repair-profile) [[ $# == 1 ]] || exit 2; repair_profile_tree ;;
+    run) [[ $# == 1 ]] || exit 2; run_host ;;
+    remove-pam) [[ $# == 1 ]] || exit 2; remove_pam_hook ;;
+    reset) [[ $# == 1 ]] || exit 2; reset_machine ;;
+    *) /usr/bin/printf 'usage: %s {configure USER|configure-auto|authorize-commands|migrate-profile|prepare-profile|repair-profile|run|remove-pam|reset}\n' "$0" >&2; exit 2 ;;
+  esac
+fi

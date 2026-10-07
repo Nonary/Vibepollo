@@ -22,13 +22,19 @@ namespace {
     rtsp_stream::launch_session_t ls {};
 
     ls.id = 0x1234u;
+    ls.role = remote_session::role_e::input;
+    ls.role_generation = 9;
+    ls.remote_capture_output = "remote-output";
+    ls.rtsp_source_address = "192.0.2.42";
     ls.gcm_key = crypto::aes_t {0x01, 0x02, 0x03, 0x04};
     ls.iv = crypto::aes_t {0x05, 0x06, 0x07, 0x08};
     ls.av_ping_payload = "ping-payload";
     ls.control_connect_data = 0xABCDu;
     ls.unique_id = "unique-id";
     ls.client_uuid = "client-uuid";
+    ls.client_name = "client-name";
     ls.device_name = "device-name";
+    ls.input_only = true;
     ls.perm = crypto::PERM::_all;
     ls.fps = 120;
     ls.client_do_cmds.push_back(crypto::command_entry_t {"do-cmd", true});
@@ -70,13 +76,19 @@ TEST(RtspStartupSnapshot, CopiesAllConsumedFields) {
   ASSERT_TRUE(clone != nullptr);
 
   EXPECT_EQ(clone->id, source.id);
+  EXPECT_EQ(clone->role, source.role);
+  EXPECT_EQ(clone->role_generation, source.role_generation);
+  EXPECT_EQ(clone->remote_capture_output, source.remote_capture_output);
+  EXPECT_EQ(clone->rtsp_source_address, source.rtsp_source_address);
   EXPECT_EQ(clone->gcm_key, source.gcm_key);
   EXPECT_EQ(clone->iv, source.iv);
   EXPECT_EQ(clone->av_ping_payload, source.av_ping_payload);
   EXPECT_EQ(clone->control_connect_data, source.control_connect_data);
   EXPECT_EQ(clone->unique_id, source.unique_id);
   EXPECT_EQ(clone->client_uuid, source.client_uuid);
+  EXPECT_EQ(clone->client_name, source.client_name);
   EXPECT_EQ(clone->device_name, source.device_name);
+  EXPECT_EQ(clone->input_only, source.input_only);
   EXPECT_EQ(clone->perm, source.perm);
   EXPECT_EQ(clone->fps, source.fps);
 

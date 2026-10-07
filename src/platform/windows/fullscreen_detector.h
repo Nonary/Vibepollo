@@ -33,17 +33,16 @@ namespace platf::fullscreen_detector {
   };
 
   /**
-   * Reconcile fullscreen evidence in confidence order:
+   * Reconcile fullscreen evidence as an ordered positive-detection chain:
    *  1. A full-monitor window attributed to the launched/Playnite game.
-   *  2. The composed blocker above an attributed full-monitor game.
-   *  3. A missing interactive session, which precludes visible game content.
-   *  4. Definitive desktop evidence on the capture display.
-   *  5. The Windows Shell's display-scoped "rude app" activation feed.
-   *  6. The Shell's session-wide exclusive-D3D notification state.
-   *  7. A generic borderless window covering the capture monitor.
+   *  2. The Windows Shell's display-scoped "rude app" activation feed.
+   *  3. The Shell's session-wide exclusive-D3D notification state.
+   *  4. Generic opaque borderless geometry covering the capture monitor.
    *
-   * A borderless window is fullscreen for this policy. Ambiguous evidence
-   * returns unknown rather than overriding stronger display-local evidence.
+   * A positive result short-circuits. A negative or unavailable provider falls
+   * through, and desktop evidence is returned only after all four providers
+   * decline. A missing interactive session remains a hard precondition because
+   * it precludes visible game content. Borderless is fullscreen for this policy.
    */
   result_t detect(const foreground_app::state_t &foreground, const RECT &capture_rect);
 

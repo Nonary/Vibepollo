@@ -1,0 +1,151 @@
+name: Submit and wait for SignPath
+description: Submit a trusted SignPath request, then poll its status every five seconds for a bounded interval.
+
+inputs:
+  api-token:
+    description: SignPath API access token.
+    required: true
+  organization-id:
+    description: SignPath organization ID.
+    required: true
+  project-slug:
+    description: SignPath project slug.
+    required: true
+  signing-policy-slug:
+    description: SignPath signing policy slug.
+    required: true
+  artifact-configuration-slug:
+    description: Optional SignPath artifact configuration slug.
+    required: false
+  github-artifact-id:
+    description: ID of the GitHub Actions artifact to sign.
+    required: true
+  github-token:
+    description: GitHub token used by the SignPath connector.
+    required: true
+  output-artifact-path:
+    description: Relative path where the completed signed artifact is written.
+    required: true
+  timeout-seconds:
+    description: Total wait budget for artifact retrieval and signing completion.
+    required: false
+    default: '600'
+  connector-url:
+    description: SignPath GitHub Actions connector URL.
+    required: false
+    default: https://githubactions.connectors.signpath.io
+
+outputs:
+  signing-request-id:
+    description: ID of the submitted SignPath request.
+    value: ${{ steps.submit.outputs.signing-request-id }}
+  signing-request-web-url:
+    description: Web URL for the submitted SignPath request.
+    value: ${{ steps.submit.outputs.signing-request-web-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Start bounded SignPath wait
+      id: budget
+      shell: pwsh
+      env:
+        TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $timeoutSeconds = 0
+        if (-not [int]::TryParse($env:TIMEOUT_SECONDS, [ref]$timeoutSeconds) -or $timeoutSeconds -lt 5) {
+          throw "timeout-seconds must be an integer of at least 5; got '$($env:TIMEOUT_SECONDS)'."
+        }
+
+        $deadline = [DateTimeOffset]::UtcNow.AddSeconds($timeoutSeconds).ToUnixTimeSeconds()
+        "deadline_unix=$deadline" >> $env:GITHUB_OUTPUT
+
+    - name: Submit SignPath signing request
+      id: submit
+      uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd  # v2
+      with:
+        api-token: ${{ inputs.api-token }}
+        organization-id: ${{ inputs.organization-id }}
+        project-slug: ${{ inputs.project-slug }}
+        signing-policy-slug: ${{ inputs.signing-policy-slug }}
+        artifact-configuration-slug: ${{ inputs.artifact-configuration-slug }}
+        github-artifact-id: ${{ inputs.github-artifact-id }}
+        github-token: ${{ inputs.github-token }}
+        connector-url: ${{ inputs.connector-url }}
+        wait-for-completion: false
+        wait-for-completion-timeout-in-seconds: ${{ inputs.timeout-seconds }}
+
+    - name: Poll SignPath and download signed artifact
+      shell: pwsh
+      env:
+        CONNECTOR_URL: ${{ inputs.connector-url }}
+        DEADLINE_UNIX: ${{ steps.budget.outputs.deadline_unix }}
+        ORGANIZATION_ID: ${{ inputs.organization-id }}
+        OUTPUT_ARTIFACT_PATH: ${{ inputs.output-artifact-path }}
+        SIGNED_ARTIFACT_URL: ${{ steps.submit.outputs.signed-artifact-download-url }}
+        SIGNING_REQUEST_ID: ${{ steps.submit.outputs.signing-request-id }}
+        SIGNPATH_API_TOKEN: ${{ inputs.api-token }}
+        TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        if ([string]::IsNullOrWhiteSpace($env:SIGNING_REQUEST_ID)) {
+          throw 'SignPath did not return a signing request ID.'
+        }
+        if ([string]::IsNullOrWhiteSpace($env:SIGNED_ARTIFACT_URL)) {
+          throw 'SignPath did not return a signed-artifact download URL.'
+        }
+
+        $deadline = [DateTimeOffset]::FromUnixTimeSeconds([long]$env:DEADLINE_UNIX)
+        $timeoutSeconds = [int]$env:TIMEOUT_SECONDS
+        $connectorUrl = $env:CONNECTOR_URL.TrimEnd('/')
+        $organizationId = [uri]::EscapeDataString($env:ORGANIZATION_ID)
+        $requestId = [uri]::EscapeDataString($env:SIGNING_REQUEST_ID)
+        $statusUrl = "$connectorUrl/$organizationId/SigningRequests/$requestId/Status?api-version=1.0"
+        $headers = @{ Authorization = "Bearer $($env:SIGNPATH_API_TOKEN)" }
+
+        if ([IO.Path]::IsPathRooted($env:OUTPUT_ARTIFACT_PATH)) {
+          $outputArtifact = $env:OUTPUT_ARTIFACT_PATH
+        } else {
+          $outputArtifact = Join-Path $env:GITHUB_WORKSPACE $env:OUTPUT_ARTIFACT_PATH
+        }
+        $outputDirectory = Split-Path -Parent $outputArtifact
+        New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+        Remove-Item -LiteralPath $outputArtifact -Force -ErrorAction SilentlyContinue
+
+        while ($true) {
+          try {
+            $request = Invoke-RestMethod -Method Get -Uri $statusUrl -Headers $headers -TimeoutSec 5
+          } catch {
+            if ([DateTimeOffset]::UtcNow -ge $deadline) {
+              throw "SignPath request $($env:SIGNING_REQUEST_ID) could not be queried within $timeoutSeconds seconds: $($_.Exception.Message)"
+            }
+            Write-Warning "SignPath status request failed: $($_.Exception.Message)"
+            Start-Sleep -Seconds 5
+            continue
+          }
+
+          $status = [string]$request.status
+          $workflowStatus = [string]$request.workflowStatus
+          $isFinal = [System.Convert]::ToBoolean($request.isFinalStatus)
+          Write-Host "SignPath request $($env:SIGNING_REQUEST_ID): status=$status workflowStatus=$workflowStatus"
+
+          if ($isFinal) {
+            if ($status -ne 'Completed') {
+              throw "SignPath request $($env:SIGNING_REQUEST_ID) finished with status '$status' rather than Completed."
+            }
+
+            Invoke-WebRequest -Method Get -Uri $env:SIGNED_ARTIFACT_URL -Headers $headers -OutFile $outputArtifact -TimeoutSec 120
+            if (-not (Test-Path -LiteralPath $outputArtifact) -or (Get-Item -LiteralPath $outputArtifact).Length -eq 0) {
+              throw "SignPath returned an empty signed artifact for request $($env:SIGNING_REQUEST_ID)."
+            }
+            Write-Host "Downloaded signed artifact to $outputArtifact"
+            break
+          }
+
+          if ([DateTimeOffset]::UtcNow -ge $deadline) {
+            throw "SignPath request $($env:SIGNING_REQUEST_ID) did not complete within $timeoutSeconds seconds."
+          }
+          Start-Sleep -Seconds 5
+        }

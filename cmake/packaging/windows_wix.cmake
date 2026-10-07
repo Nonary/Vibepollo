@@ -51,6 +51,19 @@ set(CPACK_WIX_CANDLE_EXTRA_FLAGS
   "-dVibeshineSemVer=${PROJECT_VERSION_FULL}"
 )
 
+# The patch fragment needs build-time defaults so it never invokes a missing
+# VHF package from an MSI built before the first signed driver release.
+if(NOT DEFINED SUNSHINE_VHF_GAMEPAD_WIX_BUNDLED)
+  set(SUNSHINE_VHF_GAMEPAD_WIX_BUNDLED 0)
+endif()
+if(NOT DEFINED SUNSHINE_VHF_GAMEPAD_WIX_ALLOW_LOCAL_TEST)
+  set(SUNSHINE_VHF_GAMEPAD_WIX_ALLOW_LOCAL_TEST 0)
+endif()
+list(APPEND CPACK_WIX_CANDLE_EXTRA_FLAGS
+  "-dVhfGamepadDriverBundled=${SUNSHINE_VHF_GAMEPAD_WIX_BUNDLED}"
+  "-dVhfGamepadAllowLocalTest=${SUNSHINE_VHF_GAMEPAD_WIX_ALLOW_LOCAL_TEST}"
+)
+
 
 set(CPACK_WIX_EXTRA_SOURCES
   "${CMAKE_SOURCE_DIR}/packaging/windows/wix/custom_actions.wxs"
@@ -61,7 +74,7 @@ set(CPACK_WIX_EXTRA_SOURCES
 set(CPACK_WIX_TEMPLATE "${CMAKE_SOURCE_DIR}/packaging/windows/wix/WIX.template.in")
 
 # uninstall.exe is packed into the MSI unsigned and signed as a nested PE by the
-# SignPath "msi-file" deep-sign (see docs/signpath/). There is intentionally no
+# consumer-MSI deep-signing policy (see docs/signpath/). There is intentionally no
 # CPACK_PRE_BUILD_SCRIPTS uninstaller-signing hook: a runner-local signature is
 # non-origin-verified and was a no-op in CI anyway (the token is deliberately
 # withheld from the MSI build step).
@@ -84,7 +97,7 @@ set(CPACK_WIX_TEMPLATE "${CMAKE_SOURCE_DIR}/packaging/windows/wix/WIX.template.i
 #     -beta.N   -> 30 + N   (31..59)
 #     -rc.N     -> 60 + N   (61..89)
 #     other pre -> 90
-#     stable    -> 99
+#     stable[.N] -> 99
 #
 #   1.18.0-beta.2 -> 1.18.32.0 < 1.18.0 -> 1.18.99.0 < 1.18.1-beta.1 -> 1.18.131.0
 #
@@ -136,6 +149,10 @@ if(PROJECT_VERSION_FULL MATCHES "-([A-Za-z]+)(\\.([0-9]+))?")
     math(EXPR _WIX_PRERELEASE_ORDINAL "30 + ${_pre_num}")
   elseif(_pre_tag STREQUAL "rc")
     math(EXPR _WIX_PRERELEASE_ORDINAL "60 + ${_pre_num}")
+  elseif(_pre_tag STREQUAL "stable")
+    # Stable respins remain in the stable channel. Their sortable ProductCodes
+    # distinguish stable.N packages that share this MSI ProductVersion.
+    set(_WIX_PRERELEASE_ORDINAL 99)
   else()
     # Unknown prerelease tag: rank below stable but above rc.
     set(_WIX_PRERELEASE_ORDINAL 90)

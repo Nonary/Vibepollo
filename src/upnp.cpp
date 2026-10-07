@@ -85,7 +85,7 @@ namespace upnp {
 
       // Only map port for the Web Manager if it is configured to accept connection from WAN
       if (net::from_enum_string(config::nvhttp.origin_web_ui_allowed) > net::LAN) {
-        mappings.emplace_back(mapping_t {{wm_http, wm_http, "TCP"s}, "Sunshine - Web UI"s});
+        mappings.emplace_back(mapping_t {{wm_http, wm_http, "TCP"s}, "Sunshine - Configuration API"s});
       }
 
       // Start the mapping thread

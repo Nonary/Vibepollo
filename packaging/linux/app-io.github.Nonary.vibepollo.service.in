@@ -1,0 +1,19 @@
+[Unit]
+Description=@PROJECT_DESCRIPTION@
+StartLimitIntervalSec=0
+PartOf=graphical-session.target
+After=graphical-session.target plasma-kwin_wayland.service xdg-desktop-autostart.target xdg-desktop-portal.service
+
+[Service]
+@SUNSHINE_SERVICE_READINESS_COMMAND@
+@SUNSHINE_SERVICE_START_COMMAND@
+@SUNSHINE_SERVICE_STOP_COMMAND@
+Restart=on-failure
+RestartSec=5s
+RestartSteps=7
+RestartMaxDelaySec=5min
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=graphical-session.target
+Alias=vibepollo.service

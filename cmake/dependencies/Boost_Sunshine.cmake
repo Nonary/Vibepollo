@@ -18,6 +18,18 @@ if(NOT WIN32)
     list(APPEND BOOST_COMPONENTS locale)
 endif()
 
+if(BUILD_TESTS)
+    list(APPEND BOOST_COMPONENTS
+            algorithm
+            asio
+            crc
+            format
+            function
+            log_setup
+            property_tree
+    )
+endif()
+
 # algorithm, preprocessor, scope, and uuid are not used by Sunshine, but by libdisplaydevice, added here for convenience
 if(WIN32)
     list(APPEND BOOST_COMPONENTS
@@ -36,8 +48,16 @@ if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.30")
     cmake_policy(SET CMP0167 NEW)  # Get BoostConfig.cmake from upstream
 endif()
 find_package(Boost CONFIG ${BOOST_VERSION} COMPONENTS ${BOOST_COMPONENTS})
-if(NOT Boost_FOUND)
-    message(STATUS "Boost v${BOOST_VERSION} package not found in the system. Falling back to FetchContent.")
+set(_boost_targets_missing FALSE)
+foreach(component IN LISTS BOOST_COMPONENTS)
+    if(NOT TARGET "Boost::${component}")
+        set(_boost_targets_missing TRUE)
+        break()
+    endif()
+endforeach()
+
+if(NOT Boost_FOUND OR _boost_targets_missing)
+    message(STATUS "Boost v${BOOST_VERSION} package or required targets not found in the system. Falling back to FetchContent.")
     include(FetchContent)
 
     if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.24.0")
@@ -54,10 +74,15 @@ if(NOT Boost_FOUND)
             format
             property_tree)
 
+    list(REMOVE_DUPLICATES BOOST_COMPONENTS)
+
     set(BOOST_ENABLE_CMAKE ON)
 
     # Limit boost to the required libraries only
     set(BOOST_INCLUDE_LIBRARIES ${BOOST_COMPONENTS})
+    # log_setup is a target provided by the log library, not a standalone
+    # Boost source directory accepted by BOOST_INCLUDE_LIBRARIES.
+    list(REMOVE_ITEM BOOST_INCLUDE_LIBRARIES log_setup)
     set(BOOST_URL "https://github.com/boostorg/boost/releases/download/boost-${BOOST_VERSION}/boost-${BOOST_VERSION}-cmake.tar.xz")  # cmake-lint: disable=C0301
     set(BOOST_HASH "SHA256=67acec02d0d118b5de9eb441f5fb707b3a1cdd884be00ca24b9a73c995511f74")
 

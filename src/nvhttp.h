@@ -7,9 +7,12 @@
 
 // standard includes
 #include <chrono>
+#include <cstdint>
 #include <list>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 // lib includes
@@ -82,6 +85,11 @@ namespace nvhttp {
    * @param cert
    */
   void setup(const std::string &pkey, const std::string &cert);
+
+  // Remote Input has no retained resource; its catalogue ownership ends with
+  // the exact transport generation that created it.
+  void notify_remote_input_transport_lost(std::string_view client_uuid, std::uint64_t generation);
+  void notify_remote_monitor_released(std::string_view client_uuid, std::uint64_t generation);
 
   class SunshineHTTPS: public SimpleWeb::HTTPS {
   public:
@@ -224,14 +232,8 @@ namespace nvhttp {
    */
   bool unpair_client(std::string_view uuid);
 
-  /**
-
-   * @brief Get a client's prefer_10bit_sdr override.
-   * @param uuid The UUID of the client.
-   * @return The client's override value, or std::nullopt to inherit the global value.
-   */
-  std::optional<bool> get_client_prefer_10bit_sdr_override(const std::string &uuid);
   bool has_client_uuid(std::string_view uuid);
+  bool get_client_always_use_virtual_display(const std::string &uuid);
 
   /**
    * @brief Get all paired clients.
@@ -241,6 +243,9 @@ namespace nvhttp {
    * @examples_end
    */
   nlohmann::json get_all_clients();
+
+  nlohmann::json get_remote_display_layout();
+  bool set_remote_display_layout(const nlohmann::json &layout, std::string &error);
 
   /**
    * @brief Record a client's last seen time (seconds since epoch).
@@ -260,7 +265,7 @@ namespace nvhttp {
     const std::string &virtual_display_mode,
     const std::string &virtual_display_layout,
     std::optional<std::unordered_map<std::string, std::string>> config_overrides,
-    std::optional<bool> prefer_10bit_sdr,
+    bool prefer_10bit_sdr,
     std::optional<std::string> hdr_profile
   );
 
@@ -271,14 +276,40 @@ namespace nvhttp {
   bool disconnect_client(const std::string &uuid);
 
   /**
-   * @brief Get a client's prefer_10bit_sdr override.
+   * @brief Whether a paired client is opted into 10-bit SDR instead of HDR.
    */
-  std::optional<bool> get_client_prefer_10bit_sdr_override(const std::string &uuid);
+  bool get_client_prefer_10bit_sdr(const std::string &uuid);
 
   /**
    * @brief Get a copy of a client's runtime config overrides.
    */
   std::unordered_map<std::string, std::string> get_client_config_overrides(const std::string &uuid);
+
+  /**
+   * @brief Encoder capabilities safe to expose to the browser WebRTC UI.
+   * @details Resolves the same selected-adapter capability view used for HTTP
+   *          protocol advertisement. A false `probe_complete` means the host
+   *          has not safely verified an encoder for the current capture target.
+   */
+  struct web_stream_capabilities_t {
+    bool probe_complete {false};
+    bool h264 {false};
+    bool hevc {false};
+    bool av1 {false};
+    bool hevc_hdr {false};
+    bool av1_hdr {false};
+  };
+
+  web_stream_capabilities_t get_web_stream_capabilities();
+
+  /**
+   * @brief Serialize shared stream start and final teardown across RTSP and WebRTC.
+   *
+   * Acquire after the RTSP launch-request mutex, before protocol capture locks.
+   * Starts hold it from their first idle-state observation through pending-owner
+   * publication; final teardown holds it through its shared cleanup decision.
+   */
+  std::mutex &stream_lifecycle_mutex();
 
   /**
    * @brief Persist a per-client HDR color profile selection (Windows only).
@@ -288,11 +319,12 @@ namespace nvhttp {
 
   /**
    * @brief Remove all paired clients.
+   * @return True only when the cleared machine pairing state was persisted.
    * @examples
    * nvhttp::erase_all_clients();
    * @examples_end
    */
-  void erase_all_clients();
+  bool erase_all_clients();
 
   /**
    * @brief      Stops a session.
@@ -357,12 +389,12 @@ namespace nvhttp {
     const bool always_use_virtual_display,
     const std::string &virtual_display_mode,
     const std::string &virtual_display_layout,
-    const std::optional<bool> prefer_10bit_sdr
+    const bool prefer_10bit_sdr
   );
 
   /**
    * @brief Persist current nvhttp-related state (paired clients, update subsystem markers, etc.).
    * @note Exposed so subsystems (e.g. update) can trigger a save after mutating persisted fields.
    */
-  void save_state();
+  bool save_state();
 }  // namespace nvhttp

@@ -7,11 +7,16 @@
 // local includes
 #include "input.h"
 #include "platform/common.h"
+#include "pyrowave_policy.h"
+#include "video_policy.h"
 #include "thread_safe.h"
 #include "video_colorspace.h"
 
 // standard includes
 #include <array>
+#include <atomic>
+#include <optional>
+#include <string>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -21,6 +26,12 @@ extern "C" {
 struct AVPacket;
 
 namespace video {
+  enum class capture_source_e : std::uint8_t {
+    active_output,
+    exact_output,
+    synthetic_black,
+  };
+
 
   /* Encoding configuration requested by remote client */
   struct config_t {
@@ -40,7 +51,7 @@ namespace video {
        SDR encoding colorspace (encoderCscMode >> 1) : 0 - BT.601, 1 - BT.709, 2 - BT.2020 */
     int encoderCscMode;
 
-    int videoFormat;  // 0 - H.264, 1 - HEVC, 2 - AV1
+    int videoFormat;  // 0 - H.264, 1 - HEVC, 2 - AV1, 3 - PyroWave
 
     /* Encoding color depth (bit depth): 0 - 8-bit, 1 - 10-bit
        HDR encoding activates when color depth is higher than 8-bit and the display which is being captured is operating in HDR mode */
@@ -62,12 +73,24 @@ namespace video {
 
     int enableIntraRefresh;  // 0 - disabled, 1 - enabled
 
-    int encodingFramerate;  // Requested display framerate
-    bool input_only;
+    int encodingFramerate = 0;  // Requested display framerate
+    bool input_only = false;
+    // Capture ownership is session-local. Exact remote outputs must not fall
+    // back through the mutable process-wide output selection, while input-only
+    // sessions use an in-memory black producer and never initialize capture.
+    capture_source_e capture_source {capture_source_e::active_output};
+    std::optional<std::string> capture_output;
+    // Opt into the smallest supported host-side queues for a launch-qualified VRR
+    // session. This remains false for clients that do not negotiate the mode.
+    bool vrr_low_latency = false;
     // Original client-requested wire-bandwidth budget in Kbps, before Sunshine
     // subtracts FEC/audio/control overhead from `bitrate` for the encoder.
     // Same as `bitrate` for clients that don't send maximumBitrateKbps.
-    int client_requested_bitrate;
+    int client_requested_bitrate = 0;
+    // PyroWave only (videoFormat 3): the negotiated RTP packet size, which record
+    // framing aligns to, and the framing the client asked for in ANNOUNCE.
+    int packetsize = 0;
+    pyrowave::policy::framing_e pyrowave_framing = pyrowave::policy::framing_e::records;
   };
 
   platf::mem_type_e map_base_dev_type(AVHWDeviceType type);
@@ -287,9 +310,13 @@ namespace video {
   extern encoder_t nvenc;  // available for windows and linux
 #endif
 
+#if defined(__linux__)
+  extern encoder_t nvenc_legacy;
+#endif
+
 #ifdef _WIN32
-  extern encoder_t amdvce;
-  extern encoder_t amdvce_legacy;
+  extern encoder_t amdvce_experimental;
+  extern encoder_t amdvce_ffmpeg;
   extern encoder_t quicksync;
   extern encoder_t mediafoundation;
 #endif
@@ -329,6 +356,11 @@ namespace video {
     void *channel_data = nullptr;
     bool after_ref_frame_invalidation = false;
     // Pacing/scheduled timestamp used for transport timing.
+    /// PyroWave record framing: frame bytes through the coarsest wavelet level, whose
+    /// packets stream.cpp protects with parity and announces; 0 when unknown.
+    std::size_t pyrowave_critical_bytes = 0;
+    int pyrowave_detail_fec_percentage = 0;
+    std::size_t pyrowave_frame_wire_budget = 0;
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
     // Raw capture/QPC-derived timestamp before pacing adjustments.
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
@@ -410,18 +442,42 @@ namespace video {
 
   extern int active_hevc_mode;
   extern int active_av1_mode;
+  /**
+   * PyroWave encoding on the probed capture adapter: 0 - not probed, 1 - disabled
+   * or unsupported, 2 - available (advertised). PyroWave bypasses the encoder_t
+   * selection, so this is independent of the chosen hardware encoder.
+   */
+  extern std::atomic_int active_pyrowave_mode;
   extern bool last_encoder_probe_supported_ref_frames_invalidation;
   extern std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec;  // 0 - H.264, 1 - HEVC, 2 - AV1
+
+  bool has_attempted_encoder_probe();
+  bool has_successful_encoder_probe();
+  bool last_encoder_probe_failed();
 
   struct advertised_encoder_capabilities_t {
     int hevc_mode = 0;
     int av1_mode = 0;
+    int pyrowave_mode = 0;  ///< Same values as active_pyrowave_mode.
     std::array<bool, 3> yuv444_for_codec {};
   };
 
-  bool has_attempted_encoder_probe();
-  bool has_successful_encoder_probe();
-  advertised_encoder_capabilities_t advertised_encoder_capabilities(bool probe_before_negative = false);
+  advertised_encoder_capabilities_t advertised_encoder_capabilities(
+    bool probe_before_negative = false,
+    bool *probe_complete = nullptr
+  );
+
+#ifdef _WIN32
+  // Bridge the interval between selecting a virtual-display render adapter and
+  // Windows publishing its replacement output. The lease prevents an older
+  // request from clearing a newer session's identity.
+  using encoder_probe_adapter_hint_lease_t = std::uint64_t;
+  encoder_probe_adapter_hint_lease_t set_pending_virtual_display_adapter_hint(const LUID &adapter_luid);
+  // Once the replacement output is published, capability identity must agree
+  // with its WGC/DXGI adapter before a successful probe can remain cached.
+  bool mark_pending_virtual_display_adapter_hint_ready_for_verification(encoder_probe_adapter_hint_lease_t lease);
+  bool clear_pending_virtual_display_adapter_hint(encoder_probe_adapter_hint_lease_t lease);
+#endif
 
   void capture(
     safe::mail_t mail,
@@ -429,7 +485,13 @@ namespace video {
     void *channel_data
   );
 
-  bool validate_encoder(encoder_t &encoder, bool expect_failure);
+  bool validate_encoder(
+    encoder_t &encoder,
+    bool expect_failure,
+    const std::optional<platf::adapter_id_t> &required_adapter = std::nullopt,
+    std::optional<platf::adapter_id_t> *actual_adapter = nullptr,
+    const std::string &probe_display_name = std::string {}
+  );
 
   /**
    * @brief Check if we can allow probing for the encoders.
@@ -453,18 +515,7 @@ namespace video {
   // support for 23.976 film in case someone wants to stream a film at the perfect
   // framerate.
   inline AVRational framerateX100_to_rational(const int framerateX100) {
-    if (framerateX100 % 2997 == 0) {
-      // Multiples of NTSC 29.97 e.g. 59.94, 119.88
-      return AVRational {(framerateX100 / 2997) * 30000, 1001};
-    }
-    switch (framerateX100) {
-      case 2397:  // the other weird NTSC framerate, assume these want 23.976 film
-      case 2398:
-        return AVRational {24000, 1001};
-      default:
-        // any other fractional rate can be reduced by ffmpeg. Max is set to 1 << 26 based on docs:
-        // "rational numbers with |num| <= 1<<26 && |den| <= 1<<26 can be recovered exactly from their double representation"
-        return av_d2q((double) framerateX100 / 100.0f, 1 << 26);
-    }
+    const auto rational = policy::framerate_x100_to_rational(framerateX100);
+    return AVRational {rational.numerator, rational.denominator};
   }
 }  // namespace video

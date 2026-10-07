@@ -737,7 +737,11 @@ namespace platf::dxgi {
           if (truehdr_private_input_ready && !truehdr_engine &&
               !platf::game_activity::display_mode_change_in_flight()) {
             truehdr_engine = std::make_unique<nv_truehdr_t>();
-            truehdr_engine->init(device.get());
+          }
+          if (truehdr_private_input_ready && truehdr_engine &&
+              !truehdr_engine->available() &&
+              !platf::game_activity::display_mode_change_in_flight()) {
+            (void) truehdr_engine->init(device.get());
           }
           if (truehdr_private_input_ready && truehdr_engine && truehdr_engine->available()) {
             truehdr_params_t p;
@@ -781,7 +785,8 @@ namespace platf::dxgi {
               truehdr_last_compensated_peak_nits = 0;
               truehdr_last_compensated_middle_gray = 0;
             }
-            if (auto *hdr_tex = truehdr_engine->convert(truehdr_input_texture, p)) {
+            auto *hdr_tex = truehdr_engine->convert(truehdr_input_texture, p);
+            if (hdr_tex) {
               if (hdr_tex != truehdr_srv_texture) {
                 truehdr_srv.reset();
                 truehdr_srv_texture = nullptr;
@@ -2222,7 +2227,7 @@ namespace platf::dxgi {
                       << " bitrate=" << client_config.bitrate << "kbps (active=" << active_encoder_count << ')';
 
       // AMF SDK integer values are passed straight through from the existing
-      // amd_* config (shared with the FFmpeg amdvce_legacy path).
+      // amd_* config (shared with the FFmpeg amdvce_ffmpeg path).
       if (client_config.videoFormat == 0) {
         amf_cfg.usage = config::video.amd.amd_usage_h264;
         amf_cfg.quality_preset = config::video.amd.amd_quality_h264;
@@ -2267,6 +2272,17 @@ namespace platf::dxgi {
       amf_cfg.max_ltr_frames = config::video.amd.amd_ltr_frames;  // 0 = RFI off
       if (config::video.amd.amd_input_queue_size > 0) {
         amf_cfg.input_queue_size = config::video.amd.amd_input_queue_size;
+        if (client_config.vrr_low_latency && config::video.amd.amd_input_queue_size > 1) {
+          BOOST_LOG(info) << "AMF: explicit input queue size "
+                          << config::video.amd.amd_input_queue_size
+                          << " overrides the VRR low-latency queue request";
+        }
+      } else if (client_config.vrr_low_latency) {
+        // Queue depth 1 is the lowest-latency AMF path, but some drivers need
+        // a larger explicit host setting for stability. Respect that override
+        // above and otherwise make this tradeoff only for negotiated VRR.
+        amf_cfg.input_queue_size = 1;
+        BOOST_LOG(info) << "AMF: using input queue size 1 for VRR low-latency mode";
       }
 
       // Xbox clients request rolling intra refresh because they cannot always
@@ -2836,8 +2852,12 @@ namespace platf::dxgi {
     return dup.release_frame();
   }
 
-  int display_ddup_vram_t::init(const ::video::config_t &config, const std::string &display_name) {
-    if (display_base_t::init(config, display_name) || dup.init(this, config)) {
+  int display_ddup_vram_t::init(
+    const ::video::config_t &config,
+    const std::string &display_name,
+    const std::optional<LUID> &required_adapter_luid
+  ) {
+    if (display_base_t::init(config, display_name, false, required_adapter_luid) || dup.init(this, config)) {
       return -1;
     }
 

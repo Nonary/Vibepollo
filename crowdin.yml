@@ -29,5 +29,11 @@
     "dest": "/sunshine.json",
     "translation": "/src_assets/common/assets/web/public/assets/locale/%two_letters_code%.%file_extension%",
     "update_option": "update_as_unapproved"
+  },
+  {
+    "source": "/src_assets/common/assets/web/public/assets/locale/ui/en.json",
+    "dest": "/vibepollo-ui.json",
+    "translation": "/src_assets/common/assets/web/public/assets/locale/ui/%two_letters_code%.%file_extension%",
+    "update_option": "update_as_unapproved"
   }
 ]

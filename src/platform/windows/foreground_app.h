@@ -4,6 +4,8 @@
  */
 #pragma once
 
+#include "game_activity_policy.h"
+
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -62,36 +64,12 @@ namespace platf::foreground_app {
     std::string_view status_install_dir,
     std::string_view foreground_exe
   );
-  bool passive_compositor_style_for_tests(
-    std::uintptr_t style,
-    std::uintptr_t ex_style
-  );
-
-  struct visible_window_evidence_t {
-    bool belongs_to_active_app {false};
-    bool desktop_ui {false};
-    bool passive_host {false};
-    bool fullscreen_on_capture_display {false};
-    bool opaque {true};
-    // Shell surfaces that routinely appear above a running fullscreen game for a
-    // moment (the alt-tab switcher, Task View, a taskbar strip). They are desktop
-    // UI, but treating them as a blocker turned every alt-tab keypress into a
-    // desktop verdict, so the scan looks past them at whatever they cover.
-    bool transient_shell_overlay {false};
-  };
+  using visible_window_evidence_t = game_activity_policy::visible_window_evidence_t;
 
   bool transient_shell_overlay_for_tests(
     std::string_view class_name,
     bool desktop_ui,
     bool covers_capture_display
-  );
-
-  // Evidence is ordered from topmost to bottommost in the composed window stack.
-  // Returns true only when fullscreen game content is reached before any visible
-  // desktop or unrelated application surface.
-  bool visible_fullscreen_game_selected_for_tests(
-    std::span<const visible_window_evidence_t> evidence,
-    bool require_active_app_match
   );
 
 }  // namespace platf::foreground_app

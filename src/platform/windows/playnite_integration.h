@@ -49,26 +49,16 @@ namespace platf::playnite {
    */
   void stop_client_for_session();
 
-  /**
-   * @brief Attempt to install the Playnite plugin in the default location.
-   * @param[out] error Set to a human-readable error message on failure.
-   * @return `true` on successful installation, `false` on failure.
-   */
-  bool install_plugin(std::string &error);
-
-  /**
-   * @brief Install the Playnite plugin to a specific destination directory.
-   * @param[in] dest_dir Absolute path to the target installation directory.
-   * @param[out] error Set to a human-readable error message on failure.
-   * @return `true` on success, `false` on failure.
-   */
-  bool install_plugin_to(const std::string &dest_dir, std::string &error);
+  // Stop Playnite before installing the plugin; optionally relaunch it afterward.
+  bool install_plugin(std::string &error, bool restart_playnite = true);
+  bool install_plugin_to(const std::string &dest_dir, std::string &error, bool restart_playnite = true);
   /**
    * @brief Uninstall the Playnite plugin from the target Extensions directory.
    * @param[out] error Set to a human-readable error message on failure.
+   * @param[in] restart_playnite Relaunch Playnite after stopping it for removal.
    * @return `true` on success (including when already uninstalled), `false` on failure.
    */
-  bool uninstall_plugin(std::string &error);
+  bool uninstall_plugin(std::string &error, bool restart_playnite = false);
 
   /**
    * @brief Compute the target extensions directory used for plugin installation.
@@ -128,6 +118,14 @@ namespace platf::playnite {
    * @return `true` if the sync was triggered, `false` otherwise.
    */
   bool force_sync(bool wait_for_snapshot = true);
+
+  /**
+   * @brief Replace a Playnite game's cover image with a local image file.
+   * @param[in] playnite_id The Playnite identifier of the game to update.
+   * @param[in] image_path Absolute path to the image Playnite should import.
+   * @return `true` if the Playnite connector confirmed the metadata update.
+   */
+  bool set_game_cover(const std::string &playnite_id, const std::string &image_path);
 
   /**
    * @brief Retrieve or generate a cover PNG for a Playnite game and return its path.

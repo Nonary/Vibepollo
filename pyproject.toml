@@ -25,7 +25,6 @@ glad = [
 ]
 
 flatpak = [
-    "flatpak_node_generator @ file:./packaging/linux/flatpak/deps/flatpak-builder-tools/node",
     "flatpak_pip_generator @ file:./packaging/linux/flatpak/deps/flatpak-builder-tools/pip",
 ]
 

@@ -171,6 +171,27 @@ bool RunTerminationHelper(HANDLE console_token, DWORD pid) {
   return exit_code == 0;
 }
 
+void ReportServiceStopped(DWORD error, HANDLE log_file_handle = INVALID_HANDLE_VALUE, LPPROC_THREAD_ATTRIBUTE_LIST attributes = nullptr) {
+  // SERVICE_STOPPED permits SCM to start a replacement immediately. Release our
+  // non-write-shared log handle before publishing that state, including failures
+  // during startup; returning from ServiceMain does not release process handles.
+  if (attributes != nullptr) {
+    DeleteProcThreadAttributeList(attributes);
+    HeapFree(GetProcessHeap(), 0, attributes);
+  }
+  if (log_file_handle != INVALID_HANDLE_VALUE) {
+    CloseHandle(log_file_handle);
+  }
+  // HandlerEx remains registered until process exit. Its event handles must
+  // stay valid for any control callback already in flight during cleanup.
+  service_status.dwControlsAccepted = 0;
+  service_status.dwCheckPoint = 0;
+  service_status.dwWaitHint = 0;
+  service_status.dwWin32ExitCode = error;
+  service_status.dwCurrentState = SERVICE_STOPPED;
+  SetServiceStatus(service_status_handle, &service_status);
+}
+
 VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
   service_status_handle = RegisterServiceCtrlHandlerEx(SERVICE_NAME, HandlerEx, nullptr);
   if (service_status_handle == nullptr) {
@@ -193,9 +214,7 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
   stop_event = CreateEventA(nullptr, TRUE, FALSE, nullptr);
   if (stop_event == nullptr) {
     // Tell SCM we failed to start
-    service_status.dwWin32ExitCode = GetLastError();
-    service_status.dwCurrentState = SERVICE_STOPPED;
-    SetServiceStatus(service_status_handle, &service_status);
+    ReportServiceStopped(GetLastError());
     return;
   }
 
@@ -203,18 +222,14 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
   session_change_event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
   if (session_change_event == nullptr) {
     // Tell SCM we failed to start
-    service_status.dwWin32ExitCode = GetLastError();
-    service_status.dwCurrentState = SERVICE_STOPPED;
-    SetServiceStatus(service_status_handle, &service_status);
+    ReportServiceStopped(GetLastError());
     return;
   }
 
   auto log_file_handle = OpenLogFileHandle();
   if (log_file_handle == INVALID_HANDLE_VALUE) {
     // Tell SCM we failed to start
-    service_status.dwWin32ExitCode = GetLastError();
-    service_status.dwCurrentState = SERVICE_STOPPED;
-    SetServiceStatus(service_status_handle, &service_status);
+    ReportServiceStopped(GetLastError());
     return;
   }
 
@@ -231,9 +246,7 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
   startup_info.lpAttributeList = AllocateProcThreadAttributeList(2);
   if (startup_info.lpAttributeList == nullptr) {
     // Tell SCM we failed to start
-    service_status.dwWin32ExitCode = GetLastError();
-    service_status.dwCurrentState = SERVICE_STOPPED;
-    SetServiceStatus(service_status_handle, &service_status);
+    ReportServiceStopped(GetLastError(), log_file_handle);
     return;
   }
 
@@ -300,7 +313,22 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
           if (!RunTerminationHelper(console_token, process_info.dwProcessId) ||
               WaitForSingleObject(process_info.hProcess, 20000) != WAIT_OBJECT_0) {
             // If it won't terminate gracefully, kill it now
-            TerminateProcess(process_info.hProcess, ERROR_PROCESS_ABORTED);
+            if (!TerminateProcess(process_info.hProcess, ERROR_PROCESS_ABORTED)) {
+              const auto termination_error = GetLastError();
+              // Termination can fail when the child has already exited. Otherwise
+              // fail the service instead of waiting forever or reporting success;
+              // process exit also closes our kill-on-close job as a last resort.
+              if (WaitForSingleObject(process_info.hProcess, 0) != WAIT_OBJECT_0) {
+                ExitProcess(termination_error);
+                return;
+              }
+            }
+            // TerminateProcess is asynchronous. The inherited log handle stays
+            // open until termination completes, so wait before allowing restart.
+            if (WaitForSingleObject(process_info.hProcess, INFINITE) != WAIT_OBJECT_0) {
+              ExitProcess(GetLastError());
+              return;
+            }
           }
           still_running = false;
           break;
@@ -353,9 +381,8 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
     }
   }
 
-  // Let SCM know we've stopped
-  service_status.dwCurrentState = SERVICE_STOPPED;
-  SetServiceStatus(service_status_handle, &service_status);
+  // The child has exited; release our remaining handles before allowing restart.
+  ReportServiceStopped(NO_ERROR, log_file_handle, startup_info.lpAttributeList);
 }
 
 // This will run in a child process in the user session

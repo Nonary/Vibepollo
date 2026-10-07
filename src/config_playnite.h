@@ -16,7 +16,9 @@ namespace config {
   };
 
   struct playnite_t {
-    // Enabled flag removed; integration manager always runs (server up when plugin installed)
+    // Keep the legacy Windows default enabled; Linux does not parse/start
+    // Playnite and exposes it as unavailable in the Steam provider status.
+    bool enabled = true;
     bool auto_sync = true;  // enable automatic sync from Playnite
     bool sync_all_installed = false;  // include every installed game regardless of filters
     int recent_games = 10;  // N most recent games
@@ -72,6 +74,10 @@ namespace config {
   };
 
   extern playnite_t playnite;
+
+  // Parse and consume Playnite-related values without touching process-global
+  // configuration or external Playnite/application state.
+  playnite_t parse_playnite(std::unordered_map<std::string, std::string> &vars);
 
   // Consume Playnite-related config vars from the provided map.
   void apply_playnite(std::unordered_map<std::string, std::string> &vars);

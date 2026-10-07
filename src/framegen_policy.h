@@ -33,6 +33,9 @@ namespace framegen {
     std::optional<int> framegen_refresh_rate;
     std::optional<std::uint32_t> framegen_refresh_millihz;
     int refresh_multiplier = 1;
+    // The virtual display runs at framegen_refresh_millihz itself, not a stream multiple,
+    // so its mode must be created at that rate.
+    bool fixed_refresh = false;
   };
 
   struct stream_start_policy_input_t {
@@ -50,6 +53,8 @@ namespace framegen {
     bool auto_capture_uses_wgc = false;
     bool auto_virtual_framegen_limiter = true;
     int virtual_display_refresh_multiplier = 1;
+    // Exact virtual-display refresh (e.g. 1000 Hz VRR mode). Non-zero replaces the multiplier.
+    std::uint32_t virtual_display_fixed_refresh_millihz = 0;
   };
 
   inline std::string normalize_provider(std::string_view value) {
@@ -70,6 +75,29 @@ namespace framegen {
       return "lossless-scaling";
     }
     return "lossless-scaling";
+  }
+
+  inline bool virtual_display_reflex_required(
+    const stream_start_policy_t &policy,
+    bool allow_virtual_display_override,
+    bool runtime_sync_override
+  ) {
+    if (
+      !policy.uses_virtual_display ||
+      !policy.auto_virtual_framegen_limiter ||
+      runtime_sync_override
+    ) {
+      return false;
+    }
+
+    // A game-provided DLSS/FSR frame-generation stream must keep the low-latency
+    // virtual-display path even when the global override is enabled. An explicit
+    // app/client RTSS mode remains the user's strongest opt-in.
+    if (normalize_provider(policy.frame_generation_provider) == "game-provided") {
+      return true;
+    }
+
+    return !allow_virtual_display_override;
   }
 
   inline std::string normalize_capture_mode(std::string_view value) {
@@ -150,7 +178,9 @@ namespace framegen {
 
     const auto capture_mode = normalize_capture_mode(input.capture_mode);
     const bool hard_wgc_capture = policy.uses_virtual_display && game_provided_framegen;
-    const bool explicit_dxgi_capture = capture_mode == "ddx" && !hard_wgc_capture;
+    // An explicit DXGI request is a client contract.  Game-provided frame
+    // generation defaults to WGC only when the capture mode is automatic.
+    const bool explicit_dxgi_capture = capture_mode == "ddx";
     const bool explicit_wgc_capture = capture_mode == "wgc" || capture_mode == "wgcc";
     const bool auto_wgc_capture = capture_mode.empty() && input.auto_capture_uses_wgc;
     policy.effective_wgc_capture =
@@ -159,12 +189,19 @@ namespace framegen {
     policy.physical_framegen_capture = policy.frame_generation_enabled && !policy.uses_virtual_display;
 
     // Virtual displays can apply a matching stream-start frame cap independently from their
-    // refresh policy. The default dynamic policy starts at 1x and is promoted by game activity;
-    // legacy mode instead supplies a fixed 2x multiplier here.
+    // refresh policy. The default automatic policy holds a fixed 4x display refresh; WGC
+    // changes its latest-frame admission between 2x desktop and 4x game activity. Legacy
+    // mode instead supplies a fixed 2x multiplier here. VRR mode supplies an exact refresh
+    // (1000 Hz) that does not depend on the stream rate.
     if (policy.uses_virtual_display) {
       policy.auto_virtual_framegen_limiter = input.auto_virtual_framegen_limiter;
       policy.refresh_multiplier = std::max(1, input.virtual_display_refresh_multiplier);
-      if (policy.refresh_multiplier > 1 && policy.fps > 0) {
+      if (input.virtual_display_fixed_refresh_millihz > 0) {
+        policy.refresh_multiplier = 1;
+        policy.fixed_refresh = true;
+        policy.framegen_refresh_millihz = input.virtual_display_fixed_refresh_millihz;
+        policy.framegen_refresh_rate = rounded_fps_from_millihz(input.virtual_display_fixed_refresh_millihz);
+      } else if (policy.refresh_multiplier > 1 && policy.fps > 0) {
         const auto base_millihz = input.display_refresh_millihz > 0 ?
                                       input.display_refresh_millihz :
                                       (input.fps_scaled > 0 ?
