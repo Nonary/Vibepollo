@@ -1898,17 +1898,46 @@ private:
       return;
     }
 
-    // Take the helper-local D3D context lock before the cross-process keyed
-    // mutex. The callback thread also uses this context for scratch copies; if
-    // GPU load makes that copy slow, waiting here must not block Sunshine from
-    // acquiring the shared WGC texture.
-    const auto context_wait_start = std::chrono::steady_clock::now();
-    std::unique_lock context_lock(_d3d_context_mutex);
-    const auto context_wait = std::chrono::steady_clock::now() - context_wait_start;
+    // Wait for the shared keyed mutex without holding the helper-local D3D
+    // context lock. The callback thread needs that lock for its scratch copy,
+    // and the host can hold the shared texture for a whole conversion when
+    // encoders read it directly, so holding the context through this wait would
+    // stall FrameArrived behind encoder backpressure. Once the keyed mutex is
+    // ours, take the context only if it is free: if the callback is mid-copy,
+    // hand the texture back and wait for the context instead, so the host never
+    // waits on helper work either. Publication order still holds because this
+    // frame stays in the delivering state, which keeps the callback from
+    // publishing a newer frame directly ahead of it.
+    const auto &keyed_mutex = _deps->resource_manager.get_keyed_mutex();
+    const auto acquire_start = std::chrono::steady_clock::now();
+    const auto acquire_deadline = acquire_start + std::chrono::milliseconds(200);
+    std::unique_lock context_lock(_d3d_context_mutex, std::defer_lock);
+    std::chrono::steady_clock::duration context_wait {};
+    HRESULT hr = WAIT_TIMEOUT;
+    for (;;) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= acquire_deadline) {
+        hr = WAIT_TIMEOUT;
+        break;
+      }
+      const auto remaining_ms = std::chrono::ceil<std::chrono::milliseconds>(acquire_deadline - now).count();
+      hr = keyed_mutex->AcquireSync(0, static_cast<DWORD>(remaining_ms));
+      if ((hr != S_OK && hr != WAIT_ABANDONED) || context_lock.try_lock()) {
+        break;
+      }
 
-    const auto mutex_wait_start = std::chrono::steady_clock::now();
-    HRESULT hr = _deps->resource_manager.get_keyed_mutex()->AcquireSync(0, 200);
-    const auto mutex_wait = std::chrono::steady_clock::now() - mutex_wait_start;
+      const HRESULT handback_hr = keyed_mutex->ReleaseSync(0);
+      if (FAILED(handback_hr)) {
+        BOOST_LOG(warning) << "Failed to release mutex key 0: " << std::format(": 0x{:08X}", handback_hr);
+        return;
+      }
+      const auto context_wait_start = std::chrono::steady_clock::now();
+      {
+        std::lock_guard wait_for_callback_copy(_d3d_context_mutex);
+      }
+      context_wait += std::chrono::steady_clock::now() - context_wait_start;
+    }
+    const auto mutex_wait = std::chrono::steady_clock::now() - acquire_start - context_wait;
     if (hr == WAIT_TIMEOUT) {
       const auto slow_mutex_count = _slow_mutex_waits.fetch_add(1, std::memory_order_relaxed) + 1;
       if (slow_mutex_count <= 5 || slow_mutex_count % 120 == 0) {
