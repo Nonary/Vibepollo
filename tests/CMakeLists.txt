@@ -1053,6 +1053,7 @@ if(WIN32)
     sunshine_register_component(NAME test_component_game_activity TEST_SOURCE unit/platform/windows/test_game_activity.cpp
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/game_activity_policy.cpp")
     sunshine_register_component(NAME test_component_native_amf_policy TEST_SOURCE unit/platform/windows/test_native_amf_review.cpp)
+    sunshine_register_component(NAME test_component_udp_send_retry TEST_SOURCE unit/platform/windows/test_udp_send_retry.cpp)
     sunshine_register_component(NAME test_component_rtx_hdr_policy TEST_SOURCE unit/platform/windows/test_rtx_hdr_runtime.cpp
         PRODUCT_SOURCES
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/rtx_hdr_policy.cpp")

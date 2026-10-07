@@ -66,6 +66,7 @@ extern "C" {
 #include "update.h"
 #include "utility.h"
 #include "uuid.h"
+#include "video_send.h"
 #include "webrtc_stream.h"
 #ifdef _WIN32
   #include "platform/windows/frame_limiter.h"
@@ -618,7 +619,7 @@ namespace stream {
     struct {
       std::string ping_payload;
 
-      int lowseq;
+      std::uint32_t lowseq;
       udp::endpoint peer;
 
       std::optional<crypto::cipher::gcm_t> cipher;
@@ -2031,6 +2032,13 @@ namespace stream {
     logging::min_max_avg_periodic_logger<double> frame_burst_rate_logger(debug, "Network: frame send burst rate (100+ packets)", "Mbps");
     logging::min_max_avg_periodic_logger<double> detail_fec_coverage_logger(debug, "PyroWave: detail packets protected", "%");
     auto next_burst_detail_log = std::chrono::steady_clock::now();
+    auto next_send_failure_log = std::chrono::steady_clock::time_point {};
+    std::uint64_t failed_video_frames = 0;
+    struct video_send_failed_t {
+      bool cancelled;
+      unsigned block;
+      std::size_t packets_accepted;
+    };
 
     crypto::aes_t iv(12);
 
@@ -2101,6 +2109,10 @@ namespace stream {
       }
 
       auto lowseq = session->video.lowseq;
+      const auto send_cancelled = [&] {
+        return shutdown_event->peek() || session->shutdown_event->peek() ||
+               session->state.load(std::memory_order_acquire) == session::state_e::STOPPING;
+      };
 
       std::string_view payload {(char *) packet->data(), packet->data_size()};
       std::vector<uint8_t> payload_with_replacements;
@@ -2263,6 +2275,15 @@ namespace stream {
         fec_blocks_end = std::begin(fec_blocks) + fec_blocks_needed;
 
       BOOST_LOG(verbose) << "Generating "sv << fec_blocks_needed << " FEC blocks"sv;
+
+      std::size_t frame_packets_accepted = 0;
+      const auto bytes_per_packet = blocksize + (session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
+      auto account_accepted_packets = util::fail_guard([&] {
+        // These counters feed session-history bitrate. Preserve actual socket
+        // traffic even when only a prefix of the frame was accepted.
+        session->stats.packets_sent.fetch_add(frame_packets_accepted, std::memory_order_relaxed);
+        session->stats.bytes_sent.fetch_add(frame_packets_accepted * bytes_per_packet, std::memory_order_relaxed);
+      });
 
       try {
         // Pacing target: legacy default targets ~80% of 1 Gbps (Ethernet). On WiFi
@@ -2448,6 +2469,10 @@ namespace stream {
           auto shards = fec::encode(current_payload, blocksize, fec_block_percentages[blockIndex], min_parity_shards, session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
           frame_fec_latency_logger.second_point_now_and_log();
 
+          // Reserve the entire block before any packet can enter the socket.
+          // An aborted frame must not reuse sequence numbers already sent.
+          session->video.lowseq = lowseq + shards.size();
+
           auto peer_address = session->video.peer.address();
           auto batch_info = platf::batched_send_info_t {
             shards.headers.begin(),
@@ -2461,6 +2486,7 @@ namespace stream {
             session->video.peer.port(),
             session->localAddress,
           };
+          batch_info.send_cancelled = send_cancelled;
 
           size_t next_shard_to_send = 0;
 
@@ -2503,6 +2529,9 @@ namespace stream {
 
             if (x - next_shard_to_send + 1 >= send_batch_size ||
                 x + 1 == shards.size()) {
+              if (send_cancelled()) {
+                throw video_send_failed_t {true, unsigned(blockIndex), 0};
+              }
               // Do pacing within the frame.
               // Also trigger pacing before the first send_batch() of the frame
               // to account for the last send_batch() of the previous frame.
@@ -2538,12 +2567,11 @@ namespace stream {
               if (!burst_first_send) {
                 burst_first_send = send_start;
               }
-              // Use a batched send if it's supported on this platform
-              if (!platf::send_batch(batch_info)) {
-                ++burst_fallback_batches;
-                // Batched send is not available, so send each packet individually
-                BOOST_LOG(verbose) << "Falling back to unbatched send"sv;
-                for (auto y = 0; y < current_batch_size; y++) {
+              const auto send_result = send_video_batch(
+                current_batch_size,
+                batch_info.allow_fallback,
+                [&] { return platf::send_batch(batch_info); },
+                [&](std::size_t y) {
                   auto send_info = platf::send_info_t {
                     shards.prefix(next_shard_to_send + y),
                     shards.prefixsize,
@@ -2554,9 +2582,22 @@ namespace stream {
                     session->video.peer.port(),
                     session->localAddress,
                   };
-
-                  platf::send(send_info);
-                }
+                  send_info.send_cancelled = send_cancelled;
+                  return platf::send(send_info);
+                },
+                send_cancelled
+              );
+              burst_fallback_batches += send_result.used_fallback;
+              frame_packets_accepted += send_result.packets_accepted;
+              ratecontrol_group_packets_sent += send_result.packets_accepted;
+              ratecontrol_frame_packets_sent += send_result.packets_accepted;
+              // Keep pacing debt from accepted batches even if this block or
+              // frame aborts before its final shard.
+              ratecontrol_next_frame_start = ratecontrol_frame_start +
+                                             std::chrono::duration_cast<std::chrono::nanoseconds>(1ms) *
+                                               ratecontrol_frame_packets_sent / ratecontrol_packets_in_1ms;
+              if (!send_result.sent) {
+                throw video_send_failed_t {send_result.cancelled, unsigned(blockIndex), send_result.packets_accepted};
               }
               frame_send_batch_latency_logger.second_point_now_and_log();
               burst_last_return = std::chrono::steady_clock::now();
@@ -2564,8 +2605,6 @@ namespace stream {
               burst_send_ms += send_ms;
               burst_max_send_ms = std::max(burst_max_send_ms, send_ms);
 
-              ratecontrol_group_packets_sent += current_batch_size;
-              ratecontrol_frame_packets_sent += current_batch_size;
               next_shard_to_send = x + 1;
             }
           }
@@ -2735,10 +2774,23 @@ namespace stream {
 
         // Update per-session performance counters
         session->stats.frames_sent.fetch_add(1, std::memory_order_relaxed);
-        session->stats.packets_sent.fetch_add(ratecontrol_frame_packets_sent, std::memory_order_relaxed);
-        auto bytes_per_packet = blocksize + ((session->config.encryptionFlagsEnabled & SS_ENC_VIDEO) ? sizeof(video_packet_enc_prefix_t) : 0);
-        session->stats.bytes_sent.fetch_add(ratecontrol_frame_packets_sent * bytes_per_packet, std::memory_order_relaxed);
         session->stats.last_frame_index.store(packet->frame_index(), std::memory_order_relaxed);
+      } catch (const video_send_failed_t &e) {
+        // A failed frame is not a successful delivery. Keep the next frame's
+        // sequence reservation, omit frame-success counters and avoid the generic
+        // exception path's 100 ms sleep for temporary socket pressure.
+        if (!e.cancelled) {
+          ++failed_video_frames;
+          const auto now = std::chrono::steady_clock::now();
+          if (now >= next_send_failure_log) {
+            BOOST_LOG(warning) << "Video frame send aborted: frame="sv << packet->frame_index()
+                               << "; block="sv << e.block
+                               << "; packets accepted in failed batch="sv << e.packets_accepted
+                               << "; failed frames since previous report="sv << failed_video_frames;
+            failed_video_frames = 0;
+            next_send_failure_log = now + 5s;
+          }
+        }
       } catch (const std::exception &e) {
         BOOST_LOG(error) << "Broadcast video failed "sv << e.what();
         std::this_thread::sleep_for(100ms);
@@ -2913,6 +2965,17 @@ namespace stream {
       return -1;
     }
 
+#ifdef _WIN32
+    // Windows IOCP receives don't make the socket nonblocking. Raw WSASendMsg()
+    // must return on buffer pressure so the broadcast thread can apply its
+    // retry deadline instead of waiting indefinitely inside the send call.
+    ctx.video_sock.native_non_blocking(true, ec);
+    if (ec) {
+      BOOST_LOG(fatal) << "Couldn't make Video server nonblocking: "sv << ec.message();
+      return -1;
+    }
+#endif
+
     ctx.audio_sock.open(protocol, ec);
     if (ec) {
       BOOST_LOG(fatal) << "Couldn't open socket for Audio server: "sv << ec.message();
@@ -2926,6 +2989,15 @@ namespace stream {
 
       return -1;
     }
+
+#ifdef _WIN32
+    // Audio uses the same raw Winsock sender and bounded pressure retry.
+    ctx.audio_sock.native_non_blocking(true, ec);
+    if (ec) {
+      BOOST_LOG(fatal) << "Couldn't make Audio server nonblocking: "sv << ec.message();
+      return -1;
+    }
+#endif
 
     ctx.message_queue_queue = std::make_shared<message_queue_queue_t::element_type>(30);
 

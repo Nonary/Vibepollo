@@ -7,6 +7,7 @@
 #include "src/deferred_stream_start_policy.h"
 #include "src/haptics_gain.h"
 #include "src/stream_protocol.h"
+#include "src/video_send.h"
 
 namespace {
   using haptics_packet_t = std::array<std::uint8_t, 960>;
@@ -382,6 +383,91 @@ TEST(VideoSendBatchTests, EncryptionPrefixNeverPushesABatchPastTheByteLimit) {
       }
     }
   }
+}
+
+TEST(VideoSendBatchTests, SuccessfulBatchDoesNotSendDuplicatePackets) {
+  bool allow_fallback = true;
+  unsigned individual_calls = 0;
+  const auto result = stream::send_video_batch(46, allow_fallback,
+    [] { return true; },
+    [&](std::size_t) { ++individual_calls; return true; },
+    [] { return false; });
+  EXPECT_TRUE(result.sent);
+  EXPECT_FALSE(result.used_fallback);
+  EXPECT_EQ(result.packets_accepted, 46u);
+  EXPECT_EQ(individual_calls, 0u);
+}
+
+TEST(VideoSendBatchTests, ExhaustedSocketPressureDoesNotFanOutIntoIndividualSends) {
+  bool allow_fallback = true;
+  unsigned individual_calls = 0;
+  const auto result = stream::send_video_batch(46, allow_fallback,
+    [&] { allow_fallback = false; return false; },
+    [&](std::size_t) { ++individual_calls; return true; },
+    [] { return false; });
+  EXPECT_FALSE(result.sent);
+  EXPECT_FALSE(result.cancelled);
+  EXPECT_FALSE(result.used_fallback);
+  EXPECT_EQ(result.packets_accepted, 0u);
+  EXPECT_EQ(individual_calls, 0u);
+}
+
+TEST(VideoSendBatchTests, UnsupportedBatchingDeliversEveryPacketInOrder) {
+  bool allow_fallback = true;
+  std::vector<std::size_t> accepted;
+  const auto result = stream::send_video_batch(46, allow_fallback,
+    [] { return false; },
+    [&](std::size_t i) { accepted.push_back(i); return true; },
+    [] { return false; });
+  EXPECT_TRUE(result.sent);
+  EXPECT_TRUE(result.used_fallback);
+  EXPECT_EQ(result.packets_accepted, 46u);
+  ASSERT_EQ(accepted.size(), 46u);
+  for (std::size_t i = 0; i < accepted.size(); ++i) {
+    EXPECT_EQ(accepted[i], i);
+  }
+}
+
+TEST(VideoSendBatchTests, FailedFallbackPacketStopsTheFrameInsteadOfLeavingTwelveHoles) {
+  bool allow_fallback = true;
+  std::vector<std::size_t> attempted;
+  const auto result = stream::send_video_batch(46, allow_fallback,
+    [] { return false; },
+    [&](std::size_t i) { attempted.push_back(i); return i < 34; },
+    [] { return false; });
+  // The old loop attempted all 46, ignored 12 failures and counted a sent frame.
+  EXPECT_FALSE(result.sent);
+  EXPECT_FALSE(result.cancelled);
+  EXPECT_TRUE(result.used_fallback);
+  EXPECT_EQ(result.packets_accepted, 34u);
+  ASSERT_EQ(attempted.size(), 35u);
+  EXPECT_EQ(attempted.back(), 34u);
+}
+
+TEST(VideoSendBatchTests, ShutdownStopsFallbackWithoutStartingAnotherPacket) {
+  bool allow_fallback = true;
+  unsigned individual_calls = 0;
+  bool cancelled = false;
+  const auto result = stream::send_video_batch(46, allow_fallback,
+    [] { return false; },
+    [&](std::size_t) { cancelled = ++individual_calls == 3; return true; },
+    [&] { return cancelled; });
+  EXPECT_FALSE(result.sent);
+  EXPECT_TRUE(result.cancelled);
+  EXPECT_EQ(result.packets_accepted, 3u);
+  EXPECT_EQ(individual_calls, 3u);
+}
+
+TEST(VideoSendBatchTests, ShutdownBeforeBatchSkipsSocketCalls) {
+  bool allow_fallback = true;
+  unsigned send_calls = 0;
+  const auto result = stream::send_video_batch(46, allow_fallback,
+    [&] { ++send_calls; return true; },
+    [&](std::size_t) { ++send_calls; return true; },
+    [] { return true; });
+  EXPECT_FALSE(result.sent);
+  EXPECT_TRUE(result.cancelled);
+  EXPECT_EQ(send_calls, 0u);
 }
 
 TEST(VideoFormatNameTests, CanonicalCodecNameNormalizesKnownAliases) {

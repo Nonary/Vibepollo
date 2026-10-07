@@ -67,6 +67,7 @@
 #include "src/platform/common.h"
 #include "src/process.h"
 #include "src/utility.h"
+#include "udp_send_retry.h"
 #include "utf_utils.h"
 
 // UDP_SEND_MSG_SIZE was added in the Windows 10 20H1 SDK
@@ -1921,9 +1922,52 @@ namespace platf {
     return interface_row.Type == IF_TYPE_ETHERNET_CSMACD ? interface_row.TransmitLinkSpeed : 0;
   }
 
+  namespace {
+    int send_udp_message(SOCKET socket, WSAMSG &msg, const std::function<bool()> &send_cancelled) {
+      const auto result = udp_send_retry::send(
+        [&]() {
+          DWORD bytes_sent;
+          return WSASendMsg(socket, &msg, 0, &bytes_sent, nullptr, nullptr) == SOCKET_ERROR ? WSAGetLastError() : 0;
+        },
+        [&](int error, std::chrono::steady_clock::duration remaining) {
+          const auto deadline = std::chrono::steady_clock::now() + remaining;
+          fd_set writable;
+          FD_ZERO(&writable);
+          FD_SET(socket, &writable);
+          const auto wait_us = std::max<std::int64_t>(1, std::min<std::int64_t>(1000,
+            std::chrono::duration_cast<std::chrono::microseconds>(remaining).count()));
+          timeval timeout {0, static_cast<long>(wait_us)};
+          const auto ready = select(0, nullptr, &writable, nullptr, &timeout);
+          if (ready == SOCKET_ERROR) {
+            return WSAGetLastError();
+          }
+          // ENOBUFS can leave the socket writable despite exhausted system/NIC
+          // resources. Only this error needs backoff after readiness;
+          // WSAEWOULDBLOCK retries as soon as the socket accepts another message.
+          if (ready > 0 && error == WSAENOBUFS) {
+            thread_local auto timer = create_high_precision_timer();
+            if (!timer || !*timer) {
+              return WSAENOBUFS;
+            }
+            const auto remaining_after_poll = deadline - std::chrono::steady_clock::now();
+            if (remaining_after_poll > std::chrono::steady_clock::duration::zero()) {
+              timer->sleep_for(std::min(std::chrono::nanoseconds {100'000},
+                std::chrono::duration_cast<std::chrono::nanoseconds>(remaining_after_poll)));
+            }
+          }
+          return 0;
+        },
+        [&]() { return send_cancelled && send_cancelled(); },
+        []() { return std::chrono::steady_clock::now(); }
+      );
+      return result.error;
+    }
+  }  // namespace
+
   // Use UDP segmentation offload if it is supported by the OS. If the NIC is capable, this will use
   // hardware acceleration to reduce CPU usage. Support for USO was introduced in Windows 10 20H1.
   bool send_batch(batched_send_info_t &send_info) {
+    send_info.allow_fallback = false;
     WSAMSG msg;
 
     // Convert the target address into a SOCKADDR
@@ -1941,11 +1985,12 @@ namespace platf {
       msg.namelen = sizeof(taddr_v4);
     }
 
-    auto const max_bufs_per_msg = send_info.payload_buffers.size() + (send_info.headers ? 1 : 0);
+    const bool has_headers = send_info.headers && send_info.header_size != 0;
+    auto const max_bufs_per_msg = send_info.payload_buffers.size() + (has_headers ? 1 : 0);
 
-    std::vector<WSABUF> bufs((send_info.headers ? send_info.block_count : 1) * max_bufs_per_msg);
+    std::vector<WSABUF> bufs((has_headers ? send_info.block_count : 1) * max_bufs_per_msg);
     DWORD bufcount = 0;
-    if (send_info.headers) {
+    if (has_headers) {
       // Interleave buffers for headers and payloads
       for (auto i = 0; i < send_info.block_count; i++) {
         bufs[bufcount].buf = (char *) &send_info.headers[(send_info.block_offset + i) * send_info.header_size];
@@ -2021,13 +2066,17 @@ namespace platf {
 
     msg.Control.len = cmbuflen;
 
-    // If USO is not supported, this will fail and the caller will fall back to unbatched sends.
-    DWORD bytes_sent;
-    if (WSASendMsg((SOCKET) send_info.native_socket, &msg, 0, &bytes_sent, nullptr, nullptr) != SOCKET_ERROR) {
+    const auto winerr = send_udp_message((SOCKET) send_info.native_socket, msg, send_info.send_cancelled);
+    if (winerr == 0) {
       return true;
     }
 
-    const auto winerr = WSAGetLastError();
+    send_info.allow_fallback = udp_send_retry::offload_fallback_error(
+      winerr, send_info.block_count > 1, send_info.header_size + send_info.payload_size, send_info.target_address.is_v6()
+    );
+    if (winerr == WSAEINTR) {
+      return false;
+    }
     // A rejected batch otherwise turns into dozens of individual sends with
     // no explanation at normal log levels. Bound reporting so an unsupported
     // offload path cannot spend its send budget flooding the log.
@@ -2036,11 +2085,11 @@ namespace platf {
     ++failed_batches;
     const auto now = std::chrono::steady_clock::now();
     if (now >= next_failure_log) {
-      BOOST_LOG(warning) << "WSASendMsg() batch failed: "sv << winerr
+      BOOST_LOG(send_info.allow_fallback ? debug : warning) << "WSASendMsg() batch failed: "sv << winerr
                          << "; packets="sv << send_info.block_count
                          << "; bytes="sv << send_info.block_count * (send_info.header_size + send_info.payload_size)
                          << "; failed batches since previous report="sv << failed_batches
-                         << "; falling back to individual sends"sv;
+                         << (send_info.allow_fallback ? "; falling back to individual sends"sv : "; batch was not sent"sv);
       failed_batches = 0;
       next_failure_log = now + 5s;
     }
@@ -2117,9 +2166,11 @@ namespace platf {
 
     msg.Control.len = cmbuflen;
 
-    DWORD bytes_sent;
-    if (WSASendMsg((SOCKET) send_info.native_socket, &msg, 0, &bytes_sent, nullptr, nullptr) == SOCKET_ERROR) {
-      auto winerr = WSAGetLastError();
+    const auto winerr = send_udp_message((SOCKET) send_info.native_socket, msg, send_info.send_cancelled);
+    if (winerr == WSAEINTR) {
+      return false;
+    }
+    if (winerr != 0) {
       // A session stuck in a bad state fails every FEC shard of every frame,
       // which used to flood the log with thousands of identical lines and
       // drown out the actual failure. Log the first occurrence, then a
@@ -2128,7 +2179,8 @@ namespace platf {
       static std::atomic<std::uint64_t> suppressed_count {0};
       const auto now_tick = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
       auto last = last_log_tick.load(std::memory_order_relaxed);
-      if (now_tick - last >= 5 && last_log_tick.compare_exchange_strong(last, now_tick, std::memory_order_relaxed)) {
+      if ((last == std::numeric_limits<std::int64_t>::min() || now_tick - last >= 5) &&
+          last_log_tick.compare_exchange_strong(last, now_tick, std::memory_order_relaxed)) {
         const auto suppressed = suppressed_count.exchange(0, std::memory_order_relaxed);
         BOOST_LOG(warning) << "WSASendMsg() failed: "sv << winerr
                            << (suppressed ? " (" + std::to_string(suppressed) + " similar failures suppressed)" : std::string {});
@@ -2998,11 +3050,29 @@ namespace platf {
         BOOST_LOG(error) << "Attempting high_precision_timer::sleep_for() with unexpectedly large duration (>5s)";
         return;
       }
+      if (duration == 0s) {
+        return;
+      }
 
       LARGE_INTEGER due_time;
-      due_time.QuadPart = duration.count() / -100;
-      SetWaitableTimer(timer, &due_time, 0, nullptr, nullptr, false);
-      WaitForSingleObject(timer, INFINITE);
+      due_time.QuadPart = -std::max<std::int64_t>(1, (duration.count() + 99) / 100);
+      if (!SetWaitableTimer(timer, &due_time, 0, nullptr, nullptr, false)) {
+        if (!failure_logged) {
+          failure_logged = true;
+          BOOST_LOG(error) << "Unable to arm high_precision_timer: " << GetLastError();
+        }
+        return;
+      }
+      // A failed timer must not hang a sender or capture thread indefinitely.
+      // Scheduling can overshoot a requested interval; this timeout bounds the
+      // wait operation rather than promising a strict wall-clock wake-up time.
+      const auto timeout_ms = std::chrono::ceil<std::chrono::milliseconds>(duration).count() + 1;
+      if (WaitForSingleObject(timer, static_cast<DWORD>(timeout_ms)) == WAIT_FAILED) {
+        if (!failure_logged) {
+          failure_logged = true;
+          BOOST_LOG(error) << "Unable to wait for high_precision_timer: " << GetLastError();
+        }
+      }
     }
 
     operator bool() override {
@@ -3011,6 +3081,7 @@ namespace platf {
 
   private:
     HANDLE timer = nullptr;
+    bool failure_logged = false;
   };
 
   std::unique_ptr<high_precision_timer> create_high_precision_timer() {
