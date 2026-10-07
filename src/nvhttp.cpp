@@ -4018,6 +4018,8 @@ namespace nvhttp {
       tree.put("root.PyroWaveWireBudgetVersion", 1);
       tree.put("root.PyroWaveUdpProbeVersion", 1);
       tree.put("root.PyroWaveUdpHandshakeVersion", 1);
+      // UDP probe accepts fps/pacekbps, and RTSP accepts a calibrated pyrowavePaceMbps.
+      tree.put("root.PyroWaveUdpProbeBurstVersion", 1);
       tree.put("root.PyroWaveCriticalFecPercentage", config::stream.pyrowave_critical_fec_percentage);
       tree.put("root.PyroWaveMinParityShards", 2);
     }
@@ -6416,10 +6418,15 @@ namespace nvhttp {
     const int kbps = parse("kbps"), port = parse("port"), packetsize = parse("packetsize");
     const auto token = get_arg(args, "token", "");
     const auto handshake = get_arg(args, "handshake", "0");
+    // Optional frame-shaped schedule (PyroWaveUdpProbeBurstVersion 1). Both or
+    // neither; the pace can never be below the average rate it must carry.
+    const bool burst = !get_arg(args, "fps", "").empty() || !get_arg(args, "pacekbps", "").empty();
+    const int fps = burst ? parse("fps") : 0, pace_kbps = burst ? parse("pacekbps") : 0;
     if (kbps < 5000 || kbps > 3000000 || port < 1024 || port > 65535 ||
         packetsize < 256 || packetsize > 1392 || token.size() != 32 ||
         token.find_first_not_of("0123456789abcdef") != std::string::npos ||
-        (handshake != "0" && handshake != "1")) {
+        (handshake != "0" && handshake != "1") ||
+        (burst && (fps < 10 || fps > 500 || pace_kbps < kbps || pace_kbps > 9999999))) {
       response->write(SimpleWeb::StatusCode::client_error_bad_request, "Invalid UDP probe parameters");
       return;
     }
@@ -6445,12 +6452,20 @@ namespace nvhttp {
             response->write(SimpleWeb::StatusCode::success_ok, headers);
             response->send();
             announced = true;
-          }) : std::function<void(unsigned short)> {});
+          }) : std::function<void(unsigned short)> {},
+        pyrowave::probe::burst_t {fps, std::uint64_t(pace_kbps) * 1000});
       pt::ptree tree;
       tree.put("root.<xmlattr>.status_code", 200);
       tree.put("root.expected", result.expected);
       tree.put("root.sent", result.sent);
       tree.put("root.elapsedMs", result.elapsed_ms);
+      tree.put("root.sendRetries", result.send_retries);
+      tree.put("root.lastSendError", result.last_send_error);
+      BOOST_LOG(info) << "PyroWave UDP probe: "sv << kbps << " kbps"sv
+                      << (fps ? " as " + std::to_string(fps) + " FPS frames paced at " + std::to_string(pace_kbps) + " kbps" : std::string())
+                      << ", sent "sv << result.sent << '/' << result.expected << " in "sv << result.elapsed_ms << " ms"sv
+                      << ", "sv << result.send_retries << " packets retried after a full send buffer"sv
+                      << (result.last_send_error ? ", last send error " + std::to_string(result.last_send_error) : std::string());
       std::ostringstream body;
       pt::write_xml(body, tree);
       if (announced) *response << body.str();

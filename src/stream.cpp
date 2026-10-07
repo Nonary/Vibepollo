@@ -2339,7 +2339,7 @@ namespace stream {
                                   (session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
           ratecontrol_packets_in_1ms = pyrowave::policy::pacing_packets_per_ms(
             link_bps, stream_kbps, payload_blocksize, wire_bytes,
-            packet->data_size() + sizeof(frame_header), monitor.framerate
+            packet->data_size() + sizeof(frame_header), monitor.framerate, monitor.pyrowave_peer_pace_bps
           );
           const std::pair pacing_source {link_bps, link_interface_id};
           // Route probes can alternate between a link speed and the fallback on
@@ -2354,7 +2354,10 @@ namespace stream {
                             << ", routed_link_bps "sv << link_bps << (link_bps ? "" : " (fallback: frame/bitrate demand)")
                             << ", "sv << ratecontrol_packets_in_1ms << " packets/ms at "sv << wire_bytes << " wire bytes ("sv
                             << ratecontrol_packets_in_1ms * wire_bytes * 8 / 1000 << " Mbps), payload "sv << payload_blocksize
-                            << " bytes, stream "sv << stream_kbps << " kbps at "sv << monitor.framerate << " fps"sv;
+                            << " bytes, stream "sv << stream_kbps << " kbps at "sv << monitor.framerate << " fps, pace "sv
+                            << (monitor.pyrowave_peer_pace_bps ?
+                                  "client-calibrated " + std::to_string(monitor.pyrowave_peer_pace_bps / 1'000'000) + " Mbps" :
+                                  std::string("default 80% of link"));
           }
         }
 

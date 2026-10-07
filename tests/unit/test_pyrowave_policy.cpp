@@ -802,9 +802,15 @@ TEST(PyroWavePolicy, FramingDropsPaddingWhenItWouldExceedCapacity) {
 }
 
 TEST(PyroWavePolicy, PacingTracksLinkCapacityAndAccountsForWireOverhead) {
+  // Link-limited: demand exceeds the link, so pace at the full link rate.
   EXPECT_EQ(pacing_packets_per_ms(100000000, 600000, 1376, 1474), 8u);
-  EXPECT_EQ(pacing_packets_per_ms(1000000000, 600000, 1376, 1474), 84u);
-  EXPECT_EQ(pacing_packets_per_ms(2500000000, 600000, 1376, 1474), 212u);
+  // Fast links leave 20% headroom for receivers slower than their link speed.
+  EXPECT_EQ(pacing_packets_per_ms(1000000000, 600000, 1376, 1474), 67u);
+  EXPECT_EQ(pacing_packets_per_ms(2500000000, 600000, 1376, 1474), 169u);
+  EXPECT_EQ(pacing_packets_per_ms(2500000000, 875000, 1376, 1474, 943000, 116), 169u);
+  // Headroom never paces below the stream's own demand, nor above the link.
+  EXPECT_EQ(pacing_packets_per_ms(1000000000, 800000, 1376, 1474), 73u);
+  EXPECT_EQ(pacing_packets_per_ms(1000000000, 950000, 1376, 1474), 84u);
   EXPECT_LT(pacing_packets_per_ms(1000000000, 600000, 1376, 1474 + 32),
             pacing_packets_per_ms(1000000000, 600000, 1376, 1474));
   EXPECT_EQ(pacing_packets_per_ms(0, 200000, 1376, 1474), 19u);
@@ -812,6 +818,17 @@ TEST(PyroWavePolicy, PacingTracksLinkCapacityAndAccountsForWireOverhead) {
   EXPECT_EQ(pacing_packets_per_ms(0, 200000, 1376, 1474, 1376000, 120), 120u);
   EXPECT_EQ(pacing_packets_per_ms(100000000, 200000, 1376, 1474, 1376000, 120), 8u);
   EXPECT_EQ(pacing_packets_per_ms(0, 0, 0, 0), 1u);
+}
+
+TEST(PyroWavePolicy, CalibratedPaceReplacesDefaultHeadroom) {
+  // A client that calibrated 2.2 Gbps on a 2.5 Gbps link is paced there, not at 80%.
+  EXPECT_EQ(pacing_packets_per_ms(2500000000, 875000, 1376, 1474, 943000, 116, 2200000000), 186u);
+  // The calibration never raises pacing above the host's link...
+  EXPECT_EQ(pacing_packets_per_ms(1000000000, 600000, 1376, 1474, 0, 0, 5000000000), 84u);
+  // ...nor lowers it below what the stream must carry each millisecond.
+  EXPECT_EQ(pacing_packets_per_ms(2500000000, 875000, 1376, 1474, 943000, 116, 100000000), 80u);
+  // An unknown host link (Wi-Fi, virtual) still honours the client's calibration.
+  EXPECT_EQ(pacing_packets_per_ms(0, 200000, 1376, 1474, 0, 0, 1000000000), 84u);
 }
 
 TEST(PyroWavePolicy, RecordWireBudgetIncludesBaselineFecAt800Mbps) {

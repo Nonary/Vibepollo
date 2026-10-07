@@ -2338,6 +2338,14 @@ namespace rtsp_stream {
         }
         config.monitor.pyrowave_peer_link_bps = std::uint64_t(link_mbps) * 1'000'000;
       }
+      if (const auto it = args.find("x-ss-video[0].pyrowavePaceMbps"sv); it != args.end()) {
+        const auto pace_mbps = util::from_view(it->second);
+        if (pace_mbps <= 0 || pace_mbps > 400000) {
+          respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+          return false;
+        }
+        config.monitor.pyrowave_peer_pace_bps = std::uint64_t(pace_mbps) * 1'000'000;
+      }
       if (const auto it = args.find("x-ss-video[0].pyrowaveHybrid"sv); it != args.end() && it->second != "0"sv) {
         respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
         return false;
