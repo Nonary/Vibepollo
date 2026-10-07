@@ -34,6 +34,7 @@ typedef enum _D3DKMT_GPU_PREFERENCE_QUERY_STATE : DWORD {
   D3DKMT_GPU_PREFERENCE_STATE_USER_SPECIFIED_GPU  ///< A specific GPU is preferred.
 } D3DKMT_GPU_PREFERENCE_QUERY_STATE;
 
+#include "advanced_color_watcher.h"
 #include "capture_output_validation.h"
 #include "display.h"
 #include "game_activity.h"
@@ -603,7 +604,10 @@ namespace platf::dxgi {
     // and `output` is no longer swapped underneath is_hdr() readers each second.
     // Continuation refreshes keep the compared geometry and HDR state, so the
     // worker's copied expectations stay valid for this capture session.
+    // Where Windows reports the monitor's advanced-color changes, the worker
+    // enumerates only around those reports instead of once per second.
     std::optional<capture_policy::background_output_validator_t> output_validator;
+    std::unique_ptr<advanced_color_watcher_t> advanced_color_watcher;
     if (refresh_only_changes_supported && captured_hdr_state_valid) {
       output_validator.emplace(1s, [probe_input = make_output_probe_input(*this)]() {
         output_probe_replacement_t replacement;
@@ -611,10 +615,19 @@ namespace platf::dxgi {
         const auto result = probe_output_after_nonstructural_change(probe_input, replacement);
         const auto probe_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - probe_started).count();
         if (probe_ms > 2.0) {
-          BOOST_LOG(debug) << "WGC periodic output validation took " << probe_ms << " ms off the capture thread";
+          BOOST_LOG(debug) << "WGC output validation took " << probe_ms << " ms off the capture thread";
         }
         return result == display_base_t::output_refresh_e::structural_change;
       });
+      advanced_color_watcher = advanced_color_watcher_t::start(captured_output_desc.Monitor, [&validator = *output_validator]() {
+        validator.notify();
+      });
+      if (advanced_color_watcher) {
+        output_validator->rely_on_notifications(5s);
+        BOOST_LOG(debug) << "WGC output validation follows the monitor's advanced-color notifications";
+      } else {
+        BOOST_LOG(debug) << "WGC output validation polls once per second; advanced-color notifications are unavailable";
+      }
     }
 
     while (true) {

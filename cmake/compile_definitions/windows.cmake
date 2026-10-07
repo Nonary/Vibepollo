@@ -244,6 +244,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/input.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/advanced_color_watcher.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/advanced_color_watcher.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_base.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/nv_truehdr.h"
@@ -333,6 +335,7 @@ list(PREPEND PLATFORM_LIBRARIES
         synchronization.lib
         Windowscodecs
         userenv
+        windowsapp
         ws2_32
         wsock32
 )
