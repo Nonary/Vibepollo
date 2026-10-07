@@ -1150,7 +1150,6 @@ namespace platf::dxgi {
 
       CloseHandle(token);
 
-      bool realtime_gpu_priority = false;
       HMODULE gdi32 = GetModuleHandleA("GDI32");
       if (gdi32) {
         auto check_hags = [&](const LUID &adapter) -> bool {
@@ -1208,8 +1207,6 @@ namespace platf::dxgi {
           BOOST_LOG(info) << "Using " << (priority == D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH ? "high" : "realtime") << " GPU priority";
           if (FAILED(d3dkmt_set_process_priority(GetCurrentProcess(), priority))) {
             BOOST_LOG(warning) << "Failed to adjust GPU priority. Please run application as administrator for optimal performance.";
-          } else {
-            realtime_gpu_priority = priority == D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME;
           }
         } else {
           BOOST_LOG(error) << "Couldn't load D3DKMTSetProcessSchedulingPriorityClass function from gdi32.dll to adjust GPU priority";
@@ -1223,14 +1220,7 @@ namespace platf::dxgi {
         return -1;
       }
 
-      // With the realtime GPU class granted, give the capture copy the same
-      // absolute thread priority as the encoder device: the conversion waits on
-      // this copy, so it should not queue behind game work. The NVIDIA+HAGS
-      // downgrade to the high class keeps the previous relative priority.
-      status = realtime_gpu_priority ? dxgi->SetGPUThreadPriority(0x4000001E) : E_FAIL;
-      if (FAILED(status)) {
-        status = dxgi->SetGPUThreadPriority(7);
-      }
+      status = dxgi->SetGPUThreadPriority(7);
       if (FAILED(status)) {
         BOOST_LOG(warning) << "Failed to increase capture GPU thread priority. Please run application as administrator for optimal performance.";
       }
