@@ -3,6 +3,7 @@
 #include "remote_session.h"
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -37,4 +38,38 @@ namespace rtsp_stream::pending_policy {
   bool disconnect_scope_matches(remote_session::role_e candidate_role, remote_session::role_e requested_role, bool client_matches, bool all_clients);
   std::vector<pending_owner_t> expired_remote_input_owners(const std::vector<pending_owner_t> &expired);
   std::vector<pending_owner_t> disconnect_input_owners_to_forget(const std::vector<pending_owner_t> &removed);
+
+  // A pending launch's ping_timeout starts when /launch queues it, but the
+  // client still needs it through ANNOUNCE, PLAY, and the control connection.
+  // An ANNOUNCE startup worker can wait seconds for the lifecycle gate, so a
+  // launch never expires while its startup runs, and a started session gets a
+  // fresh window for the remaining handshake instead of what was left of the
+  // original one.
+  bool launch_entry_expired(bool startup_running, std::chrono::steady_clock::time_point expires_at, std::chrono::steady_clock::time_point now);
+
+  struct loop_clear_t {
+    bool all_sessions;
+    bool preserve_pending_launches;
+    friend bool operator==(const loop_clear_t &, const loop_clear_t &) = default;
+  };
+
+  // What the RTSP loop clears on each iteration. A raised broadcast_shutdown
+  // means the current broadcast is ending, so every active session goes. A
+  // pending launch belongs to the next broadcast: its session cannot attach
+  // until end_broadcast() finishes and start_broadcast() resets the flag, so
+  // it must survive the teardown instead of being canceled with it.
+  loop_clear_t rtsp_loop_clear(bool broadcast_shutdown_raised);
+  std::chrono::steady_clock::time_point launch_deadline_after_startup(std::chrono::steady_clock::time_point expires_at, std::chrono::steady_clock::time_point now, std::chrono::milliseconds ping_timeout);
+
+  enum class announce_reply_e {
+    ok,
+    startup_failed,
+    stopped_before_reply,
+  };
+
+  // The ANNOUNCE reply is posted after startup, and the session can be stopped
+  // in between (e.g. the app ended during startup). A 200 for a stopped session
+  // sends the client on to PLAY and a control connection that can only time
+  // out, which Moonlight reports as a firewall problem, so fail it instead.
+  announce_reply_e announce_reply(bool startup_failed, bool session_running);
 }  // namespace rtsp_stream::pending_policy

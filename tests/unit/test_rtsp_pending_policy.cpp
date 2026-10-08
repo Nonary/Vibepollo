@@ -2,6 +2,7 @@
 
 #include "src/rtsp_pending_policy.h"
 
+#include <chrono>
 #include <limits>
 #include <set>
 
@@ -97,4 +98,51 @@ TEST(RtspPendingPolicy, DisconnectCleanupDoesNotSelectPostRemovalInputGeneration
   for (const auto &owner : cleanup) remembered_generations.erase(owner.generation);
   EXPECT_FALSE(remembered_generations.contains(7));
   EXPECT_TRUE(remembered_generations.contains(8));
+}
+
+TEST(RtspPendingPolicy, RunningStartupKeepsLaunchPastItsDeadline) {
+  using rtsp_stream::pending_policy::launch_entry_expired;
+  using namespace std::chrono_literals;
+  const auto now = std::chrono::steady_clock::now();
+
+  EXPECT_FALSE(launch_entry_expired(false, now + 1ms, now));
+  EXPECT_TRUE(launch_entry_expired(false, now, now));
+  EXPECT_TRUE(launch_entry_expired(false, now - 1s, now));
+
+  // An ANNOUNCE worker waiting on the lifecycle gate must not lose its launch.
+  EXPECT_FALSE(launch_entry_expired(true, now - 1s, now));
+}
+
+TEST(RtspPendingPolicy, StartedSessionGetsFreshHandshakeWindow) {
+  using rtsp_stream::pending_policy::launch_deadline_after_startup;
+  using namespace std::chrono_literals;
+  const auto now = std::chrono::steady_clock::now();
+
+  // Startup finished after the original deadline: PLAY and the control
+  // connection still get a full ping_timeout.
+  EXPECT_EQ(launch_deadline_after_startup(now - 2s, now, 10s), now + 10s);
+  // Never shorten a deadline that is already further out.
+  EXPECT_EQ(launch_deadline_after_startup(now + 15s, now, 10s), now + 15s);
+}
+
+TEST(RtspPendingPolicy, BroadcastShutdownClearsSessionsButKeepsPendingLaunches) {
+  using rtsp_stream::pending_policy::rtsp_loop_clear;
+  using clear_t = rtsp_stream::pending_policy::loop_clear_t;
+
+  // The ending broadcast takes every active session with it, but a launch
+  // queued for the next stream must survive until its own ANNOUNCE.
+  EXPECT_EQ(rtsp_loop_clear(true), (clear_t {.all_sessions = true, .preserve_pending_launches = true}));
+  EXPECT_EQ(rtsp_loop_clear(false), (clear_t {.all_sessions = false, .preserve_pending_launches = true}));
+}
+
+TEST(RtspPendingPolicy, AnnounceFailsForSessionStoppedBeforeReply) {
+  using rtsp_stream::pending_policy::announce_reply;
+  using reply_e = rtsp_stream::pending_policy::announce_reply_e;
+
+  EXPECT_EQ(announce_reply(false, true), reply_e::ok);
+  // The app ended during startup: don't send the client on to a control
+  // connection that can only time out.
+  EXPECT_EQ(announce_reply(false, false), reply_e::stopped_before_reply);
+  EXPECT_EQ(announce_reply(true, false), reply_e::startup_failed);
+  EXPECT_EQ(announce_reply(true, true), reply_e::startup_failed);
 }
