@@ -60,4 +60,16 @@ namespace rtsp_stream::pending_policy {
   // it must survive the teardown instead of being canceled with it.
   loop_clear_t rtsp_loop_clear(bool broadcast_shutdown_raised);
   std::chrono::steady_clock::time_point launch_deadline_after_startup(std::chrono::steady_clock::time_point expires_at, std::chrono::steady_clock::time_point now, std::chrono::milliseconds ping_timeout);
+
+  enum class announce_reply_e {
+    ok,
+    startup_failed,
+    stopped_before_reply,
+  };
+
+  // The ANNOUNCE reply is posted after startup, and the session can be stopped
+  // in between (e.g. the app ended during startup). A 200 for a stopped session
+  // sends the client on to PLAY and a control connection that can only time
+  // out, which Moonlight reports as a firewall problem, so fail it instead.
+  announce_reply_e announce_reply(bool startup_failed, bool session_running);
 }  // namespace rtsp_stream::pending_policy

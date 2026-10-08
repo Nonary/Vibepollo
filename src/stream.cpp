@@ -2978,15 +2978,30 @@ namespace stream {
       ref->message_queue_queue->raise(type, session_id, nullptr);
     });
 
+    const auto type_str = type == socket_e::video ? "video"sv : "audio"sv;
     auto start_time = std::chrono::steady_clock::now();
     auto current_time = start_time;
 
+    // Wake periodically so a session stopped before its client pings (e.g. the
+    // app ended during startup) releases this thread now instead of after the
+    // full ping timeout. join() waits on this thread, and when the RTSP loop is
+    // the joiner, every RTSP reply, including this launch's ANNOUNCE, waits too.
+    constexpr auto stop_poll_interval = 100ms;
     while (current_time - start_time < config::stream.ping_timeout) {
+      if (session->shutdown_event->peek()) {
+        BOOST_LOG(info) << "Session stopped before the client's "sv << type_str << " ping arrived"sv;
+        return -1;
+      }
+
       auto delta_time = current_time - start_time;
 
-      auto msg_opt = messages->pop(config::stream.ping_timeout - delta_time);
+      auto msg_opt = messages->pop(std::min<std::chrono::steady_clock::duration>(config::stream.ping_timeout - delta_time, stop_poll_interval));
       if (!msg_opt) {
-        break;
+        if (!messages->running()) {
+          break;
+        }
+        current_time = std::chrono::steady_clock::now();
+        continue;
       }
 
       TUPLE_2D_REF(recv_peer, msg, *msg_opt);
@@ -3009,7 +3024,6 @@ namespace stream {
 
     BOOST_LOG(error) << "Initial Ping Timeout"sv;
 
-    const auto type_str = type == socket_e::video ? "video"sv : "audio"sv;
     const auto received = recv_counter.load(std::memory_order_relaxed) - recv_baseline;
     if (received == 0) {
       BOOST_LOG(error) << "No UDP datagrams reached the "sv << type_str << " socket while waiting for the client's ping. "sv

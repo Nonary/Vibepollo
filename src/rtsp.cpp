@@ -188,6 +188,11 @@ namespace rtsp_stream {
     return config.dynamicRange != 0 && !config.prefer_sdr_10bit && !config.force_sdr;
   }
 
+  static bool session_still_running(const std::weak_ptr<stream::session_t> &weak_session) {
+    const auto session = weak_session.lock();
+    return session && stream::session::state(*session) == stream::session::state_e::RUNNING;
+  }
+
   std::shared_ptr<launch_session_t> launch_session_t::clone_for_startup() const {
     auto snapshot = std::make_shared<launch_session_t>();
 
@@ -2462,7 +2467,12 @@ namespace rtsp_stream {
         // scope. A failed start can hold the last reference, and ~session_t may then run
         // end_broadcast(), which joins a control thread that itself waits on this gate.
         lifecycle_lock.unlock();
-        server->post([server, socket = std::move(socket), session = std::move(session), sequence_number, startup_failed, startup_error = std::move(startup_error), virtual_display_guid_bytes = launch_session->virtual_display_guid_bytes]() mutable {
+        // Weak, so the reply never becomes the session's owner.
+        std::weak_ptr<stream::session_t> started_session;
+        if (!startup_failed) {
+          started_session = stream_session;
+        }
+        server->post([server, socket = std::move(socket), session = std::move(session), sequence_number, startup_failed, startup_error = std::move(startup_error), started_session = std::move(started_session), virtual_display_guid_bytes = launch_session->virtual_display_guid_bytes]() mutable {
           auto fg = util::fail_guard([server, virtual_display_guid_bytes]() {
             server->finish_startup(virtual_display_guid_bytes);
           });
@@ -2471,15 +2481,22 @@ namespace rtsp_stream {
           auto completion_seqn = std::to_string(sequence_number);
           completion_option.content = const_cast<char *>(completion_seqn.c_str());
 
-          if (startup_failed) {
-            if (startup_error.empty()) {
-              BOOST_LOG(error) << "Failed to start a streaming session"sv;
-            } else {
-              BOOST_LOG(error) << "Failed to start a streaming session: "sv << startup_error;
-            }
-            respond(socket->sock, *session, &completion_option, 500, "Internal Server Error", sequence_number, {});
-          } else {
-            respond(socket->sock, *session, &completion_option, 200, "OK", sequence_number, {});
+          switch (pending_policy::announce_reply(startup_failed, session_still_running(started_session))) {
+            case pending_policy::announce_reply_e::startup_failed:
+              if (startup_error.empty()) {
+                BOOST_LOG(error) << "Failed to start a streaming session"sv;
+              } else {
+                BOOST_LOG(error) << "Failed to start a streaming session: "sv << startup_error;
+              }
+              respond(socket->sock, *session, &completion_option, 500, "Internal Server Error", sequence_number, {});
+              break;
+            case pending_policy::announce_reply_e::stopped_before_reply:
+              BOOST_LOG(warning) << "Streaming session stopped before its ANNOUNCE reply was sent; reporting the start as failed."sv;
+              respond(socket->sock, *session, &completion_option, 503, "Service Unavailable", sequence_number, {});
+              break;
+            case pending_policy::announce_reply_e::ok:
+              respond(socket->sock, *session, &completion_option, 200, "OK", sequence_number, {});
+              break;
           }
 
           server->shutdown_socket(*socket);
