@@ -1068,46 +1068,50 @@ namespace proc {
   proc_t &proc_t::operator=(proc_t &&other) noexcept {
     if (this != &other) {
       std::scoped_lock lk(_apps_mutex, other._apps_mutex);
-#ifdef _WIN32
-      stop_lossless_scaling_support();
-#endif
-      _app_id.store(other._app_id.load(std::memory_order_acquire), std::memory_order_release);
-      _env = std::move(other._env);
-      _stream_owned_environment_keys = std::move(other._stream_owned_environment_keys);
-      _apps = std::move(other._apps);
-      _app = std::move(other._app);
-      _app_launch_time = other._app_launch_time;
-      _active_client_uuid = std::move(other._active_client_uuid);
-      _active_client_vdd_identity_token = other._active_client_vdd_identity_token;
-      placebo = other.placebo;
-      _steam_tracker = std::move(other._steam_tracker);
-      _steam_process_controller = std::move(other._steam_process_controller);
-      _steam_tracking_active = other._steam_tracking_active;
-      _steam_tracking_associated = other._steam_tracking_associated;
-      _steam_tracking_deadline = other._steam_tracking_deadline;
-      _steam_last_tracking_poll = other._steam_last_tracking_poll;
-      _process = std::move(other._process);
-      _process_group = std::move(other._process_group);
-      _pipe = std::move(other._pipe);
-      _app_prep_it = other._app_prep_it;
-      _app_prep_begin = other._app_prep_begin;
-#ifdef _WIN32
-      if (_runtime_output_override_lease) {
-        (void) config::clear_runtime_output_name_override_if_lease(*_runtime_output_override_lease);
-      }
-      _runtime_output_override_lease = std::exchange(other._runtime_output_override_lease, std::nullopt);
-      _lossless_thread = std::move(other._lossless_thread);
-      _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
-      _lossless_profile_applied = other._lossless_profile_applied;
-      _lossless_backup = other._lossless_backup;
-      _lossless_last_install_dir = std::move(other._lossless_last_install_dir);
-      _lossless_last_exe_path = std::move(other._lossless_last_exe_path);
-      _virtual_display_guid = other._virtual_display_guid;
-      _virtual_display_active = other._virtual_display_active;
-      other._lossless_profile_applied = false;
-#endif
+      move_from_locked(other);
     }
     return *this;
+  }
+
+  void proc_t::move_from_locked(proc_t &other) noexcept {
+#ifdef _WIN32
+    stop_lossless_scaling_support();
+#endif
+    _app_id.store(other._app_id.load(std::memory_order_acquire), std::memory_order_release);
+    _env = std::move(other._env);
+    _stream_owned_environment_keys = std::move(other._stream_owned_environment_keys);
+    _apps = std::move(other._apps);
+    _app = std::move(other._app);
+    _app_launch_time = other._app_launch_time;
+    _active_client_uuid = std::move(other._active_client_uuid);
+    _active_client_vdd_identity_token = other._active_client_vdd_identity_token;
+    placebo = other.placebo;
+    _steam_tracker = std::move(other._steam_tracker);
+    _steam_process_controller = std::move(other._steam_process_controller);
+    _steam_tracking_active = other._steam_tracking_active;
+    _steam_tracking_associated = other._steam_tracking_associated;
+    _steam_tracking_deadline = other._steam_tracking_deadline;
+    _steam_last_tracking_poll = other._steam_last_tracking_poll;
+    _process = std::move(other._process);
+    _process_group = std::move(other._process_group);
+    _pipe = std::move(other._pipe);
+    _app_prep_it = other._app_prep_it;
+    _app_prep_begin = other._app_prep_begin;
+#ifdef _WIN32
+    if (_runtime_output_override_lease) {
+      (void) config::clear_runtime_output_name_override_if_lease(*_runtime_output_override_lease);
+    }
+    _runtime_output_override_lease = std::exchange(other._runtime_output_override_lease, std::nullopt);
+    _lossless_thread = std::move(other._lossless_thread);
+    _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
+    _lossless_profile_applied = other._lossless_profile_applied;
+    _lossless_backup = other._lossless_backup;
+    _lossless_last_install_dir = std::move(other._lossless_last_install_dir);
+    _lossless_last_exe_path = std::move(other._lossless_last_exe_path);
+    _virtual_display_guid = other._virtual_display_guid;
+    _virtual_display_active = other._virtual_display_active;
+    other._lossless_profile_applied = false;
+#endif
   }
 
 #ifdef _WIN32
@@ -1354,6 +1358,19 @@ namespace proc {
 #endif
   }
   int proc_t::execute(const ctx_t &app, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {
+    // Publish the launch before touching any app state. A concurrent apps.json
+    // reload (e.g. Playnite auto-sync) would otherwise see an idle host, swap in
+    // the parsed catalog's empty app mid-launch, and leave this stream running
+    // a placebo "Desktop" that the control thread immediately treats as exited.
+    {
+      std::scoped_lock lk(_apps_mutex);
+      _launching_thread = std::this_thread::get_id();
+    }
+    auto launching_thread_guard = util::fail_guard([this]() {
+      std::scoped_lock lk(_apps_mutex);
+      _launching_thread.reset();
+    });
+
 #ifdef _WIN32
     std::optional<std::filesystem::path> resolved_lossless_exe_path;
     std::string resolved_lossless_exe_utf8;
@@ -4799,44 +4816,39 @@ namespace proc {
       return;
     }
 
-    // If an app is currently running, do not replace the entire proc_t instance.
-    // Replacing it would drop tracking state and cause the active stream loop
-    // to think no app is running, prematurely terminating the session.
-    // Instead, update only the applications list to reflect the latest config.
-    if (proc.running() > 0) {
-      // Move the parsed apps list and environment into the existing proc instance
-      // Use proc.update_apps(...) which safely replaces the app list and env
-      proc.update_apps(proc_opt->release_apps(), proc_opt->release_env());
-
-    } else {
-      // No app running: safe to refresh full state (env + apps)
-      proc = std::move(*proc_opt);
-    }
+    // Reap an app that has already exited so an idle host takes the full reload.
+    (void) proc.running();
+    proc.reload(std::move(*proc_opt));
   }
 
-  void proc_t::update_apps(std::vector<ctx_t> &&apps, bp::environment &&env) {
-    // Replace app list while keeping current running app intact.
-    // Only replace _env if no app is currently running, because execute()
-    // populates _env with stream-specific variables (APOLLO_APP_UUID,
-    // APOLLO_CLIENT_UUID, SUNSHINE_CLIENT_*, etc.) that must survive
-    // until terminate() runs the undo prep commands.
-    {
-      std::scoped_lock lk(_apps_mutex);
-      const bool app_was_running = _app_id > 0;
-      if (app_was_running && !_app.uuid.empty()) {
-        const auto refreshed_app = std::find_if(apps.begin(), apps.end(), [&](const ctx_t &candidate) {
-          return candidate.uuid == _app.uuid;
-        });
-        if (refreshed_app != apps.end()) {
-          _app_id = util::from_view(refreshed_app->id);
-        }
-      }
-      _apps = std::move(apps);
-      if (!app_was_running) {
-        _env = std::move(env);
-        _stream_owned_environment_keys.clear();
+  void proc_t::reload(proc_t &&parsed) {
+    // Decide and apply under one lock. execute() publishes _launching_thread
+    // under _apps_mutex before it touches _app or _env, so a launch cannot
+    // start between this check and the swap below.
+    std::scoped_lock lk(_apps_mutex, parsed._apps_mutex);
+    const bool launching_elsewhere =
+      _launching_thread && *_launching_thread != std::this_thread::get_id();
+    if (_app_id <= 0 && !launching_elsewhere) {
+      // No app running or launching: safe to refresh full state (env + apps).
+      move_from_locked(parsed);
+      return;
+    }
+
+    // Replacing the entire proc_t would drop tracking state and cause the
+    // active stream loop to think no app is running, prematurely terminating
+    // the session. Update only the applications list instead. _env is kept
+    // because execute() populates it with stream-specific variables
+    // (APOLLO_APP_UUID, APOLLO_CLIENT_UUID, SUNSHINE_CLIENT_*, etc.) that must
+    // survive until terminate() runs the undo prep commands.
+    if (_app_id > 0 && !_app.uuid.empty()) {
+      const auto refreshed_app = std::find_if(parsed._apps.begin(), parsed._apps.end(), [&](const ctx_t &candidate) {
+        return candidate.uuid == _app.uuid;
+      });
+      if (refreshed_app != parsed._apps.end()) {
+        _app_id = util::from_view(refreshed_app->id);
       }
     }
+    _apps = std::move(parsed._apps);
   }
 
 #ifdef _WIN32
@@ -4972,12 +4984,4 @@ namespace proc {
     return true;
   }
 #endif
-
-  std::vector<ctx_t> proc_t::release_apps() {
-    return std::move(_apps);
-  }
-
-  bp::environment proc_t::release_env() {
-    return std::move(_env);
-  }
 }  // namespace proc

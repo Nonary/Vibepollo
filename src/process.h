@@ -254,8 +254,9 @@ namespace proc {
     bool running_app_contains_pid(uint32_t pid);
 #endif
 
-    // Hot-update app list and environment without disrupting a running app
-    void update_apps(std::vector<ctx_t> &&apps, bp::environment &&env);
+    // Adopt a freshly parsed catalog. An idle host takes all of its state; a
+    // running or launching app keeps its state and only the app list changes.
+    void reload(proc_t &&parsed);
 #ifdef _WIN32
     bool update_active_app_live_rtx_hdr_overrides(const std::string &app_uuid);
     bool update_active_app_live_rtx_hdr_overrides(
@@ -264,12 +265,10 @@ namespace proc {
     );
 #endif
 
-    // Helpers for parse/refresh to extract newly parsed state without exposing internals
-    std::vector<ctx_t> release_apps();
-    bp::environment release_env();
-
   private:
     int launch_app_commands(bool stream_lifecycle_lock_held);
+    // Requires _apps_mutex and other._apps_mutex to be held.
+    void move_from_locked(proc_t &other) noexcept;
 
     std::atomic<int> _app_id {0};
     std::string _app_name;
@@ -287,6 +286,12 @@ namespace proc {
     std::uint64_t _active_client_vdd_identity_token {0};
 
     mutable std::mutex _apps_mutex;
+    // Guarded by _apps_mutex. Set to the calling thread for the whole of
+    // execute() so a reload() from any other thread cannot swap in a parsed
+    // catalog's empty app while _app and _env are being populated. A failed
+    // launch's own terminate() -> refresh() still takes the full reload.
+    // Owned by the launching call, so moves never transfer it.
+    std::optional<std::thread::id> _launching_thread;
 
     // If no command associated with _app_id, yet it's still running
     bool placebo {};
