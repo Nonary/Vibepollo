@@ -91,4 +91,11 @@ namespace rtsp_stream::pending_policy {
   ) {
     return std::max(expires_at, now + ping_timeout);
   }
+
+  announce_reply_e announce_reply(const bool startup_failed, const bool session_running) {
+    if (startup_failed) {
+      return announce_reply_e::startup_failed;
+    }
+    return session_running ? announce_reply_e::ok : announce_reply_e::stopped_before_reply;
+  }
 }  // namespace rtsp_stream::pending_policy

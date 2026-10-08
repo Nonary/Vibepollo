@@ -134,3 +134,15 @@ TEST(RtspPendingPolicy, BroadcastShutdownClearsSessionsButKeepsPendingLaunches) 
   EXPECT_EQ(rtsp_loop_clear(true), (clear_t {.all_sessions = true, .preserve_pending_launches = true}));
   EXPECT_EQ(rtsp_loop_clear(false), (clear_t {.all_sessions = false, .preserve_pending_launches = true}));
 }
+
+TEST(RtspPendingPolicy, AnnounceFailsForSessionStoppedBeforeReply) {
+  using rtsp_stream::pending_policy::announce_reply;
+  using reply_e = rtsp_stream::pending_policy::announce_reply_e;
+
+  EXPECT_EQ(announce_reply(false, true), reply_e::ok);
+  // The app ended during startup: don't send the client on to a control
+  // connection that can only time out.
+  EXPECT_EQ(announce_reply(false, false), reply_e::stopped_before_reply);
+  EXPECT_EQ(announce_reply(true, false), reply_e::startup_failed);
+  EXPECT_EQ(announce_reply(true, true), reply_e::startup_failed);
+}
