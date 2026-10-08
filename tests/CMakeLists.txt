@@ -2303,3 +2303,14 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
             "${CMAKE_CURRENT_LIST_DIR}/unit/test_homebrew_formula.py")
     set_tests_properties(test_component_homebrew_formula PROPERTIES LABELS "component;packaging" TIMEOUT 60)
 endif()
+
+# Exercise installer host commands through stubs, including literal file contents
+# and failed privileged operations, without changing the running host.
+if(NOT WIN32)
+    foreach(_flatpak_scenario IN ITEMS success literal modules missing rules)
+        add_test(NAME test_script_flatpak_install_${_flatpak_scenario}
+            COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/scripts/test_additional_install.sh" ${_flatpak_scenario})
+        set_tests_properties(test_script_flatpak_install_${_flatpak_scenario}
+            PROPERTIES LABELS "component;packaging" TIMEOUT 30)
+    endforeach()
+endif()
