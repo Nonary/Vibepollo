@@ -926,6 +926,7 @@ namespace config {
 
     video_t::virtual_display_mode_e::per_client,  // virtual_display_mode
     video_t::virtual_display_layout_e::exclusive,  // virtual_display_layout
+    true,  // virtual_display_keep_while_paused
 
     false,  // remote_monitor_mute_audio
     false,  // remote_monitor_disconnect_on_stream_end
@@ -1923,6 +1924,7 @@ namespace config {
     }
 #endif
     generic_f(vars, "virtual_display_layout", video.virtual_display_layout, virtual_display_layout_from_view);
+    bool_f(vars, "virtual_display_keep_while_paused", video.virtual_display_keep_while_paused);
     bool_f(vars, "remote_monitor_mute_audio", video.remote_monitor_mute_audio);
     bool_f(vars, "remote_monitor_disconnect_on_stream_end", video.remote_monitor_disconnect_on_stream_end);
     bool_f(vars, "remote_monitor_disconnect_on_client_disconnect", video.remote_monitor_disconnect_on_client_disconnect);

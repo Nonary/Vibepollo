@@ -307,6 +307,9 @@ namespace platf::macos_virtual_display {
       CGVirtualDisplay *display = nil;
       CGDirectDisplayID id = kCGNullDirectDisplay;
       bool hdr = false;
+      int width = 0;  ///< As requested.
+      int height = 0;
+      double refresh = 0;
       std::vector<CGDirectDisplayID> turned_off;  ///< Physical displays to turn back on.
       std::unique_ptr<saved_modes_t> turned_off_modes;  ///< Their modes from before.
       pid_t watchdog_pid = -1;
@@ -606,6 +609,9 @@ namespace platf::macos_virtual_display {
         BOOST_LOG(warning) << "Virtual display: streaming the physical display instead"sv;
         return nullptr;
       }
+      result->width = config.width;
+      result->height = config.height;
+      result->refresh = refresh;
       apply_layout(*result);
       if (!result->turned_off.empty()) {
         BOOST_LOG(info) << "Virtual display: physical displays turned off"sv;
@@ -656,9 +662,43 @@ namespace platf::macos_virtual_display {
     }
   }  // namespace
 
+  namespace {
+    std::mutex pause_hold_mutex;
+    std::shared_ptr<void> pause_hold;
+    std::uint64_t pause_hold_generation = 0;
+
+    // A paused game's display can only be reused by a stream that wants the same mode.
+    bool pause_hold_is_stale(const video::config_t &config) {
+      {
+        std::lock_guard lock {pause_hold_mutex};
+        if (!pause_hold) {
+          return false;
+        }
+      }
+      const double refresh = config.framerateX100 > 0 ? config.framerateX100 / 100.0 : config.framerate;
+      const bool hdr = config.dynamicRange > 0 && !config.prefer_sdr_10bit && !config.force_sdr;
+      std::lock_guard lock {state_mutex};
+      return current && current_users == 1 &&
+             (current->width != config.width || current->height != config.height || current->refresh != refresh || current->hdr != hdr);
+    }
+  }  // namespace
+
+  void end_pause_hold() {
+    std::shared_ptr<void> held;  // released outside the lock: releasing can take seconds
+    {
+      std::lock_guard lock {pause_hold_mutex};
+      held = std::move(pause_hold);
+      ++pause_hold_generation;
+    }
+  }
+
   std::shared_ptr<void> acquire(const video::config_t &config) {
     if (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::disabled) {
       return nullptr;
+    }
+
+    if (pause_hold_is_stale(config)) {
+      end_pause_hold();
     }
 
     std::lock_guard lock {state_mutex};
@@ -711,6 +751,46 @@ namespace platf::macos_virtual_display {
         BOOST_LOG(info) << "Virtual display: no stream started within 30 seconds of the launch; removing it"sv;
       }
     }).detach();
+  }
+
+  void hold_for_pause(const std::chrono::seconds timeout) {
+    std::shared_ptr<void> held;
+    {
+      std::lock_guard lock {state_mutex};
+      if (!current) {
+        return;
+      }
+      ++current_users;
+      static int token;
+      held = std::shared_ptr<void>(&token, [](void *) {
+        release();
+      });
+    }
+
+    std::shared_ptr<void> previous;  // released outside the lock: releasing can take seconds
+    std::uint64_t generation;
+    {
+      std::lock_guard lock {pause_hold_mutex};
+      previous = std::exchange(pause_hold, std::move(held));
+      generation = ++pause_hold_generation;
+    }
+    BOOST_LOG(info) << "Virtual display: keeping it while the session is paused"sv;
+
+    if (timeout.count() > 0) {
+      std::thread([generation, timeout]() {
+        std::this_thread::sleep_for(timeout);
+        std::shared_ptr<void> expired;
+        {
+          std::lock_guard lock {pause_hold_mutex};
+          if (pause_hold_generation == generation) {
+            expired = std::move(pause_hold);
+          }
+        }
+        if (expired) {
+          BOOST_LOG(info) << "Virtual display: paused session timed out; removing it"sv;
+        }
+      }).detach();
+    }
   }
 
   void end_launch_hold() {
