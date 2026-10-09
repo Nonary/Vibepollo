@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -50,6 +51,20 @@ namespace platf::macos_virtual_display {
    *        or the launch failed.
    */
   void end_launch_hold();
+
+  /**
+   * @brief Keep the current virtual display, and so the physical displays turned off, while a
+   *        session is paused, as on Windows.
+   * @details Ends when a stream takes the display over, end_pause_hold() is called, or the
+   *          timeout passes. Does nothing without a virtual display.
+   * @param timeout How long to keep it; zero keeps it until the hold ends otherwise.
+   */
+  void hold_for_pause(std::chrono::seconds timeout);
+
+  /**
+   * @brief Release the hold from hold_for_pause(), if any: the session resumed or ended.
+   */
+  void end_pause_hold();
 
   /**
    * @brief The virtual display that capture and input should target while one exists.
