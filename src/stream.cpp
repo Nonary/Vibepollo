@@ -3392,6 +3392,20 @@ namespace stream {
       return session.remote_role == role && (!generation || session.remote_role_generation == *generation);
     }
 
+#ifdef __APPLE__
+    // Remote Input and Remote Monitor streams drive the host's own displays, so a paused game's
+    // virtual display must not keep those turned off underneath them.
+    bool remote_stream_active(const session_t &except) {
+      for (const auto &other : rtsp_stream::get_sessions_snapshot()) {
+        if (other && other.get() != &except && other->config.monitor.capture_source != video::capture_source_e::active_output &&
+            other->state.load(std::memory_order_acquire) != state_e::STOPPED) {
+          return true;
+        }
+      }
+      return false;
+    }
+#endif
+
     void mark_client_disconnected(session_t &session) {
       session.client_disconnected.store(true, std::memory_order_release);
     }
@@ -3486,8 +3500,10 @@ namespace stream {
 
 #ifdef __APPLE__
       // Capture and input have stopped, so the virtual display (and turned-off displays) can go back,
-      // unless the game is only paused: then they stay off, as on Windows, until it resumes.
-      if (config::video.virtual_display_keep_while_paused && proc::proc.current_app_id() > 0 && !config::video.dd.config_revert_on_disconnect) {
+      // unless the game is only paused: then they stay off, as on Windows, until it resumes. Not while
+      // a Remote Input or Remote Monitor stream is still using the host's own displays.
+      if (session.macos_virtual_display && config::video.virtual_display_keep_while_paused && proc::proc.current_app_id() > 0 &&
+          !config::video.dd.config_revert_on_disconnect && !remote_stream_active(session)) {
         platf::macos_virtual_display::hold_for_pause(std::chrono::seconds {std::max(0, config::video.dd.paused_virtual_display_timeout_secs)});
       }
       session.macos_virtual_display.reset();
@@ -3642,6 +3658,9 @@ namespace stream {
         session.macos_virtual_display = platf::macos_virtual_display::acquire(session.config.monitor);
         // The display launch brought up is the session's now.
         platf::macos_virtual_display::end_launch_hold();
+        platf::macos_virtual_display::end_pause_hold();
+      } else {
+        // A paused game's display would hide the host's own displays from this stream.
         platf::macos_virtual_display::end_pause_hold();
       }
 #endif
