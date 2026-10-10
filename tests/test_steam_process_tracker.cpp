@@ -68,6 +68,16 @@ namespace {
     }
   };
 
+  class fixed_provider final : public lifecycle::process_snapshot_provider {
+  public:
+    explicit fixed_provider(lifecycle::process_snapshot value):
+        value_(std::move(value)) {}
+    std::optional<lifecycle::process_snapshot> snapshot() override { return value_; }
+
+  private:
+    lifecycle::process_snapshot value_;
+  };
+
 }  // namespace
 
 TEST(SteamBigPicture, ExistingGamesAndTheirLaterChildrenAreExcluded) {
@@ -282,6 +292,73 @@ TEST(SteamProcessTracker, RefusesToSignalWhenPidIdentityChanged) {
   EXPECT_EQ(result.kill_sent, 0U);
   EXPECT_EQ(result.skipped, 1U);
   EXPECT_TRUE(controller.signals.empty());
+}
+
+TEST(SteamProcessTracker, FinishStopsReportingAssociationOnceTrackedTreeExits) {
+  const auto root = std::filesystem::path("/games/Example");
+  const auto launcher = process(1, 0, "/sbin/init");
+  const auto game = process(90, 1, "/games/Example/game", root.string().c_str());
+  const auto baseline = snapshot({launcher});
+
+  lifecycle::tracker tracked(std::make_shared<fixed_provider>(baseline));
+  ASSERT_TRUE(tracked.begin(root));
+
+  const auto running = tracked.finish(snapshot({launcher, game}));
+  ASSERT_TRUE(running.associated());
+  EXPECT_TRUE(running.tree.processes.contains(90));
+
+  const auto exited = tracked.finish(snapshot({launcher}));
+  EXPECT_FALSE(exited.associated());
+  EXPECT_EQ(exited.reason.find("unavailable"), std::string::npos);
+  EXPECT_TRUE(tracked.tree().empty());
+}
+
+TEST(SteamProcessTracker, TrackingActionEndsSessionWhenTreeExitsAfterLaunchWindow) {
+  using namespace std::chrono_literals;
+  const auto deadline = std::chrono::steady_clock::time_point {} + 15s;
+  // Regression: the game was associated, then quit well after the 15 second
+  // launch window. This must end the session, not retain detached behavior.
+  EXPECT_EQ(lifecycle::next_tracking_action(true, false, "no process appeared after the launch baseline", deadline + 3600s, deadline),
+            lifecycle::tracking_action::tracked_tree_exited);
+}
+
+TEST(SteamProcessTracker, TrackingActionEndsSessionWhenTreeExitsBeforeLaunchWindow) {
+  using namespace std::chrono_literals;
+  const auto deadline = std::chrono::steady_clock::time_point {} + 15s;
+  EXPECT_EQ(lifecycle::next_tracking_action(true, false, "no process appeared after the launch baseline", deadline - 5s, deadline),
+            lifecycle::tracking_action::tracked_tree_exited);
+}
+
+TEST(SteamProcessTracker, TrackingActionGivesUpOnlyWhenNeverAssociatedPastDeadline) {
+  using namespace std::chrono_literals;
+  const auto deadline = std::chrono::steady_clock::time_point {} + 15s;
+  EXPECT_EQ(lifecycle::next_tracking_action(false, false, "no process appeared after the launch baseline", deadline, deadline),
+            lifecycle::tracking_action::give_up_detached);
+  EXPECT_EQ(lifecycle::next_tracking_action(false, false, "", deadline + 1s, deadline),
+            lifecycle::tracking_action::give_up_detached);
+}
+
+TEST(SteamProcessTracker, TrackingActionKeepsWaitingBeforeDeadlineWhenNeverAssociated) {
+  using namespace std::chrono_literals;
+  const auto deadline = std::chrono::steady_clock::time_point {} + 15s;
+  EXPECT_EQ(lifecycle::next_tracking_action(false, false, "no process appeared after the launch baseline", deadline - 1s, deadline),
+            lifecycle::tracking_action::keep_alive);
+}
+
+TEST(SteamProcessTracker, TrackingActionKeepsAliveWhileAssociated) {
+  using namespace std::chrono_literals;
+  const auto deadline = std::chrono::steady_clock::time_point {} + 15s;
+  EXPECT_EQ(lifecycle::next_tracking_action(true, true, "retained previously associated game process tree", deadline + 3600s, deadline),
+            lifecycle::tracking_action::keep_alive);
+  EXPECT_EQ(lifecycle::next_tracking_action(false, true, "associated new game process tree", deadline + 1s, deadline),
+            lifecycle::tracking_action::keep_alive);
+}
+
+TEST(SteamProcessTracker, TrackingActionTreatsUnavailableSnapshotAsInconclusive) {
+  using namespace std::chrono_literals;
+  const auto deadline = std::chrono::steady_clock::time_point {} + 15s;
+  EXPECT_EQ(lifecycle::next_tracking_action(true, false, "post-launch process snapshot is unavailable", deadline + 3600s, deadline),
+            lifecycle::tracking_action::keep_alive);
 }
 
 #ifdef _WIN32
