@@ -2789,6 +2789,7 @@ namespace proc {
     }
 #endif
 
+    bool tracked_tree_exited = false;
     if (_steam_tracking_active) {
       const auto now = std::chrono::steady_clock::now();
       constexpr auto tracking_poll_interval = 100ms;
@@ -2833,6 +2834,7 @@ namespace proc {
             _steam_tracking_associated = false;
             _steam_tracking_active = false;
             placebo = false;
+            tracked_tree_exited = true;
             break;
           }
         case platf::steam::lifecycle::tracking_action::give_up_detached:
@@ -2845,7 +2847,11 @@ namespace proc {
       }
     }
 
-    if (placebo) {
+    if (tracked_tree_exited) {
+      // The game tree is confirmed gone. Skip the placebo, wait_all, launcher
+      // running and auto_detach checks so none of them can keep the stream
+      // alive, and go straight to cleanup.
+    } else if (placebo) {
       return _app_id;
     } else if (_app.wait_all && _process_group && platf::process_group_running((std::uintptr_t) _process_group.native_handle())) {
       // The app is still running if any process in the group is still running
@@ -2880,7 +2886,11 @@ namespace proc {
         BOOST_LOG(debug) << "[running] App exited but stream teardown is already in flight; deferring cleanup to the gate owner.";
         return 0;
       }
-      BOOST_LOG(info) << "[running] _process.running() is false; calling terminate(). App exited with code ["sv << _process.native_exit_code() << "] for app '" << _app.name << "' (id=" << _app_id << ")";
+      if (tracked_tree_exited) {
+        BOOST_LOG(info) << "[running] Tracked game process tree exited; calling terminate() for app '" << _app.name << "' (id=" << _app_id << ")";
+      } else {
+        BOOST_LOG(info) << "[running] _process.running() is false; calling terminate(). App exited with code ["sv << _process.native_exit_code() << "] for app '" << _app.name << "' (id=" << _app_id << ")";
+      }
       // running() owns the lifecycle gate above; prevent terminate() from
       // acquiring the non-recursive mutex a second time.
       terminate(false, true, false, true);
