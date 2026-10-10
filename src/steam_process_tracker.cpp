@@ -611,6 +611,23 @@ association_result tracker::finish(const process_snapshot &after) {
   return result;
 }
 
+tracking_action next_tracking_action(bool was_associated,
+                                     bool associated_now,
+                                     std::string_view reason,
+                                     std::chrono::steady_clock::time_point now,
+                                     std::chrono::steady_clock::time_point deadline) {
+  if (associated_now) {
+    return tracking_action::keep_alive;
+  }
+  if (was_associated) {
+    // A complete snapshot with no retained PID means the tracked game tree
+    // has exited; an unavailable snapshot proves nothing either way.
+    return reason.find("unavailable") == std::string_view::npos ? tracking_action::tracked_tree_exited :
+                                                                   tracking_action::keep_alive;
+  }
+  return now < deadline ? tracking_action::keep_alive : tracking_action::give_up_detached;
+}
+
 bool tracker::has_live_processes(const process_snapshot &current) const {
   if (tree_.empty()) {
     return false;
