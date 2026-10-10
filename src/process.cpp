@@ -2792,10 +2792,15 @@ namespace proc {
     if (_steam_tracking_active) {
       const auto now = std::chrono::steady_clock::now();
       constexpr auto tracking_poll_interval = 100ms;
+      const bool was_associated = _steam_tracking_associated;
+      bool associated_now = was_associated;
+      std::string tracking_reason;
       if (_steam_last_tracking_poll.time_since_epoch().count() == 0 || now - _steam_last_tracking_poll >= tracking_poll_interval) {
         _steam_last_tracking_poll = now;
         const auto tracking = _steam_tracker.finish();
-        if (tracking.associated()) {
+        associated_now = tracking.associated();
+        tracking_reason = tracking.reason;
+        if (associated_now) {
           if (!_steam_tracking_associated) {
             const auto provider_name = !_app.steam_id.empty() ? "Steam" : "Lutris";
             const auto provider_id = !_app.steam_id.empty() ? _app.steam_id : _app.lutris_id;
@@ -2805,30 +2810,39 @@ namespace proc {
           }
           _steam_tracking_associated = true;
           placebo = false;
-        } else if (_steam_tracking_associated && tracking.reason.find("unavailable") == std::string::npos) {
-          // A complete snapshot with no retained PID means the tracked game
-          // tree has exited. Let the normal cleanup path run below.
-          _steam_tracking_associated = false;
-          _steam_tracking_active = false;
         }
       }
 
-      if (_steam_tracking_associated) {
-        return _app_id;
+      switch (platf::steam::lifecycle::next_tracking_action(was_associated, associated_now, tracking_reason, now, _steam_tracking_deadline)) {
+        case platf::steam::lifecycle::tracking_action::keep_alive:
+          // Keep the stream alive while Steam is still starting the game or
+          // the associated tree is running. This preserves the existing
+          // detached/placebo behavior if association eventually fails,
+          // without turning polling into a blocking wait.
+          return _app_id;
+        case platf::steam::lifecycle::tracking_action::tracked_tree_exited:
+          {
+            // A complete snapshot with no retained PID means the tracked game
+            // tree has exited. Leave the tracking block so the normal cleanup
+            // path below ends the session instead of falling into the
+            // detached behavior reserved for games that were never associated.
+            const auto provider_name = !_app.steam_id.empty() ? "Steam" : "Lutris";
+            const auto provider_id = !_app.steam_id.empty() ? _app.steam_id : _app.lutris_id;
+            BOOST_LOG(info) << provider_name << " app " << provider_id
+                            << " tracked process tree exited (" << tracking_reason << "); ending session.";
+            _steam_tracking_associated = false;
+            _steam_tracking_active = false;
+            placebo = false;
+            break;
+          }
+        case platf::steam::lifecycle::tracking_action::give_up_detached:
+          BOOST_LOG(warning) << "Steam app " << _app.steam_id
+                             << " process tree remained untrackable after the 15 second launch window;"
+                                " retaining detached streaming behavior.";
+          _steam_tracking_active = false;
+          placebo = true;
+          return _app_id;
       }
-      if (now < _steam_tracking_deadline) {
-        // Keep the stream alive while Steam is still starting the game. This
-        // preserves the existing detached/placebo behavior if association
-        // eventually fails, without turning polling into a blocking wait.
-        return _app_id;
-      }
-
-      BOOST_LOG(warning) << "Steam app " << _app.steam_id
-                         << " process tree remained untrackable after the 15 second launch window;"
-                            " retaining detached streaming behavior.";
-      _steam_tracking_active = false;
-      placebo = true;
-      return _app_id;
     }
 
     if (placebo) {

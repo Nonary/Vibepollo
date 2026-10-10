@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace platf::steam::lifecycle {
@@ -122,6 +123,22 @@ namespace platf::steam::lifecycle {
     tracked_tree tree_;
     bool begun_ = false;
   };
+
+  enum class tracking_action {
+    keep_alive,           // keep the stream alive and poll again
+    tracked_tree_exited,  // the associated game tree is gone; end the session
+    give_up_detached,     // never associated within the launch window; stay detached
+  };
+
+  // Pure per-poll decision for a launch being tracked. was_associated is the
+  // state before this poll, associated_now is the latest tracker result, and
+  // reason is that result's explanation. An unavailable snapshot says nothing
+  // about whether the game exited, so it never ends the session.
+  tracking_action next_tracking_action(bool was_associated,
+                                       bool associated_now,
+                                       std::string_view reason,
+                                       std::chrono::steady_clock::time_point now,
+                                       std::chrono::steady_clock::time_point deadline);
 
   enum class signal_kind { terminate, kill };
 
