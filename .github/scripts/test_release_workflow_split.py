@@ -269,7 +269,13 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             step for step in arch_workflow["jobs"]["build_archlinux"]["steps"]
             if step["name"] == "Checkout DRM source only"
         )
-        self.assertIn("--depth 1 third-party/libvirtualdisplay", drm_checkout["run"])
+        self.assertEqual(
+            drm_checkout["run"],
+            'git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --depth 1 third-party/libvirtualdisplay',
+        )
+        self.assertNotIn("--global", drm_checkout["run"])
+        self.assertNotIn("safe.directory=*", drm_checkout["run"])
+        self.assertNotIn('safe.directory="*"', drm_checkout["run"])
         recipe = (ROOT / "packaging/linux/Arch/PKGBUILD").read_text()
         self.assertIn("submodule update --recursive --init --depth 1", recipe)
         self.assertEqual(checkout["with"]["ref"], "${{ inputs.release_commit }}")

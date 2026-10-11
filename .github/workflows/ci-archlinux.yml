@@ -115,7 +115,9 @@ jobs:
 
       - name: Checkout DRM source only
         shell: bash
-        run: git submodule update --init --depth 1 third-party/libvirtualdisplay
+        # Native container Git does not retain checkout's temporary HOME/config.
+        # Trust only this verified checkout for this invocation, never all repos.
+        run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --depth 1 third-party/libvirtualdisplay
 
       - name: Detect actual build budget
         shell: bash
