@@ -173,14 +173,51 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
                 with self.subTest(job=job, event=event, ref_type=ref_type, release=release):
                     expression = jobs[job]["if"].strip().removeprefix("${{").removesuffix("}}")
                     for name, value in (
+                        ("inputs.validate_hosted_linux", False),
                         ("github.event_name", event),
                         ("github.ref_type", ref_type),
                         ("needs.release-candidate.outputs.should_release", release),
                     ):
                         expression = expression.replace(name, repr(value))
-                    expression = expression.replace("||", "or").replace("&&", "and")
+                    expression = expression.replace("!= true", "!= True").replace("||", "or").replace("&&", "and")
                     expression = " ".join(expression.split())
                     self.assertEqual(eval(expression, {"__builtins__": {}}), expected)
+
+    def test_registered_linux_flag_isolates_exact_source_without_release_selection(self) -> None:
+        workflow = load_workflow("ci.yml")
+        inputs = workflow["on"]["workflow_dispatch"]["inputs"]
+        self.assertEqual(inputs["validate_hosted_linux"]["type"], "boolean")
+        self.assertEqual(inputs["validate_hosted_linux"]["default"], "false")
+        jobs = workflow["jobs"]
+        lane = jobs["validate-hosted-linux"]
+        self.assertNotIn("needs", lane)
+        self.assertNotIn("secrets", lane)
+        self.assertEqual(lane["permissions"], {"contents": "read"})
+        self.assertEqual(lane["with"]["release_commit"], "${{ github.sha }}")
+        self.assertEqual(lane["with"]["use_self_hosted"], "false")
+        self.assertEqual(lane["with"]["validation_only"], "true")
+        self.assertEqual(lane["with"]["build_tests"], "true")
+        self.assertEqual(lane["with"]["artifact_retention_days"], "1")
+        self.assertEqual(lane["with"]["cache_namespace"], "${{ inputs.linux_cache_namespace }}")
+        # A reachable unreleased tag must not make any ordinary job reachable
+        # when the explicit manual validation flag is true.
+        for event in ("workflow_dispatch", "push", "pull_request"):
+            for enabled in (False, True):
+                active = event == "workflow_dispatch" and enabled
+                for name, job in jobs.items():
+                    expression = job["if"].strip().removeprefix("${{").removesuffix("}}")
+                    for token, value in (
+                        ("inputs.validate_hosted_linux", enabled),
+                        ("github.event_name", event),
+                        ("github.ref_type", "tag"),
+                        ("needs.release-candidate.outputs.should_release", "true"),
+                    ):
+                        expression = expression.replace(token, repr(value))
+                    expression = expression.replace("!= true", "!= True").replace("== true", "== True")
+                    expression = " ".join(expression.replace("&&", "and").replace("||", "or").split())
+                    actual = eval(expression, {"__builtins__": {}})
+                    with self.subTest(event=event, enabled=enabled, job=name):
+                        self.assertEqual(actual, active if name == "validate-hosted-linux" else not active)
 
     def test_hosted_linux_validation_cannot_sign_install_or_publish(self) -> None:
         wrapper = load_workflow("validate-linux.yml")

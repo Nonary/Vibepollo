@@ -9,6 +9,14 @@ on:
         description: Tag to publish, for example v1.16.0-alpha.4
         required: false
         type: string
+      validate_hosted_linux:
+        description: Build only this exact source on hosted Linux, without signing or installation
+        type: boolean
+        default: false
+      linux_cache_namespace:
+        description: Fresh value for a cold run; repeat unchanged for warm comparison
+        type: string
+        default: host-linux-v1
       use_self_hosted:
         description: Use the local Windows and Linux release runners
         type: boolean
@@ -30,6 +38,7 @@ concurrency:
 jobs:
   release-candidate:
     name: Release candidate
+    if: github.event_name != 'workflow_dispatch' || inputs.validate_hosted_linux != true
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -218,8 +227,9 @@ jobs:
       - release-candidate
     # Branch pushes only select candidates. Build release artifacts once, on the tag push.
     if: >-
-      ${{ github.event_name != 'push' ||
-          (github.ref_type == 'tag' && needs.release-candidate.outputs.should_release == 'true') }}
+      ${{ (github.event_name != 'workflow_dispatch' || inputs.validate_hosted_linux != true) &&
+          (github.event_name != 'push' ||
+           (github.ref_type == 'tag' && needs.release-candidate.outputs.should_release == 'true')) }}
     permissions:
       actions: read
       contents: read
@@ -247,8 +257,9 @@ jobs:
       - release-candidate
     # Match Windows: release preparation must not build packages before the tag push.
     if: >-
-      ${{ github.event_name != 'push' ||
-          (github.ref_type == 'tag' && needs.release-candidate.outputs.should_release == 'true') }}
+      ${{ (github.event_name != 'workflow_dispatch' || inputs.validate_hosted_linux != true) &&
+          (github.event_name != 'push' ||
+           (github.ref_type == 'tag' && needs.release-candidate.outputs.should_release == 'true')) }}
     permissions:
       contents: read
     uses: ./.github/workflows/ci-archlinux.yml
@@ -260,7 +271,7 @@ jobs:
 
   awaiting-signing:
     name: Awaiting manual signing
-    if: needs.release-candidate.outputs.should_release == 'true'
+    if: (github.event_name != 'workflow_dispatch' || inputs.validate_hosted_linux != true) && needs.release-candidate.outputs.should_release == 'true'
     needs:
       - release-candidate
       - build-archlinux
@@ -284,3 +295,18 @@ jobs:
             echo
             echo "Leave \`build_run_id\` empty; it is an optional recovery override. The signing workflow automatically selects the newest valid successful CI tag build for this exact tag and commit, then verifies its retained artifacts before submitting either signing request."
           } >> "${GITHUB_STEP_SUMMARY}"
+
+  validate-hosted-linux:
+    name: Hosted Linux artifact validation
+    if: github.event_name == 'workflow_dispatch' && inputs.validate_hosted_linux == true
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-archlinux.yml
+    with:
+      release_commit: ${{ github.sha }}
+      release_version: 0.0.0-linux-validation
+      use_self_hosted: false
+      validation_only: true
+      build_tests: true
+      artifact_retention_days: 1
+      cache_namespace: ${{ inputs.linux_cache_namespace }}
