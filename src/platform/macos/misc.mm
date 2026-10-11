@@ -364,9 +364,12 @@ namespace platf {
       // Also sent while the lid stays closed, when power or displays change: act on closing only.
       const bool closed = (reinterpret_cast<uintptr_t>(argument) & kClamshellStateBit) != 0;
       const bool just_closed = closed && !lid_watch.closed;
+      const bool just_opened = !closed && lid_watch.closed;
       lid_watch.closed = closed;
       if (just_closed) {
         lid_watch.handler();
+      } else if (just_opened) {
+        BOOST_LOG(info) << "The lid was opened"sv;
       }
     }
   }  // namespace
