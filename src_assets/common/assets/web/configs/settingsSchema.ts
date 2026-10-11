@@ -525,20 +525,6 @@ export const settingsCategories: SettingsCategory[] = [
         ],
       },
       {
-        id: 'everyday_remote_monitor',
-        fields: remoteMonitorFields(),
-      },
-      {
-        id: 'everyday_resolution',
-        fields: [
-          modeRemapping({
-            labelKey: 'ui.settings.fields.dd_mode_remapping.label',
-            descriptionKey: 'ui.settings.fields.dd_mode_remapping.description',
-            simple: true,
-          }),
-        ],
-      },
-      {
         id: 'everyday_smoothness',
         link: '/settings?category=pacing',
         linkLabelKey: 'ui.settings.links.pacing',
