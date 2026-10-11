@@ -1198,7 +1198,7 @@ sunshine_register_component(NAME test_component_dualsense_usbip_gamepad TEST_SOU
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/driver/src/dualsense.cpp"
     INCLUDE_DIRECTORIES ${_dualsense_protocol_test_adapter}
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/include"
-    LINK_LIBRARIES Boost::log Boost::process Boost::format sunshine_test_moonlight_headers Threads::Threads)
+    LINK_LIBRARIES nlohmann_json::nlohmann_json Boost::log Boost::process Boost::format sunshine_test_moonlight_headers Threads::Threads)
 if(TARGET test_component_dualsense_usbip_gamepad)
     set_tests_properties(test_component_dualsense_usbip_gamepad PROPERTIES TIMEOUT 30)
 endif()
