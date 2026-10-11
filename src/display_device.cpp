@@ -5,6 +5,7 @@
 // header include
 #include "display_device.h"
 #include "display_device_policy.h"
+#include "framegen_policy.h"
 
 // lib includes
 #include <boost/algorithm/string.hpp>
@@ -805,6 +806,7 @@ namespace display_device {
     policy::session_t to_policy_session(const rtsp_stream::launch_session_t &session) {
       policy::session_t result {
         .width = session.width, .height = session.height, .fps = session.fps,
+        .stream_fps_millihz = framegen::normalize_refresh_millihz(session.fps),
         .enable_hdr = session.enable_hdr, .prefer_sdr_10bit = session.prefer_sdr_10bit, .force_sdr = session.force_sdr,
         .client_display_mode_override = session.client_display_mode_override,
         // Keep the explicit client mode separate from automatic refresh

@@ -68,11 +68,16 @@ namespace display_device::policy {
       return std::nullopt;
     }
 
+    std::uint32_t streamed_refresh_millihz(const session_t &session) {
+      if (session.stream_fps_millihz > 0) return session.stream_fps_millihz;
+      return session.fps > 0 ? static_cast<std::uint32_t>(session.fps) * 1000u : 0;
+    }
+
     std::uint32_t effective_refresh_millihz(const session_t &session) {
       if (session.framegen_refresh_millihz && *session.framegen_refresh_millihz > 0) return *session.framegen_refresh_millihz;
       if (session.client_display_refresh_millihz > 0) return session.client_display_refresh_millihz;
       if (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) return static_cast<std::uint32_t>(*session.framegen_refresh_rate) * 1000u;
-      return session.fps > 0 ? static_cast<std::uint32_t>(session.fps) * 1000u : 0;
+      return streamed_refresh_millihz(session);
     }
 
     bool parse_resolution_option(const video_config_t &video, const session_t &session, configuration_t &out) {
@@ -104,7 +109,7 @@ namespace display_device::policy {
       if (session.client_display_mode_override) {
         const auto value = session.client_display_refresh_millihz > 0 ?
                              session.client_display_refresh_millihz :
-                           session.fps > 0 ? static_cast<std::uint32_t>(session.fps) * 1000u : 0u;
+                             streamed_refresh_millihz(session);
         if (!value) return false;
         out.m_refresh_rate = rational_t {value, 1000};
         return true;
@@ -153,7 +158,7 @@ namespace display_device::policy {
         // Select the rule using streamed FPS, before automatic display refresh
         // promotion. A 60 FPS rule must still match a 240/1000 Hz session.
         if ((request_res && request_res != out.m_resolution) ||
-            (request_fps && (session.fps < 0 || *request_fps != rational_t {static_cast<unsigned int>(session.fps), 1}))) continue;
+            (request_fps && (session.fps < 0 || *request_fps != rational_t {streamed_refresh_millihz(session), 1000}))) continue;
         if (final_res) out.m_resolution = final_res;
         if (final_fps) out.m_refresh_rate = final_fps;
         if (refresh_override) *refresh_override = final_fps.has_value();
