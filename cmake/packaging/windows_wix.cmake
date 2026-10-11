@@ -186,7 +186,8 @@ if(PROJECT_VERSION_FULL MATCHES "-([A-Za-z]+)(\\.([0-9]+))?")
     math(EXPR _WIX_PRERELEASE_ORDINAL "60 + ${_pre_num}")
   elseif(_pre_tag STREQUAL "stable")
     # Stable respins remain in the stable channel. Their sortable ProductCodes
-    # distinguish stable.N packages that share this MSI ProductVersion.
+    # distinguish packages in setup UI only; the unbounded Upgrade table
+    # authored by AllowDowngrades enables transactional equal-version replacement.
     set(_WIX_PRERELEASE_ORDINAL 99)
   else()
     # Unknown prerelease tag: rank below stable but above rc.

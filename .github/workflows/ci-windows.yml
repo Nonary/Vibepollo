@@ -388,6 +388,11 @@ jobs:
         shell: pwsh
         run: python packaging/windows/bootstrapper/tests/test_daily_versioninfo.py
 
+      - name: Test compiled setup upgrade classification
+        if: inputs.build_tests
+        shell: powershell
+        run: .\packaging\windows\bootstrapper\tests\test_upgrade_classification.ps1
+
       - name: Download verified VHF producer package
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:

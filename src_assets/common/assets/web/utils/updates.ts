@@ -49,7 +49,7 @@ function asset(release: UpdateRelease, name: string): boolean {
 }
 
 export function isDailyTag(tag: string): boolean {
-  return /^daily-\d{4}-\d{2}-\d{2}$/.test(tag);
+  return /^daily-\d{4}-\d{2}-\d{2}(?:\.(?:[1-9][0-9]{0,2}))?$/.test(tag);
 }
 
 export function validNightlyMetadata(
@@ -57,20 +57,24 @@ export function validNightlyMetadata(
   metadata: Record<string, unknown> | undefined,
 ): boolean {
   if (!isDailyTag(tag) || !metadata || typeof metadata !== 'object') return false;
-  const date = tag.slice(6).replaceAll('-', '');
+  const [day, suffix] = tag.slice(6).split('.');
+  const date = day!.replaceAll('-', '');
+  const revision = suffix ? Number(suffix) : 1;
+  if (revision > 999) return false;
+  const versionSuffix = suffix ? `.${revision}` : '';
   const source = metadata['source_commit'];
   const version = metadata['version'];
   return (
     metadata['schema_version'] === 1 &&
     metadata['channel'] === 'nightly' &&
     metadata['tag'] === tag &&
-    metadata['nightly_sequence'] === Number(date) &&
+    metadata['nightly_sequence'] === (suffix ? Number(date) * 1000 + revision : Number(date)) &&
     typeof source === 'string' &&
     /^[0-9a-f]{40}$/.test(source) &&
     typeof version === 'string' &&
     orderedVersion(version) &&
-    /^\d+\.\d+\.\d+-daily\.d\d{8}\+[0-9a-f]{12}$/.test(version) &&
-    version.endsWith(`-daily.d${date}+${source.slice(0, 12)}`)
+    /^\d+\.\d+\.\d+-daily\.d\d{8}(?:\.[0-9]+)?\+[0-9a-f]{12}$/.test(version) &&
+    version.endsWith(`-daily.d${date}${versionSuffix}+${source.slice(0, 12)}`)
   );
 }
 

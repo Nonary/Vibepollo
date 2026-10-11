@@ -70,13 +70,21 @@ class DailyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 daily.validate_migration("Nonary/Vibepollo", target, source, confirmation)
 
-    def test_remote_tag_and_draft_collisions_are_immutable(self):
-        for tag_output, releases in (("a refs/tags/daily", [[]]), ("", [[{"tag_name": daily.identity(SHA, dt.datetime.now(dt.timezone.utc).date(), "2.0.0")["tag"], "draft": True}]])):
-            with tempfile.TemporaryDirectory() as temp:
-                with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA, DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master", DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:master", GITHUB_OUTPUT=str(Path(temp) / "output")):
-                    with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps(releases), "", "2.0.0-beta.4\n2.0.0", tag_output]):
-                        with self.assertRaises(ValueError):
-                            daily.resolve()
+    def test_existing_day_reserves_next_revision_without_overwriting(self):
+        day = dt.datetime.now(dt.timezone.utc).date()
+        prefix = f"daily-{day}"
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "output"
+            with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA, DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master", DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:master", GITHUB_OUTPUT=str(output)):
+                with patch.object(daily, "run", side_effect=["", SHA, "", "[[]]", "", "2.0.0-beta.4\n2.0.0", f"{SHA} refs/tags/{prefix}\n{SHA} refs/tags/{prefix}.2"]):
+                    daily.resolve()
+            self.assertIn(f"tag={prefix}.3", output.read_text())
+            self.assertIn(f"version=2.0.1-daily.d{day:%Y%m%d}.3+", output.read_text())
+
+    def test_revision_identity_is_bound_and_bounded(self):
+        self.assertEqual(daily.identity(SHA, dt.date(2026,10,11), "2.0.1", 2)["version"], "2.0.1-daily.d20261011.2+aaaaaaaaaaaa")
+        for revision in (0, -1, 1000, "2"):
+            with self.assertRaises(ValueError): daily.identity(SHA, dt.date(2026,10,11), "2.0.1", revision)
 
     def test_resolve_fetches_confirmed_remote_commit_and_emits_identity(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -85,7 +93,7 @@ class DailyTests(unittest.TestCase):
                 with patch.object(daily, "run", side_effect=["", SHA, "", "[[]]", "", "2.0.0-beta.4\n2.0.0", ""]) as commands:
                     daily.resolve()
             self.assertIn(f"commit={SHA}", output.read_text())
-            self.assertIn("version=2.0.0-daily", output.read_text())
+            self.assertIn("version=2.0.1-daily", output.read_text())
             self.assertIn("should_build=true", output.read_text())
             self.assertEqual(commands.call_args_list[0].args, ("git", "fetch", "--no-tags", "origin", "refs/heads/master:refs/remotes/origin/daily-source"))
 

@@ -28,15 +28,18 @@ def sequence(repo, tag, version=None, source=None):
         if not match or (version is not None and tag != 'v' + version):
             raise ValueError('Invalid Moonlight nightly identity')
         return int(match[1])
-    match = re.fullmatch(r'daily-(20[0-9]{2})-([0-9]{2})-([0-9]{2})', tag)
+    match = re.fullmatch(r'daily-(20[0-9]{2})-([0-9]{2})-([0-9]{2})(?:\.([1-9][0-9]{0,2}))?', tag)
     if not match:
         raise ValueError('Invalid host nightly tag')
     import datetime
-    datetime.date(*map(int, match.groups()))
-    day = ''.join(match.groups())
-    if version is not None and not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-daily\.d' + day + r'\+' + exact_sha(source)[:12], version):
+    datetime.date(*map(int, match.groups()[:3]))
+    day = ''.join(match.groups()[:3])
+    revision = int(match[4]) if match[4] else 1
+    if revision > 999: raise ValueError('Nightly revision exceeds 999')
+    suffix = r'\.' + str(revision) if match[4] else ''
+    if version is not None and not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-daily\.d' + day + suffix + r'\+' + exact_sha(source)[:12], version):
         raise ValueError('Invalid host nightly version/source identity')
-    return int(day)
+    return int(day) * 1000 + revision if match[4] else int(day)
 
 
 def previous_release(repo, releases, metadata_reader, tag_resolver):

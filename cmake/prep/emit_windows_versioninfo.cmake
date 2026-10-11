@@ -308,6 +308,10 @@ else()
 
     if("${PROJECT_VERSION_FULL}" MATCHES "-daily\\.")
         _wv_daily_release_anchor("${_merged_tag_lines}" "${_major}" "${_minor}" "${_patch}" _anchor_time)
+        if(NOT "${_anchor_time}" MATCHES "^[0-9]+$" AND _patch GREATER 0)
+            math(EXPR _previous_patch "${_patch} - 1")
+            _wv_daily_release_anchor("${_merged_tag_lines}" "${_major}" "${_minor}" "${_previous_patch}" _anchor_time)
+        endif()
         if(NOT "${_anchor_time}" MATCHES "^[0-9]+$")
             message(FATAL_ERROR
                 "emit_windows_versioninfo: daily ${PROJECT_VERSION_FULL} requires a reachable "

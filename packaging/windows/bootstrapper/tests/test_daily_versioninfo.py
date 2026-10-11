@@ -61,8 +61,14 @@ class DailyVersionTests(unittest.TestCase):
             self.assertIn(f'anchor={self.anchor}', result.stdout)
             self.assertEqual(int(re.search(r'RC_VERSION_REVISION (\d+)', output.read_text())[1]), expected)
 
+    def test_post_stable_patch_uses_previous_release_anchor(self):
+        result, output = self.emit('nextpatch', 601, '2.0.1-daily.d20261011.2+fixture', patch=1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f'anchor={self.anchor}', result.stdout)
+        self.assertIn('RC_VERSION_BUILD 190', output.read_text())
+
     def test_missing_matching_stable_anchor_fails_closed(self):
-        result, _ = self.emit('missing', 601, '2.0.1-daily.d20261011+fixture', patch=1)
+        result, _ = self.emit('missing', 601, '2.0.2-daily.d20261011+fixture', patch=2)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('requires a reachable', ' '.join(result.stderr.split()))
 

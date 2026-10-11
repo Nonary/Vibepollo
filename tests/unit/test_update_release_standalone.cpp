@@ -57,6 +57,27 @@ int main() {
   assert(select(json::array({release("2.0.0-rc.1",true)}),"2.0.0-daily.d20261011+aaaaaaaaaaaa",true).is_null());
   days.push_back(release("2.0.0"));
   assert(select(days,"2.0.0-daily.d20261010+aaaaaaaaaaaa",true)["tag_name"]=="2.0.0");
+  // Actual published identities reproduce the old same-core downgrade.
+  assert(release_selection::compare_notification_versions("2.0.0-daily.d20261011+aaa39188cc78", "2.0.0") < 0);
+  assert(release_selection::compare_notification_versions("2.0.0-daily.d20261011+0d62c962e081", "2.0.0") < 0);
+  auto revision=daily("11", "2.0.1");
+  revision["tag_name"]="daily-2026-10-11.2";
+  revision["nightly_metadata"]["tag"]=revision["tag_name"];
+  revision["nightly_metadata"]["version"]="2.0.1-daily.d20261011.2+aaaaaaaaaaaa";
+  revision["nightly_metadata"]["nightly_sequence"]=20261011002LL;
+  auto qualified=json::array({revision});
+  assert(select(qualified,"2.0.0",true)["tag_name"]==revision["tag_name"]);
+  assert(select(qualified,"2.0.0-daily.d20261011+aaa39188cc78",true)["tag_name"]==revision["tag_name"]);
+  assert(select(qualified,"2.0.1-daily.d20261011+bbbbbbbbbbbb",true)["tag_name"]==revision["tag_name"]);
+  assert(select(qualified,"2.0.1-daily.d20261011.2+aaaaaaaaaaaa",true).is_null());
+  assert(select(qualified,"2.0.1-daily.d20261012+bbbbbbbbbbbb",true).is_null());
+  assert(select(qualified,"2.0.0",false).is_null());
+  assert(select(qualified,"2.0.1",true).is_null());
+  qualified.push_back(release("2.0.1"));
+  assert(select(qualified,"2.0.1-daily.d20261011.2+aaaaaaaaaaaa",true)["tag_name"]=="2.0.1");
+  auto invalid_revision=revision;
+  invalid_revision["nightly_metadata"]["nightly_sequence"]=20261011;
+  assert(select(json::array({invalid_revision}),"2.0.0",true).is_null());
   auto published=release("2.0.0");
 #ifdef _WIN32
   published["assets"][0]["name"]="VibepolloSetup-v2.0.0.exe";

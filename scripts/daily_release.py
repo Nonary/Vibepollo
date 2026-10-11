@@ -11,7 +11,7 @@ import subprocess
 import shutil
 
 
-def identity(commit, day, base):
+def identity(commit, day, base, revision=None):
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Expected an exact source commit SHA")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", base):
@@ -21,10 +21,13 @@ def identity(commit, day, base):
         raise ValueError("Source version base exceeds MSI limits or is zero")
     if not 2000 <= day.year <= 2099:
         raise ValueError("Daily version year must fit the installer version scheme")
+    if revision is not None and (not isinstance(revision, int) or not 1 <= revision <= 999):
+        raise ValueError("Nightly revision must be in 1..999")
+    suffix = "" if revision is None else f".{revision}"
     return {
         "commit": commit,
-        "tag": f"daily-{day.isoformat()}",
-        "version": f"{base}-daily.d{day:%Y%m%d}+{commit[:12]}",
+        "tag": f"daily-{day.isoformat()}{suffix}",
+        "version": f"{base}-daily.d{day:%Y%m%d}{suffix}+{commit[:12]}",
     }
 
 
@@ -102,14 +105,22 @@ def resolve():
     # with a different workflow tree and then discover that during publication.
     run("git", "diff", "--exit-code", os.environ["GITHUB_SHA"], commit, "--", ".github/workflows")
     tags = run("git", "tag", "--merged", commit, "--sort=-version:refname", "--list", "[0-9]*.[0-9]*.[0-9]*").splitlines()
-    source_tags = [tag for tag in tags if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?", tag)]
-    if not source_tags:
-        raise ValueError("Source has no merged v-less version tag; choose its release version scheme before activation")
-    base = re.match(r"[0-9]+\.[0-9]+\.[0-9]+", source_tags[0])[0]
-    info = identity(commit, dt.datetime.now(dt.timezone.utc).date(), base)
-    existing = run("git", "ls-remote", "--tags", "origin", f"refs/tags/{info['tag']}")
-    if existing or any(r["tag_name"] == info["tag"] for page in releases for r in page):
-        raise ValueError("Today's daily identity already exists; never overwrite or move it")
+    stable_tags = [tag for tag in tags if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-stable\.[0-9]+)?", tag)]
+    if not stable_tags:
+        raise ValueError("Source has no merged stable release anchor")
+    stable = max((tuple(map(int, re.match(r"[0-9]+\.[0-9]+\.[0-9]+", tag)[0].split("."))) for tag in stable_tags))
+    major, minor, patch = stable
+    # A nightly is development AFTER the released patch and BEFORE its successor.
+    # Do not change SemVer precedence to place an old nightly above its final stable.
+    base = f"{major}.{minor}.{patch + 1}"
+    day = dt.datetime.now(dt.timezone.utc).date()
+    prefix = f"daily-{day.isoformat()}"
+    reserved = run("git", "ls-remote", "--tags", "origin", f"refs/tags/{prefix}*")
+    names = [line.split()[-1].removeprefix("refs/tags/") for line in reserved.splitlines()]
+    names += [r["tag_name"] for page in releases for r in page]
+    revisions = [1 if name == prefix else int(name[len(prefix)+1:]) for name in names
+                 if re.fullmatch(re.escape(prefix) + r"(?:\.[1-9][0-9]{0,2})?", name)]
+    info = identity(commit, day, base, max(revisions, default=0) + 1)
     info["should_build"] = "true"
     emit_outputs(info)
 
@@ -120,7 +131,8 @@ def verify_assets(root, product, commit, tag, version):
     actual = {p.name for p in root.iterdir()}
     if actual != expected or any(not p.is_file() or p.is_symlink() or p.stat().st_size == 0 for p in root.iterdir()):
         raise ValueError(f"Expected exactly the finalized nonempty assets {sorted(expected)}; got {sorted(actual)}")
-    info = identity(commit, dt.date.fromisoformat(tag.removeprefix("daily-")), version.split("-")[0])
+    info = identity(commit, dt.date.fromisoformat(tag.removeprefix("daily-").split(".")[0]), version.split("-")[0],
+                    int(tag.split(".")[1]) if "." in tag else None)
     if info["tag"] != tag or info["version"] != version:
         raise ValueError("Release tag/version/source identity is incoherent")
     provenance = json.loads((root / "release-provenance.json").read_text(encoding="utf-8-sig"))

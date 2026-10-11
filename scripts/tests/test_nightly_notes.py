@@ -15,6 +15,14 @@ def release(tag='daily-2026-10-10', **kwargs):
 
 
 class NightlyNotesTests(unittest.TestCase):
+    def test_revision_sequence_is_monotonic_across_dates_and_bound_to_version(self):
+        first = n.sequence(REPO, 'daily-2026-10-11.2', f'2.0.1-daily.d20261011.2+{A[:12]}', A)
+        next_day = n.sequence(REPO, 'daily-2026-10-12.1', f'2.0.1-daily.d20261012.1+{A[:12]}', A)
+        self.assertGreater(next_day, first)
+        self.assertGreater(first, n.sequence(REPO, 'daily-2026-10-11'))
+        for tag, version in [('daily-2026-10-11.2', f'2.0.1-daily.d20261011.3+{A[:12]}'), ('daily-2026-10-11.1000', f'2.0.1-daily.d20261011.1000+{A[:12]}')]:
+            with self.assertRaises(ValueError): n.sequence(REPO, tag, version, A)
+
     def test_user_summary_and_collapsible_real_commit_log(self):
         notes, data = self.notes({'tag': 'daily-2026-10-10', 'source_commit': A}, [(B, 'fix: streaming')])
         self.assertTrue(notes.startswith('This is a nightly release of Vibeshine'))

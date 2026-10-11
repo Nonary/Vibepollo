@@ -18,7 +18,7 @@ namespace release_selection {
     return true;
   }
   inline bool daily_tag(const std::string &tag) {
-    static const std::regex pattern(R"(^daily-[0-9]{4}-[0-9]{2}-[0-9]{2}$)");
+    static const std::regex pattern(R"(^daily-[0-9]{4}-[0-9]{2}-[0-9]{2}(\.([1-9][0-9]{0,2}))?$)");
     return std::regex_match(tag, pattern);
   }
   inline bool asset(const json &release, const std::string &name) {
@@ -73,14 +73,17 @@ namespace release_selection {
   inline bool valid_metadata(const std::string &tag, const json &metadata) {
     if (!daily_tag(tag) || !metadata.is_object()) return false;
     const std::string date = tag.substr(6,4) + tag.substr(11,2) + tag.substr(14,2);
+    const int revision = tag.size() > 16 ? std::stoi(tag.substr(17)) : 1;
+    if (revision > 999) return false;
+    const long long sequence = tag.size() == 16 ? std::stoll(date) : std::stoll(date) * 1000 + revision;
     static const std::regex sha(R"(^[0-9a-f]{40}$)");
     if (metadata.value("schema_version", 0) != 1 || metadata.value("channel", "") != "nightly" ||
         metadata.value("tag", "") != tag || !metadata.contains("nightly_sequence") || !metadata["nightly_sequence"].is_number_integer() ||
-        metadata["nightly_sequence"].get<int>() != std::stoi(date) || !metadata.contains("source_commit") || !metadata["source_commit"].is_string()) return false;
+        metadata["nightly_sequence"].get<long long>() != sequence || !metadata.contains("source_commit") || !metadata["source_commit"].is_string()) return false;
     const auto source = metadata["source_commit"].get<std::string>();
     const auto version = metadata.value("version", "");
     if (!std::regex_match(source, sha) || !ordered_version(version)) return false;
-    const auto suffix = "-daily.d" + date + "+" + source.substr(0,12);
+    const auto suffix = "-daily.d" + date + (tag.size() == 16 ? "" : "." + std::to_string(revision)) + "+" + source.substr(0,12);
     return version.ends_with(suffix) && version.substr(0, version.size() - suffix.size()).find_first_of("-+") == std::string::npos;
   }
   inline std::string identity(const json &release) {
