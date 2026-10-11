@@ -13,6 +13,18 @@
 
 namespace pyrowave::probe {
 constexpr int duration_ms = 2000;
+
+namespace detail {
+// Timers may return before their requested wakeup. Keep the original absolute
+// deadline so an early return cannot shorten the measured probe window.
+template<class WaitUntil, class Now>
+inline void wait_to_deadline(std::chrono::steady_clock::time_point deadline,
+                             const WaitUntil &wait_until, const Now &now) {
+  while (now() < deadline) {
+    wait_until(deadline);
+  }
+}
+} // namespace detail
 struct result_t {
   std::uint32_t expected = 0;
   std::uint32_t sent = 0;
@@ -151,7 +163,8 @@ inline result_t send(const boost::asio::ip::address &local,
       if (overloaded()) break;
     }
   }
-  wait_until(start + milliseconds(duration_ms));
+  detail::wait_to_deadline(start + milliseconds(duration_ms), wait_until,
+                           [] { return steady_clock::now(); });
   result.elapsed_ms = duration<double, std::milli>(steady_clock::now() - start).count();
   return result;
 }

@@ -3,6 +3,47 @@
 #include <future>
 #include <cstring>
 
+TEST(PyroWaveUdpProbe, EarlyReturnsKeepTheOriginalDeadline) {
+  using namespace std::chrono;
+  const auto start = steady_clock::time_point(milliseconds(100));
+  const auto deadline = start + milliseconds(pyrowave::probe::duration_ms);
+  auto now = start;
+  unsigned waits = 0;
+  pyrowave::probe::detail::wait_to_deadline(deadline, [&](auto due) {
+    EXPECT_EQ(due, deadline);
+    ++waits;
+    if (waits == 1) now = due - microseconds(500);
+    else if (waits == 2) now = due - microseconds(100);
+    else now = due;
+  }, [&] { return now; });
+  EXPECT_EQ(waits, 3u);
+  EXPECT_EQ(now - start, milliseconds(2000));
+}
+
+TEST(PyroWaveUdpProbe, ReachedDeadlineDoesNotWaitAgain) {
+  using namespace std::chrono;
+  const auto deadline = steady_clock::time_point(milliseconds(2000));
+  for (const auto now : {deadline, deadline + milliseconds(101)}) {
+    unsigned waits = 0;
+    pyrowave::probe::detail::wait_to_deadline(deadline,
+      [&](auto) { ++waits; }, [&] { return now; });
+    EXPECT_EQ(waits, 0u);
+  }
+}
+
+TEST(PyroWaveUdpProbe, DeadlineWaitPreservesWaiterExceptions) {
+  using namespace std::chrono;
+  const auto deadline = steady_clock::time_point(milliseconds(2000));
+  unsigned waits = 0;
+  EXPECT_THROW(pyrowave::probe::detail::wait_to_deadline(deadline,
+    [&](auto due) {
+      EXPECT_EQ(due, deadline);
+      ++waits;
+      throw std::runtime_error("cancelled waiter");
+    }, [&] { return deadline - milliseconds(1); }), std::runtime_error);
+  EXPECT_EQ(waits, 1u);
+}
+
 static void handshakeProbe(const char* address) {
   using namespace boost::asio;
   using namespace std::chrono;
