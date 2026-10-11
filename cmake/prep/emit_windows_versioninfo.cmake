@@ -12,6 +12,8 @@
 # that encoded version.  Every build uses current UTC time so later rebuilds of
 # the same release replace older files.  A build-dir cache detects clock
 # rollback without advancing repeated generator passes beyond wall-clock time.
+# Daily builds use the reachable stable tag for their matching major/minor/patch
+# as the shared anchor across source commits and dates; a missing tag is an error.
 #
 # For oversized/date-style patch values, the legacy split fallback is preserved:
 #   major.minor.(patch / 100).(patch % 100)
@@ -174,6 +176,22 @@ function(_wv_scan_tag_lines lines major minor encoded_build anchor_var exact_var
     set(${exact_tag_var} "${_exact_tag}" PARENT_SCOPE)
 endfunction()
 
+# A daily version shares its resource-version series across commits and dates.
+# Its stable core release, rather than HEAD, supplies the fixed clock anchor.
+function(_wv_daily_release_anchor lines major minor patch out_var)
+    set(_anchor "")
+    foreach(_line IN LISTS lines)
+        if(NOT "${_line}" MATCHES "^v?${major}\\.${minor}\\.${patch}\\|([0-9]+)$")
+            continue()
+        endif()
+        set(_time "${CMAKE_MATCH_1}")
+        if("${_anchor}" STREQUAL "" OR _time LESS _anchor)
+            set(_anchor "${_time}")
+        endif()
+    endforeach()
+    set(${out_var} "${_anchor}" PARENT_SCOPE)
+endfunction()
+
 function(_wv_read_previous_from_cache cache key out_var)
     set(_previous "")
     if(EXISTS "${cache}")
@@ -285,6 +303,15 @@ else()
         if(NOT _head_tags_error AND NOT "${_head_tags_raw}" STREQUAL "")
             string(REPLACE "\n" ";" _head_tag_lines "${_head_tags_raw}")
             _wv_scan_tag_lines("${_head_tag_lines}" "${_major}" "${_minor}" "${_rc_build}" _unused_anchor_time _exact_tag_time _exact_tag)
+        endif()
+    endif()
+
+    if("${PROJECT_VERSION_FULL}" MATCHES "-daily\\.")
+        _wv_daily_release_anchor("${_merged_tag_lines}" "${_major}" "${_minor}" "${_patch}" _anchor_time)
+        if(NOT "${_anchor_time}" MATCHES "^[0-9]+$")
+            message(FATAL_ERROR
+                "emit_windows_versioninfo: daily ${PROJECT_VERSION_FULL} requires a reachable "
+                "${_major}.${_minor}.${_patch} stable tag; refusing a HEAD-relative revision that can downgrade installed files.")
         endif()
     endif()
 

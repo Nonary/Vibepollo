@@ -382,6 +382,11 @@ jobs:
         shell: pwsh
         run: cmake -P .\packaging\windows\wix\tests\test_sortable_product_guid_contract.cmake
 
+      - name: Test daily resource version ordering
+        if: inputs.build_tests
+        shell: pwsh
+        run: python packaging/windows/bootstrapper/tests/test_daily_versioninfo.py
+
       - name: Download verified VHF producer package
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
