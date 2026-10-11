@@ -267,9 +267,12 @@ HDR requests require an HDR-capable fallback; they do not silently become SDR.
   and reports incomplete restoration. Local DRM/X11 library calls still depend
   on the display driver or server remaining responsive.
   A failed restore retains its pre-stream snapshot and reports failure; it does
-  not discard that baseline or report successful cleanup. This snapshot remains
-  process-local, so this recovery does not provide Windows-style crash/logon
-  persistence.
+  not discard that baseline or report successful cleanup. The service-owned
+  auxiliary state persists the baseline before hotplug, bound to the selected
+  session UID and role. Restart recovery validates that owner and restores armed
+  intent through the same capture-verified handoff; idle records do not override
+  the user's current layout. Without usable saved intent or an enabled physical
+  guard, recovery preserves the private scanout until a physical output is enabled.
   A reconnect cancels stale restoration before display preparation. Failed
   preparation re-arms guarded cleanup, including failures before the caller's
   stream-start rollback guard exists, while respecting paused-session retention
