@@ -149,9 +149,6 @@ test('Everyday keeps impactful stream choices together and detailed tuning in ca
   const groups = everyday.groups.filter((group) => matchesPlatform(group, 'linux'));
   assert.deepEqual(
     groups.map((group) => group.id),
-<<<<<<< HEAD
-    ['everyday_display', 'everyday_appearance', 'everyday_remote_monitor', 'everyday_resolution', 'everyday_audio', 'everyday_input'],
-=======
     [
       'everyday_display',
       'everyday_smoothness',
@@ -171,7 +168,6 @@ test('Everyday keeps impactful stream choices together and detailed tuning in ca
   );
   const keys = groups.flatMap((group) =>
     group.fields.filter((field) => matchesPlatform(field, 'linux')).map((field) => field.key),
->>>>>>> 67c17bfdd (fix(ui): restore a focused Everyday settings workflow)
   );
   for (const key of [
     'virtual_display_mode',
