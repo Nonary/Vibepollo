@@ -17,6 +17,80 @@ $script:driverProbeTimedOut = $false
 $driverProbeTimeoutSeconds = 15
 $driverStepTimeoutSeconds = 120
 
+# DRIVER_INSTALL_SAFETY_BEGIN
+# Kept inline so pinned producer packages do not need a new runtime file.
+function ConvertTo-DriverComponentVersion {
+    param([string]$Value)
+    if ($Value -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw "Unknown driver component version: '$Value'. Driver unchanged." }
+    foreach ($part in $Value.Split('.')) {
+        if ([uint64]$part -gt 65535) { throw "Invalid driver component version: '$Value'. Driver unchanged." }
+    }
+    return [version]$Value
+}
+
+function Get-InfComponentVersion {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $inVersion = $false
+    $versions = @()
+    foreach ($line in (Get-Content -LiteralPath $Path -ErrorAction Stop)) {
+        $text = ($line -split ';', 2)[0].Trim()
+        if ($text -match '^\[(.+)\]$') { $inVersion = $Matches[1] -ieq 'Version'; continue }
+        if ($inVersion -and $text -match '^DriverVer\s*=\s*[^,]+,\s*(\S+)\s*$') {
+            $versions += ConvertTo-DriverComponentVersion $Matches[1]
+        }
+    }
+    if ($versions.Count -ne 1) { throw "Missing or ambiguous INF DriverVer: $Path. Driver unchanged." }
+    return $versions[0]
+}
+
+function Test-SafeDriverInstall {
+    param(
+        [Parameter(Mandatory = $true)][string]$InfPath,
+        [Parameter(Mandatory = $true)][string]$CatalogPath,
+        [Parameter(Mandatory = $true)][string]$HardwareId,
+        [string]$WarningMarker = 'VIRTUAL_DISPLAY_DRIVER_WARNING',
+        [bool]$LocalTestPackage = $false
+    )
+    $target = Get-InfComponentVersion $InfPath
+    $infName = [IO.Path]::GetFileName($InfPath)
+    # Both queries must succeed. An empty successful query means missing;
+    # errors, missing active versions, and unreadable store INFs mean unknown.
+    $packages = @(Get-WindowsDriver -Online -All -ErrorAction Stop | Where-Object {
+        [IO.Path]::GetFileName([string]$_.OriginalFileName) -ieq $infName
+    })
+    $devices = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
+        ([string]$_.DeviceID).StartsWith($HardwareId, [StringComparison]::OrdinalIgnoreCase) -or
+        ([string]$_.HardwareID).Equals($HardwareId, [StringComparison]::OrdinalIgnoreCase)
+    })
+    $installed = @()
+    foreach ($device in $devices) {
+        # CIM reports the active INF's numeric DriverVersion (not DriverDate).
+        $installed += ConvertTo-DriverComponentVersion ([string]$device.DriverVersion)
+    }
+    foreach ($package in $packages) {
+        $path = [string]$package.OriginalFileName
+        if (-not [IO.Path]::IsPathRooted($path)) {
+            if ([string]$package.Driver -notmatch '^oem\d+\.inf$') {
+                throw 'Unknown published INF identity. Driver unchanged.'
+            }
+            $path = Join-Path (Join-Path $env:windir 'INF') ([string]$package.Driver)
+        }
+        $installed += Get-InfComponentVersion $path
+    }
+    if (@($installed | Where-Object { $_ -ge $target }).Count -gt 0) {
+        Write-Host "Driver component $target skipped: an equal or newer active/Driver Store component exists; installed driver retained."
+        return $false
+    }
+    $signature = Get-AuthenticodeSignature -LiteralPath $CatalogPath -ErrorAction Stop
+    $signer = $signature.SignerCertificate
+    if ($LocalTestPackage -or $null -eq $signer -or $signature.Status -ne 'Valid' -or
+        [string]::Equals([string]$signer.Subject, [string]$signer.Issuer, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$WarningMarker`: Driver component $target is missing or newer, but its catalog is unsigned, self-signed, or untrusted. Installed driver retained. Manual security review is required; self-signed drivers can require added certificate trust or weakened boot/signing policy. This installer will not add test certificates, change Secure Boot, or enable test signing."
+    }
+    return $true
+}
+# DRIVER_INSTALL_SAFETY_END
+
 function Resolve-SystemToolPath {
     param([Parameter(Mandatory = $true)][string]$ToolName)
 
@@ -555,6 +629,13 @@ if ($Uninstall) {
     exit 0
 }
 
+try {
+    if (-not (Test-SafeDriverInstall -InfPath $infPath -CatalogPath $catPath -HardwareId $hardwareId)) { exit 0 }
+} catch {
+    Write-Warning "[SudoVDA] VIRTUAL_DISPLAY_DRIVER_WARNING: $($_.Exception.Message)"
+    throw
+}
+
 Assert-RequiredInstallArtifacts
 Assert-CertificateMatchesCatalog
 
@@ -595,8 +676,9 @@ if ($installedInfo -and $installedVersion -and $targetVersion) {
     Write-Host "[SudoVDA] Upgrading driver from version $installedVersion to $targetVersion."
 }
 
-Install-Certificate -StoreName 'Root'
-Install-Certificate -StoreName 'TrustedPublisher'
+
+# Let Windows validate INF/DLL catalog membership before removing any existing node.
+Invoke-DriverStep -FilePath $pnputil -ArgumentList @('/add-driver', $infPath) -Description 'Validate and stage SudoVDA catalog members'
 
 Write-Host '[SudoVDA] Removing any existing SudoVDA driver.'
 Invoke-DriverStep -FilePath $nefConc -ArgumentList @('--remove-device-node', '--hardware-id', $hardwareId, '--class-guid', $classGuid) -Description 'Remove SudoVDA device node'

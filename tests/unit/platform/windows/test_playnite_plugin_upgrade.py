@@ -29,9 +29,17 @@ with tempfile.TemporaryDirectory(prefix="playnite-upgrade-") as temporary:
         ("explicit", f'set(SUNSHINE_DOTNET_EXECUTABLE "{dotnet.as_posix()}" CACHE FILEPATH "SDK")\n'),
     ]:
         script = directory / (case + ".cmake")
-        script.write_text(prefix + discovery + f'\nif(NOT SUNSHINE_DOTNET_EXECUTABLE STREQUAL "{dotnet.as_posix()}")\nmessage(FATAL_ERROR "SDK discovery failed")\nendif()\n')
-        subprocess.run([cmake, "-P", str(script)], check=True,
-                       env=dict(os.environ, PATH=str(sdk), DOTNET_ROOT="", ProgramFiles=""))
+        # Clear discovery hints in CMake too: Windows child-process environments
+        # may retain the well-known ProgramFiles value despite an empty override.
+        fixture_env = 'set(ENV{DOTNET_ROOT} "")\nset(ENV{ProgramFiles} "")\n'
+        script.write_text(fixture_env + prefix + discovery + f'\nif(NOT SUNSHINE_DOTNET_EXECUTABLE STREQUAL "{dotnet.as_posix()}")\nmessage(FATAL_ERROR "SDK discovery failed: expected [{dotnet.as_posix()}], found [${{SUNSHINE_DOTNET_EXECUTABLE}}]")\nendif()\n')
+        # Windows environment names are case-insensitive, but a plain dict can
+        # contain both PROGRAMFILES and ProgramFiles. Remove inherited spellings
+        # before overriding hints so an installed SDK cannot mask the PATH case.
+        discovery_env = {key: value for key, value in os.environ.items()
+                         if key.casefold() not in {"path", "dotnet_root", "programfiles"}}
+        discovery_env.update(PATH=str(sdk), DOTNET_ROOT="", ProgramFiles="")
+        subprocess.run([cmake, "-P", str(script)], check=True, env=discovery_env)
         print("PASS: SDK discovery", case)
 
     # Compile the production response calculation with a minimal JSON boolean

@@ -70,14 +70,26 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
     def test_package_compilers_have_bounded_parallelism(self) -> None:
         for workflow_name in ('ci-windows.yml', 'ci-archlinux.yml'):
             workflow = load_workflow(workflow_name)
-            build = next(job for job in workflow['jobs'].values()
-                         if 'CMAKE_BUILD_PARALLEL_LEVEL' in job.get('env', {}))
-            self.assertEqual(build['env']['CMAKE_BUILD_PARALLEL_LEVEL'], '6')
+            if workflow_name == 'ci-archlinux.yml':
+                build = workflow['jobs']['build_archlinux']
+                self.assertNotIn('CMAKE_BUILD_PARALLEL_LEVEL', build.get('env', {}))
+                self.assertNotIn('--cpus', build['container'].get('options', ''))
+                self.assertNotIn('--memory', build['container'].get('options', ''))
+            else:
+                build = next(job for job in workflow['jobs'].values()
+                             if 'CMAKE_BUILD_PARALLEL_LEVEL' in job.get('env', {}))
+                self.assertEqual(build['env']['CMAKE_BUILD_PARALLEL_LEVEL'], '6')
             scripts = '\n'.join(step.get('run', '') for step in build['steps'])
             self.assertNotIn('$(nproc)', scripts)
             if workflow_name == 'ci-archlinux.yml':
+                detector = next(step for step in build['steps'] if step.get('name') == 'Detect actual build budget')
+                self.assertIn('python3 scripts/linux-build-budget.py', detector['run'])
+                self.assertIn('test_linux_build_budget.py', detector['run'])
+                self.assertIn('LTOFLAGS="-flto=1"', detector['run'])
                 package = next(step for step in build['steps'] if step.get('name') == 'Build PKGBUILD')
                 self.assertIn('CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL}"', package['run'])
+                linux_script = (ROOT / 'scripts' / 'linux_build.sh').read_text(encoding='utf-8')
+                self.assertIn('ninja -C "build" -j"${num_processors}"', linux_script)
             else:
                 commands = [line for line in scripts.splitlines() if 'cmake --build ' in line]
                 self.assertEqual(len(commands), 2)
@@ -119,9 +131,8 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             "valid_candidates.append((key, tag, notes_file, release_commit))",
             workflow_text,
         )
-        self.assertIn('os.environ.get("GITHUB_REF") == "refs/heads/vibe-test"', workflow_text)
-        self.assertIn("Linux branch candidate:", workflow_text)
-        self.assertIn("release_version=release_version", workflow_text)
+        self.assertNotIn("vibe-test", workflow_text)
+        self.assertNotIn("Linux branch candidate:", workflow_text)
         self.assertIn("should_release=\"false\"", workflow_text)
         self.assertNotIn("def canonical_release_tag", workflow_text)
 
@@ -134,7 +145,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             environment = {
                 "EVENT_NAME": "push",
                 "GITHUB_REF_TYPE": "branch",
-                "GITHUB_REF": "refs/heads/vibe-test",
+                "GITHUB_REF": "refs/heads/master",
                 "GITHUB_REPOSITORY": "Nonary/test",
                 "GITHUB_OUTPUT": str(output),
             }
@@ -162,14 +173,181 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
                 with self.subTest(job=job, event=event, ref_type=ref_type, release=release):
                     expression = jobs[job]["if"].strip().removeprefix("${{").removesuffix("}}")
                     for name, value in (
+                        ("inputs.validate_hosted_linux", False),
                         ("github.event_name", event),
                         ("github.ref_type", ref_type),
                         ("needs.release-candidate.outputs.should_release", release),
                     ):
                         expression = expression.replace(name, repr(value))
-                    expression = expression.replace("||", "or").replace("&&", "and")
+                    expression = expression.replace("!= true", "!= True").replace("||", "or").replace("&&", "and")
                     expression = " ".join(expression.split())
                     self.assertEqual(eval(expression, {"__builtins__": {}}), expected)
+
+    def test_arch_linux_interface_gate_fails_before_full_build(self) -> None:
+        recipe = (ROOT / "packaging/linux/Arch/PKGBUILD").read_text(encoding="utf-8")
+        registrations = (ROOT / "tests/CMakeLists.txt").read_text(encoding="utf-8")
+        component = registrations.split("NAME test_component_linux_routed_link", 1)[1].split("endif()", 1)[0]
+        self.assertIn("LINK_LIBRARIES Boost::asio", component)
+        self.assertIn("ctest --test-dir . --output-on-failure --no-tests=error", recipe)
+        build_function = "build() {" + recipe.split("build() {", 1)[1].split("\ncheck() {", 1)[0]
+        bash = r"C:\Program Files\Git\bin\bash.exe" if os.name == "nt" else "bash"
+        for tests, fail_gate in (("ON", "false"), ("ON", "true"), ("OFF", "false")):
+            with self.subTest(tests=tests, fail_gate=fail_gate), tempfile.TemporaryDirectory() as temporary:
+                stage = Path(temporary)
+                script = r"""set -e
+python3() {
+  [[ "$*" == *"scripts/build-linux-component-tests.py build" ]] || return 1
+  echo interface >> calls
+  [[ "$FAIL_GATE" == false ]]
+}
+cmake() {
+  if [[ "$*" == "--build build" ]]; then
+    echo full >> calls
+  else
+    echo configure >> calls
+  fi
+}
+appstreamcli() { :; }
+appstream-util() { :; }
+desktop-file-validate() { :; }
+_commit=exact-source
+_gcc_env_suffix=-14
+_use_cuda=true
+pkgname=fixture
+srcdir="$PWD"
+""" + build_function + "\nbuild\n"
+                environment = os.environ.copy()
+                environment.update(_build_tests=tests, FAIL_GATE=fail_gate, MAKEFLAGS="-j4", CMAKE_BUILD_PARALLEL_LEVEL="4")
+                result = subprocess.run([bash, "-c", script], cwd=stage, env=environment, capture_output=True, text=True)
+                calls = (stage / "calls").read_text(encoding="utf-8").splitlines()
+                expected = ["configure", "interface"] if fail_gate == "true" else (["configure", "interface", "full"] if tests == "ON" else ["configure", "full"])
+                self.assertEqual(calls, expected, result.stdout + result.stderr)
+                self.assertEqual(result.returncode == 0, fail_gate == "false", result.stdout + result.stderr)
+
+    def test_validation_source_seed_and_partial_caches_remain_scoped(self) -> None:
+        workflow = load_workflow("ci-archlinux.yml")
+        steps = {step["name"]: step for step in workflow["jobs"]["build_archlinux"]["steps"] if "name" in step}
+        build = steps["Build PKGBUILD"]["run"]
+        validation = build.split('if [[ "$VALIDATION_ONLY" == "true" ]]; then', 1)[1].split("\nfi", 1)[0]
+        self.assertIn("seed-linux-package-source.sh", validation)
+        self.assertIn("package_options=(-s --holdver)", validation)
+        self.assertIn("package_options=(-si)", build.split("validation_tree=", 1)[0])
+        self.assertIn('_validation_expected_tree="$validation_tree"', build)
+        guard = steps["Verify failed-validation partial cache eligibility"]["if"]
+        for requirement in ("failure()", "inputs.validation_only", "workflow_dispatch", "github.event.repository.full_name == github.repository", "steps.build.outcome == 'failure'", "steps.toolchain.outputs.abi != ''"):
+            self.assertIn(requirement, guard)
+        for name, output in (("Save checksum-verified CUDA installer", "cuda"), ("Save compiler cache", "compiler")):
+            self.assertIn("success()", steps[name]["if"])
+            self.assertIn("steps.partial-cache.outputs." + output + " == 'true'", steps[name]["if"])
+        cached_paths = "\n".join(steps[name]["with"]["path"] for name in ("Save checksum-verified CUDA installer", "Save compiler cache"))
+        self.assertNotIn("src/build", cached_paths)
+        self.assertNotIn("pkg.tar", cached_paths)
+
+    def test_arch_dependency_setup_honors_installed_pinned_compiler(self) -> None:
+        workflow = load_workflow("ci-archlinux.yml")
+        job = workflow["jobs"]["build_archlinux"]
+        script = next(step["run"] for step in job["steps"] if step["name"] == "Install exact package build dependencies")
+        bash = r"C:\Program Files\Git\bin\bash.exe" if os.name == "nt" else "bash"
+        for scenario in ("ok", "wrong_compiler", "install_failure", "unsatisfied"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                stage = Path(directory)
+                (stage / "pkg").mkdir()
+                (stage / "pkg/PKGBUILD").write_text("depends=('installed>=2' 'missing>=1')\nmakedepends=('gcc14')\n")
+                (stage / "pacman").write_text('''#!/bin/bash
+case "$1" in
+  -Q)
+    version=$GCC14_ARCHIVE_VERSION
+    [[ "$MOCK_SCENARIO" == wrong_compiler ]] && version=wrong
+    echo "$2 $version";;
+  -T)
+    echo "deptest $*" >> operations
+    if [[ ! -f synchronized || "$MOCK_SCENARIO" == unsatisfied ]]; then
+      echo "missing>=1"
+      exit 127
+    fi;;
+  -S)
+    echo "sync $*" >> operations
+    [[ "$*" == "-S --needed --noconfirm missing>=1" ]] || exit 99
+    [[ "$MOCK_SCENARIO" == install_failure ]] && exit 1
+    touch synchronized;;
+  *) exit 98;;
+esac
+''')
+                subprocess.run([bash, "-c", "chmod +x pacman"], cwd=stage, check=True)
+                environment = dict(os.environ, GCC14_ARCHIVE_VERSION=job["env"]["GCC14_ARCHIVE_VERSION"], MOCK_SCENARIO=scenario)
+                result = subprocess.run([bash, "-c", 'export PATH="$PWD:$PATH"; ' + script], cwd=stage, env=environment, capture_output=True, text=True)
+                if scenario == "ok":
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    operations = (stage / "operations").read_text().splitlines()
+                    self.assertEqual(sum(line.startswith("deptest ") for line in operations), 2)
+                    self.assertIn("sync -S --needed --noconfirm missing>=1", operations)
+                    self.assertFalse(any("gcc14" in line for line in operations if line.startswith("sync ")))
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+
+    def test_registered_linux_flag_isolates_exact_source_without_release_selection(self) -> None:
+        workflow = load_workflow("ci.yml")
+        inputs = workflow["on"]["workflow_dispatch"]["inputs"]
+        self.assertEqual(inputs["validate_hosted_linux"]["type"], "boolean")
+        self.assertEqual(inputs["validate_hosted_linux"]["default"], "false")
+        jobs = workflow["jobs"]
+        lane = jobs["validate-hosted-linux"]
+        self.assertNotIn("needs", lane)
+        self.assertNotIn("secrets", lane)
+        self.assertEqual(lane["permissions"], {"contents": "read"})
+        self.assertEqual(lane["with"]["release_commit"], "${{ github.sha }}")
+        self.assertEqual(lane["with"]["release_version"], "1.18.4-linux-validation")
+        self.assertNotEqual(lane["with"]["release_version"].split("-", 1)[0], "0.0.0")
+        self.assertEqual(lane["with"]["use_self_hosted"], "false")
+        self.assertEqual(lane["with"]["validation_only"], "true")
+        self.assertEqual(lane["with"]["build_tests"], "true")
+        self.assertEqual(lane["with"]["artifact_retention_days"], "1")
+        self.assertEqual(lane["with"]["cache_namespace"], "${{ inputs.linux_cache_namespace }}")
+        # A reachable unreleased tag must not make any ordinary job reachable
+        # when the explicit manual validation flag is true.
+        for event in ("workflow_dispatch", "push", "pull_request"):
+            for enabled in (False, True):
+                active = event == "workflow_dispatch" and enabled
+                for name, job in jobs.items():
+                    expression = job["if"].strip().removeprefix("${{").removesuffix("}}")
+                    for token, value in (
+                        ("inputs.validate_hosted_linux", enabled),
+                        ("github.event_name", event),
+                        ("github.ref_type", "tag"),
+                        ("needs.release-candidate.outputs.should_release", "true"),
+                    ):
+                        expression = expression.replace(token, repr(value))
+                    expression = expression.replace("!= true", "!= True").replace("== true", "== True")
+                    expression = " ".join(expression.replace("&&", "and").replace("||", "or").split())
+                    actual = eval(expression, {"__builtins__": {}})
+                    with self.subTest(event=event, enabled=enabled, job=name):
+                        self.assertEqual(actual, active if name == "validate-hosted-linux" else not active)
+
+    def test_hosted_linux_validation_cannot_sign_install_or_publish(self) -> None:
+        wrapper = load_workflow("validate-linux.yml")
+        self.assertEqual(set(wrapper["on"]), {"workflow_dispatch"})
+        job = wrapper["jobs"]["arch"]
+        self.assertEqual(job["with"]["release_commit"], "${{ github.sha }}")
+        self.assertEqual(job["with"]["release_version"], "1.18.4-linux-validation")
+        self.assertNotEqual(job["with"]["release_version"].split("-", 1)[0], "0.0.0")
+        self.assertEqual(job["with"]["use_self_hosted"], "false")
+        self.assertEqual(job["with"]["validation_only"], "true")
+        self.assertEqual(job["with"]["build_tests"], "true")
+        self.assertNotIn("secrets", job)
+        arch = load_workflow("ci-archlinux.yml")
+        build = arch["jobs"]["build_archlinux"]
+        self.assertIn("!inputs.validation_only", build["runs-on"])
+        steps = {step["name"]: step for step in build["steps"]}
+        drm = next(step["run"] for step in build["steps"] if step["name"].startswith("Compile "))
+        guard = drm.index('if [[ "$VALIDATION_ONLY" == "true" ]]')
+        end = drm.index("exit 0", guard)
+        for operation in ("openssl req", "dkms add", "dkms build", "dkms install"):
+            self.assertGreater(drm.index(operation), end)
+        self.assertIn('package_options=(-s --holdver)', steps["Build PKGBUILD"]["run"])
+        self.assertIn('if [[ "$VALIDATION_ONLY" == "true" ]]', steps["Build PKGBUILD"]["run"])
+        recipe = (ROOT / "packaging/linux/Arch/PKGBUILD").read_text()
+        self.assertIn("--no-tests=error", recipe)
+        self.assertIn("sm_61", recipe)
 
     def test_arch_package_is_built_and_carried_into_release(self) -> None:
         ci_workflow = load_workflow("ci.yml")
@@ -192,7 +370,30 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             for step in arch_workflow["jobs"]["build_archlinux"]["steps"]
             if step["name"] == "Checkout"
         )
-        self.assertEqual(checkout["with"]["submodules"], "recursive")
+        self.assertEqual(checkout["with"]["submodules"], "false")
+        drm_checkout = next(
+            step for step in arch_workflow["jobs"]["build_archlinux"]["steps"]
+            if step["name"] == "Checkout packaging driver sources"
+        )
+        self.assertEqual(
+            drm_checkout["run"].splitlines()[0],
+            'git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --depth 1 -- third-party/libvirtualdisplay third-party/libvirtualgamepad',
+        )
+        for required in (
+            "third-party/libvirtualdisplay/linux/vibeshine-drm/Makefile",
+            "third-party/libvirtualgamepad/linux/vibeshine-ds5/Makefile",
+            "third-party/libvirtualgamepad/linux/vibeshine-ds5/dkms.conf.in",
+        ):
+            self.assertIn("test -s " + required, drm_checkout["run"])
+        self.assertNotIn("--recursive", drm_checkout["run"])
+        package_configuration = (ROOT / "cmake/prep/special_package_configuration.cmake").read_text()
+        self.assertIn("libvirtualgamepad Linux DualSense sources are unavailable", package_configuration)
+        self.assertIn("libvirtualdisplay Linux assets are unavailable", package_configuration)
+        self.assertNotIn("--global", drm_checkout["run"])
+        self.assertNotIn("safe.directory=*", drm_checkout["run"])
+        self.assertNotIn('safe.directory="*"', drm_checkout["run"])
+        recipe = (ROOT / "packaging/linux/Arch/PKGBUILD").read_text()
+        self.assertIn("submodule update --recursive --init --depth 1", recipe)
         self.assertEqual(checkout["with"]["ref"], "${{ inputs.release_commit }}")
 
         arch_text = (ROOT / ".github" / "workflows" / "ci-archlinux.yml").read_text(
@@ -207,7 +408,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             'write_drm_version_header "${dkms_source}" "${dkms_ci_version}"',
             arch_text,
         )
-        self.assertIn('if [[ "${BRANCH}" == "vibe-test" ]]', arch_text)
+        self.assertIn('if [[ "${BUILD_VERSION}" == *-* ]]', arch_text)
         self.assertIn('sub_version=".r${COMMIT}"', arch_text)
         self.assertIn("makedepends = nodejs", arch_text)
         self.assertIn("makedepends = npm", arch_text)

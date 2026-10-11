@@ -23,6 +23,11 @@ on:
         required: false
         type: string
         default: ''
+      daily_unsigned:
+        description: Enforce unsigned daily driver safety and execute mandatory tests
+        required: false
+        type: boolean
+        default: false
       build_only:
         required: false
         type: boolean
@@ -263,7 +268,7 @@ jobs:
     needs:
       - fetch_vhf_gamepad_release
     if: inputs.artifact_source_run_id == '' && needs.fetch_vhf_gamepad_release.result == 'success'
-    runs-on: ${{ inputs.use_self_hosted && github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Windows", "X64", "windows-release"]') || fromJSON('["windows-2022"]') }}
+    runs-on: ${{ !inputs.daily_unsigned && inputs.use_self_hosted && github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Windows", "X64", "windows-release"]') || fromJSON('["windows-2022"]') }}
     outputs:
       msi_name: ${{ steps.package-windows-msi.outputs.msi_name }}
       symbol_pack_name: ${{ steps.package-windows-symbols.outputs.symbol_pack_name }}
@@ -301,6 +306,16 @@ jobs:
             toolchain: ucrt-x86_64
     steps:
 
+      - name: Enforce GitHub-hosted daily builds
+        if: inputs.daily_unsigned
+        shell: pwsh
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+            throw 'Daily builds require GitHub-hosted runners.'
+          }
+
       - name: Prepare self-hosted build tools
         if: runner.environment == 'self-hosted'
         shell: pwsh
@@ -323,6 +338,25 @@ jobs:
           ref: ${{ inputs.release_commit }}
           fetch-depth: 1
           submodules: recursive
+
+      - name: Enforce unsigned daily build policy
+        if: inputs.daily_unsigned
+        shell: pwsh
+        env:
+          BUILD_TESTS: ${{ inputs.build_tests }}
+          BUILD_ONLY: ${{ inputs.build_only }}
+          ARTIFACT_SOURCE_RUN_ID: ${{ inputs.artifact_source_run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SIGNPATH_ENABLED -ne 'false' -or $env:BUILD_TESTS -ne 'true' -or $env:BUILD_ONLY -ne 'false' -or $env:ARTIFACT_SOURCE_RUN_ID -ne '') {
+            throw 'Daily builds require fresh packaging, running tests, and no SignPath token.'
+          }
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\packaging\windows\test_driver_install_safety.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Mandatory driver safety tests failed.' }
+          cmake -P .\scripts\tests\test_daily_version_contract.cmake
+          if ($LASTEXITCODE -ne 0) { throw 'Daily application/MSI version contract failed.' }
+          & powershell.exe -NoLogo -NoProfile -File .\scripts\tests\test_daily_gamepad_signing.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Daily gamepad signing contract failed.' }
 
       - name: Test VHF publisher trust policy
         if: inputs.build_tests
@@ -551,6 +585,22 @@ jobs:
           .\scripts\download_truehdr_runtime_release.ps1 @args
           "SUNSHINE_TRUEHDR_RUNTIME_DIR=$env:TRUEHDR_RUNTIME_ROOT" >> $env:GITHUB_ENV
 
+      - name: Locate OpenSSL for artifact-only daily signing
+        if: inputs.daily_unsigned
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          echo "DAILY_OPENSSL_PATH=$(cygpath -w "$(command -v openssl)")" >> "$GITHUB_ENV"
+
+      - name: Self-sign only the daily gamepad catalog and setup tool
+        if: inputs.daily_unsigned
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dailyRoot = Join-Path $env:RUNNER_TEMP 'daily-vhf-signed-package'
+          .\scripts\sign_daily_gamepad.ps1 -SourceRoot $env:VHF_PACKAGE_ROOT -OutRoot $dailyRoot -OpenSslPath $env:DAILY_OPENSSL_PATH
+          "VHF_PACKAGE_ROOT=$dailyRoot" >> $env:GITHUB_ENV
+
       - name: Build Windows
         shell: msys2 {0}
         env:
@@ -560,6 +610,7 @@ jobs:
           BRANCH: ${{ github.head_ref || github.ref_name }}
           COMMIT: ${{ inputs.release_commit }}
           REQUIRE_TRUEHDR_RUNTIME: ${{ inputs.require_truehdr_runtime }}
+          DAILY_UNSIGNED: ${{ inputs.daily_unsigned }}
         run: |
           echo "Using BUILD_VERSION=${BUILD_VERSION}"
 
@@ -590,6 +641,9 @@ jobs:
             -DSUNSHINE_VHF_GAMEPAD_DRIVER_VER=10/04/2026,0.1.0.48
             -DSUNSHINE_VHF_GAMEPAD_PROTOCOL_VERSION=2
           )
+          if [[ "${DAILY_UNSIGNED}" == "true" ]]; then
+            vhf_gamepad_package_arg+=(-DSUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE=ON)
+          fi
           echo "Using verified VHF producer release v0.1.0-beta.7"
           truehdr_runtime_arg=()
           if [[ "${REQUIRE_TRUEHDR_RUNTIME}" == "true" ]]; then
@@ -649,6 +703,13 @@ jobs:
             tests/unit/platform/windows/test_native_amf_review.cpp \
             -o build/native-amf-lifecycle-test.exe
           ./build/native-amf-lifecycle-test.exe
+
+      - name: Execute Windows tests
+        if: inputs.build_tests
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          ctest --test-dir build --output-on-failure --no-tests=error
 
       - name: Install cv2pdb
         if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
@@ -832,6 +893,7 @@ jobs:
         shell: pwsh
         env:
           MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
+          DAILY_UNSIGNED: ${{ inputs.daily_unsigned }}
         run: |
           $ErrorActionPreference = 'Stop'
           $extractRoot = Join-Path $env:RUNNER_TEMP 'unsigned-vhf-msi-extract'
@@ -848,6 +910,7 @@ jobs:
           }
           $packageDir = Join-Path $extractRoot 'Apollo\drivers\vhf-gamepad'
           .\packaging\windows\virtual_gamepad_driver\refresh_driver_package.ps1 `
+            -AllowLocalTestPackage:($env:DAILY_UNSIGNED -eq 'true') `
             -ValidateOnly `
             -PrebuiltPackageDir $env:VHF_PACKAGE_ROOT `
             -PackageDir $packageDir `
@@ -866,6 +929,7 @@ jobs:
             'release-lock.json',
             'tools/VibeshineVhfGamepadDeviceSetup.exe'
           )
+          if ($env:DAILY_UNSIGNED -eq 'true') { $expected = @(($expected + 'driver/VibeshineVhfGamepad.cer') | Sort-Object) }
           $actual = @(Get-ChildItem -LiteralPath $packageDir -Recurse -File | ForEach-Object {
             $_.FullName.Substring($packageDir.Length).TrimStart('\', '/').Replace('\', '/')
           } | Sort-Object)
@@ -883,6 +947,42 @@ jobs:
           retention-days: ${{ inputs.release_artifact_retention_days }}
           archive: false
           overwrite: true
+
+      - name: Verify MSI carries the tested daily driver safeguards
+        if: inputs.daily_unsigned
+        shell: pwsh
+        env:
+          MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
+          DAILY_UNSIGNED: ${{ inputs.daily_unsigned }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'daily-driver-policy-msi'
+          New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
+          $msi = Join-Path $PWD "unsigned-signpath-msi/$($env:MSI_NAME)"
+          $proc = Start-Process msiexec.exe -WindowStyle Hidden -ArgumentList @('/a', "`"$msi`"", '/qn', "TARGETDIR=`"$extractRoot`"") -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "Daily MSI extraction failed: $($proc.ExitCode)" }
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $database = $installer.OpenDatabase($msi, 0)
+          foreach ($property in @('DAILY_UNSIGNED_DRIVER_POLICY', 'ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE')) {
+            $view = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$property'")
+            $view.Execute()
+            $record = $view.Fetch()
+            if ($null -eq $record -or $record.StringData(1) -cne '1') { throw "Daily MSI must enforce $property=1." }
+            $view.Close()
+          }
+          $gamepadRoot = Join-Path $extractRoot 'Apollo/drivers/vhf-gamepad'
+          $manifest = Get-Content (Join-Path $gamepadRoot 'manifest.json') -Raw | ConvertFrom-Json
+          $lock = Get-Content (Join-Path $gamepadRoot 'release-lock.json') -Raw | ConvertFrom-Json
+          $cer = [Security.Cryptography.X509Certificates.X509Certificate2]::new((Join-Path $gamepadRoot 'driver/VibeshineVhfGamepad.cer'))
+          if ($manifest.signing.channel -cne 'self-signed-local-test' -or $lock.channel -cne 'self-signed-local-test' -or $lock.signing_channel -cne $manifest.signing.channel -or $lock.catalog_signer_thumbprint -cne $cer.Thumbprint -or $lock.device_setup_signer_thumbprint -cne $cer.Thumbprint) { throw 'Daily signing channel/public certificate/release lock is inconsistent.' }
+          if (@(Get-ChildItem -LiteralPath $extractRoot -Recurse -File | Where-Object { $_.Extension -in '.pfx', '.pem', '.key' }).Count -ne 0) { throw 'A daily MSI contains private signing material.' }
+          foreach ($driver in @('sunshine', 'sudovda', 'vhf-gamepad')) {
+            $source = Join-Path $PWD "src_assets/windows/drivers/$driver/install.ps1"
+            $packaged = Join-Path $extractRoot "Apollo/drivers/$driver/install.ps1"
+            if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $packaged -Algorithm SHA256).Hash) {
+              throw "Packaged $driver installer is not the policy-tested source script."
+            }
+          }
 
       - name: Upload unsigned MSI for package job
         id: upload-unsigned-msi-for-package
@@ -1343,6 +1443,7 @@ jobs:
           INSTALLER_NAME: ${{ needs.package_windows.outputs.installer_name }}
           MSI_NAME: ${{ needs.release_artifacts.outputs.msi_name }}
           REQUIRE_TRUEHDR_RUNTIME: ${{ inputs.require_truehdr_runtime }}
+          DAILY_UNSIGNED: ${{ inputs.daily_unsigned }}
           SIGNPATH_SIGNING_POLICY_SLUG: ${{ inputs.signpath_signing_policy_slug }}
         run: |
           $ErrorActionPreference = 'Stop'

@@ -1,0 +1,155 @@
+---
+name: Daily Windows prerelease
+permissions: {}
+
+on:
+  schedule:
+    - cron: '32 6 * * *'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish after validation (also requires DAILY_RELEASE_ENABLED)
+        type: boolean
+        default: false
+
+# Both schedule and manual dispatch remain inert until explicitly activated.
+concurrency:
+  group: daily-windows-prerelease
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: >-
+      (github.event_name == 'workflow_dispatch' || vars.DAILY_RELEASE_ENABLED == 'true') &&
+      github.repository == 'Nonary/Vibepollo' &&
+      github.ref_type == 'branch' &&
+      github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.identity.outputs.commit }}
+      tag: ${{ steps.identity.outputs.tag }}
+      version: ${{ steps.identity.outputs.version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Test daily release contracts
+        run: python -m unittest discover -s scripts/tests -p test_daily_release.py
+      - name: Test nightly notes and immutable metadata
+        run: python -m unittest discover -s scripts/tests -p test_nightly_notes.py
+      - name: Resolve explicitly confirmed remote source and immutable identity
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAILY_PRIMARY_BRANCH: ${{ github.event.repository.default_branch }}
+          DAILY_RELEASE_SOURCE_BRANCH: ${{ vars.DAILY_RELEASE_SOURCE_BRANCH }}
+          DAILY_RELEASE_SOURCE_CONFIRMED: ${{ vars.DAILY_RELEASE_SOURCE_CONFIRMED }}
+          DAILY_RELEASE_MIGRATION_CONFIRMED: ${{ vars.DAILY_RELEASE_MIGRATION_CONFIRMED }}
+        run: python scripts/daily_release.py resolve
+
+  build:
+    needs: prepare
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/ci-windows.yml
+    with:
+      release_commit: ${{ needs.prepare.outputs.commit }}
+      release_version: ${{ needs.prepare.outputs.version }}
+      release_tag: ${{ needs.prepare.outputs.tag }}
+      daily_unsigned: true
+      build_only: false
+      build_tests: true
+      use_self_hosted: false
+      require_signpath_signing: false
+      require_truehdr_runtime: true
+      symbol_product_name: Vibepollo
+      symbol_release_prefix: polo
+      publish_symbols: false
+      upload_symbols_artifact: false
+      release_artifact_retention_days: 7
+    # Deliberately no inherit or SignPath token: only the runtime read token.
+    secrets:
+      truehdr_runtime_token: ${{ secrets.TRUEHDR_RUNTIME_TOKEN }}
+
+  publish:
+    needs: [prepare, build]
+    if: >-
+      needs.build.result == 'success' && vars.DAILY_RELEASE_ENABLED == 'true' &&
+      (github.event_name == 'schedule' || inputs.publish == true)
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DAILY_COMMIT: ${{ needs.prepare.outputs.commit }}
+      DAILY_TAG: ${{ needs.prepare.outputs.tag }}
+      DAILY_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Download finalized installer from this run
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: build-Windows
+          path: daily-assets
+      - name: Download tested MSI from this run
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: unsigned-msi-package-Windows
+          path: daily-assets
+      - name: Verify finalized provenance, identity and complete asset set
+        run: python scripts/daily_release.py verify --assets daily-assets --product Vibepollo
+      - name: Prepare transparent prerelease notes
+        run: |
+          set -euo pipefail
+          cat > daily-notes.md <<EOF
+          Automated daily Windows prerelease for $DAILY_VERSION.
+
+          Source: $DAILY_COMMIT
+          Build and mandatory driver policy tests: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          The host MSI and setup executable are unsigned; this daily pipeline does not call SignPath.
+          The daily VHF gamepad catalog and setup tool are self-signed; its public certificate is bundled, and no private key is shipped. Driver installation skips equal/newer installed drivers. A missing or genuinely newer gamepad requires validated package signatures and catalog membership. If its certificate is untrusted, a separate unchecked informed installer consent is required to add the exact displayed certificate to machine-wide Root and TrustedPublisher stores. Trust persists after uninstall and permits other code signed by that identity. Equal/newer installed components bypass all trust and driver changes. The installer does not change test signing or Secure Boot, or reboot. Existing trust entries are preserved; newly added entries are rolled back on failure.
+          Stable releases and the latest release channel are unchanged. SHA256SUMS and daily-manifest.json identify this dated build.
+          EOF
+          git fetch origin --tags
+          python scripts/nightly_notes.py --repo "$GITHUB_REPOSITORY" --tag "$DAILY_TAG" --version "$DAILY_VERSION" --source "$DAILY_COMMIT" --assets daily-assets --notes daily-notes.md
+      - name: Create once, upload all assets, then expose prerelease
+        run: |
+          set -euo pipefail
+          # Never edit a previous daily release or move its tag, including reruns.
+          test -z "$(git ls-remote --tags origin "refs/tags/$DAILY_TAG")"
+          gh release create "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --target "$DAILY_COMMIT" --title "Daily $DAILY_VERSION" --notes-file daily-notes.md --draft --prerelease --latest=false
+          gh release upload "$DAILY_TAG" daily-assets/* --repo "$GITHUB_REPOSITORY"
+          gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name] | sort' > uploaded-assets.json
+          python -c 'import json; from pathlib import Path; assert json.loads(Path("uploaded-assets.json").read_text()) == sorted(p.name for p in Path("daily-assets").iterdir()), "Uploaded release asset set is incomplete"'
+          gh release edit "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease,isDraft --jq 'if .isPrerelease and (.isDraft | not) then "Published prerelease" else error("Incorrect release state") end'
+
+  summary:
+    needs: [prepare, build, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record disabled, failed or published outcome
+        env:
+          ENABLED: ${{ vars.DAILY_RELEASE_ENABLED }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          DAILY_TAG: ${{ needs.prepare.outputs.tag }}
+          DAILY_COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: |
+          {
+            echo '## Daily prerelease outcome'
+            echo "Activation: ${ENABLED:-disabled}"
+            echo "Source: $DAILY_COMMIT; tag: $DAILY_TAG"
+            echo "Prepare: $PREPARE_RESULT; build/tests/package: $BUILD_RESULT; publish: $PUBLISH_RESULT"
+            echo 'Failed uploads retain a draft for inspection; no existing daily identity is replaced. Review failed jobs before any manual recovery.'
+          } >> "$GITHUB_STEP_SUMMARY"
