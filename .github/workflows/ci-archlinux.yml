@@ -38,6 +38,7 @@ jobs:
     name: Archlinux
     env:
       _use_cuda: true
+      GCC14_ARCHIVE_VERSION: 14.3.1+r416+g44d5743651c4-2
       CCACHE_DIR: ${{ github.workspace }}/.linux-cache/ccache
       CCACHE_MAXSIZE: 1G
       CCACHE_COMPILERCHECK: content
@@ -94,7 +95,7 @@ jobs:
           # GCC 14 is no longer in rolling Arch repos. Verify the archive's
           # detached signatures before installing these versioned packages.
           compiler_stage="$(mktemp -d)"
-          gcc14_version='14.3.1+r416+g44d5743651c4-2'
+          gcc14_version="$GCC14_ARCHIVE_VERSION"
           for package in gcc14-libs gcc14; do
             archive="${package}-${gcc14_version}-x86_64.pkg.tar.zst"
             url="https://archive.archlinux.org/packages/g/${package}/${archive}"
@@ -282,8 +283,19 @@ jobs:
           # Source the generated recipe; install build/runtime dependencies only,
           # never the host package or its optional GPU drivers.
           _use_cuda=true CARCH=x86_64 bash -c '
+            set -euo pipefail
             source pkg/PKGBUILD
-            pacman -S --needed --noconfirm "${depends[@]}" "${makedepends[@]}"
+            # GCC14 is verified and installed from signed Arch archives above;
+            # a sync query for its absent rolling-repository name still fails.
+            [[ "$(pacman -Q gcc14)" == "gcc14 ${GCC14_ARCHIVE_VERSION}" ]]
+            [[ "$(pacman -Q gcc14-libs)" == "gcc14-libs ${GCC14_ARCHIVE_VERSION}" ]]
+            mapfile -t missing < <(pacman -T "${depends[@]}" "${makedepends[@]}" || true)
+            if (( ${#missing[@]} )); then
+              pacman -S --needed --noconfirm "${missing[@]}"
+            fi
+            # A final complete dependency check remains mandatory. Unexpected
+            # deptest/install errors cannot turn into a passing ABI fingerprint.
+            pacman -T "${depends[@]}" "${makedepends[@]}"
           '
 
       - name: Fingerprint installed Arch toolchain

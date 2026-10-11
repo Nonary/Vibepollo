@@ -183,6 +183,48 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
                     expression = " ".join(expression.split())
                     self.assertEqual(eval(expression, {"__builtins__": {}}), expected)
 
+    def test_arch_dependency_setup_honors_installed_pinned_compiler(self) -> None:
+        workflow = load_workflow("ci-archlinux.yml")
+        job = workflow["jobs"]["build_archlinux"]
+        script = next(step["run"] for step in job["steps"] if step["name"] == "Install exact package build dependencies")
+        bash = r"C:\Program Files\Git\bin\bash.exe" if os.name == "nt" else "bash"
+        for scenario in ("ok", "wrong_compiler", "install_failure", "unsatisfied"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                stage = Path(directory)
+                (stage / "pkg").mkdir()
+                (stage / "pkg/PKGBUILD").write_text("depends=('installed>=2' 'missing>=1')\nmakedepends=('gcc14')\n")
+                (stage / "pacman").write_text('''#!/bin/bash
+case "$1" in
+  -Q)
+    version=$GCC14_ARCHIVE_VERSION
+    [[ "$MOCK_SCENARIO" == wrong_compiler ]] && version=wrong
+    echo "$2 $version";;
+  -T)
+    echo "deptest $*" >> operations
+    if [[ ! -f synchronized || "$MOCK_SCENARIO" == unsatisfied ]]; then
+      echo "missing>=1"
+      exit 127
+    fi;;
+  -S)
+    echo "sync $*" >> operations
+    [[ "$*" == "-S --needed --noconfirm missing>=1" ]] || exit 99
+    [[ "$MOCK_SCENARIO" == install_failure ]] && exit 1
+    touch synchronized;;
+  *) exit 98;;
+esac
+''')
+                subprocess.run([bash, "-c", "chmod +x pacman"], cwd=stage, check=True)
+                environment = dict(os.environ, GCC14_ARCHIVE_VERSION=job["env"]["GCC14_ARCHIVE_VERSION"], MOCK_SCENARIO=scenario)
+                result = subprocess.run([bash, "-c", 'export PATH="$PWD:$PATH"; ' + script], cwd=stage, env=environment, capture_output=True, text=True)
+                if scenario == "ok":
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    operations = (stage / "operations").read_text().splitlines()
+                    self.assertEqual(sum(line.startswith("deptest ") for line in operations), 2)
+                    self.assertIn("sync -S --needed --noconfirm missing>=1", operations)
+                    self.assertFalse(any("gcc14" in line for line in operations if line.startswith("sync ")))
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+
     def test_registered_linux_flag_isolates_exact_source_without_release_selection(self) -> None:
         workflow = load_workflow("ci.yml")
         inputs = workflow["on"]["workflow_dispatch"]["inputs"]
