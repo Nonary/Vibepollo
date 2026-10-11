@@ -17,7 +17,7 @@ jobs:
     uses: ./.github/workflows/ci-archlinux.yml
     with:
       release_commit: ${{ github.sha }}
-      release_version: 0.0.0-linux-validation
+      release_version: 1.18.4-linux-validation
       use_self_hosted: false
       validation_only: true
       build_tests: true

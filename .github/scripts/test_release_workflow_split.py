@@ -194,6 +194,8 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertNotIn("secrets", lane)
         self.assertEqual(lane["permissions"], {"contents": "read"})
         self.assertEqual(lane["with"]["release_commit"], "${{ github.sha }}")
+        self.assertEqual(lane["with"]["release_version"], "1.18.4-linux-validation")
+        self.assertNotEqual(lane["with"]["release_version"].split("-", 1)[0], "0.0.0")
         self.assertEqual(lane["with"]["use_self_hosted"], "false")
         self.assertEqual(lane["with"]["validation_only"], "true")
         self.assertEqual(lane["with"]["build_tests"], "true")
@@ -224,6 +226,8 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertEqual(set(wrapper["on"]), {"workflow_dispatch"})
         job = wrapper["jobs"]["arch"]
         self.assertEqual(job["with"]["release_commit"], "${{ github.sha }}")
+        self.assertEqual(job["with"]["release_version"], "1.18.4-linux-validation")
+        self.assertNotEqual(job["with"]["release_version"].split("-", 1)[0], "0.0.0")
         self.assertEqual(job["with"]["use_self_hosted"], "false")
         self.assertEqual(job["with"]["validation_only"], "true")
         self.assertEqual(job["with"]["build_tests"], "true")
