@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import shutil
 
 
 def identity(commit, day, base):
@@ -142,13 +143,39 @@ def verify_assets(root, product, commit, tag, version):
     (root / "SHA256SUMS").write_text("".join(f"{digest}  {name}\n" for name, digest in sorted(hashes.items())), encoding="utf-8")
 
 
+def include_linux(root, linux_root, product, commit, version):
+    root, linux_root = Path(root), Path(linux_root)
+    packages = list(linux_root.glob(product.lower() + '-*.pkg.tar.zst'))
+    if len(packages) != 1 or any(not p.is_file() or p.is_symlink() or p.stat().st_size == 0 for p in packages):
+        raise ValueError('Expected one nonempty installable Linux package')
+    provenance = json.loads((linux_root / 'linux-provenance.json').read_text(encoding='utf-8'))
+    if (provenance.get('source_commit') != commit or provenance.get('version') != version
+            or str(provenance.get('workflow_run_id')) != os.environ['GITHUB_RUN_ID']):
+        raise ValueError('Linux provenance must match the qualified daily source/version/run')
+    package = packages[0]
+    digest = hashlib.sha256(package.read_bytes()).hexdigest()
+    if provenance.get('assets') != {package.name: digest}:
+        raise ValueError('Linux package checksum mismatch')
+    shutil.copyfile(package, root / package.name)
+    # Consolidate Linux evidence into the existing manifest instead of exposing
+    # an extra internal build recipe or another provenance download.
+    manifest_path = root / 'daily-manifest.json'
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    manifest['assets'][package.name] = digest
+    manifest['linux'] = provenance
+    manifest_path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["resolve", "verify"])
+    parser.add_argument("command", choices=["resolve", "verify", "linux"])
     parser.add_argument("--assets")
+    parser.add_argument("--linux-assets")
     parser.add_argument("--product", choices=["Vibeshine", "Vibepollo"])
     args = parser.parse_args()
     if args.command == "resolve":
         resolve()
-    else:
+    elif args.command == 'verify':
         verify_assets(args.assets, args.product, os.environ["DAILY_COMMIT"], os.environ["DAILY_TAG"], os.environ["DAILY_VERSION"])
+    else:
+        include_linux(args.assets, args.linux_assets, args.product, os.environ['DAILY_COMMIT'], os.environ['DAILY_VERSION'])

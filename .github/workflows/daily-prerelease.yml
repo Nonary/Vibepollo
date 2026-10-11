@@ -1,5 +1,5 @@
 ---
-name: Daily Windows prerelease
+name: Daily prerelease
 permissions: {}
 
 on:
@@ -26,7 +26,7 @@ jobs:
       github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     outputs:
       commit: ${{ steps.identity.outputs.commit }}
       tag: ${{ steps.identity.outputs.tag }}
@@ -52,6 +52,16 @@ jobs:
           DAILY_RELEASE_SOURCE_CONFIRMED: ${{ vars.DAILY_RELEASE_SOURCE_CONFIRMED }}
           DAILY_RELEASE_MIGRATION_CONFIRMED: ${{ vars.DAILY_RELEASE_MIGRATION_CONFIRMED }}
         run: python scripts/daily_release.py resolve
+      - name: Reserve exact qualified source identity before builds
+        if: steps.identity.outputs.should_build == 'true' && (github.event_name == 'schedule' || inputs.publish == true)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAILY_TAG: ${{ steps.identity.outputs.tag }}
+          DAILY_COMMIT: ${{ steps.identity.outputs.commit }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$DAILY_TAG" -f sha="$DAILY_COMMIT"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$DAILY_TAG" --jq .object.sha)" = "$DAILY_COMMIT"
 
   build:
     needs: prepare
@@ -81,10 +91,25 @@ jobs:
       daily_gamepad_pfx_base64: ${{ secrets.NIGHTLY_GAMEPAD_PFX_BASE64 }}
       daily_gamepad_pfx_password: ${{ secrets.NIGHTLY_GAMEPAD_PFX_PASSWORD }}
 
+  linux:
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-archlinux.yml
+    with:
+      release_commit: ${{ needs.prepare.outputs.commit }}
+      release_version: ${{ needs.prepare.outputs.version }}
+      use_self_hosted: false
+      validation_only: true
+      build_tests: true
+      artifact_retention_days: 7
+      cache_namespace: host-linux-v1
+
   publish:
-    needs: [prepare, build]
+    needs: [prepare, build, linux]
     if: >-
-      needs.build.result == 'success' && vars.DAILY_RELEASE_ENABLED == 'true' &&
+      needs.build.result == 'success' && needs.linux.result == 'success' && vars.DAILY_RELEASE_ENABLED == 'true' &&
       (github.event_name == 'schedule' || inputs.publish == true)
     runs-on: ubuntu-latest
     permissions:
@@ -112,27 +137,24 @@ jobs:
           path: daily-assets
       - name: Verify finalized provenance, identity and complete asset set
         run: python scripts/daily_release.py verify --assets daily-assets --product Vibepollo
+      - name: Download qualified Linux package from this run
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: build-Archlinux
+          path: linux-assets
+      - name: Verify and include the installable Linux package
+        run: python scripts/daily_release.py linux --assets daily-assets --linux-assets linux-assets --product Vibepollo
       - name: Prepare transparent prerelease notes
         run: |
           set -euo pipefail
-          cat > daily-notes.md <<EOF
-          Automated daily Windows prerelease for $DAILY_VERSION.
-
-          Source: $DAILY_COMMIT
-          Build and mandatory driver policy tests: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-
-          The host MSI and setup executable are unsigned; this daily pipeline does not call SignPath.
-          The daily VHF gamepad catalog and setup tool are self-signed; its public certificate is bundled, and no private key is shipped. Driver installation skips equal/newer installed drivers. A missing or genuinely newer gamepad requires validated package signatures and catalog membership. If its certificate is untrusted, a separate unchecked informed installer consent is required to add the exact displayed certificate to machine-wide Root and TrustedPublisher stores. Trust persists after uninstall and permits other code signed by that identity. Equal/newer installed components bypass all trust and driver changes. The installer does not change test signing or Secure Boot, or reboot. Existing trust entries are preserved; newly added entries are rolled back on failure.
-          Stable releases and the latest release channel are unchanged. SHA256SUMS and daily-manifest.json identify this dated build.
-          EOF
           git fetch origin --tags
           python scripts/nightly_notes.py --repo "$GITHUB_REPOSITORY" --tag "$DAILY_TAG" --version "$DAILY_VERSION" --source "$DAILY_COMMIT" --assets daily-assets --notes daily-notes.md
       - name: Create once, upload all assets, then expose prerelease
         run: |
           set -euo pipefail
-          # Never edit a previous daily release or move its tag, including reruns.
-          test -z "$(git ls-remote --tags origin "refs/tags/$DAILY_TAG")"
-          gh release create "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --target "$DAILY_COMMIT" --title "Daily $DAILY_VERSION" --notes-file daily-notes.md --draft --prerelease --latest=false
+          # The reserved tag pins the tested source even if master advances.
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$DAILY_TAG" --jq .object.sha)" = "$DAILY_COMMIT"
+          gh release create "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Nightly $DAILY_VERSION" --notes-file daily-notes.md --draft --prerelease --latest=false
           gh release upload "$DAILY_TAG" daily-assets/* --repo "$GITHUB_REPOSITORY"
           gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name] | sort' > uploaded-assets.json
           python -c 'import json; from pathlib import Path; assert json.loads(Path("uploaded-assets.json").read_text()) == sorted(p.name for p in Path("daily-assets").iterdir()), "Uploaded release asset set is incomplete"'
@@ -140,7 +162,7 @@ jobs:
           gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease,isDraft --jq 'if .isPrerelease and (.isDraft | not) then "Published prerelease" else error("Incorrect release state") end'
 
   summary:
-    needs: [prepare, build, publish]
+    needs: [prepare, build, linux, publish]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -149,6 +171,7 @@ jobs:
           ENABLED: ${{ vars.DAILY_RELEASE_ENABLED }}
           PREPARE_RESULT: ${{ needs.prepare.result }}
           BUILD_RESULT: ${{ needs.build.result }}
+          LINUX_RESULT: ${{ needs.linux.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
           DAILY_TAG: ${{ needs.prepare.outputs.tag }}
           DAILY_COMMIT: ${{ needs.prepare.outputs.commit }}
@@ -159,6 +182,6 @@ jobs:
             echo "Activation: ${ENABLED:-disabled}"
             echo "Source: $DAILY_COMMIT; tag: $DAILY_TAG"
             echo "Skip reason: ${SKIP_REASON:-none}"
-            echo "Prepare: $PREPARE_RESULT; build/tests/package: $BUILD_RESULT; publish: $PUBLISH_RESULT"
+            echo "Prepare: $PREPARE_RESULT; Windows: $BUILD_RESULT; Linux: $LINUX_RESULT; publish: $PUBLISH_RESULT"
             echo 'Failed uploads retain a draft for inspection; no existing daily identity is replaced. Review failed jobs before any manual recovery.'
           } >> "$GITHUB_STEP_SUMMARY"

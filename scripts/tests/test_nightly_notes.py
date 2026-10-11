@@ -15,6 +15,15 @@ def release(tag='daily-2026-10-10', **kwargs):
 
 
 class NightlyNotesTests(unittest.TestCase):
+    def test_user_summary_and_collapsible_real_commit_log(self):
+        notes, data = self.notes({'tag': 'daily-2026-10-10', 'source_commit': A}, [(B, 'fix: streaming')])
+        self.assertTrue(notes.startswith('This is a nightly release of Vibeshine'))
+        self.assertIn('<details>\n<summary>Commit log</summary>', notes)
+        self.assertIn('fix: streaming', notes)
+        self.assertTrue(notes.endswith('</details>\n'))
+        self.assertNotIn('All nightly builds are self-signed', notes)
+        self.assertIn('false-positive antivirus alerts', notes)
+
     def notes(self, previous=None, commits=(), ancestor=True):
         return n.make_notes(REPO, 'daily-2026-10-11', '1.2.3-daily.d20261011+' + B[:12], B, previous, list(commits), ancestor)
 

@@ -471,6 +471,7 @@ jobs:
           # Copy built packages to artifacts
           cp pkg/vibepollo*.pkg.tar.zst artifacts/
           cp vibepollo.pkg.tar.gz artifacts/
+          python3 -c 'import hashlib,json,os,pathlib,subprocess; root=pathlib.Path("artifacts"); packages=list(root.glob("vibepollo-*.pkg.tar.zst")); assert len(packages)==1; sha=subprocess.check_output(["git","-c","safe.directory="+os.environ["GITHUB_WORKSPACE"],"rev-parse","HEAD"],text=True).strip(); assert sha==os.environ["COMMIT"]; data=dict(schema_version=1,source_commit=sha,version=os.environ["BUILD_VERSION"],workflow_run_id=os.environ["GITHUB_RUN_ID"],assets={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in packages}); (root/"linux-provenance.json").write_text(json.dumps(data,indent=2)+"\n")'
 
           # List artifacts
           ls -la artifacts/

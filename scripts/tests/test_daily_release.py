@@ -15,6 +15,29 @@ SHA = "a" * 40
 
 
 class DailyTests(unittest.TestCase):
+    def test_linux_requires_exact_source_version_run_and_hash(self):
+        for scenario in ('valid', 'source', 'version', 'run', 'hash', 'extra'):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temp:
+                root, linux = Path(temp) / 'assets', Path(temp) / 'linux'
+                root.mkdir(); linux.mkdir()
+                name = 'vibeshine-2.0.0.daily-1-x86_64.pkg.tar.zst'
+                (linux / name).write_bytes(b'package')
+                evidence = dict(source_commit=SHA, version='version', workflow_run_id='123', assets={name: hashlib.sha256(b'package').hexdigest()})
+                if scenario == 'source': evidence['source_commit'] = 'b' * 40
+                if scenario == 'version': evidence['version'] = 'other'
+                if scenario == 'run': evidence['workflow_run_id'] = '456'
+                if scenario == 'hash': (linux / name).write_bytes(b'tampered')
+                if scenario == 'extra': (linux / 'vibeshine-extra.pkg.tar.zst').write_bytes(b'other')
+                (linux / 'linux-provenance.json').write_text(json.dumps(evidence))
+                (root / 'daily-manifest.json').write_text(json.dumps({'assets': {}}))
+                with patch.dict(os.environ, GITHUB_RUN_ID='123'):
+                    if scenario == 'valid':
+                        daily.include_linux(root, linux, 'Vibeshine', SHA, 'version')
+                        self.assertEqual((root / name).read_bytes(), b'package')
+                        self.assertEqual(json.loads((root / 'daily-manifest.json').read_text())['linux'], evidence)
+                    else:
+                        with self.assertRaises(ValueError): daily.include_linux(root, linux, 'Vibeshine', SHA, 'version')
+
     def test_calendar_identity_fits_msi(self):
         first = daily.identity(SHA, dt.date(2026, 10, 11), "2.0.0")
         self.assertEqual(first["tag"], "daily-2026-10-11")

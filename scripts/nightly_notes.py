@@ -90,7 +90,11 @@ def make_notes(repo, tag, version, source, previous, commits, ancestor=True):
                     commits_total=len(commits), commits_listed=len(commits))
     if repo == 'Nonary/moonlight-qt':
         metadata['windows_product_version'] = f'6.2.{seq}'
-    notes = [f'## Nightly changes ({version})', '', f'Source: [{source}](https://github.com/{repo}/commit/{source})', '']
+    product = {'Nonary/vibeshine': 'Vibeshine', 'Nonary/Vibepollo': 'Vibepollo', 'Nonary/moonlight-qt': 'Moonlight'}[repo]
+    notes = [f'This is a nightly release of {product} and contains several bug fixes and may contain new features. Check the commit log for more information.', '',
+             'Nightly Windows installers are unsigned and include self-signed gamepad components. They may cause false-positive antivirus alerts.', '',
+             '<details>', '<summary>Commit log</summary>', '',
+             f'Source: [{source[:12]}](https://github.com/{repo}/commit/{source})', '']
     if first:
         notes += ['First published nightly: no previous successful nightly baseline exists. No commit delta is claimed.']
     elif unchanged:
@@ -101,11 +105,12 @@ def make_notes(repo, tag, version, source, previous, commits, ancestor=True):
             notes += ['', '**Warning: source history diverged or was rewound.** The list is the exact newly reachable commit set `previous_source_commit..source_commit`, not a forward ancestry claim.']
         if not commits:
             notes += ['', 'No newly reachable commits in this exact range. Source identity changed (for example, a rewind).']
-        for sha, message in commits:
-            exact_sha(sha)
-            # Fence preserves the complete raw conventional commit message.
-            fence = '`' * max(3, max((len(m[0]) for m in re.finditer(r'`+', message)), default=0) + 1)
-            notes += ['', f'[{sha[:12]}](https://github.com/{repo}/commit/{sha})', fence + 'text', message.rstrip('\n'), fence]
+    for sha, message in commits:
+        exact_sha(sha)
+        # Fence preserves the complete raw conventional commit message.
+        fence = '`' * max(3, max((len(m[0]) for m in re.finditer(r'`+', message)), default=0) + 1)
+        notes += ['', f'[{sha[:12]}](https://github.com/{repo}/commit/{sha})', fence + 'text', message.rstrip('\n'), fence]
+    notes += ['', '</details>']
     return '\n'.join(notes) + '\n', metadata
 
 
@@ -122,7 +127,15 @@ def generate(repo, tag, version, source, assets, notes):
         if not isinstance(asset_id, int) or asset_id <= 0:
             raise ValueError('Invalid metadata asset ID')
         return json.loads(run('gh', 'api', '-H', 'Accept: application/octet-stream', f'repos/{repo}/releases/assets/{asset_id}'))
-    previous = previous_release(repo, [r for page in pages for r in page], read_metadata, resolve)
+    releases = [r for page in pages for r in page if r.get('tag_name') != tag]
+    previous = previous_release(repo, releases, read_metadata, resolve)
+    # The first nightly still needs an honest, useful commit log. A published
+    # stable release supplies its initial baseline; drafts never do.
+    if previous is None:
+        stable = [r for r in releases if r.get('draft') is False and r.get('prerelease') is False and r.get('published_at')]
+        if stable:
+            baseline = max(stable, key=lambda r: (r['published_at'], r.get('id', 0)))
+            previous = {'tag': baseline['tag_name'], 'source_commit': resolve(baseline['tag_name']), 'stable_baseline': True}
     commits, ancestor = [], True
     if previous:
         old = previous['source_commit']
@@ -136,10 +149,12 @@ def generate(repo, tag, version, source, assets, notes):
         for index in range(0, len(fields) - 1, 2):
             commits.append((exact_sha(fields[index].strip()), fields[index + 1]))
     body, metadata = make_notes(repo, tag, version, source, previous, commits, ancestor)
+    if previous and previous.get('stable_baseline'):
+        body = body.replace('preceding successfully published nightly', 'preceding stable release')
+        metadata.update(first_nightly=True, previous_successful_tag=None, initial_stable_tag=previous['tag'])
     root = Path(assets)
     (root / 'nightly-metadata.json').write_text(json.dumps(metadata, indent=2) + '\n', encoding='utf-8')
-    with Path(notes).open('a', encoding='utf-8') as output:
-        output.write('\n' + body)
+    Path(notes).write_text(body, encoding='utf-8')
     # Include metadata and existing manifest/provenance; never hash SHA256SUMS itself.
     files = sorted(p for p in root.iterdir() if p.name != 'SHA256SUMS')
     if any(not p.is_file() or p.is_symlink() or '\n' in p.name or '\r' in p.name for p in files):
