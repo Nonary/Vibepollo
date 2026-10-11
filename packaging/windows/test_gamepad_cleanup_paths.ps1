@@ -24,3 +24,12 @@ foreach($architecture in @('Sysnative','System32','SysWOW64','missing')){
  }
 }
 Write-Host 'Eight cleanup path/empty-inventory cases passed; no PnPUtil or driver operation executed.'
+
+[xml]$wix=Get-Content (Join-Path $RepositoryRoot 'packaging/windows/wix/custom_actions.wxs') -Raw
+$ns=New-Object Xml.XmlNamespaceManager($wix.NameTable);$ns.AddNamespace('w','http://schemas.microsoft.com/wix/2006/wi')
+foreach($setter in $wix.SelectNodes('//w:CustomAction[@Property]',$ns)){
+ if($setter.Value -like '*[[]System64Folder[]]WindowsPowerShell*'){
+  $action=$wix.SelectSingleNode("//w:CustomAction[@Id='$($setter.Property)']",$ns)
+  if($action.DllEntry -ne 'WixQuietExec64'){throw "64-bit PowerShell redirection is not disabled: $($setter.Property)"}
+ }
+}
