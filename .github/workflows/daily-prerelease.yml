@@ -43,8 +43,10 @@ jobs:
         id: identity
         env:
           GH_TOKEN: ${{ github.token }}
+          DAILY_PRIMARY_BRANCH: ${{ github.event.repository.default_branch }}
           DAILY_RELEASE_SOURCE_BRANCH: ${{ vars.DAILY_RELEASE_SOURCE_BRANCH }}
           DAILY_RELEASE_SOURCE_CONFIRMED: ${{ vars.DAILY_RELEASE_SOURCE_CONFIRMED }}
+          DAILY_RELEASE_MIGRATION_CONFIRMED: ${{ vars.DAILY_RELEASE_MIGRATION_CONFIRMED }}
         run: python scripts/daily_release.py resolve
 
   build:
@@ -113,7 +115,7 @@ jobs:
           Build and mandatory driver policy tests: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
 
           The host MSI and setup executable are unsigned; this daily pipeline does not call SignPath.
-          The daily VHF gamepad catalog and setup tool are self-signed; its public certificate is bundled, and no private key is shipped. Driver installation skips equal/newer installed drivers. A missing/newer gamepad installs only if Windows already reports the catalog as Valid; otherwise its warning requires explicit manual OS security review. The installer does not import certificates, change test signing or Secure Boot, or reboot. Artifact signing does not establish OS trust. Existing drivers remain available.
+          The daily VHF gamepad catalog and setup tool are self-signed; its public certificate is bundled, and no private key is shipped. Driver installation skips equal/newer installed drivers. A missing or genuinely newer gamepad requires validated package signatures and catalog membership. If its certificate is untrusted, a separate unchecked informed installer consent is required to add the exact displayed certificate to machine-wide Root and TrustedPublisher stores. Trust persists after uninstall and permits other code signed by that identity. Equal/newer installed components bypass all trust and driver changes. The installer does not change test signing or Secure Boot, or reboot. Existing trust entries are preserved; newly added entries are rolled back on failure.
           Stable releases and the latest release channel are unchanged. SHA256SUMS and daily-manifest.json identify this dated build.
           EOF
           git fetch origin --tags

@@ -29,8 +29,6 @@ jobs:
     name: Archlinux
     env:
       _use_cuda: true
-      # Ninja does not honor MAKEFLAGS; bound both CMake and make builds.
-      CMAKE_BUILD_PARALLEL_LEVEL: 6
       BRANCH: ${{ github.head_ref || github.ref_name }}
       BUILD_VERSION: ${{ inputs.release_version }}
       CLONE_URL: ${{ github.event.repository.clone_url }}
@@ -40,7 +38,6 @@ jobs:
     runs-on: ${{ inputs.use_self_hosted && github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Linux", "X64", "linux-release"]') || fromJSON('["ubuntu-latest"]') }}
     container:
       image: archlinux/archlinux:base-devel
-      options: --cpus 8 --memory 16g
     steps:
 
       - name: Update keyring
@@ -58,11 +55,6 @@ jobs:
           # arch prevents running makepkg as root
           useradd -m builder
           echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
-
-      - name: Patch build flags
-        shell: bash
-        run: |
-          echo "MAKEFLAGS=\"-j${CMAKE_BUILD_PARALLEL_LEVEL}\"" >> /etc/makepkg.conf
 
       - name: Install dependencies
         shell: bash
@@ -105,6 +97,17 @@ jobs:
           ref: ${{ inputs.release_commit }}
           fetch-depth: 1
           submodules: recursive
+
+      - name: Detect actual build budget
+        shell: bash
+        run: |
+          python3 tests/unit/test_linux_build_budget.py
+          python3 scripts/linux-build-budget.py
+          jobs=$(python3 scripts/linux-build-budget.py --jobs)
+          echo "MAKEFLAGS=\"-j${jobs}\"" >> /etc/makepkg.conf
+          # Ninja links do not carry GNU make's jobserver. Keep each link's
+          # LTO pool bounded instead of spawning nproc workers per link.
+          echo 'LTOFLAGS="-flto=1"' >> /etc/makepkg.conf
 
       - name: Verify CUDA release policy
         if: inputs.build_tests
@@ -203,7 +206,7 @@ jobs:
           sub_version=""
           # Branch candidates share the upcoming prerelease version but retain
           # a commit suffix until the exact commit receives its release tag.
-          if [[ "${BRANCH}" == "vibe-test" ]]; then
+          if [[ "${BUILD_VERSION}" == *-* ]]; then
             sub_version=".r${COMMIT}"
           fi
 

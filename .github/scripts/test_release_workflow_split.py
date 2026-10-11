@@ -70,14 +70,26 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
     def test_package_compilers_have_bounded_parallelism(self) -> None:
         for workflow_name in ('ci-windows.yml', 'ci-archlinux.yml'):
             workflow = load_workflow(workflow_name)
-            build = next(job for job in workflow['jobs'].values()
-                         if 'CMAKE_BUILD_PARALLEL_LEVEL' in job.get('env', {}))
-            self.assertEqual(build['env']['CMAKE_BUILD_PARALLEL_LEVEL'], '6')
+            if workflow_name == 'ci-archlinux.yml':
+                build = workflow['jobs']['build_archlinux']
+                self.assertNotIn('CMAKE_BUILD_PARALLEL_LEVEL', build.get('env', {}))
+                self.assertNotIn('--cpus', build['container'].get('options', ''))
+                self.assertNotIn('--memory', build['container'].get('options', ''))
+            else:
+                build = next(job for job in workflow['jobs'].values()
+                             if 'CMAKE_BUILD_PARALLEL_LEVEL' in job.get('env', {}))
+                self.assertEqual(build['env']['CMAKE_BUILD_PARALLEL_LEVEL'], '6')
             scripts = '\n'.join(step.get('run', '') for step in build['steps'])
             self.assertNotIn('$(nproc)', scripts)
             if workflow_name == 'ci-archlinux.yml':
+                detector = next(step for step in build['steps'] if step.get('name') == 'Detect actual build budget')
+                self.assertIn('python3 scripts/linux-build-budget.py', detector['run'])
+                self.assertIn('test_linux_build_budget.py', detector['run'])
+                self.assertIn('LTOFLAGS="-flto=1"', detector['run'])
                 package = next(step for step in build['steps'] if step.get('name') == 'Build PKGBUILD')
                 self.assertIn('CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL}"', package['run'])
+                linux_script = (ROOT / 'scripts' / 'linux_build.sh').read_text(encoding='utf-8')
+                self.assertIn('ninja -C "build" -j"${num_processors}"', linux_script)
             else:
                 commands = [line for line in scripts.splitlines() if 'cmake --build ' in line]
                 self.assertEqual(len(commands), 2)
@@ -119,9 +131,8 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             "valid_candidates.append((key, tag, notes_file, release_commit))",
             workflow_text,
         )
-        self.assertIn('os.environ.get("GITHUB_REF") == "refs/heads/vibe-test"', workflow_text)
-        self.assertIn("Linux branch candidate:", workflow_text)
-        self.assertIn("release_version=release_version", workflow_text)
+        self.assertNotIn("vibe-test", workflow_text)
+        self.assertNotIn("Linux branch candidate:", workflow_text)
         self.assertIn("should_release=\"false\"", workflow_text)
         self.assertNotIn("def canonical_release_tag", workflow_text)
 
@@ -134,7 +145,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             environment = {
                 "EVENT_NAME": "push",
                 "GITHUB_REF_TYPE": "branch",
-                "GITHUB_REF": "refs/heads/vibe-test",
+                "GITHUB_REF": "refs/heads/master",
                 "GITHUB_REPOSITORY": "Nonary/test",
                 "GITHUB_OUTPUT": str(output),
             }
@@ -207,7 +218,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             'write_drm_version_header "${dkms_source}" "${dkms_ci_version}"',
             arch_text,
         )
-        self.assertIn('if [[ "${BRANCH}" == "vibe-test" ]]', arch_text)
+        self.assertIn('if [[ "${BUILD_VERSION}" == *-* ]]', arch_text)
         self.assertIn('sub_version=".r${COMMIT}"', arch_text)
         self.assertIn("makedepends = nodejs", arch_text)
         self.assertIn("makedepends = npm", arch_text)

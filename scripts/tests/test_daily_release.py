@@ -31,15 +31,26 @@ class DailyTests(unittest.TestCase):
                 daily.identity(SHA, dt.date(2026, 10, 11), base)
 
     def test_source_requires_exact_upstream_confirmation(self):
-        for repository, branch, confirmation in (("Other/fork", "main", "Other/fork:main"), ("Nonary/vibeshine", "", ""), ("Nonary/vibeshine", "vibe", "true")):
+        for repository, branch, confirmation in (("Other/fork", "main", "Other/fork:main"), ("Nonary/vibeshine", "", ""), ("Nonary/vibeshine", "master", "true")):
             with self.assertRaises(ValueError):
                 daily.validate_source(repository, branch, confirmation)
-        daily.validate_source("Nonary/vibeshine", "vibe", "Nonary/vibeshine:vibe")
+        daily.validate_source("Nonary/vibeshine", "master", "Nonary/vibeshine:master")
+        for retired in ("vibe", "vibe-test"):
+            with self.assertRaises(ValueError):
+                daily.validate_source("Nonary/vibeshine", retired, f"Nonary/vibeshine:{retired}")
+
+    def test_migration_confirmation_pins_both_exact_sources(self):
+        upstream = "b" * 40
+        expected = f"Nonary/vibeshine:{upstream}:Nonary/Vibepollo:{SHA}"
+        daily.validate_migration("Nonary/Vibepollo", SHA, upstream, expected)
+        for target, source, confirmation in ((SHA, upstream, ""), ("c" * 40, upstream, expected), (SHA, "c" * 40, expected), ("HEAD", upstream, expected)):
+            with self.assertRaises(ValueError):
+                daily.validate_migration("Nonary/Vibepollo", target, source, confirmation)
 
     def test_remote_tag_and_draft_collisions_are_immutable(self):
         for tag_output, releases in (("a refs/tags/daily", [[]]), ("", [[{"tag_name": daily.identity(SHA, dt.datetime.now(dt.timezone.utc).date(), "2.0.0")["tag"], "draft": True}]])):
             with tempfile.TemporaryDirectory() as temp:
-                with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA, DAILY_RELEASE_SOURCE_BRANCH="vibe", DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:vibe", GITHUB_OUTPUT=str(Path(temp) / "output")):
+                with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA, DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master", DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:master", GITHUB_OUTPUT=str(Path(temp) / "output")):
                     with patch.object(daily, "run", side_effect=["", SHA, "", "", "2.0.0-beta.4\n2.0.0", tag_output, json.dumps(releases)]):
                         with self.assertRaises(ValueError):
                             daily.resolve()
@@ -47,12 +58,12 @@ class DailyTests(unittest.TestCase):
     def test_resolve_fetches_confirmed_remote_commit_and_emits_identity(self):
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "output"
-            with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA, DAILY_RELEASE_SOURCE_BRANCH="vibe", DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:vibe", GITHUB_OUTPUT=str(output)):
+            with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA, DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master", DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:master", GITHUB_OUTPUT=str(output)):
                 with patch.object(daily, "run", side_effect=["", SHA, "", "", "2.0.0-beta.4\n2.0.0", "", "[[]]"]) as commands:
                     daily.resolve()
             self.assertIn(f"commit={SHA}", output.read_text())
             self.assertIn("version=2.0.0-daily", output.read_text())
-            self.assertEqual(commands.call_args_list[0].args, ("git", "fetch", "--no-tags", "origin", "refs/heads/vibe:refs/remotes/origin/daily-source"))
+            self.assertEqual(commands.call_args_list[0].args, ("git", "fetch", "--no-tags", "origin", "refs/heads/master:refs/remotes/origin/daily-source"))
 
     def test_finalized_assets_reject_corruption_wrong_run_and_extra_files(self):
         info = daily.identity(SHA, dt.date(2026, 10, 11), "2.0.0")

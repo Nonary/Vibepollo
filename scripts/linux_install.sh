@@ -666,7 +666,7 @@ print_summary() {
   printf '    %d. Log out and back in once (or restart PipeWire) so the audio quantum drop-in takes effect.\n' "$step"; step=$((step + 1))
   printf '\n    Status:  sudo systemctl status vibepollo-session-controller.service vibepollo.service\n'
   printf '    Logs:    sudo journalctl -u vibepollo-session-controller.service -u vibepollo.service -b\n'
-  printf '    Guide:   %s/blob/vibe-test/docs/linux/install.md\n' "$REPO_URL"
+  printf '    Guide:   %s/blob/master/docs/linux/install.md\n' "$REPO_URL"
   if ((${#warnings[@]} > 0)); then
     printf '\n    Warnings raised during installation:\n'
     local w

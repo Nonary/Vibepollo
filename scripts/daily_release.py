@@ -29,7 +29,9 @@ def identity(commit, day, base):
 def validate_source(repository, branch, confirmation):
     if repository not in {"Nonary/vibeshine", "Nonary/Vibepollo"}:
         raise ValueError("Daily publishing is limited to the designated upstream repositories")
-    if not branch or confirmation != f"{repository}:{branch}":
+    if branch not in {"master", "main"}:
+        raise ValueError("Daily source must use the verified master/main primary; legacy vibe/test lanes are retired")
+    if confirmation != f"{repository}:{branch}":
         raise ValueError("Set DAILY_RELEASE_SOURCE_BRANCH and explicitly confirm repository:branch in DAILY_RELEASE_SOURCE_CONFIRMED")
     subprocess.run(["git", "check-ref-format", f"refs/heads/{branch}"], check=True)
 
@@ -38,13 +40,30 @@ def run(*args):
     return subprocess.run(args, check=True, capture_output=True, text=True).stdout.strip()
 
 
+def validate_migration(repository, target_commit, upstream_commit, confirmation):
+    if repository != "Nonary/Vibepollo":
+        return
+    if not re.fullmatch(r"[0-9a-f]{40}", target_commit) or not re.fullmatch(r"[0-9a-f]{40}", upstream_commit):
+        raise ValueError("Migration confirmation requires exact source and target SHAs")
+    expected = f"Nonary/vibeshine:{upstream_commit}:Nonary/Vibepollo:{target_commit}"
+    if confirmation != expected:
+        raise ValueError("Vibepollo daily is blocked until the exact upstream-to-primary migration is reviewed and confirmed")
+
+
 def resolve():
     repository = os.environ["GITHUB_REPOSITORY"]
     branch = os.environ.get("DAILY_RELEASE_SOURCE_BRANCH", "")
     validate_source(repository, branch, os.environ.get("DAILY_RELEASE_SOURCE_CONFIRMED", ""))
+    if branch != os.environ.get("DAILY_PRIMARY_BRANCH"):
+        raise ValueError("Daily source must equal the verified repository default primary")
     # Fetch only the explicitly confirmed remote branch; ignore local HEAD/tags.
     run("git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}:refs/remotes/origin/daily-source")
     commit = run("git", "rev-parse", "refs/remotes/origin/daily-source^{commit}")
+    if repository == "Nonary/Vibepollo":
+        upstream = run("git", "ls-remote", "https://github.com/Nonary/vibeshine.git", "refs/heads/master").split()
+        if len(upstream) != 2 or upstream[1] != "refs/heads/master":
+            raise ValueError("Could not resolve the verified Vibeshine primary for migration")
+        validate_migration(repository, commit, upstream[0], os.environ.get("DAILY_RELEASE_MIGRATION_CONFIRMED", ""))
     # GITHUB_TOKEN has no workflows:write capability. Do not select a target
     # with a different workflow tree and then discover that during publication.
     run("git", "diff", "--exit-code", os.environ["GITHUB_SHA"], commit, "--", ".github/workflows")
