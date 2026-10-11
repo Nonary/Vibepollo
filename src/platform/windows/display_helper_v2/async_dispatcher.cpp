@@ -21,12 +21,20 @@ namespace display_helper::v2 {
 
   AsyncDispatcher::~AsyncDispatcher() {
     if (timer_worker_.joinable()) {
-      timer_worker_.request_stop();
+      {
+        // Serialize the stop predicate with the waiter to prevent a lost wake-up.
+        std::lock_guard lock(timer_mutex_);
+        timer_worker_.request_stop();
+      }
       timer_cv_.notify_all();
       timer_worker_.join();
     }
     if (worker_.joinable()) {
-      worker_.request_stop();
+      {
+        // Serialize the stop predicate with the waiter to prevent a lost wake-up.
+        std::lock_guard lock(mutex_);
+        worker_.request_stop();
+      }
       cv_.notify_all();
       worker_.join();
     }

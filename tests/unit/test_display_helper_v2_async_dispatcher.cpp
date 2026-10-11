@@ -124,6 +124,32 @@ namespace {
   };
 }  // namespace
 
+TEST(DisplayHelperV2AsyncDispatcher, RepeatedIdleShutdownCompletes) {
+  FakeClock clock;
+  FakeDisplaySettings display;
+  display_helper::v2::SnapshotService snapshot_service(display);
+  display_helper::v2::InMemorySnapshotStorage storage;
+  display_helper::v2::InMemoryTextStorage golden_status_storage;
+  display_helper::v2::GoldenHealth golden_health(golden_status_storage, {});
+  display_helper::v2::RestoreState restore_state;
+  display_helper::v2::ApplyOperation apply_op(display, clock, [] { return true; });
+  display_helper::v2::VerificationOperation verify_op(display, clock);
+  display_helper::v2::RecoveryOperation recovery_op(display, storage, golden_health, restore_state, clock);
+  display_helper::v2::RecoveryValidationOperation recovery_validate(snapshot_service, clock);
+  FakeVirtualDisplayDriver virtual_display;
+
+  // Race destruction with both workers entering their idle waits. CTest bounds
+  // this component so a shutdown regression fails instead of hanging the lane.
+  for (int iteration = 0; iteration < 1000; ++iteration) {
+    display_helper::v2::AsyncDispatcher dispatcher(
+      apply_op, verify_op, recovery_op, recovery_validate, virtual_display, clock);
+    if (iteration % 2 == 0) {
+      std::this_thread::yield();
+    }
+  }
+  EXPECT_EQ(display.apply_calls, 0);
+}
+
 TEST(DisplayHelperV2AsyncDispatcher, AppliesAfterVirtualDisplayResetSequence) {
   FakeClock clock;
   FakeDisplaySettings display;

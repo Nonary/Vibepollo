@@ -155,7 +155,10 @@ rm "$helper.hardlink"
         path = helpers / name
         path.write_text('#!/bin/sh\nprintf "%s %s\\n" "${0##*/}" "$*" >>"$TRACE"\n')
         path.chmod(0o755)
-    arch = arch.replace(f"/usr/libexec/{brand}/", str(helpers) + "/")
+    # Apollo retains the shared Vibeshine helper directory while adapting the
+    # executable names. Redirect both supported layouts into fixture-only state.
+    for helper_root in {"/usr/libexec/vibeshine/", f"/usr/libexec/{brand}/"}:
+        arch = arch.replace(helper_root, str(helpers) + "/")
     arch = arch.replace("stat -c", "fixture_stat -c")
     trace = fixture / "lifecycle-trace"
     env["TRACE"] = str(trace)
