@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace remote_display_topology {
@@ -48,6 +49,8 @@ namespace remote_display_topology {
     // 1920x1080). Keep mode reporting native while composing in desktop units.
     std::optional<int> layout_width;
     std::optional<int> layout_height;
+    // CCD refresh can encode DRR state; do not round the saved physical rate.
+    std::optional<std::pair<unsigned int, unsigned int>> baseline_refresh_rate;
   };
 
   struct runtime_callbacks_t {
