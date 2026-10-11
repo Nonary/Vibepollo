@@ -1685,8 +1685,12 @@ test('legacy updater orders embedded daily versions and shares dismissal across 
   const notice = page.locator('.dashboard-release-alert');
   await expect(notice).toHaveCount(1);
   await expect(notice).toContainText(newer.metadata.version);
-  await expect(notice.getByRole('link', { name: 'Download', exact: true })).toHaveAttribute('href', newer.release.html_url);
-  await notice.getByRole('button', { name: 'Release Notes', exact: true }).click();
+  const downloadLink = notice.getByRole('link', { name: /\bDownload$/ });
+  await expect(downloadLink).toHaveCount(1);
+  await expect(downloadLink).toHaveAttribute('href', newer.release.html_url);
+  const releaseNotesButton = notice.getByRole('button', { name: /\bRelease Notes$/ });
+  await expect(releaseNotesButton).toHaveCount(1);
+  await releaseNotesButton.click();
   await expect(notice).toContainText(newer.release.body);
   await notice.getByRole('button', { name: 'Dismiss this update', exact: true }).click();
   await expect(notice).toHaveCount(0);
