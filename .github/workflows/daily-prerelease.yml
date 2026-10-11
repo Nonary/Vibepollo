@@ -154,7 +154,7 @@ jobs:
           set -euo pipefail
           # The reserved tag pins the tested source even if master advances.
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$DAILY_TAG" --jq .object.sha)" = "$DAILY_COMMIT"
-          gh release create "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Nightly $DAILY_VERSION" --notes-file daily-notes.md --draft --prerelease --latest=false
+          gh release create "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Nightly ${DAILY_TAG#daily-}" --notes-file daily-notes.md --draft --prerelease --latest=false
           gh release upload "$DAILY_TAG" daily-assets/* --repo "$GITHUB_REPOSITORY"
           gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name] | sort' > uploaded-assets.json
           python -c 'import json; from pathlib import Path; assert json.loads(Path("uploaded-assets.json").read_text()) == sorted(p.name for p in Path("daily-assets").iterdir()), "Uploaded release asset set is incomplete"'
