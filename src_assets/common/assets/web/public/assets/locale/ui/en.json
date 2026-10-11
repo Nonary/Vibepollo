@@ -1023,7 +1023,7 @@
         "availableDetail": "A known-good display layout is available for recovery.",
         "lastFailure": "Last failure",
         "linuxTitle": "Virtual display recovery",
-        "linuxDescription": "Terminate managed virtual displays to recover from a display problem. Vibeshine will first try to restore the physical display layout.",
+        "linuxDescription": "Terminate managed virtual displays to recover from a display problem. Vibepollo will first try to restore the physical display layout.",
         "noneRecorded": "None recorded",
         "notCaptured": "Not captured",
         "notCapturedDetail": "No known-good display layout has been saved.",
