@@ -7,9 +7,21 @@ ownership, connection/config checkpoints and handle-wait decisions are extracted
 unchanged. Usage: script repository [compiler] [original-source directory].
 """
 from pathlib import Path
-import re, subprocess, sys, tempfile
-root=Path(sys.argv[1]).resolve();compiler=sys.argv[2] if len(sys.argv)>2 else 'c++'
-before=Path(sys.argv[3]) if len(sys.argv)>3 else None
+import argparse, re, subprocess, sys, tempfile
+parser=argparse.ArgumentParser()
+parser.add_argument('repository')
+parser.add_argument('compiler',nargs='?',default='c++')
+parser.add_argument('original_source_directory',nargs='?')
+parser.add_argument('--include-directory',action='append',default=[])
+args=parser.parse_args()
+root=Path(args.repository).resolve();compiler=args.compiler
+before=Path(args.original_source_directory) if args.original_source_directory else None
+compile_includes=['-I',str(root)]
+for value in args.include_directory:
+    for directory in filter(None,value.split(';')):
+        include=Path(directory).resolve()
+        if not include.is_dir():raise RuntimeError(f'Missing replay dependency include directory: {include}')
+        compile_includes.extend(['-I',str(include)])
 def read(path):
     candidate=before/Path(path).name if before else root/path
     return (candidate if candidate.exists() else root/path).read_text()
@@ -155,5 +167,5 @@ if len(budgets.splitlines())!=2:raise RuntimeError('Missing production WGC helpe
 for name,value in [('METHODS','\n'.join(methods)),('PRE',pre),('CONNECT',connect),('SEND',send),('WAIT',wait),('FORWARD','\n'.join(forward)),('SNAPSHOTS','\n'.join(snapshots)),('WATCH',watch),('END',end),('JOIN',join),('BUDGETS',budgets)]:code=code.replace('// '+name+'\n',value+'\n')
 with tempfile.TemporaryDirectory(prefix='wgc-stop-replay-') as temp:
     cpp=Path(temp)/'test.cpp';exe=Path(temp)/'test';cpp.write_text(code)
-    subprocess.run([compiler,'-std=c++23','-O2','-pthread','-Wall','-Wextra','-I',str(root),str(cpp),'-o',str(exe)],check=True)
+    subprocess.run([compiler,'-std=c++23','-O2','-pthread','-Wall','-Wextra',*compile_includes,str(cpp),'-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True,timeout=8)

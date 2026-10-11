@@ -155,7 +155,7 @@ rm "$helper.hardlink"
         path = helpers / name
         path.write_text('#!/bin/sh\nprintf "%s %s\\n" "${0##*/}" "$*" >>"$TRACE"\n')
         path.chmod(0o755)
-    arch = arch.replace("/usr/libexec/vibeshine/", str(helpers) + "/")
+    arch = arch.replace(f"/usr/libexec/{brand}/", str(helpers) + "/")
     arch = arch.replace("stat -c", "fixture_stat -c")
     trace = fixture / "lifecycle-trace"
     env["TRACE"] = str(trace)
