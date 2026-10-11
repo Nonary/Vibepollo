@@ -51,7 +51,7 @@ class DailyTests(unittest.TestCase):
         for tag_output, releases in (("a refs/tags/daily", [[]]), ("", [[{"tag_name": daily.identity(SHA, dt.datetime.now(dt.timezone.utc).date(), "2.0.0")["tag"], "draft": True}]])):
             with tempfile.TemporaryDirectory() as temp:
                 with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA, DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master", DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:master", GITHUB_OUTPUT=str(Path(temp) / "output")):
-                    with patch.object(daily, "run", side_effect=["", SHA, "", "", "2.0.0-beta.4\n2.0.0", tag_output, json.dumps(releases)]):
+                    with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps(releases), "", "2.0.0-beta.4\n2.0.0", tag_output]):
                         with self.assertRaises(ValueError):
                             daily.resolve()
 
@@ -59,11 +59,58 @@ class DailyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "output"
             with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA, DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master", DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:master", GITHUB_OUTPUT=str(output)):
-                with patch.object(daily, "run", side_effect=["", SHA, "", "", "2.0.0-beta.4\n2.0.0", "", "[[]]"]) as commands:
+                with patch.object(daily, "run", side_effect=["", SHA, "", "[[]]", "", "2.0.0-beta.4\n2.0.0", ""]) as commands:
                     daily.resolve()
             self.assertIn(f"commit={SHA}", output.read_text())
             self.assertIn("version=2.0.0-daily", output.read_text())
+            self.assertIn("should_build=true", output.read_text())
             self.assertEqual(commands.call_args_list[0].args, ("git", "fetch", "--no-tags", "origin", "refs/heads/master:refs/remotes/origin/daily-source"))
+
+    def test_unchanged_repo_skips_before_date_and_upstream_migration_checks(self):
+        for repository in ("Nonary/vibeshine", "Nonary/Vibepollo"):
+            with self.subTest(repository=repository), tempfile.TemporaryDirectory() as temp:
+                output = Path(temp) / "output"
+                with patch.dict(os.environ, GITHUB_REPOSITORY=repository, GITHUB_SHA=SHA,
+                                DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master",
+                                DAILY_RELEASE_SOURCE_CONFIRMED=f"{repository}:master", GITHUB_OUTPUT=str(output),
+                                DAILY_RELEASE_MIGRATION_CONFIRMED="stale upstream pin"):
+                    with patch.object(daily, "run", side_effect=["", SHA, "", "[[]]"]) as commands:
+                        with patch.object(daily, "previous_successful_nightly", return_value={"tag": "daily-2026-10-10", "source_commit": SHA}) as baseline:
+                            daily.resolve()
+                baseline.assert_called_once_with(repository, [[]])
+                self.assertIn("should_build=false", output.read_text())
+                self.assertNotIn("version=", output.read_text())
+                self.assertFalse(any("ls-remote" in call.args for call in commands.call_args_list))
+
+    def test_changed_target_still_requires_exact_migration_confirmation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/Vibepollo", GITHUB_SHA=SHA,
+                            DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master",
+                            DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/Vibepollo:master", GITHUB_OUTPUT=str(Path(temp) / "output"),
+                            DAILY_RELEASE_MIGRATION_CONFIRMED="stale upstream pin"):
+                with patch.object(daily, "run", side_effect=["", SHA, "", "[[]]", f"{'b' * 40} refs/heads/master"]):
+                    with patch.object(daily, "previous_successful_nightly", return_value={"tag": "daily-2026-10-10", "source_commit": "c" * 40}):
+                        with self.assertRaisesRegex(ValueError, "migration"):
+                            daily.resolve()
+
+    def test_only_published_validated_nightly_is_a_skip_baseline(self):
+        releases = [[
+            {"tag_name": "daily-2026-10-11", "draft": True, "prerelease": True, "published_at": "2026-10-11T00:00:00Z"},
+            {"tag_name": "daily-2026-10-10", "draft": False, "prerelease": True, "published_at": "2026-10-10T00:00:00Z", "assets": [{"name": "nightly-metadata.json", "id": 1}]},
+        ]]
+        metadata = {"schema_version": 1, "channel": "nightly", "tag": "daily-2026-10-10", "source_commit": SHA,
+                    "version": f"2.0.0-daily.d20261010+{SHA[:12]}", "nightly_sequence": 20261010}
+        with patch.object(daily, "run", side_effect=[json.dumps(metadata), SHA]):
+            self.assertEqual(daily.previous_successful_nightly("Nonary/vibeshine", releases)["source_commit"], SHA)
+        with patch.object(daily, "run", side_effect=[json.dumps(metadata), "b" * 40]):
+            with self.assertRaisesRegex(ValueError, "tag"):
+                daily.previous_successful_nightly("Nonary/vibeshine", releases)
+        with patch.object(daily, "run") as commands:
+            self.assertIsNone(daily.previous_successful_nightly("Nonary/vibeshine", [[releases[0][0]]]))
+            self.assertIsNone(daily.previous_successful_nightly("Nonary/vibeshine", [[
+                {"tag_name": "daily-2026-10-09", "draft": False, "prerelease": True, "published_at": "2026-10-09T00:00:00Z", "assets": []}
+            ]]))
+            commands.assert_not_called()
 
     def test_finalized_assets_reject_corruption_wrong_run_and_extra_files(self):
         info = daily.identity(SHA, dt.date(2026, 10, 11), "2.0.0")

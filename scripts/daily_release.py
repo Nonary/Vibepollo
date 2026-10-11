@@ -2,6 +2,7 @@
 import argparse
 import datetime as dt
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -50,6 +51,30 @@ def validate_migration(repository, target_commit, upstream_commit, confirmation)
         raise ValueError("Vibepollo daily is blocked until the exact upstream-to-primary migration is reviewed and confirmed")
 
 
+def previous_successful_nightly(repository, releases):
+    # Share the same verified published baseline used by the release notes.
+    spec = importlib.util.spec_from_file_location("nightly_notes", Path(__file__).with_name("nightly_notes.py"))
+    notes = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(notes)
+    def read_metadata(asset):
+        asset_id = asset.get("id")
+        if not isinstance(asset_id, int) or asset_id <= 0:
+            raise ValueError("Invalid published nightly metadata asset ID")
+        return json.loads(run("gh", "api", "-H", "Accept: application/octet-stream", f"repos/{repository}/releases/assets/{asset_id}"))
+    # A historical tag alone is not proof that this nightly was qualified.
+    candidates = [release for page in releases for release in page
+                  if any(asset.get("name") == "nightly-metadata.json" for asset in release.get("assets", []))]
+    return notes.previous_release(repository, candidates, read_metadata,
+                                  lambda tag: run("git", "rev-parse", f"refs/tags/{tag}^{{commit}}"))
+
+
+def emit_outputs(info):
+    with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+        for key, value in info.items():
+            output.write(f"{key}={value}\n")
+    print(json.dumps(info))
+
+
 def resolve():
     repository = os.environ["GITHUB_REPOSITORY"]
     branch = os.environ.get("DAILY_RELEASE_SOURCE_BRANCH", "")
@@ -59,6 +84,14 @@ def resolve():
     # Fetch only the explicitly confirmed remote branch; ignore local HEAD/tags.
     run("git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}:refs/remotes/origin/daily-source")
     commit = run("git", "rev-parse", "refs/remotes/origin/daily-source^{commit}")
+    run("git", "fetch", "--no-recurse-submodules", "origin", "refs/tags/*:refs/tags/*")
+    releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
+    previous = previous_successful_nightly(repository, releases)
+    if previous and previous["source_commit"] == commit:
+        # Each repository owns its baseline. Upstream advances cannot turn an
+        # unchanged target into a build or an assertion that migration happened.
+        emit_outputs({"commit": commit, "should_build": "false", "skip_reason": f"Source unchanged since {previous['tag']}"})
+        return
     if repository == "Nonary/Vibepollo":
         upstream = run("git", "ls-remote", "https://github.com/Nonary/vibeshine.git", "refs/heads/master").split()
         if len(upstream) != 2 or upstream[1] != "refs/heads/master":
@@ -67,7 +100,6 @@ def resolve():
     # GITHUB_TOKEN has no workflows:write capability. Do not select a target
     # with a different workflow tree and then discover that during publication.
     run("git", "diff", "--exit-code", os.environ["GITHUB_SHA"], commit, "--", ".github/workflows")
-    run("git", "fetch", "--no-recurse-submodules", "origin", "refs/tags/*:refs/tags/*")
     tags = run("git", "tag", "--merged", commit, "--sort=-version:refname", "--list", "[0-9]*.[0-9]*.[0-9]*").splitlines()
     source_tags = [tag for tag in tags if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?", tag)]
     if not source_tags:
@@ -75,13 +107,10 @@ def resolve():
     base = re.match(r"[0-9]+\.[0-9]+\.[0-9]+", source_tags[0])[0]
     info = identity(commit, dt.datetime.now(dt.timezone.utc).date(), base)
     existing = run("git", "ls-remote", "--tags", "origin", f"refs/tags/{info['tag']}")
-    releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
     if existing or any(r["tag_name"] == info["tag"] for page in releases for r in page):
         raise ValueError("Today's daily identity already exists; never overwrite or move it")
-    with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-        for key, value in info.items():
-            output.write(f"{key}={value}\n")
-    print(json.dumps(info))
+    info["should_build"] = "true"
+    emit_outputs(info)
 
 
 def verify_assets(root, product, commit, tag, version):
