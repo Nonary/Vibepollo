@@ -11,7 +11,6 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      NIGHTLY_VALIDATION_ROOT: ${{ runner.temp }}/qualified-nightly-linux
       PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -19,6 +18,8 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - name: Validate exact qualified package, preserve binaries, and publish missing Linux payload
+        env:
+          NIGHTLY_VALIDATION_ROOT: ${{ runner.temp }}/qualified-nightly-linux
         run: python scripts/recover_nightly_linux.py --product Vibepollo
       - name: Retain qualification and publication evidence
         if: always()
