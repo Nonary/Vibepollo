@@ -1429,42 +1429,6 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
-### leave_displays_off_after_streaming
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            When the last stream ends, don't wake or light the host's physical displays just to restore
-            the desktop. Vibepollo still removes its virtual display and puts back the modes and
-            arrangement it changed, but it doesn't wake displays that are asleep, and displays held
-            dark by another utility stay dark. Local keyboard or mouse input wakes them as usual.
-            Displays that stayed on during the stream are never turned off.
-            <br><br>
-            Turning a display back on lights its panel, so with the exclusive
-            [virtual_display_layout](#virtual_display_layout), physical displays mirror the virtual
-            display during the stream instead of turning off. They take no part in the desktop, and
-            the mirroring ends by itself when the virtual display goes away, including after a crash.
-            A display that is on shows the stream's desktop while it mirrors.
-            @note{Applies to macOS only for now. Windows and Linux log that the setting isn't supported
-            and restore displays as before: Windows can only turn every monitor off at once, which would
-            also turn off monitors that stayed on and can put Modern Standby PCs to sleep.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            disabled
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            leave_displays_off_after_streaming = enabled
-            @endcode</td>
-    </tr>
-</table>
-
 ### remote_monitor_mute_audio
 
 Do not capture or transmit host audio for Remote Monitor sessions. Video and
