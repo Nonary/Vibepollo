@@ -634,7 +634,7 @@ export const settingsCategories: SettingsCategory[] = [
           extendedField('qsv_preset', { encoderFamily: 'intel', platform: 'windows' }),
           extendedField('amd_quality', { encoderFamily: 'amd', platform: 'windows' }),
           number('fec_percentage', {
-            min: 1,
+            min: 0,
             max: 255,
             step: 1,
             labelKey: 'ui.settings.fields.fec_percentage.label',
@@ -992,7 +992,7 @@ export const settingsCategories: SettingsCategory[] = [
           number('minimum_fps_target', { min: 0, max: 1000, step: 0.1 }),
           extendedField('min_threads', { min: 1, step: 1 }),
           number('qp', { min: 0, max: 51, step: 1 }),
-          number('fec_percentage', { min: 1, max: 255, step: 1 }),
+          number('fec_percentage', { min: 0, max: 255, step: 1 }),
           number('video_max_batch_size_kb', { min: 1, step: 1 }),
           number('pyrowave_critical_fec_percentage', {
             min: 0,

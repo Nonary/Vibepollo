@@ -288,7 +288,7 @@ namespace config {
 
     std::string file_apps;
 
-    int fec_percentage;
+    int fec_percentage;  ///< Standard FEC percentage (0-255); 0 disables FEC.
     int video_max_batch_size_kb;
     bool pacing_batch_demand_limit;  ///< Experimental per-call demand-based video batch sizing (default off).
     bool pacing_group_demand_limit;  ///< Experimental per-frame demand pacing and batch bound (default off).

@@ -764,7 +764,7 @@
     "csrf_allowed_origins": "CSRF Allowed Origins",
     "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
     "fec_percentage": "FEC Percentage",
-    "fec_percentage_desc": "Percentage of error correcting packets per data packet in each video frame. Higher values can correct for more network packet loss, but at the cost of increasing bandwidth usage. PyroWave always sends without FEC.",
+    "fec_percentage_desc": "Percentage of error correcting packets per data packet in each video frame. Set to 0 to disable standard FEC. Higher values can correct for more network packet loss, but at the cost of increasing bandwidth usage. PyroWave parity is controlled separately by PyroWave Critical FEC Percentage.",
     "frame_limiter_fps_limit": "Frame limiter FPS limit",
     "frame_limiter_fps_limit_desc": "Optional global FPS limit for the frame limiter. MangoHUD and RTSS support up to three decimal places; NVIDIA Control Panel rounds fractional limits. Set to 0 to use the stream's requested FPS.",
     "mangohud_limiter_method": "MangoHUD limiter timing",
