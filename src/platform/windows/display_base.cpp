@@ -5,6 +5,7 @@
 // standard includes
 #include <algorithm>
 #include <cctype>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cwchar>
@@ -335,6 +336,7 @@ namespace platf::dxgi {
       case WAIT_ABANDONED:
       case DXGI_ERROR_ACCESS_LOST:
       case DXGI_ERROR_ACCESS_DENIED:
+        BOOST_LOG(info) << "[AURORA-REINIT] next_frame -> reinit [0x"sv << util::hex(status).to_string_view() << ']';
         return capture_e::reinit;
       default:
         BOOST_LOG(error) << "Couldn't acquire next frame [0x"sv << util::hex(status).to_string_view();
@@ -366,6 +368,7 @@ namespace platf::dxgi {
         return capture_e::ok;
 
       case DXGI_ERROR_ACCESS_LOST:
+        BOOST_LOG(info) << "[AURORA-REINIT] release_frame -> reinit (ACCESS_LOST)"sv;
         return capture_e::reinit;
 
       default:
@@ -376,6 +379,84 @@ namespace platf::dxgi {
 
   duplication_t::~duplication_t() {
     release_frame();
+  }
+
+  // AURORA: BREAK A DUPLICATION THAT IS TAKEN AWAY BEFORE IT EVER YIELDS A FRAME.
+  //
+  // MEASURED 2026-09-18 on VEGA: `AcquireNextFrame` returned DXGI_ERROR_ACCESS_LOST (0x887A0026)
+  // ~100-200 ms after every capture init, 85 times in one session -- the encoder re-opened 80
+  // times and delivered ONE frame, so the co-op peer pane stayed black indefinitely. The same
+  // run measured ZERO `factory not current` and ZERO display-switch reinits, so this is another
+  // party owning the output, not our own display/HDR/config state. It appears when a fullscreen
+  // game is still holding the resolution of the PREVIOUS session's orientation while this
+  // session has set the other one; it has hit both orientations, whichever one the game is not in.
+  //
+  // Re-assert the mode the session already applied. CDS_RESET re-applies even when the mode is
+  // unchanged, which drops an exclusive-fullscreen owner back to the desktop mode -- the game is
+  // forced into this session's geometry and the stream comes up, instead of the endless ~1.85 s
+  // re-open churn. Bounded and self-disarming: at most AURORA_MAX_REASSERTS attempts, and the
+  // budget is restored the moment a frame arrives.
+  //
+  // The counters live at namespace scope on purpose: the display object is destroyed and rebuilt
+  // on EVERY reinit (video.cpp captureThread), so a member would reset each cycle and never reach
+  // the threshold.
+  // MEASURED 2026-09-18 15:10, and why this counts a WINDOW rather than a consecutive run:
+  // a first attempt counted "reinits with no frame in between" and never fired, because the
+  // capture DOES succeed briefly between losses (32 losses in 65 s, yet the TV received recv=1
+  // and asked for 7,560 IDRs). Those short-lived successes reset a consecutive counter forever.
+  // Churn, not a run, is the symptom, so count losses inside AURORA_LOSS_WINDOW_MS.
+  static std::atomic<int> aurora_recent_losses {0};
+  static std::atomic<long long> aurora_window_start_ms {0};
+  static std::atomic<int> aurora_reasserts {0};
+  static std::atomic<bool> aurora_gave_up {false};
+  static std::atomic<bool> aurora_recovery_logged {false};
+  static constexpr int AURORA_LOSSES_BEFORE_REASSERT = 3;
+  static constexpr int AURORA_MAX_REASSERTS = 3;
+  static constexpr long long AURORA_LOSS_WINDOW_MS = 10000;
+
+  static long long aurora_steady_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+  }
+
+  static void aurora_reassert_output_mode(output_t &output, int session_width, int session_height, int session_fps) {
+    DXGI_OUTPUT_DESC desc {};
+    if (!output || FAILED(output->GetDesc(&desc))) {
+      BOOST_LOG(warning) << "[AURORA-REASSERT] no output description; cannot re-assert the mode"sv;
+      return;
+    }
+
+    DEVMODEW mode {};
+    mode.dmSize = sizeof(mode);
+    if (!EnumDisplaySettingsW(desc.DeviceName, ENUM_CURRENT_SETTINGS, &mode)) {
+      BOOST_LOG(warning) << "[AURORA-REASSERT] EnumDisplaySettingsW failed for "sv << to_utf8(desc.DeviceName);
+      return;
+    }
+
+    // Re-applying ENUM_CURRENT_SETTINGS alone would re-apply whatever mode the OWNER left behind.
+    // When the display has been moved off the session's geometry, put the session's geometry back:
+    // that is the case where the game is the thing that moves, not the stream.
+    const auto was_width = mode.dmPelsWidth;
+    const auto was_height = mode.dmPelsHeight;
+    const bool restore_session_mode = session_width > 0 && session_height > 0 &&
+                                      ((int) was_width != session_width || (int) was_height != session_height);
+    if (restore_session_mode) {
+      mode.dmPelsWidth = session_width;
+      mode.dmPelsHeight = session_height;
+      mode.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT;
+      if (session_fps > 0) {
+        mode.dmDisplayFrequency = session_fps;
+        mode.dmFields |= DM_DISPLAYFREQUENCY;
+      }
+    }
+
+    // CDS_RESET re-applies even an unchanged mode, which is what dislodges an exclusive-fullscreen owner.
+    const auto rc = ChangeDisplaySettingsExW(desc.DeviceName, &mode, nullptr, CDS_RESET, nullptr);
+    BOOST_LOG(info) << "[AURORA-REASSERT] "sv << (restore_session_mode ? "restored session mode "sv : "re-applied current mode "sv)
+                    << mode.dmPelsWidth << 'x' << mode.dmPelsHeight << '@' << mode.dmDisplayFrequency << "Hz on "sv
+                    << to_utf8(desc.DeviceName) << " (was "sv << was_width << 'x' << was_height
+                    << ", session wants "sv << session_width << 'x' << session_height << ", rc="sv << rc << ')';
   }
 
   capture_e display_base_t::capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) {
@@ -659,6 +740,34 @@ namespace platf::dxgi {
 
       switch (status) {
         case platf::capture_e::reinit:
+          {
+            // AURORA: see aurora_reassert_output_mode() above.
+            const auto now_ms = aurora_steady_ms();
+            const auto window_start = aurora_window_start_ms.load();
+            if (window_start == 0 || now_ms - window_start > AURORA_LOSS_WINDOW_MS) {
+              aurora_window_start_ms = now_ms;
+              aurora_recent_losses = 1;
+            } else {
+              ++aurora_recent_losses;
+            }
+
+            if (aurora_recent_losses >= AURORA_LOSSES_BEFORE_REASSERT) {
+              if (aurora_reasserts < AURORA_MAX_REASSERTS) {
+                ++aurora_reasserts;
+                aurora_reassert_output_mode(output, aurora_session_width, aurora_session_height, client_frame_rate);
+                // Each attempt costs a fresh window: without this the next loss ~1.9 s later would
+                // stack attempt 2 on a mode set that has not settled, and a mode change is itself a
+                // documented cause of ACCESS_LOST.
+                aurora_recent_losses = 0;
+                aurora_window_start_ms = now_ms;
+              } else if (!aurora_gave_up.exchange(true)) {
+                BOOST_LOG(warning) << "[AURORA-REASSERT] gave up after "sv << AURORA_MAX_REASSERTS
+                                   << " attempts: another owner keeps taking this display. Set the game to "sv
+                                   << aurora_session_width << 'x' << aurora_session_height << ", or close it."sv;
+              }
+            }
+          }
+          return status;
         case platf::capture_e::error:
         case platf::capture_e::interrupted:
           return status;
@@ -668,6 +777,21 @@ namespace platf::dxgi {
           }
           break;
         case platf::capture_e::ok:
+          {
+            // AURORA: the output is ours again. Report attribution ONCE -- "after 0 reassert(s)"
+            // means it recovered on its own. The reassert budget is deliberately NOT restored
+            // here: the measured failing session delivered ONE frame per 80 opens, so a single
+            // frame restoring it would let a half-working recovery re-set the display mode for
+            // the life of the session. Three attempts per process is the whole allowance.
+            // NOTE: the loss window is deliberately NOT cleared here. Brief successes between
+            // losses are exactly what this fault produces, and clearing on them is what stopped
+            // the first version from ever firing. The window expires on its own when the churn
+            // stops (AURORA_LOSS_WINDOW_MS).
+            const int attempts = aurora_reasserts.load();
+            if (attempts > 0 && !aurora_recovery_logged.exchange(true)) {
+              BOOST_LOG(info) << "[AURORA-REASSERT] capture recovered after "sv << attempts << " reassert(s)"sv;
+            }
+          }
           if (!push_captured_image_cb(std::move(img_out), true)) {
             return capture_e::ok;
           }
@@ -1288,6 +1412,9 @@ namespace platf::dxgi {
       }
     }
 
+    // AURORA: remember what this session asked for; the capture-loss recovery re-applies it.
+    aurora_session_width = config.width;
+    aurora_session_height = config.height;
     dxgi::output6_t output6 {};
     status = output->QueryInterface(IID_IDXGIOutput6, (void **) &output6);
     if (SUCCEEDED(status)) {

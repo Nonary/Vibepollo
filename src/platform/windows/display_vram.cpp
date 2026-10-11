@@ -25,6 +25,7 @@ extern "C" {
 // lib includes
 #include "display.h"
 #include "display_vram.h"
+#include "aurora_gpu_hevc.h"
 #include "misc.h"
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
   #include "game_activity.h"
@@ -437,7 +438,7 @@ namespace platf::dxgi {
     return cursor_img;
   }
 
-  blob_t compile_shader(LPCSTR file, LPCSTR entrypoint, LPCSTR shader_model) {
+  static blob_t compile_shader(LPCSTR file, LPCSTR entrypoint, LPCSTR shader_model) {
     blob_t::pointer msg_p = nullptr;
     blob_t::pointer compiled_p;
 
@@ -463,13 +464,15 @@ namespace platf::dxgi {
     return blob_t {compiled_p};
   }
 
-  blob_t compile_pixel_shader(LPCSTR file) {
+  static blob_t compile_pixel_shader(LPCSTR file) {
     return compile_shader(file, "main_ps", "ps_5_0");
   }
 
-  blob_t compile_vertex_shader(LPCSTR file) {
+  static blob_t compile_vertex_shader(LPCSTR file) {
     return compile_shader(file, "main_vs", "vs_5_0");
   }
+
+#include "gpu_hevc_device.inc"
 
   class d3d_base_encode_device final {
   public:
@@ -841,6 +844,12 @@ namespace platf::dxgi {
         truehdr_live_readback_request.reset();
       }
 #endif
+      // Eclipse: fill the co-op guard strip with a live copy of the content's own top rows FIRST; the
+      // real draw below then overwrites everything beneath it. Skipped entirely when the feature is
+      // off, so a pad of 0 is byte-identical to the stock path.
+      if (coop_top_pad_rows > 0) {
+        draw(*encode_input_res, out_Y_or_YUV_viewports_pad, out_UV_viewport_pad, encode_input_format, encode_input_sdr_to_pq, encode_input_truehdr_peak_expand);
+      }
       draw(
         *encode_input_res,
         out_Y_or_YUV_viewports,
@@ -1305,14 +1314,30 @@ namespace platf::dxgi {
       float in_width = display_width;
       float in_height = display_height;
 
-      // Ensure aspect ratio is maintained
-      auto scalar = std::fminf(out_width / in_width, out_height / in_height);
+      // CO-OP SEAM GUARD (config::video.coop_top_pad): reserve N rows of BLACK at the TOP.
+      //
+      // The render target is cleared to black once (see the rtvs_cleared pass below) and the
+      // content viewport never covers the reserved strip, so those rows stay black for the whole
+      // session at no per-frame cost. The encoder codes them ITSELF, which is the entire point:
+      // a motion vector from the content that points above its own top edge then resolves to
+      // pixels the encoder actually predicted from, instead of to the other host's pane after
+      // the client splices the two together.
+      //
+      // NOTE THIS IS THE HARDWARE PATH. The equivalent in video.cpp (`offsetH`) belongs to the
+      // SOFTWARE encoder, which neither co-op host uses -- patching only that one would build
+      // cleanly and measurably do nothing.
+      const int pad_rows = config::video.coop_top_pad > 0 ? config::video.coop_top_pad : 0;
+      const float top_pad = (float) pad_rows;
+      const float avail_h = (out_height - top_pad) > 1.0f ? (out_height - top_pad) : 1.0f;
+
+      // Ensure aspect ratio is maintained, fitting into what is left BELOW the reserved strip
+      auto scalar = std::fminf(out_width / in_width, avail_h / in_height);
       auto out_width_f = in_width * scalar;
       auto out_height_f = in_height * scalar;
 
       // result is always positive
       auto offsetX = (out_width - out_width_f) / 2;
-      auto offsetY = (out_height - out_height_f) / 2;
+      auto offsetY = top_pad + (avail_h - out_height_f) / 2;
 
       out_Y_or_YUV_viewports[0] = {offsetX, offsetY, out_width_f, out_height_f, 0.0f, 1.0f};  // Y plane
       out_Y_or_YUV_viewports[1] = out_Y_or_YUV_viewports[0];  // U plane
@@ -1326,7 +1351,32 @@ namespace platf::dxgi {
       out_Y_or_YUV_viewports_for_clear[2] = out_Y_or_YUV_viewports_for_clear[1];  // V plane
       out_Y_or_YUV_viewports_for_clear[2].TopLeftY += out_height;
 
+      // THE STRIP MUST NOT BE STATIC -- measured 2026-09-04, and it is the whole reason this is
+      // a second DRAW rather than just a black bar.
+      //
+      // A black strip is perfectly static, so the encoder codes it as SKIP: SKIP copies the
+      // co-located block out of the REFERENCE instead of transmitting pixels, so it can never
+      // correct itself. In the composite the reference is the composite's own previous picture,
+      // and the measurement is unambiguous -- the strip decodes at exactly 0.00 for the first
+      // ~150 frames after the IRAP and then sits at 92-122 for the rest of the session, never
+      // recovering, and everything that predicts from it degrades with it (whole-pane divergence
+      // 41-71 against 0.3-2.5 with no strip at all).
+      //
+      // The ORIGINAL guard rows do not have this problem, and the contrast is measured in one
+      // capture: real-content guard rows diverge 7.70 against a body of 5.29, i.e. they track,
+      // because real content is re-coded every frame instead of being skipped.
+      //
+      // So the strip is filled with a LIVE copy of the content's own top rows: draw the content
+      // once shifted UP by the strip height, then draw it again in its real position. The second
+      // draw overwrites everything below the strip, leaving the strip holding content rows
+      // 0..pad-1 -- adjacent, changing every frame, and re-coded every frame.
+      out_Y_or_YUV_viewports_pad = out_Y_or_YUV_viewports;
+      for (auto &v : out_Y_or_YUV_viewports_pad) { v.TopLeftY -= top_pad; }
+      coop_top_pad_rows = pad_rows;
+
       out_UV_viewport = {offsetX / 2, offsetY / 2, out_width_f / 2, out_height_f / 2, 0.0f, 1.0f};
+      out_UV_viewport_pad = out_UV_viewport;
+      out_UV_viewport_pad.TopLeftY -= top_pad / 2;
       out_UV_viewport_for_clear = {0, 0, (float) out_width / 2, (float) out_height / 2, 0.0f, 1.0f};
 
       float subsample_offset_in[16 / sizeof(float)] {1.0f / (float) out_width_f, 1.0f / (float) out_height_f};  // aligned to 16-byte
@@ -1954,6 +2004,11 @@ namespace platf::dxgi {
     std::array<D3D11_VIEWPORT, 3> out_Y_or_YUV_viewports_for_clear;
     D3D11_VIEWPORT out_UV_viewport;
     D3D11_VIEWPORT out_UV_viewport_for_clear;
+    // Same content, drawn one strip HIGHER, so the reserved strip keeps a LIVE copy of the
+    // content's own top rows. See the coop_top_pad note in init().
+    std::array<D3D11_VIEWPORT, 3> out_Y_or_YUV_viewports_pad;
+    D3D11_VIEWPORT out_UV_viewport_pad;
+    int coop_top_pad_rows = 0;
 
     DXGI_FORMAT format;
   };
@@ -3202,6 +3257,12 @@ namespace platf::dxgi {
     if (!device->prepare_device(shared_from_this(), adapter.get(), pix_fmt)) {
       return nullptr;
     }
+    return device;
+  }
+
+  std::unique_ptr<gpu_hevc_encode_device_t> display_vram_t::make_gpu_hevc_encode_device(const ::video::config_t& config) {
+    auto device = std::make_unique<d3d_gpu_hevc_encode_device_t>();
+    if (!device->init(adapter.get(), config, is_hdr())) return nullptr;
     return device;
   }
 

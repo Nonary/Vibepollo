@@ -102,6 +102,18 @@ namespace rtsp_stream {
     bool prefer_sdr_10bit = false;
     // Explicit HDR-off override. Unlike prefer_sdr_10bit, this does not request Main10.
     bool force_sdr = false;
+    bool aurora_gpu_hevc = false;
+    // Eclipse: this launch is one pane of an Eclipse co-op session (umbraCoop=1), so the co-op-only
+    // encoder tuning applies to it and to nothing else (video::config_t::umbra_coop).
+    bool umbra_coop = false;
+    // Eclipse: the client asked for the host's physical monitor(s) off while it streams (umbraMonitorOff=1,
+    // host_monitor.h). Implies the virtual display.
+    bool host_monitor_off = false;
+    // Wired pin (wired_pin.h): the launch's source address and the client's own cards.
+    std::string client_address;
+    std::string wired_mac;
+    std::vector<std::string> own_macs;
+    std::vector<std::string> own_ips;
     bool enable_sops;
     // Moonlight's VRR request passed its launch-time VSync, display-refresh,
     // and adaptive-headroom checks. The renderer may still fall back later.

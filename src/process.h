@@ -45,6 +45,10 @@ namespace VDISPLAY {
 #define FALLBACK_DESKTOP_UUID "EAAC6159-089A-46A9-9E24-6436885F6610"
 #define REMOTE_INPUT_UUID "8CB5C136-DA67-4F99-B4A1-F9CD35005CF4"
 #define TERMINATE_APP_UUID "E16CBE1B-295D-4632-9A76-EC4180C857D3"
+// Eclipse: the built-in co-op pane (proc::parse). Eclipse resolves it by this exact NAME on both
+// hosts, so the name is the contract; the UUID only keeps it stable across restarts.
+#define COOP_PANE_UUID "4E4F11CD-A1C7-4A7B-A04F-C7581FEB2A56"
+#define COOP_PANE_NAME "Co-op Pane"
 
 namespace bp = boost_process_shim;
 #define DEFAULT_APP_IMAGE_PATH SUNSHINE_ASSETS_DIR "/box.png"
@@ -237,6 +241,7 @@ namespace proc {
     std::string get_last_run_app_name();
     std::string get_running_app_uuid();
     bp::environment get_env();
+    bool prepare_gpu_hevc_resume(const rtsp_stream::launch_session_t& session);
     void resume();
     void pause(bool stream_lifecycle_lock_held = false);
     void terminate(
@@ -379,4 +384,11 @@ namespace proc {
   extern std::string input_only_app_id_str;
   extern int terminate_app_id;
   extern std::string terminate_app_id_str;
+
+  /** the host: is the GPU HEVC co-op encoder installed beside this executable (gpu-hevc\ with the
+   *  8-bit library and its kernels)? What serverinfo's UmbraCaps bit 3 reports. */
+  bool gpu_hevc_encoder_installed();
+
+  /** the host: is this app the co-op pane, built in or a same-named apps.json entry? */
+  bool is_coop_pane(const ctx_t &app);
 }  // namespace proc

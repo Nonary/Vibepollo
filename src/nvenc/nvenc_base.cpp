@@ -480,7 +480,12 @@ namespace nvenc {
       enc_config.version = api::config_version(selected_api_version);
     }
     enc_config.profileGUID = NV_ENC_CODEC_PROFILE_AUTOSELECT_GUID;
-    enc_config.gopLength = NVENC_INFINITE_GOPLENGTH;
+    // gop_length 0 keeps the stock infinite GOP; a positive value forces periodic IDRs so a
+    // co-op peer can re-anchor without the OTHER host also emitting a keyframe.
+    // Eclipse: co-op sessions only (umbraCoop), like the avcodec gop_length -- an ordinary stream keeps
+    // the stock infinite GOP whatever sunshine.conf says.
+    const int coop_gop = client_config.umbra_coop ? config.gop_length : 0;
+    enc_config.gopLength = coop_gop > 0 ? (uint32_t) coop_gop : NVENC_INFINITE_GOPLENGTH;
     enc_config.frameIntervalP = 1;
     enc_config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
     enc_config.rcParams.zeroReorderDelay = 1;
@@ -503,11 +508,46 @@ namespace nvenc {
 
     auto set_h264_hevc_common_format_config = [&](auto &format_config) {
       format_config.repeatSPSPPS = 1;
-      format_config.idrPeriod = NVENC_INFINITE_GOPLENGTH;
-      format_config.sliceMode = 3;
-      format_config.sliceModeData = client_config.slicesPerFrame;
+      // idrPeriod must track gopLength or the two disagree and the GOP is not honoured.
+      format_config.idrPeriod = coop_gop > 0 ? (uint32_t) coop_gop : NVENC_INFINITE_GOPLENGTH;
+      if (config.slice_rows) {
+        // sliceMode 2 = "sliceModeData CTB rows per slice"; 1 row gives an exact one
+        // slice per CTB row, which "N slices per picture" cannot guarantee.
+        format_config.sliceMode = 2;
+        format_config.sliceModeData = 1;
+      } else {
+        format_config.sliceMode = 3;
+        format_config.sliceModeData = client_config.slicesPerFrame;
+      }
       format_config.chromaFormatIDC = buffer_is_yuv444() ? 3 : 1;
       format_config.enableFillerDataInsertion = config.insert_filler_data;
+
+      // Multi-slice frames are only used by clients that treat each slice as an
+      // independent region (co-op split-screen composites one slice per host).
+      // Without this, inter prediction reaches across the slice boundary and
+      // corrupts a band of rows that grows until the next IDR. The caps entry is
+      // explicit that this restricts "prediction vectors for inter macroblocks in
+      // each slice ... to the slice region", and also disables in-loop filtering
+      // across slice boundaries, which removes the deblocking smear at the seam.
+      //
+      // Eclipse: AUTOMATIC (-1, the default) ALSO MEANS ON FOR AN ECLIPSE CO-OP PANE. Co-op asks
+      // each host for ONE slice (its own pane), so the slice test alone left a fresh host
+      // unconstrained -- and the composite then shows blocky damage along the seam (register
+      // `nvenc_constrained`, measured 2026-08-18; the rig only worked because it set 1 by hand).
+      // An explicit 0 or 1 in sunshine.conf still wins.
+      const bool want_constrained = config.constrained < 0
+                                        ? (client_config.slicesPerFrame > 1 || config.slice_rows || client_config.umbra_coop)
+                                        : (config.constrained != 0);
+      if (want_constrained) {
+        if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_CONSTRAINED_ENCODING)) {
+          format_config.enableConstrainedEncoding = 1;
+          encoder_params.constrained_slices = true;
+          BOOST_LOG(info) << "NvEnc: constrained encoding enabled for " << client_config.slicesPerFrame << " slices/frame"
+                          << (client_config.umbra_coop ? " (co-op pane)" : "");
+        } else {
+          BOOST_LOG(warning) << "NvEnc: constrained encoding NOT supported by this gpu; slices will not be independently decodable";
+        }
+      }
     };
 
     auto set_ref_frames = [&](uint32_t &ref_frames_option, NV_ENC_NUM_REF_FRAMES &L0_option, uint32_t ref_frames_default) {
@@ -585,11 +625,18 @@ namespace nvenc {
 #endif
       };
 
+      encoder_params.codec = client_config.videoFormat;
+
       switch (client_config.videoFormat) {
       case 0:
         {
           // H.264
-          enc_config.profileGUID = buffer_is_yuv444() ? NV_ENC_H264_PROFILE_HIGH_444_GUID : NV_ENC_H264_PROFILE_HIGH_GUID;
+          // MAIN when asked for: it drops the 8x8 transform, which is what makes an NVENC pane
+          // spliceable with an AMD/AMF one (see nvenc_config.h h264_main_profile). yuv444 still
+          // requires the HIGH 4:4:4 profile and cannot honour the request.
+          enc_config.profileGUID = buffer_is_yuv444() ? NV_ENC_H264_PROFILE_HIGH_444_GUID
+                                   : (config.h264_main_profile ? NV_ENC_H264_PROFILE_MAIN_GUID
+                                                               : NV_ENC_H264_PROFILE_HIGH_GUID);
           auto &format_config = enc_config.encodeCodecConfig.h264Config;
           set_h264_hevc_common_format_config(format_config);
           if (config.h264_cavlc || !get_encoder_cap(NV_ENC_CAPS_SUPPORT_CABAC)) {
@@ -606,7 +653,31 @@ namespace nvenc {
           set_ref_frames(format_config.maxNumRefFrames, format_config.numRefL0, 5);
           set_minqp_if_enabled(config.min_qp_h264);
           fill_h264_hevc_vui(format_config.h264VUIParameters);
-          if (client_config.enableIntraRefresh == 1) {
+          // INTRA REFRESH, H.264. Mirrors the HEVC branch below, which was the ONLY place this
+          // existed -- so on H.264 (which is what mixed-vendor co-op streams, see
+          // coop-h264-sidesteps-ctb) intra refresh was unreachable no matter how it was asked for.
+          //
+          // It is ORed with `config.intra_refresh` (the `nvenc_intra_refresh` conf key) because
+          // that key had NO CONSUMER AT ALL: config.cpp parses it into nvenc_config.h's
+          // `intra_refresh` and nothing ever read the field. Measured 2026-09-05 with the key
+          // confirmed live in sunshine.conf: the pane's busiest macroblock row held a median of 6
+          // intra MBs of 240 and no band migrated. Every previous test of this key was toggling a
+          // no-op. The client-request path (x-ss-video[0].intraRefresh, rtsp.cpp) is kept and
+          // takes effect the same way; the HEVC branch is deliberately left client-gated only.
+          //
+          // WHY IT IS WANTED: a rolling refresh reseeds a few macroblock slots per frame, so NO
+          // frame ever repaints the pane -- it cannot flash, which whole-frame refresh does.
+          //
+          // RISK TO WATCH: singleSliceIntraRefresh. Without it NVENC may split the picture into
+          // MULTIPLE SLICES, and the co-op splice is measured at one slice per pane (400/400 AUs);
+          // two slices per pane was retired for corrupting row 544. Verify `slices=1+1` in the
+          // [COOP-AVC] counters after enabling this.
+          BOOST_LOG(info) << "NvEnc: H.264 intra-refresh gate: client="
+                          << client_config.enableIntraRefresh
+                          << " conf=" << config.intra_refresh
+                          << " cap_intra_refresh=" << (int) get_encoder_cap(NV_ENC_CAPS_SUPPORT_INTRA_REFRESH)
+                          << " cap_single_slice=" << (int) get_encoder_cap(NV_ENC_CAPS_SINGLE_SLICE_INTRA_REFRESH);
+          if (client_config.enableIntraRefresh == 1 || config.intra_refresh) {
             if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_INTRA_REFRESH)) {
               format_config.enableIntraRefresh = 1;
               format_config.intraRefreshPeriod = 300;
@@ -638,6 +709,17 @@ namespace nvenc {
             format_config.outputBitDepth = NV_ENC_BIT_DEPTH_8;
           }
 #endif
+          // enableConstrainedEncoding restricts inter prediction to the slice
+          // region, but the DEBLOCKING filter is a separate stage and still runs
+          // across the slice boundary, mixing pixels from the neighbouring slice
+          // into the last rows of this one. With one host per slice those are
+          // another machine's pixels, which shows up as a thin band of artifacts
+          // exactly at the seam. In H.264 constrained pictures NVENC handles this
+          // itself (disable_deblocking_filter_idc = 2); HEVC needs the explicit
+          // flag, which maps to slice_loop_filter_across_slices_enabled_flag = 0.
+          if (encoder_params.constrained_slices) {
+            format_config.disableDeblockAcrossSliceBoundary = 1;
+          }
           set_ref_frames(format_config.maxNumRefFramesInDPB, format_config.numRefL0, 5);
           set_minqp_if_enabled(config.min_qp_hevc);
           fill_h264_hevc_vui(format_config.hevcVUIParameters);
@@ -1034,6 +1116,16 @@ namespace nvenc {
       }
     }
 #endif
+    // enableConstrainedEncoding only arms the feature; each picture must also ask
+    // to be coded as a constrained picture. AV1 has no equivalent (it uses tiles,
+    // which are already prediction-independent), so it is intentionally excluded.
+    if (encoder_params.constrained_slices) {
+      if (encoder_params.codec == 1) {
+        pic_params.codecPicParams.hevcPicParams.constrainedFrame = 1;
+      } else if (encoder_params.codec == 0) {
+        pic_params.codecPicParams.h264PicParams.constrainedFrame = 1;
+      }
+    }
 
     if (nvenc_failed(nvenc->nvEncEncodePicture(encoder, &pic_params))) {
       BOOST_LOG(error) << "NvEnc: NvEncEncodePicture() failed: " << last_nvenc_error_string;

@@ -47,6 +47,7 @@ extern "C" {
 #include "platform/common.h"
 #include "process.h"
 #include "pyrowave_host.h"
+#include "rtsp.h"  // Eclipse: gpu_hevc_runtime_lost waits for streams to end
 #include "sync.h"
 #include "video.h"
 #include "video_encoder_probe_policy.h"
@@ -1177,6 +1178,18 @@ namespace video {
     ASYNC_TEARDOWN = 1 << 11,  ///< Encoder supports async teardown on a different thread
     FIXED_GOP_SIZE = 1 << 12,  ///< Use fixed small GOP size (encoder doesn't support on-demand IDR frames)
     OWNER_THREAD_TEARDOWN = 1 << 13,  ///< Conversion resources require their current graphics context during destruction
+  };
+
+  // Eclipse: the GPU HEVC co-op encoder (gpu_hevc_device.inc) -- an explicit per-session opt-in (auroraGpuHevc=1).
+  class gpu_hevc_encode_session_t: public encode_session_t {
+  public:
+    explicit gpu_hevc_encode_session_t(std::unique_ptr<platf::gpu_hevc_encode_device_t> d): device(std::move(d)) {}
+    int convert(platf::img_t& img) override { return device->convert(img); }
+    void request_idr_frame() override { force_idr = true; }
+    void request_normal_frame() override { force_idr = false; }
+    void invalidate_ref_frames(int64_t, int64_t) override { force_idr = true; }
+    std::unique_ptr<platf::gpu_hevc_encode_device_t> device;
+    bool force_idr = true;
   };
 
   class avcodec_encode_session_t: public encode_session_t {
@@ -2346,6 +2359,10 @@ namespace video {
            return config::video.amd.amd_vbaq;
          }}},
         {"enforce_hrd"s, &config::video.amd.amd_enforce_hrd},
+        // Eclipse: ROLLING INTRA REFRESH for mixed-vendor co-op -- ffmpeg's h264_amf exposes it ("Intra Refresh MBs
+        // Number Per Slot in Macroblocks"). It reseeds a few macroblock slots per frame, so no frame repaints the pane.
+        // Unset by default: absent key -> std::optional stays empty -> never applied -> stock behaviour, bit for bit.
+        {"intra_refresh_mb"s, &config::video.amd.amd_intra_refresh_mb},
       },
       {},  // SDR-specific options
       {},  // HDR-specific options
@@ -2463,7 +2480,17 @@ namespace video {
       // 'keyint=-1' in the parameters ourselves.
       {
         {"forced-idr"s, 1},
-        {"x265-params"s, "info=0:keyint=-1"s},
+        {"x265-params"s, [](const config_t &config) {
+           // Eclipse: keyint=-1 is x265's INFINITE GOP and silently overrides ctx->gop_size, so a periodic IDR needs
+           // the keyint here too. open-gop=0 is required: without it libx265 places CRA (open GOP) random-access
+           // points, which do not reset the reference chain (measured 2026-08-23, ffmpeg 8.0.1). Co-op sessions only.
+           auto g = config.umbra_coop ? config::video.gop_length : 0;
+           if (g > 0) {
+             auto n = std::to_string(g);
+             return "info=0:open-gop=0:keyint="s + n + ":min-keyint="s + n;
+           }
+           return "info=0:keyint=-1"s;
+         }},
         {"preset"s, &config::video.sw.sw_preset},
         {"tune"s, &config::video.sw.sw_tune},
       },
@@ -3764,7 +3791,21 @@ namespace video {
     thread_local logging::min_max_avg_periodic_logger<double> encode_duration_logger(debug, "Video encode call duration", "ms");
     const auto encode_start = std::chrono::steady_clock::now();
     int result = -1;
-    if (auto avcodec_session = dynamic_cast<avcodec_encode_session_t *>(&session)) {
+    if (auto gpu_session = dynamic_cast<gpu_hevc_encode_session_t *>(&session)) {
+      // Eclipse: the GPU HEVC co-op encoder hands back whole access units.
+      std::vector<uint8_t> bytes;
+      bool idr = false;
+      if (gpu_session->device->encode(frame_nr, gpu_session->force_idr, bytes, idr) && !bytes.empty()) {
+        gpu_session->force_idr = false;
+        auto packet = std::make_unique<packet_raw_generic>(std::move(bytes), frame_nr, idr);
+        packet->channel_data = channel_data;
+        packet->frame_timestamp = frame_timestamp;
+        packet->capture_timestamp = capture_timestamp ? capture_timestamp : frame_timestamp;
+        packet->host_processing_timestamp = host_processing_timestamp;
+        packets->raise(std::move(packet));
+        result = 0;
+      }
+    } else if (auto avcodec_session = dynamic_cast<avcodec_encode_session_t *>(&session)) {
       result = encode_avcodec(frame_nr, *avcodec_session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp);
     } else if (auto nvenc_session = dynamic_cast<nvenc_encode_session_t *>(&session)) {
       result = encode_nvenc(frame_nr, *nvenc_session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp);
@@ -4126,6 +4167,12 @@ namespace video {
         // Fixed GOP for encoders that don't support on-demand IDR (e.g. Media Foundation)
         ctx->gop_size = 120;  // ~2 seconds at 60 FPS - larger to reduce oversized IDR frame frequency
         ctx->keyint_min = 120;
+      } else if (config::video.gop_length > 0 && config.umbra_coop) {
+        // Eclipse: a PERIODIC IDR for CO-OP SESSIONS ONLY (launch arg umbraCoop=1) -- co-op's seam fix needs it:
+        // the divider limits how much damage is INJECTED, a short GOP limits how long it STAYS. keyint_min ==
+        // gop_size asks for a fixed period. The avcodec-path equivalent of nvenc_gop_length.
+        ctx->gop_size = config::video.gop_length;
+        ctx->keyint_min = config::video.gop_length;
       } else {
         ctx->gop_size = encoder.flags & LIMITED_GOP_SIZE ?
                           std::numeric_limits<std::int16_t>::max() :
@@ -4145,6 +4192,11 @@ namespace video {
       // We forcefully reset the flags to avoid clash on reuse of AVCodecContext
       ctx->flags = 0;
       ctx->flags |= AV_CODEC_FLAG_CLOSED_GOP | AV_CODEC_FLAG_LOW_DELAY;
+      // Eclipse: DEBLOCKING FILTER ON -- restores ffmpeg's own {"flags","+loop"} default that the reset above
+      // wipes; without it every AMF slice carried disable_deblocking_filter_idc = 1 (measured 2026-09-01: the
+      // constant fine blockiness on the AMD half). Generic avcodec path (AMF, VAAPI, QSV, software); NVENC's native
+      // path never reaches it. Requires Eclipse's coop_avc.c PPS rewrite (2026-09-02) for mixed-vendor splicing.
+      ctx->flags |= AV_CODEC_FLAG_LOOP_FILTER;
 
       ctx->flags2 |= AV_CODEC_FLAG2_FAST;
 
@@ -4327,6 +4379,12 @@ namespace video {
             ctx->rc_buffer_size += ctx->rc_buffer_size * config::video.nv_legacy.vbv_percentage_increase / 100;
           }
 #endif
+          // Eclipse: AMF ran a 1.0-frame VBV, below AMD's documented 1.1-3 frame floor for LCVBR, starving every
+          // intra picture (measured 2026-09-01: a full intra pane in ~63 KB). 2.0 frames is mid-range. Vibepollo
+          // names its FFmpeg AMF encoder "amdvce_ffmpeg" (Apollo: "amdvce"); its native AMF path never gets here.
+          if (encoder.name == "amdvce_ffmpeg") {
+            ctx->rc_buffer_size = (bitrate / config.framerate) * 2;
+          }
         }
       }
 
@@ -4636,7 +4694,9 @@ namespace video {
     if (gate_contended_out) *gate_contended_out = false;
     bool operation_cancelled = false;
     bool gate_contended = false;
-    if (dynamic_cast<platf::avcodec_encode_device_t *>(encode_device.get())) {
+    if (dynamic_cast<platf::gpu_hevc_encode_device_t *>(encode_device.get())) {
+      return std::make_unique<gpu_hevc_encode_session_t>(boost::dynamic_pointer_cast<platf::gpu_hevc_encode_device_t>(std::move(encode_device)));
+    } else if (dynamic_cast<platf::avcodec_encode_device_t *>(encode_device.get())) {
       auto avcodec_encode_device = boost::dynamic_pointer_cast<platf::avcodec_encode_device_t>(std::move(encode_device));
       return make_avcodec_encode_session(disp, encoder, config, width, height, std::move(avcodec_encode_device));
     } else if (dynamic_cast<platf::nvenc_encode_device_t *>(encode_device.get())) {
@@ -5612,12 +5672,34 @@ namespace video {
     };
   }
 
+  void gpu_hevc_runtime_lost(const std::string &detail) {
+    static std::atomic_bool scheduled {false};
+    if (scheduled.exchange(true)) {
+      return;
+    }
+    BOOST_LOG(error) << "[AURORA-GPU-HEVC] the GPU runtime in this process is unusable (" << detail
+                     << "); seen after the PC slept and the GPU was reset. Only a new process recovers: the host restarts"
+                        " itself as soon as nothing is streaming, and the next co-op start works.";
+    std::thread([] {
+      while (rtsp_stream::session_count() > 0) {
+        std::this_thread::sleep_for(1s);
+      }
+      BOOST_LOG(warning) << "[AURORA-GPU-HEVC] restarting the host to recover the GPU runtime";
+      platf::restart();
+    }).detach();
+  }
+
   std::unique_ptr<platf::encode_device_t> make_encode_device(
     platf::display_t &disp,
     const encoder_t &encoder,
     const config_t &config,
     hdr_latch_t *hdr_latch = nullptr,
     bool deferred_avcodec = false) {
+    if (config.aurora_gpu_hevc) {
+      // Eclipse: the GPU HEVC co-op encoder, only when the session asked for it.
+      BOOST_LOG(info) << "[AURORA-GPU-HEVC] explicit experimental session, CTB32/minCB16, no CPU fallback";
+      return disp.make_gpu_hevc_encode_device(config);
+    }
     std::unique_ptr<platf::encode_device_t> result;
 
 #ifdef _WIN32

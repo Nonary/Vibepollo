@@ -311,6 +311,22 @@
                                     Profile="all"
                                     Scope="any" />
       </Component>
+
+      <!-- Eclipse Link (aurora-link.exe) is a SEPARATE executable, so the rules above do not cover it.
+           Without its own exclusion the pad host binds UDP :48200 and reports it is listening while Windows
+           silently blocks every pad packet from the Pi (measured on SKYNET 2026-07-29). UDP only: its one
+           inbound listener is the pad port. -->
+      <Component Id="Fw_EclipseLink" Guid="{6B0E3C1D-5A7F-4E2B-9C84-2F1D7A3E9B50}">
+        <CreateFolder />
+        <Firewall:FirewallException xmlns:Firewall="http://schemas.microsoft.com/wix/FirewallExtension"
+                                    Id="FE_EclipseLinkExe"
+                                    Name="Eclipse Link"
+                                    Program="[INSTALL_ROOT]aurora-link.exe"
+                                    Protocol="udp"
+                                    IgnoreFailure="yes"
+                                    Profile="all"
+                                    Scope="any" />
+      </Component>
     </DirectoryRef>
   </Fragment>
 </Wix>

@@ -175,6 +175,14 @@ namespace nvenc {
       int video_format = -1;
       uint32_t ref_frames_in_dpb = 0;
       bool rfi = false;
+      // Co-op split-screen: with >1 slice per frame the client composites slices
+      // from two different hosts into one picture. Inter prediction is not stopped
+      // by a slice boundary, so a motion vector reaching across it lands on the
+      // OTHER host's content in the decoder's reference picture and smears the seam.
+      // Constrained encoding restricts inter prediction to the slice region, which
+      // is what makes a 1px seam possible instead of a ~320 row black guard band.
+      bool constrained_slices = false;
+      int codec = 0;  ///< 0 = H.264, 1 = HEVC, 2 = AV1. Needed to pick the pic params union member.
     } encoder_params;
 
     std::string last_nvenc_error_string;

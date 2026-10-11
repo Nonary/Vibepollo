@@ -29,6 +29,7 @@
       <ComponentRef Id="ApolloSvc"/>
       <ComponentRef Id="RemoveLegacyApolloUninstallKey"/>
       <ComponentRef Id="Fw_Exceptions"/>
+      <ComponentRef Id="Fw_EclipseLink"/>
       <ComponentRef Id="StartMenuShortcut"/>
       <ComponentRef Id="SudoVdaRegistryDefaults"/>
       <ComponentRef Id="ArpCustomUninstallEntry"/>
