@@ -78,7 +78,8 @@ if not notes_root.exists():
     import importlib.util
     spec=importlib.util.spec_from_file_location('nightly_notes',Path(__file__).with_name('nightly_notes.py'))
     generator=importlib.util.module_from_spec(spec); spec.loader.exec_module(generator)
-    generator.generate(repo,tag,version,sha,notes_root,notes_root/'release-notes.md')
+    generator.generate(repo,tag,version,sha,stage,notes_root/'release-notes.md')
+    shutil.copyfile(stage/'nightly-metadata.json',notes_root/'nightly-metadata.json')
 metadata=json.loads((notes_root/'nightly-metadata.json').read_text(encoding='utf-8'))
 assert metadata['source_commit']==sha and metadata['version']==version and metadata['commits_total']>0
 (stage/'nightly-metadata.json').write_text(json.dumps(metadata,indent=2)+'\n',encoding='utf-8')

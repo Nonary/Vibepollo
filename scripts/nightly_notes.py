@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
+from urllib.parse import quote
 
 REPOSITORIES = {'Nonary/vibeshine', 'Nonary/Vibepollo', 'Nonary/moonlight-qt'}
 
@@ -153,6 +154,14 @@ def generate(repo, tag, version, source, assets, notes):
         body = body.replace('preceding successfully published nightly', 'preceding stable release')
         metadata.update(first_nightly=True, previous_successful_tag=None, initial_stable_tag=previous['tag'])
     root = Path(assets)
+    product = {'Nonary/vibeshine': 'Vibeshine', 'Nonary/Vibepollo': 'Vibepollo'}.get(repo)
+    if product and (root / (product + 'Setup.exe')).is_file():
+        downloads = [f'[Windows installer](https://github.com/{repo}/releases/download/{tag}/{product}Setup.exe)']
+        packages = list(root.glob(product.lower() + '-*.pkg.tar.zst'))
+        if len(packages) == 1:
+            downloads.append(f'[Linux (Arch x86_64)](https://github.com/{repo}/releases/download/{tag}/{quote(packages[0].name)})')
+        first_line, remainder = body.split('\n', 1)
+        body = first_line + '\n\n' + ' · '.join(downloads) + '\n' + remainder
     (root / 'nightly-metadata.json').write_text(json.dumps(metadata, indent=2) + '\n', encoding='utf-8')
     Path(notes).write_text(body, encoding='utf-8')
     # Include metadata and existing manifest/provenance; never hash SHA256SUMS itself.
