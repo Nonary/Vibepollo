@@ -121,6 +121,47 @@ build
                     self.assertIn("-DSUNSHINE_ENABLE_CUDA=OFF", result.stdout)
                     self.assertNotIn("-DCMAKE_CUDA_COMPILER=", result.stdout)
 
+    def test_final_pascal_ctest_and_package_gates_still_run_in_order(self):
+        # Execute the real recipe check/package functions with tiny external
+        # tool fixtures. A failed Pascal or CTest gate must block packaging.
+        with tempfile.TemporaryDirectory() as directory:
+            stage = Path(directory)
+            (stage / "build").mkdir()
+            (stage / "cuda/bin").mkdir(parents=True)
+            (stage / "build/vibepollo").write_text(
+                '#!/bin/sh\necho version >> "$GATE_LOG"\necho fixture-version\n')
+            (stage / "cuda/bin/cuobjdump").write_text(
+                '#!/bin/sh\necho pascal >> "$GATE_LOG"\nprintf "%s\\n" "$DEVICE_ELF"\n')
+            script = '''
+set -e
+export GATE_LOG="$PWD/gates"
+chmod +x build/vibepollo cuda/bin/cuobjdump
+source "$REPO/packaging/linux/Arch/PKGBUILD"
+srcdir="$PWD"
+pkgdir="$PWD/pkg"
+ctest() { echo ctest >> "$GATE_LOG"; return "$CTEST_RESULT"; }
+cmake() { [[ "$1" == --install && "$2" == build ]]; echo package >> "$GATE_LOG"; }
+check
+cd "$srcdir"
+package
+'''
+            for name, elf, ctest_result, gates in (
+                    ("success", "fixture.sm_61.cubin", "0", ["version", "pascal", "ctest", "package"]),
+                    ("missing-pascal", "fixture.sm_89.cubin", "0", ["version", "pascal"]),
+                    ("failed-ctest", "fixture.sm_61.cubin", "1", ["version", "pascal", "ctest"])):
+                with self.subTest(gate=name):
+                    (stage / "gates").unlink(missing_ok=True)
+                    result = subprocess.run([BASH, "-c", script], cwd=stage,
+                                            env=dict(os.environ, REPO=ROOT.as_posix(), CARCH="x86_64",
+                                                     _use_cuda="true", _build_tests="ON",
+                                                     DEVICE_ELF=elf, CTEST_RESULT=ctest_result),
+                                            capture_output=True, text=True)
+                    self.assertEqual((stage / "gates").read_text().splitlines(), gates)
+                    if name == "success":
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

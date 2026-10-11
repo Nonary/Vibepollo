@@ -42,6 +42,7 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.linux-cache/ccache
       CCACHE_MAXSIZE: 1G
       CCACHE_COMPILERCHECK: content
+      # Full toolkit installation is fresh job-local scratch, never a shared cache.
       CUDA_CACHE_DIR: ${{ github.workspace }}/.linux-cache/cuda
       VALIDATION_ONLY: ${{ inputs.validation_only }}
       BRANCH: ${{ github.head_ref || github.ref_name }}
@@ -309,14 +310,12 @@ jobs:
           chown -R builder:builder .linux-cache
           ccache --set-config=base_dir="$GITHUB_WORKSPACE"
 
-      - name: Restore verified CUDA source and toolkit
+      - name: Restore checksum-verified CUDA installer
         id: cuda-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
-          path: |
-            .linux-cache/cuda
-            pkg/cuda-x86_64.run
-          key: ${{ inputs.cache_namespace }}-cuda-${{ runner.arch }}-${{ steps.toolchain.outputs.abi }}-${{ hashFiles('packaging/linux/Arch/PKGBUILD', 'packaging/linux/patches/**/cuda-12-math_functions.patch', 'scripts/prepare-linux-cuda.sh', 'scripts/seed-linux-package-source.sh', 'scripts/check-linux-partial-cache.sh', 'scripts/build-linux-component-tests.py') }}
+          path: pkg/cuda-x86_64.run
+          key: ${{ inputs.cache_namespace }}-cuda-installer-v2-${{ runner.arch }}-${{ steps.toolchain.outputs.abi }}-${{ hashFiles('packaging/linux/Arch/PKGBUILD', 'packaging/linux/patches/**/cuda-12-math_functions.patch', 'scripts/prepare-linux-cuda.sh', 'scripts/seed-linux-package-source.sh', 'scripts/check-linux-partial-cache.sh', 'scripts/build-linux-component-tests.py') }}
 
       - name: Restore compiler cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
@@ -504,7 +503,7 @@ jobs:
             packaging/linux/patches/x86_64/cuda-12-math_functions.patch pkg/compiler-cache.log >> "$GITHUB_OUTPUT"
           ccache --show-stats
 
-      - name: Save verified CUDA source and toolkit
+      - name: Save checksum-verified CUDA installer
         if: >-
           always() && steps.cuda-cache.outputs.cache-hit != 'true' &&
           ((success() && (github.ref_name == github.event.repository.default_branch ||
@@ -512,9 +511,7 @@ jobs:
            steps.partial-cache.outputs.cuda == 'true')
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
-          path: |
-            .linux-cache/cuda
-            pkg/cuda-x86_64.run
+          path: pkg/cuda-x86_64.run
           key: ${{ steps.cuda-cache.outputs.cache-primary-key }}
 
       - name: Save compiler cache

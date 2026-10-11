@@ -236,10 +236,10 @@ srcdir="$PWD"
         guard = steps["Verify failed-validation partial cache eligibility"]["if"]
         for requirement in ("failure()", "inputs.validation_only", "workflow_dispatch", "github.event.repository.full_name == github.repository", "steps.build.outcome == 'failure'", "steps.toolchain.outputs.abi != ''"):
             self.assertIn(requirement, guard)
-        for name, output in (("Save verified CUDA source and toolkit", "cuda"), ("Save compiler cache", "compiler")):
+        for name, output in (("Save checksum-verified CUDA installer", "cuda"), ("Save compiler cache", "compiler")):
             self.assertIn("success()", steps[name]["if"])
             self.assertIn("steps.partial-cache.outputs." + output + " == 'true'", steps[name]["if"])
-        cached_paths = "\n".join(steps[name]["with"]["path"] for name in ("Save verified CUDA source and toolkit", "Save compiler cache"))
+        cached_paths = "\n".join(steps[name]["with"]["path"] for name in ("Save checksum-verified CUDA installer", "Save compiler cache"))
         self.assertNotIn("src/build", cached_paths)
         self.assertNotIn("pkg.tar", cached_paths)
 
