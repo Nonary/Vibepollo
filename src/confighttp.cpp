@@ -52,6 +52,7 @@
 #include "globals.h"
 #include "http_auth.h"
 #include "httpcommon.h"
+#include "jthread.h"
 #include "platform/common.h"
 #ifdef _WIN32
   #include "src/platform/windows/image_convert.h"
@@ -667,7 +668,6 @@ namespace confighttp {
 
   // SESSION COOKIE
   std::string sessionCookie;
-  static std::chrono::time_point<std::chrono::steady_clock> cookie_creation_time;
 
   /**
    * @brief Log the request details.
@@ -6112,7 +6112,8 @@ namespace confighttp {
       };
       record_token_route(normalize_route_pattern(pattern), method);
     };
-    auto register_blocking_api_route = [&](const char *pattern, const char *method, const auto &handler) {
+    // By value: capturing a function reference in the nested lambdas below trips up Apple Clang 15.
+    auto register_blocking_api_route = [&](const char *pattern, const char *method, auto handler) {
       register_api_route(pattern, method, [&blocking_route_pool, handler](resp_https_t response, req_https_t request) {
         if (!authenticate(response, request)) {
           return;
@@ -6285,7 +6286,7 @@ namespace confighttp {
     std::thread tcp {accept_and_run, &server};
 
     // Start a background task to clean up expired session tokens every hour
-    std::jthread cleanup_thread([shutdown_event]() {
+    util::jthread cleanup_thread([shutdown_event]() {
       while (!shutdown_event->view(std::chrono::hours(1))) {
         if (session_token_manager.cleanup_expired_session_tokens()) {
           session_token_manager.save_session_tokens();
@@ -6301,7 +6302,7 @@ namespace confighttp {
     tcp.join();
     blocking_route_pool.stop();
     blocking_route_pool.join();
-    // std::jthread (cleanup_thread) auto-joins on destruction, no need for joinable/join
+    // util::jthread (cleanup_thread) auto-joins on destruction, no need for joinable/join
   }
 
   /**

@@ -159,6 +159,7 @@ namespace config {
 
     virtual_display_mode_e virtual_display_mode;
     virtual_display_layout_e virtual_display_layout;
+    bool virtual_display_keep_while_paused;  ///< macOS: keep the virtual display, so the other displays stay off, while a game is paused.
 
     bool remote_monitor_mute_audio;  ///< Do not capture or transmit audio for Remote Monitor sessions.
     bool remote_monitor_disconnect_on_stream_end;  ///< Release a Remote Monitor when its RTSP stream ends.
@@ -509,6 +510,7 @@ namespace config {
     std::vector<std::string> csrf_allowed_origins;
     bool realtime_stats_enabled {true};  ///< Sample live host stats (CPU/GPU/RAM/VRAM) for the web UI
     int realtime_stats_poll_interval_ms {2000};  ///< Host stats sampler interval in milliseconds
+    bool lid_close_ends_streams {true};  ///< macOS: end streams when a MacBook's lid closes, even if the Mac stays awake.
   };
 
   extern video_t video;

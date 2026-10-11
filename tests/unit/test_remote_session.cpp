@@ -1,5 +1,6 @@
 #include "../tests_common.h"
 
+#include "src/jthread.h"
 #include "src/remote_session.h"
 
 #include <atomic>
@@ -506,7 +507,7 @@ TEST(RemoteSession, NormalAppTransitionGateSerializesProcessStartPublication) {
   std::atomic_bool contender_started {false};
   std::atomic_bool contender_entered {false};
   std::unique_lock first_transition {gate};
-  std::jthread contender {[&] {
+  util::jthread contender {[&] {
     contender_started.store(true, std::memory_order_release);
     std::lock_guard second_transition {gate};
     contender_entered.store(true, std::memory_order_release);

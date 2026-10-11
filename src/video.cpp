@@ -57,6 +57,10 @@ extern "C" {
   #include "platform/linux/cuda.h"
 #endif
 
+#ifdef __APPLE__
+  #include "src/platform/macos/misc.h"
+#endif
+
 #ifdef _WIN32
   #include "src/platform/windows/display.h"
   #include "src/platform/windows/display_helper_integration.h"
@@ -1858,6 +1862,10 @@ namespace video {
   std::shared_ptr<platf::display_t> make_black_display(const config_t &config) {
     return ::cuda::make_black_display(config);
   }
+#elif defined(__APPLE__)
+  std::shared_ptr<platf::display_t> make_black_display(const config_t &config) {
+    return platf::black_display(config);
+  }
 #else
   std::shared_ptr<platf::display_t> make_black_display(const config_t &) {
     return {};
@@ -3567,7 +3575,8 @@ namespace video {
     void *channel_data,
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp,
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp,
-    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp
+    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp,
+    const bool drain = false
   ) {
     auto &frame = session.device->frame;
     frame->pts = frame_nr;
@@ -3577,8 +3586,8 @@ namespace video {
     auto &sps = session.sps;
     auto &vps = session.vps;
 
-    // send the frame to the encoder
-    auto ret = avcodec_send_frame(ctx.get(), frame);
+    // send the frame to the encoder, or with drain, the end of input so it emits what it holds
+    auto ret = avcodec_send_frame(ctx.get(), drain ? nullptr : frame);
     if (ret < 0) {
       char err_str[AV_ERROR_MAX_STRING_SIZE] {0};
       BOOST_LOG(error) << "Could not send a frame for encoding: "sv << av_make_error_string(err_str, AV_ERROR_MAX_STRING_SIZE, ret);
@@ -5014,7 +5023,7 @@ namespace video {
 #ifdef _WIN32
     const bool legacy_amf_session = session_encoder == &amdvce_ffmpeg;
 #else
-    const bool legacy_amf_session = false;
+    bool legacy_amf_session = false;  // no AMF here; not const, so the teardown thread captures it as on Windows
 #endif
     bool native_amf_runtime_failed = false;
     const auto session_encoder_flags = session_encoder->flags;
@@ -5244,6 +5253,15 @@ namespace video {
         BOOST_LOG(error) << "Could not encode dummy video packet"sv;
         return native_amf_failure();
       }
+#ifdef __APPLE__
+      // VideoToolbox emits asynchronously, so a frame's packet only comes out of a later call.
+      // Input-only sessions have no later frame, so drain the encoder for it, as AMF does below.
+      if (auto *avcodec_session = dynamic_cast<avcodec_encode_session_t *>(session.get());
+          avcodec_session && encode_avcodec(dummy_frame_index, *avcodec_session, packets, channel_data, now, now, now, true)) {
+        BOOST_LOG(error) << "Could not drain the input-only dummy packet"sv;
+        return native_amf_failure();
+      }
+#endif
 
       if (auto *amf_session = dynamic_cast<amf_encode_session_t *>(session.get())) {
         const auto acceptance_deadline = std::chrono::steady_clock::now() + 2s;
@@ -7365,7 +7383,16 @@ namespace video {
 
     if (new_encoder == nullptr) {
       BOOST_LOG(fatal) << "Unable to initialize a working video encoder during startup."sv;
-      if (!config::video.adapter_name.empty() || !config::video.adapter_pnp_id.empty()) {
+#ifdef __APPLE__
+      // Encoders are validated on a captured frame, so without the permission every one fails.
+      const bool screen_capture_denied = !platf::is_screen_capture_allowed();
+#else
+      constexpr bool screen_capture_denied = false;
+#endif
+      if (screen_capture_denied) {
+        BOOST_LOG(fatal) << "Vibepollo isn't allowed to record the screen. Allow it in 'System Settings' -> "
+                            "'Privacy & Security', then restart Vibepollo."sv;
+      } else if (!config::video.adapter_name.empty() || !config::video.adapter_pnp_id.empty()) {
         BOOST_LOG(fatal) << "Please ensure the selected GPU is available and its encoder driver is working."sv;
       } else {
         BOOST_LOG(fatal) << "Please check the GPU driver and configured encoder."sv;

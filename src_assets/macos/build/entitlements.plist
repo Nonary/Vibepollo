@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Applied to the app when it is signed with a Developer ID, which enables the hardened runtime.
+  The hardened runtime blocks audio input unless the app is entitled to it, which would silence
+  both the audio device capture (AVCaptureDevice) and the system audio tap (CATapDescription).
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+</dict>
+</plist>

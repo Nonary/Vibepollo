@@ -290,6 +290,23 @@ jobs:
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
       release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0' }}
 
+  build-macos:
+    name: macOS
+    needs:
+      - release-candidate
+    # Match Windows: release preparation must not build packages before the tag push.
+    if: >-
+      ${{ github.event_name != 'push' ||
+          (github.ref_type == 'tag' && needs.release-candidate.outputs.should_release == 'true') }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-macos.yml
+    with:
+      # Ad hoc signed DMGs for Apple Silicon and Intel; notarizing needs Apple signing secrets.
+      publish_release: 'false'
+      release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
+      release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0' }}
+
   awaiting-signing:
     name: Awaiting manual signing
     if: needs.release-candidate.outputs.should_release == 'true'

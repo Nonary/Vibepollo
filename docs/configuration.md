@@ -315,6 +315,35 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### lid_close_ends_streams
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            End streams when a MacBook's lid closes. When the lid closes, the running app quits, or
+            the stream ends if no app is running.
+            @note{Turn this off to keep streaming with the lid closed. That only works while the Mac
+            stays awake, which is up to macOS (for example, a Mac on power with an external display)
+            or another utility that keeps it awake. Vibepollo doesn't change power settings or keep
+            the Mac awake itself, and it still ends streams when the Mac goes to sleep.}
+            @note{Applies to macOS only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            lid_close_ends_streams = disabled
+            @endcode</td>
+    </tr>
+</table>
+
 <!-- The update command mechanism was removed. Sunshine now only notifies about updates. -->
 
 ## Input
@@ -1369,6 +1398,34 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>extended_primary_isolated</td>
         <td>Combine the primary + isolated behaviors: the virtual display becomes primary while remaining far away from the physical monitors.</td>
+    </tr>
+</table>
+
+### virtual_display_keep_while_paused
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Keep the virtual display while a session is paused: when a client disconnects and the
+            game keeps running, the virtual display stays, and so do any displays turned off by the
+            exclusive layout, until the session resumes, the game quits, or
+            [dd_paused_virtual_display_timeout_secs](#dd_paused_virtual_display_timeout_secs) passes.
+            Turn it off to bring the displays back as soon as the stream ends.
+            @note{Applies to macOS only. Windows keeps a paused virtual display through its display helper.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            virtual_display_keep_while_paused = disabled
+            @endcode</td>
     </tr>
 </table>
 
