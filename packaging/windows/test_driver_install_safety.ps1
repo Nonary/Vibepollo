@@ -140,6 +140,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Read-only native VHF certificate verification tests failed.' }
     & $windowsPowerShell -NoProfile -File (Join-Path $RepositoryRoot 'packaging/windows/test_display_release_trust.ps1') -RepositoryRoot $RepositoryRoot
     if ($LASTEXITCODE -ne 0) { throw 'Display release identity/trust validation tests failed.' }
+    & (Join-Path $RepositoryRoot 'packaging/windows/test_gamepad_cleanup_paths.ps1') -RepositoryRoot $RepositoryRoot
     & (Join-Path $RepositoryRoot 'packaging/windows/test_optional_display_guard.ps1') -RepositoryRoot $RepositoryRoot
     Write-Host 'Driver installation safety checks passed. No installers, drivers, trust stores, services or restarts were executed.'
 } finally {
