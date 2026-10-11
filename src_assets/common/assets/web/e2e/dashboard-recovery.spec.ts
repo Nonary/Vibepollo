@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { localRoute, expect, test, type Page } from './fixtures';
 
 async function host(
   page: Page,
@@ -11,11 +11,11 @@ async function host(
   },
 ) {
   const calls: Array<{ body: unknown; csrf: string | undefined }> = [];
-  await page.route('**/api/**', async (route) => {
+  await localRoute(page, '**/api/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (!path.startsWith('/api/')) {
-      await route.continue();
+      await route.fallback();
       return;
     }
     let body: unknown = { status: true };
@@ -134,7 +134,7 @@ for (const { name, result, message } of responses) {
 
 test('recovery is available even when dashboard metrics fail', async ({ page }) => {
   const calls = await host(page);
-  await page.route('**/api/host/stats', (route) =>
+  await localRoute(page, '**/api/host/stats', (route) =>
     route.fulfill({ status: 503, json: { error: 'unavailable' } }),
   );
   await page.goto('/v2/');
@@ -147,7 +147,7 @@ test('recovery is available even when dashboard metrics fail', async ({ page }) 
 
 test('network failures leave recovery available for another attempt', async ({ page }) => {
   const calls = await host(page);
-  await page.route('**/api/display/terminate_virtual', (route) => route.abort());
+  await localRoute(page, '**/api/display/terminate_virtual', (route) => route.abort());
   await page.goto('/v2/');
   await confirmRecovery(page);
   await expect(page.getByRole('status')).toContainText('termination could not be confirmed');
@@ -166,7 +166,7 @@ test('an in-flight recovery cannot be cancelled or submitted twice', async ({ pa
   const pending = new Promise<void>((resolve) => {
     finish = resolve;
   });
-  await page.route('**/api/display/terminate_virtual', async (route) => {
+  await localRoute(page, '**/api/display/terminate_virtual', async (route) => {
     count += 1;
     await pending;
     await route.fulfill({ json: { status: true, physical_display_recovered: true } });

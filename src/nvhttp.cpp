@@ -64,6 +64,7 @@
 #include "paired_state_policy.h"
 #include "state_storage_policy.h"
 #include "update.h"
+#include "update_notification_state.h"
 #include "single_flight.h"
 #include "state_storage_policy.h"
 #ifdef _WIN32
@@ -2230,8 +2231,9 @@ namespace nvhttp {
 
       root["root"]["uniqueid"] = http::unique_id;
       root["root"]["remote_display_layout"] = client.remote_display_layout_json;
+      const auto notifications = update::notification::snapshot(update::state);
       if (share_state_file) {
-        root["root"]["last_notified_version"] = update::state.last_notified_version;
+        update::notification::write_root(root["root"], notifications);
       }
 
       nlohmann::json named_cert_nodes = nlohmann::json::array();
@@ -2327,7 +2329,7 @@ namespace nvhttp {
         if (!statefile::load_json_for_update(vibeshine_path, vibeshine_tree)) return true;
 
         auto &vibe_root = ensure_root(vibeshine_tree);
-        vibe_root.put("last_notified_version", update::state.last_notified_version);
+        update::notification::write_root(vibe_root, notifications);
 
 #ifdef _WIN32
         if (!http::shared_virtual_display_guid.empty()) {
@@ -2471,7 +2473,7 @@ namespace nvhttp {
             authorization_state_ready.store(false, std::memory_order_release);
             return false;
           }
-          update::state.last_notified_version.clear();
+          update::notification::apply(update::state, {});
           return true;
         }
         BOOST_LOG(error) << "No valid Vibepollo pairing snapshot; refusing to create a replacement identity.";
@@ -2487,7 +2489,7 @@ namespace nvhttp {
       http::unique_id = root["uniqueid"].get<std::string>();
       http::uuid = uuid_util::uuid_t::parse(http::unique_id);
       if (share_state_file) {
-        update::state.last_notified_version = root.value("last_notified_version", "");
+        update::notification::apply(update::state, update::notification::read_root(root));
       } else if (!vibeshine_path.empty()) {
 
         try {
@@ -2495,21 +2497,21 @@ namespace nvhttp {
           if (statefile::load_json(vibeshine_path, vibeshine_tree) != statefile::json_load_result_e::loaded) {
             throw std::runtime_error("notification state is unavailable");
           }
-          update::state.last_notified_version = vibeshine_tree.get("root.last_notified_version", "");
+          update::notification::apply(update::state, update::notification::read_file(vibeshine_tree));
 #ifdef _WIN32
           http::shared_virtual_display_guid = vibeshine_tree.get("root.shared_virtual_display_guid", "");
 #endif
 
         } catch (const std::exception &e) {
           BOOST_LOG(warning) << "Couldn't read "sv << vibeshine_path << " for notification state: "sv << e.what();
-          update::state.last_notified_version.clear();
+          update::notification::apply(update::state, {});
 
 #ifdef _WIN32
           http::shared_virtual_display_guid.clear();
 #endif
         }
       } else {
-        update::state.last_notified_version.clear();
+        update::notification::apply(update::state, {});
 #ifdef _WIN32
         http::shared_virtual_display_guid.clear();
 #endif

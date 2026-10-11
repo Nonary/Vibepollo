@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { localRoute, expect, test, type Locator, type Page } from './fixtures';
 
 type Layout = { version: number; placements: Record<string, Record<string, unknown>> };
 const peerPlacement = { anchor_kind: 'physical', anchor_id: 'primary', edge: 'left', alignment: 'end', gap_px: 16, primary: false };
@@ -10,10 +10,10 @@ async function openEditor(page: Page, placements: Layout['placements'] = { peer:
   const initial = structuredClone(layout);
   const saved: Layout[] = [];
   const response = () => ({ status: true, layout, clients, nodes: [{ id: 'primary', label: 'Primary', kind: 'physical', active: true, primary: true, desired_position: { x: 0, y: 0 }, mode: { width: 3840, height: 2160, refresh_hz: 60 } }] });
-  await page.route('**/api/**', async (route) => {
+  await localRoute(page, '**/api/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    if (!path.startsWith('/api/')) { await route.continue(); return; }
+    if (!path.startsWith('/api/')) { await route.fallback(); return; }
     let body: unknown = { status: true };
     if (path === '/api/auth/status') body = { authenticated: true, login_required: false, credentials_configured: true };
     else if (path === '/api/configLocale') body = { locale: 'en' };

@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { localRoute, test, expect, type Page } from './fixtures';
 
 interface HostOptions {
   platform?: 'windows' | 'linux';
@@ -13,10 +13,10 @@ interface HostOptions {
 async function host(page: Page, options: HostOptions = {}) {
   let automatic = options.automatic !== false;
   const calls = { reads: 0, mutations: [] as { path: string; body: unknown }[] };
-  await page.route('**/api/**', async (route) => {
+  await localRoute(page, '**/api/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    if (!path.startsWith('/api/')) return route.continue();
+    if (!path.startsWith('/api/')) return route.fallback();
     let body: unknown = { status: true };
     if (request.method() === 'POST') {
       calls.mutations.push({ path, body: request.postDataJSON() });

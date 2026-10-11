@@ -851,7 +851,7 @@
     "native_pen_touch": "Native Pen/Touch Support",
     "native_pen_touch_desc": "When enabled, Vibepollo will pass through native pen/touch events from Moonlight clients. This can be useful to disable for older applications without native pen/touch support.",
     "notify_pre_releases": "PreRelease Notifications",
-    "notify_pre_releases_desc": "Whether to be notified of new pre-release versions of Vibepollo",
+    "notify_pre_releases_desc": "Notify about verified stable and pre-release versions of Vibepollo by default. Disable to receive stable releases only.",
     "update_check_interval": "Update Check Interval (seconds)",
     "update_check_interval_desc": "How often Vibepollo should check for updates automatically (based on git tags). Set 0 to disable periodic checks.",
     "nvenc_h264_cavlc": "Prefer CAVLC over CABAC in H.264",
@@ -1108,6 +1108,9 @@
     "dd_manual_enforcement_notice": "Overrides below are disabled while manual resolution or refresh rate is enforced. Manual refresh rates are applied forcefully and override game-aware refresh switching on virtual displays."
   },
   "index": {
+    "check_updates": "Check for updates",
+    "dismiss_update": "Dismiss this update",
+    "update_check_failed": "Update check unavailable. Try again.",
     "display_recovery": {
       "title": "Display recovery",
       "description": "If your PC screen stays blank after streaming, terminate the virtual screen and try to recover a physical monitor.",

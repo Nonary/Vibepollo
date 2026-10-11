@@ -1,4 +1,8 @@
-import { expect, test, type Page } from '@playwright/test';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { localRoute, expect, test, type Page } from './fixtures';
+
+const screenshotDirectory = process.env.VIBEPOLLO_TEST_OUTPUT || process.env.VIBESHINE_TEST_OUTPUT || join(tmpdir(), 'vibepollo-ui-results');
 
 type DriverStatus =
   | 'ready'
@@ -26,11 +30,11 @@ async function setupWindowsHost(
     ...options.config,
   };
 
-  await page.route('**/api/**', async (route) => {
+  await localRoute(page, '**/api/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (!path.startsWith('/api/')) {
-      await route.continue();
+      await route.fallback();
       return;
     }
     let body: unknown = { status: true };
@@ -86,7 +90,7 @@ for (const [name, status] of [
       'Observed by host: Vibepollo',
     );
     await page.screenshot({
-      path: `/tmp/vibeshine-ui-results/windows-driver-${name}.png`,
+      path: join(screenshotDirectory, `windows-driver-${name}.png`),
       fullPage: true,
     });
   });
@@ -119,13 +123,13 @@ test('active dummy-plug HDR dependency is visible on desktop and narrow layouts'
   await expect(page.locator('#setting-frame_limiter_disable_vsync')).toBeChecked();
   await expect(page.locator('#setting-frame_limiter_disable_vsync')).toBeDisabled();
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/windows-dummy-hdr-desktop.png',
+    path: join(screenshotDirectory, 'windows-dummy-hdr-desktop.png'),
     fullPage: true,
   });
 
   await page.setViewportSize({ width: 390, height: 1000 });
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/windows-dummy-hdr-narrow.png',
+    path: join(screenshotDirectory, 'windows-dummy-hdr-narrow.png'),
     fullPage: true,
   });
 });
@@ -141,7 +145,7 @@ test('persisted forced VSYNC is not dirty on load and returns to its saved value
       frame_limiter_disable_vsync: false,
     },
   });
-  await page.route('**/api/config', async (route) => {
+  await localRoute(page, '**/api/config', async (route) => {
     if (route.request().method() === 'PATCH') {
       patches.push(route.request().postDataJSON() as Record<string, unknown>);
     }
@@ -170,7 +174,7 @@ test('dummy-plug dependency survives disable and only changed settings are saved
   };
   const patches: Record<string, unknown>[] = [];
   await setupWindowsHost(page, { config });
-  await page.route('**/api/config', async (route) => {
+  await localRoute(page, '**/api/config', async (route) => {
     if (route.request().method() === 'PATCH') {
       const patch = route.request().postDataJSON() as Record<string, unknown>;
       patches.push(patch);

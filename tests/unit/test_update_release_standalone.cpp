@@ -1,0 +1,78 @@
+// Standalone compile-time proof: Release must retain all assert checks.
+#include <cassert>
+#if defined(NDEBUG)
+#error "Updater standalone regression assertions must remain active in Release"
+#endif
+static_assert([] {
+  int checks = 0;
+  assert(++checks == 1);
+  return checks == 1;
+}(), "assert must evaluate its argument in this translation unit");
+
+// Standalone regression harness: g++ -std=c++20 -I. tests/unit/test_update_release_standalone.cpp
+#include "src/update_release.h"
+#include <cassert>
+#include <iostream>
+using nlohmann::json;
+std::string platform_package() {
+#ifdef _WIN32
+  return "VibepolloSetup.exe";
+#elif defined(__APPLE__)
+#if defined(__aarch64__) || defined(__arm64__)
+  return "Vibepollo-macOS-arm64.dmg";
+#else
+  return "Vibepollo-macOS-x86_64.dmg";
+#endif
+#elif defined(__aarch64__)
+  return "vibepollo-2.0.0-1-aarch64.pkg.tar.zst";
+#else
+  return "vibepollo-2.0.0-1-x86_64.pkg.tar.zst";
+#endif
+}
+json release(std::string tag, bool pre = false) { return {{"tag_name",tag},{"draft",false},{"prerelease",pre},{"assets",json::array({{{"name",platform_package()},{"state","uploaded"},{"size",100}}})}}; }
+json daily(std::string day, std::string base = "2.0.0") {
+  auto result=release("daily-2026-10-"+day,true);
+  for(auto name : {"nightly-metadata.json","SHA256SUMS"}) result["assets"].push_back({{"name",name},{"state","uploaded"},{"size",100}});
+  result["nightly_metadata"]={{"schema_version",1},{"channel","nightly"},{"tag",result["tag_name"]},{"version",base+"-daily.d202610"+day+"+aaaaaaaaaaaa"},{"source_commit",std::string(40,'a')},{"nightly_sequence",std::stoi("202610"+day)}};
+  return result;
+}
+int main() {
+  using release_selection::select;
+  auto releases=json::array({release("1.9.0-stable.2"),release("2.0.0-beta.10",true),release("2.0.0-beta.2",true)});
+  assert(select(releases,"1.9.0-stable.1",false)["tag_name"]=="1.9.0-stable.2");
+  assert(select(releases,"2.0.0-beta.2",false).is_null());
+  assert(select(releases,"2.0.0-beta.2",true)["tag_name"]=="2.0.0-beta.10");
+  auto days=json::array({daily("10"),daily("11"),daily("12","1.0.0")});
+  assert(select(days,"2.0.0-daily.d20261010+aaaaaaaaaaaa",true)["tag_name"]=="daily-2026-10-11");
+  assert(select(days,"2.0.0-daily.d20261011+aaaaaaaaaaaa",true).is_null());
+  assert(select(days,"2.0.0",true).is_null());
+  assert(select(days,"2.0.0-beta.1",true).is_null());
+  assert(select(json::array({release("2.0.0-rc.1",true)}),"2.0.0-daily.d20261011+aaaaaaaaaaaa",true).is_null());
+  days.push_back(release("2.0.0"));
+  assert(select(days,"2.0.0-daily.d20261010+aaaaaaaaaaaa",true)["tag_name"]=="2.0.0");
+#ifdef _WIN32
+  auto published=release("2.0.0"); published["assets"][0]["name"]="VibepolloSetup-v2.0.0.exe";
+  assert(select(json::array({published}),"1.18.4-stable.4",false)["tag_name"]=="2.0.0");
+#endif
+  auto bad=daily("11"); bad["nightly_metadata"]["source_commit"]="bad";
+  auto draft=release("9.0.0"); draft["draft"]=true;
+  auto incomplete=release("9.0.0"); incomplete["assets"][0]["state"]="new";
+  assert(select(json::array({bad,draft,incomplete,json("bad"),json::object()}),"1.0.0",true).is_null());
+  assert(select(releases,"unknown",true).is_null());
+  assert(select(releases,"99999999999999999999999.0.0",true).is_null());
+  auto mac=release("2.0.0"); mac["assets"][0]["name"]="Vibepollo-macOS-arm64.dmg";
+  assert(release_selection::macos_package(mac,true));
+  assert(!release_selection::macos_package(mac,false));
+  mac["assets"][0]["name"]="Vibepollo-macOS-x86_64.dmg";
+  assert(release_selection::macos_package(mac,false));
+  assert(!release_selection::macos_package(mac,true));
+  mac["assets"][0]["size"]=0;
+  assert(!release_selection::macos_package(mac,false));
+  mac["assets"][0]["size"]=100; mac["assets"][0]["state"]="new";
+  assert(!release_selection::macos_package(mac,false));
+  mac["assets"][0]["state"]="uploaded"; mac["assets"][0]["name"]="Vibeshine-macOS-x86_64.dmg";
+  assert(!release_selection::macos_package(mac,false));
+  mac["assets"]=json::array();
+  assert(!release_selection::macos_package(mac,false));
+  std::cout << "release selection regression checks passed\n";
+}

@@ -869,7 +869,7 @@
     "native_pen_touch": "Native Pen/Touch Support",
     "native_pen_touch_desc": "When enabled, Vibepollo will pass through native pen/touch events from Moonlight clients. This can be useful to disable for older applications without native pen/touch support.",
     "notify_pre_releases": "PreRelease Notifications",
-    "notify_pre_releases_desc": "Whether to be notified of new pre-release versions of Vibepollo",
+    "notify_pre_releases_desc": "Enabled by default. Turn off for stable update notifications only. Updates are never installed automatically.",
     "update_check_interval": "Update Check Interval (seconds)",
     "update_check_interval_desc": "How often Vibepollo should check for updates automatically (based on git tags). Set 0 to disable periodic checks.",
     "nvenc_h264_cavlc": "Prefer CAVLC over CABAC in H.264",

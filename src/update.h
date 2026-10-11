@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -26,11 +27,13 @@ namespace update {
     std::string name;  ///< Release name/title
     std::string body;  ///< Release body/changelog
     std::string published_at;  ///< Publish date
-    bool is_prerelease;  ///< Whether this is a prerelease
+    bool is_prerelease {false};  ///< Whether this is a prerelease
     std::vector<asset_info_t> assets;  ///< Available binary assets
   };
 
   struct state_t {
+    std::mutex notification_mutex;
+    std::vector<std::string> notified_versions;  ///< Persisted notification identities
     std::string last_notified_version;  ///< Version string last notified to user
     std::string last_notified_url;  ///< Release page URL last notified to user
     bool last_notified_is_prerelease {false};  ///< Whether last notification was for a prerelease
@@ -60,6 +63,9 @@ namespace update {
    * Called from a task pool or timer to determine if the next update check is due.
    */
   void periodic();
+
+  // Fetch validated metadata for a strictly shaped immutable nightly tag.
+  bool download_nightly_metadata(const std::string &tag, std::string &out_json);
 
   /**
    * @brief Download GitHub release data for a repository.

@@ -1,4 +1,8 @@
-import { test, expect, type Page } from '@playwright/test';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { localRoute, test, expect, type Page } from './fixtures';
+
+const screenshotDirectory = process.env.VIBEPOLLO_TEST_OUTPUT || process.env.VIBESHINE_TEST_OUTPUT || join(tmpdir(), 'vibepollo-ui-results');
 
 type SessionPayload = Record<string, unknown>;
 
@@ -198,11 +202,11 @@ async function installBrowserStreamFixtures(
     });
   });
 
-  await page.route('**/api/**', async (route) => {
+  await localRoute(page, '**/api/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (!path.startsWith('/api/')) {
-      await route.continue();
+      await route.fallback();
       return;
     }
     let body: unknown = { status: true };
@@ -300,7 +304,7 @@ for (const width of [1440, 390]) {
     const autoFullscreen = page.getByRole('checkbox', { name: 'Auto Fullscreen' });
     await expect(autoFullscreen).toBeChecked();
     await page.screenshot({
-      path: `/tmp/vibeshine-ui-results/browser-stream-${width}-expanded.png`,
+      path: join(screenshotDirectory, `browser-stream-${width}-expanded.png`),
       fullPage: true,
     });
     const streamToggle = page.locator('[aria-controls="browser-stream-surface"]');
@@ -309,7 +313,7 @@ for (const width of [1440, 390]) {
     await expect(page.locator('#browser-stream-surface')).toBeHidden();
     await expect(page.locator('#browser-stream-surface video')).toHaveCount(1);
     await page.screenshot({
-      path: `/tmp/vibeshine-ui-results/browser-stream-${width}-collapsed.png`,
+      path: join(screenshotDirectory, `browser-stream-${width}-collapsed.png`),
       fullPage: true,
     });
     await streamToggle.click();
@@ -326,7 +330,7 @@ for (const width of [1440, 390]) {
       )
       .toBe(false);
     await page.screenshot({
-      path: `/tmp/vibeshine-ui-results/browser-stream-${width}-preferences.png`,
+      path: join(screenshotDirectory, `browser-stream-${width}-preferences.png`),
       fullPage: true,
     });
     await autoFullscreen.check();
@@ -335,7 +339,7 @@ for (const width of [1440, 390]) {
     await page.locator('#browser-stream-fps').fill('60');
     await page.locator('#browser-stream-max-frame-age').fill('3');
     await page.screenshot({
-      path: `/tmp/vibeshine-ui-results/browser-stream-${width}-pacing.png`,
+      path: join(screenshotDirectory, `browser-stream-${width}-pacing.png`),
       fullPage: true,
     });
 
@@ -351,7 +355,7 @@ for (const width of [1440, 390]) {
     await expect(page.getByRole('button', { name: 'Disconnect stream' })).toBeVisible();
     await streamToggle.focus();
     await page.screenshot({
-      path: `/tmp/vibeshine-ui-results/browser-stream-${width}-active-collapsed.png`,
+      path: join(screenshotDirectory, `browser-stream-${width}-active-collapsed.png`),
       fullPage: false,
     });
     await streamToggle.click();
@@ -600,7 +604,7 @@ for (const width of [1440, 390]) {
       )
       .toBeGreaterThan(0);
     await page.screenshot({
-      path: `/tmp/vibeshine-ui-results/browser-stream-${width}-overlay.png`,
+      path: join(screenshotDirectory, `browser-stream-${width}-overlay.png`),
       fullPage: true,
     });
   });

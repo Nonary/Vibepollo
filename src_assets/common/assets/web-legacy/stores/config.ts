@@ -5,6 +5,7 @@ import { http } from '@/http';
 // Metadata describing build/runtime info returned by /api/meta
 export interface MetaInfo {
   platform?: string;
+  architecture?: string;
   status?: boolean;
   version?: string;
   commit?: string;
@@ -69,7 +70,7 @@ const defaultGroups = [
       global_prep_cmd: [] as Array<{ do: string; undo: string; elevated?: boolean }>,
       global_state_cmd: [] as Array<{ do: string; undo: string; elevated?: boolean }>,
       server_cmd: [] as Array<{ name: string; cmd: string; elevated?: boolean }>,
-      notify_pre_releases: 'disabled',
+      notify_pre_releases: 'enabled',
       update_check_interval: 86400,
       session_token_ttl_seconds: 86400,
       remember_me_refresh_token_ttl_seconds: 604800,

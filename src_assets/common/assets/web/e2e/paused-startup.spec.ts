@@ -1,12 +1,12 @@
-import { expect, test } from '@playwright/test';
+import { localRoute, expect, test } from './fixtures';
 
 test('a paused host opens the UI while display metadata is stalled and can retry', async ({ page }) => {
   let metadataReady = false;
   let metadataRequests = 0;
-  await page.route('**/api/**', async (route) => {
+  await localRoute(page, '**/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (!path.startsWith('/api/')) {
-      await route.continue();
+      await route.fallback();
       return;
     }
     if (path === '/api/auth/status') {

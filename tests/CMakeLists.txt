@@ -331,6 +331,30 @@ sunshine_add_test_target(
 )
 
 sunshine_add_test_target(
+    NAME test_fast_update_release
+    CATEGORY fast
+    TEST_SOURCES unit/test_update_release_standalone.cpp
+    LINK_LIBRARIES nlohmann_json::nlohmann_json)
+
+sunshine_add_test_target(
+    NAME test_component_update_notification_state
+    CATEGORY component
+    TEST_SOURCES unit/test_update_notification_state_standalone.cpp
+    LINK_LIBRARIES Boost::property_tree nlohmann_json::nlohmann_json)
+
+# The source standalone harnesses use assert. Preserve their checks when the
+# application and CI test targets are configured in Release mode.
+foreach(_update_test IN ITEMS test_fast_update_release test_component_update_notification_state)
+    if(TARGET ${_update_test})
+        if(MSVC)
+            target_compile_options(${_update_test} PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(${_update_test} PRIVATE -UNDEBUG)
+        endif()
+    endif()
+endforeach()
+
+sunshine_add_test_target(
     NAME test_fast_version_compare
     CATEGORY fast
     TEST_SOURCES
@@ -1085,6 +1109,14 @@ endif()
 
 # Production-code regression harnesses exercise Windows policies on the native host.
 find_package(Python3 COMPONENTS Interpreter)
+# Compile the actual notification method against the production C tray ABI.
+if(SUNSHINE_TEST_ENABLE_COMPONENT AND Python3_Interpreter_FOUND AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_test(NAME test_component_update_notification_tray_interface
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_update_notification_tray_interface.py"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_update_notification_tray_interface PROPERTIES LABELS "component")
+endif()
 find_program(SUNSHINE_TEST_GXX NAMES g++)
 if(Python3_Interpreter_FOUND AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME regression_cuda_release_policy

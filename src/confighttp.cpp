@@ -46,6 +46,7 @@
 #endif
 // local includes
 #include "config.h"
+#include "update.h"
 #include "confighttp.h"
 #include "crypto.h"
 #include "file_handler.h"
@@ -3083,6 +3084,20 @@ namespace confighttp {
     send_response(response, output_tree);
   }
 
+  void getNightlyUpdateMetadata(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    const auto query = request->parse_query_string();
+    const auto tag = query.find("tag");
+    std::string metadata;
+    if (tag == query.end() || !update::download_nightly_metadata(tag->second, metadata)) {
+      bad_request(response, request, "Nightly metadata unavailable");
+      return;
+    }
+    send_response(response, nlohmann::json::parse(metadata));
+  }
+
   /**
    * @brief Get immutables metadata about the server.
    * @param response The HTTP response object.
@@ -3100,6 +3115,13 @@ namespace confighttp {
     nlohmann::json output_tree;
     output_tree["status"] = true;
     output_tree["platform"] = SUNSHINE_PLATFORM;
+#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
+    output_tree["architecture"] = "aarch64";
+#elif defined(__x86_64__) || defined(_M_X64)
+    output_tree["architecture"] = "x86_64";
+#else
+    output_tree["architecture"] = "unknown";
+#endif
     output_tree["version"] = PROJECT_VERSION;
     output_tree["commit"] = PROJECT_VERSION_COMMIT;
 #ifdef PROJECT_VERSION_PRERELEASE
@@ -6241,6 +6263,7 @@ namespace confighttp {
     // Use a separate worker so a stalled lookup also leaves display recovery
     // and the other blocking management APIs available.
     register_blocking_api_route("^/api/metadata$", "GET", getMetadata, &metadata_route_pool);
+    register_blocking_api_route("^/api/updates/nightly-metadata$", "GET", getNightlyUpdateMetadata);
     register_api_route("^/api/configLocale$", "GET", getLocale);
     register_api_route("^/api/restart$", "POST", restart);
     register_api_route("^/api/quit$", "POST", quit);

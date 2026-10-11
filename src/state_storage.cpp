@@ -1,5 +1,6 @@
 #include "state_storage.h"
 #include "state_storage_policy.h"
+#include "state_storage_migration.h"
 
 #include "config.h"
 #include "crypto.h"
@@ -951,57 +952,27 @@ namespace statefile {
         return;
       }
 
-      bool old_modified = false;
-      bool new_modified = false;
-
-      if (old_load_result == policy::load_result_e::loaded) {
-        auto old_root_it = old_tree.find("root");
-        if (old_root_it != old_tree.not_found()) {
-          auto &old_root = old_root_it->second;
-
-          auto move_child = [&](const std::string &key) {
-            auto child_it = old_root.find(key);
-            if (child_it == old_root.not_found()) {
-              return;
-            }
-            auto &new_root = ensure_root(new_tree);
-            if (new_root.find(key) == new_root.not_found()) {
-              new_root.put_child(key, child_it->second);
-              new_modified = true;
-            }
-            old_root.erase(old_root.to_iterator(child_it));
-            old_modified = true;
-          };
-
-          move_child("api_tokens");
-          move_child("session_tokens");
-
-          if (auto last = old_root.get_optional<std::string>("last_notified_version")) {
-            auto &new_root = ensure_root(new_tree);
-            if (!new_root.get_optional<std::string>("last_notified_version")) {
-              new_root.put("last_notified_version", *last);
-              new_modified = true;
-            }
-            old_root.erase("last_notified_version");
-            old_modified = true;
+      (void) migration::migrate_recent_keys(
+        old_tree, new_tree, old_load_result == policy::load_result_e::loaded,
+        [&](const pt::ptree &tree) {
+          try {
+            write_tree(new_path, tree);
+            return true;
+          } catch (const std::exception &e) {
+            BOOST_LOG(error) << "statefile: failed to write "sv << new_path.string() << ": "sv << e.what();
+            return false;
+          }
+        },
+        [&](const pt::ptree &tree) {
+          try {
+            write_tree(old_path, tree);
+            return true;
+          } catch (const std::exception &e) {
+            BOOST_LOG(error) << "statefile: failed to write "sv << old_path.string() << ": "sv << e.what();
+            return false;
           }
         }
-      }
-
-      if (new_modified) {
-        try {
-          write_tree(new_path, new_tree);
-        } catch (const std::exception &e) {
-          BOOST_LOG(error) << "statefile: failed to write "sv << new_path.string() << ": "sv << e.what();
-        }
-      }
-      if (old_modified) {
-        try {
-          write_tree(old_path, old_tree);
-        } catch (const std::exception &e) {
-          BOOST_LOG(error) << "statefile: failed to write "sv << old_path.string() << ": "sv << e.what();
-        }
-      }
+      );
     });
   }
 

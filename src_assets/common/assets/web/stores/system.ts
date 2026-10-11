@@ -22,6 +22,7 @@ export interface HostMetadata extends ReadinessMetadata {
   windows_build_number?: number;
   windows_major_version?: number;
   platform?: string;
+  architecture?: string;
   status?: boolean;
   version?: string;
   commit?: string;

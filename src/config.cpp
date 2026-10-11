@@ -1105,7 +1105,7 @@ namespace config {
     "ipv4",  // Address family
     {},  // Bind address
     (platf::appdata() / default_log_filename).string(),  // log file
-    false,  // notify_pre_releases
+    true,  // notify_pre_releases
     false,  // legacy_ordering
     true,  // system_tray
     {},  // prep commands

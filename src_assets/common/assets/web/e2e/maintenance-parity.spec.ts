@@ -1,4 +1,8 @@
-import { test, expect, type Page } from '@playwright/test';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { localRoute, test, expect, type Page } from './fixtures';
+
+const screenshotDirectory = process.env.VIBEPOLLO_TEST_OUTPUT || process.env.VIBESHINE_TEST_OUTPUT || join(tmpdir(), 'vibepollo-ui-results');
 
 interface HostOptions {
   platform?: 'windows' | 'linux';
@@ -41,11 +45,11 @@ async function setupHost(page: Page, options: HostOptions = {}) {
   };
   let failedPartTwo = true;
 
-  await page.route('**/api/**', async (route) => {
+  await localRoute(page, '**/api/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (!url.pathname.startsWith('/api/')) {
-      await route.continue();
+      await route.fallback();
       return;
     }
     const path = url.pathname;
@@ -209,7 +213,7 @@ async function setupHost(page: Page, options: HostOptions = {}) {
 
     await route.fulfill({ json: body });
   });
-  await page.route('**/assets/changelog.json', async (route) =>
+  await localRoute(page, '**/assets/changelog.json', async (route) =>
     route.fulfill({ json: { releases: [] } }),
   );
   return calls;
@@ -233,13 +237,13 @@ test('Windows maintenance exposes every crash part and recovers a failed part', 
   await expect.poll(() => calls.crashParts).toEqual([1, 2, 2]);
   await expect(page.getByText(/Crash bundle downloads started/)).toBeVisible();
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/maintenance-crash-desktop.png',
+    path: join(screenshotDirectory, 'maintenance-crash-desktop.png'),
     animations: 'disabled',
     fullPage: false,
   });
   await page.setViewportSize({ width: 390, height: 1000 });
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/maintenance-crash-mobile.png',
+    path: join(screenshotDirectory, 'maintenance-crash-mobile.png'),
     animations: 'disabled',
     fullPage: false,
   });
@@ -265,13 +269,13 @@ test('Windows Playnite launch is actionable and auto-sync purge is separately co
   await expect(page.getByRole('dialog')).toContainText('currently 1');
   expect(calls.purgeAutosync).toBe(0);
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/maintenance-playnite-desktop.png',
+    path: join(screenshotDirectory, 'maintenance-playnite-desktop.png'),
     animations: 'disabled',
     fullPage: false,
   });
   await page.setViewportSize({ width: 390, height: 1000 });
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/maintenance-playnite-mobile.png',
+    path: join(screenshotDirectory, 'maintenance-playnite-mobile.png'),
     animations: 'disabled',
     fullPage: false,
   });
@@ -316,13 +320,13 @@ test('Lossless picker browses host roots and UNC directories without saving unti
     page.getByRole('dialog').getByRole('option', { name: /LosslessScaling\.exe/ }),
   ).toBeVisible();
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/maintenance-picker-desktop.png',
+    path: join(screenshotDirectory, 'maintenance-picker-desktop.png'),
     animations: 'disabled',
     fullPage: false,
   });
   await page.setViewportSize({ width: 390, height: 1000 });
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/maintenance-picker-mobile.png',
+    path: join(screenshotDirectory, 'maintenance-picker-mobile.png'),
     animations: 'disabled',
     fullPage: false,
   });
