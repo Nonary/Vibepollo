@@ -4427,7 +4427,7 @@ namespace proc {
             ctx.config_overrides = std::move(normalized_overrides);
           }
 
-        ctx.dualsense_haptics = app_node.value("dualsense-haptics", false);
+        ctx.dualsense_haptics = util::get_non_string_json_value<bool>(app_node, "dualsense-haptics", false);
         ctx.frame_gen_limiter_fix = util::get_non_string_json_value<bool>(app_node, "frame-gen-limiter-fix", util::get_non_string_json_value<bool>(app_node, "dlss-framegen-limiter-fix", false));
         ctx.elevated = util::get_non_string_json_value<bool>(app_node, "elevated", false);
         ctx.virtual_screen = util::get_non_string_json_value<bool>(app_node, "virtual-screen", false);
