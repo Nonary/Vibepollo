@@ -19,6 +19,7 @@
   <Fragment>
     <!-- Pull this fragment into the CPack-generated MSI -->
     <FeatureRef Id="ProductFeature"/>
+    <Property Id="DAILY_UNSIGNED_DRIVER_POLICY" Value="$(var.DailyUnsignedDriverPolicy)" Secure="yes"/>
     
     <!-- Keep Restart Manager enabled (default) to stop services in basic/silent UI -->
     
@@ -184,14 +185,14 @@
     <!-- The Sunshine virtual display driver is installed by default unless explicitly opted out. -->
     <CustomAction Id="SetInstallVirtualDisplayDriver"
                  Property="InstallVirtualDisplayDriver"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sunshine\install.ps1&quot; -InstallerBestEffort"/>
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sunshine\install.ps1&quot; -InstallerBestEffort -DailyUnsignedPolicy [DAILY_UNSIGNED_DRIVER_POLICY]"/>
 
     <!-- The VHF package is a 64-bit UMDF source driver. Its own signed setup
          tool creates the ROOT\VIBESHINEVIRTUALGAMEPAD source node after the
          catalog has been staged in the Driver Store. -->
     <CustomAction Id="SetInstallVirtualGamepadDriver"
                  Property="InstallVirtualGamepadDriver"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\vhf-gamepad\install.ps1&quot; -InstallerBestEffort -AllowLocalTestCertificate:[ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE]"/>
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\vhf-gamepad\install.ps1&quot; -InstallerBestEffort -AllowLocalTestCertificate:[ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE] -DailyUnsignedPolicy [DAILY_UNSIGNED_DRIVER_POLICY]"/>
 
     <CustomAction Id="SetRegisterVulkanHdrLayer"
                  Property="RegisterVulkanHdrLayer"

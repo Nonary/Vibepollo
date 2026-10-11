@@ -51,6 +51,13 @@ set(CPACK_WIX_CANDLE_EXTRA_FLAGS
   "-dVibeshineSemVer=${PROJECT_VERSION_FULL}"
 )
 
+# Daily packages forbid unattended trust changes; production defaults stay zero.
+set(SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY 0)
+if(PROJECT_VERSION_FULL MATCHES "-daily[.]")
+  set(SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY 1)
+endif()
+list(APPEND CPACK_WIX_CANDLE_EXTRA_FLAGS "-dDailyUnsignedDriverPolicy=${SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY}")
+
 # The patch fragment needs build-time defaults so it never invokes a missing
 # VHF package from an MSI built before the first signed driver release.
 if(NOT DEFINED SUNSHINE_VHF_GAMEPAD_WIX_BUNDLED)

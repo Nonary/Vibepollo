@@ -1,0 +1,106 @@
+"""Fail-closed daily identity and finalized artifact checks; never mutates GitHub."""
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+
+
+def identity(commit, day, base):
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Expected an exact source commit SHA")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", base):
+        raise ValueError("Expected a numeric source version base")
+    major, minor, patch = map(int, base.split("."))
+    if major > 255 or minor > 255 or patch > 654 or base == "0.0.0":
+        raise ValueError("Source version base exceeds MSI limits or is zero")
+    if not 2000 <= day.year <= 2099:
+        raise ValueError("Daily version year must fit the installer version scheme")
+    return {
+        "commit": commit,
+        "tag": f"daily-{day.isoformat()}",
+        "version": f"{base}-daily.d{day:%Y%m%d}+{commit[:12]}",
+    }
+
+
+def validate_source(repository, branch, confirmation):
+    if repository not in {"Nonary/vibeshine", "Nonary/Vibepollo"}:
+        raise ValueError("Daily publishing is limited to the designated upstream repositories")
+    if not branch or confirmation != f"{repository}:{branch}":
+        raise ValueError("Set DAILY_RELEASE_SOURCE_BRANCH and explicitly confirm repository:branch in DAILY_RELEASE_SOURCE_CONFIRMED")
+    subprocess.run(["git", "check-ref-format", f"refs/heads/{branch}"], check=True)
+
+
+def run(*args):
+    return subprocess.run(args, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def resolve():
+    repository = os.environ["GITHUB_REPOSITORY"]
+    branch = os.environ.get("DAILY_RELEASE_SOURCE_BRANCH", "")
+    validate_source(repository, branch, os.environ.get("DAILY_RELEASE_SOURCE_CONFIRMED", ""))
+    # Fetch only the explicitly confirmed remote branch; ignore local HEAD/tags.
+    run("git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}:refs/remotes/origin/daily-source")
+    commit = run("git", "rev-parse", "refs/remotes/origin/daily-source^{commit}")
+    # GITHUB_TOKEN has no workflows:write capability. Do not select a target
+    # with a different workflow tree and then discover that during publication.
+    run("git", "diff", "--exit-code", os.environ["GITHUB_SHA"], commit, "--", ".github/workflows")
+    run("git", "fetch", "--no-recurse-submodules", "origin", "refs/tags/*:refs/tags/*")
+    tags = run("git", "tag", "--merged", commit, "--sort=-version:refname", "--list", "[0-9]*.[0-9]*.[0-9]*").splitlines()
+    source_tags = [tag for tag in tags if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?", tag)]
+    if not source_tags:
+        raise ValueError("Source has no merged v-less version tag; choose its release version scheme before activation")
+    base = re.match(r"[0-9]+\.[0-9]+\.[0-9]+", source_tags[0])[0]
+    info = identity(commit, dt.datetime.now(dt.timezone.utc).date(), base)
+    existing = run("git", "ls-remote", "--tags", "origin", f"refs/tags/{info['tag']}")
+    releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
+    if existing or any(r["tag_name"] == info["tag"] for page in releases for r in page):
+        raise ValueError("Today's daily identity already exists; never overwrite or move it")
+    with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+        for key, value in info.items():
+            output.write(f"{key}={value}\n")
+    print(json.dumps(info))
+
+
+def verify_assets(root, product, commit, tag, version):
+    root = Path(root)
+    expected = {f"{product}.msi", f"{product}Setup.exe", "release-provenance.json"}
+    actual = {p.name for p in root.iterdir()}
+    if actual != expected or any(not p.is_file() or p.is_symlink() or p.stat().st_size == 0 for p in root.iterdir()):
+        raise ValueError(f"Expected exactly the finalized nonempty assets {sorted(expected)}; got {sorted(actual)}")
+    info = identity(commit, dt.date.fromisoformat(tag.removeprefix("daily-")), version.split("-")[0])
+    if info["tag"] != tag or info["version"] != version:
+        raise ValueError("Release tag/version/source identity is incoherent")
+    provenance = json.loads((root / "release-provenance.json").read_text(encoding="utf-8-sig"))
+    if provenance.get("schema_version") != 1 or provenance.get("release_commit") != commit or provenance.get("release_tag") != tag:
+        raise ValueError("Finalized artifact provenance does not match this source/tag")
+    if str(provenance.get("source_build_run_id")) != os.environ["GITHUB_RUN_ID"]:
+        raise ValueError("Artifacts must come from this successful daily build")
+    if set(provenance.get("assets", {})) != {f"{product}Setup.exe"}:
+        raise ValueError("Unexpected finalized artifact provenance assets")
+    hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in root.iterdir()}
+    if hashes[f"{product}Setup.exe"] != provenance["assets"][f"{product}Setup.exe"]:
+        raise ValueError("Finalized installer checksum mismatch")
+    manifest = {
+        "schema_version": 1, "tag": tag, "version": version, "source_commit": commit,
+        "workflow_run_id": os.environ["GITHUB_RUN_ID"], "prerelease": True,
+        "signpath": False, "assets": hashes,
+    }
+    (root / "daily-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    hashes["daily-manifest.json"] = hashlib.sha256((root / "daily-manifest.json").read_bytes()).hexdigest()
+    (root / "SHA256SUMS").write_text("".join(f"{digest}  {name}\n" for name, digest in sorted(hashes.items())), encoding="utf-8")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", choices=["resolve", "verify"])
+    parser.add_argument("--assets")
+    parser.add_argument("--product", choices=["Vibeshine", "Vibepollo"])
+    args = parser.parse_args()
+    if args.command == "resolve":
+        resolve()
+    else:
+        verify_assets(args.assets, args.product, os.environ["DAILY_COMMIT"], os.environ["DAILY_TAG"], os.environ["DAILY_VERSION"])

@@ -6793,6 +6793,10 @@ namespace VibepolloInstaller {
             "REBOOT=ReallySuppress",
             "SUPPRESSMSGBOXES=1"
           };
+          // Preserve driver devices while replacing the application, including VHF root cleanup.
+          if (logPhase.StartsWith("install_", StringComparison.OrdinalIgnoreCase) || logPhase.StartsWith("cli_remove_", StringComparison.OrdinalIgnoreCase)) {
+            args.Add("UPGRADINGPRODUCTCODE=1");
+          }
           AppendInstallerLogMessage(logPath, "Quiescing related services and helper processes before MSI uninstall attempt.");
           TryStopRelatedServicesAndProcesses(logPath);
           CleanupStaleComponentClientsForInstallLocation(product.InstallLocation, logPath);
@@ -6824,6 +6828,12 @@ namespace VibepolloInstaller {
             ScheduleSelfDeleteAndEmptyInstallRootCleanup(product.InstallLocation, logPath);
           }
         } else {
+          // A legacy uninstaller has no MSI upgrade property to preserve shared drivers.
+          // Fail before invoking it during application replacement.
+          if (logPhase.StartsWith("install_", StringComparison.OrdinalIgnoreCase) || logPhase.StartsWith("cli_remove_", StringComparison.OrdinalIgnoreCase)) {
+            return new InstallerResult { Operation = InstallerOperation.Install, ExitCode = 1603,
+              Message = "Automatic replacement of this legacy installation is blocked because its uninstaller cannot guarantee preservation of installed drivers. Manual migration review is required." };
+          }
           // Never elevate non-MSI uninstall commands sourced from HKCU since
           // those registry values are user-writable and could be tampered with.
           var allowElevation = requestElevationIfNeeded && !product.IsPerUser;
@@ -6904,6 +6914,10 @@ namespace VibepolloInstaller {
           "SUPPRESSMSGBOXES=1"
         };
 
+        // Preserve driver devices while replacing the application, including VHF root cleanup.
+        if (logPhase.StartsWith("install_", StringComparison.OrdinalIgnoreCase) || logPhase.StartsWith("cli_remove_", StringComparison.OrdinalIgnoreCase)) {
+          args.Add("UPGRADINGPRODUCTCODE=1");
+        }
         AppendInstallerLogMessage(logPath, "Quiescing related services and helper processes before MSI uninstall attempt.");
         TryStopRelatedServicesAndProcesses(logPath);
         CleanupStaleComponentClientsForInstallLocation(product.InstallLocation, logPath);
@@ -7700,7 +7714,7 @@ namespace VibepolloInstaller {
 
       try {
         var lines = File.ReadAllLines(installLogPath);
-        if (installVirtualDisplayDriver) {
+        if (installVirtualDisplayDriver || lines.Any(line => line != null && line.IndexOf("VIRTUAL_DISPLAY_DRIVER_WARNING", StringComparison.OrdinalIgnoreCase) >= 0)) {
           var virtualDisplayDriverFailed = lines.Any(line =>
             !string.IsNullOrWhiteSpace(line)
             && line.IndexOf("CustomAction InstallVirtualDisplayDriver returned actual error code", StringComparison.OrdinalIgnoreCase) >= 0);
@@ -7714,7 +7728,7 @@ namespace VibepolloInstaller {
             failures.Add(virtualDisplayDriverRestartRequired
               ? "Virtual display driver installed, but Windows restart is required before virtual display can function."
               : "Virtual display driver setup failed. Virtual display may be unavailable.");
-            var detail = ExtractDriverFailureDetail(lines, "[SunshineVirtualDisplay]");
+            var detail = ExtractDriverFailureDetail(lines, installVirtualDisplayDriver ? "[SunshineVirtualDisplay]" : "[SudoVDA]");
             if (!string.IsNullOrWhiteSpace(detail)) {
               failures.Add("Driver detail: " + detail);
             }

@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [switch] $Uninstall,
-    [switch] $InstallerBestEffort,
+    [ValidateSet(0, 1)]
+    [int]$DailyUnsignedPolicy = 0,
+    [switch]$InstallerBestEffort,
     [ValidateSet(0, 1)]
     [int] $AllowLocalTestCertificate = 0,
     [ValidateSet(0, 1)]
@@ -50,6 +52,79 @@ $downstreamSignedFiles = @(
     'tools/VibeshineVhfGamepadDeviceSetup.exe'
 )
 $rebootExitCode = 3010
+
+# DRIVER_INSTALL_SAFETY_BEGIN
+# Kept inline so pinned producer packages do not need a new runtime file.
+function ConvertTo-DriverComponentVersion {
+    param([string]$Value)
+    if ($Value -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw "Unknown driver component version: '$Value'. Driver unchanged." }
+    foreach ($part in $Value.Split('.')) {
+        if ([uint64]$part -gt 65535) { throw "Invalid driver component version: '$Value'. Driver unchanged." }
+    }
+    return [version]$Value
+}
+
+function Get-InfComponentVersion {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $inVersion = $false
+    $versions = @()
+    foreach ($line in (Get-Content -LiteralPath $Path -ErrorAction Stop)) {
+        $text = ($line -split ';', 2)[0].Trim()
+        if ($text -match '^\[(.+)\]$') { $inVersion = $Matches[1] -ieq 'Version'; continue }
+        if ($inVersion -and $text -match '^DriverVer\s*=\s*[^,]+,\s*(\S+)\s*$') {
+            $versions += ConvertTo-DriverComponentVersion $Matches[1]
+        }
+    }
+    if ($versions.Count -ne 1) { throw "Missing or ambiguous INF DriverVer: $Path. Driver unchanged." }
+    return $versions[0]
+}
+
+function Test-SafeDriverInstall {
+    param(
+        [Parameter(Mandatory = $true)][string]$InfPath,
+        [Parameter(Mandatory = $true)][string]$CatalogPath,
+        [Parameter(Mandatory = $true)][string]$HardwareId,
+        [string]$WarningMarker = 'VIRTUAL_DISPLAY_DRIVER_WARNING',
+        [bool]$LocalTestPackage = $false
+    )
+    $target = Get-InfComponentVersion $InfPath
+    $infName = [IO.Path]::GetFileName($InfPath)
+    # Both queries must succeed. An empty successful query means missing;
+    # errors, missing active versions, and unreadable store INFs mean unknown.
+    $packages = @(Get-WindowsDriver -Online -All -ErrorAction Stop | Where-Object {
+        [IO.Path]::GetFileName([string]$_.OriginalFileName) -ieq $infName
+    })
+    $devices = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
+        ([string]$_.DeviceID).StartsWith($HardwareId, [StringComparison]::OrdinalIgnoreCase) -or
+        ([string]$_.HardwareID).Equals($HardwareId, [StringComparison]::OrdinalIgnoreCase)
+    })
+    $installed = @()
+    foreach ($device in $devices) {
+        # CIM reports the active INF's numeric DriverVersion (not DriverDate).
+        $installed += ConvertTo-DriverComponentVersion ([string]$device.DriverVersion)
+    }
+    foreach ($package in $packages) {
+        $path = [string]$package.OriginalFileName
+        if (-not [IO.Path]::IsPathRooted($path)) {
+            if ([string]$package.Driver -notmatch '^oem\d+\.inf$') {
+                throw 'Unknown published INF identity. Driver unchanged.'
+            }
+            $path = Join-Path (Join-Path $env:windir 'INF') ([string]$package.Driver)
+        }
+        $installed += Get-InfComponentVersion $path
+    }
+    if (@($installed | Where-Object { $_ -ge $target }).Count -gt 0) {
+        Write-Host "Driver component $target skipped: an equal or newer active/Driver Store component exists; installed driver retained."
+        return $false
+    }
+    $signature = Get-AuthenticodeSignature -LiteralPath $CatalogPath -ErrorAction Stop
+    $signer = $signature.SignerCertificate
+    if ($null -eq $signer -or $signature.Status -ne 'Valid') {
+        throw "$WarningMarker`: Driver component $target is missing or newer, but its catalog is unsigned or not trusted by Windows. Installed driver retained. Windows requires deliberate trust/security setup before this local driver can be used; manual security review is required. Self-signed artifacts are supported when already trusted by Windows, but can require added certificate trust or weakened boot/signing policy. This installer will not add test certificates, change Secure Boot, or enable test signing."
+    }
+    return $true
+}
+# DRIVER_INSTALL_SAFETY_END
 
 function Write-DriverMessage {
     param([Parameter(Mandatory = $true)][string] $Message)
@@ -331,7 +406,7 @@ function Assert-ManifestPayloadContract {
     }
 }
 
-function Ensure-LocalTestCertificateTrusted {
+function Assert-LocalTestCertificateIdentity {
     param(
         [Parameter(Mandatory = $true)][string] $CertificatePath,
         [Parameter(Mandatory = $true)] $CatalogSignature,
@@ -345,15 +420,7 @@ function Ensure-LocalTestCertificateTrusted {
         throw '[VibeshineVhfGamepad] Local-test certificate does not match every signed package artifact.'
     }
 
-    foreach ($store in @('Cert:\LocalMachine\Root', 'Cert:\LocalMachine\TrustedPublisher')) {
-        $existing = @(Get-ChildItem -Path $store -ErrorAction Stop | Where-Object {
-            $_.Thumbprint.Replace(' ', '').ToUpperInvariant() -eq $thumbprint
-        })
-        if ($existing.Count -eq 0) {
-            Import-Certificate -FilePath $CertificatePath -CertStoreLocation $store | Out-Null
-            Write-DriverMessage "Trusted the explicit local-test certificate in $store."
-        }
-    }
+
 }
 
 function Assert-DriverPackage {
@@ -382,9 +449,6 @@ function Assert-DriverPackage {
     $certificatePath = Join-Path $Root ($localTestCertificate -replace '/', '\\')
     $hasLocalCertificate = Test-Path -LiteralPath $certificatePath -PathType Leaf
     if ($hasLocalCertificate) {
-        if ($AllowLocalTestCertificate -eq 0) {
-            throw '[VibeshineVhfGamepad] Refusing a local-test package without -AllowLocalTestCertificate 1.'
-        }
         if ($manifest.signing.channel -ne 'self-signed-local-test') {
             throw '[VibeshineVhfGamepad] A production manifest must not include a local-test certificate.'
         }
@@ -430,7 +494,7 @@ function Assert-DriverPackage {
     Assert-ReleaseLock -Root $Root -Manifest $manifest -CatalogSignature $catalogSignature -ToolSignature $toolSignature
 
     if ($hasLocalCertificate) {
-        Ensure-LocalTestCertificateTrusted -CertificatePath $certificatePath -CatalogSignature $catalogSignature -ToolSignature $toolSignature
+        Assert-LocalTestCertificateIdentity -CertificatePath $certificatePath -CatalogSignature $catalogSignature -ToolSignature $toolSignature
         $catalogSignature = Get-AuthenticodeSignature -LiteralPath $catalogPath
         $toolSignature = Get-AuthenticodeSignature -LiteralPath $toolPath
     }
@@ -502,8 +566,10 @@ function Remove-DriverStorePackage {
 
 function Install-DriverPackage {
     Assert-Administrator
+    $localTest = Test-Path -LiteralPath (Join-Path $PSScriptRoot 'driver/VibeshineVhfGamepad.cer')
+    if (-not (Test-SafeDriverInstall -InfPath (Join-Path $PSScriptRoot 'driver/VibeshineVhfGamepad.inf') -CatalogPath (Join-Path $PSScriptRoot 'driver/VibeshineVhfGamepad.cat') -HardwareId 'ROOT\VIBESHINEVIRTUALGAMEPAD' -WarningMarker 'VIRTUAL_GAMEPAD_DRIVER_WARNING' -LocalTestPackage $localTest)) { return 0 }
     $package = Assert-DriverPackage -Root $PSScriptRoot
-    if ($null -ne $package.ProductionPublisherCertificate) {
+    if ($DailyUnsignedPolicy -eq 0 -and $null -ne $package.ProductionPublisherCertificate) {
         Ensure-ProductionPublisherTrusted `
             -PublisherCertificate $package.ProductionPublisherCertificate `
             -ExpectedSubject $expectedSignPathFoundationSignerSubject
