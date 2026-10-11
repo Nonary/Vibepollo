@@ -852,7 +852,7 @@ namespace stream {
     if (bitrate_kbps <= 0) {
       return 0;
     }
-    auto ref = broadcast.ref();
+    auto ref = broadcast.try_ref();
     if (!ref) {
       return 0;
     }

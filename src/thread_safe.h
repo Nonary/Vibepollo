@@ -611,13 +611,24 @@ namespace safe {
       return ptr_t {this};
     }
 
+    // Acquire an existing object without constructing one when it is idle.
+    [[nodiscard]] ptr_t try_ref() {
+      std::lock_guard lg {_lock};
+      if (!_count) {
+        return ptr_t {nullptr};
+      }
+
+      ++_count;
+      return ptr_t {this};
+    }
+
   private:
     construct_f _construct;
     destruct_f _destruct;
 
     std::array<std::uint8_t, sizeof(element_type)> _object_buf;
 
-    std::uint32_t _count;
+    std::uint32_t _count {};
     std::mutex _lock;
   };
 

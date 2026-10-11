@@ -82,6 +82,42 @@ namespace {
   }
 }  // namespace
 
+TEST(ThreadSafeSharedTests, TryRefDoesNotConstructAnIdleObject) {
+  int constructions = 0;
+  int destructions = 0;
+  auto shared = safe::make_shared<int>(
+    [&](int &value) {
+      ++constructions;
+      value = 42;
+      return 0;
+    },
+    [&](int &) {
+      ++destructions;
+    });
+
+  {
+    auto idle = shared.try_ref();
+    EXPECT_FALSE(idle);
+  }
+  EXPECT_EQ(constructions, 0);
+  EXPECT_EQ(destructions, 0);
+
+  {
+    auto active = shared.ref();
+    ASSERT_TRUE(active);
+    EXPECT_EQ(*active.get(), 42);
+
+    auto alias = shared.try_ref();
+    ASSERT_TRUE(alias);
+    EXPECT_EQ(constructions, 1);
+    EXPECT_EQ(destructions, 0);
+  }
+
+  EXPECT_EQ(constructions, 1);
+  EXPECT_EQ(destructions, 1);
+  EXPECT_FALSE(shared.try_ref());
+}
+
 TEST(ThreadSafeQueueTests, EmptyCapturePollsDoNotWaitForPayloadConstruction) {
   check_empty_polls_during_publish<safe::queue_t<paused_payload_t>>();
 }

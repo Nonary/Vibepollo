@@ -56,7 +56,7 @@ struct Sessions {
 };
 struct control_server_t { Sessions _sessions; };
 struct Broadcast { control_server_t control_server; };
-struct { std::shared_ptr<Broadcast> value; auto ref() { return value; } } broadcast;
+struct { std::shared_ptr<Broadcast> value; auto ref() { return value; } auto try_ref() { return value; } } broadcast;
 namespace session { void stop(session_t &) {} }
 #if UPDATED_SOURCE
 using stream::video_pacing_reservation_t;

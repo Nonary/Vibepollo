@@ -6622,7 +6622,11 @@ namespace nvhttp {
     };
     https_server.resource["^/actions/clipboard$"]["GET"] = getClipboard;
     https_server.resource["^/actions/clipboard$"]["POST"] = setClipboard;
-    https_server.resource["^/bitrate$"]["GET"] = setBitrate;
+    https_server.resource["^/bitrate$"]["GET"] = [run_blocking_nvhttp](auto response, auto request) {
+      run_blocking_nvhttp(response, "bitrate", [response, request = std::move(request)]() mutable {
+        setBitrate(std::move(response), std::move(request));
+      });
+    };
     https_server.resource["^/api/abr/capabilities$"]["GET"] = getAbrCapabilities;
     https_server.resource["^/pyrowave-bandwidth-probe$"]["GET"] = getPyroWaveBandwidthProbe;
     https_server.resource["^/pyrowave-udp-probe$"]["GET"] = [run_blocking_nvhttp](auto resp, auto req) {
