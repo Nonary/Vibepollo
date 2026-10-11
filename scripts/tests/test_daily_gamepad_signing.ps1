@@ -25,6 +25,7 @@ try {
     if (-not $blocked) { throw 'An already signed manifest can be reinterpreted as a producer.' }
     $scriptText = Get-Content (Join-Path $PSScriptRoot '../sign_daily_gamepad.ps1') -Raw
     if ($scriptText -match 'Import-Certificate|Import-PfxCertificate|Cert:\\|certutil.*(-addstore|-importpfx)') { throw 'Daily signing must not import certificates.' }
+    if ($scriptText -match 'newkey|New-SelfSignedCertificate|pkcs12.*-export') { throw 'Daily signing must reuse an explicit identity rather than create one.' }
     # Execute the actual workflow expectation block against the normalized
     # consumer layout, catching slash and ordering mistakes in the MSI gate.
     $workflow = Get-Content (Join-Path $PSScriptRoot '../../.github/workflows/ci-windows.yml') -Raw

@@ -37,3 +37,9 @@ Local and read-only native contract tests do not prove a Windows application bui
 Real signing validation remains blocked: automatic approval review rejected creating the temporary RSA/PFX artifact signing identity under the task's no-new-credentials constraint. No key generation or signing test ran. Direct explicit approval for that ephemeral identity is required before its validation or activation; certificate-store imports and OS security changes remain excluded.
 
 Primary migration on 2026-10-11: Vibeshine master fast-forwarded losslessly to 68f38d8b5c37c7c06817698c0c91f872f70c3325 and became the remote default; existing open PR bases moved to identical code on master. Legacy refs remain preserved pending semantic cleanup review. Vibepollo already uses master and must resolve its reviewed migration prerequisite.
+
+## Reusable gamepad signing identity
+
+Daily builds require `NIGHTLY_GAMEPAD_PFX_BASE64` and `NIGHTLY_GAMEPAD_PFX_PASSWORD` repository secrets, plus the public `NIGHTLY_GAMEPAD_SIGNER_THUMBPRINT` variable. Only these scoped signing secrets and the runtime token reach the reusable build; SignPath credentials are excluded. Each build signs a fresh copy of the verified producer with the same identity and exports only its public certificate. It refuses missing, mismatched, not-yet-valid or near-expiry identities; it never generates a replacement automatically or imports trust.
+
+Keep private material outside the repository and downloadable packages. Back up the password-protected PFX securely. Rotation requires explicit approval, replacement of both secrets and the public pin together, and recipient consent for the new certificate; existing recipient trust is never removed by this pipeline. Equal/newer installed components bypass certificate and driver changes. Reusing the same trusted thumbprint avoids adding a new trust entry each night. Self-signing does not establish recipient trust or prove driver installation.

@@ -70,9 +70,11 @@ jobs:
       publish_symbols: false
       upload_symbols_artifact: false
       release_artifact_retention_days: 7
-    # Deliberately no inherit or SignPath token: only the runtime read token.
+    # Only scoped runtime and reusable gamepad signing secrets; no SignPath or inherit.
     secrets:
       truehdr_runtime_token: ${{ secrets.TRUEHDR_RUNTIME_TOKEN }}
+      daily_gamepad_pfx_base64: ${{ secrets.NIGHTLY_GAMEPAD_PFX_BASE64 }}
+      daily_gamepad_pfx_password: ${{ secrets.NIGHTLY_GAMEPAD_PFX_PASSWORD }}
 
   publish:
     needs: [prepare, build]

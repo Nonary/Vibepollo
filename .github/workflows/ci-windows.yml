@@ -123,6 +123,10 @@ on:
         required: false
       truehdr_runtime_token:
         required: false
+      daily_gamepad_pfx_base64:
+        required: false
+      daily_gamepad_pfx_password:
+        required: false
 
 jobs:
   resolve_source_artifacts:
@@ -586,21 +590,26 @@ jobs:
           .\scripts\download_truehdr_runtime_release.ps1 @args
           "SUNSHINE_TRUEHDR_RUNTIME_DIR=$env:TRUEHDR_RUNTIME_ROOT" >> $env:GITHUB_ENV
 
-      - name: Locate OpenSSL for artifact-only daily signing
-        if: inputs.daily_unsigned
-        shell: msys2 {0}
-        run: |
-          set -euo pipefail
-          echo "DAILY_OPENSSL_PATH=$(cygpath -w "$(command -v openssl)")" >> "$GITHUB_ENV"
-
       - name: Self-sign only the daily gamepad catalog and setup tool
         if: inputs.daily_unsigned
         shell: pwsh
+        env:
+          DAILY_GAMEPAD_PFX_BASE64: ${{ secrets.daily_gamepad_pfx_base64 }}
+          DAILY_GAMEPAD_PFX_PASSWORD: ${{ secrets.daily_gamepad_pfx_password }}
+          DAILY_GAMEPAD_SIGNER_THUMBPRINT: ${{ vars.NIGHTLY_GAMEPAD_SIGNER_THUMBPRINT }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $dailyRoot = Join-Path $env:RUNNER_TEMP 'daily-vhf-signed-package'
-          .\scripts\sign_daily_gamepad.ps1 -SourceRoot $env:VHF_PACKAGE_ROOT -OutRoot $dailyRoot -OpenSslPath $env:DAILY_OPENSSL_PATH
-          "VHF_PACKAGE_ROOT=$dailyRoot" >> $env:GITHUB_ENV
+          if (-not $env:DAILY_GAMEPAD_PFX_BASE64 -or -not $env:DAILY_GAMEPAD_PFX_PASSWORD) { throw 'Reusable nightly signing secrets are required.' }
+          $pfx = Join-Path $env:RUNNER_TEMP ('daily-gamepad-' + [Guid]::NewGuid().ToString('N') + '.pfx')
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:DAILY_GAMEPAD_PFX_BASE64))
+            $dailyRoot = Join-Path $env:RUNNER_TEMP 'daily-vhf-signed-package'
+            .\scripts\sign_daily_gamepad.ps1 -SourceRoot $env:VHF_PACKAGE_ROOT -OutRoot $dailyRoot -PfxPath $pfx -ExpectedSignerThumbprint $env:DAILY_GAMEPAD_SIGNER_THUMBPRINT
+            "VHF_PACKAGE_ROOT=$dailyRoot" >> $env:GITHUB_ENV
+          } finally {
+            if (Test-Path -LiteralPath $pfx) { Remove-Item -LiteralPath $pfx -Force }
+            Remove-Item Env:DAILY_GAMEPAD_PFX_BASE64, Env:DAILY_GAMEPAD_PFX_PASSWORD -ErrorAction SilentlyContinue
+          }
 
       - name: Build Windows
         shell: msys2 {0}

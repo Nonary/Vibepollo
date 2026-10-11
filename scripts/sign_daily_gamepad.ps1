@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$SourceRoot, [string]$OutRoot, [string]$OpenSslPath, [string]$SignToolPath, [switch]$FunctionsOnly)
+param([string]$SourceRoot, [string]$OutRoot, [string]$PfxPath, [string]$ExpectedSignerThumbprint, [string]$SignToolPath, [switch]$FunctionsOnly)
 $ErrorActionPreference = 'Stop'
 
 function Update-DailyGamepadManifest {
@@ -24,8 +24,8 @@ function Update-DailyGamepadManifest {
 }
 
 if ($FunctionsOnly) { return }
-foreach ($argument in @($SourceRoot, $OutRoot, $OpenSslPath)) {
-    if ([string]::IsNullOrWhiteSpace($argument)) { throw 'SourceRoot, OutRoot and OpenSslPath are required.' }
+foreach ($argument in @($SourceRoot, $OutRoot, $PfxPath, $ExpectedSignerThumbprint, $env:DAILY_GAMEPAD_PFX_PASSWORD)) {
+    if ([string]::IsNullOrWhiteSpace($argument)) { throw 'SourceRoot, OutRoot, PfxPath, ExpectedSignerThumbprint and the signing password environment variable are required.' }
 }
 $source = [IO.Path]::GetFullPath($SourceRoot)
 $output = [IO.Path]::GetFullPath($OutRoot)
@@ -44,26 +44,27 @@ if (-not $SignToolPath) {
     $SignToolPath = Get-ChildItem -LiteralPath $kit -Directory | Sort-Object Name -Descending | ForEach-Object { Join-Path $_.FullName 'x64/signtool.exe' } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 }
 if (-not $SignToolPath) { throw 'Windows SDK x64 SignTool is required.' }
-$secretRoot = Join-Path $env:RUNNER_TEMP ("daily-gamepad-key-" + [Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $secretRoot | Out-Null
+if ($ExpectedSignerThumbprint -cnotmatch '^[0-9A-F]{40}$') { throw 'Expected signer identity must be explicitly pinned.' }
+$certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+    [IO.File]::ReadAllBytes([IO.Path]::GetFullPath($PfxPath)),
+    $env:DAILY_GAMEPAD_PFX_PASSWORD,
+    [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
 try {
+    if (-not $certificate.HasPrivateKey -or $certificate.Thumbprint -cne $ExpectedSignerThumbprint -or
+        $certificate.NotBefore.ToUniversalTime() -gt [DateTime]::UtcNow -or
+        $certificate.NotAfter.ToUniversalTime() -le [DateTime]::UtcNow.AddDays(30)) {
+        throw 'Reusable signing identity is missing, mismatched, not yet valid, or near expiry.'
+    }
+    $eku = @($certificate.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.37' })
+    if ($eku.Count -ne 1 -or '1.3.6.1.5.5.7.3.3' -notin @($eku[0].EnhancedKeyUsages.Value)) { throw 'Reusable identity must permit code signing.' }
     foreach ($relative in @($expected) + 'manifest.json') {
         $destination = Join-Path $output $relative
         New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $source $relative) -Destination $destination
     }
-    $key = Join-Path $secretRoot 'key.pem'
-    $pem = Join-Path $secretRoot 'public.pem'
-    $pfx = Join-Path $secretRoot 'signer.pfx'
-    $env:DAILY_GAMEPAD_PFX_PASSWORD = [Guid]::NewGuid().ToString('N')
-    & $OpenSslPath req -x509 -newkey rsa:3072 -nodes -keyout $key -out $pem -days 3650 -subj '/CN=Nonary Daily VHF Gamepad Test Certificate' -addext 'basicConstraints=critical,CA:FALSE' -addext 'extendedKeyUsage=codeSigning' -addext 'keyUsage=digitalSignature' 2>$null
-    if ($LASTEXITCODE -ne 0) { throw 'Ephemeral certificate generation failed.' }
+    $pfx = [IO.Path]::GetFullPath($PfxPath)
     $cer = Join-Path $output 'driver/VibeshineVhfGamepad.cer'
-    & $OpenSslPath x509 -in $pem -outform DER -out $cer
-    if ($LASTEXITCODE -ne 0) { throw 'Public certificate export failed.' }
-    & $OpenSslPath pkcs12 -export -inkey $key -in $pem -out $pfx -passout env:DAILY_GAMEPAD_PFX_PASSWORD
-    if ($LASTEXITCODE -ne 0) { throw 'Ephemeral PFX generation failed.' }
-    $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($cer)
+    [IO.File]::WriteAllBytes($cer, $certificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
     foreach ($relative in @('driver/VibeshineVhfGamepad.cat', 'tools/VibeshineVhfGamepadDeviceSetup.exe')) {
         $path = Join-Path $output $relative
         & $SignToolPath sign /fd SHA256 /f $pfx /p $env:DAILY_GAMEPAD_PFX_PASSWORD $path
@@ -77,11 +78,6 @@ try {
     }
     Update-DailyGamepadManifest -Root $output -Thumbprint $certificate.Thumbprint -ProducerLock $producerLock
     Write-Host "Daily VHF catalog/setup self-signed. Public certificate: $($certificate.Thumbprint). No trust store was changed."
-} finally {
-    Remove-Item Env:DAILY_GAMEPAD_PFX_PASSWORD -ErrorAction SilentlyContinue
-    foreach ($name in @('key.pem', 'public.pem', 'signer.pfx')) {
-        $secretPath = Join-Path $secretRoot $name
-        if (Test-Path -LiteralPath $secretPath) { Remove-Item -LiteralPath $secretPath -Force -ErrorAction Stop }
-    }
-    Remove-Item -LiteralPath $secretRoot -Force -ErrorAction Stop
+ } finally {
+    $certificate.Dispose()
 }
