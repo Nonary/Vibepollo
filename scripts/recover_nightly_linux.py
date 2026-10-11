@@ -35,7 +35,10 @@ package = packages[0]
 pkginfo = run('tar','-xOf',str(package),'.PKGINFO')
 assert f'pkgname = {product.lower()}\n' in pkginfo and 'arch = x86_64' in pkginfo
 assert 'daily.d20261011' in pkginfo and sha in pkginfo, 'Native package version is not the exact nightly identity'
-binary = subprocess.check_output(['tar','-xOf',str(package),'usr/bin/'+product.lower()])
+binary_name = product.lower()+'-'+version
+listing = run('tar','-tvf',str(package))
+assert any(line.startswith('l') and line.endswith('usr/bin/'+product.lower()+' -> '+binary_name) for line in listing.splitlines()), 'The application symlink does not target the exact nightly binary'
+binary = subprocess.check_output(['tar','-xOf',str(package),'usr/bin/'+binary_name])
 assert version.encode() in binary, 'The actual packaged application does not contain the canonical version'
 digest = hashlib.sha256(package.read_bytes()).hexdigest()
 release = api(f'repos/{repo}/releases/tags/{tag}')
@@ -57,7 +60,7 @@ for name in original_assets:
         assert original_assets[name]['digest']=='sha256:'+hashlib.sha256((stage/name).read_bytes()).hexdigest()
 known_windows = {
     'Vibeshine': ('8204f465132d4c89b402469eb132d4b29d477845f0d0de54d7a286aa8ba87c9c', '64bd81a21ab8c0f216f18ea5be9cf0cf78d9e893d42606b59482c16a2463641a'),
-    'Vibepollo': ('a0e4f20c118bfc0d9e707608fdd6a8936ea431a7b041a04ff1c4a53e2ddaee5b8', 'd690931ade47fe1feaa4866f0481b9750f9d44142fc5f14a92d1eec60bfebef8b'),
+    'Vibepollo': ('a0e4f20c118bfc0d9e707608fdd6a8936ea431a7b041a04ff1c4a53e2daee5b8', 'd690931ade47fe1feaa4866f0481b9750f9d44142fc5f14a92d1ec60bfebef8b'),
 }[product]
 for name, expected_digest in zip((product+'.msi',product+'Setup.exe'), known_windows):
     assert hashlib.sha256((stage/name).read_bytes()).hexdigest()==expected_digest, 'Original qualified Windows payload changed'
