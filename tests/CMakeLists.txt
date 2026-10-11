@@ -785,7 +785,7 @@ sunshine_register_component(NAME test_component_video_colorspace TEST_SOURCE uni
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/logging.cpp"
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/logging_policy.cpp"
     INCLUDE_DIRECTORIES ${FFMPEG_INCLUDE_DIRS}
-    LINK_LIBRARIES Boost::log Boost::asio Boost::crc Boost::format Boost::process ZLIB::ZLIB ${FFMPEG_LIBRARIES}
+    LINK_LIBRARIES nlohmann_json::nlohmann_json Boost::log Boost::asio Boost::crc Boost::format Boost::process ZLIB::ZLIB ${FFMPEG_LIBRARIES}
                    ${SUNSHINE_TEST_FFMPEG_PLATFORM_LIBRARIES} ${SUNSHINE_TEST_SOCKET_LIBRARIES})
 sunshine_register_component(NAME test_component_wgc_monitor_selection TEST_SOURCE unit/test_wgc_monitor_selection.cpp)
 sunshine_register_component(NAME test_component_screen_saver_state TEST_SOURCE unit/test_screen_saver_state.cpp
