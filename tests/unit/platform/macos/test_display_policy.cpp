@@ -55,54 +55,6 @@ TEST(MacosExclusiveLayoutPolicy, IgnoresDuplicateEntries) {
   EXPECT_EQ(plan.newly_tracked, (std::vector<display_id_t> {1}));
 }
 
-TEST(MacosExclusiveMirrorPolicy, MirrorsThePhysicalDisplaysOntoTheStreamsDisplay) {
-  const auto mirror = plan_exclusive_mirror({{1, std::nullopt}, {5, std::nullopt}, {9, std::nullopt}}, 5, {5});
-  EXPECT_EQ(mirror, (std::vector<display_id_t> {1, 9}));
-}
-
-TEST(MacosExclusiveMirrorPolicy, LeavesDisplaysAlreadyMirroringItAlone) {
-  // The lid reopened: the external monitor (9) still mirrors the stream's display, the built-in (1) is back.
-  const auto mirror = plan_exclusive_mirror({{1, std::nullopt}, {5, std::nullopt}, {9, 5}}, 5, {5});
-  EXPECT_EQ(mirror, (std::vector<display_id_t> {1}));
-}
-
-TEST(MacosExclusiveMirrorPolicy, MovesDisplaysOutOfTheUsersOwnMirrorSet) {
-  // The user mirrors the built-in display (1) onto a monitor (9); both should mirror the stream's display.
-  const auto mirror = plan_exclusive_mirror({{1, 9}, {5, std::nullopt}, {9, std::nullopt}}, 5, {5});
-  EXPECT_EQ(mirror, (std::vector<display_id_t> {1, 9}));
-}
-
-TEST(MacosExclusiveMirrorPolicy, LeavesRemoteMonitorsSeparate) {
-  const auto mirror = plan_exclusive_mirror({{1, std::nullopt}, {5, std::nullopt}, {7, std::nullopt}}, 5, {5, 7});
-  EXPECT_EQ(mirror, (std::vector<display_id_t> {1}));
-}
-
-TEST(MacosExclusiveMirrorPolicy, IgnoresDuplicateEntries) {
-  const auto mirror = plan_exclusive_mirror({{1, std::nullopt}, {1, std::nullopt}, {5, std::nullopt}}, 5, {5});
-  EXPECT_EQ(mirror, (std::vector<display_id_t> {1}));
-}
-
-TEST(MacosTeardownPolicy, WakesAndTurnsDisplaysBackOnByDefault) {
-  const auto plan = plan_teardown(false, true);
-  EXPECT_TRUE(plan.wake_displays);
-  EXPECT_TRUE(plan.turn_on);
-}
-
-TEST(MacosTeardownPolicy, NeverWakesWhenLeavingDisplaysOff) {
-  const auto plan = plan_teardown(true, true);
-  EXPECT_FALSE(plan.wake_displays);
-  // A turned-off display is still turned back on, so none is left disabled.
-  EXPECT_TRUE(plan.turn_on);
-}
-
-TEST(MacosTeardownPolicy, LeavesDisplaysAloneWhenNoneWereTurnedOff) {
-  for (const bool leave_off : {false, true}) {
-    const auto plan = plan_teardown(leave_off, false);
-    EXPECT_FALSE(plan.wake_displays);
-    EXPECT_FALSE(plan.turn_on);
-  }
-}
-
 TEST(MacosAttemptBudget, StopsAfterTheLimitWithinTheWindow) {
   attempt_budget_t budget {3, 60s};
   const auto start = clock::time_point {};

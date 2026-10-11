@@ -36,24 +36,6 @@ namespace platf::macos_display_policy {
     return plan;
   }
 
-  std::vector<display_id_t> plan_exclusive_mirror(const std::vector<display_mirror_t> &online, const display_id_t stream_display, const std::vector<display_id_t> &keep_separate) {
-    std::vector<display_id_t> mirror;
-    for (const auto &display : online) {
-      if (contains(keep_separate, display.id) || display.mirrors == stream_display || contains(mirror, display.id)) {
-        continue;
-      }
-      mirror.push_back(display.id);
-    }
-    return mirror;
-  }
-
-  teardown_plan_t plan_teardown(const bool leave_displays_off, const bool turned_off) {
-    return {
-      .wake_displays = turned_off && !leave_displays_off,
-      .turn_on = turned_off,
-    };
-  }
-
   attempt_budget_t::attempt_budget_t(const std::size_t limit, const clock::duration window):
       limit {limit},
       window {window} {

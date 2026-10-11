@@ -432,11 +432,6 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(info) << "Prerelease build detected; default min_log_level is debug unless overridden.";
   }
   BOOST_LOG(info) << "Effective min_log_level=" << config::sunshine.min_log_level;
-#ifndef __APPLE__
-  if (config::video.leave_displays_off_after_streaming) {
-    BOOST_LOG(warning) << "leave_displays_off_after_streaming isn't supported on this platform yet; displays are restored as before when streaming ends";
-  }
-#endif
 
   // Log publisher metadata
   log_publisher_data();

@@ -1,6 +1,6 @@
 /**
  * @file src/platform/macos/display_policy.h
- * @brief CoreGraphics-independent decisions for lid transitions, the exclusive layout, stream teardown, and capture recovery.
+ * @brief CoreGraphics-independent decisions for lid transitions, the exclusive layout, and capture recovery.
  * @details Kept free of Apple frameworks so the unit tests can check them without displays.
  */
 #pragma once
@@ -46,39 +46,6 @@ namespace platf::macos_display_policy {
    * @param tracked The displays this session already turned off, and will turn back on when it ends.
    */
   exclusive_plan_t plan_exclusive_layout(const std::vector<display_id_t> &active, const std::vector<display_id_t> &keep_on, const std::vector<display_id_t> &tracked);
-
-  /// A display and the display it mirrors, if any.
-  struct display_mirror_t {
-    display_id_t id;
-    std::optional<display_id_t> mirrors;
-  };
-
-  /**
-   * @brief Which displays to mirror onto the stream's display, the exclusive layout's way of keeping the
-   *        desktop off them when leave_displays_off_after_streaming is on.
-   * @details Turning a display off takes it out of the desktop, but turning it back on when the stream
-   *          ends lights its panel, even one another utility is holding dark. A mirrored display stays
-   *          on, with its power left alone, and stops mirroring when the stream's display goes away.
-   * @param online The displays that are online, with what each one mirrors.
-   * @param stream_display The display everything else should mirror.
-   * @param keep_separate The stream's display and the Remote Monitor displays, which belong to clients.
-   */
-  std::vector<display_id_t> plan_exclusive_mirror(const std::vector<display_mirror_t> &online, display_id_t stream_display, const std::vector<display_id_t> &keep_separate);
-
-  struct teardown_plan_t {
-    bool wake_displays;  ///< Wake displays that are asleep, so the ones turned off can come back.
-    bool turn_on;  ///< Turn the displays the exclusive layout turned off back on.
-  };
-
-  /**
-   * @brief What ending a stream's virtual display does to the physical displays.
-   * @details Displays the exclusive layout turned off are always turned back on, so none is left
-   *          disabled. With leave_displays_off_after_streaming, nothing wakes displays that are asleep
-   *          or held dark: local input still does.
-   * @param leave_displays_off The leave_displays_off_after_streaming setting, as it was when the display was made.
-   * @param turned_off Whether the exclusive layout turned any display off.
-   */
-  teardown_plan_t plan_teardown(bool leave_displays_off, bool turned_off);
 
   /**
    * @brief Allows at most `limit` attempts within any `window`, to keep automatic fixes from looping.
