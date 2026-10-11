@@ -1197,8 +1197,8 @@ TEST(DisplayHelperV2FileSnapshotStorage, SaveLoadRoundTrip) {
 
   display_device::DisplaySettingsSnapshot snapshot;
   snapshot.m_topology = {{"A", "B"}};
-  snapshot.m_modes["A"] = display_device::DisplayMode {};
-  snapshot.m_modes["B"] = display_device::DisplayMode {};
+  snapshot.m_modes["A"] = display_device::DisplayMode {{1920, 1080}, {60, 1}};
+  snapshot.m_modes["B"] = display_device::DisplayMode {{1920, 1080}, {60, 1}};
   snapshot.m_hdr_states["A"] = display_device::HdrState::Enabled;
   snapshot.m_hdr_states["B"] = std::nullopt;
   snapshot.m_primary_device = "A";
