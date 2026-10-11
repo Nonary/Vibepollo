@@ -268,7 +268,7 @@ jobs:
     needs:
       - fetch_vhf_gamepad_release
     if: inputs.artifact_source_run_id == '' && needs.fetch_vhf_gamepad_release.result == 'success'
-    runs-on: ${{ inputs.use_self_hosted && github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Windows", "X64", "windows-release"]') || fromJSON('["windows-2022"]') }}
+    runs-on: ${{ !inputs.daily_unsigned && inputs.use_self_hosted && github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Windows", "X64", "windows-release"]') || fromJSON('["windows-2022"]') }}
     outputs:
       msi_name: ${{ steps.package-windows-msi.outputs.msi_name }}
       symbol_pack_name: ${{ steps.package-windows-symbols.outputs.symbol_pack_name }}
@@ -305,6 +305,16 @@ jobs:
             msystem: ucrt64
             toolchain: ucrt-x86_64
     steps:
+
+      - name: Enforce GitHub-hosted daily builds
+        if: inputs.daily_unsigned
+        shell: pwsh
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+            throw 'Daily builds require GitHub-hosted runners.'
+          }
 
       - name: Prepare self-hosted build tools
         if: runner.environment == 'self-hosted'
