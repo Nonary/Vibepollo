@@ -1425,7 +1425,7 @@ static int execute_request(int argc, char **argv,
     case MANAGED_FOCUS: {
       char *const arguments[] = {"/usr/libexec/vibeshine/vibepollo-app-focus", "--managed",
                                 argv[2], argv[3], argv[4], argv[5], argv[6], NULL};
-      return exec_user_service(identity, NULL, arguments, false, false);
+      return exec_user_service(identity, NULL, arguments, false, false, 0, NULL);
     }
     case LUTRIS: {
       // Apply the same ownership boundary to an already-running Lutris daemon.

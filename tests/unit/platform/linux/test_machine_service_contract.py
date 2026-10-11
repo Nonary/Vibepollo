@@ -330,7 +330,7 @@ forbid(host, "trap 'forward_host_signal", "duplicate service signal delivery")
 for variable in ("VIBEPOLLO_MACHINE_HOST", "VIBEPOLLO_SESSION_ROLE"):
     require(host, variable, "machine-host provider scan environment")
     require(provider_scan_protocol, f'std::getenv("{variable}")', "provider scan machine-session guard")
-for variable in ("VIBESHINE_MACHINE_HOST", "VIBEPOLLO_SESSION_ROLE"):
+for variable in ("VIBESHINE_MACHINE_HOST", "VIBESHINE_SESSION_ROLE"):
     forbid(provider_scan_protocol, variable, "provider scan source-only environment")
 require(frame_limiter, 'std::getenv("VIBEPOLLO_MACHINE_HOST")', "machine-host global limiter routing")
 require(frame_limiter, '"/usr/libexec/vibeshine/vibepollo-session-exec", "global-limiter"',
@@ -338,7 +338,7 @@ require(frame_limiter, '"/usr/libexec/vibeshine/vibepollo-session-exec", "global
 forbid(frame_limiter, "VIBESHINE_MACHINE_HOST", "global limiter source-only environment")
 require(host, '"VIBEPOLLO_SESSION_TYPE=wayland"', "managed Wayland session type")
 require(wayland_hdr_policy, 'std::getenv("VIBEPOLLO_SESSION_TYPE")', "managed Wayland HDR policy")
-forbid(wayland_hdr_policy, "VIBEPOLLO_SESSION_TYPE", "Wayland HDR source-only environment")
+forbid(wayland_hdr_policy, "VIBESHINE_SESSION_TYPE", "Wayland HDR source-only environment")
 
 # API restart of the private child exits back to the readiness-gating wrapper.
 # Ordinary Linux launches retain the historical atexit self-reexec path.
