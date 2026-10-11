@@ -15,7 +15,7 @@ try {
         $block = [regex]::Match($text, '(?s)# DRIVER_INSTALL_SAFETY_BEGIN.*?# DRIVER_INSTALL_SAFETY_END').Value
         Assert-That ($block.Length -gt 0) "Missing safety policy: $driver"
         if ($driver -eq 'vhf-gamepad') {
-            Assert-That ($block.Contains("if (`$null -eq `$signer -or `$signature.Status -ne 'Valid')")) 'VHF local signing is eligible only when Windows already trusts the catalog'
+            Assert-That ($block.Contains('$LocalTestPackage -and $AllowUntrustedLocalPackage -and $signature.Status -eq ''NotTrusted''')) 'Only a signed local VHF candidate may defer trust for independent validation and recipient consent'
         } elseif ($null -eq $baseline) { $baseline = $block } else { Assert-That ($block -ceq $baseline) "Safety policy drift: $driver" }
         # Load only these pure/read-only functions, never the installer body.
         foreach ($name in @('ConvertTo-DriverComponentVersion', 'Get-InfComponentVersion', 'Test-SafeDriverInstall')) {
@@ -125,6 +125,11 @@ try {
     Assert-That (([regex]::Matches($bootstrap, 'args.Add\("UPGRADINGPRODUCTCODE=1"\)')).Count -eq 2) 'Both MSI pre-uninstall routes must preserve drivers'
     Assert-That ($bootstrap.Contains('logPhase.StartsWith("cli_remove_"')) 'CLI pre-uninstall must preserve drivers'
     Assert-That ($bootstrap.Contains('its uninstaller cannot guarantee preservation of installed drivers')) 'Legacy pre-uninstall must fail safely'
+    & (Join-Path $RepositoryRoot 'packaging/windows/test_gamepad_certificate_trust.ps1') -RepositoryRoot $RepositoryRoot
+    & (Join-Path $RepositoryRoot 'packaging/windows/bootstrapper/tests/test_gamepad_certificate_consent.ps1')
+    $windowsPowerShell = Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/powershell.exe'
+    & $windowsPowerShell -NoProfile -File (Join-Path $RepositoryRoot 'packaging/windows/test_gamepad_certificate_crypto.ps1') -RepositoryRoot $RepositoryRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Read-only native VHF certificate verification tests failed.' }
     Write-Host 'Driver installation safety checks passed. No installers, drivers, trust stores, services or restarts were executed.'
 } finally {
     # Only delete the exact uniquely created scratch directory.

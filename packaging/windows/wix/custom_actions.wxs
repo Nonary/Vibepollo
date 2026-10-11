@@ -20,6 +20,11 @@
     <!-- Pull this fragment into the CPack-generated MSI -->
     <FeatureRef Id="ProductFeature"/>
     <Property Id="DAILY_UNSIGNED_DRIVER_POLICY" Value="$(var.DailyUnsignedDriverPolicy)" Secure="yes"/>
+    <!-- Explicit recipient consent only; ordinary and unattended installs default off. -->
+    <Property Id="ALLOW_LOCAL_GAMEPAD_CERTIFICATE_TRUST" Value="0" Secure="yes"/>
+    <Property Id="LOCAL_GAMEPAD_CERTIFICATE_THUMBPRINT" Value="$(var.LocalGamepadCertificateThumbprint)" Secure="yes"/>
+    <Property Id="LOCAL_GAMEPAD_CERTIFICATE_SUBJECT" Value="$(var.LocalGamepadCertificateSubject)"/>
+    <Property Id="LOCAL_GAMEPAD_DRIVER_VERSION" Value="$(var.LocalGamepadDriverVersion)"/>
     
     <!-- Keep Restart Manager enabled (default) to stop services in basic/silent UI -->
     
@@ -192,7 +197,7 @@
          catalog has been staged in the Driver Store. -->
     <CustomAction Id="SetInstallVirtualGamepadDriver"
                  Property="InstallVirtualGamepadDriver"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\vhf-gamepad\install.ps1&quot; -InstallerBestEffort -AllowLocalTestCertificate:[ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE] -DailyUnsignedPolicy [DAILY_UNSIGNED_DRIVER_POLICY]"/>
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\vhf-gamepad\install.ps1&quot; -InstallerBestEffort -AllowLocalTestCertificate:[ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE] -DailyUnsignedPolicy [DAILY_UNSIGNED_DRIVER_POLICY] -AllowLocalGamepadCertificateTrust [ALLOW_LOCAL_GAMEPAD_CERTIFICATE_TRUST] -ConsentCertificateThumbprint &quot;[LOCAL_GAMEPAD_CERTIFICATE_THUMBPRINT]&quot;"/>
 
     <CustomAction Id="SetRegisterVulkanHdrLayer"
                  Property="RegisterVulkanHdrLayer"

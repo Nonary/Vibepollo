@@ -116,6 +116,7 @@ namespace VibepolloInstaller {
     private readonly TextBox _installPathTextBox;
     private readonly ComboBox _virtualDisplayDriverComboBox;
     private readonly CheckBox _virtualGamepadDriverCheckBox;
+    private readonly CheckBox _localGamepadCertificateTrustCheckBox;
     private readonly TextBlock _statusText;
     private readonly TextBlock _statusDetailText;
     private readonly ProgressBar _progressBar;
@@ -650,7 +651,7 @@ namespace VibepolloInstaller {
         Content = "Install Vibepollo virtual gamepad driver",
         FontSize = 13,
         Foreground = new SolidColorBrush(Color.FromRgb(232, 239, 253)),
-        IsChecked = true,
+        IsChecked = _payloadMsiInfo == null || !_payloadMsiInfo.HasLocalGamepadCertificate,
         Margin = new Thickness(0, 0, 0, 6),
         ToolTip = "Installs the bundled user-mode virtual gamepad driver."
       };
@@ -661,6 +662,25 @@ namespace VibepolloInstaller {
         Foreground = new SolidColorBrush(Color.FromRgb(190, 208, 236)),
         TextWrapping = TextWrapping.Wrap
       });
+
+      _localGamepadCertificateTrustCheckBox = new CheckBox {
+        Content = new TextBlock { Text = "I consent to machine-wide trust of this bundled gamepad certificate", TextWrapping = TextWrapping.Wrap },
+        IsChecked = false,
+        FontSize = 12,
+        Foreground = new SolidColorBrush(Color.FromRgb(232, 239, 253)),
+        Margin = new Thickness(0, 10, 0, 6),
+        Visibility = _payloadMsiInfo != null && _payloadMsiInfo.HasLocalGamepadCertificate ? Visibility.Visible : Visibility.Collapsed
+      };
+      _localGamepadCertificateTrustCheckBox.Checked += (sender, eventArgs) => { _virtualGamepadDriverCheckBox.IsChecked = true; };
+      gamepadStack.Children.Add(_localGamepadCertificateTrustCheckBox);
+      if (_payloadMsiInfo != null && _payloadMsiInfo.HasLocalGamepadCertificate) {
+        gamepadStack.Children.Add(new TextBlock {
+          Text = "Only if this gamepad driver is missing or older, this option may add its bundled self-issued, non-CA code-signing certificate to LocalMachine Root and TrustedPublisher. Trust persists for every user and can trust other code signed by the same key; it remains after uninstall. No Secure Boot, test-signing setting or reboot is changed. Daily builds use different certificates, so consent may be needed again.\n\nSigner: " + _payloadMsiInfo.LocalGamepadCertificateSubject + "\nThumbprint: " + _payloadMsiInfo.LocalGamepadCertificateThumbprint + "\nDriver version: " + _payloadMsiInfo.LocalGamepadDriverVersion,
+          FontSize = 11,
+          Foreground = new SolidColorBrush(Color.FromRgb(190, 208, 236)),
+          TextWrapping = TextWrapping.Wrap
+        });
+      }
 
       var divider = new System.Windows.Shapes.Rectangle {
         Height = 1,
@@ -1125,6 +1145,8 @@ namespace VibepolloInstaller {
       await RunOperationAsync(async () => {
         var installVirtualDisplayDriver = ShouldInstallVirtualDisplayDriver();
         var installVirtualGamepadDriver = ShouldInstallVirtualGamepadDriver();
+        _arguments.AllowLocalGamepadCertificateTrust = _payloadMsiInfo != null && _payloadMsiInfo.HasLocalGamepadCertificate && installVirtualGamepadDriver && _localGamepadCertificateTrustCheckBox.IsChecked == true;
+        _arguments.ConsentCertificateThumbprint = _arguments.AllowLocalGamepadCertificateTrust ? _payloadMsiInfo.LocalGamepadCertificateThumbprint : string.Empty;
         return await Task.Run(() => InstallerRunner.RunInteractiveInstall(
           _arguments,
           selectedPath,
@@ -1554,6 +1576,7 @@ namespace VibepolloInstaller {
         _installPathTextBox.IsEnabled = false;
         _virtualDisplayDriverComboBox.IsEnabled = false;
         _virtualGamepadDriverCheckBox.IsEnabled = false;
+        _localGamepadCertificateTrustCheckBox.IsEnabled = false;
         _browseButton.IsEnabled = false;
         _installSection.Visibility = Visibility.Collapsed;
         _installVirtualDisplaySection.Visibility = Visibility.Collapsed;
@@ -1573,6 +1596,7 @@ namespace VibepolloInstaller {
       _installPathTextBox.IsEnabled = allowInstallInputs && showInstallLocation;
       _virtualDisplayDriverComboBox.IsEnabled = allowInstallInputs && _showInstallVirtualDisplayOption;
       _virtualGamepadDriverCheckBox.IsEnabled = allowInstallInputs && _showInstallVirtualGamepadOption;
+      _localGamepadCertificateTrustCheckBox.IsEnabled = allowInstallInputs && _showInstallVirtualGamepadOption;
       _browseButton.IsEnabled = allowInstallInputs && showInstallLocation;
       _installSection.Visibility = showInstallLocation ? Visibility.Visible : Visibility.Collapsed;
       _installVirtualDisplaySection.Visibility = _showInstallVirtualDisplayOption ? Visibility.Visible : Visibility.Collapsed;
@@ -2166,6 +2190,8 @@ namespace VibepolloInstaller {
     public string InternalInstallPath { get; set; }
     public bool InternalInstallVirtualDisplay { get; set; }
     public bool InternalInstallVirtualGamepad { get; set; }
+    public bool AllowLocalGamepadCertificateTrust { get; set; }
+    public string ConsentCertificateThumbprint { get; set; }
     public bool InternalInstallSaveLogs { get; set; }
     public string InternalInstallResultPath { get; set; }
     public bool InternalUninstallFactoryReset { get; set; }
@@ -2221,6 +2247,14 @@ namespace VibepolloInstaller {
         }
         if (string.Equals(arg, InternalInstallVirtualGamepadDriverToken, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
           parsed.InternalInstallVirtualGamepad = ParseBooleanToken(args[++index]);
+          continue;
+        }
+        if (string.Equals(arg, "--internal-gamepad-certificate-trust", StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
+          parsed.AllowLocalGamepadCertificateTrust = ParseBooleanToken(args[++index]);
+          continue;
+        }
+        if (string.Equals(arg, "--internal-gamepad-consent-thumbprint", StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
+          parsed.ConsentCertificateThumbprint = args[++index];
           continue;
         }
         if (string.Equals(arg, InternalInstallSaveLogsToken, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
@@ -2407,6 +2441,10 @@ namespace VibepolloInstaller {
       public Version Version { get; set; }
       public bool SupportsTransactionalReplacement { get; set; }
       public bool HasBundledVirtualGamepadDriver { get; set; }
+      public bool HasLocalGamepadCertificate { get; set; }
+      public string LocalGamepadCertificateThumbprint { get; set; }
+      public string LocalGamepadCertificateSubject { get; set; }
+      public string LocalGamepadDriverVersion { get; set; }
     }
 
     // Copy of the currently installed Vibeshine MSI (from the Windows
@@ -2668,6 +2706,8 @@ namespace VibepolloInstaller {
         var versionText = ReadMsiProperty(packageHandle, "ProductVersion");
         var transactionalReplacement = ReadMsiProperty(packageHandle, "VIBESHINE_TRANSACTIONAL_REPLACEMENT");
         var virtualGamepadDriverBundled = ReadMsiProperty(packageHandle, "INSTALL_VIRTUAL_GAMEPAD_DRIVER");
+        var localGamepadCertificateThumbprint = ReadMsiProperty(packageHandle, "LOCAL_GAMEPAD_CERTIFICATE_THUMBPRINT");
+        var localGamepadPackage = ReadMsiProperty(packageHandle, "ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE");
         if (string.IsNullOrWhiteSpace(productCode) && string.IsNullOrWhiteSpace(versionText) && string.IsNullOrWhiteSpace(upgradeCode)) {
           return null;
         }
@@ -2678,7 +2718,11 @@ namespace VibepolloInstaller {
           VersionText = versionText ?? string.Empty,
           Version = ParseVersion(versionText),
           SupportsTransactionalReplacement = string.Equals(transactionalReplacement, "1", StringComparison.Ordinal),
-          HasBundledVirtualGamepadDriver = string.Equals(virtualGamepadDriverBundled, "1", StringComparison.Ordinal)
+          HasBundledVirtualGamepadDriver = string.Equals(virtualGamepadDriverBundled, "1", StringComparison.Ordinal),
+          HasLocalGamepadCertificate = string.Equals(localGamepadPackage, "1", StringComparison.Ordinal) && IsCertificateThumbprint(localGamepadCertificateThumbprint),
+          LocalGamepadCertificateThumbprint = localGamepadCertificateThumbprint ?? string.Empty,
+          LocalGamepadCertificateSubject = ReadMsiProperty(packageHandle, "LOCAL_GAMEPAD_CERTIFICATE_SUBJECT") ?? string.Empty,
+          LocalGamepadDriverVersion = ReadMsiProperty(packageHandle, "LOCAL_GAMEPAD_DRIVER_VERSION") ?? string.Empty
         };
       } finally {
         MsiCloseHandle(packageHandle);
@@ -3528,7 +3572,7 @@ namespace VibepolloInstaller {
         installVirtualGamepadDriver,
         saveInstallLogs,
         restartRequired,
-        "install");
+        "install", arguments);
 
       if (ShouldRetryInstallWithFreshPayload(arguments, msiPath, installResult)) {
         TryDeleteFile(msiPath);
@@ -3556,7 +3600,7 @@ namespace VibepolloInstaller {
           installVirtualGamepadDriver,
           saveInstallLogs,
           restartRequired,
-          "install_recovery");
+          "install_recovery", arguments);
         msiPath = refreshedMsiPath;
         if (!installResult.Succeeded && !string.IsNullOrWhiteSpace(initialLogPath)) {
           installResult.Message += " Initial attempt log: " + initialLogPath;
@@ -3586,7 +3630,7 @@ namespace VibepolloInstaller {
           installVirtualGamepadDriver,
           saveInstallLogs,
           restartRequired,
-          "install_firewall_cleanup_recovery");
+          "install_firewall_cleanup_recovery", arguments);
         if (!installResult.Succeeded && !string.IsNullOrWhiteSpace(initialLogPath)) {
           installResult.Message += " Initial attempt log: " + initialLogPath;
         }
@@ -3608,7 +3652,7 @@ namespace VibepolloInstaller {
             installVirtualGamepadDriver,
             saveInstallLogs,
             restartRequired,
-            "install_registration_recovery");
+            "install_registration_recovery", arguments);
           if (!installResult.Succeeded && !string.IsNullOrWhiteSpace(initialLogPath)) {
             installResult.Message += " Initial attempt log: " + initialLogPath;
           }
@@ -3619,6 +3663,20 @@ namespace VibepolloInstaller {
       return ApplyStashedPayloadRecovery(installResult, stashedPreviousPayload, "install_restore_previous");
     }
 
+    private static bool IsCertificateThumbprint(string value) {
+      return value != null && value.Length == 40 && value.All(character =>
+        (character >= '0' && character <= '9') || (character >= 'A' && character <= 'F'));
+    }
+
+    private static IEnumerable<string> BuildLocalGamepadTrustArguments(InstallerArguments arguments, bool installGamepad) {
+      var consent = installGamepad && arguments != null && arguments.AllowLocalGamepadCertificateTrust
+        && IsCertificateThumbprint(arguments.ConsentCertificateThumbprint);
+      return new[] {
+        "ALLOW_LOCAL_GAMEPAD_CERTIFICATE_TRUST=" + (consent ? "1" : "0"),
+        "LOCAL_GAMEPAD_CERTIFICATE_THUMBPRINT=" + (consent ? arguments.ConsentCertificateThumbprint : "none")
+      };
+    }
+
     private static InstallerResult RunInstallAttempt(
       string msiPath,
       string installDirectory,
@@ -3626,7 +3684,7 @@ namespace VibepolloInstaller {
       bool installVirtualGamepadDriver,
       bool saveInstallLogs,
       bool competingProductsRequireRestart,
-      string logPhase) {
+      string logPhase, InstallerArguments arguments = null) {
       var logPath = BuildLogPath(logPhase);
       var args = new List<string> {
         "/i",
@@ -3643,6 +3701,8 @@ namespace VibepolloInstaller {
         "SUPPRESSMSGBOXES=1"
       };
       TryAppendSameProductReinstallProperties(args, msiPath);
+
+      args.AddRange(BuildLocalGamepadTrustArguments(arguments, installVirtualGamepadDriver));
 
       AppendInstallerLogMessage(logPath, "Quiescing related services and helper processes before MSI install attempt.");
       TryStopRelatedServicesAndProcesses(logPath);
@@ -7902,6 +7962,10 @@ namespace VibepolloInstaller {
         installVirtualDisplayDriver ? "1" : "0",
         "--internal-install-virtual-gamepad-driver",
         installVirtualGamepadDriver ? "1" : "0",
+        "--internal-gamepad-certificate-trust",
+        arguments.AllowLocalGamepadCertificateTrust && installVirtualGamepadDriver ? "1" : "0",
+        "--internal-gamepad-consent-thumbprint",
+        arguments.ConsentCertificateThumbprint ?? string.Empty,
         "--internal-install-save-logs",
         saveInstallLogs ? "1" : "0",
         "--internal-install-result-path",

@@ -58,6 +58,30 @@ if(PROJECT_VERSION_FULL MATCHES "-daily[.]")
 endif()
 list(APPEND CPACK_WIX_CANDLE_EXTRA_FLAGS "-dDailyUnsignedDriverPolicy=${SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY}")
 
+# Display the exact bundled certificate identity before optional recipient trust.
+set(SUNSHINE_LOCAL_GAMEPAD_CERT_THUMBPRINT "none")
+set(SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT "No local gamepad certificate")
+set(SUNSHINE_LOCAL_GAMEPAD_DRIVER_VERSION "none")
+if(SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE)
+  execute_process(
+    COMMAND powershell.exe -NoLogo -NoProfile -NonInteractive -File
+      "${CMAKE_SOURCE_DIR}/scripts/read_gamepad_certificate_identity.ps1"
+      -PackageRoot "${SUNSHINE_EFFECTIVE_LIBVIRTUALGAMEPAD_PREBUILT_DIR}"
+    RESULT_VARIABLE _certificate_result OUTPUT_VARIABLE _certificate_json ERROR_VARIABLE _certificate_error)
+  if(NOT _certificate_result EQUAL 0)
+    message(FATAL_ERROR "Cannot bind gamepad consent to its bundled certificate: ${_certificate_error}")
+  endif()
+  string(JSON SUNSHINE_LOCAL_GAMEPAD_CERT_THUMBPRINT GET "${_certificate_json}" thumbprint)
+  string(JSON SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT GET "${_certificate_json}" subject)
+  string(JSON SUNSHINE_LOCAL_GAMEPAD_DRIVER_VERSION GET "${_certificate_json}" driver_ver)
+  string(REPLACE "&" "&amp;" SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT "${SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT}")
+  string(REPLACE "<" "&lt;" SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT "${SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT}")
+  string(REPLACE "\"" "&quot;" SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT "${SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT}")
+endif()
+list(APPEND CPACK_WIX_CANDLE_EXTRA_FLAGS
+  "-dLocalGamepadCertificateThumbprint=${SUNSHINE_LOCAL_GAMEPAD_CERT_THUMBPRINT}"
+  "-dLocalGamepadCertificateSubject=${SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT}"
+  "-dLocalGamepadDriverVersion=${SUNSHINE_LOCAL_GAMEPAD_DRIVER_VERSION}")
 # The patch fragment needs build-time defaults so it never invokes a missing
 # VHF package from an MSI built before the first signed driver release.
 if(NOT DEFINED SUNSHINE_VHF_GAMEPAD_WIX_BUNDLED)
