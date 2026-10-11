@@ -703,10 +703,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                     "${CMAKE_C_COMPILER}" "${CMAKE_CXX_COMPILER}")
             set_tests_properties(test_component_linux_display_event_observer PROPERTIES LABELS "component")
         endif()
+        # The Python fixture invokes the compiler itself, so export the resolved
+        # imported-target include closure instead of relying on global headers.
+        add_library(sunshine_test_wake_observer_dependencies INTERFACE)
+        target_link_libraries(sunshine_test_wake_observer_dependencies INTERFACE Boost::algorithm)
+        set(_wake_observer_include_file "${CMAKE_CURRENT_BINARY_DIR}/wake-observer-includes-$<CONFIG>.txt")
+        file(GENERATE OUTPUT "${_wake_observer_include_file}"
+            CONTENT "$<JOIN:$<TARGET_PROPERTY:sunshine_test_wake_observer_dependencies,INTERFACE_INCLUDE_DIRECTORIES>,\n>\n")
         add_test(NAME test_component_wake_recovery_observer
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/test_wake_recovery_observer.py"
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}" "${_wake_observer_include_file}")
         set_tests_properties(test_component_wake_recovery_observer PROPERTIES LABELS "component")
         add_test(NAME test_component_recovery_status_ipc
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"

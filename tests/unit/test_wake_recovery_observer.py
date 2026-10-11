@@ -10,6 +10,14 @@ import tempfile
 
 root = pathlib.Path(sys.argv[1]).resolve()
 compiler = sys.argv[2]
+# CMake evaluates the complete Boost::algorithm usage requirements, including
+# transitive modular header roots, into a configuration-specific file. Keep
+# paths as subprocess arguments so Windows paths with spaces need no escaping.
+include_arguments = []
+if len(sys.argv) > 3:
+    for include in pathlib.Path(sys.argv[3]).read_text().splitlines():
+        if include:
+            include_arguments.extend(["-I", include])
 source = (root / "src/platform/windows/display_helper_integration.cpp").read_text()
 start = source.index("class OrphanRecoveryMonitor")
 brace = source.index("{", start)
@@ -226,10 +234,10 @@ with tempfile.TemporaryDirectory(prefix="wake-recovery-observer-") as directory:
     binary = pathlib.Path(directory) / "test"
     generated.write_text(program)
     subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-pthread",
-                    "-I", str(root), str(generated), "-o", str(binary)], check=True)
+                    "-I", str(root), *include_arguments, str(generated), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True, timeout=40)
 
 # The incident's target admission relies on the real backend-independent
 # facade; exercise its routing and fail-closed classification in this case.
 subprocess.run([sys.executable, str(root / "tests/unit/test_wake_recovery_backend.py"),
-                str(root), compiler], check=True)
+                str(root), compiler, *sys.argv[3:]], check=True)

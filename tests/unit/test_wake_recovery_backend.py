@@ -6,6 +6,13 @@ import tempfile
 
 root = pathlib.Path(sys.argv[1]).resolve()
 compiler = sys.argv[2]
+# Reuse the observer's evaluated Boost::algorithm header closure when this
+# fixture is invoked as its backend-routing regression.
+include_arguments = []
+if len(sys.argv) > 3:
+    for include in pathlib.Path(sys.argv[3]).read_text().splitlines():
+        if include:
+            include_arguments.extend(["-I", include])
 source = (root / "src/platform/windows/virtual_display.cpp").read_text()
 facade_start = source.index("  std::vector<TrackedDisplayCleanupTarget> tracked_display_cleanup_targets() {", source.index("namespace VDISPLAY {", source.index("namespace {")))
 
@@ -154,7 +161,7 @@ with tempfile.TemporaryDirectory(prefix="wake-recovery-backend-") as directory:
     binary = pathlib.Path(directory) / "test"
     generated.write_text(program)
     subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-pthread",
-                    "-I", str(root), str(generated), "-o", str(binary)], check=True)
+                    "-I", str(root), *include_arguments, str(generated), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True, timeout=10)
 
 
@@ -246,7 +253,7 @@ with tempfile.TemporaryDirectory(prefix="wake-recovery-classifier-") as director
     binary = pathlib.Path(directory) / "test"
     generated.write_text(classifier_program)
     subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-pthread",
-                    "-I", str(root), str(generated), "-o", str(binary)], check=True)
+                    "-I", str(root), *include_arguments, str(generated), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True, timeout=10)
 
 
