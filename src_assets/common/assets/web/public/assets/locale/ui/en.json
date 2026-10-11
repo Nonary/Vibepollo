@@ -25,7 +25,15 @@
         "saveFailed": "Save failed",
         "unavailable": "Application unavailable"
       },
-      "cover": {
+      "compatibility": {
+      "title": "Compatibility and state commands",
+      "description": "Override launch behavior and commands for this application.",
+      "default": "Use host default",
+      "addState": "Add state command",
+      "resume": "Resume command",
+      "pause": "Pause command"
+    },
+    "cover": {
         "alt": "{name} cover",
         "unavailable": "Cover preview unavailable",
         "unavailableLabel": "{name} cover unavailable"
