@@ -1,4 +1,4 @@
-"""Build every configured component target before the full Linux package build."""
+"""Build every configured component and fast policy target before the full Linux package build."""
 import json
 from pathlib import Path
 import re
@@ -17,7 +17,7 @@ def component_targets(build):
     configurations = model["configurations"]
     if len(configurations) != 1:
         raise ValueError("Linux package requires one configured build type")
-    targets = sorted({t["name"] for t in configurations[0]["targets"] if re.fullmatch(r"test_component_[A-Za-z0-9_]+", t["name"])})
+    targets = sorted({t["name"] for t in configurations[0]["targets"] if re.fullmatch(r"test_(?:component|fast)_[A-Za-z0-9_]+", t["name"])})
     if "test_component_linux_routed_link" not in targets:
         raise ValueError("Required Linux routed-link component was not configured")
     return targets
@@ -25,7 +25,7 @@ def component_targets(build):
 
 def main(build):
     targets = component_targets(build)
-    print(f"Early component compile gate: {len(targets)} targets", flush=True)
+    print(f"Early test compile gate: {len(targets)} targets", flush=True)
     subprocess.run(["cmake", "--build", str(build), "--target", *targets], check=True)
 
 

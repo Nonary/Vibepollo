@@ -106,13 +106,13 @@ class ComponentCompileGateTests(unittest.TestCase):
         (self.reply / "index-current.json").write_text(json.dumps({"reply": {"codemodel-v2": {"jsonFile": "model.json"}}}))
         (self.reply / "model.json").write_text(json.dumps({"configurations": [{"targets": [{"name": name} for name in targets]}]}))
 
-    def test_all_configured_components_are_built_without_host_target(self):
+    def test_component_and_fast_policy_targets_are_built_without_host_target(self):
         from unittest.mock import patch
-        targets = ["sunshine", "test_component_linux_routed_link", "test_component_new_interface", "test_component_new_interface"]
+        targets = ["sunshine", "test_fast_update_release", "test_component_linux_routed_link", "test_component_new_interface", "test_component_new_interface", "test_unrelated_tool"]
         self.model(targets)
         with patch.object(self.helper.subprocess, "run") as build:
             self.helper.main(self.build)
-        build.assert_called_once_with(["cmake", "--build", str(self.build), "--target", "test_component_linux_routed_link", "test_component_new_interface"], check=True)
+        build.assert_called_once_with(["cmake", "--build", str(self.build), "--target", "test_component_linux_routed_link", "test_component_new_interface", "test_fast_update_release"], check=True)
 
     def test_absent_model_or_required_component_fails_closed(self):
         with self.assertRaises(ValueError):
