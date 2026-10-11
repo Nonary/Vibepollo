@@ -6,7 +6,7 @@ if ([Security.Cryptography.X509Certificates.X509Certificate2]::GetCertContentTyp
     throw 'The public certificate must contain one raw certificate, never PKCS12/private-key material.'
 }
 $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($certificateBytes)
-if ($certificate.HasPrivateKey -or $certificate.Subject -cne $certificate.Issuer -or $certificate.Subject -cne 'CN=Nonary Daily VHF Gamepad Test Certificate' -or $certificate.NotBefore.ToUniversalTime() -gt [DateTime]::UtcNow -or $certificate.NotAfter.ToUniversalTime() -lt [DateTime]::UtcNow) {
+if ($certificate.HasPrivateKey -or $certificate.Subject -cne $certificate.Issuer -or $certificate.Subject -cne 'CN=Nonary Nightly VHF Gamepad Signing' -or $certificate.NotBefore.ToUniversalTime() -gt [DateTime]::UtcNow -or $certificate.NotAfter.ToUniversalTime() -lt [DateTime]::UtcNow) {
     throw 'Expected a current, self-issued public daily gamepad certificate with the pinned subject.'
 }
 $constraints = @($certificate.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.19' })
