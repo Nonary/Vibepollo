@@ -49,7 +49,8 @@ function asset(release: UpdateRelease, name: string): boolean {
 }
 
 export function isDailyTag(tag: string): boolean {
-  return /^daily-\d{4}-\d{2}-\d{2}(?:\.(?:[1-9][0-9]{0,2}))?$/.test(tag);
+  return /^daily-\d{4}-\d{2}-\d{2}(?:\.(?:[1-9][0-9]{0,2}))?$/.test(tag) ||
+    /^\d+\.\d+\.\d+-daily\.d\d{8}(?:\.(?:[1-9][0-9]{0,2}))?$/.test(tag);
 }
 
 export function validNightlyMetadata(
@@ -57,6 +58,13 @@ export function validNightlyMetadata(
   metadata: Record<string, unknown> | undefined,
 ): boolean {
   if (!isDailyTag(tag) || !metadata || typeof metadata !== 'object') return false;
+  if (!tag.startsWith('daily-')) {
+    const match = tag.match(/^\d+\.\d+\.\d+-daily\.d(\d{4})(\d{2})(\d{2})(\.[1-9][0-9]{0,2})?$/);
+    const source = metadata['source_commit'];
+    if (metadata['tag'] !== tag || !match || typeof source !== 'string' || metadata['version'] !== `${tag}+${source.slice(0, 12)}`) return false;
+    const legacy = `daily-${match[1]}-${match[2]}-${match[3]}${match[4] ?? ''}`;
+    return validNightlyMetadata(legacy, { ...metadata, tag: legacy });
+  }
   const [day, suffix] = tag.slice(6).split('.');
   const date = day!.replaceAll('-', '');
   const revision = suffix ? Number(suffix) : 1;

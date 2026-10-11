@@ -40,7 +40,7 @@ class DailyTests(unittest.TestCase):
 
     def test_calendar_identity_fits_msi(self):
         first = daily.identity(SHA, dt.date(2026, 10, 11), "2.0.0")
-        self.assertEqual(first["tag"], "daily-2026-10-11")
+        self.assertEqual(first["tag"], "2.0.0-daily.d20261011")
         self.assertEqual(first["version"], "2.0.0-daily.d20261011+aaaaaaaaaaaa")
         for day in (dt.date(2026, 12, 31), dt.date(2027, 1, 1), dt.date(2028, 2, 29)):
             major, minor, patch_number = daily.identity(SHA, day, "2.0.0")["version"].split("-")[0].split(".")
@@ -76,10 +76,10 @@ class DailyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "output"
             with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA, DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master", DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:master", GITHUB_OUTPUT=str(output)):
-                with patch.object(daily, "run", side_effect=["", SHA, "", "[[]]", "", "2.0.0-beta.4\n2.0.0", f"{SHA} refs/tags/{prefix}\n{SHA} refs/tags/{prefix}.2"]):
+                with patch.object(daily, "run", side_effect=["", SHA, "", "[[]]", "", "2.0.0-beta.4\n2.0.0", f"{SHA} refs/tags/{prefix}\n{SHA} refs/tags/{prefix}.2\n{SHA} refs/tags/2.0.1-daily.d{day:%Y%m%d}.4"]):
                     daily.resolve()
-            self.assertIn(f"tag={prefix}.3", output.read_text())
-            self.assertIn(f"version=2.0.1-daily.d{day:%Y%m%d}.3+", output.read_text())
+            self.assertIn(f"tag=2.0.1-daily.d{day:%Y%m%d}.5", output.read_text())
+            self.assertIn(f"version=2.0.1-daily.d{day:%Y%m%d}.5+", output.read_text())
 
     def test_revision_identity_is_bound_and_bounded(self):
         self.assertEqual(daily.identity(SHA, dt.date(2026,10,11), "2.0.1", 2)["version"], "2.0.1-daily.d20261011.2+aaaaaaaaaaaa")

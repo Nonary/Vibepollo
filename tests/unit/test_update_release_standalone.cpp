@@ -127,5 +127,23 @@ int main() {
   assert(!release_selection::macos_package(mac,false));
   mac["assets"]=json::array();
   assert(!release_selection::macos_package(mac,false));
+  auto compatible = daily("11");
+  compatible["tag_name"] = "2.0.1-daily.d20261011.3";
+  compatible["nightly_metadata"]["tag"] = compatible["tag_name"];
+  compatible["nightly_metadata"]["version"] = "2.0.1-daily.d20261011.3+aaaaaaaaaaaa";
+  compatible["nightly_metadata"]["nightly_sequence"] = 20261011003LL;
+  assert(version_compare::compare_semver("2.0.0", compatible["tag_name"].get<std::string>()) < 0);
+  assert(select(json::array({compatible}), "2.0.0", true)["tag_name"] == compatible["tag_name"]);
+  assert(select(json::array({compatible}), "2.0.0", false).is_null());
+  assert(select(json::array({compatible}), "2.0.1", true).is_null());
+  auto unverified = compatible;
+  unverified.erase("nightly_metadata");
+  assert(select(json::array({unverified}), "2.0.0", true).is_null());
+  auto wrong_tag = compatible;
+  wrong_tag["nightly_metadata"]["tag"] = "daily-2026-10-11.3";
+  assert(select(json::array({wrong_tag}), "2.0.0", true).is_null());
+  auto wrong_core = compatible;
+  wrong_core["nightly_metadata"]["version"] = "2.0.2-daily.d20261011.3+aaaaaaaaaaaa";
+  assert(select(json::array({wrong_core}), "2.0.0", true).is_null());
   std::cout << "release selection regression checks passed\n";
 }

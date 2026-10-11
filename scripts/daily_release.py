@@ -26,7 +26,7 @@ def identity(commit, day, base, revision=None):
     suffix = "" if revision is None else f".{revision}"
     return {
         "commit": commit,
-        "tag": f"daily-{day.isoformat()}{suffix}",
+        "tag": f"{base}-daily.d{day:%Y%m%d}{suffix}",
         "version": f"{base}-daily.d{day:%Y%m%d}{suffix}+{commit[:12]}",
     }
 
@@ -115,11 +115,16 @@ def resolve():
     base = f"{major}.{minor}.{patch + 1}"
     day = dt.datetime.now(dt.timezone.utc).date()
     prefix = f"daily-{day.isoformat()}"
-    reserved = run("git", "ls-remote", "--tags", "origin", f"refs/tags/{prefix}*")
+    reserved = run("git", "ls-remote", "--tags", "origin", f"refs/tags/{prefix}*", f"refs/tags/*-daily.d{day:%Y%m%d}*")
     names = [line.split()[-1].removeprefix("refs/tags/") for line in reserved.splitlines()]
     names += [r["tag_name"] for page in releases for r in page]
-    revisions = [1 if name == prefix else int(name[len(prefix)+1:]) for name in names
-                 if re.fullmatch(re.escape(prefix) + r"(?:\.[1-9][0-9]{0,2})?", name)]
+    revisions = []
+    for name in names:
+        legacy = re.fullmatch(re.escape(prefix) + r"(?:\.([1-9][0-9]{0,2}))?", name)
+        semver = re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-daily\.d" + f"{day:%Y%m%d}" + r"(?:\.([1-9][0-9]{0,2}))?", name)
+        match = legacy or semver
+        if match:
+            revisions.append(int(match[1]) if match[1] else 1)
     info = identity(commit, day, base, max(revisions, default=0) + 1)
     info["should_build"] = "true"
     emit_outputs(info)
@@ -131,8 +136,11 @@ def verify_assets(root, product, commit, tag, version):
     actual = {p.name for p in root.iterdir()}
     if actual != expected or any(not p.is_file() or p.is_symlink() or p.stat().st_size == 0 for p in root.iterdir()):
         raise ValueError(f"Expected exactly the finalized nonempty assets {sorted(expected)}; got {sorted(actual)}")
-    info = identity(commit, dt.date.fromisoformat(tag.removeprefix("daily-").split(".")[0]), version.split("-")[0],
-                    int(tag.split(".")[1]) if "." in tag else None)
+    match = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)-daily\.d([0-9]{8})(?:\.([1-9][0-9]{0,2}))?", tag)
+    if not match:
+        raise ValueError("New releases require a SemVer nightly tag")
+    info = identity(commit, dt.datetime.strptime(match[2], "%Y%m%d").date(), match[1],
+                    int(match[3]) if match[3] else None)
     if info["tag"] != tag or info["version"] != version:
         raise ValueError("Release tag/version/source identity is incoherent")
     provenance = json.loads((root / "release-provenance.json").read_text(encoding="utf-8-sig"))

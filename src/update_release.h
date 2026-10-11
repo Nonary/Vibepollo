@@ -19,7 +19,8 @@ namespace release_selection {
   }
   inline bool daily_tag(const std::string &tag) {
     static const std::regex pattern(R"(^daily-[0-9]{4}-[0-9]{2}-[0-9]{2}(\.([1-9][0-9]{0,2}))?$)");
-    return std::regex_match(tag, pattern);
+    static const std::regex semver(R"(^[0-9]+\.[0-9]+\.[0-9]+-daily\.d[0-9]{8}(\.([1-9][0-9]{0,2}))?$)");
+    return std::regex_match(tag, pattern) || std::regex_match(tag, semver);
   }
   inline bool asset(const json &release, const std::string &name) {
     if (!release.contains("assets") || !release["assets"].is_array()) return false;
@@ -72,6 +73,16 @@ namespace release_selection {
   }
   inline bool valid_metadata(const std::string &tag, const json &metadata) {
     if (!daily_tag(tag) || !metadata.is_object()) return false;
+    if (!tag.starts_with("daily-")) {
+      static const std::regex semver(R"(^([0-9]+\.[0-9]+\.[0-9]+)-daily\.d([0-9]{4})([0-9]{2})([0-9]{2})(\.([1-9][0-9]{0,2}))?$)");
+      std::smatch match;
+      if (metadata.value("tag", "") != tag || !std::regex_match(tag, match, semver) ||
+          metadata.value("version", "") != tag + "+" + metadata.value("source_commit", "").substr(0,12)) return false;
+      const auto legacy = "daily-" + match[2].str() + "-" + match[3].str() + "-" + match[4].str() + match[5].str();
+      auto normalized = metadata;
+      normalized["tag"] = legacy;
+      return valid_metadata(legacy, normalized);
+    }
     const std::string date = tag.substr(6,4) + tag.substr(11,2) + tag.substr(14,2);
     const int revision = tag.size() > 16 ? std::stoi(tag.substr(17)) : 1;
     if (revision > 999) return false;
