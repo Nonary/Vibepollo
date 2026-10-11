@@ -8,7 +8,7 @@ export interface DisplayRecoveryResult {
   error?: string;
 }
 
-const introductionKey = 'vibeshine.display-recovery-introduction-dismissed';
+const introductionKey = 'vibepollo.display-recovery-introduction-dismissed';
 
 export function showDisplayRecoveryIntroduction(): boolean {
   try {
