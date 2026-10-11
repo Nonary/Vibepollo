@@ -180,20 +180,26 @@ unset(_sunshine_driver_file_size)
 unset(_sunshine_driver_file)
 
 if(EXISTS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}")
-    if(SUNSHINE_DOWNLOAD_LIBVIRTUALDISPLAY_RELEASE)
-        if(NOT EXISTS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_DOWNLOAD_SCRIPT}")
-            message(FATAL_ERROR "Required libvirtualdisplay release downloader is missing: ${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_DOWNLOAD_SCRIPT}")
-        endif()
-        add_custom_target(download_sunshine_virtual_display_driver_release
-            COMMAND powershell -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass
-                    -File "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_DOWNLOAD_SCRIPT}"
-                    -Repository "${SUNSHINE_VDD_LIBVIRTUALDISPLAY_REPOSITORY}"
-                    -Tag "${SUNSHINE_VDD_LIBVIRTUALDISPLAY_RELEASE_TAG}"
-                    -OutDir "${SUNSHINE_EFFECTIVE_LIBVIRTUALDISPLAY_PREBUILT_DIR}"
-            DEPENDS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_DOWNLOAD_SCRIPT}"
-            COMMENT "Downloading pinned Vibepollo Display Driver release"
-            VERBATIM)
+    # Verify explicit prebuilt roots too; cache existence alone is not provenance.
+    if(NOT EXISTS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_DOWNLOAD_SCRIPT}")
+        message(FATAL_ERROR "Required libvirtualdisplay release downloader is missing: ${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_DOWNLOAD_SCRIPT}")
     endif()
+    set(_sunshine_vdd_provenance_args "")
+    if(NOT SUNSHINE_DOWNLOAD_LIBVIRTUALDISPLAY_RELEASE)
+        set(_sunshine_vdd_provenance_args -ValidateOnly)
+    endif()
+    add_custom_target(download_sunshine_virtual_display_driver_release
+        COMMAND powershell -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass
+                -File "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_DOWNLOAD_SCRIPT}"
+                -Repository "${SUNSHINE_VDD_LIBVIRTUALDISPLAY_REPOSITORY}"
+                -Tag "${SUNSHINE_VDD_LIBVIRTUALDISPLAY_RELEASE_TAG}"
+                -OutDir "${SUNSHINE_EFFECTIVE_LIBVIRTUALDISPLAY_PREBUILT_DIR}"
+                -LockPath "${SUNSHINE_VDD_LIBVIRTUALDISPLAY_RELEASE_LOCK}"
+                ${_sunshine_vdd_provenance_args}
+        DEPENDS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_DOWNLOAD_SCRIPT}" "${SUNSHINE_VDD_LIBVIRTUALDISPLAY_RELEASE_LOCK}"
+        COMMENT "Verifying reviewed Vibepollo Display Driver producer bytes"
+        VERBATIM)
+    unset(_sunshine_vdd_provenance_args)
 
     add_custom_target(validate_sunshine_virtual_display_driver_assets
         COMMAND powershell -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass
@@ -206,10 +212,8 @@ if(EXISTS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}")
         COMMENT "Validating Vibepollo Display Driver package assets"
         VERBATIM)
 
-    if(SUNSHINE_DOWNLOAD_LIBVIRTUALDISPLAY_RELEASE)
-        add_dependencies(validate_sunshine_virtual_display_driver_assets
-            download_sunshine_virtual_display_driver_release)
-    endif()
+    add_dependencies(validate_sunshine_virtual_display_driver_assets
+        download_sunshine_virtual_display_driver_release)
 
     add_custom_target(refresh_sunshine_virtual_display_driver_assets
         COMMAND powershell -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass
@@ -224,10 +228,8 @@ if(EXISTS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}")
         COMMENT "Refreshing Vibepollo Display Driver package assets from the pinned release"
         VERBATIM)
 
-    if(SUNSHINE_DOWNLOAD_LIBVIRTUALDISPLAY_RELEASE)
-        add_dependencies(refresh_sunshine_virtual_display_driver_assets
-            download_sunshine_virtual_display_driver_release)
-    endif()
+    add_dependencies(refresh_sunshine_virtual_display_driver_assets
+        download_sunshine_virtual_display_driver_release)
 
     if(TARGET package_msi AND SUNSHINE_VDD_REFRESH_BEFORE_MSI)
         add_dependencies(package_msi refresh_sunshine_virtual_display_driver_assets)

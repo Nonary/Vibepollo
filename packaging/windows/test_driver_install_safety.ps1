@@ -125,6 +125,7 @@ try {
     Assert-That (([regex]::Matches($bootstrap, 'args.Add\("UPGRADINGPRODUCTCODE=1"\)')).Count -eq 2) 'Both MSI pre-uninstall routes must preserve drivers'
     Assert-That ($bootstrap.Contains('logPhase.StartsWith("cli_remove_"')) 'CLI pre-uninstall must preserve drivers'
     Assert-That ($bootstrap.Contains('its uninstaller cannot guarantee preservation of installed drivers')) 'Legacy pre-uninstall must fail safely'
+    & (Join-Path $RepositoryRoot 'scripts/tests/test_display_producer_provenance.ps1') -RepositoryRoot $RepositoryRoot
     & (Join-Path $RepositoryRoot 'packaging/windows/test_gamepad_certificate_trust.ps1') -RepositoryRoot $RepositoryRoot
     & (Join-Path $RepositoryRoot 'packaging/windows/bootstrapper/tests/test_gamepad_certificate_consent.ps1')
     $windowsPowerShell = Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/powershell.exe'

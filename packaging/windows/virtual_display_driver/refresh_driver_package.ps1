@@ -219,6 +219,14 @@ function Resolve-PackageVersionFromPrebuiltRoot {
         return ''
     }
 
+    # Reviewed metadata supplies the actual component version even when the
+    # caller chooses a cache directory whose name does not carry the release.
+    $metadataPath = Join-Path $Path 'consumer-release-lock.json'
+    if (Test-Path -LiteralPath $metadataPath -PathType Leaf) {
+        $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+        if ($metadata.driver_ver -match '^\d{2}/\d{2}/\d{4},(\d+\.\d+\.\d+\.\d+)$') { return $Matches[1] }
+        throw '[SunshineVirtualDisplay] Reviewed producer metadata has no valid component version.'
+    }
     $current = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
     while ($current) {
         if ($current.Name -match '^libvirtualdisplay-([0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?)-windows-[^-]+$') {
@@ -499,6 +507,15 @@ $packageRoot = Resolve-RequiredPath -Path $PackageDir
 $driverSourceInf = Join-Path $libRoot 'src\driver\windows_driver\SunshineVirtualDisplayDriver.inf'
 Resolve-RequiredPath -Path $driverSourceInf -Leaf | Out-Null
 $prebuiltPackageRoot = Resolve-PrebuiltPackageRoot -Path $PrebuiltPackageDir
+if ($prebuiltPackageRoot) {
+    # Validate before copying catalog-bound bytes or building the separate x86 layer.
+    # A release tag/folder name alone is not provenance or an OS trust approval.
+    $producerLockPath = Join-Path $PSScriptRoot '../../../third-party/libvirtualdisplay-release/windows-x64.json'
+    $producerLock = Get-Content -LiteralPath $producerLockPath -Raw | ConvertFrom-Json
+    $producerVerifier = Join-Path $PSScriptRoot '../../../scripts/download_libvirtualdisplay_release.ps1'
+    & $producerVerifier -Repository $producerLock.repository -Tag $producerLock.tag -OutDir $prebuiltPackageRoot -LockPath $producerLockPath -ValidateOnly
+    if ($LASTEXITCODE -ne 0) { throw '[SunshineVirtualDisplay] Reviewed producer verification failed.' }
+}
 $resolvedPackageVersion = Resolve-PackageVersion -LibRoot $libRoot -PrebuiltRoot $prebuiltPackageRoot -ExistingInfPath (Join-Path $packageRoot 'SunshineVirtualDisplayDriver.inf') -AdvanceLocalDirtyVersion:$Build
 $resolvedDriverVersion = ConvertTo-DriverVerVersion -Version $resolvedPackageVersion
 $resolvedDriverDate = Resolve-DriverVerDateFromGit -Path $libRoot
