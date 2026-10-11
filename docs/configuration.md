@@ -1401,6 +1401,34 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### virtual_display_keep_while_paused
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Keep the virtual display while a session is paused: when a client disconnects and the
+            game keeps running, the virtual display stays, and so do any displays turned off by the
+            exclusive layout, until the session resumes, the game quits, or
+            [dd_paused_virtual_display_timeout_secs](#dd_paused_virtual_display_timeout_secs) passes.
+            Turn it off to bring the displays back as soon as the stream ends.
+            @note{Applies to macOS only. Windows keeps a paused virtual display through its display helper.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            virtual_display_keep_while_paused = disabled
+            @endcode</td>
+    </tr>
+</table>
+
 ### remote_monitor_mute_audio
 
 Do not capture or transmit host audio for Remote Monitor sessions. Video and
