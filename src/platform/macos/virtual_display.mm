@@ -20,6 +20,12 @@
  * reconfiguration callback notices these and, once the changes settle, turns them off again,
  * updating both safeguards first. Vibepollo's own displays are put back in the modes they were
  * made with if macOS changes them as displays come and go.
+ *
+ * Turning a display back on lights its panel, even one another utility is holding dark. So with
+ * leave_displays_off_after_streaming, the exclusive layout mirrors the physical displays onto the
+ * virtual display instead: they leave the desktop but stay on, with their power left alone, and
+ * the mirroring ends when the virtual display goes away, so it needs neither safeguard. Ending
+ * the stream then wakes nothing.
  */
 // standard includes
 #include <algorithm>
@@ -381,8 +387,11 @@ namespace platf::macos_virtual_display {
       std::size_t pixel_width = 0;  ///< As created, which is what gets captured.
       std::size_t pixel_height = 0;
       bool exclusive = false;  ///< The exclusive layout is in effect: only Vibepollo's displays stay on.
+      bool leave_off = false;  ///< leave_displays_off_after_streaming, as it was when the display was made.
+      bool mirroring = false;  ///< The exclusive layout mirrors the physical displays rather than turning them off.
       std::vector<CGDirectDisplayID> turned_off;  ///< Physical displays to turn back on.
-      std::unique_ptr<saved_modes_t> turned_off_modes;  ///< Their modes from before.
+      std::vector<CGDirectDisplayID> mirrored;  ///< Physical displays mirroring this one.
+      std::unique_ptr<saved_modes_t> turned_off_modes;  ///< The turned-off or mirrored displays' modes from before.
       watchdog_t watchdog;
       /// Bounds how often displays that keep coming back on get turned off again. Opening the lid
       /// can take two: one right away, and one once the changes settle.
@@ -520,6 +529,71 @@ namespace platf::macos_virtual_display {
       return true;
     }
 
+    void select_mode(CGDirectDisplayID id, size_t pixel_width, size_t pixel_height);
+
+    /// The online displays that should mirror `display`: all but Vibepollo's own and those already mirroring it.
+    std::vector<CGDirectDisplayID> displays_to_mirror(const virtual_display_t &display) {
+      std::vector<macos_display_policy::display_mirror_t> online;
+      std::vector<CGDirectDisplayID> keep_separate;
+      for (const auto id : display_list(CGGetOnlineDisplayList)) {
+        const CGDirectDisplayID master = CGDisplayMirrorsDisplay(id);
+        online.push_back({id, master == kCGNullDirectDisplay ? std::nullopt : std::optional<CGDirectDisplayID> {master}});
+        // Remote Monitors are other clients' displays, not the host's.
+        if (id == display.id || is_remote_display(id)) {
+          keep_separate.push_back(id);
+        }
+      }
+      return macos_display_policy::plan_exclusive_mirror(online, display.id, keep_separate);
+    }
+
+    /// Mirror `ids` onto `master` (or stop them mirroring, with kCGNullDirectDisplay), keeping `master` the main display.
+    bool set_mirroring(const std::vector<CGDirectDisplayID> &ids, const CGDirectDisplayID master) {
+      CGDisplayConfigRef config;
+      if (CGBeginDisplayConfiguration(&config) != kCGErrorSuccess) {
+        return false;
+      }
+      for (const auto id : ids) {
+        CGConfigureDisplayMirrorOfDisplay(config, id, master);
+      }
+      if (master != kCGNullDirectDisplay) {
+        CGConfigureDisplayOrigin(config, master, 0, 0);
+      }
+      // Like the virtual display, the mirroring lasts only while Vibepollo runs.
+      return CGCompleteDisplayConfiguration(config, kCGConfigureForAppOnly) == kCGErrorSuccess;
+    }
+
+    /// Mirroring can make macOS pick another mode for the display being mirrored; capture expects the one it was made with.
+    void keep_mode_after_mirroring(const virtual_display_t &display, const std::vector<CGDirectDisplayID> &ids) {
+      wait_until([&display, &ids]() {
+        return CGDisplayIsMain(display.id) && std::all_of(ids.begin(), ids.end(), [&display](const CGDirectDisplayID id) {
+                 return CGDisplayMirrorsDisplay(id) == display.id || is_gone(id);
+               });
+      },
+                 5s);
+      if (display.pixel_width != 0 && current_pixels(display.id) != std::pair {display.pixel_width, display.pixel_height}) {
+        select_mode(display.id, display.pixel_width, display.pixel_height);
+      }
+    }
+
+    /**
+     * @brief The exclusive layout for leave_displays_off_after_streaming: mirror the physical displays instead of turning them off.
+     * @details They stay on, so ending the stream needn't turn them back on, which would light them.
+     */
+    bool mirror_other_displays(virtual_display_t &display) {
+      auto others = displays_to_mirror(display);
+      if (!others.empty()) {
+        display.turned_off_modes = std::make_unique<saved_modes_t>();
+        if (!set_mirroring(others, display.id)) {
+          return false;
+        }
+        keep_mode_after_mirroring(display, others);
+      }
+      display.exclusive = true;
+      display.mirroring = true;
+      display.mirrored = std::move(others);
+      return true;
+    }
+
     void make_main(const CGDirectDisplayID id) {
       // The display at (0, 0) is the main one; keep the others to its right in their current order.
       const auto others = display_list(CGGetActiveDisplayList);
@@ -550,10 +624,17 @@ namespace platf::macos_virtual_display {
       const auto layout = config::video.virtual_display_layout;
 
       if (layout == layout_e::exclusive) {
-        if (turn_off_other_displays(display)) {
+        if (display.leave_off) {
+          if (mirror_other_displays(display)) {
+            return;
+          }
+          // Not turned off either: turning them back on would light them.
+          BOOST_LOG(warning) << "Virtual display: couldn't mirror the other displays; making it the main display instead"sv;
+        } else if (turn_off_other_displays(display)) {
           return;
+        } else {
+          BOOST_LOG(warning) << "Virtual display: couldn't turn off the other displays; making it the main display instead"sv;
         }
-        BOOST_LOG(warning) << "Virtual display: couldn't turn off the other displays; making it the main display instead"sv;
       }
       // macOS keeps displays adjacent, so the isolated layouts behave like their plain versions.
       if (layout == layout_e::extended || layout == layout_e::extended_isolated) {
@@ -699,9 +780,13 @@ namespace platf::macos_virtual_display {
       result->width = config.width;
       result->height = config.height;
       result->refresh = refresh;
+      result->leave_off = config::video.leave_displays_off_after_streaming;
       apply_layout(*result);
       if (!result->turned_off.empty()) {
         BOOST_LOG(info) << "Virtual display: physical displays turned off"sv;
+      }
+      if (!result->mirrored.empty()) {
+        BOOST_LOG(info) << "Virtual display: physical display(s) "sv << format_ids(result->mirrored) << " mirror it, so they can stay off after the stream (leave_displays_off_after_streaming)"sv;
       }
       return result;
     }
@@ -709,9 +794,16 @@ namespace platf::macos_virtual_display {
     virtual_display_t::~virtual_display_t() {
       const saved_modes_t other_modes;
       bool restored = true;
-      if (!turned_off.empty()) {
-        // A stream can end while the Mac is half-awake, where displays never come back online.
-        platf::wake_displays();
+      const auto plan = macos_display_policy::plan_teardown(leave_off, !turned_off.empty());
+      if (plan.turn_on) {
+        if (plan.wake_displays) {
+          // A stream can end while the Mac is half-awake, where displays never come back online.
+          platf::wake_displays();
+        } else {
+          // Left off would mean left disabled, which local input couldn't undo.
+          BOOST_LOG(warning) << "Virtual display: turning back on display(s) "sv << format_ids(turned_off)
+                             << " lights them; leave_displays_off_after_streaming can only keep displays dark that it mirrored"sv;
+        }
         const auto [online, offline] = split_offline(turned_off);
         const auto all_back = [&online]() {
           return std::all_of(online.begin(), online.end(), is_active_or_gone);
@@ -732,6 +824,17 @@ namespace platf::macos_virtual_display {
           return !is_active(id);
         },
                    3s);
+      }
+      // Removing the display ends the mirroring; end any that macOS kept, without waking anything.
+      if (!mirrored.empty()) {
+        std::vector<CGDirectDisplayID> still_mirroring;
+        std::copy_if(mirrored.begin(), mirrored.end(), std::back_inserter(still_mirroring), [id = id](const CGDirectDisplayID other) {
+          return CGDisplayMirrorsDisplay(other) == id;
+        });
+        if (!still_mirroring.empty() && !set_mirroring(still_mirroring, kCGNullDirectDisplay)) {
+          BOOST_LOG(warning) << "Virtual display: display(s) "sv << format_ids(still_mirroring) << " still mirror the removed virtual display"sv;
+        }
+        BOOST_LOG(info) << "Virtual display: physical display(s) "sv << format_ids(mirrored) << " stopped mirroring and were left as they were"sv;
       }
       if (turned_off_modes) {
         turned_off_modes->restore(500ms);
@@ -1113,11 +1216,48 @@ namespace platf::macos_virtual_display {
       select_mode(display.id, display.pixel_width, display.pixel_height);
     }
 
+    /// The exclusive layout's mirroring: mirror displays that came on during the session too. Call with state_mutex held.
+    void enforce_exclusive_mirror(virtual_display_t &display, const std::chrono::steady_clock::time_point noticed) {
+      const auto others = displays_to_mirror(display);
+      if (others.empty() || display.gave_up_enforcing) {
+        return;
+      }
+      if (!display.enforce_budget.try_spend(std::chrono::steady_clock::now())) {
+        display.gave_up_enforcing = true;
+        BOOST_LOG(error) << "Virtual display: display(s) "sv << format_ids(others)
+                         << " keep leaving the mirror, so they'll stay separate for the rest of this session. Start a new stream to try the Exclusive layout again"sv;
+        return;
+      }
+      if (!display.turned_off_modes) {
+        display.turned_off_modes = std::make_unique<saved_modes_t>();
+      }
+      for (const auto id : others) {
+        display.turned_off_modes->add(id);
+      }
+      if (!set_mirroring(others, display.id)) {
+        BOOST_LOG(warning) << "Virtual display: couldn't mirror display(s) "sv << format_ids(others);
+        return;
+      }
+      for (const auto id : others) {
+        if (std::find(display.mirrored.begin(), display.mirrored.end(), id) == display.mirrored.end()) {
+          display.mirrored.push_back(id);
+        }
+      }
+      keep_mode_after_mirroring(display, others);
+      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - noticed);
+      BOOST_LOG(info) << "Virtual display: display(s) "sv << format_ids(others) << " came on during the session; mirroring them for the Exclusive layout "sv
+                      << elapsed.count() << " ms after macOS reported it"sv;
+    }
+
     /**
-     * @brief Turn off displays that came back on while the exclusive layout is in effect.
+     * @brief Turn off displays that came back on while the exclusive layout is in effect, or mirror them.
      * @details Call with state_mutex held. Safeguards are updated before anything is turned off.
      */
     void enforce_exclusive_layout(virtual_display_t &display, const std::chrono::steady_clock::time_point noticed) {
+      if (display.mirroring) {
+        enforce_exclusive_mirror(display, noticed);
+        return;
+      }
       std::vector<CGDirectDisplayID> keep_on {display.id};
       {
         std::lock_guard lock {remote_ids_mutex};

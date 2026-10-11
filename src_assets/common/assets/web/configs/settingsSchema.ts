@@ -409,7 +409,12 @@ const virtualDisplayCustomizationFields = (): SettingsField[] => [
     labelKey: 'ui.settings.fields.wayland_hdr_compatibility.label',
     descriptionKey: 'ui.settings.fields.wayland_hdr_compatibility.description',
     visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
-  }),  boolean('virtual_display_keep_while_paused', {
+  }),
+  boolean('virtual_display_keep_while_paused', {
+    platform: 'macos',
+    visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
+  }),
+  boolean('leave_displays_off_after_streaming', {
     platform: 'macos',
     visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
   }),
@@ -1003,6 +1008,7 @@ export const settingsDefaults: Record<string, unknown> = {
   virtual_display_mode: 'per_client',
   virtual_display_layout: 'exclusive',
   virtual_display_keep_while_paused: true,
+  leave_displays_off_after_streaming: false,
   remote_monitor_mute_audio: false,
   remote_monitor_disconnect_on_stream_end: false,
   remote_monitor_disconnect_on_client_disconnect: false,

@@ -459,6 +459,14 @@ function selectVirtualDisplayLayout(v: unknown) {
                 default="true"
               />
 
+              <Checkbox
+                v-if="platform === 'macos'"
+                id="leave_displays_off_after_streaming"
+                v-model="config.leave_displays_off_after_streaming"
+                locale-prefix="config"
+                default="false"
+              />
+
               <!-- Warning for extended modes without primary -->
               <transition name="fade">
                 <div

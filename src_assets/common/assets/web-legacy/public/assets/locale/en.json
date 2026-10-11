@@ -616,6 +616,8 @@
     "virtual_display_shared_hdr_warning": "Shared Virtual Display is not recommended for HDR. The first active session determines the shared monitor's HDR peak, calibration profile, and desktop scale, so later clients cannot apply different display-specific values. Use Per-client Virtual Display for reliable HDR calibration.",
     "virtual_display_keep_while_paused": "Keep displays off while paused",
     "virtual_display_keep_while_paused_desc": "macOS only. When a client disconnects and the game keeps running, keep the virtual display, and so any displays turned off by the Exclusive layout, until the session resumes, the game quits, or the paused session timeout passes. Turn off to bring the displays back as soon as the stream ends.",
+    "leave_displays_off_after_streaming": "Leave physical displays off after streaming",
+    "leave_displays_off_after_streaming_desc": "macOS only. When the last stream ends, don't wake or light the Mac's own displays just to restore the desktop: they stay as they were, such as dark under another utility, until local keyboard or mouse input wakes them. With the Exclusive layout, physical displays mirror the virtual display during the stream instead of turning off, because turning a display back on lights it.",
     "virtual_display_layout_label": "Virtual Display Layout",
     "virtual_display_layout_hint": "Choose how Vibepollo positions and prioritizes your virtual display when it is enabled.",
     "virtual_display_toggle_label": "Configure Physical or Virtual Display",
