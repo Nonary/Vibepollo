@@ -271,12 +271,22 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertEqual(checkout["with"]["submodules"], "false")
         drm_checkout = next(
             step for step in arch_workflow["jobs"]["build_archlinux"]["steps"]
-            if step["name"] == "Checkout DRM source only"
+            if step["name"] == "Checkout packaging driver sources"
         )
         self.assertEqual(
-            drm_checkout["run"],
-            'git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --depth 1 third-party/libvirtualdisplay',
+            drm_checkout["run"].splitlines()[0],
+            'git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --depth 1 -- third-party/libvirtualdisplay third-party/libvirtualgamepad',
         )
+        for required in (
+            "third-party/libvirtualdisplay/linux/vibeshine-drm/Makefile",
+            "third-party/libvirtualgamepad/linux/vibeshine-ds5/Makefile",
+            "third-party/libvirtualgamepad/linux/vibeshine-ds5/dkms.conf.in",
+        ):
+            self.assertIn("test -s " + required, drm_checkout["run"])
+        self.assertNotIn("--recursive", drm_checkout["run"])
+        package_configuration = (ROOT / "cmake/prep/special_package_configuration.cmake").read_text()
+        self.assertIn("libvirtualgamepad Linux DualSense sources are unavailable", package_configuration)
+        self.assertIn("libvirtualdisplay Linux assets are unavailable", package_configuration)
         self.assertNotIn("--global", drm_checkout["run"])
         self.assertNotIn("safe.directory=*", drm_checkout["run"])
         self.assertNotIn('safe.directory="*"', drm_checkout["run"])

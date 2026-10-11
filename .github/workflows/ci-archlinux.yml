@@ -113,11 +113,16 @@ jobs:
           fetch-depth: 1
           submodules: false
 
-      - name: Checkout DRM source only
+      - name: Checkout packaging driver sources
         shell: bash
+        # Configure-only packaging requires both pinned Linux driver sources.
         # Native container Git does not retain checkout's temporary HOME/config.
         # Trust only this verified checkout for this invocation, never all repos.
-        run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --depth 1 third-party/libvirtualdisplay
+        run: |
+          git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --depth 1 -- third-party/libvirtualdisplay third-party/libvirtualgamepad
+          test -s third-party/libvirtualdisplay/linux/vibeshine-drm/Makefile
+          test -s third-party/libvirtualgamepad/linux/vibeshine-ds5/Makefile
+          test -s third-party/libvirtualgamepad/linux/vibeshine-ds5/dkms.conf.in
 
       - name: Detect actual build budget
         shell: bash
