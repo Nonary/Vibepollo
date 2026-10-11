@@ -100,6 +100,11 @@ namespace platf {
    * @details The handler runs on a background queue. Only the first call registers a handler.
    */
   void on_lid_closed(std::function<void()> handler);
+
+  /**
+   * @brief Whether a MacBook's lid is closed right now. Always false on a Mac without one.
+   */
+  bool lid_closed();
 }
 
 namespace dyn {
