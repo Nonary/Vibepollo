@@ -20,6 +20,7 @@
 #include <thread>
 
 // local includes
+#include "wired_pin.h"
 #include "confighttp.h"
 #include "entry_handler.h"
 #include "globals.h"
@@ -759,6 +760,7 @@ int main(int argc, char *argv[]) {
   if (shutdown_event->peek()) {
     return lifetime::desired_exit_code;
   }
+  wired_pin::revert_leftovers();   // Eclipse: pins a crash left behind (wired_pin.h)
 
   reed_solomon_init();
   auto input_deinit_guard = input::init();

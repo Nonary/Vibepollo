@@ -65,6 +65,34 @@ endif()
 # ViGEmBus installer is no longer bundled or managed by the installer
 
 # Adding tools
+# Eclipse Link (aurora-link.exe): the Eclipse host companion (controller bridge, audio-cable visibility).
+# Ships next to sunshine.exe in the application component, so it installs and uninstalls with the host.
+install(TARGETS aurora-link RUNTIME DESTINATION "." COMPONENT application)
+
+# Optional: the GPU HEVC co-op encoder that Eclipse's mixed-vendor (NVIDIA+AMD) and AMD+AMD co-op needs.
+# Built from source -- Eclipse repository, experimental/gpu-hevc (GPL-3.0-only), with -DBUILD_HOST_DLLS=ON.
+# SUNSHINE_GPU_HEVC_DIR must hold aurora_gpu_hevc8.dll, aurora_gpu_hevc10.dll and kernels/; they land
+# in gpu-hevc\ beside sunshine.exe, which is where gpu_hevc_device.inc loads them and what
+# serverinfo UmbraCaps bit 3 (proc::gpu_hevc_encoder_installed) checks.
+set(SUNSHINE_GPU_HEVC_DIR "" CACHE PATH "Folder with the built GPU HEVC co-op encoder (DLLs + kernels/)")
+if(SUNSHINE_GPU_HEVC_DIR)
+  foreach(required aurora_gpu_hevc8.dll aurora_gpu_hevc10.dll kernels)
+    if(NOT EXISTS "${SUNSHINE_GPU_HEVC_DIR}/${required}")
+      message(FATAL_ERROR "SUNSHINE_GPU_HEVC_DIR=${SUNSHINE_GPU_HEVC_DIR} has no ${required}")
+    endif()
+  endforeach()
+  install(FILES "${SUNSHINE_GPU_HEVC_DIR}/aurora_gpu_hevc8.dll" "${SUNSHINE_GPU_HEVC_DIR}/aurora_gpu_hevc10.dll"
+          DESTINATION "gpu-hevc" COMPONENT application)
+  install(DIRECTORY "${SUNSHINE_GPU_HEVC_DIR}/kernels" DESTINATION "gpu-hevc" COMPONENT application)
+  install(FILES "${SUNSHINE_GPU_HEVC_DIR}/COPYING" "${SUNSHINE_GPU_HEVC_DIR}/COPYING-GPL-3"
+                "${SUNSHINE_GPU_HEVC_DIR}/BUILD-PROVENANCE.json"
+          DESTINATION "gpu-hevc" COMPONENT application)
+else()
+  message(STATUS "SUNSHINE_GPU_HEVC_DIR is not set: this package has NO GPU HEVC co-op encoder, so hosts "
+                  "installed from it report UmbraCaps without bit 3 and Eclipse will not start "
+                  "NVIDIA+AMD or AMD+AMD co-op on them.")
+endif()
+
 install(TARGETS dxgi-info RUNTIME DESTINATION "tools" COMPONENT dxgi)
 install(TARGETS audio-info RUNTIME DESTINATION "tools" COMPONENT audio)
 

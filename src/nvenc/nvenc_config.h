@@ -50,6 +50,29 @@ namespace nvenc {
     // Quality preset from 1 to 7, higher is slower
     int quality_preset = 1;
 
+    // Frames between forced IDRs. 0 = infinite GOP (stock behaviour: IDR only on demand).
+    // A short GOP exists for CO-OP SPLIT-SCREEN: the client splices this host's slices into
+    // a composite picture, and a dropped pane can only be re-anchored by an IDR. With an
+    // infinite GOP that costs a keyframe from BOTH hosts at the same instant; with a short
+    // one this host re-anchors alone. Measured cost of gop=30 at 3840x1080: ~4% bitrate
+    // (55.2 vs 53.0 Mbps at 165fps, qp28), i.e. far cheaper than all-intra's 2x.
+    int gop_length = 0;
+
+    // ONE SLICE PER CTB ROW (sliceMode 2 / sliceModeData 1) instead of "N slices per
+    // picture" (sliceMode 3). The VERTICAL co-op split needs exactly one slice per row:
+    // composite row r is host A's row at CTB address r*Wc and host B's at r*Wc+Wp, and a
+    // slice spanning two rows is NOT a contiguous run in the composite, so approximate
+    // slice counts do not work. Measured cost of the slicing itself: ~+17% bitrate.
+    bool slice_rows = false;
+
+    // Constrained encoding: -1 = automatic (on whenever slicesPerFrame > 1, the shipped
+    // behaviour), 0 = force OFF, 1 = force ON. The override exists to MEASURE what it
+    // costs: it restricts inter prediction to the slice region, which is exactly right
+    // when slice == pane but confines motion search to a 32px band when slice == one CTB
+    // row. ffmpeg cannot answer this -- its -constrained-encoding arms the feature without
+    // ever setting the per-picture constrainedFrame flag, so its output is byte-identical.
+    int constrained = -1;
+
     // Use optional preliminary pass for better motion vectors, bitrate distribution and stricter VBV(HRD), uses CUDA cores
     nvenc_two_pass two_pass = nvenc_two_pass::quarter_resolution;
 
@@ -82,6 +105,16 @@ namespace nvenc {
 
     // Control split-frame encoding for supported HEVC/AV1 sessions
     nvenc::split_encode_mode split_encode_mode = nvenc::split_encode_mode::auto_mode;
+    // Code H.264 as MAIN profile instead of HIGH. This exists for CO-OP SPLIT-SCREEN across
+    // MIXED GPU VENDORS. The client splices two hosts' slices into one picture that carries a
+    // single SPS/PPS, so both encoders must agree on every field the decoder reads. NVENC's HIGH
+    // profile sets transform_8x8_mode_flag=1 in the PPS extension; AMD's AMF omits the extension
+    // entirely (=0) and exposes no control over it. Decoding AMF slices under an NVENC HIGH PPS
+    // makes the decoder expect a transform_size_8x8_flag in every macroblock that AMF never
+    // coded, and the WHOLE picture desynchronises. MAIN has no 8x8 transform, so this makes the
+    // two vendors' bitstreams spliceable. Measured 2026-08-30: with this set, a real NVENC pane
+    // and a real AMF pane compose BIT-EXACTLY.
+    bool h264_main_profile = false;
 
     // Add filler data to encoded frames to stay at target bitrate, mainly for testing
     bool insert_filler_data = false;

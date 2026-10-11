@@ -91,6 +91,10 @@ namespace video {
     // framing aligns to, and the framing the client asked for in ANNOUNCE.
     int packetsize = 0;
     pyrowave::policy::framing_e pyrowave_framing = pyrowave::policy::framing_e::records;
+    bool aurora_gpu_hevc = false;  // Explicit session opt-in; never a global encoder replacement.
+    // Eclipse: a co-op pane (launch arg umbraCoop=1). Scopes the co-op encoder knobs -- gop_length,
+    // automatic NVENC constrained encoding -- to co-op sessions so a plain stream never gets them.
+    bool umbra_coop = false;
   };
 
   platf::mem_type_e map_base_dev_type(AVHWDeviceType type);
@@ -518,4 +522,13 @@ namespace video {
     const auto rational = policy::framerate_x100_to_rational(framerateX100);
     return AVRational {rational.numerator, rational.denominator};
   }
+  /**
+   * @brief The GPU HEVC library could not create its OpenCL context or queue, so the GPU runtime inside THIS process
+   * is unusable. Logs why and restarts the host once no session is streaming (the service relaunches it).
+   * MEASURED 2026-10-03 on PC2 (RTX 3070): after the PC slept and the driver reset the GPU (nvlddmkm 153), every
+   * GPU HEVC open in the old process failed with "context OpenCL error -6" until the process was restarted; a new
+   * process opened at once. Without this, co-op with an AMD partner stays broken until the user restarts the host.
+   * @param detail The library's failure text.
+   */
+  void gpu_hevc_runtime_lost(const std::string &detail);
 }  // namespace video

@@ -43,6 +43,7 @@ extern "C" {
 #include "display_device.h"
 #include "display_helper_integration.h"
 #include "globals.h"
+#include "host_monitor.h"  // Eclipse
 #include "host_stats.h"
 #include "input.h"
 #include "logging.h"
@@ -591,6 +592,7 @@ namespace stream {
     remote_session::role_e remote_role {remote_session::role_e::game};
     std::uint64_t remote_role_generation {};
     bool input_only {};
+    bool host_monitor_off = false;  // Eclipse: umbraMonitorOff (host_monitor.h)
     bool audio_disabled {};
     std::atomic_bool client_disconnected {false};
 
@@ -3484,7 +3486,7 @@ namespace stream {
           for (auto &cmd : cmd_list) {
             std::error_code ec;
             boost::filesystem::path working_dir = proc::find_working_directory(cmd.cmd, env);
-            auto child = platf::run_command(cmd.elevated, true, cmd.cmd, working_dir, env, nullptr, ec, nullptr);
+            auto child = platf::run_command(cmd.elevated, false, cmd.cmd, working_dir, env, nullptr, ec, nullptr);  // Eclipse: no console window
             BOOST_LOG(info) << "Spawning client undo command ["sv << cmd.cmd << "] in ["sv << working_dir << ']';
             if (ec) {
               BOOST_LOG(warning) << "Couldn't spawn ["sv << cmd.cmd << "]: System: "sv << ec.message();
@@ -3532,6 +3534,9 @@ namespace stream {
         !session.secondary_game_client && !session.config.monitor.input_only && --frame_limiter_sessions == 0;
       const bool last_rtsp_session = --running_sessions == 0;
       host_stats::rtsp_session_ended();
+      if (last_rtsp_session) {
+        host_monitor::sessions_stopped();  // Eclipse: the physical monitor back for local use
+      }
       bool finalized_shared_runtime = false;
 #ifdef _WIN32
       if (last_frame_limiter_session && !last_rtsp_session) {
@@ -3692,6 +3697,9 @@ namespace stream {
         !session.secondary_game_client && !session.config.monitor.input_only &&
         ++frame_limiter_sessions == 1;
       host_stats::rtsp_session_started();
+      if (first_rtsp_session) {
+        host_monitor::session_started(session.host_monitor_off);  // Eclipse: before the state commands
+      }
       if (first_rtsp_session || first_frame_limiter_session) {
         if (first_rtsp_session) {
           if (!webrtc_stream::has_active_or_pending_sessions()) {
@@ -3815,7 +3823,7 @@ namespace stream {
           for (auto &cmd : cmd_list) {
             std::error_code ec;
             boost::filesystem::path working_dir = proc::find_working_directory(cmd.cmd, env);
-            auto child = platf::run_command(cmd.elevated, true, cmd.cmd, working_dir, env, nullptr, ec, nullptr);
+            auto child = platf::run_command(cmd.elevated, false, cmd.cmd, working_dir, env, nullptr, ec, nullptr);  // Eclipse: no console window
             BOOST_LOG(info) << "Spawning client do command ["sv << cmd.cmd << "] in ["sv << working_dir << ']';
             if (ec) {
               BOOST_LOG(warning) << "Couldn't spawn ["sv << cmd.cmd << "]: System: "sv << ec.message();
@@ -3857,6 +3865,7 @@ namespace stream {
       session->launch_session_id = launch_session.id;
       session->display_power_guard = launch_session.display_power_guard;
       session->device_name = launch_session.device_name;
+      session->host_monitor_off = launch_session.host_monitor_off;  // Eclipse
       session->device_uuid = !launch_session.client_uuid.empty() ? launch_session.client_uuid : launch_session.unique_id;
       // Fresh history identifier per stream so each start/stop cycle produces
       // a distinct row in the session_history database.

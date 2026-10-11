@@ -103,6 +103,8 @@
 #include "stream.h"
 #include "system_tray.h"
 #include "utility.h"
+#include "video.h"
+#include "wired_pin.h"
 #include "uuid.h"
 #include "video.h"
 #include "webrtc_stream.h"
@@ -956,6 +958,28 @@ namespace proc {
   int terminate_app_id = -1;
   std::string terminate_app_id_str;
 
+  bool gpu_hevc_encoder_installed() {
+#ifdef _WIN32
+    // The same files gpu_hevc_device.inc loads: <exe dir>\gpu-hevc\aurora_gpu_hevc{8,10}.dll + kernels.
+    wchar_t path[32768];
+    const DWORD length = GetModuleFileNameW(nullptr, path, ARRAYSIZE(path));
+    if (!length || length >= ARRAYSIZE(path)) {
+      return false;
+    }
+    const auto directory = std::filesystem::path(path).parent_path() / "gpu-hevc";
+    std::error_code ec;
+    return std::filesystem::is_regular_file(directory / "aurora_gpu_hevc8.dll", ec) &&
+           std::filesystem::is_regular_file(directory / "aurora_gpu_hevc10.dll", ec) &&
+           std::filesystem::is_directory(directory / "kernels", ec);
+#else
+    return false;
+#endif
+  }
+
+  bool is_coop_pane(const ctx_t &app) {
+    return app.uuid == COOP_PANE_UUID || app.name == COOP_PANE_NAME;
+  }
+
 #ifdef _WIN32
   std::atomic<VDISPLAY::DRIVER_STATUS> vDisplayDriverStatus {VDISPLAY::DRIVER_STATUS::UNKNOWN};
   std::atomic<VDISPLAY::DRIVER_SELECTION> vDisplayDriverSelection {VDISPLAY::DRIVER_SELECTION::UNKNOWN};
@@ -1659,13 +1683,44 @@ namespace proc {
           framegen_refresh_active ? rtsp_stream::framegen_refresh_multiplier(*launch_session) : 1
         );
 
+        // CO-OP SEAM PADDING. The ENCODE stays at the client's requested size; only the
+        // VIRTUAL DISPLAY is shrunk, by 2 * coop_pad_rows. Apollo's own aspect-preserving
+        // centring (display_vram.cpp) then leaves coop_pad_rows BLACK ROWS at the top and
+        // bottom of every encoded frame -- which is what makes H.264 edge extension TRUE at a
+        // spliced pane boundary (see config.h for the measurement).
+        //
+        // The width is deliberately untouched: the capture then fits the encode frame exactly
+        // in width, so the centring is a pure vertical offset with NO resampling.
+        uint32_t vdisplay_height = render_height;
+        {
+          // The GPU encoder confines the complete prediction footprint to its
+          // pane. AVC seam padding must not change its capture geometry.
+          // Eclipse: a CO-OP knob, so only a co-op launch (umbraCoop=1) gets it. Global, it shrank
+          // the virtual display of plain Desktop streams too (VEGA, 2026-09-29: 1920x1048).
+          const int pad = launch_session->aurora_gpu_hevc || !launch_session->umbra_coop ? 0 : config::video.coop_pad_rows;
+          // Refuse a value that would leave nothing to display, or that is not macroblock
+          // aligned -- an unaligned inset puts the content on a half-macroblock boundary and
+          // every row below it is coded against a shifted grid.
+          if (pad > 0 && (pad % 16) == 0 && (uint32_t)(2 * pad) < render_height / 2) {
+            vdisplay_height = render_height - (uint32_t)(2 * pad);
+            BOOST_LOG(info) << "Co-op seam padding: virtual display "sv << render_width << 'x'
+                            << vdisplay_height << " inside a "sv << render_width << 'x'
+                            << render_height << " encode ("sv << pad << " black rows per edge)"sv;
+          } else if (pad != 0) {
+            BOOST_LOG(warning) << "coop_pad_rows = "sv << pad
+                               << " REFUSED (must be a positive multiple of 16 and leave at "
+                                  "least half the height); no padding applied"sv;
+          }
+        }
+
+
         const char *hdr_profile = launch_session->hdr_profile ? launch_session->hdr_profile->c_str() : nullptr;
         auto display_info = VDISPLAY::createVirtualDisplay(
           device_uuid_str.c_str(),
           device_name.c_str(),
           hdr_profile,
           render_width,
-          render_height,
+          vdisplay_height,
           target_fps,
           display_guid,
           base_fps_millihz,
@@ -2389,7 +2444,11 @@ namespace proc {
                                               find_working_directory(cmd.do_cmd, _env) :
                                               boost::filesystem::path(_app.working_dir);
       BOOST_LOG(info) << "Executing Do Cmd: ["sv << cmd.do_cmd << "] elevated: " << cmd.elevated;
-      auto child = platf::run_command(cmd.elevated, true, cmd.do_cmd, working_dir, _env, _pipe.get(), ec, nullptr);
+      // Eclipse: session hooks (prep, state and per-client commands) run WITHOUT a console window.
+      // A console-subsystem hook (cmd, powershell, aurora-link) otherwise opens a visible window
+      // in front of the user at every stream start and stop. The app itself and server commands
+      // keep upstream's interactive launch.
+      auto child = platf::run_command(cmd.elevated, false, cmd.do_cmd, working_dir, _env, _pipe.get(), ec, nullptr);
 
       if (ec) {
         BOOST_LOG(error) << "Couldn't run ["sv << cmd.do_cmd << "]: System: "sv << ec.message();
@@ -2411,6 +2470,12 @@ namespace proc {
         BOOST_LOG(error) << '[' << cmd.do_cmd << "] exited with code ["sv << ret << ']';
         return -1;
       }
+    }
+
+    // Eclipse: a client that asked for its wired card gets it pinned for the session (reverted in terminate).
+    if (_launch_session) {
+      wired_pin::apply(_launch_session->client_address, _launch_session->wired_mac,
+                       _launch_session->own_macs, _launch_session->own_ips);
     }
 
     _env["APOLLO_APP_STATUS"] = "RUNNING";
@@ -2875,6 +2940,113 @@ namespace proc {
     return 0;
   }
 
+#ifdef _WIN32
+  /**
+   * The host: set a (virtual) display's mode, refresh in millihertz. Apollo's VDISPLAY::changeDisplaySettings did
+   * this; Vibepollo still declares it (virtual_display_legacy.h) but no longer compiles its definition. Tries the
+   * rounded refresh, then the neighbouring integer rate.
+   */
+  static LONG set_virtual_display_mode(const wchar_t *device_name, int width, int height, int refresh_millihz) {
+    DEVMODEW mode {};
+    mode.dmSize = sizeof(mode);
+    if (!EnumDisplaySettingsW(device_name, ENUM_CURRENT_SETTINGS, &mode)) {
+      return DISP_CHANGE_FAILED;
+    }
+    DWORD rate = refresh_millihz / 1000;
+    DWORD alt_rate = rate;
+    if (refresh_millihz % 1000) {
+      if (refresh_millihz % 1000 >= 900) {
+        rate += 1;
+      } else {
+        alt_rate += 1;
+      }
+    } else {
+      alt_rate -= 1;
+    }
+    mode.dmPelsWidth = width;
+    mode.dmPelsHeight = height;
+    mode.dmDisplayFrequency = rate;
+    mode.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+    auto result = ChangeDisplaySettingsExW(device_name, &mode, nullptr, CDS_UPDATEREGISTRY, nullptr);
+    if (result != DISP_CHANGE_SUCCESSFUL) {
+      mode.dmDisplayFrequency = alt_rate;
+      result = ChangeDisplaySettingsExW(device_name, &mode, nullptr, CDS_UPDATEREGISTRY, nullptr);
+    }
+    return result;
+  }
+#endif
+
+  bool proc_t::prepare_gpu_hevc_resume(const rtsp_stream::launch_session_t& session) {
+    // Eclipse: EVERY co-op pane (umbraCoop), not only the GPU HEVC one -- the built-in pane is
+    // resumable, and a co-op resumed in the other orientation, at another size or from another
+    // client must not reuse the old pane geometry.
+    if (!(session.aurora_gpu_hevc || session.umbra_coop) || !virtual_display) return true;
+#ifdef _WIN32
+    // Called before capture, only with no active streams. Ordinary hardware
+    // sessions retain Apollo's existing resume behavior. The GPU path requires
+    // a native-sized capture (32-aligned), so a previous co-op orientation cannot be
+    // reused; a native-encoder co-op pane only needs an even size (e.g. 1920x2160).
+    const int align = session.aurora_gpu_hevc ? 32 : 2;
+    if (display_name.empty() || session.width < 64 || session.height < 64 ||
+        session.width > 8192 || session.height > 8192 || session.width % align || session.height % align)
+      return false;
+    // The VIRTUAL DISPLAY height: a native co-op pane with coop_pad_rows is created that much shorter
+    // than the encode (see the launch path), so a resume must keep the same inset.
+    int vd_height = session.height;
+    if (!session.aurora_gpu_hevc && session.umbra_coop) {
+      const int pad = config::video.coop_pad_rows;
+      if (pad > 0 && (pad % 16) == 0 && 2 * pad < session.height / 2) vd_height = session.height - 2 * pad;
+    }
+    auto name = platf::from_utf8(display_name);
+    DEVMODEW mode{}; mode.dmSize = sizeof(mode);
+    if (!EnumDisplaySettingsW(name.c_str(), ENUM_CURRENT_SETTINGS, &mode)) return false;
+    if (mode.dmPelsWidth != unsigned(session.width) || mode.dmPelsHeight != unsigned(vd_height)) {
+      int fps = session.fps < 1000 ? session.fps * 1000 : session.fps;
+      if (config::video.double_refreshrate) fps *= 2;
+      auto result = set_virtual_display_mode(name.c_str(), session.width, vd_height, fps);
+      if (result != ERROR_SUCCESS && _launch_session) {
+        // SudoVDA can retain only the custom mode supplied when its monitor was
+        // created. Recreate this paused virtual monitor with its SAME identity;
+        // do not resize/crop the captured desktop or change an active stream.
+        BOOST_LOG(info) << "[AURORA-GPU-HEVC] rebuilding paused virtual display for "
+          << session.width << "x" << vd_height << " after resize rc=" << result;
+        // Vibepollo: the display's identity is proc_t::_virtual_display_guid, and createVirtualDisplay returns
+        // a creation result (display name optional) and takes the client's HDR profile.
+        if (!VDISPLAY::removeVirtualDisplay(_virtual_display_guid)) return false;
+        uuid_util::uuid_t identity;
+        memcpy(&identity, &_virtual_display_guid, sizeof(GUID));
+        const std::string device_name = _app.use_app_identity ? _app.name : _launch_session->device_name;
+        const char *hdr_profile = _launch_session->hdr_profile ? _launch_session->hdr_profile->c_str() : nullptr;
+        auto created = VDISPLAY::createVirtualDisplay(identity.string().c_str(), device_name.c_str(), hdr_profile,
+          session.width, vd_height, fps, _virtual_display_guid);
+        if (!created || !created->display_name || created->display_name->empty()) return false;
+        name = *created->display_name;
+        display_name = platf::to_utf8(name);
+        config::video.output_name = display_name;
+        result = set_virtual_display_mode(name.c_str(), session.width, vd_height, fps);
+        display_helper_integration::reset_persistence();
+      }
+      mode = {}; mode.dmSize = sizeof(mode);
+      if (result != ERROR_SUCCESS || !EnumDisplaySettingsW(name.c_str(), ENUM_CURRENT_SETTINGS, &mode) ||
+          mode.dmPelsWidth != unsigned(session.width) || mode.dmPelsHeight != unsigned(vd_height)) {
+        BOOST_LOG(error) << "[AURORA-GPU-HEVC] resumed display resize failed rc=" << result
+          << " requested=" << session.width << "x" << vd_height;
+        return false;
+      }
+    }
+    // Resume commands also need the current geometry, not the original launch.
+    _env["SUNSHINE_CLIENT_WIDTH"] = std::to_string(session.width);
+    _env["APOLLO_CLIENT_WIDTH"] = std::to_string(session.width);
+    _env["SUNSHINE_CLIENT_HEIGHT"] = std::to_string(session.height);
+    _env["APOLLO_CLIENT_HEIGHT"] = std::to_string(session.height);
+    _env["APOLLO_CLIENT_RENDER_WIDTH"] = std::to_string(session.width);
+    _env["APOLLO_CLIENT_RENDER_HEIGHT"] = std::to_string(session.height);
+    BOOST_LOG(info) << "[AURORA-GPU-HEVC] resumed virtual display verified "
+      << mode.dmPelsWidth << "x" << mode.dmPelsHeight;
+#endif
+    return true;
+  }
+
   int proc_t::current_app_id() const {
     return _app_id.load(std::memory_order_acquire);
   }
@@ -2907,7 +3079,7 @@ namespace proc {
                                                   find_working_directory(cmd.do_cmd, _env) :
                                                   boost::filesystem::path(app_working_dir);
           BOOST_LOG(info) << "Executing Resume Cmd: ["sv << cmd.do_cmd << "] elevated: " << cmd.elevated;
-          auto child = platf::run_command(cmd.elevated, true, cmd.do_cmd, working_dir, _env, nullptr, ec, nullptr);
+          auto child = platf::run_command(cmd.elevated, false, cmd.do_cmd, working_dir, _env, nullptr, ec, nullptr);
 
           if (ec) {
             BOOST_LOG(error) << "Couldn't run ["sv << cmd.do_cmd << "]: System: "sv << ec.message();
@@ -2980,7 +3152,7 @@ namespace proc {
                                                   find_working_directory(cmd.undo_cmd, _env) :
                                                   boost::filesystem::path(app_working_dir);
           BOOST_LOG(info) << "Executing Pause Cmd: ["sv << cmd.undo_cmd << "] elevated: " << cmd.elevated;
-          auto child = platf::run_command(cmd.elevated, true, cmd.undo_cmd, working_dir, _env, nullptr, ec, nullptr);
+          auto child = platf::run_command(cmd.elevated, false, cmd.undo_cmd, working_dir, _env, nullptr, ec, nullptr);
 
           if (ec) {
             BOOST_LOG(error) << "Couldn't run ["sv << cmd.undo_cmd << "]: System: "sv << ec.message();
@@ -3215,7 +3387,7 @@ namespace proc {
                                               find_working_directory(cmd.undo_cmd, _env) :
                                               boost::filesystem::path(_app.working_dir);
       BOOST_LOG(info) << "Executing Undo Cmd: ["sv << cmd.undo_cmd << ']';
-      auto child = platf::run_command(cmd.elevated, true, cmd.undo_cmd, working_dir, _env, _pipe.get(), ec, nullptr);
+      auto child = platf::run_command(cmd.elevated, false, cmd.undo_cmd, working_dir, _env, _pipe.get(), ec, nullptr);
 
       if (ec) {
         BOOST_LOG(warning) << "System: "sv << ec.message();
@@ -3258,6 +3430,8 @@ namespace proc {
 #endif
 
     _pipe.reset();
+
+    wired_pin::revert();   // Eclipse: the session's wired pin, if any
 
 #if defined(_WIN32) || defined(__linux__)
     // Release only this app's normal-display role before deciding whether the
@@ -3528,6 +3702,43 @@ namespace proc {
     ss.write(pos, (dollar - pos));
 
     return ss.str();
+  }
+
+  /**
+   * @brief Copy the global prep/state commands onto an app defined in CODE, not apps.json.
+   *
+   * The apps.json parse loop merges config::sunshine.{prep,state}_cmds into every app it
+   * builds. Apps constructed in C++ (Virtual Display, Remote Input, ...) never went through
+   * that loop, so their command lists stayed EMPTY -- and proc_t::resume()/execute() both
+   * short-circuit on an empty list. On Aurora that meant selecting Virtual Desktop ran
+   * neither global_prep_cmd (the pad/mic cable hooks) nor global_state_cmd (dispwake
+   * physical-off), so the PC monitor was never switched off and the desktop stayed two
+   * displays wide. Measured 2026-08-13: no `Executing Resume Cmd` in any Virtual Display
+   * session, while every apps.json app logged one.
+   *
+   * Kept as a helper rather than inlined so a built-in app opts in with one line, and so
+   * the env expansion stays identical to the apps.json path.
+   */
+  void apply_global_cmds(proc::ctx_t &ctx, bp::native_environment &env) {
+    // prep_cmd_t only constructs from rvalues, and these sources are the GLOBAL config --
+    // parse_env_val already returns fresh strings, and bool() copies, so nothing here
+    // hollows out config::sunshine.
+    ctx.prep_cmds.reserve(config::sunshine.prep_cmds.size());
+    for (auto &prep_cmd : config::sunshine.prep_cmds) {
+      ctx.prep_cmds.emplace_back(
+        parse_env_val(env, prep_cmd.do_cmd),
+        parse_env_val(env, prep_cmd.undo_cmd),
+        bool(prep_cmd.elevated)
+      );
+    }
+    ctx.state_cmds.reserve(config::sunshine.state_cmds.size());
+    for (auto &state_cmd : config::sunshine.state_cmds) {
+      ctx.state_cmds.emplace_back(
+        parse_env_val(env, state_cmd.do_cmd),
+        parse_env_val(env, state_cmd.undo_cmd),
+        bool(state_cmd.elevated)
+      );
+    }
   }
 
   /**
@@ -4657,6 +4868,47 @@ namespace proc {
       apps.emplace_back(std::move(ctx));
     }
 
+  #ifdef _WIN32
+    /* THE CO-OP PANE IS BUILT IN, so a user never creates it. Eclipse's co-op launches
+       an app named exactly "Co-op Pane" on both hosts. Shipped only in the default apps.json it
+       existed on a FRESH install alone -- an upgrade keeps its old apps.json -- and a user could
+       delete or rename it. Built in code it exists on every install with a working virtual
+       display, and the web UI's Applications page never shows it (that page edits apps.json).
+       nvhttp::applist hides it from clients that do not ask for it (umbraCoop=1) unless it is
+       the running app, so an ordinary Moonlight client sees it only while a co-op session is
+       streaming. A host whose apps.json already has an entry with this name keeps that
+       entry (the rig's, or a user's own) and gets no second one. */
+    if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK &&
+        std::none_of(apps.begin(), apps.end(), [](const proc::ctx_t &app) { return app.name == COOP_PANE_NAME; })) {
+      proc::ctx_t ctx;
+      ctx.idx = std::to_string(i);
+      ctx.uuid = COOP_PANE_UUID;
+      ctx.name = COOP_PANE_NAME;
+      ctx.virtual_display = true;
+      ctx.scale_factor = 100;
+      // The client's identity, as the apps.json entry it replaces had (use-app-identity unset).
+      ctx.use_app_identity = false;
+      ctx.per_client_app_identity = false;
+      ctx.allow_client_commands = false;
+      // RESUMABLE (user, 2026-10-02: Disconnect must leave the co-op session to resume). The two
+      // reasons it briefly ended with the stream are fixed: a resumed co-op pane gets its virtual
+      // display resized to the new request (prepare_gpu_hevc_resume covers umbra_coop sessions),
+      // and Eclipse's Quit now quits BOTH hosts' panes (session_worker.c), not only the primary's.
+      ctx.terminate_on_pause = false;
+      ctx.elevated = false;
+      ctx.auto_detach = true;
+      ctx.wait_all = false;   // no command to wait for; wait_all without terminate is the 07-29 hang
+      ctx.exit_timeout = 5s;
+      apply_global_cmds(ctx, this_env);
+
+      auto possible_ids = calculate_app_id(ctx.name, ctx.uuid, ctx.image_path, i++);
+      ctx.id = ids.count(std::get<0>(possible_ids)) == 0 ? std::get<0>(possible_ids) : std::get<1>(possible_ids);
+      ids.insert(ctx.id);
+      BOOST_LOG(info) << "Co-op Pane: built in (id "sv << ctx.id << "); hidden from app lists unless running or asked for (umbraCoop=1)"sv;
+      apps.emplace_back(std::move(ctx));
+    }
+  #endif
+
     // Virtual Display entry
 #ifdef _WIN32
     if (vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK) {
@@ -4667,15 +4919,45 @@ namespace proc {
       ctx.image_path = parse_env_val(this_env, "virtual_desktop.png");
       ctx.virtual_display = true;
       ctx.scale_factor = 100;
-      ctx.use_app_identity = false;
+      /* ITS OWN DISPLAY IDENTITY, NOT THE CLIENT'S. With use_app_identity false the VDD is
+         named+GUID'd from the CLIENT, so a Virtual Display stream and a co-op stream
+         produced the SAME virtual display and Wallpaper Engine could not tell them apart
+         (per-display wallpapers were impossible). true names it "Virtual Display" with
+         VIRTUAL_DISPLAY_UUID, which is stable run to run -- per_client stays false because
+         a wallpaper assigned to a display that changes GUID would not stick. */
+      ctx.use_app_identity = true;
       ctx.per_client_app_identity = false;
       ctx.allow_client_commands = false;
+      /* UPSTREAM VALUE, RESTORED 2026-09-21. Disconnect and Quit are DIFFERENT BUTTONS by
+         design: Disconnect leaves the session alive so it can be resumed, Quit ends it.
+         terminate_on_pause collapses the two -- proc_t::pause() logs "Terminating app ...
+         Pause commands are skipped" and calls terminate() -- so Disconnect quit the stream.
+         d316b272 (upstream) shipped this false; 6a9480df (co-op host patches, 2026-09-07)
+         set it true and broke it. This is a revert, not a redesign.
+         The justification that stood here was WRONG: "pausing already destroys the VDD, so
+         the desktop is gone either way". It does not. removeVirtualDisplay() is reached from
+         exactly two places -- terminate() below, and prepare_gpu_hevc_resume(), whose own
+         comment reads "Recreate this PAUSED virtual monitor with its SAME identity". There
+         is dedicated code for a paused VDD that still exists, so pausing cannot destroy it.
+         Second casualty, now also fixed: terminate_on_pause SKIPS the pause state command,
+         so global_state_cmd's undo (dispwake physical-on) never ran and the panel was left
+         to the prep-cmd undo path. That is why backlog #14's suspend/resume -- panel back on
+         while the session and game stay alive -- has never worked. */
       ctx.terminate_on_pause = false;
 
       ctx.elevated = false;
       ctx.auto_detach = true;
       ctx.wait_all = false;
       ctx.exit_timeout = 5s;
+
+      /* THIS APP IS BUILT IN CODE, SO NOTHING GAVE IT THE GLOBAL COMMANDS. Without this the
+         Virtual Desktop stream ran no global_prep_cmd and no global_state_cmd at all: the
+         pad/mic cable hooks never started and dispwake never switched the physical monitor
+         off, so the desktop stayed 6400x2160 across two displays with the PC panel primary.
+         It also restores the teardown: the prep UNDO is what reaches apollo-display.cmd
+         sessionend, which is the only thing that lights the panel again once
+         terminate_on_pause has skipped the pause command. */
+      apply_global_cmds(ctx, this_env);
 
       auto possible_ids = calculate_app_id(ctx.name, ctx.uuid, ctx.image_path, i++);
       if (ids.count(std::get<0>(possible_ids)) == 0) {

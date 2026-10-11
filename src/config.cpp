@@ -850,6 +850,9 @@ namespace config {
     true,  // pyrowave
 
     2,  // min_threads
+    0,  // gop_length -- stock infinite GOP
+    0,  // coop_top_pad -- 0 = stock, bars split evenly
+    0,  // coop_pad_rows -- 0 = stock, no virtual-display inset
     {
       "superfast"s,  // preset
       "zerolatency"s,  // tune
@@ -1766,6 +1769,8 @@ namespace config {
     int_between_f(vars, "av1_mode", video.av1_mode, {0, 3});
     bool_f(vars, "pyrowave", video.pyrowave);
     int_f(vars, "min_threads", video.min_threads);
+    int_f(vars, "coop_top_pad", video.coop_top_pad);
+    int_f(vars, "coop_pad_rows", video.coop_pad_rows);
     string_f(vars, "sw_preset", video.sw.sw_preset);
     if (!video.sw.sw_preset.empty()) {
       video.sw.svtav1_preset = sw::svtav1_preset_from_view(video.sw.sw_preset);
@@ -1773,12 +1778,17 @@ namespace config {
     string_f(vars, "sw_tune", video.sw.sw_tune);
 
     int_between_f(vars, "nvenc_preset", video.nv.quality_preset, {1, 7});
+    int_between_f(vars, "nvenc_gop_length", video.nv.gop_length, {0, 600});
+    int_between_f(vars, "gop_length", video.gop_length, {0, 600});
+    bool_f(vars, "nvenc_slice_rows", video.nv.slice_rows);
+    int_between_f(vars, "nvenc_constrained", video.nv.constrained, {-1, 1});
     int_between_f(vars, "nvenc_vbv_increase", video.nv.vbv_percentage_increase, {0, 400});
     bool_f(vars, "nvenc_spatial_aq", video.nv.adaptive_quantization);
     bool_f(vars, "nvenc_temporal_aq", video.nv.temporal_aq);
     generic_f(vars, "nvenc_split_encode", video.nv.split_encode_mode, nv::split_encode_mode_from_view);
     generic_f(vars, "nvenc_twopass", video.nv.two_pass, nv::twopass_from_view);
     bool_f(vars, "nvenc_h264_cavlc", video.nv.h264_cavlc);
+    bool_f(vars, "nvenc_h264_main", video.nv.h264_main_profile);
     bool_f(vars, "nvenc_intra_refresh", video.nv.intra_refresh);
     bool_f(vars, "nvenc_realtime_hags", video.nv_realtime_hags);
     bool_f(vars, "nvenc_opengl_vulkan_on_dxgi", video.nv_opengl_vulkan_on_dxgi);
@@ -1842,6 +1852,7 @@ namespace config {
 
     bool_f(vars, "amd_preanalysis", (bool &) video.amd.amd_preanalysis);
     int_f(vars, "amd_vbaq", video.amd.amd_vbaq, amd::tristate_from_view);
+    int_f(vars, "amd_intra_refresh_mb", video.amd.amd_intra_refresh_mb);
     bool_f(vars, "amd_enforce_hrd", (bool &) video.amd.amd_enforce_hrd);
 
     // Native AMF encoder (amdvce_experimental) tuning knobs.

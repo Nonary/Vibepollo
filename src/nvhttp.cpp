@@ -21,6 +21,8 @@
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <regex>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -50,6 +52,7 @@
 #include "globals.h"
 #include "hdr_request_policy.h"
 #include "httpcommon.h"
+#include "host_monitor.h"  // Eclipse
 #include "http_pairing_policy.h"
 #include "hdr_request_policy.h"
 #include "logging.h"
@@ -89,8 +92,28 @@
 #include "video.h"
 #include "webrtc_stream.h"
 #include "zwpad.h"
+#include "wired_pin.h"  // Eclipse
 
 using namespace std::literals;
+
+#ifdef _WIN32
+/* DECLARED, NOT INCLUDED, AND ON PURPOSE. The definition lives in platform/windows/utils.cpp,
+ * but platform/windows/utils.h drags <windows.h> into this cross-platform translation unit. A signature
+ * drift still fails loudly, at link time. */
+bool is_user_session_locked();
+#endif
+
+namespace nvhttp {
+  /** UmbraCaps bit 1: GET /umbralog (see umbralog()). */
+  constexpr int CAP_HOST_LOG = 2;
+  /** UmbraCaps bit 2: this build understands Eclipse co-op -- it builds the co-op pane in (proc::parse, whenever
+   *  the virtual display driver works), /applist hides that pane unless it is running or the client sends
+   *  umbraCoop=1, and a /launch or /resume with umbraCoop=1 gets the co-op encoder tuning. */
+  constexpr int CAP_COOP_PANE = 4;
+  /** UmbraCaps bit 3: the GPU HEVC co-op encoder is installed (proc::gpu_hevc_encoder_installed). Only
+   *  meaningful with bit 2: a host reporting bit 2 without bit 3 is a KNOWN "no", not an unknown. */
+  constexpr int CAP_GPU_HEVC = 8;
+}  // namespace nvhttp
 
 namespace nvhttp {
 
@@ -3034,6 +3057,44 @@ namespace nvhttp {
         launch_session->rtsp_source_address = request->remote_endpoint().address().to_string();
       }
 
+      // Eclipse: Eclipse's per-launch arguments.
+      // The GPU HEVC co-op encoder is a release feature (the installer ships it), not part of the beta profile.
+      launch_session->aurora_gpu_hevc = get_arg(args, "auroraGpuHevc", "0") == "1";
+      // One pane of an Eclipse co-op session -- the co-op encoder tuning applies to THIS session only.
+      launch_session->umbra_coop = get_arg(args, "umbraCoop", "0") == "1";
+      // The client asks for the host's physical monitor(s) off for this stream (host_monitor.h); a switched-off
+      // monitor cannot be what is streamed, so that also asks for the virtual display.
+      launch_session->host_monitor_off = get_arg(args, "umbraMonitorOff", "0") == "1" && host_monitor::supported();
+      if (launch_session->host_monitor_off) {
+        launch_session->client_virtual_display_override = true;
+        launch_session->virtual_display_mode_override.reset();
+      }
+      // The client asks for its wired card to carry the stream (wired_pin.h).
+      launch_session->wired_mac = get_arg(args, "auroraWiredMac", "");
+      {
+        auto split_list = [](const std::string &text) {
+          std::vector<std::string> out;
+          std::size_t start = 0;
+          while (start < text.size() && out.size() < 8) {
+            const auto comma = text.find(',', start);
+            const auto item = text.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+            if (!item.empty()) {
+              out.push_back(item);
+            }
+            if (comma == std::string::npos) {
+              break;
+            }
+            start = comma + 1;
+          }
+          return out;
+        };
+        launch_session->own_macs = split_list(get_arg(args, "auroraOwnMacs", ""));
+        launch_session->own_ips = split_list(get_arg(args, "auroraOwnIps", ""));
+      }
+      if (request) {
+        launch_session->client_address = request->remote_endpoint().address().to_string();
+      }
+
       launch_session->client_do_cmds = verified_client->do_cmds;
       launch_session->client_undo_cmds = verified_client->undo_cmds;
 
@@ -3848,6 +3909,18 @@ namespace nvhttp {
         codec_mode_flags |= pyrowave::protocol::SCM_MASK_PYROWAVE;
       }
       tree.put("root.ServerCodecModeSupport", codec_mode_flags);
+      // Eclipse: always present, so a client can tell this build from stock Apollo/Vibepollo; bits = features.
+      // bit 0 wired pin (wired_pin.h), bit 1 host log for a paired client's support bundle (/umbralog),
+      // bit 2 built-in co-op pane + per-launch co-op tuning, bit 3 GPU HEVC co-op encoder installed,
+      // bit 4 physical monitor off on request (umbraMonitorOff, host_monitor.h).
+      {
+        int caps = (wired_pin::supported() ? wired_pin::CAP_WIRED_PIN : 0) | CAP_HOST_LOG | CAP_COOP_PANE |
+                   (host_monitor::supported() ? host_monitor::CAP_MONITOR_OFF : 0);
+        if (proc::gpu_hevc_encoder_installed()) {
+          caps |= CAP_GPU_HEVC;
+        }
+        tree.put("root.UmbraCaps", caps);
+      }
 
       tree.put("root.PairStatus", pair_status);
     // This is the host's outbound physical link, not measured end-to-end
@@ -3893,6 +3966,14 @@ namespace nvhttp {
         tree.put("root.currentgame", expose_active_game ? current_appid : 0);
         tree.put("root.currentgameuuid", expose_active_game ? proc::proc.get_running_app_uuid() : "");
         tree.put("root.state", expose_active_game ? "SUNSHINE_SERVER_BUSY" : "SUNSHINE_SERVER_FREE");
+        // Eclipse: is someone looking at a lock screen right now. A locked machine answers this query perfectly
+        // well, so "online" never meant "usable"; Eclipse's PIN auto-entry reads this. Fresh on every request;
+        // unknown reads as 0 (the safe direction). HTTPS-only, like currentgame and state.
+#ifdef _WIN32
+        tree.put("root.SessionLocked", is_user_session_locked() ? 1 : 0);
+#else
+        tree.put("root.SessionLocked", 0);
+#endif
       } else {
         tree.put("root.currentgame", 0);
         tree.put("root.currentgameuuid", "");
@@ -4066,6 +4147,87 @@ namespace nvhttp {
       }
     }
 
+    /**
+     * @brief Eclipse: the tail of this host's own log, for a PAIRED client's support bundle.
+     *
+     * A user sends ONE file. The host side of their problem -- encoder, capture, audio device, display -- is only in
+     * this log, and they will not know to send it. So the client fetches it at the end of every stream while it is
+     * keeping logs. Same gate as /applist (a verified, paired client allowed to act). Lines that could carry a secret
+     * are dropped: anything naming a password/salt/token/secret/credential/cookie, and config-dump lines whose KEY
+     * looks like one. Query: bytes=N, the tail length (default 262144, 4096..1048576); the text starts on a whole line.
+     */
+    void umbralog(resp_https_t response, req_https_t request) {
+      print_req<SunshineHTTPS>(request);
+      auto verified_client = get_verified_cert(request);
+      if (!has_client_perm(verified_client, PERM::_all_actions)) {
+        response->write(SimpleWeb::StatusCode::client_error_forbidden, "not allowed for this client");
+        response->close_connection_after_response = true;
+        return;
+      }
+      auto args = request->parse_query_string();
+      std::size_t want = 262144;
+      if (auto it = args.find("bytes"); it != args.end()) {
+        try {
+          want = std::clamp<std::size_t>(std::stoul(it->second), 4096, 1048576);
+        } catch (...) {
+        }
+      }
+      std::ifstream in(config::sunshine.log_file, std::ios::binary);
+      if (!in) {
+        response->write(SimpleWeb::StatusCode::client_error_not_found, "no log file at " + config::sunshine.log_file);
+        response->close_connection_after_response = true;
+        return;
+      }
+      in.seekg(0, std::ios::end);
+      const auto size = static_cast<std::size_t>(in.tellg());
+      const auto start = size > want ? size - want : 0;
+      in.seekg(static_cast<std::streamoff>(start));
+      std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      if (start > 0) {
+        const auto first = data.find('\n');
+        data.erase(0, first == std::string::npos ? data.size() : first + 1);
+      }
+      static const std::regex secret_word("(password|passwd|salt|token|secret|credential|cookie)", std::regex::icase);
+      static const std::regex secret_key("config: *[\\[']?[^\\]'= ]*(pass|salt|token|secret|cred|key|pin)[^\\]'= ]*[\\]']?",
+                                         std::regex::icase);
+      std::ostringstream out;
+      out << "# Host log " << config::sunshine.log_file << ": last " << data.size() << " of " << size
+          << " bytes, secrets removed\n";
+      std::istringstream lines(data);
+      std::string line;
+      std::size_t removed = 0;
+      while (std::getline(lines, line)) {
+        if (std::regex_search(line, secret_word) || std::regex_search(line, secret_key)) {
+          out << "[line removed: may contain a secret]\n";
+          removed++;
+        } else {
+          out << line << '\n';
+        }
+      }
+      BOOST_LOG(info) << "Host log: sent the last "sv << data.size() << " bytes ("sv << removed << " lines removed)"sv;
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("Content-Type", "text/plain; charset=utf-8");
+      response->write(SimpleWeb::StatusCode::success_ok, out.str(), headers);
+      response->close_connection_after_response = true;
+    }
+
+    /**
+     * The host: umbraCoop=1/0 is the client's explicit answer (Eclipse from 2026-10-02, 0 = its "co-op tuning"
+     * setting is off). A client that predates the argument sends nothing; it gets the co-op tuning exactly
+     * when it launches or resumes the co-op pane (built in, or an apps.json entry of that name).
+     */
+    void resolve_coop_flag(rtsp_stream::launch_session_t &launch_session, const args_t &args, int appid) {
+      if (args.find("umbraCoop") != args.end()) {
+        return;  // make_launch_session already read it
+      }
+      for (const auto &app : proc::proc.get_apps()) {
+        if (util::from_view(app.id) == appid) {
+          launch_session.umbra_coop = proc::is_coop_pane(app);
+          return;
+        }
+      }
+    }
+
     void applist(resp_https_t response, req_https_t request) {
       print_req<SunshineHTTPS>(request);
 
@@ -4100,9 +4262,14 @@ namespace nvhttp {
 
         std::vector<const proc::ctx_t *> visible_apps;
         visible_apps.reserve(app_list.size());
+        // Eclipse: the built-in Co-op Pane is listed only to a client that asks (umbraCoop=1) or while it runs.
+        const bool list_coop_pane = get_arg(request->parse_query_string(), "umbraCoop", "0") == "1";
 
         for (const auto &app : app_list) {
           auto appid = util::from_view(app.id);
+          if (!list_coop_pane && appid != current_appid && app.uuid == COOP_PANE_UUID) {
+            continue;
+          }
           bool include = true;
           if (should_hide_inactive_apps) {
             if (
@@ -4838,6 +5005,8 @@ namespace nvhttp {
 #endif
       const bool allow_display_changes = true;
       auto launch_session = make_launch_session_from_snapshot(host_audio, is_input_only, args, verified_client, &request_client_identity, request);
+      resolve_coop_flag(*launch_session, args, appid);  // Eclipse
+      tree.put("root.auroraGpuHevc", launch_session->aurora_gpu_hevc ? 1 : 0);  // Eclipse
       std::optional<std::string> pending_output_override;
       auto output_override_guard = util::fail_guard([&]() {
         if (pending_output_override) {
@@ -5405,6 +5574,8 @@ namespace nvhttp {
     }
 
     auto launch_session = make_launch_session_from_snapshot(host_audio, is_input_only, args, verified_client, &request_client_identity, request);
+    resolve_coop_flag(*launch_session, args, current_appid);  // Eclipse
+    tree.put("root.auroraGpuHevc", launch_session->aurora_gpu_hevc ? 1 : 0);  // Eclipse
     if (!proc::proc.allow_client_commands || !verified_client->allow_client_commands) {
       launch_session->client_do_cmds.clear();
       launch_session->client_undo_cmds.clear();
@@ -5470,6 +5641,15 @@ namespace nvhttp {
       launch_session->virtual_display_guid_bytes.fill(0);
       launch_session->virtual_display_device_id.clear();
       BOOST_LOG(info) << "Joining the running game's active capture output without preparing a per-client display.";
+    }
+
+    // Eclipse: a resumed co-op pane must not reuse the old pane geometry -- resize its paused virtual display to
+    // this request (proc_t::prepare_gpu_hevc_resume; a no-op for every other session).
+    if (!joining_existing_game_output && !has_stream_session_activity() && !proc::proc.prepare_gpu_hevc_resume(*launch_session)) {
+      tree.put("root.resume", 0);
+      tree.put("root.<xmlattr>.status_code", 503);
+      tree.put("root.<xmlattr>.status_message", "Could not resize the resumed co-op virtual display");
+      return;
     }
 
 #ifdef _WIN32
@@ -5846,6 +6026,32 @@ namespace nvhttp {
       tree.put("root.<xmlattr>.status_message", permission_denied_status_message(verified_client, "Launch applications"sv));
 
       return;
+    }
+
+    // Eclipse: Eclipse's Quit is /cancel. A Remote Monitor / Remote Input session this client owns runs no game, so the
+    // cancel below answered "done" and left the role held: Eclipse then listed only Resume / Disconnect Monitor and
+    // the session could not be ended from the client (2026-10-11, PC1). Quit now releases this client's remote roles
+    // exactly as the Disconnect Monitor / Disconnect Input controls do. Disconnect (no /cancel) keeps them resumable.
+    {
+      std::unique_lock remote_transition_lock {remote_http_control_transition_mutex};
+      bool released_role = false;
+      for (const auto role : {remote_session::role_e::monitor, remote_session::role_e::input}) {
+        if (const auto generation = remote_owner_generation(request_client_identity.uuid, role)) {
+          (void) rtsp_stream::disconnect_remote_role_session(request_client_identity.uuid, role, *generation, false);
+          if (role == remote_session::role_e::monitor) {
+            remote_session::release_monitor(request_client_identity.uuid, *generation, "Quit");
+          }
+          forget_remote_owner(request_client_identity.uuid, role, *generation);
+          released_role = true;
+          BOOST_LOG(info) << "Quit released this client's Remote "sv
+                          << (role == remote_session::role_e::monitor ? "Monitor"sv : "Input"sv) << " session"sv;
+        }
+      }
+#if defined(_WIN32) || defined(__linux__)
+      if (released_role) {
+        cleanup_virtual_display_if_idle();
+      }
+#endif
     }
 
     const bool has_running_app = proc::proc.running() > 0;
@@ -6383,6 +6589,7 @@ namespace nvhttp {
     https_server.resource["^/pair/?$"]["POST"] = pair<SunshineHTTPS>;
     https_server.resource["^/unpair/?$"]["GET"] = unpair<SunshineHTTPS>;
     https_server.resource["^/unpair/?$"]["POST"] = unpair<SunshineHTTPS>;
+    https_server.resource["^/umbralog$"]["GET"] = umbralog;  // Eclipse
     https_server.resource["^/applist$"]["GET"] = [run_discovery_nvhttp](auto resp, auto req) {
       run_discovery_nvhttp([resp = std::move(resp), req = std::move(req)]() mutable {
         applist(std::move(resp), std::move(req));

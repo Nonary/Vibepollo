@@ -67,6 +67,59 @@ namespace config {
 
     int min_threads;  // Minimum number of threads/slices for CPU encoding
 
+    // Vendor-neutral PERIODIC GOP for the avcodec encoders -- AMF (AMD), QSV (Intel),
+    // VAAPI and software. 0 keeps the stock infinite GOP. `nvenc_gop_length` is the
+    // equivalent for the NATIVE nvenc encoder, which bypasses avcodec entirely and so
+    // could never be reached by this one.
+    int gop_length;
+
+    // CO-OP SEAM GUARD, TOP EDGE. Rows of BLACK padding placed ABOVE the captured content
+    // instead of splitting the aspect-ratio bars evenly.
+    //
+    // WHY: in co-op the two panes are spliced into ONE picture on the client, so each host's
+    // pane boundary stops being a picture boundary. The encoder still predicts across it with
+    // EDGE EXTENSION (a motion vector past the edge, and the 6-tap sub-pel filter that reaches
+    // 3 samples further, both clamp to the last real row), while the composite puts the OTHER
+    // host's pixels there. Measured on the TV client 2026-09-04: the composite reproduces the
+    // peer's pane to ~0.9 luma everywhere except its seam edge, where it is 28.3 across all 60
+    // sampled columns, exact at an IRAP and never recovering afterwards.
+    //
+    // The existing guard adds rows BELOW the content (the capture simply starts at y=0 and asks
+    // for more), which protects the pane that sits ON TOP of the composite -- its downward
+    // vectors land in its own extra rows. The pane on the BOTTOM has its seam at its TOP edge
+    // and nothing above it. This puts black rows there, which the encoder codes ITSELF, so what
+    // the composite contains is what the encoder predicted from. Static black codes as zero-MV
+    // SKIP, so it costs almost no bitrate.
+    //
+    // 0 = stock behaviour, bars split evenly, byte-identical to every build before this.
+    int coop_top_pad;
+
+    // CO-OP SEAM PADDING, expressed where it actually works: shrink the VIRTUAL DISPLAY by
+    // 2 * coop_pad_rows and leave the ENCODE at the client's requested size, so Apollo's own
+    // centring produces `coop_pad_rows` BLACK ROWS at the top and bottom of every encoded frame.
+    //
+    // WHY BLACK ROWS AT THE PANE EDGE FIX THE CO-OP SEAM (measured 2026-09-05 on the rig).
+    // H.264 edge extension assumes the row above a picture's first row is a REPEAT of that first
+    // row. In a spliced composite that row is really the OTHER host's pixels, so the assumption
+    // is violated and the mismatch is injected into the reference chain every frame. If both
+    // panes carry black padding at the seam the assumption comes true: the encoder predicts from
+    // black and the composite really does have black there. Measured with a 16-row pad per edge,
+    // peer rows 0-8 and 8-16 reproduce inside the composite at 0.088 and 0.011 luma levels --
+    // essentially bit-exact -- and the peak seam ratio in the first content rows falls from
+    // 1.025 to 0.632.
+    //
+    // WHY NOT JUST ASK FOR A TALLER STREAM, which is what the client's guard band does. That
+    // makes the COMPOSITE taller than the panel (2 * 1120 = 2240 against 2160), and the display
+    // pillarboxes it: measured 64 px and 74 px of black down the sides, 3702 px of 3840 active.
+    // Padding INSIDE the requested height keeps the composite at 2176 and the bars at 0-8 px.
+    // The cost is 2 * coop_pad_rows rows of desktop height per host, which is the cheaper trade.
+    //
+    // Keep it a multiple of 16 so the content stays macroblock-aligned and no resampling happens:
+    // the capture then fits the encode frame exactly in width and is merely offset vertically.
+    //
+    // 0 = stock behaviour, no inset, byte-identical to every build before this.
+    int coop_pad_rows;
+
     struct {
       std::string sw_preset;
       std::string sw_tune;
@@ -119,6 +172,9 @@ namespace config {
       std::optional<int> amd_high_motion_quality_boost;  // High-motion quality boost: 1=on, 0=off
       std::optional<int> amd_av1_screen_content;  // AV1 screen-content tools: 1=on, 0=off
       std::optional<int> amd_av1_latency_mode;  // AV1 encoding-latency mode (0-3)
+      // Eclipse: ROLLING INTRA REFRESH for the AMF encoder. Unset = never passed to ffmpeg, so an absent config key
+      // leaves encoding byte-identical to stock. LAST on purpose: config.cpp initialises this struct by position.
+      std::optional<int> amd_intra_refresh_mb;
     } amd;
 
     struct {

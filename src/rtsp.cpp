@@ -1970,7 +1970,7 @@ namespace rtsp_stream {
       ss << "a=x-nv-video[0].refPicInvalidation:1"sv << std::endl;
     }
 
-    if (video::active_hevc_mode != 1) {
+    if (session->aurora_gpu_hevc || video::active_hevc_mode != 1) {  // Eclipse: the GPU HEVC co-op encoder
       ss << "sprop-parameter-sets=AAAAAU"sv << std::endl;
     }
 
@@ -2224,6 +2224,8 @@ namespace rtsp_stream {
 
       config.monitor.input_only =
         session->input_only || session->role == remote_session::role_e::input;
+      config.monitor.aurora_gpu_hevc = session->aurora_gpu_hevc;  // Eclipse
+      config.monitor.umbra_coop = session->umbra_coop;  // Eclipse
 
       // Validate that clientRefreshRateX100 is consistent with maxFPS.
       // Some clients send a stale or incorrect clientRefreshRateX100 (e.g. 6000 = 60fps)
@@ -2390,7 +2392,12 @@ namespace rtsp_stream {
       config.monitor.bitrate = (int) configuredBitrateKbps;
     }
 
-    if (config.monitor.videoFormat == 1 && video::active_hevc_mode == 1) {
+    // Eclipse: the GPU HEVC co-op encoder codes HEVC 4:2:0 only, and does so even where native HEVC is disabled.
+    if (session->aurora_gpu_hevc && (config.monitor.videoFormat != 1 || config.monitor.chromaSamplingType != 0)) {
+      respond(socket->sock, *session, &option, 400, "GPU HEVC requires HEVC 4:2:0", req->sequenceNumber, {});
+      return false;
+    }
+    if (!session->aurora_gpu_hevc && config.monitor.videoFormat == 1 && video::active_hevc_mode == 1) {
       BOOST_LOG(warning) << "HEVC is disabled, yet the client requested HEVC"sv;
 
       respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
