@@ -14,6 +14,12 @@
  * app-only configuration scope (verified on macOS 27). The exclusive layout therefore keeps two
  * safeguards: a helper process that turns the displays back on if Vibepollo exits without doing
  * so, and a marker file of turned-off displays that the next launch restores.
+ *
+ * Displays can come back on during a session: reopening a MacBook's lid brings back its built-in
+ * display, and a monitor plugged in turns on. While the exclusive layout is active, a display
+ * reconfiguration callback notices these and, once the changes settle, turns them off again,
+ * updating both safeguards first. Vibepollo's own displays are put back in the modes they were
+ * made with if macOS changes them as displays come and go.
  */
 // standard includes
 #include <algorithm>
@@ -47,6 +53,7 @@
 #include <unistd.h>
 
 // local includes
+#include "display_policy.h"
 #include "misc.h"
 #include "src/config.h"
 #include "src/logging.h"
@@ -219,8 +226,49 @@ namespace platf::macos_virtual_display {
       return restored;
     }
 
+    std::string format_ids(const std::vector<CGDirectDisplayID> &ids) {
+      std::string result;
+      for (const auto id : ids) {
+        result += (result.empty() ? ""s : ", "s) + std::to_string(id);
+      }
+      return result;
+    }
+
     bool is_active_or_gone(const CGDirectDisplayID id) {
       return is_active(id) || is_gone(id);
+    }
+
+    /**
+     * @brief Split off the displays that are offline, such as a closed MacBook's built-in display.
+     * @details Those can't be turned on now. One that was turned off comes back on when it returns
+     *          (seen with a MacBook's lid on macOS 27), but they stay in the marker in case one doesn't.
+     */
+    std::pair<std::vector<CGDirectDisplayID>, std::vector<CGDirectDisplayID>> split_offline(const std::vector<CGDirectDisplayID> &ids) {
+      std::pair<std::vector<CGDirectDisplayID>, std::vector<CGDirectDisplayID>> result;
+      for (const auto id : ids) {
+        (CGDisplayIsOnline(id) || is_gone(id) ? result.first : result.second).push_back(id);
+      }
+      return result;
+    }
+
+    /// After turning displays back on: forget the marker, or keep just the offline ones in it.
+    void settle_marker(const std::vector<CGDirectDisplayID> &offline) {
+      if (offline.empty()) {
+        remove_marker();
+        return;
+      }
+      write_marker(offline);
+      BOOST_LOG(info) << "Virtual display: display(s) "sv << format_ids(offline) << " are offline, as with a closed lid; macOS turns them on when they return"sv;
+    }
+
+    std::pair<std::size_t, std::size_t> current_pixels(const CGDirectDisplayID id) {
+      const CGDisplayModeRef mode = CGDisplayCopyDisplayMode(id);
+      if (!mode) {
+        return {0, 0};
+      }
+      const std::pair<std::size_t, std::size_t> pixels {CGDisplayModeGetPixelWidth(mode), CGDisplayModeGetPixelHeight(mode)};
+      CGDisplayModeRelease(mode);
+      return pixels;
     }
 
     /**
@@ -260,6 +308,18 @@ namespace platf::macos_virtual_display {
 
       saved_modes_t(const saved_modes_t &) = delete;
       saved_modes_t &operator=(const saved_modes_t &) = delete;
+
+      /// Also remember a display that joined later, unless it's already remembered.
+      void add(const CGDirectDisplayID id) {
+        if (std::any_of(modes.begin(), modes.end(), [id](const auto &entry) {
+              return entry.first == id;
+            })) {
+          return;
+        }
+        if (const CGDisplayModeRef mode = CGDisplayCopyDisplayMode(id)) {
+          modes.emplace_back(id, mode);
+        }
+      }
 
       ~saved_modes_t() {
         for (const auto &[_, mode] : modes) {
@@ -303,6 +363,12 @@ namespace platf::macos_virtual_display {
       std::vector<std::pair<CGDirectDisplayID, CGDisplayModeRef>> modes;
     };
 
+    /// The helper that turns displays back on if Vibepollo exits without doing so.
+    struct watchdog_t {
+      pid_t pid = -1;
+      int fd = -1;  ///< Write end of the helper's stdin; EOF without "done" makes it restore.
+    };
+
     struct virtual_display_t {
       CGVirtualDisplay *display = nil;
       CGDirectDisplayID id = kCGNullDirectDisplay;
@@ -310,10 +376,15 @@ namespace platf::macos_virtual_display {
       int width = 0;  ///< As requested.
       int height = 0;
       double refresh = 0;
+      std::size_t pixel_width = 0;  ///< As created, which is what gets captured.
+      std::size_t pixel_height = 0;
+      bool exclusive = false;  ///< The exclusive layout is in effect: only Vibepollo's displays stay on.
       std::vector<CGDirectDisplayID> turned_off;  ///< Physical displays to turn back on.
       std::unique_ptr<saved_modes_t> turned_off_modes;  ///< Their modes from before.
-      pid_t watchdog_pid = -1;
-      int watchdog_fd = -1;  ///< Write end of the helper's stdin; EOF without "done" makes it restore.
+      watchdog_t watchdog;
+      /// Bounds how often displays that keep coming back on get turned off again.
+      macos_display_policy::attempt_budget_t enforce_budget {3, 60s};
+      bool gave_up_enforcing = false;
 
       virtual_display_t() = default;
       virtual_display_t(const virtual_display_t &) = delete;
@@ -327,11 +398,11 @@ namespace platf::macos_virtual_display {
     std::atomic<CGDirectDisplayID> current_id {kCGNullDirectDisplay};
     std::atomic<bool> current_hdr {false};
 
-    void start_watchdog(virtual_display_t &display, const std::vector<CGDirectDisplayID> &ids) {
+    watchdog_t start_watchdog(const std::vector<CGDirectDisplayID> &ids) {
       int fds[2];
       if (pipe(fds) != 0) {
         BOOST_LOG(warning) << "Virtual display: couldn't start the restore helper: "sv << std::strerror(errno);
-        return;
+        return {};
       }
       fcntl(fds[0], F_SETFD, FD_CLOEXEC);
       fcntl(fds[1], F_SETFD, FD_CLOEXEC);
@@ -343,7 +414,7 @@ namespace platf::macos_virtual_display {
       if (_NSGetExecutablePath(executable, &size) != 0) {
         close(fds[0]);
         close(fds[1]);
-        return;
+        return {};
       }
 
       std::vector<std::string> args {executable, std::string {restore_watchdog_arg}};
@@ -374,28 +445,38 @@ namespace platf::macos_virtual_display {
       if (result != 0) {
         close(fds[1]);
         BOOST_LOG(warning) << "Virtual display: couldn't start the restore helper: "sv << std::strerror(result);
-        return;
+        return {};
       }
-      display.watchdog_pid = pid;
-      display.watchdog_fd = fds[1];
+      return {pid, fds[1]};
     }
 
-    void stop_watchdog(virtual_display_t &display, const bool displays_restored) {
-      if (display.watchdog_fd < 0) {
+    void stop_watchdog(watchdog_t &watchdog, const bool displays_restored) {
+      if (watchdog.fd < 0) {
         return;
       }
       if (displays_restored) {
         constexpr char done = 'd';
-        (void) write(display.watchdog_fd, &done, 1);
+        (void) write(watchdog.fd, &done, 1);
       }
       // Without "done", the helper turns the displays back on itself.
-      close(display.watchdog_fd);
-      display.watchdog_fd = -1;
-      wait_until([&display]() {
-        return waitpid(display.watchdog_pid, nullptr, WNOHANG) != 0;
+      close(watchdog.fd);
+      watchdog.fd = -1;
+      wait_until([&watchdog]() {
+        return waitpid(watchdog.pid, nullptr, WNOHANG) != 0;
       },
                  3s);
-      display.watchdog_pid = -1;
+      watchdog.pid = -1;
+    }
+
+    /**
+     * @brief Point both safeguards at a larger set of displays, before turning the new ones off.
+     * @details The new helper starts before the old one is told it's done, so some helper always
+     *          covers every display that's off.
+     */
+    void cover_displays(virtual_display_t &display, const std::vector<CGDirectDisplayID> &ids) {
+      write_marker(ids);
+      auto previous = std::exchange(display.watchdog, start_watchdog(ids));
+      stop_watchdog(previous, true);
     }
 
     bool turn_off_other_displays(virtual_display_t &display) {
@@ -411,19 +492,22 @@ namespace platf::macos_virtual_display {
         }
       }
       if (others.empty()) {
+        // Such as a MacBook with its lid closed: displays that come on later are turned off then.
+        display.exclusive = true;
         return true;
       }
 
       // Safeguards first: macOS won't turn these back on if Vibepollo dies.
       display.turned_off_modes = std::make_unique<saved_modes_t>();
       write_marker(others);
-      start_watchdog(display, others);
+      display.watchdog = start_watchdog(others);
 
       if (!set_displays_enabled(others, false)) {
-        stop_watchdog(display, true);
+        stop_watchdog(display.watchdog, true);
         remove_marker();
         return false;
       }
+      display.exclusive = true;
       display.turned_off = std::move(others);
       // Let the desktop settle before capture starts: a capture set up while displays are still
       // going away can get no frames at all.
@@ -593,6 +677,7 @@ namespace platf::macos_virtual_display {
       if (hidpi) {
         select_mode(result->id, pixel_width, pixel_height);
       }
+      std::tie(result->pixel_width, result->pixel_height) = current_pixels(result->id);
       other_modes.restore(1s);
       BOOST_LOG(info) << "Virtual display: "sv << name.UTF8String << ' ' << pixel_width << 'x' << pixel_height << '@' << refresh << "Hz"sv
                       << (make_hdr ? " HDR"sv : ""sv)
@@ -625,18 +710,19 @@ namespace platf::macos_virtual_display {
       if (!turned_off.empty()) {
         // A stream can end while the Mac is half-awake, where displays never come back online.
         platf::wake_displays();
-        const auto all_back = [this]() {
-          return std::all_of(turned_off.begin(), turned_off.end(), is_active_or_gone);
+        const auto [online, offline] = split_offline(turned_off);
+        const auto all_back = [&online]() {
+          return std::all_of(online.begin(), online.end(), is_active_or_gone);
         };
-        restored = turn_on(turned_off) && wait_until(all_back, 5s);
+        restored = turn_on(online) && wait_until(all_back, 5s);
         if (restored) {
-          remove_marker();
+          settle_marker(offline);
           BOOST_LOG(info) << "Virtual display: physical displays turned back on"sv;
         } else {
           BOOST_LOG(error) << "Virtual display: couldn't turn the physical displays back on; the restore helper will retry"sv;
         }
       }
-      stop_watchdog(*this, restored);
+      stop_watchdog(watchdog, restored);
 
       display = nil;
       if (id != kCGNullDirectDisplay) {
@@ -811,8 +897,6 @@ namespace platf::macos_virtual_display {
     struct remote_display_t {
       std::unique_ptr<virtual_display_t> display;
       remote_display_topology::mode_t mode;  ///< As requested.
-      std::size_t pixel_width = 0;  ///< As created, which is what gets captured.
-      std::size_t pixel_height = 0;
     };
 
     std::mutex remote_mutex;  ///< Held while displays are created, which takes seconds.
@@ -853,16 +937,6 @@ namespace platf::macos_virtual_display {
       return hash == serial_number ? hash + 1 : hash;
     }
 
-    std::pair<std::size_t, std::size_t> current_pixels(const CGDirectDisplayID id) {
-      const CGDisplayModeRef mode = CGDisplayCopyDisplayMode(id);
-      if (!mode) {
-        return {0, 0};
-      }
-      const std::pair<std::size_t, std::size_t> pixels {CGDisplayModeGetPixelWidth(mode), CGDisplayModeGetPixelHeight(mode)};
-      CGDisplayModeRelease(mode);
-      return pixels;
-    }
-
     int current_refresh_hz(const CGDirectDisplayID id) {
       const CGDisplayModeRef mode = CGDisplayCopyDisplayMode(id);
       const double refresh = mode ? CGDisplayModeGetRefreshRate(mode) : 0;
@@ -901,7 +975,6 @@ namespace platf::macos_virtual_display {
       return false;
     }
     remote.mode = mode;
-    std::tie(remote.pixel_width, remote.pixel_height) = current_pixels(remote.display->id);
     publish_remote_ids();
     return true;
   }
@@ -939,7 +1012,7 @@ namespace platf::macos_virtual_display {
     }
     // Ready once the display is online in the mode it was created with; macOS offers no other.
     const auto id = remote->second.display->id;
-    if (current_pixels(id) != std::pair {remote->second.pixel_width, remote->second.pixel_height}) {
+    if (current_pixels(id) != std::pair {remote->second.display->pixel_width, remote->second.display->pixel_height}) {
       return std::nullopt;
     }
     // platf::display_names() names displays by their ID.
@@ -1013,15 +1086,145 @@ namespace platf::macos_virtual_display {
     return std::nullopt;
   }
 
+  namespace {
+    // Changes arrive in bursts (a reopened lid adds a display, then macOS rearranges and picks modes),
+    // so wait for them to stop before acting.
+    constexpr auto settle_delay = 750ms;
+
+    std::atomic<std::uint64_t> change_generation {0};
+    std::atomic<std::uint64_t> settled_generation {0};
+    std::atomic<std::uint32_t> pending_flags {0};
+
+    // Off the main thread: the callback arrives there, and the work below can wait seconds for
+    // displays, during which the event loop the display configuration depends on must keep running.
+    dispatch_queue_t reconcile_queue() {
+      static dispatch_queue_t queue = dispatch_queue_create("dev.vibepollo.display-changes", DISPATCH_QUEUE_SERIAL);
+      return queue;
+    }
+
+    /// Put a display of Vibepollo's back in the mode it was made with, if macOS picked another.
+    void keep_created_mode(const virtual_display_t &display) {
+      if (display.pixel_width == 0 || !is_active(display.id) || current_pixels(display.id) == std::pair {display.pixel_width, display.pixel_height}) {
+        return;
+      }
+      BOOST_LOG(info) << "Virtual display: macOS changed display "sv << display.id << "'s mode; putting back "sv << display.pixel_width << 'x' << display.pixel_height;
+      select_mode(display.id, display.pixel_width, display.pixel_height);
+    }
+
+    /**
+     * @brief Turn off displays that came back on while the exclusive layout is in effect.
+     * @details Call with state_mutex held. Safeguards are updated before anything is turned off.
+     */
+    void enforce_exclusive_layout(virtual_display_t &display) {
+      std::vector<CGDirectDisplayID> keep_on {display.id};
+      {
+        std::lock_guard lock {remote_ids_mutex};
+        keep_on.insert(keep_on.end(), remote_ids.begin(), remote_ids.end());
+      }
+      const auto plan = macos_display_policy::plan_exclusive_layout(display_list(CGGetActiveDisplayList), keep_on, display.turned_off);
+      if (plan.turn_off.empty() || display.gave_up_enforcing) {
+        return;
+      }
+      if (!display.enforce_budget.try_spend(std::chrono::steady_clock::now())) {
+        display.gave_up_enforcing = true;
+        BOOST_LOG(error) << "Virtual display: display(s) "sv << format_ids(plan.turn_off)
+                         << " keep turning back on, so they'll stay on for the rest of this session. Start a new stream to try the Exclusive layout again"sv;
+        return;
+      }
+
+      BOOST_LOG(info) << "Virtual display: display(s) "sv << format_ids(plan.turn_off) << " came on during the session; turning them off for the Exclusive layout"sv;
+      if (!plan.newly_tracked.empty()) {
+        if (!display.turned_off_modes) {
+          display.turned_off_modes = std::make_unique<saved_modes_t>();
+        }
+        for (const auto id : plan.newly_tracked) {
+          display.turned_off_modes->add(id);
+        }
+        auto covered = display.turned_off;
+        covered.insert(covered.end(), plan.newly_tracked.begin(), plan.newly_tracked.end());
+        cover_displays(display, covered);
+        display.turned_off = std::move(covered);
+      }
+
+      if (!set_displays_enabled(plan.turn_off, false)) {
+        BOOST_LOG(warning) << "Virtual display: couldn't turn off display(s) "sv << format_ids(plan.turn_off);
+        return;
+      }
+      wait_until([&display, &plan]() {
+        return CGDisplayIsMain(display.id) && std::none_of(plan.turn_off.begin(), plan.turn_off.end(), is_active);
+      },
+                 3s);
+    }
+
+    void reconcile_after_display_change(const std::uint32_t flags) {
+      // Only a display arriving or leaving makes macOS pick new modes; a mode change on its own may
+      // be the user's choice, so leave it alone.
+      const bool displays_changed = (flags & (kCGDisplayAddFlag | kCGDisplayRemoveFlag | kCGDisplayEnabledFlag | kCGDisplayDisabledFlag)) != 0;
+      {
+        std::lock_guard lock {state_mutex};
+        if (current) {
+          if (current->exclusive && config::video.virtual_display_layout == config::video_t::virtual_display_layout_e::exclusive) {
+            enforce_exclusive_layout(*current);
+          }
+          if (displays_changed) {
+            keep_created_mode(*current);
+          }
+        }
+      }
+      if (displays_changed) {
+        std::lock_guard lock {remote_mutex};
+        for (const auto &[_, remote] : remote_displays) {
+          if (remote.display) {
+            keep_created_mode(*remote.display);
+          }
+        }
+      }
+    }
+
+    void display_reconfigured(CGDirectDisplayID, const CGDisplayChangeSummaryFlags flags, void *) {
+      if (flags & kCGDisplayBeginConfigurationFlag) {
+        return;
+      }
+      pending_flags.fetch_or(static_cast<std::uint32_t>(flags));
+      const auto generation = ++change_generation;
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, std::chrono::nanoseconds {settle_delay}.count()), reconcile_queue(), ^{
+        if (change_generation.load() != generation) {
+          return;  // a later change restarted the wait
+        }
+        reconcile_after_display_change(pending_flags.exchange(0));
+        // Changes made while reconciling start another wait; until it ends, nothing has settled.
+        if (change_generation.load() == generation) {
+          settled_generation = generation;
+        }
+      });
+    }
+  }  // namespace
+
+  void watch_display_changes() {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (CGDisplayRegisterReconfigurationCallback(display_reconfigured, nullptr) != kCGErrorSuccess) {
+        BOOST_LOG(warning) << "Virtual display: couldn't watch for display changes; displays that come back on during a stream will stay on"sv;
+      }
+    });
+  }
+
+  bool display_changes_settled() {
+    return settled_generation.load() == change_generation.load();
+  }
+
   void recover_disabled_displays() {
     dispatch_async(dispatch_get_main_queue(), ^{
       const auto ids = read_marker();
       if (ids.empty()) {
         return;
       }
+      const auto [online, offline] = split_offline(ids);
+      if (online.empty()) {
+        return;  // still offline; checked again at the next launch
+      }
       BOOST_LOG(warning) << "Virtual display: turning back on displays a previous run left off"sv;
-      if (turn_on(ids)) {
-        remove_marker();
+      if (turn_on(online)) {
+        settle_marker(offline);
       } else {
         BOOST_LOG(error) << "Virtual display: couldn't turn them back on; logging out and back in will"sv;
       }

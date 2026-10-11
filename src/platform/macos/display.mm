@@ -7,6 +7,10 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
 
 // platform includes
 #import <AppKit/AppKit.h>
@@ -18,6 +22,7 @@
 #include "src/platform/common.h"
 #include "src/platform/macos/av_img_t.h"
 #include "src/platform/macos/av_video.h"
+#include "src/platform/macos/display_policy.h"
 #include "src/platform/macos/misc.h"
 #include "src/platform/macos/nv12_zero_device.h"
 #include "src/platform/macos/sc_video.h"
@@ -53,6 +58,31 @@ namespace platf {
     // The brightest Apple displays peak at 1600 nits.
     constexpr double max_peak_nits = 1600.0;
 
+    // A display can drop offline for a moment while macOS rearranges displays.
+    constexpr auto offline_grace = 2s;
+
+    /**
+     * @brief Bounds capture restarts, across every stream and the displays they go through.
+     * @details A capture that keeps stopping right after it starts would otherwise restart forever
+     *          while the client watches a frozen picture. Past the limit the stream ends with an error.
+     */
+    bool may_restart_capture() {
+      static std::mutex mutex;
+      static macos_display_policy::attempt_budget_t budget {10, 60s};
+      std::lock_guard lock {mutex};
+      return budget.try_spend(std::chrono::steady_clock::now());
+    }
+
+    std::pair<std::size_t, std::size_t> mode_pixels(const CGDirectDisplayID display_id) {
+      const CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display_id);
+      if (!mode) {
+        return {0, 0};
+      }
+      const std::pair<std::size_t, std::size_t> pixels {CGDisplayModeGetPixelWidth(mode), CGDisplayModeGetPixelHeight(mode)};
+      CGDisplayModeRelease(mode);
+      return pixels;
+    }
+
     /**
      * @brief How far above SDR white a display can go: more than 1 for an HDR display.
      */
@@ -73,6 +103,7 @@ namespace platf {
     CGDirectDisplayID display_id {};
     bool hdr = false;
     double headroom = 1.0;  ///< The display's EDR headroom, while hdr.
+    std::pair<std::size_t, std::size_t> captured_pixels;  ///< The display's mode when capture was set up.
 
     ~av_display_t() override {
       [av_capture release];
@@ -169,7 +200,8 @@ namespace platf {
 
       // Frames stop while the display sleeps. After a second without one, re-send the last image
       // every second, as the Linux captures do on a timeout: the stream stays up, and a stop
-      // request is still seen.
+      // request is still seen. This also checks on the display at least once a second.
+      macos_display_policy::display_presence_t presence {offline_grace};
       for (;;) {
         std::chrono::nanoseconds until_resend;
         {
@@ -180,9 +212,19 @@ namespace platf {
           break;
         }
 
+        // Displays come and go as a MacBook's lid closes and opens. Set the capture up again, within
+        // the same stream, when its display goes away or macOS gives it another size: that picks a
+        // display that's there, and the encoder and input start over with the new size.
+        const auto change = display_change(presence);
+
         std::lock_guard lock {state->mutex};
         if (state->stopped) {
           return capture_e::ok;
+        }
+        if (change) {
+          state->stopped = true;
+          BOOST_LOG(info) << "Display "sv << display_id << ' ' << *change << "; setting up capture again"sv;
+          return restart_status();
         }
         if (std::chrono::steady_clock::now() - state->last_frame < 1s) {
           continue;  // a frame arrived while waiting
@@ -200,10 +242,46 @@ namespace platf {
       std::lock_guard lock {state->mutex};
       if (!state->stopped) {
         state->stopped = true;
-        BOOST_LOG(warning) << "Capture of display "sv << display_id << " stopped by itself; restarting it"sv;
-        return capture_e::reinit;
+        BOOST_LOG(warning) << "Capture of display "sv << display_id << " stopped by itself ("sv << stop_reason() << "); restarting it"sv;
+        return restart_status();
       }
       return capture_e::ok;
+    }
+
+    /// Why the captured display needs a new capture, if it does.
+    std::optional<std::string_view> display_change(macos_display_policy::display_presence_t &presence) const {
+      if (presence.lost(CGDisplayIsOnline(display_id), std::chrono::steady_clock::now())) {
+        return "went offline"sv;
+      }
+      // While displays are still changing, the virtual display's mode may yet be put back.
+      if (!macos_virtual_display::display_changes_settled()) {
+        return std::nullopt;
+      }
+      const auto pixels = mode_pixels(display_id);
+      if (pixels.first != 0 && captured_pixels.first != 0 && pixels != captured_pixels) {
+        return "changed size"sv;
+      }
+      return std::nullopt;
+    }
+
+    capture_e restart_status() const {
+      if (may_restart_capture()) {
+        return capture_e::reinit;
+      }
+      BOOST_LOG(error) << "Capture had to restart more than 10 times in a minute; ending the stream. "sv
+                       << "Check that a display is on and that Vibepollo still has Screen Recording permission"sv;
+      return capture_e::error;
+    }
+
+    std::string stop_reason() const {
+      @autoreleasepool {
+        if ([av_capture isKindOfClass:[SCVideo class]]) {
+          if (NSString *reason = static_cast<SCVideo *>(av_capture).stopReason) {
+            return reason.UTF8String;
+          }
+        }
+      }
+      return "no reason given";
     }
 
     std::shared_ptr<img_t> alloc_img() override {
@@ -517,6 +595,7 @@ namespace platf {
 
     display->width = display->av_capture.frameWidth;
     display->height = display->av_capture.frameHeight;
+    display->captured_pixels = mode_pixels(display->display_id);
     // We also need set env_width and env_height for absolute mouse coordinates
     display->env_width = display->width;
     display->env_height = display->height;

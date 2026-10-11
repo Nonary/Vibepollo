@@ -930,6 +930,8 @@
     "sw_tune_zerolatency": "zerolatency -- good for fast encoding and low-latency streaming (default)",
     "system_tray": "Enable system tray",
     "system_tray_desc": "Show icon in system tray and display desktop notifications",
+    "lid_close_ends_streams": "End streams when the lid closes",
+    "lid_close_ends_streams_desc": "macOS only. When a MacBook's lid closes, quit the running app, or end the stream if no app is running. Turn this off to keep streaming with the lid closed. That only works while the Mac stays awake, which is up to macOS (for example, on power with an external display) or another utility that keeps it awake. Vibepollo doesn't change power settings or keep the Mac awake itself, and it still ends streams when the Mac goes to sleep.",
     "touchpad_as_ds4": "Emulate a DS4 gamepad if the client gamepad reports a touchpad is present",
     "touchpad_as_ds4_desc": "If disabled, touchpad presence will not be taken into account during gamepad type selection.",
     "upnp": "UPnP",

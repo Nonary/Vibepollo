@@ -72,6 +72,7 @@
 #endif
 
 #ifdef __APPLE__
+  #include "platform/macos/display_policy.h"
   #include "platform/macos/misc.h"
   #include "platform/macos/virtual_display.h"
 
@@ -1080,28 +1081,37 @@ int main(int argc, char *argv[]) {
     std::this_thread::sleep_for(1s);
   });
 
-  // Closing a MacBook's lid ends its streams and quits the app. While the virtual display is its
-  // only display, macOS would keep a plugged-in Mac streaming with the lid shut, but only for
-  // streams started with it open, and a closed Mac can't be woken back into a stream.
+  // By default, closing a MacBook's lid ends its streams and quits the app: a Mac usually sleeps
+  // when its lid closes. With lid_close_ends_streams off, the lid alone changes nothing, and the
+  // streams last as long as macOS or another utility keeps the Mac awake. Sleep is handled above
+  // either way.
   platf::on_lid_closed([]() {
-    if (rtsp_stream::session_count() == 0) {
-      return;
-    }
-    if (proc::proc.running() > 0) {
-      // As when an app exits, its clients are told the stream ended.
-      BOOST_LOG(info) << "The lid was closed; quitting the app to end the stream"sv;
-      proc::proc.terminate();
-    } else {
-      BOOST_LOG(info) << "The lid was closed; ending the stream"sv;
-      for (const auto &session : rtsp_stream::get_sessions_snapshot()) {
-        stream::session::graceful_stop(*session);
-      }
+    using platf::macos_display_policy::lid_close_action_e;
+    const auto sessions = rtsp_stream::session_count();
+    switch (platf::macos_display_policy::lid_close_action(config::sunshine.lid_close_ends_streams, sessions, proc::proc.running() > 0)) {
+      case lid_close_action_e::none:
+        if (sessions > 0) {
+          BOOST_LOG(info) << "The lid was closed; streaming continues while the Mac stays awake (lid_close_ends_streams is off)"sv;
+        }
+        break;
+      case lid_close_action_e::quit_app:
+        // As when an app exits, its clients are told the stream ended.
+        BOOST_LOG(info) << "The lid was closed; quitting the app to end the stream (lid_close_ends_streams is on)"sv;
+        proc::proc.terminate();
+        break;
+      case lid_close_action_e::end_streams:
+        BOOST_LOG(info) << "The lid was closed; ending the stream (lid_close_ends_streams is on)"sv;
+        for (const auto &session : rtsp_stream::get_sessions_snapshot()) {
+          stream::session::graceful_stop(*session);
+        }
+        break;
     }
   });
 
   // AppKit only delivers events on the main thread, so it waits here instead: the menu bar and
   // the virtual display's display configuration both depend on them.
   platf::macos_virtual_display::recover_disabled_displays();
+  platf::macos_virtual_display::watch_display_changes();
   platf::run_main_event_loop([&shutdown_event]() {
     return shutdown_event->peek();
   });
