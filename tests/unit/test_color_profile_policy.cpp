@@ -42,3 +42,30 @@ TEST(ColorProfilePolicy, LegacyPermissionFailureRemainsFailure) {
     [] { return false; }
   ));
 }
+
+TEST(ColorProfilePolicy, ResolvedDefaultDriverMonitorOwnsCalibration) {
+  for (const auto path : {
+         LR"(\\?\DISPLAY#SDD4100#permanent#{id})",
+         LR"(\\?\display#sdd4aBc#permanent#{id})",
+         LR"(\\?\DISPLAY#SDD5000#temporary#{id})",
+         LR"(\\?\DISPLAY#SDD5FFF#temporary#{id})"}) {
+    EXPECT_TRUE(color_profile_policy::is_sunshine_driver_monitor_path(path));
+  }
+}
+
+TEST(ColorProfilePolicy, PhysicalSudoAndMalformedPathsKeepExistingClassification) {
+  for (const auto path : {
+         LR"(\\?\DISPLAY#DEL1234#physical#{id})",
+         LR"(\\?\DISPLAY#MTT1337#sudo#{id})",
+         LR"(\\?\DISPLAY#SDD6100#custom#{id})",
+         LR"(\\?\DISPLAY#SDD410#short#{id})",
+         LR"(\\?\DISPLAY#SDD41000#long#{id})",
+         LR"(\\?\DISPLAY#SDD4100X#suffix#{id})",
+         LR"(\\?\DISPLAY#SDD4ZZZ#invalid#{id})",
+         LR"(\\?\NOTDISPLAY#SDD4100#near#{id})",
+         LR"(\\?\DISPLAY#DEL1234#SDD4100#{id})",
+         LR"(\\?\DISPLAY#SDD4100)",
+         L""}) {
+    EXPECT_FALSE(color_profile_policy::is_sunshine_driver_monitor_path(path));
+  }
+}

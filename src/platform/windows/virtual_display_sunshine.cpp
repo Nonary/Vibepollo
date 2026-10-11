@@ -7,6 +7,7 @@
 
 #include <openssl/rand.h>
 
+#include "src/color_profile_policy.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -1838,6 +1839,12 @@ namespace VDISPLAY_SUNSHINE {
                              << (display_name ? platf::to_utf8(*display_name) : std::string("(none)"))
                              << "' device_id='" << (device_id ? *device_id : std::string("(none)")) << "'.";
           }
+          return;
+        }
+
+        // Resolve known driver hardware IDs before optional enumeration: failed
+        // or incomplete metadata must not transfer calibration ownership to us.
+        if (color_profile_policy::is_sunshine_driver_monitor_path(*device_name_w)) {
           return;
         }
 
