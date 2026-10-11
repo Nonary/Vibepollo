@@ -1678,7 +1678,10 @@ namespace platf {
     }
 #endif
 #ifdef SUNSHINE_BUILD_PORTAL
-    if (((config::video.capture.empty() && !native_compositor_selected) || config::video.capture == "portal") && verify_portal()) {
+    if (linux_private_display_capture::probe_portal(
+          config::video.capture.empty(), config::video.capture == "portal",
+          native_compositor_selected, sources[source::KMS]
+        ) && verify_portal()) {
       sources[source::PORTAL] = true;
     }
 #endif

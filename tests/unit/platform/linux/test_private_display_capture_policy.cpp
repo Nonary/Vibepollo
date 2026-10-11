@@ -22,6 +22,15 @@ TEST(PrivateDisplayCapturePolicy, AutomaticVirtualCaptureUsesKmsAndExplicitChoic
   EXPECT_FALSE(policy::prefer_kms(false, false));
 }
 
+TEST(PrivateDisplayCapturePolicy, AutomaticKmsSkipsPortalConsentWhileExplicitPortalRemainsAllowed) {
+  EXPECT_FALSE(policy::probe_portal(true, false, false, true));
+  EXPECT_FALSE(policy::probe_portal(true, false, true, false));
+  EXPECT_TRUE(policy::probe_portal(true, false, false, false));
+  EXPECT_TRUE(policy::probe_portal(false, true, false, true));
+  EXPECT_TRUE(policy::probe_portal(false, true, true, false));
+  EXPECT_FALSE(policy::probe_portal(false, false, false, false));
+}
+
 TEST(PrivateDisplayCapturePolicy, RetainsKmsCapabilityForAutomaticPrivatePool) {
   EXPECT_TRUE(policy::retain_kms_capability(true));
   EXPECT_FALSE(policy::retain_kms_capability(false));

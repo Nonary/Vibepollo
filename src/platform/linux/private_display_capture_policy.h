@@ -15,6 +15,16 @@ namespace platf::linux_private_display_capture {
     return automatic_capture && private_output;
   }
 
+  /** Avoid unattended portal consent once a direct or native backend is selected. */
+  [[nodiscard]] constexpr bool probe_portal(
+    bool automatic_capture,
+    bool explicitly_requested,
+    bool native_compositor_selected,
+    bool kms_selected
+  ) noexcept {
+    return explicitly_requested || (automatic_capture && !native_compositor_selected && !kms_selected);
+  }
+
   /** Keep CAP_SYS_ADMIN permitted only when a later automatic private KMS route needs it. */
   [[nodiscard]] constexpr bool retain_kms_capability(bool automatic_private_pool_available) noexcept {
     return automatic_private_pool_available;
