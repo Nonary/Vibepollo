@@ -239,14 +239,16 @@ namespace platf::macos_virtual_display {
     }
 
     /**
-     * @brief Split off the displays that are offline, such as a closed MacBook's built-in display.
-     * @details Those can't be turned on now. One that was turned off comes back on when it returns
-     *          (seen with a MacBook's lid on macOS 27), but they stay in the marker in case one doesn't.
+     * @brief Split off a closed MacBook's built-in display, which can't be turned on until the lid opens.
+     * @details Once turned off, it comes back on by itself when the lid opens (seen on macOS 27), but it
+     *          stays in the marker in case it doesn't. CGDisplayIsOnline() can't tell: macOS reports a
+     *          display that's only turned off as offline too.
      */
     std::pair<std::vector<CGDirectDisplayID>, std::vector<CGDirectDisplayID>> split_offline(const std::vector<CGDirectDisplayID> &ids) {
       std::pair<std::vector<CGDirectDisplayID>, std::vector<CGDirectDisplayID>> result;
+      const bool lid_closed = platf::lid_closed();
       for (const auto id : ids) {
-        (CGDisplayIsOnline(id) || is_gone(id) ? result.first : result.second).push_back(id);
+        (lid_closed && CGDisplayIsBuiltin(id) && !is_gone(id) ? result.second : result.first).push_back(id);
       }
       return result;
     }
@@ -258,7 +260,7 @@ namespace platf::macos_virtual_display {
         return;
       }
       write_marker(offline);
-      BOOST_LOG(info) << "Virtual display: display(s) "sv << format_ids(offline) << " are offline, as with a closed lid; macOS turns them on when they return"sv;
+      BOOST_LOG(info) << "Virtual display: the lid is closed, so the built-in display "sv << format_ids(offline) << " comes back on when it opens"sv;
     }
 
     std::pair<std::size_t, std::size_t> current_pixels(const CGDirectDisplayID id) {

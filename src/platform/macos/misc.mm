@@ -371,6 +371,20 @@ namespace platf {
     }
   }  // namespace
 
+  bool lid_closed() {
+    const io_service_t root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"));
+    if (root == IO_OBJECT_NULL) {
+      return false;
+    }
+    const CFTypeRef state = IORegistryEntryCreateCFProperty(root, CFSTR("AppleClamshellState"), kCFAllocatorDefault, 0);
+    IOObjectRelease(root);
+    const bool closed = state == kCFBooleanTrue;
+    if (state != nullptr) {
+      CFRelease(state);
+    }
+    return closed;
+  }
+
   void on_lid_closed(std::function<void()> handler) {
     static std::once_flag once;
     std::call_once(once, [&handler]() {
@@ -378,11 +392,7 @@ namespace platf {
       if (root == IO_OBJECT_NULL) {
         return;
       }
-      const CFTypeRef state = IORegistryEntryCreateCFProperty(root, CFSTR("AppleClamshellState"), kCFAllocatorDefault, 0);
-      lid_watch.closed = state == kCFBooleanTrue;
-      if (state != nullptr) {
-        CFRelease(state);
-      }
+      lid_watch.closed = lid_closed();
       lid_watch.handler = std::move(handler);
       lid_watch.port = IONotificationPortCreate(kIOMainPortDefault);
       IONotificationPortSetDispatchQueue(lid_watch.port, dispatch_queue_create("dev.vibepollo.lid", DISPATCH_QUEUE_SERIAL));
