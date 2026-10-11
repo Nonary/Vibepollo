@@ -455,3 +455,11 @@ test('server command rows round-trip for the Vibepollo editor', () => {
     { name: 'Open overlay', cmd: 'overlay.exe', elevated: true },
   ]);
 });
+
+test('macOS exposes paused display retention with the backend default', () => {
+  const fields = settingsCategories.flatMap((category) => category.groups.flatMap((group) => group.fields));
+  const field = fields.find((candidate) => candidate.key === 'virtual_display_keep_while_paused');
+  assert.equal(field?.platform, 'macos');
+  assert.deepEqual(field?.visibleWhen, { key: 'virtual_display_mode', notEquals: 'disabled' });
+  assert.equal(settingsDefaults.virtual_display_keep_while_paused, true);
+});
