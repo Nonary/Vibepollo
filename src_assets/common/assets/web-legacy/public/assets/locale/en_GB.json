@@ -1243,7 +1243,6 @@
     "restart_apollo": "Restart Apollo",
     "restart_apollo_desc": "Restart the Apollo service. Active sessions will be disconnected.",
     "restart_apollo_success": "Apollo restart request sent.",
-    "export_crash_bundle_desc": "Download logs along with the most recent Vibeshine crash dump.",
     "dd_maintenance_disabled": "Display maintenance requires display automation or a virtual display. Enable display configuration or a virtual display in Settings, save, then refresh this status.",
     "dd_session_recovery_status": "Session recovery: current snapshot {current}, previous snapshot {previous}. Restore task: {task}. Helper engine: {engine}.",
     "dd_recovery_present": "present",
