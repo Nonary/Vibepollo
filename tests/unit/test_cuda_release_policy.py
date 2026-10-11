@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+BASH = r"C:\Program Files\Git\bin\bash.exe" if os.name == "nt" else "bash"
 
 
 class CudaReleasePolicy(unittest.TestCase):
@@ -17,7 +18,7 @@ class CudaReleasePolicy(unittest.TestCase):
                 'cmake_minimum_required(VERSION 3.25)\n'
                 f'set(CMAKE_CUDA_COMPILER_VERSION "{version}")\n'
                 f'set(SUNSHINE_REQUIRE_CUDA_PASCAL {"ON" if required else "OFF"})\n'
-                f'include("{ROOT}/cmake/compile_definitions/cuda_architectures.cmake")\n'
+                f'include("{ROOT.as_posix()}/cmake/compile_definitions/cuda_architectures.cmake")\n'
                 'message(STATUS "TARGETS=${CMAKE_CUDA_ARCHITECTURES}")\n'
             )
             return subprocess.run(
@@ -68,12 +69,13 @@ run_step_cmake
                 nvcc.write_text(f"#!/bin/sh\necho 'Cuda compilation tools, release {release}, V{release}.86'\n")
                 nvcc.chmod(0o755)
                 result = subprocess.run(
-                    ["bash", "-c", script], cwd=stage,
-                    env=dict(os.environ, FUNCTIONS=str(functions)),
+                    [BASH, "-c", script], cwd=stage,
+                    env=dict(os.environ, FUNCTIONS=functions.as_posix()),
                     capture_output=True, text=True)
                 if release == "12.9":
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertIn(f"-DCMAKE_CUDA_COMPILER:PATH={nvcc}", result.stdout)
+                    shell_stage = subprocess.run([BASH, "-c", "pwd -P"], cwd=stage, capture_output=True, text=True, check=True).stdout.strip()
+                    self.assertIn(f"-DCMAKE_CUDA_COMPILER:PATH={shell_stage}/build/cuda/bin/nvcc", result.stdout)
                     self.assertIn("-DSUNSHINE_REQUIRE_CUDA_PASCAL=ON", result.stdout)
                 else:
                     self.assertNotEqual(result.returncode, 0)
@@ -86,21 +88,33 @@ run_step_cmake
             script = '''
 set -e
 source "$REPO/packaging/linux/Arch/PKGBUILD"
-cmake() { printf '%s\\n' "$@"; }
+cmake() {
+  if [[ "$1" == --build ]]; then echo FULL-GATE; else echo CONFIGURE-GATE; fi
+  printf '%s\\n' "$@"
+}
+# This policy fixture does not have configured component source/dependencies.
+# Stub only the external helper and verify its actual invocation and order.
+python3() {
+  [[ "$1" == "$srcdir/$pkgname/scripts/build-linux-component-tests.py" && "$2" == build ]] || return 97
+  echo COMPONENT-GATE
+}
 appstreamcli() { :; }
 appstream-util() { :; }
 desktop-file-validate() { :; }
 build
 '''
             for enabled in ("true", "false"):
-                env = dict(os.environ, REPO=str(ROOT), srcdir=directory,
+                fixture_src = Path(directory).as_posix()
+                env = dict(os.environ, REPO=ROOT.as_posix(), srcdir=fixture_src, _build_tests="ON",
                            _use_cuda=enabled, CUDA_PATH="/opt/cuda-13",
                            NVCC_CCBIN="/usr/bin/g++-15")
-                result = subprocess.run(["bash", "-c", script], env=env,
+                result = subprocess.run([BASH, "-c", script], cwd=directory, env=env,
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
+                gates = [line for line in result.stdout.splitlines() if line.endswith("-GATE")]
+                self.assertEqual(gates, ["CONFIGURE-GATE", "COMPONENT-GATE", "FULL-GATE"])
                 if enabled == "true":
-                    self.assertIn(f"-DCMAKE_CUDA_COMPILER={directory}/cuda/bin/nvcc", result.stdout)
+                    self.assertIn(f"-DCMAKE_CUDA_COMPILER={fixture_src}/cuda/bin/nvcc", result.stdout)
                     self.assertIn("-DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-14", result.stdout)
                     self.assertIn("-DSUNSHINE_REQUIRE_CUDA_PASCAL=ON", result.stdout)
                 else:
