@@ -199,7 +199,7 @@ namespace platf::linux_private_display {
       }
 
       auto deadline = std::chrono::steady_clock::now() + helper_reply_timeout;
-      result = helper_process::communicate_until(process, deadline, std::getenv("VIBESHINE_MACHINE_HOST") != nullptr);
+      result = helper_process::communicate_until(process, deadline, std::getenv("VIBEPOLLO_MACHINE_HOST") != nullptr);
       if (result.completion_unknown) {
         std::unique_lock mutation_barrier {topology_mutation_gate};
         helper_completion_unknown.store(true, std::memory_order_release);

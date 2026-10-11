@@ -440,6 +440,7 @@ for operation, end_marker in (
 forbid(private_display, ").detach()", "owned restore worker lifetime")
 require(doctor_body, "helper_budget_available(helper_reply_timeout)", "full helper drain budget")
 require(doctor_body, "helper_completion_unknown.store(true", "uncertain completion fences later mutations")
+require(doctor_body, 'std::getenv("VIBEPOLLO_MACHINE_HOST") != nullptr', "Apollo broker completion classification")
 require(private_display, "helper_budget_available(connector_reply_timeout)", "full connector drain budget")
 require(broker, "now >= display_deadline", "broker-owned display request deadline")
 require(broker, "if (!worker_exited) return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN", "no acknowledgement before reap")
