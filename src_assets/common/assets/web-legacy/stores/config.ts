@@ -236,7 +236,6 @@ const defaultGroups = [
       playnite_exclude_plugins: [] as Array<{ id: string; name: string }>,
       playnite_exclude_games: [] as Array<{ id: string; name: string }>,
       playnite_install_dir: '',
-      playnite_extensions_dir: '',
     },
   },
   {
