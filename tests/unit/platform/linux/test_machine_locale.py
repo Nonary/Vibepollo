@@ -159,6 +159,21 @@ rm "$helper.hardlink"
     # executable names. Redirect both supported layouts into fixture-only state.
     for helper_root in {"/usr/libexec/vibeshine/", f"/usr/libexec/{brand}/"}:
         arch = arch.replace(helper_root, str(helpers) + "/")
+    # Exercise Apollo's real boot-link retirement guard against package-owned
+    # fixture units, never the builder host's /usr, /etc or /run inventory.
+    boot_root = fixture / "boot-root"
+    unit_root = boot_root / "usr/lib/systemd/system"
+    unit_root.mkdir(parents=True)
+    boot_links = boot_root / "etc/systemd/system/multi-user.target.wants"
+    boot_links.mkdir(parents=True)
+    for unit in ("vibepollo.service", "vibepollo-session-exec.socket"):
+        expected = unit_root / unit
+        expected.write_text((linux / unit).read_text())
+        (boot_links / unit).symlink_to(expected)
+    retirement = "vibepollo_retire_obsolete_boot_links || return 1"
+    assert arch.count(retirement) == 1
+    arch = arch.replace(retirement,
+                        f"vibepollo_retire_obsolete_boot_links {shlex.quote(str(boot_root))} || return 1")
     arch = arch.replace("stat -c", "fixture_stat -c")
     trace = fixture / "lifecycle-trace"
     env["TRACE"] = str(trace)
@@ -188,6 +203,7 @@ post_install
 '''
     run(script)
     calls = trace.read_text().splitlines()
+    assert not any(boot_links.iterdir()), "obsolete fixture boot links survived retirement"
     assert calls.count("quiesce") == 7, calls
     assert calls.count("secure") == 3, calls
     assert calls.count(f"{brand}-machine-host configure-auto") == 3, calls
