@@ -314,7 +314,10 @@ namespace {
   display_device::DisplaySettingsSnapshot make_snapshot(const std::string &id) {
     display_device::DisplaySettingsSnapshot snapshot;
     snapshot.m_topology.push_back({id});
-    snapshot.m_modes[id] = display_device::DisplayMode {};
+    snapshot.m_modes[id] = display_device::DisplayMode {
+      display_device::Resolution {1920, 1080},
+      display_device::Rational {60, 1}
+    };
     snapshot.m_hdr_states[id] = std::nullopt;
     return snapshot;
   }
