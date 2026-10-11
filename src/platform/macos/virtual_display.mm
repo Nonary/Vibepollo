@@ -384,8 +384,9 @@ namespace platf::macos_virtual_display {
       std::vector<CGDirectDisplayID> turned_off;  ///< Physical displays to turn back on.
       std::unique_ptr<saved_modes_t> turned_off_modes;  ///< Their modes from before.
       watchdog_t watchdog;
-      /// Bounds how often displays that keep coming back on get turned off again.
-      macos_display_policy::attempt_budget_t enforce_budget {3, 60s};
+      /// Bounds how often displays that keep coming back on get turned off again. Opening the lid
+      /// can take two: one right away, and one once the changes settle.
+      macos_display_policy::attempt_budget_t enforce_budget {6, 60s};
       bool gave_up_enforcing = false;
 
       virtual_display_t() = default;
@@ -472,13 +473,12 @@ namespace platf::macos_virtual_display {
 
     /**
      * @brief Point both safeguards at a larger set of displays, before turning the new ones off.
-     * @details The new helper starts before the old one is told it's done, so some helper always
-     *          covers every display that's off.
+     * @return The previous helper, to stop once the displays are off: some helper always covers
+     *         every display that's off, and turning them off needn't wait for the old one to exit.
      */
-    void cover_displays(virtual_display_t &display, const std::vector<CGDirectDisplayID> &ids) {
+    watchdog_t cover_displays(virtual_display_t &display, const std::vector<CGDirectDisplayID> &ids) {
       write_marker(ids);
-      auto previous = std::exchange(display.watchdog, start_watchdog(ids));
-      stop_watchdog(previous, true);
+      return std::exchange(display.watchdog, start_watchdog(ids));
     }
 
     bool turn_off_other_displays(virtual_display_t &display) {
@@ -1117,7 +1117,7 @@ namespace platf::macos_virtual_display {
      * @brief Turn off displays that came back on while the exclusive layout is in effect.
      * @details Call with state_mutex held. Safeguards are updated before anything is turned off.
      */
-    void enforce_exclusive_layout(virtual_display_t &display) {
+    void enforce_exclusive_layout(virtual_display_t &display, const std::chrono::steady_clock::time_point noticed) {
       std::vector<CGDirectDisplayID> keep_on {display.id};
       {
         std::lock_guard lock {remote_ids_mutex};
@@ -1134,7 +1134,7 @@ namespace platf::macos_virtual_display {
         return;
       }
 
-      BOOST_LOG(info) << "Virtual display: display(s) "sv << format_ids(plan.turn_off) << " came on during the session; turning them off for the Exclusive layout"sv;
+      watchdog_t previous_watchdog;
       if (!plan.newly_tracked.empty()) {
         if (!display.turned_off_modes) {
           display.turned_off_modes = std::make_unique<saved_modes_t>();
@@ -1144,11 +1144,13 @@ namespace platf::macos_virtual_display {
         }
         auto covered = display.turned_off;
         covered.insert(covered.end(), plan.newly_tracked.begin(), plan.newly_tracked.end());
-        cover_displays(display, covered);
+        previous_watchdog = cover_displays(display, covered);
         display.turned_off = std::move(covered);
       }
 
-      if (!set_displays_enabled(plan.turn_off, false)) {
+      const bool turned_off = set_displays_enabled(plan.turn_off, false);
+      stop_watchdog(previous_watchdog, true);
+      if (!turned_off) {
         BOOST_LOG(warning) << "Virtual display: couldn't turn off display(s) "sv << format_ids(plan.turn_off);
         return;
       }
@@ -1156,6 +1158,14 @@ namespace platf::macos_virtual_display {
         return CGDisplayIsMain(display.id) && std::none_of(plan.turn_off.begin(), plan.turn_off.end(), is_active);
       },
                  3s);
+      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - noticed);
+      BOOST_LOG(info) << "Virtual display: display(s) "sv << format_ids(plan.turn_off) << " came on during the session; turned them off for the Exclusive layout "sv
+                      << elapsed.count() << " ms after macOS reported it"sv;
+    }
+
+    /// Call with state_mutex held.
+    bool exclusive_in_effect() {
+      return current && current->exclusive && config::video.virtual_display_layout == config::video_t::virtual_display_layout_e::exclusive;
     }
 
     void reconcile_after_display_change(const std::uint32_t flags) {
@@ -1164,10 +1174,10 @@ namespace platf::macos_virtual_display {
       const bool displays_changed = (flags & (kCGDisplayAddFlag | kCGDisplayRemoveFlag | kCGDisplayEnabledFlag | kCGDisplayDisabledFlag)) != 0;
       {
         std::lock_guard lock {state_mutex};
+        if (exclusive_in_effect()) {
+          enforce_exclusive_layout(*current, std::chrono::steady_clock::now());
+        }
         if (current) {
-          if (current->exclusive && config::video.virtual_display_layout == config::video_t::virtual_display_layout_e::exclusive) {
-            enforce_exclusive_layout(*current);
-          }
           if (displays_changed) {
             keep_created_mode(*current);
           }
@@ -1186,6 +1196,18 @@ namespace platf::macos_virtual_display {
     void display_reconfigured(CGDirectDisplayID, const CGDisplayChangeSummaryFlags flags, void *) {
       if (flags & kCGDisplayBeginConfigurationFlag) {
         return;
+      }
+      // A display coming on, as when the lid opens, shows on screen until it's turned off again, so
+      // don't wait for the changes to settle for that: macOS has already made it the main display.
+      // The settled pass below catches anything this misses while macOS is still rearranging.
+      if (flags & (kCGDisplayAddFlag | kCGDisplayEnabledFlag)) {
+        const auto noticed = std::chrono::steady_clock::now();
+        dispatch_async(reconcile_queue(), ^{
+          std::lock_guard lock {state_mutex};
+          if (exclusive_in_effect()) {
+            enforce_exclusive_layout(*current, noticed);
+          }
+        });
       }
       pending_flags.fetch_or(static_cast<std::uint32_t>(flags));
       const auto generation = ++change_generation;
