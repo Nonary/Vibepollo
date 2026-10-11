@@ -993,6 +993,8 @@ jobs:
               throw "Packaged $driver installer is not the policy-tested source script."
             }
           }
+          & powershell.exe -NoProfile -NonInteractive -File packaging/windows/test_gamepad_published_package.ps1 -FixtureRoot $gamepadRoot -RepositoryRoot $PWD
+          if ($LASTEXITCODE -ne 0) { throw 'Actual daily MSI gamepad package validation failed.' }
 
       - name: Upload unsigned MSI for package job
         id: upload-unsigned-msi-for-package
@@ -1401,6 +1403,10 @@ jobs:
       actions: read
       contents: read
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.release_commit }}
+          persist-credentials: false
       - name: Download signed installer
         if: env.SIGNPATH_ENABLED == 'true'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
@@ -1421,6 +1427,26 @@ jobs:
         with:
           artifact-ids: ${{ needs.sign_windows_msi.outputs.signed_msi_artifact_id }}
           path: signed-msi
+
+      - name: Download qualified internal unsigned MSI
+        if: env.SIGNPATH_ENABLED != 'true'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          artifact-ids: ${{ needs.release_artifacts.outputs.unsigned_msi_artifact_id }}
+          github-token: ${{ github.token }}
+          path: signed-msi
+          run-id: ${{ needs.release_artifacts.outputs.source_run_id }}
+
+      - name: Verify setup contains the exact qualified internal MSI
+        shell: pwsh
+        env:
+          INSTALLER_NAME: ${{ needs.package_windows.outputs.installer_name }}
+          MSI_NAME: ${{ needs.release_artifacts.outputs.msi_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $proof = & powershell.exe -NoProfile -NonInteractive -File scripts/verify_setup_embedded_msi.ps1 -SetupPath "artifacts/$env:INSTALLER_NAME" -MsiPath "signed-msi/$env:MSI_NAME"
+          if ($LASTEXITCODE -ne 0) { throw 'Setup embedded MSI qualification failed.' }
+          $proof | Set-Content embedded-msi-proof.json -Encoding utf8
 
       - name: Download symbols package
         if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
@@ -1820,6 +1846,7 @@ jobs:
             release_commit = $env:RELEASE_COMMIT
             source_build_run_id = $env:SOURCE_BUILD_RUN_ID
             assets = $assetHashes
+            embedded_msi = Get-Content embedded-msi-proof.json -Raw | ConvertFrom-Json
           }
           $manifestPath = Join-Path $artifactRoot 'release-provenance.json'
           $provenance | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding utf8

@@ -137,12 +137,12 @@ class DailyTests(unittest.TestCase):
 
     def test_finalized_assets_reject_corruption_wrong_run_and_extra_files(self):
         info = daily.identity(SHA, dt.date(2026, 10, 11), "2.0.0")
-        for scenario in ("valid", "corrupt", "wrong-run", "wrong-source", "extra", "missing"):
+        for scenario in ("valid", "corrupt", "wrong-run", "wrong-source", "extra", "missing", "public-msi", "unverified-msi"):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 (root / "VibeshineSetup.exe").write_bytes(b"setup")
-                (root / "Vibeshine.msi").write_bytes(b"msi")
                 provenance = {"schema_version": 1, "release_tag": info["tag"], "release_commit": SHA, "source_build_run_id": "123", "assets": {"VibeshineSetup.exe": hashlib.sha256(b"setup").hexdigest()}}
+                provenance["embedded_msi"] = {"verified": True, "sha256": hashlib.sha256(b"msi").hexdigest()}
                 if scenario == "corrupt":
                     (root / "VibeshineSetup.exe").write_bytes(b"tampered")
                 if scenario == "wrong-run":
@@ -152,7 +152,11 @@ class DailyTests(unittest.TestCase):
                 if scenario == "extra":
                     (root / "local-driver.cat").write_bytes(b"untrusted")
                 if scenario == "missing":
-                    (root / "Vibeshine.msi").unlink()
+                    (root / "VibeshineSetup.exe").unlink()
+                if scenario == "public-msi":
+                    (root / "Vibeshine.msi").write_bytes(b"msi")
+                if scenario == "unverified-msi":
+                    provenance["embedded_msi"]["verified"] = False
                 (root / "release-provenance.json").write_text(json.dumps(provenance))
                 with patch.dict(os.environ, GITHUB_RUN_ID="123"):
                     if scenario == "valid":

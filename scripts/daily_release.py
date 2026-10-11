@@ -116,7 +116,7 @@ def resolve():
 
 def verify_assets(root, product, commit, tag, version):
     root = Path(root)
-    expected = {f"{product}.msi", f"{product}Setup.exe", "release-provenance.json"}
+    expected = {f"{product}Setup.exe", "release-provenance.json"}
     actual = {p.name for p in root.iterdir()}
     if actual != expected or any(not p.is_file() or p.is_symlink() or p.stat().st_size == 0 for p in root.iterdir()):
         raise ValueError(f"Expected exactly the finalized nonempty assets {sorted(expected)}; got {sorted(actual)}")
@@ -130,6 +130,10 @@ def verify_assets(root, product, commit, tag, version):
         raise ValueError("Artifacts must come from this successful daily build")
     if set(provenance.get("assets", {})) != {f"{product}Setup.exe"}:
         raise ValueError("Unexpected finalized artifact provenance assets")
+    embedded = provenance.get("embedded_msi", {})
+    if (embedded.get("verified") is not True or
+            not re.fullmatch(r"[0-9a-f]{64}", embedded.get("sha256", ""))):
+        raise ValueError("Finalized setup must contain the exact qualified internal MSI")
     hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in root.iterdir()}
     if hashes[f"{product}Setup.exe"] != provenance["assets"][f"{product}Setup.exe"]:
         raise ValueError("Finalized installer checksum mismatch")

@@ -18,6 +18,21 @@ Run `powershell -NoProfile -File packaging/windows/test_driver_install_safety.ps
 
 Windows documentation:
 
+PowerShell may report `UnknownError` for an intact local gamepad signature whose
+self-signed root is untrusted. Only the local gamepad path may defer that status
+to the independent verifier. CMS signer identity, payload locks and hashes,
+native Windows signature integrity (success or `CERT_E_UNTRUSTEDROOT` only), and
+catalog membership must all pass before exact-certificate consent is considered.
+Post-consent Windows trust must still be `Valid` before staging. Display drivers
+retain their existing policy rejecting self-signed catalogs. Rejection warnings
+include the actual signature status and detail to distinguish future reports.
+
+For a normalized extraction of an existing signed nightly package, run
+`powershell -NoProfile -File packaging/windows/test_gamepad_published_package.ps1 -FixtureRoot <path> -RepositoryRoot <repo>`.
+This read-only test binds the current installer script into a scratch release
+lock, verifies the existing signed payload, and rejects tampered or missing
+payloads and incorrect pinned identity. It does not install or change trust.
+
 - https://learn.microsoft.com/en-us/windows-hardware/drivers/install/trusted-root-certification-authorities-certificate-store
 - https://learn.microsoft.com/en-us/windows-hardware/drivers/install/test-signing
 - https://learn.microsoft.com/en-us/windows/win32/api/wintrust/ns-wintrust-wintrust_catalog_info

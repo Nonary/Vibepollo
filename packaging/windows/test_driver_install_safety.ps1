@@ -15,7 +15,7 @@ try {
         $block = [regex]::Match($text, '(?s)# DRIVER_INSTALL_SAFETY_BEGIN.*?# DRIVER_INSTALL_SAFETY_END').Value
         Assert-That ($block.Length -gt 0) "Missing safety policy: $driver"
         if ($driver -eq 'vhf-gamepad') {
-            Assert-That ($block.Contains('$LocalTestPackage -and $AllowUntrustedLocalPackage -and $signature.Status -eq ''NotTrusted''')) 'Only a signed local VHF candidate may defer trust for independent validation and recipient consent'
+            Assert-That ($block.Contains('$LocalTestPackage -and $AllowUntrustedLocalPackage -and') -and $block.Contains("@('NotTrusted', 'UnknownError')")) 'Only a signed local VHF candidate may defer trust for independent validation and recipient consent'
         } elseif ($null -eq $baseline) { $baseline = $block } else { Assert-That ($block -ceq $baseline) "Safety policy drift: $driver" }
         # Load only these pure/read-only functions, never the installer body.
         foreach ($name in @('ConvertTo-DriverComponentVersion', 'Get-InfComponentVersion', 'Test-SafeDriverInstall')) {

@@ -13,7 +13,7 @@ $script:certificate=[pscustomobject]@{Thumbprint=('AB'*20);Subject='CN=Fixture V
 function Reset-Case {
  $script:stores=@{Root=@();TrustedPublisher=@()}; $script:imports=@(); $script:removals=@(); $script:storeReads=0
  $script:installed=$null; $script:queryFailure=$false; $script:validationFailure=$false; $script:stagingFailure=$false; $script:postTrustFailure=$false; $script:importFailure=$false
- $script:validationCalls=0; $script:stagingCalls=0; $script:setupCalls=0
+ $script:validationCalls=0; $script:stagingCalls=0; $script:setupCalls=0; $script:untrustedStatus='UnknownError'; $script:setupFailure=$false
  $script:AllowLocalGamepadCertificateTrust=0; $script:ConsentCertificateThumbprint='none'; $script:DailyUnsignedPolicy=1; $script:rebootExitCode=3010
 }
 function Assert-Administrator {}
@@ -25,7 +25,7 @@ function Get-CimInstance {param($ClassName,$ErrorAction) if($null -ne $script:in
 function Get-AuthenticodeSignature {
  param($LiteralPath,$ErrorAction)
  $trusted=$script:stores.Root -contains $script:certificate.Thumbprint -and $script:stores.TrustedPublisher -contains $script:certificate.Thumbprint
- $status=if($trusted -and $script:postTrustFailure){'HashMismatch'}elseif($trusted){'Valid'}else{'NotTrusted'}
+ $status=if($trusted -and $script:postTrustFailure){'HashMismatch'}elseif($trusted){'Valid'}else{$script:untrustedStatus}
  return [pscustomobject]@{Status=$status;SignerCertificate=$script:certificate}
 }
 function Assert-DriverPackage {
@@ -52,7 +52,7 @@ function Remove-ValidatedLocalGamepadCertificate {
 }
 function Write-DriverMessage {param($Message)}
 function Invoke-PnpUtil {param($Arguments);$script:stagingCalls++;if($script:stagingFailure){throw 'Mock staging failure'};return 0}
-function Invoke-MockSetup {$script:setupCalls++;$global:LASTEXITCODE=0}
+function Invoke-MockSetup {$script:setupCalls++;$global:LASTEXITCODE=if($script:setupFailure){1}else{0}}
 function Get-PublicLocalGamepadCertificate {param($CertificatePath);return $script:certificate}
 function Expect-Failure([string]$Case) {$failed=$false;try{$null=Install-DriverPackage}catch{$failed=$true};Assert-Check $failed "Expected safe failure: $Case"}
 function Assert-NoChanges([string]$Case) {Assert-Check ($script:imports.Count -eq 0 -and $script:stagingCalls -eq 0 -and $script:setupCalls -eq 0) "No mutations expected: $Case"}
@@ -62,6 +62,18 @@ foreach($version in @('1.2.0.10','1.2.0.11')) {
 }
 Reset-Case;$script:installed='unknown';Expect-Failure 'unknown active version';Assert-NoChanges 'unknown';Assert-Check ($script:storeReads -eq 0) 'Unknown must bypass trust'
 Reset-Case;$script:queryFailure=$true;Expect-Failure 'inventory error';Assert-NoChanges 'query error'
+foreach($status in @('NotTrusted','UnknownError')) {
+ Reset-Case;$script:untrustedStatus=$status;$script:AllowLocalGamepadCertificateTrust=1;$script:ConsentCertificateThumbprint=$script:certificate.Thumbprint
+ Assert-Check ((Install-DriverPackage) -eq 0) "Independently validated $status must reach exact consent and post-trust validation"
+ Assert-Check ($script:validationCalls -eq 1 -and $script:stagingCalls -eq 1) 'Independent validation required before staging'
+ Reset-Case;$script:untrustedStatus=$status;$script:validationFailure=$true;$script:AllowLocalGamepadCertificateTrust=1;$script:ConsentCertificateThumbprint=$script:certificate.Thumbprint
+ Expect-Failure "Invalid package with $status";Assert-NoChanges "Invalid $status";Assert-Check ($script:storeReads -eq 0) 'Invalid package cannot reach trust'
+}
+foreach($status in @('HashMismatch','NotSigned','NotSupported','Incompatible')) {
+ Reset-Case;$script:untrustedStatus=$status;$script:AllowLocalGamepadCertificateTrust=1;$script:ConsentCertificateThumbprint=$script:certificate.Thumbprint
+ Expect-Failure "Disallowed signature status $status";Assert-NoChanges $status
+ Assert-Check ($script:validationCalls -eq 0) 'Disallowed signatures must fail at the early guard'
+}
 foreach($version in @($null,'1.2.0.9')) {
  Reset-Case;$script:installed=$version;Expect-Failure 'missing/older without consent';Assert-NoChanges 'no consent'
  Reset-Case;$script:installed=$version;$script:AllowLocalGamepadCertificateTrust=1;$script:ConsentCertificateThumbprint=('CD'*20);Expect-Failure 'wrong consent identity';Assert-NoChanges 'wrong consent'
@@ -73,6 +85,7 @@ Reset-Case;$script:AllowLocalGamepadCertificateTrust=1;$script:ConsentCertificat
 Reset-Case;$script:stores.Root=@($script:certificate.Thumbprint,'PREEXISTING');$script:stores.TrustedPublisher=@('OTHER');$script:AllowLocalGamepadCertificateTrust=1;$script:ConsentCertificateThumbprint=$script:certificate.Thumbprint;$script:stagingFailure=$true;Expect-Failure 'preexisting root plus staging failure';Assert-Check ($script:removals.Count -eq 1 -and $script:removals[0] -ceq 'TrustedPublisher' -and $script:stores.Root.Count -eq 2 -and $script:stores.TrustedPublisher[0] -ceq 'OTHER') 'Rollback must preserve all preexisting and unrelated certificates'
 Reset-Case;$script:AllowLocalGamepadCertificateTrust=1;$script:ConsentCertificateThumbprint=$script:certificate.Thumbprint;$script:postTrustFailure=$true;Expect-Failure 'post-trust signature failure';Assert-Check ($script:removals.Count -eq 2 -and $script:stagingCalls -eq 0) 'Post-trust failure must roll back before staging'
 Reset-Case;$script:AllowLocalGamepadCertificateTrust=1;$script:ConsentCertificateThumbprint=$script:certificate.Thumbprint;$script:importFailure=$true;Expect-Failure 'second store failure';Assert-Check ($script:removals.Count -eq 1 -and $script:stores.Root.Count -eq 0 -and $script:stagingCalls -eq 0) 'Partial import must roll back successful additions'
+Reset-Case;$script:AllowLocalGamepadCertificateTrust=1;$script:ConsentCertificateThumbprint=$script:certificate.Thumbprint;$script:setupFailure=$true;Expect-Failure 'device setup failure';Assert-Check ($script:removals.Count -eq 2 -and $script:setupCalls -eq 1) 'Setup failure must roll back only newly added trust'
 Reset-Case;$script:stores.Root=@($script:certificate.Thumbprint);$script:stores.TrustedPublisher=@($script:certificate.Thumbprint);Assert-Check ((Install-DriverPackage) -eq 0) 'Existing exact trust needs no new consent';Assert-Check ($script:imports.Count -eq 0 -and $script:stagingCalls -eq 1) 'Existing exact trust must remain unchanged'
 $signature=[pscustomobject]@{SignerCertificate=$script:certificate}
 $wrong=[pscustomobject]@{SignerCertificate=[pscustomobject]@{Thumbprint=('CD'*20)}}

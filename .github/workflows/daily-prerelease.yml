@@ -130,11 +130,6 @@ jobs:
         with:
           name: build-Windows
           path: daily-assets
-      - name: Download tested MSI from this run
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: unsigned-msi-package-Windows
-          path: daily-assets
       - name: Verify finalized provenance, identity and complete asset set
         run: python scripts/daily_release.py verify --assets daily-assets --product Vibepollo
       - name: Download qualified Linux package from this run

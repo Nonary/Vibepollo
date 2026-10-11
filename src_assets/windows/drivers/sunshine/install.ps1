@@ -124,7 +124,7 @@ function Test-SafeDriverInstall {
     $signer = $signature.SignerCertificate
     if ($LocalTestPackage -or $null -eq $signer -or $signature.Status -ne 'Valid' -or
         [string]::Equals([string]$signer.Subject, [string]$signer.Issuer, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "$WarningMarker`: Driver component $target is missing or newer, but its catalog is unsigned, self-signed, or untrusted. Installed driver retained. Manual security review is required; self-signed drivers can require added certificate trust or weakened boot/signing policy. This installer will not add test certificates, change Secure Boot, or enable test signing."
+        throw "$WarningMarker`: Driver component $target is missing or newer, but its catalog is unsigned, self-signed, or untrusted. Installed driver retained. Catalog signature status: $($signature.Status); detail: $($signature.StatusMessage). Manual security review is required; self-signed drivers can require added certificate trust or weakened boot/signing policy. This installer will not add test certificates, change Secure Boot, or enable test signing."
     }
     return $true
 }

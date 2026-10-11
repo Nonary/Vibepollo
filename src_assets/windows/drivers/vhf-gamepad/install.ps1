@@ -124,8 +124,9 @@ function Test-SafeDriverInstall {
     $signature = Get-AuthenticodeSignature -LiteralPath $CatalogPath -ErrorAction Stop
     $signer = $signature.SignerCertificate
     if ($null -eq $signer -or ($signature.Status -ne 'Valid' -and
-        (-not ($LocalTestPackage -and $AllowUntrustedLocalPackage -and $signature.Status -eq 'NotTrusted')))) {
-        throw "$WarningMarker`: Driver component $target is missing or newer, but its catalog is unsigned or not trusted by Windows. Installed driver retained. Windows requires deliberate trust/security setup before this local driver can be used; manual security review is required. Self-signed artifacts require existing Windows trust or independent validation and informed exact-certificate recipient consent; platform security policy may still reject the driver. This installer changes local certificate trust only after independent package validation and exact-certificate recipient consent. It never changes Secure Boot or enables test signing."
+        (-not ($LocalTestPackage -and $AllowUntrustedLocalPackage -and
+            [string]$signature.Status -in @('NotTrusted', 'UnknownError'))))) {
+        throw "$WarningMarker`: Driver component $target is missing or newer, but its catalog is unsigned or not trusted by Windows. Installed driver retained. Catalog signature status: $($signature.Status); detail: $($signature.StatusMessage). Windows requires deliberate trust/security setup before this local driver can be used; manual security review is required. Self-signed artifacts require existing Windows trust or independent validation and informed exact-certificate recipient consent; platform security policy may still reject the driver. This installer changes local certificate trust only after independent package validation and exact-certificate recipient consent. It never changes Secure Boot or enables test signing."
     }
     return $true
 }
@@ -721,7 +722,11 @@ function Assert-DriverPackage {
         Assert-LocalGamepadCryptographicPackage -Certificate $localCertificate -CatalogPath $catalogPath -ToolPath $toolPath -InfPath (Join-Path $Root 'driver/VibeshineVhfGamepad.inf') -DriverDllPath (Join-Path $Root 'driver/VibeshineVhfGamepad.dll')
         $validatedLocalCertificate = $localCertificate
     }
-    $allowedStatuses = if ($null -ne $validatedLocalCertificate) { @('Valid', 'NotTrusted') } else { @('Valid') }
+    # PowerShell can map an untrusted self-signed root to UnknownError. This
+    # is eligible only after the native verifier proved the exact CMS signer,
+    # Windows signature integrity (success or CERT_E_UNTRUSTEDROOT only), and
+    # catalog membership. It is never permission to stage an untrusted driver.
+    $allowedStatuses = if ($null -ne $validatedLocalCertificate) { @('Valid', 'NotTrusted', 'UnknownError') } else { @('Valid') }
     if ([string]$catalogSignature.Status -notin $allowedStatuses -or [string]$toolSignature.Status -notin $allowedStatuses) {
         throw '[VibeshineVhfGamepad] Catalog or root-device setup tool is not trusted by this Windows installation.'
     }
