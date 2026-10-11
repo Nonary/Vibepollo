@@ -21,6 +21,9 @@
 /// Capture HDR, in BT.2020 with the PQ transfer function, when the pixel format is 10-bit. Needs macOS 15.
 @property (nonatomic, assign) BOOL hdr;
 
+/// Why ScreenCaptureKit last stopped a capture by itself, such as its display going away; nil if it hasn't.
+@property (atomic, copy) NSString *stopReason;
+
 - (id)initWithDisplay:(CGDirectDisplayID)displayID frameRate:(int)frameRate;
 - (dispatch_semaphore_t)capture:(FrameCallbackBlock)frameCallback;
 

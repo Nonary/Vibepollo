@@ -74,6 +74,7 @@ const defaultGroups = [
       session_token_ttl_seconds: 86400,
       remember_me_refresh_token_ttl_seconds: 604800,
       system_tray: true,
+      lid_close_ends_streams: true,
     },
   },
   {

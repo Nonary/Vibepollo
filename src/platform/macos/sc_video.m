@@ -19,12 +19,14 @@
  *          Frames, keepalive ticks, and finishing all run on one serial queue.
  */
 @interface SCVideoCapture: NSObject <SCStreamOutput, SCStreamDelegate>
+@property (nonatomic, weak) SCVideo *owner;
 @property (nonatomic, strong) SCStream *stream;
 @property (nonatomic, copy) FrameCallbackBlock callback;
 @property (nonatomic, strong) dispatch_semaphore_t signal;
 @property (nonatomic, strong) dispatch_queue_t queue;
 - (void)startKeepaliveEvery:(CMTime)interval;
 - (void)finish;
+- (void)stopWithError:(NSError *)error;
 @end
 
 @implementation SCVideoCapture {
@@ -76,6 +78,11 @@
 }
 
 - (void)stream:(SCStream *)stream didStopWithError:(NSError *)error {
+  [self stopWithError:error];
+}
+
+- (void)stopWithError:(NSError *)error {
+  self.owner.stopReason = [NSString stringWithFormat:@"%@ (%@ %ld)", error.localizedDescription, error.domain, (long) error.code];
   [self finish];
 }
 
@@ -171,6 +178,7 @@
   configuration.queueDepth = 8;
 
   SCVideoCapture *capture = [[SCVideoCapture alloc] init];
+  capture.owner = self;
   capture.callback = frameCallback;
   capture.signal = dispatch_semaphore_create(0);
   dispatch_queue_attr_t qos = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, DISPATCH_QUEUE_PRIORITY_HIGH);
@@ -185,7 +193,7 @@
   }
   [capture.stream startCaptureWithCompletionHandler:^(NSError *startError) {
     if (startError != nil) {
-      [capture finish];
+      [capture stopWithError:startError];
     }
   }];
   if (CMTIME_IS_VALID(self.keepaliveInterval)) {
