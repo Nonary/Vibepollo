@@ -1,0 +1,40 @@
+name: Validate exact nightly Linux payload
+permissions: {}
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        required: true
+        type: string
+      release_version:
+        required: true
+        type: string
+jobs:
+  linux:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-archlinux.yml
+    with:
+      release_commit: ${{ inputs.release_commit }}
+      release_version: ${{ inputs.release_version }}
+      use_self_hosted: false
+      validation_only: true
+      build_tests: true
+      artifact_retention_days: 7
+      cache_namespace: host-linux-v1
+  publication-token:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE: ${{ inputs.release_commit }}
+    steps:
+      - name: Verify token can create a draft for an already referenced exact source
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]]
+          tag="codex-nightly-token-probe-$GITHUB_RUN_ID"
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$SOURCE" --title 'Private token validation' --notes 'Temporary unpublished validation; no application payload.' --draft --prerelease --latest=false
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq 'if .isDraft then "Draft creation passed with GITHUB_TOKEN" else error("Unexpected public release") end'
+          gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes
