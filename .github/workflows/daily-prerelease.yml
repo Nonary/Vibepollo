@@ -35,6 +35,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+          # Version tags must be reachable through the primary's complete ancestry.
+          fetch-depth: 0
       - name: Test daily release contracts
         run: python -m unittest discover -s scripts/tests -p test_daily_release.py
       - name: Test nightly notes and immutable metadata
