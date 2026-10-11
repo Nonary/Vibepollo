@@ -183,6 +183,66 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
                     expression = " ".join(expression.split())
                     self.assertEqual(eval(expression, {"__builtins__": {}}), expected)
 
+    def test_arch_linux_interface_gate_fails_before_full_build(self) -> None:
+        recipe = (ROOT / "packaging/linux/Arch/PKGBUILD").read_text(encoding="utf-8")
+        registrations = (ROOT / "tests/CMakeLists.txt").read_text(encoding="utf-8")
+        component = registrations.split("NAME test_component_linux_routed_link", 1)[1].split("endif()", 1)[0]
+        self.assertIn("LINK_LIBRARIES Boost::asio", component)
+        self.assertIn("ctest --test-dir . --output-on-failure --no-tests=error", recipe)
+        build_function = "build() {" + recipe.split("build() {", 1)[1].split("\ncheck() {", 1)[0]
+        bash = r"C:\Program Files\Git\bin\bash.exe" if os.name == "nt" else "bash"
+        for tests, fail_gate in (("ON", "false"), ("ON", "true"), ("OFF", "false")):
+            with self.subTest(tests=tests, fail_gate=fail_gate), tempfile.TemporaryDirectory() as temporary:
+                stage = Path(temporary)
+                script = r"""set -e
+python3() {
+  [[ "$*" == *"scripts/build-linux-component-tests.py build" ]] || return 1
+  echo interface >> calls
+  [[ "$FAIL_GATE" == false ]]
+}
+cmake() {
+  if [[ "$*" == "--build build" ]]; then
+    echo full >> calls
+  else
+    echo configure >> calls
+  fi
+}
+appstreamcli() { :; }
+appstream-util() { :; }
+desktop-file-validate() { :; }
+_commit=exact-source
+_gcc_env_suffix=-14
+_use_cuda=true
+pkgname=fixture
+srcdir="$PWD"
+""" + build_function + "\nbuild\n"
+                environment = os.environ.copy()
+                environment.update(_build_tests=tests, FAIL_GATE=fail_gate, MAKEFLAGS="-j4", CMAKE_BUILD_PARALLEL_LEVEL="4")
+                result = subprocess.run([bash, "-c", script], cwd=stage, env=environment, capture_output=True, text=True)
+                calls = (stage / "calls").read_text(encoding="utf-8").splitlines()
+                expected = ["configure", "interface"] if fail_gate == "true" else (["configure", "interface", "full"] if tests == "ON" else ["configure", "full"])
+                self.assertEqual(calls, expected, result.stdout + result.stderr)
+                self.assertEqual(result.returncode == 0, fail_gate == "false", result.stdout + result.stderr)
+
+    def test_validation_source_seed_and_partial_caches_remain_scoped(self) -> None:
+        workflow = load_workflow("ci-archlinux.yml")
+        steps = {step["name"]: step for step in workflow["jobs"]["build_archlinux"]["steps"] if "name" in step}
+        build = steps["Build PKGBUILD"]["run"]
+        validation = build.split('if [[ "$VALIDATION_ONLY" == "true" ]]; then', 1)[1].split("\nfi", 1)[0]
+        self.assertIn("seed-linux-package-source.sh", validation)
+        self.assertIn("package_options=(-s --holdver)", validation)
+        self.assertIn("package_options=(-si)", build.split("validation_tree=", 1)[0])
+        self.assertIn('_validation_expected_tree="$validation_tree"', build)
+        guard = steps["Verify failed-validation partial cache eligibility"]["if"]
+        for requirement in ("failure()", "inputs.validation_only", "workflow_dispatch", "github.event.repository.full_name == github.repository", "steps.build.outcome == 'failure'", "steps.toolchain.outputs.abi != ''"):
+            self.assertIn(requirement, guard)
+        for name, output in (("Save verified CUDA source and toolkit", "cuda"), ("Save compiler cache", "compiler")):
+            self.assertIn("success()", steps[name]["if"])
+            self.assertIn("steps.partial-cache.outputs." + output + " == 'true'", steps[name]["if"])
+        cached_paths = "\n".join(steps[name]["with"]["path"] for name in ("Save verified CUDA source and toolkit", "Save compiler cache"))
+        self.assertNotIn("src/build", cached_paths)
+        self.assertNotIn("pkg.tar", cached_paths)
+
     def test_arch_dependency_setup_honors_installed_pinned_compiler(self) -> None:
         workflow = load_workflow("ci-archlinux.yml")
         job = workflow["jobs"]["build_archlinux"]
@@ -283,7 +343,7 @@ esac
         end = drm.index("exit 0", guard)
         for operation in ("openssl req", "dkms add", "dkms build", "dkms install"):
             self.assertGreater(drm.index(operation), end)
-        self.assertIn('package_options=(-s)', steps["Build PKGBUILD"]["run"])
+        self.assertIn('package_options=(-s --holdver)', steps["Build PKGBUILD"]["run"])
         self.assertIn('if [[ "$VALIDATION_ONLY" == "true" ]]', steps["Build PKGBUILD"]["run"])
         recipe = (ROOT / "packaging/linux/Arch/PKGBUILD").read_text()
         self.assertIn("--no-tests=error", recipe)

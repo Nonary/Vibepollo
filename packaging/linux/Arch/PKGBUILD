@@ -133,6 +133,10 @@ fi
 
 prepare() {
     cd "$pkgname"
+    if [[ -n "${_validation_expected_tree:-}" ]]; then
+      [[ $(git rev-parse HEAD) == "${_commit}" ]] || { echo 'Extracted source commit mismatch.' >&2; return 1; }
+      [[ $(git rev-parse 'HEAD^{tree}') == "${_validation_expected_tree}" ]] || { echo 'Extracted source tree mismatch.' >&2; return 1; }
+    fi
     git -c submodule.fetchJobs="${BUILD_JOBS:-2}" submodule update --recursive --init --depth 1
     if [[ "${_use_cuda::1}" == "t" ]]; then
       bash scripts/prepare-linux-cuda.sh "${srcdir}/cuda-${CARCH}.run" \
@@ -189,12 +193,22 @@ build() {
 
     _cmake_options+=(-DBUILD_TESTS="${_build_tests:-ON}")
 
+    if [[ "${_build_tests:-ON}" != "OFF" ]]; then
+      mkdir -p build/.cmake/api/v1/query
+      touch build/.cmake/api/v1/query/codemodel-v2
+    fi
     cmake "${_cmake_options[@]}"
 
     appstreamcli validate "build/io.github.Nonary.vibepollo.metainfo.xml"
     appstream-util validate "build/io.github.Nonary.vibepollo.metainfo.xml"
     desktop-file-validate "build/io.github.Nonary.vibepollo.desktop"
     desktop-file-validate "build/io.github.Nonary.vibepollo.terminal.desktop"
+
+    if [[ "${_build_tests:-ON}" != "OFF" ]]; then
+      # Compile all configured components before expensive host/CUDA compilation.
+      # File API discovers new test targets; final full build and CTest still run.
+      python3 "$srcdir/$pkgname/scripts/build-linux-component-tests.py" build
+    fi
 
     cmake --build build
 }
