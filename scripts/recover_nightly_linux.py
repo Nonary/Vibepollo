@@ -1,6 +1,7 @@
 """Add only qualified exact-source Linux packages; preserve existing binaries."""
 import argparse, hashlib, json, os, re, shutil, subprocess
 from pathlib import Path
+from nightly_linux_qualification import final_ctest_result
 
 parser = argparse.ArgumentParser(); parser.add_argument('--product', choices=['Vibeshine','Vibepollo'], required=True)
 product = parser.parse_args().product
@@ -23,9 +24,7 @@ for name in ('Build PKGBUILD','Verify Arch package contract','Upload Artifacts')
     assert next(s for s in job['steps'] if s['name']==name)['conclusion'] == 'success'
 logs = run('gh','api','--allow-escape-sequences',f'repos/{repo}/actions/jobs/{job["databaseId"]}/logs')
 assert sha in logs and version in logs, 'Exact native source/version missing from qualification evidence'
-assert '100% tests passed, 0 tests failed' in logs
-counts = re.findall(r'100% tests passed, 0 tests failed out of (\d+)', logs)
-assert counts and int(counts[-1]) > 100
+test_result = final_ctest_result(logs)
 log_path = base / (product+'-nightly-linux-qualification.log'); log_path.write_text(logs,encoding='utf-8')
 artifact = base / ('qualified-linux-'+product); artifact.mkdir(exist_ok=True)
 if not list(artifact.glob('*.pkg.tar.zst')):
@@ -69,7 +68,7 @@ assert manifest['source_commit']==sha and manifest['version']==version and str(m
 manifest['assets'][package.name]=digest
 manifest['linux'] = dict(schema_version=1, source_commit=sha, version=version, workflow_run_id=linux_run,
     workflow_source_commit=qualification['headSha'], qualification_job_id=job['databaseId'], qualification_status='success',
-    workflow_run_conclusion=qualification['conclusion'], tests_total=int(counts[-1]),
+    workflow_run_conclusion=qualification['conclusion'], tests_total=test_result['total'], native_tests=test_result,
     assets={package.name:digest})
 manifest_path.write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
 notes_root=base/('updated-notes-'+product)
@@ -102,7 +101,7 @@ final_ref=api(f'repos/{repo}/git/ref/tags/{tag}')['object']
 while final_ref['type']=='tag': final_ref=api(f'repos/{repo}/git/tags/{final_ref["sha"]}')['object']
 assert final_ref['type']=='commit' and final_ref['sha']==sha
 report=dict(repository=repo,release=live['html_url'],source=sha,version=version,linux_run=linux_run,
-    linux_job=job['url'],tests_total=int(counts[-1]),native_package=package.name,sha256=digest,assets=len(live['assets']),
+    linux_job=job['url'],native_tests=test_result,native_package=package.name,sha256=digest,assets=len(live['assets']),
     preserved_existing_binaries=True,real_installation_tested=False)
 (base/(product+'-linux-publication-report.json')).write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
 print(json.dumps(report,indent=2))

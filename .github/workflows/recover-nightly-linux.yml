@@ -17,6 +17,8 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Test native qualification gates
+        run: python -m unittest discover -s scripts/tests -p test_nightly_linux_qualification.py
       - name: Validate exact qualified package, preserve binaries, and publish missing Linux payload
         env:
           NIGHTLY_VALIDATION_ROOT: ${{ runner.temp }}/qualified-nightly-linux
