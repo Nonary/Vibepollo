@@ -222,6 +222,21 @@ test('Wayland HDR compatibility appears in both Linux settings UIs', () => {
   assert.match(legacyStore, /wayland_hdr_compatibility:\s*false/);
 });
 
+test('Leaving displays off after streaming is an opt-in macOS setting in both settings UIs', () => {
+  assert.equal(settingsFields.get('leave_displays_off_after_streaming')?.platform, 'macos');
+  assert.equal(settingsDefaults.leave_displays_off_after_streaming, false);
+  const legacyAudioVideo = readFileSync(
+    new URL('../../web-legacy/configs/tabs/AudioVideo.vue', import.meta.url),
+    'utf8',
+  );
+  const legacyStore = readFileSync(
+    new URL('../../web-legacy/stores/config.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(legacyAudioVideo, /v-model="config\.leave_displays_off_after_streaming"/);
+  assert.match(legacyStore, /leave_displays_off_after_streaming:\s*false/);
+});
+
 test('Linux Proton and MangoHUD limiter choices stay aligned with legacy UI', () => {
   assert.equal(settingsDefaults.frame_limiter_provider, 'auto');
   assert.equal(settingsDefaults.mangohud_limiter_method, 'late');
