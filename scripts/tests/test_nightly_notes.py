@@ -80,6 +80,19 @@ class NightlyNotesTests(unittest.TestCase):
         notes, data = n.make_notes('Nonary/moonlight-qt', 'v6.1.0-daily.256', '6.1.0-daily.256', B, None, [])
         self.assertEqual(data['nightly_sequence'], 256)
         self.assertEqual(data['channel'], 'nightly')
+        self.assertEqual(data['windows_product_version'], '6.2.256')
+        self.assertNotIn('windows_product_version', self.notes()[1])
+
+    def test_moonlight_previous_windows_version_tamper_and_migration(self):
+        r = dict(release('v6.1.0-daily.255'), assets=[{'name': 'nightly-metadata.json'}])
+        data = dict(schema_version=1, channel='nightly', tag=r['tag_name'], source_commit=A,
+                    nightly_sequence=255, version='6.1.0-daily.255', windows_product_version='6.2.254')
+        with self.assertRaisesRegex(ValueError, 'Windows product version mismatch'):
+            n.previous_release('Nonary/moonlight-qt', [r], lambda a: data, lambda tag: A)
+        data['windows_product_version'] = '6.2.255'
+        self.assertEqual(n.previous_release('Nonary/moonlight-qt', [r], lambda a: data, lambda tag: A)['source_commit'], A)
+        del data['windows_product_version']
+        self.assertEqual(n.previous_release('Nonary/moonlight-qt', [r], lambda a: data, lambda tag: A)['source_commit'], A)
 
     def test_exact_delta_argv_preserves_multiline_messages(self):
         import tempfile

@@ -64,6 +64,8 @@ def previous_release(repo, releases, metadata_reader, tag_resolver):
             sha = exact_sha(metadata.get('source_commit'))
             if not isinstance(metadata.get('version'), str) or metadata.get('nightly_sequence') != sequence(repo, tag, metadata['version'], sha):
                 raise ValueError('Published nightly version/sequence mismatch')
+            if repo == 'Nonary/moonlight-qt' and 'windows_product_version' in metadata and metadata['windows_product_version'] != f'6.2.{metadata["nightly_sequence"]}':
+                raise ValueError('Published nightly Windows product version mismatch')
             if tag_resolver(tag) != sha:
                 raise ValueError('Published nightly tag does not match metadata source')
         else:
@@ -86,6 +88,8 @@ def make_notes(repo, tag, version, source, previous, commits, ancestor=True):
                     previous_source_commit=old, changelog_range=f'{old}..{source}' if old else None,
                     compare_url=compare, first_nightly=first, no_source_changes=unchanged,
                     commits_total=len(commits), commits_listed=len(commits))
+    if repo == 'Nonary/moonlight-qt':
+        metadata['windows_product_version'] = f'6.2.{seq}'
     notes = [f'## Nightly changes ({version})', '', f'Source: [{source}](https://github.com/{repo}/commit/{source})', '']
     if first:
         notes += ['First published nightly: no previous successful nightly baseline exists. No commit delta is claimed.']

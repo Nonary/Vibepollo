@@ -12,6 +12,7 @@ Schema version 1 fields:
 | `channel` | `nightly` |
 | `tag`, `version` | Immutable tag and complete embedded application version |
 | `source_commit` | Exact lowercase 40-character Git SHA |
+| `windows_product_version` | Moonlight only: exact `6.2.B`; omitted for hosts. Prior metadata may omit it for migration, but a present value must match `B`. |
 | `nightly_sequence` | Integer host UTC date `YYYYMMDD`, or Moonlight build `B` |
 | `previous_successful_tag`, `previous_source_commit` | Preceding published nightly identity; null for first nightly |
 | `changelog_range` | Exact `previous_source_commit..source_commit`; null for first nightly |
