@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <ConnectorFrameworkMajor Condition="'$(ConnectorFrameworkMajor)' == ''">8</ConnectorFrameworkMajor>
+    <TargetFramework>net$(ConnectorFrameworkMajor).0</TargetFramework>
     <RollForward>Major</RollForward>
     <ConnectorSourceRoot Condition="'$(ConnectorSourceRoot)' == ''">../../plugins/playnite/SunshinePlaynite/src</ConnectorSourceRoot>
     <NoWarn>CS0067</NoWarn>

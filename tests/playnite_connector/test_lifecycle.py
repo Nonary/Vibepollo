@@ -27,7 +27,7 @@ with tempfile.TemporaryDirectory(prefix="playnite-lifecycle-") as directory:
     env = dict(os.environ, DOTNET_CLI_HOME=directory,
                DOTNET_SKIP_FIRST_TIME_EXPERIENCE="1", DOTNET_CLI_TELEMETRY_OPTOUT="1")
     subprocess.run([args.dotnet, "build", str(project), "-c", "Release", "--nologo",
-                    "--artifacts-path", directory, f"-p:TargetFramework=net{major}.0"],
+                    "--artifacts-path", directory, f"-p:ConnectorFrameworkMajor={major}"],
                    env=env, check=True, timeout=60)
     assembly = Path(directory) / "bin/ConnectorLifecycle/release/ConnectorLifecycle.dll"
     subprocess.run([args.dotnet, str(assembly)], env=env, check=True, timeout=30)
