@@ -182,6 +182,30 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
                     expression = " ".join(expression.split())
                     self.assertEqual(eval(expression, {"__builtins__": {}}), expected)
 
+    def test_hosted_linux_validation_cannot_sign_install_or_publish(self) -> None:
+        wrapper = load_workflow("validate-linux.yml")
+        self.assertEqual(set(wrapper["on"]), {"workflow_dispatch"})
+        job = wrapper["jobs"]["arch"]
+        self.assertEqual(job["with"]["release_commit"], "${{ github.sha }}")
+        self.assertEqual(job["with"]["use_self_hosted"], "false")
+        self.assertEqual(job["with"]["validation_only"], "true")
+        self.assertEqual(job["with"]["build_tests"], "true")
+        self.assertNotIn("secrets", job)
+        arch = load_workflow("ci-archlinux.yml")
+        build = arch["jobs"]["build_archlinux"]
+        self.assertIn("!inputs.validation_only", build["runs-on"])
+        steps = {step["name"]: step for step in build["steps"]}
+        drm = next(step["run"] for step in build["steps"] if step["name"].startswith("Compile "))
+        guard = drm.index('if [[ "$VALIDATION_ONLY" == "true" ]]')
+        end = drm.index("exit 0", guard)
+        for operation in ("openssl req", "dkms add", "dkms build", "dkms install"):
+            self.assertGreater(drm.index(operation), end)
+        self.assertIn('package_options=(-s)', steps["Build PKGBUILD"]["run"])
+        self.assertIn('if [[ "$VALIDATION_ONLY" == "true" ]]', steps["Build PKGBUILD"]["run"])
+        recipe = (ROOT / "packaging/linux/Arch/PKGBUILD").read_text()
+        self.assertIn("--no-tests=error", recipe)
+        self.assertIn("sm_61", recipe)
+
     def test_arch_package_is_built_and_carried_into_release(self) -> None:
         ci_workflow = load_workflow("ci.yml")
         arch_workflow = load_workflow("ci-archlinux.yml")
@@ -203,7 +227,14 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             for step in arch_workflow["jobs"]["build_archlinux"]["steps"]
             if step["name"] == "Checkout"
         )
-        self.assertEqual(checkout["with"]["submodules"], "recursive")
+        self.assertEqual(checkout["with"]["submodules"], "false")
+        drm_checkout = next(
+            step for step in arch_workflow["jobs"]["build_archlinux"]["steps"]
+            if step["name"] == "Checkout DRM source only"
+        )
+        self.assertIn("--depth 1 third-party/libvirtualdisplay", drm_checkout["run"])
+        recipe = (ROOT / "packaging/linux/Arch/PKGBUILD").read_text()
+        self.assertIn("submodule update --recursive --init --depth 1", recipe)
         self.assertEqual(checkout["with"]["ref"], "${{ inputs.release_commit }}")
 
         arch_text = (ROOT / ".github" / "workflows" / "ci-archlinux.yml").read_text(

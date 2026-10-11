@@ -5,6 +5,15 @@ permissions: {}
 on:
   workflow_call:
     inputs:
+      validation_only:
+        description: Artifact-only validation without signing or installing host packages/modules
+        required: false
+        type: boolean
+        default: false
+      cache_namespace:
+        required: false
+        type: string
+        default: host-linux-v1
       use_self_hosted:
         required: false
         type: boolean
@@ -29,13 +38,18 @@ jobs:
     name: Archlinux
     env:
       _use_cuda: true
+      CCACHE_DIR: ${{ github.workspace }}/.linux-cache/ccache
+      CCACHE_MAXSIZE: 1G
+      CCACHE_COMPILERCHECK: content
+      CUDA_CACHE_DIR: ${{ github.workspace }}/.linux-cache/cuda
+      VALIDATION_ONLY: ${{ inputs.validation_only }}
       BRANCH: ${{ github.head_ref || github.ref_name }}
       BUILD_VERSION: ${{ inputs.release_version }}
       CLONE_URL: ${{ github.event.repository.clone_url }}
       COMMIT: ${{ inputs.release_commit }}
     permissions:
       contents: read
-    runs-on: ${{ inputs.use_self_hosted && github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Linux", "X64", "linux-release"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ !inputs.validation_only && inputs.use_self_hosted && github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Linux", "X64", "linux-release"]') || fromJSON('["ubuntu-latest"]') }}
     container:
       image: archlinux/archlinux:base-devel
     steps:
@@ -61,6 +75,7 @@ jobs:
         run: |
           pacman -Syu --disable-download-timeout --needed --noconfirm \
             base-devel \
+            ccache \
             cmake \
             curl \
             dkms \
@@ -96,7 +111,11 @@ jobs:
         with:
           ref: ${{ inputs.release_commit }}
           fetch-depth: 1
-          submodules: recursive
+          submodules: false
+
+      - name: Checkout DRM source only
+        shell: bash
+        run: git submodule update --init --depth 1 third-party/libvirtualdisplay
 
       - name: Detect actual build budget
         shell: bash
@@ -139,9 +158,16 @@ jobs:
           module_build_dir="${RUNNER_TEMP}/vibeshine-drm-${kernel_release}"
           cp -a third-party/libvirtualdisplay/linux/vibeshine-drm "${module_build_dir}"
           write_drm_version_header "${module_build_dir}" "0.0.0"
+          # The exact pinned helper was audited: it only compiles modules and
+          # selects LLVM when required by the kernel; no signing or installation.
           MAKEFLAGS="-j${CMAKE_BUILD_PARALLEL_LEVEL}" \
             "${module_build_dir}/build-module" "${kernel_release}" "${module_build_dir}"
           test -s "${module_build_dir}/vibeshine_drm.ko"
+
+          if [[ "$VALIDATION_ONLY" == "true" ]]; then
+            echo "::notice::Unsigned DRM kernel compile passed. Signing, DKMS installation and installed-module checks are omitted in artifact-only validation."
+            exit 0
+          fi
 
           signing_key="${RUNNER_TEMP}/vibeshine-drm-mok.key"
           signing_certificate="${RUNNER_TEMP}/vibeshine-drm-mok.pub"
@@ -241,6 +267,46 @@ jobs:
           cd ..
           tar -czf vibepollo.pkg.tar.gz -C pkg .
 
+      - name: Install exact package build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Resolve the complete installed ABI before computing cache keys.
+          # Source the generated recipe; install build/runtime dependencies only,
+          # never the host package or its optional GPU drivers.
+          _use_cuda=true CARCH=x86_64 bash -c '
+            source pkg/PKGBUILD
+            pacman -S --needed --noconfirm "${depends[@]}" "${makedepends[@]}"
+          '
+
+      - name: Fingerprint installed Arch toolchain
+        id: toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          fingerprint=$(pacman -Q | LC_ALL=C sort | sha256sum | cut -d' ' -f1)
+          echo "abi=${fingerprint}" >> "$GITHUB_OUTPUT"
+          mkdir -p "$CCACHE_DIR" "$CUDA_CACHE_DIR"
+          chown -R builder:builder .linux-cache
+          ccache --set-config=base_dir="$GITHUB_WORKSPACE"
+
+      - name: Restore verified CUDA source and toolkit
+        id: cuda-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: |
+            .linux-cache/cuda
+            pkg/cuda-x86_64.run
+          key: ${{ inputs.cache_namespace }}-cuda-${{ runner.arch }}-${{ steps.toolchain.outputs.abi }}-${{ hashFiles('packaging/linux/Arch/PKGBUILD', 'packaging/linux/patches/**/cuda-12-math_functions.patch', 'scripts/prepare-linux-cuda.sh') }}
+
+      - name: Restore compiler cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: .linux-cache/ccache
+          key: ${{ inputs.cache_namespace }}-ccache-${{ runner.arch }}-${{ steps.toolchain.outputs.abi }}-${{ hashFiles('packaging/linux/Arch/PKGBUILD', '.github/workflows/ci-archlinux.yml', 'scripts/prepare-linux-cuda.sh') }}-${{ inputs.release_commit }}
+          restore-keys: |
+            ${{ inputs.cache_namespace }}-ccache-${{ runner.arch }}-${{ steps.toolchain.outputs.abi }}-${{ hashFiles('packaging/linux/Arch/PKGBUILD', '.github/workflows/ci-archlinux.yml', 'scripts/prepare-linux-cuda.sh') }}-
+
       - name: Build PKGBUILD
         id: build
         shell: bash
@@ -260,11 +326,21 @@ jobs:
           export _use_cuda="${_use_cuda}"
 
           # Build the package as builder user (pass through environment variables)
+          chown -R builder:builder . "$CCACHE_DIR" "$CUDA_CACHE_DIR"
+          package_options=(-si)
+          if [[ "$VALIDATION_ONLY" == "true" ]]; then
+            package_options=(-s)
+          fi
           sudo -u builder env \
+            CCACHE_DIR="$CCACHE_DIR" \
+            CCACHE_MAXSIZE="$CCACHE_MAXSIZE" \
+            CCACHE_COMPILERCHECK="$CCACHE_COMPILERCHECK" \
+            CUDA_CACHE_DIR="$CUDA_CACHE_DIR" \
             _use_cuda="${_use_cuda}" \
             _build_tests="${_build_tests}" \
+            BUILD_JOBS="$BUILD_JOBS" \
             CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL}" \
-            makepkg -si --noconfirm
+            makepkg "${package_options[@]}" --noconfirm
 
           # Remove debug package
           rm -f vibepollo-debug*.pkg.tar.zst
@@ -380,6 +456,32 @@ jobs:
           path: artifacts/
           if-no-files-found: error
           retention-days: ${{ inputs.artifact_retention_days }}
+
+      - name: Report compiler cache
+        shell: bash
+        run: ccache --show-stats
+
+      - name: Save verified CUDA source and toolkit
+        if: >-
+          success() && steps.cuda-cache.outputs.cache-hit != 'true' &&
+          (github.ref_name == github.event.repository.default_branch ||
+           (github.event_name == 'workflow_dispatch' && github.event.repository.full_name == github.repository))
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: |
+            .linux-cache/cuda
+            pkg/cuda-x86_64.run
+          key: ${{ steps.cuda-cache.outputs.cache-primary-key }}
+
+      - name: Save compiler cache
+        if: >-
+          success() &&
+          (github.ref_name == github.event.repository.default_branch ||
+           (github.event_name == 'workflow_dispatch' && github.event.repository.full_name == github.repository))
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: .linux-cache/ccache
+          key: ${{ inputs.cache_namespace }}-ccache-${{ runner.arch }}-${{ steps.toolchain.outputs.abi }}-${{ hashFiles('packaging/linux/Arch/PKGBUILD', '.github/workflows/ci-archlinux.yml', 'scripts/prepare-linux-cuda.sh') }}-${{ inputs.release_commit }}
 
       - name: Restore self-hosted workspace ownership
         if: always() && runner.environment == 'self-hosted'

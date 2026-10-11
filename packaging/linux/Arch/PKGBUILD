@@ -133,13 +133,10 @@ fi
 
 prepare() {
     cd "$pkgname"
-    git submodule update --recursive --init
+    git -c submodule.fetchJobs="${BUILD_JOBS:-2}" submodule update --recursive --init --depth 1
     if [[ "${_use_cuda::1}" == "t" ]]; then
-      sh "${srcdir}/cuda-${CARCH}.run" --silent --toolkit --override \
-        --toolkitpath="${srcdir}/cuda" --no-opengl-libs --no-man-page --no-drm
-      # Match CUDA 12.9 headers to Arch's glibc 2.41+ declarations.
-      patch -p2 --forward --directory="${srcdir}/cuda" \
-        < "packaging/linux/patches/${CARCH}/cuda-12-math_functions.patch"
+      bash scripts/prepare-linux-cuda.sh "${srcdir}/cuda-${CARCH}.run" \
+        "${srcdir}/cuda" "packaging/linux/patches/${CARCH}/cuda-12-math_functions.patch"
     fi
 }
 
@@ -182,6 +179,14 @@ build() {
       )
     fi
 
+    if [[ -n "${CCACHE_DIR:-}" ]]; then
+      _cmake_options+=(
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache
+      )
+    fi
+
     _cmake_options+=(-DBUILD_TESTS="${_build_tests:-ON}")
 
     cmake "${_cmake_options[@]}"
@@ -203,7 +208,7 @@ check() {
       grep -q 'sm_61\.' cuda-device-code.txt
     fi
     if [[ "${_build_tests:-ON}" != "OFF" ]]; then
-      ctest --test-dir . --output-on-failure -j2
+      ctest --test-dir . --output-on-failure --no-tests=error -j2
     fi
 }
 
