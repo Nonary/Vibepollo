@@ -1,4 +1,8 @@
-import { expect, test, type Page } from '@playwright/test';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { localRoute, expect, test, type Page } from './fixtures';
+
+const screenshotDirectory = process.env.VIBEPOLLO_TEST_OUTPUT || process.env.VIBESHINE_TEST_OUTPUT || join(tmpdir(), 'vibepollo-ui-results');
 
 type FixtureOptions = {
   platform?: 'windows' | 'linux' | 'macos';
@@ -52,12 +56,12 @@ async function installFixture(page: Page, options: FixtureOptions = {}) {
   const platform = options.platform ?? 'windows';
   const calls = { vigem: 0 };
 
-  await page.route('**/api/**', async (route) => {
+  await localRoute(page, '**/api/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname;
     if (!path.startsWith('/api/')) {
-      await route.continue();
+      await route.fallback();
       return;
     }
 
@@ -187,13 +191,13 @@ test('device filters search display metadata, sort deterministically, and keep d
     'Unknown Client',
   ]);
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/devices-filters-desktop.png',
+    path: join(screenshotDirectory, 'devices-filters-desktop.png'),
     animations: 'disabled',
     fullPage: false,
   });
   await page.setViewportSize({ width: 390, height: 1000 });
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/devices-filters-mobile.png',
+    path: join(screenshotDirectory, 'devices-filters-mobile.png'),
     animations: 'disabled',
     fullPage: false,
   });
@@ -215,13 +219,13 @@ test('Windows overview reports only an explicit missing ViGEm driver with versio
   );
   expect(calls.vigem).toBeGreaterThan(0);
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/overview-vigem-desktop.png',
+    path: join(screenshotDirectory, 'overview-vigem-desktop.png'),
     animations: 'disabled',
     fullPage: false,
   });
   await page.setViewportSize({ width: 390, height: 1000 });
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/overview-vigem-mobile.png',
+    path: join(screenshotDirectory, 'overview-vigem-mobile.png'),
     animations: 'disabled',
     fullPage: false,
   });

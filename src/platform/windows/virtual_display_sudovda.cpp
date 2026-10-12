@@ -1,4 +1,5 @@
 ﻿#include "virtual_display.h"
+#include "src/platform/windows/virtual_display_refresh_policy.h"
 
 #include "virtual_display_recovery_registry.h"
 
@@ -120,7 +121,8 @@ namespace VDISPLAY_SUDOVDA {
   static bool remove_virtual_display_impl(
     const GUID &guid,
     bool cancel_recovery_monitor,
-    std::stop_token stop_token = {}
+    std::stop_token stop_token = {},
+    bool allow_driver_recovery = true
   );
   bool removeAllVirtualDisplays();
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
@@ -160,8 +162,14 @@ namespace VDISPLAY_SUDOVDA {
     std::stop_token stop_token = {},
     bool allow_reinstall = true
   );
-  static DRIVER_STATUS open_vdisplay_device_impl(std::stop_token stop_token, bool allow_reinstall = true);
-  static DRIVER_STATUS open_vdisplay_device_with_status(std::stop_token stop_token, bool allow_reinstall = true);
+  static DRIVER_STATUS open_vdisplay_device_impl(
+    std::stop_token stop_token,
+    bool allow_reinstall = true,
+    bool allow_driver_recovery = true);
+  static DRIVER_STATUS open_vdisplay_device_with_status(
+    std::stop_token stop_token,
+    bool allow_reinstall = true,
+    bool allow_driver_recovery = true);
   static bool start_ping_thread_impl(std::function<void()> fail_cb, std::stop_token stop_token);
   static std::optional<VirtualDisplayCreationResult> create_virtual_display_with_stop(
     const char *s_client_uid,
@@ -487,94 +495,6 @@ namespace VDISPLAY_SUDOVDA {
       }
 
       return false;
-    }
-
-    std::string trim_copy(std::string_view value) {
-      const auto start = value.find_first_not_of(" \t\r\n");
-      if (start == std::string_view::npos) {
-        return {};
-      }
-      const auto end = value.find_last_not_of(" \t\r\n");
-      return std::string(value.substr(start, end - start + 1));
-    }
-
-    std::optional<uint32_t> parse_refresh_hz(std::string_view value) {
-      const auto trimmed = trim_copy(value);
-      if (trimmed.empty()) {
-        return std::nullopt;
-      }
-      try {
-        const double hz = std::stod(trimmed);
-        if (!std::isfinite(hz) || hz <= 0.0) {
-          return std::nullopt;
-        }
-        const double clamped = std::min(hz, static_cast<double>(std::numeric_limits<uint32_t>::max()));
-        const auto rounded = static_cast<uint32_t>(std::lround(clamped));
-        if (rounded == 0) {
-          return std::nullopt;
-        }
-        return rounded;
-      } catch (...) {
-        return std::nullopt;
-      }
-    }
-
-    uint32_t highest_requested_refresh_hz() {
-      using dd_t = config::video_t::dd_t;
-      uint32_t max_hz = 0;
-
-      if (config::video.dd.refresh_rate_option == dd_t::refresh_rate_option_e::manual) {
-        if (auto manual = parse_refresh_hz(config::video.dd.manual_refresh_rate)) {
-          max_hz = std::max(max_hz, *manual);
-        }
-      }
-
-      const auto process_entries = [&](const auto &entries) {
-        for (const auto &entry : entries) {
-          if (auto parsed = parse_refresh_hz(entry.final_refresh_rate)) {
-            max_hz = std::max(max_hz, *parsed);
-          }
-        }
-      };
-
-      process_entries(config::video.dd.mode_remapping.mixed);
-      process_entries(config::video.dd.mode_remapping.refresh_rate_only);
-      process_entries(config::video.dd.mode_remapping.resolution_only);
-
-      return max_hz;
-    }
-
-    uint32_t apply_refresh_overrides(uint32_t fps_millihz, uint32_t base_fps_millihz = 0u, int framegen_refresh_multiplier = 1) {
-      constexpr uint64_t scale = 1000ull;
-      using dd_t = config::video_t::dd_t;
-      // Manual refresh rate override takes priority over everything, including the multiplied virtual refresh.
-      if (config::video.dd.refresh_rate_option == dd_t::refresh_rate_option_e::manual) {
-        if (auto manual = parse_refresh_hz(config::video.dd.manual_refresh_rate)) {
-          const uint64_t forced = static_cast<uint64_t>(*manual) * scale;
-          return static_cast<uint32_t>(
-            std::min<uint64_t>(forced, std::numeric_limits<uint32_t>::max())
-          );
-        }
-      }
-      const int refresh_multiplier = std::max(1, framegen_refresh_multiplier);
-      if (refresh_multiplier > 1 && base_fps_millihz > 0) {
-        const uint64_t minimum_millihz = static_cast<uint64_t>(base_fps_millihz) * static_cast<uint64_t>(refresh_multiplier);
-        const uint32_t safe_minimum = static_cast<uint32_t>(std::min<uint64_t>(minimum_millihz, std::numeric_limits<uint32_t>::max()));
-        // Ensure we're at least at the minimum, but never lower if already higher
-        if (fps_millihz < safe_minimum) {
-          fps_millihz = safe_minimum;
-        }
-      }
-      const uint32_t max_hz = highest_requested_refresh_hz();
-      if (max_hz == 0) {
-        return fps_millihz;
-      }
-      uint64_t required = static_cast<uint64_t>(max_hz) * scale;
-      if (required <= fps_millihz) {
-        return fps_millihz;
-      }
-      required = std::min<uint64_t>(required, std::numeric_limits<uint32_t>::max());
-      return static_cast<uint32_t>(required);
     }
 
     class DevInfoHandle {
@@ -1652,36 +1572,15 @@ namespace VDISPLAY_SUDOVDA {
       const color_profile_scope_e scope,
       LSTATUS *out_status = nullptr
     ) {
-      // Keep the legacy value populated first. Besides supporting older Windows builds,
-      // this preserves the existing scope-selection state before the modern API activates it.
-      LSTATUS registry_status = ERROR_SUCCESS;
-      const bool registry_success = write_color_profile_to_registry(
+      return VDISPLAY::associate_hdr_profile(
         device_path,
         profile_filename,
-        scope,
-        &registry_status
+        is_system_wide_profile_scope(scope),
+        [&](LSTATUS *status) {
+          return write_color_profile_to_registry(device_path, profile_filename, scope, status);
+        },
+        out_status
       );
-      const auto result = VDISPLAY::set_advanced_color_profile(
-        device_path,
-        profile_filename,
-        is_system_wide_profile_scope(scope)
-      );
-      if (out_status) {
-        *out_status = registry_status;
-      }
-      if (result.success) {
-        return true;
-      }
-      if (result.attempted) {
-        BOOST_LOG(warning) << "HDR profile: Advanced Color activation failed (add=0x"
-                           << std::hex << static_cast<unsigned long>(result.association_status)
-                           << ", default=0x" << static_cast<unsigned long>(result.default_status) << std::dec
-                           << ", scope=" << color_profile_scope_label(scope) << "); retained registry association only.";
-      } else if (result.api_available && !result.target_found) {
-        BOOST_LOG(warning) << "HDR profile: active DisplayConfig target was unavailable; retained registry association only"
-                           << " (scope=" << color_profile_scope_label(scope) << ").";
-      }
-      return result.api_available ? false : registry_success;
     }
 
     void apply_hdr_profile_if_available(
@@ -1856,7 +1755,11 @@ namespace VDISPLAY_SUDOVDA {
               _wcsicmp(fs::path(*existing).filename().c_str(), profile_filename.c_str()) == 0;
 
             if (desired_already_associated) {
-              already_associated = true;
+              const auto active = VDISPLAY::get_advanced_color_profile(*device_name_w, is_system_wide_profile_scope(scope));
+              if (active && _wcsicmp(fs::path(*active).filename().c_str(), profile_filename.c_str()) == 0) {
+                already_associated = true;
+                return {true, false};
+              }
             }
 
             BOOST_LOG(debug) << "HDR profile: applying '" << profile_path->filename().string() << "' for client '" << client_name << "'.";
@@ -3058,6 +2961,45 @@ namespace VDISPLAY_SUDOVDA {
     }
   }  // namespace
 
+  std::vector<VDISPLAY::TrackedDisplayCleanupTarget> tracked_display_cleanup_targets() {
+    std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
+    std::vector<VDISPLAY::TrackedDisplayCleanupTarget> result;
+    for (const auto &guid_uuid : active_virtual_display_tracker().all()) {
+      const auto identity = g_owned_display_identities.find(guid_uuid.string());
+      if (identity == g_owned_display_identities.end() || identity->second.device_id.empty()) continue;
+      VDISPLAY::TrackedDisplayCleanupTarget target;
+      static_assert(sizeof(GUID) == target.guid_bytes.size());
+      std::memcpy(target.guid_bytes.data(), guid_uuid.b8, target.guid_bytes.size());
+      target.device_id = identity->second.device_id;
+      target.backend = VDISPLAY::ensure_display_backend_e::sudovda;
+      result.push_back(std::move(target));
+    }
+    return result;
+  }
+
+  bool tracked_display_cleanup_target_matches(
+    const std::array<std::uint8_t, 16> &guid_bytes,
+    const std::string &device_id) {
+    if (device_id.empty()) return false;
+    uuid_util::uuid_t guid_uuid {};
+    std::memcpy(guid_uuid.b8, guid_bytes.data(), guid_bytes.size());
+    std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
+    if (!active_virtual_display_tracker().contains(guid_uuid)) return false;
+    const auto identity = g_owned_display_identities.find(guid_uuid.string());
+    return identity != g_owned_display_identities.end() &&
+           boost::iequals(identity->second.device_id, device_id);
+  }
+
+  bool remove_tracked_display_cleanup_target(const VDISPLAY::TrackedDisplayCleanupTarget &target) {
+    if (target.backend != VDISPLAY::ensure_display_backend_e::sudovda || target.device_id.empty()) return false;
+    std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
+    if (!tracked_display_cleanup_target_matches(target.guid_bytes, target.device_id)) return false;
+    GUID guid {};
+    static_assert(sizeof(guid) == sizeof(target.guid_bytes));
+    std::memcpy(&guid, target.guid_bytes.data(), sizeof(guid));
+    return remove_virtual_display_impl(guid, true, {}, false);
+  }
+
   void applyHdrProfileToOutput(const char *s_client_name, const char *s_hdr_profile, const char *s_device_id) {
     // Only apply HDR profiles when explicitly selected by the user.
     if (!s_hdr_profile || std::strlen(s_hdr_profile) == 0) {
@@ -3277,7 +3219,10 @@ namespace VDISPLAY_SUDOVDA {
     RegCloseKey(key);
   }
 
-  static DRIVER_STATUS open_vdisplay_device_impl(std::stop_token stop_token, bool allow_reinstall) {
+  static DRIVER_STATUS open_vdisplay_device_impl(
+    std::stop_token stop_token,
+    bool allow_reinstall,
+    bool allow_driver_recovery) {
     std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
     if (stop_token.stop_requested()) {
       return DRIVER_STATUS::FAILED;
@@ -3308,7 +3253,8 @@ namespace VDISPLAY_SUDOVDA {
         if (retryInterval > 320) {
           if (!attempted_recovery) {
             attempted_recovery = true;
-            if (ensure_driver_is_ready_impl(RestartCooldownBehavior::wait, stop_token, allow_reinstall)) {
+            if (allow_driver_recovery &&
+                ensure_driver_is_ready_impl(RestartCooldownBehavior::wait, stop_token, allow_reinstall)) {
               retryInterval = 20;
               continue;
             }
@@ -3343,9 +3289,12 @@ namespace VDISPLAY_SUDOVDA {
     return DRIVER_STATUS::OK;
   }
 
-  static DRIVER_STATUS open_vdisplay_device_with_status(std::stop_token stop_token, bool allow_reinstall) {
+  static DRIVER_STATUS open_vdisplay_device_with_status(
+    std::stop_token stop_token,
+    bool allow_reinstall,
+    bool allow_driver_recovery) {
     proc::setVDisplayDriverStatus(DRIVER_STATUS::UNKNOWN, VDISPLAY::DRIVER_SELECTION::UNKNOWN);
-    const auto status = open_vdisplay_device_impl(stop_token, allow_reinstall);
+    const auto status = open_vdisplay_device_impl(stop_token, allow_reinstall, allow_driver_recovery);
     proc::setVDisplayDriverStatus(status, VDISPLAY::DRIVER_SELECTION::SUDOVDA);
     return status;
   }
@@ -4163,7 +4112,12 @@ namespace VDISPLAY_SUDOVDA {
         return std::nullopt;
       }
 
-      const uint32_t requested_fps = apply_refresh_overrides(fps, base_fps_millihz, framegen_refresh_active ? framegen_refresh_multiplier : 1);
+      static const auto windows_build = platf::query_windows_version().build_number;
+      const auto refresh = VDISPLAY::policy::resolve_creation_refresh(
+        fps, base_fps_millihz, framegen_refresh_active ? framegen_refresh_multiplier : 1,
+        height, windows_build
+      );
+      const uint32_t requested_fps = refresh.requested_millihz;
       VIRTUAL_DISPLAY_ADD_OUT output {};
       BOOST_LOG(debug) << "Calling AddVirtualDisplay (driver handle present).";
       if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, requested_fps, guid, s_client_name, s_client_uid, output)) {
@@ -4686,7 +4640,8 @@ namespace VDISPLAY_SUDOVDA {
   static bool remove_virtual_display_impl(
     const GUID &guid,
     bool cancel_recovery_monitor,
-    std::stop_token stop_token
+    std::stop_token stop_token,
+    bool allow_driver_recovery
   ) {
     const auto guid_uuid = guid_to_uuid(guid);
     // A recovery-owned rollback must complete removal even after its monitor
@@ -4724,7 +4679,7 @@ namespace VDISPLAY_SUDOVDA {
     }
 
     const bool initial_handle_invalid = (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE);
-    const bool allow_reinstall = !stop_token.stop_possible();
+    const bool allow_reinstall = allow_driver_recovery && !stop_token.stop_possible();
     bool opened_handle = false;
 
     auto ensure_handle = [&]() -> bool {
@@ -4732,7 +4687,7 @@ namespace VDISPLAY_SUDOVDA {
         return true;
       }
       if ((cancel_recovery_monitor && stop_token.stop_requested()) ||
-          open_vdisplay_device_with_status(reopen_stop_token, allow_reinstall) != DRIVER_STATUS::OK) {
+          open_vdisplay_device_with_status(reopen_stop_token, allow_reinstall, allow_driver_recovery) != DRIVER_STATUS::OK) {
         printf("[SUDOVDA] Failed to open driver while removing virtual display.\n");
         return false;
       }
@@ -4762,7 +4717,7 @@ namespace VDISPLAY_SUDOVDA {
       printf("[SUDOVDA] Driver handle became invalid while removing virtual display; retrying.\n");
       closeVDisplayDevice();
       if ((!cancel_recovery_monitor || !stop_token.stop_requested()) &&
-          open_vdisplay_device_with_status(reopen_stop_token, allow_reinstall) == DRIVER_STATUS::OK) {
+          open_vdisplay_device_with_status(reopen_stop_token, allow_reinstall, allow_driver_recovery) == DRIVER_STATUS::OK) {
         opened_handle = true;
         auto retry_result = perform_remove();
         removed = retry_result.first;
@@ -5093,30 +5048,30 @@ namespace VDISPLAY_SUDOVDA {
     return std::nullopt;
   }
 
-  bool is_virtual_display_output(const std::string &output_identifier) {
-    if (output_identifier.empty()) {
-      return false;
-    }
-
+  std::optional<bool> classify_virtual_display_output(const std::string &output_identifier) {
+    if (output_identifier.empty()) return std::nullopt;
     const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     if (!devices) {
-      return false;
+      return std::nullopt;
     }
 
+    bool matched = false;
     for (const auto &device : *devices) {
-      if (!is_virtual_display_device(device)) {
-        continue;
-      }
-
-      if (!device.m_device_id.empty() && equals_ci(device.m_device_id, output_identifier)) {
-        return true;
-      }
-      if (!device.m_display_name.empty() && equals_ci(device.m_display_name, output_identifier)) {
-        return true;
+      const bool same_device_id = !device.m_device_id.empty() && equals_ci(device.m_device_id, output_identifier);
+      const bool same_display_name = !device.m_display_name.empty() && equals_ci(device.m_display_name, output_identifier);
+      if (!same_device_id && !same_display_name) continue;
+      matched = true;
+      if (is_virtual_display_device(device)) return true;
+      // Missing identity fields cannot establish that this is a physical output.
+      if (device.m_monitor_device_path.empty() || device.m_friendly_name.empty() || !device.m_edid) {
+        return std::nullopt;
       }
     }
+    return matched ? std::optional<bool>(false) : std::nullopt;
+  }
 
-    return false;
+  bool is_virtual_display_output(const std::string &output_identifier) {
+    return classify_virtual_display_output(output_identifier).value_or(false);
   }
 
   bool is_virtual_display_selection(const std::string &output_identifier) {

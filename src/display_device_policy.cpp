@@ -68,11 +68,16 @@ namespace display_device::policy {
       return std::nullopt;
     }
 
+    std::uint32_t streamed_refresh_millihz(const session_t &session) {
+      if (session.stream_fps_millihz > 0) return session.stream_fps_millihz;
+      return session.fps > 0 ? static_cast<std::uint32_t>(session.fps) * 1000u : 0;
+    }
+
     std::uint32_t effective_refresh_millihz(const session_t &session) {
       if (session.framegen_refresh_millihz && *session.framegen_refresh_millihz > 0) return *session.framegen_refresh_millihz;
       if (session.client_display_refresh_millihz > 0) return session.client_display_refresh_millihz;
       if (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) return static_cast<std::uint32_t>(*session.framegen_refresh_rate) * 1000u;
-      return session.fps > 0 ? static_cast<std::uint32_t>(session.fps) * 1000u : 0;
+      return streamed_refresh_millihz(session);
     }
 
     bool parse_resolution_option(const video_config_t &video, const session_t &session, configuration_t &out) {
@@ -102,7 +107,9 @@ namespace display_device::policy {
 
     bool parse_refresh_option(const video_config_t &video, const session_t &session, configuration_t &out) {
       if (session.client_display_mode_override) {
-        const auto value = effective_refresh_millihz(session);
+        const auto value = session.client_display_refresh_millihz > 0 ?
+                             session.client_display_refresh_millihz :
+                             streamed_refresh_millihz(session);
         if (!value) return false;
         out.m_refresh_rate = rational_t {value, 1000};
         return true;
@@ -134,7 +141,7 @@ namespace display_device::policy {
       if (fps) return remapping_type_e::refresh_rate_only;
       return std::nullopt;
     }
-    bool remap(const video_config_t &video, const session_t &session, configuration_t &out) {
+    bool remap(const video_config_t &video, const session_t &session, configuration_t &out, bool *refresh_override = nullptr) {
       if (session.client_display_mode_override) return true;
       const auto type = remapping_type(video); if (!type) return true;
       const auto &entries = *type == remapping_type_e::mixed ? video.dd.mode_remapping.mixed : *type == remapping_type_e::resolution_only ? video.dd.mode_remapping.resolution_only : video.dd.mode_remapping.refresh_rate_only;
@@ -148,9 +155,13 @@ namespace display_device::policy {
             // display mode may legitimately use a fractional refresh rate.
             (map_fps && (!parse_refresh_rate(entry.requested_fps, request_fps, false) || !parse_refresh_rate(entry.final_refresh_rate, final_fps)))) return false;
         if (!final_res && !final_fps) return false;
-        if ((request_res && request_res != out.m_resolution) || (request_fps && request_fps != out.m_refresh_rate)) continue;
+        // Select the rule using streamed FPS, before automatic display refresh
+        // promotion. A 60 FPS rule must still match a 240/1000 Hz session.
+        if ((request_res && request_res != out.m_resolution) ||
+            (request_fps && (session.fps < 0 || *request_fps != rational_t {streamed_refresh_millihz(session), 1000}))) continue;
         if (final_res) out.m_resolution = final_res;
         if (final_fps) out.m_refresh_rate = final_fps;
+        if (refresh_override) *refresh_override = final_fps.has_value();
         break;
       }
       return true;
@@ -174,18 +185,12 @@ namespace display_device::policy {
   }
 
   bool refresh_rate_override_active(const video_config_t &video, const session_t &session) {
-    if (video.dd.refresh_rate_option == dd_t::refresh_rate_option_e::manual) return true;
     if (session.client_display_mode_override) return false;
-    const auto type = remapping_type(video); if (!type || *type == remapping_type_e::resolution_only) return false;
-    const auto &entries = *type == remapping_type_e::mixed ? video.dd.mode_remapping.mixed : video.dd.mode_remapping.refresh_rate_only;
-    const int fps = session.framegen_refresh_rate && *session.framegen_refresh_rate > 0 ? *session.framegen_refresh_rate : session.fps;
-    if (fps < 0) return false;
-    const rational_t requested {static_cast<unsigned int>(fps), 1};
-    for (const auto &entry : entries) {
-      std::optional<rational_t> request, final;
-      if (!parse_refresh_rate(entry.requested_fps, request, false) || !parse_refresh_rate(entry.final_refresh_rate, final, false)) return false;
-      if (final && (!request || *request == requested)) return true;
-    }
-    return false;
+    if (video.dd.refresh_rate_option == dd_t::refresh_rate_option_e::manual) return true;
+    configuration_t out;
+    bool refresh_override = false;
+    // Reuse rule selection, including resolution and first-match precedence.
+    return parse_resolution_option(video, session, out) &&
+           remap(video, session, out, &refresh_override) && refresh_override;
   }
 }  // namespace display_device::policy

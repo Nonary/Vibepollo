@@ -37,7 +37,7 @@ HOST = 'vibepollo.service'
 CONTROLLER = 'vibepollo-session-controller.service'
 SOCKET = 'vibepollo-session-exec.socket'
 HELPERS = (
-    'app-supervisor', 'display-power', 'global-limiter.py', 'host',
+    'app-supervisor', 'app-focus', 'display-power', 'display-observer', 'global-limiter.py', 'host',
     'package-preflight',
     'kwin-session-environment', 'machine-host', 'profile-import', 'provider-scan',
     'session-broker', 'session-controller', 'session-exec', 'steam-launch',

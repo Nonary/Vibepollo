@@ -46,6 +46,7 @@
 #endif
 // local includes
 #include "config.h"
+#include "update.h"
 #include "confighttp.h"
 #include "crypto.h"
 #include "file_handler.h"
@@ -72,7 +73,9 @@
 #include "webrtc_stream.h"
 
 #ifdef _WIN32
+  #include "platform/windows/service_startup.h"
   #include "platform/windows/virtual_display_cleanup.h"
+  #include "platform/windows/display_helper_v2/win_scheduled_task_manager.h"
   #include "platform/windows/virtual_display.h"
 #elif defined(__linux__)
   #include "platform/linux/capture_status.h"
@@ -545,7 +548,7 @@ namespace confighttp {
       }
 
       for (const auto &key : keys) {
-        if (key.rfind("playnite_", 0) == 0) {
+        if (key.rfind("app_focus_", 0) == 0 || key.rfind("playnite_", 0) == 0) {
           continue;
         }
 
@@ -1787,6 +1790,7 @@ namespace confighttp {
         "gen1-framegen-fix",
         "gen2-framegen-fix",
         "dlss-framegen-capture-fix",  // backward compatibility
+        "dualsense-haptics",
         "lossless-scaling-enabled",
         "lossless-scaling-framegen",
         "lossless-scaling-legacy-auto-detect"
@@ -3080,6 +3084,20 @@ namespace confighttp {
     send_response(response, output_tree);
   }
 
+  void getNightlyUpdateMetadata(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    const auto query = request->parse_query_string();
+    const auto tag = query.find("tag");
+    std::string metadata;
+    if (tag == query.end() || !update::download_nightly_metadata(tag->second, metadata)) {
+      bad_request(response, request, "Nightly metadata unavailable");
+      return;
+    }
+    send_response(response, nlohmann::json::parse(metadata));
+  }
+
   /**
    * @brief Get immutables metadata about the server.
    * @param response The HTTP response object.
@@ -3097,6 +3115,13 @@ namespace confighttp {
     nlohmann::json output_tree;
     output_tree["status"] = true;
     output_tree["platform"] = SUNSHINE_PLATFORM;
+#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
+    output_tree["architecture"] = "aarch64";
+#elif defined(__x86_64__) || defined(_M_X64)
+    output_tree["architecture"] = "x86_64";
+#else
+    output_tree["architecture"] = "unknown";
+#endif
     output_tree["version"] = PROJECT_VERSION;
     output_tree["commit"] = PROJECT_VERSION_COMMIT;
 #ifdef PROJECT_VERSION_PRERELEASE
@@ -3518,8 +3543,12 @@ namespace confighttp {
     print_req(request);
 
     nlohmann::json output_tree;
-    const int active = rtsp_stream::session_count() + static_cast<int>(webrtc_stream::active_session_count());
-    const bool app_running = proc::proc.running() > 0;
+    // Status polling runs on the HTTPS event loop. The lifecycle versions of
+    // these queries can join capture threads or terminate an exited app,
+    // blocking every Web UI request while stream teardown waits after resume.
+    // The RTSP and control loops own cleanup; report their current snapshots.
+    const int active = rtsp_stream::session_count_no_cleanup() + static_cast<int>(webrtc_stream::active_session_count());
+    const bool app_running = proc::proc.current_app_id() > 0;
     output_tree["activeSessions"] = active;
     output_tree["appRunning"] = app_running;
     output_tree["appName"] = app_running ? proc::proc.get_last_run_app_name() : "";
@@ -4907,13 +4936,21 @@ namespace confighttp {
     print_req(request);
 
     nlohmann::json output_tree;
+#ifdef _WIN32
+    if (!display_helper_integration::maintenance_available()) {
+      output_tree["status"] = false;
+      output_tree["error"] = "Display maintenance requires display automation or an active virtual display.";
+      send_response(response, output_tree);
+      return;
+    }
+#endif
     output_tree["status"] = display_helper_integration::reset_persistence();
     send_response(response, output_tree);
   }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   /**
-   * @brief Execute the same terminal virtual-display cleanup as the restore hotkey.
+   * @brief Terminate all managed virtual displays, overriding active ownership.
    * @api_examples{/api/display/terminate_virtual| POST| {"status":true}}
    */
   void postTerminateVirtualDisplay(resp_https_t response, req_https_t request) {
@@ -4926,6 +4963,7 @@ namespace confighttp {
     print_req(request);
 
     nlohmann::json out;
+#ifdef _WIN32
     const auto result = platf::virtual_display_cleanup::terminate_all("maintenance_api");
     out["status"] = result.virtual_displays_removed;
     out["driver_watchdog_stopped"] = true;
@@ -4933,13 +4971,23 @@ namespace confighttp {
     out["virtual_displays_removed"] = result.virtual_displays_removed;
     out["restore_dispatched"] = result.helper_revert_dispatched;
     out["database_restore_applied"] = result.database_restore_applied;
+    out["physical_display_recovered"] = result.physical_display_recovered;
     out["watchdogs_stopped"] = true;
+#else
+    const auto result = platf::linux_private_display::terminate_all();
+    out["status"] = result.virtual_displays_removed;
+    out["virtual_displays_removed"] = result.virtual_displays_removed;
+    out["topology_restored"] = result.topology_restored;
+    out["physical_display_recovered"] = result.physical_display_recovered;
+#endif
     if (!result.virtual_displays_removed) {
       out["error"] = "One or more managed virtual displays could not be removed.";
     }
     send_response(response, out, "no-store");
   }
+#endif
 
+#ifdef _WIN32
   /**
    * @brief Export the current Windows display settings as a golden restore snapshot.
    * @api_examples{/api/display/export_golden| POST| {"status":true}}
@@ -4953,6 +5001,12 @@ namespace confighttp {
     }
     print_req(request);
     nlohmann::json out;
+    if (!display_helper_integration::maintenance_available()) {
+      out["status"] = false;
+      out["error"] = "Display maintenance requires display automation or an active virtual display.";
+      send_response(response, out);
+      return;
+    }
     try {
       const bool ok = display_helper_integration::export_golden_restore();
       out["status"] = ok;
@@ -5514,6 +5568,18 @@ namespace confighttp {
       }
     } catch (...) {
     }
+    out["maintenance_available"] = display_helper_integration::maintenance_available();
+    out["helper_engine"] = display_helper_integration::legacy_helper_engine_selected() ? "legacy" : "v2";
+    bool session_current_exists = false;
+    bool session_previous_exists = false;
+    for (const auto &snapshot : golden_snapshot_candidates()) {
+      session_current_exists = session_current_exists || file_exists_nofail(snapshot.parent_path() / L"display_session_current.json");
+      session_previous_exists = session_previous_exists || file_exists_nofail(snapshot.parent_path() / L"display_session_previous.json");
+    }
+    out["session_current_exists"] = session_current_exists;
+    out["session_previous_exists"] = session_previous_exists;
+    display_helper::v2::WinScheduledTaskManager tasks;
+    out["restore_task_state"] = display_helper::restore_task_state_name(tasks.restore_task_state());
     out["exists"] = exists;
     out["snapshot_version"] = snapshot_version ? nlohmann::json(*snapshot_version) : nlohmann::json(nullptr);
     out["latest_snapshot_version"] = kGoldenSnapshotLatestVersion;
@@ -5578,6 +5644,42 @@ namespace confighttp {
     }
     out["deleted"] = any_deleted;
     send_response(response, out);
+  }
+#endif
+
+#ifdef _WIN32
+  nlohmann::json serviceStartupResponse(const service_ctrl::startup_state &state) {
+    const char *mode = state.start_type == SERVICE_AUTO_START   ? "automatic" :
+                       state.start_type == SERVICE_DEMAND_START ? "manual" :
+                       state.start_type == SERVICE_DISABLED     ? "disabled" :
+                                                                  "unknown";
+    return {{"status", state.status}, {"installed", state.installed}, {"automatic", state.automatic}, {"start_type", mode}, {"can_change", state.can_change}, {"error", state.error}, {"error_code", state.error_code}};
+  }
+
+  void getServiceStartup(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    send_response(response, serviceStartupResponse(service_ctrl::get_service_startup()));
+  }
+
+  void saveServiceStartup(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+    try {
+      const auto body = nlohmann::json::parse(request->content.string());
+      if (!body.is_object() || !body.contains("automatic") || !body["automatic"].is_boolean()) {
+        bad_request(response, request, "automatic must be a boolean");
+        return;
+      }
+      send_response(response, serviceStartupResponse(service_ctrl::set_service_startup(body["automatic"].get<bool>())));
+    } catch (const std::exception &e) {
+      bad_request(response, request, e.what());
+    }
   }
 #endif
 
@@ -6098,6 +6200,8 @@ namespace confighttp {
     server.default_resource["GET"] = getWebUi;
     thread_pool_util::ThreadPool blocking_route_pool;
     blocking_route_pool.start(1);
+    thread_pool_util::ThreadPool metadata_route_pool;
+    metadata_route_pool.start(1);
     clear_token_route_catalog();
     auto register_api_route = [&](const char *pattern, const char *method, const auto &handler) {
       server.resource[pattern][method] = [method, handler](resp_https_t response, req_https_t request) {
@@ -6112,12 +6216,13 @@ namespace confighttp {
       };
       record_token_route(normalize_route_pattern(pattern), method);
     };
-    auto register_blocking_api_route = [&](const char *pattern, const char *method, const auto &handler) {
-      register_api_route(pattern, method, [&blocking_route_pool, handler](resp_https_t response, req_https_t request) {
+    auto register_blocking_api_route = [&](const char *pattern, const char *method, const auto &handler, thread_pool_util::ThreadPool *route_pool = nullptr) {
+      auto *worker_pool = route_pool ? route_pool : &blocking_route_pool;
+      register_api_route(pattern, method, [worker_pool, handler](resp_https_t response, req_https_t request) {
         if (!authenticate(response, request)) {
           return;
         }
-        blocking_route_pool.push([handler, response = std::move(response), request = std::move(request)]() mutable {
+        worker_pool->push([handler, response = std::move(response), request = std::move(request)]() mutable {
           try {
             handler(response, request);
           } catch (const std::exception &e) {
@@ -6152,13 +6257,25 @@ namespace confighttp {
     // Partial updates for config settings; merges with existing file and
     // removes keys when value is null or empty string.
     register_api_route("^/api/config$", "PATCH", patchConfig);
-    register_api_route("^/api/metadata$", "GET", getMetadata);
+    // Capability cache lookup resolves the current output/adapter and can test
+    // desktop duplication. Keep display-driver waits off the HTTPS event loop,
+    // including while a paused application retains its virtual display.
+    // Use a separate worker so a stalled lookup also leaves display recovery
+    // and the other blocking management APIs available.
+    register_blocking_api_route("^/api/metadata$", "GET", getMetadata, &metadata_route_pool);
+    register_blocking_api_route("^/api/updates/nightly-metadata$", "GET", getNightlyUpdateMetadata);
     register_api_route("^/api/configLocale$", "GET", getLocale);
     register_api_route("^/api/restart$", "POST", restart);
     register_api_route("^/api/quit$", "POST", quit);
+#ifdef _WIN32
+    register_api_route("^/api/service/startup$", "GET", getServiceStartup);
+    register_api_route("^/api/service/startup$", "POST", saveServiceStartup);
+#endif
     register_blocking_api_route("^/api/reset-display-device-persistence$", "POST", resetDisplayDevicePersistence);
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__linux__)
     register_blocking_api_route("^/api/display/terminate_virtual$", "POST", postTerminateVirtualDisplay);
+#endif
+#ifdef _WIN32
     register_blocking_api_route("^/api/display/export_golden$", "POST", postExportGoldenDisplay);
     register_blocking_api_route("^/api/display/golden_status$", "GET", getGoldenStatus);
     register_api_route("^/api/display/golden$", "DELETE", deleteGolden);
@@ -6179,8 +6296,8 @@ namespace confighttp {
     register_api_route("^/api/apps/([0-9]+)$", "DELETE", deleteApp);
     register_api_route("^/api/clients/unpair-all$", "POST", unpairAll);
     register_api_route("^/api/clients/list$", "GET", getClients);
-    register_api_route("^/api/clients/display-layout$", "GET", getClientDisplayLayout);
-    register_api_route("^/api/clients/display-layout$", "PUT", putClientDisplayLayout);
+    register_blocking_api_route("^/api/clients/display-layout$", "GET", getClientDisplayLayout);
+    register_blocking_api_route("^/api/clients/display-layout$", "PUT", putClientDisplayLayout);
     register_api_route("^/api/clients/hdr-profiles$", "GET", getHdrProfiles);
     register_api_route("^/api/clients/update$", "POST", updateClient);
     register_api_route("^/api/clients/unpair$", "POST", unpair);
@@ -6300,7 +6417,10 @@ namespace confighttp {
 
     tcp.join();
     blocking_route_pool.stop();
+    metadata_route_pool.stop();
     blocking_route_pool.join();
+    metadata_route_pool.join();
+    webrtc_stream::shutdown_all_sessions();
     // std::jthread (cleanup_thread) auto-joins on destruction, no need for joinable/join
   }
 

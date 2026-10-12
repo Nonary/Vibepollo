@@ -4,6 +4,7 @@
  */
 // standard includes
 #include <thread>
+#include <optional>
 
 // local includes
 #include "cuda.h"
@@ -435,18 +436,27 @@ namespace platf {
     return wlr;
   }
 
-  std::vector<std::string> wl_display_names() {
+  static std::vector<std::string> wl_display_names_impl(
+    std::optional<std::chrono::steady_clock::time_point> deadline,
+    const std::function<bool()> &allowed
+  ) {
     std::vector<std::string> display_names;
 
     wl::display_t display;
-    if (display.init()) {
+    if (deadline ? display.init_until(*deadline, allowed) : display.init()) {
       return {};
     }
+
+    const auto roundtrip = [&] {
+      if (deadline) return display.roundtrip_until(*deadline, allowed);
+      display.roundtrip();
+      return true;
+    };
 
     wl::interface_t interface;
     interface.listen(display.registry());
 
-    display.roundtrip();
+    if (!roundtrip()) return {};
 
     if (!interface[wl::interface_t::XDG_OUTPUT]) {
       BOOST_LOG(warning) << "[wlgrab] Missing Wayland wire for xdg_output"sv;
@@ -465,7 +475,7 @@ namespace platf {
       monitor->listen(interface.output_manager);
     }
 
-    display.roundtrip();
+    if (!roundtrip()) return {};
 
     BOOST_LOG(info) << "[wlgrab] -------- Start of Wayland monitor list --------"sv;
 
@@ -483,6 +493,17 @@ namespace platf {
     BOOST_LOG(info) << "[wlgrab] --------- End of Wayland monitor list ---------"sv;
 
     return display_names;
+  }
+
+  std::vector<std::string> wl_display_names() {
+    return wl_display_names_impl(std::nullopt, {});
+  }
+
+  std::vector<std::string> wl_display_names_for_restore(
+    std::chrono::steady_clock::time_point deadline,
+    const std::function<bool()> &allowed
+  ) {
+    return wl_display_names_impl(deadline, allowed);
   }
 
 }  // namespace platf

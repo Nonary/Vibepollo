@@ -39,6 +39,7 @@ export type ConfigFieldSchemaContext = ConfigSelectOptionsContext & {
 };
 
 const SWITCH_KEYS = new Set<string>([
+  'app_focus_exit_on_first',
   'frame_limiter_enable',
   'frame_limiter_disable_vsync',
   'rtx_hdr',
@@ -46,6 +47,8 @@ const SWITCH_KEYS = new Set<string>([
 ]);
 
 const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
+  app_focus_attempts: { min: 0, max: 100, step: 1, precision: 0 },
+  app_focus_timeout_secs: { min: 0, max: 300, step: 1, precision: 0 },
   fec_percentage: { placeholder: '20' },
   qp: { placeholder: '28' },
   min_threads: { placeholder: '2', min: 1 },
@@ -75,6 +78,7 @@ const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
   rtx_hdr_sdr_brightness: { min: 0, max: 100, step: 1, placeholder: '0' },
   rtx_hdr_middle_gray: { min: 10, max: 100, step: 1, placeholder: '50' },
   rtx_hdr_peak_brightness: { min: 400, max: 2000, step: 1, placeholder: '1000' },
+  virtual_display_max_clients: { min: 1, max: 8, step: 1, precision: 0, placeholder: '4' },
   dd_virtual_display_permanent_count: { min: 0, max: 4, step: 1, precision: 0, placeholder: '0' },
   nvenc_vbv_increase: { min: 0, max: 400, placeholder: '0' },
   frame_limiter_fps_limit: { min: 0, max: 1000, step: 0.001, precision: 3, placeholder: '0' },

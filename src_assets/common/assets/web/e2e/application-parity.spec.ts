@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { localRoute, test, expect, type Page } from './fixtures';
 
 const appUuid = '11111111-1111-4111-8111-111111111111';
 
@@ -12,13 +12,13 @@ async function setupHost(page: Page, options: HostOptions = {}) {
   let apps = [...(options.apps ?? [])];
   const saves: Record<string, unknown>[] = [];
 
-  await page.route('**/api/**', async (route) => {
+  await localRoute(page, '**/api/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname;
     const method = request.method();
     if (!path.startsWith('/api/')) {
-      await route.continue();
+      await route.fallback();
       return;
     }
 
@@ -60,7 +60,7 @@ async function setupHost(page: Page, options: HostOptions = {}) {
     }
     await route.fulfill({ json: body });
   });
-  await page.route('**/assets/changelog.json', (route) =>
+  await localRoute(page, '**/assets/changelog.json', (route) =>
     route.fulfill({ json: { releases: [] } }),
   );
   return saves;

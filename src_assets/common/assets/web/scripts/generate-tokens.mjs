@@ -321,7 +321,9 @@ export function cssVar(name: TokenName): \`var(\${TokenName})\` {
 async function emit(url, contents) {
   if (checkOnly) {
     const current = await readFile(url, "utf8").catch(() => "");
-    if (current !== contents) {
+    // Git may check these generated text files out with CRLF on Windows.
+    // Ignore that checkout conversion without accepting other content drift.
+    if (current.replace(/\r\n/g, "\n") !== contents) {
       process.exitCode = 1;
       console.error(`${url.pathname} is out of date`);
     }

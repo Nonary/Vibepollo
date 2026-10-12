@@ -432,6 +432,19 @@ editing the `conf` file in a text editor. Use the examples as reference.
             lightbar, the player and microphone LEDs, and the adaptive triggers.}</td>
     </tr>
     <tr>
+        <td>usbip_ds5</td>
+        <td>Wired USB DualSense with a Windows controller audio endpoint for waveform haptics
+            @note{This option applies to Windows only and requires the optional
+            DualSense USB audio and haptics installer component. It uses the
+            Microsoft-signed usbip-win2 transport to expose a composite USB DualSense
+            with HID and audio interfaces. Compatible native games can send waveform
+            haptics through a Moonlight client implementing the waveform extension.
+            The physical client connection does not change this wired USB identity.
+            This selection reports an error when the transport
+            is unavailable. See [Windows DualSense waveform haptics](windows-dualsense-haptics.md)
+            for setup and validation.}</td>
+    </tr>
+    <tr>
         <td>x360</td>
         <td>Xbox 360 controller
             @note{This option applies to Windows only.}</td>
@@ -807,6 +820,41 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
 </table>
+
+### dualsense_haptics_gain
+
+Strength control for native DualSense waveform haptics streamed from Windows
+or Linux. Default: `1.0`. Allowed range: `0.0` to `4.0`.
+
+Use `1.5` for a gentle boost, `2.0` for a stronger boost, or `0.0` to mute
+waveform haptics. Above `1.0`, the quieter active actuator sets the requested
+amplification. Both actuators receive the same increase in normalized peak
+strength, preserving the gap between their peaks within each 5 ms packet.
+For example, peaks of 20% and 90% can become 30% and 100% while keeping their
+70 percentage point gap. Available headroom limits the shared lift; a full-scale
+peak leaves both actuators unchanged. Silent actuators remain silent.
+
+Each channel's waveform is scaled linearly within the packet, preserving its
+shape and zero crossings without hard clipping or adding a sample offset.
+The strongest recent peak remains the headroom reference for 100 ms, then
+releases over 200 ms, retaining contrast when a quieter effect follows a strong
+one. Increases in lift ease over 20 ms; reductions apply immediately when
+headroom shrinks. Smoothing is independent per controller. Brief silent gaps
+retain recent peak history; 100 ms of silence, sequence gaps, packet gaps over
+50 ms, or strength changes reset it. No packets are buffered
+and no playback latency is added.
+
+This preserves the measured peak-strength gap between actuator channels, not
+the differences between individual game effects already mixed into one channel.
+Recent peak history helps preserve contrast across nearby effects, but future
+peaks cannot be predicted and exact gaps across time are not guaranteed. 16-bit
+rounding can change the measured gap by about one sample. At `1.0`, the signal is unchanged; below `1.0`, it is
+attenuated linearly. Ordinary rumble and adaptive triggers are unaffected.
+Requires a client and controller with waveform haptics support.
+
+```ini
+dualsense_haptics_gain = 1.5
+```
 
 ### proton_dualsense_compatibility
 
@@ -1298,7 +1346,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             Replacing the module file does not replace a module already loaded by the compositor.
             Compare <code>modinfo -F version vibeshine_drm</code> with
             <code>cat /sys/module/vibeshine_drm/version</code> and reboot before testing when they differ.
-            The module supports Linux 6.16 or newer and exposes four independent virtual connectors
+            The module supports Linux 6.16 or newer and exposes eight independent virtual connectors
             with a deterministic HDR10 EDID, BT.2020/PQ metadata, 8-16 bits per component, and
             10-bit RGB plane formats. Vibepollo enables one only for a stream, applies the requested
             mode, layout, and HDR state through KScreen, captures that exact connector, and restores
@@ -1371,6 +1419,32 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Combine the primary + isolated behaviors: the virtual display becomes primary while remaining far away from the physical monitors.</td>
     </tr>
 </table>
+
+On Windows, non-isolated extended application streams preserve Windows'
+relative monitor arrangement. Per-client directions can be saved under
+**Devices → Arrange client displays**. The editor supports left, right, above, below,
+alignment and gap, plus **Preserve / manual**. A saved direction or explicit
+manual rule takes precedence over isolated positioning for that client.
+`dd_configuration_option = verify_only` verifies the existing extended target
+and preserves topology and positions; use an automatic preparation option to
+apply a saved direction. Shared displays use the application layout.
+
+### virtual_display_max_clients
+
+Maximum paired-client identities that may own virtual displays at once, from
+`1` to `8`. The default is `4`; set `virtual_display_max_clients = 6` to allow
+six clients. Normal game streams and Remote Monitor share one slot when they
+belong to the same paired client. Retained or retryable displays still own a
+slot until explicitly released. Lowering the setting does not unplug existing
+owners; it prevents new identities until usage falls below the limit.
+
+The Windows driver supports eight temporary per-client displays, independently
+of the permanent-display setting. Linux also clamps this limit to configured
+outputs actually present in its managed kernel pool. New Linux pools provision
+eight outputs. An existing four-output pool is preserved during updates; reboot
+or safely reprovision the pool with the host and compositor stopped before
+requesting more than four clients. The topology editor reports the effective
+limit. Arbitrarily many displays are not supported.
 
 ### remote_monitor_mute_audio
 
@@ -3225,7 +3299,7 @@ are detected during the stream. The host log reports hook readiness or failure.
         <td colspan="2">
             Controls how fast the virtual display refreshes, which decides how soon each game frame is captured. Windows only hands Vibeshine a new frame when it redraws the display, so on a display that refreshes at the stream rate a frame that finishes just after a redraw waits up to a whole refresh before capture, and frames reach the client unevenly. A faster virtual display captures each frame closer to when the game drew it. None of the modes change the stream FPS or bandwidth, and all but @code{}disabled@endcode cap games to the stream rate.
             <br>
-            @code{}vrr@endcode holds the virtual display at a fixed 1000 Hz whatever the stream rate, so every frame is captured within 1 ms of being drawn and its RTP timestamp carries accurate game timing for clients with VRR pacing. @code{}enabled@endcode keeps the display at 4x the stream rate (within ~2 ms at 120 FPS) and captures at most 2x the stream rate on the desktop. @code{}legacy@endcode uses a fixed 2x refresh, as older versions did. @code{}disabled@endcode leaves the display at the stream rate and turns off the matching game cap. Existing boolean values remain compatible: true maps to enabled and false maps to disabled.
+            @code{}vrr@endcode requests a fixed 1000 Hz virtual display whatever the stream rate, reducing the delay between game presentation and capture for clients with VRR pacing. On Windows 10 and Windows 11 before 24H2, refresh is capped at the maximum allowed by the OS's 1 MHz horizontal scan-frequency limit for the selected resolution (about 462.962 Hz at 3840x2160). Manual refresh settings and matching FPS-to-refresh mappings take precedence over the automatic capture policy, subject to this OS limit; mapping rules match the requested stream FPS. @code{}enabled@endcode keeps the display at 4x the stream rate and captures at most 2x the stream rate on the desktop. @code{}legacy@endcode uses a fixed 2x refresh, as older versions did. @code{}disabled@endcode leaves the display at the stream rate and turns off the matching game cap. Existing boolean values remain compatible: true maps to enabled and false maps to disabled.
         </td>
     </tr>
     <tr>
@@ -4684,6 +4758,12 @@ Default: `false`
 
 ## Playnite Integration
 
+### playnite_install_dir
+
+Optional host directory containing `Playnite.DesktopApp.exe`. Use the Playnite directory picker under Integrations when automatic detection cannot find the installation, then save before installing the plugin. This setting also supplies the executable location for game and fullscreen launches. Installed copies retain their extensions in the user's RoamingAppData; portable copies use `Extensions` inside the selected directory. Clear the setting to restore automatic detection.
+
+Default: empty (automatic detection)
+
 ### playnite_enabled
 
 Enables Playnite library synchronization and launch support on Windows. Disable this setting to use Steam by itself, or leave both providers enabled to combine their catalogs. Playnite is unavailable on Linux.
@@ -4962,3 +5042,32 @@ Sets the maximum network packet size used for streaming. Set `0` to use the defa
   <summary></summary>
   [TOC]
 </details>
+
+## Managed application focus
+
+Focus policy is shared by managed Steam, Lutris and Playnite launches. Windows
+uses foreground window activation, Linux uses the selected KDE/KWin desktop
+session for both native Wayland and Xwayland games, and macOS activates the
+running game application. Manual applications and Desktop launches do not
+start automatic focus. A pending focus session is cancelled when its game
+session ends. Missing windows are retried until the timeout; only confirmed
+foreground activations consume the focus count.
+
+### app_focus_attempts
+
+Number of confirmed focus applications after launch, from 0 to 100. Default:
+`3`. Set to `0` to disable automatic focus.
+
+### app_focus_timeout_secs
+
+Total launch-time focus window in seconds, from 0 to 300. Default: `15`. Set to
+`0` to disable automatic focus.
+
+### app_focus_exit_on_first
+
+Stop after the first confirmed foreground activation. Default: `false`.
+
+The previous `playnite_focus_attempts`, `playnite_focus_timeout_secs` and
+`playnite_focus_exit_on_first` keys remain readable aliases. Explicit shared
+keys take precedence. The web interface removes the corresponding old key
+when saving a shared focus setting, including resetting it to its default.

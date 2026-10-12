@@ -36,7 +36,7 @@ internal static class LayoutTest {
     var scroll = Find<ScrollViewer>(root);
     int checks = 0;
     foreach (bool options in new[] { false, true }) {
-      foreach (string name in new[] { "_installSection", "_installVirtualDisplaySection", "_installVirtualGamepadSection" })
+      foreach (string name in new[] { "_installSection", "_installVirtualDisplaySection", "_installVirtualGamepadSection", "_installUsbIpTransportSection" })
         Field<Border>(window, name).Visibility = options ? Visibility.Visible : Visibility.Collapsed;
       foreach (bool expanded in new[] { false, true }) {
         Find<Expander>(root).IsExpanded = expanded;

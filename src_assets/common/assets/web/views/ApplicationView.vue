@@ -111,6 +111,7 @@ interface EditorForm {
   lutrisService: string;
   lutrisServiceId: string;
   elevated: boolean;
+  dualsenseHaptics: boolean;
   autoDetach: boolean;
   waitAll: boolean;
   excludeGlobalPrepCmd: boolean;
@@ -1228,6 +1229,7 @@ const editableKeys = new Set([
   'lutris-service',
   'lutris-service-id',
   'elevated',
+  'dualsense-haptics',
   'auto-detach',
   'wait-all',
   'exclude-global-prep-cmd',
@@ -1317,6 +1319,7 @@ function emptyForm(): EditorForm {
     lutrisService: '',
     lutrisServiceId: '',
     elevated: false,
+    dualsenseHaptics: false,
     autoDetach: true,
     waitAll: true,
     excludeGlobalPrepCmd: false,
@@ -1769,6 +1772,7 @@ function hydrate(app: AppRecord): void {
     lutrisService: asString(app['lutris-service']),
     lutrisServiceId: asString(app['lutris-service-id']),
     elevated: asBoolean(app.elevated),
+    dualsenseHaptics: asBoolean(app['dualsense-haptics']),
     autoDetach: hasExplicitAutoDetach ? asBoolean(app['auto-detach']) : true,
     waitAll: hasExplicitWaitAll ? asBoolean(app['wait-all']) : true,
     excludeGlobalPrepCmd: asBoolean(app['exclude-global-prep-cmd']),
@@ -1957,6 +1961,7 @@ function buildPayload(): AppRecord {
       ? form.cmd.split(/\r?\n/).filter((line) => line.length > 0)
       : form.cmd,
     elevated: form.elevated,
+    'dualsense-haptics': form.dualsenseHaptics,
     'auto-detach': form.autoDetach,
     'wait-all': form.waitAll,
     'exclude-global-prep-cmd': form.excludeGlobalPrepCmd,
@@ -3588,6 +3593,17 @@ onBeforeUnmount(() => {
             </select>
           </label>
 
+          <SettingRow
+            v-if="isWindowsHost"
+            :label="t('apps.dualsense_haptics')"
+            :description="t('apps.dualsense_haptics_desc')"
+            control-id="app-dualsense-haptics"
+          >
+            <label class="vs-checkbox">
+              <input id="app-dualsense-haptics" v-model="form.dualsenseHaptics" type="checkbox" />
+              <span>{{ t('apps.dualsense_haptics') }}</span>
+            </label>
+          </SettingRow>
           <div v-if="isWindowsHost" class="lossless-editor editor-field--full">
             <div class="lossless-editor__heading">
               <div>

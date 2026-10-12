@@ -301,6 +301,9 @@ namespace webrtc_stream {
         session->framegen_refresh_millihz = framegen_policy.framegen_refresh_millihz;
         session->framegen_refresh_multiplier = framegen_policy.refresh_multiplier;
         session->framegen_fixed_refresh = framegen_policy.fixed_refresh;
+        if (uses_virtual_display) {
+          display_helper_integration::helpers::resolve_virtual_display_refresh(config::video, *session);
+        }
       };
       BOOST_LOG(debug) << "Display helper: WebRTC session prep client='" << session->client_name
                        << "' allow_display_changes=" << allow_display_changes
@@ -3161,7 +3164,7 @@ namespace webrtc_stream {
       // the desktop (0) so the launch session and capture key stay well-formed.
       const int effective_app_id = requested_app_id > 0 ? requested_app_id : std::max(current_app_id, 0);
       const bool capture_already_active = webrtc_capture.active.load(std::memory_order_acquire);
-#ifdef __linux__
+#if defined(_WIN32) || defined(__linux__)
       // A fresh desktop capture can inherit RTSP's output after its app exits.
       // It must not attach to an ended generation while that output drains.
       if (!capture_already_active && remote_display_topology::instance().normal_game_release_pending()) {
@@ -3295,7 +3298,7 @@ namespace webrtc_stream {
       desired_key = build_capture_config_key(effective_app_id, video_config, options);
 
       if (!rtsp_active) {
-#if defined(_WIN32) || defined(__linux__)
+#ifdef _WIN32
         stream::cancel_paused_display_cleanup();
 #endif
         // Ensure the latest config is applied before starting capture.
@@ -3329,25 +3332,11 @@ namespace webrtc_stream {
                            << " for client '" << launch_session->client_name << "'.";
           (void) display_helper_integration::disarm_pending_restore();
           auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
-          bool applied = false;
-          display_helper_integration::ApplyVerificationTicket verification_ticket;
           if (!request) {
-            BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
-          } else if (!(applied = display_helper_integration::apply(*request, &verification_ticket))) {
-            BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
-          }
-
-          if (applied) {
-            // Soft gate: wait (bounded) for the helper's apply verification before
-            // probing encoders so the first capture isn't grabbed mid-modeset.
-            const auto verification_status =
-              display_helper_integration::wait_for_apply_verification(
-                verification_ticket,
-                display_helper_integration::kApplyVerificationTimeout);
-            if (verification_status != display_helper_integration::ApplyVerificationStatus::Verified) {
-              BOOST_LOG(warning)
-                << "Display helper validation did not confirm the WebRTC target; continuing with GPU capability probing.";
-            }
+            BOOST_LOG(warning) << "Display helper: no display configuration request; using the existing display.";
+          } else if (!display_helper_integration::apply(
+                       *request, nullptr, {}, display_helper_integration::ApplyRetryPolicy::StreamStart)) {
+            BOOST_LOG(warning) << "Display helper: display setup did not complete; continuing WebRTC stream startup with the existing display.";
           }
         }
 #elif defined(__linux__)
@@ -3457,7 +3446,7 @@ namespace webrtc_stream {
       }
 
       std::shared_ptr<void> normal_display_capture;
-#ifdef __linux__
+#if defined(_WIN32) || defined(__linux__)
       const auto app = proc::proc.active_session_guard();
       if (app.normal_vdd_identity_token != 0) {
         normal_display_capture = remote_display_topology::instance().retain_normal_game_capture(

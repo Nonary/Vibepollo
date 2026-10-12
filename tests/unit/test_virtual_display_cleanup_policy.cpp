@@ -3,11 +3,149 @@
  * @brief Pure retained-display cleanup and restore-order contracts.
  */
 #include <gtest/gtest.h>
+#include <src/platform/windows/virtual_display_policy.h>
+
+#include <optional>
+#include <string>
+
+TEST(VirtualDisplayCleanupPolicy, RetainedResumeRecoveryExcludesLiveAndSecondaryPeers) {
+  EXPECT_TRUE(VDISPLAY::policy::should_rearm_retained_game_output_recovery(
+    true,
+    true,
+    false,
+    true,
+    41,
+    "retained-owner"
+  ));
+  // An existing capture is a live peer; its worker must not be replaced.
+  EXPECT_FALSE(VDISPLAY::policy::should_rearm_retained_game_output_recovery(
+    false,
+    true,
+    false,
+    true,
+    41,
+    "retained-owner"
+  ));
+  EXPECT_FALSE(VDISPLAY::policy::should_rearm_retained_game_output_recovery(
+    true,
+    true,
+    true,
+    true,
+    41,
+    "retained-owner"
+  ));
+  EXPECT_FALSE(VDISPLAY::policy::should_rearm_retained_game_output_recovery(
+    true,
+    false,
+    false,
+    true,
+    41,
+    "retained-owner"
+  ));
+  EXPECT_FALSE(VDISPLAY::policy::should_rearm_retained_game_output_recovery(
+    true,
+    true,
+    false,
+    false,
+    41,
+    "retained-owner"
+  ));
+  EXPECT_FALSE(VDISPLAY::policy::should_rearm_retained_game_output_recovery(
+    true,
+    true,
+    false,
+    true,
+    0,
+    "retained-owner"
+  ));
+  EXPECT_FALSE(VDISPLAY::policy::should_rearm_retained_game_output_recovery(
+    true,
+    true,
+    false,
+    true,
+    41,
+    ""
+  ));
+}
+
+TEST(VirtualDisplayCleanupPolicy, PausedRetainedResumeRearmsBothReusePathsOnlyAfterAdmission) {
+  struct recovery_context_t {
+    std::string device_id;
+    unsigned int width;
+    unsigned int height;
+    unsigned int refresh_millihz;
+    bool hdr;
+
+    bool operator==(const recovery_context_t &) const = default;
+  };
+
+  const recovery_context_t retained_mode {
+    .device_id = R"(\\.\DISPLAY17)",
+    .width = 2560,
+    .height = 1440,
+    .refresh_millihz = 117'500,
+    .hdr = true,
+  };
+  bool recovery_armed = false;
+  std::optional<recovery_context_t> scheduled_context;
+
+  {
+    VDISPLAY::policy::retained_resume_recovery_rearm_t rejected_resume;
+    rejected_resume.stage(VDISPLAY::policy::retained_resume_reuse_path_e::capture_ready_output, [&] {
+      recovery_armed = true;
+    });
+    EXPECT_TRUE(rejected_resume.pending());
+    EXPECT_EQ(
+      rejected_resume.path(),
+      VDISPLAY::policy::retained_resume_reuse_path_e::capture_ready_output
+    );
+    EXPECT_FALSE(recovery_armed);
+    EXPECT_FALSE(rejected_resume.admit_and_commit([] {
+      return false;
+    }));
+    EXPECT_FALSE(rejected_resume.pending());
+    EXPECT_FALSE(rejected_resume.path());
+  }
+  EXPECT_FALSE(recovery_armed);
+
+  for (const auto reuse_path : {
+         VDISPLAY::policy::retained_resume_reuse_path_e::prepared_existing_display,
+         VDISPLAY::policy::retained_resume_reuse_path_e::capture_ready_output,
+       }) {
+    VDISPLAY::policy::retained_resume_recovery_rearm_t accepted_resume;
+    bool pending_owner_published = false;
+    recovery_armed = false;
+    scheduled_context.reset();
+    accepted_resume.stage(reuse_path, [&, retained_mode] {
+      EXPECT_TRUE(pending_owner_published);
+      recovery_armed = true;
+      scheduled_context = retained_mode;
+    });
+    EXPECT_TRUE(accepted_resume.pending());
+    EXPECT_EQ(accepted_resume.path(), reuse_path);
+    EXPECT_FALSE(recovery_armed);
+    EXPECT_TRUE(accepted_resume.admit_and_commit([&] {
+      pending_owner_published = true;
+      return true;
+    }));
+    EXPECT_TRUE(recovery_armed);
+    EXPECT_EQ(scheduled_context, retained_mode);
+    EXPECT_FALSE(accepted_resume.pending());
+    EXPECT_FALSE(accepted_resume.path());
+  }
+
+  VDISPLAY::policy::retained_resume_recovery_rearm_t no_rearm;
+  bool admitted_without_rearm = false;
+  EXPECT_TRUE(no_rearm.admit_and_commit([&] {
+    admitted_without_rearm = true;
+    return true;
+  }));
+  EXPECT_TRUE(admitted_without_rearm);
+}
 
 #ifdef _WIN32
   #include <src/platform/windows/virtual_display.h>
   #include <src/platform/windows/virtual_display_cleanup.h>
-  #include <src/platform/windows/virtual_display_policy.h>
 
 TEST(VirtualDisplayCleanupPolicy, OwnedProbeRequestDoesNotImplyCaptureReadiness) {
   const VDISPLAY::ensure_display_result result {

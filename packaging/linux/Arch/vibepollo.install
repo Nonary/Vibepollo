@@ -1,5 +1,9 @@
 # shellcheck shell=bash
 
+# Pacman sources this file for install, upgrade and removal. Keep parsed
+# command output stable in every lifecycle hook.
+export LC_ALL=C
+
 do_secure_executables() {
   # pacman's own systemd-sysusers hook only runs after the whole transaction,
   # but this scriptlet starts vibeshine-vkms-control.socket (SocketGroup=
@@ -32,8 +36,8 @@ do_secure_executables() {
   chown root:root "$broker"
   chmod 0700 "$broker"
   setcap cap_kill,cap_setgid,cap_setuid=p "$broker" || return 1
-  [[ $(stat -c '%U:%G:%a:%F' -- "$broker") == \
-     'root:root:700:regular file' ]] || return 1
+  [[ $(stat -c '%U:%G:%a' -- "$broker") == \
+     'root:root:700' ]] || return 1
   broker_capabilities=$(getcap "$broker" 2>/dev/null)
   [[ "$broker_capabilities" == "$broker cap_kill,cap_setgid,cap_setuid=p" ]] || {
     echo 'error: the root-only session broker has unexpected file capabilities.' >&2
@@ -50,8 +54,8 @@ do_secure_executables() {
   chown root:vibepollo "$host"
   chmod 0750 "$host"
   setcap cap_sys_admin,cap_sys_nice=p "$host" || return 1
-  [[ $(stat -c '%U:%G:%a:%F' -- "$host") == \
-     'root:vibepollo:750:regular file' ]] || return 1
+  [[ $(stat -c '%U:%G:%a' -- "$host") == \
+     'root:vibepollo:750' ]] || return 1
   host_capabilities=$(getcap "$host" 2>/dev/null)
   [[ "$host_capabilities" == "$host cap_sys_admin,cap_sys_nice=p" ]] || {
     echo 'error: the private Vibepollo host has unexpected file capabilities.' >&2
@@ -273,8 +277,9 @@ vibepollo_prepare_host_upgrade_fence() (
   local temporary
   [[ ! -L "$vibepollo_host_upgrade_dropin_dir" && ! -L "$vibepollo_host_upgrade_dropin" ]] || exit 1
   install -d -o root -g root -m 0755 -- "$vibepollo_host_upgrade_dropin_dir" || exit 1
-  [[ $(stat -c '%u:%g:%a:%F' -- "$vibepollo_host_upgrade_dropin_dir") == \
-     '0:0:755:directory' ]] || exit 1
+  [[ -d "$vibepollo_host_upgrade_dropin_dir" && ! -L "$vibepollo_host_upgrade_dropin_dir" &&
+     $(stat -c '%u:%g:%a' -- "$vibepollo_host_upgrade_dropin_dir") == \
+     '0:0:755' ]] || exit 1
   temporary=$(mktemp /run/vibepollo-host-upgrade.XXXXXX) || exit 1
   trap 'rm -f -- "$temporary"' EXIT
   [[ "$vibepollo_upgrade_kill_mode" =~ ^(mixed|process|control-group)$ ]] || exit 1
@@ -282,13 +287,15 @@ vibepollo_prepare_host_upgrade_fence() (
     "$vibepollo_upgrade_kill_mode" >"$temporary" || exit 1
   chmod 0600 -- "$temporary" || exit 1
   if [[ -e "$vibepollo_host_upgrade_dropin" ]]; then
-    [[ $(stat -c '%u:%g:%a:%h:%F' -- "$vibepollo_host_upgrade_dropin") == \
-       '0:0:644:1:regular file' ]] || exit 1
+    [[ -f "$vibepollo_host_upgrade_dropin" && ! -L "$vibepollo_host_upgrade_dropin" &&
+       $(stat -c '%u:%g:%a:%h' -- "$vibepollo_host_upgrade_dropin") == \
+       '0:0:644:1' ]] || exit 1
     cmp -s -- "$temporary" "$vibepollo_host_upgrade_dropin" || exit 1
   fi
   install -o root -g root -m 0644 -- "$temporary" "$vibepollo_host_upgrade_dropin" || exit 1
-  [[ $(stat -c '%u:%g:%a:%h:%F' -- "$vibepollo_host_upgrade_dropin") == \
-     '0:0:644:1:regular file' ]] || exit 1
+  [[ -f "$vibepollo_host_upgrade_dropin" && ! -L "$vibepollo_host_upgrade_dropin" &&
+     $(stat -c '%u:%g:%a:%h' -- "$vibepollo_host_upgrade_dropin") == \
+     '0:0:644:1' ]] || exit 1
 )
 
 vibepollo_activate_host_upgrade_fence() {
@@ -480,8 +487,8 @@ vibepollo_restore_instances_are_quiescent() (
 
 vibepollo_privileged_helper_is_safe() {
   [[ -f "$1" && ! -L "$1" && -x "$1" &&
-     $(stat -c '%u:%g:%a:%h:%F' -- "$1") == \
-       '0:0:755:1:regular file' ]]
+     $(stat -c '%u:%g:%a:%h' -- "$1") == \
+       '0:0:755:1' ]]
 }
 
 vibepollo_run_optional_legacy_command() {
@@ -502,7 +509,7 @@ vibepollo_runtime_root_is_safe_or_absent() {
     return 0
   fi
   [[ -d "$vibepollo_runtime_root" && ! -L "$vibepollo_runtime_root" &&
-     $(stat -c '%u:%g:%a:%F' -- "$vibepollo_runtime_root") == '0:0:755:directory' ]]
+     $(stat -c '%u:%g:%a' -- "$vibepollo_runtime_root") == '0:0:755' ]]
 }
 
 vibepollo_legacy_handoff_process_is_running() {
@@ -652,8 +659,8 @@ vibepollo_preserved_quiesce_is_safe() {
      ! -e "$vibepollo_legacy_prelogin_marker" && ! -L "$vibepollo_legacy_prelogin_marker" ]] || return 1
   if [[ -e "$vibepollo_host_upgrade_dropin" || -L "$vibepollo_host_upgrade_dropin" ]]; then
     [[ -f "$vibepollo_host_upgrade_dropin" && ! -L "$vibepollo_host_upgrade_dropin" &&
-       $(stat -c '%u:%g:%a:%h:%F' -- "$vibepollo_host_upgrade_dropin") == \
-         '0:0:644:1:regular file' ]] || return 1
+       $(stat -c '%u:%g:%a:%h' -- "$vibepollo_host_upgrade_dropin") == \
+         '0:0:644:1' ]] || return 1
     contents=$(sed -n '1,6p' -- "$vibepollo_host_upgrade_dropin") || return 1
     [[ "$contents" == $'[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=process\nSendSIGKILL=no' ||
        "$contents" == $'[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=mixed\nSendSIGKILL=no' ||
@@ -916,8 +923,8 @@ vibepollo_unmask_host_for_controller() {
   vibepollo_unit_is_quiescent vibepollo-session-exec.socket || return 1
   if [[ -e "$vibepollo_host_upgrade_dropin" || -L "$vibepollo_host_upgrade_dropin" ]]; then
     [[ -f "$vibepollo_host_upgrade_dropin" && ! -L "$vibepollo_host_upgrade_dropin" &&
-       $(stat -c '%u:%g:%a:%h:%F' -- "$vibepollo_host_upgrade_dropin") == \
-         '0:0:644:1:regular file' ]] || return 1
+       $(stat -c '%u:%g:%a:%h' -- "$vibepollo_host_upgrade_dropin") == \
+         '0:0:644:1' ]] || return 1
     contents=$(sed -n '1,6p' -- "$vibepollo_host_upgrade_dropin") || return 1
     [[ "$contents" == $'[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=process\nSendSIGKILL=no' ||
        "$contents" == $'[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=mixed\nSendSIGKILL=no' ||

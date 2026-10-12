@@ -21,3 +21,8 @@ The connector settings are available in Playnite Desktop Mode under
 `Add-ons -> Extension settings -> Generic -> Vibepollo Playnite Connector`.
 Settings control whether the connector runs, whether library changes notify
 Vibepollo, and whether verbose diagnostic logging is enabled.
+
+Waveform haptics retains the connector readiness and environment acknowledgments
+used by the native launcher. Requested hooks are prepared in `OnGameStarting`;
+failed preparation cancels the launch and notifies the launcher. Steam uses the
+native helper, including when Playnite runs as a 32-bit process.

@@ -40,6 +40,12 @@ extern "C" {
 #include "network.h"
 #include "nvhttp.h"
 #include "pyrowave_protocol.h"
+#include "pyrowave_bandwidth.h"
+#if defined(_WIN32)
+  #include "platform/windows/misc.h"
+#elif defined(__linux__)
+  #include "platform/linux/routed_link.h"
+#endif
 #include "rtsp.h"
 #include "rtsp_pending_policy.h"
 #include "stream.h"
@@ -207,6 +213,7 @@ namespace rtsp_stream {
     snapshot->client_name = client_name;
     snapshot->device_name = device_name;
     snapshot->input_only = input_only;
+    snapshot->gcpersist = gcpersist;
     snapshot->client_display_mode_override = client_display_mode_override;
     snapshot->client_display_refresh_millihz = client_display_refresh_millihz;
     snapshot->enable_hdr = enable_hdr;
@@ -234,9 +241,6 @@ namespace rtsp_stream {
     snapshot->frame_generation_provider = frame_generation_provider;
     snapshot->lossless_scaling_target_fps = lossless_scaling_target_fps;
     snapshot->lossless_scaling_rtss_limit = lossless_scaling_rtss_limit;
-#ifdef _WIN32
-    snapshot->display_helper_gate = display_helper_gate;
-#endif
 
     return snapshot;
   }
@@ -2325,6 +2329,32 @@ namespace rtsp_stream {
       const bool pyrowave_adaptive_fec = args.contains(pyrowave::protocol::ANNOUNCE_ADAPTIVE_FEC);
       config.monitor.pyrowave_framing = pyrowave::policy::select_framing(pyrowave_adaptive_fec, pyrowave_features);
       config.monitor.packetsize = config.packetsize;
+      config.monitor.pyrowave_min_parity_shards = std::max(2, config.minRequiredFecPackets);
+      if (const auto it = args.find("x-ss-video[0].pyrowaveLinkMbps"sv); it != args.end()) {
+        const auto link_mbps = util::from_view(it->second);
+        if (link_mbps <= 0 || link_mbps > 400000) {
+          respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+          return false;
+        }
+        config.monitor.pyrowave_peer_link_bps = std::uint64_t(link_mbps) * 1'000'000;
+      }
+      if (const auto it = args.find("x-ss-video[0].pyrowavePaceMbps"sv); it != args.end()) {
+        const auto pace_mbps = util::from_view(it->second);
+        if (pace_mbps <= 0 || pace_mbps > 400000) {
+          respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+          return false;
+        }
+        config.monitor.pyrowave_peer_pace_bps = std::uint64_t(pace_mbps) * 1'000'000;
+      }
+      if (const auto it = args.find("x-ss-video[0].pyrowaveHybrid"sv); it != args.end() && it->second != "0"sv) {
+        respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+        return false;
+      }
+      // Retired compression transports must not be negotiated as native framing.
+      if (const auto it = args.find("x-ss-video[0].pyrowaveCompression"sv); it != args.end() && it->second != "0"sv) {
+        respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+        return false;
+      }
       BOOST_LOG(info) << "Client requested PyroWave: framing="sv
                       << (config.monitor.pyrowave_framing == pyrowave::policy::framing_e::records ? "records"sv : "length-prefixed"sv)
                       << ", features="sv << pyrowave_features.value_or(0)
@@ -2358,6 +2388,28 @@ namespace rtsp_stream {
     }
     apply_rtx_hdr_stream_policy(config.monitor);
 
+#if defined(_WIN32) || defined(__linux__)
+    if (pyrowave_session) {
+      boost::system::error_code local_ec, remote_ec;
+      const auto local = socket->sock.local_endpoint(local_ec);
+      const auto remote = socket->sock.remote_endpoint(remote_ec);
+      if (!local_ec && !remote_ec) {
+        const auto link_bps = pyrowave::bandwidth::pacing_link_bps(
+          platf::routed_link_bps(local.address(), remote.address()), config.monitor.pyrowave_peer_link_bps);
+        if (link_bps) {
+          const auto limit_kbps = static_cast<std::int64_t>(link_bps / 1000);
+          const auto requested = configuredBitrateKbps ? configuredBitrateKbps : config.monitor.bitrate;
+          configuredBitrateKbps = std::min<std::int64_t>(requested, limit_kbps);
+          if (configuredBitrateKbps < requested) {
+            BOOST_LOG(warning) << "PyroWave bandwidth capped at " << configuredBitrateKbps
+                               << " kbps for the routed wired link, including FEC and headers";
+          }
+        }
+      }
+    }
+
+#endif
+
     // If the client sent a configured bitrate, we will choose the actual bitrate ourselves
     // by using FEC percentage and audio quality settings. If the calculated bitrate ends up
     // too low, we'll allow it to exceed the limits rather than reducing the encoding bitrate
@@ -2372,7 +2424,7 @@ namespace rtsp_stream {
       // If the FEC percentage isn't too high, adjust the configured bitrate to ensure video
       // traffic doesn't exceed the user's selected bitrate when the FEC shards are included.
       // PyroWave only adds parity to its few critical packets (see stream.cpp), so it
-      // keeps that share.
+      // reserves its baseline parity and packet overhead in the per-frame budget.
       if (config::stream.fec_percentage <= 80 && !pyrowave_session) {
         configuredBitrateKbps /= 100.f / (100 - config::stream.fec_percentage);
       }
@@ -2380,11 +2432,20 @@ namespace rtsp_stream {
       // Adjust the bitrate to account for audio traffic bandwidth usage (capped at 20% reduction).
       // The bitrate per channel is 256 Kbps for high quality mode and 96 Kbps for normal quality.
       auto audioBitrateAdjustment = (config.audio.flags[audio::config_t::HIGH_QUALITY] ? 256 : 96) * config.audio.channels;
-      configuredBitrateKbps -= std::min((std::int64_t) audioBitrateAdjustment, configuredBitrateKbps / 5);
+      // Audio adds two parity packets for every four data packets. Include
+      // that fixed 50% FEC cost inside PyroWave's total wire budget too.
+      if (pyrowave_session) audioBitrateAdjustment = (audioBitrateAdjustment * 3 + 1) / 2;
+      configuredBitrateKbps -= pyrowave_session ? audioBitrateAdjustment :
+                                                   std::min((std::int64_t) audioBitrateAdjustment, configuredBitrateKbps / 5);
 
       // Reduce it by another 500Kbps to account for A/V packet overhead and control data
       // traffic (capped at 10% reduction).
-      configuredBitrateKbps -= std::min((std::int64_t) 500, configuredBitrateKbps / 10);
+      configuredBitrateKbps -= pyrowave_session ? 500 : std::min((std::int64_t) 500, configuredBitrateKbps / 10);
+      if (pyrowave_session && configuredBitrateKbps <= 0) {
+        BOOST_LOG(warning) << "PyroWave bandwidth budget cannot accommodate audio and control overhead";
+        respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+        return false;
+      }
 
       BOOST_LOG(debug) << "Final adjusted video encoding bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
       config.monitor.bitrate = (int) configuredBitrateKbps;

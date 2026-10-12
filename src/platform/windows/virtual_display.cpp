@@ -1,6 +1,7 @@
 #include "virtual_display.h"
 
 #include "src/config.h"
+#include "src/color_profile_policy.h"
 #include "src/display_device.h"
 #include "src/logging.h"
 #include "src/platform/windows/display_helper_coordinator.h"
@@ -13,7 +14,9 @@
 #include <filesystem>
 #include <fstream>
 #include <icm.h>
+#include <iterator>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include <boost/algorithm/string/predicate.hpp>
@@ -33,16 +36,14 @@ namespace {
   struct advanced_color_api_t {
     using add_fn_t = HRESULT(WINAPI *)(WCS_PROFILE_MANAGEMENT_SCOPE, PCWSTR, LUID, UINT32, BOOL, BOOL);
     using remove_fn_t = HRESULT(WINAPI *)(WCS_PROFILE_MANAGEMENT_SCOPE, PCWSTR, LUID, UINT32, BOOL);
-    using set_default_fn_t = HRESULT(WINAPI *)(WCS_PROFILE_MANAGEMENT_SCOPE, PCWSTR, COLORPROFILETYPE, COLORPROFILESUBTYPE, LUID, UINT32);
     using get_default_fn_t = HRESULT(WINAPI *)(WCS_PROFILE_MANAGEMENT_SCOPE, LUID, UINT32, COLORPROFILETYPE, COLORPROFILESUBTYPE, LPWSTR *);
 
     add_fn_t add {};
     remove_fn_t remove {};
-    set_default_fn_t set_default {};
     get_default_fn_t get_default {};
 
     bool available() const {
-      return add && remove && set_default && get_default;
+      return add && remove && get_default;
     }
   };
 
@@ -55,7 +56,6 @@ namespace {
       }
       result.add = reinterpret_cast<advanced_color_api_t::add_fn_t>(GetProcAddress(module, "ColorProfileAddDisplayAssociation"));
       result.remove = reinterpret_cast<advanced_color_api_t::remove_fn_t>(GetProcAddress(module, "ColorProfileRemoveDisplayAssociation"));
-      result.set_default = reinterpret_cast<advanced_color_api_t::set_default_fn_t>(GetProcAddress(module, "ColorProfileSetDisplayDefaultAssociation"));
       result.get_default = reinterpret_cast<advanced_color_api_t::get_default_fn_t>(GetProcAddress(module, "ColorProfileGetDisplayDefault"));
       return result;
     }();
@@ -274,16 +274,38 @@ namespace VDISPLAY {
       TRUE,
       TRUE
     );
-    result.default_status = api.set_default(
-      scope,
-      profile_name.c_str(),
-      CPT_ICC,
-      static_cast<COLORPROFILESUBTYPE>(CPST_EXTENDED_DISPLAY_COLOR_MODE),
-      target->target_adapter_id,
-      target->source_id
-    );
-    result.success = SUCCEEDED(result.association_status) || SUCCEEDED(result.default_status);
+    // add(setAsDefault=TRUE) already activates the profile. A second default
+    // assignment duplicates the display notification and can mask add failures.
+    result.success = SUCCEEDED(result.association_status);
     return result;
+  }
+
+  bool associate_hdr_profile(
+    const std::wstring &monitor_device_path,
+    const std::wstring &profile_name,
+    const bool system_wide,
+    const std::function<bool(LSTATUS *)> &legacy_association,
+    LSTATUS *out_status
+  ) {
+    return color_profile_policy::associate(
+      [&]() {
+        const auto result = set_advanced_color_profile(monitor_device_path, profile_name, system_wide);
+        if (out_status) {
+          *out_status = result.success ? ERROR_SUCCESS :
+                        !result.target_found ? ERROR_NOT_FOUND :
+                        HRESULT_FACILITY(result.association_status) == FACILITY_WIN32 ?
+                          HRESULT_CODE(result.association_status) : ERROR_GEN_FAILURE;
+        }
+        if (result.api_available && !result.success) {
+          BOOST_LOG(warning) << "HDR profile: Advanced Color activation failed (hr=0x"
+                             << std::hex << static_cast<unsigned long>(result.association_status) << std::dec
+                             << ", scope=" << (system_wide ? "system_wide" : "current_user")
+                             << "); no registry association written.";
+        }
+        return result;
+      },
+      [&]() { return legacy_association(out_status); }
+    );
   }
 
   advanced_color_profile_result_t remove_advanced_color_profile(
@@ -461,6 +483,7 @@ namespace VDISPLAY {
 
 namespace VDISPLAY_SUNSHINE {
   using VDISPLAY::DRIVER_STATUS;
+  using VDISPLAY::TrackedDisplayCleanupTarget;
   using VDISPLAY::VirtualDisplayCreationResult;
   using VDISPLAY::VirtualDisplayInfo;
   using VDISPLAY::VirtualDisplayRecoveryParams;
@@ -506,6 +529,12 @@ namespace VDISPLAY_SUNSHINE {
   void request_virtual_display_recovery_shutdown();
   void join_virtual_display_recovery_monitors();
   bool is_virtual_display_guid_tracked(const GUID &guid);
+  std::vector<TrackedDisplayCleanupTarget> tracked_display_cleanup_targets();
+  bool tracked_display_cleanup_target_matches(
+    const std::array<std::uint8_t, 16> &guid_bytes,
+    const std::string &device_id);
+  bool remove_tracked_display_cleanup_target(const TrackedDisplayCleanupTarget &target);
+  std::optional<bool> classify_virtual_display_output(const std::string &output_identifier);
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
   std::optional<std::string> resolveVirtualDisplayDeviceIdForClient(const std::string &client_name);
   std::optional<std::string> resolveActiveVirtualDisplayDeviceId(const std::string &preferred_output_identifier, const std::string &client_name, bool allow_any_fallback);
@@ -539,6 +568,7 @@ namespace VDISPLAY_SUDOVDA {
   using VDISPLAY::VirtualDisplayInfo;
   using VDISPLAY::VirtualDisplayRecoveryParams;
   using VDISPLAY::ensure_display_result;
+  using VDISPLAY::TrackedDisplayCleanupTarget;
 
   void closeVDisplayDevice();
   DRIVER_STATUS openVDisplayDevice();
@@ -580,6 +610,12 @@ namespace VDISPLAY_SUDOVDA {
   void request_virtual_display_recovery_shutdown();
   void join_virtual_display_recovery_monitors();
   bool is_virtual_display_guid_tracked(const GUID &guid);
+  std::vector<TrackedDisplayCleanupTarget> tracked_display_cleanup_targets();
+  bool tracked_display_cleanup_target_matches(
+    const std::array<std::uint8_t, 16> &guid_bytes,
+    const std::string &device_id);
+  bool remove_tracked_display_cleanup_target(const TrackedDisplayCleanupTarget &target);
+  std::optional<bool> classify_virtual_display_output(const std::string &output_identifier);
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
   std::optional<std::string> resolveVirtualDisplayDeviceIdForClient(const std::string &client_name);
   std::optional<std::string> resolveActiveVirtualDisplayDeviceId(const std::string &preferred_output_identifier, const std::string &client_name, bool allow_any_fallback);
@@ -939,6 +975,52 @@ namespace VDISPLAY {
     // currently selected backend owns all retained state.
     return VDISPLAY_SUNSHINE::has_retained_ensure_display() ||
            VDISPLAY_SUDOVDA::has_retained_ensure_display();
+  }
+
+  std::vector<TrackedDisplayCleanupTarget> tracked_display_cleanup_targets() {
+    auto result = VDISPLAY_SUNSHINE::tracked_display_cleanup_targets();
+    auto sudovda = VDISPLAY_SUDOVDA::tracked_display_cleanup_targets();
+    result.insert(result.end(), std::make_move_iterator(sudovda.begin()), std::make_move_iterator(sudovda.end()));
+    return result;
+  }
+
+  bool tracked_display_cleanup_target_matches(const TrackedDisplayCleanupTarget &target) {
+    switch (target.backend) {
+      case ensure_display_backend_e::sunshine:
+        return VDISPLAY_SUNSHINE::tracked_display_cleanup_target_matches(target.guid_bytes, target.device_id);
+      case ensure_display_backend_e::sudovda:
+        return VDISPLAY_SUDOVDA::tracked_display_cleanup_target_matches(target.guid_bytes, target.device_id);
+      case ensure_display_backend_e::none:
+        return false;
+    }
+    return false;
+  }
+
+  bool remove_tracked_display_cleanup_target(const TrackedDisplayCleanupTarget &target) {
+    switch (target.backend) {
+      case ensure_display_backend_e::sunshine:
+        return VDISPLAY_SUNSHINE::remove_tracked_display_cleanup_target(target);
+      case ensure_display_backend_e::sudovda:
+        return VDISPLAY_SUDOVDA::remove_tracked_display_cleanup_target(target);
+      case ensure_display_backend_e::none:
+        return false;
+    }
+    return false;
+  }
+
+  std::optional<bool> is_any_managed_virtual_display_output(const std::string &output_identifier) {
+    if (output_identifier.empty()) return std::nullopt;
+    const auto tracked_targets = tracked_display_cleanup_targets();
+    if (std::any_of(tracked_targets.begin(), tracked_targets.end(), [&](const auto &target) {
+          return boost::iequals(target.device_id, output_identifier);
+        })) {
+      return true;
+    }
+    const auto sunshine = VDISPLAY_SUNSHINE::classify_virtual_display_output(output_identifier);
+    const auto sudovda = VDISPLAY_SUDOVDA::classify_virtual_display_output(output_identifier);
+    if ((sunshine && *sunshine) || (sudovda && *sudovda)) return true;
+    if (!sunshine || !sudovda) return std::nullopt;
+    return false;
   }
 
   void cleanup_retained_ensure_display() {

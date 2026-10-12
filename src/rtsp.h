@@ -77,6 +77,7 @@ namespace rtsp_stream {
     int height;
     int fps;
     int gcmap;
+    bool gcpersist = false;
     int playstation_gamepad_mask {};
 
     struct app_metadata_t {
@@ -136,6 +137,9 @@ namespace rtsp_stream {
     std::optional<config::video_t::dd_t::config_option_e> dd_config_option_override;
     std::optional<std::string> output_name_override;
     bool display_config_preapplied = false;
+    // Preserve startup-owned displays and deferred setup across app replacement,
+    // even when the lock screen prevented APPLY from completing.
+    bool display_config_preapply_attempted = false;
     std::array<std::uint8_t, 16> virtual_display_guid_bytes {};
     std::string virtual_display_device_id;
     std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
@@ -169,17 +173,6 @@ namespace rtsp_stream {
 
     std::string client_cert;
 
-#ifdef _WIN32
-    enum class display_helper_gate_status_e : uint8_t {
-      proceed,  ///< Verified/ready (or no-op)
-      proceed_gaveup,  ///< Unknown/unavailable/timeout
-      abort_failed  ///< Verified failure (capture proceeds anyway; logged)
-    };
-
-    /// Soft gate: capture start waits (bounded) for the display helper's apply
-    /// verification so the first frames aren't grabbed mid-modeset.
-    std::shared_future<display_helper_gate_status_e> display_helper_gate;
-#endif
 
     /**
      * @brief Build an isolated copy for the background RTSP startup worker.

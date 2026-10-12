@@ -1,6 +1,7 @@
 #include "src/platform/windows/display_helper_request_policy.h"
 
 #include <algorithm>
+#include <cctype>
 
 namespace display_helper_integration::request_policy {
   namespace {
@@ -8,9 +9,15 @@ namespace display_helper_integration::request_policy {
       return layout != VirtualDisplayLayout::Exclusive;
     }
 
+    bool same_device(const std::string &left, const std::string &right) {
+      return std::equal(left.begin(), left.end(), right.begin(), right.end(), [](unsigned char l, unsigned char r) {
+        return std::tolower(l) == std::tolower(r);
+      });
+    }
+
     bool contains_device(const std::vector<std::vector<std::string>> &topology, const std::string &device_id) {
       return std::any_of(topology.begin(), topology.end(), [&](const auto &group) {
-        return std::find(group.begin(), group.end(), device_id) != group.end();
+        return std::any_of(group.begin(), group.end(), [&](const auto &id) { return same_device(id, device_id); });
       });
     }
   }  // namespace
@@ -25,6 +32,29 @@ namespace display_helper_integration::request_policy {
   ) {
     disarm_restore();
     return virtual_display_mutation_allowed(restore_in_progress());
+  }
+
+  std::vector<std::vector<std::string>> merge_extended_topology(
+    std::vector<std::vector<std::string>> current,
+    const std::vector<std::vector<std::string>> &baseline,
+    const std::string &target_device_id
+  ) {
+    for (const auto &group : baseline) {
+      auto existing = std::find_if(current.begin(), current.end(), [&](const auto &candidate) {
+        return std::any_of(group.begin(), group.end(), [&](const auto &id) {
+          return std::any_of(candidate.begin(), candidate.end(), [&](const auto &live) { return same_device(id, live); });
+        });
+      });
+      std::vector<std::string> missing;
+      for (const auto &id : group) {
+        if (!contains_device(current, id)) missing.push_back(id);
+      }
+      if (missing.empty()) continue;
+      if (existing == current.end()) current.push_back(std::move(missing));
+      else existing->insert(existing->end(), missing.begin(), missing.end());
+    }
+    if (!target_device_id.empty() && !contains_device(current, target_device_id)) current.push_back({target_device_id});
+    return current;
   }
 
   Result evaluate(const Input &input) {
@@ -51,7 +81,11 @@ namespace display_helper_integration::request_policy {
       result.dispatch = false;
     }
 
-    if (input.virtual_display) {
+    const bool verify_extended = input.virtual_display && is_extended(input.layout) &&
+                                 input.configuration_option == ConfigurationOption::VerifyOnly;
+    if (verify_extended) {
+      result.device_preparation = DevicePreparation::VerifyOnly;
+    } else if (input.virtual_display) {
       switch (input.layout) {
         case VirtualDisplayLayout::Exclusive:
           result.device_preparation = DevicePreparation::EnsureOnlyDisplay;
@@ -76,7 +110,7 @@ namespace display_helper_integration::request_policy {
       result.applied_resolution = input.remapped_resolution;
     }
 
-    if (input.virtual_display && is_extended(input.layout)) {
+    if (input.virtual_display && is_extended(input.layout) && !verify_extended) {
       result.topology = input.topology_snapshot;
       if (!result.topology.empty() && !input.target_device_id.empty() && !contains_device(result.topology, input.target_device_id)) {
         result.topology.push_back({input.target_device_id});

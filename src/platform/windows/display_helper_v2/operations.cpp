@@ -251,10 +251,8 @@ namespace display_helper::v2 {
     IDisplaySettings &display,
     IClock &clock,
     MutationBoundary mutation_boundary)
-    : display_(display),
-      mutation_boundary_(std::move(mutation_boundary)) {
-    (void) clock;
-  }
+    : display_(display), clock_(clock),
+      mutation_boundary_(std::move(mutation_boundary)) {}
 
   bool ApplyOperation::arm_durable_recovery_boundary() {
     return mutation_boundary_ && mutation_boundary_();
@@ -282,7 +280,7 @@ namespace display_helper::v2 {
       durable_recovery_armed = arm_durable_recovery_boundary();
       return durable_recovery_armed;
     };
-    if (token.is_cancelled()) {
+    if ((token.is_cancelled() || clock_.now() >= request.deadline)) {
       outcome.status = ApplyStatus::Fatal;
       return outcome;
     }
@@ -309,7 +307,7 @@ namespace display_helper::v2 {
       outcome.durable_recovery_attempted = true;
       outcome.staged_state_prepared = true;
       outcome.status = display_.apply(*request.configuration);
-      if (token.is_cancelled()) {
+      if ((token.is_cancelled() || clock_.now() >= request.deadline)) {
         outcome.status = ApplyStatus::Fatal;
       }
       return outcome;
@@ -339,7 +337,7 @@ namespace display_helper::v2 {
       };
     }
 
-    if (token.is_cancelled()) {
+    if ((token.is_cancelled() || clock_.now() >= request.deadline)) {
       outcome.status = ApplyStatus::Fatal;
       return outcome;
     }
@@ -354,7 +352,7 @@ namespace display_helper::v2 {
       }
     }
 
-    if (token.is_cancelled()) {
+    if ((token.is_cancelled() || clock_.now() >= request.deadline)) {
       outcome.status = ApplyStatus::Fatal;
       return outcome;
     }
@@ -366,7 +364,7 @@ namespace display_helper::v2 {
       outcome.display_may_have_changed = true;
       (void) display_.apply_topology(*request.topology);
     }
-    if (token.is_cancelled()) {
+    if ((token.is_cancelled() || clock_.now() >= request.deadline)) {
       outcome.status = ApplyStatus::Fatal;
       return outcome;
     }
@@ -377,7 +375,7 @@ namespace display_helper::v2 {
     outcome.staged_state_prepared = true;
     outcome.status = display_.apply(*request.configuration);
 
-    if (token.is_cancelled()) {
+    if ((token.is_cancelled() || clock_.now() >= request.deadline)) {
       outcome.status = ApplyStatus::Fatal;
       return outcome;
     }
@@ -387,9 +385,17 @@ namespace display_helper::v2 {
       apply_refresh_rate_overrides(request, token);
     }
 
-    if (token.is_cancelled()) {
+    if ((token.is_cancelled() || clock_.now() >= request.deadline)) {
       outcome.status = ApplyStatus::Fatal;
     }
+
+    if (outcome.status == ApplyStatus::Ok && request.hdr_blank && !request.settings_only_repair) {
+      const auto cancelled = [&] { return token.is_cancelled() || clock_.now() >= request.deadline; };
+      if (cancelled() || !display_.blank_hdr_states(std::chrono::milliseconds(1000), cancelled)) {
+        outcome.status = cancelled() ? ApplyStatus::Fatal : ApplyStatus::HdrStateFailed;
+      }
+    }
+    if (clock_.now() >= request.deadline) outcome.status = ApplyStatus::Fatal;
 
     return outcome;
   }
@@ -559,7 +565,7 @@ namespace display_helper::v2 {
     const std::optional<ActiveTopology> &expected_topology,
     const std::optional<ResolvedConfigurationTarget> &resolved_target,
     const CancellationToken &token) {
-    if (token.is_cancelled()) {
+    if ((token.is_cancelled() || clock_.now() >= request.deadline)) {
       return false;
     }
 
@@ -598,7 +604,7 @@ namespace display_helper::v2 {
     }
 
     clock_.sleep_for(std::chrono::milliseconds(250));
-    return !token.is_cancelled() && matches_requested_state();
+    return !(token.is_cancelled() || clock_.now() >= request.deadline) && matches_requested_state();
   }
 
   RecoveryOperation::RecoveryOperation(
@@ -866,7 +872,11 @@ namespace display_helper::v2 {
   bool RecoveryOperation::should_skip_golden(const Snapshot &golden) {
     const auto now_ms = steady_now_ms();
     const auto last_ok = state_.last_session_restore_success_ms.load(std::memory_order_acquire);
-    if (last_ok != 0 && (now_ms - last_ok) < 60'000) {
+    // A session fallback cannot supersede an explicitly authoritative golden
+    // baseline. Repeated fallback successes refresh last_ok on every poll and
+    // otherwise prevent golden from being retried when a missing monitor returns.
+    const bool golden_first = state_.always_restore_from_golden.load(std::memory_order_acquire);
+    if (!golden_first && last_ok != 0 && (now_ms - last_ok) < 60'000) {
       BOOST_LOG(info) << "Skipping golden: recent session restore success guard active.";
       return true;
     }
@@ -1044,7 +1054,7 @@ namespace display_helper::v2 {
       bool attempted_previous = false;
       if (try_session(SnapshotTier::Previous, "previous", attempted_previous)) {
         if (attempted_current && !token.is_cancelled()) {
-          (void) storage_.remove(SnapshotTier::Current);
+          BOOST_LOG(warning) << "Restore: previous snapshot recovered the desktop; retaining the unconfirmed current baseline for a later restore.";
         }
         return true;
       }

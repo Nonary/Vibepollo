@@ -33,8 +33,29 @@ namespace display_helper_integration {
     std::chrono::steady_clock::time_point startup_deadline {};
   };
 
+  struct RecoveryTicket {
+    std::uint64_t id {0};
+    std::uint64_t connection_generation {0};
+  };
+
+  enum class RecoveryStatus {
+    Unknown,
+    Active,
+    Failed,
+    Restored,
+  };
+  struct RecoveryStatusSnapshot {
+    std::uint64_t ticket {0};
+    std::uint64_t connection_generation {0};
+    RecoveryStatus status {RecoveryStatus::Unknown};
+    std::uint64_t event_revision {0};
+    bool parked {false};
+  };
+
   // Launch the helper (if needed) and process the provided builder request.
-  // Returns true if the helper accepted the command; false to allow fallback.
+  // StreamStart returns only after display setup and verification complete;
+  // failure or timeout must abort startup before probing or capture.
+  // Other policies return true if the helper accepted the command.
   // A cancellation predicate interrupts helper IPC waits and disables the
   // potentially blocking in-process fallback for that caller. Stream starts
   // also supply one, so shutdown-class callers (owned recovery/teardown
@@ -64,10 +85,28 @@ namespace display_helper_integration {
   // a later launch/resume may arm fresh recovery and supersede the restore.
   // Returns true if the helper accepted the command; false to allow fallback.
   // Terminal user actions may explicitly override managed display ownership.
+  // A saved enabled-to-disabled policy transition may finish old recovery even
+  // though future display automation is disabled. Ordinary REVERTs stay gated.
   bool revert(
     bool prefer_golden_if_current_missing = true,
-    bool override_managed_ownership = false
+    bool override_managed_ownership = false,
+    bool allow_disabled_recovery = false,
+    RecoveryTicket *recovery_ticket = nullptr
   );
+
+  std::optional<RecoveryStatusSnapshot> query_recovery_status(
+    const RecoveryTicket &ticket,
+    bool park,
+    std::chrono::milliseconds timeout,
+    bool receive_only = false);
+
+  // Start the incident-scoped observer before streaming begins. It remains
+  // idle until a tracked REVERT publishes a recovery ticket.
+  void start_orphan_recovery_monitor();
+
+  // Stop and join the event-driven failed-restore observer before
+  // virtual-display/global teardown begins.
+  void shutdown_orphan_recovery_monitor();
 
   // Attempt to cancel any pending restore/revert requests on a running helper.
   // Returns true if a DISARM command was sent successfully.
@@ -85,6 +124,10 @@ namespace display_helper_integration {
 
   // Request the helper to export current OS settings as golden restore snapshot.
   bool export_golden_restore();
+
+  // Report the same effective gate as helper startup without starting it.
+  bool maintenance_available();
+  bool legacy_helper_engine_selected();
 
   // Request the helper to reset its persistence/state.
   bool reset_persistence();
@@ -131,23 +174,11 @@ namespace display_helper_integration {
   // before the client's first-video timeout, even when APPLY itself is slow.
   inline constexpr auto kStreamStartApplyVerificationTimeout =
     display_helper::v2::timing::kStreamStartApplyBudget;
-  inline constexpr auto kApplyVerificationGateWaitTimeout =
-    kStreamStartApplyVerificationTimeout + display_helper::v2::timing::kApplyGateConsumerSlack;
-
   // Wait for helper verification to finish after APPLY (v2 engine only).
   // Returns Unknown on timeout, legacy engine, or when verification is unavailable.
   ApplyVerificationStatus wait_for_apply_verification(
     const ApplyVerificationTicket &ticket,
     std::chrono::milliseconds timeout);
-
-  // True when the most recent successful APPLY is verified and has no pending
-  // HDR/topology workaround that requires the settling fallback.
-  bool last_apply_is_capture_stable();
-
-  // True when the most recent APPLY asked for HDR to be enabled. Capture start
-  // uses this to wait for HDR to actually come up rather than for a fixed
-  // interval, so a session never begins in SDR and transitions mid-stream.
-  bool last_apply_requested_hdr();
 
   // Milliseconds left in the bounded stream-start budget of the most recent
   // APPLY, clamped at zero, or nullopt when that APPLY was not a bounded stream
@@ -190,5 +221,9 @@ namespace display_helper_integration {
   // Stop the helper watchdog when no streams are active. Forced stops are
   // reserved for process shutdown or an explicit user-requested restore.
   void stop_watchdog(bool force = false);
+
+  // Explicit killswitch fallback: stop and verify the owned helper, then run
+  // native physical recovery while APPLY/REVERT dispatch remains fenced.
+  bool run_terminal_physical_recovery(const std::function<bool()> &recover);
 
 }  // namespace display_helper_integration

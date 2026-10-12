@@ -28,6 +28,7 @@
 #include "src/logging.h"
 #include "src/utility.h"
 #include "vhf_gamepad.h"
+#include "dualsense_haptics.h"
 #include "vhf_gamepad_policy.h"
 
 namespace platf {
@@ -329,6 +330,16 @@ namespace platf {
           continue;
         }
 
+        if (slots[nr].profile == lvg::profile::dualsense && slots[nr].feedback_queue) {
+          for (const auto &packet : dualsense_audio::drain(nr)) {
+            gamepad_feedback_msg_t msg {};
+            msg.type = gamepad_feedback_e::haptics_pcm;
+            msg.id = slots[nr].client_relative_index;
+            msg.data.haptics.sequence = packet.sequence;
+            msg.data.haptics.samples = packet.samples;
+            slots[nr].feedback_queue->try_raise(std::move(msg));
+          }
+        }
         lvg::feedback_event event {};
         const DWORD status = client.poll_feedback(static_cast<std::uint32_t>(nr), &event);
         if (status != ERROR_SUCCESS) {
@@ -367,6 +378,7 @@ namespace platf {
       for (int nr = 0; nr < MAX_GAMEPADS; ++nr) {
         if (impl->slots[nr].active) {
           std::ignore = impl->client.destroy_controller(static_cast<std::uint32_t>(nr));
+          dualsense_audio::set_slot(nr, false);
           impl->slots[nr].reset();
         }
       }
@@ -478,6 +490,7 @@ namespace platf {
     slot.profile = profile;
     slot.client_relative_index = id.clientRelativeIndex;
     slot.feedback_queue = std::move(feedback_queue);
+    dualsense_audio::set_slot(id.globalIndex, profile == lvg::profile::dualsense);
     impl->active_count.fetch_add(1, std::memory_order_acq_rel);
 
     if (has_motion(profile) && slot.feedback_queue) {
@@ -518,6 +531,7 @@ namespace platf {
                          << util::hex(status).to_string_view() << ']';
     }
 
+    dualsense_audio::set_slot(nr, false);
     slot.reset();
     if (impl->active_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
       BOOST_LOG(debug) << "Disconnecting from the Vibepollo virtual gamepad driver"sv;

@@ -17,6 +17,18 @@ TEST(LinuxPrivateDisplayConfigurationPolicy, RejectsKScreenFailureWithSuccessful
   EXPECT_TRUE(configuration::command_succeeded(true, "Output 1 set mode 1", "locale warning"));
 }
 
+TEST(LinuxPrivateDisplayModePolicy, AcceptsGlobalDrmNamesAndRejectsMalformedOrOutOfRangeNames) {
+  for (const auto name : {"Virtual-1", "Virtual-2", "Virtual-3", "Virtual-4",
+                         "Virtual-5", "Virtual-6", "Virtual-7", "Virtual-8",
+                         "Virtual-9", "Virtual-10", "Virtual-2147483647"}) {
+    EXPECT_TRUE(policy::managed_connector_name(name)) << name;
+  }
+  for (const auto name : {"", "Virtual-", "Virtual-0", "Virtual-01", "Virtual-2147483648",
+                         "Virtual-5x", "Virtual-8\n", "Virtual-8/../1", "DP-1"}) {
+    EXPECT_FALSE(policy::managed_connector_name(name)) << name;
+  }
+}
+
 TEST(LinuxPrivateDisplayModePolicy, AcceptsFractionalEquivalentRefresh) {
   EXPECT_TRUE(policy::refresh_matches(59.95, 60.0));
   EXPECT_TRUE(policy::refresh_matches(119.88, 120.0));

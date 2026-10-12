@@ -342,16 +342,21 @@ namespace platf::dxgi {
 
     std::unique_ptr<INamedPipe> build_anonymous_server_pipe(
       std::unique_ptr<INamedPipe> control_pipe,
-      const NamedPipeFactory &factory
+      const NamedPipeFactory &factory,
+      std::function<bool()> stop_requested
     );
   }  // namespace
 
   std::unique_ptr<INamedPipe> AnonymousPipeFactory::create_server(const std::string &pipeName) {
+    return create_server(pipeName, {});
+  }
+
+  std::unique_ptr<INamedPipe> AnonymousPipeFactory::create_server(const std::string &pipeName, std::function<bool()> stop_requested) {
     auto first_pipe = _pipe_factory.create_server(pipeName);
     if (!first_pipe) {
       return nullptr;
     }
-    return build_anonymous_server_pipe(std::move(first_pipe), _pipe_factory);
+    return build_anonymous_server_pipe(std::move(first_pipe), _pipe_factory, std::move(stop_requested));
   }
 
   std::unique_ptr<INamedPipe> AnonymousPipeFactory::create_client(const std::string &pipeName) {
@@ -439,31 +444,35 @@ namespace platf::dxgi {
 
   class AnonymousServerPipe final: public INamedPipe {
   public:
-    AnonymousServerPipe(std::unique_ptr<INamedPipe> control_pipe, NamedPipeFactory factory):
+    AnonymousServerPipe(std::unique_ptr<INamedPipe> control_pipe, NamedPipeFactory factory, std::function<bool()> stop_requested):
         control_(std::move(control_pipe)),
-        pipe_factory_(std::move(factory)) {}
+        pipe_factory_(std::move(factory)),
+        stop_requested_(std::move(stop_requested)) {}
 
     bool send(std::span<const uint8_t> bytes, int timeout_ms) override {
       maybe_handshake();
-      auto *pipe = active_pipe();
+      auto *pipe = stop_requested() ? nullptr : active_pipe();
       return pipe ? pipe->send(bytes, timeout_ms) : false;
     }
 
     PipeResult receive(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) override {
       maybe_handshake();
       bytesRead = 0;
-      auto *pipe = active_pipe();
+      auto *pipe = stop_requested() ? nullptr : active_pipe();
       return pipe ? pipe->receive(dst, bytesRead, timeout_ms) : PipeResult::Disconnected;
     }
 
     PipeResult receive_latest(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) override {
       maybe_handshake();
       bytesRead = 0;
-      auto *pipe = active_pipe();
+      auto *pipe = stop_requested() ? nullptr : active_pipe();
       return pipe ? pipe->receive_latest(dst, bytesRead, timeout_ms) : PipeResult::Disconnected;
     }
 
     void wait_for_client_connection(int milliseconds) override {
+      if (stop_requested()) {
+        return;
+      }
       if (data_) {
         data_->wait_for_client_connection(milliseconds);
         return;
@@ -492,6 +501,10 @@ namespace platf::dxgi {
     }
 
   private:
+    bool stop_requested() const {
+      return stop_requested_ && stop_requested_();
+    }
+
     INamedPipe *active_pipe() {
       if (data_) {
         return data_.get();
@@ -500,7 +513,7 @@ namespace platf::dxgi {
     }
 
     bool send_handshake_message(const std::string &pipe_name) {
-      if (!control_ || !control_->is_connected()) {
+      if (stop_requested() || !control_ || !control_->is_connected()) {
         return false;
       }
 
@@ -526,9 +539,12 @@ namespace platf::dxgi {
       std::array<uint8_t, 64> chunk {};
       const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
 
-      while (std::chrono::steady_clock::now() < deadline) {
+      while (!stop_requested() && std::chrono::steady_clock::now() < deadline) {
         size_t bytes_read = 0;
         const PipeResult result = control_->receive(chunk, bytes_read, 1000);
+        if (stop_requested()) {
+          return AnonymousPipeFactory::HandshakeAckResult::Failed;
+        }
 
         if (result == Success) {
           if (bytes_read == 0) {
@@ -544,6 +560,9 @@ namespace platf::dxgi {
             if (buffered.size() < sizeof(uint32_t)) {
               size_t peek_read = 0;
               const PipeResult peek = control_->receive(chunk, peek_read, 10);
+              if (stop_requested()) {
+                return AnonymousPipeFactory::HandshakeAckResult::Failed;
+              }
               if (peek == Success && peek_read > 0) {
                 buffered.insert(buffered.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(peek_read));
                 continue;
@@ -571,14 +590,14 @@ namespace platf::dxgi {
         }
       }
 
-      return AnonymousPipeFactory::HandshakeAckResult::Fallback;
+      return stop_requested() ? AnonymousPipeFactory::HandshakeAckResult::Failed : AnonymousPipeFactory::HandshakeAckResult::Fallback;
     }
 
     void maybe_handshake() {
       if (handshake_attempted_) {
         return;
       }
-      if (!control_ || !control_->is_connected()) {
+      if (stop_requested() || !control_ || !control_->is_connected()) {
         return;
       }
       handshake_attempted_ = true;
@@ -593,8 +612,15 @@ namespace platf::dxgi {
         return;
       }
 
+      if (stop_requested()) {
+        return;
+      }
+
       std::vector<uint8_t> buffered;
       const auto ack_result = wait_for_handshake_ack(buffered);
+      if (stop_requested()) {
+        return;
+      }
       if (ack_result != AnonymousPipeFactory::HandshakeAckResult::Acked) {
         BOOST_LOG(debug) << "Anonymous handshake: ACK not received; using control pipe.";
         if (!buffered.empty()) {
@@ -611,7 +637,13 @@ namespace platf::dxgi {
         }
         return;
       }
+      if (stop_requested()) {
+        return;
+      }
       data_pipe->wait_for_client_connection(0);
+      if (stop_requested()) {
+        return;
+      }
       if (!data_pipe->is_connected()) {
         BOOST_LOG(warning) << "Anonymous handshake: client did not connect to data pipe; using control pipe.";
         if (!buffered.empty()) {
@@ -632,15 +664,17 @@ namespace platf::dxgi {
     std::unique_ptr<INamedPipe> control_;
     std::unique_ptr<INamedPipe> data_;
     NamedPipeFactory pipe_factory_;
+    std::function<bool()> stop_requested_;
     bool handshake_attempted_ {false};
   };
 
   namespace {
     std::unique_ptr<INamedPipe> build_anonymous_server_pipe(
       std::unique_ptr<INamedPipe> control_pipe,
-      const NamedPipeFactory &factory
+      const NamedPipeFactory &factory,
+      std::function<bool()> stop_requested
     ) {
-      return std::make_unique<AnonymousServerPipe>(std::move(control_pipe), factory);
+      return std::make_unique<AnonymousServerPipe>(std::move(control_pipe), factory, std::move(stop_requested));
     }
   }  // namespace
 

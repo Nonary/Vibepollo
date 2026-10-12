@@ -1,0 +1,25 @@
+---
+name: Validate hosted Linux
+permissions: {}
+on:
+  workflow_dispatch:
+    inputs:
+      cache_namespace:
+        description: Fresh namespace for cold run; repeat unchanged for warm run
+        required: true
+        default: host-linux-v1
+        type: string
+jobs:
+  arch:
+    if: github.repository == 'Nonary/Vibepollo'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-archlinux.yml
+    with:
+      release_commit: ${{ github.sha }}
+      release_version: 1.18.4-linux-validation
+      use_self_hosted: false
+      validation_only: true
+      build_tests: true
+      artifact_retention_days: 1
+      cache_namespace: ${{ inputs.cache_namespace }}

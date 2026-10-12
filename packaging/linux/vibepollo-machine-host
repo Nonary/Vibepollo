@@ -2,7 +2,7 @@
 
 set -euo pipefail
 umask 0077
-export LC_ALL=C
+export LC_ALL=C.UTF-8
 
 readonly settings_file=/etc/vibepollo/machine.conf
 readonly legacy_settings_file=/etc/vibepollo/prelogin.conf
@@ -63,8 +63,8 @@ resolve_desktop_identity() {
 read_desktop_user() {
   local source=$1 attributes key value line selected=''
   [[ -f "$source" && ! -L "$source" ]] || return 1
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$source") || return 1
-  [[ "$attributes" == 'root:root:600:regular file' ]] || { fail "$source must be root:root mode 0600"; return 1; }
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$source") || return 1
+  [[ "$attributes" == 'root:root:600' ]] || { fail "$source must be root:root mode 0600"; return 1; }
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -n "$line" && "$line" != \#* ]] || continue; key=${line%%=*}; value=${line#*=}
     case "$key" in
@@ -341,8 +341,8 @@ migrate_legacy_command_manifest() {
 ensure_command_manifest() {
   local attributes
   if [[ -f "$command_manifest" && ! -L "$command_manifest" ]]; then
-    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$command_manifest") || return 1
-    [[ "$attributes" == "root:${service_user}:640:regular file" ]] || { fail 'administrator command manifest is unsafe'; return 1; }
+    attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$command_manifest") || return 1
+    [[ "$attributes" == "root:${service_user}:640" ]] || { fail 'administrator command manifest is unsafe'; return 1; }
     manifest_is_v2 && return 0
     migrate_legacy_command_manifest
     return
@@ -361,8 +361,8 @@ profile_is_safe() {
 profile_tree_is_sanitized() {
   local root=$1 attributes unsafe
   [[ -d "$root" && ! -L "$root" ]] || return 1
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$root") || return 1
-  [[ "$attributes" == "${service_user}:${service_user}:700:directory" ]] || return 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$root") || return 1
+  [[ "$attributes" == "${service_user}:${service_user}:700" ]] || return 1
   unsafe=$(/usr/bin/find "$root" -xdev -mindepth 1 \
     \( ! -type d ! -type f -o \
        -type d \( ! -user "$service_user" -o ! -group "$service_user" -o ! -perm 0700 \) -o \
@@ -376,8 +376,8 @@ rewrite_machine_cover_paths() {
   local marker_line source_user entry account_name account_home
   [[ $(/usr/bin/id -un) == "$service_user" ]] || fail 'cover migration requires the service account'
   [[ -f "$profile_marker" && ! -L "$profile_marker" ]] || fail 'machine-profile marker is unsafe'
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$profile_marker") || return 1
-  [[ "$attributes" == "${service_user}:${service_user}:600:regular file" ]] ||
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$profile_marker") || return 1
+  [[ "$attributes" == "${service_user}:${service_user}:600" ]] ||
     fail 'machine-profile marker ownership is unsafe'
   IFS= read -r marker_line <"$profile_marker" || return 1
   [[ "$marker_line" =~ ^source_user=([a-z_][a-z0-9_-]*)$ ]] || fail 'machine-profile marker is invalid'
@@ -392,8 +392,8 @@ rewrite_machine_cover_paths() {
     return 0
   fi
   [[ -f "$apps" && ! -L "$apps" ]] || fail 'machine application catalog is unsafe'
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$apps") || return 1
-  [[ "$attributes" == "${service_user}:${service_user}:600:regular file" ]] ||
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$apps") || return 1
+  [[ "$attributes" == "${service_user}:${service_user}:600" ]] ||
     fail 'machine application catalog ownership is unsafe'
   size=$(/usr/bin/stat -c '%s' -- "$apps") || return 1
   [[ "$size" =~ ^[0-9]+$ ]] && ((size > 0 && size <= 16777216)) ||
@@ -484,8 +484,8 @@ remove_root_staging() {
   local staging=$1 attributes
   [[ "$staging" =~ ^/var/lib/\.vibepollo-profile\.[A-Za-z0-9]+$ &&
      -d "$staging" && ! -L "$staging" ]] || return 1
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$staging") || return 1
-  [[ "$attributes" == 'root:root:700:directory' ]] || return 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$staging") || return 1
+  [[ "$attributes" == 'root:root:700' ]] || return 1
   /usr/bin/rm -rf --one-file-system -- "$staging"
 }
 
@@ -493,8 +493,9 @@ publish_migrated_profile() (
   local staging incoming attributes unsafe
   staging=$(/usr/bin/mktemp -d --tmpdir=/var/lib .vibepollo-profile.XXXXXX) || exit 1
   trap '[[ -z ${staging:-} ]] || remove_root_staging "$staging"' EXIT HUP INT TERM
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$staging") || exit 1
-  [[ "$attributes" == 'root:root:700:directory' ]] || exit 1
+  [[ -d "$staging" && ! -L "$staging" ]] || exit 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$staging") || exit 1
+  [[ "$attributes" == 'root:root:700' ]] || exit 1
 
   # The confined importer opens the profile beneath the account's home with
   # openat2(RESOLVE_BENEATH|NO_SYMLINKS|NO_XDEV), permanently drops to that
@@ -529,8 +530,8 @@ publish_migrated_profile() (
 
   if [[ -e "$machine_profile" || -L "$machine_profile" ]]; then
     [[ -d "$machine_profile" && ! -L "$machine_profile" ]] || exit 1
-    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$machine_profile") || exit 1
-    [[ "$attributes" =~ ^(root:root|${service_user}:${service_user}):700:directory$ ]] || exit 1
+    attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$machine_profile") || exit 1
+    [[ "$attributes" =~ ^(root:root|${service_user}:${service_user}):700$ ]] || exit 1
     [[ -z $(/usr/bin/find "$machine_profile" -mindepth 1 -print -quit) ]] || exit 1
     /usr/bin/rmdir -- "$machine_profile" || exit 1
   fi
@@ -550,7 +551,8 @@ migrate_profile() {
     return
   fi
   [[ ! -e "$profile_marker" && ! -L "$profile_marker" ]] || { fail 'unsafe machine-profile marker'; return 1; }
-  [[ $(/usr/bin/stat -c '%U:%G:%a:%F' -- /var/lib) == 'root:root:755:directory' ]] ||
+  [[ -d /var/lib && ! -L /var/lib ]] || { fail '/var/lib is not a safe migration parent'; return 1; }
+  [[ $(/usr/bin/stat -c '%U:%G:%a' -- /var/lib) == 'root:root:755' ]] ||
     { fail '/var/lib is not a safe migration parent'; return 1; }
   publish_migrated_profile || { fail 'profile staging or atomic publication failed'; return 1; }
   /usr/bin/printf 'vibepollo-machine-host: migrated the selected desktop profile into the machine profile\n'
@@ -611,17 +613,21 @@ prepare_upgrade_profile() {
   ensure_command_manifest || return 1
 }
 
-user_exec() {
+user_exec() (
+  # find saves/restores its initial cwd. A service-account child cannot
+  # restore the invoking administrator's private home after dropping UID.
+  # Isolate the cwd change so callers keep their own relative-path semantics.
+  cd / || return 1
   local user=$1 uid gid; shift; uid=$(/usr/bin/id -u -- "$user"); gid=$(/usr/bin/id -g -- "$user")
   /usr/bin/setpriv --reuid "$uid" --regid "$gid" --init-groups --no-new-privs -- "$@"
-}
+)
 
 load_session() {
   local attributes key value line entry account_name account_uid account_gid account_home
   local -A seen=()
   [[ -f "$session_file" && ! -L "$session_file" ]] || fail 'missing session environment'
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$session_file")
-  [[ "$attributes" == "root:${service_user}:640:regular file" ]] || fail 'untrusted session environment'
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$session_file")
+  [[ "$attributes" == "root:${service_user}:640" ]] || fail 'untrusted session environment'
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" == *=* ]] || fail 'malformed session environment'
     key=${line%%=*}; value=${line#*=}
@@ -685,8 +691,8 @@ find_host_readiness_log() {
     ((count == 1)) || return 1
     [[ "${candidate##*/}" =~ ^vibepollo-[0-9]{8}-[0-9]{6}-[0-9]{3}\.log$ &&
        -f "$candidate" && ! -L "$candidate" ]] || return 1
-    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$candidate") || return 1
-    [[ "$attributes" == "${expected_owner}:600:regular file" ]] || return 1
+    attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$candidate") || return 1
+    [[ "$attributes" == "${expected_owner}:600" ]] || return 1
     host_log=$candidate
   done
   ((count == 1))
@@ -783,17 +789,14 @@ run_host() {
   # stop and reap the real host when an unrelated supervisor command fails.
   host_pid='' host_reaped=0 host_stop_sent=0 shutting_down=0 host_cleanup_python=''
   local -A previous_host_logs=()
-  # Linux private displays are capture-ready through the Vibeshine DRM/KMS
-  # path.  Leaving desktop sessions to inherit a compositor capture setting
-  # makes a newly reserved output disappear during KWin's topology refresh,
-  # producing a connected session with no video.  Keep this aligned with the
-  # machine-wide Linux capture policy for every selected session role.
-  local -a overrides=('system_tray=disabled' 'capture=kms') environment
+  # Capture selection belongs to the host configuration. Automatic capture
+  # prefers KMS for managed virtual displays; explicit backends remain allowed.
+  local -a overrides=('system_tray=disabled') environment
   [[ $(/usr/bin/id -un) == "$service_user" ]] || fail "run requires $service_user"
   load_session
   capability_free_exec "$machine_host" prepare-profile
   [[ -f "$machine_host_executable" && ! -L "$machine_host_executable" &&
-     $(/usr/bin/stat -c '%U:%G:%a:%F' -- "$machine_host_executable") == "root:${service_user}:750:regular file" ]] ||
+     $(/usr/bin/stat -c '%U:%G:%a' -- "$machine_host_executable") == "root:${service_user}:750" ]] ||
     fail 'private machine-host executable is unsafe'
   host_capabilities=$(/usr/bin/getcap -n -- "$machine_host_executable") ||
     fail 'could not inspect private machine-host capabilities'
@@ -803,13 +806,13 @@ run_host() {
   # controller generations and boots, with up to 10 MiB per launch.
   host_log_prefix=$machine_profile/vibepollo.log
   [[ -d /run/vibepollo/host && ! -L /run/vibepollo/host &&
-     $(/usr/bin/stat -c '%U:%G:%a:%F' -- /run/vibepollo/host) == "${service_user}:${service_user}:700:directory" ]] ||
+     $(/usr/bin/stat -c '%U:%G:%a' -- /run/vibepollo/host) == "${service_user}:${service_user}:700" ]] ||
     fail 'host runtime directory is unsafe'
   if [[ ! -e "$host_log_directory" && ! -L "$host_log_directory" ]]; then
     /usr/bin/mkdir -m 700 -- "$host_log_directory"
   fi
   [[ -d "$host_log_directory" && ! -L "$host_log_directory" &&
-     $(/usr/bin/stat -c '%U:%G:%a:%F' -- "$host_log_directory") == "${service_user}:${service_user}:700:directory" ]] ||
+     $(/usr/bin/stat -c '%U:%G:%a' -- "$host_log_directory") == "${service_user}:${service_user}:700" ]] ||
     fail 'host readiness log directory is unsafe'
   # Retained logs may already contain readiness messages. Snapshot their names
   # before launch so only a newly created session log can make this host ready.
@@ -1046,8 +1049,8 @@ quiesce_machine_for_reset() {
     fail 'reset requires a running systemd system manager'
   [[ -f "$session_controller" && ! -L "$session_controller" ]] ||
     fail 'reset requires the installed machine-session controller'
-  controller_attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$session_controller") || return 1
-  [[ "$controller_attributes" == 'root:root:755:regular file' ]] ||
+  controller_attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$session_controller") || return 1
+  [[ "$controller_attributes" == 'root:root:755' ]] ||
     fail 'the installed machine-session controller is unsafe'
 
   for unit in vibepollo-session-exec.socket vibepollo.service \
@@ -1098,8 +1101,9 @@ remove_machine_profile() {
     return
   fi
   if [[ -d "$machine_profile" ]]; then
-    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- /var/lib) || return 1
-    [[ "$attributes" == 'root:root:755:directory' ]] ||
+    [[ -d /var/lib && ! -L /var/lib ]] || fail 'refusing to remove machine state beneath an unsafe /var/lib'
+    attributes=$(/usr/bin/stat -c '%U:%G:%a' -- /var/lib) || return 1
+    [[ "$attributes" == 'root:root:755' ]] ||
       fail 'refusing to remove machine state beneath an unsafe /var/lib'
     if /usr/bin/mountpoint -q -- "$machine_profile"; then
       fail 'refusing to recursively remove a mounted machine-state directory'

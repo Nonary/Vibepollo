@@ -1,4 +1,5 @@
 #include "virtual_display.h"
+#include "src/platform/windows/virtual_display_refresh_policy.h"
 #include "virtual_display_recovery_registry.h"
 
 #include <virtual_display/driver/control_client.h>
@@ -6,6 +7,7 @@
 
 #include <openssl/rand.h>
 
+#include "src/color_profile_policy.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -603,94 +605,6 @@ namespace VDISPLAY_SUNSHINE {
       }
 
       return false;
-    }
-
-    std::string trim_copy(std::string_view value) {
-      const auto start = value.find_first_not_of(" \t\r\n");
-      if (start == std::string_view::npos) {
-        return {};
-      }
-      const auto end = value.find_last_not_of(" \t\r\n");
-      return std::string(value.substr(start, end - start + 1));
-    }
-
-    std::optional<uint32_t> parse_refresh_hz(std::string_view value) {
-      const auto trimmed = trim_copy(value);
-      if (trimmed.empty()) {
-        return std::nullopt;
-      }
-      try {
-        const double hz = std::stod(trimmed);
-        if (!std::isfinite(hz) || hz <= 0.0) {
-          return std::nullopt;
-        }
-        const double clamped = std::min(hz, static_cast<double>(std::numeric_limits<uint32_t>::max()));
-        const auto rounded = static_cast<uint32_t>(std::lround(clamped));
-        if (rounded == 0) {
-          return std::nullopt;
-        }
-        return rounded;
-      } catch (...) {
-        return std::nullopt;
-      }
-    }
-
-    uint32_t highest_requested_refresh_hz() {
-      using dd_t = config::video_t::dd_t;
-      uint32_t max_hz = 0;
-
-      if (config::video.dd.refresh_rate_option == dd_t::refresh_rate_option_e::manual) {
-        if (auto manual = parse_refresh_hz(config::video.dd.manual_refresh_rate)) {
-          max_hz = std::max(max_hz, *manual);
-        }
-      }
-
-      const auto process_entries = [&](const auto &entries) {
-        for (const auto &entry : entries) {
-          if (auto parsed = parse_refresh_hz(entry.final_refresh_rate)) {
-            max_hz = std::max(max_hz, *parsed);
-          }
-        }
-      };
-
-      process_entries(config::video.dd.mode_remapping.mixed);
-      process_entries(config::video.dd.mode_remapping.refresh_rate_only);
-      process_entries(config::video.dd.mode_remapping.resolution_only);
-
-      return max_hz;
-    }
-
-    uint32_t apply_refresh_overrides(uint32_t fps_millihz, uint32_t base_fps_millihz = 0u, int framegen_refresh_multiplier = 1) {
-      constexpr uint64_t scale = 1000ull;
-      using dd_t = config::video_t::dd_t;
-      // Manual refresh rate override takes priority over everything, including the multiplied virtual refresh.
-      if (config::video.dd.refresh_rate_option == dd_t::refresh_rate_option_e::manual) {
-        if (auto manual = parse_refresh_hz(config::video.dd.manual_refresh_rate)) {
-          const uint64_t forced = static_cast<uint64_t>(*manual) * scale;
-          return static_cast<uint32_t>(
-            std::min<uint64_t>(forced, std::numeric_limits<uint32_t>::max())
-          );
-        }
-      }
-      const int refresh_multiplier = std::max(1, framegen_refresh_multiplier);
-      if (refresh_multiplier > 1 && base_fps_millihz > 0) {
-        const uint64_t minimum_millihz = static_cast<uint64_t>(base_fps_millihz) * static_cast<uint64_t>(refresh_multiplier);
-        const uint32_t safe_minimum = static_cast<uint32_t>(std::min<uint64_t>(minimum_millihz, std::numeric_limits<uint32_t>::max()));
-        // Ensure we're at least at the minimum, but never lower if already higher
-        if (fps_millihz < safe_minimum) {
-          fps_millihz = safe_minimum;
-        }
-      }
-      const uint32_t max_hz = highest_requested_refresh_hz();
-      if (max_hz == 0) {
-        return fps_millihz;
-      }
-      uint64_t required = static_cast<uint64_t>(max_hz) * scale;
-      if (required <= fps_millihz) {
-        return fps_millihz;
-      }
-      required = std::min<uint64_t>(required, std::numeric_limits<uint32_t>::max());
-      return static_cast<uint32_t>(required);
     }
 
     class DevInfoHandle {
@@ -1816,36 +1730,15 @@ namespace VDISPLAY_SUNSHINE {
       const color_profile_scope_e scope,
       LSTATUS *out_status = nullptr
     ) {
-      // Keep the legacy value populated first. Besides supporting older Windows builds,
-      // this preserves the existing scope-selection state before the modern API activates it.
-      LSTATUS registry_status = ERROR_SUCCESS;
-      const bool registry_success = write_color_profile_to_registry(
+      return VDISPLAY::associate_hdr_profile(
         device_path,
         profile_filename,
-        scope,
-        &registry_status
+        is_system_wide_profile_scope(scope),
+        [&](LSTATUS *status) {
+          return write_color_profile_to_registry(device_path, profile_filename, scope, status);
+        },
+        out_status
       );
-      const auto result = VDISPLAY::set_advanced_color_profile(
-        device_path,
-        profile_filename,
-        is_system_wide_profile_scope(scope)
-      );
-      if (out_status) {
-        *out_status = registry_status;
-      }
-      if (result.success) {
-        return true;
-      }
-      if (result.attempted) {
-        BOOST_LOG(warning) << "HDR profile: Advanced Color activation failed (add=0x"
-                           << std::hex << static_cast<unsigned long>(result.association_status)
-                           << ", default=0x" << static_cast<unsigned long>(result.default_status) << std::dec
-                           << ", scope=" << color_profile_scope_label(scope) << "); retained registry association only.";
-      } else if (result.api_available && !result.target_found) {
-        BOOST_LOG(warning) << "HDR profile: active DisplayConfig target was unavailable; retained registry association only"
-                           << " (scope=" << color_profile_scope_label(scope) << ").";
-      }
-      return result.api_available ? false : registry_success;
     }
 
     void apply_hdr_profile_if_available(
@@ -1862,12 +1755,13 @@ namespace VDISPLAY_SUNSHINE {
       if (stop_token.stop_requested()) {
         return;
       }
-      // Physical outputs are left untouched unless the user explicitly selected
-      // a profile. Virtual outputs are different: Windows can reuse a monitor
-      // class instance whose registry association belongs to an older display,
-      // so an empty selection must actively clear that stale association.
+      // The Vibeshine driver retains calibration associations by monitor identity.
+      // Never overwrite or clear its profiles from the host, including on reuse.
+      if (is_virtual_display) {
+        return;
+      }
       const bool has_profile_selection = hdr_profile_utf8 && !hdr_profile_utf8->empty();
-      if (!has_profile_selection && !is_virtual_display) {
+      if (!has_profile_selection) {
         return;
       }
 
@@ -1948,6 +1842,29 @@ namespace VDISPLAY_SUNSHINE {
           return;
         }
 
+        // Resolve known driver hardware IDs before optional enumeration: failed
+        // or incomplete metadata must not transfer calibration ownership to us.
+        if (color_profile_policy::is_sunshine_driver_monitor_path(*device_name_w)) {
+          return;
+        }
+
+        // A permanent driver monitor can also be selected through the physical
+        // output route. Its calibration association still belongs to the driver.
+        if (const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
+          for (const auto &device : *devices) {
+            if (!device.m_monitor_device_path.empty() &&
+                _wcsicmp(platf::from_utf8(device.m_monitor_device_path).c_str(), device_name_w->c_str()) == 0 &&
+                VDISPLAY::is_sunshine_virtual_display_identity(
+                  device.m_monitor_device_path,
+                  device.m_friendly_name,
+                  device.m_edid ? device.m_edid->m_manufacturer_id : "",
+                  device.m_edid ? device.m_edid->m_product_code : ""
+                )) {
+              return;
+            }
+          }
+        }
+
         bool success = false;
         bool already_associated = false;
         bool cleared_mismatched = false;
@@ -2020,7 +1937,11 @@ namespace VDISPLAY_SUNSHINE {
               _wcsicmp(fs::path(*existing).filename().c_str(), profile_filename.c_str()) == 0;
 
             if (desired_already_associated) {
-              already_associated = true;
+              const auto active = VDISPLAY::get_advanced_color_profile(*device_name_w, is_system_wide_profile_scope(scope));
+              if (active && _wcsicmp(fs::path(*active).filename().c_str(), profile_filename.c_str()) == 0) {
+                already_associated = true;
+                return {true, false};
+              }
             }
 
             BOOST_LOG(debug) << "HDR profile: applying '" << profile_path->filename().string() << "' for client '" << client_name << "'.";
@@ -2501,13 +2422,14 @@ namespace VDISPLAY_SUNSHINE {
       for (int attempt = 0; attempt < 4; ++attempt) {
         UINT queried_path_count = static_cast<UINT>(query.paths.size());
         UINT queried_mode_count = static_cast<UINT>(query.modes.size());
+        DISPLAYCONFIG_TOPOLOGY_ID database_topology {};
         result = QueryDisplayConfig(
           flags,
           &queried_path_count,
           queried_path_count ? query.paths.data() : nullptr,
           &queried_mode_count,
           queried_mode_count ? query.modes.data() : nullptr,
-          nullptr
+          (flags & QDC_DATABASE_CURRENT) != 0 ? &database_topology : nullptr
         );
         if (result == ERROR_SUCCESS) {
           if (!VDISPLAY::policy::display_config_buffer_sizes_are_sane(queried_path_count, queried_mode_count)) {
@@ -2576,6 +2498,38 @@ namespace VDISPLAY_SUNSHINE {
         static_cast<LONG>((std::min)(right_edge, static_cast<std::int64_t>((std::numeric_limits<LONG>::max)()))),
         0,
       };
+    }
+
+    std::optional<POINTL> display_config_origin(const DisplayConfigQuery &query, const DisplayConfigTarget &target) {
+      for (const auto &path : query.paths) {
+        if (target_key(target) != path_state(path).target) {
+          continue;
+        }
+        const auto index = source_mode_index(path, query.virtual_mode_aware);
+        if (!index || *index >= query.modes.size()) {
+          continue;
+        }
+        const auto &mode = query.modes[*index];
+        if (mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE && mode.id == path.sourceInfo.id && luid_equals(mode.adapterId, path.sourceInfo.adapterId)) {
+          return mode.sourceMode.position;
+        }
+      }
+      return std::nullopt;
+    }
+
+    POINTL retained_display_origin(const DisplayConfigQuery &query, const DisplayConfigTarget &target) {
+      // QDC_ALL_PATHS can expose temporary state. Prefer the persisted CCD
+      // source origin for this exact driver target when Windows has saved one.
+      DisplayConfigQuery saved;
+      if (query_display_config(QDC_DATABASE_CURRENT | QDC_VIRTUAL_MODE_AWARE, saved) == ERROR_SUCCESS) {
+        if (const auto origin = display_config_origin(saved, target)) {
+          return *origin;
+        }
+      }
+      if (const auto origin = display_config_origin(query, target)) {
+        return *origin;
+      }
+      return next_extended_position(query);
     }
 
     DISPLAYCONFIG_VIDEO_SIGNAL_INFO make_activation_signal_info(
@@ -2663,7 +2617,7 @@ namespace VDISPLAY_SUNSHINE {
       source_mode.sourceMode.width = width;
       source_mode.sourceMode.height = height;
       source_mode.sourceMode.pixelFormat = DISPLAYCONFIG_PIXELFORMAT_32BPP;
-      source_mode.sourceMode.position = next_extended_position(query);
+      source_mode.sourceMode.position = retained_display_origin(query, output);
       requested_modes.push_back(source_mode);
 
       // A hand-built DISPLAYCONFIG_VIDEO_SIGNAL_INFO cannot match a timing the
@@ -5041,6 +4995,44 @@ namespace VDISPLAY_SUNSHINE {
     return is_virtual_display_guid_tracked(guid_to_uuid(guid));
   }
 
+  std::vector<VDISPLAY::TrackedDisplayCleanupTarget> tracked_display_cleanup_targets() {
+    std::vector<VDISPLAY::TrackedDisplayCleanupTarget> result;
+    for (const auto &guid_uuid : active_virtual_display_tracker().all()) {
+      const auto lease = driver_lease_tracker().get(guid_uuid);
+      if (!lease || !lease->device_id || lease->device_id->empty()) {
+        continue;
+      }
+      VDISPLAY::TrackedDisplayCleanupTarget target;
+      static_assert(sizeof(GUID) == target.guid_bytes.size());
+      std::memcpy(target.guid_bytes.data(), guid_uuid.b8, target.guid_bytes.size());
+      target.device_id = *lease->device_id;
+      target.backend = VDISPLAY::ensure_display_backend_e::sunshine;
+      result.push_back(std::move(target));
+    }
+    return result;
+  }
+
+  bool tracked_display_cleanup_target_matches(
+    const std::array<std::uint8_t, 16> &guid_bytes,
+    const std::string &device_id) {
+    if (device_id.empty()) return false;
+    uuid_util::uuid_t guid_uuid {};
+    std::memcpy(guid_uuid.b8, guid_bytes.data(), guid_bytes.size());
+    if (!active_virtual_display_tracker().contains(guid_uuid)) return false;
+    const auto lease = driver_lease_tracker().get(guid_uuid);
+    return lease && lease->device_id && boost::iequals(*lease->device_id, device_id);
+  }
+
+  bool remove_tracked_display_cleanup_target(const VDISPLAY::TrackedDisplayCleanupTarget &target) {
+    if (target.backend != VDISPLAY::ensure_display_backend_e::sunshine || target.device_id.empty()) return false;
+    std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
+    if (!tracked_display_cleanup_target_matches(target.guid_bytes, target.device_id)) return false;
+    GUID guid {};
+    static_assert(sizeof(guid) == sizeof(target.guid_bytes));
+    std::memcpy(&guid, target.guid_bytes.data(), sizeof(guid));
+    return removeVirtualDisplay(guid);
+  }
+
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params) {
     if (params.max_attempts == 0) {
       return;
@@ -6434,8 +6426,6 @@ namespace VDISPLAY_SUNSHINE {
 
       uuid_util::uuid_t requested_uuid {};
       std::memcpy(requested_uuid.b8, &guid, sizeof(requested_uuid.b8));
-      const std::optional<std::string> deferred_hdr_profile_worker_key =
-        stop_token.stop_possible() ? std::make_optional(requested_uuid.string()) : std::nullopt;
 
       // Log entry and inputs for deeper diagnostics
       BOOST_LOG(debug) << "createVirtualDisplay called: client_uid='" << (s_client_uid ? s_client_uid : "(null)")
@@ -6491,12 +6481,17 @@ namespace VDISPLAY_SUNSHINE {
         BOOST_LOG(warning) << "Unable to apply configured Sunshine virtual display permanent count before creating temporary display.";
       }
 
-      const uint32_t requested_fps = apply_refresh_overrides(fps, base_fps_millihz, framegen_refresh_active ? framegen_refresh_multiplier : 1);
+      static const auto windows_build = platf::query_windows_version().build_number;
+      const auto refresh = VDISPLAY::policy::resolve_creation_refresh(
+        fps, base_fps_millihz, framegen_refresh_active ? framegen_refresh_multiplier : 1,
+        height, windows_build
+      );
+      const uint32_t requested_fps = refresh.requested_millihz;
       // The driver derives its complete mode catalog from the descriptor timing. Keep the
       // descriptor at the client/base rate so it can advertise both that mode and 4x; the
       // display helper selects requested_fps after the monitor arrives when a fixed refresh
       // policy needs to start above the base rate.
-      const uint32_t descriptor_fps = base_fps_millihz > 0 ? base_fps_millihz : requested_fps;
+      const uint32_t descriptor_fps = refresh.descriptor_millihz;
       const auto display_id = client_uuid_to_virtual_display_id(guid);
       const auto secure_reclaim_supported = driver_supports_secure_reclaim(client);
       if (!secure_reclaim_supported) {
@@ -6857,21 +6852,7 @@ namespace VDISPLAY_SUNSHINE {
             if (dpi_snapshot) {
               (void) apply_virtual_display_dpi_value(*dpi_snapshot);
             }
-            std::optional<std::string> hdr_profile;
-            if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
-              hdr_profile = std::string(s_hdr_profile);
-            }
-            apply_hdr_profile_if_available(
-              result.display_name,
-              result.device_id,
-              result.monitor_device_path,
-              result.client_name,
-              hdr_profile,
-              true,
-              true,
-              stop_token,
-              deferred_hdr_profile_worker_key
-            );
+            // HDR profile retention belongs to the driver; leave its association intact.
             if (stop_token.stop_requested()) {
               return std::nullopt;
             }
@@ -7178,21 +7159,7 @@ namespace VDISPLAY_SUNSHINE {
       if (confirmed_active) {
         result.ready_since = ready_since;
       }
-      std::optional<std::string> hdr_profile;
-      if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
-        hdr_profile = std::string(s_hdr_profile);
-      }
-      apply_hdr_profile_if_available(
-        result.display_name,
-        result.device_id,
-        result.monitor_device_path,
-        result.client_name,
-        hdr_profile,
-        true,
-        true,
-        stop_token,
-        deferred_hdr_profile_worker_key
-      );
+      // HDR profile retention belongs to the driver; leave its association intact.
       if (stop_token.stop_requested()) {
         rollback_created_display();
         return std::nullopt;
@@ -8050,30 +8017,30 @@ namespace VDISPLAY_SUNSHINE {
     return std::nullopt;
   }
 
-  bool is_virtual_display_output(const std::string &output_identifier) {
-    if (output_identifier.empty()) {
-      return false;
-    }
-
+  std::optional<bool> classify_virtual_display_output(const std::string &output_identifier) {
+    if (output_identifier.empty()) return std::nullopt;
     const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
     if (!devices) {
-      return false;
+      return std::nullopt;
     }
 
+    bool matched = false;
     for (const auto &device : *devices) {
-      if (!is_virtual_display_device(device)) {
-        continue;
-      }
-
-      if (!device.m_device_id.empty() && equals_ci(device.m_device_id, output_identifier)) {
-        return true;
-      }
-      if (!device.m_display_name.empty() && equals_ci(device.m_display_name, output_identifier)) {
-        return true;
+      const bool same_device_id = !device.m_device_id.empty() && equals_ci(device.m_device_id, output_identifier);
+      const bool same_display_name = !device.m_display_name.empty() && equals_ci(device.m_display_name, output_identifier);
+      if (!same_device_id && !same_display_name) continue;
+      matched = true;
+      if (is_virtual_display_device(device)) return true;
+      // Missing identity fields cannot establish that this is a physical output.
+      if (device.m_monitor_device_path.empty() || device.m_friendly_name.empty() || !device.m_edid) {
+        return std::nullopt;
       }
     }
+    return matched ? std::optional<bool>(false) : std::nullopt;
+  }
 
-    return false;
+  bool is_virtual_display_output(const std::string &output_identifier) {
+    return classify_virtual_display_output(output_identifier).value_or(false);
   }
 
   bool is_virtual_display_selection(const std::string &output_identifier) {

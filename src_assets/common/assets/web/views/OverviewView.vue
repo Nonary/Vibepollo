@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
+import VirtualDisplayRecovery from '@/components/VirtualDisplayRecovery.vue';
 import { ApiError, apiGet } from '@/api/client';
 import {
   AppButton,
@@ -15,8 +16,9 @@ import {
 } from '@/components/ui';
 import type { HostInfo, HostStatsSnapshot } from '@/types/host';
 import type { SessionStatus } from '@/types/sessions';
-import { useSystemStore, type HostMetadata } from '@/stores/system';
+import { useSystemStore } from '@/stores/system';
 import { formatBytes } from '@/utils/format';
+import { displayRecoverySupported } from '@/utils/displayRecovery';
 
 interface OverviewWarning {
   key: string;
@@ -123,11 +125,10 @@ async function refresh(silent = false): Promise<void> {
     apiGet<SessionStatus>('/api/session/status'),
     apiGet<HostStatsSnapshot>('/api/host/stats'),
     apiGet<HostInfo>('/api/host/info'),
-    apiGet<Pick<HostMetadata, 'platform'>>('/api/metadata'),
   ]);
 
   const nextErrors: string[] = [];
-  const [sessionResult, statsResult, infoResult, metadataResult] = results;
+  const [sessionResult, statsResult, infoResult] = results;
 
   if (sessionResult.status === 'fulfilled') {
     session.value = sessionResult.value;
@@ -149,9 +150,9 @@ async function refresh(silent = false): Promise<void> {
     nextErrors.push(errorMessage(infoResult.reason, t('ui.overview.errors.hostInfo')));
   }
 
-  if (metadataResult.status === 'fulfilled') {
-    hostPlatform.value = metadataResult.value.platform ?? '';
-  }
+  // The system store discovers metadata independently; a display-driver wait
+  // must not hold the dashboard's session status and metrics in loading state.
+  hostPlatform.value = system.metadata?.platform ?? hostPlatform.value;
   await refreshVigem(hostPlatform.value || system.metadata?.platform || '');
 
   fetchErrors.value = [...new Set(nextErrors)];
@@ -345,6 +346,10 @@ onBeforeUnmount(() => {
       </template>
     </PageHeader>
     <div class="visually-hidden" aria-live="polite" aria-atomic="true">{{ readiness.label }}</div>
+    <VirtualDisplayRecovery
+      v-if="displayRecoverySupported(hostPlatform || system.metadata?.platform || '')"
+      @recovered="refresh(true)"
+    />
     <template v-if="loading">
       <LoadingSkeleton variant="block" height="184px" :label="t('ui.overview.loadingReadiness')" />
       <LoadingSkeleton variant="block" height="320px" :label="t('ui.overview.loadingReadiness')" />

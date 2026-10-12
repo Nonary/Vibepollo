@@ -42,6 +42,30 @@
 
 namespace fs = std::filesystem;
 
+namespace platf::steam {
+  fs::path normalize_pressure_vessel_host_path(const fs::path &input) {
+#if defined(__linux__)
+    if (input.empty()) {
+      return input;
+    }
+    const auto normalized = input.lexically_normal();
+    const auto value = normalized.generic_string();
+
+    constexpr std::string_view prefix = "/run/host/";
+
+    if (value.starts_with(prefix)) {
+      return fs::path {"/"} / value.substr(prefix.size());
+    }
+
+    if (value == "/run/host") {
+      return fs::path {"/"};
+    }
+#endif
+
+    return input;
+  }
+}  // namespace platf::steam
+
 namespace {
   using platf::steam::vdf_node;
 
@@ -671,12 +695,13 @@ namespace {
     if (marker == std::string::npos) {
       return;
     }
-    game.proton_path = files_path.substr(0, marker);
+    game.proton_path = platf::steam::normalize_pressure_vessel_host_path(files_path.substr(0, marker));
 
     fs::path steamapps;
     std::error_code ec;
-    if (!steam_client_path.empty() && fs::is_directory(fs::path(steam_client_path) / "steamapps", ec)) {
-      game.steam_client_path = steam_client_path;
+    const auto normalized_steam_client = platf::steam::normalize_pressure_vessel_host_path(steam_client_path);
+    if (!steam_client_path.empty() && fs::is_directory(normalized_steam_client / "steamapps", ec)) {
+      game.steam_client_path = normalized_steam_client;
       steamapps = game.steam_client_path / "steamapps";
     } else {
       steamapps = game.proton_path;

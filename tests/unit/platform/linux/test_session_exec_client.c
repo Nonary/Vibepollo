@@ -9,6 +9,8 @@ int vibepollo_session_exec_entrypoint(int argc, char **argv);
 #include "../../../../packaging/linux/vibepollo-session-exec.c"
 #undef main
 
+#include "test_session_display_request.h"
+
 #define CHECK(expression) do { \
   if (!(expression)) { \
     fprintf(stderr, "FAIL: %s:%d: %s\n", __FILE__, __LINE__, #expression); \
@@ -62,7 +64,80 @@ static int check_client_termination(int signal_number, bool pending) {
   return 0;
 }
 
+static int check_display_request_limits(void) {
+  struct display_request_fixture fixture;
+  CHECK(compose_eight_client_display_request(&fixture));
+  CHECK(fixture.argc == 67); // program + operation + 65 composed properties
+  CHECK(fixture.message_length < VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE);
+  int peers[2];
+  CHECK(!socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, peers));
+  unsigned char *packet = malloc(VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE + 1);
+  unsigned char *expected = malloc(VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE + 1);
+  CHECK(packet && expected);
+  CHECK(send_request(peers[0], fixture.argc, fixture.argv, 42));
+  CHECK(recv(peers[1], packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE + 1, 0) ==
+        (ssize_t) fixture.message_length);
+  CHECK(encode_display_request(&fixture, expected, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE) == fixture.message_length);
+  CHECK(!memcmp(packet, expected, fixture.message_length));
+  struct vibepollo_session_message header;
+  memcpy(&header, packet, sizeof(header));
+  CHECK(header.argument_count == 66 && header.generation == 42);
+  CHECK(header.payload_length + sizeof(header) == fixture.message_length);
+
+  // Exercise the public client's exact argument ceiling, then one extra
+  // property. No partial frame may be sent when the complete request is too big.
+  while (fixture.argc < TEST_DISPLAY_MAX_PROPERTIES + 2) {
+    CHECK(append_display_property(&fixture, "output.Virtual-8.enable"));
+  }
+  CHECK(send_request(peers[0], fixture.argc, fixture.argv, 42));
+  CHECK(recv(peers[1], packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE + 1, 0) ==
+        (ssize_t) fixture.message_length);
+  memcpy(&header, packet, sizeof(header));
+  CHECK(header.argument_count == TEST_DISPLAY_MAX_PROPERTIES + 1);
+  CHECK(append_display_property(&fixture, "output.Virtual-8.enable"));
+  errno = 0;
+  CHECK(!send_request(peers[0], fixture.argc, fixture.argv, 42) && errno == E2BIG);
+  CHECK(recv(peers[1], packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE + 1, MSG_DONTWAIT) < 0 &&
+        (errno == EAGAIN || errno == EWOULDBLOCK));
+
+  // Longest identifiers and bounded restore values for all 64 accepted
+  // snapshot outputs still fit the unchanged byte limit in one frame.
+  CHECK(compose_maximum_restore_request(&fixture));
+  CHECK(fixture.message_length < VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE);
+  CHECK(send_request(peers[0], fixture.argc, fixture.argv, 42));
+  CHECK(recv(peers[1], packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE + 1, 0) ==
+        (ssize_t) fixture.message_length);
+  CHECK(encode_display_request(&fixture, expected, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE) == fixture.message_length);
+  CHECK(!memcmp(packet, expected, fixture.message_length));
+
+  // Independently lock down the aggregate byte ceiling with only two wire
+  // arguments, so relaxing the argument count cannot bypass this check.
+  const size_t half_payload = (VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE - sizeof(header)) / 2;
+  char *large_argument = malloc(half_payload + 1);
+  CHECK(large_argument);
+  memset(large_argument, 'A', half_payload);
+  large_argument[half_payload - 1] = 0;
+  char *byte_arguments[] = {"vibepollo-session-exec", large_argument, large_argument, NULL};
+  CHECK(send_request(peers[0], 3, byte_arguments, 42));
+  CHECK(recv(peers[1], packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE + 1, 0) ==
+        VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE);
+  large_argument[half_payload - 1] = 'A';
+  large_argument[half_payload] = 0;
+  byte_arguments[1] = (char *) packet + sizeof(header);
+  errno = 0;
+  CHECK(!send_request(peers[0], 3, byte_arguments, 42) && errno == E2BIG);
+  CHECK(recv(peers[1], packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE + 1, MSG_DONTWAIT) < 0 &&
+        (errno == EAGAIN || errno == EWOULDBLOCK));
+  free(large_argument);
+  free(expected);
+  free(packet);
+  close(peers[0]);
+  close(peers[1]);
+  return 0;
+}
+
 int main(void) {
+  CHECK(!check_display_request_limits());
   CHECK(!check_client_termination(SIGTERM, true));
   CHECK(!check_client_termination(SIGTERM, false));
   CHECK(!check_client_termination(SIGINT, false));
@@ -112,6 +187,11 @@ int main(void) {
   CHECK(relay_responses(peers[0], 42) == 7);
   close(peers[0]);
   close(peers[1]);
+
+  CHECK(!socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, peers));
+  close(peers[1]);
+  CHECK(relay_responses(peers[0], 42) == VIBEPOLLO_SESSION_COMPLETION_UNKNOWN);
+  close(peers[0]);
 
   const pid_t child = fork();
   CHECK(child >= 0);

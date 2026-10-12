@@ -66,6 +66,15 @@ namespace platf::dxgi {
      */
     void initialize_if_needed();
 
+    // Published by session teardown; it never enters the helper or D3D driver.
+    void request_stop() noexcept {
+      _stop_requested.store(true, std::memory_order_release);
+    }
+
+    bool stop_requested() const noexcept {
+      return _stop_requested.load(std::memory_order_acquire);
+    }
+
     /**
      * @brief Acquire the next frame, blocking until available or timeout.
      * @param timeout Maximum time to wait for a frame.
@@ -157,6 +166,8 @@ namespace platf::dxgi {
     }
 
   private:
+    std::atomic_bool _stop_requested {false};  // This IPC object belongs to one capture generation.
+
     /**
      * @brief Set up shared texture and frame signaling handles by duplicating them from the helper.
      * @param handle_data Shared handles and texture metadata from the helper process.

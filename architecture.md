@@ -245,6 +245,45 @@ HDR requests require an HDR-capable fallback; they do not silently become SDR.
 
 - The desktop implementation delegates connector reservation, mode application,
   and restoration to `linux_private_display` (KScreen and the private DRM pool).
+  Restoration verifies a saved output and its capture availability before
+  retiring private connectors, including connected outputs whose client
+  reservations have already been released. It rechecks the saved guard before
+  each retirement and waits for each hotplug to settle. The remaining saved
+  outputs activate after private retirement, avoiding a temporary requirement
+  for the baseline plus virtual outputs to fit simultaneously. KWin output
+  priorities and the complete saved mode, orientation, scale, position, HDR
+  and activation state are verified after its output ordering has settled.
+  Mode identifiers cannot bypass saved resolution or known refresh evidence.
+  A missing secondary output does not prevent retiring private connectors
+  behind a verified surviving baseline output. Final verification still checks
+  the complete saved desktop and retains the baseline if it is incomplete.
+  Confirmed restore failures receive up to three attempts, with 250 ms and
+  1 s backoff and a 30 s budget per attempt, including lock acquisition. Backoff
+  releases the lifecycle and display locks, and every attempt rechecks ownership
+  and cancellation. Unknown helper completion fences further mutations.
+  Capture readiness observations use bounded private Wayland connections and
+  never request portal consent. An explicitly selected portal cannot certify a
+  replacement scanout noninteractively, so cleanup preserves the connector
+  and reports incomplete restoration. Local DRM/X11 library calls still depend
+  on the display driver or server remaining responsive.
+  A failed restore retains its pre-stream snapshot and reports failure; it does
+  not discard that baseline or report successful cleanup. The service-owned
+  auxiliary state persists the baseline before hotplug, bound to the selected
+  session UID and role. Restart recovery validates that owner and restores armed
+  intent through the same capture-verified handoff; idle records do not override
+  the user's current layout. Without usable saved intent or an enabled physical
+  guard, recovery preserves the private scanout until a physical output is enabled.
+  A reconnect cancels stale restoration before display preparation. Failed
+  preparation re-arms guarded cleanup, including failures before the caller's
+  stream-start rollback guard exists, while respecting paused-session retention
+  and restore-delay settings. Physical/dummy capture targets are disabled through
+  KScreen when needed; only driver-managed private connectors are unplugged.
+  Terminal desktop streams without a running app release normal display roles
+  after all transports drain. Failed release remains recovery state without
+  preventing restoration, and successful restoration reconciles only drained
+  pending roles. Paused apps, live capture and retained Remote Monitors keep
+  their ownership. Logical completion runs under the lifecycle gate after the
+  display mutex is released.
 - The Gamescope implementation supplies the existing compositor scene, owns no
   connector, and performs no topology restoration. Physical, per-client, and
   shared display preferences all select that scene for normal game sessions.
@@ -786,3 +825,26 @@ sequenceDiagram
   UI->>API: DELETE /api/webrtc/sessions/:id
   API->>WS: close_session -> stop capture if idle
 ```
+
+## PyroWave bandwidth calibration (2026-10-02)
+
+Reviewed over `6d8fc5ac`: paired `/serverinfo` advertises UDP probe v1 alongside
+wire budget v1 and the current critical FEC policy. `/pyrowave-udp-probe` runs
+on the serialized NVHTTP blocking worker, holds the stream-start lifecycle
+lock, rejects active streams, and sends a bounded two-second paced UDP test
+to the HTTPS peer. Reliable response counts allow Moonlight to score packet
+loss, including the lost tail, and schedule-relative delivery delay. The old
+HTTPS throughput probe remains for compatibility. RTSP now caps the total
+wire budget at physical endpoint capacity, without the old blanket 20%
+reduction. Client-reported receive speed still limits stream packet pacing.
+The existing encoder continues reserving critical FEC, headers, and audio
+inside the total allowance. See [the shared protocol](docs/pyrowave-protocol.md#fec-inclusive-recommendations-and-udp-calibration)
+for rate search, validation thresholds, packet layout, and limits of the test.
+
+The Windows calibration correction adds `PyroWaveUdpHandshakeVersion=1`.
+With `handshake=1`, the paired HTTPS response announces `X-PyroWave-Udp-Port`
+before its final XML body. The sender exchanges ungraded 32-byte tokens with
+the HTTPS peer for at most 1500 ms, then starts the measured two-second probe
+using the client's observed UDP source port. This establishes outbound UDP
+state on both peers without changing firewall rules. Warmups and handshake
+time are excluded from results; legacy clients retain the original transfer.

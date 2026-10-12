@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { hostReadiness, linuxCaptureState } from '../utils/hostReadiness.ts';
-import { acknowledgeSettings, configBoolean, settingError } from '../utils/settings.ts';
+import {
+  acknowledgeSettings,
+  configBoolean,
+  linuxVirtualCaptureWarning,
+  settingError,
+} from '../utils/settings.ts';
 import { settingsFields } from '../configs/settingsSchema.ts';
 import {
   NETWORK_PORT_MAX,
@@ -143,4 +148,41 @@ test('legacy global configuration is covered by v2 fields or a dedicated integra
       key,
     );
   }
+});
+
+test('managed application focus settings are shared across platforms and separate from Playnite', async () => {
+  const { settingsCategories, settingsDestinations } = await import('../configs/settingsSchema.ts');
+  const focus = settingsCategories.flatMap((category) => category.groups).find((group) => group.id === 'app_focus');
+  assert.deepEqual(focus?.fields.map((field) => field.key), [
+    'app_focus_attempts', 'app_focus_timeout_secs', 'app_focus_exit_on_first',
+  ]);
+  for (const field of focus?.fields ?? []) {
+    assert.equal(field.platform, undefined);
+    assert.ok(!settingsDestinations.some((destination) => destination.keys.includes(field.key)));
+  }
+});
+
+test('virtual display capacity allows six and stays a bounded global setting', async () => {
+  const { settingsDefaults, clientOverrideableKeys } = await import('../configs/settingsSchema.ts');
+  const field = settingsFields.get('virtual_display_max_clients');
+  assert.equal(settingsDefaults.virtual_display_max_clients, 4);
+  assert.equal(field?.min, 1);
+  assert.equal(field?.max, 8);
+  assert.equal(clientOverrideableKeys.has('virtual_display_max_clients'), false);
+  for (const value of [1, 4, 6, 8]) assert.equal(settingError(field, value), undefined);
+  for (const value of [0, 9, 5.5, NaN]) assert.ok(settingError(field, value));
+});
+
+// The warning also covers virtual screens selected per client or application,
+// even when the global display mode is physical.
+test('Linux explicit non-KMS capture warns without rejecting the selection', () => {
+  for (const capture of ['kwin', 'wlr', 'portal', 'gamescope', 'x11', 'nvfbc']) {
+    assert.equal(linuxVirtualCaptureWarning('linux', capture), true);
+    assert.equal(settingError(settingsFields.get('capture'), capture), undefined);
+  }
+  for (const capture of ['', 'kms', undefined]) {
+    assert.equal(linuxVirtualCaptureWarning('linux', capture), false);
+  }
+  assert.equal(linuxVirtualCaptureWarning('windows', 'wgc'), false);
+  assert.equal(linuxVirtualCaptureWarning('macos', 'avfoundation'), false);
 });

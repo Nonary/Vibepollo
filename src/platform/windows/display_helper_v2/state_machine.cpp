@@ -1,12 +1,13 @@
 #include "src/platform/windows/display_helper_v2/state_machine.h"
 
+#include "src/platform/windows/display_helper_v2/diagnostics.h"
+
 #include <algorithm>
 #include <array>
 #include <boost/algorithm/string/predicate.hpp>
+#include <exception>
 #include <iterator>
 #include <utility>
-
-#include "src/platform/windows/display_helper_v2/diagnostics.h"
 
 namespace display_helper::v2 {
   namespace {
@@ -71,6 +72,10 @@ namespace display_helper::v2 {
         default:
           return "Unknown";
       }
+    }
+
+    RecoveryStatus to_wire_status(recovery_status::status status) {
+      return static_cast<RecoveryStatus>(status);
     }
 
     const char *apply_status_to_string(ApplyStatus status) {
@@ -261,6 +266,53 @@ namespace display_helper::v2 {
     return candidate;
   }
 
+  std::optional<std::set<std::string>> SnapshotLedger::present_physical_restore_baseline_devices(
+    const bool golden_first,
+    const std::vector<std::string> &exclusions
+  ) {
+    try {
+      const std::array tiers = golden_first ?
+                                 std::array {SnapshotTier::Golden, SnapshotTier::Current, SnapshotTier::Previous} :
+                                 std::array {SnapshotTier::Current, SnapshotTier::Previous, SnapshotTier::Golden};
+      std::optional<Snapshot> baseline;
+      for (const auto tier : tiers) {
+        auto loaded = persistence_.storage().load(tier);
+        if (loaded && !loaded->m_topology.empty()) {
+          baseline = std::move(loaded);
+          break;
+        }
+      }
+      if (!baseline) {
+        return std::nullopt;
+      }
+
+      std::set<std::string> required;
+      for (const auto &group : baseline->m_topology) {
+        for (const auto &id : group) {
+          const auto normalized = codec::normalize_device_id(id);
+          const bool excluded = std::any_of(exclusions.begin(), exclusions.end(), [&](const auto &excluded_id) {
+            return codec::normalize_device_id(excluded_id) == normalized;
+          });
+          if (!normalized.empty() && !excluded) {
+            required.insert(normalized);
+          }
+        }
+      }
+
+      std::set<std::string> present;
+      for (const auto &device : service_.enumerate()) {
+        const auto normalized = codec::normalize_device_id(device.m_device_id);
+        if (required.contains(normalized) && !codec::is_virtual_display_device(device)) {
+          present.insert(normalized);
+        }
+      }
+      return present;
+    } catch (const std::exception &ex) {
+      BOOST_LOG(debug) << "Display helper: physical baseline observation unavailable: " << ex.what();
+      return std::nullopt;
+    }
+  }
+
   StateMachine::StateMachine(
     ApplyPipeline &apply,
     RecoveryPipeline &recovery,
@@ -297,14 +349,24 @@ namespace display_helper::v2 {
     // queued work must not toggle the topology recovery is about to own.
     system_.clear_pending_hdr_blank();
     recovery_staged_state_reset_succeeded_.reset();
+    deferred_recovery_display_event_.reset();
+    recovery_baseline_present_devices_ = snapshots_.present_physical_restore_baseline_devices(
+      restore_state_.always_restore_from_golden.load(std::memory_order_acquire),
+      exclusions_vector()
+    );
     transition(State::Recovery, trigger);
     active_mutation_worker_ = ActiveMutationWorker {
       .kind = MutationWorkerKind::Recovery,
       .generation = recovery_.dispatch_recovery(delay),
     };
+    const auto ticket = recovery_status_policy_.ticket();
+    if (ticket != 0) {
+      recovery_status_policy_.restart(active_mutation_worker_->generation, recovery_status_policy_.epoch());
+    }
   }
 
   void StateMachine::clear_recovery_state(bool delete_restore_task) {
+    recovery_status_policy_.supersede();
     scheduler_.disarm();
     restore_state_.reset_request_progress();
     recovery_armed_ = false;
@@ -315,6 +377,8 @@ namespace display_helper::v2 {
     system_.disarm_heartbeat();
     recovery_snapshot_.reset();
     recovery_event_feedback_quiet_until_.reset();
+    deferred_recovery_display_event_.reset();
+    recovery_baseline_present_devices_.reset();
     virtual_identity_discoveries_remaining_ = 0;
     virtual_identity_repairs_remaining_ = 0;
     baseline_topology_repair_available_ = false;
@@ -736,6 +800,11 @@ namespace display_helper::v2 {
     refresh_rate_result_callback_ = std::move(callback);
   }
 
+  void StateMachine::set_recovery_status_result_callback(
+    std::function<void(std::uint64_t, RecoveryStatus, std::uint64_t, bool, std::uint64_t)> callback) {
+    recovery_status_result_callback_ = std::move(callback);
+  }
+
   void StateMachine::set_exit_callback(std::function<void(int)> callback) {
     exit_callback_ = std::move(callback);
   }
@@ -824,6 +893,8 @@ namespace display_helper::v2 {
         handle_ping_command(payload);
       } else if constexpr (std::is_same_v<T, StopCommand>) {
         handle_stop_command(payload);
+      } else if constexpr (std::is_same_v<T, RecoveryStatusCommand>) {
+        handle_recovery_status_command(payload);
       } else if constexpr (std::is_same_v<T, ApplyCompleted>) {
         handle_apply_completed(payload);
       } else if constexpr (std::is_same_v<T, VerificationCompleted>) {
@@ -842,6 +913,24 @@ namespace display_helper::v2 {
         handle_helper_event(payload);
       }
     }, message);
+    notify_recovery_status();
+  }
+
+  void StateMachine::notify_recovery_status() {
+    const auto ticket = recovery_status_policy_.ticket();
+    if (!ticket || !recovery_status_result_callback_) return;
+    const auto epoch = connection_epoch_provider_ ? connection_epoch_provider_() : current_connection_epoch_;
+    const auto status = to_wire_status(recovery_status_policy_.query(
+      ticket, recovery_status_policy_.generation(), recovery_status_policy_.epoch(),
+      system_.current_generation(), epoch, mutation_worker_active(),
+      staged_state_reset_pending_ || !deferred_mutation_commands_.empty(), false));
+    const auto event = recovery_status_policy_.event_revision();
+    const auto notification = std::make_tuple(ticket, status, event, epoch);
+    if (last_recovery_notification_ == notification) return;
+    last_recovery_notification_ = notification;
+    // An unsolicited update is a hint. Only a requested park ACK may authorize
+    // the host to remove a target after checking its own ownership state.
+    recovery_status_result_callback_(ticket, status, event, false, epoch);
   }
 
   void StateMachine::handle_apply_command(const ApplyCommand &command) {
@@ -849,10 +938,13 @@ namespace display_helper::v2 {
       BOOST_LOG(debug) << "Display helper: ignoring APPLY from a retired IPC connection.";
       return;
     }
+    recovery_status_policy_.supersede();
     // A live replacement request owns the next desktop even if it must wait
     // behind the current mutation fence. Invalidate older queued HDR work at
     // ingress and again when a deferred Apply drains through this method.
     system_.clear_pending_hdr_blank();
+    deferred_recovery_display_event_.reset();
+    recovery_baseline_present_devices_.reset();
     // Apply describes the newest desired session even when it has to wait
     // behind a worker.  Clear older autonomous/explicit recovery intent at
     // ingress so a heartbeat cannot replace this deferred session start.
@@ -993,6 +1085,16 @@ namespace display_helper::v2 {
       BOOST_LOG(debug) << "Display helper: ignoring REVERT from a retired IPC connection.";
       return;
     }
+    if (command.restore_ticket != 0 &&
+        recovery_status_policy_.ticket() == command.restore_ticket &&
+        recovery_status_policy_.epoch() == command.connection_epoch) {
+      recovery_status_policy_.restart(system_.current_generation(), command.connection_epoch);
+    } else {
+      recovery_status_policy_.begin(
+        command.restore_ticket,
+        system_.current_generation(),
+        command.connection_epoch);
+    }
     system_.clear_pending_hdr_blank();
     // Latch explicit restore intent at ingress, before it can be deferred
     // behind an APPLY/RESET worker. A later heartbeat is autonomous policy and
@@ -1080,6 +1182,7 @@ namespace display_helper::v2 {
       BOOST_LOG(debug) << "Display helper: ignoring DISARM from a retired IPC connection.";
       return;
     }
+    recovery_status_policy_.supersede();
     system_.clear_pending_hdr_blank();
     // A restore attempt that has not been confirmed yet must not be cancelled
     // or overwritten by a later stream-start probe (72b0d996). Check this
@@ -1209,6 +1312,7 @@ namespace display_helper::v2 {
       BOOST_LOG(debug) << "Display helper: ignoring RESET from a retired IPC connection.";
       return;
     }
+    recovery_status_policy_.supersede();
     if (staged_state_reset_pending_) {
       enqueue_deferred_mutation_command(command, "RESET");
       return;
@@ -1239,6 +1343,66 @@ namespace display_helper::v2 {
     BOOST_LOG(info) << "Display helper: received STOP command, exiting gracefully.";
     if (exit_callback_) {
       exit_callback_(0);
+    }
+  }
+
+  void StateMachine::handle_recovery_status_command(const RecoveryStatusCommand &command) {
+    const auto current_epoch = connection_epoch_provider_ ? connection_epoch_provider_() : current_connection_epoch_;
+    const bool operation_queued = staged_state_reset_pending_ || !deferred_mutation_commands_.empty();
+    auto result = recovery_status_policy_.query(
+      command.ticket,
+      command.generation,
+      command.connection_epoch,
+      system_.current_generation(),
+      current_epoch,
+      mutation_worker_active(),
+      operation_queued,
+      false);
+
+    // This poll proves only that the controller is alive. It deliberately
+    // does not assert a stream owner or move recovery backoff/grace state.
+    if (command.ticket != 0 && !is_stale_connection(command.connection_epoch)) {
+      system_.record_liveness_ping();
+    }
+
+    if (command.park && result == recovery_status::status::failed && !operation_queued &&
+        !mutation_worker_active() && state_ == State::EventLoop) {
+      // The FSM queue serializes this gate with worker completions and display
+      // events. Once parked, timer and event callbacks cannot dispatch a retry.
+      result = recovery_status_policy_.query(
+        command.ticket,
+        command.generation,
+        command.connection_epoch,
+        system_.current_generation(),
+        current_epoch,
+        false,
+        false,
+        true);
+      if (result == recovery_status::status::failed && recovery_status_policy_.parked()) {
+        scheduler_.disarm();
+        deferred_recovery_display_event_.reset();
+      }
+    } else if (command.park && result == recovery_status::status::active) {
+      // Busy recovery is reported as Active; park never manufactures failure.
+      result = recovery_status::status::active;
+    } else if (command.park && result == recovery_status::status::failed) {
+      // A failed status is actionable only after this query has actually
+      // parked the idle EventLoop retry source.
+      result = recovery_status::status::active;
+    }
+
+    if (recovery_status_result_callback_) {
+      const bool parked_ack = command.park && result == recovery_status::status::failed &&
+                              recovery_status_policy_.ticket() == command.ticket &&
+                              recovery_status_policy_.generation() == system_.current_generation() &&
+                              recovery_status_policy_.epoch() == current_epoch &&
+                              recovery_status_policy_.parked();
+      recovery_status_result_callback_(
+        command.ticket,
+        to_wire_status(result),
+        recovery_status_policy_.event_revision(),
+        parked_ack,
+        command.connection_epoch);
     }
   }
 
@@ -1484,17 +1648,8 @@ namespace display_helper::v2 {
           system_.arm_heartbeat();
         }
         system_.refresh_shell();
-        // wa_hdr_toggle is an explicitly requested workaround. Running it on
-        // every successful APPLY was an unnecessary monitor off/on cycle.
-        if (current_request_.hdr_blank) {
-          system_.blank_hdr_states(std::chrono::milliseconds(1000));
-        }
-        // ApplyResult is the point at which Sunshine begins WGC prewarm. Do
-        // not publish it until the core Apply, best-effort geometry/rate work,
-        // and both target-scoped verification samples have completed. The
-        // explicitly requested asynchronous HDR-blank workaround above is a
-        // separate compatibility action. VerificationResult follows
-        // immediately for the v2 correlation gate.
+        // All display mutations, including the optional HDR blank/restore,
+        // finish in the APPLY worker before these post-apply verification samples.
         send_apply_result(ApplyStatus::Ok);
         send_verification_result(true);
       }
@@ -1688,6 +1843,11 @@ namespace display_helper::v2 {
 
     active_mutation_worker_.reset();
     BOOST_LOG(warning) << "Display helper: recovery failed or no valid snapshot found, entering event loop";
+    (void) recovery_status_policy_.publish(
+      completed.display_may_have_changed ? recovery_status::status::failed : recovery_status::status::unknown,
+      recovery_status_policy_.ticket(),
+      completed.generation,
+      recovery_status_policy_.epoch());
     const auto failed_at = system_.now();
     scheduler_.on_attempt_failed(failed_at);
     recovery_event_feedback_quiet_until_ = failed_at + kRecoveryFeedbackQuietPeriod;
@@ -1714,10 +1874,17 @@ namespace display_helper::v2 {
     active_mutation_worker_.reset();
 
     if (completed.success) {
+      (void) recovery_status_policy_.publish(
+        recovery_status::status::restored,
+        recovery_status_policy_.ticket(),
+        completed.generation,
+        recovery_status_policy_.epoch());
       BOOST_LOG(info) << "Display helper: recovery validation succeeded, display settings restored.";
       recovery_armed_ = false;
       display_changes_pending_recovery_ = false;
       recovery_event_feedback_quiet_until_.reset();
+      deferred_recovery_display_event_.reset();
+      recovery_baseline_present_devices_.reset();
       unconfirmed_cancelled_mutation_ = false;
       scheduler_.disarm();
       restore_state_.reset_request_progress();
@@ -1775,6 +1942,11 @@ namespace display_helper::v2 {
     }
 
     BOOST_LOG(warning) << "Display helper: recovery validation failed, entering event loop for retry.";
+    (void) recovery_status_policy_.publish(
+      recovery_status::status::failed,
+      recovery_status_policy_.ticket(),
+      completed.generation,
+      recovery_status_policy_.epoch());
     const auto failed_at = system_.now();
     scheduler_.on_attempt_failed(failed_at);
     recovery_event_feedback_quiet_until_ = failed_at + kRecoveryFeedbackQuietPeriod;
@@ -1789,6 +1961,16 @@ namespace display_helper::v2 {
     }
     if (is_stale_connection(event.connection_epoch)) {
       BOOST_LOG(debug) << "Display helper: ignoring display event owned by a retired connection.";
+      return;
+    }
+    if (recovery_status_policy_.parked()) {
+      const bool topology_evidence = event.event == DisplayEvent::DisplayChange ||
+                                     event.event == DisplayEvent::PowerResume ||
+                                     event.event == DisplayEvent::DeviceArrival;
+      if (topology_evidence) {
+        (void) recovery_status_policy_.observe_event();
+      }
+      BOOST_LOG(debug) << "Display helper: ignoring display event while the failed recovery ticket is parked.";
       return;
     }
 
@@ -1812,6 +1994,7 @@ namespace display_helper::v2 {
         // live topology contract is extended, and one admission per explicit
         // APPLY prevents the resulting Windows notifications from looping.
         baseline_topology_repair_available_ = false;
+        (void) recovery_status_policy_.observe_event();
         expected_topology_ = std::move(repaired_topology);
         verification_reapply_available_ = false;
         transition(State::Verification, ApplyAction::Apply);
@@ -1951,6 +2134,14 @@ namespace display_helper::v2 {
       return;
     }
 
+    if (recovery_armed_ && recovery_worker_in_progress()) {
+      // Coalescing can leave DeviceRemoval last in a mixed monitor-return
+      // burst. Preserve the opportunity; baseline presence decides whether
+      // it was a physical return after the worker settles.
+      deferred_recovery_display_event_ = event;
+      return;
+    }
+
     // Standard recovery from EventLoop state
     if (state_ != State::EventLoop) {
       return;
@@ -1965,7 +2156,8 @@ namespace display_helper::v2 {
       // member of a recovery-generated burst. A fixed deadline can expire
       // while WinEventPump's 500ms debounce is still being extended.
       recovery_event_feedback_quiet_until_ = now + kRecoveryFeedbackQuietPeriod;
-      BOOST_LOG(debug) << "Display helper: ignoring display feedback inside the post-recovery quiet period.";
+      deferred_recovery_display_event_ = event;
+      BOOST_LOG(debug) << "Display helper: deferring topology reconciliation inside the post-recovery quiet period.";
       return;
     }
     recovery_event_feedback_quiet_until_.reset();
@@ -1977,6 +2169,9 @@ namespace display_helper::v2 {
       // restore -> notification -> immediate restore feedback loop. External
       // evidence remains useful after the window expires, when it can open one
       // new bounded opportunity.
+      // Keep the evidence if the next backoff falls outside this window.
+      // An ordinary retry consumes it; otherwise reconcile at window expiry.
+      deferred_recovery_display_event_ = event;
       BOOST_LOG(debug) << "Display helper: retaining recovery backoff despite a display event inside the active recovery window.";
       return;
     }
@@ -1988,6 +2183,7 @@ namespace display_helper::v2 {
     // identity notification. Open one new bounded opportunity.
     scheduler_.on_display_event(now);
     if (scheduler_.should_attempt(now)) {
+      (void) recovery_status_policy_.observe_event();
       start_recovery(std::chrono::milliseconds(0), ApplyAction::Revert);
     }
   }
@@ -1998,6 +2194,9 @@ namespace display_helper::v2 {
     }
     if (is_stale_connection(event.connection_epoch)) {
       BOOST_LOG(debug) << "Display helper: ignoring heartbeat event from a retired IPC connection.";
+      return;
+    }
+    if (recovery_status_policy_.parked()) {
       return;
     }
     if (event.event != HelperEvent::HeartbeatTimeout) {
@@ -2071,11 +2270,35 @@ namespace display_helper::v2 {
   }
 
   void StateMachine::handle_tick() {
-    if (state_ != State::EventLoop || !recovery_armed_) {
+    if (state_ != State::EventLoop || !recovery_armed_ || recovery_status_policy_.parked()) {
       return;
     }
 
     const auto now = system_.now();
+    if (deferred_recovery_display_event_ && !mutation_worker_active() && !staged_state_reset_pending_ && !scheduler_.window_active(now) && (!recovery_event_feedback_quiet_until_ || now >= *recovery_event_feedback_quiet_until_)) {
+      const auto event = *deferred_recovery_display_event_;
+      deferred_recovery_display_event_.reset();
+      if (!is_stale(event.generation) && !is_stale_connection(event.connection_epoch) && recovery_baseline_present_devices_) {
+        const auto present = snapshots_.present_physical_restore_baseline_devices(
+          restore_state_.always_restore_from_golden.load(std::memory_order_acquire),
+          exclusions_vector()
+        );
+        const bool physical_return = present && std::any_of(present->begin(), present->end(), [&](const auto &id) {
+                                       return !recovery_baseline_present_devices_->contains(id);
+                                     });
+        if (physical_return) {
+          // The event alone never resets backoff. Only a newly enumerable
+          // member of the retained physical restore contract can reopen one
+          // bounded window after the failed worker and its feedback settle.
+          BOOST_LOG(info) << "Display helper: deferred event confirmed a returned physical baseline member; reopening bounded recovery.";
+          (void) recovery_status_policy_.observe_event();
+          recovery_event_feedback_quiet_until_.reset();
+          scheduler_.on_display_event(now);
+          start_recovery(std::chrono::milliseconds(0), ApplyAction::Revert);
+          return;
+        }
+      }
+    }
     if (scheduler_.window_just_expired(now)) {
       BOOST_LOG(info) << "Restore polling: window exhausted; pausing attempts until next event.";
       golden_health_.register_unresolved("restore window exhausted");

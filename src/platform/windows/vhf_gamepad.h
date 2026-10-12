@@ -9,20 +9,9 @@
 
 // local includes
 #include "src/platform/common.h"
+#include "vhf_gamepad_policy.h"
 
 namespace platf {
-
-  /**
-   * @brief The controller the VHF driver should present.
-   */
-  enum class vhf_profile_e {
-    automatic,  ///< Best available for the client, preferring a PlayStation pad when it fits.
-    xbox_series,
-    xbox_one,
-    dualshock4,
-    dualsense,
-    switch_pro
-  };
 
   /**
    * @brief Drives virtual controllers through Vibepollo's own UMDF/VHF gamepad driver.

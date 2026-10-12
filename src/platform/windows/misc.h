@@ -38,7 +38,8 @@ namespace platf {
   std::uint64_t routed_link_bps(const boost::asio::ip::address &source, const boost::asio::ip::address &target, routed_link_info_t *info = nullptr);
 
   void print_status(const std::string_view &prefix, HRESULT status);
-  HDESK syncThreadDesktop();
+  /// Bind the calling thread to the input desktop, retaining its owned handle.
+  bool syncThreadDesktop();
 
   int64_t qpc_counter();
 
@@ -183,18 +184,18 @@ namespace platf {
 
   /**
    * @brief Check whether the Sunshine Vulkan HDR implicit layer is registered for the system.
-   * @details Reads HKLM\SOFTWARE\Khronos\Vulkan\ImplicitLayers (64-bit view) and confirms a value
-   *          pointing at VkLayer_sunshine_hdr.json whose manifest still exists on disk.
-   * @return true if the implicit layer is registered and its manifest is present, false otherwise.
+   * @details Requires enabled DWORD values for the shipped x64 and x86 manifests in their
+   *          respective registry views, and both manifest/DLL pairs on disk.
+   * @return true if both architectures are registered and their payloads are present.
    */
   bool is_vulkan_hdr_layer_registered();
 
   /**
    * @brief Register or unregister the Sunshine Vulkan HDR implicit layer (system-wide, HKLM).
    * @details Registering writes the manifest path (shipped under drivers\sunshine\vulkan-layer) into
-   *          the 64-bit ImplicitLayers key; unregistering removes our manifest from both registry
-   *          views. Requires administrative/SYSTEM rights (best-effort otherwise). No-op when the
-   *          layer is already in the requested state.
+   *          each architecture's ImplicitLayers registry view; unregistering removes only our
+   *          manifest values from both views, including partial or stale registrations.
+   *          Requires administrative/SYSTEM rights (best-effort otherwise).
    * @param enabled true to register the layer, false to unregister it.
    * @return true on success (or when already in the desired state), false on failure.
    */

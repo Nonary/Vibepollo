@@ -3,6 +3,7 @@
  * @brief Definitions for the configuration of Sunshine.
  */
 // standard includes
+#include "managed_app_focus.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -929,6 +930,7 @@ namespace config {
     video_t::virtual_display_mode_e::per_client,  // virtual_display_mode
     video_t::virtual_display_layout_e::exclusive,  // virtual_display_layout
 
+    4,  // virtual_display_max_clients
     false,  // remote_monitor_mute_audio
     false,  // remote_monitor_disconnect_on_stream_end
     false,  // remote_monitor_disconnect_on_client_disconnect
@@ -1035,6 +1037,7 @@ namespace config {
     true,  // client gamepads with touchpads are emulated as DS4
     true,  // ds5_inputtino_randomize_mac
     true,  // proton_dualsense_compatibility
+    1.0,  // dualsense_haptics_gain
 
     true,  // keyboard enabled
     true,  // mouse enabled
@@ -1104,7 +1107,7 @@ namespace config {
     "ipv4",  // Address family
     {},  // Bind address
     (platf::appdata() / default_log_filename).string(),  // log file
-    false,  // notify_pre_releases
+    true,  // notify_pre_releases
     false,  // legacy_ordering
     true,  // system_tray
     {},  // prep commands
@@ -1930,6 +1933,7 @@ namespace config {
     }
 #endif
     generic_f(vars, "virtual_display_layout", video.virtual_display_layout, virtual_display_layout_from_view);
+    int_between_f(vars, "virtual_display_max_clients", video.virtual_display_max_clients, {1, 8});
     bool_f(vars, "remote_monitor_mute_audio", video.remote_monitor_mute_audio);
     bool_f(vars, "remote_monitor_disconnect_on_stream_end", video.remote_monitor_disconnect_on_stream_end);
     bool_f(vars, "remote_monitor_disconnect_on_client_disconnect", video.remote_monitor_disconnect_on_client_disconnect);
@@ -2215,6 +2219,7 @@ namespace config {
     bool_f(vars, "ds4_back_as_touchpad_click", input.ds4_back_as_touchpad_click);
     bool_f(vars, "motion_as_ds4", input.motion_as_ds4);
     bool_f(vars, "proton_dualsense_compatibility", input.proton_dualsense_compatibility);
+    double_between_f(vars, "dualsense_haptics_gain", input.dualsense_haptics_gain, {0.0, 4.0});
     bool_f(vars, "touchpad_as_ds4", input.touchpad_as_ds4);
 
     bool_f(vars, "mouse", input.mouse);
@@ -2304,6 +2309,7 @@ namespace config {
 
     // Provider settings are cross-platform. Playnite remains Windows-only,
     // while Steam's parser enforces the Linux Steam-only policy.
+    managed_app_focus::settings = managed_app_focus::parse_policy(vars);
     config::apply_steam(vars);
 #ifdef __linux__
     config::apply_lutris(vars);
@@ -2668,6 +2674,7 @@ namespace config {
         "keybindings",
         "ds5_inputtino_randomize_mac",
         "proton_dualsense_compatibility",
+        "dualsense_haptics_gain",
 
         // Stream audio/video and display automation
         "audio_sink",
@@ -3301,7 +3308,11 @@ namespace config {
       if (dd_config_changed && !has_active_stream_sessions() && runtime_overrides.empty()) {
         stream::session::cleanup_reservation_t cleanup_reservation;
         BOOST_LOG(info) << "Hot-apply: DD configuration changed with no active sessions; reverting cached display state.";
+#ifdef _WIN32
+        display_helper_integration::revert(true, false, dd_was_enabled && dd_disabled_now);
+#else
         display_helper_integration::revert();
+#endif
 
         if (dd_was_enabled && dd_disabled_now) {
           BOOST_LOG(info) << "Hot-apply: DD configuration changed to disabled.";

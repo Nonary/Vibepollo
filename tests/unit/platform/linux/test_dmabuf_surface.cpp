@@ -12,6 +12,24 @@
 #include <sys/eventfd.h>
 
 namespace {
+  TEST(DmabufSurface, CpuFallbackRequiresKnownLayoutForManagedImports) {
+    egl::surface_descriptor_t surface;
+    surface.direct_import_required = true;
+    surface.modifier = 0;
+    EXPECT_TRUE(egl::can_cpu_upload_surface(surface));
+
+    surface.modifier = 0x00ffffffffffffffULL;
+    EXPECT_FALSE(egl::can_cpu_upload_surface(surface));
+    surface.direct_import_required = false;
+    EXPECT_TRUE(egl::can_cpu_upload_surface(surface));
+
+    // The block-linear modifier observed in the NVIDIA scanout probe.
+    surface.modifier = 0x0300000000606013ULL;
+    EXPECT_FALSE(egl::can_cpu_upload_surface(surface));
+    surface.direct_import_required = true;
+    EXPECT_FALSE(egl::can_cpu_upload_surface(surface));
+  }
+
   int open_frame_fd() {
     return eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
   }

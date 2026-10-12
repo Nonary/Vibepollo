@@ -64,9 +64,11 @@ namespace display_helper::v2 {
           const auto *ps = reinterpret_cast<const POWERBROADCAST_SETTING *>(lParam);
           if (ps && ps->PowerSetting == GUID_MONITOR_POWER_ON && ps->DataLength == sizeof(DWORD)) {
             const DWORD state = *reinterpret_cast<const DWORD *>(ps->Data);
-            if (state != 0) {
+            if (self->monitor_power_policy_.observe(true, state != 0)) {
               self->signal(DisplayEvent::PowerResume);
             }
+          } else {
+            (void) self->monitor_power_policy_.observe(false, false);
           }
         }
         break;
@@ -109,10 +111,26 @@ namespace display_helper::v2 {
     wc.lpszClassName = klass;
     RegisterClassExW(&wc);
 
-    HWND hwnd = CreateWindowExW(0, klass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, instance, this);
+    // A message-only window does not receive broadcast WM_DISPLAYCHANGE.
+    // Keep a hidden top-level window so the service can observe display
+    // topology changes without showing UI or installing input hooks.
+    HWND hwnd = CreateWindowExW(
+      WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+      klass,
+      L"",
+      WS_POPUP,
+      0,
+      0,
+      0,
+      0,
+      nullptr,
+      nullptr,
+      instance,
+      this);
     if (!hwnd) {
       return;
     }
+    monitor_power_policy_.reset();
 
     power_cookie_ = RegisterPowerSettingNotification(hwnd, &GUID_MONITOR_POWER_ON, DEVICE_NOTIFY_WINDOW_HANDLE);
 

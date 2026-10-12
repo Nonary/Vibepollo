@@ -2914,7 +2914,9 @@ namespace platf::audio {
       if (FAILED(show_status)) {
         BOOST_LOG(warning) << "Failed to enable Steam audio device: "sv
                            << util::hex(show_status).to_string_view();
-        return reset_result_e::fatal;
+        // Windows already chose a fallback while Steam was hidden. Publish
+        // that exact role ownership below even when showing Steam fails, so
+        // the captured endpoint can still be restored when it returns.
       }
 
       bool no_device = false;
@@ -3028,6 +3030,9 @@ namespace platf::audio {
         }
       }
 
+      if (FAILED(show_status)) {
+        return reset_result_e::fatal;
+      }
       if (failure) {
         BOOST_LOG(warning) << "Keeping "sv << failure
                            << " failed role-specific audio fallback reset(s) queued for retry"sv;
@@ -3074,6 +3079,7 @@ namespace platf::audio {
 
       BOOST_LOG(info) << "Waiting in background to restore failed audio roles"sv;
       bool retry_fallback_reset = true;
+      bool visibility_fallback_available = true;
       while (pending_restore_worker_can_write(stop_token, token, assignment_epoch) &&
              !role_restores.empty()) {
         bool needs_fallback = false;
@@ -3130,7 +3136,7 @@ namespace platf::audio {
           ++it;
         }
 
-        if (needs_fallback && retry_fallback_reset) {
+        if (needs_fallback && retry_fallback_reset && visibility_fallback_available) {
           const auto fallback_result = try_reset_pending_roles_from_steam(
             steam_device_id,
             role_restores,
@@ -3139,12 +3145,33 @@ namespace platf::audio {
             assignment_epoch
           );
           if (fallback_result == reset_result_e::fatal) {
-            clear_pending_role_restores_for_worker(
-              role_restores,
-              token,
-              assignment_epoch
-            );
-            return;
+            if (process_shutdown_in_progress()) {
+              clear_pending_role_restores_for_worker(
+                role_restores,
+                token,
+                assignment_epoch
+              );
+              return;
+            }
+
+            // A failed visibility RPC or marker write does not release the
+            // captured endpoints. Stop using that fallback, but keep direct
+            // restoration queued while the exact owned default is selected.
+            visibility_fallback_available = false;
+            for (auto it = role_restores.begin(); it != role_restores.end();) {
+              // The fallback may have retired a role after a newer choice
+              // during the RPC. Its published record is already gone; remove
+              // the local record before republishing the surviving roles.
+              if (it->expected_current_id.empty()) {
+                it = role_restores.erase(it);
+                continue;
+              }
+              it->fallback_transition = false;
+              if (!update_pending_role_restore_for_worker(*it, token, assignment_epoch)) {
+                return;
+              }
+              ++it;
+            }
           }
           if (fallback_result == reset_result_e::inactive) {
             return;
@@ -3161,7 +3188,9 @@ namespace platf::audio {
         // Any role with a captured endpoint stays queued until that endpoint
         // returns, but only while its expected fallback remains selected.
         for (auto it = role_restores.begin(); it != role_restores.end();) {
-          if (it->expected_current_id.empty() || (it->preferred_id.empty() && it->expected_current_id != steam_device_id)) {
+          if (it->expected_current_id.empty() ||
+              (it->preferred_id.empty() &&
+               (it->expected_current_id != steam_device_id || !visibility_fallback_available))) {
             clear_pending_role_restore_for_worker(
               *it,
               token,

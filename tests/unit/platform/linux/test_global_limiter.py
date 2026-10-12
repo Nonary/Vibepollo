@@ -216,5 +216,17 @@ print(json.dumps({k: v for k, v in g_session.env.items() if k.startswith(("DXVK"
                 limiter.environment(invalid, {})
 
 
+    def test_manageable_tool_skips_readonly(self):
+        self.assertTrue(limiter.manageable_tool(self.tool))
+        self.assertFalse(limiter.manageable_tool(self.settings))
+        readonly_dir = self.tool / "readonly_tool"
+        readonly_dir.mkdir()
+        try:
+            readonly_dir.chmod(0o555)
+            self.assertFalse(limiter.manageable_tool(readonly_dir))
+        finally:
+            readonly_dir.chmod(0o755)
+
+
 if __name__ == "__main__":
     unittest.main()

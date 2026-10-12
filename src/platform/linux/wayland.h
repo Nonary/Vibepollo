@@ -6,6 +6,8 @@
 
 // standard includes
 #include <bitset>
+#include <chrono>
+#include <functional>
 
 #ifdef SUNSHINE_BUILD_WAYLAND
   #include <linux-dmabuf-unstable-v1.h>
@@ -181,8 +183,11 @@ namespace wl {
      */
     int init(const char *display_name = nullptr);
 
+    int init_until(std::chrono::steady_clock::time_point deadline, const std::function<bool()> &allowed);
+
     // Roundtrip with Wayland connection
     void roundtrip();
+    bool roundtrip_until(std::chrono::steady_clock::time_point deadline, const std::function<bool()> &allowed);
 
     // Wait up to the timeout to read and dispatch new events
     bool dispatch(std::chrono::milliseconds timeout);

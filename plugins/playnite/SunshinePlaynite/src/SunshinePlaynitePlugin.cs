@@ -44,6 +44,11 @@ namespace SunshinePlaynite
             connector.Stop();
         }
 
+        public override void OnGameStarting(OnGameStartingEventArgs args)
+        {
+            if (!connector.GameStarting(args.Game)) args.CancelStartup = true;
+        }
+
         public override void OnGameStarted(OnGameStartedEventArgs args)
         {
             connector.GameStarted(args.Game);

@@ -21,6 +21,7 @@ namespace display_helper::v2 {
   class WinDisplaySettings final : public IDisplaySettings {
   public:
     ApplyStatus apply(const SingleDisplayConfiguration &config) override;
+    bool blank_hdr_states(std::chrono::milliseconds delay, const std::function<bool()> &cancelled) override;
     ApplyStatus apply_topology(const ActiveTopology &topology) override;
     EnumeratedDeviceList enumerate(display_device::DeviceEnumerationDetail detail) override;
     ActiveTopology capture_topology() override;

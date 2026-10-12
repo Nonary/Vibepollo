@@ -1367,7 +1367,11 @@ function libraryRequest(
             <h2 :id="`integration-${summary.id}`">{{ summary.name }}</h2>
             <StatusBadge :label="summary.status" :tone="summary.tone" compact />
           </div>
-          <PlaynitePolicySettings v-if="summary.id === 'playnite' && isWindows" />
+          <PlaynitePolicySettings
+            v-if="summary.id === 'playnite' && isWindows"
+            :needs-directory="!playnite?.extensions_dir"
+            @saved="load"
+          />
           <ul v-if="summary.details.length" class="integration-details">
             <li v-for="detail in summary.details" :key="detail">{{ detail }}</li>
           </ul>

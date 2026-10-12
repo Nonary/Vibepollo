@@ -164,7 +164,7 @@ TEST(SunshineVirtualDisplay, ActivePhysicalDisplayDetectionIsScopedToConfiguredA
     ASSERT_NE(detection_end, std::string::npos) << relative_path;
     const auto detection_body = source.substr(detection_pos, detection_end - detection_pos);
 
-    EXPECT_NE(detection_body.find("platf::configured_capture_adapter_has_output(active_physical_displays)"), std::string::npos)
+    EXPECT_NE(detection_body.find("platf::configured_capture_adapter_has_output(physical.display_names)"), std::string::npos)
       << relative_path << " does not scope active display detection to the configured adapter";
   }
 

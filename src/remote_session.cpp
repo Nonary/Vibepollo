@@ -424,13 +424,13 @@ namespace remote_session {
     return snapshot ? snapshot(client_uuid, generation) : monitor_runtime_state_t {.retryable = true, .error = "Remote Monitor topology is not ready."};
   }
 
-  void release_monitor(const std::string_view client_uuid, const std::uint64_t generation, const std::string_view reason) {
-    std::function<void(std::string_view, std::uint64_t, std::string_view)> release;
+  bool release_monitor(const std::string_view client_uuid, const std::uint64_t generation, const std::string_view reason) {
+    std::function<bool(std::string_view, std::uint64_t, std::string_view)> release;
     {
       std::lock_guard lock {monitor_runtime_hooks_mutex};
       release = monitor_runtime_hooks.explicit_release;
     }
-    if (release) release(client_uuid, generation, reason);
+    return release && release(client_uuid, generation, reason);
   }
 
   void notify_monitor_transport_lost(const std::string_view client_uuid, const std::uint64_t generation) {

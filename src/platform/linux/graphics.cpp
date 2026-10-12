@@ -37,6 +37,8 @@ extern "C" {
 #define DRM_FORMAT_XRGB8888 fourcc_code('X', 'R', '2', '4')
 #define DRM_FORMAT_ABGR8888 fourcc_code('A', 'B', '2', '4')
 #define DRM_FORMAT_XBGR8888 fourcc_code('X', 'B', '2', '4')
+#define DRM_FORMAT_RGBA8888 fourcc_code('R', 'A', '2', '4')
+#define DRM_FORMAT_BGRA8888 fourcc_code('B', 'A', '2', '4')
 #define DRM_FORMAT_ARGB2101010 fourcc_code('A', 'R', '3', '0')
 #define DRM_FORMAT_XRGB2101010 fourcc_code('X', 'R', '3', '0')
 #define DRM_FORMAT_ABGR2101010 fourcc_code('A', 'B', '3', '0')
@@ -751,6 +753,10 @@ namespace egl {
   }
 
   std::optional<rgb_t> upload_source(display_t::pointer egl_display, const surface_descriptor_t &xrgb) {
+    if (!can_cpu_upload_surface(xrgb)) {
+      BOOST_LOG(error) << "CPU DMA-BUF upload requires a linear framebuffer layout; managed implicit imports cannot be mapped safely.";
+      return std::nullopt;
+    }
     if (xrgb.direct_import_required) {
       static std::atomic_bool warned {false};
       if (!warned.exchange(true, std::memory_order_relaxed)) {
@@ -759,10 +765,6 @@ namespace egl {
                            << util::hex(xrgb.modifier).to_string_view()
                            << "); using the linear CPU upload fallback.";
       }
-    }
-    if (xrgb.modifier != 0 && xrgb.modifier != DRM_FORMAT_MOD_INVALID) {
-      BOOST_LOG(error) << "CPU DMA-BUF upload requires a linear framebuffer modifier.";
-      return std::nullopt;
     }
     if (xrgb.fds[0] < 0 || xrgb.width <= 0 || xrgb.height <= 0 || xrgb.pitches[0] == 0 || xrgb.pitches[0] % sizeof(std::uint32_t) != 0) {
       return std::nullopt;
@@ -783,6 +785,18 @@ namespace egl {
         internal_format = GL_RGBA8;
         external_format = GL_RGBA;
         external_type = GL_UNSIGNED_BYTE;
+        break;
+      // These DRM formats store alpha in the low byte. A packed upload
+      // preserves their RGBA/BGRA bit order instead of treating alpha as red.
+      case DRM_FORMAT_RGBA8888:
+        internal_format = GL_RGBA8;
+        external_format = GL_RGBA;
+        external_type = GL_UNSIGNED_INT_8_8_8_8;
+        break;
+      case DRM_FORMAT_BGRA8888:
+        internal_format = GL_RGBA8;
+        external_format = GL_BGRA;
+        external_type = GL_UNSIGNED_INT_8_8_8_8;
         break;
       case DRM_FORMAT_ARGB2101010:
       case DRM_FORMAT_XRGB2101010:
