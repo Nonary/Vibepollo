@@ -429,7 +429,7 @@
     "amd_preanalysis_desc": "Umożliwia to wstępną analizę kontroli szybkości, która może zwiększyć jakość kosztem zwiększonego opóźnienia kodowania.",
     "amd_quality": "Jakość AMF",
     "amd_quality_balanced": "balanced -- równowaga szybkości i jakości",
-    "amd_quality_desc": "To ustawienie reguluje równowagę między szybkością kodowania a jakością. Domyślnie wybrana jest opcja „balanced”. Opcja „auto” nie ustawia tej właściwości, dzięki czemu jej wartość może dobrać wybrany profil użycia AMF.",
+    "amd_quality_desc": "To ustawienie reguluje równowagę między szybkością kodowania a jakością. Domyślnie wybrana jest opcja „speed”. Opcja „auto” nie ustawia tej właściwości, dzięki czemu jej wartość może dobrać wybrany profil użycia AMF.",
     "amd_quality_group": "Ustawienia jakości AMF (natywny + FFmpeg)",
     "amd_quality_quality": "quality - preferuj jakość",
     "amd_quality_speed": "speed - preferuj szybkość",

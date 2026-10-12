@@ -224,9 +224,9 @@ export function getConfigSelectOptions(
       if (platform === 'windows') {
         if (hasNvidia) options.push({ label: 'NVIDIA NVENC', value: 'nvenc' });
         if (hasIntel) options.push({ label: 'Intel QuickSync', value: 'quicksync' });
-        if (hasAmd) options.push({ label: 'AMD AMF/VCE (FFmpeg)', value: 'amdvce_ffmpeg' });
+        if (hasAmd) options.push({ label: 'AMD AMF/VCE (Legacy FFmpeg)', value: 'amdvce_ffmpeg' });
         if (hasAmd) {
-          options.push({ label: 'AMD AMF/VCE (Experimental)', value: 'amdvce_experimental' });
+          options.push({ label: 'AMD AMF/VCE (Native)', value: 'amdvce_experimental' });
         }
       } else if (platform === 'linux') {
         options.push(

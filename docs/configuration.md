@@ -3065,8 +3065,8 @@ this option to replace the running app immediately. The default is `true`.
     </tr>
     <tr>
         <td>amdvce_ffmpeg</td>
-        <td>For AMD graphics cards. This is the supported FFmpeg-based AMF encoder and the
-            implementation used by automatic selection on Windows.
+        <td>Legacy FFmpeg-based AMD AMF encoder. Select this explicitly to preserve legacy
+            encoding. Automatic selection prefers native AMF on Windows.
             @note{Existing configurations using @code{}amdvce_legacy@endcode are accepted as
             a compatibility alias for @code{}amdvce_ffmpeg@endcode. The former native
             @code{}amdvce@endcode value is accepted as an alias for
@@ -3074,9 +3074,14 @@ this option to replace the running app immediately. The default is `true`.
     </tr>
     <tr>
         <td>amdvce_experimental</td>
-        <td>Experimental native AMD AMF encoder. It is not selected automatically, has limited
-            hardware test coverage, and may not work with older GPUs or driver versions. Explicit
-            selection fails closed instead of silently changing encoder implementations.
+        <td>Native AMD AMF encoder, preferred by automatic selection on Windows. The historical
+            name remains compatible with existing settings. Explicit selection fails closed.
+            With automatic selection, a confirmed encoder creation or initialization failure
+            permits one FFmpeg AMF rollback per stream after native cleanup completes. Codec,
+            bit depth, chroma and HDR remain unchanged. Unsupported requested formats, explicit
+            native options, intra refresh, unsupported decoder reference limits, capture/conversion errors, cancellation, contention
+            and unsafe driver timeouts do not trigger rollback. The next stream retries native
+            initialization; a failed rollback ends the stream.
             @note{Applies to Windows only.}</td>
     </tr>
     <tr>
@@ -4041,6 +4046,7 @@ runtime version is written to the log on every AMD HDR HEVC attempt (search for
         <td>Description</td>
         <td colspan="2">
             The quality profile controls the tradeoff between speed and quality of encoding.
+            Speed is the default to prioritize low latency. Existing explicit selections are preserved.
             `auto` leaves the quality property unset so the selected AMF usage preset can choose it.
             @note{This option applies to the AMD [encoders](#encoder).}
         </td>
@@ -4048,13 +4054,13 @@ runtime version is written to the log on every AMD HDR HEVC attempt (search for
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            balanced
+            speed
             @endcode</td>
     </tr>
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            amd_quality = balanced
+            amd_quality = speed
             @endcode</td>
     </tr>
     <tr>
@@ -4216,6 +4222,29 @@ runtime version is written to the log on every AMD HDR HEVC attempt (search for
         <td>force screen-content tools off</td>
     </tr>
 </table>
+
+### amd_av1_tiles
+
+Experimental AV1 tile-count override for the native `amdvce_experimental` encoder only. Set this in `sunshine.conf`.
+
+| Value | Behavior |
+| --- | --- |
+| `0` (default) | Preserve the client's tile/slice request and the usage-preset default. |
+| `1`, `2`, `4` | Request this many AV1 tiles, overriding the client request. |
+
+Example: `amd_av1_tiles = 2`. Reconnect the stream after changing this setting.
+Invalid values fall back to `0`. This does not affect H.264, HEVC or `amdvce_ffmpeg`.
+
+AMF may adjust the requested tile count for its supported layout. The session log reports the request and
+the driver-reported count **after encoder initialization**; these are not a bitstream inspection or proof
+of multi-engine split-frame encoding. The split-frame hint is likewise only a driver recommendation.
+More tiles are not guaranteed to improve latency and can trade compression efficiency for parallelism.
+See [AMD's AV1 tile documentation](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/master/amf/doc/AMF_Video_Encode_AV1_API.md)
+and [AMD's split-frame explanation](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/585#issuecomment-3755732553).
+
+For a controlled comparison, repeat the same scene with `1`, `2` and `4` at identical resolution, FPS,
+bitrate and HDR settings. Check the reported tile count, image quality, dropped frames and latency
+distribution, not only a single maximum. Restore `0` if there is no repeatable benefit.
 
 ### amd_av1_latency_mode
 
@@ -4844,7 +4873,7 @@ Sets the number of long-term reference frames used by the experimental native AM
 
 ### amd_input_queue_size
 
-Sets the experimental native AMD encoder input queue depth. A positive explicit value overrides automatic low-latency queue selection.
+Sets the experimental native AMD encoder's driver input capacity. This is not the number of frames Vibepollo permits to accumulate: the native encoder independently keeps the smallest pipeline depth demonstrated by the runtime and drops a newer stale capture rather than growing that backlog. Leave this at `0` for the driver default unless hardware testing shows a benefit. A positive explicit value overrides VRR low-latency queue selection; values as small as `1` can starve drivers that retain several startup surfaces, while `4` is the safer low-latency tuning point.
 
 ### amd_smart_access_video
 
