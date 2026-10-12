@@ -550,6 +550,7 @@ import PlayniteReinstallButton from '@/components/PlayniteReinstallButton.vue';
 import VibepolloVersion from '@/sunshine_version';
 import type { ChangelogEntry } from '../../web/utils/changelog';
 import {
+  apiNightlyMetadata,
   fetchUpdateReleases,
   selectAvailableUpdate,
   prereleasesEnabled,
@@ -569,7 +570,7 @@ const installedVersion = ref<VibepolloVersion>(new VibepolloVersion('0.0.0'));
 const availableUpdate = ref<ChangelogEntry | null>(null);
 const availableRelease = ref<UpdateRelease | null>(null);
 const availableVersion = computed(() => {
-  const embeddedVersion = availableRelease.value?.nightly_metadata?.['version'];
+  const embeddedVersion = availableRelease.value ? apiNightlyMetadata(availableRelease.value)?.['version'] : undefined;
   return typeof embeddedVersion === 'string'
     ? embeddedVersion
     : (availableUpdate.value?.tag || '').replace(/^v/, '');

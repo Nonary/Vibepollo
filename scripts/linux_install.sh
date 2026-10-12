@@ -432,6 +432,19 @@ download_release_package() {
   local_package="${workdir}/${asset_name}"
   curl -fL --progress-bar --max-time 900 -o "$local_package" "$asset_url"
 
+  # This is an explicit installation, never an availability check.
+  local sums checksum_expected checksum_actual
+  sums=$(curl -fsSL --max-time 60 "${REPO_URL}/releases/download/${tag}/SHA256SUMS" 2>/dev/null || true)
+  if [[ -n "$sums" ]]; then
+    checksum_expected=$(awk -v name="$asset_name" '$2 == name {print $1}' <<<"$sums")
+    [[ "$checksum_expected" =~ ^[0-9a-f]{64}$ ]] || die "missing or ambiguous checksum for ${asset_name}"
+    checksum_actual=$(sha256sum "$local_package" | awk '{print $1}')
+    [[ "$checksum_actual" == "$checksum_expected" ]] || die "checksum mismatch for ${asset_name}; refusing to install"
+    ok "Package checksum matches SHA256SUMS."
+  elif [[ "$tag" == daily-* || "$tag" == *-daily.d* ]]; then
+    die "nightly checksums unavailable; refusing to install"
+  fi
+
   # Verify against the release provenance manifest when the release ships one.
   local provenance expected actual
   provenance=$(curl -fsSL --max-time 60 \

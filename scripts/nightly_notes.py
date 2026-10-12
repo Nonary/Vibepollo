@@ -171,10 +171,19 @@ def generate(repo, tag, version, source, assets, notes):
             downloads.append(f'[Linux (Arch x86_64)](https://github.com/{repo}/releases/download/{tag}/{quote(packages[0].name)})')
         first_line, remainder = body.split('\n', 1)
         body = first_line + '\n\n' + ' · '.join(downloads) + '\n' + remainder
+    # API-visible identity is generated only after the existing qualification gates.
+    # The asset stays available for installed clients using the old contract.
+    if repo != 'Nonary/moonlight-qt':
+        evidence = root / 'daily-manifest.json'
+        if evidence.is_file():
+            metadata['qualification'] = json.loads(evidence.read_text(encoding='utf-8'))
+    if '<!-- nightly-identity: ' in body:
+        raise ValueError('Commit notes contain a reserved nightly identity marker')
+    body = '<!-- nightly-identity: ' + json.dumps(metadata, separators=(',', ':')) + ' -->\n' + body
     (root / 'nightly-metadata.json').write_text(json.dumps(metadata, indent=2) + '\n', encoding='utf-8')
     Path(notes).write_text(body, encoding='utf-8')
     # Include metadata and existing manifest/provenance; never hash SHA256SUMS itself.
-    files = sorted(p for p in root.iterdir() if p.name != 'SHA256SUMS')
+    files = sorted(p for p in root.iterdir() if p.name not in ('SHA256SUMS', 'daily-manifest.json', 'release-provenance.json'))
     if any(not p.is_file() or p.is_symlink() or '\n' in p.name or '\r' in p.name for p in files):
         raise ValueError('Unsafe checksum input')
     (root / 'SHA256SUMS').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in files), encoding='utf-8')

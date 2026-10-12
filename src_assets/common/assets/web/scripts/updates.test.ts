@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  selectAvailableUpdate,
+  selectAvailableUpdate as selectWireUpdate,
   prereleasesEnabled,
   validNightlyMetadata,
   fetchUpdateReleases,
@@ -9,6 +9,13 @@ import {
   dismissedUpdate,
   type UpdateRelease,
 } from '../utils/updates.ts';
+
+// Convert semantic-order fixtures to the release API wire contract.
+function selectAvailableUpdate(...args: Parameters<typeof selectWireUpdate>) {
+  args[1] = args[1].map((r) => r.nightly_metadata
+    ? { ...r, body: `<!-- nightly-identity: ${JSON.stringify(r.nightly_metadata)} -->\n` } : r);
+  return selectWireUpdate(...args);
+}
 
 const assets = [{ name: 'VibepolloSetup.exe', state: 'uploaded', size: 100 }];
 function release(tag: string, prerelease = false): UpdateRelease {
@@ -219,4 +226,27 @@ test('SemVer GitHub nightly tags notify shipped stable clients and retain metada
     {...next, nightly_metadata: {...next.nightly_metadata, version: '2.0.2-daily.d20261012.1+aaaaaaaaaaaa'}},
     {...next, assets: assets},
   ]) assert.equal(selectAvailableUpdate('2.0.0', [changed], true), null);
+});
+
+test('daily availability uses only release API requests and embedded validated identity', async () => {
+  const previous = globalThis.fetch;
+  const next = daily('2026-10-12', '2.0.1');
+  next.body = `<!-- nightly-identity: ${JSON.stringify(next.nightly_metadata)} -->\n`;
+  delete next.nightly_metadata;
+  next.assets = next.assets!.filter((a) => a.name !== 'nightly-metadata.json');
+  const calls: string[] = [];
+  try {
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify([next]));
+    }) as typeof fetch;
+    const releases = await fetchUpdateReleases(new AbortController().signal);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0]!, /^https:\/\/api.github.com\/repos\//);
+    assert.equal(selectWireUpdate('2.0.0', releases, true)?.tag, next.tag_name);
+    assert.equal(selectWireUpdate('2.0.0', releases, false), null);
+    assert.equal(selectWireUpdate('2.0.1', releases, true), null);
+    assert.equal(selectWireUpdate('2.0.0', [{...next, body: next.body + next.body}], true), null);
+    assert.equal(selectWireUpdate('2.0.0', [{...next, body: ''}], true), null);
+  } finally { globalThis.fetch = previous; }
 });

@@ -28,7 +28,6 @@
 #include "utility.h"
 #include "version_compare.h"
 #include "update_release.h"
-#include <map>
 #include <mutex>
 
 using namespace std::literals;
@@ -125,34 +124,13 @@ namespace update {
 
   bool download_nightly_metadata(const std::string &tag, std::string &out_json) {
     if (!release_selection::daily_tag(tag)) return false;
-    static std::mutex cache_mutex;
-    static std::map<std::string, nlohmann::json> metadata_cache;
-    std::lock_guard<std::mutex> lock(cache_mutex);
-    auto cached = metadata_cache.find(tag);
-    if (cached == metadata_cache.end()) {
-      std::string data;
-      if (!download_json("https://github.com/" SUNSHINE_REPO_OWNER "/" SUNSHINE_REPO_NAME "/releases/download/" + tag + "/nightly-metadata.json", data)) return false;
-      auto metadata = nlohmann::json::parse(data, nullptr, false);
-      try {
-        if (!release_selection::valid_metadata(tag, metadata)) return false;
-      } catch (const nlohmann::json::exception &) { return false; }
-      cached = metadata_cache.emplace(tag, std::move(metadata)).first;
-    }
-    out_json = cached->second.dump();
-    return true;
-  }
-
-  static bool enrich_nightly_releases(nlohmann::json &releases) {
-    for (auto &release : releases) {
-      try {
-        if (!release.is_object() || !release.contains("tag_name") || !release["tag_name"].is_string()) continue;
-        const auto tag = release["tag_name"].get<std::string>();
-        if (!release_selection::daily_tag(tag) || !release_selection::complete(release, true)) continue;
-        std::string metadata;
-        if (!download_nightly_metadata(tag, metadata)) continue;
-        release["nightly_metadata"] = nlohmann::json::parse(metadata);
-      } catch (const nlohmann::json::exception &) { /* malformed release */ }
-    }
+    // Kept for API compatibility; availability checks never fetch assets.
+    std::string data;
+    if (!download_json("https://api.github.com/repos/" SUNSHINE_REPO_OWNER "/" SUNSHINE_REPO_NAME "/releases/tags/" + tag, data)) return false;
+    const auto release = nlohmann::json::parse(data, nullptr, false);
+    const auto metadata = release_selection::api_metadata(release);
+    if (metadata.is_null()) return false;
+    out_json = metadata.dump();
     return true;
   }
 
@@ -193,15 +171,13 @@ namespace update {
     });
     try {
       state.last_check_time = std::chrono::steady_clock::now();
-      const bool allow_prerelease_updates =
-        config::sunshine.notify_pre_releases;
       // Fetch releases list once and compute latest stable/prerelease
       BOOST_LOG(info) << "Update check: querying GitHub releases from repo "sv
                       << SUNSHINE_REPO_OWNER << '/' << SUNSHINE_REPO_NAME;
       std::string releases_json;
       if (!download_github_release_data(SUNSHINE_REPO_OWNER, SUNSHINE_REPO_NAME, releases_json)) return;
       auto j = nlohmann::json::parse(releases_json);
-      if (!j.is_array() || (allow_prerelease_updates && !enrich_nightly_releases(j))) return;
+      if (!j.is_array()) return;
       const auto stable = release_selection::select(j, PROJECT_VERSION, false);
       const auto any = release_selection::select(j, PROJECT_VERSION, config::sunshine.notify_pre_releases);
       auto info = [](const nlohmann::json &rel) {

@@ -144,15 +144,26 @@ jobs:
           set -euo pipefail
           git fetch origin --tags
           python scripts/nightly_notes.py --repo "$GITHUB_REPOSITORY" --tag "$DAILY_TAG" --version "$DAILY_VERSION" --source "$DAILY_COMMIT" --assets daily-assets --notes daily-notes.md
+      - name: Preserve qualification evidence in CI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-qualification
+          path: |
+            daily-assets/daily-manifest.json
+            daily-assets/release-provenance.json
+            daily-assets/nightly-metadata.json
+          retention-days: 90
+      - name: Stage useful public downloads and legacy compatibility
+        run: python scripts/daily_release.py public --assets daily-assets --destination public-assets --product Vibepollo
       - name: Create once, upload all assets, then expose prerelease
         run: |
           set -euo pipefail
           # The reserved tag pins the tested source even if master advances.
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$DAILY_TAG" --jq .object.sha)" = "$DAILY_COMMIT"
           gh release create "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Nightly ${DAILY_TAG#daily-}" --notes-file daily-notes.md --draft --prerelease --latest=false
-          gh release upload "$DAILY_TAG" daily-assets/* --repo "$GITHUB_REPOSITORY"
+          gh release upload "$DAILY_TAG" public-assets/* --repo "$GITHUB_REPOSITORY"
           gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name] | sort' > uploaded-assets.json
-          python -c 'import json; from pathlib import Path; assert json.loads(Path("uploaded-assets.json").read_text()) == sorted(p.name for p in Path("daily-assets").iterdir()), "Uploaded release asset set is incomplete"'
+          python -c 'import json; from pathlib import Path; assert json.loads(Path("uploaded-assets.json").read_text()) == sorted(p.name for p in Path("public-assets").iterdir()), "Uploaded release asset set is incomplete"'
           gh release edit "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
           gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease,isDraft --jq 'if .isPrerelease and (.isDraft | not) then "Published prerelease" else error("Incorrect release state") end'
 

@@ -1346,10 +1346,21 @@ test('Windows default nightly notification validates metadata and dismissal surv
 }) => {
   await host(page, 'windows', {}, true, undefined, { version: '1.9.0' });
   const tag = 'daily-2026-10-11';
+  const metadata = {
+    schema_version: 1, channel: 'nightly', tag,
+    version: '2.0.0-daily.d20261011+aaaaaaaaaaaa',
+    source_commit: 'a'.repeat(40), nightly_sequence: 20261011,
+  };
+  const assetRequests: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/api/updates/nightly-metadata') || request.url().includes('/releases/download/'))
+      assetRequests.push(request.url());
+  });
   await page.route('https://api.github.com/repos/Nonary/Vibepollo/releases?**', (route) =>
     route.fulfill({
       json: [{
         tag_name: tag,
+        body: `<!-- nightly-identity: ${JSON.stringify(metadata)} -->\n`,
         draft: false,
         prerelease: true,
         html_url: `https://github.com/Nonary/Vibepollo/releases/tag/${tag}`,
@@ -1361,28 +1372,17 @@ test('Windows default nightly notification validates metadata and dismissal surv
       }],
     }),
   );
-  await localRoute(page, '**/api/updates/nightly-metadata?**', (route) =>
-    route.fulfill({
-      json: {
-        schema_version: 1,
-        channel: 'nightly',
-        tag,
-        version: '2.0.0-daily.d20261011+aaaaaaaaaaaa',
-        source_commit: 'a'.repeat(40),
-        nightly_sequence: 20261011,
-      },
-    }),
-  );
   await page.goto('/v2/');
   const notice = page.locator('.update-notice');
   await expect(notice.getByText(`Vibepollo ${tag} is available`)).toBeVisible();
   await notice.getByRole('button', { name: 'Dismiss this update' }).click();
   await expect(notice).toHaveCount(0);
-  const checked = page.waitForResponse((response) => response.url().includes('/api/updates/nightly-metadata?'));
+  const checked = page.waitForResponse((response) => response.url().includes('/releases?per_page=100&page=1'));
   await page.reload();
   await (await checked).finished();
   await settleUpdaterRendering(page);
   await expect(notice).toHaveCount(0);
+  expect(assetRequests).toEqual([]);
 });
 
 test('Windows prerelease install opts out persistently and still receives a stable update', async ({
@@ -1467,7 +1467,9 @@ async function mockUpdaterFeed(
   await page.route(`${updaterReleasesUrl}?**`, async (route) => {
     calls.releases++;
     const pageNumber = new URL(route.request().url()).searchParams.get('page');
-    await route.fulfill({ json: pageNumber === '1' ? releases : [] });
+    await route.fulfill({ json: pageNumber === '1' ? releases.map((release) => metadata[release.tag_name]
+      ? { ...release, body: `<!-- nightly-identity: ${JSON.stringify(metadata[release.tag_name])} -->\n${release.body}` }
+      : release) : [] });
   });
   await localRoute(page, '**/api/updates/nightly-metadata?**', async (route) => {
     calls.metadata++;
@@ -1549,7 +1551,7 @@ function legacyUpdaterCompleted(page: Page) {
   return page.waitForResponse((response) => new URL(response.url()).pathname === '/api/logs');
 }
 
-async function stallUpdaterMetadataBody(page: Page) {
+async function stallUpdaterReleaseBody(page: Page) {
   await page.addInitScript(() => {
     const state = { started: 0, aborted: 0 };
     Object.assign(window, { __vibepolloUpdaterBody: state });
@@ -1557,9 +1559,9 @@ async function stallUpdaterMetadataBody(page: Page) {
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const response = await originalFetch(input, init);
       const url = new URL(input instanceof Request ? input.url : String(input), location.href);
-      if (url.pathname !== '/api/updates/nightly-metadata') return response;
+      if (url.hostname !== 'api.github.com' || !url.pathname.endsWith('/releases') || !url.searchParams.has('page')) return response;
       const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
-      // Only the final metadata decode is controlled; release fetching and selection stay real.
+      // Only release API body decoding is controlled; selection stays real.
       response.json = () => {
         state.started++;
         return new Promise((_, reject) => {
@@ -1701,7 +1703,7 @@ test('legacy updater orders embedded daily versions and shares dismissal across 
   await expect(notice).toHaveCount(0);
   const switchedCheck = page.waitForResponse((response) => {
     const url = new URL(response.url());
-    return url.pathname === '/api/updates/nightly-metadata' && url.searchParams.get('tag') === newer.metadata.tag;
+    return url.hostname === 'api.github.com' && url.pathname.endsWith('/releases') && url.searchParams.has('page');
   });
   await page.locator('.dashboard-page a[href="/v2/"]').click();
   await (await switchedCheck).finished();
@@ -1732,7 +1734,8 @@ test('legacy updater rejects malformed metadata and incomplete or wrong-platform
   const completedCheck = legacyUpdaterCompleted(page);
   await page.goto(legacyUrl + '/');
   await (await completedCheck).finished();
-  await expect.poll(() => calls.metadata).toBe(1);
+  await expect.poll(() => calls.releases).toBe(1);
+  expect(calls.metadata).toBe(0);
   await expect(page.getByRole('button', { name: 'Check for updates', exact: true })).toBeEnabled();
   await expect(page.locator('.dashboard-release-alert')).toHaveCount(0);
 });
@@ -1749,7 +1752,7 @@ for (const [architecture, available] of [['x86_64', true], ['aarch64', false], [
     await (await completedCheck).finished();
     if (available) await expect(page.locator('.dashboard-release-alert')).toContainText(daily.metadata.version);
     else await expect(page.locator('.dashboard-release-alert')).toHaveCount(0);
-    expect(calls).toEqual({ releases: 1, metadata: available ? 1 : 0 });
+    expect(calls).toEqual({ releases: 1, metadata: 0 });
   });
 }
 
@@ -1766,16 +1769,16 @@ test('legacy updater interval zero retains health and logs and permits one force
   expect(calls).toEqual({ releases: 0, metadata: 0 });
   await page.getByRole('button', { name: 'Check for updates', exact: true }).click();
   await expect(page.locator('.dashboard-release-alert')).toContainText(daily.metadata.version);
-  expect(calls).toEqual({ releases: 1, metadata: 1 });
+  expect(calls).toEqual({ releases: 1, metadata: 0 });
   await page.clock.fastForward(300001);
-  expect(calls).toEqual({ releases: 1, metadata: 1 });
+  expect(calls).toEqual({ releases: 1, metadata: 0 });
 });
 
 for (const ui of ['legacy', 'v2'] as const) {
-  test(`${ui} updater aborts final metadata body on unmount without resuming its timer`, async ({ page }) => {
+  test(`${ui} updater aborts release API body on unmount without resuming its timer`, async ({ page }) => {
     const legacyUrl = ui === 'legacy' ? classicUpdaterUrl() : undefined;
     await page.clock.install();
-    await stallUpdaterMetadataBody(page);
+    await stallUpdaterReleaseBody(page);
     if (ui === 'legacy') await legacyUpdaterHost(page);
     else await host(page, 'windows');
     let authenticated = true;
@@ -1800,16 +1803,16 @@ for (const ui of ['legacy', 'v2'] as const) {
     }
     await expect.poll(async () => (await updaterBodyState(page))?.aborted).toBe(1);
     await page.clock.fastForward(300001);
-    expect(calls).toEqual({ releases: 1, metadata: 1 });
+    expect(calls).toEqual({ releases: 1, metadata: 0 });
     await expect(page.locator('.update-notice, .dashboard-release-alert')).toHaveCount(0);
   });
 }
 
 for (const ui of ['legacy', 'v2'] as const) {
-  test(`${ui} updater interval zero metadata-body timeout cannot select stable or resume checks`, async ({ page }) => {
+  test(`${ui} updater interval zero release-body timeout cannot select stable or resume checks`, async ({ page }) => {
     const legacyUrl = ui === 'legacy' ? classicUpdaterUrl() : undefined;
     await page.clock.install();
-    await stallUpdaterMetadataBody(page);
+    await stallUpdaterReleaseBody(page);
     const config = { update_check_interval: ui === 'legacy' ? 0 : 1 };
     if (ui === 'legacy') await legacyUpdaterHost(page, config);
     else await host(page, 'windows', config);
@@ -1840,6 +1843,6 @@ for (const ui of ['legacy', 'v2'] as const) {
     await expect(page.locator('.update-notice a')).toHaveCount(0);
     await expect(page.locator('.dashboard-release-alert')).toHaveCount(0);
     await page.clock.fastForward(300001);
-    expect(calls).toEqual({ releases: 1, metadata: 1 });
+    expect(calls).toEqual({ releases: 1, metadata: 0 });
   });
 }

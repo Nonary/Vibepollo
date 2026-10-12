@@ -86,6 +86,20 @@ export function validNightlyMetadata(
   );
 }
 
+export function apiNightlyMetadata(release: UpdateRelease): Record<string, unknown> | undefined {
+  if (typeof release.body !== 'string') return undefined;
+  const marker = '<!-- nightly-identity: ';
+  const begin = release.body.indexOf(marker);
+  if (begin < 0 || (begin > 0 && release.body[begin - 1] !== '\n') ||
+      release.body.indexOf(marker, begin + marker.length) >= 0) return undefined;
+  const end = release.body.indexOf(' -->', begin + marker.length);
+  if (end < 0) return undefined;
+  try {
+    const metadata = JSON.parse(release.body.slice(begin + marker.length, end));
+    return validNightlyMetadata(release.tag_name ?? '', metadata) ? metadata : undefined;
+  } catch { return undefined; }
+}
+
 export function completeRelease(
   release: UpdateRelease,
   platform = 'windows',
@@ -123,7 +137,6 @@ export function completeRelease(
     !!packageAvailable &&
     (!isDailyTag(release.tag_name) ||
       (release.prerelease &&
-        asset(release, 'nightly-metadata.json') &&
         asset(release, 'SHA256SUMS')))
   );
 }
@@ -160,8 +173,9 @@ export function selectAvailableUpdate(
     let identity = release.tag_name!;
     let entry: ChangelogEntry | null;
     if (isDailyTag(identity)) {
-      if (!validNightlyMetadata(identity, release.nightly_metadata)) continue;
-      identity = release.nightly_metadata!['version'] as string;
+      const metadata = apiNightlyMetadata(release);
+      if (!metadata) continue;
+      identity = metadata['version'] as string;
       entry = githubReleaseToChangelogEntry({ ...release, tag_name: identity });
       if (entry) entry.tag = release.tag_name!;
     } else {
@@ -207,27 +221,7 @@ export async function fetchUpdateReleases(
   }
   if (!complete) throw new Error('pagination-incomplete');
   signal.throwIfAborted();
-  if (!allowPrereleases) return releases;
-  for (const release of releases) {
-    if (
-      !release ||
-      typeof release.tag_name !== 'string' ||
-      !isDailyTag(release.tag_name) ||
-      !completeRelease(release, platform, architecture)
-    )
-      continue;
-    const response = await fetch(
-      `/api/updates/nightly-metadata?tag=${encodeURIComponent(release.tag_name)}`,
-      { credentials: 'same-origin', signal },
-    );
-    if (!response.ok) continue;
-    try {
-      release.nightly_metadata = await response.json();
-    } catch {
-      /* Ignore malformed metadata. */
-    }
-  }
-  signal.throwIfAborted();
+  // Identity is already in the release API body. No metadata/installer requests.
   return releases;
 }
 

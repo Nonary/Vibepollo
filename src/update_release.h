@@ -69,7 +69,7 @@ namespace release_selection {
       }
     }
 #endif
-    return package && (!nightly || (release["prerelease"].get<bool>() && asset(release, "nightly-metadata.json") && asset(release, "SHA256SUMS")));
+    return package && (!nightly || (release["prerelease"].get<bool>() && asset(release, "SHA256SUMS")));
   }
   inline bool valid_metadata(const std::string &tag, const json &metadata) {
     if (!daily_tag(tag) || !metadata.is_object()) return false;
@@ -97,11 +97,27 @@ namespace release_selection {
     const auto suffix = "-daily.d" + date + (tag.size() == 16 ? "" : "." + std::to_string(revision)) + "+" + source.substr(0,12);
     return version.ends_with(suffix) && version.substr(0, version.size() - suffix.size()).find_first_of("-+") == std::string::npos;
   }
+  inline json api_metadata(const json &release) {
+    try {
+      if (!release.is_object() || !release.contains("body") || !release["body"].is_string()) return nullptr;
+      const auto body = release["body"].get<std::string>();
+      const std::string marker = "<!-- nightly-identity: ";
+      const auto begin = body.find(marker);
+      if (begin == std::string::npos || (begin != 0 && body[begin - 1] != '\n') ||
+          body.find(marker, begin + marker.size()) != std::string::npos) return nullptr;
+      const auto end = body.find(" -->", begin + marker.size());
+      if (end == std::string::npos) return nullptr;
+      const auto metadata = json::parse(body.substr(begin + marker.size(), end - begin - marker.size()), nullptr, false);
+      if (!valid_metadata(release.value("tag_name", ""), metadata)) return nullptr;
+      return metadata;
+    } catch (const json::exception &) { return nullptr; }
+  }
   inline std::string identity(const json &release) {
     const auto tag = release.value("tag_name", "");
     if (!daily_tag(tag)) return ordered_version(tag) ? tag : "";
-    if (!release.contains("nightly_metadata") || !valid_metadata(tag, release["nightly_metadata"])) return "";
-    return release["nightly_metadata"]["version"].get<std::string>();
+    const auto metadata = api_metadata(release);
+    if (metadata.is_null()) return "";
+    return metadata["version"].get<std::string>();
   }
   inline bool nightly_version(const std::string &version) {
     return version.find("-daily.d") != std::string::npos;

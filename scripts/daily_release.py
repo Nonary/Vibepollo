@@ -190,16 +190,36 @@ def include_linux(root, linux_root, product, commit, version):
     manifest_path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
 
 
+def stage_public_assets(root, destination, product):
+    root, destination = Path(root), Path(destination)
+    packages = list(root.glob(product.lower() + '-*.pkg.tar.zst'))
+    if len(packages) != 1:
+        raise ValueError('Expected exactly one qualified Linux package')
+    public = {product + 'Setup.exe', packages[0].name, 'nightly-metadata.json', 'SHA256SUMS'}
+    evidence = {'daily-manifest.json', 'release-provenance.json'}
+    if {p.name for p in root.iterdir()} != public | evidence:
+        raise ValueError('Unexpected public or qualification assets')
+    if any(not p.is_file() or p.is_symlink() or p.stat().st_size == 0 for p in root.iterdir()):
+        raise ValueError('Unsafe or incomplete public asset input')
+    # Qualification stays in the source directory for the CI artifact.
+    destination.mkdir()
+    for name in sorted(public):
+        shutil.copyfile(root / name, destination / name)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["resolve", "verify", "linux"])
+    parser.add_argument("command", choices=["resolve", "verify", "linux", "public"])
     parser.add_argument("--assets")
     parser.add_argument("--linux-assets")
+    parser.add_argument("--destination")
     parser.add_argument("--product", choices=["Vibeshine", "Vibepollo"])
     args = parser.parse_args()
     if args.command == "resolve":
         resolve()
     elif args.command == 'verify':
         verify_assets(args.assets, args.product, os.environ["DAILY_COMMIT"], os.environ["DAILY_TAG"], os.environ["DAILY_VERSION"])
+    elif args.command == 'public':
+        stage_public_assets(args.assets, args.destination, args.product)
     else:
         include_linux(args.assets, args.linux_assets, args.product, os.environ['DAILY_COMMIT'], os.environ['DAILY_VERSION'])

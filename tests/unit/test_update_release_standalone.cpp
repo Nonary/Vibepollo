@@ -40,7 +40,22 @@ json daily(std::string day, std::string base = "2.0.0") {
   return result;
 }
 int main() {
-  using release_selection::select;
+  auto select = [](json releases, const std::string &installed, bool pre) {
+    for (auto &item : releases) if (item.is_object() && item.contains("nightly_metadata"))
+      item["body"] = "<!-- nightly-identity: " + item["nightly_metadata"].dump() + " -->\n";
+    return release_selection::select(releases, installed, pre);
+  };
+  auto api = daily("12", "2.0.1");
+  api["body"] = "<!-- nightly-identity: " + api["nightly_metadata"].dump() + " -->\n";
+  api.erase("nightly_metadata");
+  api["assets"].erase(1); // No metadata asset required by new clients.
+  assert(!release_selection::select(json::array({api}), "2.0.0", true).is_null());
+  assert(release_selection::select(json::array({api}), "2.0.0", false).is_null());
+  auto duplicate = api;
+  duplicate["body"] = api["body"].get<std::string>() + api["body"].get<std::string>();
+  assert(release_selection::select(json::array({duplicate}), "2.0.0", true).is_null());
+  api.erase("body");
+  assert(release_selection::select(json::array({api}), "2.0.0", true).is_null());
   auto releases=json::array({release("1.9.0-stable.2"),release("2.0.0-beta.10",true),release("2.0.0-beta.2",true)});
   assert(release_selection::complete(releases[0],false));
   assert(release_selection::compare_notification_versions("1.9.0-stable.1","1.9.0-stable.2")<0);

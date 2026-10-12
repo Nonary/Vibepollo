@@ -1,6 +1,8 @@
 # Published nightly notes and metadata
 
-`nightly_notes.py` runs only in the gated publish job, after exact build artifact verification and before creating the draft. It appends raw commit messages and exact GitHub commit/compare links to the existing security/build notes, writes `nightly-metadata.json`, and regenerates `SHA256SUMS` including metadata, manifests and packages (excluding the checksum file itself).
+`nightly_notes.py` runs only in the gated publish job, after exact build artifact verification and before creating the draft. It appends raw commit messages and exact GitHub commit/compare links to the existing security/build notes, writes `nightly-metadata.json`, and regenerates `SHA256SUMS` including compatibility metadata and public packages (excluding the checksum file itself).
+
+Ordinary application update checks use the identity embedded in the release API body and fetch no assets. See [the staged compatibility and public asset contract](../docs/api-only-update-contract.md). Historical assets are retained for installed clients.
 
 The baseline is the most recently **published**, non-draft nightly prerelease returned by the paginated GitHub releases API. Failed builds, retained drafts, stable releases and other prerelease tag families do not advance it. Existing pre-metadata published daily tags can provide a migration baseline by resolving their exact Git commit; new metadata is checked against the immutable tag target. No baseline is saved in the workflow workspace for future runs.
 
