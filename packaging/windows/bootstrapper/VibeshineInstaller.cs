@@ -7975,7 +7975,10 @@ namespace VibepolloInstaller {
         var usbIpTransportWarning = lines.Any(line =>
           !string.IsNullOrWhiteSpace(line)
           && line.IndexOf("USBIP_TRANSPORT_WARNING", StringComparison.OrdinalIgnoreCase) >= 0);
-        if (usbIpTransportFailed || usbIpTransportRestartRequired || usbIpTransportWarning) {
+        // Optional runtime readiness is diagnostic only. A restart marker still
+        // promotes the successful MSI result to 3010, without a failure dialog.
+        // Keep actual setup errors/warnings visible; do not suppress exceptions.
+        if (usbIpTransportFailed || usbIpTransportWarning) {
           failures.Add(usbIpTransportRestartRequired
             ? "USB/IP driver installed, but Windows restart is required before DualSense USB waveform haptics can function."
             : "USB/IP driver setup failed. DualSense USB waveform haptics may be unavailable.");
