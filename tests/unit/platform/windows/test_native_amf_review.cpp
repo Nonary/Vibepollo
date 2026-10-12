@@ -343,13 +343,13 @@ namespace {
       auto log = [&](auto reason) { if (live == 0 && reason == failure) ++logs; };
       auto result = stream.initialize(true, true, native, failed_legacy, log);
       if (result.value || live || !stream.legacy || native_calls != 1 || legacy_calls != 1 || logs != 1) return false;
-      // A reinit in this stream never reenters native or logs another rollback.
+      // A failed rollback is terminal: neither implementation is tried again.
       result = stream.initialize(true, true, native, failed_legacy, log);
-      if (result.value || live || native_calls != 1 || legacy_calls != 2 || logs != 1) return false;
+      if (result.value || live || native_calls != 1 || legacy_calls != 1 || logs != 1) return false;
       initialization_fallback_t next_stream;
       auto success = [&]() -> result_t { ++native_calls; return {std::make_unique<owned_t>(live), initialization_failure_e::none}; };
       result = next_stream.initialize(true, true, success, failed_legacy, log);
-      if (!result.value || next_stream.legacy || native_calls != 2 || legacy_calls != 2 || live != 1) return false;
+      if (!result.value || next_stream.legacy || native_calls != 2 || legacy_calls != 1 || live != 1) return false;
       result.value.reset();
       if (live) return false;
     }

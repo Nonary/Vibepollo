@@ -18,6 +18,22 @@ namespace amf::lifecycle {
     unsafe_runtime,
   };
 
+  inline constexpr std::string_view initialization_failure_name(initialization_failure_e failure) {
+    switch (failure) {
+      case initialization_failure_e::none: return "none";
+      case initialization_failure_e::encoder_create: return "encoder creation";
+      case initialization_failure_e::encoder_init: return "encoder initialization";
+      case initialization_failure_e::unsupported_format: return "unsupported format or settings";
+      case initialization_failure_e::device_or_capture: return "device or capture setup";
+      case initialization_failure_e::conversion: return "conversion setup";
+      case initialization_failure_e::network: return "network";
+      case initialization_failure_e::cancelled: return "cancelled";
+      case initialization_failure_e::busy: return "runtime fence contention";
+      case initialization_failure_e::unsafe_runtime: return "unsafe runtime";
+    }
+    return "unknown";
+  }
+
   template<typename T>
   struct initialization_result_t {
     std::optional<T> value;
@@ -28,9 +44,12 @@ namespace amf::lifecycle {
   // starts with native AMF again. Explicit implementations never switch.
   struct initialization_fallback_t {
     bool legacy = false;
+    std::optional<initialization_failure_e> failed_rollback;
 
     template<typename Native, typename Legacy, typename Log>
     auto initialize(bool automatic, bool compatible, Native &&native, Legacy &&rollback, Log &&log) {
+      using result_t = decltype(native());
+      if (failed_rollback) return result_t {std::nullopt, *failed_rollback};
       if (legacy) return rollback();
       auto result = native();
       if (result.value || !automatic || !compatible ||
@@ -40,7 +59,9 @@ namespace amf::lifecycle {
       // Set this before rollback so a failed rollback cannot loop back to native.
       legacy = true;
       log(result.failure);
-      return rollback();
+      auto rolled_back = rollback();
+      if (!rolled_back.value) failed_rollback = rolled_back.failure;
+      return rolled_back;
     }
   };
 

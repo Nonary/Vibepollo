@@ -6431,8 +6431,9 @@ namespace video {
           prepared_session = std::move(initialized.value->session);
           session_hdr_metadata_valid = initialized.value->hdr_metadata_valid;
           session_hdr_metadata = initialized.value->hdr_metadata;
-        } else if (!initialization_was_cancelled && !initialization_gate_contended) {
-          BOOST_LOG(error) << "AMF: stream initialization failed (stage=" << static_cast<int>(initialized.failure)
+        } else if (amd_initialization_fallback.failed_rollback ||
+                   (!initialization_was_cancelled && !initialization_gate_contended)) {
+          BOOST_LOG(error) << "AMF: stream initialization failed (stage=" << amf::lifecycle::initialization_failure_name(initialized.failure)
                            << ", implementation=" << enc_ptr->name << "); ending stream without changing negotiated format"sv;
           return;
         }
