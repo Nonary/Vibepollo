@@ -2958,7 +2958,9 @@ namespace VibepolloInstaller {
             Kind = kind,
             IsWindowsInstaller = true,
             IsPerUser = hive == Registry.CurrentUser,
-            InstallLocation = ResolveInstallLocation(productKey, uninstallString, quietUninstallString),
+            InstallLocation = IsWindowsInstallerProduct(productKey) && LooksLikeProductCode(subKeyName) && hive == Registry.LocalMachine
+              ? (ReadInstalledMsiRoot(subKeyName) ?? string.Empty)
+              : ResolveInstallLocation(productKey, uninstallString, quietUninstallString),
             UninstallString = uninstallString,
             QuietUninstallString = quietUninstallString,
             RegistryPath = BuildRegistryPath(hive, rootPath, subKeyName)
@@ -2999,7 +3001,9 @@ namespace VibepolloInstaller {
             Kind = kind,
             IsWindowsInstaller = IsWindowsInstallerProduct(productKey) && LooksLikeProductCode(subKeyName),
             IsPerUser = hive == Registry.CurrentUser,
-            InstallLocation = ResolveInstallLocation(productKey, uninstallString, quietUninstallString),
+            InstallLocation = IsWindowsInstallerProduct(productKey) && LooksLikeProductCode(subKeyName) && hive == Registry.LocalMachine
+              ? (ReadInstalledMsiRoot(subKeyName) ?? string.Empty)
+              : ResolveInstallLocation(productKey, uninstallString, quietUninstallString),
             UninstallString = uninstallString,
             QuietUninstallString = quietUninstallString,
             RegistryPath = BuildRegistryPath(hive, rootPath, subKeyName)
@@ -3553,6 +3557,19 @@ namespace VibepolloInstaller {
     }
 
     public static InstallerResult RunInteractiveInstall(
+      InstallerArguments arguments, string installDirectory, bool installVirtualDisplayDriver,
+      bool installVirtualGamepadDriver, bool installUsbIpTransport, bool saveInstallLogs, bool allowSelfElevation = true) {
+      if (!IsProcessElevated()) return RunInteractiveInstallCore(arguments, installDirectory, installVirtualDisplayDriver,
+        installVirtualGamepadDriver, installUsbIpTransport, saveInstallLogs, allowSelfElevation);
+      try {
+        var msiPath = ResolveMsiPath(arguments == null ? null : arguments.MsiPathOverride);
+        return RunWithBootstrapMigration(msiPath, installDirectory, () => RunInteractiveInstallCore(arguments,
+          installDirectory, installVirtualDisplayDriver, installVirtualGamepadDriver, installUsbIpTransport, saveInstallLogs, allowSelfElevation), installVirtualDisplayDriver ? "1" : "0");
+      } catch (Exception ex) { return new InstallerResult { Operation = InstallerOperation.Install, ExitCode = 1603,
+        Message = "Bootstrap migration preflight failed: " + ex.Message }; }
+    }
+
+    private static InstallerResult RunInteractiveInstallCore(
       InstallerArguments arguments,
       string installDirectory,
       bool installVirtualDisplayDriver,
@@ -3587,7 +3604,7 @@ namespace VibepolloInstaller {
       var uninstallCompetingProductsResult = UninstallCompetingProducts(
         "install_remove_competing",
         true,
-        false);
+        false, msiPath);
       var competingProductsRequireRestart = uninstallCompetingProductsResult.ExitCode == 3010;
       if (!uninstallCompetingProductsResult.Succeeded) {
         string recoveryDetail;
@@ -3643,7 +3660,7 @@ namespace VibepolloInstaller {
         "install_remove_vibepollo_1148",
         true,
         false,
-        out upgradeSourceStash);
+        out upgradeSourceStash, msiPath);
       AdoptStashedPayload(ref stashedPreviousPayload, upgradeSourceStash);
       if (uninstallUpgradeSourceResult != null) {
         restartRequired |= uninstallUpgradeSourceResult.ExitCode == 3010;
@@ -3844,7 +3861,6 @@ namespace VibepolloInstaller {
         logPath,
         CreatePropertyArgument("INSTALL_ROOT", installDirectory),
         "INSTALL_USBIP_TRANSPORT=" + (installUsbIpTransport ? "1" : "0"),
-        "SKIP_REMOVE_CONFLICTING_PRODUCTS=1",
         "REBOOT=ReallySuppress",
         "SUPPRESSMSGBOXES=1"
       };
@@ -5731,6 +5747,21 @@ namespace VibepolloInstaller {
 
     public static InstallerResult RunCli(InstallerArguments arguments) {
       var cliArgs = new List<string>(arguments.ForwardedArguments);
+      if (!IsProcessElevated() || (cliArgs.Any(IsOperationSwitch) && !IsMsiInstallOperation(cliArgs))) return RunCliCore(arguments);
+      try {
+        var msiPath = GetMsiPathArgument(cliArgs);
+        if (string.IsNullOrWhiteSpace(msiPath)) msiPath = ResolveMsiPath(arguments.MsiPathOverride);
+        var destination = ResolveBootstrapMigrationDestination(msiPath, cliArgs);
+        // Pin the directory used by both the data checkpoint and msiexec.
+        arguments.ForwardedArguments.RemoveAll(value => value.StartsWith("INSTALL_ROOT=", StringComparison.OrdinalIgnoreCase));
+        arguments.ForwardedArguments.Add(CreatePropertyArgument("INSTALL_ROOT", destination));
+        return RunWithBootstrapMigration(msiPath, destination, () => RunCliCore(arguments), GetPropertyValue(cliArgs, "INSTALL_VIRTUAL_DISPLAY_DRIVER"));
+      } catch (Exception ex) { return new InstallerResult { Operation = InstallerOperation.Install, ExitCode = 1603,
+        Message = "Bootstrap migration preflight failed: " + ex.Message }; }
+    }
+
+    private static InstallerResult RunCliCore(InstallerArguments arguments) {
+      var cliArgs = new List<string>(arguments.ForwardedArguments);
       var hasOperation = cliArgs.Any(IsOperationSwitch);
       var installMsiPath = string.Empty;
       string injectedMsiPath = null;
@@ -5812,7 +5843,7 @@ namespace VibepolloInstaller {
         var uninstallCompetingProductsResult = UninstallCompetingProducts(
           "cli_remove_competing",
           arguments.IsCliQuietMode(),
-          true);
+          true, GetMsiPathArgument(cliArgs));
         if (!uninstallCompetingProductsResult.Succeeded) {
           if (ShouldRerunCliElevatedForMsiRecovery(uninstallCompetingProductsResult, new[] { InstalledProductKind.Vibepollo })) {
             return RunElevatedBootstrapperCli(arguments);
@@ -5842,7 +5873,7 @@ namespace VibepolloInstaller {
           "cli_remove_vibepollo_1148",
           arguments.IsCliQuietMode(),
           true,
-          out upgradeSourceStash);
+          out upgradeSourceStash, GetMsiPathArgument(cliArgs));
         AdoptStashedPayload(ref stashedPreviousPayload, upgradeSourceStash);
         if (uninstallUpgradeSourceResult != null) {
           if (!uninstallUpgradeSourceResult.Succeeded) {
@@ -5870,9 +5901,6 @@ namespace VibepolloInstaller {
           }
           vibeshineSourceRequiresRestart |= uninstallUpgradeSourceResult.ExitCode == 3010;
         }
-      }
-      if (uninstallCompetingProducts && !HasProperty(cliArgs, "SKIP_REMOVE_CONFLICTING_PRODUCTS")) {
-        cliArgs.Add("SKIP_REMOVE_CONFLICTING_PRODUCTS=1");
       }
 
       if (ShouldPreUninstallVibeshineInstallSource(cliArgs)) {
@@ -6775,8 +6803,7 @@ namespace VibepolloInstaller {
           "/norestart",
           "/l*v",
           logPath,
-          "SKIP_REMOVE_CONFLICTING_PRODUCTS=1",
-          "REBOOT=ReallySuppress",
+            "REBOOT=ReallySuppress",
           "SUPPRESSMSGBOXES=1"
         };
         if (!string.IsNullOrWhiteSpace(stashedPayload.InstallLocation)) {
@@ -6876,9 +6903,10 @@ namespace VibepolloInstaller {
       string logPhase,
       bool hiddenWindow,
       bool requestElevationIfNeeded,
-      out StashedVibeshinePayload stashedPayload) {
+      out StashedVibeshinePayload stashedPayload, string incomingMsiPath = null) {
       stashedPayload = null;
       var installedVibepollo = GetInstalledVibepolloProduct();
+      if (CanReplaceInMsiTransaction(installedVibepollo, ReadInstalledMigrationMsi(installedVibepollo), TryGetPayloadMsiInfo(incomingMsiPath))) return null;
       if (!RequiresPreUninstallUpgradeWorkaround(installedVibepollo)) {
         return null;
       }
@@ -6958,11 +6986,591 @@ namespace VibepolloInstaller {
           && installedProduct.Version.Build <= UpgradeSourcePreUninstallVersion.Build * 100 + 99);
     }
 
+    // ARP facades are application UI entries, not independent installations.
+    // Resolve only against live, per-machine MSI identities at the same root.
+    internal static List<InstalledProductInfo> ResolveBootstrapMigrationProducts(
+      IEnumerable<InstalledProductInfo> registrations,
+      Func<string, bool> isLiveMsi) {
+      var products = registrations.ToList();
+      var resolved = new List<InstalledProductInfo>();
+      foreach (var product in products) {
+        if (product.IsWindowsInstaller) {
+          resolved.Add(product);
+          continue;
+        }
+        var root = TryGetFullPathOrNull(product.InstallLocation);
+        var matches = products.Where(candidate => candidate.IsWindowsInstaller
+          && !candidate.IsPerUser && !product.IsPerUser
+          && candidate.Kind == product.Kind && root != null
+          && string.Equals(root, TryGetFullPathOrNull(candidate.InstallLocation), StringComparison.OrdinalIgnoreCase)
+          && isLiveMsi(candidate.ProductCode)).ToList();
+        if (matches.Select(candidate => NormalizeProductCode(candidate.ProductCode))
+            .Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1) {
+          throw new InvalidOperationException("Multiple live MSI products claim the legacy installation at " + root + ". No changes were made.");
+        }
+        resolved.Add(matches.Count == 0 ? product : matches[0]);
+      }
+      return resolved.GroupBy(product => product.IsWindowsInstaller
+        ? "msi|" + NormalizeProductCode(product.ProductCode)
+        : BuildProductRegistrationIdentity(product), StringComparer.OrdinalIgnoreCase)
+        .Select(group => group.First()).ToList();
+    }
+
+    internal static bool CanReplaceInMsiTransaction(InstalledProductInfo product,
+      PayloadMsiInfo installed, PayloadMsiInfo incoming) {
+      return product != null && product.IsWindowsInstaller && !product.IsPerUser
+        && installed != null && incoming != null && installed.SupportsTransactionalReplacement && incoming.SupportsTransactionalReplacement
+        && string.Equals(NormalizeProductCode(product.ProductCode), NormalizeProductCode(installed.ProductCode), StringComparison.OrdinalIgnoreCase)
+        && LooksLikeProductCode(installed.UpgradeCode) && LooksLikeProductCode(incoming.UpgradeCode)
+        && string.Equals(installed.UpgradeCode, incoming.UpgradeCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static PayloadMsiInfo ReadInstalledMigrationMsi(InstalledProductInfo product) {
+      if (product == null || !product.IsWindowsInstaller) return null;
+      var cache = TryGetProductLocalPackagePath(product.ProductCode);
+      // Even an MSI facade must not authorize an old removal action that can
+      // run during UPGRADINGPRODUCTCODE and remove shared devices or packages.
+      return CachedMsiPreservesDriversDuringUpgrade(cache) ? TryGetPayloadMsiInfo(cache) : null;
+    }
+
+    internal static bool CachedMsiPreservesDriversDuringUpgrade(string cache) {
+      IntPtr database = IntPtr.Zero, view = IntPtr.Zero;
+      try {
+        if (string.IsNullOrWhiteSpace(cache) || MsiOpenDatabase(cache, IntPtr.Zero, out database) != 0) return false;
+        if (MsiDatabaseOpenView(database, "SELECT `Action`, `Condition` FROM `InstallExecuteSequence`", out view) != 0
+            || MsiViewExecute(view, IntPtr.Zero) != 0) return false;
+        IntPtr record;
+        uint fetchCode;
+        while ((fetchCode = MsiViewFetch(view, out record)) == 0 && record != IntPtr.Zero) {
+          try {
+            var name = ReadMigrationRecordString(record, 1).ToUpperInvariant();
+            var removal = name.Contains("UNINSTALL") || name.Contains("REMOVE") || name.Contains("UNREGISTER");
+            var driver = name.Contains("DRIVER") || name.Contains("SUDOVDA") || name.Contains("GAMEPAD") || name.Contains("VULKAN");
+            if (removal && driver) {
+              var condition = ReadMigrationRecordString(record, 2).ToUpperInvariant();
+              condition = System.Text.RegularExpressions.Regex.Replace(condition, @"\s+", " ");
+              // Accept the known authored conjunction contract, not a textual
+              // occurrence inside an OR or negated compound expression.
+              if (condition.Contains("(") || condition.Contains(")")
+                  || System.Text.RegularExpressions.Regex.IsMatch(condition, @"\bOR\b")
+                  || !System.Text.RegularExpressions.Regex.Split(condition.Trim(), @"\s+AND\s+")
+                    .Any(clause => clause.Trim() == "NOT UPGRADINGPRODUCTCODE")) return false;
+            }
+          } finally { MsiCloseHandle(record); }
+        }
+        return fetchCode == 259; // ERROR_NO_MORE_ITEMS; a failed query is not proof.
+      } catch { return false; }
+      finally {
+        if (view != IntPtr.Zero) { MsiViewClose(view); MsiCloseHandle(view); }
+        if (database != IntPtr.Zero) MsiCloseHandle(database);
+      }
+    }
+
+    [DllImport("msi.dll", CharSet = CharSet.Unicode)]
+    private static extern int MsiGetComponentPath(string productCode, string componentCode, StringBuilder path, ref uint length);
+    [DllImport("msi.dll", CharSet = CharSet.Unicode)]
+    private static extern uint MsiRecordGetString(IntPtr record, uint field, StringBuilder value, ref uint length);
+
+    private static string ReadMigrationRecordString(IntPtr record, uint field) {
+      uint length = 1024;
+      var value = new StringBuilder((int)length);
+      var result = MsiRecordGetString(record, field, value, ref length);
+      if (result == MsiErrorMoreData) {
+        value = new StringBuilder((int)++length);
+        result = MsiRecordGetString(record, field, value, ref length);
+      }
+      return result == 0 ? value.ToString() : string.Empty;
+    }
+
+    private static List<InstalledProductInfo> ReadBootstrapMigrationRegistrations() {
+      // The registry collectors resolve per-machine MSI component paths for
+      // both UI defaults and execution. Missing identity never falls back to
+      // the hidden ARP icon's Windows\\Installer directory.
+      return GetInstalledProductRegistrations(true);
+    }
+
+    private static string ResolveBootstrapMigrationDestination(string msiPath, List<string> cliArgs) {
+      var selected = GetPropertyValue(cliArgs.AsEnumerable().Reverse().ToList(), "INSTALL_ROOT");
+      if (!string.IsNullOrWhiteSpace(selected)) {
+        var selectedPath = Path.GetFullPath(selected);
+        if (string.Equals(selectedPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), Path.GetPathRoot(selectedPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+          throw new InvalidOperationException("A volume root cannot be a migration destination.");
+        var fullPath = TryGetFullPathOrNull(selected);
+        if (fullPath == null) throw new InvalidOperationException("Invalid migration destination.");
+        return fullPath;
+      }
+      var incoming = TryGetPayloadMsiInfo(msiPath);
+      var roots = ResolveBootstrapMigrationProducts(ReadBootstrapMigrationRegistrations(),
+        code => MsiQueryProductState(NormalizeProductCode(code)) == MsiInstallStateDefault)
+        .Where(product => CanReplaceInMsiTransaction(product, ReadInstalledMigrationMsi(product), incoming))
+        .Select(product => TryGetFullPathOrNull(product.InstallLocation))
+        .Where(root => root != null).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+      if (roots.Count > 1) throw new InvalidOperationException("Multiple install roots require an explicit migration destination.");
+      return roots.Count == 1 ? roots[0] : DefaultInstallDirectory;
+    }
+
+    private static string ReadInstalledMsiRoot(string productCode) {
+      return ReadCachedMigrationRoot(TryGetProductLocalPackagePath(productCode), productCode, ReadRegisteredMigrationComponentPath);
+    }
+    private static string ReadRegisteredMigrationComponentPath(string productCode, string component) {
+      uint length = 32768;
+      var path = new StringBuilder((int)length);
+      // Component LOCAL is 3; product DEFAULT is 5. These are distinct
+      // Windows Installer states even for a healthy installed product.
+      return MsiGetComponentPath(productCode, component, path, ref length) == 3 ? path.ToString() : null;
+    }
+    internal static string ReadCachedMigrationRoot(string cache, string productCode, Func<string, string, string> componentPath) {
+      IntPtr database = IntPtr.Zero, view = IntPtr.Zero;
+      try {
+        if (string.IsNullOrWhiteSpace(cache) || MsiOpenDatabase(cache, IntPtr.Zero, out database) != 0) return null;
+        const string query = "SELECT `Component`.`ComponentId`, `File`.`FileName` FROM `Component`, `File` WHERE `Component`.`Component` = `File`.`Component_`";
+        if (MsiDatabaseOpenView(database, query, out view) != 0 || MsiViewExecute(view, IntPtr.Zero) != 0) return null;
+        IntPtr record;
+        while (MsiViewFetch(view, out record) == 0 && record != IntPtr.Zero) {
+          try {
+            var name = ReadMigrationRecordString(record, 2).Split('|').Last();
+            if (!string.Equals(name, "sunshine.exe", StringComparison.OrdinalIgnoreCase)) continue;
+            var component = ReadMigrationRecordString(record, 1);
+            var path = componentPath(productCode, component);
+            if (!string.IsNullOrWhiteSpace(path)) return Path.GetDirectoryName(path);
+          } finally { MsiCloseHandle(record); }
+        }
+      } catch { return null; }
+      finally {
+        if (view != IntPtr.Zero) { MsiViewClose(view); MsiCloseHandle(view); }
+        if (database != IntPtr.Zero) MsiCloseHandle(database);
+      }
+      return null;
+    }
+
+    private static InstallerResult RunWithBootstrapMigration(string msiPath, string destination, Func<InstallerResult> install, string virtualDriverPreference = null) {
+      // Never take a destructive action based solely on a named ARP entry.
+      // A missing/ambiguous MSI identity stays on the legacy preservation guard.
+      var registrations = ReadBootstrapMigrationRegistrations();
+      var products = ResolveBootstrapMigrationProducts(registrations,
+        code => MsiQueryProductState(NormalizeProductCode(code)) == MsiInstallStateDefault);
+      if (products.Any(product => !product.IsWindowsInstaller && CanUninstallProduct(product))) {
+        return new InstallerResult { Operation = InstallerOperation.Install, ExitCode = 1603,
+          Message = "Legacy migration is blocked before replacement: no unique live MSI owns this installation, and its uninstaller cannot guarantee preservation of installed drivers. A non-MSI application/service recovery contract is required. No changes were made." };
+      }
+      if (products.Any(product => product.IsPerUser)) return new InstallerResult {
+        Operation = InstallerOperation.Install, ExitCode = 1603,
+        Message = "Per-user installation migration requires a separate identity and recovery contract. No changes were made." };
+      // Apply the same data/preservation preflight to a live MSI whose custom
+      // facade is missing. Its old actions must not fall back to a blind removal.
+      var sources = products.Where(product => product.IsWindowsInstaller
+        && MsiQueryProductState(NormalizeProductCode(product.ProductCode)) == MsiInstallStateDefault).ToList();
+      if (sources.Count > 1) return new InstallerResult { Operation = InstallerOperation.Install, ExitCode = 1603,
+        Message = "Multiple installations contain legacy data. Select a migration source before replacement; no changes were made." };
+      var source = sources.SingleOrDefault();
+      var metadata = source == null ? null : ReadInstalledMigrationMsi(source);
+      var incoming = TryGetPayloadMsiInfo(msiPath);
+      if (incoming == null || !LooksLikeProductCode(incoming.ProductCode)) return new InstallerResult {
+        Operation = InstallerOperation.Install, ExitCode = 1603, Message = "The MSI payload identity could not be verified; no migration changes were made." };
+      // Cross-product MSI removal does not share a transaction with the incoming
+      // product. Never enter an unprotected uninstall gap under this migration.
+      if (source != null && !CanReplaceInMsiTransaction(source, metadata, incoming)) return new InstallerResult {
+        Operation = InstallerOperation.Install, ExitCode = 1603,
+        Message = "Legacy migration requires a verified same-family transactional MSI. Cross-product or missing-cache migration needs an application/service rollback contract before replacement. No changes were made." };
+      var sourceRoot = TryGetFullPathOrNull(source == null ? destination : source.InstallLocation);
+      var targetRoot = TryGetFullPathOrNull(destination);
+      if (sourceRoot == null || targetRoot == null || sourceRoot.EndsWith(":")) return new InstallerResult {
+        Operation = InstallerOperation.Install, ExitCode = 1603, Message = "Legacy migration requires explicit source and destination paths." };
+      LegacyDataCheckpoint checkpoint = null;
+      var runningServices = new List<string>();
+      var installationStarted = false;
+      try {
+        var logPath = BuildLogPath("bootstrap_migration");
+        runningServices = RelatedServiceNames.Where(name => IsMigrationServiceRunning(name, sourceRoot)).ToList();
+        var recoveryRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "NonaryBootstrapMigration");
+        checkpoint = LegacyDataCheckpoint.Open(recoveryRoot, sourceRoot, targetRoot,
+          source == null ? "fresh-" + incoming.ProductCode : source.ProductCode,
+          BuildInstallerRecoveryDirectorySecurity(), savedServices => {
+            // Persisted before quiescing: an interrupted bootstrapper must not
+            // forget which application services it stopped.
+            runningServices = savedServices.ToList();
+            TryStopRelatedServicesAndProcesses(logPath);
+            if (RelatedProcessNames.Any(name => Process.GetProcessesByName(name).Any()))
+              throw new InvalidOperationException("The legacy host is still running; data cannot be checkpointed consistently.");
+          }, runningServices);
+        checkpoint.SeedDestination();
+        checkpoint.PrepareConfiguration(virtualDriverPreference);
+        installationStarted = true;
+        var result = install();
+        // 1618/timeout leave ownership uncertain. Never restore while MSI might
+        // still be writing; retain the checkpoint and let the next run reconcile.
+        if (result.Succeeded) checkpoint.Complete();
+        else if (result.ExitCode != 1618 && result.ExitCode != MsiExecTimeoutExitCode
+            && (source == null
+              ? MsiQueryProductState(NormalizeProductCode(incoming.ProductCode)) != MsiInstallStateDefault
+              : MsiQueryProductState(NormalizeProductCode(source.ProductCode)) == MsiInstallStateDefault)) {
+          TryStopRelatedServicesAndProcesses(logPath);
+          if (RelatedProcessNames.Any(name => Process.GetProcessesByName(name).Any()))
+            throw new InvalidOperationException("The rolled-back host is still running; retained data cannot be restored consistently.");
+          checkpoint.RestoreSource();
+          checkpoint.SecureRestoredCredentials();
+          RestartMigrationServices(checkpoint.ReadRunningServices(), sourceRoot);
+        }
+        result.Message += " Legacy data checkpoint: " + checkpoint.DirectoryPath;
+        return result;
+      } catch (Exception ex) {
+        if (!installationStarted) {
+          try {
+            if (checkpoint != null) { checkpoint.RestoreSource(); checkpoint.SecureRestoredCredentials(); }
+            RestartMigrationServices(runningServices, sourceRoot);
+          }
+          catch (Exception restartError) { ex = new InvalidOperationException(ex.Message + " Service recovery failed: " + restartError.Message); }
+        }
+        return new InstallerResult { Operation = InstallerOperation.Install, ExitCode = 1603,
+          Message = "Bootstrap migration failed: " + ex.Message + (checkpoint == null ? "" : " Data checkpoint retained at " + checkpoint.DirectoryPath) };
+      } finally {
+        if (checkpoint != null) checkpoint.Dispose();
+      }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MigrationServiceStatus {
+      public uint Type, CurrentState, ControlsAccepted, Win32ExitCode, ServiceSpecificExitCode, CheckPoint, WaitHint;
+    }
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr OpenSCManager(string machine, string database, uint access);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr OpenService(IntPtr manager, string name, uint access);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool QueryServiceStatus(IntPtr service, out MigrationServiceStatus status);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool StartService(IntPtr service, uint count, IntPtr arguments);
+    [DllImport("advapi32.dll")]
+    private static extern bool CloseServiceHandle(IntPtr handle);
+
+    private static bool MigrationServiceBelongsToRoot(string name, string root) {
+      if (!RelatedServiceNames.Contains(name, StringComparer.OrdinalIgnoreCase)) return false;
+      using (var key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\" + name)) {
+        if (key == null) return false;
+        string executable, arguments;
+        if (!TrySplitExecutableAndArguments(Convert.ToString(key.GetValue("ImagePath")), out executable, out arguments)) return false;
+        var path = TryGetFullPathOrNull(Environment.ExpandEnvironmentVariables(executable));
+        return path != null && path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+      }
+    }
+    private static bool IsMigrationServiceRunning(string name, string root) {
+      if (!MigrationServiceBelongsToRoot(name, root)) return false;
+      var manager = OpenSCManager(null, null, 1);
+      if (manager == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+      try {
+        var service = OpenService(manager, name, 4);
+        if (service == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+        try {
+          MigrationServiceStatus status;
+          if (!QueryServiceStatus(service, out status)) throw new Win32Exception(Marshal.GetLastWin32Error());
+          return status.CurrentState == 4;
+        } finally { CloseServiceHandle(service); }
+      } finally { CloseServiceHandle(manager); }
+    }
+    private static void RestartMigrationServices(IEnumerable<string> names, string root) {
+      foreach (var name in names) {
+        if (!MigrationServiceBelongsToRoot(name, root)) throw new InvalidOperationException("Service ownership changed during migration: " + name);
+        var manager = OpenSCManager(null, null, 1);
+        if (manager == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+        try {
+          var service = OpenService(manager, name, 16);
+          if (service == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+          try {
+            if (!StartService(service, 0, IntPtr.Zero) && Marshal.GetLastWin32Error() != 1056)
+              throw new Win32Exception(Marshal.GetLastWin32Error());
+          } finally { CloseServiceHandle(service); }
+        } finally { CloseServiceHandle(manager); }
+      }
+    }
+
+    // This checkpoint owns data only. It never executes legacy binaries, edits
+    // Windows Installer registration, stops a driver, or changes certificate trust.
+    internal sealed class LegacyDataCheckpoint : IDisposable {
+      private static readonly string[] DataEntries = {
+        "config", "credentials", "covers", "apps.json", "sunshine.conf", "sunshine_state.json", "sunshine_state.json.bak", "vibeshine_state.json"
+      };
+      internal string DirectoryPath { get; private set; }
+      private string SourceRoot;
+      private string TargetRoot;
+      private FileStream Lock;
+      private bool Completed;
+      private string SourceSnapshot;
+      private string TargetSnapshot;
+
+      internal static LegacyDataCheckpoint Open(string recoveryRoot, string sourceRoot, string targetRoot,
+        string productCode, DirectorySecurity security, Action<string[]> prepareSnapshot = null, IEnumerable<string> runningServices = null) {
+        foreach (var root in new[] { sourceRoot, targetRoot }) {
+          var full = Path.GetFullPath(root);
+          if (root.EndsWith(":") || string.Equals(full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), Path.GetPathRoot(full).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Migration cannot claim a volume root.");
+        }
+        sourceRoot = Path.GetFullPath(sourceRoot).TrimEnd(Path.DirectorySeparatorChar);
+        targetRoot = Path.GetFullPath(targetRoot).TrimEnd(Path.DirectorySeparatorChar);
+        AssertNoReparsePoints(sourceRoot);
+        AssertNoReparsePoints(targetRoot);
+        AssertNoReparsePoints(recoveryRoot);
+        var identity = sourceRoot.ToUpperInvariant() + "\n" + targetRoot.ToUpperInvariant() + "\n" + productCode.ToUpperInvariant();
+        string key;
+        // The lock is per source, independent of destination. Two competing
+        // migrations must not checkpoint or replace the same installation.
+        using (var hash = SHA256.Create()) key = BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(sourceRoot.ToUpperInvariant() + "\n" + productCode.ToUpperInvariant()))).Replace("-", "");
+        EnsureSecureCheckpointDirectory(recoveryRoot, security);
+        var path = Path.Combine(recoveryRoot, key);
+        EnsureSecureCheckpointDirectory(path, security);
+        AssertNoReparsePoints(path);
+        var checkpoint = new LegacyDataCheckpoint { DirectoryPath = path, SourceRoot = sourceRoot, TargetRoot = targetRoot };
+        try {
+          AssertNoReparsePoints(Path.Combine(path, "lock"));
+          checkpoint.Lock = new FileStream(Path.Combine(path, "lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+          var manifest = Path.Combine(path, "ready");
+          foreach (var name in new[] { "ready", "ready.tmp", "complete", "restored" }) AssertNoReparsePoints(Path.Combine(path, name));
+          if (File.Exists(manifest)) {
+            var contents = File.ReadAllText(manifest, Encoding.UTF8);
+            if (!contents.StartsWith(identity + "\n", StringComparison.Ordinal)) throw new InvalidOperationException("Checkpoint identity mismatch.");
+            var fields = contents.Substring(identity.Length + 1).Split('\n');
+            if (fields.Length != 3) throw new InvalidOperationException("Invalid checkpoint manifest.");
+            var generation = fields[0];
+            if (!generation.StartsWith("source-", StringComparison.Ordinal) || generation != Path.GetFileName(generation))
+              throw new InvalidOperationException("Invalid checkpoint generation.");
+            checkpoint.SourceSnapshot = Path.Combine(path, generation);
+            checkpoint.TargetSnapshot = Path.Combine(path, generation + "-destination");
+            if (!Directory.Exists(checkpoint.SourceSnapshot)) throw new InvalidOperationException("Checkpoint data is missing.");
+            if (SnapshotHash(checkpoint.SourceSnapshot) != fields[1]) throw new InvalidOperationException("Checkpoint data integrity validation failed.");
+            if (!Directory.Exists(checkpoint.TargetSnapshot) || SnapshotHash(checkpoint.TargetSnapshot) != fields[2])
+              throw new InvalidOperationException("Destination checkpoint integrity validation failed.");
+          }
+          checkpoint.Completed = File.Exists(Path.Combine(path, "complete"));
+          var servicePath = Path.Combine(path, "running-services");
+          AssertNoReparsePoints(servicePath);
+          AssertNoReparsePoints(servicePath + ".tmp");
+          if (prepareSnapshot != null) {
+            if (!File.Exists(servicePath) || checkpoint.Completed || File.Exists(Path.Combine(path, "restored"))) {
+              File.WriteAllLines(servicePath + ".tmp", runningServices ?? Enumerable.Empty<string>(), Encoding.UTF8);
+              if (File.Exists(servicePath)) File.Replace(servicePath + ".tmp", servicePath, null);
+              else File.Move(servicePath + ".tmp", servicePath);
+            }
+            prepareSnapshot(File.ReadAllLines(servicePath, Encoding.UTF8));
+          }
+          if (!checkpoint.Completed && File.Exists(Path.Combine(path, "restoring"))) checkpoint.RestoreSource();
+          if (!File.Exists(manifest) || File.Exists(Path.Combine(path, "restored")) || (checkpoint.Completed && prepareSnapshot != null)) {
+            // Publishing ready is the commit point for the snapshot. A partially
+            // copied snapshot is never used for restoration after interruption.
+            var generation = "source-" + Guid.NewGuid().ToString("N");
+            var snapshot = Path.Combine(path, generation);
+            var targetSnapshot = Path.Combine(path, generation + "-destination");
+            Directory.CreateDirectory(snapshot);
+            Directory.CreateDirectory(targetSnapshot);
+            foreach (var entry in DataEntries) CopyEntry(Path.Combine(sourceRoot, entry), Path.Combine(snapshot, entry), true);
+            foreach (var entry in DataEntries) CopyEntry(Path.Combine(targetRoot, entry), Path.Combine(targetSnapshot, entry), true);
+            File.WriteAllText(Path.Combine(path, "ready.tmp"), identity + "\n" + generation + "\n" + SnapshotHash(snapshot) + "\n" + SnapshotHash(targetSnapshot), Encoding.UTF8);
+            if (File.Exists(manifest)) File.Replace(Path.Combine(path, "ready.tmp"), manifest, null);
+            else File.Move(Path.Combine(path, "ready.tmp"), manifest);
+            checkpoint.SourceSnapshot = snapshot;
+            checkpoint.TargetSnapshot = targetSnapshot;
+            File.Delete(Path.Combine(path, "restored"));
+            File.Delete(Path.Combine(path, "complete"));
+            checkpoint.Completed = false;
+          }
+          checkpoint.Completed = File.Exists(Path.Combine(path, "complete"));
+          return checkpoint;
+        } catch { checkpoint.Dispose(); throw; }
+      }
+
+      internal void SeedDestination() {
+        if (Completed || string.Equals(SourceRoot, TargetRoot, StringComparison.OrdinalIgnoreCase)) return;
+        // Conflicting destination data is never silently replaced. Copies are
+        // idempotent only when they still match the original checkpoint bytes.
+        // Preflight every conflict before copying anything into the destination.
+        foreach (var entry in DataEntries) VerifyEntry(Path.Combine(SourceSnapshot, entry), Path.Combine(TargetRoot, entry));
+        foreach (var entry in DataEntries) CopyEntry(Path.Combine(SourceSnapshot, entry), Path.Combine(TargetRoot, entry), false);
+      }
+      internal void PrepareConfiguration(string virtualDriverPreference) {
+        PrepareConfigurationLayout(TargetRoot, virtualDriverPreference);
+        SecureCredentialDirectory(TargetRoot);
+      }
+      internal void SecureRestoredCredentials() {
+        foreach (var root in new[] { SourceRoot, TargetRoot }.Distinct(StringComparer.OrdinalIgnoreCase))
+          if (Directory.Exists(Path.Combine(root, "config", "credentials"))) SecureCredentialDirectory(root);
+      }
+      internal static void PrepareConfigurationLayout(string root, string virtualDriverPreference) {
+        // Bootstrap owns layout transition before msiexec. Retain flat originals
+        // until the whole install succeeds; no log/config/driver deletion occurs.
+        var config = Path.Combine(root, "config");
+        AssertNoReparsePoints(config);
+        Directory.CreateDirectory(config);
+        foreach (var entry in DataEntries.Where(entry => entry != "config")) {
+          var flat = Path.Combine(root, entry);
+          var current = Path.Combine(config, entry);
+          // The configured layout is authoritative if both already exist.
+          if (!File.Exists(current) && !Directory.Exists(current)) CopyEntry(flat, current, false);
+        }
+        var apps = Path.Combine(config, "apps.json");
+        if (File.Exists(apps) && Directory.Exists(Path.Combine(config, "covers"))) {
+          var original = File.ReadAllText(apps, Encoding.UTF8);
+          var updated = original.Replace(".\\/covers\\/", ".\\/config\\/covers\\/").Replace("./covers/", "./config/covers/");
+          if (updated != original) WriteConfigurationAtomically(apps, updated);
+        }
+        if (virtualDriverPreference == "0" || virtualDriverPreference == "1") {
+          var path = Path.Combine(config, "sunshine.conf");
+          var original = File.Exists(path) ? File.ReadAllText(path, Encoding.UTF8) : string.Empty;
+          var pattern = @"(?im)^\s*dd_use_sunshine_virtual_display_driver\s*=[^\r\n]*";
+          var line = "dd_use_sunshine_virtual_display_driver = " + (virtualDriverPreference == "1" ? "enabled" : "disabled");
+          var updated = System.Text.RegularExpressions.Regex.IsMatch(original, pattern)
+            ? System.Text.RegularExpressions.Regex.Replace(original, pattern, line)
+            : original + (original.Length > 0 && !original.EndsWith("\n") ? Environment.NewLine : "") + line + Environment.NewLine;
+          if (updated != original) WriteConfigurationAtomically(path, updated);
+        }
+      }
+      private static void SecureCredentialDirectory(string root) {
+        // Match the established private key/certificate ACL without a shell or
+        // an installed, mutable legacy script. Only this known data directory.
+        var credentials = Path.Combine(root, "config", "credentials");
+        AssertNoReparsePoints(credentials);
+        var security = BuildInstallerRecoveryDirectorySecurity();
+        security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+          FileSystemRights.ReadAndExecute, AccessControlType.Allow));
+        Directory.CreateDirectory(credentials, security);
+        new DirectoryInfo(credentials).SetAccessControl(security);
+      }
+      private static void WriteConfigurationAtomically(string path, string value) {
+        AssertNoReparsePoints(path);
+        var temporary = path + ".bootstrap-" + Guid.NewGuid().ToString("N");
+        File.WriteAllText(temporary, value, new UTF8Encoding(false));
+        if (File.Exists(path)) File.Replace(temporary, path, null);
+        else File.Move(temporary, path);
+      }
+      internal void RestoreSource() {
+        if (Completed) return;
+        var pending = Path.Combine(DirectoryPath, "restoring");
+        File.WriteAllText(pending, "Restoration in progress", Encoding.UTF8);
+        RestoreDataRoot(SourceRoot, SourceSnapshot, "restoring-source");
+        if (!string.Equals(SourceRoot, TargetRoot, StringComparison.OrdinalIgnoreCase))
+          RestoreDataRoot(TargetRoot, TargetSnapshot, "restoring-destination");
+        File.WriteAllText(Path.Combine(DirectoryPath, "restored"), "Application data restored", Encoding.UTF8);
+        File.Delete(pending);
+      }
+      private void RestoreDataRoot(string root, string snapshot, string marker) {
+        var restoring = Path.Combine(DirectoryPath, marker);
+        string generation;
+        if (File.Exists(restoring)) generation = File.ReadAllText(restoring, Encoding.UTF8);
+        else {
+          generation = "failed-data-" + Guid.NewGuid().ToString("N");
+          File.WriteAllText(restoring, generation, Encoding.UTF8);
+        }
+        if (!generation.StartsWith("failed-data-", StringComparison.Ordinal) || generation != Path.GetFileName(generation))
+          throw new InvalidOperationException("Invalid interrupted restoration journal.");
+        var quarantine = Path.Combine(DirectoryPath, generation);
+        AssertNoReparsePoints(quarantine);
+        Directory.CreateDirectory(quarantine);
+        foreach (var entry in DataEntries) {
+          var original = Path.Combine(root, entry);
+          var retained = Path.Combine(quarantine, entry);
+          AssertNoReparsePoints(original);
+          AssertNoReparsePoints(retained);
+          // Retain failed-attempt data before restoring even an absent preimage.
+          // The retained entry marks a completed move if restoration is interrupted.
+          if (!File.Exists(retained) && !Directory.Exists(retained)) {
+            if (Directory.Exists(original)) Directory.Move(original, retained);
+            else if (File.Exists(original)) File.Move(original, retained);
+          }
+          CopyEntry(Path.Combine(snapshot, entry), original, true);
+        }
+        File.Delete(restoring);
+      }
+      internal void Complete() {
+        File.WriteAllText(Path.Combine(DirectoryPath, "complete"), "MSI registration validated", Encoding.UTF8);
+        Completed = true;
+      }
+      internal string[] ReadRunningServices() { return File.ReadAllLines(Path.Combine(DirectoryPath, "running-services"), Encoding.UTF8); }
+      internal static void AssertNoReparsePoints(string path) {
+        var current = Path.GetFullPath(path);
+        while (!string.IsNullOrWhiteSpace(current)) {
+          if ((File.Exists(current) || Directory.Exists(current)) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidOperationException("Migration cannot traverse a reparse point: " + current);
+          current = Path.GetDirectoryName(current);
+        }
+      }
+      private static void EnsureSecureCheckpointDirectory(string path, DirectorySecurity security) {
+        AssertNoReparsePoints(path);
+        Directory.CreateDirectory(path, security);
+        var actual = Directory.GetAccessControl(path);
+        if (!actual.GetOwner(typeof(SecurityIdentifier)).Equals(security.GetOwner(typeof(SecurityIdentifier))))
+          throw new InvalidOperationException("Untrusted migration checkpoint owner: " + path);
+        var mutation = FileSystemRights.Write | FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles
+          | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
+        var permitted = security.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+          .Where(rule => rule.AccessControlType == AccessControlType.Allow && (rule.FileSystemRights & mutation) != 0)
+          .Select(rule => rule.IdentityReference.Value).ToList();
+        if (actual.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+            .Any(rule => rule.AccessControlType == AccessControlType.Allow && (rule.FileSystemRights & mutation) != 0
+              && !permitted.Contains(rule.IdentityReference.Value)))
+          throw new InvalidOperationException("Untrusted writers can modify the migration checkpoint: " + path);
+      }
+      private static void VerifyEntry(string source, string destination) {
+        AssertNoReparsePoints(source);
+        AssertNoReparsePoints(destination);
+        if (Directory.Exists(source)) {
+          if (File.Exists(destination)) throw new InvalidOperationException("Destination layout conflicts with legacy data: " + destination);
+          foreach (var child in Directory.GetFileSystemEntries(source)) VerifyEntry(child, Path.Combine(destination, Path.GetFileName(child)));
+        } else if (File.Exists(source)) {
+          if (Directory.Exists(destination)) throw new InvalidOperationException("Destination layout conflicts with legacy data: " + destination);
+          if (File.Exists(destination)) {
+            using (var hash = SHA256.Create())
+            using (var first = File.OpenRead(source))
+            using (var second = File.OpenRead(destination)) {
+              if (!hash.ComputeHash(first).SequenceEqual(hash.ComputeHash(second)))
+                throw new InvalidOperationException("Destination data conflicts with legacy data: " + destination);
+            }
+          }
+        }
+      }
+      private static string SnapshotHash(string root) {
+        var content = new StringBuilder();
+        AppendSnapshotHash(root, root, content);
+        using (var hash = SHA256.Create()) return BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(content.ToString()))).Replace("-", "");
+      }
+      private static void AppendSnapshotHash(string root, string path, StringBuilder content) {
+        AssertNoReparsePoints(path);
+        content.Append(path.Substring(root.Length)).Append('\n');
+        if (Directory.Exists(path)) {
+          content.Append("directory\n");
+          foreach (var child in Directory.GetFileSystemEntries(path).OrderBy(value => value, StringComparer.Ordinal)) AppendSnapshotHash(root, child, content);
+        } else {
+          using (var hash = SHA256.Create())
+          using (var file = File.OpenRead(path)) content.Append(BitConverter.ToString(hash.ComputeHash(file))).Append('\n');
+        }
+      }
+      private static void CopyEntry(string source, string destination, bool overwrite) {
+        AssertNoReparsePoints(source);
+        AssertNoReparsePoints(destination);
+        if (Directory.Exists(source)) {
+          Directory.CreateDirectory(destination);
+          foreach (var child in Directory.GetFileSystemEntries(source)) CopyEntry(child, Path.Combine(destination, Path.GetFileName(child)), overwrite);
+        } else if (File.Exists(source)) {
+          if (File.Exists(destination) && !overwrite) {
+            using (var hash = SHA256.Create())
+            using (var first = File.OpenRead(source))
+            using (var second = File.OpenRead(destination)) {
+              if (!hash.ComputeHash(first).SequenceEqual(hash.ComputeHash(second)))
+                throw new InvalidOperationException("Destination data conflicts with legacy data: " + destination);
+            }
+            return;
+          }
+          Directory.CreateDirectory(Path.GetDirectoryName(destination));
+          File.Copy(source, destination, overwrite);
+        }
+      }
+      public void Dispose() { if (Lock != null) { Lock.Dispose(); Lock = null; } }
+    }
+
     private static InstallerResult UninstallCompetingProducts(
       string logPhase,
       bool hiddenWindow,
-      bool requestElevationIfNeeded) {
-      var installedProducts = GetInstalledProductRegistrations(true)
+      bool requestElevationIfNeeded,
+      string incomingMsiPath = null) {
+      var incoming = TryGetPayloadMsiInfo(incomingMsiPath);
+      var installedProducts = ResolveBootstrapMigrationProducts(ReadBootstrapMigrationRegistrations(),
+        code => MsiQueryProductState(NormalizeProductCode(code)) == MsiInstallStateDefault)
         .Where(product =>
           product.Kind == InstalledProductKind.Apollo
           || product.Kind == InstalledProductKind.Vibepollo
@@ -6981,6 +7589,8 @@ namespace VibepolloInstaller {
       var finalCode = 0;
       var lastLogPath = string.Empty;
       foreach (var product in installedProducts) {
+        // Same-family replacement belongs to the incoming MSI transaction.
+        if (CanReplaceInMsiTransaction(product, ReadInstalledMigrationMsi(product), incoming)) continue;
         if (!CanUninstallProduct(product)) {
           // Stale ARP entry with no usable uninstall command — skip rather
           // than blocking installation over a leftover registry key.

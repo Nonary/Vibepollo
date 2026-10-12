@@ -1257,3 +1257,16 @@ if(TARGET pyrowave-linux)
     add_test(NAME pyrowave_linux_gpu COMMAND test_pyrowave_linux_gpu)
     set_tests_properties(pyrowave_linux_gpu PROPERTIES SKIP_RETURN_CODE 77 LABELS "integration;gpu")
 endif()
+
+# Compiles the production bootstrapper and tests migration using temporary data.
+# Never invokes MSI, services, driver installers, or certificate store mutations.
+if(WIN32)
+    set(_bootstrap_migration_shell "$ENV{WINDIR}/System32/WindowsPowerShell/v1.0/powershell.exe")
+    if(EXISTS "${_bootstrap_migration_shell}")
+        add_test(NAME test_script_bootstrap_migration
+            COMMAND "${_bootstrap_migration_shell}" -NoLogo -NoProfile -ExecutionPolicy Bypass
+                -File "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/windows/bootstrapper/tests/test_bootstrap_migration.ps1"
+                -OutputDirectory "${CMAKE_CURRENT_BINARY_DIR}/bootstrap-migration")
+        set_tests_properties(test_script_bootstrap_migration PROPERTIES LABELS "installer;component")
+    endif()
+endif()

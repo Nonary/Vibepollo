@@ -3,14 +3,6 @@
   <CPackWiXFragment Id="#PRODUCT">
     <Property Id="ALLUSERS" Value="1"/>
     <Property Id="ARPSYSTEMCOMPONENT" Value="1"/>
-    <Property Id="LEGACY_SUNSHINE_PRESENT" Secure="yes">
-      <RegistrySearch Id="SearchLegacySunshine64" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine" Name="DisplayName" Type="raw" Win64="yes"/>
-      <RegistrySearch Id="SearchLegacySunshine32" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine" Name="DisplayName" Type="raw"/>
-    </Property>
-    <Property Id="LEGACY_SUNSHINE_UNINSTALL" Secure="yes">
-      <RegistrySearch Id="SearchLegacySunshineUninstall64" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine" Name="UninstallString" Type="raw" Win64="yes"/>
-      <RegistrySearch Id="SearchLegacySunshineUninstall32" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine" Name="UninstallString" Type="raw"/>
-    </Property>
     <Property Id="REMOVEVIRTUALDISPLAYDRIVER" Value="0" Secure="yes"/>
     <Property Id="REMOVEVIRTUALGAMEPADDRIVER" Value="0" Secure="yes"/>
     <Property Id="FACTORYRESET" Value="0" Secure="yes"/>
@@ -27,7 +19,6 @@
     <Property Id="ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE" Value="$(var.VhfGamepadAllowLocalTest)" Secure="yes"/>
     <Property Id="USBIP_TRANSPORT_BUNDLED" Value="$(var.UsbIpTransportBundled)"/>
     <Property Id="INSTALL_USBIP_TRANSPORT" Value="0" Secure="yes"/>
-    <Property Id="SKIP_REMOVE_CONFLICTING_PRODUCTS" Value="0" Secure="yes"/>
     <Condition Message="Administrator privileges are required.">Privileged</Condition>
     <Property Id="VIGEMBUS_PRESENT">
       <RegistrySearch Id="Search_ViGEmBus_Service64" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\ViGEmBus" Name="DisplayName" Type="raw" Win64="yes"/>
@@ -36,7 +27,6 @@
     <Feature Id="VibepolloExtras" Title="Vibepollo Components" Level="1" Absent="disallow">
       <ComponentRef Id="CtlStopApolloLegacy"/>
       <ComponentRef Id="ApolloSvc"/>
-      <ComponentRef Id="RemoveLegacyApolloUninstallKey"/>
       <ComponentRef Id="Fw_Exceptions"/>
       <ComponentRef Id="StartMenuShortcut"/>
       <ComponentRef Id="SudoVdaRegistryDefaults"/>
@@ -55,8 +45,6 @@
       <Custom Action="EnsureDriverSelectionsRepair" After="DefaultGamepadDriverSelection">Installed AND NOT REMOVE AND REINSTALL=""</Custom>
       <Custom Action="ExtendDriverSelectionsRepair" After="EnsureDriverSelectionsRepair">Installed AND NOT REMOVE AND REINSTALL&lt;&gt;"" AND REINSTALL&lt;&gt;"ALL" AND NOT (REINSTALL &gt;&lt; "InstallerDriverSelections")</Custom>
       <Custom Action="DefaultDriverSelectionsRepairMode" After="ExtendDriverSelectionsRepair">Installed AND NOT REMOVE AND REINSTALLMODE=""</Custom>
-      <!-- Remove conflicting products before installation starts. -->
-      <Custom Action="RemoveConflictingProducts" Before="InstallValidate">NOT Installed AND NOT REMOVE AND SKIP_REMOVE_CONFLICTING_PRODUCTS &lt;&gt; "1"</Custom>
 
       <!-- Pre-validate stop/kill when UI can't prompt.  Major upgrades are
            not "Installed" from the incoming package's perspective, but they
@@ -98,11 +86,7 @@
       <Custom Action="SetRegisterVulkanHdrLayer" After="InstallUsbIpTransport">NOT REMOVE</Custom>
       <Custom Action="RegisterVulkanHdrLayer" After="SetRegisterVulkanHdrLayer">NOT REMOVE</Custom>
       <!-- Tightened to NOT Installed so repair/upgrade does not rerun install-time migration work. -->
-      <Custom Action="SetMigrateConfig" After="RegisterVulkanHdrLayer">NOT Installed AND NOT REMOVE</Custom>
-      <Custom Action="MigrateConfig" After="SetMigrateConfig">NOT Installed AND NOT REMOVE</Custom>
-      <Custom Action="SetRunInstallerMigrations" After="MigrateConfig">NOT Installed AND NOT REMOVE</Custom>
-      <Custom Action="RunInstallerMigrations" After="SetRunInstallerMigrations">NOT Installed AND NOT REMOVE</Custom>
-      <Custom Action="SetUpdatePathAdd" After="RunInstallerMigrations">NOT REMOVE</Custom>
+      <Custom Action="SetUpdatePathAdd" After="RegisterVulkanHdrLayer">NOT REMOVE</Custom>
       <Custom Action="UpdatePathAdd" After="SetUpdatePathAdd">NOT REMOVE</Custom>
 
       <!-- Uninstall before file removal -->
@@ -132,19 +116,6 @@
     </InstallExecuteSequence>
 
     <InstallUISequence>
-      <!-- Legacy Sunshine handling flow -->
-      <!-- 1. Ask user if they want to uninstall legacy Sunshine (and launch if they agree) -->
-      <Custom Action="AskUninstallLegacySunshine" After="AppSearch">LEGACY_SUNSHINE_PRESENT AND UILevel &gt; 2 AND NOT Installed</Custom>
-
-      <!-- 2. Wait for legacy Sunshine uninstall to complete and verify it's gone -->
-      <Custom Action="WaitForLegacyUninstall" After="AskUninstallLegacySunshine">UNINSTALL_LEGACY_SUNSHINE = "1" AND NOT USER_CANCELLED_LEGACY_SUNSHINE_UNINSTALL</Custom>
-
-      <!-- 3. Block if user cancelled at any point -->
-      <Custom Action="BlockUserCancelledLegacy" Before="LaunchConditions">USER_CANCELLED_LEGACY_SUNSHINE_UNINSTALL = "1"</Custom>
-
-      <!-- 4. Block if legacy Sunshine is still present after user claimed to uninstall it -->
-      <Custom Action="BlockLegacySunshineStillPresent" Before="LaunchConditions">LEGACY_SUNSHINE_STILL_PRESENT = "1"</Custom>
-
       <Custom Action="RepairCompletePrompt" After="ExecuteAction">REINSTALL AND NOT REMOVE AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2</Custom>
     </InstallUISequence>
   </CPackWiXFragment>
