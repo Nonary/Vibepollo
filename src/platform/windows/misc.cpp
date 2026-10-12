@@ -67,6 +67,7 @@
 #include "src/platform/common.h"
 #include "src/process.h"
 #include "src/utility.h"
+#include "udp_send_retry.h"
 #include "utf_utils.h"
 
 // UDP_SEND_MSG_SIZE was added in the Windows 10 20H1 SDK
@@ -393,49 +394,64 @@ namespace platf {
   namespace {
     constexpr wchar_t kVulkanImplicitLayersSubKey[] = L"SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers";
     constexpr wchar_t kVulkanHdrLayerManifestName[] = L"VkLayer_sunshine_hdr.json";
-    // Resolve the shipped manifest path: <sunshine.exe dir>\drivers\sunshine\vulkan-layer\VkLayer_sunshine_hdr.json
-    std::filesystem::path vulkan_hdr_layer_manifest_path() {
+    constexpr wchar_t kVulkanHdrLayerX86ManifestName[] = L"VkLayer_sunshine_hdr_x86.json";
+
+    struct vulkan_hdr_layer_t {
+      REGSAM view;
+      const wchar_t *manifest_name;
+      const wchar_t *library_name;
+    };
+
+    constexpr vulkan_hdr_layer_t kVulkanHdrLayers[] = {
+      {KEY_WOW64_64KEY, kVulkanHdrLayerManifestName, L"VkLayer_sunshine_hdr.dll"},
+      {KEY_WOW64_32KEY, kVulkanHdrLayerX86ManifestName, L"VkLayer_sunshine_hdr_x86.dll"},
+    };
+
+    std::filesystem::path vulkan_hdr_layer_manifest_path(const vulkan_hdr_layer_t &layer) {
       wchar_t module_path[MAX_PATH] = {};
-      if (GetModuleFileNameW(nullptr, module_path, _countof(module_path)) == 0) {
+      const DWORD length = GetModuleFileNameW(nullptr, module_path, _countof(module_path));
+      if (length == 0 || length >= _countof(module_path)) {
         return {};
       }
-      return std::filesystem::path {module_path}.parent_path() / L"drivers" / L"sunshine" / L"vulkan-layer" / kVulkanHdrLayerManifestName;
+      return std::filesystem::path {module_path}.parent_path() / L"drivers" / L"sunshine" / L"vulkan-layer" / layer.manifest_name;
     }
 
-    // The registry value name is a full manifest path; match on its (ASCII, case-insensitive) leaf.
+    bool vulkan_hdr_layer_payload_exists(const vulkan_hdr_layer_t &layer) {
+      const auto manifest = vulkan_hdr_layer_manifest_path(layer);
+      std::error_code ec;
+      return !manifest.empty() && std::filesystem::is_regular_file(manifest, ec) &&
+             std::filesystem::is_regular_file(manifest.parent_path() / layer.library_name, ec);
+    }
+
+    // Match only our two manifest leaves, including registrations at old install
+    // paths. Other implicit layers share this key and must remain untouched.
     bool value_name_is_our_manifest(const std::wstring &value_name) {
-      const std::wstring leaf = std::filesystem::path {value_name}.filename().wstring();
-      const std::wstring target = kVulkanHdrLayerManifestName;
-      if (leaf.size() != target.size()) {
+      const auto leaf = std::filesystem::path {value_name}.filename().wstring();
+      return _wcsicmp(leaf.c_str(), kVulkanHdrLayerManifestName) == 0 ||
+             _wcsicmp(leaf.c_str(), kVulkanHdrLayerX86ManifestName) == 0;
+    }
+
+    bool unregister_vulkan_hdr_layer_view(REGSAM view) {
+      HKEY key = nullptr;
+      const LONG opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, kVulkanImplicitLayersSubKey, 0, KEY_QUERY_VALUE | KEY_SET_VALUE | view, &key);
+      if (opened == ERROR_FILE_NOT_FOUND) {
+        return true;
+      }
+      if (opened != ERROR_SUCCESS) {
         return false;
       }
-      const auto ascii_lower = [](wchar_t c) -> wchar_t {
-        return (c >= L'A' && c <= L'Z') ? static_cast<wchar_t>(c - L'A' + L'a') : c;
-      };
-      for (size_t i = 0; i < leaf.size(); ++i) {
-        if (ascii_lower(leaf[i]) != ascii_lower(target[i])) {
-          return false;
-        }
-      }
-      return true;
-    }
-
-    // Remove any of our manifest registrations from a single registry view.
-    void unregister_vulkan_hdr_layer_view(REGSAM view) {
-      HKEY key = nullptr;
-      if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kVulkanImplicitLayersSubKey, 0, KEY_QUERY_VALUE | KEY_SET_VALUE | view, &key) != ERROR_SUCCESS) {
-        return;
-      }
       std::vector<std::wstring> to_delete;
+      bool ok = true;
       for (DWORD index = 0;; ++index) {
-        wchar_t value_name[2048];
+        wchar_t value_name[32768];
         DWORD name_len = _countof(value_name);
         const LONG r = RegEnumValueW(key, index, value_name, &name_len, nullptr, nullptr, nullptr, nullptr);
-        if (r == ERROR_MORE_DATA) {
-          continue;  // value name longer than our buffer; not ours, skip
+        if (r == ERROR_NO_MORE_ITEMS) {
+          break;
         }
         if (r != ERROR_SUCCESS) {
-          break;  // ERROR_NO_MORE_ITEMS or a hard error
+          ok = false;
+          break;
         }
         std::wstring name {value_name, name_len};
         if (value_name_is_our_manifest(name)) {
@@ -443,102 +459,122 @@ namespace platf {
         }
       }
       for (const auto &name : to_delete) {
-        RegDeleteValueW(key, name.c_str());
+        if (RegDeleteValueW(key, name.c_str()) != ERROR_SUCCESS) {
+          ok = false;
+        }
       }
       RegCloseKey(key);
+      return ok;
+    }
+
+    bool vulkan_hdr_layer_view_registered(const vulkan_hdr_layer_t &layer) {
+      if (!vulkan_hdr_layer_payload_exists(layer)) {
+        return false;
+      }
+      HKEY key = nullptr;
+      if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kVulkanImplicitLayersSubKey, 0, KEY_QUERY_VALUE | layer.view, &key) != ERROR_SUCCESS) {
+        return false;
+      }
+      DWORD type = 0;
+      DWORD value = 1;
+      DWORD size = sizeof(value);
+      const auto manifest = vulkan_hdr_layer_manifest_path(layer).wstring();
+      const LONG r = RegQueryValueExW(key, manifest.c_str(), nullptr, &type, reinterpret_cast<BYTE *>(&value), &size);
+      RegCloseKey(key);
+      return r == ERROR_SUCCESS && type == REG_DWORD && size == sizeof(value) && value == 0;
     }
 
     bool register_vulkan_hdr_layer() {
-      const std::filesystem::path manifest = vulkan_hdr_layer_manifest_path();
-      std::error_code ec;
-      if (manifest.empty() || !std::filesystem::exists(manifest, ec)) {
-        BOOST_LOG(warning) << "Vulkan HDR layer manifest not found; cannot register: "sv << manifest.string();
-        return false;
+      // Validate both architectures before removing a working old registration.
+      for (const auto &layer : kVulkanHdrLayers) {
+        if (!vulkan_hdr_layer_payload_exists(layer)) {
+          BOOST_LOG(warning) << "Vulkan HDR layer payload missing; cannot register: "sv << vulkan_hdr_layer_manifest_path(layer).string();
+          return false;
+        }
       }
-      // Clear stale registrations (including ones pointing at old install paths) before adding ours.
-      unregister_vulkan_hdr_layer_view(KEY_WOW64_64KEY);
-      unregister_vulkan_hdr_layer_view(KEY_WOW64_32KEY);
-
-      HKEY key = nullptr;
-      LONG r = RegCreateKeyExW(HKEY_LOCAL_MACHINE, kVulkanImplicitLayersSubKey, 0, nullptr, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &key, nullptr);
-      if (r != ERROR_SUCCESS) {
-        BOOST_LOG(warning) << "Failed to open Vulkan ImplicitLayers key for write [0x"sv << util::hex(r).to_string_view() << ']';
-        return false;
+      bool ok = true;
+      for (const auto &layer : kVulkanHdrLayers) {
+        if (!unregister_vulkan_hdr_layer_view(layer.view)) {
+          ok = false;
+          continue;
+        }
+        HKEY key = nullptr;
+        LONG r = RegCreateKeyExW(HKEY_LOCAL_MACHINE, kVulkanImplicitLayersSubKey, 0, nullptr, 0, KEY_SET_VALUE | layer.view, nullptr, &key, nullptr);
+        if (r == ERROR_SUCCESS) {
+          const auto manifest = vulkan_hdr_layer_manifest_path(layer).wstring();
+          const DWORD enabled_value = 0;  // Vulkan loader: DWORD 0 enables the layer.
+          r = RegSetValueExW(key, manifest.c_str(), 0, REG_DWORD, reinterpret_cast<const BYTE *>(&enabled_value), sizeof(enabled_value));
+          RegCloseKey(key);
+        }
+        if (r != ERROR_SUCCESS) {
+          BOOST_LOG(warning) << "Failed to register Vulkan HDR layer "sv << vulkan_hdr_layer_manifest_path(layer).string() << " [0x"sv << util::hex(r).to_string_view() << ']';
+          ok = false;
+        }
       }
-      const std::wstring manifest_w = manifest.wstring();
-      DWORD enabled_value = 0;  // 0 = layer enabled, per the Vulkan loader convention
-      r = RegSetValueExW(key, manifest_w.c_str(), 0, REG_DWORD, reinterpret_cast<const BYTE *>(&enabled_value), sizeof(enabled_value));
-      RegCloseKey(key);
-      if (r != ERROR_SUCCESS) {
-        BOOST_LOG(warning) << "Failed to register Vulkan HDR layer [0x"sv << util::hex(r).to_string_view() << ']';
-        return false;
-      }
-      BOOST_LOG(info) << "Vulkan HDR implicit layer registered: "sv << manifest.string();
-      return true;
+      return ok;
     }
-
   }  // namespace
 
   bool is_vulkan_hdr_layer_registered() {
-    HKEY key = nullptr;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kVulkanImplicitLayersSubKey, 0, KEY_QUERY_VALUE | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS) {
-      return false;
-    }
-    bool found = false;
-    for (DWORD index = 0;; ++index) {
-      wchar_t value_name[2048];
-      DWORD name_len = _countof(value_name);
-      const LONG r = RegEnumValueW(key, index, value_name, &name_len, nullptr, nullptr, nullptr, nullptr);
-      if (r == ERROR_MORE_DATA) {
-        continue;
-      }
-      if (r != ERROR_SUCCESS) {
-        break;
-      }
-      const std::wstring name {value_name, name_len};
-      if (value_name_is_our_manifest(name)) {
-        std::error_code ec;
-        if (std::filesystem::exists(std::filesystem::path {name}, ec)) {
-          found = true;
-          break;
-        }
-      }
-    }
-    RegCloseKey(key);
-    return found;
+    return std::all_of(std::begin(kVulkanHdrLayers), std::end(kVulkanHdrLayers), vulkan_hdr_layer_view_registered);
   }
 
   bool set_vulkan_hdr_layer_enabled(bool enabled) {
-    const bool currently = is_vulkan_hdr_layer_registered();
-    if (enabled == currently) {
-      return true;  // already in the desired state; avoid needless registry churn / log spam
-    }
     if (enabled) {
-      return register_vulkan_hdr_layer();
+      return is_vulkan_hdr_layer_registered() || register_vulkan_hdr_layer();
     }
-    unregister_vulkan_hdr_layer_view(KEY_WOW64_64KEY);
-    unregister_vulkan_hdr_layer_view(KEY_WOW64_32KEY);
-    BOOST_LOG(info) << "Vulkan HDR implicit layer unregistered."sv;
-    return true;
+    // Partial installation is unhealthy, but can still contain one enabled
+    // architecture. Always remove both views when the preference is disabled.
+    const bool removed64 = unregister_vulkan_hdr_layer_view(KEY_WOW64_64KEY);
+    const bool removed32 = unregister_vulkan_hdr_layer_view(KEY_WOW64_32KEY);
+    return removed64 && removed32;
   }
 
-  HDESK syncThreadDesktop() {
+  bool syncThreadDesktop() {
+    struct desktop_binding_t {
+      // GetThreadDesktop returns a borrowed handle; never close it. Keep the
+      // opened handle alive while this thread uses it, then switch away before
+      // releasing it (CloseDesktop rejects a handle still assigned to a thread).
+      HDESK initial {GetThreadDesktop(GetCurrentThreadId())};
+      HDESK owned {nullptr};
+
+      ~desktop_binding_t() {
+        if (owned && initial && SetThreadDesktop(initial)) {
+          CloseDesktop(owned);
+        }
+      }
+    };
+    thread_local desktop_binding_t binding;
+
     auto hDesk = OpenInputDesktop(DF_ALLOWOTHERACCOUNTHOOK, FALSE, GENERIC_ALL);
     if (!hDesk) {
       auto err = GetLastError();
       BOOST_LOG(error) << "Failed to Open Input Desktop [0x"sv << util::hex(err).to_string_view() << ']';
-
-      return nullptr;
+      return false;
     }
 
     if (!SetThreadDesktop(hDesk)) {
       auto err = GetLastError();
       BOOST_LOG(error) << "Failed to sync desktop to thread [0x"sv << util::hex(err).to_string_view() << ']';
+      CloseDesktop(hDesk);
+      return false;
     }
 
-    CloseDesktop(hDesk);
+    // Selecting the already-current desktop may keep its existing handle.
+    // Release the redundant OpenInputDesktop handle instead of mistaking the
+    // successful no-op for a new thread-owned binding.
+    const auto assigned = GetThreadDesktop(GetCurrentThreadId());
+    if (assigned && assigned != hDesk) {
+      CloseDesktop(hDesk);
+      return true;
+    }
 
-    return hDesk;
+    const auto previous = binding.owned;
+    binding.owned = hDesk;
+    if (previous) {
+      CloseDesktop(previous);
+    }
+    return true;
   }
 
   void print_status(const std::string_view &prefix, HRESULT status) {
@@ -1886,9 +1922,52 @@ namespace platf {
     return interface_row.Type == IF_TYPE_ETHERNET_CSMACD ? interface_row.TransmitLinkSpeed : 0;
   }
 
+  namespace {
+    int send_udp_message(SOCKET socket, WSAMSG &msg, const std::function<bool()> &send_cancelled) {
+      const auto result = udp_send_retry::send(
+        [&]() {
+          DWORD bytes_sent;
+          return WSASendMsg(socket, &msg, 0, &bytes_sent, nullptr, nullptr) == SOCKET_ERROR ? WSAGetLastError() : 0;
+        },
+        [&](int error, std::chrono::steady_clock::duration remaining) {
+          const auto deadline = std::chrono::steady_clock::now() + remaining;
+          fd_set writable;
+          FD_ZERO(&writable);
+          FD_SET(socket, &writable);
+          const auto wait_us = std::max<std::int64_t>(1, std::min<std::int64_t>(1000,
+            std::chrono::duration_cast<std::chrono::microseconds>(remaining).count()));
+          timeval timeout {0, static_cast<long>(wait_us)};
+          const auto ready = select(0, nullptr, &writable, nullptr, &timeout);
+          if (ready == SOCKET_ERROR) {
+            return WSAGetLastError();
+          }
+          // ENOBUFS can leave the socket writable despite exhausted system/NIC
+          // resources. Only this error needs backoff after readiness;
+          // WSAEWOULDBLOCK retries as soon as the socket accepts another message.
+          if (ready > 0 && error == WSAENOBUFS) {
+            thread_local auto timer = create_high_precision_timer();
+            if (!timer || !*timer) {
+              return WSAENOBUFS;
+            }
+            const auto remaining_after_poll = deadline - std::chrono::steady_clock::now();
+            if (remaining_after_poll > std::chrono::steady_clock::duration::zero()) {
+              timer->sleep_for(std::min(std::chrono::nanoseconds {100'000},
+                std::chrono::duration_cast<std::chrono::nanoseconds>(remaining_after_poll)));
+            }
+          }
+          return 0;
+        },
+        [&]() { return send_cancelled && send_cancelled(); },
+        []() { return std::chrono::steady_clock::now(); }
+      );
+      return result.error;
+    }
+  }  // namespace
+
   // Use UDP segmentation offload if it is supported by the OS. If the NIC is capable, this will use
   // hardware acceleration to reduce CPU usage. Support for USO was introduced in Windows 10 20H1.
   bool send_batch(batched_send_info_t &send_info) {
+    send_info.allow_fallback = false;
     WSAMSG msg;
 
     // Convert the target address into a SOCKADDR
@@ -1906,11 +1985,12 @@ namespace platf {
       msg.namelen = sizeof(taddr_v4);
     }
 
-    auto const max_bufs_per_msg = send_info.payload_buffers.size() + (send_info.headers ? 1 : 0);
+    const bool has_headers = send_info.headers && send_info.header_size != 0;
+    auto const max_bufs_per_msg = send_info.payload_buffers.size() + (has_headers ? 1 : 0);
 
-    std::vector<WSABUF> bufs((send_info.headers ? send_info.block_count : 1) * max_bufs_per_msg);
+    std::vector<WSABUF> bufs((has_headers ? send_info.block_count : 1) * max_bufs_per_msg);
     DWORD bufcount = 0;
-    if (send_info.headers) {
+    if (has_headers) {
       // Interleave buffers for headers and payloads
       for (auto i = 0; i < send_info.block_count; i++) {
         bufs[bufcount].buf = (char *) &send_info.headers[(send_info.block_offset + i) * send_info.header_size];
@@ -1986,13 +2066,17 @@ namespace platf {
 
     msg.Control.len = cmbuflen;
 
-    // If USO is not supported, this will fail and the caller will fall back to unbatched sends.
-    DWORD bytes_sent;
-    if (WSASendMsg((SOCKET) send_info.native_socket, &msg, 0, &bytes_sent, nullptr, nullptr) != SOCKET_ERROR) {
+    const auto winerr = send_udp_message((SOCKET) send_info.native_socket, msg, send_info.send_cancelled);
+    if (winerr == 0) {
       return true;
     }
 
-    const auto winerr = WSAGetLastError();
+    send_info.allow_fallback = udp_send_retry::offload_fallback_error(
+      winerr, send_info.block_count > 1, send_info.header_size + send_info.payload_size, send_info.target_address.is_v6()
+    );
+    if (winerr == WSAEINTR) {
+      return false;
+    }
     // A rejected batch otherwise turns into dozens of individual sends with
     // no explanation at normal log levels. Bound reporting so an unsupported
     // offload path cannot spend its send budget flooding the log.
@@ -2001,11 +2085,11 @@ namespace platf {
     ++failed_batches;
     const auto now = std::chrono::steady_clock::now();
     if (now >= next_failure_log) {
-      BOOST_LOG(warning) << "WSASendMsg() batch failed: "sv << winerr
+      BOOST_LOG(send_info.allow_fallback ? debug : warning) << "WSASendMsg() batch failed: "sv << winerr
                          << "; packets="sv << send_info.block_count
                          << "; bytes="sv << send_info.block_count * (send_info.header_size + send_info.payload_size)
                          << "; failed batches since previous report="sv << failed_batches
-                         << "; falling back to individual sends"sv;
+                         << (send_info.allow_fallback ? "; falling back to individual sends"sv : "; batch was not sent"sv);
       failed_batches = 0;
       next_failure_log = now + 5s;
     }
@@ -2082,9 +2166,11 @@ namespace platf {
 
     msg.Control.len = cmbuflen;
 
-    DWORD bytes_sent;
-    if (WSASendMsg((SOCKET) send_info.native_socket, &msg, 0, &bytes_sent, nullptr, nullptr) == SOCKET_ERROR) {
-      auto winerr = WSAGetLastError();
+    const auto winerr = send_udp_message((SOCKET) send_info.native_socket, msg, send_info.send_cancelled);
+    if (winerr == WSAEINTR) {
+      return false;
+    }
+    if (winerr != 0) {
       // A session stuck in a bad state fails every FEC shard of every frame,
       // which used to flood the log with thousands of identical lines and
       // drown out the actual failure. Log the first occurrence, then a
@@ -2093,7 +2179,8 @@ namespace platf {
       static std::atomic<std::uint64_t> suppressed_count {0};
       const auto now_tick = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
       auto last = last_log_tick.load(std::memory_order_relaxed);
-      if (now_tick - last >= 5 && last_log_tick.compare_exchange_strong(last, now_tick, std::memory_order_relaxed)) {
+      if ((last == std::numeric_limits<std::int64_t>::min() || now_tick - last >= 5) &&
+          last_log_tick.compare_exchange_strong(last, now_tick, std::memory_order_relaxed)) {
         const auto suppressed = suppressed_count.exchange(0, std::memory_order_relaxed);
         BOOST_LOG(warning) << "WSASendMsg() failed: "sv << winerr
                            << (suppressed ? " (" + std::to_string(suppressed) + " similar failures suppressed)" : std::string {});
@@ -2963,11 +3050,29 @@ namespace platf {
         BOOST_LOG(error) << "Attempting high_precision_timer::sleep_for() with unexpectedly large duration (>5s)";
         return;
       }
+      if (duration == 0s) {
+        return;
+      }
 
       LARGE_INTEGER due_time;
-      due_time.QuadPart = duration.count() / -100;
-      SetWaitableTimer(timer, &due_time, 0, nullptr, nullptr, false);
-      WaitForSingleObject(timer, INFINITE);
+      due_time.QuadPart = -std::max<std::int64_t>(1, (duration.count() + 99) / 100);
+      if (!SetWaitableTimer(timer, &due_time, 0, nullptr, nullptr, false)) {
+        if (!failure_logged) {
+          failure_logged = true;
+          BOOST_LOG(error) << "Unable to arm high_precision_timer: " << GetLastError();
+        }
+        return;
+      }
+      // A failed timer must not hang a sender or capture thread indefinitely.
+      // Scheduling can overshoot a requested interval; this timeout bounds the
+      // wait operation rather than promising a strict wall-clock wake-up time.
+      const auto timeout_ms = std::chrono::ceil<std::chrono::milliseconds>(duration).count() + 1;
+      if (WaitForSingleObject(timer, static_cast<DWORD>(timeout_ms)) == WAIT_FAILED) {
+        if (!failure_logged) {
+          failure_logged = true;
+          BOOST_LOG(error) << "Unable to wait for high_precision_timer: " << GetLastError();
+        }
+      }
     }
 
     operator bool() override {
@@ -2976,6 +3081,7 @@ namespace platf {
 
   private:
     HANDLE timer = nullptr;
+    bool failure_logged = false;
   };
 
   std::unique_ptr<high_precision_timer> create_high_precision_timer() {

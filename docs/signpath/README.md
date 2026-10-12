@@ -1,4 +1,9 @@
-# SignPath signing configuration
+# Historical SignPath signing configuration
+
+SignPath publication is disabled under the current build policy. This document
+and its XML files are inactive integration references kept for audit; current
+CI must not invoke SignPath. The signing requests described below apply only
+to that historical integration.
 
 This directory documents how the Windows installer is code-signed through
 [SignPath](https://signpath.io) and keeps **review copies** of the account-side
@@ -159,19 +164,21 @@ invalidates its catalog hash and **breaks driver installation**. These must be
   repository's MSI request.
 - `nvngx_truehdr.dll` (NVIDIA RTX Video SDK runtime, downloaded from the pinned TrueHDR runtime release)
 
-The virtual-display catalog, probe, and Vulkan layer are first-party signing
+The virtual-display catalog, probe, and both Vulkan layers are first-party signing
 targets; the VHF catalog and setup tool are downstream-signing targets. The
 recommended config excludes only the protected files above while enumerating
 each signing target explicitly.
+The x64 driver/layer payload comes from the pinned libvirtualdisplay release;
+package refresh builds the separate x86 layer from pinned source.
 
 ## VHF gamepad release boundary
 
-The VHF gamepad payload has a strict immutable-artifact boundary. The Windows
-release flow pins `Nonary/libvirtualgamepad` tag
-`v0.1.0-beta.6`, source/tag target
-`4b56fb9da177f320fb2d7ddb1b6262e5d55d2750`, and archive SHA-256
-`a45a8ae27d2764ad26a4b89d43d1e2dc43510d84bddd5899aac7c80499754782`.
-It also requires DriverVer `09/22/2026,0.1.0.39` and protocol version 2.
+The VHF gamepad payload has a strict immutable-artifact boundary.
+The Windows release flow pins `Nonary/libvirtualgamepad` tag
+`v0.1.0-beta.7`, source/tag target
+`9edbce11ad71e9455867c356c8368a6b39fa2242`, and archive SHA-256
+`56e57fc70b9c3fdc5dfd0f44f01255275c114711b46521224204a385cde3a6e2`.
+It also requires DriverVer `10/04/2026,0.1.0.48` and protocol version 2.
 
 The producer sidecars remain outside its ZIP. They travel only in the internal
 CI artifact so the Windows build can revalidate the same public bytes without a
@@ -201,12 +208,16 @@ stripped in CI and never signed on the runner). The `msi-file-apollo` config is 
 | `sunshinesvc.exe` | `Apollo\tools\` (bound via the `wix_payload` binder) |
 | `dxgi-info.exe` | `Apollo\tools\` |
 | `audio-info.exe` | `Apollo\tools\` |
+| `vibepollo_dualsense_haptics.exe` | `Apollo\tools\` |
+| `vibepollo_dualsense_audio.dll` | `Apollo\tools\` |
 | `playnite-launcher.exe` | `Apollo\tools\` |
+| `VibepolloPlaynite.dll` | `Apollo\plugins\playnite\SunshinePlaynite\` |
 | `sunshine_wgc_capture.exe` | `Apollo\tools\` |
 | `sunshine_display_helper.exe` | `Apollo\tools\` |
 | `SunshineVirtualDisplayDriver.cat` | `Apollo\drivers\sunshine\` |
 | `virtualdisplay_probe.exe` | `Apollo\drivers\sunshine\` |
 | `VkLayer_sunshine_hdr.dll` | `Apollo\drivers\sunshine\vulkan-layer\` |
+| `VkLayer_sunshine_hdr_x86.dll` | `Apollo\drivers\sunshine\vulkan-layer\` |
 
 > The paths in the artifact-configuration XML must match the MSI's logical
 > directory layout. Confirm the exact in-MSI paths against a built MSI's File

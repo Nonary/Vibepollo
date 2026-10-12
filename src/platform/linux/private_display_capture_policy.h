@@ -10,19 +10,24 @@ namespace platf::linux_private_display_capture {
     return explicitly_requested || outputs_available;
   }
 
-  /** Direct KMS is required to preserve managed private-display HDR scanout. */
-  [[nodiscard]] constexpr bool prefer_kms(
-    int dynamic_range,
-    bool force_sdr,
-    bool prefer_sdr_10bit,
-    bool private_output
-  ) noexcept {
-    return dynamic_range > 0 && !force_sdr && !prefer_sdr_10bit && private_output;
+  /** Automatic private-display capture uses KMS; explicit choices are honored. */
+  [[nodiscard]] constexpr bool prefer_kms(bool automatic_capture, bool private_output) noexcept {
+    return automatic_capture && private_output;
   }
 
-  /** Keep CAP_SYS_ADMIN permitted only when a later private HDR KMS route needs it. */
-  [[nodiscard]] constexpr bool retain_kms_capability(bool private_hdr_pool_available) noexcept {
-    return private_hdr_pool_available;
+  /** Avoid unattended portal consent once a direct or native backend is selected. */
+  [[nodiscard]] constexpr bool probe_portal(
+    bool automatic_capture,
+    bool explicitly_requested,
+    bool native_compositor_selected,
+    bool kms_selected
+  ) noexcept {
+    return explicitly_requested || (automatic_capture && !native_compositor_selected && !kms_selected);
+  }
+
+  /** Keep CAP_SYS_ADMIN permitted only when a later automatic private KMS route needs it. */
+  [[nodiscard]] constexpr bool retain_kms_capability(bool automatic_private_pool_available) noexcept {
+    return automatic_private_pool_available;
   }
 
   /** Startup may use dummy compositor names only when KMS capability will be discarded. */

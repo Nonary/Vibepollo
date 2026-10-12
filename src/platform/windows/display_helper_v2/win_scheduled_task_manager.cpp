@@ -299,6 +299,15 @@ namespace display_helper::v2 {
       return false;
     }
 
+    const auto existing_state = display_helper::read_restore_task_state(root_folder, task_name.c_str());
+    if (!display_helper::can_manage_restore_task(existing_state)) {
+      BOOST_LOG(info) << "Display helper v2: preserving restore task state: " << display_helper::restore_task_state_name(existing_state);
+      root_folder->Release();
+      service->Release();
+      CoUninitialize();
+      return existing_state == display_helper::restore_task_state_e::disabled;
+    }
+
     ITaskDefinition *task = nullptr;
     hr = service->NewTask(0, &task);
     if (FAILED(hr)) {
@@ -476,6 +485,14 @@ namespace display_helper::v2 {
 
     bool success = true;
     const auto task_name = build_restore_task_name({});
+    const auto existing_state = display_helper::read_restore_task_state(root_folder, task_name.c_str());
+    if (!display_helper::can_manage_restore_task(existing_state)) {
+      // Keep the disabled task so the next stream cannot silently re-enable it.
+      root_folder->Release();
+      service->Release();
+      CoUninitialize();
+      return existing_state == display_helper::restore_task_state_e::disabled;
+    }
     const HRESULT delete_hr = root_folder->DeleteTask(_bstr_t(task_name.c_str()), 0);
     if (FAILED(delete_hr) && delete_hr != HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) {
       success = false;
@@ -488,24 +505,24 @@ namespace display_helper::v2 {
     return success;
   }
 
-  bool WinScheduledTaskManager::is_task_present() {
+  display_helper::restore_task_state_e WinScheduledTaskManager::restore_task_state() {
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr)) {
-      return false;
+      return display_helper::restore_task_state_e::unavailable;
     }
 
     ITaskService *service = nullptr;
     hr = CoCreateInstance(CLSID_TaskScheduler, nullptr, CLSCTX_INPROC_SERVER, IID_ITaskService, (void **) &service);
     if (FAILED(hr)) {
       CoUninitialize();
-      return false;
+      return display_helper::restore_task_state_e::unavailable;
     }
 
     hr = service->Connect(_variant_t(), _variant_t(), _variant_t(), _variant_t());
     if (FAILED(hr)) {
       service->Release();
       CoUninitialize();
-      return false;
+      return display_helper::restore_task_state_e::unavailable;
     }
 
     ITaskFolder *root_folder = nullptr;
@@ -513,22 +530,21 @@ namespace display_helper::v2 {
     if (FAILED(hr)) {
       service->Release();
       CoUninitialize();
-      return false;
+      return display_helper::restore_task_state_e::unavailable;
     }
 
-    bool found = false;
-    const std::wstring task_name = build_restore_task_name({});
-    IRegisteredTask *task = nullptr;
-    hr = root_folder->GetTask(_bstr_t(task_name.c_str()), &task);
-    if (SUCCEEDED(hr) && task) {
-      found = true;
-      task->Release();
-    }
+    const auto task_name = build_restore_task_name({});
+    const auto state = display_helper::read_restore_task_state(root_folder, task_name.c_str());
 
     root_folder->Release();
     service->Release();
     CoUninitialize();
 
-    return found;
+    return state;
+  }
+  bool WinScheduledTaskManager::is_task_present() {
+    const auto state = restore_task_state();
+    return state == display_helper::restore_task_state_e::enabled ||
+           state == display_helper::restore_task_state_e::disabled;
   }
 }  // namespace display_helper::v2

@@ -165,10 +165,11 @@ load_session() {{ session_role=desktop; }}
 capability_free_exec() {{ :; }}
 function /usr/bin/id() {{ printf '%s\\n' "$service_user"; }}
 function /usr/bin/stat() {{
+  [[ "$1" == -c && "$2" == '%U:%G:%a' ]] || return 1
   if [[ "${{@: -1}}" == "$fixture_executable" ]]; then
-    printf 'root:%s:750:regular file\\n' "$service_user"
+    printf 'root:%s:750\\n' "$service_user"
   else
-    printf '%s:%s:700:directory\\n' "$service_user" "$service_user"
+    printf '%s:%s:700\\n' "$service_user" "$service_user"
   fi
 }}
 function /usr/bin/getcap() {{ printf '%s cap_sys_admin,cap_sys_nice=p\\n' "$fixture_executable"; }}

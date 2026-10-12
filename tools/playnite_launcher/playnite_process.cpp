@@ -635,6 +635,17 @@ namespace playnite_launcher::playnite {
   }
 
   std::wstring query_playnite_executable_from_assoc() {
+    const DWORD size = GetEnvironmentVariableW(L"SUNSHINE_PLAYNITE_INSTALL_DIR", nullptr, 0);
+    if (size > 1) {
+      std::wstring directory(size, L'\0');
+      const DWORD copied = GetEnvironmentVariableW(L"SUNSHINE_PLAYNITE_INSTALL_DIR", directory.data(), size);
+      if (copied > 0 && copied < size) {
+        directory.resize(copied);
+        const auto exe = std::filesystem::path(directory) / L"Playnite.DesktopApp.exe";
+        std::error_code ec;
+        return std::filesystem::is_regular_file(exe, ec) ? exe.wstring() : std::wstring {};
+      }
+    }
     auto exe = query_assoc_string(ASSOCSTR_EXECUTABLE, nullptr);
     if (!exe.empty()) {
       return exe;

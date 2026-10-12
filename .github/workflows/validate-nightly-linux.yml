@@ -1,0 +1,24 @@
+name: Validate exact nightly Linux payload
+permissions: {}
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        required: true
+        type: string
+      release_version:
+        required: true
+        type: string
+jobs:
+  linux:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-archlinux.yml
+    with:
+      release_commit: ${{ inputs.release_commit }}
+      release_version: ${{ inputs.release_version }}
+      use_self_hosted: false
+      validation_only: true
+      build_tests: true
+      artifact_retention_days: 7
+      cache_namespace: host-linux-v1

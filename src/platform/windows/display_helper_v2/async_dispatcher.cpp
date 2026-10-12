@@ -16,17 +16,25 @@ namespace display_helper::v2 {
       recovery_validation_operation_(recovery_validation_operation),
       virtual_display_(virtual_display),
       clock_(clock),
-      worker_(&AsyncDispatcher::worker_loop, this),
-      timer_worker_(&AsyncDispatcher::timer_loop, this) {}
+      worker_([this](std::stop_token stop) { worker_loop(stop); }),
+      timer_worker_([this](std::stop_token stop) { timer_loop(stop); }) {}
 
   AsyncDispatcher::~AsyncDispatcher() {
     if (timer_worker_.joinable()) {
-      timer_worker_.request_stop();
+      {
+        // Serialize the stop predicate with the waiter to prevent a lost wake-up.
+        std::lock_guard lock(timer_mutex_);
+        timer_worker_.request_stop();
+      }
       timer_cv_.notify_all();
       timer_worker_.join();
     }
     if (worker_.joinable()) {
-      worker_.request_stop();
+      {
+        // Serialize the stop predicate with the waiter to prevent a lost wake-up.
+        std::lock_guard lock(mutex_);
+        worker_.request_stop();
+      }
       cv_.notify_all();
       worker_.join();
     }
@@ -38,7 +46,8 @@ namespace display_helper::v2 {
     std::chrono::milliseconds delay,
     bool reset_virtual_display,
     std::function<void(const ApplyOutcome &)> completion) {
-    enqueue_task([
+    const auto report_failure = completion;
+    enqueue_operation([
       this,
       request,
       token,
@@ -145,7 +154,7 @@ namespace display_helper::v2 {
       outcome.durable_recovery_attempted = outcome.durable_recovery_attempted ||
                                             virtual_reset_outcome.durable_recovery_attempted;
       completion(outcome);
-    });
+    }, [completion = report_failure] { completion(ApplyOutcome {}); });
   }
 
   void AsyncDispatcher::dispatch_verification(
@@ -224,7 +233,8 @@ namespace display_helper::v2 {
     const CancellationToken &token,
     std::chrono::milliseconds delay,
     std::function<void(const RecoveryOutcome &)> completion) {
-    enqueue_task([
+    const auto report_failure = completion;
+    enqueue_operation([
       this,
       token,
       delay,
@@ -245,7 +255,7 @@ namespace display_helper::v2 {
       }
 
       completion(recovery_operation_.run(token));
-    });
+    }, [completion = report_failure] { completion(RecoveryOutcome {}); });
   }
 
   void AsyncDispatcher::dispatch_recovery_validation(
@@ -269,7 +279,8 @@ namespace display_helper::v2 {
     const CancellationToken &token,
     std::function<void(bool)> completion
   ) {
-    enqueue_task([
+    const auto report_failure = completion;
+    enqueue_operation([
       this,
       device_id = std::move(device_id),
       numerator,
@@ -282,6 +293,12 @@ namespace display_helper::v2 {
         return;
       }
       completion(apply_operation_.set_refresh_rate(device_id, numerator, denominator));
+    }, [completion = report_failure] { completion(false); });
+  }
+
+  void AsyncDispatcher::enqueue_operation(std::function<void()> task, std::function<void()> report_failure) {
+    enqueue_task([task = std::move(task), report_failure = std::move(report_failure)] {
+      try { task(); } catch (...) { report_failure(); }
     });
   }
 

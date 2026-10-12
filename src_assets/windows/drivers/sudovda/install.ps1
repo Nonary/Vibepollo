@@ -1,5 +1,6 @@
 param(
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$InstallerBestEffort
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,6 +17,308 @@ $script:rebootRequired = $false
 $script:driverProbeTimedOut = $false
 $driverProbeTimeoutSeconds = 15
 $driverStepTimeoutSeconds = 120
+
+trap {
+    Write-Warning "[SudoVDA] VIRTUAL_DISPLAY_DRIVER_WARNING: Display driver setup did not complete. $($_.Exception.Message)"
+    throw
+}
+
+# DRIVER_INSTALL_SAFETY_BEGIN
+# Kept inline so pinned producer packages do not need a new runtime file.
+function ConvertTo-DriverComponentVersion {
+    param([string]$Value)
+    if ($Value -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw "Unknown driver component version: '$Value'. Driver unchanged." }
+    foreach ($part in $Value.Split('.')) {
+        if ([uint64]$part -gt 65535) { throw "Invalid driver component version: '$Value'. Driver unchanged." }
+    }
+    return [version]$Value
+}
+
+function Get-InfComponentVersion {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $inVersion = $false
+    $versions = @()
+    foreach ($line in (Get-Content -LiteralPath $Path -ErrorAction Stop)) {
+        $text = ($line -split ';', 2)[0].Trim()
+        if ($text -match '^\[(.+)\]$') { $inVersion = $Matches[1] -ieq 'Version'; continue }
+        if ($inVersion -and $text -match '^DriverVer\s*=\s*[^,]+,\s*(\S+)\s*$') {
+            $versions += ConvertTo-DriverComponentVersion $Matches[1]
+        }
+    }
+    if ($versions.Count -ne 1) { throw "Missing or ambiguous INF DriverVer: $Path. Driver unchanged." }
+    return $versions[0]
+}
+
+function Test-SafeDriverInstall {
+    param(
+        [Parameter(Mandatory = $true)][string]$InfPath,
+        [Parameter(Mandatory = $true)][string]$CatalogPath,
+        [Parameter(Mandatory = $true)][string]$HardwareId,
+        [string]$WarningMarker = 'VIRTUAL_DISPLAY_DRIVER_WARNING',
+        [bool]$LocalTestPackage = $false
+    )
+    $target = Get-InfComponentVersion $InfPath
+    $infName = [IO.Path]::GetFileName($InfPath)
+    # Both queries must succeed. An empty successful query means missing;
+    # errors, missing active versions, and unreadable store INFs mean unknown.
+    $packages = @(Get-WindowsDriver -Online -All -ErrorAction Stop | Where-Object {
+        [IO.Path]::GetFileName([string]$_.OriginalFileName) -ieq $infName
+    })
+    $devices = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
+        ([string]$_.DeviceID).StartsWith($HardwareId, [StringComparison]::OrdinalIgnoreCase) -or
+        ([string]$_.HardwareID).Equals($HardwareId, [StringComparison]::OrdinalIgnoreCase)
+    })
+    $installed = @()
+    foreach ($device in $devices) {
+        # CIM reports the active INF's numeric DriverVersion (not DriverDate).
+        $installed += ConvertTo-DriverComponentVersion ([string]$device.DriverVersion)
+    }
+    foreach ($package in $packages) {
+        $path = [string]$package.OriginalFileName
+        if (-not [IO.Path]::IsPathRooted($path)) {
+            if ([string]$package.Driver -notmatch '^oem\d+\.inf$') {
+                throw 'Unknown published INF identity. Driver unchanged.'
+            }
+            $path = Join-Path (Join-Path $env:windir 'INF') ([string]$package.Driver)
+        }
+        $installed += Get-InfComponentVersion $path
+    }
+    if (@($installed | Where-Object { $_ -ge $target }).Count -gt 0) {
+        Write-Host "Driver component $target skipped: an equal or newer active/Driver Store component exists; installed driver retained."
+        return $false
+    }
+    if ($LocalTestPackage) { throw "$WarningMarker`: Unreviewed local display package rejected; installed driver retained." }
+    # Only the pinned release signer or the existing trusted production publisher
+    # may become eligible; verify INF/DLL catalog membership before any trust.
+    $null = Assert-ExpectedDisplayPackage -InfPath $InfPath -CatalogPath $CatalogPath -HardwareId $HardwareId
+    return $true
+}
+# DRIVER_INSTALL_SAFETY_END
+
+function Initialize-DisplayPackageValidation {
+    if ('DisplayPackageValidation' -as [type]) { return }
+    Add-Type -ReferencedAssemblies @('System', 'System.Core', 'System.Security') -TypeDefinition @"
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography.Pkcs;
+public static class DisplayPackageValidation {
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct FileInfo {
+        public uint Size; [MarshalAs(UnmanagedType.LPWStr)] public string Path; public IntPtr File, Subject;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct TrustData {
+        public uint Size; public IntPtr Callback, Sip; public uint UI, Revocation, Choice;
+        public IntPtr File; public uint StateAction; public IntPtr StateData;
+        public IntPtr Url; public uint Flags, Context; public IntPtr SignatureSettings;
+    }
+    [DllImport("wintrust.dll", ExactSpelling=true, CharSet=CharSet.Unicode)]
+    static extern int WinVerifyTrust(IntPtr window, ref Guid action, ref TrustData data);
+    [DllImport("wintrust.dll", ExactSpelling=true, CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern IntPtr CryptCATOpen(string path, uint flags, IntPtr provider, uint version, uint encoding);
+    [DllImport("wintrust.dll", SetLastError=true)] static extern bool CryptCATClose(IntPtr catalog);
+    [DllImport("wintrust.dll", SetLastError=true)] static extern IntPtr CryptCATEnumerateMember(IntPtr catalog, IntPtr previous);
+    [DllImport("wintrust.dll", ExactSpelling=true, CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern bool CryptCATAdminAcquireContext2(out IntPtr context, IntPtr subsystem, string algorithm, IntPtr policy, uint flags);
+    [DllImport("wintrust.dll", SetLastError=true)]
+    static extern bool CryptCATAdminCalcHashFromFileHandle2(IntPtr context, IntPtr file, ref uint length, byte[] hash, uint flags);
+    [DllImport("wintrust.dll", SetLastError=true)] static extern bool CryptCATAdminReleaseContext(IntPtr context, uint flags);
+    [StructLayout(LayoutKind.Sequential)] struct MemberHead { public uint Size; public IntPtr Tag, FileName; }
+    static void CheckCms(byte[] encoded, string expectedThumbprint) {
+        var cms = new SignedCms(); cms.Decode(encoded);
+        if (cms.SignerInfos.Count != 1 || cms.SignerInfos[0].Certificate == null ||
+            !String.Equals(cms.SignerInfos[0].Certificate.Thumbprint, expectedThumbprint, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Package CMS signer is not the expected release certificate.");
+        cms.CheckSignature(true); // Cryptographic verification; no chain trust is granted.
+    }
+    static byte[] PeCms(string path) {
+        byte[] bytes=File.ReadAllBytes(path);
+        if (bytes.Length<64 || BitConverter.ToUInt16(bytes,0)!=0x5a4d) throw new InvalidOperationException("Invalid signed PE file.");
+        int pe=BitConverter.ToInt32(bytes,0x3c);
+        if (pe<0 || pe>bytes.Length-160 || BitConverter.ToUInt32(bytes,pe)!=0x4550) throw new InvalidOperationException("Invalid PE header.");
+        int optional=pe+24; ushort magic=BitConverter.ToUInt16(bytes,optional);
+        int directories=magic==0x20b ? optional+112 : magic==0x10b ? optional+96 : -1;
+        if (directories<0 || directories>bytes.Length-40) throw new InvalidOperationException("Invalid PE directories.");
+        uint offset=BitConverter.ToUInt32(bytes,directories+32), size=BitConverter.ToUInt32(bytes,directories+36);
+        if (offset>bytes.Length-8 || size<8 || (ulong)offset+size>(ulong)bytes.Length) throw new InvalidOperationException("Missing PE signature.");
+        uint length=BitConverter.ToUInt32(bytes,(int)offset);
+        if (length<8 || length>size || BitConverter.ToUInt16(bytes,(int)offset+6)!=2 || ((length+7u)&~7u)!=size)
+            throw new InvalidOperationException("Unsupported or ambiguous PE signatures.");
+        byte[] encoded=new byte[length-8]; Buffer.BlockCopy(bytes,(int)offset+8,encoded,0,encoded.Length); return encoded;
+    }
+    static void CheckWindowsSignature(string path) {
+        var file=new FileInfo { Size=(uint)Marshal.SizeOf(typeof(FileInfo)), Path=path };
+        IntPtr pointer=Marshal.AllocHGlobal(Marshal.SizeOf(typeof(FileInfo)));
+        try {
+            Marshal.StructureToPtr(file,pointer,false);
+            var data=new TrustData { Size=(uint)Marshal.SizeOf(typeof(TrustData)), UI=2, Choice=1, File=pointer, StateAction=1, Flags=0x1010 };
+            Guid action=new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+            try {
+                int status=WinVerifyTrust(new IntPtr(-1),ref action,ref data);
+                if (status!=0 && unchecked((uint)status)!=0x800B0109u)
+                    throw new InvalidOperationException("Windows signature integrity/chain validation failed: 0x"+unchecked((uint)status).ToString("X8"));
+            } finally { data.StateAction=2; WinVerifyTrust(new IntPtr(-1),ref action,ref data); }
+        } finally { Marshal.DestroyStructure(pointer,typeof(FileInfo)); Marshal.FreeHGlobal(pointer); }
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct CatalogInfo {
+        public uint Size, Version;
+        [MarshalAs(UnmanagedType.LPWStr)] public string Catalog, Tag, Member;
+        public IntPtr File, Hash; public uint HashLength; public IntPtr CatalogContext, Admin;
+    }
+    static bool CheckCatalogMember(string catalog, string path, string tag, string algorithm) {
+        IntPtr context;
+        if (!CryptCATAdminAcquireContext2(out context,IntPtr.Zero,algorithm,IntPtr.Zero,0)) throw new InvalidOperationException("Catalog hash context unavailable.");
+        try {
+            using(var stream=File.Open(path,FileMode.Open,FileAccess.Read,FileShare.Read)) {
+                uint length=0; IntPtr file=stream.SafeFileHandle.DangerousGetHandle();
+                if (!CryptCATAdminCalcHashFromFileHandle2(context,file,ref length,null,0) || length==0) throw new InvalidOperationException("Catalog member hash unavailable.");
+                byte[] hash=new byte[length];
+                if (!CryptCATAdminCalcHashFromFileHandle2(context,file,ref length,hash,0)) throw new InvalidOperationException("Catalog member hash failed.");
+                var pinned=GCHandle.Alloc(hash,GCHandleType.Pinned);
+                IntPtr pointer=Marshal.AllocHGlobal(Marshal.SizeOf(typeof(CatalogInfo)));
+                try {
+                    var info=new CatalogInfo { Size=(uint)Marshal.SizeOf(typeof(CatalogInfo)), Catalog=Path.GetFullPath(catalog), Tag=tag,
+                        Member=Path.GetFullPath(path), File=file, Hash=pinned.AddrOfPinnedObject(), HashLength=length, Admin=context };
+                    Marshal.StructureToPtr(info,pointer,false);
+                    var data=new TrustData { Size=(uint)Marshal.SizeOf(typeof(TrustData)), UI=2, Choice=2, File=pointer, StateAction=1, Flags=0x1010 };
+                    Guid action=new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+                    try {
+                        int status=WinVerifyTrust(new IntPtr(-1),ref action,ref data);
+                        return status==0 || unchecked((uint)status)==0x800B0109u;
+                    } finally { data.StateAction=2; WinVerifyTrust(new IntPtr(-1),ref action,ref data); }
+                } finally { Marshal.DestroyStructure(pointer,typeof(CatalogInfo)); Marshal.FreeHGlobal(pointer); pinned.Free(); }
+            }
+        } finally { CryptCATAdminReleaseContext(context,0); }
+    }
+    public static void VerifyCatalog(string catalog, string thumbprint, string[] memberFiles) {
+        CheckCms(File.ReadAllBytes(catalog),thumbprint); CheckWindowsSignature(catalog);
+        IntPtr handle=CryptCATOpen(catalog,0,IntPtr.Zero,0x200,0);
+        if(handle==new IntPtr(-1) || handle==IntPtr.Zero) throw new InvalidOperationException("Cannot open driver catalog.");
+        try {
+            var tags=new System.Collections.Generic.List<string>();
+            IntPtr member=IntPtr.Zero;
+            while((member=CryptCATEnumerateMember(handle,member))!=IntPtr.Zero) {
+                var entry=(MemberHead)Marshal.PtrToStructure(member,typeof(MemberHead));
+                tags.Add(Marshal.PtrToStringUni(entry.Tag));
+            }
+            foreach(string path in memberFiles) {
+                bool verified=false;
+                foreach(string tag in tags) {
+                    if (CheckCatalogMember(catalog,path,tag,"SHA256") || CheckCatalogMember(catalog,path,tag,"SHA1")) { verified=true; break; }
+                }
+                if (!verified) throw new InvalidOperationException("Driver file is not authenticated by this catalog: "+path);
+            }
+        } finally { CryptCATClose(handle); }
+    }
+    public static void VerifyTool(string tool, string thumbprint) { CheckCms(PeCms(tool),thumbprint); CheckWindowsSignature(tool); }
+    public static void Verify(string catalog, string tool, string thumbprint, string[] memberFiles) {
+        VerifyCatalog(catalog,thumbprint,memberFiles);
+        VerifyTool(tool,thumbprint);
+    }
+}
+"@
+}
+
+function Assert-ExpectedDisplayPackage {
+    param([string]$InfPath = $script:infPath, [string]$CatalogPath = $script:catPath,
+          [string]$HardwareId = $script:hardwareId, [string]$CertificatePath = $script:certPath,
+          [string]$DriverPath = $script:dllPath)
+    $isSudo = $HardwareId -ieq 'ROOT\SUDOMAKER\SUDOVDA'
+    if (!$isSudo -and $HardwareId -ine 'ROOT\SunshineVirtualDisplay') { throw 'Unknown display hardware identity.' }
+    $expectedPin = if ($isSudo) { '3C918FC73525AD8B1521B6DB26B71F694277CC49' } else { '37E100B2B382866FA7CE04EE33FE53DF53AEDC6D' }
+    $expectedInf = if ($isSudo) { 'SudoVDA.inf' } else { 'SunshineVirtualDisplayDriver.inf' }
+    $expectedDll = if ($isSudo) { 'SudoVDA.dll' } else { 'SunshineVirtualDisplayDriver.dll' }
+    $expectedCat = if ($isSudo) { 'sudovda.cat' } else { 'SunshineVirtualDisplayDriver.cat' }
+    if ([IO.Path]::GetFileName($InfPath) -ine $expectedInf -or
+        [IO.Path]::GetFileName($DriverPath) -ine $expectedDll -or
+        [IO.Path]::GetFileName($CatalogPath) -ine $expectedCat) { throw 'Display package filenames do not match the hardware identity.' }
+    $inf = (Get-Content -LiteralPath $InfPath -ErrorAction Stop | ForEach-Object { ($_ -split ';',2)[0] }) -join "`n"
+    if ($inf -notmatch '(?im)^\s*Class\s*=\s*Display\s*$' -or
+        $inf -notmatch '(?im)^\s*ClassGuid\s*=\s*\{4d36e968-e325-11ce-bfc1-08002be10318\}\s*$' -or
+        $inf -notmatch ('(?im)^\s*CatalogFile\s*=\s*' + [regex]::Escape($expectedCat) + '\s*$') -or
+        $inf -notmatch ('(?im)^\s*%[^%]+%\s*=\s*[^,\r\n]+,\s*' + [regex]::Escape($HardwareId) + '\s*$')) {
+        throw 'Display INF class, catalog or hardware identity mismatch.'
+    }
+    Initialize-DisplayPackageValidation
+    $cms = New-Object Security.Cryptography.Pkcs.SignedCms
+    $cms.Decode([IO.File]::ReadAllBytes($CatalogPath))
+    if ($cms.SignerInfos.Count -ne 1 -or !$cms.SignerInfos[0].Certificate) { throw 'Display catalog must have one identifiable signer.' }
+    $signer = $cms.SignerInfos[0].Certificate
+    $selfSigned = [string]::Equals($signer.Subject,$signer.Issuer,[StringComparison]::OrdinalIgnoreCase)
+    if ($selfSigned) {
+        $bytes = [IO.File]::ReadAllBytes($CertificatePath)
+        if ([Security.Cryptography.X509Certificates.X509Certificate2]::GetCertContentType($bytes) -ne [Security.Cryptography.X509Certificates.X509ContentType]::Cert) { throw 'Display package certificate must be a public DER certificate.' }
+        $bundled = [Security.Cryptography.X509Certificates.X509Certificate2]::new($bytes)
+        if ($bundled.HasPrivateKey -or $bundled.Thumbprint -ine $expectedPin -or $signer.Thumbprint -ine $expectedPin -or
+            [DateTime]::Now -lt $bundled.NotBefore -or [DateTime]::Now -gt $bundled.NotAfter) { throw 'Display catalog does not match the pinned, currently valid release certificate.' }
+        $eku = @($bundled.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.37' })
+        $constraints = @($bundled.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.19' })
+        if ($eku.Count -ne 1 -or @($eku[0].EnhancedKeyUsages).Count -ne 1 -or $eku[0].EnhancedKeyUsages[0].Value -ne '1.3.6.1.5.5.7.3.3' -or
+            @($constraints | Where-Object { $_.CertificateAuthority }).Count -ne 0) { throw 'Pinned display certificate is not a non-CA code-signing certificate.' }
+    } else {
+        # Retain the existing production publisher identity and Windows chain validation.
+        $signature = Get-AuthenticodeSignature -LiteralPath $CatalogPath -ErrorAction Stop
+        if ($isSudo -or $signer.Subject -ine 'CN=SignPath Foundation, O=SignPath Foundation, L=Lewes, S=Delaware, C=US' -or
+            $signature.Status -ne 'Valid' -or !$signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ine $signer.Thumbprint) {
+            throw 'Display production catalog publisher or trusted chain mismatch.'
+        }
+    }
+    [DisplayPackageValidation]::VerifyCatalog($CatalogPath, $signer.Thumbprint, @($InfPath,$DriverPath))
+    return [pscustomobject]@{ Certificate=$signer; SelfSigned=$selfSigned; CatalogPath=$CatalogPath }
+}
+
+function Test-DisplayCertificatePresent {
+    param($Certificate,[string]$StoreName)
+    $store = [Security.Cryptography.X509Certificates.X509Store]::new($StoreName,'LocalMachine')
+    try {
+        $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+        return $store.Certificates.Find([Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,$Certificate.Thumbprint,$false).Count -gt 0
+    } finally { $store.Close() }
+}
+function Add-DisplayCertificate {
+    param($Certificate,[string]$StoreName)
+    $store = [Security.Cryptography.X509Certificates.X509Store]::new($StoreName,'LocalMachine')
+    try { $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite); $store.Add($Certificate) } finally { $store.Close() }
+}
+function Remove-DisplayCertificate {
+    param($Certificate,[string]$StoreName)
+    $store = [Security.Cryptography.X509Certificates.X509Store]::new($StoreName,'LocalMachine')
+    try {
+        $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        foreach ($entry in $store.Certificates.Find([Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,$Certificate.Thumbprint,$false)) { $store.Remove($entry) }
+    } finally { $store.Close() }
+}
+function Undo-DisplayTrustProvisioning {
+    foreach ($entry in @($script:displayTrustAdded)) {
+        try { Remove-DisplayCertificate -Certificate $entry.Certificate -StoreName $entry.StoreName }
+        catch { Write-Warning "VIRTUAL_DISPLAY_DRIVER_WARNING: Failed to roll back newly added display publisher trust: $($_.Exception.Message)" }
+    }
+    $script:displayTrustAdded = @()
+}
+function Install-ExpectedDisplayTrust {
+    # Repeat independent verification immediately before trust mutation.
+    $package = Assert-ExpectedDisplayPackage
+    $script:displayTrustAdded = @()
+    try {
+        $stores = if ($package.SelfSigned) { @('Root','TrustedPublisher') } else { @('TrustedPublisher') }
+        foreach ($storeName in $stores) {
+            if (!(Test-DisplayCertificatePresent -Certificate $package.Certificate -StoreName $storeName)) {
+                # Record ownership before Add: rollback handles a partial Add failure.
+                $script:displayTrustAdded += [pscustomobject]@{Certificate=$package.Certificate;StoreName=$storeName}
+                Add-DisplayCertificate -Certificate $package.Certificate -StoreName $storeName
+                if (!(Test-DisplayCertificatePresent -Certificate $package.Certificate -StoreName $storeName)) { throw 'Display certificate provisioning did not persist.' }
+            }
+        }
+        $signature = Get-AuthenticodeSignature -LiteralPath $package.CatalogPath -ErrorAction Stop
+        if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ine $package.Certificate.Thumbprint) {
+            throw 'Windows still rejects the verified display catalog after publisher trust provisioning.'
+        }
+        Write-Host 'Verified display publisher trust is ready. Windows driver staging and load policy remain authoritative.'
+    } catch {
+        Undo-DisplayTrustProvisioning
+        throw
+    }
+}
+
 
 function Resolve-SystemToolPath {
     param([Parameter(Mandatory = $true)][string]$ToolName)
@@ -272,24 +575,7 @@ function Install-Certificate {
 }
 
 function Assert-CertificateMatchesCatalog {
-    Assert-RequiredDriverArtifact -Path $certPath -DisplayName 'sudovda.cer'
-    Assert-RequiredDriverArtifact -Path $catPath -DisplayName 'sudovda.cat'
-
-    try {
-        $certBytes = [System.IO.File]::ReadAllBytes($certPath)
-        $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certBytes)
-    }
-    catch {
-        throw "[SudoVDA] Failed to load certificate from $certPath. $($_.Exception.Message)"
-    }
-
-    $signature = Get-AuthenticodeSignature -LiteralPath $catPath
-    if (-not $signature.SignerCertificate -or $signature.Status -eq 'HashMismatch') {
-        throw "[SudoVDA] Driver catalog signature is not valid ($($signature.Status)): $catPath"
-    }
-    if (-not [string]::Equals($signature.SignerCertificate.Thumbprint, $cert.Thumbprint, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "[SudoVDA] Driver catalog signer does not match bundled certificate."
-    }
+    $null = Assert-ExpectedDisplayPackage
 }
 
 function Get-TargetDriverVersion {
@@ -555,6 +841,18 @@ if ($Uninstall) {
     exit 0
 }
 
+try {
+    if (-not (Test-SafeDriverInstall -InfPath $infPath -CatalogPath $catPath -HardwareId $hardwareId)) { exit 0 }
+} catch {
+    # The read-only guard rejected the candidate before any driver changes.
+    # MSI treats display setup as optional; direct use remains strict.
+    if ($InstallerBestEffort) {
+        Write-Warning "[SudoVDA] VIRTUAL_DISPLAY_DRIVER_WARNING: Optional driver update skipped; driver state unchanged; virtual display may be unavailable. $($_.Exception.Message)"
+        exit 0
+    }
+    throw
+}
+
 Assert-RequiredInstallArtifacts
 Assert-CertificateMatchesCatalog
 
@@ -595,8 +893,16 @@ if ($installedInfo -and $installedVersion -and $targetVersion) {
     Write-Host "[SudoVDA] Upgrading driver from version $installedVersion to $targetVersion."
 }
 
-Install-Certificate -StoreName 'Root'
-Install-Certificate -StoreName 'TrustedPublisher'
+
+Install-ExpectedDisplayTrust
+
+# Let Windows validate INF/DLL catalog membership before removing any existing node.
+try {
+    Invoke-DriverStep -FilePath $pnputil -ArgumentList @('/add-driver', $infPath) -Description 'Validate and stage SudoVDA catalog members'
+} catch {
+    Undo-DisplayTrustProvisioning
+    throw
+}
 
 Write-Host '[SudoVDA] Removing any existing SudoVDA driver.'
 Invoke-DriverStep -FilePath $nefConc -ArgumentList @('--remove-device-node', '--hardware-id', $hardwareId, '--class-guid', $classGuid) -Description 'Remove SudoVDA device node'

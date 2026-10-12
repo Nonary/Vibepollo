@@ -36,8 +36,25 @@ function Get-OwnedRootDeviceInstanceIds {
     }
 }
 
+function Resolve-SystemToolPath {
+    param([Parameter(Mandatory = $true)][string] $ToolName)
+
+    $systemRoot = if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) { 'C:\Windows' } else { $env:SystemRoot }
+    foreach ($candidate in @(
+        (Join-Path $systemRoot "Sysnative\$ToolName"),
+        (Join-Path $systemRoot "System32\$ToolName"),
+        (Join-Path $systemRoot "SysWOW64\$ToolName")
+    )) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
+        }
+    }
+
+    return Join-Path $systemRoot "System32\$ToolName"
+}
+
 function Remove-OwnedRootDevices {
-    $pnputil = Join-Path $env:WINDIR 'System32\pnputil.exe'
+    $pnputil = Resolve-SystemToolPath -ToolName 'pnputil.exe'
     if (-not (Test-Path -LiteralPath $pnputil -PathType Leaf)) {
         throw "PnPUtil is unavailable: $pnputil"
     }
@@ -68,7 +85,7 @@ function Remove-OwnedDriverStorePackages {
         throw 'Get-WindowsDriver is unavailable; refusing to guess Driver Store package names.'
     }
 
-    $pnputil = Join-Path $env:WINDIR 'System32\pnputil.exe'
+    $pnputil = Resolve-SystemToolPath -ToolName 'pnputil.exe'
     if (-not (Test-Path -LiteralPath $pnputil -PathType Leaf)) {
         throw "PnPUtil is unavailable: $pnputil"
     }

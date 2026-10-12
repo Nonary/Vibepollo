@@ -6,9 +6,17 @@
 #define VIBEPOLLO_SESSION_BROKER_SOCKET "/run/vibepollo/session-broker.sock"
 #define VIBEPOLLO_SESSION_PROTOCOL_MAGIC UINT32_C(0x56534252)
 #define VIBEPOLLO_SESSION_PROTOCOL_VERSION UINT16_C(1)
-#define VIBEPOLLO_SESSION_PROTOCOL_MAX_ARGUMENTS UINT32_C(65)
+/* Complete activation/restore transactions need up to seven properties for
+ * each output in the bounded 64-output topology, plus the operation verb.
+ * The independent message byte limit still applies to every request. */
+#define VIBEPOLLO_SESSION_PROTOCOL_MAX_DISPLAY_PROPERTIES (UINT32_C(64) * UINT32_C(7))
+#define VIBEPOLLO_SESSION_PROTOCOL_MAX_ARGUMENTS (VIBEPOLLO_SESSION_PROTOCOL_MAX_DISPLAY_PROPERTIES + UINT32_C(1))
 #define VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE UINT32_C(131072)
 #define VIBEPOLLO_SESSION_PROTOCOL_OUTPUT_CHUNK UINT32_C(16384)
+/* No terminal broker acknowledgement was received; mutation completion is unknown. */
+#define VIBEPOLLO_SESSION_COMPLETION_UNKNOWN 125
+/* KScreen requests are cancelled and reaped by the broker before reporting exit. */
+#define VIBEPOLLO_SESSION_DISPLAY_TIMEOUT_MS UINT64_C(5000)
 
 enum vibepollo_session_message_type {
   VIBEPOLLO_SESSION_REQUEST = 1,

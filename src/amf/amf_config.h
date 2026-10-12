@@ -93,6 +93,10 @@ namespace amf {
     // AMF_VIDEO_ENCODER_AV1_ENCODING_LATENCY_MODE_ENUM: 0=none, 1=power saving RT, 2=RT, 3=lowest latency
     std::optional<int> av1_encoding_latency_mode;
 
+    // Experimental AV1 tile override: 0 preserves client/preset behavior;
+    // 1, 2 and 4 request that many tiles, subject to driver adjustment.
+    int av1_tiles = 0;
+
     // --- AV1 Screen Content Tools ---
     std::optional<bool> av1_screen_content_tools;
     std::optional<bool> av1_palette_mode;

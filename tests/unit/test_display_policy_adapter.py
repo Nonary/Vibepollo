@@ -59,6 +59,9 @@ int main() {
  check(session, 60000);
  session.fps = SCALED ? 59940 : 60;
  check(session, SCALED ? 59940 : 60000);
+ session.client_display_mode_override = true;
+ check(session, SCALED ? 59940 : 60000); // Explicit mode fallback keeps fractional stream FPS.
+ session.client_display_mode_override = false;
  session.client_display_refresh_millihz = 59940;
  check(session, 59940);
  session.framegen_refresh_rate = 240;
@@ -75,6 +78,32 @@ int main() {
  check(session, 50000);
  session.client_display_mode_override = true;
  check(session, 60000); // Client override retains priority over manual rate.
+ session.client_display_refresh_millihz = 480000;
+ session.framegen_refresh_millihz = 1000000;
+ check(session, 480000); // Explicit client mode wins over VRR promotion.
+ session.client_display_mode_override = false;
+ session.client_display_refresh_millihz = 0;
+ video.dd.refresh_rate_option = policy::video_config_t::dd_t::refresh_rate_option_e::automatic;
+ video.dd.mode_remapping.mixed = {{"2560x1440", "60", "", "480"}};
+ check(session, 480000); // Match streamed 60 FPS, not the promoted 1000 Hz.
+ if (SCALED) {
+   session.fps = 59940;
+   check(session, 1000000); // Exact 59.94 FPS must not match an integer 60 FPS rule.
+   session.framegen_refresh_millihz.reset();
+   check(session, 59940);
+ }
+ video.dd.mode_remapping.mixed.clear();
+ policy::session_t direct {.width = 1920, .height = 1080, .fps = 60};
+ auto direct_result = policy::parse_configuration(video, direct);
+ assert(std::get<policy::configuration_t>(direct_result).m_refresh_rate == (policy::rational_t{60, 1}));
+ ++count;
+ direct.fps = 0;
+ direct_result = policy::parse_configuration(video, direct);
+ assert(std::get<policy::configuration_t>(direct_result).m_refresh_rate == (policy::rational_t{0, 1}));
+ ++count;
+ direct.fps = -1;
+ assert(std::holds_alternative<policy::failed_to_parse_tag_t>(policy::parse_configuration(video, direct)));
+ ++count;
  std::cout << count << " adapter refresh cases passed (scaled=" << SCALED << ")\n";
 }
 '''

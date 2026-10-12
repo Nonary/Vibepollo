@@ -28,6 +28,7 @@ interface PlayniteStatus {
   available?: boolean;
   active?: boolean;
   installed?: boolean | null;
+  legacy_plugin?: boolean;
   extensions_dir?: string;
   installed_version?: string;
   packaged_version?: string;
@@ -888,11 +889,11 @@ const dialogCopy = computed(() => {
   switch (pendingAction.value) {
     case 'playnite-install':
       return {
-        title: playnite.value?.installed
+        title: playnite.value?.installed || playnite.value?.legacy_plugin
           ? t('ui.integrations.confirm.playniteUpdateTitle')
           : t('ui.integrations.confirm.playniteInstallTitle'),
         description: t('ui.integrations.confirm.playniteInstallDescription'),
-        confirm: playnite.value?.installed
+        confirm: playnite.value?.installed || playnite.value?.legacy_plugin
           ? t('ui.integrations.actions.updateExtension')
           : t('ui.integrations.actions.installExtension'),
         tone: 'default' as const,
@@ -964,7 +965,7 @@ async function runConfirmedAction(): Promise<void> {
   try {
     let result: MutationResult;
     if (action === 'playnite-install') {
-      result = await apiPost<MutationResult>('/api/playnite/install', { restart: false });
+      result = await apiPost<MutationResult>('/api/playnite/install', { restart: true });
       notice.value = t('ui.integrations.notices.playniteInstalled');
     } else if (action === 'playnite-uninstall') {
       result = await apiPost<MutationResult>('/api/playnite/uninstall', { restart: false });
@@ -1398,7 +1399,11 @@ function libraryRequest(
             <h2 :id="`integration-${summary.id}`">{{ summary.name }}</h2>
             <StatusBadge :label="summary.status" :tone="summary.tone" compact />
           </div>
-          <PlaynitePolicySettings v-if="summary.id === 'playnite' && isWindows" />
+          <PlaynitePolicySettings
+            v-if="summary.id === 'playnite' && isWindows"
+            :needs-directory="!playnite?.extensions_dir"
+            @saved="load"
+          />
           <div v-if="summary.id === 'playnite' && isWindows" class="integration-settings__rows">
             <SettingRow
               :label="t('ui.appOrder.integrationRow.label')"

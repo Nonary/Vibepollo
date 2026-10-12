@@ -40,10 +40,12 @@ extern "C" {
 // local includes
 #include "config.h"
 #include "crypto.h"
+#include "deferred_stream_start_policy.h"
 #include "display_device.h"
 #include "display_helper_integration.h"
 #include "globals.h"
 #include "host_stats.h"
+#include "haptics_gain.h"
 #include "input.h"
 #include "logging.h"
 #include "network.h"
@@ -51,6 +53,7 @@ extern "C" {
 #include "platform/common.h"
 #include "process.h"
 #include "pyrowave_policy.h"
+#include "pyrowave_bandwidth.h"
 #include "pyrowave_protocol.h"
 #include "remote_display_topology.h"
 #include "rtsp.h"
@@ -63,6 +66,7 @@ extern "C" {
 #include "update.h"
 #include "utility.h"
 #include "uuid.h"
+#include "video_send.h"
 #include "webrtc_stream.h"
 #ifdef _WIN32
   #include "platform/windows/frame_limiter.h"
@@ -367,6 +371,11 @@ namespace stream {
     std::uint8_t tag[16];
   };
 
+  static_assert(
+    MAX_RTP_HEADER_SIZE + 38 + 40 + 8 + sizeof(video_packet_enc_prefix_t) == pyrowave::policy::MAX_PACKET_WIRE_OVERHEAD_BYTES,
+    "PyroWave wire budget must reserve the sender's maximum packet overhead"
+  );
+
   struct audio_packet_t {
     RTP_PACKET rtp;
   };
@@ -598,10 +607,6 @@ namespace stream {
 
     std::shared_ptr<input::input_t> input;
 
-#ifdef _WIN32
-    std::shared_future<rtsp_stream::launch_session_t::display_helper_gate_status_e> display_helper_gate;
-#endif
-
     std::thread audioThread;
     std::thread videoThread;
 
@@ -614,7 +619,7 @@ namespace stream {
     struct {
       std::string ping_payload;
 
-      int lowseq;
+      std::uint32_t lowseq;
       udp::endpoint peer;
 
       std::optional<crypto::cipher::gcm_t> cipher;
@@ -661,6 +666,7 @@ namespace stream {
       std::uint32_t seq;
 
       platf::feedback_queue_t feedback_queue;
+      std::array<haptics_gain_t, platf::MAX_GAMEPADS> haptics_gains;
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
     } control;
 
@@ -919,31 +925,35 @@ namespace stream {
       return false;
     }
 
-    std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
-    std::optional<deferred_stream_start_t> deferred;
-    {
-      std::lock_guard<std::mutex> lock(deferred_stream_start_mutex());
-      if (!deferred_stream_start_state()) {
-        return false;
+    return deferred_start::try_apply_with_lifecycle_gate(
+      nvhttp::stream_lifecycle_mutex(),
+      [&]() {
+        std::optional<deferred_stream_start_t> deferred;
+        {
+          std::lock_guard<std::mutex> lock(deferred_stream_start_mutex());
+          if (!deferred_stream_start_state()) {
+            return false;
+          }
+          deferred = std::move(deferred_stream_start_state());
+          deferred_stream_start_state().reset();
+        }
+
+        if (!rtsp_stream_start_actions_still_needed()) {
+          BOOST_LOG(debug) << "Stream-start actions skipped because no active RTSP stream remains.";
+          return false;
+        }
+
+        BOOST_LOG(info) << "Stream-start actions applied after user session became available.";
+        if (deferred->policy) {
+          platf::frame_limiter_streaming_start(
+            platf::frame_limiter_owner::rtsp,
+            *deferred->policy
+          );
+        }
+        session::start_shared_platform_if_needed();
+        return true;
       }
-      deferred = std::move(deferred_stream_start_state());
-      deferred_stream_start_state().reset();
-    }
-
-    if (!rtsp_stream_start_actions_still_needed()) {
-      BOOST_LOG(debug) << "Stream-start actions skipped because no active RTSP stream remains.";
-      return false;
-    }
-
-    BOOST_LOG(info) << "Stream-start actions applied after user session became available.";
-    if (deferred->policy) {
-      platf::frame_limiter_streaming_start(
-        platf::frame_limiter_owner::rtsp,
-        *deferred->policy
-      );
-    }
-    session::start_shared_platform_if_needed();
-    return true;
+    );
   }
 #endif
 
@@ -1261,6 +1271,14 @@ namespace stream {
       MlHapticsWrite32(bytes + 4, msg.data.haptics.sequence);
       MlHapticsWrite16(bytes + 8, ML_HAPTICS_MAX_FRAMES);
       std::memcpy(bytes + ML_HAPTICS_HEADER_SIZE, msg.data.haptics.samples.data(), msg.data.haptics.samples.size());
+      if (msg.id < session->control.haptics_gains.size()) {
+        session->control.haptics_gains[msg.id].apply(
+          std::span(bytes + ML_HAPTICS_HEADER_SIZE, msg.data.haptics.samples.size()),
+          config::input.dualsense_haptics_gain,
+          msg.data.haptics.sequence,
+          std::chrono::steady_clock::now()
+        );
+      }
       std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size> encrypted_payload;
       payload = encode_control(session, std::string_view(reinterpret_cast<const char *>(plaintext.data()), plaintext.size()), encrypted_payload);
     } else if (msg.type == platf::gamepad_feedback_e::rumble) {
@@ -2014,6 +2032,13 @@ namespace stream {
     logging::min_max_avg_periodic_logger<double> frame_burst_rate_logger(debug, "Network: frame send burst rate (100+ packets)", "Mbps");
     logging::min_max_avg_periodic_logger<double> detail_fec_coverage_logger(debug, "PyroWave: detail packets protected", "%");
     auto next_burst_detail_log = std::chrono::steady_clock::now();
+    auto next_send_failure_log = std::chrono::steady_clock::time_point {};
+    std::uint64_t failed_video_frames = 0;
+    struct video_send_failed_t {
+      bool cancelled;
+      unsigned block;
+      std::size_t packets_accepted;
+    };
 
     crypto::aes_t iv(12);
 
@@ -2084,6 +2109,10 @@ namespace stream {
       }
 
       auto lowseq = session->video.lowseq;
+      const auto send_cancelled = [&] {
+        return shutdown_event->peek() || session->shutdown_event->peek() ||
+               session->state.load(std::memory_order_acquire) == session::state_e::STOPPING;
+      };
 
       std::string_view payload {(char *) packet->data(), packet->data_size()};
       std::vector<uint8_t> payload_with_replacements;
@@ -2247,6 +2276,15 @@ namespace stream {
 
       BOOST_LOG(verbose) << "Generating "sv << fec_blocks_needed << " FEC blocks"sv;
 
+      std::size_t frame_packets_accepted = 0;
+      const auto bytes_per_packet = blocksize + (session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
+      auto account_accepted_packets = util::fail_guard([&] {
+        // These counters feed session-history bitrate. Preserve actual socket
+        // traffic even when only a prefix of the frame was accepted.
+        session->stats.packets_sent.fetch_add(frame_packets_accepted, std::memory_order_relaxed);
+        session->stats.bytes_sent.fetch_add(frame_packets_accepted * bytes_per_packet, std::memory_order_relaxed);
+      });
+
       try {
         // Pacing target: legacy default targets ~80% of 1 Gbps (Ethernet). On WiFi
         // links the legacy value collapses to a no-op pacer (frames get blasted out
@@ -2310,7 +2348,8 @@ namespace stream {
 #elif defined(__linux__)
           link_interface_kind = "ifindex";
 #endif
-          const auto link_bps = wire_timeline_state.cached_link_bps;
+          const auto link_bps = pyrowave::bandwidth::pacing_link_bps(
+            wire_timeline_state.cached_link_bps, session->config.monitor.pyrowave_peer_link_bps);
           const auto link_interface_id = wire_timeline_state.cached_interface_id;
           const auto &monitor = session->config.monitor;
           const auto stream_kbps = monitor.client_requested_bitrate > 0 ? monitor.client_requested_bitrate : monitor.bitrate;
@@ -2321,7 +2360,7 @@ namespace stream {
                                   (session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
           ratecontrol_packets_in_1ms = pyrowave::policy::pacing_packets_per_ms(
             link_bps, stream_kbps, payload_blocksize, wire_bytes,
-            packet->data_size() + sizeof(frame_header), monitor.framerate
+            packet->data_size() + sizeof(frame_header), monitor.framerate, monitor.pyrowave_peer_pace_bps
           );
           const std::pair pacing_source {link_bps, link_interface_id};
           // Route probes can alternate between a link speed and the fallback on
@@ -2336,7 +2375,10 @@ namespace stream {
                             << ", routed_link_bps "sv << link_bps << (link_bps ? "" : " (fallback: frame/bitrate demand)")
                             << ", "sv << ratecontrol_packets_in_1ms << " packets/ms at "sv << wire_bytes << " wire bytes ("sv
                             << ratecontrol_packets_in_1ms * wire_bytes * 8 / 1000 << " Mbps), payload "sv << payload_blocksize
-                            << " bytes, stream "sv << stream_kbps << " kbps at "sv << monitor.framerate << " fps"sv;
+                            << " bytes, stream "sv << stream_kbps << " kbps at "sv << monitor.framerate << " fps, pace "sv
+                            << (monitor.pyrowave_peer_pace_bps ?
+                                  "client-calibrated " + std::to_string(monitor.pyrowave_peer_pace_bps / 1'000'000) + " Mbps" :
+                                  std::string("default 80% of link"));
           }
         }
 
@@ -2427,6 +2469,10 @@ namespace stream {
           auto shards = fec::encode(current_payload, blocksize, fec_block_percentages[blockIndex], min_parity_shards, session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
           frame_fec_latency_logger.second_point_now_and_log();
 
+          // Reserve the entire block before any packet can enter the socket.
+          // An aborted frame must not reuse sequence numbers already sent.
+          session->video.lowseq = lowseq + shards.size();
+
           auto peer_address = session->video.peer.address();
           auto batch_info = platf::batched_send_info_t {
             shards.headers.begin(),
@@ -2440,6 +2486,7 @@ namespace stream {
             session->video.peer.port(),
             session->localAddress,
           };
+          batch_info.send_cancelled = send_cancelled;
 
           size_t next_shard_to_send = 0;
 
@@ -2482,6 +2529,9 @@ namespace stream {
 
             if (x - next_shard_to_send + 1 >= send_batch_size ||
                 x + 1 == shards.size()) {
+              if (send_cancelled()) {
+                throw video_send_failed_t {true, unsigned(blockIndex), 0};
+              }
               // Do pacing within the frame.
               // Also trigger pacing before the first send_batch() of the frame
               // to account for the last send_batch() of the previous frame.
@@ -2517,12 +2567,11 @@ namespace stream {
               if (!burst_first_send) {
                 burst_first_send = send_start;
               }
-              // Use a batched send if it's supported on this platform
-              if (!platf::send_batch(batch_info)) {
-                ++burst_fallback_batches;
-                // Batched send is not available, so send each packet individually
-                BOOST_LOG(verbose) << "Falling back to unbatched send"sv;
-                for (auto y = 0; y < current_batch_size; y++) {
+              const auto send_result = send_video_batch(
+                current_batch_size,
+                batch_info.allow_fallback,
+                [&] { return platf::send_batch(batch_info); },
+                [&](std::size_t y) {
                   auto send_info = platf::send_info_t {
                     shards.prefix(next_shard_to_send + y),
                     shards.prefixsize,
@@ -2533,9 +2582,22 @@ namespace stream {
                     session->video.peer.port(),
                     session->localAddress,
                   };
-
-                  platf::send(send_info);
-                }
+                  send_info.send_cancelled = send_cancelled;
+                  return platf::send(send_info);
+                },
+                send_cancelled
+              );
+              burst_fallback_batches += send_result.used_fallback;
+              frame_packets_accepted += send_result.packets_accepted;
+              ratecontrol_group_packets_sent += send_result.packets_accepted;
+              ratecontrol_frame_packets_sent += send_result.packets_accepted;
+              // Keep pacing debt from accepted batches even if this block or
+              // frame aborts before its final shard.
+              ratecontrol_next_frame_start = ratecontrol_frame_start +
+                                             std::chrono::duration_cast<std::chrono::nanoseconds>(1ms) *
+                                               ratecontrol_frame_packets_sent / ratecontrol_packets_in_1ms;
+              if (!send_result.sent) {
+                throw video_send_failed_t {send_result.cancelled, unsigned(blockIndex), send_result.packets_accepted};
               }
               frame_send_batch_latency_logger.second_point_now_and_log();
               burst_last_return = std::chrono::steady_clock::now();
@@ -2543,8 +2605,6 @@ namespace stream {
               burst_send_ms += send_ms;
               burst_max_send_ms = std::max(burst_max_send_ms, send_ms);
 
-              ratecontrol_group_packets_sent += current_batch_size;
-              ratecontrol_frame_packets_sent += current_batch_size;
               next_shard_to_send = x + 1;
             }
           }
@@ -2714,10 +2774,23 @@ namespace stream {
 
         // Update per-session performance counters
         session->stats.frames_sent.fetch_add(1, std::memory_order_relaxed);
-        session->stats.packets_sent.fetch_add(ratecontrol_frame_packets_sent, std::memory_order_relaxed);
-        auto bytes_per_packet = blocksize + ((session->config.encryptionFlagsEnabled & SS_ENC_VIDEO) ? sizeof(video_packet_enc_prefix_t) : 0);
-        session->stats.bytes_sent.fetch_add(ratecontrol_frame_packets_sent * bytes_per_packet, std::memory_order_relaxed);
         session->stats.last_frame_index.store(packet->frame_index(), std::memory_order_relaxed);
+      } catch (const video_send_failed_t &e) {
+        // A failed frame is not a successful delivery. Keep the next frame's
+        // sequence reservation, omit frame-success counters and avoid the generic
+        // exception path's 100 ms sleep for temporary socket pressure.
+        if (!e.cancelled) {
+          ++failed_video_frames;
+          const auto now = std::chrono::steady_clock::now();
+          if (now >= next_send_failure_log) {
+            BOOST_LOG(warning) << "Video frame send aborted: frame="sv << packet->frame_index()
+                               << "; block="sv << e.block
+                               << "; packets accepted in failed batch="sv << e.packets_accepted
+                               << "; failed frames since previous report="sv << failed_video_frames;
+            failed_video_frames = 0;
+            next_send_failure_log = now + 5s;
+          }
+        }
       } catch (const std::exception &e) {
         BOOST_LOG(error) << "Broadcast video failed "sv << e.what();
         std::this_thread::sleep_for(100ms);
@@ -2892,6 +2965,17 @@ namespace stream {
       return -1;
     }
 
+#ifdef _WIN32
+    // Windows IOCP receives don't make the socket nonblocking. Raw WSASendMsg()
+    // must return on buffer pressure so the broadcast thread can apply its
+    // retry deadline instead of waiting indefinitely inside the send call.
+    ctx.video_sock.native_non_blocking(true, ec);
+    if (ec) {
+      BOOST_LOG(fatal) << "Couldn't make Video server nonblocking: "sv << ec.message();
+      return -1;
+    }
+#endif
+
     ctx.audio_sock.open(protocol, ec);
     if (ec) {
       BOOST_LOG(fatal) << "Couldn't open socket for Audio server: "sv << ec.message();
@@ -2905,6 +2989,15 @@ namespace stream {
 
       return -1;
     }
+
+#ifdef _WIN32
+    // Audio uses the same raw Winsock sender and bounded pressure retry.
+    ctx.audio_sock.native_non_blocking(true, ec);
+    if (ec) {
+      BOOST_LOG(fatal) << "Couldn't make Audio server nonblocking: "sv << ec.message();
+      return -1;
+    }
+#endif
 
     ctx.message_queue_queue = std::make_shared<message_queue_queue_t::element_type>(30);
 
@@ -3042,35 +3135,6 @@ namespace stream {
     auto address = session->video.peer.address();
     session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
 
-#ifdef _WIN32
-    if (session->display_helper_gate.valid()) {
-      BOOST_LOG(debug) << "Display helper: waiting for apply/validation gate before starting capture.";
-      rtsp_stream::launch_session_t::display_helper_gate_status_e gate_status {};
-      try {
-        constexpr auto kGateTimeout = display_helper_integration::kApplyVerificationGateWaitTimeout;
-        if (session->display_helper_gate.wait_for(kGateTimeout) == std::future_status::ready) {
-          gate_status = session->display_helper_gate.get();
-        } else {
-          BOOST_LOG(warning) << "Display helper: gate wait timed out; proceeding with capture.";
-          gate_status = rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
-        }
-      } catch (const std::exception &e) {
-        BOOST_LOG(warning) << "Display helper: gate wait failed (" << e.what() << "); proceeding with capture.";
-        gate_status = rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
-      } catch (...) {
-        BOOST_LOG(warning) << "Display helper: gate wait failed (unknown); proceeding with capture.";
-        gate_status = rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
-      }
-
-      if (gate_status == rtsp_stream::launch_session_t::display_helper_gate_status_e::abort_failed) {
-        BOOST_LOG(error) << "Display helper validation failed; starting capture anyway.";
-      }
-      if (gate_status == rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup) {
-        BOOST_LOG(warning) << "Display helper verification result unavailable; starting capture anyway.";
-      }
-    }
-#endif
-
     BOOST_LOG(debug) << "Start capturing Video"sv;
     video::capture(session->mail, session->config.monitor, session);
   }
@@ -3134,7 +3198,11 @@ namespace stream {
 
     bool has_shared_runtime_owner(const shared_runtime_finalize_context_t &context) {
       return has_capture_runtime_owner(context) ||
+#ifdef __linux__
+             remote_display_topology::instance().has_live_managed_client_identity();
+#else
              remote_display_topology::instance().managed_client_identity_count() != 0;
+#endif
     }
 
     void arm_shared_runtime_cleanup(
@@ -3161,6 +3229,12 @@ namespace stream {
       // every game role, including paused owners, while retaining monitor roles.
       topology.release_all_normal_game_identities();
 #ifdef _WIN32
+      // RTSP termination can leave WebRTC capture active on this exact GUID.
+      // Keep it for final idle cleanup until every capture owner has drained.
+      if (has_capture_runtime_owner()) {
+        return;
+      }
+
       // Shared-mode displays have no normal identity token. Their exact GUID
       // belongs to the stream runtime, not proc_t's unused display fields.
       // Remove only that target; generic cleanup would also remove peers.
@@ -3197,7 +3271,16 @@ namespace stream {
       const std::string_view reason,
       const shared_runtime_finalize_context_t &context
     ) {
-      remote_display_topology::instance().release_drained_normal_game_identities();
+      auto &topology = remote_display_topology::instance();
+#ifdef __linux__
+      topology.release_idle_normal_game_identities(
+        proc::proc.current_app_id() > 0,
+        has_capture_runtime_owner(context)
+      );
+#else
+      topology.release_drained_normal_game_identities();
+#endif
+      nvhttp::reconcile_remote_monitor_owners();
       if (!shared_runtime_cleanup_armed) {
         return false;
       }
@@ -3207,7 +3290,34 @@ namespace stream {
         shared_runtime_force_display_revert_when_idle ||
         context.force_display_revert_when_idle;
 
-      if (has_shared_runtime_owner(context)) {
+      const bool capture_runtime_owned = has_capture_runtime_owner(context);
+#ifdef _WIN32
+      // A paused app intentionally keeps its normal identity for Resume, but
+      // crash recovery has authority only while capture is live. Retire each
+      // drained normal-only worker at the final capture boundary. A Remote
+      // Monitor sharing that stable identity retains its worker, and any live
+      // or starting peer defers this boundary for every display.
+      const auto retiring_recovery_clients =
+        topology.idle_normal_game_recovery_client_ids(capture_runtime_owned);
+      for (const auto &client_uuid : retiring_recovery_clients) {
+        const auto recovery_uuid = VDISPLAY::virtualDisplayUuidFromStableId(client_uuid);
+        GUID recovery_guid {};
+        static_assert(sizeof(recovery_guid) == sizeof(recovery_uuid.b8));
+        std::memcpy(&recovery_guid, recovery_uuid.b8, sizeof(recovery_guid));
+        VDISPLAY::cancel_virtual_display_recovery_monitor(recovery_guid);
+      }
+      if (!retiring_recovery_clients.empty()) {
+        BOOST_LOG(info) << "Virtual display recovery: disengaged "
+                        << retiring_recovery_clients.size()
+                        << " paused normal-game monitor(s) at the final capture boundary.";
+      }
+#endif
+
+#ifdef __linux__
+      if (capture_runtime_owned || topology.has_live_managed_client_identity()) {
+#else
+      if (capture_runtime_owned || topology.managed_client_identity_count() != 0) {
+#endif
         return false;
       }
 
@@ -3501,6 +3611,7 @@ namespace stream {
       // this capture has joined and released every encoder/conversion import.
       session.normal_display_capture.reset();
       remote_display_topology::instance().release_drained_normal_game_identities();
+      nvhttp::reconcile_remote_monitor_owners();
 
       if (session.remote_role == remote_session::role_e::monitor && !session.device_uuid.empty()) {
         const bool client_disconnected = session.client_disconnected.load(std::memory_order_acquire);
@@ -3509,8 +3620,9 @@ namespace stream {
               config::video.remote_monitor_disconnect_on_client_disconnect,
               client_disconnected)) {
           const auto reason = client_disconnected ? "Remote Monitor client disconnected" : "Remote Monitor stream ended";
-          remote_session::release_monitor(session.device_uuid, session.remote_role_generation, reason);
-          nvhttp::notify_remote_monitor_released(session.device_uuid, session.remote_role_generation);
+          if (remote_session::release_monitor(session.device_uuid, session.remote_role_generation, reason)) {
+            nvhttp::notify_remote_monitor_released(session.device_uuid, session.remote_role_generation);
+          }
         } else {
           // Retain the exact display and desired mode so this paired client can
           // resume the Remote Monitor without changing any peer's topology.
@@ -3613,7 +3725,7 @@ namespace stream {
     }
 
     int start(session_t &session, const std::string &addr_string) {
-      session.input = input::alloc(session.mail);
+      session.input = input::alloc(session.mail, session.config.gcpersist);
 
       session.broadcast_ref = broadcast.ref();
       if (!session.broadcast_ref) {
@@ -3867,6 +3979,7 @@ namespace stream {
       session->undo_cmds = std::move(launch_session.client_undo_cmds);
 
       session->config = config;
+      session->config.gcpersist = launch_session.gcpersist;
       session->stream_fps = session->config.monitor.framerate;
       session->stream_fps_scaled = session->config.monitor.encodingFramerate;
       if (launch_session.fps > 0) {
@@ -3881,7 +3994,7 @@ namespace stream {
       session->secondary_game_client = launch_session.secondary_game_client;
       session->remote_role = launch_session.role;
       session->remote_role_generation = launch_session.role_generation;
-#ifdef __linux__
+#if defined(_WIN32) || defined(__linux__)
       if (launch_session.role == remote_session::role_e::game) {
         const auto app = proc::proc.active_session_guard();
         const auto token = launch_session.normal_vdd_identity_token != 0 ?
@@ -3941,7 +4054,6 @@ namespace stream {
       if (session->virtual_display.active) {
         VDISPLAY::setWatchdogFeedingEnabled(true);
       }
-      session->display_helper_gate = launch_session.display_helper_gate;
 #endif
 
       session->control.connect_data = launch_session.control_connect_data;

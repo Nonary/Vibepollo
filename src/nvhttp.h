@@ -90,6 +90,11 @@ namespace nvhttp {
   // the exact transport generation that created it.
   void notify_remote_input_transport_lost(std::string_view client_uuid, std::uint64_t generation);
   void notify_remote_monitor_released(std::string_view client_uuid, std::uint64_t generation);
+  void reconcile_remote_monitor_owners();
+  // Conservative ownership observation for automatic display recovery. Call
+  // under stream_lifecycle_mutex() so a fresh remote-role launch cannot enter
+  // between this check and a guarded display mutation.
+  bool has_remote_role_owner();
 
   class SunshineHTTPS: public SimpleWeb::HTTPS {
   public:

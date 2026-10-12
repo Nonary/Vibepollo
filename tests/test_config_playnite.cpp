@@ -3,6 +3,15 @@
 #include <string>
 #include <unordered_map>
 
+TEST(PlayniteConfig, InstallationDirectoryPreservesSpacesAndCanBeCleared) {
+  std::unordered_map<std::string, std::string> vars {{"playnite_install_dir", "D:\\My Games\\Playnite"}};
+  EXPECT_EQ(config::parse_playnite(vars).install_dir, "D:\\My Games\\Playnite");
+  EXPECT_TRUE(vars.empty());
+  vars["playnite_install_dir"] = "";
+  EXPECT_TRUE(config::parse_playnite(vars).install_dir.empty());
+  EXPECT_TRUE(vars.empty());
+}
+
 TEST(PlayniteConfig, Booleans_ParseCaseInsensitiveTruths) {
   std::unordered_map<std::string, std::string> vars {
     {"playnite_auto_sync", "on"},
@@ -27,22 +36,18 @@ TEST(PlayniteConfig, EnabledDefaultsOnAndCanBeDisabled) {
 }
 
 TEST(PlayniteConfig, Integers_ValidAndClampNegatives) {
-  std::unordered_map<std::string, std::string> vars {{"playnite_recent_games", "20"}, {"playnite_recent_max_age_days", "-5"}, {"playnite_autosync_delete_after_days", "7"}, {"playnite_focus_attempts", "0"}, {"playnite_focus_timeout_secs", "12"}};
+  std::unordered_map<std::string, std::string> vars {{"playnite_recent_games", "20"}, {"playnite_recent_max_age_days", "-5"}, {"playnite_autosync_delete_after_days", "7"}};
   const auto parsed = config::parse_playnite(vars);
   EXPECT_EQ(parsed.recent_games, 20);
   EXPECT_EQ(parsed.recent_max_age_days, 0);  // clamped
   EXPECT_EQ(parsed.autosync_delete_after_days, 7);
-  EXPECT_EQ(parsed.focus_attempts, 0);
-  EXPECT_EQ(parsed.focus_timeout_secs, 12);
 }
 
 TEST(PlayniteConfig, Integers_InvalidStringsAreIgnored) {
   // Leave defaults when invalid
-  std::unordered_map<std::string, std::string> vars {{"playnite_recent_games", "abc"}, {"playnite_focus_attempts", "-x"}, {"playnite_focus_timeout_secs", ""}};
+  std::unordered_map<std::string, std::string> vars {{"playnite_recent_games", "abc"}};
   const auto parsed = config::parse_playnite(vars);
   EXPECT_EQ(parsed.recent_games, 10);
-  EXPECT_EQ(parsed.focus_attempts, 3);
-  EXPECT_EQ(parsed.focus_timeout_secs, 15);
 }
 
 TEST(PlayniteConfig, Lists_ParseJsonArrayAndCsv) {
@@ -75,9 +80,3 @@ TEST(PlayniteConfig, Lists_ParseJsonArrayAndCsv) {
 }
 
 // Note: extensions-dir override removed; no path config test required here.
-
-TEST(PlayniteConfig, FocusExitOnFirst_ParsesBoolean) {
-  std::unordered_map<std::string, std::string> vars {{"playnite_focus_exit_on_first", "true"}};
-  const auto parsed = config::parse_playnite(vars);
-  EXPECT_TRUE(parsed.focus_exit_on_first);
-}

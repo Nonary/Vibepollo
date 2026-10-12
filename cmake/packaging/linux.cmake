@@ -112,6 +112,16 @@ else()
         set_target_properties(vibepollo_display_power PROPERTIES OUTPUT_NAME "vibepollo-display-power")
         target_include_directories(vibepollo_display_power PRIVATE ${GIO_INCLUDE_DIRS})
         target_link_libraries(vibepollo_display_power PRIVATE ${GIO_LIBRARIES})
+        if(WAYLAND_FOUND)
+            add_executable(vibepollo_display_observer
+                    "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-display-observer.c"
+                    "${CMAKE_BINARY_DIR}/generated-src/dpms.c")
+            set_target_properties(vibepollo_display_observer PROPERTIES OUTPUT_NAME "vibepollo-display-observer")
+            target_include_directories(vibepollo_display_observer PRIVATE
+                    "${CMAKE_BINARY_DIR}/generated-src" ${WAYLAND_INCLUDE_DIRS})
+            target_link_libraries(vibepollo_display_observer PRIVATE ${WAYLAND_LIBRARIES})
+            target_compile_definitions(vibepollo_session_broker PRIVATE VIBEPOLLO_HAVE_WAYLAND_OBSERVER=1)
+        endif()
         add_executable(vibepollo_app_supervisor
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-app-supervisor.c")
         set_target_properties(vibepollo_app_supervisor PROPERTIES OUTPUT_NAME "vibepollo-app-supervisor")
@@ -142,6 +152,18 @@ else()
         target_link_libraries(vibepollo_provider_scan PRIVATE
                 nlohmann_json::nlohmann_json
                 "${SQLITE3_LIBRARIES}")
+        add_executable(vibepollo_app_focus
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-app-focus.cpp"
+                "${CMAKE_SOURCE_DIR}/src/managed_app_focus.cpp"
+                "${CMAKE_SOURCE_DIR}/src/steam_process_tracker.cpp"
+                "${CMAKE_SOURCE_DIR}/src/provider_scan_protocol.cpp"
+                "${CMAKE_SOURCE_DIR}/src/steam_integration.cpp"
+                "${CMAKE_SOURCE_DIR}/src/lutris_integration.cpp")
+        set_target_properties(vibepollo_app_focus PROPERTIES OUTPUT_NAME "vibepollo-app-focus")
+        target_include_directories(vibepollo_app_focus PRIVATE
+                "${CMAKE_SOURCE_DIR}" ${GIO_INCLUDE_DIRS} ${SQLITE3_INCLUDE_DIRS})
+        target_link_libraries(vibepollo_app_focus PRIVATE
+                nlohmann_json::nlohmann_json ${GIO_LIBRARIES} ${SQLITE3_LIBRARIES})
         add_executable(vibepollo_steam_launch
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-steam-launch.cpp"
                 "${CMAKE_SOURCE_DIR}/src/steam_process_tracker.cpp"
@@ -176,8 +198,12 @@ else()
                 DESTINATION "${CMAKE_INSTALL_DATADIR}/libalpm/hooks")
         install(TARGETS vibepollo_session_exec vibepollo_app_supervisor
                 vibepollo_profile_import vibepollo_kwin_session_environment
-                vibepollo_provider_scan vibepollo_steam_launch vibepollo_display_power
+                vibepollo_provider_scan vibepollo_steam_launch vibepollo_display_power vibepollo_app_focus
                 RUNTIME DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
+        if(TARGET vibepollo_display_observer)
+            install(TARGETS vibepollo_display_observer
+                    RUNTIME DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
+        endif()
         install(TARGETS vibepollo_session_broker
                 RUNTIME DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}"
                 PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
@@ -313,9 +339,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             "%attr(0700,root,root) %caps(cap_kill,cap_setgid,cap_setuid+p) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-session-broker"
             "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-app-supervisor"
             "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-steam-launch"
+            "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-app-focus"
             "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-kwin-session-environment"
             "%attr(0750,root,vibepollo) %caps(cap_sys_admin,cap_sys_nice+p) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-host"
     )
+    if(TARGET vibepollo_display_observer)
+        list(APPEND CPACK_RPM_USER_FILELIST
+                "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-display-observer")
+    endif()
 endif()
 
 # FreeBSD post install/deinstall scripts

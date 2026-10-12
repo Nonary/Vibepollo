@@ -33,8 +33,6 @@ namespace config {
   void apply_playnite(std::unordered_map<std::string, std::string> &vars) {
     playnite = parse_playnite(vars);
 
-    // paths (overrides removed)
-
 #ifdef _WIN32
     try {
       std::lock_guard apps_lock {confighttp::apps_file_mutex()};

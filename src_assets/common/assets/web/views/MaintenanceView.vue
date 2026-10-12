@@ -18,12 +18,22 @@ import {
 } from '@/components/ui';
 import { useSystemStore, type HostMetadata } from '@/stores/system';
 import { formatBytes } from '@/utils/format';
+import { displayRecoveryNotice } from '@/utils/displayRecovery';
 import {
   crashBundlePartPath,
   parseContentDispositionFilename,
   parseCrashBundleManifest,
   type CrashBundlePart,
 } from '@/utils/maintenanceCrashBundle';
+
+interface ServiceStartup {
+  status?: boolean;
+  installed?: boolean;
+  automatic?: boolean;
+  start_type?: string;
+  can_change?: boolean;
+  error?: string;
+}
 
 interface CrashDumpStatus {
   available?: boolean;
@@ -38,6 +48,11 @@ interface CrashDumpStatus {
 }
 
 interface GoldenStatus {
+  maintenance_available?: boolean;
+  session_current_exists?: boolean;
+  session_previous_exists?: boolean;
+  restore_task_state?: 'enabled' | 'disabled' | 'missing' | 'unavailable';
+  helper_engine?: 'legacy' | 'v2';
   exists?: boolean;
   snapshot_version?: number | null;
   latest_snapshot_version?: number;
@@ -75,6 +90,8 @@ interface SessionsResponse {
 
 interface MutationResponse {
   status?: boolean;
+  topology_restored?: boolean;
+  physical_display_recovered?: boolean;
   deleted?: boolean;
   error?: string;
   message?: string;
@@ -95,8 +112,34 @@ type CrashBundlePartState = CrashBundlePart & {
 const { locale, t } = useI18n();
 const system = useSystemStore();
 const metadata = ref<HostMetadata | null>(system.metadata);
+const serviceStartup = ref<ServiceStartup | null>(null);
+const serviceStartupDraft = ref(false);
+const serviceStartupBusy = ref(false);
+const serviceStartupError = ref('');
+const serviceStartupSaved = ref(false);
 const crashDump = ref<CrashDumpStatus | null>(null);
 const golden = ref<GoldenStatus | null>(null);
+const displayMaintenanceAvailable = computed(
+  () => golden.value !== null && golden.value.maintenance_available !== false,
+);
+const sessionRecoveryDetail = computed(() => {
+  const status = golden.value;
+  if (!status || status.restore_task_state === undefined) return '';
+  return t('troubleshooting.dd_session_recovery_status', {
+    current: t(
+      status.session_current_exists
+        ? 'troubleshooting.dd_recovery_present'
+        : 'troubleshooting.dd_recovery_absent',
+    ),
+    previous: t(
+      status.session_previous_exists
+        ? 'troubleshooting.dd_recovery_present'
+        : 'troubleshooting.dd_recovery_absent',
+    ),
+    task: t(`troubleshooting.dd_restore_task_${status.restore_task_state}`),
+    engine: status.helper_engine === 'legacy' ? 'v1' : 'v2',
+  });
+});
 const browserSessions = ref<BrowserSession[]>([]);
 const loading = ref(true);
 const refreshing = ref(false);
@@ -126,6 +169,10 @@ const isWindows = computed(() =>
   String(metadata.value?.platform ?? system.metadata?.platform ?? '')
     .toLocaleLowerCase()
     .includes('windows'),
+);
+const isLinux = computed(
+  () =>
+    String(metadata.value?.platform ?? system.metadata?.platform ?? '').toLowerCase() === 'linux',
 );
 
 function message(cause: unknown, fallback: string): string {
@@ -273,6 +320,39 @@ function reconcileSessions(
   return [...stable, ...byId.values()];
 }
 
+async function refreshServiceStartup(): Promise<void> {
+  serviceStartupError.value = '';
+  serviceStartup.value = null;
+  try {
+    serviceStartup.value = await apiGet<ServiceStartup>('/api/service/startup');
+    serviceStartupDraft.value = serviceStartup.value.automatic === true;
+  } catch {
+    serviceStartupError.value = t('service_startup.unavailable');
+  }
+}
+
+async function saveServiceStartup(): Promise<void> {
+  if (serviceStartupBusy.value || serviceStartup.value?.can_change !== true) return;
+  serviceStartupBusy.value = true;
+  serviceStartupError.value = '';
+  serviceStartupSaved.value = false;
+  try {
+    const result = await apiPost<ServiceStartup>('/api/service/startup', {
+      automatic: serviceStartupDraft.value,
+    });
+    serviceStartup.value = result;
+    serviceStartupDraft.value = result.automatic === true;
+    if (result.status !== true) throw new Error(result.error || t('service_startup.unavailable'));
+    serviceStartupSaved.value = true;
+  } catch (cause) {
+    const error = message(cause, t('service_startup.unavailable'));
+    await refreshServiceStartup();
+    serviceStartupError.value = error;
+  } finally {
+    serviceStartupBusy.value = false;
+  }
+}
+
 async function load(): Promise<void> {
   if (refreshing.value) return;
   refreshing.value = true;
@@ -304,6 +384,7 @@ async function load(): Promise<void> {
   }
 
   if (isWindows.value) {
+    await refreshServiceStartup();
     const windowsResults = await Promise.allSettled([
       apiGet<CrashDumpStatus>('/api/health/crashdump'),
       apiGet<GoldenStatus>('/api/display/golden_status'),
@@ -312,8 +393,12 @@ async function load(): Promise<void> {
     if (crashResult.status === 'fulfilled') crashDump.value = crashResult.value;
     else errors.push(message(crashResult.reason, t('ui.maintenance.errors.crashStatus')));
     if (goldenResult.status === 'fulfilled') golden.value = goldenResult.value;
-    else errors.push(message(goldenResult.reason, t('ui.maintenance.errors.recoveryStatus')));
+    else {
+      golden.value = null;
+      errors.push(message(goldenResult.reason, t('ui.maintenance.errors.recoveryStatus')));
+    }
   } else {
+    serviceStartup.value = null;
     crashDump.value = null;
     golden.value = null;
   }
@@ -461,7 +546,11 @@ const dialogCopy = computed(() => {
   if (action?.kind === 'terminate-virtual-display') {
     return {
       title: t('ui.maintenance.confirm.terminateVirtualDisplayTitle'),
-      description: t('ui.maintenance.confirm.terminateVirtualDisplayDescription'),
+      description: t(
+        isLinux.value
+          ? 'ui.maintenance.confirm.terminateVirtualDisplayLinuxDescription'
+          : 'ui.maintenance.confirm.terminateVirtualDisplayDescription',
+      ),
       confirm: t('ui.maintenance.actions.terminateVirtualDisplay'),
       tone: 'danger' as const,
     };
@@ -505,6 +594,18 @@ async function runConfirmedAction(): Promise<void> {
   actionError.value = '';
 
   try {
+    if (
+      (action.kind === 'golden-export' || action.kind === 'golden-delete') &&
+      !displayMaintenanceAvailable.value
+    ) {
+      throw new Error(
+        t(
+          golden.value
+            ? 'troubleshooting.dd_maintenance_disabled'
+            : 'troubleshooting.dd_maintenance_unavailable',
+        ),
+      );
+    }
     if (action.kind === 'golden-export') {
       const result = await apiPost<MutationResponse>('/api/display/export_golden', {});
       if (result.status === false) {
@@ -521,10 +622,10 @@ async function runConfirmedAction(): Promise<void> {
       await load();
     } else if (action.kind === 'terminate-virtual-display') {
       const result = await apiPost<MutationResponse>('/api/display/terminate_virtual', {});
-      if (result.status === false) {
+      if (result.status !== true) {
         throw new Error(result.error || t('ui.maintenance.errors.virtualDisplayTermination'));
       }
-      notice.value = t('ui.maintenance.notices.virtualDisplayTerminated');
+      notice.value = t(displayRecoveryNotice(result));
     } else if (action.kind === 'revoke-session') {
       await apiDelete<MutationResponse>(
         `/api/auth/sessions/${encodeURIComponent(action.session.id)}`,
@@ -846,17 +947,33 @@ onBeforeUnmount(() => {
       </section>
 
       <section
-        v-if="isWindows"
+        v-if="isWindows || isLinux"
         class="maintenance-section"
         aria-labelledby="display-recovery-title"
       >
         <div class="maintenance-section__heading">
           <div>
-            <h2 id="display-recovery-title">{{ t('ui.maintenance.recovery.title') }}</h2>
-            <p>{{ goldenState.detail }}</p>
+            <h2 id="display-recovery-title">
+              {{
+                t(isLinux ? 'ui.maintenance.recovery.linuxTitle' : 'ui.maintenance.recovery.title')
+              }}
+            </h2>
+            <p>
+              {{ isLinux ? t('ui.maintenance.recovery.linuxDescription') : goldenState.detail }}
+            </p>
           </div>
-          <StatusBadge :label="goldenState.label" :tone="goldenState.tone" />
+          <StatusBadge v-if="isWindows" :label="goldenState.label" :tone="goldenState.tone" />
         </div>
+        <p v-if="sessionRecoveryDetail" class="maintenance-muted">{{ sessionRecoveryDetail }}</p>
+        <p v-if="isWindows && !displayMaintenanceAvailable" class="maintenance-muted" role="status">
+          {{
+            t(
+              golden
+                ? 'troubleshooting.dd_maintenance_disabled'
+                : 'troubleshooting.dd_maintenance_unavailable',
+            )
+          }}
+        </p>
         <dl v-if="golden?.exists" class="recovery-facts">
           <div>
             <dt>{{ t('ui.maintenance.recovery.snapshotSchema') }}</dt>
@@ -880,14 +997,16 @@ onBeforeUnmount(() => {
             <dd>{{ formatTimestamp(golden.restore_status_updated_at_unix_ms) }}</dd>
           </div>
         </dl>
-        <div v-if="isWindows" class="maintenance-actions">
+        <div class="maintenance-actions">
           <AppButton
+            v-if="isWindows"
             :label="
               golden?.exists
                 ? t('ui.maintenance.actions.replaceSnapshot')
                 : t('ui.maintenance.actions.captureSnapshot')
             "
             variant="secondary"
+            :disabled="!displayMaintenanceAvailable || !golden"
             @click="requestAction({ kind: 'golden-export' })"
           />
           <AppButton
@@ -895,6 +1014,7 @@ onBeforeUnmount(() => {
             class="maintenance-danger-text"
             :label="t('ui.maintenance.actions.deleteSnapshot')"
             variant="tertiary"
+            :disabled="!displayMaintenanceAvailable"
             @click="requestAction({ kind: 'golden-delete' })"
           />
           <AppButton
@@ -1040,6 +1160,42 @@ onBeforeUnmount(() => {
             />
           </div>
         </form>
+      </section>
+
+      <section v-if="isWindows" class="maintenance-section" aria-labelledby="service-startup-title">
+        <div class="maintenance-section__heading">
+          <div>
+            <h2 id="service-startup-title">{{ t('service_startup.title') }}</h2>
+            <p>{{ t('service_startup.description') }}</p>
+          </div>
+        </div>
+        <label class="vs-cluster">
+          <input
+            v-model="serviceStartupDraft"
+            type="checkbox"
+            :disabled="serviceStartupBusy || serviceStartup?.can_change !== true"
+            @change="saveServiceStartup"
+          />
+          <span>{{ t('service_startup.automatic') }}</span>
+        </label>
+        <p>
+          {{ t('service_startup.mode') }}:
+          {{
+            t(
+              'service_startup.' +
+                (serviceStartup?.start_type === 'automatic'
+                  ? 'automatic_mode'
+                  : serviceStartup?.start_type || 'unknown'),
+            )
+          }}
+        </p>
+        <p v-if="serviceStartup?.error">{{ serviceStartup.error }}</p>
+        <InlineAlert v-if="serviceStartupError" tone="danger" announce="assertive">{{
+          serviceStartupError
+        }}</InlineAlert>
+        <InlineAlert v-if="serviceStartupSaved" tone="success" announce="polite">{{
+          t('service_startup.saved')
+        }}</InlineAlert>
       </section>
 
       <section class="danger-zone" aria-labelledby="restart-title">

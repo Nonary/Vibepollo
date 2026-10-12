@@ -268,6 +268,27 @@ TEST(SteamDiscovery, FindsContentHashedLibraryCapsule) {
   fs::remove_all(base, ec);
 }
 
+TEST(SteamDiscovery, FindsContentHashedLibrary600x900) {
+  const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());
+  const auto base = fs::temp_directory_path() / ("vibepollo-steam-hashed-600x900-test-" + std::to_string(nonce));
+  std::error_code ec;
+  fs::create_directories(base / "steamapps/common/NewCoverGame", ec);
+  fs::create_directories(base / "appcache/librarycache/85/portrait-hash", ec);
+  fs::create_directories(base / "appcache/librarycache/85/header-hash", ec);
+  {
+    std::ofstream out(base / "steamapps/appmanifest_85.acf");
+    out << R"VDF("AppState" { "appid" "85" "name" "New Cover Game" "type" "game" "installdir" "NewCoverGame" })VDF";
+  }
+  std::ofstream(base / "appcache/librarycache/85/portrait-hash/library_600x900.jpg") << "portrait";
+  std::ofstream(base / "appcache/librarycache/85/header-hash/library_header.jpg") << "header";
+
+  const auto games = discover({base});
+  ASSERT_EQ(games.size(), 1U);
+  EXPECT_EQ(games[0].portrait_path.filename(), "library_600x900.jpg");
+  EXPECT_EQ(games[0].artwork_path, games[0].portrait_path);
+  fs::remove_all(base, ec);
+}
+
 TEST(SteamDiscovery, IgnoresManifestWithoutInstalledDirectory) {
   const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());
   const auto base = fs::temp_directory_path() / ("vibepollo-steam-stale-test-" + std::to_string(nonce));
@@ -361,6 +382,22 @@ TEST(SteamDiscovery, ResolvesDirectLaunchMetadataOptionsAndExistingProton) {
   EXPECT_EQ(custom_tool_games[0].proton_runtime_path, runtime);
   EXPECT_NE(launch_command(custom_tool_games[0]).find("ExternalProton/proton"), std::string::npos);
 
+  // Pressure Vessel records host paths beneath /run/host in containerized
+  // environments (such as CachyOS Proton SLR). These must normalize to the host root.
+  {
+    std::ofstream output(compatdata / "config_info");
+    output << "External Proton\n"
+           << "/run/host" << (external_proton / "files/share/fonts").string() << "/\n"
+           << "/run/host" << (external_proton / "files/lib").string() << "/\n"
+           << "/run/host" << client.string() << "\n";
+  }
+  const auto pressure_vessel_games = discover({base});
+  ASSERT_GE(pressure_vessel_games.size(), 1U);
+  EXPECT_EQ(pressure_vessel_games[0].proton_path, external_proton);
+  EXPECT_EQ(pressure_vessel_games[0].steam_client_path, client);
+  EXPECT_EQ(pressure_vessel_games[0].proton_runtime_path, runtime);
+  EXPECT_NE(launch_command(pressure_vessel_games[0]).find("ExternalProton/proton"), std::string::npos);
+
   // Compatibility tools can also be installed outside a Steam library. The
   // upward search must stop at the filesystem root and use the broker fallback
   // when older config_info metadata does not identify the Steam client.
@@ -373,6 +410,15 @@ TEST(SteamDiscovery, ResolvesDirectLaunchMetadataOptionsAndExistingProton) {
   EXPECT_TRUE(external_games[0].proton_runtime_path.empty());
   EXPECT_EQ(launch_command(external_games[0]), "steam -applaunch 42");
   fs::remove_all(base, ec);
+}
+
+TEST(SteamPressureVessel, NormalizesContainerHostPaths) {
+  EXPECT_EQ(normalize_pressure_vessel_host_path("/run/host/usr/share/steam"), "/usr/share/steam");
+  EXPECT_EQ(normalize_pressure_vessel_host_path("/run/host/home/test/.local/share/Steam"), "/home/test/.local/share/Steam");
+  EXPECT_EQ(normalize_pressure_vessel_host_path("/run/host"), "/");
+  EXPECT_EQ(normalize_pressure_vessel_host_path("/run/host/"), "/");
+  EXPECT_EQ(normalize_pressure_vessel_host_path("/usr/share/steam"), "/usr/share/steam");
+  EXPECT_EQ(normalize_pressure_vessel_host_path(""), "");
 }
 #endif
 

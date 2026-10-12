@@ -4,20 +4,29 @@
  */
 
 #include "private_display.h"
-#include "display_power.h"
+#include "private_display_capacity.h"
+#include "display_restore_capture.h"
 
+#include "display_helper_process.h"
+#include "display_power.h"
+#include "display_restore_dispatcher.h"
 #include "hdr_policy.h"
 #include "private_display_cleanup_policy.h"
-#include "private_display_mode_client.h"
 #include "private_display_configuration_policy.h"
+#include "private_display_emergency_policy.h"
+#include "private_display_recovery_policy.h"
+#include "private_display_mode_client.h"
 #include "private_display_mode_policy.h"
 #include "private_display_restore_policy.h"
+#include "private_display_restore_transaction.h"
 #include "private_display_resume_policy.h"
+#include "private_display_snapshot_policy.h"
 #include "src/config.h"
 #include "src/display_device.h"
 #include "src/logging.h"
 #include "src/nvhttp.h"
 #include "src/platform/common.h"
+#include "src/process.h"
 #include "src/remote_display_topology.h"
 #include "src/rtsp.h"
 #include "src/state_storage.h"
@@ -25,6 +34,7 @@
 #include "src/virtual_display_scale.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cmath>
@@ -40,6 +50,7 @@
 #include <shared_mutex>
 #include <sys/stat.h>
 #include <thread>
+#include <unistd.h>
 #include <virtual_display/driver/linux_control_client.h>
 
 namespace platf::linux_private_display {
@@ -48,23 +59,58 @@ namespace platf::linux_private_display {
 
     constexpr auto output_publication_timeout = std::chrono::seconds {3};
     constexpr auto output_verification_timeout = std::chrono::seconds {3};
+    constexpr auto helper_reply_timeout = std::chrono::seconds {10};
+    constexpr auto connector_reply_timeout = std::chrono::seconds {8};
+    constexpr auto restore_operation_timeout = std::chrono::seconds {30};
     static_assert(std::atomic_bool::is_always_lock_free);
     std::atomic_bool preserve_for_process_shutdown {false};
+    std::atomic_bool helper_completion_unknown {false};
     std::shared_mutex topology_mutation_gate;
 
-    struct command_result_t {
-      bool success {false};
-      std::string stdout_text;
-      std::string stderr_text;
+    using command_result_t = helper_process::result_t;
+
+    struct restore_context_t {
+      std::chrono::steady_clock::time_point deadline;
+      std::function<bool()> valid;
     };
+    thread_local const restore_context_t *restore_context = nullptr;
+
+    bool restore_allowed() {
+      return !helper_completion_unknown.load(std::memory_order_acquire) &&
+             (!restore_context ||
+              (std::chrono::steady_clock::now() < restore_context->deadline && restore_context->valid()));
+    }
+
+    std::vector<std::string> capture_output_names() {
+      auto deadline = std::chrono::steady_clock::now() + output_verification_timeout;
+      if (restore_context) deadline = std::min(deadline, restore_context->deadline);
+      return platf::display_names_for_restore(platf::mem_type_e::unknown, deadline, [] {
+        return !process_shutdown_preserve_requested() && restore_allowed();
+      });
+    }
+
+    bool helper_budget_available(std::chrono::steady_clock::duration budget) {
+      return restore_allowed() && (!restore_context ||
+             restore_context->deadline - std::chrono::steady_clock::now() >= budget);
+    }
 
     struct state_t {
       std::mutex mutex;
       std::optional<json> snapshot;
+      bool snapshot_loaded {false};
+      bool snapshot_legacy_record {false};
       std::map<std::string, std::string> reservations;
       std::map<std::string, double> retained_scales;
       std::set<std::string> newly_connected_reservations;
       std::atomic<std::uint64_t> cleanup_generation {0};
+      std::atomic<std::uint64_t> reset_generation {0};
+      // Destroy/join the worker before its snapshot, generation and mutex.
+      restore_dispatcher_t restore_dispatcher {[] {
+        BOOST_LOG(error) << "Linux display helper: asynchronous restore failed with an exception.";
+      }};
+      std::mutex recovery_monitor_mutex;
+      std::jthread recovery_monitor;
+      bool recovery_monitor_stopping {false};
     };
 
     state_t &state() {
@@ -80,6 +126,9 @@ namespace platf::linux_private_display {
     }
 
     bool broker_set_connected(const std::string &output_name, const bool connected) {
+      // The control client waits longer than the broker's mutation/stop bound.
+      // Reserve that entire interval rather than shortening its safe drain.
+      if (!helper_budget_available(connector_reply_timeout)) return false;
       static const virtual_display::driver::LinuxControlClient client;
       const auto result = client.set_connector(output_name, connected);
       if (!result.ok()) {
@@ -104,6 +153,10 @@ namespace platf::linux_private_display {
 
     command_result_t run_doctor(const std::vector<std::string> &arguments, const bool mutating = false) {
       command_result_t result;
+      if (!helper_budget_available(helper_reply_timeout)) {
+        result.stderr_text = "display helper fenced, restore superseded, or insufficient reply budget";
+        return result;
+      }
       const auto executable = doctor_path();
       if (!executable) {
         result.stderr_text = "kscreen-doctor was not found in PATH";
@@ -141,53 +194,39 @@ namespace platf::linux_private_display {
         }
       }
 
-      GError *error = nullptr;
+      // Revalidate after admission: a concurrent mutation may have fenced
+      // helper completion, or the queued restore was superseded meanwhile.
+      if (!helper_budget_available(helper_reply_timeout)) {
+        result.stderr_text = "display helper admission superseded or fenced";
+        return result;
+      }
+      GError *spawn_error = nullptr;
       GSubprocess *process = g_subprocess_newv(
         argv.data(),
         static_cast<GSubprocessFlags>(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE),
-        &error
+        &spawn_error
       );
       if (!process) {
-        if (error) {
-          result.stderr_text = error->message;
-          g_error_free(error);
+        if (spawn_error) {
+          result.stderr_text = spawn_error->message;
+          g_error_free(spawn_error);
         }
         return result;
       }
       // Admission closes once the exact helper exists. Its KScreen request is
-      // deliberately allowed to drain outside the gate: shutdown must never
-      // cancel a compositor transaction, but it also must not wait for an
-      // unbounded external reply before publishing the shutdown event.
+      // allowed to drain outside the gate up to the helper reply deadline:
+      // shutdown fences later mutations without cancelling an admitted one.
       if (mutation_admission.owns_lock()) {
         mutation_admission.unlock();
       }
 
-      gchar *stdout_text = nullptr;
-      gchar *stderr_text = nullptr;
-      const gboolean communicated = g_subprocess_communicate_utf8(
-        process,
-        nullptr,
-        nullptr,
-        &stdout_text,
-        &stderr_text,
-        &error
-      );
-      if (stdout_text) {
-        result.stdout_text = stdout_text;
-        g_free(stdout_text);
+      auto deadline = std::chrono::steady_clock::now() + helper_reply_timeout;
+      result = helper_process::communicate_until(process, deadline, std::getenv("VIBEPOLLO_MACHINE_HOST") != nullptr);
+      if (mutating && result.completion_unknown) {
+        std::unique_lock mutation_barrier {topology_mutation_gate};
+        helper_completion_unknown.store(true, std::memory_order_release);
+        BOOST_LOG(error) << "Linux display helper: completion could not be confirmed; refusing further display mutations until host restart.";
       }
-      if (stderr_text) {
-        result.stderr_text = stderr_text;
-        g_free(stderr_text);
-      }
-      if (!communicated && error) {
-        if (!result.stderr_text.empty()) {
-          result.stderr_text += ": ";
-        }
-        result.stderr_text += error->message;
-        g_error_free(error);
-      }
-      result.success = communicated && g_subprocess_get_successful(process);
       g_object_unref(process);
       return result;
     }
@@ -215,6 +254,7 @@ namespace platf::linux_private_display {
       const auto deadline = std::chrono::steady_clock::now() + output_verification_timeout;
       linux_hdr::output_state_stabilizer_t stabilizer;
       do {
+        if (!restore_allowed()) return false;
         const auto configuration = query_configuration();
         const bool matches = configuration && predicate(*configuration);
         if (matches && (!require_stability || stabilizer.observe(true))) {
@@ -243,6 +283,22 @@ namespace platf::linux_private_display {
 
     bool enabled(const json &output) {
       return output.value("enabled", false);
+    }
+
+    json physical_topology_signature(const json &configuration) {
+      std::vector<std::pair<std::string, json>> outputs;
+      const auto values = configuration.find("outputs");
+      if (values == configuration.end() || !values->is_array()) return nullptr;
+      for (const auto &output : *values) {
+        if (!output.is_object()) continue;
+        const auto name = output.value("name", std::string {});
+        if (name.empty() || mode_policy::managed_connector_name(name)) continue;
+        outputs.emplace_back(name, output);
+      }
+      std::ranges::sort(outputs, [](const auto &left, const auto &right) { return left.first < right.first; });
+      json result = json::array();
+      for (const auto &[_, output] : outputs) result.push_back(output);
+      return result;
     }
 
     std::vector<std::string> discover_managed_outputs() {
@@ -299,8 +355,6 @@ namespace platf::linux_private_display {
       return std::nullopt;
     }
 
-    bool disconnect_managed_output(const std::string &name);
-
     bool connect_managed_output(const std::string &name) {
       if (process_shutdown_preserve_requested()) {
         return false;
@@ -314,16 +368,7 @@ namespace platf::linux_private_display {
           return false;
         }
       }
-      if (wait_for_output_publication(name)) {
-        return true;
-      }
-      BOOST_LOG(error) << "Linux private display: " << name
-                       << " did not publish in KScreen after broker connection.";
-      // Re-enter through the normal fenced disconnect path. If shutdown was
-      // requested during publication, preserve the admitted connector for the
-      // successor instead of beginning a rollback mutation.
-      (void) disconnect_managed_output(name);
-      return false;
+      return true;
     }
 
     bool disconnect_managed_output(const std::string &name) {
@@ -378,6 +423,99 @@ namespace platf::linux_private_display {
       std::ifstream status {std::filesystem::path {path} / "status"};
       std::string value;
       return status >> value && value == "connected";
+    }
+
+    recovery_policy::connector_state_t recovery_connector_state(
+      const std::string &name,
+      const std::map<std::string, display_power::dpms_state_t> &dpms_states
+    ) {
+      const auto path = connector_sysfs_path(name);
+      if (path.empty() || is_managed_output(name)) return {};
+      recovery_policy::connector_state_t result;
+      std::ifstream status {std::filesystem::path {path} / "status"};
+      std::string value;
+      if (!(status >> value) || (value != "connected" && value != "disconnected")) return result;
+      result.known = true;
+      result.connected = value == "connected";
+      std::ifstream enabled {std::filesystem::path {path} / "enabled"};
+      if (enabled >> value) {
+        if (value == "enabled" || value == "disabled") {
+          result.enabled_known = true;
+          result.enabled = value == "enabled";
+        }
+      }
+      const auto compositor_dpms = dpms_states.find(name);
+      if (compositor_dpms != dpms_states.end() && compositor_dpms->second.known) {
+        result.dpms_known = true;
+        result.dpms_on = compositor_dpms->second.on;
+      } else {
+        // Some drivers expose the connector's legacy DPMS state here. Keep it
+        // as a fallback observation; enabled alone never fabricates a wake.
+        std::ifstream dpms {std::filesystem::path {path} / "dpms"};
+        if (dpms >> value) {
+          if (value == "On") {
+            result.dpms_known = true;
+            result.dpms_on = true;
+          } else if (value == "Off" || value == "Standby" || value == "Suspend") {
+            result.dpms_known = true;
+            result.dpms_on = false;
+          }
+        }
+      }
+      return result;
+    }
+
+    std::map<std::string, std::string> managed_connector_identities() {
+      std::map<std::string, std::string> result;
+      for (const auto &name : discover_managed_outputs()) {
+        const auto path = connector_sysfs_path(name);
+        if (path.empty()) continue;
+        std::error_code error;
+        const auto resolved = std::filesystem::canonical(path, error);
+        if (!error && resolved.string().find("/devices/faux/vibeshine/") != std::string::npos) {
+          result.emplace(name, resolved.string());
+        }
+      }
+      return result;
+    }
+
+    bool managed_connector_identity_matches(const std::string &name, const std::string &identity) {
+      const auto path = connector_sysfs_path(name);
+      if (path.empty()) return false;
+      std::error_code error;
+      const auto resolved = std::filesystem::canonical(path, error);
+      return !error && resolved.string() == identity &&
+             resolved.string().find("/devices/faux/vibeshine/") != std::string::npos;
+    }
+
+    bool managed_connector_verified_disconnected(const std::string &name, const std::string &identity) {
+      std::error_code error;
+      const std::filesystem::path drm_class {"/sys/class/drm"};
+      const auto suffix = "-" + name;
+      std::optional<std::filesystem::path> exact_node;
+      for (std::filesystem::directory_iterator it {drm_class, error}, end; !error && it != end; it.increment(error)) {
+        const auto filename = it->path().filename().string();
+        if (!filename.starts_with("card") || !filename.ends_with(suffix)) continue;
+        const auto resolved = std::filesystem::canonical(it->path(), error);
+        if (error) return false;
+        if (resolved.string() == identity &&
+            resolved.string().find("/devices/faux/vibeshine/") != std::string::npos) {
+          exact_node = it->path();
+          break;
+        }
+      }
+      if (error) return false;
+      if (!exact_node) return true;
+      std::ifstream status {*exact_node / "status"};
+      std::string value;
+      if (!(status >> value) || (value != "connected" && value != "disconnected")) return false;
+      const bool kernel_disconnected = value == "disconnected";
+      const auto configuration = query_configuration();
+      if (!configuration) return false;
+      const auto *output = find_output(*configuration, name);
+      const bool compositor_inactive = !output || !connected(*output);
+      return recovery_policy::managed_connector_retired(
+        true, true, kernel_disconnected, compositor_inactive);
     }
 
     bool connector_hdr_capable(const std::string &name) {
@@ -523,7 +661,7 @@ namespace platf::linux_private_display {
                       << '@' << request.refresh_millihz << " mHz on " << name << '.';
       {
         std::shared_lock mutation_admission {topology_mutation_gate};
-        if (process_shutdown_preserve_requested()) return false;
+        if (process_shutdown_preserve_requested() || !restore_allowed()) return false;
         const auto admitted = request_managed_mode(name, request);
         if (!admitted.success) {
           BOOST_LOG(error) << "Linux private display: " << admitted.detail;
@@ -573,12 +711,13 @@ namespace platf::linux_private_display {
       const json *present,
       const std::string &name
     ) {
-      const auto prefix = "output." + name + ".";
-      std::vector<std::string> arguments {prefix + "enable"};
-      const auto mode = saved.value("currentModeId", std::string {});
-      if (!mode.empty()) {
-        arguments.push_back(prefix + "mode." + mode);
+      const auto mode = restore_policy::select_restore_mode(saved, present);
+      if (!mode) {
+        BOOST_LOG(warning) << "Linux private display: no current mode can verify the saved configuration for " << name << "; retaining the saved output for later recovery.";
+        return {};
       }
+      const auto prefix = "output." + name + ".";
+      std::vector<std::string> arguments {prefix + "enable", prefix + "mode." + *mode};
       // KScreen serializes Output::Rotation as flags, while the doctor takes names.
       static const std::map<int, std::string> rotations {
         {1, "none"}, {2, "left"}, {4, "inverted"}, {8, "right"},
@@ -621,15 +760,9 @@ namespace platf::linux_private_display {
           continue;
         }
         snapshot_names.insert(name);
+        if (mode_policy::managed_connector_name(name)) continue;
         const auto *present = find_output(current, name);
         const bool is_connected = present && connected(*present);
-        guard_candidates.push_back({
-          name,
-          enabled(saved),
-          is_connected,
-          private_names.contains(name),
-          retiring_outputs.contains(name),
-        });
         if (!is_connected) {
           continue;
         }
@@ -638,8 +771,10 @@ namespace platf::linux_private_display {
           arguments.deactivate.push_back(prefix + "disable");
           continue;
         }
-        restored_non_private = restored_non_private || !private_names.contains(name);
         auto activation = output_activation_arguments(saved, present, name);
+        if (activation.empty()) continue;
+        guard_candidates.push_back({name, true, true, false, retiring_outputs.contains(name)});
+        restored_non_private = true;
         arguments.activate.insert(arguments.activate.end(), activation.begin(), activation.end());
         activation_by_output.emplace(name, std::move(activation));
       }
@@ -668,18 +803,6 @@ namespace platf::linux_private_display {
       return arguments;
     }
 
-    json snapshot_for_output(const json &snapshot, const std::string &name) {
-      json result;
-      result["outputs"] = json::array();
-      for (const auto &saved : snapshot["outputs"]) {
-        if (saved.value("name", std::string {}) == name) {
-          result["outputs"].push_back(saved);
-          break;
-        }
-      }
-      return result;
-    }
-
     bool wait_for_snapshot_activation(const json &snapshot, const bool final = false) {
       return wait_for_configuration([&](const json &current) {
         return restore_policy::snapshot_matches(snapshot, current, final);
@@ -689,7 +812,8 @@ namespace platf::linux_private_display {
     bool wait_for_capture_publication(const std::string &name) {
       const auto deadline = std::chrono::steady_clock::now() + output_verification_timeout;
       do {
-        const auto capture_outputs = platf::display_names(platf::mem_type_e::unknown);
+        if (!restore_allowed()) return false;
+        const auto capture_outputs = capture_output_names();
         if (std::find(capture_outputs.begin(), capture_outputs.end(), name) != capture_outputs.end()) {
           return true;
         }
@@ -747,27 +871,50 @@ namespace platf::linux_private_display {
       }
     }
 
-    json restorable_snapshot(const json &configuration) {
-      auto snapshot = configuration;
-      const auto private_names = private_output_set();
-      const bool has_active_physical = std::ranges::any_of(snapshot["outputs"], [&](const json &output) {
-        return connected(output) && enabled(output) &&
-               !private_names.contains(output.value("name", std::string {}));
-      });
-      if (has_active_physical) {
-        for (auto &output : snapshot["outputs"]) {
-          if (private_names.contains(output.value("name", std::string {}))) {
-            output["enabled"] = false;
-          }
-        }
-      }
-      return snapshot;
+    std::string snapshot_owner() {
+      const auto *uid = std::getenv("VIBEPOLLO_SESSION_UID");
+      const auto *role = std::getenv("VIBEPOLLO_SESSION_ROLE");
+      return std::string {uid ? uid : std::to_string(getuid())} + ":" + (role ? role : "standalone");
     }
 
-    void snapshot_configuration_if_needed(state_t &manager, const json &configuration) {
-      if (!manager.snapshot) {
-        manager.snapshot = restorable_snapshot(configuration);
+    bool persist_snapshot(const json &snapshot, const bool restore_pending = true) {
+      return statefile::save_linux_display_snapshot(json {{"version", 1}, {"owner", snapshot_owner()}, {"restore_pending", restore_pending}, {"topology", snapshot}}.dump());
+    }
+
+    void load_snapshot_if_needed(state_t &manager) {
+      if (manager.snapshot_loaded) {
+        return;
       }
+      manager.snapshot_loaded = true;
+      if (const auto saved = statefile::load_linux_display_snapshot()) {
+        bool restore_pending = false;
+        auto snapshot = snapshot_policy::decode<json>(*saved, snapshot_owner(), &restore_pending, &manager.snapshot_legacy_record);
+        if (!snapshot) {
+          BOOST_LOG(warning) << "Linux private display: ignoring unusable or different-session saved topology.";
+        } else if (restore_pending) {
+          manager.snapshot = std::move(snapshot);
+        }
+      }
+    }
+
+    bool snapshot_configuration_if_needed(state_t &manager, const json &configuration) {
+      load_snapshot_if_needed(manager);
+      if (!snapshot_policy::capture(manager.snapshot, configuration, private_output_set(), !manager.reservations.empty(), [](const json &snapshot) {
+            return persist_snapshot(snapshot);
+          })) {
+        BOOST_LOG(error) << "Linux private display: cannot persist the desktop before changing outputs.";
+        return false;
+      }
+      return true;
+    }
+
+    void restore_after_failed_preparation() {
+      const auto delay = cleanup_policy::failed_preparation_restore_delay(
+        proc::proc.current_app_id() > 0,
+        config::video.dd.config_revert_on_disconnect,
+        config::video.dd.paused_virtual_display_timeout_secs,
+        config::video.dd.config_revert_delay);
+      if (delay) schedule_revert(*delay, "failed display preparation");
     }
 
     std::optional<std::string> reserve_output(
@@ -777,15 +924,21 @@ namespace platf::linux_private_display {
       const bool reuse_active_reservation = true
     ) {
       const auto connect = [&](const std::string &name) {
-        return restore_policy::connect_with_snapshot(manager.snapshot, [&]() -> std::optional<json> {
-          const auto configuration = query_configuration();
-          if (!configuration) {
-            BOOST_LOG(error) << "Linux private display: cannot save the desktop before connecting " << name << '.';
-            return std::nullopt;
-          }
-          return restorable_snapshot(*configuration);
+        const auto configuration = query_configuration();
+        // Refresh idle preferences and persist ownership before hotplug.
+        if (!configuration || !snapshot_configuration_if_needed(manager, *configuration)) {
+          BOOST_LOG(error) << "Linux private display: cannot save the desktop before connecting " << name << '.';
+          return restore_policy::connection_result_e::failed;
+        }
+        return restore_policy::connect_with_snapshot_and_publication(manager.snapshot, [&]() {
+          return manager.snapshot;
         }, [&] {
           return connect_managed_output(name);
+        }, [&] {
+          if (wait_for_output_publication(name)) return true;
+          BOOST_LOG(error) << "Linux private display: " << name
+                           << " did not publish in KScreen after broker connection; preserving the admitted connector and saved topology for guarded restoration.";
+          return false;
         });
       };
       if (const auto existing = manager.reservations.find(identity); existing != manager.reservations.end()) {
@@ -794,9 +947,15 @@ namespace platf::linux_private_display {
             return existing->second;
           }
         }
-        if (is_managed_output(existing->second) && connect(existing->second)) {
-          manager.newly_connected_reservations.insert(identity);
-          return existing->second;
+        if (is_managed_output(existing->second)) {
+          const auto connection = connect(existing->second);
+          if (connection != restore_policy::connection_result_e::failed) {
+            manager.newly_connected_reservations.insert(identity);
+            if (connection == restore_policy::connection_result_e::published) return existing->second;
+            // Acknowledged hotplug may already be the only live scanout. Keep
+            // ownership for guarded recovery and stop trying other connectors.
+            return std::nullopt;
+          }
         }
         manager.reservations.erase(existing);
       }
@@ -823,10 +982,12 @@ namespace platf::linux_private_display {
           continue;
         }
         if (is_managed_output(candidate)) {
-          if (connect(candidate)) {
+          const auto connection = connect(candidate);
+          if (connection != restore_policy::connection_result_e::failed) {
             manager.reservations.emplace(identity, candidate);
             manager.newly_connected_reservations.insert(identity);
-            return candidate;
+            if (connection == restore_policy::connection_result_e::published) return candidate;
+            return std::nullopt;
           }
           continue;
         }
@@ -856,33 +1017,65 @@ namespace platf::linux_private_display {
       return false;
     }
 
+    auto &manager = state();
+    std::lock_guard lock {manager.mutex};
+    load_snapshot_if_needed(manager);
+    const auto startup = snapshot_policy::prepare_startup(manager.snapshot, *configuration, private_names, [](const json &snapshot) {
+      return persist_snapshot(snapshot, false);
+    }, manager.snapshot_legacy_record);
+    if (startup == snapshot_policy::startup_action_e::recover) {
+      // Hot-unplug can precede KWin's final baseline reapply. The durable
+      // marker owns that unfinished restore even after every private output
+      // has disconnected; never refresh it from the interrupted topology.
+      schedule_revert({}, "recover saved topology after host restart");
+      BOOST_LOG(info) << "Linux private display: queued saved topology recovery for the current session.";
+      return true;
+    }
+    if (startup == snapshot_policy::startup_action_e::failed) {
+      return false;
+    }
+
     // A normal idle pool is dormant, but a restart may follow a failed
     // compositor handoff. Never hot-unplug the last framebuffer that the
     // selected capture backend can actually enumerate.
-    const auto capture_outputs = platf::display_names(platf::mem_type_e::unknown);
-    const std::set<std::string> capture_names {capture_outputs.begin(), capture_outputs.end()};
-    const bool capture_ready_physical = std::ranges::any_of((*configuration)["outputs"], [&](const json &output) {
-      const auto name = output.value("name", std::string {});
-      return connected(output) && enabled(output) && !private_names.contains(name) && capture_names.contains(name);
-    });
-
     const auto managed_outputs = discover_managed_outputs();
     const std::set<std::string> managed_names {managed_outputs.begin(), managed_outputs.end()};
     std::set<std::string> preserved_private_outputs;
     for (const auto &name : managed_outputs) {
+      // Each hotplug may load a different remembered KWin topology. Never
+      // reuse the previous connector's guard observation for another unplug.
+      configuration = query_configuration();
+      if (!configuration) return false;
       const auto *output = find_output(*configuration, name);
-      const bool capture_ready_private =
-        output && connected(*output) && enabled(*output) && capture_names.contains(name);
-      const bool active_private = output && connected(*output) && enabled(*output);
-      if (restore_policy::preserve_private_scanout(capture_ready_physical, capture_ready_private) || (!capture_ready_physical && active_private)) {
+      if (!output || !connected(*output)) continue;
+      const auto capture_outputs = capture_output_names();
+      std::set<std::string> physical_names;
+      for (const auto &present : (*configuration)["outputs"]) {
+        const auto physical_name = present.value("name", std::string {});
+        if (connected(present) && enabled(present) && !private_names.contains(physical_name)) physical_names.insert(physical_name);
+      }
+      const auto guard = restore_policy::select_capture_ready_guard(*configuration, physical_names, capture_outputs);
+      if (!guard) {
         preserved_private_outputs.insert(name);
-        BOOST_LOG(warning) << "Linux private display: preserving capture-ready " << name
-                           << " during startup because no physical capture output is ready"
-                           << (capture_ready_private ? "." : " and capture enumeration is still pending.");
+        BOOST_LOG(warning) << "Linux private display: preserving connected " << name
+                           << " during startup because no physical capture output is ready.";
         continue;
       }
-      if (!disconnect_managed_output(name)) {
-        BOOST_LOG(error) << "Linux private display: failed to disconnect stale pool output " << name << '.';
+      if (!restore_policy::retire_with_capture_guard(true, [&] { return guard; }, [&](const std::string &guard_name) {
+            const auto current = query_configuration();
+            const auto *physical = current ? find_output(*current, guard_name) : nullptr;
+            return physical && connected(*physical) && enabled(*physical);
+          }, [] {
+            return !process_shutdown_preserve_requested() && restore_allowed();
+          }, [&] { return disconnect_managed_output(name); })) {
+        BOOST_LOG(error) << "Linux private display: could not safely disconnect stale pool output " << name << '.';
+        return false;
+      }
+      if (!wait_for_configuration([&](const json &current) {
+            const auto *present = find_output(current, name);
+            return !present || !connected(*present);
+          }, true)) {
+        BOOST_LOG(error) << "Linux private display: startup hotplug did not settle for " << name << "; preserving remaining connectors.";
         return false;
       }
     }
@@ -892,14 +1085,12 @@ namespace platf::linux_private_display {
       return false;
     }
 
-    bool has_active_physical = false;
+    std::set<std::string> physical_names;
     for (const auto &output : (*configuration)["outputs"]) {
-      if (connected(output) && enabled(output) && !private_names.contains(output.value("name", std::string {}))) {
-        has_active_physical = true;
-        break;
-      }
+      const auto name = output.value("name", std::string {});
+      if (connected(output) && enabled(output) && !private_names.contains(name)) physical_names.insert(name);
     }
-    if (has_active_physical) {
+    if (!physical_names.empty()) {
       std::vector<std::string> disable_stale;
       for (const auto &name : private_names) {
         if (preserved_private_outputs.contains(name)) {
@@ -915,10 +1106,24 @@ namespace platf::linux_private_display {
           disable_stale.push_back("output." + name + ".disable");
         }
       }
-      if (!execute_configuration(disable_stale, "startup cleanup")) {
+      if (!disable_stale.empty() && !restore_policy::retire_with_capture_guard(true, [&]() -> std::optional<std::string> {
+            const auto current = query_configuration();
+            if (!current) return std::nullopt;
+            const auto capture_outputs = capture_output_names();
+            return restore_policy::select_capture_ready_guard(*current, physical_names, capture_outputs);
+          }, [&](const std::string &guard) {
+            const auto current = query_configuration();
+            const auto *output = current ? find_output(*current, guard) : nullptr;
+            return output && connected(*output) && enabled(*output);
+          }, [] {
+            return !process_shutdown_preserve_requested() && restore_allowed();
+          }, [&] {
+            return execute_configuration(disable_stale, "startup cleanup");
+          })) {
         return false;
       }
     }
+
     BOOST_LOG(info) << "Linux private display: ready with " << private_names.size() << " private output(s).";
     return true;
   }
@@ -939,9 +1144,6 @@ namespace platf::linux_private_display {
       session.virtual_display_failed = true;
       return result;
     }
-    // Failed admission must not cancel cleanup of an earlier idle display.
-    cancel_scheduled_revert();
-
     const auto mode = session.virtual_display_mode_override.value_or(config::video.virtual_display_mode);
     const bool config_requests_virtual = mode != config::video_t::virtual_display_mode_e::disabled;
     const bool client_requests_virtual = session.client_virtual_display_override.value_or(session.client_requests_virtual_display);
@@ -963,7 +1165,7 @@ namespace platf::linux_private_display {
       return result;
     }
 
-    {
+    cleanup_policy::prepare_with_restore_on_failure(cancel_scheduled_revert, [&] {
       auto &manager = state();
       std::lock_guard lock {manager.mutex};
       const bool shared = mode == config::video_t::virtual_display_mode_e::shared;
@@ -977,16 +1179,17 @@ namespace platf::linux_private_display {
         if (!output || !connected(*output)) {
           manager.reservations.erase(identity);
           manager.newly_connected_reservations.erase(identity);
-          (void) disconnect_managed_output(*output_name);
+          // A failed query is not permission to unplug a potentially last-live
+          // output. Guarded restoration discovers this released connector.
           result.error = "The leased Linux private display was not published by KScreen";
           session.virtual_display_failed = true;
-          return result;
+          return false;
         }
         result.active = true;
         result.output_name = *output_name;
         session.virtual_display = true;
         session.virtual_display_device_id = *output_name;
-        const auto capture_outputs = platf::display_names(platf::mem_type_e::unknown);
+        const auto capture_outputs = capture_output_names();
         const bool capture_available = std::find(capture_outputs.begin(), capture_outputs.end(), *output_name) != capture_outputs.end();
         session.virtual_display_recreated_on_demand =
           resume_policy::requires_apply(
@@ -1007,7 +1210,8 @@ namespace platf::linux_private_display {
           session.virtual_display_ready_since = std::chrono::steady_clock::now();
         }
       }
-    }
+      return result.active;
+    }, restore_after_failed_preparation);
 
     if (!result.active) {
       session.virtual_display_failed = true;
@@ -1072,7 +1276,9 @@ namespace platf::linux_private_display {
     bool newly_connected = false;
     {
       std::lock_guard lock {manager.mutex};
-      snapshot_configuration_if_needed(manager, *configuration);
+      if (!snapshot_configuration_if_needed(manager, *configuration)) {
+        return false;
+      }
       for (const auto &[_, output_name] : manager.reservations) {
         reserved_outputs.insert(output_name);
       }
@@ -1350,9 +1556,8 @@ namespace platf::linux_private_display {
   void request_process_shutdown_preserve() noexcept {
     preserve_for_process_shutdown.store(true, std::memory_order_release);
     // Drain only bounded mutation-admission sections. KScreen helpers which
-    // were already spawned continue outside the gate and are never cancelled
-    // mid-transaction; the signal thread can therefore publish shutdown
-    // without waiting for an unbounded compositor reply.
+    // were already spawned drain outside the gate to their normal deadline;
+    // the signal thread can publish shutdown without waiting for their reply.
     std::unique_lock mutation_barrier {topology_mutation_gate};
   }
 
@@ -1372,7 +1577,8 @@ namespace platf::linux_private_display {
     std::lock_guard lock {manager.mutex};
     // Remote Monitor bypasses prepare_session(). Invalidate an earlier idle
     // restore under the same lock which publishes its connector reservation.
-    manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
+    const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    manager.restore_dispatcher.cancel(generation);
     const auto output = reserve_output(
       manager,
       client_reservation_identity(client_uuid),
@@ -1445,8 +1651,11 @@ namespace platf::linux_private_display {
 
     auto &manager = state();
     std::lock_guard lock {manager.mutex};
-    manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
-    snapshot_configuration_if_needed(manager, *configuration);
+    const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    manager.restore_dispatcher.cancel(generation);
+    if (!snapshot_configuration_if_needed(manager, *configuration)) {
+      return false;
+    }
 
     std::vector<desired_output_t> desired;
     std::map<std::string, std::size_t> desired_indexes;
@@ -1564,6 +1773,7 @@ namespace platf::linux_private_display {
     std::vector<std::string> hdr_rearm_arguments;
     std::vector<std::string> hdr_arguments;
     std::vector<std::string> deactivate_arguments;
+    bool retiring_active_scanout = false;
     int next_priority = 2;
     for (std::size_t i = 0; i < desired.size(); ++i) {
       auto &entry = desired[i];
@@ -1616,10 +1826,8 @@ namespace platf::linux_private_display {
       }
     }
 
-    // KScreen may process one command line in connector order rather than the
-    // order supplied. Activating the destination first prevents KWin from
-    // publishing a transient zero-output desktop while an exclusive topology
-    // replaces the physical display.
+    // Activate and verify the destination before retiring previous scanouts.
+    // A successful KScreen transaction alone does not prove capture readiness.
     activate_arguments.insert(activate_arguments.end(), hdr_rearm_arguments.begin(), hdr_rearm_arguments.end());
     if (!execute_configuration(activate_arguments, "Remote Monitor topology activation")) {
       return false;
@@ -1657,6 +1865,12 @@ namespace platf::linux_private_display {
       return false;
     }
     const bool verified = wait_for_configuration([&](const json &current) {
+      // Base guard admission on the post-activation observation: KWin may
+      // change a previously disabled output while applying the new topology.
+      retiring_active_scanout = std::ranges::any_of(current["outputs"], [&](const auto &output) {
+        return connected(output) && enabled(output) &&
+               std::ranges::find(deactivate_arguments, "output." + output.value("name", std::string {}) + ".disable") != deactivate_arguments.end();
+      });
       return topology_matches(current) && std::ranges::all_of(desired, [&](const auto &entry) {
         if (!entry.owned_client) {
           return true;
@@ -1670,7 +1884,27 @@ namespace platf::linux_private_display {
       BOOST_LOG(error) << "Linux Remote Monitor: timed out verifying the composed mode/HDR/scale state.";
       return false;
     }
-    if (!execute_configuration(deactivate_arguments, "Remote Monitor topology retirement")) {
+    const bool retired = restore_policy::retire_with_capture_guard(retiring_active_scanout, [&]() -> std::optional<std::string> {
+      std::optional<std::string> guard;
+      const bool published = wait_for_configuration([&](const json &current) {
+        const auto capture_outputs = capture_output_names();
+        guard = restore_policy::select_capture_ready_guard(current, desired_names, capture_outputs);
+        return guard.has_value();
+      });
+      return published ? guard : std::nullopt;
+    }, [&](const std::string &guard) {
+      // Capture publication can take time. Reread KScreen immediately before
+      // retiring the previous scanout rather than trusting the earlier modeset.
+      const auto current = query_configuration();
+      const auto *output = current ? find_output(*current, guard) : nullptr;
+      return output && connected(*output) && enabled(*output);
+    }, [] {
+      return !process_shutdown_preserve_requested() && restore_allowed();
+    }, [&] {
+      return execute_configuration(deactivate_arguments, "Remote Monitor topology retirement");
+    });
+    if (!retired) {
+      BOOST_LOG(error) << "Linux Remote Monitor: capture-ready topology retirement was not confirmed; preserving the previous outputs.";
       return false;
     }
     for (const auto &entry : desired) {
@@ -1706,7 +1940,7 @@ namespace platf::linux_private_display {
             static_cast<int>(std::lround(output_refresh(*output))) == mode.refresh_hz &&
             output->value("hdr", false) == mode.hdr;
           if (mode_matches) {
-            const auto capture_outputs = platf::display_names(platf::mem_type_e::unknown);
+            const auto capture_outputs = capture_output_names();
             if (std::find(capture_outputs.begin(), capture_outputs.end(), *owned_output) != capture_outputs.end()) {
               return owned_output;
             }
@@ -1739,7 +1973,7 @@ namespace platf::linux_private_display {
     });
     if (!still_reserved) {
       const auto configuration = query_configuration();
-      const auto capture_outputs = platf::display_names(platf::mem_type_e::unknown);
+      const auto capture_outputs = capture_output_names();
       const bool has_capture_ready_survivor = configuration &&
                                               std::ranges::any_of((*configuration)["outputs"], [&](const json &output) {
                                                 const auto name = output.value("name", std::string {});
@@ -1774,8 +2008,23 @@ namespace platf::linux_private_display {
     return reservation == manager.reservations.end() ? std::nullopt : std::make_optional(reservation->second);
   }
 
-  static bool revert_locked(state_t &manager) {
+  static bool revert_locked(
+    state_t &manager,
+    restore_transaction::result_e *failure_result = nullptr,
+    const recovery_policy::target_policy_e target_policy = recovery_policy::target_policy_e::saved_baseline,
+    json *observed_topology = nullptr,
+    const std::map<std::string, std::string> *allowed_managed_identities = nullptr,
+    const bool require_dpms_on_before_retirement = false,
+    std::vector<std::string> *failed_managed_retirements = nullptr,
+    json *verified_physical_topology_before_retirement = nullptr
+  ) {
+    if (failure_result) *failure_result = restore_transaction::result_e::cancelled;
     if (process_shutdown_preserve_requested()) {
+      return false;
+    }
+    if (!restore_allowed()) return false;
+    const auto private_names = private_output_set();
+    if (!manager.snapshot && manager.reservations.empty() && private_names.empty()) {
       return true;
     }
     std::set<std::string> reserved_outputs;
@@ -1784,114 +2033,192 @@ namespace platf::linux_private_display {
     }
     const auto current = query_configuration();
     if (current) {
+      if (observed_topology) *observed_topology = *current;
       remember_reserved_scales(manager, *current);
     }
-    if (!manager.snapshot) {
-      if (!reserved_outputs.empty()) {
-        BOOST_LOG(warning) << "Linux private display: no saved replacement topology can guard connector release; preserving the current private scanout and releasing only process-local ownership.";
-      }
-      manager.reservations.clear();
-      manager.newly_connected_reservations.clear();
-      return true;
-    }
-    if (!current) {
+    if (!current || !restore_allowed()) {
       return false;
     }
-    const auto arguments = restore_arguments(*manager.snapshot, *current, reserved_outputs);
-    if (!arguments.guard_output) {
-      // A headless saved baseline, or a saved private output which is itself
-      // being retired, cannot authorize removing the compositor's last live
-      // scanout. Release only process-local client ownership; startup can
-      // retire the preserved connector after a distinct physical capture
-      // source exists.
-      BOOST_LOG(warning) << "Linux private display: no distinct connected saved output can guard topology restore; preserving the current private scanout.";
-      manager.snapshot.reset();
-      manager.reservations.clear();
-      manager.newly_connected_reservations.clear();
-      return true;
-    }
-    if (!execute_configuration(arguments.guard_activate, "topology restore guard activation")) {
-      return false;
-    }
-    const auto guard_snapshot = snapshot_for_output(*manager.snapshot, *arguments.guard_output);
-    if (!wait_for_snapshot_activation(guard_snapshot)) {
-      BOOST_LOG(error) << "Linux private display: saved output " << *arguments.guard_output
-                       << " did not activate as the topology restore guard; preserving the current private scanout.";
-      return false;
-    }
-    if (!wait_for_capture_publication(*arguments.guard_output)) {
-      BOOST_LOG(error) << "Linux private display: saved output " << *arguments.guard_output
-                       << " activated in KScreen but did not publish to the capture backend; preserving the current private scanout.";
-      return false;
-    }
-    BOOST_LOG(debug) << "Linux private display: capture-ready restore guard "
-                     << *arguments.guard_output << " is active.";
-    // Apply retirement and activation as one KScreen transaction. Activating
-    // every saved output before retiring the private output can exceed the
-    // compositor's max-active-output limit. The capture-ready guard above
-    // ensures this transaction cannot create a transient zero-output desktop.
-    std::vector<std::string> restore;
-    std::ranges::copy_if(arguments.deactivate, std::back_inserter(restore), [&](const auto &argument) {
-      // Keep every retiring scanout live until a distinct guard has survived
-      // the complete restore and the final capture-publication check.
-      return std::ranges::none_of(reserved_outputs, [&](const auto &retiring_output) {
-        return argument.starts_with("output." + retiring_output + ".");
-      });
+    load_snapshot_if_needed(manager);
+    auto restore_snapshot = manager.snapshot;
+    const bool has_enabled_physical_output = std::ranges::any_of((*current)["outputs"], [](const auto &output) {
+      return output.value("connected", false) && output.value("enabled", false) &&
+             !mode_policy::managed_connector_name(output.value("name", std::string {}));
     });
-    const auto guard_prefix = "output." + *arguments.guard_output + ".";
-    std::ranges::copy_if(arguments.activate, std::back_inserter(restore), [&](const auto &argument) {
-      // The guard is already in its exact saved state and capture-verified.
-      // Reissuing its mode/HDR properties here could retrain the physical link
-      // between verification and connector retirement.
-      return !argument.starts_with(guard_prefix);
-    });
-    if (!execute_configuration(restore, "topology restore")) {
-      return false;
-    }
-    if (!wait_for_snapshot_activation(*manager.snapshot)) {
-      BOOST_LOG(error) << "Linux private display: timed out activating the saved output topology.";
-      return false;
-    }
-    if (!wait_for_capture_publication(*arguments.guard_output)) {
-      BOOST_LOG(error) << "Linux private display: restore guard " << *arguments.guard_output
-                       << " lost capture publication before connector retirement; preserving the current private scanout.";
-      return false;
-    }
-    bool disconnected = true;
-    for (const auto &output_name : reserved_outputs) {
-      disconnected = disconnect_managed_output(output_name) && disconnected;
-    }
-    if (!disconnected) {
-      BOOST_LOG(error) << "Linux private display: restored topology but failed to disconnect one or more released outputs.";
-      return false;
-    }
-    // The broker acknowledgement precedes KWin's hotplug processing. Wait for
-    // removal before reapplying the baseline: KWin can load a different saved
-    // setup when the connected output set changes, including enabling a panel
-    // which was disabled before streaming.
-    if (!wait_for_configuration([&](const json &configuration) {
-          return std::ranges::all_of(reserved_outputs, [&](const auto &name) {
-            const auto *output = find_output(configuration, name);
-            return !output || !connected(*output);
-          });
-        }, true)) {
-      BOOST_LOG(error) << "Linux private display: timed out waiting for released outputs to disappear from KScreen.";
-      return false;
-    }
-    const auto settled = query_configuration();
-    if (!settled) {
-      return false;
-    }
-    if (!restore_policy::snapshot_matches(*manager.snapshot, *settled, true)) {
-      const auto final_arguments = restore_arguments(*manager.snapshot, *settled, reserved_outputs);
-      auto final_restore = final_arguments.deactivate;
-      final_restore.insert(final_restore.end(), final_arguments.activate.begin(), final_arguments.activate.end());
-      if (!execute_configuration(final_restore, "post-disconnect topology restore")) {
+    const bool preserve_live_physical_layout = recovery_policy::select_target(
+      target_policy, has_enabled_physical_output) == recovery_policy::target_e::live_physical_layout;
+    if (preserve_live_physical_layout) {
+      // Automatic recovery must respect physical choices made while an older
+      // snapshot was stranded. Keep the durable intent untouched until this
+      // live baseline has completed the guarded handoff below.
+      restore_snapshot = snapshot_policy::live_fallback(*current, private_names);
+      if (!restore_snapshot) {
+        BOOST_LOG(warning) << "Linux private display: automatic recovery has no enabled physical baseline; preserving saved topology.";
         return false;
       }
     }
-    if (!wait_for_snapshot_activation(*manager.snapshot, true)) {
-      BOOST_LOG(error) << "Linux private display: the pre-stream topology did not stabilize after connector retirement.";
+    auto managed = discover_managed_outputs();
+    if (allowed_managed_identities) {
+      std::erase_if(managed, [&](const auto &name) {
+        const auto expected = allowed_managed_identities->find(name);
+        return expected == allowed_managed_identities->end() ||
+               !managed_connector_identity_matches(name, expected->second);
+      });
+    }
+    if (!snapshot_policy::restore_needed(restore_snapshot, *current, {managed.begin(), managed.end()}, !manager.reservations.empty())) {
+      // Nothing acquired display ownership and no managed orphan remains.
+      // The user's current idle layout is authoritative.
+      return true;
+    }
+    const auto use_live_fallback = [&] {
+      const auto fallback = snapshot_policy::live_fallback(*current, private_names);
+      if (!fallback || !persist_snapshot(*fallback)) {
+        return false;
+      }
+      manager.snapshot = *fallback;
+      restore_snapshot = *fallback;
+      BOOST_LOG(info) << "Linux private display: recovering with the live enabled physical topology.";
+      return true;
+    };
+    if (!restore_snapshot && !use_live_fallback()) {
+      // No historical intent remains. Do not guess which deliberately
+      // disabled physical monitor should be enabled, or retire the last image.
+      BOOST_LOG(warning) << "Linux private display: no saved or active physical topology can guard connector release; preserving the current private scanout.";
+      manager.reservations.clear();
+      manager.newly_connected_reservations.clear();
+      return false;
+    }
+    // Restart has no process-local reservations, but its orphan connectors
+    // still need retirement once a distinct saved guard is capture-ready.
+    const auto remember_orphans = [&] {
+      const auto orphaned = snapshot_policy::retiring_outputs(
+        *restore_snapshot,
+        *current,
+        std::set<std::string> {managed.begin(), managed.end()}
+      );
+      reserved_outputs.insert(orphaned.begin(), orphaned.end());
+    };
+    remember_orphans();
+    auto arguments = restore_arguments(*restore_snapshot, *current, reserved_outputs);
+    if (!arguments.guard_output && !preserve_live_physical_layout && use_live_fallback()) {
+      restore_snapshot = manager.snapshot;
+      remember_orphans();
+      arguments = restore_arguments(*restore_snapshot, *current, reserved_outputs);
+    }
+    if (!arguments.guard_output) {
+      if (!restore_allowed()) return false;
+      if (failure_result) *failure_result = restore_transaction::result_e::no_guard;
+      BOOST_LOG(warning) << "Linux private display: no distinct connected saved output can guard topology restore; preserving the current private scanout and saved topology.";
+      manager.reservations.clear();
+      manager.newly_connected_reservations.clear();
+      return false;
+    }
+    struct operations_t {
+      const std::map<std::string, std::string> *allowed_managed_identities;
+      bool automatic_recovery;
+      bool require_dpms_on_before_retirement;
+      std::optional<std::string> guard_output;
+      std::vector<std::string> *failed_managed_retirements;
+      json *verified_physical_topology_before_retirement;
+      json verified_physical_topology;
+      bool topology_deactivation_applied {false};
+
+      phased_configuration_t plan(const json &snapshot, const json &current, const std::set<std::string> &retiring) {
+        return restore_arguments(snapshot, current, retiring);
+      }
+      bool configure(const std::vector<std::string> &arguments, const char *phase) {
+        const bool configured = execute_configuration(arguments, phase);
+        if (configured && std::string_view {phase} == "topology restore deactivation") {
+          topology_deactivation_applied = true;
+        }
+        return configured;
+      }
+      bool wait_snapshot(const json &snapshot, const bool final) {
+        return wait_for_snapshot_activation(snapshot, final);
+      }
+      bool wait_capture(const std::string &name) {
+        if (!wait_for_capture_publication(name)) return false;
+        if (automatic_recovery && topology_deactivation_applied && verified_physical_topology.is_null()) {
+          const auto fresh = query_configuration();
+          if (!fresh) return false;
+          verified_physical_topology = physical_topology_signature(*fresh);
+          if (verified_physical_topology_before_retirement) {
+            *verified_physical_topology_before_retirement = verified_physical_topology;
+          }
+        }
+        return true;
+      }
+      bool disconnect(const std::string &name) {
+        if (automatic_recovery) {
+          if (!restore_allowed()) return false;
+          const auto fresh = query_configuration();
+          if (!fresh || verified_physical_topology.is_null() ||
+              !recovery_policy::topology_still_matches(verified_physical_topology,
+                                                        physical_topology_signature(*fresh))) return false;
+          if (!guard_output || !wait_for_capture_publication(*guard_output) || !restore_allowed()) return false;
+          const auto power_deadline = restore_context ? restore_context->deadline :
+            std::chrono::steady_clock::now() + helper_reply_timeout;
+          const auto dpms_states = display_power::query_dpms_states(power_deadline);
+          const auto no_dpms_states = std::map<std::string, display_power::dpms_state_t> {};
+          bool guard_power_known_on = false;
+          for (const auto &output : verified_physical_topology) {
+            if (!output.is_object() || !output.value("connected", false) || !output.value("enabled", false)) continue;
+            const auto physical_name = output.value("name", std::string {});
+            if (physical_name.empty() || mode_policy::managed_connector_name(physical_name)) continue;
+            const auto observed_power = recovery_connector_state(
+              physical_name, dpms_states ? *dpms_states : no_dpms_states);
+            if (!observed_power.dpms_known) continue;
+            if (!observed_power.dpms_on) return false;
+            if (physical_name == *guard_output) guard_power_known_on = true;
+          }
+          if (require_dpms_on_before_retirement && !guard_power_known_on) return false;
+        }
+        if (allowed_managed_identities) {
+          const auto expected = allowed_managed_identities->find(name);
+          if (expected == allowed_managed_identities->end() ||
+              !managed_connector_identity_matches(name, expected->second)) {
+            if (failed_managed_retirements) failed_managed_retirements->push_back(name);
+            return false;
+          }
+        }
+        const bool disconnected = disconnect_managed_output(name);
+        if (!disconnected && failed_managed_retirements) failed_managed_retirements->push_back(name);
+        return disconnected;
+      }
+      bool wait_disconnected(const std::set<std::string> &names) {
+        const bool gone = wait_for_configuration([&](const json &configuration) {
+          return std::ranges::all_of(names, [&](const auto &name) {
+            const auto *output = find_output(configuration, name);
+            return !output || !connected(*output);
+          });
+        }, true);
+        if (!gone && failed_managed_retirements) {
+          failed_managed_retirements->insert(failed_managed_retirements->end(), names.begin(), names.end());
+        }
+        return gone;
+      }
+      std::optional<json> query() {
+        return query_configuration();
+      }
+      bool allowed() {
+        return !process_shutdown_preserve_requested() && restore_allowed();
+      }
+    } operations {
+      allowed_managed_identities,
+      target_policy == recovery_policy::target_policy_e::automatic_recovery,
+      require_dpms_on_before_retirement,
+      arguments.guard_output,
+      failed_managed_retirements,
+      verified_physical_topology_before_retirement,
+    };
+    const auto result = restore_transaction::perform_guarded_restore(*restore_snapshot, *current, reserved_outputs, operations);
+    if (result != restore_transaction::result_e::restored) {
+      if (failure_result) *failure_result = result;
+      BOOST_LOG(warning) << "Linux private display: " << restore_transaction::result_name(result)
+                         << "; preserving the saved topology and remaining connector ownership for recovery.";
+      return false;
+    }
+    if (!restore_allowed() || !statefile::save_linux_display_snapshot(std::nullopt)) {
       return false;
     }
     manager.snapshot.reset();
@@ -1901,58 +2228,563 @@ namespace platf::linux_private_display {
     return true;
   }
 
-  bool revert() {
-    cancel_scheduled_revert();
+  namespace {
+    struct failed_restore_incident_t {
+      recovery_policy::incident_t policy;
+      std::vector<std::string> physical_outputs;
+      std::map<std::string, std::string> managed_connector_identities;
+    };
+
+    enum class recovery_check_e { current, busy, stale };
+    enum class recovery_enqueue_e { queued, busy, stale };
+
+    bool recovery_owner_active() {
+      // The stream query covers pending launches, startup, active capture and
+      // teardown. A paused app can retain its managed identity after capture
+      // ends, so automatic recovery parks until that identity is released.
+      return stream::session::has_capture_runtime_owner() ||
+             proc::proc.current_app_id() > 0 ||
+             remote_display_topology::instance().has_live_managed_client_identity() ||
+             !remote_display_topology::instance().protected_remote_monitor_client_ids().empty() ||
+             nvhttp::has_remote_role_owner();
+    }
+
+    std::vector<std::string> recovery_physical_outputs(const json &snapshot, const json &observed) {
+      std::vector<std::string> result;
+      auto append = [&](const json &configuration, const bool enabled_only) {
+        if (!configuration.is_object()) return;
+        const auto outputs = configuration.find("outputs");
+        if (outputs == configuration.end() || !outputs->is_array()) return;
+        for (const auto &output : *outputs) {
+          if (!output.is_object()) continue;
+          const auto name = output.value("name", std::string {});
+          if (!name.empty() && (!enabled_only || output.value("enabled", false)) &&
+              !mode_policy::managed_connector_name(name)) {
+            result.push_back(name);
+          }
+        }
+      };
+      append(snapshot, true);
+      append(observed, false);
+      std::ranges::sort(result);
+      result.erase(std::unique(result.begin(), result.end()), result.end());
+      return result;
+    }
+
+    void stop_recovery_monitor(state_t &manager) {
+      std::jthread worker;
+      {
+        std::lock_guard lock {manager.recovery_monitor_mutex};
+        manager.recovery_monitor_stopping = true;
+        if (manager.recovery_monitor.joinable()) {
+          manager.recovery_monitor.request_stop();
+          worker = std::move(manager.recovery_monitor);
+        }
+      }
+      if (worker.joinable()) worker.join();
+    }
+
+    recovery_check_e recovery_incident_current(state_t &manager, const failed_restore_incident_t &incident) {
+      if (process_shutdown_preserve_requested() ||
+          helper_completion_unknown.load(std::memory_order_acquire) ||
+          manager.cleanup_generation.load(std::memory_order_acquire) != incident.policy.cleanup_generation ||
+          snapshot_owner() != incident.policy.session_owner) {
+        return recovery_check_e::stale;
+      }
+      std::unique_lock lock {manager.mutex, std::try_to_lock};
+      if (!lock.owns_lock()) return recovery_check_e::busy;
+      return manager.snapshot && manager.snapshot->dump() == incident.policy.snapshot_identity
+               ? recovery_check_e::current
+               : recovery_check_e::stale;
+    }
+
+    recovery_enqueue_e enqueue_failed_restore_recovery(
+      state_t &manager,
+      failed_restore_incident_t &incident,
+      const bool dpms_wake_observed
+    ) {
+      // Match the normal teardown lock order and inspect the broad caller and
+      // retained-monitor ownership before atomically validating the generation
+      // under the display mutex. A launch after this point must acquire the
+      // lifecycle gate before applying its display plan.
+      std::unique_lock lifecycle_lock {nvhttp::stream_lifecycle_mutex(), std::try_to_lock};
+      if (!lifecycle_lock.owns_lock()) return recovery_enqueue_e::busy;
+      if (recovery_owner_active()) return recovery_enqueue_e::stale;
+      std::unique_lock display_lock {manager.mutex, std::try_to_lock};
+      if (!display_lock.owns_lock()) return recovery_enqueue_e::busy;
+      if (!manager.snapshot || manager.snapshot->dump() != incident.policy.snapshot_identity) return recovery_enqueue_e::stale;
+      if (!recovery_policy::may_start(
+            incident.policy,
+            manager.cleanup_generation.load(std::memory_order_acquire),
+            snapshot_owner(),
+            manager.snapshot->dump(),
+            !helper_completion_unknown.load(std::memory_order_acquire),
+            false,
+            false,
+            process_shutdown_preserve_requested())) {
+        return recovery_enqueue_e::stale;
+      }
+      incident.policy.attempted = true;
+      const auto generation = incident.policy.cleanup_generation;
+      const auto expected_owner = incident.policy.session_owner;
+      const auto expected_snapshot = incident.policy.snapshot_identity;
+      const auto managed_identities = incident.managed_connector_identities;
+      const bool accepted = manager.restore_dispatcher.submit(generation,
+        [generation, expected_owner, expected_snapshot, managed_identities, dpms_wake_observed](std::stop_token stop) {
+          auto &manager = state();
+          stream::session::cleanup_reservation_t cleanup_reservation;
+          static constexpr std::array<std::chrono::milliseconds, 0> no_retry_delays {};
+          const auto result = cleanup_policy::run_delayed_restore_with_retries(
+            nvhttp::stream_lifecycle_mutex(), manager.mutex, manager.cleanup_generation, generation,
+            [] { return recovery_owner_active(); },
+            [&](const std::uint64_t claimed_generation, const auto deadline) {
+              const restore_context_t context {deadline, [&] {
+                return !stop.stop_requested() && !process_shutdown_preserve_requested() &&
+                       manager.cleanup_generation.load(std::memory_order_acquire) == claimed_generation;
+              }};
+              restore_context = &context;
+              auto context_guard = util::fail_guard([] { restore_context = nullptr; });
+              if (snapshot_owner() != expected_owner || !manager.snapshot ||
+                  manager.snapshot->dump() != expected_snapshot) {
+                return false;
+              }
+              restore_transaction::result_e failure = restore_transaction::result_e::cancelled;
+              json observed_before_restore;
+              json verified_physical_layout;
+              std::vector<std::string> failed_retirements;
+              const auto power_deadline = deadline;
+              if (!revert_locked(manager, &failure,
+                                 recovery_policy::target_policy_e::automatic_recovery,
+                                 &observed_before_restore,
+                                 &managed_identities,
+                                 dpms_wake_observed,
+                                 &failed_retirements,
+                                 &verified_physical_layout)) {
+                const bool connector_cleanup_failure =
+                  recovery_policy::solely_virtual_cleanup_failed(
+                    failure == restore_transaction::result_e::connector_disconnect_failed,
+                    failure == restore_transaction::result_e::connector_disappearance_failed);
+                std::ranges::sort(failed_retirements);
+                failed_retirements.erase(std::unique(failed_retirements.begin(), failed_retirements.end()),
+                                         failed_retirements.end());
+                if (!connector_cleanup_failure || failed_retirements.empty() ||
+                    !observed_before_restore.contains("outputs") || verified_physical_layout.is_null() || recovery_owner_active() ||
+                    !restore_allowed()) return false;
+
+                // The fallback is limited to connectors whose exact retirement
+                // failed in the guarded transaction. It is allowed only while
+                // KScreen still reports the same verified physical layout.
+                auto fresh = query_configuration();
+                if (!fresh || !recovery_policy::topology_still_matches(
+                                verified_physical_layout, physical_topology_signature(*fresh))) return false;
+                const auto guard = std::find_if(verified_physical_layout.begin(),
+                  verified_physical_layout.end(), [](const auto &output) {
+                    return output.is_object() && output.value("connected", false) &&
+                           output.value("enabled", false) &&
+                           !mode_policy::managed_connector_name(output.value("name", std::string {}));
+                  });
+                if (guard == verified_physical_layout.end()) return false;
+                const auto guard_name = guard->value("name", std::string {});
+                if (guard_name.empty() || !wait_for_capture_publication(guard_name) || !restore_allowed()) return false;
+                auto power = display_power::query_dpms_states(power_deadline);
+                const auto no_dpms_states = std::map<std::string, display_power::dpms_state_t> {};
+                auto guard_power = recovery_connector_state(guard_name, power ? *power : no_dpms_states);
+                if (guard_power.dpms_known && !guard_power.dpms_on) return false;
+                if (dpms_wake_observed && (!guard_power.dpms_known || !guard_power.dpms_on)) {
+                  return false;
+                }
+
+                for (const auto &name : failed_retirements) {
+                  if (!restore_allowed() || recovery_owner_active()) return false;
+                  const auto identity = managed_identities.find(name);
+                  if (identity == managed_identities.end() ||
+                      !managed_connector_identity_matches(name, identity->second)) return false;
+                  fresh = query_configuration();
+                  if (!fresh || !recovery_policy::topology_still_matches(
+                                  verified_physical_layout, physical_topology_signature(*fresh)) ||
+                      !wait_for_capture_publication(guard_name) || !restore_allowed()) return false;
+                  power = display_power::query_dpms_states(power_deadline);
+                  guard_power = recovery_connector_state(guard_name, power ? *power : no_dpms_states);
+                  if (guard_power.dpms_known && !guard_power.dpms_on) return false;
+                  if (dpms_wake_observed && (!guard_power.dpms_known || !guard_power.dpms_on)) {
+                    return false;
+                  }
+                  if (!disconnect_managed_output(name)) return false;
+                  const auto verify_deadline = std::chrono::steady_clock::now() + output_verification_timeout;
+                  if (!wait_for_configuration([&](const json &configuration) {
+                        const auto *output = find_output(configuration, name);
+                        return !output || !connected(*output);
+                      }, true) || std::chrono::steady_clock::now() > verify_deadline) return false;
+                  if (!managed_connector_verified_disconnected(name, identity->second)) return false;
+                  fresh = query_configuration();
+                  if (!fresh || !recovery_policy::topology_still_matches(
+                                  verified_physical_layout, physical_topology_signature(*fresh)) || !restore_allowed()) return false;
+                }
+                for (const auto &name : failed_retirements) {
+                  const auto identity = managed_identities.find(name);
+                  if (identity == managed_identities.end() ||
+                      !managed_connector_verified_disconnected(name, identity->second)) return false;
+                }
+                if (!wait_for_capture_publication(guard_name) || !restore_allowed() || recovery_owner_active() ||
+                    !statefile::save_linux_display_snapshot(std::nullopt)) return false;
+                manager.snapshot.reset();
+                manager.reservations.clear();
+                manager.newly_connected_reservations.clear();
+              }
+              auto reset_generation = manager.reset_generation.load(std::memory_order_acquire);
+              if (reset_generation && reset_generation <= claimed_generation && restore_allowed()) {
+                if (!statefile::save_linux_display_snapshot(std::nullopt)) return false;
+                manager.retained_scales.clear();
+                statefile::clear_virtual_display_scales();
+                (void) manager.reset_generation.compare_exchange_strong(reset_generation, 0, std::memory_order_acq_rel);
+              }
+              return true;
+            }, [] {
+              return !process_shutdown_preserve_requested() &&
+                     !helper_completion_unknown.load(std::memory_order_acquire);
+            }, no_retry_delays, stop, restore_operation_timeout, [](const std::uint64_t) {
+              if (!process_shutdown_preserve_requested() && !stream::session::has_capture_runtime_owner()) {
+                remote_display_topology::instance().complete_restored_normal_game_cleanup();
+              }
+            });
+          if (result == cleanup_policy::result_e::restored) {
+            BOOST_LOG(info) << "Linux display helper: one-shot guarded recovery completed.";
+          } else {
+            BOOST_LOG(warning) << "Linux display helper: one-shot guarded recovery did not complete; preserving the saved topology.";
+          }
+        });
+      if (!accepted) {
+        incident.policy.attempted = false;
+        return recovery_enqueue_e::busy;
+      }
+      return recovery_enqueue_e::queued;
+    }
+
+    void start_failed_restore_monitor(state_t &manager, failed_restore_incident_t incident) {
+      std::jthread previous;
+      {
+        std::lock_guard lock {manager.recovery_monitor_mutex};
+        if (manager.recovery_monitor_stopping || process_shutdown_preserve_requested()) return;
+        if (manager.recovery_monitor.joinable()) {
+          manager.recovery_monitor.request_stop();
+          previous = std::move(manager.recovery_monitor);
+        }
+      }
+      if (previous.joinable()) previous.join();
+
+      std::lock_guard lock {manager.recovery_monitor_mutex};
+      if (manager.recovery_monitor_stopping || process_shutdown_preserve_requested()) return;
+      manager.recovery_monitor = std::jthread([&manager, incident = std::move(incident)](std::stop_token stop) mutable {
+        recovery_policy::run_monitor_safely([&] {
+          recovery_policy::wake_event_tracker_t events;
+          recovery_policy::topology_change_tracker_t<json> physical_topology_events;
+          std::map<std::string, display_power::dpms_state_t> sampled_dpms;
+          bool ready = false;
+          bool dpms_wake_observed = false;
+          display_power::observe_events([&](const display_power::observation_t &event) {
+            const auto incident_state = recovery_incident_current(manager, incident);
+            if (incident_state == recovery_check_e::stale) return false;
+            if (event.kind == display_power::observation_t::kind_e::power) {
+              sampled_dpms[event.output] = event.power;
+              const auto sample = recovery_connector_state(event.output, sampled_dpms);
+              if (!ready) {
+                events.prime(event.output, sample);
+                return true;
+              }
+              const auto edge = events.observe(event.output, sample);
+              if (!edge) return true;
+              dpms_wake_observed = dpms_wake_observed || edge.dpms_woke;
+            } else if (event.kind == display_power::observation_t::kind_e::topology) {
+              if (!ready || mode_policy::managed_connector_name(event.output)) return true;
+            }
+            const auto observed_topology = query_configuration();
+            std::optional<json> observed_physical_signature;
+            if (observed_topology) {
+              auto signature = physical_topology_signature(*observed_topology);
+              if (!signature.is_null()) observed_physical_signature = std::move(signature);
+            }
+            if (event.kind == display_power::observation_t::kind_e::baseline_ready) {
+              ready = true;
+              if (observed_physical_signature) physical_topology_events.prime(*observed_physical_signature);
+              return true;
+            }
+            const bool topology_changed = physical_topology_events.observe(observed_physical_signature);
+            if (incident_state == recovery_check_e::busy || (!dpms_wake_observed && !topology_changed)) return true;
+            {
+              const restore_context_t context {
+                std::chrono::steady_clock::now() + helper_reply_timeout + output_verification_timeout,
+                [&] {
+                  return !stop.stop_requested() && !process_shutdown_preserve_requested() &&
+                         manager.cleanup_generation.load(std::memory_order_acquire) == incident.policy.cleanup_generation;
+                }
+              };
+              restore_context = &context;
+              auto context_guard = util::fail_guard([] { restore_context = nullptr; });
+              const auto &current = observed_topology;
+              if (current) {
+                const bool physical_target_verified = std::ranges::any_of(
+                  current->value("outputs", json::array()), [&](const auto &output) {
+                    if (!output.is_object() || !output.value("connected", false) ||
+                        mode_policy::managed_connector_name(output.value("name", std::string {}))) return false;
+                    const auto name = output.value("name", std::string {});
+                    const auto connector = recovery_connector_state(name, sampled_dpms);
+                    if (!connector.present() ||
+                        (connector.dpms_known && !connector.dpms_on)) return false;
+                    return !dpms_wake_observed || connector.dpms_known;
+                  });
+                if (physical_target_verified) {
+                  const auto queued = enqueue_failed_restore_recovery(manager, incident, dpms_wake_observed);
+                  if (queued == recovery_enqueue_e::queued || queued == recovery_enqueue_e::stale) return false;
+                }
+              }
+            }
+            return true;
+          }, [&] {
+            return !stop.stop_requested() && !process_shutdown_preserve_requested() &&
+                   manager.cleanup_generation.load(std::memory_order_acquire) == incident.policy.cleanup_generation;
+          });
+        }, [](const std::string_view detail) {
+          if (detail.empty()) {
+            BOOST_LOG(error) << "Linux display recovery monitor stopped after an unknown exception; saved topology is retained.";
+          } else {
+            BOOST_LOG(error) << "Linux display recovery monitor stopped: " << detail << "; saved topology is retained.";
+          }
+        });
+      });
+    }
+  }  // namespace
+
+  static bool dispatch_restore(std::chrono::milliseconds delay, std::string reason, bool reset) {
     if (process_shutdown_preserve_requested()) {
       return true;
     }
     auto &manager = state();
-    std::lock_guard lock {manager.mutex};
-    return revert_locked(manager);
+    const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    if (reset) {
+      // Coalescing later restores must retain an accepted persistence reset.
+      auto previous = manager.reset_generation.load(std::memory_order_acquire);
+      while (previous < generation &&
+             !manager.reset_generation.compare_exchange_weak(previous, generation, std::memory_order_acq_rel)) {}
+    }
+    const bool accepted = manager.restore_dispatcher.submit(generation,
+      [generation, reason = std::move(reason)](std::stop_token stop) {
+        auto &manager = state();
+        stream::session::cleanup_reservation_t cleanup_reservation;
+        constexpr std::array retry_delays {std::chrono::milliseconds(250), std::chrono::milliseconds(1000)};
+        unsigned attempt = 0;
+        std::optional<restore_transaction::result_e> last_transaction_failure;
+        std::optional<failed_restore_incident_t> failed_incident;
+        std::uint64_t last_claimed_generation = 0;
+        json last_observed_topology;
+        const auto result = cleanup_policy::run_delayed_restore_with_retries(
+          nvhttp::stream_lifecycle_mutex(), manager.mutex, manager.cleanup_generation, generation,
+          [] {
+            // Normal paused apps may reach their display timeout. Retained
+            // Remote Monitors remain owners even without an active transport.
+            return stream::session::has_capture_runtime_owner() ||
+                   !remote_display_topology::instance().protected_remote_monitor_client_ids().empty();
+          },
+          [&](const std::uint64_t claimed_generation, const auto deadline) {
+            ++attempt;
+            last_claimed_generation = claimed_generation;
+            last_transaction_failure.reset();
+            failed_incident.reset();
+            last_observed_topology = json {};
+            const restore_context_t context {deadline, [&] {
+              return !stop.stop_requested() && !process_shutdown_preserve_requested() &&
+                     manager.cleanup_generation.load(std::memory_order_acquire) == claimed_generation;
+            }};
+            restore_context = &context;
+            auto context_guard = util::fail_guard([] { restore_context = nullptr; });
+            BOOST_LOG(info) << "Linux display helper: restoring outputs (reason=" << reason << ", attempt=" << attempt << ").";
+            restore_transaction::result_e failure_result = restore_transaction::result_e::cancelled;
+            json observed_topology;
+            if (!revert_locked(manager, &failure_result,
+                               recovery_policy::target_policy_e::saved_baseline,
+                               &observed_topology)) {
+              if (failure_result != restore_transaction::result_e::cancelled) {
+                last_transaction_failure = failure_result;
+                if (observed_topology.contains("outputs")) {
+                  last_observed_topology = std::move(observed_topology);
+                }
+                if (!helper_completion_unknown.load(std::memory_order_acquire) &&
+                    manager.snapshot && snapshot_policy::valid(*manager.snapshot)) {
+                  failed_restore_incident_t candidate;
+                  candidate.policy.cleanup_generation = claimed_generation;
+                  candidate.policy.session_owner = snapshot_owner();
+                  candidate.policy.snapshot_identity = manager.snapshot->dump();
+                  candidate.policy.restore_callback_claimed = true;
+                  candidate.policy.transaction_failed = true;
+                  candidate.policy.helper_completion_known = true;
+                  candidate.physical_outputs = recovery_physical_outputs(*manager.snapshot, last_observed_topology);
+                  candidate.managed_connector_identities = managed_connector_identities();
+                  if (!candidate.physical_outputs.empty() && !candidate.managed_connector_identities.empty()) {
+                    failed_incident = std::move(candidate);
+                  }
+                }
+              }
+              return false;
+            }
+            auto reset_generation = manager.reset_generation.load(std::memory_order_acquire);
+            if (reset_generation && reset_generation <= claimed_generation && restore_allowed()) {
+              if (!statefile::save_linux_display_snapshot(std::nullopt)) {
+                return false;
+              }
+              manager.retained_scales.clear();
+              statefile::clear_virtual_display_scales();
+              (void) manager.reset_generation.compare_exchange_strong(reset_generation, 0, std::memory_order_acq_rel);
+            }
+            return true;
+          }, [] {
+            return !process_shutdown_preserve_requested() &&
+                   !helper_completion_unknown.load(std::memory_order_acquire);
+          }, retry_delays, stop, restore_operation_timeout, [](const std::uint64_t) {
+            // The lifecycle gate is still held and the display mutex released.
+            // Only a verified restore can retire ended logical roles; live
+            // capture and retained Remote Monitors remain protected.
+            if (!process_shutdown_preserve_requested() && !stream::session::has_capture_runtime_owner()) {
+              remote_display_topology::instance().complete_restored_normal_game_cleanup();
+            }
+          });
+        if (result == cleanup_policy::result_e::failed) {
+          BOOST_LOG(error) << "Linux display helper: restore failed; preserving saved topology (reason=" << reason << ").";
+          const auto current_generation = manager.cleanup_generation.load(std::memory_order_acquire);
+          if (last_transaction_failure && failed_incident && last_claimed_generation != 0 &&
+              recovery_policy::failed_claim_is_current(last_claimed_generation, current_generation) &&
+              !helper_completion_unknown.load(std::memory_order_acquire) &&
+              !process_shutdown_preserve_requested()) {
+            // The incident was bound while the claimed callback held both
+            // lifecycle and display gates; avoid a second lock race that could
+            // silently discard a valid recovery ticket.
+            start_failed_restore_monitor(manager, std::move(*failed_incident));
+          }
+        } else if (result == cleanup_policy::result_e::restored) {
+          BOOST_LOG(info) << "Linux display helper: restore completed (reason=" << reason << ").";
+        } else {
+          BOOST_LOG(debug) << "Linux display helper: restore superseded or still owned (reason=" << reason << ").";
+        }
+      }, std::max(delay, std::chrono::milliseconds::zero()));
+    if (!accepted) BOOST_LOG(warning) << "Linux display helper: restore request was not accepted.";
+    return accepted;
+  }
+
+  bool revert() {
+    return dispatch_restore({}, "immediate restore", false);
   }
 
   bool reset_persistence() {
-    if (!revert()) {
-      return false;
-    }
-    auto &manager = state();
-    std::lock_guard lock {manager.mutex};
-    manager.snapshot.reset();
-    manager.reservations.clear();
-    manager.retained_scales.clear();
-    manager.newly_connected_reservations.clear();
-    statefile::clear_virtual_display_scales();
-    return true;
+    return dispatch_restore({}, "reset display persistence", true);
   }
 
   void schedule_revert(const std::chrono::milliseconds delay, std::string reason) {
-    auto &manager = state();
-    const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
-    std::thread([delay, generation, reason = std::move(reason)]() {
-      std::this_thread::sleep_for(delay);
-      stream::session::cleanup_reservation_t cleanup_reservation;
-      auto &delayed_manager = state();
-      (void) cleanup_policy::run_delayed_restore(
-        nvhttp::stream_lifecycle_mutex(),
-        delayed_manager.mutex,
-        delayed_manager.cleanup_generation,
-        generation,
-        [] {
-          // A paused normal app may intentionally reach its display timeout.
-          // Retained Remote Monitors remain owners even without a transport.
-          return stream::session::has_capture_runtime_owner() ||
-                 !remote_display_topology::instance().protected_remote_monitor_client_ids().empty();
-        },
-        [&] {
-          BOOST_LOG(info) << "Linux private display: " << reason << " elapsed; restoring outputs.";
-          return revert_locked(delayed_manager);
-        }
-      );
-    }).detach();
+    (void) dispatch_restore(delay, std::move(reason), false);
   }
 
   void cancel_scheduled_revert() {
-    state().cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
+    auto &manager = state();
+    const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    manager.restore_dispatcher.cancel(generation);
+  }
+
+  void shutdown_restore_worker(bool drain) {
+    auto &manager = state();
+    // A passive recovery waiter must never keep standalone shutdown's drain
+    // alive. Sysfs polling checks stop every two seconds; a single in-flight
+    // KScreen query can delay the join by at most its ten-second reply bound.
+    stop_recovery_monitor(manager);
+    if (drain) manager.restore_dispatcher.drain();
+    manager.restore_dispatcher.stop();
+  }
+
+  static bool recover_emergency_physical_display() {
+    if (!restore_allowed()) return false;
+    auto current = query_configuration();
+    if (!current || !restore_allowed()) return false;
+    if (emergency_policy::physical_active(*current)) return true;
+    // The explicit emergency action authorizes activating a disabled monitor.
+    // Keep failed saved intent intact; this is a temporary usable desktop.
+    for (const auto &candidate : emergency_policy::physical_candidates(*current)) {
+      if (!restore_allowed()) return false;
+      current = query_configuration();
+      if (!current || !restore_allowed()) return false;
+      if (emergency_policy::physical_active(*current)) return true;
+      const auto name = candidate.value("name", std::string {});
+      const auto *present = find_output(*current, name);
+      if (!present || !connected(*present)) continue;
+      const auto arguments = output_activation_arguments(candidate, present, name);
+      if (arguments.empty() || !execute_configuration(arguments, "emergency physical recovery")) continue;
+      if (wait_for_snapshot_activation(json {{"outputs", json::array({candidate})}})) {
+        BOOST_LOG(info) << "Linux private display: emergency recovery activated physical output " << name << '.';
+        return true;
+      }
+    }
+    BOOST_LOG(warning) << "Linux private display: emergency recovery could not verify an active physical output.";
+    return false;
+  }
+
+  termination_result_t terminate_all() {
+    auto &manager = state();
+    stream::session::cleanup_reservation_t cleanup_reservation;
+    const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    manager.restore_dispatcher.cancel(generation);
+    termination_result_t result;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds {90};
+    const auto outcome = cleanup_policy::run_delayed_restore(
+      nvhttp::stream_lifecycle_mutex(), manager.mutex, manager.cleanup_generation, generation,
+      [] { return true; },
+      [&] {
+        const auto claimed_generation = generation + 1;
+        auto valid = [&] {
+          return !process_shutdown_preserve_requested() &&
+                 manager.cleanup_generation.load(std::memory_order_acquire) == claimed_generation;
+        };
+        restore_context_t context {std::min(deadline, std::chrono::steady_clock::now() + restore_operation_timeout), valid};
+        restore_context = &context;
+        auto context_guard = util::fail_guard([] { restore_context = nullptr; });
+        manager.reset_generation.store(0, std::memory_order_release);
+        // Discover the entire driver pool, not only configured or reserved slots.
+        // Never send disconnect commands for physical or other drivers' outputs.
+        const auto outputs = discover_managed_outputs();
+        const auto terminated = cleanup_policy::terminate_outputs(outputs,
+          [&] {
+            context.deadline = std::min(deadline, std::chrono::steady_clock::now() + restore_operation_timeout);
+            const bool restored = revert_locked(manager);
+            context.deadline = deadline;
+            return restored;
+          },
+          [](const std::string &name) { return disconnect_managed_output(name); },
+          [&](const auto &names) {
+            const auto verify_deadline = std::min(deadline, std::chrono::steady_clock::now() + output_verification_timeout);
+            do {
+              if (!restore_allowed()) return false;
+              const bool disconnected = std::ranges::all_of(names, [](const auto &name) {
+                const auto path = connector_sysfs_path(name);
+                if (path.empty()) return false;
+                std::ifstream status {std::filesystem::path {path} / "status"};
+                std::string value;
+                return status >> value && value == "disconnected";
+              });
+              if (disconnected) return true;
+              std::this_thread::sleep_for(std::chrono::milliseconds {50});
+            } while (std::chrono::steady_clock::now() < verify_deadline);
+            return false;
+          }, [&] { return valid() && restore_allowed(); });
+        result = {terminated.topology_restored, terminated.virtual_displays_removed};
+        if (result.virtual_displays_removed) {
+          result.physical_display_recovered = recover_emergency_physical_display();
+          manager.reservations.clear();
+          manager.newly_connected_reservations.clear();
+        }
+        return result.virtual_displays_removed;
+      }, {}, deadline, [](const std::uint64_t) {
+        // Drop logical owners only after verified removal and outside the display
+        // lock. This avoids compositor callbacks recreating a terminated output.
+        remote_display_topology::instance().shutdown(true);
+      }, cleanup_policy::admission_e::override_owners);
+    result.virtual_displays_removed = outcome == cleanup_policy::result_e::restored;
+    BOOST_LOG(info) << "Linux private display: terminal cleanup removed=" << result.virtual_displays_removed
+                    << ", restored=" << result.topology_restored << '.';
+    return result;
   }
 
   bool capable() {
@@ -1994,6 +2826,10 @@ namespace platf::linux_private_display {
 
   std::vector<std::string> private_output_names() {
     return configured_outputs();
+  }
+
+  std::size_t client_output_capacity() {
+    return configured_client_output_capacity(configured_outputs(), discover_managed_outputs(), connector_is_connected);
   }
 
   std::optional<display_device::EnumeratedDeviceList> enumerate_devices(

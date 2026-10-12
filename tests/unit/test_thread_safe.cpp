@@ -265,6 +265,35 @@ TEST(ThreadSafeQueueTests, TryRaiseRejectsOverflowWithoutDiscardingQueuedValues)
   EXPECT_FALSE(queue.try_raise(4));
 }
 
+TEST(ThreadSafeQueueTests, DiscardMatchingProducerPreservesOtherQueueItemsAndReadiness) {
+  using namespace std::chrono_literals;
+  using message_t = std::pair<int, int>;
+  safe::queue_t<message_t> queue {4};
+  queue.try_raise(1, 10);
+  queue.try_raise(2, 20);
+  queue.try_raise(1, 11);
+  queue.try_raise(3, 30);
+
+  queue.discard_if([](const message_t &message) { return message.first == 1; });
+  EXPECT_TRUE(queue.peek());
+  ASSERT_TRUE(queue.try_raise(2, 21));
+  const auto second = queue.pop(0ms);
+  ASSERT_TRUE(second);
+  EXPECT_EQ(*second, message_t(2, 20));
+  const auto third = queue.pop(0ms);
+  ASSERT_TRUE(third);
+  EXPECT_EQ(*third, message_t(3, 30));
+
+  queue.discard_if([](const message_t &) { return true; });
+  EXPECT_FALSE(queue.peek());
+  EXPECT_TRUE(queue.running());
+  EXPECT_FALSE(queue.pop(0ms));
+  queue.stop();
+  queue.discard_if([](const message_t &) { return true; });
+  EXPECT_FALSE(queue.running());
+  EXPECT_FALSE(queue.try_raise(1, 12));
+}
+
 TEST(ThreadSafeEventTests, PeekAndRunningTrackPublishedEventState) {
   safe::event_t<int> event;
   EXPECT_TRUE(event.running());

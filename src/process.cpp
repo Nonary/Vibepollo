@@ -62,6 +62,7 @@
 #endif
 #ifdef _WIN32
   #include "config_playnite.h"
+  #include "platform/windows/dualsense_launch_policy.h"
   #include "platform/windows/display.h"
   #include "platform/windows/frame_limiter.h"
   #include "platform/windows/ipc/misc_utils.h"
@@ -1035,6 +1036,7 @@ namespace proc {
       _active_client_uuid(std::move(other._active_client_uuid)),
       _active_client_vdd_identity_token(other._active_client_vdd_identity_token),
       placebo(other.placebo),
+      _app_focus(std::move(other._app_focus)),
       _steam_tracker(std::move(other._steam_tracker)),
       _steam_process_controller(std::move(other._steam_process_controller)),
       _steam_tracking_active(other._steam_tracking_active),
@@ -1044,6 +1046,7 @@ namespace proc {
       _process(std::move(other._process)),
       _process_group(std::move(other._process_group)),
 #ifdef _WIN32
+      _dualsense_usbip_session(std::move(other._dualsense_usbip_session)),
       _virtual_display_guid(other._virtual_display_guid),
       _virtual_display_active(other._virtual_display_active),
       _runtime_output_override_lease(std::exchange(other._runtime_output_override_lease, std::nullopt)),
@@ -1062,6 +1065,8 @@ namespace proc {
   {
 #ifdef _WIN32
     _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
+    _deferred_launch = other._deferred_launch.load(std::memory_order_acquire);
+    _dualsense_ready_deadline = other._dualsense_ready_deadline;
     other._lossless_profile_applied = false;
 #endif
   }
@@ -1081,6 +1086,7 @@ namespace proc {
       _active_client_uuid = std::move(other._active_client_uuid);
       _active_client_vdd_identity_token = other._active_client_vdd_identity_token;
       placebo = other.placebo;
+      _app_focus = std::move(other._app_focus);
       _steam_tracker = std::move(other._steam_tracker);
       _steam_process_controller = std::move(other._steam_process_controller);
       _steam_tracking_active = other._steam_tracking_active;
@@ -1097,6 +1103,9 @@ namespace proc {
         (void) config::clear_runtime_output_name_override_if_lease(*_runtime_output_override_lease);
       }
       _runtime_output_override_lease = std::exchange(other._runtime_output_override_lease, std::nullopt);
+      _dualsense_usbip_session = std::move(other._dualsense_usbip_session);
+      _dualsense_ready_deadline = other._dualsense_ready_deadline;
+      _deferred_launch = other._deferred_launch.load(std::memory_order_acquire);
       _lossless_thread = std::move(other._lossless_thread);
       _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
       _lossless_profile_applied = other._lossless_profile_applied;
@@ -1354,23 +1363,28 @@ namespace proc {
     system_tray::update_tray_playing(_app_name);
 #endif
   }
-  int proc_t::execute(const ctx_t &app, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {
+  int proc_t::execute(const ctx_t &app, std::shared_ptr<rtsp_stream::launch_session_t> launch_session, bool config_read_gate_held) {
 #ifdef _WIN32
     std::optional<std::filesystem::path> resolved_lossless_exe_path;
     std::string resolved_lossless_exe_utf8;
     _virtual_display_active = false;
     _virtual_display_guid = GUID {};
+    _dualsense_usbip_session.reset();
+    _dualsense_ready_deadline = {};
+    _env["VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING"] = "";
+    _env["VIBEPOLLO_DUALSENSE_HAPTICS_DLL"] = "";
     _deferred_launch = false;
     _lossless_should_start_support = false;
     _lossless_metadata = {};
 #endif
     if (_app_id == input_only_app_id) {
-      terminate(false, false, false, true);
+      terminate(false, false, false, true, config_read_gate_held);
       std::this_thread::sleep_for(1s);
     } else {
       // Ensure starting from a clean slate
-      const bool skip_display_revert = launch_session && launch_session->display_config_preapplied;
-      terminate(false, false, skip_display_revert, true);
+      const bool skip_display_revert = launch_session &&
+                                      (launch_session->display_config_preapplied || launch_session->display_config_preapply_attempted);
+      terminate(false, false, skip_display_revert, true, config_read_gate_held);
     }
 
 #ifdef __linux__
@@ -1386,6 +1400,7 @@ namespace proc {
     _app_id = util::from_view(app.id);
     audio::app_started();
 #ifdef _WIN32
+    platf::dualsense_usbip_gamepad::set_application_active(true);
     // A replacement app owns the streaming display configuration. Any
     // restore deferred by the previous app must not fire at this session's end.
     clear_deferred_display_revert();
@@ -2354,17 +2369,17 @@ namespace proc {
     }
 #endif
 
-    return launch_app_commands(true);
+    return launch_app_commands(true, config_read_gate_held);
   }
 
-  int proc_t::launch_app_commands(bool stream_lifecycle_lock_held) {
+  int proc_t::launch_app_commands(bool stream_lifecycle_lock_held, bool config_read_gate_held) {
     std::error_code ec;
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
 
     // Executed when returning from function on failure
     auto fg = util::fail_guard([&]() {
-      terminate(false, true, false, stream_lifecycle_lock_held);
+      terminate(false, true, false, stream_lifecycle_lock_held, config_read_gate_held);
     });
 
 #ifdef _WIN32
@@ -2373,6 +2388,25 @@ namespace proc {
     // of whether the launched process remains trackable.
     platf::cache_screen_saver_state();
 
+    if (_app.dualsense_haptics) {
+      if (!_dualsense_usbip_session) {
+        _dualsense_usbip_session = platf::dualsense_usbip_gamepad::start_session();
+        if (!_dualsense_usbip_session) {
+          BOOST_LOG(error) << "DualSense waveform haptics requires the optional DualSense USB audio and haptics driver component. Modify the Windows installation to enable it.";
+          return -1;
+        }
+      }
+      // Input arrives after the application request, through the new RTSP
+      // session. Return a live deferred application while USB/HID/audio
+      // enumerate; waiting here would prevent the client from connecting.
+      if (!platf::dualsense_usbip_gamepad::has_ready_controller()) {
+        _dualsense_ready_deadline = std::chrono::steady_clock::now() + 30s;
+        _deferred_launch = true;
+        BOOST_LOG(info) << "Waiting for the streamed DualSense controller and its Windows haptic audio endpoint before launching '" << _app.name << "'.";
+        fg.disable();
+        return 0;
+      }
+    }
     std::unordered_set<DWORD> lossless_baseline_pids;
     bool lossless_monitor_started = false;
     std::string lossless_install_dir_hint;
@@ -2488,7 +2522,7 @@ namespace proc {
             BOOST_LOG(info) << "Playnite plugin update available (" << installed_ver
                             << " -> " << packaged_ver << "), auto-updating before launch";
             std::string install_error;
-            if (platf::playnite::install_plugin(install_error)) {
+            if (platf::playnite::install_plugin(install_error, true)) {
               BOOST_LOG(info) << "Playnite plugin auto-update succeeded";
             } else {
               BOOST_LOG(warning) << "Playnite plugin auto-update failed: " << install_error
@@ -2504,6 +2538,7 @@ namespace proc {
       }
 
       BOOST_LOG(info) << "Launching Playnite game via helper, id=" << _app.playnite_id;
+      _env["SUNSHINE_PLAYNITE_INSTALL_DIR"] = config::playnite.install_dir;
       bool launched = false;
       // Resolve launcher alongside sunshine.exe: tools\\playnite-launcher.exe
       try {
@@ -2521,17 +2556,7 @@ namespace proc {
           }
         } catch (...) {}
         // Pass focus attempts from config so the helper can try to bring Playnite/game to foreground
-        try {
-          if (config::playnite.focus_attempts > 0) {
-            cmd += std::string(" --focus-attempts ") + std::to_string(config::playnite.focus_attempts);
-          }
-          if (config::playnite.focus_timeout_secs > 0) {
-            cmd += std::string(" --focus-timeout ") + std::to_string(config::playnite.focus_timeout_secs);
-          }
-          if (config::playnite.focus_exit_on_first) {
-            cmd += std::string(" --focus-exit-on-first");
-          }
-        } catch (...) {}
+        cmd += managed_app_focus::launcher_arguments(managed_app_focus::settings);
         std::error_code fec;
         boost::filesystem::path wd;  // empty wd
         _process = platf::run_command(false, true, cmd, wd, _env, _pipe.get(), fec, &_process_group);
@@ -2578,6 +2603,7 @@ namespace proc {
 #ifdef _WIN32
       if (_app.playnite_fullscreen) {
       BOOST_LOG(info) << "Launching Playnite in fullscreen via helper";
+      _env["SUNSHINE_PLAYNITE_INSTALL_DIR"] = config::playnite.install_dir;
       bool launched = false;
       try {
         WCHAR exePathW[MAX_PATH] = {};
@@ -2586,17 +2612,7 @@ namespace proc {
         std::filesystem::path launcher = exeDir / L"tools" / L"playnite-launcher.exe";
         std::string lpath = launcher.string();
         std::string cmd = std::string("\"") + lpath + "\" --fullscreen";
-        try {
-          if (config::playnite.focus_attempts > 0) {
-            cmd += std::string(" --focus-attempts ") + std::to_string(config::playnite.focus_attempts);
-          }
-          if (config::playnite.focus_timeout_secs > 0) {
-            cmd += std::string(" --focus-timeout ") + std::to_string(config::playnite.focus_timeout_secs);
-          }
-          if (config::playnite.focus_exit_on_first) {
-            cmd += std::string(" --focus-exit-on-first");
-          }
-        } catch (...) {}
+        cmd += managed_app_focus::launcher_arguments(managed_app_focus::settings);
         std::error_code fec;
         boost::filesystem::path wd;  // empty wd
         _process = platf::run_command(false, true, cmd, wd, _env, _pipe.get(), fec, &_process_group);
@@ -2667,7 +2683,8 @@ namespace proc {
         }
       }
       BOOST_LOG(info) << "Executing: ["sv << _app.cmd << "] in ["sv << working_dir << ']';
-      _process = platf::run_command(_app.elevated, true, _app.cmd, working_dir, _env, _pipe.get(), ec, &_process_group);
+      std::string launch_command = _app.cmd;
+      _process = platf::run_command(_app.elevated, true, launch_command, working_dir, _env, _pipe.get(), ec, &_process_group);
       if (ec) {
         BOOST_LOG(warning) << "Couldn't run ["sv << _app.cmd << "]: System: "sv << ec.message();
         return -1;
@@ -2698,6 +2715,13 @@ namespace proc {
     }
 #endif
 
+    if (_app.playnite_id.empty() && (!_app.steam_id.empty() || !_app.lutris_id.empty())) {
+      const bool steam = !_app.steam_id.empty();
+      _app_focus = managed_app_focus::start({steam ? "steam" : "lutris",
+        steam ? _app.steam_id : _app.lutris_id,
+        steam ? _app.steam_install_dir : _app.lutris_directory}, managed_app_focus::settings);
+    }
+
     _app_launch_time = std::chrono::steady_clock::now();
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
@@ -2710,23 +2734,43 @@ namespace proc {
 
   int proc_t::running() {
 #ifndef _WIN32
-    // On POSIX OSes, we must periodically wait for our children to avoid
-    // them becoming zombies. This must be synchronized carefully with
-    // calls to bp::wait() and platf::process_group_running() which both
-    // invoke waitpid() under the hood.
+    // Detached launchers still need collecting, but other children retain
+    // their own wait status (Boost, provider scans and GLib helpers).
     auto reaper = util::fail_guard([]() {
-      while (waitpid(-1, nullptr, WNOHANG) > 0);
+      bp::child::reap_detached();
     });
 #endif
 
 #ifdef _WIN32
     if (_deferred_launch) {
+      // Discovery and the control thread can observe readiness together.
+      // Admit exactly one launch/cleanup owner without blocking discovery
+      // behind another stream lifecycle operation.
+      std::unique_lock deferred_lock {nvhttp::stream_lifecycle_mutex(), std::try_to_lock};
+      if (!deferred_lock.owns_lock() || !_deferred_launch) {
+        return _app_id;
+      }
       if (platf::is_running_as_system()) {
         HANDLE user_token = platf::dxgi::retrieve_users_token(false);
         if (!user_token) {
           return _app_id;
         }
         CloseHandle(user_token);
+      }
+      const bool waiting_for_controller = static_cast<bool>(_dualsense_usbip_session);
+      const auto readiness = dualsense_launch::evaluate(
+        waiting_for_controller,
+        waiting_for_controller && platf::dualsense_usbip_gamepad::has_ready_controller(),
+        _dualsense_ready_deadline,
+        std::chrono::steady_clock::now()
+      );
+      if (readiness == dualsense_launch::decision::wait) {
+        return _app_id;
+      }
+      if (readiness == dualsense_launch::decision::timed_out) {
+        BOOST_LOG(error) << "DualSense launch timed out waiting for the streamed controller and its Windows haptic audio endpoint. Check the optional driver installation and use a compatible Moonlight client with a waveform-capable DualSense.";
+        terminate(false, true, false, true);
+        return 0;
       }
       std::optional<int> rtss_warmup_limit;
       if (_lossless_metadata.enabled && _lossless_metadata.rtss_limit && *_lossless_metadata.rtss_limit > 0) {
@@ -2780,12 +2824,16 @@ namespace proc {
           BOOST_LOG(info) << "RTSS warmup " << (running ? "complete" : "timeout") << " after deferred login.";
         }
       }
-      BOOST_LOG(info) << "User session detected; resuming deferred launch for app '" << _app.name << "'.";
+      BOOST_LOG(info) << "Deferred launch is ready; starting app '" << _app.name << "'.";
       _deferred_launch = false;
-      int err = launch_app_commands(false);
+      int err = launch_app_commands(true);
       if (err != 0) {
         BOOST_LOG(error) << "Deferred launch failed; terminating session.";
         return 0;
+      }
+      // A login-deferred launch may now be waiting for the first controller.
+      if (_deferred_launch) {
+        return _app_id;
       }
     }
 #endif
@@ -2834,11 +2882,12 @@ namespace proc {
 
     if (placebo) {
       return _app_id;
-    } else if (_app.wait_all && _process_group && platf::process_group_running((std::uintptr_t) _process_group.native_handle())) {
-      // The app is still running if any process in the group is still running
-      return _app_id;
     } else if (_process.running()) {
-      // The app is still running only if the initial process launched is still running
+      // Checking the owned child is cheap and collects its exact exit status.
+      // Only inspect the rest of the group after this child has exited.
+      return _app_id;
+    } else if (_app.wait_all && _process_group && platf::process_group_running((std::uintptr_t) _process_group.native_handle())) {
+      // A launcher may exit before the game processes in its group.
       return _app_id;
     } else if (_app.auto_detach && std::chrono::steady_clock::now() - _app_launch_time < 5s) {
       BOOST_LOG(info) << "App exited with code ["sv << _process.native_exit_code() << "] within 5 seconds of launch. Treating the app as a detached command."sv;
@@ -3098,7 +3147,8 @@ namespace proc {
     bool immediate,
     bool needs_refresh,
     bool skip_display_revert,
-    bool stream_lifecycle_lock_held
+    bool stream_lifecycle_lock_held,
+    bool config_read_gate_held
   ) {
 #ifdef __linux__
     // This owner represents a running-Steam handoff. Dropping it when the
@@ -3110,6 +3160,9 @@ namespace proc {
       stream_lifecycle_lock =
         std::unique_lock<std::mutex> {nvhttp::stream_lifecycle_mutex()};
     }
+
+    // Stop launch-time focus work before tearing down the application.
+    _app_focus.reset();
 
     // Mark termination before process teardown so a concurrent final audio
     // owner restores directly instead of retaining state for the ended app.
@@ -3130,6 +3183,10 @@ namespace proc {
     placebo = false;
     std::chrono::seconds remaining_timeout = _app.exit_timeout;
 #ifdef _WIN32
+    _dualsense_usbip_session.reset();
+    _dualsense_ready_deadline = {};
+    _env["VIBEPOLLO_DUALSENSE_HAPTICS_MAPPING"] = "";
+    _env["VIBEPOLLO_DUALSENSE_HAPTICS_DLL"] = "";
     _deferred_launch = false;
     _lossless_should_start_support = false;
     stop_lossless_scaling_support();
@@ -3319,7 +3376,7 @@ namespace proc {
     if (should_dispatch_revert && skip_display_revert) {
 #ifdef _WIN32
       clear_deferred_display_revert();
-      BOOST_LOG(info) << "Skipping display revert during app replacement because the new session has already applied its display configuration.";
+      BOOST_LOG(info) << "Skipping display revert during app replacement because the new session owns startup display setup.";
 #endif
     } else if (should_dispatch_revert && !other_streaming_session_active) {
 #ifdef _WIN32
@@ -3351,6 +3408,9 @@ namespace proc {
     _active_client_vdd_identity_token = 0;
     _app_launch_time = {};
     _app_id = -1;
+#ifdef _WIN32
+    platf::dualsense_usbip_gamepad::set_application_active(false);
+#endif
     _app_name.clear();
     _app = {};
     display_name.clear();
@@ -3372,7 +3432,12 @@ namespace proc {
     // If we can safely hot-apply immediately, restore global config now; otherwise defer.
     if (has_run) {
       config::clear_runtime_config_overrides();
-      if (!other_streaming_session_active) {
+      // A failed launch can reach this tail while its caller still holds the
+      // configuration read gate. Applying here would deadlock on the write
+      // gate and retain the lifecycle mutex, blocking every subsequent launch.
+      // The caller restores config after releasing its read gate on failure;
+      // otherwise the deferred reload waits for the next idle transition.
+      if (!other_streaming_session_active && !config_read_gate_held) {
         config::apply_config_now();
       } else {
         config::mark_deferred_reload();
@@ -4431,6 +4496,7 @@ namespace proc {
             ctx.config_overrides = std::move(normalized_overrides);
           }
 
+        ctx.dualsense_haptics = util::get_non_string_json_value<bool>(app_node, "dualsense-haptics", false);
         ctx.frame_gen_limiter_fix = util::get_non_string_json_value<bool>(app_node, "frame-gen-limiter-fix", util::get_non_string_json_value<bool>(app_node, "dlss-framegen-limiter-fix", false));
         ctx.elevated = util::get_non_string_json_value<bool>(app_node, "elevated", false);
         ctx.virtual_screen = util::get_non_string_json_value<bool>(app_node, "virtual-screen", false);

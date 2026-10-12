@@ -7,6 +7,11 @@ import { AppButton, StatusBadge } from '@/components/ui';
 import type { StatusTone } from '@/components/ui/types';
 
 interface GoldenStatus {
+  maintenance_available?: boolean;
+  session_current_exists?: boolean;
+  session_previous_exists?: boolean;
+  restore_task_state?: 'enabled' | 'disabled' | 'missing' | 'unavailable';
+  helper_engine?: 'legacy' | 'v2';
   exists?: boolean;
   needs_layout_upgrade?: boolean;
   out_of_date?: boolean;
@@ -18,6 +23,7 @@ interface MutationResponse {
 }
 
 const props = defineProps<{
+  maintenanceAvailable: boolean | null;
   hotkey?: unknown;
   modifiers?: unknown;
   preferGolden?: unknown;
@@ -27,6 +33,7 @@ const emit = defineEmits<{
   'update:hotkey': [value: string];
   'update:modifiers': [value: string];
   'update:preferGolden': [value: boolean];
+  'maintenance-status': [available: boolean | null];
 }>();
 
 const { t } = useI18n();
@@ -105,8 +112,10 @@ const goldenState = computed<{ label: string; detail: string; tone: StatusTone }
 async function loadGoldenStatus(): Promise<void> {
   statusLoading.value = true;
   statusError.value = '';
+  emit('maintenance-status', null);
   try {
     golden.value = await apiGet<GoldenStatus>('/api/display/golden_status');
+    emit('maintenance-status', golden.value.maintenance_available !== false);
   } catch {
     golden.value = null;
     statusError.value = t('ui.settings.recovery.status_error');
@@ -116,7 +125,7 @@ async function loadGoldenStatus(): Promise<void> {
 }
 
 async function captureGoldenSnapshot(): Promise<void> {
-  if (captureBusy.value) return;
+  if (captureBusy.value || props.maintenanceAvailable !== true) return;
   const confirmation = golden.value?.exists
     ? t('ui.settings.recovery.replace_confirm')
     : t('ui.settings.recovery.create_confirm');
@@ -216,11 +225,20 @@ onMounted(() => void loadGoldenStatus());
         "
         :busy="captureBusy"
         :busy-label="t('ui.settings.recovery.saving_snapshot')"
-        :disabled="statusLoading"
+        :disabled="statusLoading || (golden !== null && maintenanceAvailable !== true)"
         variant="secondary"
         @click="golden ? captureGoldenSnapshot() : loadGoldenStatus()"
       />
 
+      <p v-if="maintenanceAvailable !== true" role="status">
+        {{
+          t(
+            maintenanceAvailable === false
+              ? 'troubleshooting.dd_maintenance_disabled'
+              : 'troubleshooting.dd_maintenance_unavailable',
+          )
+        }}
+      </p>
       <div class="recovery-preference">
         <div class="recovery-item__copy">
           <div class="recovery-item__title">

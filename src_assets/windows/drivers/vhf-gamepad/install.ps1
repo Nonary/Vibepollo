@@ -1,9 +1,14 @@
 [CmdletBinding()]
 param(
     [switch] $Uninstall,
-    [switch] $InstallerBestEffort,
+    [ValidateSet(0, 1)]
+    [int]$DailyUnsignedPolicy = 0,
+    [switch]$InstallerBestEffort,
     [ValidateSet(0, 1)]
     [int] $AllowLocalTestCertificate = 0,
+    [ValidateSet(0, 1)]
+    [int] $AllowLocalGamepadCertificateTrust = 0,
+    [string] $ConsentCertificateThumbprint = '',
     [ValidateSet(0, 1)]
     [int] $RemoveDriverStorePackage = 0
 )
@@ -26,11 +31,11 @@ $manifestPayload = @(
 )
 $localTestCertificate = 'driver/VibeshineVhfGamepad.cer'
 $expectedProducerRepository = 'Nonary/libvirtualgamepad'
-$expectedProducerTag = 'v0.1.0-beta.6'
-$expectedProducerAsset = 'libvirtualgamepad-0.1.0-beta.6-windows-x64.zip'
-$expectedProducerArchiveSha256 = 'a45a8ae27d2764ad26a4b89d43d1e2dc43510d84bddd5899aac7c80499754782'
-$expectedProducerSourceRevision = '4b56fb9da177f320fb2d7ddb1b6262e5d55d2750'
-$expectedDriverVer = '09/22/2026,0.1.0.39'
+$expectedProducerTag = 'v0.1.0-beta.7'
+$expectedProducerAsset = 'libvirtualgamepad-0.1.0-beta.7-windows-x64.zip'
+$expectedProducerArchiveSha256 = '56e57fc70b9c3fdc5dfd0f44f01255275c114711b46521224204a385cde3a6e2'
+$expectedProducerSourceRevision = '9edbce11ad71e9455867c356c8368a6b39fa2242'
+$expectedDriverVer = '10/04/2026,0.1.0.48'
 $expectedProtocolVersion = 2
 $expectedSignPathFoundationSignerSubject = 'CN=SignPath Foundation, O=SignPath Foundation, L=Lewes, S=Delaware, C=US'
 
@@ -50,6 +55,82 @@ $downstreamSignedFiles = @(
     'tools/VibeshineVhfGamepadDeviceSetup.exe'
 )
 $rebootExitCode = 3010
+
+# DRIVER_INSTALL_SAFETY_BEGIN
+# Kept inline so pinned producer packages do not need a new runtime file.
+function ConvertTo-DriverComponentVersion {
+    param([string]$Value)
+    if ($Value -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw "Unknown driver component version: '$Value'. Driver unchanged." }
+    foreach ($part in $Value.Split('.')) {
+        if ([uint64]$part -gt 65535) { throw "Invalid driver component version: '$Value'. Driver unchanged." }
+    }
+    return [version]$Value
+}
+
+function Get-InfComponentVersion {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $inVersion = $false
+    $versions = @()
+    foreach ($line in (Get-Content -LiteralPath $Path -ErrorAction Stop)) {
+        $text = ($line -split ';', 2)[0].Trim()
+        if ($text -match '^\[(.+)\]$') { $inVersion = $Matches[1] -ieq 'Version'; continue }
+        if ($inVersion -and $text -match '^DriverVer\s*=\s*[^,]+,\s*(\S+)\s*$') {
+            $versions += ConvertTo-DriverComponentVersion $Matches[1]
+        }
+    }
+    if ($versions.Count -ne 1) { throw "Missing or ambiguous INF DriverVer: $Path. Driver unchanged." }
+    return $versions[0]
+}
+
+function Test-SafeDriverInstall {
+    param(
+        [Parameter(Mandatory = $true)][string]$InfPath,
+        [Parameter(Mandatory = $true)][string]$CatalogPath,
+        [Parameter(Mandatory = $true)][string]$HardwareId,
+        [string]$WarningMarker = 'VIRTUAL_DISPLAY_DRIVER_WARNING',
+        [bool]$LocalTestPackage = $false,
+        [bool]$AllowUntrustedLocalPackage = $false
+    )
+    $target = Get-InfComponentVersion $InfPath
+    $infName = [IO.Path]::GetFileName($InfPath)
+    # Both queries must succeed. An empty successful query means missing;
+    # errors, missing active versions, and unreadable store INFs mean unknown.
+    $packages = @(Get-WindowsDriver -Online -All -ErrorAction Stop | Where-Object {
+        [IO.Path]::GetFileName([string]$_.OriginalFileName) -ieq $infName
+    })
+    $devices = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
+        ([string]$_.DeviceID).StartsWith($HardwareId, [StringComparison]::OrdinalIgnoreCase) -or
+        ([string]$_.HardwareID).Equals($HardwareId, [StringComparison]::OrdinalIgnoreCase)
+    })
+    $installed = @()
+    foreach ($device in $devices) {
+        # CIM reports the active INF's numeric DriverVersion (not DriverDate).
+        $installed += ConvertTo-DriverComponentVersion ([string]$device.DriverVersion)
+    }
+    foreach ($package in $packages) {
+        $path = [string]$package.OriginalFileName
+        if (-not [IO.Path]::IsPathRooted($path)) {
+            if ([string]$package.Driver -notmatch '^oem\d+\.inf$') {
+                throw 'Unknown published INF identity. Driver unchanged.'
+            }
+            $path = Join-Path (Join-Path $env:windir 'INF') ([string]$package.Driver)
+        }
+        $installed += Get-InfComponentVersion $path
+    }
+    if (@($installed | Where-Object { $_ -ge $target }).Count -gt 0) {
+        Write-Host "Driver component $target skipped: an equal or newer active/Driver Store component exists; installed driver retained."
+        return $false
+    }
+    $signature = Get-AuthenticodeSignature -LiteralPath $CatalogPath -ErrorAction Stop
+    $signer = $signature.SignerCertificate
+    if ($null -eq $signer -or ($signature.Status -ne 'Valid' -and
+        (-not ($LocalTestPackage -and $AllowUntrustedLocalPackage -and
+            [string]$signature.Status -in @('NotTrusted', 'UnknownError'))))) {
+        throw "$WarningMarker`: Driver component $target is missing or newer, but its catalog is unsigned or not trusted by Windows. Installed driver retained. Catalog signature status: $($signature.Status); detail: $($signature.StatusMessage). Windows requires deliberate trust/security setup before this local driver can be used; manual security review is required. Self-signed artifacts require existing Windows trust or independent validation and informed exact-certificate recipient consent; platform security policy may still reject the driver. This installer changes local certificate trust only after independent package validation and exact-certificate recipient consent. It never changes Secure Boot or enables test signing."
+    }
+    return $true
+}
+# DRIVER_INSTALL_SAFETY_END
 
 function Write-DriverMessage {
     param([Parameter(Mandatory = $true)][string] $Message)
@@ -331,33 +412,233 @@ function Assert-ManifestPayloadContract {
     }
 }
 
-function Ensure-LocalTestCertificateTrusted {
+function Assert-LocalTestCertificateIdentity {
     param(
         [Parameter(Mandatory = $true)][string] $CertificatePath,
         [Parameter(Mandatory = $true)] $CatalogSignature,
         [Parameter(Mandatory = $true)] $ToolSignature
     )
 
-    $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($CertificatePath)
+    $certificate = Get-PublicLocalGamepadCertificate -CertificatePath $CertificatePath
     $thumbprint = Get-Thumbprint -Certificate $certificate
     if ((Get-Thumbprint -Certificate $CatalogSignature.SignerCertificate) -ne $thumbprint -or
         (Get-Thumbprint -Certificate $ToolSignature.SignerCertificate) -ne $thumbprint) {
         throw '[VibeshineVhfGamepad] Local-test certificate does not match every signed package artifact.'
     }
+    return $certificate
+}
 
-    foreach ($store in @('Cert:\LocalMachine\Root', 'Cert:\LocalMachine\TrustedPublisher')) {
-        $existing = @(Get-ChildItem -Path $store -ErrorAction Stop | Where-Object {
-            $_.Thumbprint.Replace(' ', '').ToUpperInvariant() -eq $thumbprint
-        })
-        if ($existing.Count -eq 0) {
-            Import-Certificate -FilePath $CertificatePath -CertStoreLocation $store | Out-Null
-            Write-DriverMessage "Trusted the explicit local-test certificate in $store."
+function Initialize-LocalGamepadTrustValidation {
+    if ('VhfLocalTrustValidation' -as [type]) { return }
+    Add-Type -ReferencedAssemblies @('System', 'System.Core', 'System.Security') -TypeDefinition @"
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography.Pkcs;
+public static class VhfLocalTrustValidation {
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct FileInfo {
+        public uint Size; [MarshalAs(UnmanagedType.LPWStr)] public string Path; public IntPtr File, Subject;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct TrustData {
+        public uint Size; public IntPtr Callback, Sip; public uint UI, Revocation, Choice;
+        public IntPtr File; public uint StateAction; public IntPtr StateData;
+        public IntPtr Url; public uint Flags, Context; public IntPtr SignatureSettings;
+    }
+    [DllImport("wintrust.dll", ExactSpelling=true, CharSet=CharSet.Unicode)]
+    static extern int WinVerifyTrust(IntPtr window, ref Guid action, ref TrustData data);
+    [DllImport("wintrust.dll", ExactSpelling=true, CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern IntPtr CryptCATOpen(string path, uint flags, IntPtr provider, uint version, uint encoding);
+    [DllImport("wintrust.dll", SetLastError=true)] static extern bool CryptCATClose(IntPtr catalog);
+    [DllImport("wintrust.dll", SetLastError=true)] static extern IntPtr CryptCATEnumerateMember(IntPtr catalog, IntPtr previous);
+    [DllImport("wintrust.dll", ExactSpelling=true, CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern bool CryptCATAdminAcquireContext2(out IntPtr context, IntPtr subsystem, string algorithm, IntPtr policy, uint flags);
+    [DllImport("wintrust.dll", SetLastError=true)]
+    static extern bool CryptCATAdminCalcHashFromFileHandle2(IntPtr context, IntPtr file, ref uint length, byte[] hash, uint flags);
+    [DllImport("wintrust.dll", SetLastError=true)] static extern bool CryptCATAdminReleaseContext(IntPtr context, uint flags);
+    [StructLayout(LayoutKind.Sequential)] struct MemberHead { public uint Size; public IntPtr Tag, FileName; }
+    static void CheckCms(byte[] encoded, string expectedThumbprint) {
+        var cms = new SignedCms(); cms.Decode(encoded);
+        if (cms.SignerInfos.Count != 1 || cms.SignerInfos[0].Certificate == null ||
+            !String.Equals(cms.SignerInfos[0].Certificate.Thumbprint, expectedThumbprint, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Package CMS signer is not the exact consent certificate.");
+        cms.CheckSignature(true); // Cryptographic verification; no chain trust is granted.
+    }
+    static byte[] PeCms(string path) {
+        byte[] bytes=File.ReadAllBytes(path);
+        if (bytes.Length<64 || BitConverter.ToUInt16(bytes,0)!=0x5a4d) throw new InvalidOperationException("Invalid signed PE file.");
+        int pe=BitConverter.ToInt32(bytes,0x3c);
+        if (pe<0 || pe>bytes.Length-160 || BitConverter.ToUInt32(bytes,pe)!=0x4550) throw new InvalidOperationException("Invalid PE header.");
+        int optional=pe+24; ushort magic=BitConverter.ToUInt16(bytes,optional);
+        int directories=magic==0x20b ? optional+112 : magic==0x10b ? optional+96 : -1;
+        if (directories<0 || directories>bytes.Length-40) throw new InvalidOperationException("Invalid PE directories.");
+        uint offset=BitConverter.ToUInt32(bytes,directories+32), size=BitConverter.ToUInt32(bytes,directories+36);
+        if (offset>bytes.Length-8 || size<8 || (ulong)offset+size>(ulong)bytes.Length) throw new InvalidOperationException("Missing PE signature.");
+        uint length=BitConverter.ToUInt32(bytes,(int)offset);
+        if (length<8 || length>size || BitConverter.ToUInt16(bytes,(int)offset+6)!=2 || ((length+7u)&~7u)!=size)
+            throw new InvalidOperationException("Unsupported or ambiguous PE signatures.");
+        byte[] encoded=new byte[length-8]; Buffer.BlockCopy(bytes,(int)offset+8,encoded,0,encoded.Length); return encoded;
+    }
+    static void CheckWindowsSignature(string path) {
+        var file=new FileInfo { Size=(uint)Marshal.SizeOf(typeof(FileInfo)), Path=path };
+        IntPtr pointer=Marshal.AllocHGlobal(Marshal.SizeOf(typeof(FileInfo)));
+        try {
+            Marshal.StructureToPtr(file,pointer,false);
+            var data=new TrustData { Size=(uint)Marshal.SizeOf(typeof(TrustData)), UI=2, Choice=1, File=pointer, StateAction=1, Flags=0x1010 };
+            Guid action=new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+            try {
+                int status=WinVerifyTrust(new IntPtr(-1),ref action,ref data);
+                if (status!=0 && unchecked((uint)status)!=0x800B0109u)
+                    throw new InvalidOperationException("Windows signature integrity/chain validation failed: 0x"+unchecked((uint)status).ToString("X8"));
+            } finally { data.StateAction=2; WinVerifyTrust(new IntPtr(-1),ref action,ref data); }
+        } finally { Marshal.DestroyStructure(pointer,typeof(FileInfo)); Marshal.FreeHGlobal(pointer); }
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct CatalogInfo {
+        public uint Size, Version;
+        [MarshalAs(UnmanagedType.LPWStr)] public string Catalog, Tag, Member;
+        public IntPtr File, Hash; public uint HashLength; public IntPtr CatalogContext, Admin;
+    }
+    static bool CheckCatalogMember(string catalog, string path, string tag, string algorithm) {
+        IntPtr context;
+        if (!CryptCATAdminAcquireContext2(out context,IntPtr.Zero,algorithm,IntPtr.Zero,0)) throw new InvalidOperationException("Catalog hash context unavailable.");
+        try {
+            using(var stream=File.Open(path,FileMode.Open,FileAccess.Read,FileShare.Read)) {
+                uint length=0; IntPtr file=stream.SafeFileHandle.DangerousGetHandle();
+                if (!CryptCATAdminCalcHashFromFileHandle2(context,file,ref length,null,0) || length==0) throw new InvalidOperationException("Catalog member hash unavailable.");
+                byte[] hash=new byte[length];
+                if (!CryptCATAdminCalcHashFromFileHandle2(context,file,ref length,hash,0)) throw new InvalidOperationException("Catalog member hash failed.");
+                var pinned=GCHandle.Alloc(hash,GCHandleType.Pinned);
+                IntPtr pointer=Marshal.AllocHGlobal(Marshal.SizeOf(typeof(CatalogInfo)));
+                try {
+                    var info=new CatalogInfo { Size=(uint)Marshal.SizeOf(typeof(CatalogInfo)), Catalog=Path.GetFullPath(catalog), Tag=tag,
+                        Member=Path.GetFullPath(path), File=file, Hash=pinned.AddrOfPinnedObject(), HashLength=length, Admin=context };
+                    Marshal.StructureToPtr(info,pointer,false);
+                    var data=new TrustData { Size=(uint)Marshal.SizeOf(typeof(TrustData)), UI=2, Choice=2, File=pointer, StateAction=1, Flags=0x1010 };
+                    Guid action=new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+                    try {
+                        int status=WinVerifyTrust(new IntPtr(-1),ref action,ref data);
+                        return status==0 || unchecked((uint)status)==0x800B0109u;
+                    } finally { data.StateAction=2; WinVerifyTrust(new IntPtr(-1),ref action,ref data); }
+                } finally { Marshal.DestroyStructure(pointer,typeof(CatalogInfo)); Marshal.FreeHGlobal(pointer); pinned.Free(); }
+            }
+        } finally { CryptCATAdminReleaseContext(context,0); }
+    }
+    public static void VerifyCatalog(string catalog, string thumbprint, string[] memberFiles) {
+        CheckCms(File.ReadAllBytes(catalog),thumbprint); CheckWindowsSignature(catalog);
+        IntPtr handle=CryptCATOpen(catalog,0,IntPtr.Zero,0x200,0);
+        if(handle==new IntPtr(-1) || handle==IntPtr.Zero) throw new InvalidOperationException("Cannot open driver catalog.");
+        try {
+            var tags=new System.Collections.Generic.List<string>();
+            IntPtr member=IntPtr.Zero;
+            while((member=CryptCATEnumerateMember(handle,member))!=IntPtr.Zero) {
+                var entry=(MemberHead)Marshal.PtrToStructure(member,typeof(MemberHead));
+                tags.Add(Marshal.PtrToStringUni(entry.Tag));
+            }
+            foreach(string path in memberFiles) {
+                bool verified=false;
+                foreach(string tag in tags) {
+                    if (CheckCatalogMember(catalog,path,tag,"SHA256") || CheckCatalogMember(catalog,path,tag,"SHA1")) { verified=true; break; }
+                }
+                if (!verified) throw new InvalidOperationException("Driver file is not authenticated by this catalog: "+path);
+            }
+        } finally { CryptCATClose(handle); }
+    }
+    public static void VerifyTool(string tool, string thumbprint) { CheckCms(PeCms(tool),thumbprint); CheckWindowsSignature(tool); }
+    public static void Verify(string catalog, string tool, string thumbprint, string[] memberFiles) {
+        VerifyCatalog(catalog,thumbprint,memberFiles);
+        VerifyTool(tool,thumbprint);
+    }
+}
+"@
+}
+
+function Assert-LocalGamepadCertificatePolicy {
+    param([Parameter(Mandatory = $true)]$Certificate)
+    if ($certificate.Subject -cne $certificate.Issuer -or $certificate.HasPrivateKey -or
+        [DateTime]::Now -lt $certificate.NotBefore -or [DateTime]::Now -gt $certificate.NotAfter) {
+        throw 'Local gamepad certificate must be a currently valid self-issued public certificate.'
+    }
+    $constraints = @($certificate.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.19' })
+    $usage = @($certificate.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.37' })
+    if ($constraints.Count -ne 1 -or $constraints[0].CertificateAuthority -or $usage.Count -ne 1 -or
+        @($usage[0].EnhancedKeyUsages | Where-Object { $_.Value -eq '1.3.6.1.5.5.7.3.3' }).Count -ne 1 -or
+        @($usage[0].EnhancedKeyUsages).Count -ne 1) {
+        throw 'Local gamepad trust is restricted to a non-CA certificate used only for code signing.'
+    }
+}
+
+function Get-PublicLocalGamepadCertificate {
+    param([string]$CertificatePath)
+    $bytes = [IO.File]::ReadAllBytes($CertificatePath)
+    if ([Security.Cryptography.X509Certificates.X509Certificate2]::GetCertContentType($bytes) -ne [Security.Cryptography.X509Certificates.X509ContentType]::Cert) {
+        throw 'Local gamepad payload must contain a public DER certificate, never PKCS#12/key material.'
+    }
+    return [Security.Cryptography.X509Certificates.X509Certificate2]::new($bytes)
+}
+
+function Assert-LocalGamepadCryptographicPackage {
+    param([Parameter(Mandatory = $true)]$Certificate, [string]$CatalogPath, [string]$ToolPath, [string]$InfPath, [string]$DriverDllPath)
+    Assert-LocalGamepadCertificatePolicy -Certificate $Certificate
+    Initialize-LocalGamepadTrustValidation
+    [VhfLocalTrustValidation]::Verify($CatalogPath, $ToolPath, $Certificate.Thumbprint.ToUpperInvariant(), @($InfPath, $DriverDllPath))
+}
+function Add-ValidatedLocalGamepadCertificate {
+    param([Parameter(Mandatory = $true)]$Certificate, [ValidateSet('Root', 'TrustedPublisher')][string]$StoreName)
+    $store = [Security.Cryptography.X509Certificates.X509Store]::new($StoreName, 'LocalMachine')
+    try {
+        $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        if ($store.Certificates.Find([Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $Certificate.Thumbprint, $false).Count -gt 0) { return $false }
+        $store.Add($Certificate)
+        return $true
+    } finally { $store.Close() }
+}
+
+function Remove-AddedLocalGamepadTrust {
+    param($State)
+    if ($null -eq $State) { return }
+    foreach ($name in @($State.AddedStores)) {
+        try { Remove-ValidatedLocalGamepadCertificate -Certificate $State.Certificate -StoreName $name } catch {
+            Write-Warning "Unable to roll back newly added gamepad certificate $($State.Certificate.Thumbprint) in LocalMachine\${name}: $($_.Exception.Message)"
         }
     }
 }
 
+function Remove-ValidatedLocalGamepadCertificate {
+    param([Parameter(Mandatory = $true)]$Certificate, [ValidateSet('Root', 'TrustedPublisher')][string]$StoreName)
+    $store = [Security.Cryptography.X509Certificates.X509Store]::new($StoreName, 'LocalMachine')
+    try {
+        $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        $matches = $store.Certificates.Find([Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $Certificate.Thumbprint, $false)
+        foreach ($exactCertificate in $matches) { $store.Remove($exactCertificate) }
+    } finally { $store.Close() }
+}
+
+function Ensure-ConsentedLocalGamepadTrust {
+    param([Parameter(Mandatory = $true)]$Certificate, [int]$Consent = 0, [string]$ConsentThumbprint = '')
+    $thumbprint = Get-Thumbprint $Certificate
+    $state = [pscustomobject]@{ Certificate = $Certificate; AddedStores = @() }
+    $missingStores = @()
+    foreach ($name in @('Root', 'TrustedPublisher')) {
+        $present = @(Get-ChildItem -LiteralPath "Cert:\LocalMachine\$name" -ErrorAction Stop | Where-Object { (Get-Thumbprint $_) -ceq $thumbprint })
+        if ($present.Count -eq 0) { $missingStores += $name }
+    }
+    if ($missingStores.Count -eq 0) { return $state }
+    if ($Consent -ne 1 -or $ConsentThumbprint -notmatch '^[0-9a-fA-F]{40}$' -or $ConsentThumbprint.ToUpperInvariant() -cne $thumbprint) {
+        throw "VIRTUAL_GAMEPAD_DRIVER_WARNING: Explicit recipient consent is required to trust bundled certificate '$($Certificate.Subject)' ($thumbprint) in LocalMachine Root and TrustedPublisher. Trust persists and can authorize other code signed by this key. A new daily certificate requires new consent. Driver retained; no trust changes made."
+    }
+    Write-DriverMessage "Recipient approved persistent machine-wide trust of '$($Certificate.Subject)' ($thumbprint) for this validated VHF package."
+    try {
+        foreach ($name in $missingStores) {
+            if (Add-ValidatedLocalGamepadCertificate -Certificate $Certificate -StoreName $name) { $state.AddedStores += $name }
+        }
+        return $state
+    } catch {
+        Remove-AddedLocalGamepadTrust -State $state
+        throw
+    }
+}
+
 function Assert-DriverPackage {
-    param([Parameter(Mandatory = $true)][string] $Root)
+    param([Parameter(Mandatory = $true)][string] $Root, [switch]$AllowUntrustedLocalPackage)
 
     foreach ($relativePath in $packageFiles) {
         Assert-File -Path (Join-Path $Root ($relativePath -replace '/', '\\'))
@@ -382,9 +663,6 @@ function Assert-DriverPackage {
     $certificatePath = Join-Path $Root ($localTestCertificate -replace '/', '\\')
     $hasLocalCertificate = Test-Path -LiteralPath $certificatePath -PathType Leaf
     if ($hasLocalCertificate) {
-        if ($AllowLocalTestCertificate -eq 0) {
-            throw '[VibeshineVhfGamepad] Refusing a local-test package without -AllowLocalTestCertificate 1.'
-        }
         if ($manifest.signing.channel -ne 'self-signed-local-test') {
             throw '[VibeshineVhfGamepad] A production manifest must not include a local-test certificate.'
         }
@@ -430,13 +708,26 @@ function Assert-DriverPackage {
     Assert-ReleaseLock -Root $Root -Manifest $manifest -CatalogSignature $catalogSignature -ToolSignature $toolSignature
 
     if ($hasLocalCertificate) {
-        Ensure-LocalTestCertificateTrusted -CertificatePath $certificatePath -CatalogSignature $catalogSignature -ToolSignature $toolSignature
+        $localCertificate = Assert-LocalTestCertificateIdentity -CertificatePath $certificatePath -CatalogSignature $catalogSignature -ToolSignature $toolSignature
         $catalogSignature = Get-AuthenticodeSignature -LiteralPath $catalogPath
         $toolSignature = Get-AuthenticodeSignature -LiteralPath $toolPath
     }
 
-    if ($catalogSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
-        $toolSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+    $validatedLocalCertificate = $null
+    if ($hasLocalCertificate -and $AllowUntrustedLocalPackage) {
+        $manifestParts = @($manifest.driver_ver -split ',')
+        if ($manifestParts.Count -ne 2 -or (Get-InfComponentVersion (Join-Path $Root 'driver/VibeshineVhfGamepad.inf')) -ne (ConvertTo-DriverComponentVersion $manifestParts[1].Trim())) {
+            throw 'Local gamepad manifest does not match the actual INF component version.'
+        }
+        Assert-LocalGamepadCryptographicPackage -Certificate $localCertificate -CatalogPath $catalogPath -ToolPath $toolPath -InfPath (Join-Path $Root 'driver/VibeshineVhfGamepad.inf') -DriverDllPath (Join-Path $Root 'driver/VibeshineVhfGamepad.dll')
+        $validatedLocalCertificate = $localCertificate
+    }
+    # PowerShell can map an untrusted self-signed root to UnknownError. This
+    # is eligible only after the native verifier proved the exact CMS signer,
+    # Windows signature integrity (success or CERT_E_UNTRUSTEDROOT only), and
+    # catalog membership. It is never permission to stage an untrusted driver.
+    $allowedStatuses = if ($null -ne $validatedLocalCertificate) { @('Valid', 'NotTrusted', 'UnknownError') } else { @('Valid') }
+    if ([string]$catalogSignature.Status -notin $allowedStatuses -or [string]$toolSignature.Status -notin $allowedStatuses) {
         throw '[VibeshineVhfGamepad] Catalog or root-device setup tool is not trusted by this Windows installation.'
     }
 
@@ -444,6 +735,8 @@ function Assert-DriverPackage {
         InfPath = Join-Path $Root 'driver/VibeshineVhfGamepad.inf'
         SetupToolPath = $toolPath
         ProductionPublisherCertificate = $productionPublisherCertificate
+        LocalCertificate = $validatedLocalCertificate
+        CatalogPath = $catalogPath
     }
 }
 
@@ -502,39 +795,56 @@ function Remove-DriverStorePackage {
 
 function Install-DriverPackage {
     Assert-Administrator
-    $package = Assert-DriverPackage -Root $PSScriptRoot
-    if ($null -ne $package.ProductionPublisherCertificate) {
-        Ensure-ProductionPublisherTrusted `
-            -PublisherCertificate $package.ProductionPublisherCertificate `
-            -ExpectedSubject $expectedSignPathFoundationSignerSubject
-    }
-    # PnPUtil performs Windows' catalog-to-INF/DLL membership validation while
-    # it stages the package. The installed product deliberately does not ship
-    # SDK-only signtool.exe just to repeat that platform validation.
-    $pnputilExitCode = Invoke-PnpUtil -Arguments @('/add-driver', $package.InfPath)
-    & $package.SetupToolPath install --inf $package.InfPath | Out-Host
-    $setupExitCode = $LASTEXITCODE
-    if ($setupExitCode -ne 0 -and $setupExitCode -ne $rebootExitCode) {
-        throw "[VibeshineVhfGamepad] Root-device setup failed with exit code $setupExitCode."
-    }
-    # The setup tool's zero exit code is a stronger result than PnPUtil's
-    # advisory 3010: it has reloaded the exact owned source node, opened its
-    # private interface, completed the versioned query handshake, and (when
-    # PnP requested a restart) attested the selected DriverVer. Do not request
-    # a reboot that Windows no longer needs just because the initial Driver
-    # Store staging step asked for one.
-    if ($setupExitCode -eq 0) {
-        if ($pnputilExitCode -eq $rebootExitCode) {
-            Write-DriverMessage 'Windows requested restart while staging the package, but the VHF source device is live now.'
+    $localTest = Test-Path -LiteralPath (Join-Path $PSScriptRoot 'driver/VibeshineVhfGamepad.cer')
+    if (-not (Test-SafeDriverInstall -InfPath (Join-Path $PSScriptRoot 'driver/VibeshineVhfGamepad.inf') -CatalogPath (Join-Path $PSScriptRoot 'driver/VibeshineVhfGamepad.cat') -HardwareId 'ROOT\VIBESHINEVIRTUALGAMEPAD' -WarningMarker 'VIRTUAL_GAMEPAD_DRIVER_WARNING' -LocalTestPackage $localTest -AllowUntrustedLocalPackage $localTest)) { return 0 }
+    $package = Assert-DriverPackage -Root $PSScriptRoot -AllowUntrustedLocalPackage
+    $trustState = $null
+    try {
+        if ($null -ne $package.LocalCertificate) {
+            if ($package.LocalCertificate.Thumbprint -ine '7F1868BF86698A8674F40E686B02C8C702BD3B88') {
+                throw 'Beta gamepad catalog is not signed by the expected reusable release identity. Driver and trust unchanged.'
+            }
+            $trustState = Ensure-ConsentedLocalGamepadTrust -Certificate $package.LocalCertificate -Consent $AllowLocalGamepadCertificateTrust -ConsentThumbprint $ConsentCertificateThumbprint
+            if ((Get-AuthenticodeSignature -LiteralPath $package.CatalogPath).Status -ne 'Valid' -or (Get-AuthenticodeSignature -LiteralPath $package.SetupToolPath).Status -ne 'Valid') {
+                throw 'Windows still does not trust the validated VHF package after approved certificate setup. Driver retained; boot/signing settings unchanged.'
+            }
         }
-        Write-DriverMessage 'Installed and verified the VHF source device.'
-        return 0
+        if ($DailyUnsignedPolicy -eq 0 -and $null -ne $package.ProductionPublisherCertificate) {
+            Ensure-ProductionPublisherTrusted `
+                -PublisherCertificate $package.ProductionPublisherCertificate `
+                -ExpectedSubject $expectedSignPathFoundationSignerSubject
+        }
+        # PnPUtil performs Windows' catalog-to-INF/DLL membership validation while
+        # it stages the package. The installed product deliberately does not ship
+        # SDK-only signtool.exe just to repeat that platform validation.
+        $pnputilExitCode = Invoke-PnpUtil -Arguments @('/add-driver', $package.InfPath)
+        & $package.SetupToolPath install --inf $package.InfPath | Out-Host
+        $setupExitCode = $LASTEXITCODE
+        if ($setupExitCode -ne 0 -and $setupExitCode -ne $rebootExitCode) {
+            throw "[VibeshineVhfGamepad] Root-device setup failed with exit code $setupExitCode."
+        }
+        # The setup tool's zero exit code is a stronger result than PnPUtil's
+        # advisory 3010: it has reloaded the exact owned source node, opened its
+        # private interface, completed the versioned query handshake, and (when
+        # PnP requested a restart) attested the selected DriverVer. Do not request
+        # a reboot that Windows no longer needs just because the initial Driver
+        # Store staging step asked for one.
+        if ($setupExitCode -eq 0) {
+            if ($pnputilExitCode -eq $rebootExitCode) {
+                Write-DriverMessage 'Windows requested restart while staging the package, but the VHF source device is live now.'
+            }
+            Write-DriverMessage 'Installed and verified the VHF source device.'
+            return 0
+        }
+        if ($pnputilExitCode -eq $rebootExitCode -or $setupExitCode -eq $rebootExitCode) {
+            Write-DriverMessage 'VIRTUAL_GAMEPAD_RESTART_REQUIRED'
+            return $rebootExitCode
+        }
+        throw "[VibeshineVhfGamepad] Root-device setup ended with unexpected exit code $setupExitCode."
+    } catch {
+        Remove-AddedLocalGamepadTrust -State $trustState
+        throw
     }
-    if ($pnputilExitCode -eq $rebootExitCode -or $setupExitCode -eq $rebootExitCode) {
-        Write-DriverMessage 'VIRTUAL_GAMEPAD_RESTART_REQUIRED'
-        return $rebootExitCode
-    }
-    throw "[VibeshineVhfGamepad] Root-device setup ended with unexpected exit code $setupExitCode."
 }
 
 function Uninstall-DriverPackage {

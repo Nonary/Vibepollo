@@ -4,6 +4,7 @@
 #include "src/platform/windows/display_helper_v2/interfaces.h"
 #include "src/platform/windows/display_helper_v2/operations.h"
 #include "src/platform/windows/display_helper_v2/runtime_support.h"
+#include "src/platform/windows/recovery_status.h"
 #include "src/platform/windows/display_helper_v2/snapshot.h"
 #include "src/platform/windows/display_helper_v2/types.h"
 
@@ -12,6 +13,7 @@
 #include <functional>
 #include <optional>
 #include <set>
+#include <tuple>
 #include <variant>
 
 namespace display_helper::v2 {
@@ -55,6 +57,10 @@ namespace display_helper::v2 {
 
     void record_ping() {
       heartbeat_.record_ping();
+    }
+
+    void record_liveness_ping() {
+      heartbeat_.record_liveness_ping();
     }
 
     void refresh_shell() {
@@ -278,6 +284,14 @@ namespace display_helper::v2 {
       const std::string &virtual_device_id,
       const std::vector<std::string> &exclusions);
 
+    /// Read-only presence of physical members in the first retained restore
+    /// baseline. Connected inactive members count: restore owns their saved
+    /// active intent. Virtual/excluded/non-baseline outputs never count.
+    std::optional<std::set<std::string>> present_physical_restore_baseline_devices(
+      bool golden_first,
+      const std::vector<std::string> &exclusions
+    );
+
     /**
      * @brief Legacy capture pipeline: capture, gate on topology validity, filter
      *        (active virtual displays, exclusions, display_name-less devices),
@@ -326,6 +340,8 @@ namespace display_helper::v2 {
     void set_verification_result_callback(std::function<void(bool, std::uint64_t, std::uint64_t)> callback);
     void set_snapshot_result_callback(std::function<void(bool, std::uint64_t, std::uint64_t)> callback);
     void set_refresh_rate_result_callback(std::function<void(bool, std::uint64_t, std::uint64_t)> callback);
+    void set_recovery_status_result_callback(
+      std::function<void(std::uint64_t, RecoveryStatus, std::uint64_t, bool, std::uint64_t)> callback);
     void set_exit_callback(std::function<void(int)> callback);
     /// The pipe owner updates this monotonically as connections are replaced.
     /// Commands tagged by an older connection are discarded before they can
@@ -389,6 +405,7 @@ namespace display_helper::v2 {
     void handle_reset_command(const ResetCommand &command);
     void handle_ping_command(const PingCommand &command);
     void handle_stop_command(const StopCommand &command);
+    void handle_recovery_status_command(const RecoveryStatusCommand &command);
     void handle_apply_completed(const ApplyCompleted &completed);
     void finish_apply_completed(const ApplyCompleted &completed);
     void handle_verification_completed(const VerificationCompleted &completed);
@@ -492,10 +509,15 @@ namespace display_helper::v2 {
     std::optional<ActiveTopology> expected_topology_;
     std::optional<Snapshot> recovery_snapshot_;
     std::optional<std::chrono::steady_clock::time_point> recovery_event_feedback_quiet_until_;
+    // One post-settlement read can reconcile a return notification delivered
+    // during recovery/feedback suppression without making feedback a retry.
+    std::optional<DisplayEventMessage> deferred_recovery_display_event_;
+    std::optional<std::set<std::string>> recovery_baseline_present_devices_;
     std::size_t virtual_identity_discoveries_remaining_ = 0;
     std::size_t virtual_identity_repairs_remaining_ = 0;
     std::set<std::string> snapshot_blacklist_;
     std::uint64_t current_connection_epoch_ = 0;
+    recovery_status::policy recovery_status_policy_;
 
     // A durable task is armed by the worker immediately before a mutation,
     // but only the state machine may remove it. The fence covers both staged
@@ -529,6 +551,9 @@ namespace display_helper::v2 {
     std::function<void(bool, std::uint64_t, std::uint64_t)> verification_result_callback_;
     std::function<void(bool, std::uint64_t, std::uint64_t)> snapshot_result_callback_;
     std::function<void(bool, std::uint64_t, std::uint64_t)> refresh_rate_result_callback_;
+    std::function<void(std::uint64_t, RecoveryStatus, std::uint64_t, bool, std::uint64_t)> recovery_status_result_callback_;
+    void notify_recovery_status();
+    std::optional<std::tuple<std::uint64_t, RecoveryStatus, std::uint64_t, std::uint64_t>> last_recovery_notification_;
     std::function<void(int)> exit_callback_;
     std::function<std::uint64_t()> connection_epoch_provider_;
   };

@@ -1,0 +1,35 @@
+name: Validate reserved nightly publication
+permissions: {}
+on:
+  workflow_dispatch:
+    inputs:
+      probe_tag:
+        description: Owned probe tag, or empty to reserve a new one
+        type: string
+        default: ''
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PROBE_TAG: ${{ inputs.probe_tag }}
+    steps:
+      - name: Reserve current source or test an existing owned reservation
+        run: |
+          set -euo pipefail
+          if [[ -z "$PROBE_TAG" ]]; then
+            tag="codex-nightly-reservation-probe-$GITHUB_RUN_ID"
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA"
+            echo "Reserved $tag at $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          else
+            [[ "$PROBE_TAG" =~ ^codex-nightly-reservation-probe-[0-9]+$ ]]
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$PROBE_TAG" --jq .object.sha)
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+            gh release create "$PROBE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title 'Private token validation' --notes 'Temporary unpublished validation.' --draft --prerelease --latest=false
+            gh release view "$PROBE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq 'if .isDraft then "Reserved historical tag draft creation passed with GITHUB_TOKEN" else error("Unexpected public release") end'
+            test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$PROBE_TAG" --jq .object.sha)" = "$sha"
+            gh release delete "$PROBE_TAG" --repo "$GITHUB_REPOSITORY" --yes
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$PROBE_TAG"
+          fi

@@ -1,0 +1,3 @@
+LIBRARY VkLayer_sunshine_hdr_x86
+EXPORTS
+    vkGetInstanceProcAddr=_vkGetInstanceProcAddr@8

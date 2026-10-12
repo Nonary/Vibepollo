@@ -413,21 +413,46 @@ for invariant in (
     "std::shared_lock {topology_mutation_gate}",
     "g_subprocess_newv(",
     "mutation_admission.unlock()",
-    "g_subprocess_communicate_utf8(",
+    "helper_process::communicate_until(process, deadline,",
 ):
     require(doctor_body, invariant, "bounded KScreen mutation admission")
 if not (
     doctor_body.index("std::shared_lock {topology_mutation_gate}")
     < doctor_body.index("g_subprocess_newv(")
     < doctor_body.index("mutation_admission.unlock()")
-    < doctor_body.index("g_subprocess_communicate_utf8(")
+    < doctor_body.index("helper_process::communicate_until(process, deadline,")
 ):
-    raise AssertionError("KScreen mutation admission remains held across its unbounded response")
+    raise AssertionError("KScreen mutation admission remains held across its helper response")
 execute_body = private_display.split("bool execute_configuration", 1)[1].split(
     "double floating_point", 1
 )[0]
 require(execute_body, "run_doctor(arguments, true)", "fenced KScreen mutation spawn")
 forbid(execute_body, "std::shared_lock", "KScreen response outside mutation admission")
+for operation, end_marker in (
+    ("revert", "bool reset_persistence"),
+    ("reset_persistence", "void schedule_revert"),
+    ("schedule_revert", "void cancel_scheduled_revert"),
+):
+    body = private_display.split(f"\n  {'void' if operation == 'schedule_revert' else 'bool'} {operation}(", 1)[1].split(end_marker, 1)[0]
+    require(body, "dispatch_restore(", f"asynchronous {operation} admission")
+    forbid(body, "revert_locked(", f"no inline restoration in {operation}")
+    forbid(body, "manager.mutex", f"no display transaction lock in {operation}")
+forbid(private_display, ").detach()", "owned restore worker lifetime")
+require(doctor_body, "helper_budget_available(helper_reply_timeout)", "full helper drain budget")
+require(doctor_body, "helper_completion_unknown.store(true", "uncertain completion fences later mutations")
+require(doctor_body, 'std::getenv("VIBEPOLLO_MACHINE_HOST") != nullptr', "Apollo broker completion classification")
+require(private_display, "helper_budget_available(connector_reply_timeout)", "full connector drain budget")
+require(broker, "now >= display_deadline", "broker-owned display request deadline")
+require(broker, "if (!worker_exited) return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN", "no acknowledgement before reap")
+require(broker, "terminate_display_worker(worker, worker_exited, status, signal_cross_uid_worker)", "display cancellation before acknowledgement")
+require(broker, "display_mutating && (cancelled || WIFSIGNALED(status))", "interrupted compositor mutations remain uncertain")
+for method, handler in (("GET", "getClientDisplayLayout"), ("PUT", "putClientDisplayLayout")):
+    require(confighttp, f'register_blocking_api_route("^/api/clients/display-layout$", "{method}", {handler})', "display queries outside HTTPS loop")
+status_body = confighttp.split("void getSessionStatus(", 1)[1].split("\n  void ", 1)[0]
+require(status_body, "session_count_no_cleanup()", "status uses passive stream snapshot")
+require(status_body, "proc::proc.current_app_id()", "status uses passive app snapshot")
+forbid(status_body, "rtsp_stream::session_count()", "no stream teardown from status polling")
+forbid(status_body, "proc::proc.running()", "no app teardown from status polling")
 initialize_body = private_display.split("\n  bool initialize() {", 1)[1].split(
     "\n  prepare_result_t prepare_session", 1
 )[0]
@@ -683,7 +708,7 @@ if len(launch_admission_rechecks) != 3:
     raise AssertionError("every launch/resume admission path must revalidate live pairing authorization")
 launch_body = nvhttp.split("void launch(", 1)[1].split("void resume(", 1)[0]
 forbid(launch_body, "proc::proc.terminate();", "lifecycle-owned launch termination")
-if len(re.findall(r"proc::proc\.terminate\(false, true(?:, false, true)?\)", launch_body)) < 3:
+if len(re.findall(r"proc::proc\.terminate\(false,\s*true(?:,\s*false,\s*true(?:,\s*true)?)?\)", launch_body)) < 3:
     raise AssertionError("every lifecycle-owned launch termination must transfer the held gate")
 require(host, "configure) [[ $# == 2 ]]", "desktop-user-only machine policy")
 require(host, "capability_clean_exec /usr/bin/env -i", "private host capability-clean exec")

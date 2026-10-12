@@ -504,16 +504,52 @@ mapfile -t mock_system_systemctl_calls <"$mock_system_systemctl_calls_file"
 # The controller passes X credentials only to target-UID helpers. The file
 # itself must remain a regular file owned by that UID with no group/other mode.
 candidate_uid=1000
-xauthority_attributes_are_private '1000:600:regular file' || fail_test 'private Xauthority attributes were rejected'
-if xauthority_attributes_are_private '1000:640:regular file'; then
+xauthority_attributes_are_private '1000:600' || fail_test 'private Xauthority attributes were rejected'
+if xauthority_attributes_are_private '1000:640'; then
   fail_test 'group-readable Xauthority attributes were accepted'
 fi
-if xauthority_attributes_are_private '1000:604:regular file'; then
+if xauthority_attributes_are_private '1000:604'; then
   fail_test 'other-readable Xauthority attributes were accepted'
 fi
-if xauthority_attributes_are_private '1001:600:regular file'; then
+if xauthority_attributes_are_private '1001:600'; then
   fail_test 'foreign-owned Xauthority attributes were accepted'
 fi
+if xauthority_attributes_are_private '1000:600:unexpected'; then
+  fail_test 'extra Xauthority metadata fields were accepted'
+fi
+
+# Exercise the separate file-type guards with real fixture inodes. The identity
+# wrapper verifies the requested UID/GID, then executes the real test/stat calls
+# as our current user so these checks need no root privileges.
+(
+  candidate_runtime=$(mktemp -d /tmp/vibepollo-xauthority-test.XXXXXXXX) || exit 1
+  trap 'rm -rf -- "$candidate_runtime"' EXIT
+  candidate_uid=$(/usr/bin/id -u)
+  candidate_gid=$(/usr/bin/id -g)
+  fixture_setpriv() {
+    [[ "$1" == --reuid && "$2" == "$candidate_uid" &&
+       "$3" == --regid && "$4" == "$candidate_gid" &&
+       "$5" == --init-groups && "$6" == --no-new-privs && "$7" == -- ]] || return 1
+    shift 7
+    "$@"
+  }
+  eval "$(declare -f xauthority_is_private | sed 's@/usr/bin/setpriv@fixture_setpriv@g')"
+  authority=$candidate_runtime/authority
+  printf 'fixture authority\n' > "$authority"
+  chmod 600 "$authority"
+  xauthority_is_private "$authority" || fail_test 'private Xauthority file was rejected'
+  chmod 640 "$authority"
+  if xauthority_is_private "$authority"; then fail_test 'group-readable Xauthority file was accepted'; fi
+  chmod 600 "$authority"
+  ln -s authority "$candidate_runtime/link"
+  mkdir -m600 "$candidate_runtime/directory"
+  mkfifo -m600 "$candidate_runtime/fifo"
+  for path in link directory fifo; do
+    if xauthority_is_private "$candidate_runtime/$path"; then
+      fail_test "Xauthority $path was accepted"
+    fi
+  done
+) || fail_test 'Xauthority file-type checks failed'
 
 # Transient application cleanup stops only exact-generation names, catches a
 # unit that registers after an initially clean pass, and requires a sustained

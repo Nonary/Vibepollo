@@ -195,6 +195,16 @@ brew uninstall sunshine
 > You should carefully select or unselect the options you want to install. Do not blindly install or
 > enable features.
 
+To present a wired USB DualSense with native waveform haptics to Windows games, select the optional
+**DualSense USB audio and haptics** component in the Vibepollo installer.
+It is off by default, installs the bundled Microsoft-signed usbip-win2 transport,
+and may require a Windows restart. Then enable **DualSense waveform haptics** for
+an application, or choose **DualSense with waveform haptics** in Settings → Input
+to use it for all streams. Compatible games and a Moonlight client implementing
+waveform feedback are required. See the [Windows DualSense setup guide](windows-dualsense-haptics.md).
+The USB/IP transport is shared with other applications and remains installed
+when Vibepollo is uninstalled.
+
 To uninstall, find Sunshine in the list <a href="ms-settings:installed-apps">here</a> and select "Uninstall" from the
 overflow menu. Different versions of Windows may provide slightly different steps for uninstall.
 
@@ -481,7 +491,7 @@ Additional information:
   Native packages and `vibeshine-drm-setup.service` attempt the module build automatically; the
   first command retries it manually. Privileged helpers always install under the fixed, root-owned
   `/usr/libexec/vibeshine` path even when the application uses a custom prefix. The pool service
-  provisions four dormant private outputs using the custom GPU-attached backend. If the module
+  provisions eight dormant private outputs using the custom GPU-attached backend. If the module
   cannot be built or loaded, managed virtual displays remain unavailable rather than falling back
   to CPU-backed stock VKMS.
 

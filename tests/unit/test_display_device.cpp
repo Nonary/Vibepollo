@@ -8,6 +8,7 @@
 #include <format>
 #include <src/display_device_policy.h>
 #include <src/hdr_request_policy.h>
+#include <src/platform/windows/virtual_display_refresh_policy.h>
 #include <src/rtsp.h>
 
 namespace {
@@ -48,6 +49,100 @@ namespace {
   template<class T>
   struct DisplayDeviceConfigTest: testing::TestWithParam<T> {};
 }  // namespace
+
+TEST(DisplayRefreshPolicy, StreamFpsMappingOverridesAutomaticRefresh) {
+  policy::video_config_t video;
+  video.dd.configuration_option = config_option_e::ensure_active;
+  video.dd.resolution_option = resolution_option_e::automatic;
+  video.dd.refresh_rate_option = refresh_rate_option_e::automatic;
+  video.dd.mode_remapping.mixed = {{"3840x2160", "60", "", "480"}};
+  policy::session_t session {.width = 3840, .height = 2160, .fps = 60};
+  for (const auto promoted : {240000u, 1000000u}) {
+    session.framegen_refresh_rate = promoted / 1000;
+    session.framegen_refresh_millihz = promoted;
+    const auto parsed = policy::parse_configuration(video, session);
+    const auto *cfg = std::get_if<policy::configuration_t>(&parsed);
+    ASSERT_NE(cfg, nullptr);
+    EXPECT_EQ(cfg->m_refresh_rate, (rational_t {480, 1}));
+    EXPECT_TRUE(policy::refresh_rate_override_active(video, session));
+    EXPECT_EQ(session.fps, 60);
+  }
+}
+
+TEST(DisplayRefreshPolicy, OnlyFirstMatchingResolutionAndFpsRuleOverridesRefresh) {
+  policy::video_config_t video;
+  video.dd.configuration_option = config_option_e::ensure_active;
+  video.dd.resolution_option = resolution_option_e::automatic;
+  video.dd.refresh_rate_option = refresh_rate_option_e::automatic;
+  policy::session_t session {.width = 2560, .height = 1440, .fps = 60};
+  session.framegen_refresh_millihz = 1000000;
+  video.dd.mode_remapping.mixed = {
+    {"3840x2160", "60", "", "480"},
+    {"", "120", "", "1000"},
+    {"2560x1440", "60", "1920x1080", ""},
+    {"", "60", "", "480"},
+  };
+  EXPECT_FALSE(policy::refresh_rate_override_active(video, session));
+  const auto parsed = policy::parse_configuration(video, session);
+  ASSERT_TRUE(std::holds_alternative<policy::configuration_t>(parsed));
+  EXPECT_EQ(std::get<policy::configuration_t>(parsed).m_refresh_rate, (rational_t {1000, 1}));
+}
+
+TEST(DisplayRefreshPolicy, RefreshOnlyRulePreservesFractionalOverride) {
+  policy::video_config_t video;
+  video.dd.configuration_option = config_option_e::ensure_active;
+  video.dd.refresh_rate_option = refresh_rate_option_e::automatic;
+  video.dd.mode_remapping.refresh_rate_only = {{"", "60", "", "479.520"}};
+  policy::session_t session {.fps = 60};
+  session.framegen_refresh_millihz = 1000000;
+  const auto parsed = policy::parse_configuration(video, session);
+  ASSERT_TRUE(std::holds_alternative<policy::configuration_t>(parsed));
+  EXPECT_EQ(std::get<policy::configuration_t>(parsed).m_refresh_rate, (rational_t {479520, 1000}));
+  EXPECT_TRUE(policy::refresh_rate_override_active(video, session));
+}
+
+TEST(DisplayRefreshPolicy, ClientModeOverridesManualAndAutomaticRefresh) {
+  policy::video_config_t video;
+  video.dd.configuration_option = config_option_e::ensure_active;
+  video.dd.refresh_rate_option = refresh_rate_option_e::manual;
+  video.dd.manual_refresh_rate = "1000";
+  policy::session_t session {.width = 2560, .height = 1440, .fps = 60};
+  session.client_display_mode_override = true;
+  session.client_display_refresh_millihz = 480000;
+  session.framegen_refresh_millihz = 1000000;
+  const auto parsed = policy::parse_configuration(video, session);
+  ASSERT_TRUE(std::holds_alternative<policy::configuration_t>(parsed));
+  EXPECT_EQ(std::get<policy::configuration_t>(parsed).m_refresh_rate, (rational_t {480, 1}));
+  EXPECT_FALSE(policy::refresh_rate_override_active(video, session));
+}
+
+TEST(DisplayRefreshPolicy, OlderWindowsUsesMaximumValidScanFrequency) {
+  for (const auto build : {19045u, 22000u, 22621u, 22631u}) {
+    for (const auto height : {1080u, 1440u, 2160u, 4320u}) {
+      const auto rate = VDISPLAY::policy::limit_refresh_millihz(1000000, height, build);
+      EXPECT_LE(static_cast<std::uint64_t>(rate) * height, 1000000000u);
+      EXPECT_GT(static_cast<std::uint64_t>(rate + 1) * height, 1000000000u);
+    }
+    EXPECT_EQ(VDISPLAY::policy::limit_refresh_millihz(480000, 2160, build), 462962u);
+    EXPECT_EQ(VDISPLAY::policy::limit_refresh_millihz(480000, 1440, build), 480000u);
+  }
+  EXPECT_EQ(VDISPLAY::policy::limit_refresh_millihz(1000000, 2160, std::nullopt), 462962u);
+  for (const auto build : {26100u, 26200u}) {
+    EXPECT_EQ(VDISPLAY::policy::limit_refresh_millihz(1000000, 2160, build), 1000000u);
+  }
+}
+
+TEST(DisplayRefreshPolicy, CreationAdvertisesExactCappedAndOverriddenRates) {
+  const auto capped = VDISPLAY::policy::resolve_creation_refresh(480000, 120000, 4, 2160, 19045);
+  EXPECT_EQ(capped.requested_millihz, 462962u);
+  EXPECT_EQ(capped.descriptor_millihz, 462962u);
+  const auto automatic = VDISPLAY::policy::resolve_creation_refresh(240000, 60000, 4, 2160, 26100);
+  EXPECT_EQ(automatic.requested_millihz, 240000u);
+  EXPECT_EQ(automatic.descriptor_millihz, 60000u);
+  const auto overridden = VDISPLAY::policy::resolve_creation_refresh(479520, 479520, 1, 1440, 19045);
+  EXPECT_EQ(overridden.requested_millihz, 479520u);
+  EXPECT_EQ(overridden.descriptor_millihz, 479520u);
+}
 
 using ParseDeviceId = DisplayDeviceConfigTest<std::pair<std::string, std::string>>;
 INSTANTIATE_TEST_SUITE_P(

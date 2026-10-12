@@ -120,6 +120,7 @@ namespace config {
       std::optional<int> amd_high_motion_quality_boost;  // High-motion quality boost: 1=on, 0=off
       std::optional<int> amd_av1_screen_content;  // AV1 screen-content tools: 1=on, 0=off
       std::optional<int> amd_av1_latency_mode;  // AV1 encoding-latency mode (0-3)
+      int amd_av1_tiles;  // Native AV1 tile override (0=auto; experimental 1/2/4)
     } amd;
 
     struct {
@@ -160,6 +161,8 @@ namespace config {
 
     virtual_display_mode_e virtual_display_mode;
     virtual_display_layout_e virtual_display_layout;
+
+    int virtual_display_max_clients;  ///< Shared normal-game/Remote Monitor client identity limit (1..8).
 
     bool remote_monitor_mute_audio;  ///< Do not capture or transmit audio for Remote Monitor sessions.
     bool remote_monitor_disconnect_on_stream_end;  ///< Release a Remote Monitor when its RTSP stream ends.
@@ -325,6 +328,8 @@ namespace config {
     bool ds5_inputtino_randomize_mac;
     // Apply native Sony audio endpoint compatibility to streamed Proton launches.
     bool proton_dualsense_compatibility;
+    // Strength lift for streamed native actuator waveforms; 1.0 is unchanged.
+    double dualsense_haptics_gain;
 
     bool keyboard;
     bool mouse;

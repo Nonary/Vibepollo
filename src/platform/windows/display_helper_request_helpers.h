@@ -11,6 +11,10 @@
 
 namespace display_helper_integration::helpers {
 
+  // Resolve explicit refresh overrides and OS timing limits before creation,
+  // so recovery and APPLY use the same rate the driver advertises.
+  void resolve_virtual_display_refresh(const config::video_t &video_config, rtsp_stream::launch_session_t &session);
+
   /**
    * @brief Configures builder instances with session-derived display settings.
    */

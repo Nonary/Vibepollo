@@ -429,7 +429,7 @@
     "amd_preanalysis_desc": "這可進行速率控制預分析，以增加編碼延遲為代價來提高品質。",
     "amd_quality": "AMF 品質",
     "amd_quality_balanced": "balanced -- 平衡速度與畫質",
-    "amd_quality_desc": "此設定用來平衡編碼速度與畫質。預設為「平衡」。選擇 auto 時，該屬性會保持未設定，交由所選的 AMF 使用情境預設決定。",
+    "amd_quality_desc": "此設定用來平衡編碼速度與畫質。預設為「speed」。選擇 auto 時，該屬性會保持未設定，交由所選的 AMF 使用情境預設決定。",
     "amd_quality_group": "AMF 品質設定（原生 + FFmpeg）",
     "amd_quality_quality": "quality—偏好品質",
     "amd_quality_speed": "speed—偏好速度",

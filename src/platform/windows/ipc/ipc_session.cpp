@@ -210,6 +210,10 @@ namespace platf::dxgi {
   }
 
   void ipc_session_t::initialize_if_needed() {
+    if (stop_requested()) {
+      return;
+    }
+
     // Fast path: already successfully initialized
     if (_initialized) {
       return;
@@ -220,6 +224,9 @@ namespace platf::dxgi {
     if (!_initializing.compare_exchange_strong(expected, true)) {
       // Another thread is initializing; wait until it finishes (either success or failure)
       while (_initializing) {
+        if (stop_requested()) {
+          return;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
       return;  // After wait, either initialized is true (success) or false (failure); caller can retry later
@@ -302,7 +309,7 @@ namespace platf::dxgi {
 
     auto anon_connector = std::make_unique<AnonymousPipeFactory>();
 
-    auto control_pipe = anon_connector->create_server(pipe_guid);
+    auto control_pipe = anon_connector->create_server(pipe_guid, [this]() { return stop_requested(); });
     if (!control_pipe) {
       BOOST_LOG(error) << "IPC pipe setup failed for WGC session; aborting";
       return;
@@ -318,7 +325,14 @@ namespace platf::dxgi {
       return;
     }
 
+    if (stop_requested()) {
+      return;
+    }
+
     control_pipe->wait_for_client_connection(5000);
+    if (stop_requested()) {
+      return;
+    }
 
     if (!control_pipe->is_connected()) {
       BOOST_LOG(error) << "Helper failed to connect to control pipe within timeout";
@@ -364,9 +378,19 @@ namespace platf::dxgi {
     }
 
     auto config_span = std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&config_data), sizeof(config_data_t));
+    if (stop_requested()) {
+      return;
+    }
     if (!control_pipe->send(config_span, 5000)) {
+      if (stop_requested()) {
+        return;
+      }
       BOOST_LOG(error) << "Failed to send configuration data to helper process";
       _process_helper->terminate();
+      return;
+    }
+
+    if (stop_requested()) {
       return;
     }
 
@@ -380,6 +404,9 @@ namespace platf::dxgi {
     DWORD helper_exit_code = 0;
 
     while (!handle_received) {
+      if (stop_requested()) {
+        return;
+      }
       auto now = std::chrono::steady_clock::now();
       if (now >= deadline) {
         timed_out_waiting = true;
@@ -411,6 +438,10 @@ namespace platf::dxgi {
         bytes_read,
         std::min(wait_ms, 250)
       );
+
+      if (stop_requested()) {
+        return;
+      }
 
       if (result == PipeResult::Success) {
         if (bytes_read == sizeof(shared_handle_data_t)) {

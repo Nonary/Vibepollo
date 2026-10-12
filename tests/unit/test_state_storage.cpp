@@ -877,3 +877,31 @@ TEST(StateStorageApollo, MissingReadCallbackFailsClosed) {
     nvhttp::state_policy::valid_primary_json), policy::load_result_e::failed);
   EXPECT_TRUE(tree.empty());
 }
+
+TEST(StateStorageWrite, LinuxDisplayBaselineSurvivesAtomicAuxiliaryRoundTrip) {
+  memory_state_store_t store;
+  const std::string snapshot = R"({"version":1,"owner":"1000:desktop","topology":{"outputs":[{"name":"eDP-1","connected":true,"enabled":false},{"name":"DP-1","connected":true,"enabled":true}]}})";
+  pt::ptree tree;
+  tree.put("root.linux_display_topology", snapshot);
+  tree.put("root.unrelated_setting", "preserved");
+  policy::write_vibeshine_state("aux.json", tree, [&store](const std::string &path, const std::string &contents) {
+    return store.write(path, contents);
+  },
+                                [&store](const std::string &path) {
+                                  return store.read(path);
+                                });
+  ASSERT_TRUE(store.files.contains("aux.json.bak"));
+  // A corrupt main state recovers the saved topology with its original types
+  // intact in the serialized payload, while retaining unrelated machine state.
+  store.files["aux.json"] = "{";
+  pt::ptree recovered;
+  ASSERT_EQ(policy::load_vibeshine_state("aux.json", recovered, [&store](const std::string &path) {
+              return store.read(path);
+            },
+                                         [&store](const std::string &path, const std::string &contents) {
+                                           return store.write(path, contents);
+                                         }),
+            policy::load_result_e::loaded);
+  EXPECT_EQ(recovered.get<std::string>("root.linux_display_topology"), snapshot);
+  EXPECT_EQ(recovered.get<std::string>("root.unrelated_setting"), "preserved");
+}

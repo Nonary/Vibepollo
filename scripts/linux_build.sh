@@ -19,7 +19,7 @@ cuda_patches=0
 cuda_system_package=0
 cuda_system_package_name=""
 force_cuda_runfile=1
-num_processors=$(nproc)
+num_processors=${BUILD_JOBS:-$(nproc)}
 publisher_name="Third Party Publisher"
 publisher_website=""
 publisher_issue_url="https://app.lizardbyte.dev/support"
@@ -612,7 +612,7 @@ function run_step_deps() {
         cd "${DOXYGEN}-${doxygen_min}"
         cmake -DCMAKE_BUILD_TYPE=Release -G="Ninja" -B="build" -S="."
         ninja -C "build" -j"${num_processors}"
-        ${sudo_cmd} ninja -C "build" install
+        ${sudo_cmd} ninja -C "build" -j"${num_processors}" install
       popd
     else
       echo "${DOXYGEN} version not in range, skipping docs"
@@ -724,7 +724,7 @@ function run_step_build() {
   echo "Running step: Build"
 
   # Build the project
-  ninja -C "build"
+  ninja -C "build" -j"${num_processors}"
   return 0
 }
 

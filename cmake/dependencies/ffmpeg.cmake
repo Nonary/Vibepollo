@@ -173,4 +173,11 @@ else()
     list(APPEND FFMPEG_LIBRARIES ${FFMPEG_PLATFORM_LIBRARIES})
 endif()
 
+if(WIN32)
+    # Static libavutil uses BCrypt for av_random_bytes(). Keep its system
+    # dependency with FFmpeg so focused consumers do not rely on the host's
+    # larger Windows link list, including with user-provided FFmpeg binaries.
+    list(APPEND FFMPEG_LIBRARIES bcrypt)
+endif()
+
 set(FFMPEG_INCLUDE_DIRS "${FFMPEG_PREPARED_BINARIES}/include")

@@ -91,6 +91,10 @@ namespace video {
     // framing aligns to, and the framing the client asked for in ANNOUNCE.
     int packetsize = 0;
     pyrowave::policy::framing_e pyrowave_framing = pyrowave::policy::framing_e::records;
+    std::size_t pyrowave_min_parity_shards = 2;
+    std::uint64_t pyrowave_peer_link_bps = 0;
+    // Highest loss-free frame pace the client calibrated (0 = not calibrated).
+    std::uint64_t pyrowave_peer_pace_bps = 0;
   };
 
   platf::mem_type_e map_base_dev_type(AVHWDeviceType type);

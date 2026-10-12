@@ -16,6 +16,7 @@ export function settingError(field: SettingsField | undefined, value: unknown): 
     const number = Number(value);
     if (
       !Number.isFinite(number) ||
+      (field.key === 'virtual_display_max_clients' && !Number.isInteger(number)) ||
       (field.min != null && number < field.min) ||
       (field.max != null && number > field.max)
     )
@@ -37,5 +38,14 @@ export function configBoolean(value: unknown, fallback = false): boolean {
   if (value == null) return fallback;
   return (
     value === true || ['1', 'true', 'enabled', 'yes', 'on'].includes(String(value).toLowerCase())
+  );
+}
+
+export function linuxVirtualCaptureWarning(platform: string, capture: unknown): boolean {
+  return (
+    platform.toLowerCase() === 'linux' &&
+    typeof capture === 'string' &&
+    capture !== '' &&
+    capture !== 'kms'
   );
 }

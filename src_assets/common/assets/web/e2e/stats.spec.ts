@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { localRoute, expect, test, type Page } from './fixtures';
 
 const FIXTURE_NOW = 1_788_955_200;
 
@@ -101,14 +101,14 @@ async function installStatsFixture(page: Page) {
   const deleted = new Set<string>();
   const requests: string[] = [];
   let hostStatsRequestCount = 0;
-  await page.route('**/api/**', async (route) => {
+  await localRoute(page, '**/api/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname;
     // The glob also matches Vite's /src/api/* module URLs. Let those modules
     // load or the app remains on the boot screen before StatsView mounts.
     if (!path.startsWith('/api/')) {
-      await route.continue();
+      await route.fallback();
       return;
     }
     requests.push(`${request.method()} ${path}${url.search}`);
