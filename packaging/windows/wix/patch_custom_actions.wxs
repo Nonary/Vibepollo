@@ -40,14 +40,21 @@
       <ComponentRef Id="Fw_Exceptions"/>
       <ComponentRef Id="StartMenuShortcut"/>
       <ComponentRef Id="SudoVdaRegistryDefaults"/>
-      <ComponentRef Id="InstallerDriverSelectionPreferences"/>
       <ComponentRef Id="ArpCustomUninstallEntry"/>
+    </Feature>
+    <Feature Id="InstallerDriverSelections" Title="Saved driver choices" Display="hidden" Level="1" Absent="disallow">
+      <ComponentRef Id="InstallerDriverSelectionPreferences"/>
     </Feature>
     <InstallExecuteSequence>
       <Custom Action="RestoreSavedDisplayDriverSelection" After="AppSearch">INSTALL_DISPLAY_DRIVERS="" AND (SAVED_DISPLAY_DRIVER_SELECTION="0" OR SAVED_DISPLAY_DRIVER_SELECTION="1")</Custom>
       <Custom Action="DefaultDisplayDriverSelection" After="RestoreSavedDisplayDriverSelection">INSTALL_DISPLAY_DRIVERS=""</Custom>
       <Custom Action="RestoreSavedGamepadDriverSelection" After="DefaultDisplayDriverSelection">INSTALL_VIRTUAL_GAMEPAD_DRIVER="" AND (SAVED_GAMEPAD_DRIVER_SELECTION="0" OR SAVED_GAMEPAD_DRIVER_SELECTION="1")</Custom>
       <Custom Action="DefaultGamepadDriverSelection" After="RestoreSavedGamepadDriverSelection">INSTALL_VIRTUAL_GAMEPAD_DRIVER=""</Custom>
+      <!-- Same-product /i maintenance must rewrite only the saved-choice feature.
+           Existing full or targeted repair options retain their caller semantics. -->
+      <Custom Action="EnsureDriverSelectionsRepair" After="DefaultGamepadDriverSelection">Installed AND NOT REMOVE AND REINSTALL=""</Custom>
+      <Custom Action="ExtendDriverSelectionsRepair" After="EnsureDriverSelectionsRepair">Installed AND NOT REMOVE AND REINSTALL&lt;&gt;"" AND REINSTALL&lt;&gt;"ALL" AND NOT (REINSTALL &gt;&lt; "InstallerDriverSelections")</Custom>
+      <Custom Action="DefaultDriverSelectionsRepairMode" After="ExtendDriverSelectionsRepair">Installed AND NOT REMOVE AND REINSTALLMODE=""</Custom>
       <!-- Remove conflicting products before installation starts. -->
       <Custom Action="RemoveConflictingProducts" Before="InstallValidate">NOT Installed AND NOT REMOVE AND SKIP_REMOVE_CONFLICTING_PRODUCTS &lt;&gt; "1"</Custom>
 

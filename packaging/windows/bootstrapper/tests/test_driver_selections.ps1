@@ -30,6 +30,15 @@ try {
         $property = $patch.SelectSingleNode("//Property[@Id='$id']")
         if ($property.HasAttribute('Value') -or $property.Secure -ne 'yes') { throw "MSI persistence/caller precedence lost for $id" }
     }
+    $feature = $patch.SelectSingleNode('//Feature[@Id="InstallerDriverSelections"]')
+    if ($null -eq $feature -or $feature.SelectNodes('ComponentRef').Count -ne 1 -or $feature.ComponentRef.Id -ne 'InstallerDriverSelectionPreferences') { throw 'Preference maintenance must target only its own registry feature.' }
+    foreach ($id in @('EnsureDriverSelectionsRepair', 'ExtendDriverSelectionsRepair', 'DefaultDriverSelectionsRepairMode')) {
+        $action = $patch.SelectSingleNode("//InstallExecuteSequence/Custom[@Action='$id']")
+        if ($null -eq $action -or -not $action.InnerText.Contains('Installed AND NOT REMOVE')) { throw "Same-product maintenance/uninstall guard missing: $id" }
+    }
+    $ensure = $patch.SelectSingleNode('//InstallExecuteSequence/Custom[@Action="EnsureDriverSelectionsRepair"]')
+    $mode = $patch.SelectSingleNode('//InstallExecuteSequence/Custom[@Action="DefaultDriverSelectionsRepairMode"]')
+    if (-not $ensure.InnerText.Contains('REINSTALL=""') -or -not $mode.InnerText.Contains('REINSTALLMODE=""')) { throw 'Explicit caller repair flags must be preserved.' }
     $source = Get-Content $sourcePath -Raw
     foreach ($binding in @('IsChecked = _driverSelections.DisplayEnabled', 'IsChecked = _driverSelections.GamepadEnabled', '_driverSelections.SelectDisplay(false)', '_driverSelections.SelectGamepad(false)', 'BuildDriverSelectionArguments(arguments, installVirtualDisplayDriver, installVirtualGamepadDriver)')) {
         if (-not $source.Contains($binding)) { throw "Actual UI/MSI selection binding lost: $binding" }

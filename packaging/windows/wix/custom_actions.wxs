@@ -20,11 +20,14 @@
     <!-- Pull this fragment into the CPack-generated MSI -->
     <FeatureRef Id="ProductFeature"/>
     <Property Id="DAILY_UNSIGNED_DRIVER_POLICY" Value="$(var.DailyUnsignedDriverPolicy)" Secure="yes"/>
-    <!-- Explicit recipient consent only; ordinary and unattended installs default off. -->
+    <!-- Driver selection covers the verified reusable beta signer; opt-outs skip trust. -->
     <CustomAction Id="RestoreSavedDisplayDriverSelection" Property="INSTALL_DISPLAY_DRIVERS" Value="[SAVED_DISPLAY_DRIVER_SELECTION]"/>
     <CustomAction Id="DefaultDisplayDriverSelection" Property="INSTALL_DISPLAY_DRIVERS" Value="1"/>
     <CustomAction Id="RestoreSavedGamepadDriverSelection" Property="INSTALL_VIRTUAL_GAMEPAD_DRIVER" Value="[SAVED_GAMEPAD_DRIVER_SELECTION]"/>
     <CustomAction Id="DefaultGamepadDriverSelection" Property="INSTALL_VIRTUAL_GAMEPAD_DRIVER" Value="$(var.VhfGamepadDriverBundled)"/>
+    <CustomAction Id="EnsureDriverSelectionsRepair" Property="REINSTALL" Value="InstallerDriverSelections"/>
+    <CustomAction Id="ExtendDriverSelectionsRepair" Property="REINSTALL" Value="[REINSTALL],InstallerDriverSelections"/>
+    <CustomAction Id="DefaultDriverSelectionsRepairMode" Property="REINSTALLMODE" Value="m"/>
     <Property Id="ALLOW_LOCAL_GAMEPAD_CERTIFICATE_TRUST" Value="$(var.VhfGamepadAllowLocalTest)" Secure="yes"/>
     <Property Id="LOCAL_GAMEPAD_CERTIFICATE_THUMBPRINT" Value="$(var.LocalGamepadCertificateThumbprint)" Secure="yes"/>
     <Property Id="LOCAL_GAMEPAD_CERTIFICATE_SUBJECT" Value="$(var.LocalGamepadCertificateSubject)"/>
