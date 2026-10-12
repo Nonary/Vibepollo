@@ -1085,8 +1085,9 @@ namespace amf {
       // Create encoder component
       res = factory->CreateComponent(context, get_codec_id(), &encoder);
       if (res != AMF_OK || !encoder) {
-        initialization_failure = res == AMF_NOT_SUPPORTED ? lifecycle::initialization_failure_e::unsupported_format :
-                                                          lifecycle::initialization_failure_e::encoder_create;
+        initialization_failure = device->GetDeviceRemovedReason() != S_OK ? lifecycle::initialization_failure_e::device_or_capture :
+                                 res == AMF_NOT_SUPPORTED ? lifecycle::initialization_failure_e::unsupported_format :
+                                                            lifecycle::initialization_failure_e::encoder_create;
         BOOST_LOG(error) << "AMF: CreateComponent failed for codec " << video_format << ", error: " << res;
         if (attempt + 1 < max_attempts) continue;
         return false;
@@ -1108,7 +1109,8 @@ namespace amf {
       res = encoder->Init(amf_format, client_config.width, client_config.height);
 
       if (res != AMF_OK) {
-        initialization_failure = (res == AMF_NOT_SUPPORTED || res == AMF_INVALID_ARG) ?
+        initialization_failure = device->GetDeviceRemovedReason() != S_OK ? lifecycle::initialization_failure_e::device_or_capture :
+                                 (res == AMF_NOT_SUPPORTED || res == AMF_INVALID_ARG) ?
                                    lifecycle::initialization_failure_e::unsupported_format :
                                    lifecycle::initialization_failure_e::encoder_init;
         BOOST_LOG(error) << "AMF: encoder Init failed with the requested encode settings, error: " << res;

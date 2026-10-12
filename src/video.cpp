@@ -4480,7 +4480,12 @@ namespace video {
               BOOST_LOG(warning) << "AMF: HDR stream will continue without mastering metadata"sv;
             }
             handed_off_to_caller = handoff->publish(std::move(owned_encode_device));
+          } catch (const std::exception &err) {
+            BOOST_LOG(error) << "AMF: native initialization exception: " << err.what();
+            owned_encode_device.reset();
+            handoff->publish(nullptr);
           } catch (...) {
+            BOOST_LOG(error) << "AMF: native initialization failed with an unknown exception"sv;
             owned_encode_device.reset();
             handoff->publish(nullptr);
           }
@@ -4756,7 +4761,11 @@ namespace video {
             const bool initialized = static_cast<bool>(prepared_bundle.session);
             const bool accepted = handoff->publish(std::move(prepared_bundle));
             gate_finished = initialized && accepted;
+          } catch (const std::exception &err) {
+            BOOST_LOG(error) << "AMF: FFmpeg initialization exception: " << err.what();
+            handoff->publish(legacy_amf_session_bundle_t {});
           } catch (...) {
+            BOOST_LOG(error) << "AMF: FFmpeg initialization failed with an unknown exception"sv;
             handoff->publish(legacy_amf_session_bundle_t {});
           }
         }
