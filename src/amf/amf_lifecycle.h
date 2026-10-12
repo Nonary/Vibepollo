@@ -200,6 +200,17 @@ namespace amf::lifecycle {
         changed.wait_until(lock, std::min(deadline, Clock::now() + poll_interval));
       }
       if (!ready || abandoned) return std::nullopt;
+      // A condition-variable wait can wake late (notably with coarse Windows
+      // timers), or cancellation can race publication. Ready is not permission
+      // to accept after the caller's budget/session has ended. The producer
+      // still owns the candidate and must perform its destruction.
+      const bool cancelled_after_publication = cancelled();
+      if (cancelled_after_publication || Clock::now() >= deadline) {
+        if (was_cancelled) *was_cancelled = cancelled_after_publication;
+        abandoned = true;
+        changed.notify_all();
+        return std::nullopt;
+      }
       auto result = std::move(candidate);
       candidate.reset();
       accepted = true;

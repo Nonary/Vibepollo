@@ -7,6 +7,7 @@
 #include "src/amf/amf_config_policy.h"
 
 #include <array>
+#include <cstdio>
 #include <atomic>
 #include <chrono>
 #include <deque>
@@ -723,6 +724,41 @@ namespace {
     return !accepted && destroyed_on == worker_id;
   }
 
+  bool ready_handoff_rechecks_deadline_and_cancellation() {
+    struct resource_t {
+      std::thread::id &destroyed_on;
+      ~resource_t() { destroyed_on = std::this_thread::get_id(); }
+    };
+    struct candidate_t {
+      std::unique_ptr<resource_t> resource;
+      std::atomic<bool> &stored;
+      candidate_t(std::unique_ptr<resource_t> owned, std::atomic<bool> &ready): resource(std::move(owned)), stored(ready) {}
+      candidate_t(candidate_t &&other) noexcept: resource(std::move(other.resource)), stored(other.stored) {
+        stored.store(true, std::memory_order_release);
+        stored.notify_one();
+      }
+    };
+    for (bool cancelled : {false, true}) {
+      std::atomic<bool> stored {false};
+      std::thread::id destroyed_on, producer_id;
+      auto handoff = std::make_shared<amf::lifecycle::worker_handoff_t<candidate_t>>();
+      std::thread producer {[&]() {
+        producer_id = std::this_thread::get_id();
+        handoff->publish(candidate_t {std::make_unique<resource_t>(destroyed_on), stored});
+      }};
+      // The candidate move runs under the handoff mutex. Once we acquire that
+      // mutex, publish has set ready and parked the producer: no timing sleeps.
+      stored.wait(false, std::memory_order_acquire);
+      bool was_cancelled = false;
+      auto accepted = handoff->accept_until(
+        std::chrono::steady_clock::now() + (cancelled ? 1s : -1s),
+        [&]() { return cancelled; }, &was_cancelled);
+      producer.join();
+      if (accepted || was_cancelled != cancelled || destroyed_on != producer_id) return false;
+    }
+    return true;
+  }
+
   bool normal_cancellation_does_not_quarantine_the_runtime() {
     amf::lifecycle::native_runtime_gate_t gate;
     if (!gate.try_begin_initialization()) return false;
@@ -789,45 +825,55 @@ namespace {
 #ifdef SUNSHINE_AMF_LIFECYCLE_STANDALONE
 
 int main() {
-  return capture_wait_completion_is_delivered_before_conversion() &&
-             ready_output_drain_is_optional_and_propagates_failures() &&
-             av1_tiles_auto_preserves_client_and_preset_behavior() &&
-             av1_tiles_override_includes_explicit_single_tile() &&
-             av1_tiles_rejects_invalid_host_overrides() &&
-             synchronous_release_during_submit_is_reentrant_safe() &&
-             backpressure_retries_the_same_submission_until_accepted() &&
-             exhausted_backpressure_reinitializes_without_owned_surfaces() &&
-             recovery_state_changes_only_after_accepted_input() &&
-             preanalysis_dependent_rate_control_is_planned_natively() &&
-             preanalysis_pipeline_primes_and_drains_in_order() &&
-             automatic_h264_coder_preserves_driver_default() &&
-             automatic_prefers_native_and_explicit_choices_are_strict() &&
-             initialization_fallback_respects_success_and_explicit_choices() &&
-             successful_rollback_uses_the_same_stream_format() &&
-             encoder_initialization_fallback_is_bounded_and_owned() &&
-             unrelated_or_unsupported_failures_never_fallback() &&
-             rollback_preserves_negotiated_format_requirements() &&
-             xbox_intra_refresh_maps_to_native_amf() &&
-             hevc_gdr_uses_negotiated_codec_and_dimensions() &&
-             effective_reference_frame_limit_matches_configure_and_verify() &&
-             repeated_input_rotates_away_from_a_lookahead_owned_surface() &&
-             surface_pool_can_prime_a_retaining_driver() &&
-             driver_submit_capacity_bounds_are_inclusive() &&
-             saturation_wait_requires_an_actual_surface_release() &&
-             output_poll_rearm_survives_concurrent_submission() &&
-             strict_application_depth_preserves_driver_headroom() &&
-             asynchronous_pipeline_catches_up_to_current_output() &&
-             preanalysis_target_tracks_accepted_indices_with_gaps() &&
-             teardown_timeout_returns_control_before_a_wedged_destructor() &&
-             runtime_gate_fences_initialization_against_teardown_and_quarantine() &&
-             timed_out_teardown_quarantines_and_retains_the_runtime_fence() &&
-             timed_out_worker_handoff_reaps_on_the_producer_thread() &&
-             normal_cancellation_does_not_quarantine_the_runtime() &&
-             teardown_gate_contention_respects_its_deadline() &&
-             smart_access_video_avoids_aggressive_low_latency_driver_path() &&
-             concurrent_native_session_remains_usable() ?
-           0 :
-           1;
+  const std::pair<const char *, bool (*)()> cases[] {
+    {"capture_wait_completion_is_delivered_before_conversion", capture_wait_completion_is_delivered_before_conversion},
+    {"ready_output_drain_is_optional_and_propagates_failures", ready_output_drain_is_optional_and_propagates_failures},
+    {"av1_tiles_auto_preserves_client_and_preset_behavior", av1_tiles_auto_preserves_client_and_preset_behavior},
+    {"av1_tiles_override_includes_explicit_single_tile", av1_tiles_override_includes_explicit_single_tile},
+    {"av1_tiles_rejects_invalid_host_overrides", av1_tiles_rejects_invalid_host_overrides},
+    {"synchronous_release_during_submit_is_reentrant_safe", synchronous_release_during_submit_is_reentrant_safe},
+    {"backpressure_retries_the_same_submission_until_accepted", backpressure_retries_the_same_submission_until_accepted},
+    {"exhausted_backpressure_reinitializes_without_owned_surfaces", exhausted_backpressure_reinitializes_without_owned_surfaces},
+    {"recovery_state_changes_only_after_accepted_input", recovery_state_changes_only_after_accepted_input},
+    {"preanalysis_dependent_rate_control_is_planned_natively", preanalysis_dependent_rate_control_is_planned_natively},
+    {"preanalysis_pipeline_primes_and_drains_in_order", preanalysis_pipeline_primes_and_drains_in_order},
+    {"automatic_h264_coder_preserves_driver_default", automatic_h264_coder_preserves_driver_default},
+    {"automatic_prefers_native_and_explicit_choices_are_strict", automatic_prefers_native_and_explicit_choices_are_strict},
+    {"initialization_fallback_respects_success_and_explicit_choices", initialization_fallback_respects_success_and_explicit_choices},
+    {"successful_rollback_uses_the_same_stream_format", successful_rollback_uses_the_same_stream_format},
+    {"encoder_initialization_fallback_is_bounded_and_owned", encoder_initialization_fallback_is_bounded_and_owned},
+    {"unrelated_or_unsupported_failures_never_fallback", unrelated_or_unsupported_failures_never_fallback},
+    {"rollback_preserves_negotiated_format_requirements", rollback_preserves_negotiated_format_requirements},
+    {"xbox_intra_refresh_maps_to_native_amf", xbox_intra_refresh_maps_to_native_amf},
+    {"hevc_gdr_uses_negotiated_codec_and_dimensions", hevc_gdr_uses_negotiated_codec_and_dimensions},
+    {"effective_reference_frame_limit_matches_configure_and_verify", effective_reference_frame_limit_matches_configure_and_verify},
+    {"repeated_input_rotates_away_from_a_lookahead_owned_surface", repeated_input_rotates_away_from_a_lookahead_owned_surface},
+    {"surface_pool_can_prime_a_retaining_driver", surface_pool_can_prime_a_retaining_driver},
+    {"driver_submit_capacity_bounds_are_inclusive", driver_submit_capacity_bounds_are_inclusive},
+    {"saturation_wait_requires_an_actual_surface_release", saturation_wait_requires_an_actual_surface_release},
+    {"output_poll_rearm_survives_concurrent_submission", output_poll_rearm_survives_concurrent_submission},
+    {"strict_application_depth_preserves_driver_headroom", strict_application_depth_preserves_driver_headroom},
+    {"asynchronous_pipeline_catches_up_to_current_output", asynchronous_pipeline_catches_up_to_current_output},
+    {"preanalysis_target_tracks_accepted_indices_with_gaps", preanalysis_target_tracks_accepted_indices_with_gaps},
+    {"teardown_timeout_returns_control_before_a_wedged_destructor", teardown_timeout_returns_control_before_a_wedged_destructor},
+    {"runtime_gate_fences_initialization_against_teardown_and_quarantine", runtime_gate_fences_initialization_against_teardown_and_quarantine},
+    {"timed_out_teardown_quarantines_and_retains_the_runtime_fence", timed_out_teardown_quarantines_and_retains_the_runtime_fence},
+    {"timed_out_worker_handoff_reaps_on_the_producer_thread", timed_out_worker_handoff_reaps_on_the_producer_thread},
+    {"ready_handoff_rechecks_deadline_and_cancellation", ready_handoff_rechecks_deadline_and_cancellation},
+    {"normal_cancellation_does_not_quarantine_the_runtime", normal_cancellation_does_not_quarantine_the_runtime},
+    {"teardown_gate_contention_respects_its_deadline", teardown_gate_contention_respects_its_deadline},
+    {"smart_access_video_avoids_aggressive_low_latency_driver_path", smart_access_video_avoids_aggressive_low_latency_driver_path},
+    {"concurrent_native_session_remains_usable", concurrent_native_session_remains_usable},
+  };
+  int failed = 0;
+  for (const auto &[name, run] : cases) {
+    if (!run()) {
+      std::fprintf(stderr, "FAILED: %s\n", name);
+      ++failed;
+    }
+  }
+  std::fprintf(stdout, "%zu native AMF policy cases, %d failures\n", std::size(cases), failed);
+  return failed ? 1 : 0;
 }
 
 #else
@@ -959,6 +1005,10 @@ TEST(SunshineNativeAmfReview, TimedOutTeardownQuarantinesAndRetainsRuntimeFence)
 
 TEST(SunshineNativeAmfReview, TimedOutWorkerHandoffReapsOnProducerThread) {
   EXPECT_TRUE(timed_out_worker_handoff_reaps_on_the_producer_thread());
+}
+
+TEST(SunshineNativeAmfReview, ReadyHandoffRechecksDeadlineAndCancellation) {
+  EXPECT_TRUE(ready_handoff_rechecks_deadline_and_cancellation());
 }
 
 TEST(SunshineNativeAmfReview, NormalCancellationDoesNotQuarantineRuntime) {
