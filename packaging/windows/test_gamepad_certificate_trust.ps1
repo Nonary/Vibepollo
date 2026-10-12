@@ -9,7 +9,7 @@ foreach ($name in @('ConvertTo-DriverComponentVersion','Test-SafeDriverInstall',
  Assert-Check ($null -ne $function) "Missing tested function $name"
  . ([scriptblock]::Create($function.Extent.Text))
 }
-$script:certificate=[pscustomobject]@{Thumbprint=('AB'*20);Subject='CN=Fixture VHF';Issuer='CN=Fixture VHF'}
+$script:certificate=[pscustomobject]@{Thumbprint='7F1868BF86698A8674F40E686B02C8C702BD3B88';Subject='CN=Fixture VHF';Issuer='CN=Fixture VHF'}
 function Reset-Case {
  $script:stores=@{Root=@();TrustedPublisher=@()}; $script:imports=@(); $script:removals=@(); $script:storeReads=0
  $script:installed=$null; $script:queryFailure=$false; $script:validationFailure=$false; $script:stagingFailure=$false; $script:postTrustFailure=$false; $script:importFailure=$false
@@ -80,6 +80,7 @@ foreach($version in @($null,'1.2.0.9')) {
  Reset-Case;$script:installed=$version;$script:AllowLocalGamepadCertificateTrust=1;$script:ConsentCertificateThumbprint=$script:certificate.Thumbprint
  Assert-Check ((Install-DriverPackage) -eq 0) 'Consented missing/older must install';Assert-Check ($script:imports.Count -eq 2 -and $script:stagingCalls -eq 1 -and $script:setupCalls -eq 1) 'Only expected consented stores/driver calls'
 }
+Reset-Case;$script:certificate.Thumbprint=('AB'*20);$script:AllowLocalGamepadCertificateTrust=1;$script:ConsentCertificateThumbprint=$script:certificate.Thumbprint;Expect-Failure 'changed beta signer';Assert-NoChanges 'changed beta signer';Assert-Check ($script:storeReads -eq 0) 'Pinned beta identity must precede trust lookup';$script:certificate.Thumbprint='7F1868BF86698A8674F40E686B02C8C702BD3B88'
 Reset-Case;$script:validationFailure=$true;$script:AllowLocalGamepadCertificateTrust=1;$script:ConsentCertificateThumbprint=$script:certificate.Thumbprint;Expect-Failure 'payload/crypto tamper';Assert-NoChanges 'validation failure';Assert-Check ($script:storeReads -eq 0) 'Validation must precede consent/trust lookup'
 Reset-Case;$script:AllowLocalGamepadCertificateTrust=1;$script:ConsentCertificateThumbprint=$script:certificate.Thumbprint;$script:stagingFailure=$true;Expect-Failure 'staging failure';Assert-Check ($script:removals.Count -eq 2 -and $script:stores.Root.Count -eq 0 -and $script:stores.TrustedPublisher.Count -eq 0 -and $script:setupCalls -eq 0) 'Staging failure must roll back only new trust before setup'
 Reset-Case;$script:stores.Root=@($script:certificate.Thumbprint,'PREEXISTING');$script:stores.TrustedPublisher=@('OTHER');$script:AllowLocalGamepadCertificateTrust=1;$script:ConsentCertificateThumbprint=$script:certificate.Thumbprint;$script:stagingFailure=$true;Expect-Failure 'preexisting root plus staging failure';Assert-Check ($script:removals.Count -eq 1 -and $script:removals[0] -ceq 'TrustedPublisher' -and $script:stores.Root.Count -eq 2 -and $script:stores.TrustedPublisher[0] -ceq 'OTHER') 'Rollback must preserve all preexisting and unrelated certificates'

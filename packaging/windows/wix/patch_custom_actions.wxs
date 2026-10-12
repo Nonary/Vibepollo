@@ -14,9 +14,16 @@
     <Property Id="REMOVEVIRTUALDISPLAYDRIVER" Value="0" Secure="yes"/>
     <Property Id="REMOVEVIRTUALGAMEPADDRIVER" Value="0" Secure="yes"/>
     <Property Id="FACTORYRESET" Value="0" Secure="yes"/>
+    <Property Id="INSTALL_DISPLAY_DRIVERS" Secure="yes"/>
+    <Property Id="SAVED_DISPLAY_DRIVER_SELECTION">
+      <RegistrySearch Id="SavedDisplayDriverSelection" Root="HKLM" Key="SOFTWARE\Nonary\Vibepollo\Installer\DriverSelections" Name="DisplayEnabled" Type="raw" Win64="yes"/>
+    </Property>
     <Property Id="INSTALL_SUDOVDA" Value="1" Secure="yes"/>
     <Property Id="INSTALL_VIRTUAL_DISPLAY_DRIVER" Secure="yes"/>
-    <Property Id="INSTALL_VIRTUAL_GAMEPAD_DRIVER" Value="$(var.VhfGamepadDriverBundled)" Secure="yes"/>
+    <Property Id="INSTALL_VIRTUAL_GAMEPAD_DRIVER" Secure="yes"/>
+    <Property Id="SAVED_GAMEPAD_DRIVER_SELECTION">
+      <RegistrySearch Id="SavedGamepadDriverSelection" Root="HKLM" Key="SOFTWARE\Nonary\Vibepollo\Installer\DriverSelections" Name="GamepadEnabled" Type="raw" Win64="yes"/>
+    </Property>
     <Property Id="ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE" Value="$(var.VhfGamepadAllowLocalTest)" Secure="yes"/>
     <Property Id="USBIP_TRANSPORT_BUNDLED" Value="$(var.UsbIpTransportBundled)"/>
     <Property Id="INSTALL_USBIP_TRANSPORT" Value="0" Secure="yes"/>
@@ -33,9 +40,14 @@
       <ComponentRef Id="Fw_Exceptions"/>
       <ComponentRef Id="StartMenuShortcut"/>
       <ComponentRef Id="SudoVdaRegistryDefaults"/>
+      <ComponentRef Id="InstallerDriverSelectionPreferences"/>
       <ComponentRef Id="ArpCustomUninstallEntry"/>
     </Feature>
     <InstallExecuteSequence>
+      <Custom Action="RestoreSavedDisplayDriverSelection" After="AppSearch">INSTALL_DISPLAY_DRIVERS="" AND (SAVED_DISPLAY_DRIVER_SELECTION="0" OR SAVED_DISPLAY_DRIVER_SELECTION="1")</Custom>
+      <Custom Action="DefaultDisplayDriverSelection" After="RestoreSavedDisplayDriverSelection">INSTALL_DISPLAY_DRIVERS=""</Custom>
+      <Custom Action="RestoreSavedGamepadDriverSelection" After="DefaultDisplayDriverSelection">INSTALL_VIRTUAL_GAMEPAD_DRIVER="" AND (SAVED_GAMEPAD_DRIVER_SELECTION="0" OR SAVED_GAMEPAD_DRIVER_SELECTION="1")</Custom>
+      <Custom Action="DefaultGamepadDriverSelection" After="RestoreSavedGamepadDriverSelection">INSTALL_VIRTUAL_GAMEPAD_DRIVER=""</Custom>
       <!-- Remove conflicting products before installation starts. -->
       <Custom Action="RemoveConflictingProducts" Before="InstallValidate">NOT Installed AND NOT REMOVE AND SKIP_REMOVE_CONFLICTING_PRODUCTS &lt;&gt; "1"</Custom>
 
@@ -64,10 +76,10 @@
       <!-- Post-install chores -->
       <Custom Action="SetResetAcls" After="InstallFiles">NOT REMOVE</Custom>
       <Custom Action="ResetAcls" After="SetResetAcls">NOT REMOVE</Custom>
-      <Custom Action="SetInstallSudovda" After="ResetAcls">NOT REMOVE AND INSTALL_SUDOVDA = "1"</Custom>
-      <Custom Action="InstallSudovda" After="SetInstallSudovda">NOT REMOVE AND INSTALL_SUDOVDA = "1"</Custom>
-      <Custom Action="SetInstallVirtualDisplayDriver" After="InstallSudovda">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; "0"</Custom>
-      <Custom Action="InstallVirtualDisplayDriver" After="SetInstallVirtualDisplayDriver">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; "0"</Custom>
+      <Custom Action="SetInstallSudovda" After="ResetAcls">NOT REMOVE AND INSTALL_SUDOVDA = "1" AND INSTALL_DISPLAY_DRIVERS = "1"</Custom>
+      <Custom Action="InstallSudovda" After="SetInstallSudovda">NOT REMOVE AND INSTALL_SUDOVDA = "1" AND INSTALL_DISPLAY_DRIVERS = "1"</Custom>
+      <Custom Action="SetInstallVirtualDisplayDriver" After="InstallSudovda">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; "0" AND INSTALL_DISPLAY_DRIVERS = "1"</Custom>
+      <Custom Action="InstallVirtualDisplayDriver" After="SetInstallVirtualDisplayDriver">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; "0" AND INSTALL_DISPLAY_DRIVERS = "1"</Custom>
       <Custom Action="SetInstallVirtualGamepadDriver" After="InstallVirtualDisplayDriver">NOT REMOVE AND INSTALL_VIRTUAL_GAMEPAD_DRIVER &lt;&gt; "0"</Custom>
       <Custom Action="InstallVirtualGamepadDriver" After="SetInstallVirtualGamepadDriver">NOT REMOVE AND INSTALL_VIRTUAL_GAMEPAD_DRIVER &lt;&gt; "0"</Custom>
       <!-- Explicit opt-in only; existing shared transports are left unchanged.

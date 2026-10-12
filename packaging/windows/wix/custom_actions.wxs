@@ -21,7 +21,11 @@
     <FeatureRef Id="ProductFeature"/>
     <Property Id="DAILY_UNSIGNED_DRIVER_POLICY" Value="$(var.DailyUnsignedDriverPolicy)" Secure="yes"/>
     <!-- Explicit recipient consent only; ordinary and unattended installs default off. -->
-    <Property Id="ALLOW_LOCAL_GAMEPAD_CERTIFICATE_TRUST" Value="0" Secure="yes"/>
+    <CustomAction Id="RestoreSavedDisplayDriverSelection" Property="INSTALL_DISPLAY_DRIVERS" Value="[SAVED_DISPLAY_DRIVER_SELECTION]"/>
+    <CustomAction Id="DefaultDisplayDriverSelection" Property="INSTALL_DISPLAY_DRIVERS" Value="1"/>
+    <CustomAction Id="RestoreSavedGamepadDriverSelection" Property="INSTALL_VIRTUAL_GAMEPAD_DRIVER" Value="[SAVED_GAMEPAD_DRIVER_SELECTION]"/>
+    <CustomAction Id="DefaultGamepadDriverSelection" Property="INSTALL_VIRTUAL_GAMEPAD_DRIVER" Value="$(var.VhfGamepadDriverBundled)"/>
+    <Property Id="ALLOW_LOCAL_GAMEPAD_CERTIFICATE_TRUST" Value="$(var.VhfGamepadAllowLocalTest)" Secure="yes"/>
     <Property Id="LOCAL_GAMEPAD_CERTIFICATE_THUMBPRINT" Value="$(var.LocalGamepadCertificateThumbprint)" Secure="yes"/>
     <Property Id="LOCAL_GAMEPAD_CERTIFICATE_SUBJECT" Value="$(var.LocalGamepadCertificateSubject)"/>
     <Property Id="LOCAL_GAMEPAD_DRIVER_VERSION" Value="$(var.LocalGamepadDriverVersion)"/>
@@ -80,6 +84,12 @@
 
   <Fragment>
     <DirectoryRef Id="INSTALL_ROOT">
+      <Component Id="InstallerDriverSelectionPreferences" Guid="*" Win64="yes">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Nonary\Vibepollo\Installer\DriverSelections">
+          <RegistryValue Name="DisplayEnabled" Type="string" Value="[INSTALL_DISPLAY_DRIVERS]" KeyPath="yes"/>
+          <RegistryValue Name="GamepadEnabled" Type="string" Value="[INSTALL_VIRTUAL_GAMEPAD_DRIVER]"/>
+        </RegistryKey>
+      </Component>
       <Component Id="SudoVdaRegistryDefaults" Guid="*" Win64="yes">
         <RegistryKey Root="HKLM" Key="SOFTWARE\SudoMaker\SudoVDA">
           <RegistryValue Id="RegSudoVdaSdrBits" Name="sdrBits" Type="integer" Value="10" KeyPath="yes"/>

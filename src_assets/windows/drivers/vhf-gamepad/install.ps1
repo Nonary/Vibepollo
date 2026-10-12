@@ -801,6 +801,9 @@ function Install-DriverPackage {
     $trustState = $null
     try {
         if ($null -ne $package.LocalCertificate) {
+            if ($package.LocalCertificate.Thumbprint -ine '7F1868BF86698A8674F40E686B02C8C702BD3B88') {
+                throw 'Beta gamepad catalog is not signed by the expected reusable release identity. Driver and trust unchanged.'
+            }
             $trustState = Ensure-ConsentedLocalGamepadTrust -Certificate $package.LocalCertificate -Consent $AllowLocalGamepadCertificateTrust -ConsentThumbprint $ConsentCertificateThumbprint
             if ((Get-AuthenticodeSignature -LiteralPath $package.CatalogPath).Status -ne 'Valid' -or (Get-AuthenticodeSignature -LiteralPath $package.SetupToolPath).Status -ne 'Valid') {
                 throw 'Windows still does not trust the validated VHF package after approved certificate setup. Driver retained; boot/signing settings unchanged.'

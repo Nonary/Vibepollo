@@ -134,6 +134,7 @@ try {
     Assert-That ($bootstrap.Contains('its uninstaller cannot guarantee preservation of installed drivers')) 'Legacy pre-uninstall must fail safely'
     & (Join-Path $RepositoryRoot 'scripts/tests/test_display_producer_provenance.ps1') -RepositoryRoot $RepositoryRoot
     & (Join-Path $RepositoryRoot 'packaging/windows/test_gamepad_certificate_trust.ps1') -RepositoryRoot $RepositoryRoot
+    & (Join-Path $RepositoryRoot 'packaging/windows/bootstrapper/tests/test_driver_selections.ps1')
     & (Join-Path $RepositoryRoot 'packaging/windows/bootstrapper/tests/test_gamepad_certificate_consent.ps1')
     $windowsPowerShell = Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/powershell.exe'
     & $windowsPowerShell -NoProfile -File (Join-Path $RepositoryRoot 'packaging/windows/test_gamepad_certificate_crypto.ps1') -RepositoryRoot $RepositoryRoot

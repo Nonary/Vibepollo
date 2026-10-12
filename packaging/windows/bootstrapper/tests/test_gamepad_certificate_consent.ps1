@@ -46,16 +46,15 @@ try {
     $arguments = Parse-TestArguments @('--internal-elevated-install')
     Assert-ConsentArguments $arguments $true $false
 
-    $checkbox = [regex]::Match($source, '(?s)_localGamepadCertificateTrustCheckBox = new CheckBox \{.*?\n      \};').Value
-    if (-not $checkbox.Contains('IsChecked = false')) { throw 'Trust consent must be visibly unchecked by default.' }
-    foreach ($disclosure in @('LocalMachine Root and TrustedPublisher', 'Trust persists for every user', 'other code signed by the same key', 'it remains after uninstall', 'No Secure Boot, test-signing setting or reboot', 'Thumbprint: ', 'Driver version: ')) {
-        if (-not $source.Contains($disclosure)) { throw "Missing informed consent disclosure: $disclosure" }
+    if ($source.Contains('_localGamepadCertificateTrustCheckBox')) { throw 'Separate beta certificate checkbox must be removed.' }
+    foreach ($disclosure in @('verified bundled signing certificate', 'Equal or newer installed drivers remain unchanged', 'Windows security enforcement stays enabled')) {
+        if (-not $source.Contains($disclosure)) { throw "Missing concise beta disclosure: $disclosure" }
     }
     [xml]$wix = Get-Content (Join-Path $repo 'packaging/windows/wix/custom_actions.wxs') -Raw
     $namespace = New-Object Xml.XmlNamespaceManager($wix.NameTable)
     $namespace.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi')
     $property = $wix.SelectSingleNode('//w:Property[@Id="ALLOW_LOCAL_GAMEPAD_CERTIFICATE_TRUST"]', $namespace)
-    if ($property.Value -cne '0' -or $property.Secure -cne 'yes') { throw 'MSI consent property must be secure and default zero.' }
+    if ($property.Value -cne '$(var.VhfGamepadAllowLocalTest)' -or $property.Secure -cne 'yes') { throw 'MSI beta trust must follow verified local package presence, remain secure and preserve identity binding.' }
     $action = $wix.SelectSingleNode('//w:CustomAction[@Id="SetInstallVirtualGamepadDriver"]', $namespace)
     if (-not $action.Value.Contains('-AllowLocalGamepadCertificateTrust [ALLOW_LOCAL_GAMEPAD_CERTIFICATE_TRUST]') -or -not $action.Value.Contains('-ConsentCertificateThumbprint "[LOCAL_GAMEPAD_CERTIFICATE_THUMBPRINT]"')) { throw 'MSI gamepad action lost explicit consent/identity binding.' }
     $reader = Get-Content (Join-Path $repo 'scripts/read_gamepad_certificate_identity.ps1') -Raw
