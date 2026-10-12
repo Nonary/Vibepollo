@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#include "amf_initialization_policy.h"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -244,13 +246,12 @@ namespace amf::lifecycle {
 
   inline constexpr encoder_selection_policy_t encoder_selection_policy(
     std::string_view requested_encoder) noexcept {
-    // The FFmpeg AMF implementation is the supported default. The native AMF
-    // implementation has limited hardware coverage and is only considered when
-    // the user explicitly opts into the experimental encoder.
+    // Automatic selection prefers native AMF. Preserve explicit implementation
+    // choices, including both historical aliases.
     const auto canonical_encoder = canonical_encoder_name(requested_encoder);
     return {
-      canonical_encoder == "amdvce_experimental",
-      canonical_encoder == "amdvce_experimental",
+      requested_encoder.empty() || canonical_encoder == "amdvce_experimental",
+      canonical_encoder == "amdvce_experimental" || canonical_encoder == "amdvce_ffmpeg",
     };
   }
 

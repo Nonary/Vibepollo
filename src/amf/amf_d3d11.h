@@ -32,6 +32,8 @@ namespace amf {
    */
   class amf_d3d11: public amf_encoder {
   public:
+    lifecycle::initialization_failure_e initialization_failure = lifecycle::initialization_failure_e::device_or_capture;
+
     explicit amf_d3d11(ID3D11Device *d3d_device);
     ~amf_d3d11();
 

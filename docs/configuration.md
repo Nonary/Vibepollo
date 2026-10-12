@@ -3065,8 +3065,8 @@ this option to replace the running app immediately. The default is `true`.
     </tr>
     <tr>
         <td>amdvce_ffmpeg</td>
-        <td>For AMD graphics cards. This is the supported FFmpeg-based AMF encoder and the
-            implementation used by automatic selection on Windows.
+        <td>Legacy FFmpeg-based AMD AMF encoder. Select this explicitly to preserve legacy
+            encoding. Automatic selection prefers native AMF on Windows.
             @note{Existing configurations using @code{}amdvce_legacy@endcode are accepted as
             a compatibility alias for @code{}amdvce_ffmpeg@endcode. The former native
             @code{}amdvce@endcode value is accepted as an alias for
@@ -3074,9 +3074,14 @@ this option to replace the running app immediately. The default is `true`.
     </tr>
     <tr>
         <td>amdvce_experimental</td>
-        <td>Experimental native AMD AMF encoder. It is not selected automatically, has limited
-            hardware test coverage, and may not work with older GPUs or driver versions. Explicit
-            selection fails closed instead of silently changing encoder implementations.
+        <td>Native AMD AMF encoder, preferred by automatic selection on Windows. The historical
+            name remains compatible with existing settings. Explicit selection fails closed.
+            With automatic selection, a confirmed encoder creation or initialization failure
+            permits one FFmpeg AMF rollback per stream after native cleanup completes. Codec,
+            bit depth, chroma and HDR remain unchanged. Unsupported requested formats, explicit
+            native options, intra refresh, capture/conversion errors, cancellation, contention
+            and unsafe driver timeouts do not trigger rollback. The next stream retries native
+            initialization; a failed rollback ends the stream.
             @note{Applies to Windows only.}</td>
     </tr>
     <tr>
@@ -4220,7 +4225,7 @@ runtime version is written to the log on every AMD HDR HEVC attempt (search for
 
 ### amd_av1_tiles
 
-Experimental AV1 tile-count override for the native `amdvce` encoder only. Set this in `sunshine.conf`.
+Experimental AV1 tile-count override for the native `amdvce_experimental` encoder only. Set this in `sunshine.conf`.
 
 | Value | Behavior |
 | --- | --- |
@@ -4228,7 +4233,7 @@ Experimental AV1 tile-count override for the native `amdvce` encoder only. Set t
 | `1`, `2`, `4` | Request this many AV1 tiles, overriding the client request. |
 
 Example: `amd_av1_tiles = 2`. Reconnect the stream after changing this setting.
-Invalid values fall back to `0`. This does not affect H.264, HEVC or `amdvce_legacy`.
+Invalid values fall back to `0`. This does not affect H.264, HEVC or `amdvce_ffmpeg`.
 
 AMF may adjust the requested tile count for its supported layout. The session log reports the request and
 the driver-reported count **after encoder initialization**; these are not a bitstream inspection or proof

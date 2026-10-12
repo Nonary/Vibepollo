@@ -2067,8 +2067,8 @@
           "verify_only": "Verify it is active"
         },
         "encoder": {
-          "amdvce_ffmpeg": "AMD AMF (FFmpeg)",
-          "amdvce_experimental": "AMD AMF (Experimental)",
+          "amdvce_ffmpeg": "AMD AMF (Legacy FFmpeg)",
+          "amdvce_experimental": "AMD AMF (Native)",
           "auto": "Automatic · Recommended",
           "auto_selected": "Automatic · {encoder}",
           "mediafoundation": "Windows Media Foundation",

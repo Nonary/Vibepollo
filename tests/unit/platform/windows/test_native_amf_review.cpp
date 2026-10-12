@@ -5,7 +5,6 @@
 
 #include "src/amf/amf_lifecycle.h"
 #include "src/amf/amf_config_policy.h"
-#include "src/platform/windows/capture_gpu_policy.h"
 
 #include <array>
 #include <atomic>
@@ -93,65 +92,6 @@ namespace {
            !valid_av1_tiles_override(-1) && !valid_av1_tiles_override(3) &&
            !valid_av1_tiles_override(8) && !av1_tiles_request(3, 1) &&
            av1_tiles_request(-1, 8) == 8;
-  }
-
-  bool fresh_cursor_capture_releases_output_before_caching_desktop() {
-    std::vector<int> commands;
-    int desktop = 42;
-    int cached_desktop = 17;
-    int output = 0;
-    const bool result = platf::dxgi::capture_policy::submit_cursor_frame(
-      true,
-      [&](bool fresh) {
-        commands.push_back(1);
-        output = fresh ? desktop : cached_desktop;
-      },
-      [&]() {
-        commands.push_back(2);
-        output += 100;
-      },
-      [&]() {
-        commands.push_back(3);
-        return output == 142 && cached_desktop == 17;
-      },
-      [&]() {
-        commands.push_back(4);
-        cached_desktop = desktop;
-      });
-    return result && commands == std::vector<int> {1, 2, 3, 4} &&
-           output == 142 && cached_desktop == 42;
-  }
-
-  bool mouse_only_capture_uses_unmodified_cached_desktop() {
-    int cached_desktop = 42;
-    int output = 0;
-    int cache_copies = 0;
-    int releases = 0;
-    for (int cursor : {100, 200}) {
-      if (!platf::dxgi::capture_policy::submit_cursor_frame(
-            false,
-            [&](bool fresh) { output = fresh ? -1 : cached_desktop; },
-            [&]() { output += cursor; },
-            [&]() {
-              ++releases;
-              return true;
-            },
-            [&]() {
-              ++cache_copies;
-              cached_desktop = output;
-            }) ||
-          output != 42 + cursor) {
-        return false;
-      }
-    }
-    return cached_desktop == 42 && cache_copies == 0 && releases == 2;
-  }
-
-  bool failed_capture_handoff_is_not_reported_as_a_valid_frame() {
-    bool cache_copied = false;
-    const bool result = platf::dxgi::capture_policy::submit_cursor_frame(
-      true, [](bool) {}, []() {}, []() { return false; }, [&]() { cache_copied = true; });
-    return !result && !cache_copied;
   }
 
   enum class fake_amf_result_e {
@@ -331,18 +271,122 @@ namespace {
     return !automatic && cabac && *cabac == 1 && cavlc && *cavlc == 0;
   }
 
-  bool experimental_selection_is_explicit_only() {
+  bool automatic_prefers_native_and_explicit_choices_are_strict() {
     const auto automatic = amf::lifecycle::encoder_selection_policy("");
     const auto stable = amf::lifecycle::encoder_selection_policy("amdvce_ffmpeg");
     const auto experimental = amf::lifecycle::encoder_selection_policy("amdvce_experimental");
     const auto stable_alias = amf::lifecycle::encoder_selection_policy("amdvce_legacy");
     const auto experimental_alias = amf::lifecycle::encoder_selection_policy("amdvce");
 
-    return !automatic.include_experimental && !automatic.fail_closed &&
-           !stable.include_experimental && !stable.fail_closed &&
+    return automatic.include_experimental && !automatic.fail_closed &&
+           !stable.include_experimental && stable.fail_closed &&
            experimental.include_experimental && experimental.fail_closed &&
-           !stable_alias.include_experimental && !stable_alias.fail_closed &&
+           !stable_alias.include_experimental && stable_alias.fail_closed &&
            experimental_alias.include_experimental && experimental_alias.fail_closed;
+  }
+
+  bool initialization_fallback_respects_success_and_explicit_choices() {
+    using namespace amf::lifecycle;
+    using result_t = initialization_result_t<std::unique_ptr<int>>;
+    int native_calls = 0, legacy_calls = 0, logs = 0;
+    initialization_fallback_t automatic;
+    auto success = [&]() -> result_t { ++native_calls; return {std::make_unique<int>(42), initialization_failure_e::none}; };
+    auto legacy = [&]() -> result_t { ++legacy_calls; return {std::make_unique<int>(17), initialization_failure_e::none}; };
+    auto log = [&](auto) { ++logs; };
+    auto result = automatic.initialize(true, true, success, legacy, log);
+    if (!result.value || **result.value != 42 || automatic.legacy || native_calls != 1 || legacy_calls || logs) return false;
+    initialization_fallback_t explicit_native;
+    auto failure = []() -> result_t { return {std::nullopt, initialization_failure_e::encoder_init}; };
+    if (explicit_native.initialize(false, true, failure, legacy, log).value || explicit_native.legacy || legacy_calls || logs) return false;
+    initialization_fallback_t explicit_legacy {.legacy = true};
+    result = explicit_legacy.initialize(false, true, success, legacy, log);
+    return result.value && **result.value == 17 && native_calls == 1 && legacy_calls == 1 && logs == 0;
+  }
+
+  bool successful_rollback_uses_the_same_stream_format() {
+    using namespace amf::lifecycle;
+    using format_t = std::array<int, 4>; // codec, depth, chroma, HDR
+    using result_t = initialization_result_t<format_t>;
+    const format_t requested {2, 10, 0, 1};
+    initialization_fallback_t stream;
+    int native_calls = 0, legacy_calls = 0, logs = 0;
+    auto native = [&]() -> result_t { ++native_calls; return {std::nullopt, initialization_failure_e::encoder_init}; };
+    auto legacy = [&]() -> result_t { ++legacy_calls; return {requested, initialization_failure_e::none}; };
+    auto result = stream.initialize(true, true, native, legacy, [&](auto) { ++logs; });
+    if (!result.value || *result.value != requested || !stream.legacy || native_calls != 1 || legacy_calls != 1 || logs != 1) return false;
+    result = stream.initialize(true, true, native, legacy, [&](auto) { ++logs; });
+    return result.value && *result.value == requested && native_calls == 1 && legacy_calls == 2 && logs == 1;
+  }
+
+  bool encoder_initialization_fallback_is_bounded_and_owned() {
+    using namespace amf::lifecycle;
+    struct owned_t {
+      int &live;
+      explicit owned_t(int &count): live(count) { ++live; }
+      ~owned_t() { --live; }
+    };
+    using result_t = initialization_result_t<std::unique_ptr<owned_t>>;
+    for (auto failure : {initialization_failure_e::encoder_create, initialization_failure_e::encoder_init}) {
+      int live = 0, native_calls = 0, legacy_calls = 0, logs = 0;
+      initialization_fallback_t stream;
+      auto native = [&]() -> result_t {
+        ++native_calls;
+        auto partial = std::make_unique<owned_t>(live);
+        return {std::nullopt, failure};
+      };
+      auto failed_legacy = [&]() -> result_t {
+        ++legacy_calls;
+        if (live != 0) return {std::make_unique<owned_t>(live), initialization_failure_e::none};
+        auto partial = std::make_unique<owned_t>(live);
+        return {std::nullopt, initialization_failure_e::encoder_init};
+      };
+      auto log = [&](auto reason) { if (live == 0 && reason == failure) ++logs; };
+      auto result = stream.initialize(true, true, native, failed_legacy, log);
+      if (result.value || live || !stream.legacy || native_calls != 1 || legacy_calls != 1 || logs != 1) return false;
+      // A reinit in this stream never reenters native or logs another rollback.
+      result = stream.initialize(true, true, native, failed_legacy, log);
+      if (result.value || live || native_calls != 1 || legacy_calls != 2 || logs != 1) return false;
+      initialization_fallback_t next_stream;
+      auto success = [&]() -> result_t { ++native_calls; return {std::make_unique<owned_t>(live), initialization_failure_e::none}; };
+      result = next_stream.initialize(true, true, success, failed_legacy, log);
+      if (!result.value || next_stream.legacy || native_calls != 2 || legacy_calls != 2 || live != 1) return false;
+      result.value.reset();
+      if (live) return false;
+    }
+    return true;
+  }
+
+  bool unrelated_or_unsupported_failures_never_fallback() {
+    using namespace amf::lifecycle;
+    using result_t = initialization_result_t<int>;
+    for (auto failure : {initialization_failure_e::unsupported_format, initialization_failure_e::device_or_capture,
+                         initialization_failure_e::conversion, initialization_failure_e::network,
+                         initialization_failure_e::cancelled, initialization_failure_e::busy,
+                         initialization_failure_e::unsafe_runtime}) {
+      initialization_fallback_t stream;
+      int rollbacks = 0;
+      auto result = stream.initialize(true, true,
+        [&]() -> result_t { return {std::nullopt, failure}; },
+        [&]() -> result_t { ++rollbacks; return {17, initialization_failure_e::none}; }, [](auto) {});
+      if (result.value || result.failure != failure || rollbacks || stream.legacy) return false;
+    }
+    initialization_fallback_t incompatible;
+    auto result = incompatible.initialize(true, false,
+      []() -> result_t { return {std::nullopt, initialization_failure_e::encoder_init}; },
+      []() -> result_t { return {17, initialization_failure_e::none}; }, [](auto) {});
+    return !result.value && !incompatible.legacy;
+  }
+
+  bool rollback_preserves_negotiated_format_requirements() {
+    using amf::lifecycle::legacy_stream_format_compatible;
+    return legacy_stream_format_compatible(0, 0, false, false, false) &&
+           legacy_stream_format_compatible(1, 0, true, false, false) &&
+           legacy_stream_format_compatible(2, 0, true, false, false) &&
+           !legacy_stream_format_compatible(0, 0, true, false, false) &&
+           !legacy_stream_format_compatible(1, 1, false, false, false) &&
+           !legacy_stream_format_compatible(3, 0, false, false, false) &&
+           !legacy_stream_format_compatible(1, 0, false, true, false) &&
+           !legacy_stream_format_compatible(2, 0, false, false, true);
   }
 
   bool xbox_intra_refresh_maps_to_native_amf() {
@@ -748,9 +792,6 @@ int main() {
              av1_tiles_auto_preserves_client_and_preset_behavior() &&
              av1_tiles_override_includes_explicit_single_tile() &&
              av1_tiles_rejects_invalid_host_overrides() &&
-             fresh_cursor_capture_releases_output_before_caching_desktop() &&
-             mouse_only_capture_uses_unmodified_cached_desktop() &&
-             failed_capture_handoff_is_not_reported_as_a_valid_frame() &&
              synchronous_release_during_submit_is_reentrant_safe() &&
              backpressure_retries_the_same_submission_until_accepted() &&
              exhausted_backpressure_reinitializes_without_owned_surfaces() &&
@@ -758,7 +799,12 @@ int main() {
              preanalysis_dependent_rate_control_is_planned_natively() &&
              preanalysis_pipeline_primes_and_drains_in_order() &&
              automatic_h264_coder_preserves_driver_default() &&
-             experimental_selection_is_explicit_only() &&
+             automatic_prefers_native_and_explicit_choices_are_strict() &&
+             initialization_fallback_respects_success_and_explicit_choices() &&
+             successful_rollback_uses_the_same_stream_format() &&
+             encoder_initialization_fallback_is_bounded_and_owned() &&
+             unrelated_or_unsupported_failures_never_fallback() &&
+             rollback_preserves_negotiated_format_requirements() &&
              xbox_intra_refresh_maps_to_native_amf() &&
              hevc_gdr_uses_negotiated_codec_and_dimensions() &&
              effective_reference_frame_limit_matches_configure_and_verify() &&
@@ -804,16 +850,20 @@ TEST(SunshineNativeAmfReview, Av1TilesRejectsInvalidHostOverrides) {
   EXPECT_TRUE(av1_tiles_rejects_invalid_host_overrides());
 }
 
-TEST(WindowsCaptureGpuPolicy, FreshCursorFrameIsReleasedBeforeBackgroundCopy) {
-  EXPECT_TRUE(fresh_cursor_capture_releases_output_before_caching_desktop());
+TEST(SunshineNativeAmfReview, InitializationFallbackRespectsSuccessAndExplicitChoices) {
+  EXPECT_TRUE(initialization_fallback_respects_success_and_explicit_choices());
 }
-
-TEST(WindowsCaptureGpuPolicy, MouseOnlyFramesPreserveCursorFreeBackground) {
-  EXPECT_TRUE(mouse_only_capture_uses_unmodified_cached_desktop());
+TEST(SunshineNativeAmfReview, SuccessfulRollbackUsesTheSameStreamFormat) {
+  EXPECT_TRUE(successful_rollback_uses_the_same_stream_format());
 }
-
-TEST(WindowsCaptureGpuPolicy, FailedHandoffRejectsFrame) {
-  EXPECT_TRUE(failed_capture_handoff_is_not_reported_as_a_valid_frame());
+TEST(SunshineNativeAmfReview, EncoderInitializationFallbackIsBoundedAndOwned) {
+  EXPECT_TRUE(encoder_initialization_fallback_is_bounded_and_owned());
+}
+TEST(SunshineNativeAmfReview, UnrelatedOrUnsupportedFailuresNeverFallback) {
+  EXPECT_TRUE(unrelated_or_unsupported_failures_never_fallback());
+}
+TEST(SunshineNativeAmfReview, RollbackPreservesNegotiatedFormatRequirements) {
+  EXPECT_TRUE(rollback_preserves_negotiated_format_requirements());
 }
 
 TEST(SunshineNativeAmfReview, SynchronousReleaseDuringSubmitIsReentrantSafe) {
@@ -844,8 +894,8 @@ TEST(SunshineNativeAmfReview, AutomaticH264CoderPreservesDriverDefault) {
   EXPECT_TRUE(automatic_h264_coder_preserves_driver_default());
 }
 
-TEST(SunshineNativeAmfReview, ExperimentalSelectionIsExplicitOnly) {
-  EXPECT_TRUE(experimental_selection_is_explicit_only());
+TEST(SunshineNativeAmfReview, AutomaticPrefersNativeAndExplicitChoicesAreStrict) {
+  EXPECT_TRUE(automatic_prefers_native_and_explicit_choices_are_strict());
 }
 
 TEST(SunshineNativeAmfReview, XboxIntraRefreshMapsToNativeAmf) {

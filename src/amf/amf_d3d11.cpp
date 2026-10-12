@@ -1036,8 +1036,11 @@ namespace amf {
     video_format = client_config.videoFormat;
     current_config = client_config;
 
+    initialization_failure = lifecycle::initialization_failure_e::encoder_create;
     // Initialize AMF library
     if (!init_amf_library()) return false;
+    // Context/D3D setup is distinct from the codec component boundary.
+    initialization_failure = lifecycle::initialization_failure_e::device_or_capture;
 
     // Create AMF context
     auto res = factory->CreateContext(&context);
@@ -1082,6 +1085,8 @@ namespace amf {
       // Create encoder component
       res = factory->CreateComponent(context, get_codec_id(), &encoder);
       if (res != AMF_OK || !encoder) {
+        initialization_failure = res == AMF_NOT_SUPPORTED ? lifecycle::initialization_failure_e::unsupported_format :
+                                                          lifecycle::initialization_failure_e::encoder_create;
         BOOST_LOG(error) << "AMF: CreateComponent failed for codec " << video_format << ", error: " << res;
         if (attempt + 1 < max_attempts) continue;
         return false;
@@ -1089,6 +1094,7 @@ namespace amf {
 
       // Configure encoder properties (before Init)
       if (!configure_encoder(attempt_config, client_config, colorspace)) {
+        initialization_failure = lifecycle::initialization_failure_e::unsupported_format;
         encoder->Terminate();
         encoder = nullptr;
         if (attempt + 1 < max_attempts) continue;
@@ -1102,6 +1108,9 @@ namespace amf {
       res = encoder->Init(amf_format, client_config.width, client_config.height);
 
       if (res != AMF_OK) {
+        initialization_failure = (res == AMF_NOT_SUPPORTED || res == AMF_INVALID_ARG) ?
+                                   lifecycle::initialization_failure_e::unsupported_format :
+                                   lifecycle::initialization_failure_e::encoder_init;
         BOOST_LOG(error) << "AMF: encoder Init failed with the requested encode settings, error: " << res;
         encoder->Terminate();
         encoder = nullptr;
@@ -1113,6 +1122,7 @@ namespace amf {
       break;
     }
 
+    initialization_failure = lifecycle::initialization_failure_e::unsupported_format;
     if (video_format != 0) {
       const wchar_t *multi_instance_property = video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_MULTI_HW_INSTANCE_ENCODE :
                                                                    AMF_VIDEO_ENCODER_AV1_MULTI_HW_INSTANCE_ENCODE;
@@ -1333,6 +1343,7 @@ namespace amf {
                        << " (result=" << latency_result << ')';
     }
 
+    initialization_failure = lifecycle::initialization_failure_e::device_or_capture;
     // Create the rotating textures that are both render targets and native AMF
     // inputs. Rendering directly into a reserved slot removes a full-frame GPU copy.
     DXGI_FORMAT dxgi_fmt;
@@ -1426,6 +1437,7 @@ namespace amf {
                     << ", input_queue=" << encoder_input_queue_size
                     << ", input_surfaces=" << active_input_surface_count
                     << ", client_slices=" << client_config.slicesPerFrame << ")";
+    initialization_failure = lifecycle::initialization_failure_e::none;
     return true;
   }
 

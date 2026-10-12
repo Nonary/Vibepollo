@@ -27,6 +27,7 @@
 // local includes
 #include "src/boost_process_shim.h"
 #include "src/config.h"
+#include "src/amf/amf_initialization_policy.h"
 #include "src/host_stats_types.h"
 #include "src/logging.h"
 #include "src/thread_safe.h"
@@ -491,6 +492,9 @@ namespace platf {
   };
 
   struct amf_encode_device_t: encode_device_t {
+    // Set only by the AMF runtime/component boundary; D3D/capture preparation
+    // failures must never authorize an implementation fallback.
+    ::amf::lifecycle::initialization_failure_e initialization_failure = ::amf::lifecycle::initialization_failure_e::device_or_capture;
     // Native backends prepare only non-driver state on the capture thread.
     // D3D/AMF construction is invoked by the bounded initialization worker.
     virtual bool initialize_hardware_device() {

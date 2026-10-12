@@ -2080,12 +2080,12 @@ namespace video {
     PARALLEL_ENCODING | CBR_WITH_VBR | RELAXED_COMPLIANCE | NO_RC_BUF_LIMIT | YUV444_SUPPORT
   };
 
-  // Experimental native AMD AMF encoder (src/amf/amf_d3d11.cpp). Bypasses the
+  // Preferred native AMD AMF encoder (src/amf/amf_d3d11.cpp). Bypasses the
   // FFmpeg AMF wrapper for direct AMF SDK access: D3D11 zero-copy input, reference-frame
   // invalidation and HDR metadata. Selecting amdvce_experimental is a strict native-AMF
   // contract: feature, initialization, or runtime failures are reported instead
-  // of silently changing encoder implementations. It is excluded from automatic
-  // probing because hardware and driver coverage is currently limited.
+  // of silently changing encoder implementations. Automatic selection prefers
+  // this path and permits a compatible, bounded initialization rollback.
   encoder_t amdvce_experimental {
     "amdvce_experimental"sv,
     std::make_unique<encoder_platform_formats_amf>(
@@ -2131,7 +2131,7 @@ namespace video {
   };
 
   // Supported FFmpeg-based AMF encoder. Its explicit name identifies the
-  // implementation, and it is the AMD encoder selected by automatic probing.
+  // implementation; select it explicitly to retain legacy AMD behavior.
   encoder_t amdvce_ffmpeg {
     "amdvce_ffmpeg"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
@@ -2627,8 +2627,8 @@ namespace video {
 #endif
 #ifdef _WIN32
     &quicksync,
-    &amdvce_ffmpeg,
     &amdvce_experimental,
+    &amdvce_ffmpeg,
     &mediafoundation,
 #endif
 #if defined(__linux__) || defined(linux) || defined(__linux) || defined(__FreeBSD__)
@@ -2644,6 +2644,11 @@ namespace video {
   };
 
   static encoder_t *chosen_encoder;
+#ifdef _WIN32
+  // A transient native initialization failure during startup probing does not
+  // permanently opt later streams out of the preferred implementation.
+  std::atomic_bool native_amf_probe_retry_allowed {false};
+#endif
   int active_hevc_mode;
   int active_av1_mode;
   std::atomic_int active_pyrowave_mode {0};
@@ -4384,7 +4389,9 @@ namespace video {
     std::chrono::steady_clock::time_point deadline,
     const initialization_cancel_t &cancelled,
     bool &operation_cancelled,
-    bool &gate_contended) {
+    bool &gate_contended,
+    amf::lifecycle::initialization_failure_e &failure) {
+    failure = amf::lifecycle::initialization_failure_e::device_or_capture;
     operation_cancelled = false;
     gate_contended = false;
     // Native AMF can wedge inside Init/Terminate on a damaged driver. Run the
@@ -4441,10 +4448,12 @@ namespace video {
     auto display_lease = encode_device->release_display_lease_for_initialization();
     auto handoff = std::make_shared<amf::lifecycle::worker_handoff_t<std::unique_ptr<platf::amf_encode_device_t>>>();
     const auto colorspace = encode_device->colorspace;
+    auto worker_failure = std::make_shared<amf::lifecycle::initialization_failure_e>(
+      amf::lifecycle::initialization_failure_e::device_or_capture);
     std::thread initialization_thread;
     try {
       initialization_thread = std::thread {
-        [encode_device = std::move(encode_device), client_config, colorspace, resolved_hdr_metadata, handoff]() mutable {
+        [encode_device = std::move(encode_device), client_config, colorspace, resolved_hdr_metadata, handoff, worker_failure]() mutable {
           bool handed_off_to_caller = false;
           auto initialization_gate = util::fail_guard([&handed_off_to_caller]() {
             if (!handed_off_to_caller) {
@@ -4453,9 +4462,12 @@ namespace video {
           });
           auto owned_encode_device = std::move(encode_device);
           try {
-            if (!owned_encode_device->initialize_hardware_device() ||
-                !owned_encode_device->init_encoder(client_config, colorspace) ||
-                !owned_encode_device->finish_encoder_initialization(client_config, colorspace)) {
+            const bool hardware_ready = owned_encode_device->initialize_hardware_device();
+            const bool encoder_ready = hardware_ready && owned_encode_device->init_encoder(client_config, colorspace);
+            const bool output_ready = encoder_ready && owned_encode_device->finish_encoder_initialization(client_config, colorspace);
+            if (!output_ready) {
+              *worker_failure = encoder_ready ? amf::lifecycle::initialization_failure_e::conversion :
+                                               owned_encode_device->initialization_failure;
               // Failure destruction is part of this same watchdog interval. Only
               // publish failure after the D3D/AMF resources are gone, so legacy
               // fallback cannot race a still-unwinding native runtime.
@@ -4497,6 +4509,7 @@ namespace video {
     encode_device = std::move(*accepted);
     if (!encode_device) {
       initialization_thread.join();
+      failure = *worker_failure;
       return nullptr;
     }
     initialization_thread.join();
@@ -4526,6 +4539,7 @@ namespace video {
     }
     encode_device->restore_display_lease_after_initialization(std::move(display_lease));
 
+    failure = amf::lifecycle::initialization_failure_e::none;
     return std::make_unique<amf_encode_session_t>(std::move(encode_device));
   }
 
@@ -4539,7 +4553,8 @@ namespace video {
     std::chrono::steady_clock::time_point initialization_deadline = std::chrono::steady_clock::time_point::max(),
     initialization_cancel_t cancelled = {},
     bool *operation_cancelled_out = nullptr,
-    bool *gate_contended_out = nullptr) {
+    bool *gate_contended_out = nullptr,
+    amf::lifecycle::initialization_failure_e *failure_out = nullptr) {
     if (!cancelled) cancelled = []() { return false; };
     if (operation_cancelled_out) *operation_cancelled_out = false;
     if (gate_contended_out) *gate_contended_out = false;
@@ -4553,9 +4568,11 @@ namespace video {
       return make_nvenc_encode_session(config, std::move(nvenc_encode_device));
     } else if (dynamic_cast<platf::amf_encode_device_t *>(encode_device.get())) {
       auto amf_encode_device = boost::dynamic_pointer_cast<platf::amf_encode_device_t>(std::move(encode_device));
+      amf::lifecycle::initialization_failure_e failure;
       auto session = make_amf_encode_session(
         config, std::move(amf_encode_device), initialization_deadline, cancelled,
-        operation_cancelled, gate_contended);
+        operation_cancelled, gate_contended, failure);
+      if (failure_out) *failure_out = failure;
       if (operation_cancelled_out) *operation_cancelled_out = operation_cancelled;
       if (gate_contended_out) *gate_contended_out = gate_contended;
       return session;
@@ -4676,7 +4693,9 @@ namespace video {
     std::chrono::steady_clock::time_point deadline,
     const initialization_cancel_t &cancelled,
     bool &operation_cancelled,
-    bool &gate_contended) {
+    bool &gate_contended,
+    std::optional<sunshine_colorspace_t> required_colorspace = std::nullopt,
+    const SS_HDR_METADATA *required_hdr_metadata = nullptr) {
     operation_cancelled = false;
     gate_contended = false;
     if (!disp || native_amf_lifecycle_gate.is_quarantined()) {
@@ -4709,6 +4728,11 @@ namespace video {
       return std::nullopt;
     }
 
+    if (required_colorspace) prepared_device->colorspace = *required_colorspace;
+    if (required_hdr_metadata) {
+      prepared_device->hdr_metadata = *required_hdr_metadata;
+      prepared_device->hdr_metadata_valid = true;
+    }
     legacy_amf_session_bundle_t prepared_bundle;
     prepared_bundle.hdr_metadata_valid = prepared_device->hdr_metadata_valid;
     prepared_bundle.hdr_metadata = prepared_device->hdr_metadata;
@@ -6286,6 +6310,7 @@ namespace video {
 #endif
 #ifdef _WIN32
     int consecutive_native_amf_runtime_failures = 0;
+    amf::lifecycle::initialization_fallback_t amd_initialization_fallback;
 #endif
 
     // Encoding takes place on this thread (async-capture mode; capture lives in
@@ -6329,6 +6354,12 @@ namespace video {
         BOOST_LOG(error) << "No encoder available for async capture"sv;
         return;
       }
+#ifdef _WIN32
+      if (config::video.encoder.empty() && enc_ptr == &amdvce_ffmpeg &&
+          native_amf_probe_retry_allowed.load(std::memory_order_acquire)) {
+        enc_ptr = &amdvce_experimental;
+      }
+#endif
       auto &encoder = *enc_ptr;
       const auto initialization_deadline = std::chrono::steady_clock::now() + 5s;
       initialization_cancel_t initialization_cancelled = [&]() {
@@ -6342,15 +6373,68 @@ namespace video {
       bool initialization_was_cancelled = false;
       bool initialization_gate_contended = false;
 #ifdef _WIN32
-      if (&encoder == &amdvce_ffmpeg) {
-        auto legacy = make_legacy_amf_session_bounded(
-          display, config, display->width, display->height,
-          initialization_deadline, initialization_cancelled,
-          initialization_was_cancelled, initialization_gate_contended);
-        if (legacy) {
-          prepared_session = std::move(legacy->session);
-          session_hdr_metadata_valid = legacy->hdr_metadata_valid;
-          session_hdr_metadata = legacy->hdr_metadata;
+      if (&encoder == &amdvce_experimental || &encoder == &amdvce_ffmpeg) {
+        using failure_e = amf::lifecycle::initialization_failure_e;
+        using result_t = amf::lifecycle::initialization_result_t<legacy_amf_session_bundle_t>;
+        const bool automatic = config::video.encoder.empty();
+        const auto &amd = config::video.amd;
+        const bool native_options = amd.amd_av1_tiles != 0 || amd.amd_ltr_frames != 0 ||
+                                    amd.amd_input_queue_size != 0 || amd.amd_smart_access_video ||
+                                    amd.amd_lowlatency_mode || amd.amd_high_motion_quality_boost ||
+                                    amd.amd_av1_screen_content || amd.amd_av1_latency_mode;
+        const bool compatible = amf::lifecycle::legacy_stream_format_compatible(
+          config.videoFormat, config.chromaSamplingType, config.dynamicRange != 0,
+          config.enableIntraRefresh == 1, native_options);
+        std::optional<sunshine_colorspace_t> native_colorspace;
+        std::optional<SS_HDR_METADATA> native_hdr_metadata;
+        const auto native = [&]() -> result_t {
+          auto device = make_encode_device(*display, encoder, config);
+          if (!device) return {std::nullopt, failure_e::device_or_capture};
+          legacy_amf_session_bundle_t bundle;
+          bundle.hdr_metadata_valid = device->hdr_metadata_valid;
+          bundle.hdr_metadata = device->hdr_metadata;
+          native_colorspace = device->colorspace;
+          if (device->hdr_metadata_valid) native_hdr_metadata = device->hdr_metadata;
+          failure_e failure = failure_e::device_or_capture;
+          bundle.session = make_encode_session(
+            display.get(), encoder, config, display->width, display->height,
+            std::move(device), initialization_deadline, initialization_cancelled,
+            &initialization_was_cancelled, &initialization_gate_contended, &failure);
+          if (bundle.session) return {std::move(bundle), failure_e::none};
+          if (initialization_was_cancelled) failure = failure_e::cancelled;
+          else if (initialization_gate_contended) failure = failure_e::busy;
+          else if (native_amf_lifecycle_gate.is_quarantined()) failure = failure_e::unsafe_runtime;
+          if (failure == failure_e::encoder_create || failure == failure_e::encoder_init) {
+            BOOST_LOG(error) << "AMF: native encoder creation/initialization failed after completed cleanup"sv;
+          }
+          return {std::nullopt, failure};
+        };
+        const auto legacy = [&]() -> result_t {
+          // Fresh bounded vendor budget after native cleanup. Reuse the exact
+          // negotiated config: codec, depth, chroma and HDR are never relaxed.
+          auto bundle = make_legacy_amf_session_bounded(
+            display, config, display->width, display->height,
+            std::chrono::steady_clock::now() + 5s, initialization_cancelled,
+            initialization_was_cancelled, initialization_gate_contended,
+            native_colorspace, native_hdr_metadata ? &*native_hdr_metadata : nullptr);
+          if (bundle && bundle->session) return {std::move(*bundle), failure_e::none};
+          return {std::nullopt, initialization_was_cancelled ? failure_e::cancelled :
+                                initialization_gate_contended ? failure_e::busy : failure_e::encoder_init};
+        };
+        if (&encoder == &amdvce_ffmpeg) amd_initialization_fallback.legacy = true;
+        auto initialized = amd_initialization_fallback.initialize(
+          automatic, compatible, native, legacy, [&](failure_e) {
+            BOOST_LOG(warning) << "AMF: automatic native initialization failed; trying amdvce_ffmpeg once for this stream with the same codec/depth/chroma/HDR. The next stream will retry native AMF"sv;
+          });
+        if (amd_initialization_fallback.legacy) enc_ptr = &amdvce_ffmpeg;
+        if (initialized.value) {
+          prepared_session = std::move(initialized.value->session);
+          session_hdr_metadata_valid = initialized.value->hdr_metadata_valid;
+          session_hdr_metadata = initialized.value->hdr_metadata;
+        } else if (!initialization_was_cancelled && !initialization_gate_contended) {
+          BOOST_LOG(error) << "AMF: stream initialization failed (stage=" << static_cast<int>(initialized.failure)
+                           << ", implementation=" << enc_ptr->name << "); ending stream without changing negotiated format"sv;
+          return;
         }
       } else
 #endif
@@ -6361,12 +6445,6 @@ namespace video {
           session_hdr_metadata = encode_device->hdr_metadata;
         }
       }
-#ifdef _WIN32
-      if (initialization_was_cancelled) continue;
-      if (!encode_device && !prepared_session && &encoder == &amdvce_experimental) {
-        BOOST_LOG(error) << "AMF: native device creation failed; refusing silent amdvce_ffmpeg fallback"sv;
-      }
-#endif
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
       if (!encode_device && !prepared_session && &encoder == &nvenc) {
         ++consecutive_encoder_initialization_failures;
@@ -6583,9 +6661,18 @@ namespace video {
         {
           auto encode_device = make_encode_device(*disp, encoder, config);
           if (encode_device) {
+            amf::lifecycle::initialization_failure_e failure = amf::lifecycle::initialization_failure_e::device_or_capture;
             session = make_encode_session(
               disp.get(), encoder, config, disp->width, disp->height,
-              std::move(encode_device), probe_deadline, []() { return false; });
+              std::move(encode_device), probe_deadline, []() { return false; }, nullptr, nullptr, &failure);
+#ifdef _WIN32
+            if (&encoder == &amdvce_experimental && config.videoFormat == 0) {
+              native_amf_probe_retry_allowed.store(
+                !session && (failure == amf::lifecycle::initialization_failure_e::encoder_create ||
+                             failure == amf::lifecycle::initialization_failure_e::encoder_init),
+                std::memory_order_release);
+            }
+#endif
           }
         }
         if (!session) {
@@ -7110,7 +7197,7 @@ namespace video {
 #endif
 #ifdef _WIN32
     const auto amf_selection_policy = amf::lifecycle::encoder_selection_policy(config::video.encoder);
-    // The native encoder is experimental and must never be selected implicitly.
+    // Prefer native AMD automatically; explicit implementation choices remain strict.
     if (!amf_selection_policy.include_experimental) {
       encoder_list.erase(std::remove(encoder_list.begin(), encoder_list.end(), &amdvce_experimental), encoder_list.end());
     }
@@ -7191,7 +7278,7 @@ namespace video {
 #endif
 #ifdef _WIN32
         if (amf_selection_policy.fail_closed) {
-          BOOST_LOG(error) << "Experimental native AMF was explicitly selected; refusing automatic fallback to amdvce_ffmpeg or another encoder"sv;
+          BOOST_LOG(error) << "An AMD implementation was explicitly selected; refusing automatic fallback to another encoder"sv;
           return -1;
         }
 #endif
@@ -7276,12 +7363,24 @@ namespace video {
     auto &encoder = *new_encoder;
 
 #ifdef _WIN32
+    if (&encoder == &amdvce_experimental && config::video.encoder.empty()) {
+      std::optional<platf::adapter_id_t> legacy_adapter;
+      const bool legacy_available = validate_encoder(
+        amdvce_ffmpeg, true, successful_probe_adapter ? successful_probe_adapter : required_adapter,
+        &legacy_adapter, probe_target.display_name);
+      BOOST_LOG(info) << "AMF: native is the automatic default; compatible FFmpeg initialization rollback is "
+                      << (legacy_available ? "available"sv : "unavailable"sv);
+      if (native_amf_lifecycle_gate.is_quarantined()) {
+        BOOST_LOG(error) << "AMF: capability probing left the runtime quarantined; refusing to start an AMD stream"sv;
+        return -1;
+      }
+    }
     if (encoder.name == "software"sv) {
       // Software is probed last, so reaching it means every hardware encoder —
       // including native AMF — failed validation. Make the degradation loud:
       // an AMD user should never discover software encoding from stutter alone.
       BOOST_LOG(error) << "No hardware encoder passed validation; the SOFTWARE encoder was selected."sv;
-      BOOST_LOG(error) << "If this system has an AMD GPU, hardware encoding is NOT active. Check the AMD driver and FFmpeg AMF availability; the native AMF encoder is experimental and is not selected automatically."sv;
+      BOOST_LOG(error) << "If this system has an AMD GPU, hardware encoding is NOT active. Check the AMD driver and FFmpeg AMF availability; automatic AMD selection prefers native AMF, with FFmpeg AMF available for compatible initialization failures."sv;
     }
 #endif
 
