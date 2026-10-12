@@ -66,8 +66,10 @@ namespace amf::lifecycle {
   };
 
   inline constexpr bool legacy_stream_format_compatible(
-    int codec, int chroma, bool ten_bit, bool intra_refresh, bool native_options) {
+    int codec, int chroma, bool ten_bit, bool intra_refresh, bool native_options,
+    int reference_frames = 0, bool reference_limit_supported = true) {
     return codec >= 0 && codec <= 2 && chroma == 0 &&
-           !(codec == 0 && ten_bit) && !intra_refresh && !native_options;
+           !(codec == 0 && ten_bit) && !intra_refresh && !native_options &&
+           (reference_frames == 0 || reference_limit_supported);
   }
 }

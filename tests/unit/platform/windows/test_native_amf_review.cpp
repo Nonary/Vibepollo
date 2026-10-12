@@ -386,7 +386,9 @@ namespace {
            !legacy_stream_format_compatible(1, 1, false, false, false) &&
            !legacy_stream_format_compatible(3, 0, false, false, false) &&
            !legacy_stream_format_compatible(1, 0, false, true, false) &&
-           !legacy_stream_format_compatible(2, 0, false, false, true);
+           !legacy_stream_format_compatible(2, 0, false, false, true) &&
+           legacy_stream_format_compatible(1, 0, true, false, false, 1, true) &&
+           !legacy_stream_format_compatible(1, 0, true, false, false, 1, false);
   }
 
   bool xbox_intra_refresh_maps_to_native_amf() {

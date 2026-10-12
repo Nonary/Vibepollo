@@ -3079,7 +3079,7 @@ this option to replace the running app immediately. The default is `true`.
             With automatic selection, a confirmed encoder creation or initialization failure
             permits one FFmpeg AMF rollback per stream after native cleanup completes. Codec,
             bit depth, chroma and HDR remain unchanged. Unsupported requested formats, explicit
-            native options, intra refresh, capture/conversion errors, cancellation, contention
+            native options, intra refresh, unsupported decoder reference limits, capture/conversion errors, cancellation, contention
             and unsafe driver timeouts do not trigger rollback. The next stream retries native
             initialization; a failed rollback ends the stream.
             @note{Applies to Windows only.}</td>

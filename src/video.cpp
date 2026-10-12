@@ -6393,7 +6393,8 @@ namespace video {
                                     amd.amd_av1_screen_content || amd.amd_av1_latency_mode;
         const bool compatible = amf::lifecycle::legacy_stream_format_compatible(
           config.videoFormat, config.chromaSamplingType, config.dynamicRange != 0,
-          config.enableIntraRefresh == 1, native_options);
+          config.enableIntraRefresh == 1, native_options, config.numRefFrames,
+          amdvce_ffmpeg.codec_from_config(config)[encoder_t::REF_FRAMES_RESTRICT]);
         std::optional<sunshine_colorspace_t> native_colorspace;
         std::optional<SS_HDR_METADATA> native_hdr_metadata;
         const auto native = [&]() -> result_t {
