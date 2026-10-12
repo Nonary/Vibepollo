@@ -587,6 +587,28 @@ namespace {
     return cold_start && steady_state && retained_driver;
   }
 
+  bool dropped_submission_preserves_latest_static_and_idr_image() {
+    using namespace amf::lifecycle;
+    struct slot_t: input_surface_state_t { int pixels = 0; };
+    std::array<slot_t, 2> slots;
+    slots[0].state = input_surface_state_e::in_flight;
+    slots[0].frame_index = 41;
+    slots[0].pixels = 17; // Previous frame can still be owned by AMF.
+    slots[1].state = input_surface_state_e::reserved;
+    slots[1].pixels = 42; // Last real conversion before capture goes static.
+    std::optional<std::size_t> prepared {1}, last_rendered {0};
+    release_unsubmitted_capture(slots, prepared, last_rendered);
+    if (prepared || last_rendered != 1 || slots[1].state != input_surface_state_e::free ||
+        slots[0].state != input_surface_state_e::in_flight || slots[0].frame_index != 41) return false;
+    const auto repeat = select_repeat_surface(slots, *last_rendered, 0, slots.size());
+    if (repeat != 1 || slots[*repeat].pixels != 42) return false;
+    // Missing or incorrectly owned reservations cannot steal driver ownership.
+    release_unsubmitted_capture(slots, prepared, last_rendered);
+    prepared = 0;
+    release_unsubmitted_capture(slots, prepared, last_rendered);
+    return !prepared && last_rendered == 1 && slots[0].state == input_surface_state_e::in_flight;
+  }
+
   bool asynchronous_pipeline_catches_up_to_current_output() {
     using amf::lifecycle::output_coalesce_budget;
     using amf::lifecycle::driver_wait_budget;
@@ -866,6 +888,7 @@ int main() {
     {"saturation_wait_requires_an_actual_surface_release", saturation_wait_requires_an_actual_surface_release},
     {"output_poll_rearm_survives_concurrent_submission", output_poll_rearm_survives_concurrent_submission},
     {"strict_application_depth_preserves_driver_headroom", strict_application_depth_preserves_driver_headroom},
+    {"dropped_submission_preserves_latest_static_and_idr_image", dropped_submission_preserves_latest_static_and_idr_image},
     {"asynchronous_pipeline_catches_up_to_current_output", asynchronous_pipeline_catches_up_to_current_output},
     {"preanalysis_target_tracks_accepted_indices_with_gaps", preanalysis_target_tracks_accepted_indices_with_gaps},
     {"teardown_timeout_returns_control_before_a_wedged_destructor", teardown_timeout_returns_control_before_a_wedged_destructor},
@@ -994,6 +1017,10 @@ TEST(SunshineNativeAmfReview, OutputPollRearmSurvivesConcurrentSubmission) {
 
 TEST(SunshineNativeAmfReview, StrictApplicationDepthPreservesDriverHeadroom) {
   EXPECT_TRUE(strict_application_depth_preserves_driver_headroom());
+}
+
+TEST(SunshineNativeAmfReview, DroppedSubmissionPreservesLatestStaticAndIdrImage) {
+  EXPECT_TRUE(dropped_submission_preserves_latest_static_and_idr_image());
 }
 
 TEST(SunshineNativeAmfReview, AsynchronousPipelineCatchesUpToCurrentOutput) {

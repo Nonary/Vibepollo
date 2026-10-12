@@ -1877,15 +1877,8 @@ namespace amf {
       }
     };
     auto release_prepared_input_locked = [&]() {
-      if (!prepared_input_surface_slot) {
-        return;
-      }
-      auto &slot = input_surface_ring[*prepared_input_surface_slot];
-      if (slot.state == input_surface_state_e::reserved) {
-        slot.state = input_surface_state_e::free;
-        slot.frame_index = 0;
-      }
-      prepared_input_surface_slot.reset();
+      lifecycle::release_unsubmitted_capture(
+        input_surface_ring, prepared_input_surface_slot, last_rendered_input_surface_slot);
       state_cv.notify_all();
     };
 
@@ -1906,9 +1899,9 @@ namespace amf {
       }
       if (!results.empty()) {
         // A packet that completed between capture iterations is already the oldest
-        // work in the real-time pipeline. Return it immediately and discard this
-        // prepared capture instead of submitting a newer frame and permanently
-        // carrying a one-frame encoder backlog after a transient miss.
+        // work in the real-time pipeline. Return it immediately without queueing
+        // a newer submission. Keep the latest converted pixels for static/IDR
+        // repeats so a final capture cannot disappear after this transient miss.
         release_prepared_input_locked();
         return result;
       }
@@ -1945,7 +1938,8 @@ namespace amf {
         }
         if (!results.empty()) {
           // The completion that released capacity wins over this newer capture.
-          // Its next encode attempt will use a fresh converted image.
+          // A fresh capture replaces this conversion; static/IDR repeats retain
+          // it as the newest image without increasing application backlog.
           release_prepared_input_locked();
           return result;
         }

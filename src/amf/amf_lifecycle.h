@@ -509,6 +509,23 @@ namespace amf::lifecycle {
     return outstanding <= static_cast<uint64_t>(permitted_depth);
   }
 
+  // Skipping submission must not forget the last converted image: capture can
+  // become static immediately afterward, and an IDR/minimum-FPS repeat still
+  // needs the newest pixels. Retain only its slot index, without queueing input.
+  template<typename Slots>
+  void release_unsubmitted_capture(
+    Slots &slots, std::optional<std::size_t> &prepared,
+    std::optional<std::size_t> &last_rendered) {
+    if (!prepared) return;
+    auto &slot = slots[*prepared];
+    if (slot.state == input_surface_state_e::reserved) {
+      last_rendered = *prepared;
+      slot.state = input_surface_state_e::free;
+      slot.frame_index = 0;
+    }
+    prepared.reset();
+  }
+
   inline constexpr bool saturation_wait_should_finish(bool output_fatal,
                                                        bool capacity_available) noexcept {
     return output_fatal || capacity_available;
