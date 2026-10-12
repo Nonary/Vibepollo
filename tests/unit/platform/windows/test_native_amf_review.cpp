@@ -637,20 +637,28 @@ namespace {
   bool teardown_timeout_returns_control_before_a_wedged_destructor() {
     struct slow_resource_t {
       std::atomic<bool> *destroyed;
+      std::atomic<bool> *release;
       ~slow_resource_t() {
-        std::this_thread::sleep_for(150ms);
+        // Keep destruction blocked until the watchdog returns, independent of
+        // thread-launch cost or Windows timer granularity.
+        release->wait(false, std::memory_order_acquire);
         destroyed->store(true, std::memory_order_release);
       }
     };
 
     std::atomic<bool> destroyed {false};
+    std::atomic<bool> release {false};
     auto resource = std::make_unique<slow_resource_t>();
     resource->destroyed = &destroyed;
+    resource->release = &release;
     const auto start = std::chrono::steady_clock::now();
     const bool completed = amf::lifecycle::run_with_timeout(
       [resource = std::move(resource)]() mutable { resource.reset(); },
       5ms);
     const auto elapsed = std::chrono::steady_clock::now() - start;
+    const bool returned_before_destruction = !destroyed.load(std::memory_order_acquire);
+    release.store(true, std::memory_order_release);
+    release.notify_one();
 
     const auto cleanup_deadline = std::chrono::steady_clock::now() + 1s;
     while (!destroyed.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < cleanup_deadline) {
@@ -658,7 +666,7 @@ namespace {
     }
     // Generous bound: the point is "returned promptly instead of blocking on the
     // wedged destructor", not a scheduler-sensitive exact latency.
-    return !completed && elapsed < 2s && destroyed.load(std::memory_order_acquire);
+    return !completed && returned_before_destruction && elapsed < 2s && destroyed.load(std::memory_order_acquire);
   }
 
   bool runtime_gate_fences_initialization_against_teardown_and_quarantine() {
@@ -710,9 +718,10 @@ namespace {
     auto handoff = std::make_shared<amf::lifecycle::worker_handoff_t<std::unique_ptr<resource_t>>>();
     std::thread::id destroyed_on;
     std::thread::id worker_id;
+    std::atomic<bool> publish_after_timeout {false};
     std::thread worker {[&]() {
       worker_id = std::this_thread::get_id();
-      std::this_thread::sleep_for(20ms);
+      publish_after_timeout.wait(false, std::memory_order_acquire);
       auto resource = std::make_unique<resource_t>();
       resource->destroyed_on = &destroyed_on;
       handoff->publish(std::move(resource));
@@ -720,6 +729,10 @@ namespace {
     const auto accepted = handoff->accept_until(
       std::chrono::steady_clock::now() + 2ms,
       []() { return false; });
+    // A slow thread constructor must not make the producer's result ready
+    // before the test establishes its deadline.
+    publish_after_timeout.store(true, std::memory_order_release);
+    publish_after_timeout.notify_one();
     worker.join();
     return !accepted && destroyed_on == worker_id;
   }
