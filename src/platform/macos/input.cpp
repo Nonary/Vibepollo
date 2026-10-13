@@ -655,8 +655,10 @@ const KeyCodeMap kKeyCodesMap[] = {
           return kCGMouseButtonLeft;
         case PEN_PRIMARY:
           return kCGMouseButtonRight;
-        default:
+        case PEN_SECONDARY:
           return kCGMouseButtonCenter;
+        default:
+          return static_cast<CGMouseButton>(3);
       }
     }
 
@@ -700,8 +702,10 @@ const KeyCodeMap kKeyCodesMap[] = {
       }
 
       CGEventSetIntegerValueField(event, kCGMouseEventClickState, click_count);
-      CGEventSetDoubleValueField(event, kCGMouseEventDeltaX, location.x - last_location.x);
-      CGEventSetDoubleValueField(event, kCGMouseEventDeltaY, location.y - last_location.y);
+      if (have_location) {
+        CGEventSetDoubleValueField(event, kCGMouseEventDeltaX, location.x - last_location.x);
+        CGEventSetDoubleValueField(event, kCGMouseEventDeltaY, location.y - last_location.y);
+      }
 
       if (pen) {
         double tilt_x = 0;
@@ -737,6 +741,7 @@ const KeyCodeMap kKeyCodesMap[] = {
       // See post_mouse(): keeps the cursor where the event was posted.
       CGWarpMouseCursorPosition(location);
       last_location = location;
+      have_location = true;
     }
 
     void post_proximity(const bool enter) const {
@@ -775,9 +780,16 @@ const KeyCodeMap kKeyCodesMap[] = {
       pen_in_proximity = false;
     }
 
-    void touch_click(const CGPoint &location, const CGEventType down, const CGEventType up) {
-      post_mouse_event(down, kCGMouseButtonLeft, location, 1);
-      post_mouse_event(up, kCGMouseButtonLeft, location, 1);
+    void touch_click(const CGPoint &location) {
+      // Taps close together in time and place are a double or triple click.
+      const auto now = std::chrono::steady_clock::now();
+      const bool near = std::hypot(location.x - last_tap.x, location.y - last_tap.y) <= MULTICLICK_DISTANCE;
+      tap_count = (now - last_tap_time < MULTICLICK_DELAY_MS && near) ? tap_count + 1 : 1;
+      last_tap = location;
+      last_tap_time = now;
+
+      post_mouse_event(kCGEventLeftMouseDown, kCGMouseButtonLeft, location, tap_count);
+      post_mouse_event(kCGEventLeftMouseUp, kCGMouseButtonLeft, location, tap_count);
     }
 
     void touch_release() {
@@ -790,6 +802,7 @@ const KeyCodeMap kKeyCodesMap[] = {
 
     macos_input_t *macos_input;
     CGPoint last_location {};
+    bool have_location {};
 
     bool pen_in_proximity {};
     int pen_pointer {POINTER_PEN};
@@ -801,6 +814,11 @@ const KeyCodeMap kKeyCodesMap[] = {
     std::map<std::uint32_t, touch_point_t> touch_points;
     bool touch_dragging {};  ///< The left button is held for a one-finger drag.
     bool touch_scrolling {};  ///< Two fingers have been down since the last finger lifted.
+    double scroll_remainder_x {};  ///< Movement too small to scroll a whole pixel yet.
+    double scroll_remainder_y {};
+    int tap_count {1};
+    CGPoint last_tap {};
+    std::chrono::steady_clock::time_point last_tap_time {};
   };
 
   void macos_client_input_t::pen_update(const touch_port_t &touch_port, const pen_input_t &pen) {
@@ -854,7 +872,9 @@ const KeyCodeMap kKeyCodesMap[] = {
         held = i;
       }
     }
-    if (pen.eventType != LI_TOUCH_EVENT_BUTTON_ONLY && (location.x != last_location.x || location.y != last_location.y)) {
+    // A move is posted even when the pen holds still, since pressure and tilt can change.
+    const bool moved = !have_location || location.x != last_location.x || location.y != last_location.y;
+    if (pen.eventType == LI_TOUCH_EVENT_MOVE || (pen.eventType != LI_TOUCH_EVENT_BUTTON_ONLY && moved)) {
       post_mouse_event(held < 0 ? kCGEventMouseMoved : button_event(held, true, true), held < 0 ? kCGMouseButtonLeft : mouse_button(held), location, 1, &pen);
     }
 
@@ -932,7 +952,13 @@ const KeyCodeMap kKeyCodesMap[] = {
           // Two fingers moving together scroll by their average movement; each finger reports
           // its own move, so take half of each.
           const auto fingers = static_cast<double>(std::max<std::size_t>(touch_points.size(), 1));
-          post_scroll(macos_input, static_cast<int>(std::lround(delta_y / fingers)), static_cast<int>(std::lround(delta_x / fingers)));
+          scroll_remainder_x += delta_x / fingers;
+          scroll_remainder_y += delta_y / fingers;
+          const auto whole_x = std::trunc(scroll_remainder_x);
+          const auto whole_y = std::trunc(scroll_remainder_y);
+          scroll_remainder_x -= whole_x;
+          scroll_remainder_y -= whole_y;
+          post_scroll(macos_input, static_cast<int>(whole_y), static_cast<int>(whole_x));
         } else if (touch_dragging) {
           post_mouse_event(kCGEventLeftMouseDragged, kCGMouseButtonLeft, location, 1);
         } else if (touch_points.size() == 1 && std::hypot(location.x - point->second.start.x, location.y - point->second.start.y) > TOUCH_SLOP) {
@@ -956,7 +982,7 @@ const KeyCodeMap kKeyCodesMap[] = {
           post_mouse_event(kCGEventLeftMouseUp, kCGMouseButtonLeft, location, 1);
           touch_dragging = false;
         } else if (tap) {
-          touch_click(start, kCGEventLeftMouseDown, kCGEventLeftMouseUp);
+          touch_click(start);
         }
         if (touch_points.empty()) {
           touch_scrolling = false;
