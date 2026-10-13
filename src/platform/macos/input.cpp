@@ -818,7 +818,7 @@ const KeyCodeMap kKeyCodesMap[] = {
       }
       touch_dragging = false;
       touch_points.clear();
-    two_finger_tap = false;
+      two_finger_tap = false;
     }
 
     macos_input_t *macos_input;
