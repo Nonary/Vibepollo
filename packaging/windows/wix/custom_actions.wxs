@@ -4,12 +4,12 @@
     Custom actions to implement the Windows installer behavior:
     - Reset ACLs on install dir
     - Update PATH (add/remove)
-    - Bootstrapper prepares configuration before normal MSI installation
+    - Migrate config files
     - Add/remove firewall rules
     - Install/update SudoVDA virtual display driver
     - Install/uninstall service and autostart configuration
     - Optional prompts on uninstall for SudoVDA removal and factory reset of known Vibepollo app data
-    - Bootstrapper owns installation migration; MSI performs normal installation
+    - Detect legacy Sunshine on direct MSI installs and prompt for removal
 
     Notes:
     - Relies on WixUtilExtension (WixQuietExec) to run commands quietly with logging.
@@ -32,12 +32,16 @@
     <Property Id="LOCAL_GAMEPAD_CERTIFICATE_THUMBPRINT" Value="$(var.LocalGamepadCertificateThumbprint)" Secure="yes"/>
     <Property Id="LOCAL_GAMEPAD_CERTIFICATE_SUBJECT" Value="$(var.LocalGamepadCertificateSubject)"/>
     <Property Id="LOCAL_GAMEPAD_DRIVER_VERSION" Value="$(var.LocalGamepadDriverVersion)"/>
-    
+
     <!-- Keep Restart Manager enabled (default) to stop services in basic/silent UI -->
-    
+
     <!-- VBScript to show a final repair-complete notification (full UI only) -->
     <Binary Id="RepairCompleteVbs" SourceFile="$(sys.SOURCEFILEDIR)repair_complete.vbs"/>
 
+    <!-- VBScripts for legacy Sunshine handling -->
+    <Binary Id="AskUninstallLegacySunshineVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_uninstall_legacy_sunshine.vbs"/>
+    <Binary Id="WaitForLegacyUninstallVbs" SourceFile="$(sys.SOURCEFILEDIR)wait_for_legacy_uninstall.vbs"/>
+    <Binary Id="RemoveConflictingProductsVbs" SourceFile="$(sys.SOURCEFILEDIR)remove_conflicting_products.vbs"/>
 
   </Fragment>
 
@@ -121,10 +125,32 @@
     </DirectoryRef>
   </Fragment>
 
-<Fragment>
-    <!-- MSI owns ordinary install-directory ACL reset. Bootstrapper owns
-         data/layout migration and private credential preparation before install. -->
+  <Fragment>
+    <DirectoryRef Id="INSTALL_ROOT">
+      <Component Id="RemoveLegacyApolloUninstallKey" Guid="{6AE78F9A-37E3-44EB-AE6E-5ECFAC03A899}" KeyPath="yes" Win64="yes">
+        <CreateFolder/>
+        <RemoveRegistryKey Id="RemoveLegacyApolloUninstallKeyHKLM" Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Apollo" Action="removeOnInstall" />
+        <RemoveRegistryKey Id="RemoveLegacyApolloUninstallKeyHKLM32" Root="HKLM" Key="Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Apollo" Action="removeOnInstall" />
+        <RemoveRegistryKey Id="RemoveLegacyApolloUninstallKeyHKLM_is1" Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Apollo_is1" Action="removeOnInstall" />
+        <RemoveRegistryKey Id="RemoveLegacyApolloUninstallKeyHKLM32_is1" Root="HKLM" Key="Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Apollo_is1" Action="removeOnInstall" />
+        <RemoveRegistryKey Id="RemoveLegacyApolloUninstallKeyHKCU" Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Apollo" Action="removeOnInstall" />
+        <RemoveRegistryKey Id="RemoveLegacyApolloUninstallKeyHKCU_is1" Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Apollo_is1" Action="removeOnInstall" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+
+  <Fragment>
+    <!-- Post-install chores (ACL reset, config migration, installer migrations) run
+         AFTER InstallFiles. They are best-effort housekeeping, not prerequisites for
+         the app to boot: a failure here must NOT roll back / brick an otherwise complete
+         upgrade. Use Return="ignore" like the driver/Vulkan-layer actions below; Vibepollo
+         re-repairs config ACLs AND re-hardens the private credentials directory at startup
+         (statefile::repair_config_permissions / secure_private_directory, and create_creds
+         hardens it before writing the key), and the legacy config-key migrations are
+         idempotent on the next successful install. -->
     <CustomAction Id="ResetAcls" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="MigrateConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="RunInstallerMigrations" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <!-- Driver and Vulkan-layer installs stay Return="ignore" in Vibepollo: a failed
          SudoVDA/virtual-display driver refresh or Vulkan HDR layer registration (AV
          quarantine, ACLs, missing payload on upgrade) must NOT roll back an otherwise
@@ -140,6 +166,7 @@
 
     <!-- Uninstall-time actions (deferred, elevated) -->
     <CustomAction Id="RestoreNvPrefsUndo" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="RemoveConflictingProducts" BinaryKey="RemoveConflictingProductsVbs" VBScriptCall="RemoveConflictingProducts" Execute="immediate" Return="check" />
     <!-- Quiet stop for repair/basic UI: proactively stop service when UI is too low for prompts -->
     <CustomAction Id="StopSvcQuietImmediate" BinaryKey="WixCA" DllEntry="CAQuietExec" Return="ignore" />
     <CustomAction Id="StopSvcQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
@@ -161,6 +188,12 @@
                  Property="ResetAcls"
                  Value="&quot;[SystemFolder]icacls.exe&quot; &quot;[INSTALL_ROOT].&quot; /reset"/>
 
+    <CustomAction Id="SetMigrateConfig"
+                 Property="MigrateConfig"
+                 Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\migrate-config.bat&quot;&quot;"/>
+    <CustomAction Id="SetRunInstallerMigrations"
+                 Property="RunInstallerMigrations"
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]scripts\installer-migrations.ps1&quot; -InstallVirtualDisplayDriver &quot;[INSTALL_VIRTUAL_DISPLAY_DRIVER]&quot;"/>
     <!-- SudoVDA is a 64-bit display driver path. Keep its PowerShell host in System64Folder;
          the 32-bit host from SystemFolder/SysWOW64 can wedge the elevated MSI custom-action
          server while probing or installing the driver. -->
@@ -250,7 +283,12 @@
                  Property="RemoveServiceQuiet"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoP -EP Bypass -C &quot;sc.exe delete SunshineService | Out-Null; sc.exe delete VibeshineService | Out-Null; sc.exe delete sunshinesvc | Out-Null; sc.exe delete ApolloService | Out-Null; sc.exe delete ApolloSvc | Out-Null&quot;"/>
 
+    <!-- Legacy Sunshine handling actions -->
+    <CustomAction Id="AskUninstallLegacySunshine" BinaryKey="AskUninstallLegacySunshineVbs" VBScriptCall="AskUninstallLegacySunshine" Execute="immediate" Return="check" />
+    <CustomAction Id="WaitForLegacyUninstall" BinaryKey="WaitForLegacyUninstallVbs" VBScriptCall="WaitForLegacyUninstall" Execute="immediate" Return="check" />
 
+    <CustomAction Id="BlockLegacySunshineStillPresent" Error="Legacy Sunshine is still installed. It must be removed before installing Vibepollo; click OK to start the uninstallation." />
+    <CustomAction Id="BlockUserCancelledLegacy" Error="Installation cancelled. Legacy Sunshine must be removed before installing Vibepollo." />
 
     <!-- UI-only prompt at end of a successful Repair to inform no reboot is required -->
     <CustomAction Id="RepairCompletePrompt" BinaryKey="RepairCompleteVbs" VBScriptCall="ShowRepairComplete" Execute="immediate" Return="ignore" />
