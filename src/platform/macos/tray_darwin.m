@@ -104,6 +104,7 @@ int tray_init(struct tray *tray) {
   statusBar = [NSStatusBar systemStatusBar];
   if (statusItem == nil) {
     statusItem = [statusBar statusItemWithLength:NSVariableStatusItemLength];
+    statusItem.autosaveName = @"io.github.Nonary.vibepollo.tray";
   }
   if (statusBar == nil || statusItem == nil) {
     tray_log(TRAY_LOG_ERROR, "Failed to initialize NSStatusBar/NSStatusItem");
@@ -162,10 +163,26 @@ void tray_update(struct tray *tray) {
         NSString *resDir = [[NSBundle mainBundle] resourcePath];
         if (resDir) {
           NSString *cleanSub = [rawPath stringByReplacingOccurrencesOfString:@"../Resources/" withString:@""];
+          cleanSub = [cleanSub stringByReplacingOccurrencesOfString:@"assets/" withString:@""];
           NSString *candidate = [[resDir stringByAppendingPathComponent:cleanSub] stringByStandardizingPath];
           if ([fm fileExistsAtPath:candidate]) {
             resolvedPath = candidate;
+          } else {
+            candidate = [[[resDir stringByAppendingPathComponent:@"assets"] stringByAppendingPathComponent:cleanSub] stringByStandardizingPath];
+            if ([fm fileExistsAtPath:candidate]) {
+              resolvedPath = candidate;
+            }
           }
+        }
+      }
+
+      // Check if a vector .svg version exists to ensure crisp Retina rendering
+      if ([resolvedPath hasSuffix:@".png"]) {
+        NSString *svgCandidate = [resolvedPath stringByReplacingOccurrencesOfString:@"-16.png" withString:@".svg"];
+        svgCandidate = [svgCandidate stringByReplacingOccurrencesOfString:@"-45.png" withString:@".svg"];
+        svgCandidate = [svgCandidate stringByReplacingOccurrencesOfString:@".png" withString:@".svg"];
+        if ([fm fileExistsAtPath:svgCandidate]) {
+          resolvedPath = svgCandidate;
         }
       }
 
@@ -176,11 +193,10 @@ void tray_update(struct tray *tray) {
 
     if (image) {
       [image setSize:NSMakeSize(18, 18)];
-      if (tray->icon && strstr(tray->icon, "logo-apollo-16") != NULL) {
-        [image setTemplate:YES];
-      } else {
-        [image setTemplate:NO];
-      }
+      BOOL isMonochrome = (tray->icon && (strstr(tray->icon, "logo-apollo") != NULL ||
+                                          strstr(tray->icon, "tray") != NULL ||
+                                          strstr(tray->icon, "apollo.svg") != NULL));
+      [image setTemplate:isMonochrome];
       statusItem.button.image = image;
       statusItem.button.title = @"";
     } else {
