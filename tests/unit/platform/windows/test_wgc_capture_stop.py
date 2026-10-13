@@ -53,8 +53,8 @@ for cls in ('display_wgc_ipc_vram_t','display_wgc_ipc_ram_t'):
     snapshots.append('capture_e '+cls+'::before_frame(bool cursor_visible) '+display[body:display.index(boundary,body)]+'    return capture_e::ok;\n  }')
 stream=read('src/stream.cpp');start=stream.index('    class join_deadline_t {')
 watch=stream[start:stream.index('\n  }  // namespace',start)].replace('std::chrono::seconds(10)','std::chrono::milliseconds(100)')
-start=stream.index('        auto hung_stage = std::make_shared<std::atomic<const char *>>("video thread");',stream.index('    void join(session_t &session'))
-join='      {\n'+stream[start:stream.index('      // Watchdog coverage ends',start)]
+start=stream.index('auto hung_stage = std::make_shared<std::atomic<const char *>>("video thread");',stream.index('void join(session_t &session'))
+join=stream[start:stream.index('      // Watchdog coverage ends',start)]
 code=r'''
 #include <algorithm>
 #include <array>
@@ -130,7 +130,20 @@ struct capture_thread_async_ctx_t {
 #define _WIN32
 // END
 #undef _WIN32
-struct session_t{std::thread videoThread,audioThread;safe::signal_t controlEnd;};
+namespace audio {
+  enum class join_stage_e { video, audio, control };
+  template<class W, class S>
+  void join_rtsp_capture(std::shared_ptr<void>&, std::thread &video, std::thread &audio, const std::function<void()> &control_end, W &&watchdog, S &&stage) {
+    auto deadline = watchdog();
+    stage(join_stage_e::video);
+    video.join();
+    stage(join_stage_e::audio);
+    if (audio.joinable()) audio.join();
+    stage(join_stage_e::control);
+    control_end();
+  }
+}
+struct session_t{std::shared_ptr<void> audio_context_guard;std::thread videoThread,audioThread;safe::signal_t controlEnd;};
 void join_session(session_t& session){
 // JOIN
 }

@@ -304,7 +304,7 @@ struct runtime {
       auto idr = s->idr;
       accepted.push_back(id);
       accepted_pixels.push_back(pixels);
-      maximum_depth = std::max(maximum_depth, encoder.accepted_input_count - encoder.completed_output_count + 1);
+      maximum_depth = std::max<std::size_t>(maximum_depth, encoder.accepted_input_count - encoder.completed_output_count + 1);
       events.push_back({model_clock::now() + delay, [this, id, pixels, idr] {
                           std::lock_guard lock(encoder.state_mutex);
                           encoder.completed_outputs.push_back({{pixels}, uint64_t(id), idr, encoder.frame_rfi_flags.contains(id), false});
