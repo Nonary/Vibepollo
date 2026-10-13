@@ -735,8 +735,8 @@ editing the `conf` file in a text editor. Use the examples as reference.
             <br>
             <br>
             On macOS, a pen is posted as a tablet device, so apps that read pressure, tilt, and the eraser
-            see them. macOS has no public way to inject multi-touch, so one finger acts as the mouse and
-            two fingers scroll. This needs the same Accessibility permission as mouse and keyboard input.
+            see them. macOS has no public way to inject multi-touch, so a tap clicks, one or two fingers
+            scroll, and holding a finger before moving it drags. This needs the same Accessibility permission as mouse and keyboard input.
         </td>
     </tr>
     <tr>

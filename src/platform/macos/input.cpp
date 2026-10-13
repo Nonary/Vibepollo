@@ -609,8 +609,8 @@ const KeyCodeMap kKeyCodesMap[] = {
    *
    * The pen is posted as a tablet device: proximity events as it enters, leaves, or changes tool,
    * and mouse events carrying the tablet fields (pressure, tilt, rotation, buttons) while it is
-   * in range. Touch has no public injection API on macOS, so one finger acts as the mouse and
-   * two fingers scroll.
+   * in range. Touch has no public injection API on macOS, so one finger scrolls (hold, then
+   * move, to drag), a tap clicks, and two fingers scroll.
    */
   class macos_client_input_t: public client_input_t {
   public:
@@ -639,10 +639,13 @@ const KeyCodeMap kKeyCodesMap[] = {
     struct touch_point_t {
       CGPoint start;
       CGPoint last;
+      std::chrono::steady_clock::time_point down_time;
     };
 
     // A tap (down and up with little movement) clicks; moving past this many points drags.
     static constexpr double TOUCH_SLOP = 6;
+    // Holding one finger still this long makes the next movement drag instead of scroll.
+    static constexpr std::chrono::milliseconds LONG_PRESS {350};
     static constexpr double MULTICLICK_DISTANCE = 6;
     static constexpr int POINTER_PEN = 1;  // NX_TABLET_POINTER_PEN
     static constexpr int POINTER_ERASER = 3;  // NX_TABLET_POINTER_ERASER
@@ -795,6 +798,15 @@ const KeyCodeMap kKeyCodesMap[] = {
       post_mouse_event(kCGEventLeftMouseUp, kCGMouseButtonLeft, location, tap_count);
     }
 
+    // Scrolls by the whole pixels gathered so far and keeps the fraction for the next event.
+    void scroll_by_remainder() {
+      const auto whole_x = std::trunc(scroll_remainder_x);
+      const auto whole_y = std::trunc(scroll_remainder_y);
+      scroll_remainder_x -= whole_x;
+      scroll_remainder_y -= whole_y;
+      post_scroll(macos_input, static_cast<int>(whole_y), static_cast<int>(whole_x));
+    }
+
     void touch_release() {
       if (touch_dragging) {
         post_mouse_event(kCGEventLeftMouseUp, kCGMouseButtonLeft, last_location, 1);
@@ -929,7 +941,7 @@ const KeyCodeMap kKeyCodesMap[] = {
 
     switch (touch.eventType) {
       case LI_TOUCH_EVENT_DOWN:
-        touch_points[touch.pointerId] = {location, location};
+        touch_points[touch.pointerId] = {location, location, std::chrono::steady_clock::now()};
         if (touch_points.size() >= 2) {
           // The first finger was waiting to become a click or drag; it is a scroll now.
           if (touch_dragging) {
@@ -958,18 +970,22 @@ const KeyCodeMap kKeyCodesMap[] = {
           const auto fingers = static_cast<double>(std::max<std::size_t>(touch_points.size(), 1));
           scroll_remainder_x += delta_x / fingers;
           scroll_remainder_y += delta_y / fingers;
-          const auto whole_x = std::trunc(scroll_remainder_x);
-          const auto whole_y = std::trunc(scroll_remainder_y);
-          scroll_remainder_x -= whole_x;
-          scroll_remainder_y -= whole_y;
-          post_scroll(macos_input, static_cast<int>(whole_y), static_cast<int>(whole_x));
+          scroll_by_remainder();
         } else if (touch_dragging) {
           post_mouse_event(kCGEventLeftMouseDragged, kCGMouseButtonLeft, location, 1);
         } else if (touch_points.size() == 1 && std::hypot(location.x - point->second.start.x, location.y - point->second.start.y) > TOUCH_SLOP) {
-          // Moved past the slop: press at the start of the touch and drag from there.
-          post_mouse_event(kCGEventLeftMouseDown, kCGMouseButtonLeft, point->second.start, 1);
-          touch_dragging = true;
-          post_mouse_event(kCGEventLeftMouseDragged, kCGMouseButtonLeft, location, 1);
+          if (std::chrono::steady_clock::now() - point->second.down_time >= LONG_PRESS) {
+            // Held still, then moved: press at the start of the touch and drag from there.
+            post_mouse_event(kCGEventLeftMouseDown, kCGMouseButtonLeft, point->second.start, 1);
+            touch_dragging = true;
+            post_mouse_event(kCGEventLeftMouseDragged, kCGMouseButtonLeft, location, 1);
+          } else {
+            // Moved right away: scroll, counting from where the finger landed.
+            touch_scrolling = true;
+            scroll_remainder_x += location.x - point->second.start.x;
+            scroll_remainder_y += location.y - point->second.start.y;
+            scroll_by_remainder();
+          }
         }
         break;
       }
