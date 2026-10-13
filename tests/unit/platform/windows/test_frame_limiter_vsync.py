@@ -283,9 +283,17 @@ int main() {
         if len(sys.argv) > 2
         else root / "src/platform/windows/frame_limiter.cpp"
     )
+    extra_flags = []
+    if sys.platform == "darwin":
+        extra_flags = [
+            "-D_UPPER=0x1", "-D_LOWER=0x2", "-D_DIGIT=0x4", "-D_SPACE=0x8",
+            "-D_PUNCT=0x10", "-D_CONTROL=0x20", "-D_BLANK=0x40", "-D_HEX=0x80",
+            "-D_ALPHA=0x103",
+        ]
     subprocess.run(
         [
             "g++", "-std=c++20", "-D_WIN32", "-pthread",
+            *extra_flags,
             "-I" + str(directory_path), "-I" + str(root),
             "-I" + str(root / "src/platform/windows"),
             str(source), str(directory_path / "test.cpp"),

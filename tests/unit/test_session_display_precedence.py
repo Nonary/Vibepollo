@@ -318,5 +318,19 @@ with tempfile.TemporaryDirectory(prefix='session-display-precedence-') as tempor
     cpp = directory / 'test.cpp'
     cpp.write_text(program)
     binary = directory / 'test'
+    if not dependency_includes:
+        for candidate in [
+            *root.glob('build*/_deps/boost-src/libs'),
+            pathlib.Path('/opt/homebrew/include'),
+            pathlib.Path('/usr/local/include'),
+        ]:
+            if candidate.is_dir():
+                if (candidate / 'boost').is_dir():
+                    dependency_includes.extend(['-I', str(candidate)])
+                else:
+                    for d in candidate.glob('*/include'):
+                        dependency_includes.extend(['-I', str(d)])
+                if dependency_includes:
+                    break
     subprocess.run([args.compiler, '-std=c++20', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', '-I', str(source.parent), *dependency_includes, str(cpp), str(source / 'platform/windows/display_helper_request_policy.cpp'), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

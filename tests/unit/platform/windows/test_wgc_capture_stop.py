@@ -22,6 +22,11 @@ for value in args.include_directory:
         include=Path(directory).resolve()
         if not include.is_dir():raise RuntimeError(f'Missing replay dependency include directory: {include}')
         compile_includes.extend(['-I',str(include)])
+if not args.include_directory and sys.platform=='darwin':
+    for candidate in (Path('/opt/homebrew/include'),Path('/usr/local/include')):
+        if (candidate/'boost').is_dir():
+            compile_includes.extend(['-I',str(candidate)])
+            break
 def read(path):
     candidate=before/Path(path).name if before else root/path
     return (candidate if candidate.exists() else root/path).read_text()
