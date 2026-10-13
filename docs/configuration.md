@@ -761,6 +761,11 @@ editing the `conf` file in a text editor. Use the examples as reference.
             When enabled, Sunshine will pass through native pen/touch events from Moonlight clients.
             <br>
             This can be useful to disable for older applications without native pen/touch support.
+            <br>
+            <br>
+            On macOS, a pen is posted as a tablet device, so apps that read pressure, tilt, and the eraser
+            see them. macOS has no public way to inject multi-touch, so a tap clicks, one or two fingers
+            scroll, and holding a finger before moving it drags. This needs the same Accessibility permission as mouse and keyboard input.
         </td>
     </tr>
     <tr>
