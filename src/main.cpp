@@ -1057,7 +1057,17 @@ int main(int argc, char *argv[]) {
 #endif
 
   // Wait for shutdown
+#if (defined(__APPLE__) || defined(__MACH__)) && defined(SUNSHINE_TRAY) && SUNSHINE_TRAY >= 1
+  if (config::sunshine.system_tray && system_tray::is_initialized()) {
+    system_tray::wait_for_shutdown([&shutdown_event]() {
+      return shutdown_event->peek();
+    });
+  } else {
+    shutdown_event->view();
+  }
+#else
   shutdown_event->view();
+#endif
 #ifdef __linux__
   if (supervised_machine_host) {
     platf::linux_private_display::request_process_shutdown_preserve();

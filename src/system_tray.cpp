@@ -76,6 +76,10 @@ namespace system_tray {
   static std::thread tray_thread;
 #endif
 
+  bool is_initialized() {
+    return tray_initialized.load();
+  }
+
   static int init_tray();
 
   static void tray_log_bridge(enum tray_log_level level, const char *message) {
@@ -381,14 +385,12 @@ namespace system_tray {
 
   void run_tray() {
   #if defined(__APPLE__) || defined(__MACH__)
-    // macOS requires that UI elements be created on the main thread
-    // creating tray using dispatch queue does not work, although the code doesn't actually throw any (visible) errors
-
-    // dispatch_async(dispatch_get_main_queue(), ^{
-    //   system_tray();
-    // });
-
-    BOOST_LOG(info) << "system_tray() is not yet implemented for this platform."sv;
+    if (init_tray() != 0) {
+      BOOST_LOG(warning) << "Failed to initialize macOS menu bar item"sv;
+      return;
+    }
+    tray_initialized = true;
+    BOOST_LOG(info) << "macOS menu bar item initialized successfully"sv;
   #else  // Windows, Linux
 #ifdef _WIN32
     tray_worker.start([]() {
@@ -407,7 +409,9 @@ namespace system_tray {
 
   int end_tray() {
     tray_initialized = false;
-#ifdef _WIN32
+#if defined(__APPLE__) || defined(__MACH__)
+    tray_exit();
+#elif defined(_WIN32)
     tray_worker.stop();
     tray_action_cv.notify_all();
 #else
@@ -434,6 +438,23 @@ namespace system_tray {
 #endif
     return 0;
   }
+
+#if defined(__APPLE__) || defined(__MACH__)
+  void wait_for_shutdown(const std::function<bool()> &is_shutdown) {
+    if (!tray_initialized.load()) {
+      while (is_shutdown && !is_shutdown()) {
+        std::this_thread::sleep_for(100ms);
+      }
+      return;
+    }
+
+    while (is_shutdown && !is_shutdown() && !tray_thread_should_exit.load()) {
+      if (tray_loop(1) < 0) {
+        break;
+      }
+    }
+  }
+#endif
 
   // Persistent storage for tooltip/notification strings to avoid dangling pointers
   static std::string s_tooltip;
