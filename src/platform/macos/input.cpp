@@ -841,7 +841,8 @@ const KeyCodeMap kKeyCodesMap[] = {
         return;
     }
 
-    const auto location = clamp_to_display(stream_location(macos_input, touch_port, pen.x, pen.y));
+    // Pen and touch coordinates are 0..1 across the stream; touch_port gives its size.
+    const auto location = clamp_to_display(stream_location(macos_input, touch_port, pen.x * touch_port.width, pen.y * touch_port.height));
 
     // A tool change (pen to eraser) is a new device coming into range.
     const int pointer = pen.toolType == LI_TOOL_TYPE_ERASER ? POINTER_ERASER : POINTER_PEN;
@@ -924,7 +925,7 @@ const KeyCodeMap kKeyCodesMap[] = {
         return;  // Hover and button-only events have no touch equivalent.
     }
 
-    const auto location = clamp_to_display(stream_location(macos_input, touch_port, touch.x, touch.y));
+    const auto location = clamp_to_display(stream_location(macos_input, touch_port, touch.x * touch_port.width, touch.y * touch_port.height));
 
     switch (touch.eventType) {
       case LI_TOUCH_EVENT_DOWN:
