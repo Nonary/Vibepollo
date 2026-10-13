@@ -698,6 +698,11 @@ int main(int argc, char *argv[]) {
 #ifdef _WIN32
   // Terminate gracefully on Windows when console window is closed
   SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+
+  // One readiness pass before the first apps.json parse: proc::parse() lists the
+  // Virtual Display app only when the driver is ready. refresh() itself stays
+  // independent of the driver because web UI request handlers call it.
+  proc::initVDisplayDriver();
 #endif
 
   proc::refresh(config::stream.file_apps);
