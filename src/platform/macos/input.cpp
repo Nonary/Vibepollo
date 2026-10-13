@@ -730,7 +730,10 @@ const KeyCodeMap kKeyCodesMap[] = {
         // The subtype has to be set before the other tablet fields.
         CGEventSetIntegerValueField(event, kCGMouseEventSubtype, kCGEventMouseSubtypeTabletPoint);
         CGEventSetIntegerValueField(event, kCGTabletEventPointButtons, buttons);
-        CGEventSetDoubleValueField(event, kCGTabletEventPointPressure, pen_down[PEN_TIP] ? pen->pressureOrDistance : 0.0);
+        const double pressure = pen_down[PEN_TIP] ? pen->pressureOrDistance : 0.0;
+        CGEventSetDoubleValueField(event, kCGTabletEventPointPressure, pressure);
+        // NSEvent.pressure on mouse events reads this field instead of the tablet one.
+        CGEventSetDoubleValueField(event, kCGMouseEventPressure, pressure);
         CGEventSetDoubleValueField(event, kCGTabletEventTiltX, tilt_x);
         CGEventSetDoubleValueField(event, kCGTabletEventTiltY, tilt_y);
         CGEventSetDoubleValueField(event, kCGTabletEventRotation, pen->rotation == LI_ROT_UNKNOWN ? 0.0 : pen->rotation);
