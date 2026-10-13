@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include <functional>
 #include <string>
 
 struct tray_menu;
@@ -12,6 +13,11 @@ struct tray_menu;
  * @brief Handles the system tray icon and notification system.
  */
 namespace system_tray {
+  /**
+   * @brief Returns whether the system tray has been initialized.
+   */
+  bool is_initialized();
+
   /**
    * @brief Callback for opening the UI from the system tray.
    * @param item The tray menu item.
@@ -49,7 +55,6 @@ namespace system_tray {
 
   /**
    * @brief Run the system tray with platform specific options.
-   * @todo macOS requires that UI elements be created on the main thread, so the system tray is not currently implemented for macOS.
    */
   void run_tray();
 
@@ -58,6 +63,14 @@ namespace system_tray {
    * @return 0 after exiting the system tray.
    */
   int end_tray();
+
+#if defined(__APPLE__) || defined(__MACH__)
+  /**
+   * @brief Pumps macOS system tray events on the main thread until shutdown is signaled.
+   * @param is_shutdown A callback returning true when shutdown is requested.
+   */
+  void wait_for_shutdown(const std::function<bool()> &is_shutdown);
+#endif
 
   /**
    * @brief Sets the tray icon in playing mode and spawns the appropriate notification

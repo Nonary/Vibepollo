@@ -1079,7 +1079,17 @@ int main(int argc, char *argv[]) {
 
   // Wait for shutdown
   shutdown_phase_state.set(shutdown_phase::phase_e::waiting_for_shutdown_event);
+#if (defined(__APPLE__) || defined(__MACH__)) && defined(SUNSHINE_TRAY) && SUNSHINE_TRAY >= 1
+  if (config::sunshine.system_tray && system_tray::is_initialized()) {
+    system_tray::wait_for_shutdown([&shutdown_event]() {
+      return shutdown_event->peek();
+    });
+  } else {
+    shutdown_event->view();
+  }
+#else
   shutdown_event->view();
+#endif
 #ifdef __linux__
   if (supervised_machine_host) {
     shutdown_phase_state.set(shutdown_phase::phase_e::linux_private_display_preserve);
