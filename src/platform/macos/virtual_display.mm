@@ -234,10 +234,6 @@ namespace platf::macos_virtual_display {
       return result;
     }
 
-    bool is_active_or_gone(const CGDirectDisplayID id) {
-      return is_active(id) || is_gone(id);
-    }
-
     /**
      * @brief Split off a closed MacBook's built-in display, which can't be turned on until the lid opens.
      * @details Once turned off, it comes back on by itself when the lid opens (seen on macOS 27), but it
@@ -713,8 +709,12 @@ namespace platf::macos_virtual_display {
         // A stream can end while the Mac is half-awake, where displays never come back online.
         platf::wake_displays();
         const auto [online, offline] = split_offline(turned_off);
+        // The virtual display goes away after this, so a physical display that's active but still
+        // asleep isn't back yet: with nothing else on, macOS stops WindowServer for a stuck display.
         const auto all_back = [&online]() {
-          return std::all_of(online.begin(), online.end(), is_active_or_gone);
+          return std::all_of(online.begin(), online.end(), [](const CGDirectDisplayID id) {
+            return is_gone(id) || (is_active(id) && !CGDisplayIsAsleep(id));
+          });
         };
         restored = turn_on(online) && wait_until(all_back, 5s);
         if (restored) {
