@@ -63,6 +63,8 @@
   #include "src/platform/linux/display_backend.h"
 
   #include <pthread.h>
+#elif defined(__APPLE__)
+  #include <mach-o/dyld.h>
 #endif
 
 #ifdef _WIN32
@@ -331,6 +333,14 @@ int main(int argc, char *argv[]) {
   if (bundle_error) {
     std::fprintf(stderr, "Vibepollo: cannot resolve SteamOS bundle: %s\n", bundle_error.message().c_str());
     return 1;
+  }
+#elif defined(__APPLE__) && !defined(SUNSHINE_BUILD_HOMEBREW)
+  // Resolve bundle resources from the executable's directory when running in an .app bundle.
+  char exe_buf[PATH_MAX];
+  uint32_t exe_buf_size = sizeof(exe_buf);
+  if (_NSGetExecutablePath(exe_buf, &exe_buf_size) == 0) {
+    std::error_code bundle_error;
+    std::filesystem::current_path(std::filesystem::path(exe_buf).parent_path(), bundle_error);
   }
 #endif
 
