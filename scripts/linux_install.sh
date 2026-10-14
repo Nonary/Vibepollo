@@ -613,8 +613,8 @@ prepare_package_hook_dirs() {
   local guard_name=${private_guards[0]##*/}
   package_hook_args=()
   while IFS= read -r hook_dir; do
-    [[ -n "$hook_dir" && "$hook_dir" != *$'\r'* ]] ||
-      die 'invalid effective pacman hook directory'
+    [[ "$hook_dir" == /* && "$hook_dir" != *$'\r'* ]] ||
+      die 'effective pacman hook directory must be absolute and contain no carriage return'
     # A configured same-name dummy hook can disable AbortOnFail, while the
     # default directory would be shadowed by our CLI guard. Preserve admin
     # policy in both cases by refusing the collision before any transaction.

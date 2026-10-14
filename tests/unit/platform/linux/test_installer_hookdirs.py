@@ -53,6 +53,7 @@ with tempfile.TemporaryDirectory(prefix=f'{brand}-hookdir-regression-') as tempo
     custom = [str(fixture / 'hooks-one'), str(fixture / 'hooks-$literal;two')]
     default = '/etc/pacman.d/hooks/'
     configurations = {'default': ([], [default]), 'custom': (custom, custom)}
+    relative_value = str(fixture / 'relative-admin').lstrip('/')
 
     # pacman-conf does not call setup_libalpm (hence no database lock or
     # package writes), as confirmed in official src/pacman/pacman-conf.c.
@@ -71,6 +72,11 @@ with tempfile.TemporaryDirectory(prefix=f'{brand}-hookdir-regression-') as tempo
         actual = subprocess.run([query, '--config', str(configured), 'HookDir'], check=True, capture_output=True, text=True).stdout.splitlines()
         assert actual == custom, actual
         print(f'{brand}: native pacman-conf private default/Include queries match source merge model')
+        relative_config = fixture / 'relative.conf'
+        relative_config.write_text(f'[options]\nHookDir = {relative_value}\n')
+        actual = subprocess.run([query, '--config', str(relative_config), 'HookDir'], check=True, capture_output=True, text=True).stdout.splitlines()
+        assert actual == [relative_value], actual
+        print(f'{brand}: native pacman-conf preserves relative HookDir; installer must refuse it')
 
     for case, (configured, effective) in configurations.items():
         for operation in ('-S', '-U', '-R'):
@@ -137,13 +143,13 @@ run_package_transaction() {{
             count += 1
 
     # Query failures must never reach any transaction edge or driver-prep.
-    for mode in ('missing', 'error', 'empty', 'cr', 'blank-line', 'over-limit'):
+    for mode in ('missing', 'error', 'empty', 'cr', 'blank-line', 'over-limit', 'relative'):
         for operation in ('-S', '-U', '-R'):
             current = fixture / (mode + operation)
             current.mkdir()
             called = current / 'called'
             preparation = current / 'driver-prep'
-            values = {'empty': '', 'cr': '/etc/pacman.d/hooks/\r\n', 'blank-line': '/etc/pacman.d/hooks/\n\n/tmp/hooks\n',
+            values = {'relative': relative_value + '\n', 'empty': '', 'cr': '/etc/pacman.d/hooks/\r\n', 'blank-line': '/etc/pacman.d/hooks/\n\n/tmp/hooks\n',
                       'over-limit': ''.join(f'/tmp/hooks-{index}\n' for index in range(257))}.get(mode, '')
             query_file = current / 'query-values'
             query_file.write_text(values)
