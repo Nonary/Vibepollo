@@ -16,6 +16,28 @@ def forbid(text: str, needle: str, label: str) -> None:
         raise AssertionError(f"{label} retains forbidden legacy or privileged behavior: {needle}")
 
 
+def require_force_guard(text: str, label: str) -> None:
+    """Any package SIGKILL must stay inside the identity-checked opt-in helper."""
+    command = "systemctl kill --kill-whom=all --signal=KILL"
+    if command not in text:
+        return
+    match = re.search(r"^vibepollo_stop_host_for_package\(\) \(\n.*?^\)$", text, re.M | re.S)
+    if not match or text.count(command) != match.group().count(command):
+        raise AssertionError(f"{label} forceful termination escaped the exact host helper")
+    shutdown = match.group()
+    for guard in ("VIBEPOLLO_PACKAGE_FORCE", "vibepollo_package_backup_for_force",
+                  "vibepollo_original_invocation", "vibepollo_original_cgroup",
+                  "vibepollo_original_pid", "vibepollo_host_stop_deadline",
+                  "unit_is_quiescent vibepollo.service"):
+        require(shutdown, guard, label)
+    kill_at = shutdown.index(command)
+    if not shutdown.index("VIBEPOLLO_PACKAGE_FORCE") < shutdown.index("vibepollo_package_backup_for_force") < kill_at:
+        raise AssertionError(f"{label} forces shutdown before consent and backup")
+    require(text, "--property=InvocationID", label)
+    require(text, '[ "$vibepollo_stop_restart" = no ]', label)
+    require(text, '[ "$vibepollo_stop_fenced" = yes ]', label)
+
+
 root = pathlib.Path(sys.argv[1])
 linux = root / "packaging/linux"
 controller = (linux / "vibepollo-session-controller").read_text()
@@ -812,7 +834,7 @@ for lifecycle, label in (
         raise AssertionError(f"{label} lacks sustained clean broker enumeration")
     forbid(lifecycle, "systemctl stop 'vibepollo-session-exec@*.service'", label)
     forbid(lifecycle, 'systemctl stop "vibepollo-session-exec@*.service"', label)
-    forbid(lifecycle, "systemctl kill --kill-whom=all --signal=KILL", label)
+    require_force_guard(lifecycle, label)
 
 # Pre-replacement hooks must quiesce both the immediately prior architecture
 # and the controller/broker architecture without trusting systemctl globs.
@@ -885,7 +907,7 @@ for lifecycle, label in (
     forbid(lifecycle, "systemctl stop 'vibepollo-session-restore@*.service'", label)
     forbid(lifecycle, 'systemctl stop "vibepollo-session-restore@*.service"', label)
     forbid(lifecycle, "systemctl unmask", label)
-    forbid(lifecycle, "systemctl kill --kill-whom=all --signal=KILL", label)
+    require_force_guard(lifecycle, label)
     forbid(lifecycle, "vibepollo_session_record=", label)
     forbid(lifecycle, "vibepollo_legacy_acl=", label)
     function_name = "do_quiesce_machine_host" if label.startswith("Arch") else "vibepollo_quiesce_machine_host"
@@ -894,15 +916,15 @@ for lifecycle, label in (
     prepare_at = quiesce.index("vibepollo_prepare_host_upgrade_fence || return 1")
     freeze_at = quiesce.index("vibepollo_freeze_controller || return 1", prepare_at)
     activate_at = quiesce.index("vibepollo_activate_host_upgrade_fence || return 1", freeze_at)
-    control_mask_at = quiesce.index("systemctl mask --runtime vibeshine-vkms-control.socket", activate_at)
+    control_mask_at = quiesce.index("vibepollo_package_mask vibeshine-vkms-control.socket", activate_at)
     control_stop_at = quiesce.index("vibepollo_stop_exact_unit vibeshine-vkms-control.socket", control_mask_at)
     control_drain_at = quiesce.index("vibepollo_control_instances_are_quiescent || return 1", control_stop_at)
-    restore_mask_at = quiesce.index("systemctl mask --runtime 'vibepollo-session-restore@.service'", activate_at)
+    restore_mask_at = quiesce.index("vibepollo_package_mask 'vibepollo-session-restore@.service'", activate_at)
     helper_close_at = quiesce.index("vibepollo_disable_legacy_handoff || return 1", restore_mask_at)
-    broker_admission_at = quiesce.index("systemctl mask --runtime vibepollo-session-exec.socket", control_drain_at)
+    broker_admission_at = quiesce.index("vibepollo_package_mask vibepollo-session-exec.socket", control_drain_at)
     broker_stop_at = quiesce.index("vibepollo_stop_exact_unit vibepollo-session-exec.socket", broker_admission_at)
     host_stop_at = quiesce.index("vibepollo_stop_exact_unit vibepollo.service", broker_stop_at)
-    host_mask_at = quiesce.index("systemctl mask --runtime vibepollo.service", host_stop_at)
+    host_mask_at = quiesce.index("vibepollo_package_mask vibepollo.service", host_stop_at)
     first_restore_stop = quiesce.index("vibepollo_stop_restore_instances || return 1", host_mask_at)
     broker_drain_at = quiesce.index("vibepollo_stop_brokers || return 1", first_restore_stop)
     frozen_proof_at = quiesce.index("vibepollo_controller_remains_frozen || return 1", broker_drain_at)
@@ -989,10 +1011,10 @@ for lifecycle, label in (
         "RefuseManualStart=no",
         "KillMode=mixed",
         "SendSIGKILL=no",
-        "unmask --runtime vibeshine-vkms-control.socket",
+        "vibepollo_package_release",
         "start vibeshine-vkms-control.socket",
-        "unmask --runtime vibepollo-session-exec.socket",
-        "unmask --runtime vibepollo.service",
+        "vibepollo_package_restore_barriers",
+        "vibepollo_package_remove_owned",
         "LoadState=loaded",
         "systemctl enable vibepollo-session-controller.service",
         "systemctl start vibepollo-session-controller.service",

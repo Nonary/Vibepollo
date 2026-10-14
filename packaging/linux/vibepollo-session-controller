@@ -697,7 +697,7 @@ enumerate_session_generation_apps() {
     fi
     ((${#fields[@]} >= 5)) || return 1
     unit=${fields[0]}; load=${fields[1]}; active=${fields[2]}; substate=${fields[3]}
-    [[ "$unit" =~ ^vibepollo-app-${generation}-[1-9][0-9]*\.service$ &&
+    [[ "$unit" =~ ^vibepollo-app-${generation}-[1-9][0-9]*(-[1-9][0-9]*)?\.service$ &&
        "$load" == loaded && "$active" =~ ^[a-z-]+$ && "$substate" =~ ^[a-z-]+$ &&
        -z ${seen[$unit]:-} ]] || return 1
     seen[$unit]=1

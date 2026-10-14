@@ -189,7 +189,7 @@ unit disconnects any client that is streaming.
 | No pre-login stream | Expected on AMD and Intel GPUs. Log in first. |
 | Audio crackles or drifts | Log out and in again so the PipeWire drop-in applies. Keep Vibepollo's virtual sink; do not pin a static `audio_sink`. |
 | Moonlight sees the host but the stream fails | Open the UDP ports (see above). |
-| `could not start the Vibepollo session controller safely` at install | Reboot, then check `systemctl status vibepollo-session-controller.service`. Report the journal output if it still fails. |
+| `could not start the Vibepollo session controller safely` at install | Check the reported cleanup proof, retained transaction record, and administrator masks, then retry the installer. Report the controller journal if it still fails. |
 
 KMS is recommended for managed virtual screens for maximum compatibility and
 Vibepollo's low-latency capture. Automatic capture selects KMS for these screens.
@@ -248,11 +248,98 @@ end active streams. The old helper paths remain available for existing scripts.
 
 If the hook says the kernel still holds the old driver, reboot before streaming again.
 
+### Shutdown failures and explicit force
+
+Package replacement deliberately disconnects streams. The host receives a graceful stop with
+a 60-second deadline. Replacement requires the old host's entire service cgroup to be empty,
+followed by broker/application cleanup and removal of the old session record.
+
+The installer offers one force-stop retry after a recorded shutdown deadline when it has an interactive
+terminal. `--yes` never accepts that choice automatically. For an unattended retry, use:
+
+```bash
+sudo bash linux_install.sh --package /path/to/fixed.pkg.tar.zst --force-stop --yes
+```
+
+Force terminates the verified host service cgroup after the graceful deadline. Active streams
+and applications end, and normal cleanup may be incomplete. Before the forced signal, the hook
+saves a private snapshot of `/etc/vibepollo` and `/var/lib/vibepollo`, excluding changing logs,
+under `/var/lib/vibepollo-package-backups/forced-stop.*`. The directory is root-only, and its
+`recovery.log` records the old invocation, installed version, and force outcome. This snapshot
+may have been taken while the old host was running; do not treat it as an atomic database backup.
+Archive errors, including a missing `tar`, stop the forced operation.
+
+Updated package hooks also accept `VIBEPOLLO_PACKAGE_FORCE=1`, for example
+`sudo env VIBEPOLLO_PACKAGE_FORCE=1 pacman -U /path/to/fixed.pkg.tar.zst`.
+That variable does not retrofit force support into an older installed hook; use the incoming
+installer when upgrading a broken old package. Force never targets a process by name or an
+unrelated session. A changed/uncertain service identity, an unkillable process, a populated
+cgroup, or unresolved generation cleanup still blocks replacement. The failure report explains
+the remaining proof and preserves the transaction record for a retry.
+
+A host using the old executable outside the machine service blocks replacement even with force. The report identifies its PID and scope. An executable match does not establish authority over another user manager's restart policy, session cleanup, or profile backup; stop that exact host and fence its activation source through its owning manager before retrying. An inode absence scan alone cannot prevent an unfenced user service from restarting.
+
+Cancellation waits for pacman and its hooks to finish before recovery. The client runs in a separate session so terminal interrupts cannot orphan a pretransaction hook. A requested cancellation may allow an in-progress package replacement to finish; the installer still returns the cancellation status.
+
+Owned runtime masks and the upgrade fence are recorded under `/run/vibepollo-package-transaction`.
+Failure/cancellation restores only barriers created by that transaction after verifying a safe
+release. Existing administrator masks are preserved, so automatic startup may be deferred.
+An unrecorded legacy fence is adopted only when the exact known fence and all four runtime masks match, with the old generation fully drained and no pending jobs. An active host, partial mask set, or different fence remains blocked even with force: ownership and the loaded shutdown contract are not established. Stop the identified old generation through its owning manager and verify its remaining jobs and resources before retrying; the installer preserves ambiguous barriers rather than removing them.
+
+An interruption that leaves shutdown uncertain retains the record until a retry can finish;
+do not delete it or unmask every service indiscriminately.
+
+### Incoming installer compatibility
+
+The incoming installer extracts its shutdown guard from the selected package and overrides only
+`00-vibepollo-quiesce.hook` in a private ALPM hook directory. It runs before package files change.
+The named `upgrade-2.0-lifecycle-v1` compatibility step applies only to installed `2.0.0` builds
+whose outgoing hook still has locale-sensitive metadata parsing or helper-text-first selection.
+It selects an exact-name override of the known old ALPM hook and uses the incoming guard's full shutdown proof in the C locale. A regular incoming guard runs for other versions while their outgoing hooks retain their checks. It does
+not edit installed hooks or suppress a failed proof. Fixed daily builds with the same version
+are tested by their actual hook conditions. The step is repeatable and can be removed when
+upgrades from those affected builds are no longer supported; future exceptions belong in
+separate named, condition-scoped scripts under `scripts/linux/migrations`.
+
+The separate `upgrade-2.0.1-lifecycle-v1` step applies to `2.0.1` builds with the qualified helper-first selector and old fence without `Restart=no`. Both repository baselines are exactly tagged `2.0.1`; the tests retain their original hooks, reproduce the direct fence-preparation mismatch, and verify the scoped override. Complete historical removal callbacks accept the proven incoming fence through their preserved-quiescence shortcut, keep the fence and masks intact, and reach driver cleanup. Epochs and package revisions are included in version matching. Unknown versions and already fixed hooks keep their outgoing checks.
+
+The published 2.0.0 metadata failure compared translated `stat %F` text with `regular file`.
+Locale-independent metadata checks are already present in the qualified primary source. The
+new changes address idle helper selection, bounded force, transaction ownership and recovery.
+
+Package ordering limits what an incoming package can repair:
+
+| Path | Earliest applicable step |
+| --- | --- |
+| Arch/CachyOS installer | Private incoming `PreTransaction` guard, before outgoing hooks and package writes. |
+| Direct Arch upgrade/removal from a broken installed hook | Use the incoming installer preflight; incoming post-install code runs too late. |
+| DEB | Old `prerm upgrade` runs before new `preinst`; dpkg can call new `prerm failed-upgrade` when the old script fails. Current removal-only `prerm` does nothing for those upgrade arguments. |
+| RPM | New `%pre` runs before replacement; new `%post` precedes old `%preun` during upgrade. Old scriptlets can still affect the transaction. |
+
+These boundaries follow the [ALPM hook rules](https://pacman.archlinux.page/alpm-hooks.5.html),
+[Debian maintainer-script ordering](https://www.debian.org/doc/debian-policy/ch-maintainerscripts.html#details-of-unpack-phase-of-installation-or-upgrade),
+and [RPM upgrade ordering](https://rpm.org/docs/4.20.x/manual/triggers.html).
+The shell entrypoint supports Arch/CachyOS. Its historical-package harness validates the incoming
+override and refusal paths; actual package-manager and GPU behavior requires host qualification.
+It does not claim to override arbitrary old DEB/RPM scripts or administrator hook overrides. The latest reporter did not establish their installed version, so the known 2.0.0 workaround cannot be assumed to match that report.
+
 ## Uninstall
 
 ```bash
 sudo pacman -R vibepollo
 ```
+
+For a broken older pretransaction hook, supply a fixed incoming package as a source of the
+shutdown policy without installing it:
+
+```bash
+sudo bash linux_install.sh --remove --package /path/to/fixed.pkg.tar.zst
+```
+
+Add `--force-stop` only when you accept the termination consequences above. The removal path
+does not run install checks, install headers, configure a package repository, or open the
+firewall. Outgoing removal scriptlets still run; their behavior must be qualified with the
+actual old package, and failure is reported rather than silently discarded.
 
 Removal stops the services and removes the DKMS module but keeps `/var/lib/vibepollo` and
 `/etc/vibepollo`. To wipe them as well, run
