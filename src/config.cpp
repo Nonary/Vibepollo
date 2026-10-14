@@ -2585,6 +2585,8 @@ namespace config {
     adapter_config_pair_t g_base_adapter_config;
     adapter_config_pair_t g_active_adapter_config;
     bool g_base_adapter_config_valid = false;
+    video_t::dd_t::hdr_request_override_e g_base_hdr_request_override =
+      video_t::dd_t::hdr_request_override_e::automatic;
     bool g_active_adapter_config_valid = false;
 
     adapter_config_pair_t adapter_config_from_vars(
@@ -2608,6 +2610,10 @@ namespace config {
       std::lock_guard<std::mutex> lock(g_adapter_config_snapshot_mutex);
       g_base_adapter_config = adapter_config_from_vars(vars);
       g_base_adapter_config_valid = true;
+      const auto hdr_override = vars.find("dd_hdr_request_override");
+      g_base_hdr_request_override = dd::hdr_request_override_from_view(
+        hdr_override != vars.end() ? std::string_view {hdr_override->second} : "auto"sv
+      );
     }
 
 #ifdef _WIN32
@@ -3055,6 +3061,11 @@ namespace config {
       .pnp_id = video.adapter_pnp_id,
     };
     g_active_adapter_config_valid = true;
+  }
+
+  video_t::dd_t::hdr_request_override_e base_hdr_request_override() {
+    std::lock_guard<std::mutex> lock(g_adapter_config_snapshot_mutex);
+    return g_base_hdr_request_override;
   }
 
   void merge_config_overrides(
