@@ -1057,6 +1057,8 @@ vibepollo_select_upgrade_kill_mode() {
   fi
 }
 vibepollo_prepare_host_upgrade_fence() (
+  vibepollo_package_preserve_unowned_host_mask || exit 1
+  [ "$vibepollo_package_preserve_host_mask" -eq 0 ] || exit 0
   [ ! -L "$vibepollo_host_upgrade_dropin_dir" ] && \
     [ ! -L "$vibepollo_host_upgrade_dropin" ] || exit 1
   install -d -o root -g root -m 0755 -- "$vibepollo_host_upgrade_dropin_dir" || exit 1
@@ -1089,6 +1091,8 @@ vibepollo_prepare_host_upgrade_fence() (
   vibepollo_package_record_owned fence "$vibepollo_host_upgrade_dropin" || exit 1
 )
 vibepollo_activate_host_upgrade_fence() {
+  vibepollo_package_preserve_unowned_host_mask || return 1
+  [ "$vibepollo_package_preserve_host_mask" -eq 0 ] || return 0
   vibepollo_package_open_owned_host_for_stop || exit 1
   systemctl daemon-reload || exit 1
   vibepollo_host_stop_properties=$(timeout --signal=KILL 5 systemctl show vibepollo.service \
@@ -1482,6 +1486,82 @@ vibepollo_package_run_id_is_safe() {
   case "$1" in *[!0-9a-f]*) return 1 ;; esac
 }
 
+vibepollo_package_preserve_unowned_host_mask() {
+  vibepollo_package_preserve_host_mask=0
+  for vibepollo_package_mask_path in /etc/systemd/system/vibepollo.service /run/systemd/system/vibepollo.service; do
+    [ -L "$vibepollo_package_mask_path" ] || continue
+    [ "$(readlink -- "$vibepollo_package_mask_path")" = /dev/null ] || continue
+    vibepollo_package_mask_identity=$(vibepollo_package_path_identity "$vibepollo_package_mask_path") || return 1
+    case "$vibepollo_package_mask_identity" in
+      *:0:0:'symbolic link') ;;
+      *) echo "error: unsafe host mask at $vibepollo_package_mask_path; package operation is blocked." >&2; return 1 ;;
+    esac
+    if [ "$vibepollo_package_mask_path" = /run/systemd/system/vibepollo.service ] &&
+       { [ -e "$vibepollo_package_transaction/vibepollo.service.owned" ] || [ -L "$vibepollo_package_transaction/vibepollo.service.owned" ]; }; then
+      vibepollo_package_record_is_safe "$vibepollo_package_transaction/vibepollo.service.owned" || return 1
+      [ "$(cat -- "$vibepollo_package_transaction/vibepollo.service.owned")" = "$vibepollo_package_mask_identity" ] || return 1
+      continue
+    fi
+    vibepollo_package_preserve_host_mask=1
+  done
+  [ "$vibepollo_package_preserve_host_mask" -eq 1 ] || return 0
+  vibepollo_package_mask_state=$(timeout --signal=KILL 5 systemctl is-enabled vibepollo.service 2>/dev/null || true)
+  vibepollo_package_mask_load=$(timeout --signal=KILL 5 systemctl show vibepollo.service --property=LoadState 2>/dev/null) || vibepollo_package_mask_load=uncertain
+  vibepollo_package_mask_verified=0
+  case "$vibepollo_package_mask_state:$vibepollo_package_mask_load" in
+    masked:LoadState=masked | masked-runtime:LoadState=masked) vibepollo_package_mask_verified=1 ;;
+  esac
+  if [ "$vibepollo_package_mask_verified" -ne 1 ] ||
+     ! vibepollo_unit_is_quiescent vibepollo.service ||
+     ! vibepollo_package_no_jobs; then
+    echo 'error: an unowned Vibepollo host mask exists, but the host is active, populated, has a pending job, or its state is uncertain; package replacement is blocked. Force cannot remove an administrator or legacy mask without proving its activation ownership.' >&2
+    return 1
+  fi
+  # Preserve the actual mask and any unowned fence byte-for-byte. The mask
+  # supplies no-start admission while the full generation proof still runs.
+  return 0
+}
+
+vibepollo_package_prepare_postinstall_start() {
+  vibepollo_package_start_deferred=0
+  vibepollo_package_preserve_unowned_host_mask || return 1
+  if [ "$vibepollo_package_preserve_host_mask" -eq 1 ]; then
+    vibepollo_package_start_deferred=1
+  fi
+  for vibepollo_package_start_unit in vibepollo.service vibepollo-session-controller.service vibepollo-session-exec.socket vibeshine-vkms-control.socket; do
+    for vibepollo_package_start_directory in /etc/systemd/system /run/systemd/system; do
+      vibepollo_package_start_path=$vibepollo_package_start_directory/$vibepollo_package_start_unit
+      [ -L "$vibepollo_package_start_path" ] || continue
+      [ "$(readlink -- "$vibepollo_package_start_path")" = /dev/null ] || continue
+      vibepollo_package_start_identity=$(vibepollo_package_path_identity "$vibepollo_package_start_path") || return 1
+      case "$vibepollo_package_start_identity" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+      if [ "$vibepollo_package_start_directory" = /run/systemd/system ] &&
+         { [ -e "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned" ] || [ -L "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned" ]; }; then
+        vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned" || return 1
+        [ "$(cat -- "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned")" = "$vibepollo_package_start_identity" ] || return 1
+        continue
+      fi
+      vibepollo_package_start_deferred=1
+    done
+  done
+  if [ -e "$vibepollo_package_transaction/fence.before" ]; then
+    vibepollo_package_record_is_safe "$vibepollo_package_transaction/fence.before" || return 1
+    vibepollo_package_prior_fence=$(cat -- "$vibepollo_package_transaction/fence.before") || return 1
+    if [ "$vibepollo_package_prior_fence" != absent ]; then
+      [ "$(vibepollo_package_path_identity "$vibepollo_host_upgrade_dropin")" = "$vibepollo_package_prior_fence" ] || return 1
+      vibepollo_package_start_deferred=1
+    fi
+  fi
+  [ "$vibepollo_package_start_deferred" -eq 1 ] || return 0
+  # This must be the full actual generation proof (controller, broker/apps,
+  # restore/control instances, session record and retained executable inodes).
+  # The local host-empty + no-jobs classifier is insufficient for release.
+  vibepollo_package_complete_quiescence_is_safe || return 1
+  vibepollo_package_release || return 1
+  echo 'package: preserved administrator host mask or start fence; configuration completed and automatic service activation is deferred.' >&2
+  return 0
+}
+
 vibepollo_package_bind_run() {
   if [ -n "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ]; then
     vibepollo_package_run_id_is_safe "$VIBEPOLLO_PACKAGE_RUN_ID" || return 1
@@ -1562,6 +1642,48 @@ vibepollo_package_adopt_legacy_barriers() {
     vibepollo_package_record_is_safe "$vibepollo_package_transaction/legacy-adopted" &&
       [ "$(cat -- "$vibepollo_package_transaction/legacy-adopted")" = yes ] || return 1
     vibepollo_package_adoption_pending=1
+    # The marker is published only after the exact old fence, all original
+    # mask identities and full generation proof were verified. An interrupted
+    # conversion may leave some .before snapshots unconverted when old package
+    # unwind removes the fence. Resume only those original masks, never a
+    # replacement path or an unrecorded new mask.
+    if [ ! -e "$vibepollo_host_upgrade_dropin" ] && [ ! -L "$vibepollo_host_upgrade_dropin" ]; then
+      vibepollo_package_complete_quiescence_is_safe || return 1
+      if [ -e "$vibepollo_package_transaction/fence.owned" ] || [ -L "$vibepollo_package_transaction/fence.owned" ]; then
+        vibepollo_package_record_is_safe "$vibepollo_package_transaction/fence.owned" || return 1
+      fi
+      # Validate every path before changing any record. Repeat the identity
+      # checks during publication so interruption leaves resumable metadata.
+      for vibepollo_package_adoption_pass in validate commit; do
+        for vibepollo_package_name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
+          vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_name.before" || return 1
+          vibepollo_package_expected=$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.before") || return 1
+          if [ -e "$vibepollo_package_transaction/$vibepollo_package_name.owned" ] || [ -L "$vibepollo_package_transaction/$vibepollo_package_name.owned" ]; then
+            vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_name.owned" || return 1
+            vibepollo_package_expected=$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.owned") || return 1
+          fi
+          vibepollo_package_current=$(vibepollo_package_path_identity "/run/systemd/system/$vibepollo_package_name") || return 1
+          if [ "$vibepollo_package_current" != absent ]; then
+            case "$vibepollo_package_current" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+            [ "$(readlink -- "/run/systemd/system/$vibepollo_package_name")" = /dev/null ] || return 1
+            [ "$vibepollo_package_current" = "$vibepollo_package_expected" ] || return 1
+          fi
+          [ "$vibepollo_package_adoption_pass" = commit ] || continue
+          if [ "$vibepollo_package_current" = absent ]; then
+            vibepollo_package_write_record "$vibepollo_package_name.before" absent || return 1
+            rm -f -- "$vibepollo_package_transaction/$vibepollo_package_name.owned" || return 1
+          else
+            vibepollo_package_write_record "$vibepollo_package_name.owned" "$vibepollo_package_current" || return 1
+            vibepollo_package_write_record "$vibepollo_package_name.before" absent || return 1
+          fi
+        done
+      done
+      vibepollo_package_write_record fence.before absent || return 1
+      rm -f -- "$vibepollo_package_transaction/fence.owned" || return 1
+      vibepollo_package_write_record phase preflight || return 1
+      rm -f -- "$vibepollo_package_transaction/legacy-adopted" || return 1
+      return 0
+    fi
   fi
   [ "$vibepollo_package_before" != absent ] || [ "$vibepollo_package_adoption_pending" -eq 1 ] || return 0
   [ -f "$vibepollo_host_upgrade_dropin" ] && [ ! -L "$vibepollo_host_upgrade_dropin" ] || return 1
@@ -1594,6 +1716,7 @@ SendSIGKILL=no') ;;
   for vibepollo_package_name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
     vibepollo_package_current=$(vibepollo_package_path_identity "/run/systemd/system/$vibepollo_package_name") || return 1
     case "$vibepollo_package_current" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+    [ "$(readlink -- "/run/systemd/system/$vibepollo_package_name")" = /dev/null ] || return 1
     if [ -e "$vibepollo_package_transaction/$vibepollo_package_name.owned" ]; then
       vibepollo_package_expected=$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.owned") || return 1
     else
@@ -1613,18 +1736,30 @@ SendSIGKILL=no') ;;
     vibepollo_package_write_record "$vibepollo_package_name.owned" "$vibepollo_package_current" || return 1
     vibepollo_package_write_record "$vibepollo_package_name.before" absent || return 1
   done
-  vibepollo_package_write_record phase preflight
+  vibepollo_package_write_record phase preflight || return 1
+  # Every owned identity and before snapshot is now durable; the pending
+  # adoption marker is no longer needed by later release/retry operations.
+  rm -f -- "$vibepollo_package_transaction/legacy-adopted"
 }
 
 vibepollo_package_rebaseline_unwound_run() {
-  # A fresh explicit installer operation may select the current healthy
-  # invocation after an older dpkg abort restored every owned barrier. This
-  # grants a fresh stop target; it does not prove old process resources gone.
-  [ -n "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ] || return 0
-  vibepollo_package_run_id_is_safe "$VIBEPOLLO_PACKAGE_RUN_ID" || return 1
-  [ -e "$vibepollo_package_transaction/run-id" ] || return 0
-  vibepollo_package_record_is_safe "$vibepollo_package_transaction/run-id" || return 1
-  [ "$(cat -- "$vibepollo_package_transaction/run-id")" != "$VIBEPOLLO_PACKAGE_RUN_ID" ] || return 0
+  # Pending legacy authority is not a wholly unwound transaction even when
+  # no .owned file has been published yet. Reconcile it before a new target.
+  if [ -e "$vibepollo_package_transaction/legacy-adopted" ] || [ -L "$vibepollo_package_transaction/legacy-adopted" ]; then
+    vibepollo_package_record_is_safe "$vibepollo_package_transaction/legacy-adopted" &&
+      [ "$(cat -- "$vibepollo_package_transaction/legacy-adopted")" = yes ] || return 1
+    return 0
+  fi
+  # A native package retry, or a fresh explicit installer operation, may
+  # select the current healthy invocation after every owned barrier unwound.
+  # This grants a fresh target, never proof that old process resources vanished.
+  if [ -n "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ]; then
+    vibepollo_package_run_id_is_safe "$VIBEPOLLO_PACKAGE_RUN_ID" || return 1
+    [ -e "$vibepollo_package_transaction/run-id" ] || return 0
+    vibepollo_package_record_is_safe "$vibepollo_package_transaction/run-id" || return 1
+    # A same-run force retry must retain its original invocation identity.
+    [ "$(cat -- "$vibepollo_package_transaction/run-id")" != "$VIBEPOLLO_PACKAGE_RUN_ID" ] || return 0
+  fi
   for vibepollo_package_path in "$vibepollo_package_transaction"/*.owned; do
     [ ! -e "$vibepollo_package_path" ] && [ ! -L "$vibepollo_package_path" ] || return 0
   done
@@ -1640,6 +1775,13 @@ vibepollo_package_rebaseline_unwound_run() {
       --property=FreezerState --property=InvocationID 2>/dev/null) || return 1
     vibepollo_package_controller_identity_is_safe "$vibepollo_package_controller" || return 1
     vibepollo_package_write_record controller "$vibepollo_package_controller" || return 1
+  fi
+  if [ -z "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ]; then
+    # A native retry is a new operation. Retire any earlier wrapper's nonce
+    # atomically before refreshing phase or discarding its saved stop identity.
+    vibepollo_package_new_run=$(cat /proc/sys/kernel/random/uuid | tr -d '-') || return 1
+    vibepollo_package_run_id_is_safe "$vibepollo_package_new_run" || return 1
+    vibepollo_package_write_record run-id "$vibepollo_package_new_run" || return 1
   fi
   vibepollo_package_write_record phase early || return 1
   rm -f -- "$vibepollo_package_transaction/host-stop.before" || return 1
@@ -2257,6 +2399,82 @@ vibepollo_package_run_id_is_safe() {
   case "$1" in *[!0-9a-f]*) return 1 ;; esac
 }
 
+vibepollo_package_preserve_unowned_host_mask() {
+  vibepollo_package_preserve_host_mask=0
+  for vibepollo_package_mask_path in /etc/systemd/system/vibepollo.service /run/systemd/system/vibepollo.service; do
+    [ -L "$vibepollo_package_mask_path" ] || continue
+    [ "$(readlink -- "$vibepollo_package_mask_path")" = /dev/null ] || continue
+    vibepollo_package_mask_identity=$(vibepollo_package_path_identity "$vibepollo_package_mask_path") || return 1
+    case "$vibepollo_package_mask_identity" in
+      *:0:0:'symbolic link') ;;
+      *) echo "error: unsafe host mask at $vibepollo_package_mask_path; package operation is blocked." >&2; return 1 ;;
+    esac
+    if [ "$vibepollo_package_mask_path" = /run/systemd/system/vibepollo.service ] &&
+       { [ -e "$vibepollo_package_transaction/vibepollo.service.owned" ] || [ -L "$vibepollo_package_transaction/vibepollo.service.owned" ]; }; then
+      vibepollo_package_record_is_safe "$vibepollo_package_transaction/vibepollo.service.owned" || return 1
+      [ "$(cat -- "$vibepollo_package_transaction/vibepollo.service.owned")" = "$vibepollo_package_mask_identity" ] || return 1
+      continue
+    fi
+    vibepollo_package_preserve_host_mask=1
+  done
+  [ "$vibepollo_package_preserve_host_mask" -eq 1 ] || return 0
+  vibepollo_package_mask_state=$(timeout --signal=KILL 5 systemctl is-enabled vibepollo.service 2>/dev/null || true)
+  vibepollo_package_mask_load=$(timeout --signal=KILL 5 systemctl show vibepollo.service --property=LoadState 2>/dev/null) || vibepollo_package_mask_load=uncertain
+  vibepollo_package_mask_verified=0
+  case "$vibepollo_package_mask_state:$vibepollo_package_mask_load" in
+    masked:LoadState=masked | masked-runtime:LoadState=masked) vibepollo_package_mask_verified=1 ;;
+  esac
+  if [ "$vibepollo_package_mask_verified" -ne 1 ] ||
+     ! vibepollo_unit_is_quiescent vibepollo.service ||
+     ! vibepollo_package_no_jobs; then
+    echo 'error: an unowned Vibepollo host mask exists, but the host is active, populated, has a pending job, or its state is uncertain; package replacement is blocked. Force cannot remove an administrator or legacy mask without proving its activation ownership.' >&2
+    return 1
+  fi
+  # Preserve the actual mask and any unowned fence byte-for-byte. The mask
+  # supplies no-start admission while the full generation proof still runs.
+  return 0
+}
+
+vibepollo_package_prepare_postinstall_start() {
+  vibepollo_package_start_deferred=0
+  vibepollo_package_preserve_unowned_host_mask || return 1
+  if [ "$vibepollo_package_preserve_host_mask" -eq 1 ]; then
+    vibepollo_package_start_deferred=1
+  fi
+  for vibepollo_package_start_unit in vibepollo.service vibepollo-session-controller.service vibepollo-session-exec.socket vibeshine-vkms-control.socket; do
+    for vibepollo_package_start_directory in /etc/systemd/system /run/systemd/system; do
+      vibepollo_package_start_path=$vibepollo_package_start_directory/$vibepollo_package_start_unit
+      [ -L "$vibepollo_package_start_path" ] || continue
+      [ "$(readlink -- "$vibepollo_package_start_path")" = /dev/null ] || continue
+      vibepollo_package_start_identity=$(vibepollo_package_path_identity "$vibepollo_package_start_path") || return 1
+      case "$vibepollo_package_start_identity" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+      if [ "$vibepollo_package_start_directory" = /run/systemd/system ] &&
+         { [ -e "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned" ] || [ -L "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned" ]; }; then
+        vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned" || return 1
+        [ "$(cat -- "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned")" = "$vibepollo_package_start_identity" ] || return 1
+        continue
+      fi
+      vibepollo_package_start_deferred=1
+    done
+  done
+  if [ -e "$vibepollo_package_transaction/fence.before" ]; then
+    vibepollo_package_record_is_safe "$vibepollo_package_transaction/fence.before" || return 1
+    vibepollo_package_prior_fence=$(cat -- "$vibepollo_package_transaction/fence.before") || return 1
+    if [ "$vibepollo_package_prior_fence" != absent ]; then
+      [ "$(vibepollo_package_path_identity "$vibepollo_host_upgrade_dropin")" = "$vibepollo_package_prior_fence" ] || return 1
+      vibepollo_package_start_deferred=1
+    fi
+  fi
+  [ "$vibepollo_package_start_deferred" -eq 1 ] || return 0
+  # This must be the full actual generation proof (controller, broker/apps,
+  # restore/control instances, session record and retained executable inodes).
+  # The local host-empty + no-jobs classifier is insufficient for release.
+  vibepollo_package_complete_quiescence_is_safe || return 1
+  vibepollo_package_release || return 1
+  echo 'package: preserved administrator host mask or start fence; configuration completed and automatic service activation is deferred.' >&2
+  return 0
+}
+
 vibepollo_package_bind_run() {
   if [ -n "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ]; then
     vibepollo_package_run_id_is_safe "$VIBEPOLLO_PACKAGE_RUN_ID" || return 1
@@ -2337,6 +2555,48 @@ vibepollo_package_adopt_legacy_barriers() {
     vibepollo_package_record_is_safe "$vibepollo_package_transaction/legacy-adopted" &&
       [ "$(cat -- "$vibepollo_package_transaction/legacy-adopted")" = yes ] || return 1
     vibepollo_package_adoption_pending=1
+    # The marker is published only after the exact old fence, all original
+    # mask identities and full generation proof were verified. An interrupted
+    # conversion may leave some .before snapshots unconverted when old package
+    # unwind removes the fence. Resume only those original masks, never a
+    # replacement path or an unrecorded new mask.
+    if [ ! -e "$vibepollo_host_upgrade_dropin" ] && [ ! -L "$vibepollo_host_upgrade_dropin" ]; then
+      vibepollo_package_complete_quiescence_is_safe || return 1
+      if [ -e "$vibepollo_package_transaction/fence.owned" ] || [ -L "$vibepollo_package_transaction/fence.owned" ]; then
+        vibepollo_package_record_is_safe "$vibepollo_package_transaction/fence.owned" || return 1
+      fi
+      # Validate every path before changing any record. Repeat the identity
+      # checks during publication so interruption leaves resumable metadata.
+      for vibepollo_package_adoption_pass in validate commit; do
+        for vibepollo_package_name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
+          vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_name.before" || return 1
+          vibepollo_package_expected=$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.before") || return 1
+          if [ -e "$vibepollo_package_transaction/$vibepollo_package_name.owned" ] || [ -L "$vibepollo_package_transaction/$vibepollo_package_name.owned" ]; then
+            vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_name.owned" || return 1
+            vibepollo_package_expected=$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.owned") || return 1
+          fi
+          vibepollo_package_current=$(vibepollo_package_path_identity "/run/systemd/system/$vibepollo_package_name") || return 1
+          if [ "$vibepollo_package_current" != absent ]; then
+            case "$vibepollo_package_current" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+            [ "$(readlink -- "/run/systemd/system/$vibepollo_package_name")" = /dev/null ] || return 1
+            [ "$vibepollo_package_current" = "$vibepollo_package_expected" ] || return 1
+          fi
+          [ "$vibepollo_package_adoption_pass" = commit ] || continue
+          if [ "$vibepollo_package_current" = absent ]; then
+            vibepollo_package_write_record "$vibepollo_package_name.before" absent || return 1
+            rm -f -- "$vibepollo_package_transaction/$vibepollo_package_name.owned" || return 1
+          else
+            vibepollo_package_write_record "$vibepollo_package_name.owned" "$vibepollo_package_current" || return 1
+            vibepollo_package_write_record "$vibepollo_package_name.before" absent || return 1
+          fi
+        done
+      done
+      vibepollo_package_write_record fence.before absent || return 1
+      rm -f -- "$vibepollo_package_transaction/fence.owned" || return 1
+      vibepollo_package_write_record phase preflight || return 1
+      rm -f -- "$vibepollo_package_transaction/legacy-adopted" || return 1
+      return 0
+    fi
   fi
   [ "$vibepollo_package_before" != absent ] || [ "$vibepollo_package_adoption_pending" -eq 1 ] || return 0
   [ -f "$vibepollo_host_upgrade_dropin" ] && [ ! -L "$vibepollo_host_upgrade_dropin" ] || return 1
@@ -2369,6 +2629,7 @@ SendSIGKILL=no') ;;
   for vibepollo_package_name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
     vibepollo_package_current=$(vibepollo_package_path_identity "/run/systemd/system/$vibepollo_package_name") || return 1
     case "$vibepollo_package_current" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+    [ "$(readlink -- "/run/systemd/system/$vibepollo_package_name")" = /dev/null ] || return 1
     if [ -e "$vibepollo_package_transaction/$vibepollo_package_name.owned" ]; then
       vibepollo_package_expected=$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.owned") || return 1
     else
@@ -2388,18 +2649,30 @@ SendSIGKILL=no') ;;
     vibepollo_package_write_record "$vibepollo_package_name.owned" "$vibepollo_package_current" || return 1
     vibepollo_package_write_record "$vibepollo_package_name.before" absent || return 1
   done
-  vibepollo_package_write_record phase preflight
+  vibepollo_package_write_record phase preflight || return 1
+  # Every owned identity and before snapshot is now durable; the pending
+  # adoption marker is no longer needed by later release/retry operations.
+  rm -f -- "$vibepollo_package_transaction/legacy-adopted"
 }
 
 vibepollo_package_rebaseline_unwound_run() {
-  # A fresh explicit installer operation may select the current healthy
-  # invocation after an older dpkg abort restored every owned barrier. This
-  # grants a fresh stop target; it does not prove old process resources gone.
-  [ -n "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ] || return 0
-  vibepollo_package_run_id_is_safe "$VIBEPOLLO_PACKAGE_RUN_ID" || return 1
-  [ -e "$vibepollo_package_transaction/run-id" ] || return 0
-  vibepollo_package_record_is_safe "$vibepollo_package_transaction/run-id" || return 1
-  [ "$(cat -- "$vibepollo_package_transaction/run-id")" != "$VIBEPOLLO_PACKAGE_RUN_ID" ] || return 0
+  # Pending legacy authority is not a wholly unwound transaction even when
+  # no .owned file has been published yet. Reconcile it before a new target.
+  if [ -e "$vibepollo_package_transaction/legacy-adopted" ] || [ -L "$vibepollo_package_transaction/legacy-adopted" ]; then
+    vibepollo_package_record_is_safe "$vibepollo_package_transaction/legacy-adopted" &&
+      [ "$(cat -- "$vibepollo_package_transaction/legacy-adopted")" = yes ] || return 1
+    return 0
+  fi
+  # A native package retry, or a fresh explicit installer operation, may
+  # select the current healthy invocation after every owned barrier unwound.
+  # This grants a fresh target, never proof that old process resources vanished.
+  if [ -n "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ]; then
+    vibepollo_package_run_id_is_safe "$VIBEPOLLO_PACKAGE_RUN_ID" || return 1
+    [ -e "$vibepollo_package_transaction/run-id" ] || return 0
+    vibepollo_package_record_is_safe "$vibepollo_package_transaction/run-id" || return 1
+    # A same-run force retry must retain its original invocation identity.
+    [ "$(cat -- "$vibepollo_package_transaction/run-id")" != "$VIBEPOLLO_PACKAGE_RUN_ID" ] || return 0
+  fi
   for vibepollo_package_path in "$vibepollo_package_transaction"/*.owned; do
     [ ! -e "$vibepollo_package_path" ] && [ ! -L "$vibepollo_package_path" ] || return 0
   done
@@ -2415,6 +2688,13 @@ vibepollo_package_rebaseline_unwound_run() {
       --property=FreezerState --property=InvocationID 2>/dev/null) || return 1
     vibepollo_package_controller_identity_is_safe "$vibepollo_package_controller" || return 1
     vibepollo_package_write_record controller "$vibepollo_package_controller" || return 1
+  fi
+  if [ -z "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ]; then
+    # A native retry is a new operation. Retire any earlier wrapper's nonce
+    # atomically before refreshing phase or discarding its saved stop identity.
+    vibepollo_package_new_run=$(cat /proc/sys/kernel/random/uuid | tr -d '-') || return 1
+    vibepollo_package_run_id_is_safe "$vibepollo_package_new_run" || return 1
+    vibepollo_package_write_record run-id "$vibepollo_package_new_run" || return 1
   fi
   vibepollo_package_write_record phase early || return 1
   rm -f -- "$vibepollo_package_transaction/host-stop.before" || return 1
@@ -2841,6 +3121,8 @@ vibepollo_select_upgrade_kill_mode() {
 }
 
 vibepollo_prepare_host_upgrade_fence() (
+  vibepollo_package_preserve_unowned_host_mask || exit 1
+  [ "$vibepollo_package_preserve_host_mask" -eq 0 ] || exit 0
   [ ! -L "$vibepollo_host_upgrade_dropin_dir" ] && \
     [ ! -L "$vibepollo_host_upgrade_dropin" ] || exit 1
   install -d -o root -g root -m 0755 -- "$vibepollo_host_upgrade_dropin_dir" || exit 1
@@ -2874,6 +3156,8 @@ vibepollo_prepare_host_upgrade_fence() (
 )
 
 vibepollo_activate_host_upgrade_fence() {
+  vibepollo_package_preserve_unowned_host_mask || return 1
+  [ "$vibepollo_package_preserve_host_mask" -eq 0 ] || return 0
   vibepollo_package_open_owned_host_for_stop || exit 1
   systemctl daemon-reload || exit 1
   vibepollo_host_stop_properties=$(timeout --signal=KILL 5 systemctl show vibepollo.service \
@@ -4216,22 +4500,25 @@ if [ ! -x "$(command -v rpm-ostree)" ]; then
   systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
   systemctl daemon-reload || exit 1
   if "$vibepollo_machine_helper" configure-auto; then
-    if ! systemctl enable vibepollo-session-controller.service; then
-      if vibepollo_quiesce_or_abort; then
-        vibepollo_package_recover_failed_transaction ||
-          echo 'error: failed-start recovery could not prove a safe release; owned fences were retained for retry.' >&2
-      fi
-      echo "error: could not enable the Vibepollo controller safely; transaction recovery was attempted; inspect the preceding shutdown result." >&2
-      exit 1
-    fi
-    if ! vibepollo_unmask_host_for_controller || \
-       ! systemctl start vibepollo-session-controller.service; then
+    vibepollo_package_prepare_postinstall_start || exit 1
+    if [ "$vibepollo_package_start_deferred" -eq 0 ]; then
+      if ! systemctl enable vibepollo-session-controller.service; then
         if vibepollo_quiesce_or_abort; then
           vibepollo_package_recover_failed_transaction ||
             echo 'error: failed-start recovery could not prove a safe release; owned fences were retained for retry.' >&2
         fi
-      echo "error: could not start the Vibepollo controller safely; transaction recovery was attempted; inspect the preceding shutdown result." >&2
-      exit 1
+        echo "error: could not enable the Vibepollo controller safely; transaction recovery was attempted; inspect the preceding shutdown result." >&2
+        exit 1
+      fi
+      if ! vibepollo_unmask_host_for_controller || \
+         ! systemctl start vibepollo-session-controller.service; then
+          if vibepollo_quiesce_or_abort; then
+            vibepollo_package_recover_failed_transaction ||
+              echo 'error: failed-start recovery could not prove a safe release; owned fences were retained for retry.' >&2
+          fi
+        echo "error: could not start the Vibepollo controller safely; transaction recovery was attempted; inspect the preceding shutdown result." >&2
+        exit 1
+      fi
     fi
   else
     if ! vibepollo_package_complete_quiescence_is_safe ||
@@ -4745,6 +5032,8 @@ vibepollo_preun_select_upgrade_kill_mode() {
 }
 
 vibepollo_prepare_host_upgrade_fence() (
+  vibepollo_package_preserve_unowned_host_mask || exit 1
+  [ "$vibepollo_package_preserve_host_mask" -eq 0 ] || exit 0
   [ ! -L "$vibepollo_host_upgrade_dropin_dir" ] && \
     [ ! -L "$vibepollo_host_upgrade_dropin" ] || exit 1
   install -d -o root -g root -m 0755 -- "$vibepollo_host_upgrade_dropin_dir" || exit 1
@@ -4778,6 +5067,8 @@ vibepollo_prepare_host_upgrade_fence() (
 )
 
 vibepollo_activate_host_upgrade_fence() {
+  vibepollo_package_preserve_unowned_host_mask || return 1
+  [ "$vibepollo_package_preserve_host_mask" -eq 0 ] || return 0
   vibepollo_package_open_owned_host_for_stop || exit 1
   systemctl daemon-reload || exit 1
   vibepollo_host_stop_properties=$(timeout --signal=KILL 5 systemctl show vibepollo.service \
@@ -5380,6 +5671,82 @@ vibepollo_package_run_id_is_safe() {
   case "$1" in *[!0-9a-f]*) return 1 ;; esac
 }
 
+vibepollo_package_preserve_unowned_host_mask() {
+  vibepollo_package_preserve_host_mask=0
+  for vibepollo_package_mask_path in /etc/systemd/system/vibepollo.service /run/systemd/system/vibepollo.service; do
+    [ -L "$vibepollo_package_mask_path" ] || continue
+    [ "$(readlink -- "$vibepollo_package_mask_path")" = /dev/null ] || continue
+    vibepollo_package_mask_identity=$(vibepollo_package_path_identity "$vibepollo_package_mask_path") || return 1
+    case "$vibepollo_package_mask_identity" in
+      *:0:0:'symbolic link') ;;
+      *) echo "error: unsafe host mask at $vibepollo_package_mask_path; package operation is blocked." >&2; return 1 ;;
+    esac
+    if [ "$vibepollo_package_mask_path" = /run/systemd/system/vibepollo.service ] &&
+       { [ -e "$vibepollo_package_transaction/vibepollo.service.owned" ] || [ -L "$vibepollo_package_transaction/vibepollo.service.owned" ]; }; then
+      vibepollo_package_record_is_safe "$vibepollo_package_transaction/vibepollo.service.owned" || return 1
+      [ "$(cat -- "$vibepollo_package_transaction/vibepollo.service.owned")" = "$vibepollo_package_mask_identity" ] || return 1
+      continue
+    fi
+    vibepollo_package_preserve_host_mask=1
+  done
+  [ "$vibepollo_package_preserve_host_mask" -eq 1 ] || return 0
+  vibepollo_package_mask_state=$(timeout --signal=KILL 5 systemctl is-enabled vibepollo.service 2>/dev/null || true)
+  vibepollo_package_mask_load=$(timeout --signal=KILL 5 systemctl show vibepollo.service --property=LoadState 2>/dev/null) || vibepollo_package_mask_load=uncertain
+  vibepollo_package_mask_verified=0
+  case "$vibepollo_package_mask_state:$vibepollo_package_mask_load" in
+    masked:LoadState=masked | masked-runtime:LoadState=masked) vibepollo_package_mask_verified=1 ;;
+  esac
+  if [ "$vibepollo_package_mask_verified" -ne 1 ] ||
+     ! vibepollo_preun_unit_is_quiescent vibepollo.service ||
+     ! vibepollo_package_no_jobs; then
+    echo 'error: an unowned Vibepollo host mask exists, but the host is active, populated, has a pending job, or its state is uncertain; package replacement is blocked. Force cannot remove an administrator or legacy mask without proving its activation ownership.' >&2
+    return 1
+  fi
+  # Preserve the actual mask and any unowned fence byte-for-byte. The mask
+  # supplies no-start admission while the full generation proof still runs.
+  return 0
+}
+
+vibepollo_package_prepare_postinstall_start() {
+  vibepollo_package_start_deferred=0
+  vibepollo_package_preserve_unowned_host_mask || return 1
+  if [ "$vibepollo_package_preserve_host_mask" -eq 1 ]; then
+    vibepollo_package_start_deferred=1
+  fi
+  for vibepollo_package_start_unit in vibepollo.service vibepollo-session-controller.service vibepollo-session-exec.socket vibeshine-vkms-control.socket; do
+    for vibepollo_package_start_directory in /etc/systemd/system /run/systemd/system; do
+      vibepollo_package_start_path=$vibepollo_package_start_directory/$vibepollo_package_start_unit
+      [ -L "$vibepollo_package_start_path" ] || continue
+      [ "$(readlink -- "$vibepollo_package_start_path")" = /dev/null ] || continue
+      vibepollo_package_start_identity=$(vibepollo_package_path_identity "$vibepollo_package_start_path") || return 1
+      case "$vibepollo_package_start_identity" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+      if [ "$vibepollo_package_start_directory" = /run/systemd/system ] &&
+         { [ -e "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned" ] || [ -L "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned" ]; }; then
+        vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned" || return 1
+        [ "$(cat -- "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned")" = "$vibepollo_package_start_identity" ] || return 1
+        continue
+      fi
+      vibepollo_package_start_deferred=1
+    done
+  done
+  if [ -e "$vibepollo_package_transaction/fence.before" ]; then
+    vibepollo_package_record_is_safe "$vibepollo_package_transaction/fence.before" || return 1
+    vibepollo_package_prior_fence=$(cat -- "$vibepollo_package_transaction/fence.before") || return 1
+    if [ "$vibepollo_package_prior_fence" != absent ]; then
+      [ "$(vibepollo_package_path_identity "$vibepollo_host_upgrade_dropin")" = "$vibepollo_package_prior_fence" ] || return 1
+      vibepollo_package_start_deferred=1
+    fi
+  fi
+  [ "$vibepollo_package_start_deferred" -eq 1 ] || return 0
+  # This must be the full actual generation proof (controller, broker/apps,
+  # restore/control instances, session record and retained executable inodes).
+  # The local host-empty + no-jobs classifier is insufficient for release.
+  vibepollo_package_complete_quiescence_is_safe || return 1
+  vibepollo_package_release || return 1
+  echo 'package: preserved administrator host mask or start fence; configuration completed and automatic service activation is deferred.' >&2
+  return 0
+}
+
 vibepollo_package_bind_run() {
   if [ -n "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ]; then
     vibepollo_package_run_id_is_safe "$VIBEPOLLO_PACKAGE_RUN_ID" || return 1
@@ -5460,6 +5827,48 @@ vibepollo_package_adopt_legacy_barriers() {
     vibepollo_package_record_is_safe "$vibepollo_package_transaction/legacy-adopted" &&
       [ "$(cat -- "$vibepollo_package_transaction/legacy-adopted")" = yes ] || return 1
     vibepollo_package_adoption_pending=1
+    # The marker is published only after the exact old fence, all original
+    # mask identities and full generation proof were verified. An interrupted
+    # conversion may leave some .before snapshots unconverted when old package
+    # unwind removes the fence. Resume only those original masks, never a
+    # replacement path or an unrecorded new mask.
+    if [ ! -e "$vibepollo_host_upgrade_dropin" ] && [ ! -L "$vibepollo_host_upgrade_dropin" ]; then
+      vibepollo_package_complete_quiescence_is_safe || return 1
+      if [ -e "$vibepollo_package_transaction/fence.owned" ] || [ -L "$vibepollo_package_transaction/fence.owned" ]; then
+        vibepollo_package_record_is_safe "$vibepollo_package_transaction/fence.owned" || return 1
+      fi
+      # Validate every path before changing any record. Repeat the identity
+      # checks during publication so interruption leaves resumable metadata.
+      for vibepollo_package_adoption_pass in validate commit; do
+        for vibepollo_package_name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
+          vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_name.before" || return 1
+          vibepollo_package_expected=$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.before") || return 1
+          if [ -e "$vibepollo_package_transaction/$vibepollo_package_name.owned" ] || [ -L "$vibepollo_package_transaction/$vibepollo_package_name.owned" ]; then
+            vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_name.owned" || return 1
+            vibepollo_package_expected=$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.owned") || return 1
+          fi
+          vibepollo_package_current=$(vibepollo_package_path_identity "/run/systemd/system/$vibepollo_package_name") || return 1
+          if [ "$vibepollo_package_current" != absent ]; then
+            case "$vibepollo_package_current" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+            [ "$(readlink -- "/run/systemd/system/$vibepollo_package_name")" = /dev/null ] || return 1
+            [ "$vibepollo_package_current" = "$vibepollo_package_expected" ] || return 1
+          fi
+          [ "$vibepollo_package_adoption_pass" = commit ] || continue
+          if [ "$vibepollo_package_current" = absent ]; then
+            vibepollo_package_write_record "$vibepollo_package_name.before" absent || return 1
+            rm -f -- "$vibepollo_package_transaction/$vibepollo_package_name.owned" || return 1
+          else
+            vibepollo_package_write_record "$vibepollo_package_name.owned" "$vibepollo_package_current" || return 1
+            vibepollo_package_write_record "$vibepollo_package_name.before" absent || return 1
+          fi
+        done
+      done
+      vibepollo_package_write_record fence.before absent || return 1
+      rm -f -- "$vibepollo_package_transaction/fence.owned" || return 1
+      vibepollo_package_write_record phase preflight || return 1
+      rm -f -- "$vibepollo_package_transaction/legacy-adopted" || return 1
+      return 0
+    fi
   fi
   [ "$vibepollo_package_before" != absent ] || [ "$vibepollo_package_adoption_pending" -eq 1 ] || return 0
   [ -f "$vibepollo_host_upgrade_dropin" ] && [ ! -L "$vibepollo_host_upgrade_dropin" ] || return 1
@@ -5492,6 +5901,7 @@ SendSIGKILL=no') ;;
   for vibepollo_package_name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
     vibepollo_package_current=$(vibepollo_package_path_identity "/run/systemd/system/$vibepollo_package_name") || return 1
     case "$vibepollo_package_current" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+    [ "$(readlink -- "/run/systemd/system/$vibepollo_package_name")" = /dev/null ] || return 1
     if [ -e "$vibepollo_package_transaction/$vibepollo_package_name.owned" ]; then
       vibepollo_package_expected=$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.owned") || return 1
     else
@@ -5511,18 +5921,30 @@ SendSIGKILL=no') ;;
     vibepollo_package_write_record "$vibepollo_package_name.owned" "$vibepollo_package_current" || return 1
     vibepollo_package_write_record "$vibepollo_package_name.before" absent || return 1
   done
-  vibepollo_package_write_record phase preflight
+  vibepollo_package_write_record phase preflight || return 1
+  # Every owned identity and before snapshot is now durable; the pending
+  # adoption marker is no longer needed by later release/retry operations.
+  rm -f -- "$vibepollo_package_transaction/legacy-adopted"
 }
 
 vibepollo_package_rebaseline_unwound_run() {
-  # A fresh explicit installer operation may select the current healthy
-  # invocation after an older dpkg abort restored every owned barrier. This
-  # grants a fresh stop target; it does not prove old process resources gone.
-  [ -n "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ] || return 0
-  vibepollo_package_run_id_is_safe "$VIBEPOLLO_PACKAGE_RUN_ID" || return 1
-  [ -e "$vibepollo_package_transaction/run-id" ] || return 0
-  vibepollo_package_record_is_safe "$vibepollo_package_transaction/run-id" || return 1
-  [ "$(cat -- "$vibepollo_package_transaction/run-id")" != "$VIBEPOLLO_PACKAGE_RUN_ID" ] || return 0
+  # Pending legacy authority is not a wholly unwound transaction even when
+  # no .owned file has been published yet. Reconcile it before a new target.
+  if [ -e "$vibepollo_package_transaction/legacy-adopted" ] || [ -L "$vibepollo_package_transaction/legacy-adopted" ]; then
+    vibepollo_package_record_is_safe "$vibepollo_package_transaction/legacy-adopted" &&
+      [ "$(cat -- "$vibepollo_package_transaction/legacy-adopted")" = yes ] || return 1
+    return 0
+  fi
+  # A native package retry, or a fresh explicit installer operation, may
+  # select the current healthy invocation after every owned barrier unwound.
+  # This grants a fresh target, never proof that old process resources vanished.
+  if [ -n "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ]; then
+    vibepollo_package_run_id_is_safe "$VIBEPOLLO_PACKAGE_RUN_ID" || return 1
+    [ -e "$vibepollo_package_transaction/run-id" ] || return 0
+    vibepollo_package_record_is_safe "$vibepollo_package_transaction/run-id" || return 1
+    # A same-run force retry must retain its original invocation identity.
+    [ "$(cat -- "$vibepollo_package_transaction/run-id")" != "$VIBEPOLLO_PACKAGE_RUN_ID" ] || return 0
+  fi
   for vibepollo_package_path in "$vibepollo_package_transaction"/*.owned; do
     [ ! -e "$vibepollo_package_path" ] && [ ! -L "$vibepollo_package_path" ] || return 0
   done
@@ -5538,6 +5960,13 @@ vibepollo_package_rebaseline_unwound_run() {
       --property=FreezerState --property=InvocationID 2>/dev/null) || return 1
     vibepollo_package_controller_identity_is_safe "$vibepollo_package_controller" || return 1
     vibepollo_package_write_record controller "$vibepollo_package_controller" || return 1
+  fi
+  if [ -z "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ]; then
+    # A native retry is a new operation. Retire any earlier wrapper's nonce
+    # atomically before refreshing phase or discarding its saved stop identity.
+    vibepollo_package_new_run=$(cat /proc/sys/kernel/random/uuid | tr -d '-') || return 1
+    vibepollo_package_run_id_is_safe "$vibepollo_package_new_run" || return 1
+    vibepollo_package_write_record run-id "$vibepollo_package_new_run" || return 1
   fi
   vibepollo_package_write_record phase early || return 1
   rm -f -- "$vibepollo_package_transaction/host-stop.before" || return 1
@@ -5910,7 +6339,9 @@ vibepollo_abort_removal() {
       fi
       vibepollo_package_complete_quiescence_is_safe || return 1
       vibepollo_package_restore_legacy_handoff || return 1
-      vibepollo_package_release && return 0
+      vibepollo_package_restore_barriers || return 1
+      vibepollo_package_forget || return 1
+      return 0
     fi
   fi
   echo 'error: removal recovery remains uncertain; retry removal to finish exact host and session cleanup.' >&2
@@ -6561,6 +6992,82 @@ vibepollo_package_run_id_is_safe() {
   case "$1" in *[!0-9a-f]*) return 1 ;; esac
 }
 
+vibepollo_package_preserve_unowned_host_mask() {
+  vibepollo_package_preserve_host_mask=0
+  for vibepollo_package_mask_path in /etc/systemd/system/vibepollo.service /run/systemd/system/vibepollo.service; do
+    [ -L "$vibepollo_package_mask_path" ] || continue
+    [ "$(readlink -- "$vibepollo_package_mask_path")" = /dev/null ] || continue
+    vibepollo_package_mask_identity=$(vibepollo_package_path_identity "$vibepollo_package_mask_path") || return 1
+    case "$vibepollo_package_mask_identity" in
+      *:0:0:'symbolic link') ;;
+      *) echo "error: unsafe host mask at $vibepollo_package_mask_path; package operation is blocked." >&2; return 1 ;;
+    esac
+    if [ "$vibepollo_package_mask_path" = /run/systemd/system/vibepollo.service ] &&
+       { [ -e "$vibepollo_package_transaction/vibepollo.service.owned" ] || [ -L "$vibepollo_package_transaction/vibepollo.service.owned" ]; }; then
+      vibepollo_package_record_is_safe "$vibepollo_package_transaction/vibepollo.service.owned" || return 1
+      [ "$(cat -- "$vibepollo_package_transaction/vibepollo.service.owned")" = "$vibepollo_package_mask_identity" ] || return 1
+      continue
+    fi
+    vibepollo_package_preserve_host_mask=1
+  done
+  [ "$vibepollo_package_preserve_host_mask" -eq 1 ] || return 0
+  vibepollo_package_mask_state=$(timeout --signal=KILL 5 systemctl is-enabled vibepollo.service 2>/dev/null || true)
+  vibepollo_package_mask_load=$(timeout --signal=KILL 5 systemctl show vibepollo.service --property=LoadState 2>/dev/null) || vibepollo_package_mask_load=uncertain
+  vibepollo_package_mask_verified=0
+  case "$vibepollo_package_mask_state:$vibepollo_package_mask_load" in
+    masked:LoadState=masked | masked-runtime:LoadState=masked) vibepollo_package_mask_verified=1 ;;
+  esac
+  if [ "$vibepollo_package_mask_verified" -ne 1 ] ||
+     ! vibepollo_unit_is_quiescent vibepollo.service ||
+     ! vibepollo_package_no_jobs; then
+    echo 'error: an unowned Vibepollo host mask exists, but the host is active, populated, has a pending job, or its state is uncertain; package replacement is blocked. Force cannot remove an administrator or legacy mask without proving its activation ownership.' >&2
+    return 1
+  fi
+  # Preserve the actual mask and any unowned fence byte-for-byte. The mask
+  # supplies no-start admission while the full generation proof still runs.
+  return 0
+}
+
+vibepollo_package_prepare_postinstall_start() {
+  vibepollo_package_start_deferred=0
+  vibepollo_package_preserve_unowned_host_mask || return 1
+  if [ "$vibepollo_package_preserve_host_mask" -eq 1 ]; then
+    vibepollo_package_start_deferred=1
+  fi
+  for vibepollo_package_start_unit in vibepollo.service vibepollo-session-controller.service vibepollo-session-exec.socket vibeshine-vkms-control.socket; do
+    for vibepollo_package_start_directory in /etc/systemd/system /run/systemd/system; do
+      vibepollo_package_start_path=$vibepollo_package_start_directory/$vibepollo_package_start_unit
+      [ -L "$vibepollo_package_start_path" ] || continue
+      [ "$(readlink -- "$vibepollo_package_start_path")" = /dev/null ] || continue
+      vibepollo_package_start_identity=$(vibepollo_package_path_identity "$vibepollo_package_start_path") || return 1
+      case "$vibepollo_package_start_identity" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+      if [ "$vibepollo_package_start_directory" = /run/systemd/system ] &&
+         { [ -e "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned" ] || [ -L "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned" ]; }; then
+        vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned" || return 1
+        [ "$(cat -- "$vibepollo_package_transaction/$vibepollo_package_start_unit.owned")" = "$vibepollo_package_start_identity" ] || return 1
+        continue
+      fi
+      vibepollo_package_start_deferred=1
+    done
+  done
+  if [ -e "$vibepollo_package_transaction/fence.before" ]; then
+    vibepollo_package_record_is_safe "$vibepollo_package_transaction/fence.before" || return 1
+    vibepollo_package_prior_fence=$(cat -- "$vibepollo_package_transaction/fence.before") || return 1
+    if [ "$vibepollo_package_prior_fence" != absent ]; then
+      [ "$(vibepollo_package_path_identity "$vibepollo_host_upgrade_dropin")" = "$vibepollo_package_prior_fence" ] || return 1
+      vibepollo_package_start_deferred=1
+    fi
+  fi
+  [ "$vibepollo_package_start_deferred" -eq 1 ] || return 0
+  # This must be the full actual generation proof (controller, broker/apps,
+  # restore/control instances, session record and retained executable inodes).
+  # The local host-empty + no-jobs classifier is insufficient for release.
+  vibepollo_package_complete_quiescence_is_safe || return 1
+  vibepollo_package_release || return 1
+  echo 'package: preserved administrator host mask or start fence; configuration completed and automatic service activation is deferred.' >&2
+  return 0
+}
+
 vibepollo_package_bind_run() {
   if [ -n "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ]; then
     vibepollo_package_run_id_is_safe "$VIBEPOLLO_PACKAGE_RUN_ID" || return 1
@@ -6641,6 +7148,48 @@ vibepollo_package_adopt_legacy_barriers() {
     vibepollo_package_record_is_safe "$vibepollo_package_transaction/legacy-adopted" &&
       [ "$(cat -- "$vibepollo_package_transaction/legacy-adopted")" = yes ] || return 1
     vibepollo_package_adoption_pending=1
+    # The marker is published only after the exact old fence, all original
+    # mask identities and full generation proof were verified. An interrupted
+    # conversion may leave some .before snapshots unconverted when old package
+    # unwind removes the fence. Resume only those original masks, never a
+    # replacement path or an unrecorded new mask.
+    if [ ! -e "$vibepollo_host_upgrade_dropin" ] && [ ! -L "$vibepollo_host_upgrade_dropin" ]; then
+      vibepollo_package_complete_quiescence_is_safe || return 1
+      if [ -e "$vibepollo_package_transaction/fence.owned" ] || [ -L "$vibepollo_package_transaction/fence.owned" ]; then
+        vibepollo_package_record_is_safe "$vibepollo_package_transaction/fence.owned" || return 1
+      fi
+      # Validate every path before changing any record. Repeat the identity
+      # checks during publication so interruption leaves resumable metadata.
+      for vibepollo_package_adoption_pass in validate commit; do
+        for vibepollo_package_name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
+          vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_name.before" || return 1
+          vibepollo_package_expected=$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.before") || return 1
+          if [ -e "$vibepollo_package_transaction/$vibepollo_package_name.owned" ] || [ -L "$vibepollo_package_transaction/$vibepollo_package_name.owned" ]; then
+            vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_name.owned" || return 1
+            vibepollo_package_expected=$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.owned") || return 1
+          fi
+          vibepollo_package_current=$(vibepollo_package_path_identity "/run/systemd/system/$vibepollo_package_name") || return 1
+          if [ "$vibepollo_package_current" != absent ]; then
+            case "$vibepollo_package_current" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+            [ "$(readlink -- "/run/systemd/system/$vibepollo_package_name")" = /dev/null ] || return 1
+            [ "$vibepollo_package_current" = "$vibepollo_package_expected" ] || return 1
+          fi
+          [ "$vibepollo_package_adoption_pass" = commit ] || continue
+          if [ "$vibepollo_package_current" = absent ]; then
+            vibepollo_package_write_record "$vibepollo_package_name.before" absent || return 1
+            rm -f -- "$vibepollo_package_transaction/$vibepollo_package_name.owned" || return 1
+          else
+            vibepollo_package_write_record "$vibepollo_package_name.owned" "$vibepollo_package_current" || return 1
+            vibepollo_package_write_record "$vibepollo_package_name.before" absent || return 1
+          fi
+        done
+      done
+      vibepollo_package_write_record fence.before absent || return 1
+      rm -f -- "$vibepollo_package_transaction/fence.owned" || return 1
+      vibepollo_package_write_record phase preflight || return 1
+      rm -f -- "$vibepollo_package_transaction/legacy-adopted" || return 1
+      return 0
+    fi
   fi
   [ "$vibepollo_package_before" != absent ] || [ "$vibepollo_package_adoption_pending" -eq 1 ] || return 0
   [ -f "$vibepollo_host_upgrade_dropin" ] && [ ! -L "$vibepollo_host_upgrade_dropin" ] || return 1
@@ -6673,6 +7222,7 @@ SendSIGKILL=no') ;;
   for vibepollo_package_name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
     vibepollo_package_current=$(vibepollo_package_path_identity "/run/systemd/system/$vibepollo_package_name") || return 1
     case "$vibepollo_package_current" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+    [ "$(readlink -- "/run/systemd/system/$vibepollo_package_name")" = /dev/null ] || return 1
     if [ -e "$vibepollo_package_transaction/$vibepollo_package_name.owned" ]; then
       vibepollo_package_expected=$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.owned") || return 1
     else
@@ -6692,18 +7242,30 @@ SendSIGKILL=no') ;;
     vibepollo_package_write_record "$vibepollo_package_name.owned" "$vibepollo_package_current" || return 1
     vibepollo_package_write_record "$vibepollo_package_name.before" absent || return 1
   done
-  vibepollo_package_write_record phase preflight
+  vibepollo_package_write_record phase preflight || return 1
+  # Every owned identity and before snapshot is now durable; the pending
+  # adoption marker is no longer needed by later release/retry operations.
+  rm -f -- "$vibepollo_package_transaction/legacy-adopted"
 }
 
 vibepollo_package_rebaseline_unwound_run() {
-  # A fresh explicit installer operation may select the current healthy
-  # invocation after an older dpkg abort restored every owned barrier. This
-  # grants a fresh stop target; it does not prove old process resources gone.
-  [ -n "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ] || return 0
-  vibepollo_package_run_id_is_safe "$VIBEPOLLO_PACKAGE_RUN_ID" || return 1
-  [ -e "$vibepollo_package_transaction/run-id" ] || return 0
-  vibepollo_package_record_is_safe "$vibepollo_package_transaction/run-id" || return 1
-  [ "$(cat -- "$vibepollo_package_transaction/run-id")" != "$VIBEPOLLO_PACKAGE_RUN_ID" ] || return 0
+  # Pending legacy authority is not a wholly unwound transaction even when
+  # no .owned file has been published yet. Reconcile it before a new target.
+  if [ -e "$vibepollo_package_transaction/legacy-adopted" ] || [ -L "$vibepollo_package_transaction/legacy-adopted" ]; then
+    vibepollo_package_record_is_safe "$vibepollo_package_transaction/legacy-adopted" &&
+      [ "$(cat -- "$vibepollo_package_transaction/legacy-adopted")" = yes ] || return 1
+    return 0
+  fi
+  # A native package retry, or a fresh explicit installer operation, may
+  # select the current healthy invocation after every owned barrier unwound.
+  # This grants a fresh target, never proof that old process resources vanished.
+  if [ -n "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ]; then
+    vibepollo_package_run_id_is_safe "$VIBEPOLLO_PACKAGE_RUN_ID" || return 1
+    [ -e "$vibepollo_package_transaction/run-id" ] || return 0
+    vibepollo_package_record_is_safe "$vibepollo_package_transaction/run-id" || return 1
+    # A same-run force retry must retain its original invocation identity.
+    [ "$(cat -- "$vibepollo_package_transaction/run-id")" != "$VIBEPOLLO_PACKAGE_RUN_ID" ] || return 0
+  fi
   for vibepollo_package_path in "$vibepollo_package_transaction"/*.owned; do
     [ ! -e "$vibepollo_package_path" ] && [ ! -L "$vibepollo_package_path" ] || return 0
   done
@@ -6719,6 +7281,13 @@ vibepollo_package_rebaseline_unwound_run() {
       --property=FreezerState --property=InvocationID 2>/dev/null) || return 1
     vibepollo_package_controller_identity_is_safe "$vibepollo_package_controller" || return 1
     vibepollo_package_write_record controller "$vibepollo_package_controller" || return 1
+  fi
+  if [ -z "${VIBEPOLLO_PACKAGE_RUN_ID:-}" ]; then
+    # A native retry is a new operation. Retire any earlier wrapper's nonce
+    # atomically before refreshing phase or discarding its saved stop identity.
+    vibepollo_package_new_run=$(cat /proc/sys/kernel/random/uuid | tr -d '-') || return 1
+    vibepollo_package_run_id_is_safe "$vibepollo_package_new_run" || return 1
+    vibepollo_package_write_record run-id "$vibepollo_package_new_run" || return 1
   fi
   vibepollo_package_write_record phase early || return 1
   rm -f -- "$vibepollo_package_transaction/host-stop.before" || return 1

@@ -283,7 +283,7 @@ Cancellation waits for pacman and its hooks to finish before recovery. The clien
 
 Owned runtime masks and the upgrade fence are recorded under `/run/vibepollo-package-transaction`.
 Failure/cancellation restores only barriers created by that transaction after verifying a safe
-release. Existing administrator masks are preserved, so automatic startup may be deferred.
+release. Existing administrator masks are preserved, so automatic startup may be deferred. An idle, empty host behind a verified administrator mask does not need a new shutdown fence; package replacement still requires the complete old-generation resource proof. Runtime and persistent masks stay in place, and configuration succeeds with automatic startup deferred. A masked host that is active, populated, has pending jobs, or cannot be inspected remains blocked with a diagnostic.
 An unrecorded legacy fence is adopted only when the exact known fence and all four runtime masks match, with the old generation fully drained and no pending jobs. An active host, partial mask set, or different fence remains blocked even with force: ownership and the loaded shutdown contract are not established. Stop the identified old generation through its owning manager and verify its remaining jobs and resources before retrying; the installer preserves ambiguous barriers rather than removing them.
 
 An interruption that leaves shutdown uncertain retains the record until a retry can finish;

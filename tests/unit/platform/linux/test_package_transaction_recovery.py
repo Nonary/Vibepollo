@@ -260,11 +260,17 @@ QUIESCE() {
     def test_absent_service_fence_activation_requires_quiescent_proof(self):
         for hook in HOOKS:
             source = (ROOT / hook).read_text().replace("%%", "%")
-            activation = function(source, "vibepollo_activate_host_upgrade_fence")
+            activation = "\n".join(function(source, name) for name in (
+                "vibepollo_activate_host_upgrade_fence",
+                "vibepollo_package_preserve_unowned_host_mask",
+                "vibepollo_package_path_identity",
+                "vibepollo_package_record_is_safe",
+                "vibepollo_package_no_jobs"))
             shell = "bash" if "/Arch/" in hook else (shutil.which("dash") or "sh")
             for quiet in (0, 1):
-                with self.subTest(hook=hook, quiet=quiet):
-                    code = activation + "\n" + r'''
+                with self.subTest(hook=hook, quiet=quiet), tempfile.TemporaryDirectory() as tmp:
+                    private_activation = activation.replace("/etc/systemd/system", str(Path(tmp) / "etc-systemd")).replace("/run/systemd/system", str(Path(tmp) / "run-systemd"))
+                    code = private_activation + "\n" + 'vibepollo_package_transaction="'+tmp+'/transaction"\n' + r'''
 vibepollo_package_open_owned_host_for_stop() { return 0; }
 systemctl() { if [ "$1" = show ]; then printf 'LoadState=not-found\nRefuseManualStart=no\nKillMode=control-group\nSendSIGKILL=yes\nRestart=no\n'; fi; }
 timeout() { shift 2; "$@"; }
@@ -358,7 +364,10 @@ stat() {
                         self.assertTrue(stale.exists() or stale.is_symlink())
                     self.assertEqual(sentinel.read_bytes(), b"must remain unchanged")
                     for name, value in original.items():
-                        self.assertEqual((record_dir / name).read_bytes(), value)
+                        if name == "run-id" and kind in ("empty", "partial"):
+                            self.assertRegex((record_dir / name).read_text(), r"^[0-9a-f]{32}\n$")
+                        else:
+                            self.assertEqual((record_dir / name).read_bytes(), value)
 
     def test_sigkill_during_real_record_publication_can_retry(self):
         for hook in HOOKS:
@@ -407,7 +416,10 @@ vibepollo_package_write_record phase late
                     result = subprocess.run(["bash", "-c", code + "\nvibepollo_package_begin\n"], env=env, capture_output=True, text=True, timeout=5)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(list(record_dir.glob(".record.*")), [])
-                    self.assertEqual({x.name: x.read_bytes() for x in record_dir.glob("*") if not x.name.startswith(".record.")}, original)
+                    retried = {x.name: x.read_bytes() for x in record_dir.glob("*") if not x.name.startswith(".record.")}
+                    self.assertRegex(retried.pop("run-id").decode(), r"^[0-9a-f]{32}\n$")
+                    original.pop("run-id")
+                    self.assertEqual(retried, original)
 
     def test_retired_and_incomplete_initialization_retry(self):
         for hook in HOOKS:
@@ -562,6 +574,238 @@ vibepollo_package_forget
                     self.assertEqual(result.returncode,0,result.stderr)
                     self.assertFalse((stage / "transaction.retired").exists())
                     self.assertEqual((stage / "transaction/phase").read_text(),"early\n")
+
+    def test_legacy_adoption_marker_does_not_pin_interrupted_release(self):
+        for hook in HOOKS:
+            for cut in ("fence-only", "reload-failure"):
+                with self.subTest(hook=hook, cut=cut), tempfile.TemporaryDirectory() as tmp:
+                    stage=Path(tmp); (stage / "systemd").mkdir(); (stage / "runtime").mkdir()
+                    (stage / "fence").write_text("[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=mixed\nSendSIGKILL=no\n")
+                    (stage / "fence").chmod(0o644)
+                    for unit in ("vibepollo.service", "vibepollo-session-exec.socket", "vibeshine-vkms-control.socket", "vibepollo-session-restore@.service"):
+                        (stage / "systemd" / unit).symlink_to("/dev/null")
+                    code=self.record_fixture_code(hook,stage)+r"""
+vibepollo_package_complete_quiescence_is_safe() { return 0; }
+vibepollo_package_begin || exit 91
+# Simulate the durable marker left by the previously shipped adoption code.
+vibepollo_package_write_record legacy-adopted yes || exit 92
+rm() {
+  command rm "$@" || return 1
+  case "$*" in *"$stage/fence") [ "$cut" != fence-only ] || return 1 ;; esac
+}
+systemctl() {
+  case "$*" in
+    *--property=Job*) echo Job= ;;
+    *--property=MainPID*) printf 'MainPID=0\nControlGroup=\nFreezerState=\nInvocationID=\n' ;;
+    daemon-reload) return 124 ;;
+  esac
+}
+vibepollo_package_restore_barriers && exit 93
+[ ! -e "$stage/fence" ] || exit 94
+vibepollo_package_begin || exit 95
+[ ! -e "$stage/transaction/legacy-adopted" ] || exit 96
+# No replacement fence was claimed merely from the stale marker.
+[ ! -e "$stage/transaction/fence.owned" ] || exit 97
+exit 0
+"""
+                    result=subprocess.run([shutil.which("dash") or "sh","-c",code],env=dict(os.environ,stage=tmp,cut=cut),capture_output=True,text=True)
+                    self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_native_retry_rebaselines_only_a_wholly_unwound_transaction(self):
+        for hook in HOOKS:
+            for kind in ("native", "same-installer-run", "new-installer-run", "owned-barrier", "unstable", "pending-job", "changed-unowned-path"):
+                with self.subTest(hook=hook, kind=kind), tempfile.TemporaryDirectory() as tmp:
+                    stage=Path(tmp);(stage / "systemd").mkdir();(stage / "runtime").mkdir()
+                    code=self.record_fixture_code(hook,stage)+r"""
+VIBEPOLLO_PACKAGE_RUN_ID=11111111111111111111111111111111
+vibepollo_package_begin || exit 91
+vibepollo_package_write_record phase late || exit 92
+vibepollo_package_write_record host-stop.before original-invocation || exit 93
+case "$kind" in
+  same-installer-run) ;;
+  new-installer-run) VIBEPOLLO_PACKAGE_RUN_ID=22222222222222222222222222222222 ;;
+  *) unset VIBEPOLLO_PACKAGE_RUN_ID ;;
+esac
+case "$kind" in
+  owned-barrier)
+    printf 'owned fence\n' >"$stage/fence"; chmod 644 "$stage/fence"
+    vibepollo_package_record_owned fence "$stage/fence" || exit 94 ;;
+  changed-unowned-path) ln -s /dev/null "$stage/systemd/vibepollo.service" ;;
+  unstable) vibepollo_host_is_stable_or_quiescent() { return 1; } ;;
+  pending-job) vibepollo_package_no_jobs() { return 1; } ;;
+esac
+vibepollo_package_begin
+result=$?
+case "$kind" in
+  native | new-installer-run)
+    [ "$result" -eq 0 ] || exit 95
+    [ ! -e "$stage/transaction/host-stop.before" ] || exit 96
+    [ "$(cat "$stage/transaction/phase")" = early ] || exit 97
+    if [ "$kind" = native ]; then
+      current_run=$(cat "$stage/transaction/run-id") || exit 102
+      vibepollo_package_run_id_is_safe "$current_run" || exit 103
+      [ "$current_run" != 11111111111111111111111111111111 ] || exit 104
+      VIBEPOLLO_PACKAGE_RUN_ID=11111111111111111111111111111111
+      vibepollo_package_run_is_owned && exit 105
+    fi ;;
+  same-installer-run | owned-barrier)
+    [ "$result" -eq 0 ] || exit 98
+    [ "$(cat "$stage/transaction/host-stop.before")" = original-invocation ] || exit 99 ;;
+  *)
+    [ "$result" -ne 0 ] || exit 100
+    [ "$(cat "$stage/transaction/host-stop.before")" = original-invocation ] || exit 101 ;;
+esac
+exit 0
+"""
+                    result=subprocess.run([shutil.which("dash") or "sh","-c",code],env=dict(os.environ,stage=tmp,kind=kind),capture_output=True,text=True)
+                    self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_legacy_adoption_pending_metadata_can_resume_at_each_write(self):
+        for hook in HOOKS:
+            for cut in ("legacy-adopted", "fence.owned", "fence.before", "vibepollo-session-exec.socket.owned", "vibepollo-session-restore@.service.before", "phase"):
+                with self.subTest(hook=hook, cut=cut), tempfile.TemporaryDirectory() as tmp:
+                    stage=Path(tmp);(stage / "systemd").mkdir();(stage / "runtime").mkdir()
+                    code=self.record_fixture_code(hook,stage)+r"""
+vibepollo_package_complete_quiescence_is_safe() { return 0; }
+vibepollo_package_begin || exit 91
+# Capture the unmodified function; intercept only the return after a real
+# atomic write, so retry sees each genuine durable intermediate state.
+"""
+                    # POSIX shells have no function introspection. Copy the
+                    # actual production writer with a new function name.
+                    source=(ROOT/hook).read_text().replace("%%","%")
+                    writer=function(source,"vibepollo_package_write_record",True).replace("vibepollo_package_write_record()", "vibepollo_real_write_record()",1)
+                    writer=writer.replace("0:0:",f"{os.getuid()}:{os.getgid()}:")
+                    code += writer + r"""
+printf '[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=mixed\nSendSIGKILL=no\n' >"$stage/fence"
+chmod 644 "$stage/fence"
+for name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
+  ln -s /dev/null "$stage/systemd/$name"
+  vibepollo_package_snapshot_path "$name" "$stage/systemd/$name" || exit 92
+done
+vibepollo_package_snapshot_path fence "$stage/fence" || exit 93
+vibepollo_package_write_record() {
+  vibepollo_real_write_record "$@" || return 1
+  [ "$1" != "$cut" ]
+}
+vibepollo_package_adopt_legacy_barriers && exit 94
+# Restoring the real writer models the next interpreter after interruption.
+vibepollo_package_write_record() { vibepollo_real_write_record "$@"; }
+vibepollo_package_begin || exit 95
+[ "$(cat "$stage/transaction/phase")" = preflight ] || exit 96
+[ ! -e "$stage/transaction/legacy-adopted" ] || exit 97
+for name in fence vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
+  [ "$(cat "$stage/transaction/$name.before")" = absent ] && [ -f "$stage/transaction/$name.owned" ] || exit 98
+done
+"""
+                    result=subprocess.run([shutil.which("dash") or "sh","-c",code],env=dict(os.environ,stage=tmp,cut=cut),capture_output=True,text=True)
+                    self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_native_nonce_publication_precedes_identity_rebaseline(self):
+        for hook in HOOKS:
+            with self.subTest(hook=hook), tempfile.TemporaryDirectory() as tmp:
+                stage=Path(tmp);(stage / "systemd").mkdir();(stage / "runtime").mkdir()
+                source=(ROOT/hook).read_text().replace("%%","%")
+                writer=function(source,"vibepollo_package_write_record",True).replace("vibepollo_package_write_record()", "vibepollo_real_write_record()",1)
+                code=self.record_fixture_code(hook,stage)+writer+r"""
+VIBEPOLLO_PACKAGE_RUN_ID=11111111111111111111111111111111
+vibepollo_package_begin || exit 91
+vibepollo_package_write_record phase late || exit 92
+vibepollo_package_write_record host-stop.before original-invocation || exit 93
+unset VIBEPOLLO_PACKAGE_RUN_ID
+# A failure after the real atomic nonce publication must leave the old
+# stop identity intact while making the previous wrapper lose ownership.
+vibepollo_package_write_record() {
+  vibepollo_real_write_record "$@" || return 1
+  [ "$1" != run-id ]
+}
+vibepollo_package_begin && exit 94
+[ "$(cat "$stage/transaction/phase")" = late ] || exit 95
+[ "$(cat "$stage/transaction/host-stop.before")" = original-invocation ] || exit 96
+VIBEPOLLO_PACKAGE_RUN_ID=11111111111111111111111111111111
+vibepollo_package_run_is_owned && exit 97
+unset VIBEPOLLO_PACKAGE_RUN_ID
+vibepollo_package_write_record() { vibepollo_real_write_record "$@"; }
+vibepollo_package_begin || exit 98
+[ "$(cat "$stage/transaction/phase")" = early ] || exit 99
+[ ! -e "$stage/transaction/host-stop.before" ] || exit 100
+"""
+                result=subprocess.run([shutil.which("dash") or "sh","-c",code],env=dict(os.environ,stage=tmp),capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_partial_adoption_recovers_after_fence_and_mask_disappearance(self):
+        for hook in HOOKS:
+            for cut in ("legacy-adopted", "fence.owned", "fence.before", "vibepollo-session-exec.socket.owned", "vibepollo-session-restore@.service.before", "phase"):
+                for change in ("fence-only", "one-mask", "all-masks", "native-fence-only", "native-all-masks", "changed-mask", "non-mask-link", "changed-fence", "failed-proof"):
+                    with self.subTest(hook=hook, cut=cut, change=change), tempfile.TemporaryDirectory() as tmp:
+                        stage=Path(tmp);(stage / "systemd").mkdir();(stage / "runtime").mkdir()
+                        source=(ROOT/hook).read_text().replace("%%","%")
+                        writer=function(source,"vibepollo_package_write_record",True).replace("vibepollo_package_write_record()", "vibepollo_real_write_record()",1)
+                        code=self.record_fixture_code(hook,stage)+writer+r"""
+VIBEPOLLO_PACKAGE_RUN_ID=11111111111111111111111111111111
+vibepollo_package_complete_quiescence_is_safe() { [ "$change" != failed-proof ] || [ ! -e "$stage/cut-done" ]; }
+vibepollo_package_begin || exit 91
+printf '[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=mixed\nSendSIGKILL=no\n' >"$stage/fence"
+chmod 644 "$stage/fence"
+for name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
+  ln -s /dev/null "$stage/systemd/$name"
+  vibepollo_package_snapshot_path "$name" "$stage/systemd/$name" || exit 92
+done
+vibepollo_package_snapshot_path fence "$stage/fence" || exit 93
+vibepollo_package_write_record() {
+  vibepollo_real_write_record "$@" || return 1
+  [ "$1" != "$cut" ]
+}
+vibepollo_package_adopt_legacy_barriers && exit 94
+vibepollo_package_write_record() { vibepollo_real_write_record "$@"; }
+: >"$stage/cut-done"
+# Keep old inodes allocated to make replacement-identity checks deterministic.
+mv "$stage/fence" "$stage/removed-fence"
+case "$change" in native-*) unset VIBEPOLLO_PACKAGE_RUN_ID; change=${change#native-} ;; esac
+case "$change" in
+  one-mask) rm "$stage/systemd/vibepollo-session-exec.socket" ;;
+  all-masks) for name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do rm "$stage/systemd/$name"; done ;;
+  changed-mask | non-mask-link)
+    mv "$stage/systemd/vibeshine-vkms-control.socket" "$stage/removed-mask"
+    target=/dev/null
+    [ "$change" != non-mask-link ] || target="$stage/unknown-target"
+    ln -s "$target" "$stage/systemd/vibeshine-vkms-control.socket"
+    replacement=$(stat -c '%d:%i' "$stage/systemd/vibeshine-vkms-control.socket") ;;
+  changed-fence)
+    cp "$stage/removed-fence" "$stage/fence"
+    chmod 644 "$stage/fence"
+    replacement=$(stat -c '%d:%i' "$stage/fence") ;;
+esac
+vibepollo_package_begin
+status=$?
+case "$change" in
+  changed-mask | non-mask-link | changed-fence | failed-proof)
+    [ "$status" -ne 0 ] || exit 95
+    [ -e "$stage/transaction/legacy-adopted" ] || exit 96
+    case "$change" in
+      changed-mask | non-mask-link) [ "$replacement" = "$(stat -c '%d:%i' "$stage/systemd/vibeshine-vkms-control.socket")" ] || exit 97 ;;
+      changed-fence) [ "$replacement" = "$(stat -c '%d:%i' "$stage/fence")" ] || exit 98 ;;
+    esac
+    exit 0 ;;
+esac
+[ "$status" -eq 0 ] || exit 99
+[ ! -e "$stage/transaction/legacy-adopted" ] || exit 100
+[ ! -e "$stage/transaction/fence.owned" ] || exit 101
+for name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
+  [ "$(cat "$stage/transaction/$name.before")" = absent ] || exit 102
+  if [ -L "$stage/systemd/$name" ]; then
+    [ "$(cat "$stage/transaction/$name.owned")" = "$(vibepollo_package_path_identity "$stage/systemd/$name")" ] || exit 103
+  else
+    [ ! -e "$stage/transaction/$name.owned" ] || exit 104
+  fi
+done
+vibepollo_package_restore_barriers || exit 105
+for name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
+  [ ! -L "$stage/systemd/$name" ] || exit 106
+done
+"""
+                        result=subprocess.run([shutil.which("dash") or "sh","-c",code],env=dict(os.environ,stage=tmp,cut=cut,change=change),capture_output=True,text=True)
+                        self.assertEqual(result.returncode,0,result.stderr)
 
     def test_stale_generation_record_or_populated_host_blocks_release(self):
         for hook in HOOKS:

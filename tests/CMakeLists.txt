@@ -959,7 +959,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
             set_tests_properties(test_component_linux_machine_locale PROPERTIES LABELS "component" TIMEOUT 30)
             foreach(package_fixture IN ITEMS
                     package_kill_mode package_metadata package_host_stop package_host_scope package_transaction_recovery package_postconfigure
-                    package_removal package_force_backup installer_compat installer_ownership installer_real_guard installer_2_0_1 installer_hookdirs)
+                    package_removal package_masked_host package_force_backup installer_compat installer_ownership installer_real_guard installer_2_0_1 installer_hookdirs)
                 add_test(NAME "test_component_linux_${package_fixture}"
                     COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_${package_fixture}.py"
@@ -967,6 +967,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
                 set_tests_properties("test_component_linux_${package_fixture}"
                     PROPERTIES LABELS "component" TIMEOUT 240)
             endforeach()
+            # Recovery exercises real subprocess publication/crash checkpoints.
+            set_tests_properties(test_component_linux_package_transaction_recovery
+                PROPERTIES TIMEOUT 600)
             add_test(NAME test_component_linux_profile_upgrade
                 COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                     "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_profile_upgrade.py"
