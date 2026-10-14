@@ -133,6 +133,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Production legacy dispatcher compilation faile
 & $dispatchOutput
 if ($LASTEXITCODE -ne 0) { throw 'Legacy uninstall dispatcher regression failed' }
 
+# Run the shared full-source rollback/transactional dispatch regression too.
+& (Join-Path $PSScriptRoot 'test_bootstrap_rollback.ps1') -OutputDirectory (Join-Path $OutputDirectory 'rollback')
+
 [xml]$patch = Get-Content -LiteralPath (Join-Path $repo 'packaging/windows/wix/patch_custom_actions.wxs') -Raw
 [xml]$custom = Get-Content -LiteralPath (Join-Path $repo 'packaging/windows/wix/custom_actions.wxs') -Raw
 $ns = New-Object Xml.XmlNamespaceManager($custom.NameTable)
