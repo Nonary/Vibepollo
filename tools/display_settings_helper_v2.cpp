@@ -50,6 +50,7 @@
   #include "src/platform/windows/display_helper_v2/win_virtual_display_driver.h"
   #include "src/platform/windows/ipc/pipes.h"
   #include "tools/display_helper_paths.h"
+  #include "src/platform/windows/display_restore_policy.h"
 
   #include <display_device/json.h>
   #include <display_device/logging.h>
@@ -909,6 +910,9 @@ int run_v2_helper(int argc, char *argv[]) {
     BOOST_LOG(info) << "Display helper v2 running in restore mode.";
     display_helper::v2::RevertCommand revert {cancellation.current_generation()};
     revert.immediate = true;
+    revert.always_restore_from_golden = display_helper::load_boot_restore_prefer_golden(
+      display_helper_paths::executable_config_search_roots(), search_roots,
+      display_helper_paths::restore_state_file_from_command_line());
     queue.push(revert);
     while (running.load(std::memory_order_acquire)) {
       process_queue();

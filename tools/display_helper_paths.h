@@ -15,7 +15,9 @@
   #include <algorithm>
   #include <cwchar>
   #include <filesystem>
+  #include <optional>
   #include <string>
+  #include <string_view>
   #include <vector>
 
   #ifndef WIN32_LEAN_AND_MEAN
@@ -24,10 +26,37 @@
   #include <winsock2.h>
   #include <windows.h>
   #include <shlobj.h>
+  #include <shellapi.h>
+
+  #include "src/platform/windows/display_restore_policy.h"
 
   #include "src/platform/windows/ipc/misc_utils.h"
 
 namespace display_helper_paths {
+  inline std::optional<std::filesystem::path> restore_state_file_from_command_line() {
+    int argc = 0;
+    auto argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return std::nullopt;
+    std::optional<std::filesystem::path> path;
+    constexpr std::wstring_view prefix = L"--restore-state-file=";
+    for (int i = 1; i < argc; ++i) {
+      const std::wstring_view argument(argv[i]);
+      if (argument.starts_with(prefix) && argument.size() > prefix.size()) {
+        path = std::filesystem::path(argument.substr(prefix.size()));
+      }
+    }
+    LocalFree(argv);
+    return path;
+  }
+
+  inline std::wstring restore_task_arguments() {
+    std::wstring arguments = L"--restore";
+    if (const auto state_file = restore_state_file_from_command_line()) {
+      arguments += L" " + display_helper::restore_state_file_argument(*state_file);
+    }
+    return arguments;
+  }
+
   inline HANDLE make_named_mutex(const wchar_t *name) {
     SECURITY_ATTRIBUTES sa {};
     sa.nLength = sizeof(sa);

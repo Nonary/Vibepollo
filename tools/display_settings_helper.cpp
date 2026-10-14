@@ -60,6 +60,8 @@
   #endif
 
   #include "src/platform/windows/display_restore_task.h"
+  #include "src/platform/windows/display_restore_policy.h"
+  #include "tools/display_helper_paths.h"
   #include "src/platform/windows/legacy_restore_event_policy.h"
   #include "src/platform/windows/recovery_status.h"
 
@@ -5268,7 +5270,7 @@ namespace {
     }
 
     exec_action->put_Path(_bstr_t(exe_path));
-    exec_action->put_Arguments(_bstr_t(L"--restore"));
+    exec_action->put_Arguments(_bstr_t(display_helper_paths::restore_task_arguments().c_str()));
     exec_action->Release();
 
     // Without an interactive user (helper launched as SYSTEM after sign-out or
@@ -6163,6 +6165,10 @@ int run_legacy_helper(int argc, char *argv[]) {
     BOOST_LOG(info) << "Display helper started in restore mode (--restore flag)";
     dd_log_bridge().install();
     ServiceState state;
+    state.always_restore_from_golden.store(
+      display_helper::load_boot_restore_prefer_golden(
+        executable_config_search_roots(), search_roots, display_helper_paths::restore_state_file_from_command_line()),
+      std::memory_order_release);
     state.golden_path = active_snapshots.golden;
     state.golden_status_path = active_snapshots.golden_status;
     state.session_current_path = active_snapshots.session_current;

@@ -1,3 +1,4 @@
+#include "tools/display_helper_paths.h"
 #include "src/platform/windows/display_helper_v2/win_scheduled_task_manager.h"
 
 #include "src/logging.h"
@@ -407,7 +408,7 @@ namespace display_helper::v2 {
     }
 
     exec_action->put_Path(_bstr_t(exe_path));
-    exec_action->put_Arguments(_bstr_t(L"--restore"));
+    exec_action->put_Arguments(_bstr_t(display_helper_paths::restore_task_arguments().c_str()));
     exec_action->Release();
 
     // When no interactive token exists (for example, after sign-out), bind the

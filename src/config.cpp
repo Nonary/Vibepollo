@@ -2481,6 +2481,9 @@ namespace config {
       // Persist snapshot exclusion devices to vibeshine_state.json on startup so the display
       // helper can read them directly without depending on IPC from Sunshine.
       statefile::save_snapshot_exclude_devices(video.dd.snapshot_exclude_devices);
+      // Persist the resolved config (including custom files and command-line overrides)
+      // so recovery at next logon does not require a live host/IPC connection.
+      statefile::save_display_restore_preference(video.dd.always_restore_from_golden);
     } catch (const std::filesystem::filesystem_error &err) {
       BOOST_LOG(fatal) << "Failed to apply config: "sv << err.what();
     } catch (const boost::filesystem::filesystem_error &err) {
@@ -3278,6 +3281,9 @@ namespace config {
       // can read them directly without depending on IPC from Sunshine.
       // This is done unconditionally to ensure the state file is always up-to-date.
       statefile::save_snapshot_exclude_devices(video.dd.snapshot_exclude_devices);
+      // Persist the resolved config (including custom files and command-line overrides)
+      // so recovery at next logon does not require a live host/IPC connection.
+      statefile::save_display_restore_preference(video.dd.always_restore_from_golden);
 
       // Check if any DD configuration changed and handle hot-apply when no active sessions
       using dd_cfg_e = config::video_t::dd_t::config_option_e;

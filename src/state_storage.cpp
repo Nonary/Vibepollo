@@ -1204,6 +1204,34 @@ namespace statefile {
     return devices;
   }
 
+  void save_display_restore_preference(const bool always_restore_from_golden) {
+    migrate_recent_state_keys();
+    const auto &path_str = vibeshine_state_path();
+    if (path_str.empty()) {
+      return;
+    }
+
+    std::lock_guard<std::mutex> guard(state_mutex());
+    const fs::path path(path_str);
+    pt::ptree root;
+    if (load_tree_for_update(path, root) == policy::load_result_e::failed) {
+      return;
+    }
+
+    auto &root_node = ensure_root(root);
+    const auto previous = root_node.get_child_optional("display_restore_prefer_golden");
+    if (previous && previous->empty() &&
+        previous->data() == (always_restore_from_golden ? "true" : "false")) {
+      return;
+    }
+    root_node.put("display_restore_prefer_golden", always_restore_from_golden);
+    try {
+      write_tree(path, root);
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "statefile: failed to write "sv << path.string() << ": "sv << e.what();
+    }
+  }
+
   void save_display_helper_engine(const std::string &engine) {
     if (engine.empty()) {
       return;
