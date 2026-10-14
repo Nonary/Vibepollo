@@ -607,10 +607,19 @@ prepare_package_hook_dirs() {
   resolved_hooks=$(pacman-conf HookDir) ||
     die 'could not read effective pacman hook directories; no transaction started'
   [[ -n "$resolved_hooks" ]] || die 'effective pacman hook directories are empty'
+  local -a private_guards=("$workdir/hooks/"*.hook)
+  [[ ${#private_guards[@]} == 1 && -f "${private_guards[0]}" && ! -L "${private_guards[0]}" ]] ||
+    die 'private package transaction guard is missing or ambiguous'
+  local guard_name=${private_guards[0]##*/}
   package_hook_args=()
   while IFS= read -r hook_dir; do
     [[ -n "$hook_dir" && "$hook_dir" != *$'\r'* ]] ||
       die 'invalid effective pacman hook directory'
+    # A configured same-name dummy hook can disable AbortOnFail, while the
+    # default directory would be shadowed by our CLI guard. Preserve admin
+    # policy in both cases by refusing the collision before any transaction.
+    [[ ! -e "$hook_dir/$guard_name" && ! -L "$hook_dir/$guard_name" ]] ||
+      die "administrator hook $hook_dir/$guard_name conflicts with the required shutdown guard; no transaction started"
     hook_count=$((hook_count + 1))
     ((hook_count <= 256)) || die 'too many effective pacman hook directories'
     package_hook_args+=(--hookdir "$hook_dir")

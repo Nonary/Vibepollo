@@ -120,8 +120,8 @@ run_package_transaction() {{
             for index, directory in enumerate(effective):
                 entries[directory.rstrip('/')] = {'90-administrator.hook': f'admin-{index}', f'80-admin-{index}.hook': 'sentinel'}
             if configured:
-                # Explicit HookDir directives append after CLI, so even the
-                # same-name administrator override remains authoritative.
+                # Demonstrate native same-name collision precedence. Actual
+                # collisions below must refuse before a transaction edge.
                 entries[configured[-1]][incoming_name] = 'admin-override'
             selected = selected_hooks(merged, entries)
             assert selected['10-system.hook'] == 'system'
@@ -174,6 +174,9 @@ run_package_transaction() {{ printf 'unexpected transaction\\n' > {shlex.quote(s
     dangerous = [str(fixture / 'hooks with spaces'), str(fixture / 'hooks-$(touch UNEXPECTED)-*')]
     quoted.write_text('\n'.join(dangerous) + '\n')
     argv_path = fixture / 'quoted-argv'
+    private_hooks = fixture / 'private hooks/hooks'
+    private_hooks.mkdir(parents=True)
+    (private_hooks / f'00-{brand}-incoming-quiesce.hook').write_text('fixture guard\n')
     body = f'''
 source {shlex.quote(str(script))}
 workdir={shlex.quote(str(fixture / 'private hooks'))}
@@ -187,4 +190,68 @@ printf '%s\\0' "${{package_hook_args[@]}}" > {shlex.quote(str(argv_path))}
     assert argv == ['--hookdir', dangerous[0], '--hookdir', dangerous[1], '--hookdir', str(fixture / 'private hooks/hooks')], argv
     assert not (fixture / 'UNEXPECTED').exists()
     count += 1
-print(f'{brand}: {count} hook-directory cases PASS; all actual installer entrypoints retain administrator/system hooks and config precedence; unsafe query results stop before transaction/driver preparation')
+
+    # Actual same-name administrator files and disabling/broken symlinks must
+    # neither override the required guard nor be shadowed by the CLI guard.
+    for policy in ('default', 'configured'):
+        for qualified in (False, True):
+            guard_name = f'00-{brand}-' + ('quiesce.hook' if qualified else 'incoming-quiesce.hook')
+            for kind in ('regular', 'disabled-link', 'broken-link'):
+                for operation in ('-S', '-U', '-R'):
+                    current = fixture / f'collision-{policy}-{qualified}-{kind}-{operation}'
+                    current.mkdir()
+                    admin = current / 'administrator hooks'
+                    admin.mkdir()
+                    collision = admin / guard_name
+                    if kind == 'regular':
+                        collision.write_text('administrator policy\n')
+                    else:
+                        collision.symlink_to('/dev/null' if kind == 'disabled-link' else '/missing-hook-target')
+                    before = collision.read_bytes() if kind == 'regular' else os.readlink(collision)
+                    collision_query = [str(admin)] if policy == 'default' else [str(current / 'earlier nonconflicting hooks'), str(admin)]
+                    called = current / 'called'
+                    preparation = current / 'driver-prep'
+                    body = f"""
+source {shlex.quote(str(script))}
+workdir={shlex.quote(str(current / 'workdir'))}
+mkdir -p "$workdir"
+local_package={shlex.quote(str(candidate))}
+configure_pacman_repo() {{ :; }}
+prepare_driver_replacement() {{ printf 'unexpected preparation\\n' > {shlex.quote(str(preparation))}; }}
+pacman-conf() {{ printf '%s\\n' {' '.join(shlex.quote(value) for value in collision_query)}; }}
+pacman() {{ case "$1" in -Si) return 0 ;; -Sw) cp -- {shlex.quote(str(candidate))} "$workdir/cache/{candidate.name}" ;; -Qp) printf '%s\\n' '{brand} 3.0.0-1' ;; *) return 90 ;; esac; }}
+eval "$(declare -f stage_upgrade_guard | sed '1s/stage_upgrade_guard/stage_guard_fixture/')"
+stage_upgrade_guard() {{
+  stage_guard_fixture "$@" || return
+  {'mv -- "$workdir/hooks/00-' + brand + '-incoming-quiesce.hook" "$workdir/hooks/' + guard_name + '"' if qualified else ':'}
+}}
+run_package_transaction() {{ printf 'unexpected transaction\\n' > {shlex.quote(str(called))}; }}
+{'install_from_repo' if operation == '-S' else 'install_from_package' if operation == '-U' else 'remove_' + brand}
+"""
+                    completed = subprocess.run(['bash', '-c', body], capture_output=True, text=True)
+                    assert completed.returncode != 0, (policy, qualified, kind, operation)
+                    assert 'conflicts with the required shutdown guard' in completed.stderr, completed.stderr
+                    assert not called.exists() and not preparation.exists(), (policy, kind, operation)
+                    after = collision.read_bytes() if kind == 'regular' else os.readlink(collision)
+                    assert after == before, (policy, kind, 'administrator policy changed')
+                    count += 1
+
+    for mode in ('missing', 'ambiguous', 'symlink'):
+        current = fixture / ('private-guard-' + mode)
+        guard_dir = current / 'hooks'
+        guard_dir.mkdir(parents=True)
+        if mode == 'ambiguous':
+            (guard_dir / 'one.hook').write_text('one\n')
+            (guard_dir / 'two.hook').write_text('two\n')
+        elif mode == 'symlink':
+            (guard_dir / 'one.hook').symlink_to('/dev/null')
+        body = f"""
+source {shlex.quote(str(script))}
+workdir={shlex.quote(str(current))}
+pacman-conf() {{ printf '%s\\n' {shlex.quote(str(fixture / 'admin-without-collision'))}; }}
+prepare_package_hook_dirs
+"""
+        completed = subprocess.run(['bash', '-c', body], capture_output=True, text=True)
+        assert completed.returncode != 0 and 'private package transaction guard' in completed.stderr, (mode, completed.stderr)
+        count += 1
+print(f'{brand}: {count} hook-directory cases PASS; actual installer entrypoints retain administrator/system hooks and config precedence; conflicting policy and unsafe query/guard results refuse before transaction/driver preparation')
