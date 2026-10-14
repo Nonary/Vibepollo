@@ -28,6 +28,15 @@ assert any("PROGRAMS" in b and f"Arch/{brand}-package-preflight" in b and 'DESTI
 assert any("FILES" in b and f"Arch/{brand}.install" in b and f'${{CMAKE_INSTALL_DATADIR}}/{brand}' in b and 'RENAME "arch-package-hooks"' in b for b in blocks)
 assert any("FILES" in b and f"Arch/00-{brand}-quiesce.hook" in b and '${CMAKE_INSTALL_DATADIR}/libalpm/hooks' in b for b in blocks)
 assert f"install={brand}.install" in (arch / "PKGBUILD").read_text()
+spec = (root / "packaging/linux/copr/Sunshine.spec").read_text()
+rpm_install = spec.split("\n%install\n", 1)[1].split("\n%pre\n", 1)[0]
+for path in (
+    f"%{{_prefix}}/libexec/vibeshine/{brand}-package-preflight",
+    f"%{{_datadir}}/libalpm/hooks/00-{brand}-quiesce.hook",
+    f"%{{_datadir}}/{brand}/arch-package-hooks",
+):
+    assert f"rm -f %{{buildroot}}{path}" in rpm_install.splitlines(), path
+assert "rmdir %{buildroot}%{_datadir}/libalpm/hooks %{buildroot}%{_datadir}/libalpm 2>/dev/null || true" in rpm_install.splitlines()
 source = (arch / f"{brand}.install").read_text()
 count = 0
 for operation in ("Install", "Upgrade", "Remove"):
