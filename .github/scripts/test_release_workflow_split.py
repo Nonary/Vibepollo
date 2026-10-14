@@ -1,5 +1,7 @@
 import io
 import os
+import re
+import xml.etree.ElementTree as ET
 import subprocess
 import sys
 import tempfile
@@ -20,7 +22,7 @@ def load_workflow(name: str) -> dict:
 
 
 class ReleaseWorkflowSplitTest(unittest.TestCase):
-    def test_release_tag_uses_local_linux_and_cloud_windows(self) -> None:
+    def test_release_tag_uses_hosted_runners_with_explicit_manual_opt_in(self) -> None:
         ci_workflow = load_workflow("ci.yml")
         dispatch_input = ci_workflow["on"]["workflow_dispatch"]["inputs"][
             "use_self_hosted"
@@ -37,9 +39,22 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         )
         self.assertEqual(
             ci_workflow["jobs"]["build-archlinux"]["with"]["use_self_hosted"],
-            "${{ needs.release-candidate.outputs.should_release == 'true' || "
-            "(github.event_name == 'workflow_dispatch' && inputs.use_self_hosted) }}",
+            expected_forwarding,
         )
+        for job in ("build-windows", "build-archlinux"):
+            forwarding = ci_workflow["jobs"][job]["with"]["use_self_hosted"]
+            for event, opt_in, expected in (
+                ("push", False, False),
+                ("push", True, False),
+                ("workflow_dispatch", False, False),
+                ("workflow_dispatch", True, True),
+            ):
+                with self.subTest(job=job, event=event, opt_in=opt_in):
+                    expression = forwarding.removeprefix("${{").removesuffix("}}")
+                    expression = expression.replace("github.event_name", repr(event))
+                    expression = expression.replace("inputs.use_self_hosted", repr(opt_in))
+                    expression = expression.replace("&&", "and").replace("||", "or")
+                    self.assertEqual(eval(expression.strip(), {"__builtins__": {}}), expected)
 
         validation_workflow = load_workflow("validate-windows.yml")
         validation_input = validation_workflow["on"]["workflow_dispatch"]["inputs"][
@@ -110,11 +125,12 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn("awaiting-signing", jobs)
         self.assertIn("build-archlinux", awaiting_signing["needs"])
         self.assertIn("should_release", build_inputs["build_only"])
+        for job in ("build-windows", "build-archlinux"):
+            self.assertEqual(
+                jobs[job]["with"]["build_tests"],
+                "${{ needs.release-candidate.outputs.should_release == 'true' }}",
+            )
         self.assertNotIn("require_signpath_signing", build_inputs)
-        self.assertEqual(
-            build_inputs["build_tests"],
-            "false",
-        )
         self.assertEqual(
             build_inputs["release_artifact_retention_days"],
             "${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}",
@@ -135,6 +151,28 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertNotIn("Linux branch candidate:", workflow_text)
         self.assertIn("should_release=\"false\"", workflow_text)
         self.assertNotIn("def canonical_release_tag", workflow_text)
+
+    def test_installer_regressions_run_after_wix_for_all_test_builds(self) -> None:
+        steps = load_workflow("ci-windows.yml")["jobs"]["build_windows"]["steps"]
+        named_steps = {step["name"]: step for step in steps}
+        names = [step["name"] for step in steps]
+        for gate in ("Test installer driver safety and rollback", "Test production bootstrap migration"):
+            with self.subTest(gate=gate):
+                self.assertEqual(named_steps[gate]["if"], "inputs.build_tests")
+                self.assertGreater(names.index(gate), names.index("Install WiX Toolset"))
+                self.assertLess(names.index(gate), names.index("Build Windows"))
+                self.assertIn("$LASTEXITCODE -ne 0", named_steps[gate]["run"])
+        self.assertIn("test_driver_install_safety.ps1", named_steps["Test installer driver safety and rollback"]["run"])
+        migration = named_steps["Test production bootstrap migration"]["run"]
+        self.assertIn("test_bootstrap_migration.ps1 -OutputDirectory $outputDirectory", migration)
+        self.assertIn("Join-Path $env:RUNNER_TEMP", migration)
+        daily = named_steps["Enforce unsigned daily build policy"]
+        self.assertEqual(daily["if"], "inputs.daily_unsigned")
+        self.assertIn("$env:SIGNPATH_ENABLED -ne 'false'", daily["run"])
+        self.assertIn("$env:BUILD_TESTS -ne 'true'", daily["run"])
+        self.assertNotIn("test_driver_install_safety.ps1", daily["run"])
+        self.assertIn("test_daily_version_contract.cmake", daily["run"])
+        self.assertIn("test_daily_gamepad_signing.ps1", daily["run"])
 
     def test_branch_selection_skips_without_git_or_release_api_calls(self) -> None:
         steps = load_workflow("ci.yml")["jobs"]["release-candidate"]["steps"]
@@ -846,27 +884,54 @@ class WindowsWorkflowEfficiencyTest(unittest.TestCase):
             ROOT / "packaging" / "windows" / "bootstrapper" / "VibeshineInstaller.cs"
         ).read_text(encoding="utf-8")
 
-        self.assertIn(
-            'elseif(_pre_tag STREQUAL "stable")\n'
-            '    # Stable respins remain in the stable channel. Their sortable ProductCodes\n'
-            '    # distinguish stable.N packages that share this MSI ProductVersion.\n'
-            '    set(_WIX_PRERELEASE_ORDINAL 99)',
-            wix_version,
-        )
-        self.assertIn(
-            'elseif("${_pre_tag}" STREQUAL "stable")\n'
-            '            # Keep stable respins in the stable channel. The timed revision\n'
-            '            # orders successive stable.N executable builds.\n'
-            '            set(_ordinal 99)',
-            executable_version,
-        )
-        self.assertIn(
-            'if (string.Equals(tag, "stable", StringComparison.Ordinal)) {\n'
-            '        // Stable respins share the stable ordinal; sortable ProductCodes order\n'
-            '        // distinct MSI packages within that channel.\n'
-            '        return 99;',
+        # Execute the production numeric transforms without configuring WiX or
+        # generating a Windows binary on the audit host.
+        wix_numeric = "set(_RAW_VER" + wix_version.split("set(_RAW_VER", 1)[1].split(
+            "# Merge our custom actions", 1
+        )[0]
+        executable_functions = "function(_wv_int_or_zero" + executable_version.split(
+            "function(_wv_int_or_zero", 1
+        )[1].split("function(_wv_current_time", 1)[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            probe = Path(temporary) / "version-ordinals.cmake"
+            probe.write_text(
+                'set(PROJECT_VERSION_NUMERIC "2.0.1")\n' + wix_numeric +
+                executable_functions +
+                '_wv_encoded_build(1 "${PROJECT_VERSION_FULL}" encoded)\n'
+                'if(NOT CPACK_WIX_PRODUCT_VERSION STREQUAL "2.0.${EXPECTED_BUILD}.0" OR\n'
+                '   NOT encoded EQUAL EXPECTED_BUILD)\n'
+                '  message(FATAL_ERROR "MSI/executable ordinal mismatch")\n'
+                'endif()\n', encoding="utf-8"
+            )
+            for version, encoded in (
+                ("2.0.1", 199), ("2.0.1-stable", 199),
+                ("2.0.1-stable.1", 199), ("2.0.1-stable.29", 199),
+                ("2.0.1-beta.29", 159), ("2.0.1-rc.29", 189),
+            ):
+                with self.subTest(version=version):
+                    result = subprocess.run(
+                        ["cmake", f"-DPROJECT_VERSION_FULL={version}",
+                         f"-DEXPECTED_BUILD={encoded}", "-P", str(probe)],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        # Equal numeric stable versions must still replace inside the MSI
+        # transaction. A GUID comparison alone cannot implement that contract.
+        template = (ROOT / "packaging/windows/wix/WIX.template.in").read_text(encoding="utf-8")
+        # Parse the authored element before CPack expands its surrounding XML
+        # namespace placeholder and WiX preprocesses the conditional sections.
+        upgrade_elements = re.findall(r"<MajorUpgrade\b[^>]+/>", template)
+        self.assertEqual(len(upgrade_elements), 1)
+        major_upgrade = ET.fromstring(upgrade_elements[0])
+        self.assertEqual(major_upgrade.attrib["Schedule"], "afterInstallInitialize")
+        self.assertEqual(major_upgrade.attrib["AllowDowngrades"], "yes")
+        stable_branch = re.search(
+            r'if \(string.Equals\(tag, "stable", StringComparison.Ordinal\)\) \{([^}]+)\}',
             bootstrapper,
         )
+        self.assertIsNotNone(stable_branch)
+        self.assertRegex(stable_branch.group(1), r"return\s+99\s*;")
 
     def test_release_build_uses_shallow_cached_dependencies(self) -> None:
         workflow = load_workflow("ci-windows.yml")
@@ -878,7 +943,15 @@ class WindowsWorkflowEfficiencyTest(unittest.TestCase):
 
         build_checkout = next(step for step in build_steps if step["name"] == "Checkout")
         package_checkout = next(step for step in package_steps if step["name"] == "Checkout")
-        self.assertEqual(build_checkout["with"]["fetch-depth"], "1")
+        depth_expression = build_checkout["with"]["fetch-depth"]
+        for daily, expected_depth in ((False, "1"), (True, "0")):
+            with self.subTest(daily=daily):
+                expression = depth_expression.removeprefix("${{").removesuffix("}}")
+                expression = expression.replace("inputs.daily_unsigned", repr(daily))
+                expression = expression.replace("&&", "and").replace("||", "or")
+                actual = eval(expression.strip(), {"__builtins__": {}})
+                self.assertEqual(actual, expected_depth)
+        self.assertEqual(build_checkout["with"]["fetch-tags"], "${{ inputs.daily_unsigned }}")
         self.assertEqual(build_checkout["with"]["submodules"], "recursive")
         self.assertEqual(package_checkout["with"]["fetch-depth"], "1")
 
