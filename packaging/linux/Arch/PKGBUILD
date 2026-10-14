@@ -79,6 +79,7 @@ makedepends=(
 )
 
 optdepends=(
+  'pyside6: desktop tray status and streaming host controls'
   'intel-media-driver: Intel GPU encoding support'
   'libva-mesa-driver: AMD GPU encoding support'
   'linux-cachyos-headers: build the virtual-display module for the standard CachyOS kernel'
