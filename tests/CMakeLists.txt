@@ -2314,3 +2314,12 @@ if(NOT WIN32)
             PROPERTIES LABELS "component;packaging" TIMEOUT 30)
     endforeach()
 endif()
+
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+    add_test(NAME test_component_upnp_igd_status
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_upnp_igd_status.py"
+            --compiler "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_upnp_igd_status
+        PROPERTIES LABELS "component" TIMEOUT 60)
+endif()
