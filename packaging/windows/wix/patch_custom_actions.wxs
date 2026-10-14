@@ -21,6 +21,8 @@
     <Property Id="INSTALL_SUDOVDA" Value="1" Secure="yes"/>
     <Property Id="INSTALL_VIRTUAL_DISPLAY_DRIVER" Secure="yes"/>
     <Property Id="INSTALL_VIRTUAL_GAMEPAD_DRIVER" Secure="yes"/>
+    <!-- Private, build-time capability: independent of saved/caller selection. -->
+    <Property Id="VhfGamepadDriverBundled" Value="$(var.VhfGamepadDriverBundled)"/>
     <Property Id="SAVED_GAMEPAD_DRIVER_SELECTION">
       <RegistrySearch Id="SavedGamepadDriverSelection" Root="HKLM" Key="SOFTWARE\Nonary\Vibepollo\Installer\DriverSelections" Name="GamepadEnabled" Type="raw" Win64="yes"/>
     </Property>

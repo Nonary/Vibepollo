@@ -17,6 +17,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Production driver-selection compilation failed.' }
     & $output
     if ($LASTEXITCODE -ne 0) { throw 'Driver-selection regression failed.' }
+    & (Join-Path $PSScriptRoot 'test_gamepad_bundle_metadata.ps1') -RegressionExe $output -OutputDirectory $scratch
     [xml]$patch = Get-Content (Join-Path $repo 'packaging/windows/wix/patch_custom_actions.wxs') -Raw
     foreach ($id in @('SetInstallSudovda', 'InstallSudovda', 'SetInstallVirtualDisplayDriver', 'InstallVirtualDisplayDriver')) {
         $action = $patch.SelectSingleNode("//InstallExecuteSequence/Custom[@Action='$id']")

@@ -2831,7 +2831,7 @@ namespace VibepolloInstaller {
         var upgradeCode = ReadMsiProperty(packageHandle, "UpgradeCode");
         var versionText = ReadMsiProperty(packageHandle, "ProductVersion");
         var transactionalReplacement = ReadMsiProperty(packageHandle, "VIBESHINE_TRANSACTIONAL_REPLACEMENT");
-        var virtualGamepadDriverBundled = ReadMsiProperty(packageHandle, "INSTALL_VIRTUAL_GAMEPAD_DRIVER");
+        var virtualGamepadDriverBundled = ReadMsiProperty(packageHandle, "VhfGamepadDriverBundled");
         var usbIpTransportBundled = ReadMsiProperty(packageHandle, "USBIP_TRANSPORT_BUNDLED");
         var localGamepadCertificateThumbprint = ReadMsiProperty(packageHandle, "LOCAL_GAMEPAD_CERTIFICATE_THUMBPRINT");
         var localGamepadPackage = ReadMsiProperty(packageHandle, "ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE");

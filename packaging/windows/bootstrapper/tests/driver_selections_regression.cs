@@ -4,7 +4,7 @@ using System.Linq;
 using PRODUCT_NAMESPACE;
 internal static class DriverSelectionsRegression {
  static void Check(bool value,string message) {if(!value)throw new Exception(message);}
- [STAThread] static int Main() {
+ [STAThread] static int Main(string[] fixtures) {
   var saved=new Dictionary<string,int>();
   Func<string,int?> read=name=>saved.ContainsKey(name)?(int?)saved[name]:null;
   Action<string,bool> write=(name,value)=>saved[name]=value?1:0;
@@ -35,6 +35,25 @@ internal static class DriverSelectionsRegression {
   payload.HasLocalGamepadCertificate=false;
   InstallerRunner.ApplySelectedGamepadTrust(args,payload,true);
   Check(!args.AllowLocalGamepadCertificateTrust,"production signer does not enter beta trust flow");
+  if(fixtures.Length!=0) {
+   Check(fixtures.Length==4,"bundled, absent, missing and malformed capability fixtures required");
+   for(int i=0;i<fixtures.Length;i++) {
+    var metadata=InstallerRunner.TryGetPayloadMsiInfo(new InstallerArguments {MsiPathOverride=fixtures[i]});
+    Check(metadata!=null,"actual MSI fixture metadata must be readable");
+    Check(metadata.HasBundledVirtualGamepadDriver==(i==0),"bundle detection must ignore mutable install selection and fail closed");
+    var enabled=new InstallerDriverSelections(name=>null,(name,value)=>{});
+    bool install=metadata.HasBundledVirtualGamepadDriver && enabled.GamepadEnabled;
+    Check(InstallerRunner.BuildDriverSelectionArguments(args,true,install).Contains("INSTALL_VIRTUAL_GAMEPAD_DRIVER="+(i==0?"1":"0")),"fresh bundle defaults on; absent capability defaults off");
+    enabled.SelectGamepad(false);
+    install=metadata.HasBundledVirtualGamepadDriver && enabled.GamepadEnabled;
+    Check(InstallerRunner.BuildDriverSelectionArguments(args,true,install).Contains("INSTALL_VIRTUAL_GAMEPAD_DRIVER=0"),"explicit optout survives bundled capability");
+    InstallerRunner.ApplySelectedGamepadTrust(args,metadata,install);
+    Check(!args.AllowLocalGamepadCertificateTrust,"optout cannot authorize certificate trust");
+    InstallerRunner.ApplySelectedGamepadTrust(args,metadata,metadata.HasBundledVirtualGamepadDriver);
+    Check(args.AllowLocalGamepadCertificateTrust==(i==0),"bundle metadata only permits selected pinned beta certificate");
+   }
+   Console.WriteLine("4 actual MSI capability fixtures passed without running MSI actions or changing trust.");
+  }
   Console.WriteLine("Driver default/persistence/cancel/repair/MSI/elevation/pinned-beta policy regressions passed. No registry, UI, installers or trust changes.");
   return 0;
  }
