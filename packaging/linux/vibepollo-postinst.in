@@ -83,13 +83,26 @@ vibepollo_package_cleanup_record_temporaries() {
   # First validate the complete set, so one malformed entry prevents every
   # deletion. Writers inherit fd 8; a fresh caller cannot hold the lock while
   # an interrupted operation's surviving writer is still publishing a record.
-  for vibepollo_package_path in "$vibepollo_package_transaction"/.record.*; do
+  for vibepollo_package_path in "$vibepollo_package_transaction"/.record.* "$vibepollo_package_transaction"/.mask.*; do
     [ -e "$vibepollo_package_path" ] || [ -L "$vibepollo_package_path" ] || continue
     vibepollo_package_has_temporary=1
     vibepollo_package_suffix=${vibepollo_package_path##*/}
-    vibepollo_package_suffix=${vibepollo_package_suffix#.record.}
+    case "$vibepollo_package_suffix" in
+      .record.*) vibepollo_package_suffix=${vibepollo_package_suffix#.record.} ;;
+      .mask.*) vibepollo_package_suffix=${vibepollo_package_suffix#.mask.} ;;
+      *) return 1 ;;
+    esac
     [ "${#vibepollo_package_suffix}" -eq 6 ] || return 1
     case "$vibepollo_package_suffix" in *[!A-Za-z0-9]*) return 1 ;; esac
+    if [ -L "$vibepollo_package_path" ]; then
+      case "${vibepollo_package_path##*/}" in .mask.*) ;; *) return 1 ;; esac
+      [ "$(readlink -- "$vibepollo_package_path")" = /dev/null ] || return 1
+      vibepollo_package_temporary_attributes=$(stat -c '%u:%g:%h:%F' -- "$vibepollo_package_path") || return 1
+      case "$vibepollo_package_temporary_attributes" in
+        '0:0:1:symbolic link' | '0:0:2:symbolic link') continue ;;
+        *) return 1 ;;
+      esac
+    fi
     [ -f "$vibepollo_package_path" ] && [ ! -L "$vibepollo_package_path" ] || return 1
     vibepollo_package_temporary_attributes=$(stat -c '%u:%g:%a:%h:%F' -- "$vibepollo_package_path") || return 1
     case "$vibepollo_package_temporary_attributes" in
@@ -100,8 +113,8 @@ vibepollo_package_cleanup_record_temporaries() {
   [ "$vibepollo_package_has_temporary" -eq 1 ] || return 0
   [ "${vibepollo_package_lock_held:-0}" -eq 1 ] || return 1
   flock --nonblock 8 || return 1
-  for vibepollo_package_path in "$vibepollo_package_transaction"/.record.*; do
-    [ -e "$vibepollo_package_path" ] || continue
+  for vibepollo_package_path in "$vibepollo_package_transaction"/.record.* "$vibepollo_package_transaction"/.mask.*; do
+    [ -e "$vibepollo_package_path" ] || [ -L "$vibepollo_package_path" ] || continue
     rm -f -- "$vibepollo_package_path" || return 1
   done
 }
@@ -581,11 +594,71 @@ vibepollo_package_record_owned() {
 }
 
 vibepollo_package_mask() (
+  vibepollo_package_mask_stage=
+  trap '[ -z "$vibepollo_package_mask_stage" ] || rm -f -- "$vibepollo_package_mask_stage"' 0
+  for vibepollo_package_name do
+    case "$vibepollo_package_name" in
+      vibepollo.service | vibepollo-session-exec.socket | vibeshine-vkms-control.socket | vibepollo-session-restore@.service) ;;
+      *) return 1 ;;
+    esac
+    vibepollo_package_mask_path=/run/systemd/system/$vibepollo_package_name
+    vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_name.before" || return 1
+    vibepollo_package_mask_identity=$(vibepollo_package_path_identity "$vibepollo_package_mask_path") || return 1
+    if [ -e "$vibepollo_package_transaction/$vibepollo_package_name.owned" ] || [ -L "$vibepollo_package_transaction/$vibepollo_package_name.owned" ]; then
+      vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_name.owned" || return 1
+      case "$vibepollo_package_mask_identity" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+      [ "$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.before")" = absent ] &&
+        [ "$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.owned")" = "$vibepollo_package_mask_identity" ] || return 1
+      continue
+    fi
+    if [ "$vibepollo_package_mask_identity" = absent ]; then
+      # Keep a private inode as creation evidence. Publish its ownership intent
+      # before linking it, so interruption cannot strand our published mask.
+      # ln -P -T never replaces an administrator's competing path.
+      vibepollo_package_mask_stage=$(mktemp "$vibepollo_package_transaction/.mask.XXXXXX") || return 1
+      rm -f -- "$vibepollo_package_mask_stage" || return 1
+      ln -s /dev/null "$vibepollo_package_mask_stage" || return 1
+      vibepollo_package_created_mask=$(vibepollo_package_path_identity "$vibepollo_package_mask_stage") || return 1
+      case "$vibepollo_package_created_mask" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+      vibepollo_package_write_record "$vibepollo_package_name.before" absent || return 1
+      vibepollo_package_write_record "$vibepollo_package_name.owned" "$vibepollo_package_created_mask" || return 1
+      if ! ln -P -T -- "$vibepollo_package_mask_stage" "$vibepollo_package_mask_path" 2>/dev/null; then
+        vibepollo_package_mask_identity=$(vibepollo_package_path_identity "$vibepollo_package_mask_path") || return 1
+        if [ "$vibepollo_package_mask_identity" != "$vibepollo_package_created_mask" ]; then
+          # An exclusive-link failure published none of our inode. Drop only
+          # our exact intent, then preserve a valid competing external mask.
+          vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_name.owned" || return 1
+          [ "$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.owned")" = "$vibepollo_package_created_mask" ] || return 1
+          rm -f -- "$vibepollo_package_transaction/$vibepollo_package_name.owned" || return 1
+          [ "$vibepollo_package_mask_identity" != absent ] || return 1
+        fi
+      else
+        vibepollo_package_mask_identity=$(vibepollo_package_path_identity "$vibepollo_package_mask_path") || return 1
+        [ "$vibepollo_package_mask_identity" = "$vibepollo_package_created_mask" ] || return 1
+      fi
+      rm -f -- "$vibepollo_package_mask_stage" || return 1
+      vibepollo_package_mask_stage=
+      if [ -e "$vibepollo_package_transaction/$vibepollo_package_name.owned" ]; then continue; fi
+    fi
+    # Existing unowned masks, including ones added since a failed attempt's
+    # snapshot, remain policy. Refresh their preserved baseline, never claim.
+    case "$vibepollo_package_mask_identity" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+    vibepollo_package_write_record "$vibepollo_package_name.before" "$vibepollo_package_mask_identity" || return 1
+    [ "$(vibepollo_package_path_identity "$vibepollo_package_mask_path")" = "$vibepollo_package_mask_identity" ] || return 1
+  done
   timeout --signal=KILL 15 systemctl mask --runtime "$@" 2>/dev/null
   vibepollo_package_mask_status=$?
-  # A timed-out client may have completed the manager mutation.
+  # The manager can reload our prepublished masks, but cannot establish their
+  # ownership. Even a timed-out client must leave every recorded inode intact.
   for vibepollo_package_name do
-    vibepollo_package_record_owned "$vibepollo_package_name" "/run/systemd/system/$vibepollo_package_name" || return 1
+    vibepollo_package_mask_path=/run/systemd/system/$vibepollo_package_name
+    vibepollo_package_mask_identity=$(vibepollo_package_path_identity "$vibepollo_package_mask_path") || return 1
+    if [ -e "$vibepollo_package_transaction/$vibepollo_package_name.owned" ] || [ -L "$vibepollo_package_transaction/$vibepollo_package_name.owned" ]; then
+      vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_name.owned" || return 1
+      [ "$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.owned")" = "$vibepollo_package_mask_identity" ] || return 1
+    else
+      [ "$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.before")" = "$vibepollo_package_mask_identity" ] || return 1
+    fi
   done
   return "$vibepollo_package_mask_status"
 )

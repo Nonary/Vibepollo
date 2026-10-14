@@ -324,7 +324,7 @@ vibepollo_host_is_stable_or_quiescent() { return 0; }
 
     def test_stale_record_temporaries_are_cleaned_under_the_exclusive_lock(self):
         for hook in HOOKS:
-            for kind in ("empty", "partial", "malformed", "symlink", "mode", "owner", "hardlink", "unknown"):
+            for kind in ("empty", "partial", "malformed", "symlink", "mode", "owner", "hardlink", "unknown", "extra-dot", "extra-mask-dot", "mask-empty", "mask-symlink", "mask-linked"):
                 with self.subTest(hook=hook, kind=kind), tempfile.TemporaryDirectory() as temp:
                     stage = Path(temp)
                     (stage / "systemd").mkdir()
@@ -337,14 +337,20 @@ vibepollo_host_is_stable_or_quiescent() { return 0; }
                     self.assertEqual(initial.returncode, 0, initial.stderr)
                     record_dir = stage / "transaction"
                     original = {x.name: x.read_bytes() for x in record_dir.glob("*") if not x.name.startswith(".record.")}
-                    name = ".record.bad" if kind == "malformed" else "unknown" if kind == "unknown" else ".record.Abc123"
+                    name = ".record.bad" if kind == "malformed" else "unknown" if kind == "unknown" else ".record.manual.Abc123" if kind == "extra-dot" else ".mask.manual.Abc123" if kind == "extra-mask-dot" else ".mask.Abc123" if kind.startswith("mask-") else ".record.Abc123"
                     stale = record_dir / name
-                    if kind == "symlink":
+                    published = stage / "published-mask"
+                    if kind in ("mask-symlink", "mask-linked"):
+                        stale.symlink_to('/dev/null')
+                        if kind == "mask-linked":
+                            os.link(stale, published, follow_symlinks=False)
+                            published_identity = published.lstat().st_ino
+                    elif kind == "symlink":
                         stale.symlink_to(sentinel)
                     elif kind == "hardlink":
                         os.link(sentinel, stale)
                     else:
-                        stale.write_bytes(b"" if kind == "empty" else b"partial unpublished record")
+                        stale.write_bytes(b"" if kind in ("empty", "mask-empty") else b"partial unpublished record")
                         stale.chmod(0o644 if kind == "mode" else 0o600)
                     if kind == "owner":
                         code += r"""
@@ -356,18 +362,71 @@ stat() {
 }
 """
                     result = subprocess.run(["bash", "-c", code + "\nvibepollo_package_begin\n"], env=env, capture_output=True, text=True, timeout=5)
-                    if kind in ("empty", "partial"):
+                    if kind in ("empty", "partial", "mask-empty", "mask-symlink", "mask-linked"):
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertFalse(stale.exists())
                     else:
                         self.assertNotEqual(result.returncode, 0, result.stderr)
                         self.assertTrue(stale.exists() or stale.is_symlink())
                     self.assertEqual(sentinel.read_bytes(), b"must remain unchanged")
+                    if kind == "mask-linked":
+                        self.assertEqual(published.lstat().st_ino, published_identity)
+                        self.assertEqual(published.readlink(), Path('/dev/null'))
                     for name, value in original.items():
-                        if name == "run-id" and kind in ("empty", "partial"):
+                        if name == "run-id" and kind in ("empty", "partial", "mask-empty", "mask-symlink", "mask-linked"):
                             self.assertRegex((record_dir / name).read_text(), r"^[0-9a-f]{32}\n$")
                         else:
                             self.assertEqual((record_dir / name).read_bytes(), value)
+
+    def test_sigkill_during_mask_intent_and_exclusive_publication_can_retry(self):
+        for hook in HOOKS:
+            for point in ('before-intent', 'before-link', 'after-link'):
+                with self.subTest(hook=hook, point=point), tempfile.TemporaryDirectory() as temp:
+                    stage = Path(temp)
+                    (stage / 'systemd').mkdir()
+                    (stage / 'runtime').mkdir()
+                    code = self.record_fixture_code(hook, stage)
+                    writer = code + r'''
+vibepollo_package_begin || exit 1
+mkfifo "$stage/pause"
+exec 9<>"$stage/pause"
+pause_mask_writer() { : >"$stage/ready"; IFS= read -r paused <"$stage/pause"; }
+mv() {
+  for destination do :; done
+  case "$destination:$point" in *.owned:before-intent) pause_mask_writer ;; esac
+  command mv "$@"
+}
+ln() {
+  if [ "$1" = -P ]; then
+    [ "$point" != before-link ] || pause_mask_writer
+    command ln "$@" || return 1
+    [ "$point" != after-link ] || pause_mask_writer
+  else
+    command ln "$@"
+  fi
+}
+vibepollo_package_mask vibepollo.service
+'''
+                    env = dict(os.environ, stage=str(stage), point=point)
+                    proc = subprocess.Popen(['bash', '-c', writer], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+                    try:
+                        for _ in range(200):
+                            if (stage / 'ready').exists() or proc.poll() is not None:
+                                break
+                            time.sleep(.01)
+                        self.assertTrue((stage / 'ready').exists())
+                        self.assertEqual(len(list((stage / 'transaction').glob('.mask.*'))), 1)
+                        blocked = subprocess.run(['bash', '-c', code + '\nvibepollo_package_begin\n'], env=env, capture_output=True, text=True, timeout=5)
+                        self.assertNotEqual(blocked.returncode, 0)
+                    finally:
+                        if proc.poll() is None:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        proc.communicate(timeout=5)
+                    retry = code + '\nvibepollo_package_begin && vibepollo_package_mask vibepollo.service && vibepollo_package_restore_barriers && vibepollo_package_forget\n'
+                    result = subprocess.run(['bash', '-c', retry], env=env, capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertFalse((stage / 'systemd/vibepollo.service').is_symlink())
+                    self.assertFalse((stage / 'transaction').exists())
 
     def test_sigkill_during_real_record_publication_can_retry(self):
         for hook in HOOKS:
