@@ -732,7 +732,15 @@ class WindowsWorkflowBehaviorTest(unittest.TestCase):
 
         build_checkout = next(step for step in build_steps if step["name"] == "Checkout")
         package_checkout = next(step for step in package_steps if step["name"] == "Checkout")
-        self.assertEqual(build_checkout["with"]["fetch-depth"], "1")
+        depth_expression = build_checkout["with"]["fetch-depth"]
+        for daily, expected_depth in ((False, "1"), (True, "0")):
+            with self.subTest(daily=daily):
+                expression = depth_expression.removeprefix("${{").removesuffix("}}")
+                expression = expression.replace("inputs.daily_unsigned", repr(daily))
+                expression = expression.replace("&&", "and").replace("||", "or")
+                actual = eval(expression.strip(), {"__builtins__": {}})
+                self.assertEqual(actual, expected_depth)
+        self.assertEqual(build_checkout["with"]["fetch-tags"], "${{ inputs.daily_unsigned }}")
         self.assertEqual(build_checkout["with"]["submodules"], "recursive")
         self.assertEqual(package_checkout["with"]["fetch-depth"], "1")
 
