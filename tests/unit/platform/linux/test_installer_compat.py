@@ -116,6 +116,7 @@ if "$workdir/preflight"; then exit 1; fi
 REMOVAL_TRACE={shlex.quote(str(removal_trace))}
 export REMOVAL_TRACE
 require_root() {{ return 0; }}
+pacman-conf() {{ printf '%s\\n' /etc/pacman.d/hooks; }}
 require_pacman() {{ return 0; }}
 run_checks() {{ die 'removal must not run installation checks'; }}
 install_kernel_headers() {{ die 'removal must not install headers'; }}
@@ -125,6 +126,8 @@ pacman() {{
     -Q) printf '%s\\n' '{brand} 2.0.0-1' ;;
     -R)
       shift
+      while [ "$1" != --hookdir ]; do shift; done
+      shift 2
       while [ "$1" != --hookdir ]; do shift; done
       hook_dir=$2
       preflight=$(sed -n 's/^Exec = //p' "$hook_dir/00-{brand}-incoming-quiesce.hook")
@@ -143,6 +146,7 @@ REMOVAL_TRACE={shlex.quote(str(removal_trace))}
 : > "$REMOVAL_TRACE"
 export REMOVAL_TRACE FIXTURE_HOST_ACTIVE=1
 require_root() {{ return 0; }}
+pacman-conf() {{ printf '%s\\n' /etc/pacman.d/hooks; }}
 require_pacman() {{ return 0; }}
 pacman() {{
   case "$1" in
@@ -150,6 +154,8 @@ pacman() {{
     -Q) printf '%s\\n' '{brand} 2.0.0-1' ;;
     -R)
       shift
+      while [ "$1" != --hookdir ]; do shift; done
+      shift 2
       while [ "$1" != --hookdir ]; do shift; done
       preflight=$(sed -n 's/^Exec = //p' "$2/00-{brand}-incoming-quiesce.hook")
       "$preflight" || return
@@ -163,6 +169,7 @@ if main --remove --yes --package {shlex.quote(str(candidate))}; then exit 1; fi
 ''')
     run(f'''
 require_root() {{ return 0; }}
+pacman-conf() {{ printf '%s\\n' /etc/pacman.d/hooks; }}
 require_pacman() {{ return 0; }}
 pacman() {{ [ "$1" = -Qp ] && printf '%s\\n' 'unrelated 2.1.0-1'; }}
 if (main --remove); then exit 1; fi

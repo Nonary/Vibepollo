@@ -27,6 +27,7 @@ package_name=vibepollo
 directory_owner=vibepollo
 ownership_error=0
 repository_metadata_available=1
+pacman-conf() { [[ "$*" = HookDir ]] && printf '%s\n' /etc/pacman.d/hooks; }
 pacman() {
   printf '%s\n' "$*" >> "$calls"
   if [[ "$1" == -Si ]]; then ((repository_metadata_available)); return; fi
@@ -56,7 +57,7 @@ pacman() {
 parse_args --yes
 install_from_package
 ! grep -Eq -- '^-S' "$calls"
-grep -Fx -- "-U --noconfirm --ask=4 --hookdir $workdir/hooks -- $local_package" "$calls"
+grep -Fx -- "-U --noconfirm --ask=4 --hookdir /etc/pacman.d/hooks --hookdir $workdir/hooks -- $local_package" "$calls"
 [[ $(wc -l < "$calls") == 2 ]]
 : > "$calls"
 package_name=unrelated
@@ -67,7 +68,7 @@ if (install_from_package); then exit 1; fi
 package_name=vibepollo
 pacman_confirm=(); replacement_confirm=()
 install_from_package
-grep -Fx -- "-U --hookdir $workdir/hooks -- $local_package" "$calls"
+grep -Fx -- "-U --hookdir /etc/pacman.d/hooks --hookdir $workdir/hooks -- $local_package" "$calls"
 printf 'Native installer validates package identity and confines conflict answers to replacement.\n'
 
 directory="$source_root/vibeshine-drm-1.19.0"
@@ -81,7 +82,7 @@ printf 'literal wildcard\n' > "$directory/unsafe*.h"
 install_from_package
 expected='--overwrite usr/src/vibeshine-drm-1.19.0/vibeshine_drm_vrr.h'
 ! grep -Eq -- '^-S' "$calls"
-grep -Fx -- "-U $expected --hookdir $workdir/hooks -- $local_package" "$calls"
+grep -Fx -- "-U $expected --hookdir /etc/pacman.d/hooks --hookdir $workdir/hooks -- $local_package" "$calls"
 [[ ${#driver_overwrite[@]} == 2 ]]
 backups=("$backup_root"/vibeshine-driver-backup.*/vibeshine-drm-1.19.0/vibeshine_drm_vrr.h)
 [[ ${#backups[@]} == 1 ]]
@@ -116,14 +117,14 @@ configure_pacman_repo() { :; }
 parse_args --yes
 : > "$calls"
 install_from_repo
-grep -Fx -- "-S --noconfirm --ask=4 $expected --cachedir $workdir/cache --hookdir $workdir/hooks vibepollo" "$calls"
+grep -Fx -- "-S --noconfirm --ask=4 $expected --cachedir $workdir/cache --hookdir /etc/pacman.d/hooks --hookdir $workdir/hooks vibepollo" "$calls"
 ! grep -Eq -- '^-S[^ ]*[yu]' "$calls"
 download_release_package() { printf 'download-release\n' >> "$calls"; }
 repository_metadata_available=0
 : > "$calls"
 install_from_repo
 grep -Fx -- 'download-release' "$calls"
-grep -Fx -- "-U --noconfirm --ask=4 $expected --hookdir $workdir/hooks -- $local_package" "$calls"
+grep -Fx -- "-U --noconfirm --ask=4 $expected --hookdir /etc/pacman.d/hooks --hookdir $workdir/hooks -- $local_package" "$calls"
 ! grep -Eq -- '^-S[^ ]*[yu]' "$calls"
 repository_metadata_available=1
 

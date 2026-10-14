@@ -56,6 +56,7 @@ skip_checks=0
 pacman_confirm=()
 replacement_confirm=()
 driver_overwrite=()
+package_hook_args=()
 check_failures=0
 warnings=()
 workdir=''
@@ -596,6 +597,27 @@ EOF
   fi
 }
 
+prepare_package_hook_dirs() {
+  # Pacman applies the default /etc hook directory only when no --hookdir or
+  # configured HookDir exists. Preserve the effective configuration explicitly;
+  # configured directories still append in Pacman and retain admin precedence.
+  command -v pacman-conf >/dev/null 2>&1 ||
+    die 'pacman-conf is required to preserve administrator transaction hooks'
+  local resolved_hooks hook_dir hook_count=0
+  resolved_hooks=$(pacman-conf HookDir) ||
+    die 'could not read effective pacman hook directories; no transaction started'
+  [[ -n "$resolved_hooks" ]] || die 'effective pacman hook directories are empty'
+  package_hook_args=()
+  while IFS= read -r hook_dir; do
+    [[ -n "$hook_dir" && "$hook_dir" != *$'\r'* ]] ||
+      die 'invalid effective pacman hook directory'
+    hook_count=$((hook_count + 1))
+    ((hook_count <= 256)) || die 'too many effective pacman hook directories'
+    package_hook_args+=(--hookdir "$hook_dir")
+  done <<< "$resolved_hooks"
+  package_hook_args+=(--hookdir "$workdir/hooks")
+}
+
 stage_upgrade_guard() {
   local candidate=$1 library="$workdir/arch-package-hooks" preflight="$workdir/preflight"
   local hook_dir="$workdir/hooks"
@@ -684,10 +706,11 @@ install_from_repo() {
   [[ $(pacman -Qp -- "${candidates[0]}") == 'vibepollo '* ]] ||
     die 'cached package identity is not Vibepollo'
   stage_upgrade_guard "${candidates[0]}"
+  prepare_package_hook_dirs
   prepare_driver_replacement
   log 'Installing Vibepollo and its dependencies; no full system upgrade is requested'
   run_package_transaction pacman -S "${replacement_confirm[@]}" "${driver_overwrite[@]}" \
-    --cachedir "$workdir/cache" --hookdir "$workdir/hooks" "${repo_target[@]}"
+    --cachedir "$workdir/cache" "${package_hook_args[@]}" "${repo_target[@]}"
 }
 
 download_release_package() {
@@ -850,11 +873,12 @@ install_from_package() {
   [[ "$identity" == 'vibepollo '* && "$identity" != *$'\n'* ]] || die 'local package is not Vibepollo'
   package_path=$(readlink -f -- "$local_package") || die 'cannot resolve the local package path'
   stage_upgrade_guard "$local_package"
+  prepare_package_hook_dirs
   prepare_driver_replacement
   log "Installing ${local_package##*/} with pacman"
   # Installing a local build must not also upgrade the operating system.
   run_package_transaction pacman -U "${replacement_confirm[@]}" "${driver_overwrite[@]}" \
-    --hookdir "$workdir/hooks" -- "$package_path"
+    "${package_hook_args[@]}" -- "$package_path"
 }
 
 install_vibepollo() {
@@ -882,8 +906,9 @@ remove_vibepollo() {
   [[ "$identity" == 'vibepollo '* && "$identity" != *$'\n'* ]] || die 'removal policy package is not Vibepollo'
   workdir=$(mktemp -d /tmp/vibepollo-removal.XXXXXXXX)
   stage_upgrade_guard "$local_package"
+  prepare_package_hook_dirs
   log 'Removing Vibepollo with the incoming shutdown guard; the policy package will not be installed'
-  run_package_transaction pacman -R "${pacman_confirm[@]}" --hookdir "$workdir/hooks" -- vibepollo || return $?
+  run_package_transaction pacman -R "${pacman_confirm[@]}" "${package_hook_args[@]}" -- vibepollo || return $?
   ok 'Vibepollo was removed; existing machine profile data is preserved.'
 }
 
