@@ -313,6 +313,7 @@ Package ordering limits what an incoming package can repair:
 | Path | Earliest applicable step |
 | --- | --- |
 | Arch/CachyOS installer | Private incoming `PreTransaction` guard, before outgoing hooks and package writes. |
+| Future direct Arch transactions with the installed guard | Installed `AbortOnFail` hook loads the package function library before extraction. |
 | Direct Arch upgrade/removal from a broken installed hook | Use the incoming installer preflight; incoming post-install code runs too late. |
 | DEB | Old `prerm upgrade` runs before new `preinst`; dpkg can call new `prerm failed-upgrade` when the old script fails. Current removal-only `prerm` does nothing for those upgrade arguments. |
 | RPM | New `%pre` runs before replacement; new `%post` precedes old `%preun` during upgrade. Old scriptlets can still affect the transaction. |
