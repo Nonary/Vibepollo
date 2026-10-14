@@ -807,6 +807,67 @@ done
                         result=subprocess.run([shutil.which("dash") or "sh","-c",code],env=dict(os.environ,stage=tmp,cut=cut,change=change),capture_output=True,text=True)
                         self.assertEqual(result.returncode,0,result.stderr)
 
+    def test_pending_adoption_recovery_preserves_edited_fence_and_authority(self):
+        for hook in HOOKS:
+            for cut in ("legacy-adopted", "fence.before", "vibepollo-session-exec.socket.owned"):
+                for edit in ("comment", "newline", "unchanged"):
+                    with self.subTest(hook=hook, cut=cut, edit=edit), tempfile.TemporaryDirectory() as tmp:
+                        stage=Path(tmp); (stage/"systemd").mkdir(); (stage/"runtime").mkdir()
+                        source=(ROOT/hook).read_text().replace("%%", "%")
+                        writer=function(source, "vibepollo_package_write_record", True).replace("vibepollo_package_write_record()", "vibepollo_real_write_record()", 1)
+                        code=self.record_fixture_code(hook,stage)+writer+r"""
+VIBEPOLLO_PACKAGE_RUN_ID=11111111111111111111111111111111
+vibepollo_package_complete_quiescence_is_safe() { return 0; }
+vibepollo_package_begin || exit 91
+printf '[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=mixed\nSendSIGKILL=no\n' >"$stage/fence"
+chmod 644 "$stage/fence"
+for name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
+  ln -s /dev/null "$stage/systemd/$name"
+  vibepollo_package_snapshot_path "$name" "$stage/systemd/$name" || exit 92
+  vibepollo_package_path_identity "$stage/systemd/$name" >"$stage/$name.identity"
+done
+vibepollo_package_snapshot_path fence "$stage/fence" || exit 93
+fence_identity=$(vibepollo_package_path_identity "$stage/fence") || exit 94
+vibepollo_package_write_record() {
+  vibepollo_real_write_record "$@" || return 1
+  [ "$1" != "$cut" ]
+}
+vibepollo_package_adopt_legacy_barriers && exit 95
+vibepollo_package_write_record() { vibepollo_real_write_record "$@"; }
+# Even marker-only initialization has authority that cannot be forgotten.
+vibepollo_package_forget && exit 96
+case "$edit" in
+  comment) printf '# administrator edit\n' >>"$stage/fence" ;;
+  newline) printf '\n' >>"$stage/fence" ;;
+esac
+cp "$stage/fence" "$stage/expected-fence"
+[ "$fence_identity" = "$(vibepollo_package_path_identity "$stage/fence")" ] || exit 97
+if [ "$edit" != unchanged ]; then
+  vibepollo_package_begin && exit 98
+  # Exercise the real higher-level rollback and retirement guards after the
+  # failed begin, rather than certifying only signature selection in isolation.
+  vibepollo_package_restore_barriers && exit 99
+  vibepollo_package_forget && exit 100
+  cmp "$stage/expected-fence" "$stage/fence" || exit 101
+  [ "$fence_identity" = "$(vibepollo_package_path_identity "$stage/fence")" ] || exit 102
+  [ "$(cat "$stage/transaction/legacy-adopted")" = yes ] || exit 103
+  for name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
+    [ "$(cat "$stage/$name.identity")" = "$(vibepollo_package_path_identity "$stage/systemd/$name")" ] || exit 104
+  done
+else
+  # A unchanged trusted partial adoption can finish directly through rollback.
+  vibepollo_package_restore_barriers || exit 105
+  [ ! -e "$stage/fence" ] || exit 106
+  for name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
+    [ ! -L "$stage/systemd/$name" ] || exit 107
+  done
+  vibepollo_package_forget || exit 108
+  [ ! -e "$stage/transaction" ] || exit 109
+fi
+"""
+                        result=subprocess.run([shutil.which("dash") or "sh", "-c", code], env=dict(os.environ,stage=tmp,cut=cut,edit=edit), capture_output=True,text=True)
+                        self.assertEqual(result.returncode,0,result.stderr)
+
     def test_stale_generation_record_or_populated_host_blocks_release(self):
         for hook in HOOKS:
             for scenario in ("stale-record", "populated", "unmanaged"):
