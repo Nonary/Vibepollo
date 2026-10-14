@@ -1220,8 +1220,10 @@ vibepollo_package_prepare_postinstall_start() {
   # This must be the full actual generation proof (controller, broker/apps,
   # restore/control instances, session record and retained executable inodes).
   # The local host-empty + no-jobs classifier is insufficient for release.
-  vibepollo_package_complete_quiescence_is_safe || return 1
-  vibepollo_package_release || return 1
+  if ! vibepollo_package_complete_quiescence_is_safe || ! vibepollo_package_release; then
+    echo 'error: safe package shutdown recovery could not finish; automatic service activation remains deferred. Resolve the preceding check and retry package configuration; administrator masks were preserved.' >&2
+    return 1
+  fi
   echo 'package: preserved administrator host mask or start fence; configuration completed and automatic service activation is deferred.' >&2
   return 0
 }
@@ -1628,6 +1630,25 @@ vibepollo_package_remove_owned() {
   [ "$vibepollo_package_before" = absent ] || return 0
   vibepollo_package_current=$(vibepollo_package_path_identity "$2") || return 1
   [ "$vibepollo_package_current" != absent ] || return 0
+  if [ ! -e "$vibepollo_package_transaction/$1.owned" ] && [ ! -L "$vibepollo_package_transaction/$1.owned" ]; then
+    # An idle Arch retry can skip mask creation. Reconcile an external mask
+    # added since the snapshot without claiming it or reopening its admission.
+    # New package masks publish intent first, so a missing record is not ours.
+    case "$1:$2" in
+      vibepollo.service:/run/systemd/system/vibepollo.service | vibepollo-session-exec.socket:/run/systemd/system/vibepollo-session-exec.socket | vibeshine-vkms-control.socket:/run/systemd/system/vibeshine-vkms-control.socket | vibepollo-session-restore@.service:/run/systemd/system/vibepollo-session-restore@.service) ;;
+      *) return 1 ;;
+    esac
+    case "$vibepollo_package_current" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
+    vibepollo_package_lock || return 1
+    vibepollo_package_complete_quiescence_is_safe || return 1
+    [ ! -e "$vibepollo_package_transaction/$1.owned" ] && [ ! -L "$vibepollo_package_transaction/$1.owned" ] || return 1
+    vibepollo_package_record_is_safe "$vibepollo_package_transaction/$1.before" || return 1
+    [ "$(cat -- "$vibepollo_package_transaction/$1.before")" = absent ] || return 1
+    [ "$(vibepollo_package_path_identity "$2")" = "$vibepollo_package_current" ] || return 1
+    vibepollo_package_write_record "$1.before" "$vibepollo_package_current" || return 1
+    [ "$(vibepollo_package_path_identity "$2")" = "$vibepollo_package_current" ] || return 1
+    return 0
+  fi
   vibepollo_package_record_is_safe "$vibepollo_package_transaction/$1.owned" || return 1
   [ "$(cat -- "$vibepollo_package_transaction/$1.owned")" = "$vibepollo_package_current" ] || return 1
   rm -f -- "$2"

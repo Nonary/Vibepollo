@@ -123,3 +123,6 @@ esac
                     count += 1
 print(f'{brand}: {count} actual mask-helper cases passed across nine standalone contexts; no native services')
 subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures/package-mask-retry.py'), str(root), brand], check=True)
+
+subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures/package-idle-mask-retry.py'), str(root), brand], check=True)
+subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures/package-idle-mask-faults.py'), str(root), brand], check=True)
