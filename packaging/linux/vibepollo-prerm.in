@@ -1300,6 +1300,7 @@ vibepollo_package_adopt_legacy_barriers() {
     # replacement path or an unrecorded new mask.
     if [ ! -e "$vibepollo_host_upgrade_dropin" ] && [ ! -L "$vibepollo_host_upgrade_dropin" ]; then
       vibepollo_package_complete_quiescence_is_safe || return 1
+      [ ! -e "$vibepollo_host_upgrade_dropin" ] && [ ! -L "$vibepollo_host_upgrade_dropin" ] || return 1
       if [ -e "$vibepollo_package_transaction/fence.owned" ] || [ -L "$vibepollo_package_transaction/fence.owned" ]; then
         vibepollo_package_record_is_safe "$vibepollo_package_transaction/fence.owned" || return 1
       fi
@@ -1329,9 +1330,11 @@ vibepollo_package_adopt_legacy_barriers() {
           fi
         done
       done
+      [ ! -e "$vibepollo_host_upgrade_dropin" ] && [ ! -L "$vibepollo_host_upgrade_dropin" ] || return 1
       vibepollo_package_write_record fence.before absent || return 1
       rm -f -- "$vibepollo_package_transaction/fence.owned" || return 1
       vibepollo_package_write_record phase preflight || return 1
+      [ ! -e "$vibepollo_host_upgrade_dropin" ] && [ ! -L "$vibepollo_host_upgrade_dropin" ] || return 1
       rm -f -- "$vibepollo_package_transaction/legacy-adopted" || return 1
       return 0
     fi
@@ -1367,6 +1370,10 @@ SendSIGKILL=no') ;;
     echo 'error: an earlier package fence remains, but the old host or session has not fully drained; it cannot be adopted safely.' >&2
     return 1
   }
+  # Generation inspection can take time. An administrator may edit the same
+  # inode while it runs; do not convert authority for changed fence bytes.
+  printf '%s\n' "$vibepollo_package_legacy_contents" |
+    cmp -s -- - "$vibepollo_host_upgrade_dropin" || return 1
   for vibepollo_package_name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
     vibepollo_package_current=$(vibepollo_package_path_identity "/run/systemd/system/$vibepollo_package_name") || return 1
     case "$vibepollo_package_current" in *:0:0:'symbolic link') ;; *) return 1 ;; esac
@@ -1382,15 +1389,32 @@ SendSIGKILL=no') ;;
     vibepollo_package_before=$(cat -- "$vibepollo_package_transaction/fence.owned") || return 1
   fi
   [ "$(vibepollo_package_path_identity "$vibepollo_host_upgrade_dropin")" = "$vibepollo_package_before" ] || return 1
+  vibepollo_package_adoption_fence_identity=$vibepollo_package_before
   vibepollo_package_write_record legacy-adopted yes || return 1
   for vibepollo_package_name in fence vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
     if [ "$vibepollo_package_name" = fence ]; then vibepollo_package_owned_path=$vibepollo_host_upgrade_dropin
     else vibepollo_package_owned_path=/run/systemd/system/$vibepollo_package_name; fi
+    # Recheck each original identity at publication, rather than claiming a
+    # replacement that appeared after the inventory pass.
+    if [ -e "$vibepollo_package_transaction/$vibepollo_package_name.owned" ]; then
+      vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_name.owned" || return 1
+      vibepollo_package_expected=$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.owned") || return 1
+    else
+      vibepollo_package_record_is_safe "$vibepollo_package_transaction/$vibepollo_package_name.before" || return 1
+      vibepollo_package_expected=$(cat -- "$vibepollo_package_transaction/$vibepollo_package_name.before") || return 1
+    fi
     vibepollo_package_current=$(vibepollo_package_path_identity "$vibepollo_package_owned_path") || return 1
+    [ "$vibepollo_package_current" = "$vibepollo_package_expected" ] || return 1
+    if [ "$vibepollo_package_name" != fence ]; then
+      [ "$(readlink -- "$vibepollo_package_owned_path")" = /dev/null ] || return 1
+    fi
     vibepollo_package_write_record "$vibepollo_package_name.owned" "$vibepollo_package_current" || return 1
     vibepollo_package_write_record "$vibepollo_package_name.before" absent || return 1
   done
   vibepollo_package_write_record phase preflight || return 1
+  [ "$(vibepollo_package_path_identity "$vibepollo_host_upgrade_dropin")" = "$vibepollo_package_adoption_fence_identity" ] || return 1
+  printf '%s\n' "$vibepollo_package_legacy_contents" |
+    cmp -s -- - "$vibepollo_host_upgrade_dropin" || return 1
   # Every owned identity and before snapshot is now durable; the pending
   # adoption marker is no longer needed by later release/retry operations.
   rm -f -- "$vibepollo_package_transaction/legacy-adopted"

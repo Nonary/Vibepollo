@@ -868,6 +868,90 @@ fi
                         result=subprocess.run([shutil.which("dash") or "sh", "-c", code], env=dict(os.environ,stage=tmp,cut=cut,edit=edit), capture_output=True,text=True)
                         self.assertEqual(result.returncode,0,result.stderr)
 
+    def test_legacy_adoption_rechecks_after_proof_and_publication(self):
+        for hook in HOOKS:
+            for scenario in ("proof-edit", "pending-proof-edit", "publication-edit", "publication-mask-replace", "missing-proof-new-fence", "unchanged"):
+                with self.subTest(hook=hook, scenario=scenario), tempfile.TemporaryDirectory() as tmp:
+                    stage=Path(tmp); (stage/"systemd").mkdir(); (stage/"runtime").mkdir()
+                    source=(ROOT/hook).read_text().replace("%%", "%")
+                    writer=function(source,"vibepollo_package_write_record",True).replace("vibepollo_package_write_record()", "vibepollo_real_write_record()",1)
+                    code=self.record_fixture_code(hook,stage)+writer+r"""
+VIBEPOLLO_PACKAGE_RUN_ID=11111111111111111111111111111111
+inject=none
+vibepollo_package_complete_quiescence_is_safe() {
+  case "$inject" in
+    proof-edit) printf '# administrator edit during proof\n' >>"$stage/fence"; inject=none ;;
+    proof-new-fence) cp "$stage/removed-fence" "$stage/fence"; chmod 644 "$stage/fence"; inject=none ;;
+  esac
+  return 0
+}
+vibepollo_package_begin || exit 91
+printf '[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=mixed\nSendSIGKILL=no\n' >"$stage/fence"
+chmod 644 "$stage/fence"
+for name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
+  ln -s /dev/null "$stage/systemd/$name"
+  vibepollo_package_snapshot_path "$name" "$stage/systemd/$name" || exit 92
+  vibepollo_package_path_identity "$stage/systemd/$name" >"$stage/$name.identity"
+done
+vibepollo_package_snapshot_path fence "$stage/fence" || exit 93
+vibepollo_package_write_record() {
+  vibepollo_real_write_record "$@" || return 1
+  case "$inject:$1" in
+    seed-cut:fence.before) return 1 ;;
+    publication-edit:phase) printf '# administrator edit during publication\n' >>"$stage/fence"; inject=none ;;
+    publication-mask-replace:legacy-adopted)
+      mv "$stage/systemd/vibepollo-session-exec.socket" "$stage/original-mask"
+      ln -s /dev/null "$stage/systemd/vibepollo-session-exec.socket"
+      inject=none ;;
+  esac
+  return 0
+}
+case "$scenario" in
+  pending-proof-edit | missing-proof-new-fence)
+    inject=seed-cut
+    vibepollo_package_adopt_legacy_barriers && exit 94
+    if [ "$scenario" = missing-proof-new-fence ]; then
+      mv "$stage/fence" "$stage/removed-fence"
+      inject=proof-new-fence
+    else
+      inject=proof-edit
+    fi ;;
+  *) inject=$scenario ;;
+esac
+vibepollo_package_adopt_legacy_barriers
+status=$?
+if [ "$scenario" = unchanged ]; then
+  [ "$status" -eq 0 ] || exit 95
+  vibepollo_package_restore_barriers || exit 96
+  vibepollo_package_forget || exit 97
+  [ ! -e "$stage/fence" ] && [ ! -e "$stage/transaction" ] || exit 98
+  exit 0
+fi
+[ "$status" -ne 0 ] || exit 99
+[ -f "$stage/fence" ] || exit 100
+cp "$stage/fence" "$stage/expected-fence"
+if [ "$scenario" != proof-edit ]; then
+  [ "$(cat "$stage/transaction/legacy-adopted")" = yes ] || exit 101
+  vibepollo_package_restore_barriers && exit 102
+  vibepollo_package_forget && exit 103
+else
+  # Initial adoption never published authority for the edited old barrier.
+  [ ! -e "$stage/transaction/legacy-adopted" ] || exit 104
+  [ ! -e "$stage/transaction/fence.owned" ] || exit 105
+fi
+cmp "$stage/expected-fence" "$stage/fence" || exit 106
+for name in vibepollo.service vibepollo-session-exec.socket vibeshine-vkms-control.socket 'vibepollo-session-restore@.service'; do
+  if [ "$scenario" = publication-mask-replace ] && [ "$name" = vibepollo-session-exec.socket ]; then
+    [ ! -e "$stage/transaction/$name.owned" ] || exit 107
+    [ "$(cat "$stage/transaction/$name.before")" = "$(cat "$stage/$name.identity")" ] || exit 108
+  else
+    [ "$(cat "$stage/$name.identity")" = "$(vibepollo_package_path_identity "$stage/systemd/$name")" ] || exit 109
+  fi
+done
+"""
+                    result=subprocess.run([shutil.which("dash") or "sh","-c",code],env=dict(os.environ,stage=tmp,scenario=scenario),capture_output=True,text=True)
+                    self.assertEqual(result.returncode,0,result.stderr)
+
     def test_stale_generation_record_or_populated_host_blocks_release(self):
         for hook in HOOKS:
             for scenario in ("stale-record", "populated", "unmanaged"):
