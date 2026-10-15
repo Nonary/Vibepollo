@@ -2666,45 +2666,9 @@ namespace confighttp {
   void refresh_remote_display_physical_baseline() {
     try {
 #ifdef _WIN32
-      // The Devices page is read-only. Never overwrite a managed stream's
-      // physical baseline when the page requests its display inventory.
+      // An inventory read must not replace a live stream's captured baseline.
       if (remote_display_topology::instance().managed_client_identity_count() != 0) return;
-      const auto devices = display_helper_integration::enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
-      if (!devices) return;
-      std::vector<remote_display_topology::node_t> nodes;
-      for (const auto &device : *devices) {
-        if (device.m_device_id.empty() || device.m_display_name.empty() || !device.m_info) continue;
-        const auto &info = *device.m_info;
-        const auto label = device.m_friendly_name.empty() ? device.m_display_name : device.m_friendly_name;
-        if (VDISPLAY::is_virtual_display_output(device.m_device_id) ||
-            boost::algorithm::icontains(label, "virtual display")) continue;
-        remote_display_topology::node_t node;
-        node.id = device.m_device_id;
-        node.device_id = device.m_device_id;
-        node.label = label;
-        node.physical = true;
-        node.preexisting = true;
-        node.active = true;
-        node.primary = info.m_primary;
-        // Physical origins must not silently default to (0,0): the idle
-        // shutdown coordinator used to write both defaults back to Windows.
-        node.x = info.m_origin_point.m_x;
-        node.y = info.m_origin_point.m_y;
-        node.configured_mode.width = static_cast<int>(info.m_resolution.m_width);
-        node.configured_mode.height = static_cast<int>(info.m_resolution.m_height);
-        if (const auto *rate = std::get_if<display_device::Rational>(&info.m_refresh_rate)) {
-          if (rate->m_denominator != 0) {
-            node.configured_mode.refresh_hz = static_cast<int>(std::lround(
-              static_cast<double>(rate->m_numerator) / rate->m_denominator));
-          }
-        } else if (const auto *rate = std::get_if<double>(&info.m_refresh_rate)) {
-          node.configured_mode.refresh_hz = static_cast<int>(std::lround(*rate));
-        }
-        node.configured_mode.hdr = info.m_hdr_state.value_or(display_device::HdrState::Disabled) == display_device::HdrState::Enabled;
-        nodes.push_back(std::move(node));
-      }
-      if (nodes.empty()) return;
-#else
+#endif
       const auto devices = nlohmann::json::parse(display_helper_integration::enumerate_devices_json(display_device::DeviceEnumerationDetail::Full));
       if (!devices.is_array()) return;
       std::vector<remote_display_topology::node_t> nodes;
@@ -2724,8 +2688,25 @@ namespace confighttp {
         const auto info = device.value("info", nlohmann::json::object());
         node.active = info.value("active", true);
         node.primary = info.value("primary", false);
+#ifdef _WIN32
+        // The coordinator may later apply this baseline. A missing origin
+        // must never silently become (0,0) for a second physical monitor.
+        if (!info.contains("origin_point") || !info["origin_point"].is_object() ||
+            !info["origin_point"].contains("x") || !info["origin_point"].contains("y") ||
+            !info["origin_point"]["x"].is_number_integer() || !info["origin_point"]["y"].is_number_integer()) continue;
+        node.device_id = id;
+        node.preexisting = true;
+        node.x = info["origin_point"]["x"].get<int>();
+        node.y = info["origin_point"]["y"].get<int>();
+        if (info.contains("resolution") && info["resolution"].is_object()) {
+          node.configured_mode.width = info["resolution"].value("width", node.configured_mode.width);
+          node.configured_mode.height = info["resolution"].value("height", node.configured_mode.height);
+        }
+#endif
         nodes.push_back(std::move(node));
       }
+#ifdef _WIN32
+      if (nodes.empty()) return;
 #endif
       remote_display_topology::instance().set_physical_baseline(std::move(nodes));
     } catch (const std::exception &e) {
