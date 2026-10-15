@@ -64,7 +64,7 @@ try {
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors)
         if ($errors.Count -gt 0) { throw "$file has PowerShell syntax errors: $($errors.Message -join '; ')" }
         if ($file.EndsWith('install.ps1')) {
-            $command = $ast.Find({param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Add-Type'}, $true)
+            $command = $ast.Find({param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Add-DriverInteropType'}, $true)
             Add-Type -TypeDefinition $command.CommandElements[2].Value
             foreach ($name in @('DeviceInfo', 'InterfaceInfo', 'InstallParams')) {
                 $type = [VibepolloUsbIpSetup].GetNestedType($name, [Reflection.BindingFlags]::NonPublic)

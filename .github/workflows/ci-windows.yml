@@ -513,6 +513,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\packaging\windows\test_driver_install_safety.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Mandatory driver safety tests failed.' }
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\packaging\windows\test_driver_interop_environment.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Driver interop environment regression failed.' }
 
       - name: Test production bootstrap migration
         if: inputs.build_tests
