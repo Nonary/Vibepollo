@@ -195,7 +195,12 @@ int main() {
 with tempfile.TemporaryDirectory(prefix="virtual-capture-readiness-") as temporary:
     cpp = Path(temporary) / "test.cpp"
     cpp.write_text(harness)
-    for platform, flags in [("Windows", ["-D_WIN32"]), ("non-Windows", [])]:
+    darwin_compat = [
+        "-D_UPPER=0x1", "-D_LOWER=0x2", "-D_DIGIT=0x4", "-D_SPACE=0x8",
+        "-D_PUNCT=0x10", "-D_CONTROL=0x20", "-D_BLANK=0x40", "-D_HEX=0x80",
+        "-D_ALPHA=0x103",
+    ] if sys.platform == "darwin" else []
+    for platform, flags in [("Windows", ["-D_WIN32", *darwin_compat]), ("non-Windows", [])]:
         exe = Path(temporary) / platform
         subprocess.run(["g++", "-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", *flags, str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)

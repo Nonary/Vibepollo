@@ -26,6 +26,7 @@ if(NOT BOOST_USE_STATIC AND NOT FETCH_CONTENT_BOOST_USED)
 endif()
 
 list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
+        ZLIB::ZLIB
         ${APP_KIT_LIBRARY}
         ${APP_SERVICES_LIBRARY}
         ${AUDIO_TOOLBOX_LIBRARY}
@@ -66,7 +67,7 @@ if(SUNSHINE_ENABLE_TRAY)
     list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
             ${COCOA})
     list(APPEND PLATFORM_TARGET_FILES
-            "${CMAKE_SOURCE_DIR}/third-party/tray/src/tray_darwin.m")
+            "${CMAKE_SOURCE_DIR}/src/platform/macos/tray_darwin.m")
 endif()
 
 list(APPEND PLATFORM_TARGET_FILES "${CMAKE_SOURCE_DIR}/src/platform/macos/managed_app_focus.mm")

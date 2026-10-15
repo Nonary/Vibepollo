@@ -11,6 +11,13 @@ if(NOT DEFINED FFMPEG_PREPARED_BINARIES)
     elseif(FREEBSD)
         # numa is not available on FreeBSD
         set(FFMPEG_PLATFORM_LIBRARIES va va-drm va-x11 X11)
+    elseif(APPLE)
+        set(FFMPEG_PLATFORM_LIBRARIES
+            "-framework CoreFoundation"
+            "-framework CoreMedia"
+            "-framework CoreVideo"
+            "-framework VideoToolbox"
+            "-framework AudioToolbox")
     elseif(UNIX AND NOT APPLE)
         set(FFMPEG_PLATFORM_LIBRARIES numa va va-drm va-x11 X11)
     endif()
@@ -142,6 +149,13 @@ else()
             set(FFMPEG_PLATFORM_LIBRARIES mfplat ole32 strmiids mfuuid vpl)
         elseif(FREEBSD)
             set(FFMPEG_PLATFORM_LIBRARIES va va-drm va-x11 X11)
+        elseif(APPLE)
+            set(FFMPEG_PLATFORM_LIBRARIES
+                "-framework CoreFoundation"
+                "-framework CoreMedia"
+                "-framework CoreVideo"
+                "-framework VideoToolbox"
+                "-framework AudioToolbox")
         elseif(UNIX AND NOT APPLE)
             set(FFMPEG_PLATFORM_LIBRARIES numa va va-drm va-x11 X11)
         endif()

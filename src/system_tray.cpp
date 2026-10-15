@@ -22,10 +22,10 @@
     #define TRAY_ICON_PAUSING SUNSHINE_TRAY_PREFIX "-pausing"
     #define TRAY_ICON_LOCKED SUNSHINE_TRAY_PREFIX "-locked"
   #elif defined(__APPLE__) || defined(__MACH__)
-    #define TRAY_ICON WEB_DIR "images/logo-apollo-16.png"
-    #define TRAY_ICON_PLAYING WEB_DIR "images/apollo-playing-16.png"
-    #define TRAY_ICON_PAUSING WEB_DIR "images/apollo-pausing-16.png"
-    #define TRAY_ICON_LOCKED WEB_DIR "images/apollo-locked-16.png"
+    #define TRAY_ICON WEB_DIR "images/logo-apollo.svg"
+    #define TRAY_ICON_PLAYING WEB_DIR "images/apollo-playing.svg"
+    #define TRAY_ICON_PAUSING WEB_DIR "images/apollo-pausing.svg"
+    #define TRAY_ICON_LOCKED WEB_DIR "images/apollo-locked.svg"
     #include <dispatch/dispatch.h>
   #endif
 
@@ -73,6 +73,10 @@ namespace system_tray {
   static std::queue<std::function<void()>> tray_actions;
   static std::atomic<bool> tray_shutdown_requested = false;
 #endif
+
+  bool is_initialized() {
+    return tray_initialized.load();
+  }
 
   static int init_tray();
 
@@ -361,14 +365,12 @@ namespace system_tray {
     // create the system tray
     tray_set_log_callback(&tray_log_bridge);
   #if defined(__APPLE__) || defined(__MACH__)
-    // macOS requires that UI elements be created on the main thread
-    // creating tray using dispatch queue does not work, although the code doesn't actually throw any (visible) errors
-
-    // dispatch_async(dispatch_get_main_queue(), ^{
-    //   system_tray();
-    // });
-
-    BOOST_LOG(info) << "system_tray() is not yet implemented for this platform."sv;
+    if (init_tray() != 0) {
+      BOOST_LOG(warning) << "Failed to initialize macOS menu bar item"sv;
+      return;
+    }
+    tray_initialized = true;
+    BOOST_LOG(info) << "macOS menu bar item initialized successfully"sv;
   #else  // Windows, Linux
     if (tray_thread.joinable()) {
       return;
@@ -382,7 +384,10 @@ namespace system_tray {
 
   int end_tray() {
     tray_initialized = false;
-#ifdef _WIN32
+    tray_thread_should_exit = true;
+#if defined(__APPLE__) || defined(__MACH__)
+    tray_exit();
+#elif defined(_WIN32)
     tray_shutdown_requested = true;
     tray_action_cv.notify_one();
 #else
@@ -409,6 +414,23 @@ namespace system_tray {
 #endif
     return 0;
   }
+
+#if defined(__APPLE__) || defined(__MACH__)
+  void wait_for_shutdown(const std::function<bool()> &is_shutdown) {
+    if (!tray_initialized.load()) {
+      while (is_shutdown && !is_shutdown()) {
+        std::this_thread::sleep_for(100ms);
+      }
+      return;
+    }
+
+    while (is_shutdown && !is_shutdown() && !tray_thread_should_exit.load()) {
+      if (tray_loop(1) < 0) {
+        break;
+      }
+    }
+  }
+#endif
 
   // Persistent storage for tooltip/notification strings to avoid dangling pointers
   static std::string s_tooltip;
