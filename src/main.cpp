@@ -641,10 +641,16 @@ int main(int argc, char *argv[]) {
   task_pool.start(1);
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-  // create tray thread and detach it if enabled in config
+  // Keep tray shutdown inside main's lifetime, including early startup returns.
   if (config::sunshine.system_tray) {
     system_tray::run_tray();
   }
+#ifdef _WIN32
+  auto tray_shutdown_guard = util::fail_guard([&shutdown_deadline]() {
+    shutdown_deadline.arm();
+    system_tray::end_tray();
+  });
+#endif
   // Schedule periodic update checks if configured
   if (config::sunshine.update_check_interval_seconds > 0) {
     // Trigger an immediate update check on startup so users don't wait
@@ -1086,6 +1092,9 @@ int main(int argc, char *argv[]) {
   // stop system tray
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
   system_tray::end_tray();
+#ifdef _WIN32
+  tray_shutdown_guard.disable();
+#endif
 #endif
 
 #ifdef WIN32

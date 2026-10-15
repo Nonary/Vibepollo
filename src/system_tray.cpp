@@ -57,6 +57,7 @@
   #include "platform/windows/service_constants.h"
   #include "process.h"
   #include "src/entry_handler.h"
+  #include "system_tray_lifecycle.h"
   #include "update.h"
 
 using namespace std::literals;
@@ -64,14 +65,15 @@ using namespace std::literals;
 // system_tray namespace
 namespace system_tray {
   static std::atomic<bool> tray_initialized = false;
-  static std::atomic<bool> tray_thread_running = false;
-  static std::atomic<bool> tray_thread_should_exit = false;
-  static std::thread tray_thread;
 #ifdef _WIN32
   static std::mutex tray_action_mutex;
   static std::condition_variable tray_action_cv;
   static std::queue<std::function<void()>> tray_actions;
-  static std::atomic<bool> tray_shutdown_requested = false;
+  static detail::worker_t tray_worker;
+#else
+  static std::atomic<bool> tray_thread_running = false;
+  static std::atomic<bool> tray_thread_should_exit = false;
+  static std::thread tray_thread;
 #endif
 
   static int init_tray();
@@ -194,6 +196,9 @@ namespace system_tray {
 #ifdef _WIN32
     {
       std::lock_guard lock(tray_action_mutex);
+      if (!tray_initialized.load() || tray_worker.stop_requested()) {
+        return;
+      }
       tray_actions.emplace(std::forward<Fn>(fn));
     }
     tray_action_cv.notify_one();
@@ -260,13 +265,18 @@ namespace system_tray {
 
     // Wait for the shell to be initialized before registering the tray icon.
     // This ensures the tray icon works reliably after a logoff/logon cycle.
-    while (GetShellWindow() == nullptr) {
-      Sleep(1000);
+    while (!tray_worker.stop_requested() && GetShellWindow() == nullptr) {
+      if (tray_worker.wait_for_stop(1s)) {
+        return 1;
+      }
     }
 
     auto wait_for_default_desktop = []() {
       constexpr int attempts = 60;
       for (int attempt = 0; attempt < attempts; ++attempt) {
+        if (tray_worker.stop_requested()) {
+          return false;
+        }
         HDESK desktop = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS | DESKTOP_ENUMERATE);
         if (desktop != nullptr) {
           auto close_desktop = util::fail_guard([desktop]() {
@@ -282,13 +292,19 @@ namespace system_tray {
           }
         }
 
-        Sleep(1000);
+        if (tray_worker.wait_for_stop(1s)) {
+          return false;
+        }
       }
 
       return false;
     };
 
-    if (!wait_for_default_desktop()) {
+    const bool desktop_ready = wait_for_default_desktop();
+    if (tray_worker.stop_requested()) {
+      return 1;
+    }
+    if (!desktop_ready) {
       BOOST_LOG(warning) << "Timed out waiting for interactive desktop; system tray may not appear"sv;
     } else {
       BOOST_LOG(debug) << "Interactive desktop ready for tray initialization"sv;
@@ -299,8 +315,8 @@ namespace system_tray {
     int tray_init_result = -1;
     while (tray_init_result < 0 && attempt < 30) {
 #ifdef _WIN32
-      if (tray_shutdown_requested.load()) {
-        return 0;
+      if (tray_worker.stop_requested()) {
+        return 1;
       }
 #endif
       tray_init_result = tray_init(&tray);
@@ -311,7 +327,13 @@ namespace system_tray {
       clear_pending_quit_messages();
 #endif
       BOOST_LOG(warning) << "Failed to create system tray (attempt "sv << attempt + 1 << ')';
+#ifdef _WIN32
+      if (tray_worker.wait_for_stop(2s)) {
+        return 1;
+      }
+#else
       std::this_thread::sleep_for(2s);
+#endif
       ++attempt;
     }
 
@@ -331,7 +353,7 @@ namespace system_tray {
     }
 
 #ifdef _WIN32
-    while (!tray_shutdown_requested.load()) {
+    while (!tray_worker.stop_requested()) {
       run_pending_tray_actions();
       if (tray_loop(0) < 0) {
         break;
@@ -339,7 +361,7 @@ namespace system_tray {
 
       std::unique_lock lock(tray_action_mutex);
       tray_action_cv.wait_for(lock, 50ms, []() {
-        return tray_shutdown_requested.load() || !tray_actions.empty();
+        return tray_worker.stop_requested() || !tray_actions.empty();
       });
     }
 
@@ -358,8 +380,6 @@ namespace system_tray {
   }
 
   void run_tray() {
-    // create the system tray
-    tray_set_log_callback(&tray_log_bridge);
   #if defined(__APPLE__) || defined(__MACH__)
     // macOS requires that UI elements be created on the main thread
     // creating tray using dispatch queue does not work, although the code doesn't actually throw any (visible) errors
@@ -370,26 +390,30 @@ namespace system_tray {
 
     BOOST_LOG(info) << "system_tray() is not yet implemented for this platform."sv;
   #else  // Windows, Linux
+#ifdef _WIN32
+    tray_worker.start([]() {
+      tray_set_log_callback(&tray_log_bridge);
+      system_tray();
+    });
+#else
     if (tray_thread.joinable()) {
       return;
     }
-#ifdef _WIN32
-    tray_shutdown_requested = false;
-#endif
+    tray_set_log_callback(&tray_log_bridge);
     tray_thread = std::thread(system_tray);
+#endif
   #endif
   }
 
   int end_tray() {
     tray_initialized = false;
 #ifdef _WIN32
-    tray_shutdown_requested = true;
-    tray_action_cv.notify_one();
+    tray_worker.stop();
+    tray_action_cv.notify_all();
 #else
     if (tray_thread.joinable()) {
       tray_exit();
     }
-#endif
     if (tray_thread.joinable()) {
       // end_tray() can run on the tray thread itself: a tray menu action
       // Keep self-join protection for any tray-thread caller. Joining our own
@@ -402,6 +426,7 @@ namespace system_tray {
         tray_thread.join();
       }
     }
+#endif
 #ifdef _WIN32
     std::lock_guard lock(tray_action_mutex);
     std::queue<std::function<void()>> empty;
@@ -621,6 +646,7 @@ namespace system_tray {
   }
 
   // Threading functions available on all platforms
+#ifndef _WIN32
   static void tray_thread_worker() {
     BOOST_LOG(info) << "System tray thread started"sv;
 
@@ -644,19 +670,47 @@ namespace system_tray {
     tray_thread_running = false;
     BOOST_LOG(info) << "System tray thread ended"sv;
   }
+#endif
 
   int init_tray_threaded() {
+#ifdef _WIN32
+    bool started = false;
+    try {
+      started = tray_worker.start([]() {
+        tray_set_log_callback(&tray_log_bridge);
+        // Only the worker that owns startup may change the live tray menu.
+        static const std::string title = utf8ToAcp("Open Apollo (" + config::nvhttp.sunshine_name + ":" + std::to_string(net::map_port(confighttp::PORT_HTTPS)) + ")");
+        tray.menu[0].text = title.c_str();
+        if (config::sunshine.hide_tray_controls) {
+          tray.menu[1].text = nullptr;
+        }
+        system_tray();
+      });
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "Failed to create tray thread: " << e.what();
+      return 1;
+    }
+    if (!started) {
+      return 1;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    while (!tray_initialized.load() && !tray_worker.stop_requested()) {
+      if (std::chrono::steady_clock::now() >= deadline) {
+        BOOST_LOG(error) << "Tray thread initialization timeout"sv;
+        end_tray();
+        return 1;
+      }
+      tray_worker.wait_for_stop(10ms);
+    }
+    return tray_initialized.load() ? 0 : 1;
+  #else
     if (tray_thread_running) {
       BOOST_LOG(warning) << "Tray thread is already running"sv;
       return 1;
     }
 
-  #ifdef _WIN32
-    std::string tmp_str = "Open Apollo (" + config::nvhttp.sunshine_name + ":" + std::to_string(net::map_port(confighttp::PORT_HTTPS)) + ")";
-    static const std::string title_str = utf8ToAcp(tmp_str);
-  #else
     static const std::string title_str = "Open Apollo (" + config::nvhttp.sunshine_name + ":" + std::to_string(net::map_port(confighttp::PORT_HTTPS)) + ")";
-  #endif
     tray.menu[0].text = title_str.c_str();
 
     if (config::sunshine.hide_tray_controls) {
@@ -698,9 +752,13 @@ namespace system_tray {
       BOOST_LOG(error) << "Failed to create tray thread: " << e.what();
       return 1;
     }
+  #endif
   }
 
   int end_tray_threaded() {
+#ifdef _WIN32
+    return end_tray();
+#else
     if (!tray_thread_running) {
       return 0;
     }
@@ -713,6 +771,7 @@ namespace system_tray {
     }
 
     return 0;
+#endif
   }
 
   void tray_notify(const char *title, const char *text, void (*cb)()) {
