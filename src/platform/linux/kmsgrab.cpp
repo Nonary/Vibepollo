@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <filesystem>
+#include <mutex>
 #include <thread>
 #include <unistd.h>
 
@@ -212,6 +213,10 @@ namespace platf {
       std::map<std::uint32_t, monitor_t> crtc_to_monitor;
     };
 
+    // Enumeration and capture initialization share connector maps and desktop
+    // geometry. Keep the complete refresh/use transaction exclusive; a query
+    // for another encoder type can otherwise replace or filter these maps.
+    static std::mutex display_mutex;
     static std::vector<card_descriptor_t> card_descriptors;
     static std::vector<selection::named_monitor_t> named_monitors;
 
@@ -2425,7 +2430,16 @@ namespace platf {
 
   }  // namespace kms
 
+  static std::vector<std::string> kms_display_names_unlocked(mem_type_e hwdevice_type);
+
   std::shared_ptr<display_t> kms_display(mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config) {
+    std::lock_guard lock {kms::display_mutex};
+    // Encoder probes can reach KMS without any prior output enumeration, and
+    // previous queries may have filtered a different encoder's devices. Refresh
+    // every target, including empty/numeric and physical names, before either
+    // the direct-import or RAM fallback consumes the connector maps.
+    (void) kms_display_names_unlocked(hwdevice_type);
+
     if (hwdevice_type == mem_type_e::vaapi || hwdevice_type == mem_type_e::cuda || hwdevice_type == mem_type_e::vulkan) {
       auto disp = std::make_shared<kms::display_vram_t>(hwdevice_type);
 
@@ -2529,8 +2543,8 @@ namespace platf {
     BOOST_LOG(info) << "--------- End of KMS monitor list ---------"sv;
   }
 
-  // A list of names of displays accepted as display_name
-  std::vector<std::string> kms_display_names(mem_type_e hwdevice_type) {
+  // Called only while kms::display_mutex protects the shared enumeration state.
+  static std::vector<std::string> kms_display_names_unlocked(mem_type_e hwdevice_type) {
     std::uint32_t count = 0;
 
     if (!fs::exists("/dev/dri")) {
@@ -2710,6 +2724,12 @@ namespace platf {
     kms::named_monitors = std::move(named_monitors);
 
     return display_names;
+  }
+
+  // A list of names of displays accepted as display_name.
+  std::vector<std::string> kms_display_names(mem_type_e hwdevice_type) {
+    std::lock_guard lock {kms::display_mutex};
+    return kms_display_names_unlocked(hwdevice_type);
   }
 
 }  // namespace platf
