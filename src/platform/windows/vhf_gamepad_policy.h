@@ -78,6 +78,19 @@ namespace platf::vhf_gamepad {
   ) noexcept;
 
   /**
+   * @brief Reports whether controller selection can create a touchpad-capable profile.
+   * @details Capabilities are advertised before controller arrival. Automatic modes can still
+   *          select DualSense for a PlayStation client when both selection heuristics are off.
+   * @param configured_gamepad The selected gamepad setting.
+   * @param composite_dualsense Whether the application forces a composite DualSense.
+   * @return Whether the client should be allowed to send controller touch events.
+   */
+  [[nodiscard]] bool supports_controller_touch(
+    std::string_view configured_gamepad,
+    bool composite_dualsense
+  ) noexcept;
+
+  /**
    * @brief Vibepollo's normalized controller state, copied field-for-field out of `gamepad_state_t`.
    * @details Keeping this struct free of platform headers lets the translation be tested on its own.
    */

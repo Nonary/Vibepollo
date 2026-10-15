@@ -74,6 +74,17 @@ namespace platf::vhf_gamepad {
     return vhf_profile_e::automatic;
   }
 
+  bool supports_controller_touch(
+    const std::string_view configured_gamepad,
+    const bool composite_dualsense
+  ) noexcept {
+    return composite_dualsense ||
+           (configured_gamepad != "x360" &&
+            configured_gamepad != "vhf_xbox" &&
+            configured_gamepad != "vhf_xbox_one" &&
+            configured_gamepad != "vhf_switch");
+  }
+
   lvg::input_state_request make_input_state(
     const std::uint32_t controller_id,
     const normalized_state_t &state

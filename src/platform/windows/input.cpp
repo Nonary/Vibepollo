@@ -532,24 +532,6 @@ namespace platf {
   }
 
   /**
-   * @brief Reports whether the configured VHF controller has a touchpad.
-   * @return `true` when the selection always yields a PlayStation controller.
-   */
-  static bool vhf_gamepad_has_touchpad() {
-    return config::input.gamepad == "vhf_ds4"sv || config::input.gamepad == "vhf_ds5"sv;
-  }
-
-  /**
-   * @brief Reports whether the configured VHF controller definitely has no touchpad.
-   * @return `true` when the selection always yields an Xbox controller.
-   */
-  static bool vhf_gamepad_is_xbox() {
-    return config::input.gamepad == "vhf_xbox"sv ||
-           config::input.gamepad == "vhf_xbox_one"sv ||
-           config::input.gamepad == "vhf_switch"sv;
-  }
-
-  /**
    * @brief Chooses which controller the VHF driver should present.
    * @param metadata The client's reported gamepad capabilities.
    * @return The profile to request.
@@ -2094,16 +2076,8 @@ namespace platf {
   platform_caps::caps_t get_capabilities() {
     platform_caps::caps_t caps = 0;
 
-    // We support controller touchpad input as long as we're not emulating X360, which has no
-    // touchpad. On the VHF driver it depends on the controller: the PlayStation profiles have
-    // one, and plain `vhf` may still select one for a PlayStation client, so advertise it unless
-    // the selection rules out a touchpad entirely.
-    const bool vhf_without_touchpad =
-      vhf_gamepad_selected() && !vhf_gamepad_has_touchpad() &&
-      (vhf_gamepad_is_xbox() ||
-       (!config::input.motion_as_ds4 && !config::input.touchpad_as_ds4));
     const bool composite_dualsense = config::input.gamepad == "usbip_ds5"sv || dualsense_usbip_gamepad::enabled();
-    if (composite_dualsense || (config::input.gamepad != "x360"sv && !vhf_without_touchpad)) {
+    if (vhf_gamepad::supports_controller_touch(config::input.gamepad, composite_dualsense)) {
       caps |= platform_caps::controller_touch;
     }
 
