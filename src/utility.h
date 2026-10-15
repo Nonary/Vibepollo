@@ -368,7 +368,7 @@ namespace util {
       return true;
     };
 
-    auto buf_size = std::count_if(std::begin(hex), std::end(hex), is_convertable) / 2;
+    auto buf_size = std::min<std::size_t>(std::count_if(std::begin(hex), std::end(hex), is_convertable) / 2, sizeof(T));
     auto padding = sizeof(T) - buf_size;
 
     const char *data = hex.data() + hex.size() - 1;
