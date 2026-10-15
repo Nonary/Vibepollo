@@ -37,17 +37,17 @@ $prefix = 'DRIVER_ENV_' + [Guid]::NewGuid().ToString('N')
 $added = @()
 try {
     $null = New-Item -ItemType Directory -Path $fixture
-    # Own the compiler scratch root and cover quoted paths with Unicode/spaces.
-    [Environment]::SetEnvironmentVariable('TEMP', $fixture, 'Process')
-    [Environment]::SetEnvironmentVariable('TMP', $fixture, 'Process')
+    # Establish that CodeDOM works before changing the environment. Keep its
+    # original scratch path for the size-only negative control: combining the
+    # Unicode scratch fixture with that control can fail earlier with Win32 123.
+    Add-Type -TypeDefinition ('public class CodeDomControl' + [Guid]::NewGuid().ToString('N') + ' {}')
+    Assert-EnvironmentUnchanged $original
     # Each value remains below Windows' per-variable limit, while the total
     # exceeds both 65535 and the 170393-byte environment reported in #610.
     foreach ($i in 0..11) {
         $key = $prefix + '_' + $i; $added += $key
         [Environment]::SetEnvironmentVariable($key, ('x' * 16000), 'Process')
     }
-    $key = $prefix + '_UNICODE'; $added += $key
-    [Environment]::SetEnvironmentVariable($key, "C:\Users\$([char]0x00e9)$([char]0x4e2d)\Driver Test", 'Process')
     $large = [Environment]::GetEnvironmentVariables('Process')
     $characters = 1
     foreach ($name in $large.Keys) { $characters += $name.Length + $large[$name].Length + 2 }
@@ -63,6 +63,15 @@ try {
     }
     if (!$baselineFailed) { throw 'The original Add-Type path did not reproduce the Framework environment limit.' }
     Assert-EnvironmentUnchanged $large
+
+    # The replacement must also preserve Unicode values and compile beneath a
+    # scratch root containing spaces and Unicode. Exercise those independently
+    # of the original compiler's size-only negative control.
+    [Environment]::SetEnvironmentVariable('TEMP', $fixture, 'Process')
+    [Environment]::SetEnvironmentVariable('TMP', $fixture, 'Process')
+    $key = $prefix + '_UNICODE'; $added += $key
+    [Environment]::SetEnvironmentVariable($key, "C:\Users\$([char]0x00e9)$([char]0x4e2d)\Driver Test", 'Process')
+    $large = [Environment]::GetEnvironmentVariables('Process')
 
     foreach ($i in 0..1) {
         . ([scriptblock]::Create($definitions[$i]))
