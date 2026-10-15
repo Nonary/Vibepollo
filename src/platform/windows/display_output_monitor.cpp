@@ -142,6 +142,9 @@ namespace platf::dxgi {
 #endif
     BOOST_LOG(debug) << "Display color monitoring: " << (subscribed ? "AdvancedColorInfoChanged events" : "background polling fallback");
     auto next_poll = std::chrono::steady_clock::time_point::min();
+    std::optional<std::chrono::steady_clock::time_point> sample_failure_since;
+    constexpr auto sample_retry_interval = 100ms;
+    constexpr auto sample_failure_timeout = 2s;
     std::optional<output_sample_t> last_sample;
     while (!stop.stop_requested() && !reinit_requested()) {
       const auto now = std::chrono::steady_clock::now();
@@ -154,19 +157,41 @@ namespace platf::dxgi {
         notifications_->reinit.store(true, std::memory_order_release);
         break;
       }
-      if (notified || stale || (!subscribed && now >= next_poll)) {
+      if (notified || stale || ((!subscribed || sample_failure_since) && now >= next_poll)) {
         next_poll = now + 1s;
         auto sample = sample_output(adapter_, output_.DeviceName);
         const auto &a = output_.DesktopCoordinates;
-        if (!sample || !sample->desc.AttachedToDesktop || sample->desc.Monitor != output_.Monitor ||
-            sample->desc.Rotation != output_.Rotation ||
-            a.left != sample->desc.DesktopCoordinates.left || a.top != sample->desc.DesktopCoordinates.top ||
-            a.right != sample->desc.DesktopCoordinates.right || a.bottom != sample->desc.DesktopCoordinates.bottom ||
-            sample->hdr_valid != hdr_valid_ || sample->hdr != hdr_) {
-          notifications_->reinit.store(true, std::memory_order_release);
-          break;
+        if (!sample) {
+          // DXGI enumeration can be temporarily unavailable while a color or
+          // display notification settles, even while WGC still produces frames.
+          // Keep consuming capture until an observation proves a change or the
+          // bounded retry window expires; an unknown sample is not a new state.
+          const auto failed_at = std::chrono::steady_clock::now();
+          if (!sample_failure_since) {
+            sample_failure_since = failed_at;
+            BOOST_LOG(debug) << "Display output observation unavailable; retrying without capture reinitialization.";
+          }
+          if (failed_at - *sample_failure_since >= sample_failure_timeout) {
+            BOOST_LOG(warning) << "Display output observation remained unavailable; requesting capture reinitialization.";
+            notifications_->reinit.store(true, std::memory_order_release);
+            break;
+          }
+          next_poll = failed_at + sample_retry_interval;
+        } else {
+          if (sample_failure_since) {
+            BOOST_LOG(debug) << "Display output observation recovered after a transient failure.";
+          }
+          sample_failure_since.reset();
+          if (!sample->desc.AttachedToDesktop || sample->desc.Monitor != output_.Monitor ||
+              sample->desc.Rotation != output_.Rotation ||
+              a.left != sample->desc.DesktopCoordinates.left || a.top != sample->desc.DesktopCoordinates.top ||
+              a.right != sample->desc.DesktopCoordinates.right || a.bottom != sample->desc.DesktopCoordinates.bottom ||
+              sample->hdr_valid != hdr_valid_ || sample->hdr != hdr_) {
+            notifications_->reinit.store(true, std::memory_order_release);
+            break;
+          }
+          last_sample = std::move(sample);
         }
-        last_sample = std::move(sample);
       }
       std::unique_lock lock(notifications_->mutex);
       notifications_->cv.wait_for(lock, stop, 100ms, [this] {
