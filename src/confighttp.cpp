@@ -2686,6 +2686,9 @@ namespace confighttp {
         node.label = label;
         node.physical = true;
         const auto info = device.value("info", nlohmann::json::object());
+#ifdef _WIN32
+        if (!info.is_object() || !info.value("active", true)) continue;
+#endif
         node.active = info.value("active", true);
         node.primary = info.value("primary", false);
 #ifdef _WIN32
