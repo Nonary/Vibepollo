@@ -26,7 +26,7 @@ The installer checks the requirements above, installs the kernel headers for you
 installs the package, opens the firewall if one is active, and tells you whether a reboot is needed.
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/Nonary/Vibepollo/vibe-test/scripts/linux_install.sh
+curl -fsSLO https://raw.githubusercontent.com/Nonary/Vibepollo/master/scripts/linux_install.sh
 less linux_install.sh            # optional: read what it does
 sudo bash linux_install.sh
 ```
