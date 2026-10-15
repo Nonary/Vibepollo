@@ -1204,6 +1204,10 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_policy_adapter.py")
     add_test(NAME regression_virtual_display_refresh
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_virtual_display_refresh.py")
+    add_test(NAME regression_virtual_display_recovery_transport
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_virtual_display_recovery_transport.py")
+    add_test(NAME regression_virtual_display_recovery_modes
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_virtual_display_recovery_modes.py")
 endif()
 
 if(TARGET test_component_resource_locale_catalog)

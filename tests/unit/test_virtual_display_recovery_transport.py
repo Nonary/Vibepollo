@@ -1,0 +1,478 @@
+"""Compile the production Sunshine recovery/transport functions with fake I/O.
+
+The Windows API and driver boundary is replaced by a tiny in-memory transport.
+The recovery orchestration, transport-health helper, transport replacement,
+ping-thread startup, provenance comparison, and reclaimed-display policy are
+compiled from their production definitions.
+"""
+
+import pathlib
+import subprocess
+import tempfile
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+SOURCE = (ROOT / "src/platform/windows/virtual_display_sunshine.cpp").read_text()
+
+
+def extract_function(text, signature):
+    start = text.index(signature)
+    opening = text.index("(", start)
+    parens, closing = 0, opening
+    while True:
+        if text[closing] == "(":
+            parens += 1
+        elif text[closing] == ")":
+            parens -= 1
+            if parens == 0:
+                break
+        closing += 1
+    brace = text.index("{", closing)
+    depth, end = 1, brace + 1
+    while depth:
+        depth += (text[end] == "{") - (text[end] == "}")
+        end += 1
+    return text[start:end]
+
+
+production_attempt = extract_function(
+    SOURCE,
+    "bool attempt_virtual_display_recovery(RecoveryMonitorState &state, std::stop_token stop_token)",
+)
+ensure_declaration_start = SOURCE.index("  bool ensure_control_transport_responsive(")
+ensure_declaration_end = SOURCE.index(";", ensure_declaration_start) + 1
+production_ensure_declaration = SOURCE[ensure_declaration_start:ensure_declaration_end]
+assert "{" not in production_ensure_declaration
+assert ensure_declaration_start < SOURCE.index("bool attempt_virtual_display_recovery(")
+production_ensure = extract_function(
+    SOURCE,
+    "bool ensure_control_transport_responsive(\n    std::string_view operation,\n    std::stop_token stop_token = {}",
+)
+production_control_snapshot = extract_function(
+    SOURCE,
+    "std::shared_ptr<sunshine_driver::WindowsControlTransport> control_transport_snapshot()",
+)
+production_replace_transport = extract_function(
+    SOURCE,
+    "std::shared_ptr<sunshine_driver::WindowsControlTransport> replace_control_transport(",
+)
+production_clear_transport = extract_function(SOURCE, "void clear_control_transport()")
+production_luid_equal = extract_function(SOURCE, "bool luid_equal(const LUID &lhs, const LUID &rhs)")
+production_provenance_match = extract_function(
+    SOURCE,
+    "bool render_adapter_request_provenance_matches(\n      const uuid_util::uuid_t &guid,\n      const std::string_view context",
+)
+production_ping_start = extract_function(
+    SOURCE,
+    "static bool start_ping_thread_impl(\n    std::function<void()> failCb,",
+)
+
+
+PROGRAM = r'''
+#include <algorithm>
+#include <atomic>
+#include <cassert>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <stop_token>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+#include "src/platform/windows/virtual_display_policy.h"
+
+#define BOOST_LOG(level) std::clog
+
+struct LUID { std::uint32_t LowPart = 0; std::int32_t HighPart = 0; };
+using GUID = int;
+namespace uuid_util {
+  struct uuid_t {
+    std::string value;
+    std::string string() const { return value; }
+  };
+}
+namespace sunshine_driver {
+  struct WindowsControlTransport {
+    int id = 0;
+    bool is_valid = true;
+    bool is_responsive = true;
+    int cancelled = 0;
+    bool valid() const { return is_valid; }
+    void cancel_pending_io() { ++cancelled; }
+  };
+}
+namespace sunshine_driver {
+  struct open_result {
+    std::unique_ptr<WindowsControlTransport> transport;
+    int status = 0;
+    unsigned long native_error = 0;
+    bool ok() const { return static_cast<bool>(transport); }
+  };
+  const char *to_string(int) { return "fake"; }
+  open_result open_first_control_device();
+  struct feed_result { bool ok() const { return true; } int status = 0; unsigned long native_error = 0; };
+  struct LeaseRequest { std::uint64_t lease_id = 0; std::uint32_t requested_timeout_ms = 0; };
+  struct ControlClient {
+    WindowsControlTransport &transport;
+    explicit ControlClient(WindowsControlTransport &value): transport(value) {}
+    feed_result feed_lease(const LeaseRequest &) { return {}; }
+  };
+}
+
+namespace VDISPLAY_SUNSHINE {
+  using namespace std::chrono_literals;
+  using Transport = sunshine_driver::WindowsControlTransport;
+
+  enum class DRIVER_STATUS { UNKNOWN, OK, FAILED };
+  enum class DRIVER_SELECTION { UNKNOWN, VIBESHINE };
+  enum class OpenRecoveryBehavior { transport_only, recover_driver };
+  enum class RestartCooldownBehavior { skip, wait };
+  namespace VDISPLAY {
+    using DRIVER_STATUS = ::VDISPLAY_SUNSHINE::DRIVER_STATUS;
+    using DRIVER_SELECTION = ::VDISPLAY_SUNSHINE::DRIVER_SELECTION;
+    namespace policy = ::VDISPLAY::policy;
+  }
+  namespace proc {
+    std::atomic<DRIVER_STATUS> status {DRIVER_STATUS::UNKNOWN};
+    std::atomic<DRIVER_SELECTION> selection {DRIVER_SELECTION::UNKNOWN};
+    void setVDisplayDriverStatus(DRIVER_STATUS value, DRIVER_SELECTION selected) {
+      status.store(value);
+      selection.store(selected);
+    }
+    std::atomic<DRIVER_STATUS> &vDisplayDriverStatus = status;
+    std::atomic<DRIVER_SELECTION> &vDisplayDriverSelection = selection;
+  }
+
+  namespace util {
+    template <typename F> struct fail_guard_t {
+      F fn;
+      ~fail_guard_t() { fn(); }
+    };
+    template <typename F> auto fail_guard(F fn) { return fail_guard_t<F> {std::move(fn)}; }
+  }
+
+  std::mutex g_control_transport_mutex;
+  std::shared_ptr<Transport> VIRTUAL_DISPLAY_DRIVER_TRANSPORT;
+  std::recursive_mutex g_watchdog_lifecycle_mutex;
+  std::recursive_mutex g_virtual_display_operation_mutex;
+  std::mutex g_watchdog_thread_mutex;
+  std::mutex g_watchdog_wake_mutex;
+  std::condition_variable g_watchdog_wake_cv;
+  std::thread g_watchdog_thread;
+  std::shared_ptr<Transport> g_watchdog_transport;
+  std::function<void()> g_watchdog_fail_cb;
+  std::atomic_bool g_watchdog_feed_requested {false};
+  std::atomic_bool g_watchdog_stop_requested {false};
+  std::atomic<std::int64_t> g_watchdog_grace_deadline_ns {0};
+  std::uint64_t g_watchdog_wake_generation = 0;
+  bool g_watchdog_start_in_progress = false;
+  constexpr auto WATCHDOG_INIT_GRACE = 30s;
+  constexpr std::uint32_t DRIVER_LEASE_TIMEOUT_MS = 30000;
+  int next_transport_id = 1;
+  int device_open_count = 0;
+  bool open_succeeds = true;
+  bool opened_transport_responsive = true;
+
+  struct LuidProvenance {
+    std::weak_ptr<Transport> transport;
+    LUID luid {};
+  };
+  std::mutex g_render_adapter_request_mutex;
+  std::weak_ptr<Transport> g_current_render_adapter_request_transport;
+  LUID g_current_render_adapter_request_luid {};
+  std::unordered_map<std::string, LuidProvenance> g_render_adapter_request_provenance;
+
+  std::shared_ptr<Transport> control_transport_snapshot();
+  std::shared_ptr<Transport> replace_control_transport(std::unique_ptr<Transport> replacement);
+  void clear_control_transport();
+
+  bool driver_transport_responsive(Transport *transport) {
+    return transport && transport->valid() && transport->is_responsive;
+  }
+  void stop_watchdog_thread() {
+    std::thread thread;
+    {
+      std::lock_guard<std::mutex> lock(g_watchdog_thread_mutex);
+      g_watchdog_stop_requested.store(true);
+      g_watchdog_wake_cv.notify_all();
+      thread = std::move(g_watchdog_thread);
+    }
+    if (thread.joinable()) thread.join();
+    std::lock_guard<std::mutex> lock(g_watchdog_thread_mutex);
+    g_watchdog_transport.reset();
+  }
+  void set_watchdog_feed_requested(bool value, bool) { g_watchdog_feed_requested.store(value); }
+  bool check_driver_protocol_compatible(sunshine_driver::ControlClient &) { return true; }
+  bool ensure_driver_is_ready_impl(RestartCooldownBehavior, std::stop_token) { return true; }
+  void store_watchdog_fail_cb(const std::function<void()> &cb) { g_watchdog_fail_cb = cb; }
+  std::function<void()> copy_watchdog_fail_cb() { return g_watchdog_fail_cb; }
+  bool watchdog_thread_running() {
+    std::lock_guard<std::mutex> lock(g_watchdog_thread_mutex);
+    return g_watchdog_thread.joinable();
+  }
+  std::int64_t steady_ticks_from_time(std::chrono::steady_clock::time_point) { return 1; }
+  bool within_grace_period(std::chrono::steady_clock::time_point) { return false; }
+  bool wait_for_watchdog_state_change(std::chrono::milliseconds, std::uint64_t &) { return true; }
+  void log_control_failure(std::string_view, int, unsigned long) {}
+  void dispatch_watchdog_fail_cb(std::shared_ptr<const std::function<void()>>) {}
+
+  struct Lease { std::uint64_t lease_id = 1; };
+  struct LeaseTracker { std::vector<Lease> all() const { return {}; } };
+  LeaseTracker &driver_lease_tracker() { static LeaseTracker tracker; return tracker; }
+
+  DRIVER_STATUS open_vdisplay_device_with_status(std::stop_token, OpenRecoveryBehavior) {
+    if (!open_succeeds) {
+      proc::setVDisplayDriverStatus(DRIVER_STATUS::FAILED, DRIVER_SELECTION::VIBESHINE);
+      return DRIVER_STATUS::FAILED;
+    }
+    auto opened = sunshine_driver::open_first_control_device();
+    auto transport = replace_control_transport(std::move(opened.transport));
+    proc::setVDisplayDriverStatus(
+      transport ? DRIVER_STATUS::OK : DRIVER_STATUS::FAILED,
+      DRIVER_SELECTION::VIBESHINE
+    );
+    return transport ? DRIVER_STATUS::OK : DRIVER_STATUS::FAILED;
+  }
+
+  struct RecoveryParams {
+    GUID guid = 17;
+    std::string client_uid = "client";
+    std::string client_name = "test-client";
+    std::optional<std::string> hdr_profile;
+    std::uint32_t width = 1920, height = 1080, fps = 60, base_fps_millihz = 60000;
+    bool framegen_refresh_active = false;
+    int framegen_refresh_multiplier = 1;
+    std::optional<bool> hdr_requested;
+    std::function<std::function<void()>(const struct VirtualDisplayCreationResult &, std::stop_token)> on_recovery_success;
+  };
+  struct RecoveryMonitorState {
+    RecoveryParams params;
+    bool abort = false;
+    int identifier_updates = 0;
+    std::string describe_target() const { return "test target"; }
+    void update_identifiers(const std::optional<std::wstring> &, const std::optional<std::string> &, const std::optional<std::wstring> &) { ++identifier_updates; }
+  };
+  bool release_retained_ensure_display_for_stream(GUID, const char *, std::stop_token token) { return !token.stop_requested(); }
+  bool lock_recovery_operation(std::unique_lock<std::recursive_mutex> &lock, const RecoveryMonitorState &state, std::stop_token token) {
+    return !state.abort && !token.stop_requested() && lock.try_lock();
+  }
+  bool monitor_should_abort(const RecoveryMonitorState &state, std::stop_token token) { return state.abort || token.stop_requested(); }
+  void setWatchdogFeedingEnabled(bool) {}
+  bool remove_virtual_display_impl(GUID, bool, std::stop_token) { return true; }
+
+  struct VirtualDisplayCreationResult {
+    std::optional<std::wstring> display_name {L"\\\\.\\DISPLAY9"};
+    std::optional<std::string> device_id {"device-9"};
+    std::optional<std::wstring> monitor_device_path {L"monitor-path-9"};
+  };
+  bool provenance_matches = false;
+  bool display_recreated = false;
+  bool render_adapter_request_provenance_matches(const uuid_util::uuid_t &, std::string_view);
+  std::optional<VirtualDisplayCreationResult> create_virtual_display_with_stop(
+    const char *, const char *, const char *, std::uint32_t, std::uint32_t, std::uint32_t,
+    GUID guid, std::uint32_t, bool, int, std::optional<bool>, bool, bool, bool, std::stop_token
+  ) {
+    provenance_matches = render_adapter_request_provenance_matches(uuid_util::uuid_t {std::to_string(guid)}, "test reclaim");
+    const auto plan = VDISPLAY::policy::reclaimed_display_plan_for_session(
+      true, true, true, provenance_matches
+    );
+    display_recreated = plan.action == VDISPLAY::policy::reclaimed_display_action::recreate;
+    return VirtualDisplayCreationResult {};
+  }
+
+''' + production_control_snapshot + production_replace_transport + production_clear_transport + r'''
+  void closeVDisplayDevice() {
+    std::lock_guard<std::recursive_mutex> lifecycle_lock(g_watchdog_lifecycle_mutex);
+    stop_watchdog_thread();
+    set_watchdog_feed_requested(false, false);
+    g_watchdog_grace_deadline_ns.store(0);
+    clear_control_transport();
+  }
+''' + production_ensure_declaration + r'''
+  static bool start_ping_thread_impl(std::function<void()>, std::stop_token, OpenRecoveryBehavior);
+''' + production_attempt + production_ensure + production_luid_equal + production_provenance_match + production_ping_start + r'''
+
+  void reset_fixture() {
+    stop_watchdog_thread();
+    clear_control_transport();
+    {
+      std::lock_guard<std::mutex> lock(g_render_adapter_request_mutex);
+      g_current_render_adapter_request_transport.reset();
+      g_current_render_adapter_request_luid = {};
+      g_render_adapter_request_provenance.clear();
+    }
+    device_open_count = 0;
+    next_transport_id = 1;
+    open_succeeds = true;
+    opened_transport_responsive = true;
+    provenance_matches = false;
+    display_recreated = false;
+    proc::setVDisplayDriverStatus(DRIVER_STATUS::UNKNOWN, DRIVER_SELECTION::UNKNOWN);
+  }
+  void seed_provenance(const uuid_util::uuid_t &guid, const std::shared_ptr<Transport> &transport, LUID luid) {
+    std::lock_guard<std::mutex> lock(g_render_adapter_request_mutex);
+    g_current_render_adapter_request_transport = transport;
+    g_current_render_adapter_request_luid = luid;
+    g_render_adapter_request_provenance[guid.string()] = {transport, luid};
+  }
+  int failures = 0;
+  void check(bool condition, std::string_view message) {
+    if (!condition) { ++failures; std::cerr << "FAIL: " << message << '\n'; }
+    else std::cout << "PASS: " << message << '\n';
+  }
+
+  void test_healthy_recovery_preserves_transport_provenance() {
+    reset_fixture();
+    auto original = replace_control_transport(std::make_unique<Transport>(Transport {1, true, true, 0}));
+    const uuid_util::uuid_t guid {"17"};
+    const LUID luid {7, 0};
+    seed_provenance(guid, original, luid);
+    g_watchdog_fail_cb = [] {};
+    RecoveryMonitorState state;
+    const bool recovered = attempt_virtual_display_recovery(state, {});
+    check(recovered, "healthy transport recovery completes");
+    check(proc::vDisplayDriverStatus.load() == DRIVER_STATUS::OK &&
+            proc::vDisplayDriverSelection.load() == DRIVER_SELECTION::VIBESHINE,
+          "successful recovery restores driver status OK and selection VIBESHINE from UNKNOWN");
+    check(control_transport_snapshot() == original, "healthy recovery preserves shared transport identity");
+    check(provenance_matches, "same transport and LUID provenance remains valid after reclaim");
+    check(!display_recreated, "reclaimed inactive display with matching provenance reuses in place");
+    check(g_watchdog_transport && g_watchdog_transport != original,
+          "watchdog ping uses a separately opened handle");
+  }
+
+  void test_ping_open_does_not_replace_shared_transport() {
+    reset_fixture();
+    auto original = replace_control_transport(std::make_unique<Transport>(Transport {1, true, true, 0}));
+    const bool started = start_ping_thread_impl([] {}, {}, OpenRecoveryBehavior::transport_only);
+    check(started, "watchdog ping starts with a healthy shared transport");
+    check(g_watchdog_transport && g_watchdog_transport != original,
+          "watchdog ping opens its own handle");
+    check(control_transport_snapshot() == original,
+          "opening the independent ping handle leaves shared transport unchanged");
+  }
+
+  void test_unhealthy_recovery_reopens_and_recreates_for_stale_provenance() {
+    reset_fixture();
+    auto original = std::make_shared<Transport>(Transport {1, true, false, 0});
+    VIRTUAL_DISPLAY_DRIVER_TRANSPORT = original;
+    const uuid_util::uuid_t guid {"17"};
+    seed_provenance(guid, original, LUID {7, 0});
+    g_watchdog_fail_cb = [] {};
+    RecoveryMonitorState state;
+    const bool recovered = attempt_virtual_display_recovery(state, {});
+    check(recovered, "recovery succeeds after reopening an unhealthy shared transport");
+    check(control_transport_snapshot() != original, "unhealthy recovery replaces the shared transport");
+    check(original->cancelled == 1, "reopen cancels pending I/O on the unhealthy transport");
+    check(!provenance_matches, "reopened transport does not inherit old creation provenance");
+    check(display_recreated, "unhealthy reopen keeps fail-closed recreate policy for old provenance");
+  }
+
+  void test_same_transport_with_changed_luid_still_recreates() {
+    reset_fixture();
+    auto transport = replace_control_transport(std::make_unique<Transport>(Transport {1, true, true, 0}));
+    const uuid_util::uuid_t guid {"17"};
+    seed_provenance(guid, transport, LUID {7, 0});
+    {
+      std::lock_guard<std::mutex> lock(g_render_adapter_request_mutex);
+      g_current_render_adapter_request_luid = LUID {8, 0};
+    }
+    const bool matches = render_adapter_request_provenance_matches(guid, "changed LUID");
+    const auto plan = VDISPLAY::policy::reclaimed_display_plan_for_session(true, true, true, matches);
+    check(!matches, "same transport with a different current LUID fails provenance comparison");
+    check(plan.action == VDISPLAY::policy::reclaimed_display_action::recreate,
+          "different LUID still forces recreation");
+  }
+
+  void test_health_gate_preserves_healthy_transport() {
+    reset_fixture();
+    auto original = replace_control_transport(std::make_unique<Transport>(Transport {1, true, true, 0}));
+    const bool ready = ensure_control_transport_responsive("fixture", {}, OpenRecoveryBehavior::transport_only);
+    check(ready, "health gate accepts responsive transport");
+    check(control_transport_snapshot() == original, "health gate avoids reopening responsive transport");
+    check(device_open_count == 0, "health gate opens no new control device when transport is responsive");
+  }
+
+  void test_unhealthy_transport_reopens_and_fails_closed() {
+    reset_fixture();
+    auto old_transport = std::make_shared<Transport>(Transport {1, true, false, 0});
+    VIRTUAL_DISPLAY_DRIVER_TRANSPORT = old_transport;
+    open_succeeds = false;
+    const bool ready = ensure_control_transport_responsive("fixture", {}, OpenRecoveryBehavior::transport_only);
+    check(!ready, "unresponsive transport plus failed reopen fails closed");
+    check(!control_transport_snapshot(), "failed reopen leaves no cached transport");
+    check(old_transport->cancelled == 1, "failed recovery cancels pending I/O on the old transport");
+  }
+
+  void test_opened_but_unresponsive_transport_is_rejected() {
+    reset_fixture();
+    VIRTUAL_DISPLAY_DRIVER_TRANSPORT = std::make_shared<Transport>(Transport {1, true, false, 0});
+    opened_transport_responsive = false;
+    const bool ready = ensure_control_transport_responsive("fixture", {}, OpenRecoveryBehavior::transport_only);
+    check(!ready, "new transport that fails its health check is rejected");
+    check(!control_transport_snapshot(), "unresponsive new transport is cleared");
+  }
+
+  void test_cancelled_recovery_does_not_open_transport() {
+    reset_fixture();
+    auto original = replace_control_transport(std::make_unique<Transport>(Transport {1, true, true, 0}));
+    RecoveryMonitorState state;
+    std::stop_source source;
+    source.request_stop();
+    const bool recovered = attempt_virtual_display_recovery(state, source.get_token());
+    check(!recovered, "cancelled recovery exits before opening the driver");
+    check(control_transport_snapshot() == original, "cancellation preserves the existing shared transport");
+    check(device_open_count == 0, "cancelled recovery performs no device open");
+  }
+
+  int run() {
+    test_healthy_recovery_preserves_transport_provenance();
+    test_ping_open_does_not_replace_shared_transport();
+    test_unhealthy_recovery_reopens_and_recreates_for_stale_provenance();
+    test_same_transport_with_changed_luid_still_recreates();
+    test_health_gate_preserves_healthy_transport();
+    test_unhealthy_transport_reopens_and_fails_closed();
+    test_opened_but_unresponsive_transport_is_rejected();
+    test_cancelled_recovery_does_not_open_transport();
+    std::cout << "Recovery transport fixture failures=" << failures << '\n';
+    return failures == 0 ? 0 : 1;
+  }
+}
+
+namespace sunshine_driver {
+  open_result open_first_control_device() {
+    using namespace VDISPLAY_SUNSHINE;
+    ++device_open_count;
+    if (!open_succeeds) return {};
+    auto transport = std::make_unique<WindowsControlTransport>();
+    transport->id = next_transport_id++;
+    transport->is_responsive = opened_transport_responsive;
+    return {std::move(transport)};
+  }
+}
+
+int main() { return VDISPLAY_SUNSHINE::run(); }
+'''
+
+
+with tempfile.TemporaryDirectory(prefix="virtual-display-recovery-") as temporary:
+    directory = pathlib.Path(temporary)
+    cpp = directory / "test.cpp"
+    binary = directory / "test-recovery"
+    cpp.write_text(PROGRAM)
+    subprocess.run(
+        [
+            "g++", "-std=c++20", "-pthread", "-Wall", "-Wextra", "-Werror",
+            "-Wno-missing-field-initializers", "-I", str(ROOT), str(cpp), "-o", str(binary),
+        ],
+        check=True,
+    )
+    subprocess.run([str(binary)], check=True, timeout=10)

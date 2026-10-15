@@ -162,6 +162,11 @@ namespace VDISPLAY_SUNSHINE {
   static bool ensure_driver_is_ready_impl(RestartCooldownBehavior cooldown_behavior, std::stop_token stop_token = {});
   static DRIVER_STATUS open_vdisplay_device_impl(std::stop_token stop_token, OpenRecoveryBehavior recovery_behavior);
   static DRIVER_STATUS open_vdisplay_device_with_status(std::stop_token stop_token, OpenRecoveryBehavior recovery_behavior);
+  bool ensure_control_transport_responsive(
+    std::string_view operation,
+    std::stop_token stop_token,
+    OpenRecoveryBehavior recovery_behavior
+  );
   static bool start_ping_thread_impl(
     std::function<void()> fail_cb,
     std::stop_token stop_token,
@@ -4601,21 +4606,25 @@ namespace VDISPLAY_SUNSHINE {
         return false;
       }
 
-      open_vdisplay_device_with_status(stop_token, OpenRecoveryBehavior::transport_only);
-      const auto driver_status = proc::vDisplayDriverStatus.load(std::memory_order_acquire);
-      if (driver_status != DRIVER_STATUS::OK) {
-        BOOST_LOG(warning) << "Virtual display recovery: failed to reopen driver (status="
-                           << static_cast<int>(driver_status) << ") for "
+      // An inactive output does not imply a dead control transport. Reopening a
+      // healthy transport invalidates the display's creation-time adapter
+      // provenance and forces an otherwise unnecessary monitor departure.
+      if (!ensure_control_transport_responsive(
+            "Virtual display recovery",
+            stop_token,
+            OpenRecoveryBehavior::transport_only
+          )) {
+        BOOST_LOG(warning) << "Virtual display recovery: driver transport unavailable for "
                            << state.describe_target();
         return false;
       }
+      proc::setVDisplayDriverStatus(DRIVER_STATUS::OK, VDISPLAY::DRIVER_SELECTION::VIBESHINE);
       if (monitor_should_abort(state, stop_token)) {
         return false;
       }
 
-      // Restart the watchdog ping thread with the new driver handle.
-      // The old ping thread is still feeding a stale duplicated handle;
-      // startPingThread stops it and duplicates the freshly opened handle.
+      // Refresh the watchdog's independent ping handle even when the shared
+      // control transport remains healthy and can preserve display provenance.
       if (auto watchdog_fail_cb = copy_watchdog_fail_cb(); watchdog_fail_cb) {
         if (!start_ping_thread_impl(
               std::move(watchdog_fail_cb),
@@ -6276,7 +6285,10 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     bool existing_virtual_display_supports_refresh(
+      sunshine_driver::ControlClient &client,
       const std::uint64_t display_id,
+      const std::uint32_t width,
+      const std::uint32_t height,
       const std::uint32_t requested_refresh_millihz
     ) {
       if (requested_refresh_millihz == 0) {
@@ -6285,32 +6297,55 @@ namespace VDISPLAY_SUNSHINE {
       const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(
         display_device::DeviceEnumerationDetail::Full
       );
-      if (!devices) {
+      if (devices) {
+        for (const auto &device : *devices) {
+          if (!is_virtual_display_device(device) ||
+              !matches_virtual_display_id_edid(device, display_id)) {
+            continue;
+          }
+          if (device.m_supported_refresh_rates.empty()) {
+            break;
+          }
+          return std::any_of(
+            device.m_supported_refresh_rates.begin(),
+            device.m_supported_refresh_rates.end(),
+            [&](const display_device::Rational &refresh) {
+              if (refresh.m_denominator == 0) {
+                return false;
+              }
+              const auto rounded_millihz =
+                (static_cast<std::uint64_t>(refresh.m_numerator) * 1000ull + refresh.m_denominator / 2ull) /
+                refresh.m_denominator;
+              const auto requested = static_cast<std::uint64_t>(requested_refresh_millihz);
+              return rounded_millihz <= std::numeric_limits<std::uint32_t>::max() &&
+                     VDISPLAY::policy::refresh_matches(
+                       static_cast<std::uint32_t>(rounded_millihz),
+                       static_cast<std::uint32_t>(requested)
+                     );
+            }
+          );
+        }
+      }
+
+      // An inactive target may have no GDI name, so Windows cannot enumerate
+      // its rates. After secure reclaim, the driver's live descriptor is an
+      // independent positive source for its exact preferred mode. Do not infer
+      // multiplier modes or override a nonempty Windows list that rejected it.
+      const auto state = client.query_display_state();
+      if (!state.ok()) {
+        log_control_failure("Sunshine virtual display mode descriptor query", state.status, state.native_error);
         return false;
       }
-      for (const auto &device : *devices) {
-        if (!is_virtual_display_device(device) ||
-            !matches_virtual_display_id_edid(device, display_id)) {
-          continue;
+      for (std::uint32_t index = 0;
+           index < state.value.entry_count && index < sunshine_driver::kMaxDisplayStateEntries;
+           ++index) {
+        const auto &entry = state.value.entries[index];
+        if (entry.kind == sunshine_driver::kDisplayStateKindTemporary &&
+            entry.display_id == display_id &&
+            entry.width == width && entry.height == height &&
+            entry.refresh_rate_millihz == requested_refresh_millihz) {
+          return true;
         }
-        return std::any_of(
-          device.m_supported_refresh_rates.begin(),
-          device.m_supported_refresh_rates.end(),
-          [&](const display_device::Rational &refresh) {
-            if (refresh.m_denominator == 0) {
-              return false;
-            }
-            const auto rounded_millihz =
-              (static_cast<std::uint64_t>(refresh.m_numerator) * 1000ull + refresh.m_denominator / 2ull) /
-              refresh.m_denominator;
-            const auto requested = static_cast<std::uint64_t>(requested_refresh_millihz);
-            return rounded_millihz <= std::numeric_limits<std::uint32_t>::max() &&
-                   VDISPLAY::policy::refresh_matches(
-                     static_cast<std::uint32_t>(rounded_millihz),
-                     static_cast<std::uint32_t>(requested)
-                   );
-          }
-        );
       }
       return false;
     }
@@ -6545,7 +6580,7 @@ namespace VDISPLAY_SUNSHINE {
             // the helper still applies the new session resolution and refresh.
             const bool requested_refresh_available =
               existing_presence == ExistingVirtualDisplayPresence::inactive &&
-              existing_virtual_display_supports_refresh(display_id, requested_fps);
+              existing_virtual_display_supports_refresh(client, display_id, width, height, requested_fps);
             const bool resurrect_inactive =
               replace_existing &&
               existing_presence == ExistingVirtualDisplayPresence::inactive &&
