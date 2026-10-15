@@ -488,10 +488,24 @@ sunshine_register_component(NAME test_component_managed_app_focus TEST_SOURCE un
 sunshine_register_component(NAME test_component_config_playnite TEST_SOURCE test_config_playnite.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_playnite_parse.cpp"
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
+set(STEAM_DISCOVERY_TEST_LIBRARIES "")
+if(WIN32)
+    set(STEAM_DISCOVERY_TEST_LIBRARIES advapi32 shell32 wtsapi32)
+endif()
 sunshine_register_component(NAME test_component_steam_integration TEST_SOURCE test_steam_integration.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_integration.cpp"
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/provider_scan_protocol.cpp"
-    LINK_LIBRARIES nlohmann_json::nlohmann_json)
+    LINK_LIBRARIES nlohmann_json::nlohmann_json ${STEAM_DISCOVERY_TEST_LIBRARIES})
+if(NOT WIN32)
+    # Run the production Windows token/session/registry adapter against a narrow
+    # API shim, without touching host identities, sessions or registry hives.
+    sunshine_register_component(NAME test_component_windows_steam_discovery
+        TEST_SOURCE unit/platform/windows/test_steam_discovery.cpp
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_integration.cpp"
+                        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/provider_scan_protocol.cpp"
+        INCLUDE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/support/windows_steam_api"
+        LINK_LIBRARIES nlohmann_json::nlohmann_json)
+endif()
 if(WIN32)
     # The static FFmpeg build uses BCrypt for its random seed provider.
     list(APPEND STEAM_ARTWORK_TEST_LIBRARIES bcrypt)
@@ -502,7 +516,7 @@ sunshine_register_component(NAME test_component_steam_artwork TEST_SOURCE test_s
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/provider_scan_protocol.cpp"
     INCLUDE_DIRECTORIES ${FFMPEG_INCLUDE_DIRS}
     LINK_LIBRARIES nlohmann_json::nlohmann_json ${FFMPEG_LIBRARIES} ${STEAM_ARTWORK_TEST_LIBRARIES}
-                   ${SUNSHINE_TEST_FFMPEG_PLATFORM_LIBRARIES}
+                   ${SUNSHINE_TEST_FFMPEG_PLATFORM_LIBRARIES} ${STEAM_DISCOVERY_TEST_LIBRARIES}
     DEFINITIONS ${STEAM_ARTWORK_TEST_DEFINITIONS})
 sunshine_register_component(NAME test_component_config_steam TEST_SOURCE test_config_steam.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_steam.cpp"
@@ -511,14 +525,14 @@ sunshine_register_component(NAME test_component_steam_sync TEST_SOURCE test_stea
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_sync_policy.cpp"
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_integration.cpp"
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/provider_scan_protocol.cpp"
-    LINK_LIBRARIES nlohmann_json::nlohmann_json)
+    LINK_LIBRARIES nlohmann_json::nlohmann_json ${STEAM_DISCOVERY_TEST_LIBRARIES})
 sunshine_register_component(NAME test_component_steam_process_tracker TEST_SOURCE test_steam_process_tracker.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_process_tracker.cpp")
 sunshine_register_component(NAME test_component_steam_auto_sync TEST_SOURCE test_steam_auto_sync.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_auto_sync_policy.cpp"
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_integration.cpp"
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/provider_scan_protocol.cpp"
-    LINK_LIBRARIES nlohmann_json::nlohmann_json)
+    LINK_LIBRARIES nlohmann_json::nlohmann_json ${STEAM_DISCOVERY_TEST_LIBRARIES})
 sunshine_register_component(NAME test_component_config_lutris TEST_SOURCE test_config_lutris.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_lutris.cpp"
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
@@ -529,7 +543,7 @@ sunshine_register_component(NAME test_component_lutris_integration TEST_SOURCE t
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_artwork.cpp"
     INCLUDE_DIRECTORIES ${FFMPEG_INCLUDE_DIRS}
     LINK_LIBRARIES nlohmann_json::nlohmann_json ${SQLITE3_LIBRARIES} ${FFMPEG_LIBRARIES} ${STEAM_ARTWORK_TEST_LIBRARIES}
-                   ${SUNSHINE_TEST_FFMPEG_PLATFORM_LIBRARIES}
+                   ${SUNSHINE_TEST_FFMPEG_PLATFORM_LIBRARIES} ${STEAM_DISCOVERY_TEST_LIBRARIES}
     DEFINITIONS ${STEAM_ARTWORK_TEST_DEFINITIONS})
 sunshine_register_component(NAME test_component_lutris_sync TEST_SOURCE test_lutris_sync.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/lutris_sync_policy.cpp"
