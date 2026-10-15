@@ -255,6 +255,10 @@ namespace platf::dxgi {
     _secdesc_builder = std::move(builder);
   }
 
+  void NamedPipeFactory::set_client_identification_only() {
+    _client_security_flags = SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION;
+  }
+
   std::unique_ptr<INamedPipe> NamedPipeFactory::create_client(const std::string &pipeName) {
     auto wPipeBase = utf8_to_wide(pipeName);
     std::wstring fullPipeName = (wPipeBase.find(LR"(\\.\pipe\)") == 0) ? wPipeBase : LR"(\\.\pipe\)" + wPipeBase;
@@ -279,7 +283,7 @@ namespace platf::dxgi {
 
     while (GetTickCount64() < deadline) {
       winrt::file_handle pipe {
-        CreateFileW(fullPipeName.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr)
+        CreateFileW(fullPipeName.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED | _client_security_flags, nullptr)
       };
 
       if (pipe) {
@@ -369,6 +373,10 @@ namespace platf::dxgi {
 
   void AnonymousPipeFactory::set_security_descriptor_builder(NamedPipeFactory::SecurityDescriptorBuilder builder) {
     _pipe_factory.set_security_descriptor_builder(std::move(builder));
+  }
+
+  void AnonymousPipeFactory::set_client_identification_only() {
+    _pipe_factory.set_client_identification_only();
   }
 
   class PrefetchedPipe: public INamedPipe {

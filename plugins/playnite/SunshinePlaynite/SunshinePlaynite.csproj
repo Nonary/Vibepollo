@@ -3,7 +3,7 @@
     <TargetFramework>net462</TargetFramework>
     <AssemblyName>VibepolloPlaynite</AssemblyName>
     <RootNamespace>SunshinePlaynite</RootNamespace>
-    <Version>0.5.1</Version>
+    <Version>0.5.2</Version>
     <LangVersion>7.3</LangVersion>
     <UseWPF>true</UseWPF>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
