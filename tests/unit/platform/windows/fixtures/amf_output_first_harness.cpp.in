@@ -1,0 +1,664 @@
+// Deterministic AMF/D3D boundary for the production functions extracted by
+// test_amf_output_first_retry.py. No vendor runtime or network is involved.
+// The fake driver completes after 6.6 ms; captures arrive at 6, 13, 20... ms
+// with 1 ms conversion. This puts completion after the real pre-conversion
+// output check, exercising the race even with the real capture-wait drain.
+#include "src/amf/amf_encoded_frame.h"
+#include "src/amf/amf_lifecycle.h"
+
+#include <algorithm>
+#include <array>
+#include <cassert>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+using namespace std::chrono_literals;
+using namespace std::string_view_literals;
+
+struct model_clock {
+  using duration = std::chrono::steady_clock::duration;
+  using time_point = std::chrono::steady_clock::time_point;
+  static inline time_point now_ {};
+
+  static time_point now() {
+    return now_;
+  }
+};
+
+struct event_t {
+  model_clock::time_point when;
+  std::function<void()> action;
+};
+
+std::deque<event_t> events;
+
+void advance(model_clock::time_point end) {
+  while (!events.empty() && events.front().when <= end) {
+    auto e = events.front();
+    events.pop_front();
+    model_clock::now_ = e.when;
+    e.action();
+  }
+  model_clock::now_ = std::max(model_clock::now_, end);
+}
+
+struct model_cv {
+  void notify_all() {}
+
+  template<class Lock, class TP, class Pred>
+  bool wait_until(Lock &lock, TP deadline, Pred pred) {
+    while (!pred() && model_clock::now() < deadline) {
+      auto next = events.empty() ? deadline : std::min(deadline, events.front().when);
+      lock.unlock();
+      advance(next);
+      lock.lock();
+    }
+    return pred();
+  }
+
+  template<class Lock, class Duration, class Pred>
+  bool wait_for(Lock &lock, Duration timeout, Pred pred) {
+    return wait_until(lock, model_clock::now() + timeout, pred);
+  }
+};
+
+namespace util {
+  template<class F>
+  struct guard {
+    F f;
+    bool active = true;
+
+    ~guard() {
+      if (active) {
+        f();
+      }
+    }
+
+    void disable() {
+      active = false;
+    }
+  };
+
+  template<class F>
+  auto fail_guard(F f) {
+    return guard<F> {f};
+  }
+
+  template<class T>
+  struct hex_t {
+    std::string to_string_view() {
+      return "0";
+    }
+  };
+
+  template<class T>
+  auto hex(T) {
+    return hex_t<T> {};
+  }
+}  // namespace util
+
+struct null_log {
+  template<class T>
+  null_log &operator<<(T const &) {
+    return *this;
+  }
+};
+
+#define BOOST_LOG(x) \
+  null_log {}
+using AMF_RESULT = int;
+using AMF_SURFACE_FORMAT = int;
+using HMODULE = void *;
+using amf_int64 = std::int64_t;
+using amf_pts = std::int64_t;
+constexpr int AMF_OK = 0, AMF_INPUT_FULL = 1, AMF_DECODER_NO_FREE_SURFACES = 2, AMF_NEED_MORE_INPUT = 3, AMF_SURFACE_NV12 = 0, S_OK = 0;
+#define AMF_STD_CALL
+#include "constants.inc"
+
+struct ID3D11Texture2D {
+  uint8_t pixels = 0;
+};
+
+struct ID3D11DeviceContext {
+  void CopyResource(ID3D11Texture2D *d, ID3D11Texture2D *s) {
+    d->pixels = s->pixels;
+  }
+};
+
+namespace Microsoft::WRL {
+  template<class T>
+  struct ComPtr {
+    std::shared_ptr<T> p = std::make_shared<T>();
+
+    T *Get() {
+      return p.get();
+    }
+
+    T *operator->() {
+      return p.get();
+    }
+
+    operator bool() const {
+      return bool(p);
+    }
+
+    T **GetAddressOf() {
+      static T *value = p.get();
+      return &value;
+    }
+
+    ComPtr() = default;
+    ComPtr(std::nullptr_t):
+        p(nullptr) {};
+  };
+}  // namespace Microsoft::WRL
+
+struct ID3D11Device {
+  int GetDeviceRemovedReason() {
+    return S_OK;
+  }
+
+  void GetImmediateContext(ID3D11DeviceContext **p) {
+    static ID3D11DeviceContext c;
+    *p = &c;
+  }
+};
+
+struct D3D11_TEXTURE2D_DESC {};
+
+namespace video {
+  struct config_t {
+    int framerate = 660;
+  };
+
+  struct sunshine_colorspace_t {};
+}  // namespace video
+
+namespace platf {
+  enum class pix_fmt_e {
+  };
+}  // namespace platf
+
+namespace amf {
+  struct amf_config {};
+
+  struct amf_hdr_metadata {};
+
+  struct AMFFactory {};
+
+  struct AMFData {};
+
+  using AMFDataPtr = std::shared_ptr<AMFData>;
+
+  struct AMFSurface {
+    std::int64_t index = 0;
+    ID3D11Texture2D *texture = nullptr;
+    bool idr = false;
+
+    template<class K, class V>
+    int SetProperty(K key, V) {
+      if (key == AMF_VIDEO_ENCODER_FORCE_PICTURE_TYPE || key == AMF_VIDEO_ENCODER_HEVC_FORCE_PICTURE_TYPE || key == AMF_VIDEO_ENCODER_AV1_FORCE_FRAME_TYPE) {
+        idr = true;
+      }
+      return AMF_OK;
+    }
+
+    void SetCrop(int, int, int, int) {}
+
+    void SetPts(amf_pts i) {
+      index = i;
+    }
+  };
+
+  using AMFSurfacePtr = std::shared_ptr<AMFSurface>;
+
+  struct AMFSurfaceObserver {
+    virtual ~AMFSurfaceObserver() = default;
+    virtual void OnSurfaceDataRelease(AMFSurface *) = 0;
+  };
+
+  struct AMFContext {
+    int CreateSurfaceFromDX11Native(ID3D11Texture2D *t, AMFSurfacePtr *s, AMFSurfaceObserver *) {
+      *s = std::make_shared<AMFSurface>();
+      (*s)->texture = t;
+      return AMF_OK;
+    }
+  };
+
+  using AMFContextPtr = std::shared_ptr<AMFContext>;
+
+  struct AMFComponent {
+    std::function<int(AMFSurfacePtr)> submit;
+
+    int SubmitInput(AMFSurfacePtr s) {
+      return submit(s);
+    }
+  };
+
+  using AMFComponentPtr = std::shared_ptr<AMFComponent>;
+}  // namespace amf
+
+#include "encoder_class.inc"
+
+namespace amf {
+  static const wchar_t *const kSlotGenerationProperty = L"generation";
+#include "drain_output.inc"
+#include "encode_frame.inc"
+
+  amf_d3d11::amf_d3d11(ID3D11Device *d):
+      device(d) {}
+
+  amf_d3d11::~amf_d3d11() = default;
+
+  void amf_d3d11::input_surface_release_observer_t::OnSurfaceDataRelease(AMFSurface *) {}
+
+  Microsoft::WRL::ComPtr<ID3D11Texture2D> amf_d3d11::create_input_surface_texture() {
+    return {};
+  }
+
+  std::optional<amf_d3d11::output_query_outcome_t> amf_d3d11::try_query_output_until(uint64_t, model_clock::time_point deadline) noexcept {
+    advance(events.empty() ? deadline : std::min(deadline, events.front().when));
+    return {};
+  }
+}  // namespace amf
+
+struct counted_encoder: amf::amf_d3d11 {
+  using amf::amf_d3d11::amf_d3d11;
+  int encode_calls = 0;
+
+  amf::amf_encode_result encode_frame(uint64_t index, bool idr) {
+    ++encode_calls;
+    return amf::amf_d3d11::encode_frame(index, idr);
+  }
+};
+
+struct runtime {
+  ID3D11Device device;
+  counted_encoder encoder {&device};
+  std::chrono::nanoseconds delay = 6600us;
+  std::vector<uint64_t> accepted, delivered;
+  std::vector<uint8_t> accepted_pixels;
+  std::size_t maximum_depth = 0;
+  int submit_result = AMF_OK;
+
+  runtime() {
+    model_clock::now_ = {};
+    events.clear();
+    encoder.context = std::make_shared<amf::AMFContext>();
+    encoder.encoder = std::make_shared<amf::AMFComponent>();
+    encoder.low_latency_pipeline_depth = 0;
+    encoder.encoder->submit = [this](auto s) {
+      auto id = s->index;
+      auto pixels = s->texture->pixels;
+      auto idr = s->idr;
+      accepted.push_back(id);
+      accepted_pixels.push_back(pixels);
+      maximum_depth = std::max(maximum_depth, encoder.accepted_input_count - encoder.completed_output_count + 1);
+      events.push_back({model_clock::now() + delay, [this, id, pixels, idr] {
+                          std::lock_guard lock(encoder.state_mutex);
+                          encoder.completed_outputs.push_back({{pixels}, uint64_t(id), idr, encoder.frame_rfi_flags.contains(id), false});
+                          ++encoder.completed_output_count;
+                          encoder.last_completed_frame_index = id;
+                          encoder.last_output_progress = model_clock::now();
+                          encoder.input_surfaces_in_flight = 0;
+                          for (auto &slot : encoder.input_surface_ring) {
+                            if (slot.state == amf::lifecycle::input_surface_state_e::in_flight) {
+                              slot.state = amf::lifecycle::input_surface_state_e::free;
+                            }
+                          }
+                        }});
+      return submit_result;
+    };
+  }
+
+  void prepare(uint8_t pixels = 0) {
+    for (std::size_t i = 0; i < encoder.active_input_surface_count; i++) {
+      if (encoder.input_surface_ring[i].state == amf::lifecycle::input_surface_state_e::free) {
+        encoder.input_surface_ring[i].state = amf::lifecycle::input_surface_state_e::reserved;
+        encoder.prepared_input_surface_slot = i;
+        encoder.input_surface_ring[i].texture->pixels = pixels;
+        return;
+      }
+    }
+    assert(false);
+  }
+
+  void deliver(amf::amf_encode_result &r) {
+    assert(!r.fatal);
+    for (auto &f : r.frames) {
+      delivered.push_back(f.frame_index);
+    }
+  }
+};
+
+namespace webrtc_stream {
+  bool has_active_sessions() {
+    return false;
+  }
+
+  template<class T>
+  void submit_video_packet(T &) {}
+}  // namespace webrtc_stream
+
+struct packet_raw_generic {
+  packet_raw_generic(std::vector<uint8_t> d, uint64_t i, bool idr):
+      data(std::move(d)),
+      index(i),
+      idr(idr) {}
+
+  std::vector<uint8_t> data;
+  uint64_t index;
+  bool idr;
+  void *channel_data = nullptr;
+  bool after_ref_frame_invalidation = false;
+  std::optional<model_clock::time_point> frame_timestamp, capture_timestamp, host_processing_timestamp;
+  model_clock::time_point packet_enqueue_timestamp;
+};
+
+using packet_t = std::unique_ptr<packet_raw_generic>;
+
+namespace safe {
+  struct mail_raw_t {
+    template<class T>
+    struct queue {
+      std::vector<T> values;
+      std::function<void()> on_raise;
+
+      void raise(T v) {
+        values.push_back(std::move(v));
+        if (on_raise) {
+          on_raise();
+        }
+      }
+    };
+    template<class T>
+    using queue_t = std::shared_ptr<queue<T>>;
+  };
+}  // namespace safe
+
+struct amf_encode_session_t {
+  struct device_t {
+    counted_encoder *amf;
+  };
+
+  std::unique_ptr<device_t> device;
+  bool force_idr = false, last_input_accepted = false, fresh_conversion_pending = true, suppress_tail_flush_until_fresh_conversion = false;
+  std::optional<model_clock::time_point> last_input_accepted_at;
+  int64_t last_emitted_index = -1;
+#include "video_session_methods.inc"
+
+  struct pending_timestamp_slot_t {
+    uint64_t frame_index = 0;
+    bool valid = false;
+    frame_timestamps_t ts;
+  };
+
+  std::array<pending_timestamp_slot_t, 256> pending_timestamps {};
+};
+
+#include "video_delivery.inc"
+
+void check(bool ok, const char *msg) {
+  if (!ok) {
+    std::cerr << "FAIL " << msg << '\n';
+    std::exit(1);
+  }
+  std::cout << "PASS " << msg << '\n';
+}
+
+struct image_queue {
+  std::deque<model_clock::time_point> arrivals;
+
+  bool peek() {
+    return !arrivals.empty() && arrivals.front() <= model_clock::now();
+  }
+
+  bool pop(std::chrono::nanoseconds timeout) {
+    if (!peek() && !arrivals.empty() && arrivals.front() <= model_clock::now() + timeout) {
+      advance(arrivals.front());
+    }
+    if (!peek()) {
+      return false;
+    }
+    arrivals.pop_front();
+    return true;
+  }
+};
+
+struct profile_result {
+  int source_frames = 0, submissions = 0, outputs = 0, skips = 0;
+  std::vector<uint64_t> indices;
+  std::vector<uint8_t> pixels;
+  std::size_t depth = 0;
+};
+
+profile_result profile(int count, std::chrono::nanoseconds convert = 1ms) {
+  runtime r;
+  amf_encode_session_t s;
+  s.device = std::make_unique<amf_encode_session_t::device_t>(&r.encoder);
+  auto *native_session = &s;
+  auto packets = std::make_shared<safe::mail_raw_t::queue<packet_t>>();
+  void *channel_data = nullptr;
+  uint64_t frame_nr = 1;
+  bool native_amf_runtime_failed = false;
+  auto deliver_ready_amf_output = [&]() {
+    return amf::lifecycle::deliver_ready_output(native_session, [&](auto &frames) {
+      deliver_amf_frames(frame_nr, s, frames, packets, channel_data);
+    });
+  };
+  image_queue image_storage;
+  auto *images = &image_storage;
+  for (int i = 0; i < count; i++) {
+    image_storage.arrivals.push_back(model_clock::time_point {} + 6ms + 7ms * i);
+  }
+  // First accepted input starts at t=0; next captures arrive at 6,13,20,... ms.
+  r.prepare(frame_nr);
+  encode_amf(frame_nr++, s, packets, channel_data, {}, {}, {});
+  auto encode_frame_threshold = 6060606ns;
+  int skipped = 0;
+  for (int i = 0; i < count; i++) {
+    if (!deliver_ready_amf_output()) {
+      break;
+    }
+    std::chrono::nanoseconds max_frametime = 100ms;
+    auto image_wait_budget = max_frametime;
+#include "capture_wait.inc"
+    if (!img) {
+      break;
+    }
+    advance(model_clock::now() + convert);
+    r.prepare(frame_nr);
+    s.fresh_conversion_pending = true;
+    if (encode_amf(frame_nr++, s, packets, channel_data, model_clock::now(), model_clock::now(), model_clock::now())) {
+      break;
+    }
+    if (!s.was_last_input_accepted()) {
+      ++skipped;
+    }
+  }
+  advance(model_clock::now() + 100ms);
+  auto tail = s.drain_frames(0ms);
+  deliver_amf_frames(frame_nr, s, tail.frames, packets, channel_data);
+  profile_result out {count + 1, int(r.accepted.size()), int(packets->values.size()), skipped, {}, {}, r.maximum_depth};
+  for (auto &p : packets->values) {
+    out.indices.push_back(p->index);
+    out.pixels.push_back(p->data[0]);
+  }
+  check(!native_amf_runtime_failed, "exact capture-wait block completes without AMF fatal error");
+  return out;
+}
+
+struct fixture {
+  runtime r;
+  amf_encode_session_t session;
+  safe::mail_raw_t::queue_t<packet_t> packets = std::make_shared<safe::mail_raw_t::queue<packet_t>>();
+
+  fixture() {
+    session.device = std::make_unique<amf_encode_session_t::device_t>(&r.encoder);
+  }
+
+  void older_ready() {
+    r.prepare(11);
+    r.encoder.encode_frame(1, false);
+    advance(model_clock::now() + 10ms);
+  }
+
+  int encode(uint64_t index) {
+    return encode_amf(index, session, packets, nullptr, model_clock::now(), model_clock::now() - 1ms, model_clock::now() - 2ms);
+  }
+};
+
+int main() {
+  auto fixed = profile(100);
+  check(fixed.submissions == 101 && fixed.outputs == 101 && fixed.skips == 0, "conversion-completion race submits and delivers all 101 source captures");
+  bool identities = true;
+  for (std::size_t i = 0; i < fixed.indices.size(); ++i) {
+    identities &= fixed.indices[i] == i + 1 && fixed.pixels[i] == i + 1;
+  }
+  check(identities, "wire indices and actual encoded pixels match every accepted current capture");
+  check(fixed.depth == 1, "retry preserves strict depth-one native application queue");
+  {
+    fixture f;
+    f.older_ready();
+    f.r.prepare(22);
+    f.session.force_idr = true;
+    f.r.encoder.rfi_enabled = true;
+    f.r.encoder.effective_ltr_slots = 2;
+    f.r.encoder.rfi_pending = true;
+    auto stamp = model_clock::now();
+    int calls = f.r.encoder.encode_calls;
+    check(f.encode(2) == 0, "ready-output recovery call succeeds");
+    check(f.r.encoder.encode_calls - calls == 2 && f.session.was_last_input_accepted(), "fresh output-first rejection makes exactly one real submission retry");
+    advance(model_clock::now() + 10ms);
+    auto tail = f.session.drain_frames(0ms);
+    deliver_amf_frames(2, f.session, tail.frames, f.packets, nullptr);
+    auto &p = *f.packets->values.back();
+    check(p.index == 2 && p.data[0] == 22 && p.idr, "retry submits latest pixels with original index and recovery IDR");
+    check(p.frame_timestamp == stamp && p.capture_timestamp == stamp - 1ms && p.host_processing_timestamp == stamp - 2ms, "retry preserves all current-frame timestamps");
+    check(!f.session.force_idr && !f.r.encoder.rfi_pending && f.r.encoder.ltr_slots_valid[0] && f.r.encoder.ltr_slot_frame_index[0] == 2, "recovery commits only after current input acceptance");
+  }
+  {
+    fixture f;
+    f.older_ready();
+    f.r.prepare(22);
+    f.session.fresh_conversion_pending = false;
+    int calls = f.r.encoder.encode_calls;
+    check(f.encode(2) == 0 && f.r.encoder.encode_calls - calls == 1 && !f.session.was_last_input_accepted(), "static duplicate output-only delivery never triggers fresh-capture retry");
+  }
+  {
+    fixture f;
+    f.r.encoder.accepted_input_count = 1;
+    f.r.encoder.low_latency_pipeline_depth = 0;
+    f.r.prepare(22);
+    int calls = f.r.encoder.encode_calls;
+    check(f.encode(2) == 0 && f.r.encoder.encode_calls - calls == 1 && !f.session.was_last_input_accepted(), "empty output under real backpressure is not retried or hidden");
+  }
+  {
+    fixture f;
+    f.r.prepare(22);
+    int calls = f.r.encoder.encode_calls;
+    check(f.encode(2) == 0 && f.r.encoder.encode_calls - calls == 1 && f.session.was_last_input_accepted(), "accepted asynchronous input without output is never resubmitted");
+  }
+  {
+    fixture f;
+    f.r.encoder.preanalysis_enabled = true;
+    f.r.encoder.preanalysis_lookahead_depth = 1;
+    f.r.submit_result = AMF_NEED_MORE_INPUT;
+    f.r.prepare(22);
+    check(f.encode(2) == 0 && f.r.encoder.encode_calls == 1 && f.session.was_last_input_accepted(), "accepted NEED_MORE_INPUT preserves PA priming and is never retried");
+  }
+  {
+    fixture f;
+    f.r.encoder.output_fatal = true;
+    f.r.prepare(22);
+    check(f.encode(2) == -1 && f.r.encoder.encode_calls == 1 && f.packets->values.empty(), "fatal native failure returns immediately without retry");
+  }
+  {
+    fixture f;
+    auto &e = f.r.encoder;
+    e.accepted_input_count = 2;
+    e.completed_output_count = 1;
+    e.completed_outputs.push_back({{11}, 1, false, false, false});
+    f.packets->on_raise = [&]() {
+      if (e.completed_output_count == 1) {
+        e.completed_output_count = 2;
+        e.completed_outputs.push_back({{22}, 2, false, false, false});
+      }
+    };
+    f.r.prepare(33);
+    int calls = e.encode_calls;
+    check(f.encode(3) == 0 && e.encode_calls - calls == 2 && !f.session.was_last_input_accepted() && f.packets->values.size() == 2, "a second racing completion stops after one retry and leaves the real drop visible");
+  }
+  {
+    fixture f;
+    f.older_ready();
+    f.r.prepare(22);
+    f.session.fresh_conversion_pending = false;
+    f.session.force_idr = true;
+    int calls = f.r.encoder.encode_calls;
+    check(f.encode(2) == 0 && f.r.encoder.encode_calls - calls == 1 && f.session.force_idr, "static requested IDR keeps its pending recovery state when the output-first call declines it");
+  }
+  {
+    fixture f;
+    f.older_ready();
+    auto &e = f.r.encoder;
+    e.rfi_enabled = true;
+    e.effective_ltr_slots = 2;
+    e.rfi_pending = true;
+    e.last_rfi_ltr_index = 0;
+    e.ltr_slots_valid[0] = true;
+    e.ltr_slot_frame_index[0] = 1;
+    f.r.prepare(22);
+    check(f.encode(2) == 0 && !e.rfi_pending && e.frame_rfi_flags.contains(2) && e.ltr_slots_valid[0] && e.ltr_slot_frame_index[0] == 1, "RFI-only retry commits the original accepted index and preserves its LTR reference");
+    advance(model_clock::now() + 10ms);
+    auto tail = f.session.drain_frames(0ms);
+    deliver_amf_frames(2, f.session, tail.frames, f.packets, nullptr);
+    auto &p = *f.packets->values.back();
+    check(p.index == 2 && p.data[0] == 22 && !p.idr && p.after_ref_frame_invalidation, "RFI-only recovery packet retains actual pixels and reference-invalidation flag");
+  }
+  {
+    fixture f;
+    f.older_ready();
+    f.r.prepare(22);
+    f.packets->on_raise = [&]() {
+      f.r.encoder.output_fatal = true;
+    };
+    int calls = f.r.encoder.encode_calls;
+    check(f.encode(2) == -1 && f.r.encoder.encode_calls - calls == 2 && f.packets->values.size() == 1, "fatal retry ends encoding after delivering the older packet");
+  }
+  {
+    fixture f;
+    f.older_ready();
+    f.r.prepare(22);
+    // Retained wrappers may outlive their completed output. Fill the driver
+    // headroom while keeping a separate free texture for the fresh capture.
+    auto &e = f.r.encoder;
+    e.encoder_input_queue_size = 1;
+    e.accepted_input_count = e.completed_output_count = 2;
+    e.completed_outputs.push_back({{12}, 2, false, false, false});
+    e.last_completed_frame_index = 2;
+    e.input_surfaces_in_flight = 2;
+    e.input_surface_ring[1].state = e.input_surface_ring[2].state =
+      amf::lifecycle::input_surface_state_e::in_flight;
+    int calls = f.r.encoder.encode_calls;
+    auto before = model_clock::now();
+    check(f.encode(2) == 0 && f.r.encoder.encode_calls - calls == 2 && !f.session.was_last_input_accepted() && model_clock::now() - before <= 6ms, "retained driver ownership bounds the retry and preserves the visible rejection");
+  }
+  {
+    fixture f;
+    f.r.delay = 1ms;
+    f.r.prepare(22);
+    check(f.encode(2) == 0 && f.r.encoder.encode_calls == 1 && f.packets->values.size() == 1 && f.session.was_last_input_accepted(), "accepted input with immediately available output is submitted only once");
+  }
+}

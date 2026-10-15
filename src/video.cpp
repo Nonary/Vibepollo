@@ -1365,6 +1365,10 @@ namespace video {
       }
     }
 
+    bool has_fresh_conversion() const {
+      return fresh_conversion_pending;
+    }
+
     amf::amf_encode_result encode_frames(uint64_t frame_index) {
       if (!device || !device->amf) {
         return {};
@@ -3642,26 +3646,35 @@ namespace video {
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp,
     std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp
   ) {
-    // Stash this frame's timestamps before submitting; the encoder is pipelined and
-    // emits an earlier frame, so the packet is stamped from this map by emitted index.
-    session.store_frame_timestamps((uint64_t) frame_nr, {frame_timestamp, capture_timestamp, host_processing_timestamp});
+    // A completion can race the pre-conversion output drain. Deliver the older
+    // packet first, then give the retained fresh capture one submission attempt
+    // before the outer loop consumes another image/index. Never retry accepted
+    // input or loop through persistent backpressure; ordinary drops stay visible.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      // Stash this frame's timestamps before submitting; the encoder is pipelined and
+      // emits an earlier frame, so the packet is stamped from this map by emitted index.
+      session.store_frame_timestamps((uint64_t) frame_nr, {frame_timestamp, capture_timestamp, host_processing_timestamp});
 
-    auto encode_result = session.encode_frames(frame_nr);
-    auto &encoded_frames = encode_result.frames;
-    if (!encode_result.input_accepted) {
-      session.discard_frame_timestamps((uint64_t) frame_nr);
-    }
-    if (encode_result.fatal || std::any_of(encoded_frames.begin(), encoded_frames.end(), [](const auto &frame) { return frame.fatal; })) {
-      BOOST_LOG(error) << "AMF encoder entered an unrecoverable state, requesting reinit";
-      return -1;
-    }
-    if (encoded_frames.empty()) {
-      // No output this call (pipeline still filling or transient stall); not fatal.
-      // The stashed timestamps stay until this frame is actually emitted.
-      return 0;
-    }
+      auto encode_result = session.encode_frames(frame_nr);
+      auto &encoded_frames = encode_result.frames;
+      if (!encode_result.input_accepted) {
+        session.discard_frame_timestamps((uint64_t) frame_nr);
+      }
+      if (encode_result.fatal || std::any_of(encoded_frames.begin(), encoded_frames.end(), [](const auto &frame) { return frame.fatal; })) {
+        BOOST_LOG(error) << "AMF encoder entered an unrecoverable state, requesting reinit";
+        return -1;
+      }
+      if (encoded_frames.empty()) {
+        // No output this call (pipeline still filling or transient stall); not fatal.
+        // The stashed timestamps stay until this frame is actually emitted.
+        return 0;
+      }
 
-    deliver_amf_frames(frame_nr, session, encoded_frames, packets, channel_data);
+      deliver_amf_frames(frame_nr, session, encoded_frames, packets, channel_data);
+      if (encode_result.input_accepted || !session.has_fresh_conversion()) {
+        return 0;
+      }
+    }
 
     return 0;
   }
