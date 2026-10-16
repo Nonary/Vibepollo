@@ -7,6 +7,7 @@ const BrowserStreamView = () => import('@/views/BrowserStreamView.vue');
 const DevicesView = () => import('@/views/DevicesView.vue');
 const IntegrationsView = () => import('@/views/IntegrationsView.vue');
 const LibraryView = () => import('@/views/LibraryView.vue');
+const AppOrderView = () => import('@/views/AppOrderView.vue');
 const LogsView = () => import('@/views/LogsView.vue');
 const MaintenanceView = () => import('@/views/MaintenanceView.vue');
 const NotFoundView = () => import('@/views/NotFoundView.vue');
@@ -38,6 +39,12 @@ const router = createRouter({
       name: 'library',
       component: LibraryView,
       meta: { titleKey: 'ui.nav.library' },
+    },
+    {
+      path: '/library/order',
+      name: 'app-order',
+      component: AppOrderView,
+      meta: { titleKey: 'ui.appOrder.page.title' },
     },
     {
       path: '/library/new',

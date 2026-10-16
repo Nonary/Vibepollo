@@ -581,6 +581,9 @@ function libraryRequest(
         <RouterLink class="button button--secondary" to="/integrations"
           ><UiIcon name="integrations" />{{ t('ui.library.actions.sources') }}</RouterLink
         >
+        <RouterLink class="button button--secondary" to="/library/order"
+          ><UiIcon name="list" />{{ t('ui.library.actions.appOrder') }}</RouterLink
+        >
         <AppButton
           v-if="isWindows && purgeablePlayniteEntries.length"
           icon="trash"

@@ -22,6 +22,16 @@ TEST(LutrisSync, ImportsNonSteamAndTracksProviderMetadata) {
   EXPECT_EQ(root["apps"][0]["cmd"], "lutris lutris:rungameid/7");
 }
 
+TEST(LutrisSync, RecordsPlayStatsForAppOrdering) {
+  auto played = game(7, "Battle.net");
+  played.last_played = 1727000000;
+  played.playtime_seconds = 2.5;  // Lutris stores hours.
+  nlohmann::json root = {{"apps", nlohmann::json::array()}};
+  ASSERT_TRUE(platf::lutris::sync::policy::reconcile(root, {played}));
+  EXPECT_EQ(root["apps"][0]["last-played"], 1727000000);
+  EXPECT_EQ(root["apps"][0]["playtime-minutes"], 150);
+}
+
 TEST(LutrisSync, SteamEntriesAreOffByDefaultAndDirectSteamWins) {
   auto steam_game = game(8, "Steam Copy", "steam");
   steam_game.service = "steam";

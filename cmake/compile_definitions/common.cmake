@@ -146,6 +146,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/common_services.h"
         "${CMAKE_SOURCE_DIR}/src/app_catalog_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/app_catalog_policy.h"
+        "${CMAKE_SOURCE_DIR}/src/app_order_policy.cpp"
+        "${CMAKE_SOURCE_DIR}/src/app_order_policy.h"
         "${CMAKE_SOURCE_DIR}/src/steam_integration.cpp"
         "${CMAKE_SOURCE_DIR}/src/steam_integration.h"
         "${CMAKE_SOURCE_DIR}/src/steam_artwork.cpp"

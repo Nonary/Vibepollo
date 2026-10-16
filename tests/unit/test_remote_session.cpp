@@ -124,6 +124,26 @@ TEST(RemoteSession, ConfiguredRemoteMarkersCannotShadowSyntheticControls) {
   EXPECT_EQ(idle.catalogue[2].id, remote_session::monitor_id);
 }
 
+TEST(RemoteSession, ControlsTakeTheConfiguredPositionOfTheirEntries) {
+  const std::vector<remote_session::app_t> configured {
+    {1, "desktop", "Desktop", false},
+    {2, "monitor-entry", "Remote Monitor", false},
+    {3, "input-entry", "Remote Input", false},
+    {4, "game", "Game", false},
+  };
+  const auto idle = remote_session::project(caller("client"), {}, {}, configured, false);
+  ASSERT_EQ(idle.catalogue.size(), 4);
+  EXPECT_EQ(idle.catalogue[0].title, "Desktop");
+  EXPECT_EQ(idle.catalogue[1].id, remote_session::monitor_id);
+  EXPECT_EQ(idle.catalogue[2].id, remote_session::input_id);
+  EXPECT_EQ(idle.catalogue[3].title, "Game");
+
+  const auto input_owner = remote_session::project(caller("input"), {}, {.role = remote_session::role_e::input}, configured, true);
+  ASSERT_EQ(input_owner.catalogue.size(), 3);
+  EXPECT_EQ(input_owner.catalogue[1].id, remote_session::monitor_id);
+  EXPECT_EQ(input_owner.catalogue[2].title, "Game");
+}
+
 TEST(RemoteSession, UngatedGameStaysLaunchableAndCancelableUntilSpecialSessionOwnership) {
   const auto active_game = game();
   const auto owner = caller("owner");
