@@ -361,6 +361,15 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(error) << "Logging failed to initialize"sv;
   }
 
+#ifdef WIN32
+  // Own cleanup even for maintenance commands and early startup returns.
+  // shutdown() is terminal and contains exceptions before logger teardown.
+  auto restore_nvprefs = []() noexcept {
+    nvprefs_instance.shutdown();
+  };
+  auto nvprefs_shutdown_guard = util::fail_guard(restore_nvprefs);
+#endif
+
 #ifdef _WIN32
   const auto app_user_model_id_status =
     SetCurrentProcessExplicitAppUserModelID(WIDEN_STRING_LITERAL(PROJECT_APP_USER_MODEL_ID));
@@ -1099,10 +1108,8 @@ int main(int argc, char *argv[]) {
 
 #ifdef WIN32
   // Restore global NVIDIA control panel settings
-  if (nvprefs_instance.owning_undo_file() && nvprefs_instance.load()) {
-    nvprefs_instance.restore_global_profile();
-    nvprefs_instance.unload();
-  }
+  restore_nvprefs();
+  nvprefs_shutdown_guard.disable();
 #endif
 
   session_history::shutdown();

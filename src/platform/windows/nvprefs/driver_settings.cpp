@@ -28,9 +28,9 @@ namespace {
 
 namespace nvprefs {
 
-  driver_settings_t::~driver_settings_t() {
+  driver_settings_t::~driver_settings_t() noexcept {
     if (session_handle) {
-      NvAPI_DRS_DestroySession(session_handle);
+      destroy();
     }
   }
 
@@ -57,12 +57,23 @@ namespace nvprefs {
     return load_settings();
   }
 
-  void driver_settings_t::destroy() {
-    if (session_handle) {
-      NvAPI_DRS_DestroySession(session_handle);
-      session_handle = nullptr;
+  bool driver_settings_t::destroy() noexcept {
+    bool success = true;
+    const auto session = session_handle;
+    session_handle = nullptr;
+    if (session) {
+      try {
+        success = NvAPI_DRS_DestroySession(session) == NVAPI_OK;
+      } catch (...) {
+        success = false;
+      }
     }
-    NvAPI_Unload();
+    try {
+      success = (NvAPI_Unload() == NVAPI_OK) && success;
+    } catch (...) {
+      success = false;
+    }
+    return success;
   }
 
   bool driver_settings_t::load_settings() {

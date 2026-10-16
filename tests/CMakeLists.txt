@@ -730,6 +730,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 "-I$<JOIN:$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>,;-I>"
             COMMAND_EXPAND_LISTS)
         set_tests_properties(test_component_process_undo_shutdown PROPERTIES LABELS "component" TIMEOUT 45)
+        add_test(NAME test_component_nvprefs_shutdown
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_nvprefs_shutdown.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_nvprefs_shutdown PROPERTIES LABELS "component" TIMEOUT 45)
+        add_test(NAME test_component_nvprefs_cleanup
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_nvprefs_cleanup.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_nvprefs_cleanup PROPERTIES LABELS "component" TIMEOUT 45)
         add_test(NAME test_component_recovery_event_notifications
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/test_recovery_event_notifications.py"

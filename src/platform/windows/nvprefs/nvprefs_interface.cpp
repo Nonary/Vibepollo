@@ -4,6 +4,7 @@
  */
 // standard includes
 #include <cassert>
+#include <cstdio>
 
 // local includes
 #include "driver_settings.h"
@@ -14,6 +15,15 @@ namespace {
 
   const auto sunshine_program_data_folder = "Sunshine";
   const auto nvprefs_undo_file_name = "nvprefs_undo.json";
+
+  void report_cleanup_failure(const char *message) noexcept {
+    try {
+      nvprefs::error_message(message);
+    } catch (...) {
+      std::fputs(message, stderr);
+      std::fputc('\n', stderr);
+    }
+  }
 
 }  // namespace
 
@@ -32,14 +42,38 @@ namespace nvprefs {
       pimpl(new impl()) {
   }
 
-  nvprefs_interface::~nvprefs_interface() {
-    if (owning_undo_file() && load()) {
-      restore_global_profile();
+  nvprefs_interface::~nvprefs_interface() noexcept = default;
+
+  bool nvprefs_interface::shutdown() noexcept {
+    if (shutdown_started) {
+      return shutdown_succeeded;
     }
-    unload();
+    shutdown_started = true;
+    shutdown_succeeded = false;
+
+    try {
+      shutdown_succeeded = !owning_undo_file() || (load() && restore_global_profile());
+    } catch (...) {
+      shutdown_succeeded = false;
+    }
+    // Even a partially initialized driver session must be closed. destroy()
+    // contains exceptions and clears its handle before invoking the driver.
+    shutdown_succeeded = unload() && shutdown_succeeded;
+
+    // A failed restore/delete keeps the file on disk. Release its exclusive
+    // handle and all runtime state now, so CRT destruction cannot retry work
+    // through logging/NVAPI globals which may already have been destroyed.
+    pimpl.reset();
+    if (!shutdown_succeeded) {
+      report_cleanup_failure("NVIDIA settings cleanup failed; any remaining undo file is preserved for recovery on a later startup.");
+    }
+    return shutdown_succeeded;
   }
 
   bool nvprefs_interface::load() {
+    if (!pimpl) {
+      return false;
+    }
     if (!pimpl->loaded) {
       // Check %ProgramData% variable, need it for storing undo file
       wchar_t program_data_env[MAX_PATH];
@@ -60,48 +94,57 @@ namespace nvprefs {
     return pimpl->loaded;
   }
 
-  void nvprefs_interface::unload() {
-    if (pimpl->loaded) {
-      // Unload dynamically loaded nvapi library
-      pimpl->driver_settings.destroy();
-      pimpl->loaded = false;
+  bool nvprefs_interface::unload() noexcept {
+    if (!pimpl) {
+      return shutdown_succeeded;
     }
+    // init() can acquire a session before returning false or throwing.
+    const bool success = pimpl->driver_settings.destroy();
+    pimpl->loaded = false;
+    return success;
   }
 
-  bool nvprefs_interface::restore_from_and_delete_undo_file_if_exists() {
-    if (!pimpl->loaded) {
+  bool nvprefs_interface::restore_from_and_delete_undo_file_if_exists() noexcept {
+    if (!pimpl || !pimpl->loaded) {
       return false;
     }
 
-    // Check for undo file from previous improper termination
-    bool access_denied = false;
-    if (auto undo_file = undo_file_t::open_existing_file(pimpl->undo_file_path, access_denied)) {
-      // Try to restore from the undo file
-      info_message("Opened undo file from previous improper termination");
-      if (auto undo_data = undo_file->read_undo_data()) {
-        if (pimpl->driver_settings.restore_global_profile_to_undo(*undo_data) && pimpl->driver_settings.save_settings()) {
-          info_message("Restored global profile settings from undo file - deleting the file");
+    try {
+      // Check for undo file from previous improper termination
+      bool access_denied = false;
+      if (auto undo_file = undo_file_t::open_existing_file(pimpl->undo_file_path, access_denied)) {
+        // Try to restore from the undo file
+        info_message("Opened undo file from previous improper termination");
+        if (auto undo_data = undo_file->read_undo_data()) {
+          if (pimpl->driver_settings.restore_global_profile_to_undo(*undo_data) && pimpl->driver_settings.save_settings()) {
+            info_message("Restored global profile settings from undo file - deleting the file");
+          } else {
+            error_message("Failed to restore global profile settings from undo file; keeping the file for recovery");
+            return false;
+          }
         } else {
-          error_message("Failed to restore global profile settings from undo file, deleting the file anyway");
+          error_message("Couldn't read undo file; keeping the file for recovery");
+          return false;
         }
-      } else {
-        error_message("Coulnd't read undo file, deleting the file anyway");
-      }
 
-      if (!undo_file->delete_file()) {
-        error_message("Couldn't delete undo file");
+        if (!undo_file->delete_file()) {
+          error_message("Couldn't delete undo file");
+          return false;
+        }
+      } else if (access_denied) {
+        error_message("Couldn't open undo file from previous improper termination, or confirm that there's no such file");
         return false;
       }
-    } else if (access_denied) {
-      error_message("Couldn't open undo file from previous improper termination, or confirm that there's no such file");
+
+      return true;
+    } catch (...) {
+      report_cleanup_failure("NVIDIA settings recovery failed; keeping the undo file for a later startup.");
       return false;
     }
-
-    return true;
   }
 
   bool nvprefs_interface::modify_application_profile() {
-    if (!pimpl->loaded) {
+    if (!pimpl || !pimpl->loaded) {
       return false;
     }
 
@@ -125,7 +168,7 @@ namespace nvprefs {
   }
 
   bool nvprefs_interface::modify_global_profile() {
-    if (!pimpl->loaded) {
+    if (!pimpl || !pimpl->loaded) {
       return false;
     }
 
@@ -192,11 +235,11 @@ namespace nvprefs {
   }
 
   bool nvprefs_interface::owning_undo_file() {
-    return pimpl->undo_file.has_value();
+    return pimpl && pimpl->undo_file.has_value();
   }
 
   bool nvprefs_interface::restore_global_profile() {
-    if (!pimpl->loaded || !pimpl->undo_data || !pimpl->undo_file) {
+    if (!pimpl || !pimpl->loaded || !pimpl->undo_data || !pimpl->undo_file) {
       return false;
     }
 
