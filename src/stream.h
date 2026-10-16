@@ -77,6 +77,7 @@ namespace stream {
   };
 
   namespace session {
+    constexpr int START_PACING_REJECTED = -2;
     extern std::atomic_uint running_sessions;
     // Counts RTSP joins through their complete post-session cleanup tail.
     // Observers use this instead of entering blocking session cleanup.

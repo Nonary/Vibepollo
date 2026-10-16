@@ -461,6 +461,35 @@ endif()
 
 sunshine_register_component(NAME test_component_stream_protocol TEST_SOURCE unit/test_stream.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_protocol.cpp")
+sunshine_register_component(NAME test_component_video_pacing TEST_SOURCE unit/test_video_pacing.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_protocol.cpp")
+if(SUNSHINE_TEST_ENABLE_COMPONENT)
+    find_program(SUNSHINE_TEST_PYTHON_EXECUTABLE NAMES python3 python)
+    if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+        set(_pacing_fixture_dir "${CMAKE_CURRENT_BINARY_DIR}/video-pacing")
+        add_custom_command(
+            OUTPUT "${_pacing_fixture_dir}/video_pacing_integration.cpp" "${_pacing_fixture_dir}/stream_protocol.h"
+            BYPRODUCTS "${_pacing_fixture_dir}/stream_protocol.cpp"
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_video_pacing_integration.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}"
+                --generate-only --output-dir "${_pacing_fixture_dir}"
+            DEPENDS unit/test_video_pacing_integration.py unit/test_video_pacing_integration.cpp.in
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream.cpp"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream.h"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_protocol.cpp"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_protocol.h"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/pyrowave_policy.h"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/nvhttp.cpp"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/rtsp.cpp"
+            VERBATIM)
+        sunshine_add_test_target(NAME test_component_video_pacing_admission CATEGORY component
+            TEST_SOURCES "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp" "${_pacing_fixture_dir}/video_pacing_integration.cpp"
+            PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_protocol.cpp"
+            INCLUDE_DIRECTORIES "${_pacing_fixture_dir}"
+            DEFINITIONS SUNSHINE_TESTS LINK_LIBRARIES GTest::gtest)
+    endif()
+endif()
 sunshine_register_component(NAME test_component_remote_session TEST_SOURCE unit/test_remote_session.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/remote_session.cpp")
 sunshine_register_component(NAME test_component_rtsp_pending_policy TEST_SOURCE unit/test_rtsp_pending_policy.cpp

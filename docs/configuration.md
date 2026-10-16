@@ -5029,7 +5029,11 @@ Enables NVIDIA temporal adaptive quantization when supported.
 
 ### pacing_max_bitrate_kbps
 
-Sets the maximum bitrate, in Kbps, considered by the network pacing policy. Set `0` to use the automatic default.
+Sets a ceiling in Kbps on the shared video UDP payload pacer, including RTP/packet headers, FEC and any video encryption prefix. It does not include audio/control traffic or IP/link headers, and is not a limit on instantaneous NIC serialization speed.
+
+Positive values reject a stream start or runtime bitrate increase when the combined nominal video demand cannot fit. Admission conservatively reserves per-frame padding and per-block FEC rounding/minimums at the negotiated bitrate and cadence; large IDR frames can still create temporary pacing debt. Reduce the requested video bitrate or explicitly raise the ceiling if admission fails. The host never raises this ceiling automatically. PyroWave keeps its adaptive policy, bounded by this ceiling when configured; admission conservatively allows its maximum critical/detail FEC.
+
+Set `0` to preserve the existing legacy/adaptive pacing behavior without this admission check.
 
 ### packetsize
 

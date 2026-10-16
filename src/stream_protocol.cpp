@@ -3,6 +3,63 @@
 #include <algorithm>
 
 namespace stream {
+  std::size_t video_pacing_packets_per_ms(int ceiling_kbps, std::size_t datagram_bytes) {
+    if (ceiling_kbps <= 0 || datagram_bytes == 0) {
+      return 0;
+    }
+    return std::uint64_t(ceiling_kbps) / 8 / datagram_bytes;
+  }
+
+  video_pacing_reservation_t video_pacing_reservation(int ceiling_kbps, const video_pacing_demand_t &demand) {
+    if (ceiling_kbps == 0) {
+      return {true, 0, 0};
+    }
+    // Match the transport's packet-size, RTSP cadence and FEC domains. Besides
+    // rejecting invalid input, these bounds keep every intermediate in u64.
+    if (ceiling_kbps < 0 || demand.encoder_kbps <= 0 ||
+        demand.frames_per_second <= 0 || demand.frames_per_second > 4000 ||
+        demand.payload_bytes == 0 || demand.datagram_bytes <= demand.payload_bytes ||
+        demand.datagram_bytes > 65535 + 16 + 32 ||
+        demand.frame_header_bytes > demand.datagram_bytes ||
+        demand.fec_percentage < 0 || demand.fec_percentage > 255 ||
+        demand.min_parity_shards < 0 || demand.min_parity_shards > 255) {
+      return {};
+    }
+    const auto ceil_div = [](std::uint64_t value, std::uint64_t divisor) {
+      return (value + divisor - 1) / divisor;
+    };
+    const auto fps = std::uint64_t(demand.frames_per_second);
+    const auto image_bytes = std::uint64_t(demand.encoder_kbps) * 125;
+    // sum(ceil(frame_bytes / payload)) <= ceil(sum / payload) + frames - 1.
+    const auto data = ceil_div(image_bytes + fps * demand.frame_header_bytes, demand.payload_bytes) + fps - 1;
+    std::uint64_t parity = 0;
+    if (demand.fec_percentage != 0) {
+      const auto max_data_per_block = 255 * 100 / (100 + demand.fec_percentage);
+      const auto blocks = demand.independent_fec_blocks ? 4 * fps :
+                          std::min(4 * fps, ceil_div(data, max_data_per_block) + fps - 1);
+      // Each protected block has at least one parity shard. Bound its ceil
+      // and any client minimum separately, including uneven frame sizes.
+      parity = ceil_div(data * demand.fec_percentage, 100) +
+               blocks * std::max(demand.min_parity_shards, 1) - 1;
+    }
+    const auto packets = data + parity;
+    const auto pace = video_pacing_packets_per_ms(ceiling_kbps, demand.datagram_bytes);
+    if (pace == 0) {
+      return {false, packets, 0};
+    }
+    const auto send_ns = ceil_div(packets * 1'000'000, pace);
+    return {send_ns <= 1'000'000'000, packets, send_ns};
+  }
+
+  bool reserve_video_pacing_capacity(std::uint64_t &used_ns_per_second, const video_pacing_reservation_t &reservation) {
+    if (!reservation.admissible || used_ns_per_second > 1'000'000'000 ||
+        reservation.send_ns_per_second > 1'000'000'000 - used_ns_per_second) {
+      return false;
+    }
+    used_ns_per_second += reservation.send_ns_per_second;
+    return true;
+  }
+
   std::size_t video_send_batch_size(std::size_t block_size, std::size_t prefix_size, std::size_t max_batch_bytes) {
     const auto byte_limit = std::min<std::size_t>(64 * 1024, max_batch_bytes);
     // Even an individual packet larger than the configured batch budget must

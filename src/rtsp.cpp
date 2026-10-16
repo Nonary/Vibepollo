@@ -2549,11 +2549,17 @@ namespace rtsp_stream {
 
         std::shared_ptr<stream::session_t> stream_session;
         bool startup_failed = true;
+        int startup_status = 500;
         std::string startup_error;
 
         try {
           stream_session = stream::session::alloc(config, *launch_session);
-          startup_failed = stream::session::start(*stream_session, remote_address) != 0;
+          const auto result = stream::session::start(*stream_session, remote_address);
+          startup_failed = result != 0;
+          if (result == stream::session::START_PACING_REJECTED) {
+            startup_status = 400;
+            startup_error = "Requested video demand cannot fit the configured pacing ceiling with FEC and packet headers";
+          }
         } catch (const std::exception &e) {
           startup_error = e.what();
         } catch (...) {
@@ -2571,7 +2577,7 @@ namespace rtsp_stream {
         // scope. A failed start can hold the last reference, and ~session_t may then run
         // end_broadcast(), which joins a control thread that itself waits on this gate.
         lifecycle_lock.unlock();
-        server->post([server, socket = std::move(socket), session = std::move(session), sequence_number, startup_failed, startup_error = std::move(startup_error), virtual_display_guid_bytes = launch_session->virtual_display_guid_bytes]() mutable {
+        server->post([server, socket = std::move(socket), session = std::move(session), sequence_number, startup_failed, startup_status, startup_error = std::move(startup_error), virtual_display_guid_bytes = launch_session->virtual_display_guid_bytes]() mutable {
           auto fg = util::fail_guard([server, virtual_display_guid_bytes]() {
             server->finish_startup(virtual_display_guid_bytes);
           });
@@ -2586,7 +2592,7 @@ namespace rtsp_stream {
             } else {
               BOOST_LOG(error) << "Failed to start a streaming session: "sv << startup_error;
             }
-            respond(socket->sock, *session, &completion_option, 500, "Internal Server Error", sequence_number, {});
+            respond(socket->sock, *session, &completion_option, startup_status, startup_status == 400 ? "BAD REQUEST" : "Internal Server Error", sequence_number, {});
           } else {
             respond(socket->sock, *session, &completion_option, 200, "OK", sequence_number, {});
           }
