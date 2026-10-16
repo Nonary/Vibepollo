@@ -18,7 +18,10 @@
 
 // No direct helper calls here; this unit now focuses on parsing and small conveniences.
 #ifdef _WIN32
+  #include "platform/windows/misc.h"
+
   #include <display_device/windows/win_api_layer.h>
+  #include <display_device/windows/win_api_recovery.h>
   #include <display_device/windows/win_display_device.h>
   #include "platform/windows/virtual_display.h"
 #endif
@@ -695,6 +698,54 @@ namespace display_device {
 #else
     // Non-Windows: no mapping needed
     return output_name;
+#endif
+  }
+
+  output_state_e get_output_state(const std::string &output_name) {
+#ifdef _WIN32
+    try {
+      // libdisplaydevice returns an empty list when QueryDisplayConfig fails.
+      // Observe that query in the same enumeration so a transient failure is
+      // not mistaken for a missing selection and replaced with a new VDD.
+      struct EnumerationApi: WinApiLayer {
+        mutable bool query_available = false;
+
+        std::optional<PathAndModeData> queryDisplayConfig(QueryType type) const override {
+          auto result = WinApiLayer::queryDisplayConfig(type);
+          query_available = result.has_value();
+          return result;
+        }
+      };
+      DisplayRecoveryBehaviorGuard guard(DisplayRecoveryBehavior::Skip);
+      auto api = std::make_shared<EnumerationApi>();
+      WinDisplayDevice dd(api);
+      const auto devices = dd.enumAvailableDevices(DeviceEnumerationDetail::Minimal);
+      if (!api->query_available) {
+        return output_state_e::unknown;
+      }
+
+      const auto active_state = [](const EnumeratedDevice &device) {
+        return platf::configured_capture_adapter_has_output({device.m_display_name}) ?
+                 output_state_e::active : output_state_e::adapter_mismatch;
+      };
+      for (const auto &device : devices) {
+        if (output_name.empty()) {
+          if (!device.m_display_name.empty() && device.m_info && device.m_info->m_primary) {
+            return active_state(device);
+          }
+        } else if ((!device.m_device_id.empty() && boost::iequals(device.m_device_id, output_name)) ||
+                   (!device.m_display_name.empty() && boost::iequals(device.m_display_name, output_name)) ||
+                   (!device.m_friendly_name.empty() && boost::iequals(device.m_friendly_name, output_name))) {
+          return device.m_display_name.empty() ? output_state_e::inactive : active_state(device);
+        }
+      }
+      return output_state_e::missing;
+    } catch (...) {
+      return output_state_e::unknown;
+    }
+#else
+    (void) output_name;
+    return output_state_e::unknown;
 #endif
   }
 

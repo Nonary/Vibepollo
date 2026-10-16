@@ -38,6 +38,22 @@ namespace display_device {
   [[nodiscard]] std::string
     map_display_name(const std::string &display_name);
 
+  enum class output_state_e {
+    unknown,
+    missing,
+    inactive,
+    adapter_mismatch,
+    active,
+  };
+
+  /**
+   * @brief Query an existing output once, including virtual and third-party displays.
+   * An empty name selects the active primary. Active outputs must be on the
+   * configured capture adapter. Unknown means enumeration failed, rather than
+   * establishing that the requested output is absent.
+   */
+  [[nodiscard]] output_state_e get_output_state(const std::string &output_name);
+
   /**
    * @brief Check whether a configured output name matches a known physical display.
    */

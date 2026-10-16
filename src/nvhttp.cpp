@@ -1604,7 +1604,7 @@ namespace nvhttp {
       }
 
       // Snapshot current display state BEFORE any display enumeration.
-      // queryDisplayConfig(QueryType::All) in output_exists() and other calls can activate
+      // queryDisplayConfig(QueryType::All) calls during display discovery can activate
       // external dummy plugs, which would pollute the snapshot used for session restore.
       if (no_active_sessions) {
         if (!display_helper_integration::snapshot_current_display_state(
@@ -1633,15 +1633,35 @@ namespace nvhttp {
         disable_virtual_display_request();
       }
 
-      if (!request_virtual_display && !requested_output_name.empty()) {
-        if (!display_device::output_exists(requested_output_name)) {
+      bool preserve_requested_output = false;
+      if (!request_virtual_display) {
+        const auto output_state = display_device::get_output_state(requested_output_name);
+        preserve_requested_output = output_state == display_device::output_state_e::active ||
+                                    output_state == display_device::output_state_e::unknown;
+        if (!requested_output_name.empty() && output_state == display_device::output_state_e::missing) {
           BOOST_LOG(warning) << "Requested display '" << requested_output_name
                              << "' not found; initializing virtual display instead.";
           if (!has_app_output_override) {
             request_virtual_display = true;
           }
+        } else if (output_state == display_device::output_state_e::inactive) {
+          // The output exists but is currently inactive (no \\\\.\\DISPLAY# assigned). If we cannot
+          // run the display helper to activate it (no signed-in user session), fall back to a
+          // virtual display so capture can still start.
+          if (no_active_sessions && !display_helper_session_available()) {
+            BOOST_LOG(warning) << "Requested display '" << requested_output_name
+                               << "' is present but inactive and cannot be activated without a signed-in user; initializing virtual display instead.";
+            if (!has_app_output_override) {
+              request_virtual_display = true;
+            }
+          } else {
+            preserve_requested_output = true;
+            BOOST_LOG(info) << "Requested display '" << requested_output_name
+                            << "' is present but inactive; attempting activation via display helper.";
+          }
         }
       }
+
       if (is_input_only) {
         disable_virtual_display_request();
       } else {
@@ -1861,11 +1881,10 @@ namespace nvhttp {
           }
         };
 
-        // A per-app physical output override must never suppress this fallback:
-        // should_auto_enable_virtual_display() only returns true when no capturable
-        // physical display is active at all, so the pinned output cannot exist and the
-        // session would otherwise land on the generic temporary probe display.
-        if (!request_virtual_display && VDISPLAY::should_auto_enable_virtual_display()) {
+        // Preserve a usable selected output, including an existing VDD. Only
+        // release an unsatisfiable app pin when the existing headless fallback
+        // is actually needed; keep Apollo's input-only and resume ownership.
+        if (!request_virtual_display && !preserve_requested_output && VDISPLAY::should_auto_enable_virtual_display()) {
           BOOST_LOG(info) << "No physical monitors detected. Automatically enabling virtual display.";
           request_virtual_display = true;
           if (has_app_output_override) {
