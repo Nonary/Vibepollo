@@ -745,6 +745,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 "${CMAKE_CURRENT_LIST_DIR}/unit/test_nvprefs_cleanup.py"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
         set_tests_properties(test_component_nvprefs_cleanup PROPERTIES LABELS "component" TIMEOUT 45)
+        add_test(NAME test_component_windows_streaming_scheduling
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_streaming_scheduling.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_windows_streaming_scheduling PROPERTIES LABELS "component" TIMEOUT 60)
         add_test(NAME test_component_recovery_event_notifications
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/test_recovery_event_notifications.py"
