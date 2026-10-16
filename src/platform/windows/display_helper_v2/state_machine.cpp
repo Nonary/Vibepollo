@@ -172,11 +172,20 @@ namespace display_helper::v2 {
     return replaced;
   }
 
-  std::optional<ActiveTopology> SnapshotLedger::topology_with_returned_active_baseline_devices(
+  std::optional<ActiveTopology> SnapshotLedger::topology_with_returned_baseline_devices(
     const std::string &virtual_device_id,
-    const std::vector<std::string> &exclusions) {
-    const auto devices = service_.enumerate();
-    const auto active_topology = service_.capture().m_topology;
+    const std::vector<std::string> &exclusions,
+    std::set<std::string> &observed_absent_devices,
+    std::set<std::string> &observed_disabled_devices) {
+    display_device::EnumeratedDeviceList devices;
+    ActiveTopology active_topology;
+    try {
+      devices = service_.enumerate();
+      active_topology = service_.capture().m_topology;
+    } catch (const std::exception &ex) {
+      BOOST_LOG(debug) << "Display helper: physical return observation unavailable: " << ex.what();
+      return std::nullopt;
+    }
 
     const auto contains_id = [](const auto &ids, const std::string &needle) {
       return std::any_of(ids.begin(), ids.end(), [&needle](const std::string &candidate) {
@@ -194,18 +203,56 @@ namespace display_helper::v2 {
       return std::nullopt;
     }
 
+    // A failed or incomplete enumeration is not evidence that a saved output
+    // disappeared. Require every captured active path, including the virtual
+    // target, to be represented before changing the session's observations.
+    for (const auto &group : active_topology) {
+      for (const auto &id : group) {
+        if (id.empty() || !std::any_of(devices.begin(), devices.end(), [&](const auto &device) {
+              return boost::iequals(device.m_device_id, id) && device.m_info.has_value();
+            })) {
+          return std::nullopt;
+        }
+      }
+    }
+
     const auto excluded = [&exclusions](const std::string &needle) {
       return std::any_of(exclusions.begin(), exclusions.end(), [&needle](const std::string &candidate) {
         return boost::iequals(candidate, needle);
       });
     };
-    const auto active_physical_device = [&devices](const std::string &needle) {
-      return std::any_of(devices.begin(), devices.end(), [&needle](const auto &device) {
-        return !device.m_device_id.empty() &&
-               boost::iequals(device.m_device_id, needle) &&
-               device.m_info.has_value() &&
-               !codec::is_virtual_display_device(device);
+    const auto returned_physical_device = [&devices, &observed_absent_devices, &observed_disabled_devices](const std::string &needle) {
+      const auto found = std::find_if(devices.begin(), devices.end(), [&needle](const auto &device) {
+        return !device.m_device_id.empty() && boost::iequals(device.m_device_id, needle);
       });
+      const auto normalized = codec::normalize_device_id(needle);
+      if (found == devices.end()) {
+        // A saved active baseline provides layout intent; a disappearance
+        // distinguishes a powered-off monitor from a connected disabled one.
+        if (!observed_disabled_devices.contains(normalized)) {
+          observed_absent_devices.insert(normalized);
+        }
+        return false;
+      }
+      if (codec::is_virtual_display_device(*found)) {
+        observed_absent_devices.erase(normalized);
+        return false;
+      }
+      if (found->m_info.has_value()) {
+        // A healthy return completes this power cycle. Do not let its old
+        // disappearance override a later deliberate disable while connected.
+        observed_absent_devices.erase(normalized);
+        observed_disabled_devices.erase(normalized);
+        return true;
+      }
+      if (observed_absent_devices.contains(normalized)) {
+        return true;
+      }
+      // Seeing a connected disabled output is newer intent than the saved
+      // baseline. Keep it passive through subsequent power cycles until an
+      // active observation establishes that it has been enabled again.
+      observed_disabled_devices.insert(normalized);
+      return false;
     };
 
     std::optional<Snapshot> baseline;
@@ -228,7 +275,7 @@ namespace display_helper::v2 {
         if (!device_id.empty() &&
             !boost::iequals(device_id, virtual_device_id) &&
             !excluded(device_id) &&
-            active_physical_device(device_id)) {
+            returned_physical_device(device_id)) {
           active_group.push_back(device_id);
         }
       }
@@ -262,7 +309,6 @@ namespace display_helper::v2 {
       return std::nullopt;
     }
 
-    BOOST_LOG(info) << "Display helper: an active physical baseline device is missing from the live topology; admitting one bounded topology repair.";
     return candidate;
   }
 
@@ -383,6 +429,8 @@ namespace display_helper::v2 {
     virtual_identity_repairs_remaining_ = 0;
     baseline_topology_repair_available_ = false;
     baseline_topology_repair_in_flight_ = false;
+    observed_absent_baseline_devices_.clear();
+    observed_disabled_baseline_devices_.clear();
     expected_topology_.reset();
     if (delete_restore_task) {
       system_.delete_restore_task();
@@ -440,6 +488,15 @@ namespace display_helper::v2 {
 
   void StateMachine::enter_steady_state() {
     if (current_request_.virtual_layout.has_value()) {
+      if (baseline_topology_repair_available_ && current_request_.configuration) {
+        // A monitor can already be powered off when APPLY verifies. Observe
+        // its absence now so the first return event retains that evidence.
+        (void) snapshots_.topology_with_returned_baseline_devices(
+          current_request_.configuration->m_device_id,
+          exclusions_vector(),
+          observed_absent_baseline_devices_,
+          observed_disabled_baseline_devices_);
+      }
       transition(State::VirtualDisplayMonitoring, ApplyAction::Apply, ApplyStatus::Ok);
     } else {
       transition(State::Waiting, ApplyAction::Apply, ApplyStatus::Ok);
@@ -990,6 +1047,8 @@ namespace display_helper::v2 {
     reset_apply_verification_state();
     baseline_topology_repair_available_ = false;
     baseline_topology_repair_in_flight_ = false;
+    observed_absent_baseline_devices_.clear();
+    observed_disabled_baseline_devices_.clear();
     expected_topology_.reset();
 
     if (current_request_.snapshot_exclusions) {
@@ -1121,6 +1180,8 @@ namespace display_helper::v2 {
     deferred_apply_completion_.reset();
     baseline_topology_repair_available_ = false;
     baseline_topology_repair_in_flight_ = false;
+    observed_absent_baseline_devices_.clear();
+    observed_disabled_baseline_devices_.clear();
     expected_topology_.reset();
     // Disconnect-triggered reverts honor the restore-on-disconnect policy: a
     // paused stream with revert_on_disconnect=false must preserve its display
@@ -1212,6 +1273,8 @@ namespace display_helper::v2 {
     deferred_apply_completion_.reset();
     baseline_topology_repair_available_ = false;
     baseline_topology_repair_in_flight_ = false;
+    observed_absent_baseline_devices_.clear();
+    observed_disabled_baseline_devices_.clear();
     expected_topology_.reset();
 
     BOOST_LOG(info) << "Display helper: received Disarm command, resetting state";
@@ -1684,6 +1747,9 @@ namespace display_helper::v2 {
       transition(State::InProgress, ApplyAction::Apply, ApplyStatus::VerificationFailed);
       auto repair_request = current_request_;
       repair_request.topology = expected_topology_;
+      // SettingsManager must adopt the enlarged physical topology instead of
+      // rebuilding this repair from its cached, monitor-missing initial state.
+      repair_request.refresh_settings_baseline = true;
       dispatch_apply_worker(repair_request, std::chrono::milliseconds(0), false);
       return;
     }
@@ -1979,7 +2045,8 @@ namespace display_helper::v2 {
 
     const bool topology_evidence_event = event.event == DisplayEvent::DisplayChange ||
                                          event.event == DisplayEvent::PowerResume ||
-                                         event.event == DisplayEvent::DeviceArrival;
+                                         event.event == DisplayEvent::DeviceArrival ||
+                                         event.event == DisplayEvent::DeviceRemoval;
     if (state_ == State::VirtualDisplayMonitoring &&
         baseline_topology_repair_available_ &&
         topology_evidence_event &&
@@ -1987,9 +2054,12 @@ namespace display_helper::v2 {
         current_request_.virtual_layout &&
         !mutation_worker_active() &&
         !staged_state_reset_pending_) {
-      if (auto repaired_topology = snapshots_.topology_with_returned_active_baseline_devices(
+      if (auto repaired_topology = snapshots_.topology_with_returned_baseline_devices(
             current_request_.configuration->m_device_id,
-            exclusions_vector())) {
+            exclusions_vector(),
+            observed_absent_baseline_devices_,
+            observed_disabled_baseline_devices_)) {
+        BOOST_LOG(info) << "Display helper: a returned physical baseline device is missing from the live topology; admitting one bounded topology repair.";
         // The exact virtual configuration remains the capture target. Only the
         // live topology contract is extended, and one admission per explicit
         // APPLY prevents the resulting Windows notifications from looping.
@@ -2263,6 +2333,8 @@ namespace display_helper::v2 {
     reset_apply_verification_state();
     baseline_topology_repair_available_ = false;
     baseline_topology_repair_in_flight_ = false;
+    observed_absent_baseline_devices_.clear();
+    observed_disabled_baseline_devices_.clear();
     expected_topology_.reset();
     golden_health_.reset_request_tracking();
     scheduler_.arm_primary(system_.now(), std::chrono::milliseconds(5000));

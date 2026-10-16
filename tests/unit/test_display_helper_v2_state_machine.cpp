@@ -1799,7 +1799,7 @@ TEST(DisplayHelperV2StateMachine, EmptyVirtualDeviceIdentityDoesNotReapplyStaleI
   EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before);
 }
 
-TEST(DisplayHelperV2StateMachine, MissingOrInactivePhysicalMemberRemainsPassive) {
+TEST(DisplayHelperV2StateMachine, ContinuouslyConnectedInactivePhysicalMemberRemainsPassive) {
   StateMachineHarness harness;
   auto golden = make_snapshot("physical_a");
   golden.m_topology.push_back({"physical_b"});
@@ -1834,8 +1834,8 @@ TEST(DisplayHelperV2StateMachine, MissingOrInactivePhysicalMemberRemainsPassive)
   const int verification_dispatches_before = harness.dispatcher.verification_dispatch_count;
   const int device_id_calls_before = harness.virtual_display.device_id_calls;
 
-  // Physical B powers off: it drops out of enumeration and Windows emits
-  // generic display/power notifications that carry no device identity.
+  // A deliberately disabled physical B stays enumerable. Its active saved
+  // baseline alone must not override that live choice without a disappearance.
   harness.display_settings.devices.clear();
   harness.add_active_device("physical_a");
   harness.add_active_device("virtual_current");
@@ -1844,15 +1844,6 @@ TEST(DisplayHelperV2StateMachine, MissingOrInactivePhysicalMemberRemainsPassive)
   harness.display_settings.snapshot.m_topology.push_back({"virtual_current"});
   harness.display_settings.snapshot.m_modes["virtual_current"] = display_device::DisplayMode {};
   harness.display_settings.snapshot.m_hdr_states["virtual_current"] = std::nullopt;
-  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
-    display_helper::v2::DisplayEvent::DisplayChange,
-    harness.cancellation.current_generation()});
-  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
-    display_helper::v2::DisplayEvent::PowerResume,
-    harness.cancellation.current_generation()});
-
-  // Physical B returns enumerable but inactive (no display name / mode info),
-  // as in vibepollo#370, alongside another generic notification.
   harness.add_inactive_device("physical_b");
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
     display_helper::v2::DisplayEvent::DisplayChange,
@@ -1868,6 +1859,348 @@ TEST(DisplayHelperV2StateMachine, MissingOrInactivePhysicalMemberRemainsPassive)
   EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before);
   EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before);
   EXPECT_EQ(harness.virtual_display.device_id_calls, device_id_calls_before + 1);
+}
+
+TEST(DisplayHelperV2StateMachine, PoweredOffPhysicalBaselineReturnsInactiveAndGetsOneTopologyRepair) {
+  for (const bool missing_when_apply_verified : {false, true}) {
+    SCOPED_TRACE(missing_when_apply_verified);
+    StateMachineHarness harness;
+    auto golden = make_snapshot("physical_a");
+    golden.m_topology.push_back({"physical_b"});
+    golden.m_modes["physical_b"] = display_device::DisplayMode {};
+    golden.m_hdr_states["physical_b"] = std::nullopt;
+    ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, golden));
+
+    const auto set_live_devices = [&](bool physical_b_present, bool physical_b_active) {
+      harness.display_settings.devices.clear();
+      harness.add_active_device("physical_a");
+      harness.add_active_device("virtual_current");
+      harness.display_settings.snapshot = make_snapshot("physical_a");
+      harness.display_settings.snapshot.m_topology.push_back({"virtual_current"});
+      if (physical_b_present) {
+        if (physical_b_active) {
+          harness.add_active_device("physical_b");
+          harness.display_settings.snapshot.m_topology.push_back({"physical_b"});
+        } else {
+          harness.add_inactive_device("PHYSICAL_B");
+        }
+      }
+      harness.display_settings.topology = harness.display_settings.snapshot.m_topology;
+    };
+    set_live_devices(!missing_when_apply_verified, true);
+    display_helper::v2::ApplyRequest request;
+    request.configuration = display_device::SingleDisplayConfiguration {};
+    request.configuration->m_device_id = "virtual_current";
+    request.configuration->m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsurePrimary;
+    request.topology = harness.display_settings.topology;
+    request.virtual_layout = "extended_primary";
+    request.prefer_golden_first = true;
+    harness.virtual_display.current_device_id = "virtual_current";
+    harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+    display_helper::v2::ApplyOutcome applied;
+    applied.status = display_helper::v2::ApplyStatus::Ok;
+    applied.resolved_target = display_helper::v2::ResolvedConfigurationTarget {
+      .kind = display_helper::v2::DeviceTargetKind::ExplicitDevice,
+      .representative_device_id = "virtual_current",
+      .duplicate_device_ids = {"virtual_current"},
+    };
+    harness.dispatcher.apply_completion(applied);
+    harness.drain_messages();
+    harness.dispatcher.verification_completion(true);
+    harness.drain_messages();
+    ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+    const int apply_before = harness.dispatcher.apply_dispatch_count;
+    const int verification_before = harness.dispatcher.verification_dispatch_count;
+
+    if (!missing_when_apply_verified) {
+      set_live_devices(false, false);
+      harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+        display_helper::v2::DisplayEvent::DeviceRemoval, harness.cancellation.current_generation()});
+      EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_before);
+      EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_before);
+    }
+    set_live_devices(true, false);
+    harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+      display_helper::v2::DisplayEvent::DisplayChange, harness.cancellation.current_generation()});
+    ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
+    const display_device::ActiveTopology repaired {{"physical_a"}, {"virtual_current"}, {"physical_b"}};
+    ASSERT_TRUE(harness.dispatcher.verification_topology);
+    EXPECT_EQ(*harness.dispatcher.verification_topology, repaired);
+    EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_before);
+    EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_before + 1);
+
+    harness.dispatcher.verification_completion(false);
+    harness.drain_messages();
+    ASSERT_EQ(harness.dispatcher.apply_dispatch_count, apply_before + 1);
+    EXPECT_TRUE(harness.dispatcher.apply_request.refresh_settings_baseline);
+    ASSERT_TRUE(harness.dispatcher.apply_request.topology);
+    EXPECT_EQ(*harness.dispatcher.apply_request.topology, repaired);
+    ASSERT_TRUE(harness.dispatcher.apply_request.configuration);
+    EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "virtual_current");
+    EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_prep,
+              display_device::SingleDisplayConfiguration::DevicePreparation::EnsurePrimary);
+    harness.dispatcher.apply_completion(applied);
+    harness.drain_messages();
+    harness.dispatcher.verification_completion(true);
+    harness.drain_messages();
+    EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+
+    // The notification burst generated by the repair cannot start another one.
+    for (const auto event : {display_helper::v2::DisplayEvent::DisplayChange,
+                            display_helper::v2::DisplayEvent::DeviceArrival,
+                            display_helper::v2::DisplayEvent::PowerResume}) {
+      harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+        event, harness.cancellation.current_generation()});
+    }
+    EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_before + 1);
+    EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_before + 2);
+    ASSERT_TRUE(harness.storage.load(display_helper::v2::SnapshotTier::Golden));
+    EXPECT_EQ(harness.storage.load(display_helper::v2::SnapshotTier::Golden)->m_topology, golden.m_topology);
+  }
+}
+
+TEST(DisplayHelperV2StateMachine, HealthyPhysicalReturnConsumesEvidenceBeforeLaterManualDisable) {
+  StateMachineHarness harness;
+  auto golden = make_snapshot("physical_a");
+  golden.m_topology.push_back({"physical_b"});
+  golden.m_modes["physical_b"] = display_device::DisplayMode {};
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, golden));
+  harness.add_active_device("physical_a");
+  harness.add_active_device("virtual_current");
+  harness.display_settings.snapshot = make_snapshot("physical_a");
+  harness.display_settings.snapshot.m_topology.push_back({"virtual_current"});
+  harness.display_settings.topology = harness.display_settings.snapshot.m_topology;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual_current";
+  request.topology = harness.display_settings.topology;
+  request.virtual_layout = "extended_primary";
+  request.prefer_golden_first = true;
+  harness.virtual_display.current_device_id = "virtual_current";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  const int apply_before = harness.dispatcher.apply_dispatch_count;
+  const int verification_before = harness.dispatcher.verification_dispatch_count;
+
+  // B was absent at Apply, then returns healthy without needing a repair.
+  harness.add_active_device("physical_b");
+  harness.display_settings.snapshot.m_topology.push_back({"physical_b"});
+  harness.display_settings.topology = harness.display_settings.snapshot.m_topology;
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange, harness.cancellation.current_generation()});
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_before);
+
+  // A later user disable keeps B connected. The earlier completed power cycle
+  // must not override this newer intent with another topology repair.
+  harness.display_settings.devices.pop_back();
+  harness.add_inactive_device("physical_b");
+  harness.display_settings.snapshot.m_topology.pop_back();
+  harness.display_settings.topology = harness.display_settings.snapshot.m_topology;
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange, harness.cancellation.current_generation()});
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_before);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_before);
+}
+
+TEST(DisplayHelperV2StateMachine, InactivePhysicalReturnsRespectExclusiveExcludedAndNonBaselineOutputs) {
+  for (const std::string policy : {"exclusive", "excluded", "not_in_baseline"}) {
+    SCOPED_TRACE(policy);
+    StateMachineHarness harness;
+    auto golden = make_snapshot("physical_a");
+    if (policy != "not_in_baseline") {
+      golden.m_topology.push_back({"physical_b"});
+      golden.m_modes["physical_b"] = display_device::DisplayMode {};
+    }
+    ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, golden));
+    harness.add_active_device("physical_a");
+    harness.add_active_device("virtual_current");
+    harness.display_settings.snapshot = make_snapshot("virtual_current");
+    if (policy != "exclusive") {
+      harness.display_settings.snapshot.m_topology.push_back({"physical_a"});
+    }
+    harness.display_settings.topology = harness.display_settings.snapshot.m_topology;
+    display_helper::v2::ApplyRequest request;
+    request.configuration = display_device::SingleDisplayConfiguration {};
+    request.configuration->m_device_id = "virtual_current";
+    request.topology = harness.display_settings.topology;
+    request.virtual_layout = policy == "exclusive" ? "exclusive" : "extended_primary";
+    request.prefer_golden_first = true;
+    if (policy == "excluded") {
+      request.snapshot_exclusions = std::vector<std::string> {"physical_b"};
+    }
+    harness.virtual_display.current_device_id = "virtual_current";
+    harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+    display_helper::v2::ApplyOutcome applied;
+    applied.status = display_helper::v2::ApplyStatus::Ok;
+    harness.dispatcher.apply_completion(applied);
+    harness.drain_messages();
+    harness.dispatcher.verification_completion(true);
+    harness.drain_messages();
+    const int apply_before = harness.dispatcher.apply_dispatch_count;
+    const int verification_before = harness.dispatcher.verification_dispatch_count;
+
+    // Absence at Apply cannot authorize an excluded/non-baseline output, or
+    // override the user's exclusive virtual layout when it returns inactive.
+    harness.add_inactive_device("physical_b");
+    harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+      display_helper::v2::DisplayEvent::DisplayChange, harness.cancellation.current_generation()});
+    EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+    EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_before);
+    EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_before);
+  }
+}
+
+TEST(DisplayHelperV2StateMachine, NewApplyDiscardsPriorInactivePhysicalReturnEvidence) {
+  StateMachineHarness harness;
+  auto golden = make_snapshot("physical_a");
+  golden.m_topology.push_back({"physical_b"});
+  golden.m_modes["physical_b"] = display_device::DisplayMode {};
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, golden));
+  harness.add_active_device("physical_a");
+  harness.add_active_device("virtual_current");
+  harness.display_settings.snapshot = make_snapshot("physical_a");
+  harness.display_settings.snapshot.m_topology.push_back({"virtual_current"});
+  harness.display_settings.topology = harness.display_settings.snapshot.m_topology;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual_current";
+  request.topology = harness.display_settings.topology;
+  request.virtual_layout = "extended_primary";
+  request.prefer_golden_first = true;
+  harness.virtual_display.current_device_id = "virtual_current";
+  const auto apply_and_verify = [&]() {
+    harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+    display_helper::v2::ApplyOutcome applied;
+    applied.status = display_helper::v2::ApplyStatus::Ok;
+    harness.dispatcher.apply_completion(applied);
+    harness.drain_messages();
+    harness.dispatcher.verification_completion(true);
+    harness.drain_messages();
+  };
+  apply_and_verify();
+  harness.add_inactive_device("physical_b");
+  // The new explicit session owns a layout in which B is already connected
+  // and disabled; it must not inherit the previous session's disappearance.
+  apply_and_verify();
+  const int apply_before = harness.dispatcher.apply_dispatch_count;
+  const int verification_before = harness.dispatcher.verification_dispatch_count;
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange, harness.cancellation.current_generation()});
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_before);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_before);
+}
+
+TEST(DisplayHelperV2SnapshotLedger, FailedPhysicalObservationCannotAuthorizeInactiveReturn) {
+  for (const std::string failure : {"empty", "missing_virtual", "missing_active_peer", "exception"}) {
+    SCOPED_TRACE(failure);
+    StateMachineHarness harness;
+    ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, make_snapshot("physical_b")));
+    harness.display_settings.snapshot.m_topology = {{"physical_a"}, {"virtual_current"}};
+    if (failure == "missing_virtual") {
+      harness.add_active_device("physical_a");
+    } else if (failure == "missing_active_peer") {
+      harness.add_active_device("virtual_current");
+    }
+    harness.display_settings.throw_enumeration = failure == "exception";
+    std::set<std::string> absent;
+    std::set<std::string> disabled;
+    EXPECT_FALSE(harness.snapshot_ledger.topology_with_returned_baseline_devices(
+      "virtual_current", {}, absent, disabled));
+    EXPECT_TRUE(absent.empty());
+    EXPECT_TRUE(disabled.empty());
+
+    harness.display_settings.throw_enumeration = false;
+    harness.display_settings.devices.clear();
+    harness.add_active_device("physical_a");
+    harness.add_active_device("virtual_current");
+    harness.add_inactive_device("physical_b");
+    EXPECT_FALSE(harness.snapshot_ledger.topology_with_returned_baseline_devices(
+      "virtual_current", {}, absent, disabled));
+    EXPECT_TRUE(absent.empty());
+  }
+}
+
+TEST(DisplayHelperV2SnapshotLedger, ManualDisableSurvivesPowerCycleUntilAnActiveObservation) {
+  StateMachineHarness harness;
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, make_snapshot("physical_b")));
+  harness.display_settings.snapshot.m_topology = {{"physical_a"}, {"virtual_current"}};
+  const auto set_devices = [&](const std::string &physical_state) {
+    harness.display_settings.devices.clear();
+    harness.add_active_device("physical_a");
+    harness.add_active_device("virtual_current");
+    if (physical_state == "active") {
+      harness.add_active_device("physical_b");
+    } else if (physical_state == "disabled") {
+      harness.add_inactive_device("PHYSICAL_B");
+    }
+  };
+  std::set<std::string> absent;
+  std::set<std::string> disabled;
+  const auto observe = [&]() {
+    return harness.snapshot_ledger.topology_with_returned_baseline_devices(
+      "virtual_current", {}, absent, disabled);
+  };
+  set_devices("disabled");
+  EXPECT_FALSE(observe());
+  set_devices("absent");
+  EXPECT_FALSE(observe());
+  set_devices("disabled");
+  EXPECT_FALSE(observe());
+
+  // The user enables B again; its next observed disappearance can authorize
+  // the same-ID inactive return without retaining the earlier disabled intent.
+  set_devices("active");
+  harness.display_settings.snapshot.m_topology.push_back({"physical_b"});
+  EXPECT_FALSE(observe());
+  set_devices("absent");
+  harness.display_settings.snapshot.m_topology.pop_back();
+  EXPECT_FALSE(observe());
+  set_devices("disabled");
+  ASSERT_TRUE(observe());
+  EXPECT_EQ(*observe(), (display_device::ActiveTopology {{"physical_a"}, {"virtual_current"}, {"physical_b"}}));
+}
+
+TEST(DisplayHelperV2SnapshotLedger, InactiveCloneReturnPreservesLivePeersAndAllSnapshotTiers) {
+  StateMachineHarness harness;
+  auto golden = make_snapshot("physical_a");
+  golden.m_topology.front().push_back("physical_b");
+  golden.m_topology.push_back({"virtual_baseline"});
+  const auto current = make_snapshot("current_owner");
+  const auto previous = make_snapshot("previous_owner");
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, golden));
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, current));
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Previous, previous));
+  harness.snapshot_persistence.set_prefer_golden_first(true);
+  harness.add_active_device("physical_a");
+  harness.add_active_device("virtual_current");
+  harness.add_active_device("new_live_peer");
+  harness.display_settings.snapshot.m_topology = {{"physical_a"}, {"virtual_current"}, {"new_live_peer"}};
+  std::set<std::string> absent;
+  std::set<std::string> disabled;
+  EXPECT_FALSE(harness.snapshot_ledger.topology_with_returned_baseline_devices(
+    "virtual_current", {}, absent, disabled));
+  harness.add_inactive_device("PHYSICAL_B");
+  harness.add_inactive_device("virtual_baseline");
+  harness.display_settings.devices.back().m_friendly_name = "Sunshine Virtual Display Driver";
+  const auto topology = harness.snapshot_ledger.topology_with_returned_baseline_devices(
+    "virtual_current", {}, absent, disabled);
+  ASSERT_TRUE(topology);
+  EXPECT_EQ(*topology, (display_device::ActiveTopology {{"physical_a", "physical_b"}, {"virtual_current"}, {"new_live_peer"}}));
+  for (const auto &[tier, expected] : std::vector<std::pair<display_helper::v2::SnapshotTier, display_helper::v2::Snapshot>> {
+         {display_helper::v2::SnapshotTier::Golden, golden},
+         {display_helper::v2::SnapshotTier::Current, current},
+         {display_helper::v2::SnapshotTier::Previous, previous}}) {
+    ASSERT_TRUE(harness.storage.load(tier));
+    EXPECT_EQ(display_helper::v2::codec::serialize_snapshot(*harness.storage.load(tier), {}),
+              display_helper::v2::codec::serialize_snapshot(expected, {}));
+  }
 }
 
 TEST(DisplayHelperV2StateMachine, ActivePhysicalBaselineReturnGetsOneTopologyRepairWithoutRetargetingVirtualDisplay) {

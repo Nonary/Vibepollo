@@ -274,15 +274,18 @@ namespace display_helper::v2 {
     }
 
     /**
-     * @brief Build the live topology plus physical baseline devices that have
-     *        become active but are not yet members of the active topology.
+     * @brief Observe absent physical baseline devices and build a topology
+     *        including their returns while the virtual target remains active.
      *
      * The persisted snapshot remains authoritative and is never rewritten.
-     * Inactive, excluded, and virtual devices are not admitted.
+     * Inactive devices require an observed disappearance in this session;
+     * observed disabled, excluded, and virtual devices stay passive.
      */
-    std::optional<ActiveTopology> topology_with_returned_active_baseline_devices(
+    std::optional<ActiveTopology> topology_with_returned_baseline_devices(
       const std::string &virtual_device_id,
-      const std::vector<std::string> &exclusions);
+      const std::vector<std::string> &exclusions,
+      std::set<std::string> &observed_absent_devices,
+      std::set<std::string> &observed_disabled_devices);
 
     /// Read-only presence of physical members in the first retained restore
     /// baseline. Connected inactive members count: restore owns their saved
@@ -483,6 +486,10 @@ namespace display_helper::v2 {
     bool virtual_hdr_fallback_attempted_ = false;
     bool baseline_topology_repair_available_ = false;
     bool baseline_topology_repair_in_flight_ = false;
+    // Same-id physical returns may be inactive after monitor power loss.
+    // Evidence is scoped to the current explicit APPLY, never a later session.
+    std::set<std::string> observed_absent_baseline_devices_;
+    std::set<std::string> observed_disabled_baseline_devices_;
     bool apply_result_sent_ = false;
     bool verification_result_sent_ = false;
     // A result may have been sent for an initial failure. Keep successful
