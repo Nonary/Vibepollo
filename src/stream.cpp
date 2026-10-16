@@ -1876,7 +1876,11 @@ namespace stream {
           }
 
           auto session = *pos;
-          haptics_client |= (session->config.mlFeatureFlags & ML_FF_HAPTICS_PCM) != 0;
+          // The gamepad feedback queues below are drained only by this loop, so a
+          // session with a controller attached needs the short wait too: a Steam
+          // haptic click or a rumble stop must not sit for up to 150 ms.
+          haptics_client |= (session->config.mlFeatureFlags & ML_FF_HAPTICS_PCM) != 0 ||
+                            input::has_gamepad(session->input);
 
           if (now > session->pingTimeout) {
             auto address = session->control.peer ? platf::from_sockaddr((sockaddr *) &session->control.peer->address.address) : session->control.expected_peer_address;
@@ -1999,7 +2003,8 @@ namespace stream {
         break;
       }
 
-      // Haptic samples must keep flowing even when the player is not moving.
+      // Haptic samples and gamepad feedback must keep flowing even when the player
+      // is not moving.
       server->iterate(haptics_client ? 5ms : 150ms);
     }
 
@@ -4173,7 +4178,7 @@ namespace stream {
 #endif
 
       session->control.connect_data = launch_session.control_connect_data;
-      session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
+      session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback, platf::GAMEPAD_FEEDBACK_QUEUE_CAPACITY, false);
       session->control.hdr_queue = mail->event<video::hdr_info_t>(mail::hdr);
       session->control.legacy_input_enc_iv = launch_session.iv;
       session->control.cipher = crypto::cipher::gcm_t {

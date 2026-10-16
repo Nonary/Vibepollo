@@ -224,6 +224,8 @@ namespace input {
     uint16_t repeating_key = 0;
 
     std::vector<gamepad_t> gamepads;
+    // Only the input worker owns gamepads; the control thread reads this summary.
+    std::atomic_uint32_t allocated_gamepads {0};
     std::unique_ptr<platf::client_input_t> client_context;
 
     safe::mail_raw_t::event_t<input::touch_port_t> touch_port_event;
@@ -1096,6 +1098,7 @@ namespace input {
     }
 
     input->gamepads[packet->controllerNumber].id = id;
+    input->allocated_gamepads.fetch_or(1u << packet->controllerNumber, std::memory_order_relaxed);
   }
 
   /**
@@ -1351,6 +1354,7 @@ namespace input {
       if (!(packet->activeGamepadMask & (1 << i)) &&
           (input->gamepads[i].id >= 0 || input->gamepads[i].back_timeout_id)) {
         reset_gamepad(input->gamepads[i]);
+        input->allocated_gamepads.fetch_and(~(1u << i), std::memory_order_relaxed);
       }
     }
 
@@ -1370,6 +1374,7 @@ namespace input {
       }
 
       gamepad.id = id;
+      input->allocated_gamepads.fetch_or(1u << packet->controllerNumber, std::memory_order_relaxed);
     }
 
     // If this gamepad has not been initialized, ignore it.
@@ -1988,6 +1993,7 @@ namespace input {
       for (auto &gamepad : input->gamepads) {
         reset_gamepad(gamepad);
       }
+      input->allocated_gamepads.store(0, std::memory_order_relaxed);
       if (input->client_context) {
         platf::touch_input_t touch {};
         touch.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
@@ -2033,10 +2039,14 @@ namespace input {
     return true;
   }
 
+  bool has_gamepad(const std::shared_ptr<input_t> &input) {
+    return input && input->allocated_gamepads.load(std::memory_order_relaxed) != 0;
+  }
+
   std::shared_ptr<input_t> alloc(safe::mail_t mail, bool persist_gamepads) {
     auto input = std::make_shared<input_t>(
       mail->event<input::touch_port_t>(mail::touch_port),
-      mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback)
+      mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback, platf::GAMEPAD_FEEDBACK_QUEUE_CAPACITY, false)
     );
     input->persist_gamepads = persist_gamepads;
 

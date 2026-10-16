@@ -257,6 +257,65 @@ namespace platf {
   static_assert(sizeof(gamepad_feedback_msg_t::data.steam_haptic.report) == STEAM_HAPTIC_REPORT_MAX);
   static_assert(sizeof(gamepad_feedback_msg_t::data.steam_settings.triples) == STEAM_SETTINGS_PAYLOAD_SIZE);
 
+  // Per controller: seven raw haptic states/stops plus eight conventional
+  // state keys. Keep at most 32 ordinary events and 16 settings chunks, even
+  // if state capacity is idle. Haptic bursts must not split a settings write.
+  inline constexpr std::uint32_t GAMEPAD_FEEDBACK_QUEUE_CAPACITY = 256;
+
+  // Return a stop key including both report family and actuator mask.
+  // Keep families distinct: do not assume their hardware stop effects are interchangeable.
+  inline unsigned steam_haptic_stop_key(const unsigned char *report, unsigned length) {
+    if (length >= 10 && report[0] == 0x80 &&
+            report[4] == 0 && report[5] == 0 && report[7] == 0 && report[8] == 0) {
+        return (0x80u << 2) | 3;
+    }
+    if (length < 2 || report[1] > 2) return 0;
+    if ((length >= 8 && report[0] == 0x81 &&
+            ((report[2] == 0 && report[3] == 0) || (report[6] == 0 && report[7] == 0))) ||
+            (length >= 4 && report[0] == 0x82 && report[2] == 0)) {
+        return (static_cast<unsigned>(report[0]) << 2) | (report[1] == 2 ? 3 : 1u << report[1]);
+    }
+    return 0;
+  }
+
+  inline unsigned gamepad_feedback_state_key(const gamepad_feedback_msg_t &msg) {
+    if (msg.id >= 16) return 0;
+    unsigned subkey = 0;
+    switch (msg.type) {
+      case gamepad_feedback_e::rumble:
+      case gamepad_feedback_e::rumble_triggers:
+      case gamepad_feedback_e::set_rgb_led:
+        break;
+      case gamepad_feedback_e::set_motion_event_state:
+        subkey = msg.data.motion_event_state.motion_type;
+        if (subkey != 1 && subkey != 2) return 0;
+        break;
+      case gamepad_feedback_e::set_adaptive_triggers:
+        subkey = msg.data.adaptive_triggers.event_flags & 0x0c;
+        if (subkey == 0) return 0;
+        break;
+      case gamepad_feedback_e::steam_haptic: {
+        const auto &h = msg.data.steam_haptic;
+        // Periodic 0x80 is state even when nonzero; pulse/command starts are events.
+        subkey = h.length >= 10 && h.report[0] == 0x80 ? (0x80u << 2) | 3 :
+            steam_haptic_stop_key(h.report.data(), h.length);
+        if (subkey == 0) return 0;
+        break;
+      }
+      default: return 0;
+    }
+    return ((static_cast<unsigned>(msg.type) + 1) << 16) | subkey;
+  }
+
+  inline bool raise_gamepad_feedback(safe::queue_t<gamepad_feedback_msg_t> &queue, gamepad_feedback_msg_t msg) {
+    const auto key = gamepad_feedback_state_key(msg);
+    const auto id = msg.id;
+    return queue.raise_latest_classed(std::move(msg), [key, id](const auto &pending) {
+      return key != 0 && pending.id == id && gamepad_feedback_state_key(pending) == key;
+    }, [](const auto &pending) { return gamepad_feedback_state_key(pending) != 0; }, 32,
+      [](const auto &pending) { return pending.type == gamepad_feedback_e::steam_settings; }, 16);
+  }
+
   namespace speaker {
     enum speaker_e {
       FRONT_LEFT,  ///< Front left
