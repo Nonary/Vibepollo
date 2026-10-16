@@ -1655,9 +1655,20 @@ namespace nvhttp {
               request_virtual_display = true;
             }
           } else {
-            preserve_requested_output = true;
-            BOOST_LOG(info) << "Requested display '" << requested_output_name
-                            << "' is present but inactive; attempting activation via display helper.";
+            const auto preparation = launch_session->dd_config_option_override.value_or(config::video.dd.configuration_option);
+            using preparation_e = config::video_t::dd_t::config_option_e;
+            // A helper session alone does not activate an output: VerifyOnly
+            // preserves its inactive topology, and disabled sends no APPLY.
+            preserve_requested_output = preparation == preparation_e::ensure_active ||
+                                        preparation == preparation_e::ensure_primary ||
+                                        preparation == preparation_e::ensure_only_display;
+            if (preserve_requested_output) {
+              BOOST_LOG(info) << "Requested display '" << requested_output_name
+                              << "' is present but inactive; attempting activation via display helper.";
+            } else {
+              BOOST_LOG(info) << "Requested display '" << requested_output_name
+                              << "' is present but inactive; display preparation policy does not activate it.";
+            }
           }
         }
       }
