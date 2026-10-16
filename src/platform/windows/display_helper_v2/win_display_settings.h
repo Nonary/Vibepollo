@@ -29,6 +29,7 @@ namespace display_helper::v2 {
     Snapshot capture_snapshot() override;
     bool apply_snapshot(const Snapshot &snapshot) override;
     bool apply_snapshot_settings(const Snapshot &snapshot) override;
+    bool apply_snapshot_hdr_states(const Snapshot &snapshot) override;
     bool snapshot_matches_current(const Snapshot &snapshot) override;
     bool configuration_matches(const SingleDisplayConfiguration &config) override;
     bool configuration_matches(

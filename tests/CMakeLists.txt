@@ -708,6 +708,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 "${CMAKE_CURRENT_LIST_DIR}/unit/test_legacy_boot_primary_restore.py"
                 --repo "${SUNSHINE_TEST_REPOSITORY_ROOT}" --compiler "${CMAKE_CXX_COMPILER}")
         set_tests_properties(test_component_legacy_boot_primary_restore PROPERTIES LABELS "component")
+        add_test(NAME test_component_display_snapshot_backend
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_snapshot_backend.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" --compiler "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_display_snapshot_backend PROPERTIES LABELS "component" TIMEOUT 30)
         add_test(NAME test_component_display_helper_recovery
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_helper_recovery.py"

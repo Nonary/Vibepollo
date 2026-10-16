@@ -1587,14 +1587,14 @@ namespace {
           }
           std::this_thread::sleep_for(150ms);
         }
-        if (!display_helper::restore_snapshot_settings(*m_dd, snap)) {
+        if (!display_helper::restore_snapshot_settings(*m_dd, snap, false)) {
           BOOST_LOG(warning) << "Snapshot restore: settings failed; skipping remaining layout saves.";
           return false;
         }
-        if (layout_rotations && !layout_rotations->empty()) {
-          return apply_layout_rotations(*layout_rotations);
+        if (layout_rotations && !layout_rotations->empty() && !apply_layout_rotations(*layout_rotations)) {
+          return false;
         }
-        return true;
+        return display_helper::restore_snapshot_hdr_states(*m_dd, snap);
       } catch (...) {
         return false;
       }

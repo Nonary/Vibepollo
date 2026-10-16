@@ -41,6 +41,12 @@ namespace display_helper::v2 {
       return apply_snapshot(snapshot);
     }
 
+    /// Restore and verify known saved HDR states after all layout mode-sets.
+    /// Simple backends may already restore HDR in apply_snapshot_settings.
+    virtual bool apply_snapshot_hdr_states(const Snapshot &) {
+      return true;
+    }
+
     virtual bool snapshot_matches_current(const Snapshot &snapshot) = 0;
     virtual bool configuration_matches(const SingleDisplayConfiguration &config) = 0;
     /// Verify configuration fields using the target scope resolved by the
@@ -122,8 +128,8 @@ namespace display_helper::v2 {
     /// Force a same-value rotation mode-set for non-default rotations. The OS
     /// can report a matching layout while the display driver's pointer
     /// transform is stale after a virtual-display session; only a forced
-    /// re-apply reaches the driver. Best-effort: failure must not fail a
-    /// confirmed restore.
+    /// re-apply reaches the driver. Best-effort: a failed refresh may still
+    /// succeed if the snapshot and layout are confirmed again afterward.
     virtual bool reassert_layout_rotations(const codec::layout_rotation_map_t &) {
       return true;
     }

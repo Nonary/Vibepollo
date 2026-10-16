@@ -780,7 +780,7 @@ namespace display_helper::v2 {
           return false;
         }
       }
-      return true;
+      return !token.is_cancelled() && display_.apply_snapshot_hdr_states(base);
     };
 
     auto verify_once = [&](const char *attempt) -> bool {
@@ -807,28 +807,28 @@ namespace display_helper::v2 {
     // pointer transform is still stale after a virtual-display session
     // (Vibepollo #406). When the matching fast path confirms a baseline that
     // holds a non-default rotation, force a same-value rotation refresh so the
-    // driver rebuilds that transform. Best-effort by design: a confirmed
-    // restore must never fail on this.
-    const auto reassert_rotations_after_match = [&]() {
+    // driver rebuilds that transform. A refresh failure is best-effort, but
+    // any mode-set can invalidate the earlier color/state confirmation.
+    const auto reassert_rotations_after_match = [&]() -> bool {
       if (!require_layout_match || layouts.empty() || token.is_cancelled()) {
-        return;
+        return !token.is_cancelled();
       }
       const bool any_non_default = std::any_of(layouts.begin(), layouts.end(), [](const auto &entry) {
         return entry.second != 0;
       });
       if (!any_non_default) {
-        return;
+        return true;
       }
       if (!display_.reassert_layout_rotations(layouts)) {
-        BOOST_LOG(warning) << "Restore (" << label << "): rotation reassert failed; keeping confirmed restore.";
+        BOOST_LOG(warning) << "Restore (" << label << "): rotation reassert failed; checking final state.";
       }
+      return !token.is_cancelled() && display_.apply_snapshot_hdr_states(base) && verify_once("rotation refresh");
     };
 
     if (token.is_cancelled()) {
       return false;
     }
-    if (confirm_matches(loaded, label, token)) {
-      reassert_rotations_after_match();
+    if (confirm_matches(loaded, label, token) && reassert_rotations_after_match()) {
       return true;
     }
 
@@ -845,8 +845,7 @@ namespace display_helper::v2 {
     if (token.is_cancelled() || !wait_with_cancel(std::chrono::milliseconds(700), token)) {
       return false;
     }
-    if (confirm_matches(loaded, label, token)) {
-      reassert_rotations_after_match();
+    if (confirm_matches(loaded, label, token) && reassert_rotations_after_match()) {
       return true;
     }
     const bool second_apply_succeeded = apply_once();

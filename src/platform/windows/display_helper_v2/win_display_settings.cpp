@@ -228,11 +228,11 @@ namespace display_helper::v2 {
 
     display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
     try {
-      // Preserve v1's restore order: topology is staged by TopologyTransition,
-      // then modes and HDR are restored before primary/origin changes. Moving
+      // Topology is staged by TopologyTransition. Restore exact modes before
+      // primary/origin changes, and defer HDR until after rotations. Moving
       // primary first can make Windows reject a saved mode on a waking or
       // duplicate display, leaving recovery half-applied.
-      if (!display_helper::restore_snapshot_settings(*display_device_, snapshot)) {
+      if (!display_helper::restore_snapshot_settings(*display_device_, snapshot, false)) {
         BOOST_LOG(warning) << "apply_snapshot_settings: failed to restore settings; skipping remaining layout saves";
         return false;
       }
@@ -242,6 +242,18 @@ namespace display_helper::v2 {
       return false;
     } catch (...) {
       BOOST_LOG(error) << "apply_snapshot_settings: unknown exception";
+      return false;
+    }
+  }
+
+  bool WinDisplaySettings::apply_snapshot_hdr_states(const Snapshot &snapshot) {
+    if (!ensure_initialized()) {
+      return false;
+    }
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+    try {
+      return display_helper::restore_snapshot_hdr_states(*display_device_, snapshot);
+    } catch (...) {
       return false;
     }
   }
@@ -274,6 +286,10 @@ namespace display_helper::v2 {
           BOOST_LOG(warning) << "apply_snapshot: failed to restore display rotations";
           return false;
         }
+      }
+      if (!apply_snapshot_hdr_states(snapshot)) {
+        BOOST_LOG(warning) << "apply_snapshot: failed to restore final HDR states";
+        return false;
       }
       BOOST_LOG(info) << "apply_snapshot: completed";
       return true;

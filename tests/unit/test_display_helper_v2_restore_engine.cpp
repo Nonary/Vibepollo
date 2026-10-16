@@ -445,6 +445,7 @@ namespace {
     ApplyStatus apply_topology(const display_device::ActiveTopology &topology) override {
       ++topology_calls;
       transition_order.push_back("topology:" + first_id(topology));
+      if (topology_result != ApplyStatus::Ok) return topology_result;
       current.m_topology = topology;
       if (on_topology_applied) {
         on_topology_applied();
@@ -490,6 +491,17 @@ namespace {
       return true;
     }
 
+    bool apply_snapshot_hdr_states(const display_device::DisplaySettingsSnapshot &snapshot) override {
+      restore_stage_order.push_back("hdr");
+      ++hdr_apply_calls;
+      if (!hdr_apply_result) return false;
+      for (const auto &[id, state] : snapshot.m_hdr_states) {
+        if (state) current.m_hdr_states[id] = state;
+      }
+      if (on_hdr_applied) on_hdr_applied();
+      return true;
+    }
+
     bool snapshot_matches_current(const display_device::DisplaySettingsSnapshot &snapshot) override {
       return codec::equal_snapshots_strict(current, snapshot);
     }
@@ -512,7 +524,9 @@ namespace {
     }
 
     bool apply_layout_rotations(const codec::layout_rotation_map_t &layout_rotations) override {
+      restore_stage_order.push_back("rotation");
       rotation_apply_calls.push_back(layout_rotations);
+      if (on_rotation_applied) on_rotation_applied();
       return apply_layout_rotations_result;
     }
 
@@ -524,7 +538,9 @@ namespace {
     }
 
     bool reassert_layout_rotations(const codec::layout_rotation_map_t &layout_rotations) override {
+      restore_stage_order.push_back("reassert");
       reassert_calls.push_back(layout_rotations);
+      if (on_rotation_applied) on_rotation_applied();
       return reassert_result;
     }
 
@@ -544,9 +560,11 @@ namespace {
     std::set<std::string> ineffective_ids;
     std::vector<std::string> apply_order;
     std::vector<std::string> transition_order;
+    std::vector<std::string> restore_stage_order;
     std::vector<codec::layout_rotation_map_t> rotation_apply_calls;
     std::vector<codec::layout_rotation_map_t> reassert_calls;
     int apply_calls = 0;
+    int hdr_apply_calls = 0;
     int topology_calls = 0;
     int enumerate_calls = 0;
     int reset_staged_apply_state_calls = 0;
@@ -554,6 +572,10 @@ namespace {
     bool apply_layout_rotations_result = true;
     bool layout_matches_result = true;
     bool reassert_result = true;
+    bool hdr_apply_result = true;
+    ApplyStatus topology_result = ApplyStatus::Ok;
+    std::function<void()> on_rotation_applied;
+    std::function<void()> on_hdr_applied;
     std::function<void()> on_capture_snapshot;
     std::function<void()> on_topology_applied;
     std::function<void()> on_enumerate;
@@ -1032,7 +1054,7 @@ TEST(DisplayHelperV2RecoveryEngine, SessionFirstKeepsCooldownWhenGoldenDeviceRet
 
 // The OS can report a fully matching layout while the driver's pointer
 // transform is stale; a confirmed match with a non-default rotation must force
-// a same-value rotation refresh without touching topology or settings.
+// a same-value rotation refresh, then restore color and verify again.
 TEST(DisplayHelperV2RecoveryEngine, ReassertsNonDefaultRotationOnMatchingFastPath) {
   RecoveryHarness harness;
   harness.add_device("A");
@@ -1075,8 +1097,7 @@ TEST(DisplayHelperV2RecoveryEngine, SkipsReassertWhenLayoutIsAllDefault) {
   EXPECT_EQ(harness.display.apply_calls, 0);
 }
 
-// The reassert is best-effort: its failure must never fail a restore that was
-// already confirmed on screen.
+// A failed reassert remains best-effort when the final state still matches.
 TEST(DisplayHelperV2RecoveryEngine, ReassertFailureDoesNotFailConfirmedRestore) {
   RecoveryHarness harness;
   harness.add_device("A");
@@ -1186,6 +1207,119 @@ TEST(DisplayHelperV2RecoveryEngine, RotationStageFailureFailsRestoreWhenLayoutNe
   EXPECT_EQ(harness.display.topology_calls, 2);
   EXPECT_EQ(harness.display.rotation_apply_calls.size(), 2u);
   EXPECT_TRUE(harness.display.reassert_calls.empty());
+}
+
+TEST(DisplayHelperV2RecoveryEngine, RestoresSavedHdrAfterRotationColorReset) {
+  for (const bool matching_fast_path : {false, true}) {
+    for (const auto saved_hdr : {display_device::HdrState::Disabled, display_device::HdrState::Enabled}) {
+      RecoveryHarness harness;
+      harness.add_device("A");
+      harness.add_device("B");
+      auto baseline = make_snapshot({{"A"}});
+      baseline.m_hdr_states["A"] = saved_hdr;
+      ASSERT_TRUE(harness.storage.save(
+        display_helper::v2::SnapshotTier::Current, baseline, codec::layout_rotation_map_t {{"A", 270}}));
+      harness.display.current = matching_fast_path ? baseline : make_snapshot({{"B"}});
+      harness.display.on_rotation_applied = [&] {
+        harness.display.current.m_hdr_states["A"] = saved_hdr == display_device::HdrState::Enabled ?
+          display_device::HdrState::Disabled : display_device::HdrState::Enabled;
+      };
+
+      EXPECT_TRUE(harness.recovery.run(harness.cancellation.token()).success);
+      EXPECT_EQ(harness.display.current.m_hdr_states.at("A"), saved_hdr);
+      EXPECT_EQ(harness.display.restore_stage_order, (std::vector<std::string> {
+        matching_fast_path ? "reassert" : "rotation", "hdr"}));
+      EXPECT_EQ(harness.display.reset_staged_apply_state_calls, 1);
+    }
+  }
+}
+
+TEST(DisplayHelperV2RecoveryEngine, FailedReassertStillRepairsColorBeforeConfirming) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+  auto baseline = make_snapshot({{"A"}});
+  baseline.m_hdr_states["A"] = display_device::HdrState::Disabled;
+  ASSERT_TRUE(harness.storage.save(
+    display_helper::v2::SnapshotTier::Current, baseline, codec::layout_rotation_map_t {{"A", 90}}));
+  harness.display.current = baseline;
+  harness.display.reassert_result = false;
+  harness.display.on_rotation_applied = [&] {
+    harness.display.current.m_hdr_states["A"] = display_device::HdrState::Enabled;
+  };
+  EXPECT_TRUE(harness.recovery.run(harness.cancellation.token()).success);
+  EXPECT_EQ(harness.display.current.m_hdr_states.at("A"), display_device::HdrState::Disabled);
+  EXPECT_EQ(harness.display.hdr_apply_calls, 1);
+}
+
+TEST(DisplayHelperV2RecoveryEngine, FailedFinalHdrRetainsBaselineAndStagedApplyState) {
+  for (const bool matching_fast_path : {false, true}) {
+    RecoveryHarness harness;
+    harness.add_device("A");
+    harness.add_device("B");
+    auto baseline = make_snapshot({{"A"}});
+    baseline.m_hdr_states["A"] = display_device::HdrState::Disabled;
+    ASSERT_TRUE(harness.storage.save(
+      display_helper::v2::SnapshotTier::Current, baseline, codec::layout_rotation_map_t {{"A", 90}}));
+    harness.display.current = matching_fast_path ? baseline : make_snapshot({{"B"}});
+    harness.display.hdr_apply_result = false;
+    harness.display.on_rotation_applied = [&] {
+      harness.display.current.m_hdr_states["A"] = display_device::HdrState::Enabled;
+    };
+
+    EXPECT_FALSE(harness.recovery.run(harness.cancellation.token()).success);
+    EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Current));
+    EXPECT_EQ(harness.display.reset_staged_apply_state_calls, 0);
+    EXPECT_GT(harness.display.hdr_apply_calls, 0);
+  }
+}
+
+TEST(DisplayHelperV2RecoveryEngine, ReassertMustReconfirmWholeSnapshotAfterHdr) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+  auto baseline = make_snapshot({{"A"}});
+  ASSERT_TRUE(harness.storage.save(
+    display_helper::v2::SnapshotTier::Current, baseline, codec::layout_rotation_map_t {{"A", 270}}));
+  harness.display.current = baseline;
+  harness.display.ineffective_ids.insert("A");
+  harness.display.on_rotation_applied = [&] {
+    harness.display.current.m_modes.at("A").m_resolution.m_width = 1280;
+  };
+
+  EXPECT_FALSE(harness.recovery.run(harness.cancellation.token()).success);
+  EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Current));
+  EXPECT_EQ(harness.display.reset_staged_apply_state_calls, 0);
+}
+
+TEST(DisplayHelperV2RecoveryEngine, CancelledRotationSuppressesFinalHdrAndSuccess) {
+  for (const bool matching_fast_path : {false, true}) {
+    RecoveryHarness harness;
+    harness.add_device("A");
+    harness.add_device("B");
+    auto baseline = make_snapshot({{"A"}});
+    ASSERT_TRUE(harness.storage.save(
+      display_helper::v2::SnapshotTier::Current, baseline, codec::layout_rotation_map_t {{"A", 90}}));
+    harness.display.current = matching_fast_path ? baseline : make_snapshot({{"B"}});
+    harness.display.on_rotation_applied = [&] { harness.cancellation.cancel(); };
+    EXPECT_FALSE(harness.recovery.run(harness.cancellation.token()).success);
+    EXPECT_EQ(harness.display.hdr_apply_calls, 0);
+    EXPECT_EQ(harness.display.reset_staged_apply_state_calls, 0);
+    EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Current));
+  }
+}
+
+TEST(DisplayHelperV2RecoveryEngine, TopologyFailureNeverReachesColorRestore) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+  harness.add_device("B");
+  auto baseline = make_snapshot({{"A"}});
+  baseline.m_hdr_states["A"] = display_device::HdrState::Disabled;
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, baseline));
+  harness.display.current = make_snapshot({{"B"}});
+  harness.display.topology_result = display_helper::v2::ApplyStatus::VerificationFailed;
+  EXPECT_FALSE(harness.recovery.run(harness.cancellation.token()).success);
+  EXPECT_EQ(harness.display.apply_calls, 0);
+  EXPECT_EQ(harness.display.hdr_apply_calls, 0);
+  EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Current));
 }
 
 // --- storage round trip in the legacy file format ---

@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,7 +26,7 @@ namespace {
   };
 
   using ModeMap = std::map<std::string, Mode>;
-  using HdrMap = std::map<std::string, bool>;
+  using HdrMap = std::map<std::string, std::optional<bool>>;
 
   Mode make_mode(unsigned int width, unsigned int height, unsigned int numerator, unsigned int denominator) {
     return {
@@ -59,18 +60,29 @@ namespace {
     bool setHdrStates(const HdrMap &states) {
       calls.emplace_back("hdr");
       requested_hdr_states = states;
+      if (hdr_succeeds && !ignore_hdr_write) {
+        for (const auto &[id, state] : states) current_hdr_states[id] = state;
+      }
       return hdr_succeeds;
+    }
+
+    HdrMap getCurrentHdrStates(const std::set<std::string> &ids) {
+      calls.emplace_back("hdr-readback");
+      requested_hdr_ids = ids;
+      return unreadable_hdr ? HdrMap {} : current_hdr_states;
     }
 
     bool setAsPrimary(const std::string &device_id) {
       calls.emplace_back("primary");
       requested_primary = device_id;
+      if (reset_color_on_layout) current_hdr_states.clear();
       return primary_succeeds;
     }
 
     bool setDisplayOrigin(const std::string &device_id, const Origin &origin) {
       calls.emplace_back("origin:" + device_id);
       requested_origins[device_id] = origin;
+      if (reset_color_on_layout) current_hdr_states.clear();
       return failing_origin.empty() || failing_origin != device_id;
     }
 
@@ -78,9 +90,14 @@ namespace {
     ModeMap readback_modes;
     ModeMap requested_modes;
     HdrMap requested_hdr_states;
+    HdrMap current_hdr_states;
+    std::set<std::string> requested_hdr_ids;
     std::string requested_primary;
     std::map<std::string, Origin> requested_origins;
     bool hdr_succeeds = true;
+    bool ignore_hdr_write = false;
+    bool unreadable_hdr = false;
+    bool reset_color_on_layout = false;
     bool primary_succeeds = true;
     std::string failing_origin;
   };
@@ -145,14 +162,14 @@ TEST(DisplaySnapshotRestore, RejectedModeReadbackStopsLaterSettingsWrites) {
   EXPECT_EQ(device.calls, (std::vector<std::string> {"modes"}));
 }
 
-TEST(DisplaySnapshotRestore, HdrFailureStopsPrimaryAndOriginWrites) {
+TEST(DisplaySnapshotRestore, HdrFailureIsReportedAfterLayoutWrites) {
   const auto snapshot = complete_snapshot();
   FakeDevice device;
   set_matching_readback(device, snapshot);
   device.hdr_succeeds = false;
 
   EXPECT_FALSE(display_helper::restore_snapshot_settings(device, snapshot));
-  EXPECT_EQ(device.calls, (std::vector<std::string> {"modes", "hdr"}));
+  EXPECT_EQ(device.calls, (std::vector<std::string> {"modes", "primary", "origin:DISPLAY-A", "origin:DISPLAY-B", "hdr"}));
 }
 
 TEST(DisplaySnapshotRestore, PrimaryFailureStopsOriginWrites) {
@@ -162,7 +179,7 @@ TEST(DisplaySnapshotRestore, PrimaryFailureStopsOriginWrites) {
   device.primary_succeeds = false;
 
   EXPECT_FALSE(display_helper::restore_snapshot_settings(device, snapshot));
-  EXPECT_EQ(device.calls, (std::vector<std::string> {"modes", "hdr", "primary"}));
+  EXPECT_EQ(device.calls, (std::vector<std::string> {"modes", "primary"}));
 }
 
 TEST(DisplaySnapshotRestore, OriginFailureStopsRemainingOriginWrites) {
@@ -172,7 +189,7 @@ TEST(DisplaySnapshotRestore, OriginFailureStopsRemainingOriginWrites) {
   device.failing_origin = "DISPLAY-A";
 
   EXPECT_FALSE(display_helper::restore_snapshot_settings(device, snapshot));
-  EXPECT_EQ(device.calls, (std::vector<std::string> {"modes", "hdr", "primary", "origin:DISPLAY-A"}));
+  EXPECT_EQ(device.calls, (std::vector<std::string> {"modes", "primary", "origin:DISPLAY-A"}));
 }
 
 TEST(DisplaySnapshotRestore, AppliesAllSettingsInOrderAndSkipsEmptyOptionalFields) {
@@ -182,7 +199,7 @@ TEST(DisplaySnapshotRestore, AppliesAllSettingsInOrderAndSkipsEmptyOptionalField
 
   EXPECT_TRUE(display_helper::restore_snapshot_settings(device, snapshot));
   EXPECT_EQ(device.calls,
-            (std::vector<std::string> {"modes", "hdr", "primary", "origin:DISPLAY-A", "origin:DISPLAY-B"}));
+            (std::vector<std::string> {"modes", "primary", "origin:DISPLAY-A", "origin:DISPLAY-B", "hdr", "hdr-readback"}));
   EXPECT_TRUE(display_device::equalDisplayModes(device.requested_modes, snapshot.m_modes));
   EXPECT_EQ(device.requested_hdr_states, snapshot.m_hdr_states);
   EXPECT_EQ(device.requested_primary, "DISPLAY-A");
@@ -192,4 +209,62 @@ TEST(DisplaySnapshotRestore, AppliesAllSettingsInOrderAndSkipsEmptyOptionalField
   FakeDevice empty_device;
   EXPECT_TRUE(display_helper::restore_snapshot_settings(empty_device, empty_snapshot));
   EXPECT_TRUE(empty_device.calls.empty());
+}
+
+TEST(DisplaySnapshotRestore, FinalHdrSurvivesPrimaryAndOriginColorResets) {
+  for (const bool enabled : {false, true}) {
+    auto snapshot = complete_snapshot();
+    snapshot.m_hdr_states["DISPLAY-A"] = enabled;
+    snapshot.m_hdr_states["DISPLAY-B"] = !enabled;
+    FakeDevice device;
+    set_matching_readback(device, snapshot);
+    device.reset_color_on_layout = true;
+
+    ASSERT_TRUE(display_helper::restore_snapshot_settings(device, snapshot));
+    EXPECT_EQ(device.current_hdr_states, snapshot.m_hdr_states);
+    EXPECT_EQ(device.calls.back(), "hdr-readback");
+  }
+}
+
+TEST(DisplaySnapshotRestore, RejectsSuccessfulHdrWriteWithWrongMissingOrUnknownReadback) {
+  const auto snapshot = complete_snapshot();
+  for (const auto &readback : {HdrMap {}, HdrMap {{"DISPLAY-A", false}}, HdrMap {{"DISPLAY-A", std::nullopt}}}) {
+    FakeDevice device;
+    device.ignore_hdr_write = true;
+    device.current_hdr_states = readback;
+    EXPECT_FALSE(display_helper::restore_snapshot_hdr_states(device, snapshot));
+    EXPECT_EQ(device.calls, (std::vector<std::string> {"hdr", "hdr-readback"}));
+  }
+  FakeDevice device;
+  device.unreadable_hdr = true;
+  EXPECT_FALSE(display_helper::restore_snapshot_hdr_states(device, snapshot));
+}
+
+TEST(DisplaySnapshotRestore, UnknownSavedHdrIsNeitherWrittenNorRequiredForReadback) {
+  Snapshot snapshot;
+  snapshot.m_hdr_states = {{"DISPLAY-A", false}, {"DISPLAY-B", std::nullopt}};
+  FakeDevice device;
+  device.current_hdr_states["DISPLAY-B"] = true;
+  EXPECT_TRUE(display_helper::restore_snapshot_hdr_states(device, snapshot));
+  EXPECT_EQ(device.requested_hdr_states, (HdrMap {{"DISPLAY-A", false}}));
+  EXPECT_EQ(device.requested_hdr_ids, (std::set<std::string> {"DISPLAY-A"}));
+  EXPECT_EQ(device.current_hdr_states.at("DISPLAY-B"), true);
+
+  snapshot.m_hdr_states = {{"DISPLAY-B", std::nullopt}};
+  FakeDevice unknown_device;
+  EXPECT_TRUE(display_helper::restore_snapshot_hdr_states(unknown_device, snapshot));
+  EXPECT_TRUE(unknown_device.calls.empty());
+}
+
+TEST(DisplaySnapshotRestore, DefersHdrUntilCallerFinishesRotations) {
+  const auto snapshot = complete_snapshot();
+  FakeDevice device;
+  set_matching_readback(device, snapshot);
+  EXPECT_TRUE(display_helper::restore_snapshot_settings(device, snapshot, false));
+  EXPECT_EQ(device.calls.back(), "origin:DISPLAY-B");
+  EXPECT_TRUE(device.requested_hdr_states.empty());
+  // A later rotation mode-set discards the current color state.
+  device.current_hdr_states.clear();
+  EXPECT_TRUE(display_helper::restore_snapshot_hdr_states(device, snapshot));
+  EXPECT_EQ(device.current_hdr_states, snapshot.m_hdr_states);
 }
