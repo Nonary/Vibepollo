@@ -498,7 +498,17 @@ namespace {
     return {};
   }
 
-  void apply_launch_node(platf::steam::game_t &game, const vdf_node &appinfo) {
+  void apply_launch_node(platf::steam::game_t &game, const vdf_node &appinfo, std::string_view required_os = {}) {
+    // Catalog discovery may enrich an installed record a second time. Do not
+    // retain an earlier OS/tool when Steam's explicit selection has changed.
+    game.launch_executable.clear();
+    game.launch_working_dir.clear();
+    game.launch_arguments.clear();
+    game.launch_os.clear();
+    game.proton_path.clear();
+    game.proton_runtime_path.clear();
+    game.steam_client_path.clear();
+    game.compatdata_path.clear();
     const auto *config = appinfo.find("config");
     const auto *launches = config ? config->find("launch") : nullptr;
     if (!launches) {
@@ -510,7 +520,8 @@ namespace {
     for (const auto &[index, launch] : launches->children) {
       const auto *executable = launch.find("executable");
       const auto os = normalized_os(launch);
-      if (!executable || executable->value.empty() || os.empty()) {
+      if (!executable || executable->value.empty() || os.empty() ||
+          (!required_os.empty() && os != required_os)) {
         continue;
       }
       int score = os == "linux" ? 200 : 100;
@@ -558,6 +569,138 @@ namespace {
     }
   }
 
+  const vdf_node *find_case_insensitive(const vdf_node &node, std::string_view key) {
+    for (const auto &[name, child] : node.children) {
+      if (name.size() == key.size() && std::equal(name.begin(), name.end(), key.begin(), [](unsigned char lhs, unsigned char rhs) {
+            return std::tolower(lhs) == std::tolower(rhs);
+          })) {
+        return &child;
+      }
+    }
+    return nullptr;
+  }
+
+  vdf_node read_vdf(const fs::path &path) {
+    std::ifstream input(path);
+    std::stringstream buffer;
+    buffer << input.rdbuf();
+    return platf::steam::parse_vdf(buffer.str());
+  }
+
+  struct explicit_compatibility_tool {
+    std::string name;
+    bool supported_config = true;
+  };
+
+  std::map<std::uint32_t, explicit_compatibility_tool> explicit_compatibility_tools(
+    const fs::path &steam_root, const std::map<std::uint32_t, platf::steam::game_t> &games
+  ) {
+    const auto doc = read_vdf(steam_root / "config/config.vdf");
+    const vdf_node *mapping = &doc;
+    for (const auto key : {"InstallConfigStore", "Software", "Valve", "Steam", "CompatToolMapping"}) {
+      mapping = mapping ? find_case_insensitive(*mapping, key) : nullptr;
+    }
+    std::map<std::uint32_t, explicit_compatibility_tool> result;
+    if (mapping) {
+      for (const auto &[id, game] : games) {
+        (void) game;
+        // Key 0 is a default for compatibility launches, not an instruction
+        // to replace every available native Linux build with Windows.
+        const auto *entry = mapping->find(std::to_string(id));
+        const auto *name = entry ? find_case_insensitive(*entry, "name") : nullptr;
+        if (name && !name->value.empty()) {
+          const auto *config = find_case_insensitive(*entry, "config");
+          result.emplace(id, explicit_compatibility_tool {name->value, !config || config->value.empty()});
+        }
+      }
+    }
+    return result;
+  }
+
+  bool proton_tool_declaration(const vdf_node &tool) {
+    const auto *from = find_case_insensitive(tool, "from_oslist");
+    const auto *to = find_case_insensitive(tool, "to_oslist");
+    return from && from->value == "windows" && to && to->value == "linux";
+  }
+
+  bool supported_proton_directory(const fs::path &directory) {
+    const auto doc = read_vdf(directory / "toolmanifest.vdf");
+    const auto *manifest = find_case_insensitive(doc, "manifest");
+    const auto *command = manifest ? find_case_insensitive(*manifest, "commandline") : nullptr;
+    std::error_code ec;
+    // Other Windows-to-Linux compatibility tools have their own launch
+    // protocols. A helper named 'proton' alone does not identify that protocol.
+    return command && command->value == "/proton %verb%" &&
+           fs::is_regular_file(directory / "proton", ec);
+  }
+
+  fs::path resolve_explicit_proton(const std::string &name, const fs::path &steam_root,
+                                   const vdf_node &steam_play_manifest,
+                                   const std::map<std::uint32_t, platf::steam::game_t> &games) {
+    std::error_code ec;
+    const auto custom_root = steam_root / "compatibilitytools.d";
+    std::vector<fs::path> declarations;
+    if (fs::is_directory(custom_root, ec)) {
+      for (const auto &entry : fs::directory_iterator(custom_root, ec)) {
+        if (entry.is_directory(ec)) {
+          declarations.push_back(entry.path() / "compatibilitytool.vdf");
+        } else if (entry.path().extension() == ".vdf") {
+          declarations.push_back(entry.path());
+        }
+      }
+    }
+    std::sort(declarations.begin(), declarations.end());
+    fs::path custom_proton;
+    bool custom_match = false;
+    for (const auto &path : declarations) {
+      const auto doc = read_vdf(path);
+      const auto *root = find_case_insensitive(doc, "compatibilitytools");
+      const auto *tools = root ? find_case_insensitive(*root, "compat_tools") : nullptr;
+      const auto *tool = tools ? tools->find(name) : nullptr;
+      if (!tool) continue;
+      // Steam's precedence for duplicate custom declarations is not a stable
+      // API. Decline an ambiguous direct launch instead of guessing a tool.
+      if (custom_match) return {};
+      custom_match = true;
+      const auto *install = find_case_insensitive(*tool, "install_path");
+      if (!proton_tool_declaration(*tool) || !install || install->value.empty()) return {};
+      const auto directory = install->value == "." ? path.parent_path() : path.parent_path() / install->value;
+      if (!supported_proton_directory(directory)) return {};
+      custom_proton = directory.lexically_normal();
+    }
+    if (custom_match) return custom_proton;
+
+    // Official tools are named by the Steam Play manifest, rather than by
+    // their install folder. Prefer an exact internal name over an alias.
+    const auto *extended = steam_play_manifest.find("extended");
+    const auto *tools = extended ? extended->find("compat_tools") : nullptr;
+    if (!tools) return {};
+    const auto *tool = tools->find(name);
+    if (!tool) {
+      for (const auto &[internal_name, candidate] : tools->children) {
+        (void) internal_name;
+        const auto *aliases = candidate.find("aliases");
+        std::stringstream names(aliases ? aliases->value : std::string {});
+        std::string alias;
+        while (std::getline(names, alias, ',')) {
+          if (alias == name) {
+            if (tool && tool != &candidate) return {};
+            tool = &candidate;
+          }
+        }
+      }
+    }
+    if (!tool || !proton_tool_declaration(*tool)) return {};
+    const auto id = number(tool->find("appid"));
+    if (!id || *id == 0 || *id > UINT32_MAX) return {};
+    const auto installed = games.find(static_cast<std::uint32_t>(*id));
+    if (installed == games.end() || !installed->second.installed) return {};
+    const auto &directory = installed->second.install_dir;
+    return supported_proton_directory(directory) ? directory : fs::path {};
+  }
+
+  void apply_proton_metadata(platf::steam::game_t &game);
+
   void enrich_from_appinfo(const fs::path &path, std::map<std::uint32_t, platf::steam::game_t> &games) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
@@ -584,6 +727,10 @@ namespace {
       keys.push_back(read_cstring(data, strings_offset, data.size()));
     }
 
+    const auto steam_root = path.parent_path().parent_path();
+    const auto overrides = explicit_compatibility_tools(steam_root, games);
+    vdf_node steam_play_manifest;
+    std::map<std::uint32_t, vdf_node> launch_metadata;
     std::size_t offset = 16;
     while (offset + 4 <= string_table_offset) {
       const auto app_id = read_u32(data, offset);
@@ -591,31 +738,62 @@ namespace {
         break;
       }
       if (offset + 68 > string_table_offset) {
-        return;
+        break;
       }
       const auto entry_size = read_u32(data, offset + 4);
       if (entry_size > string_table_offset - offset - 8) {
-        return;
+        break;
       }
       const auto entry_end = offset + 8 + static_cast<std::size_t>(entry_size);
       const auto value_offset = offset + 68;
       if (entry_size < 60 || entry_end > string_table_offset || value_offset > entry_end) {
-        return;
+        break;
       }
-      if (const auto found = games.find(app_id); found != games.end()) {
+      if (games.contains(app_id) || (app_id == 891390 && !overrides.empty())) {
         try {
           auto cursor = value_offset;
           const auto root = parse_binary_vdf(data, cursor, entry_end, keys);
           const auto *appinfo = root.find("appinfo");
           const auto &metadata = appinfo ? *appinfo : root;
-          apply_common_node(found->second, metadata);
-          apply_launch_node(found->second, metadata);
+          if (app_id == 891390) steam_play_manifest = metadata;
+          if (const auto found = games.find(app_id); found != games.end()) {
+            apply_common_node(found->second, metadata);
+            launch_metadata.emplace(app_id, metadata);
+          }
         } catch (...) {
           // A single malformed/cache-version entry must not suppress the rest
           // of Steam discovery; unresolved games keep the broker fallback.
         }
       }
       offset = entry_end;
+    }
+    std::map<std::string, fs::path> resolved_tools;
+    for (const auto &[id, metadata] : launch_metadata) {
+      auto &game = games.at(id);
+      const auto override = overrides.find(id);
+      if (override == overrides.end()) {
+        apply_launch_node(game, metadata);
+      } else {
+        fs::path proton;
+        if (override->second.supported_config) {
+          auto [resolved, inserted] = resolved_tools.try_emplace(override->second.name);
+          if (inserted) resolved->second = resolve_explicit_proton(override->second.name, steam_root, steam_play_manifest, games);
+          proton = resolved->second;
+        }
+        if (proton.empty()) {
+          apply_launch_node(game, vdf_node {});
+          continue;
+        }
+        apply_launch_node(game, metadata, "windows");
+        std::error_code ec;
+        if (game.launch_executable.empty() || !fs::is_regular_file(game.launch_executable, ec)) {
+          game.launch_executable.clear();
+          continue;
+        }
+        game.proton_path = proton;
+        game.steam_client_path = steam_root;
+      }
+      apply_proton_metadata(game);
     }
   }
 
@@ -692,16 +870,22 @@ namespace {
     }
     std::getline(input, library_path);
     std::getline(input, steam_client_path);
-    const auto marker = files_path.find("/files/");
-    if (marker == std::string::npos) {
-      return;
+    // An explicit current selection has already resolved the tool and client.
+    // config_info is prefix history and may still refer to an older Proton.
+    if (game.proton_path.empty()) {
+      const auto marker = files_path.find("/files/");
+      if (marker == std::string::npos) {
+        return;
+      }
+      game.proton_path = platf::steam::normalize_pressure_vessel_host_path(files_path.substr(0, marker));
     }
-    game.proton_path = platf::steam::normalize_pressure_vessel_host_path(files_path.substr(0, marker));
 
     fs::path steamapps;
     std::error_code ec;
     const auto normalized_steam_client = platf::steam::normalize_pressure_vessel_host_path(steam_client_path);
-    if (!steam_client_path.empty() && fs::is_directory(normalized_steam_client / "steamapps", ec)) {
+    if (!game.steam_client_path.empty() && fs::is_directory(game.steam_client_path / "steamapps", ec)) {
+      steamapps = game.steam_client_path / "steamapps";
+    } else if (!steam_client_path.empty() && fs::is_directory(normalized_steam_client / "steamapps", ec)) {
       game.steam_client_path = normalized_steam_client;
       steamapps = game.steam_client_path / "steamapps";
     } else {
@@ -1035,10 +1219,6 @@ namespace platf::steam {
           // the safe fallback for an unreadable or newly-versioned cache.
         }
       }
-    }
-    for (auto &[app_id, game] : found) {
-      (void) app_id;
-      apply_proton_metadata(game);
     }
 #endif
     std::vector<game_t> result;

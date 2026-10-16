@@ -1,10 +1,12 @@
 #include "src/steam_integration.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <iterator>
 #include <optional>
 #include <random>
 #include <vector>
@@ -70,7 +72,7 @@ namespace {
     append_string(data, value);
   }
 
-  void write_test_appinfo(const fs::path &path, std::uint32_t app_id, std::string_view name = "Example") {
+  void write_test_appinfo(const fs::path &path, std::uint32_t app_id, std::string_view name = "Example", bool include_linux = false, bool include_windows = true, bool include_official_tool = false) {
     const std::vector<std::string> keys {
       "appinfo",
       "config",
@@ -82,7 +84,15 @@ namespace {
       "type",
       "oslist",
       "common",
-      "name"
+      "name",
+      "1",
+      "extended",
+      "compat_tools",
+      "proton_fixture",
+      "appid",
+      "from_oslist",
+      "to_oslist",
+      "aliases"
     };
     std::vector<std::uint8_t> blob;
     append_object(blob, 0);
@@ -92,14 +102,26 @@ namespace {
     blob.push_back(0x08);
     append_object(blob, 1);
     append_object(blob, 2);
-    append_object(blob, 3);
-    append_value(blob, 4, "Game.exe");
-    append_value(blob, 5, "-from-appinfo");
-    append_value(blob, 6, "bin");
-    append_value(blob, 7, "default");
-    append_object(blob, 1);
-    append_value(blob, 8, "windows");
-    blob.insert(blob.end(), {0x08, 0x08, 0x08, 0x08, 0x08, 0x08});
+    if (include_windows) {
+      append_object(blob, 3);
+      append_value(blob, 4, "Game.exe");
+      append_value(blob, 5, "-from-appinfo");
+      append_value(blob, 6, "bin");
+      append_value(blob, 7, "default");
+      append_object(blob, 1);
+      append_value(blob, 8, "windows");
+      blob.insert(blob.end(), {0x08, 0x08});
+    }
+    if (include_linux) {
+      append_object(blob, 11);
+      append_value(blob, 4, "Game.sh");
+      append_value(blob, 5, "-native-from-appinfo");
+      append_value(blob, 7, "default");
+      append_object(blob, 1);
+      append_value(blob, 8, "linux");
+      blob.insert(blob.end(), {0x08, 0x08});
+    }
+    blob.insert(blob.end(), {0x08, 0x08, 0x08, 0x08});
 
     std::vector<std::uint8_t> data;
     append_u32(data, 0x07564429);
@@ -109,6 +131,22 @@ namespace {
     append_u32(data, static_cast<std::uint32_t>(60 + blob.size()));
     data.resize(data.size() + 60, 0);
     data.insert(data.end(), blob.begin(), blob.end());
+    if (include_official_tool) {
+      std::vector<std::uint8_t> manifest;
+      append_object(manifest, 0);
+      append_object(manifest, 12);
+      append_object(manifest, 13);
+      append_object(manifest, 14);
+      append_value(manifest, 15, "199");
+      append_value(manifest, 16, "windows");
+      append_value(manifest, 17, "linux");
+      append_value(manifest, 18, "proton-fixture-alias");
+      manifest.insert(manifest.end(), {0x08, 0x08, 0x08, 0x08, 0x08});
+      append_u32(data, 891390);
+      append_u32(data, static_cast<std::uint32_t>(60 + manifest.size()));
+      data.resize(data.size() + 60, 0);
+      data.insert(data.end(), manifest.begin(), manifest.end());
+    }
     append_u32(data, 0);  // App-entry sentinel.
     const auto table_offset = data.size();
     for (unsigned shift = 0; shift < 64; shift += 8) {
@@ -303,6 +341,311 @@ TEST(SteamDiscovery, IgnoresManifestWithoutInstalledDirectory) {
 }
 
 #ifdef __linux__
+namespace {
+  // Synthetic installation using Steam's on-disk schemas, not a copy of a
+  // user's files. Mixed-platform appinfo plus only the Windows payload models
+  // Nonary/vibeshine#294. Keep the client, game and runtime in separate roots.
+  class SteamCompatibilityOverrides: public ::testing::Test {
+  protected:
+    static constexpr std::uint32_t app_id = 588650;
+    scoped_environment machine_host {"VIBESHINE_MACHINE_HOST", ""};
+    fs::path base;
+    fs::path steam;
+    fs::path library;
+    fs::path install;
+    fs::path proton;
+    fs::path runtime;
+
+    static std::string read(const fs::path &path) {
+      std::ifstream input(path, std::ios::binary);
+      return std::string(std::istreambuf_iterator<char> {input}, std::istreambuf_iterator<char> {});
+    }
+
+    static void write(const fs::path &path, const std::string &contents) {
+      fs::create_directories(path.parent_path());
+      std::ofstream(path, std::ios::binary) << contents;
+    }
+
+    void SetUp() override {
+      const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());
+      base = fs::temp_directory_path() / ("vibeshine-steam-compatibility-" + std::to_string(nonce));
+      steam = base / "Steam client";
+      library = base / "External library";
+      install = library / "steamapps/common/DualGame";
+      // The internal tool name deliberately differs from its directory name.
+      proton = steam / "compatibilitytools.d/Custom tool directory";
+      runtime = library / "steamapps/common/SteamLinuxRuntime_sniper";
+      fs::create_directories(steam / "steamapps");
+      fs::create_directories(steam / "appcache");
+      fs::create_directories(install / "bin");
+      write(steam / "steamapps/libraryfolders.vdf",
+        "\"libraryfolders\" { \"0\" { \"path\" \"" + library.generic_string() + "\" } }");
+      write(library / "steamapps/appmanifest_588650.acf",
+        R"VDF("AppState" { "appid" "588650" "name" "Dual Game" "installdir" "DualGame" "StateFlags" "4" })VDF");
+      write_test_appinfo(steam / "appcache/appinfo.vdf", app_id, "Dual Game", true);
+      write(install / "Game.exe", "Windows payload; never executed\n");
+      write(steam / "userdata/123/config/localconfig.vdf", R"VDF(
+        "UserLocalConfigStore" { "Software" { "Valve" { "Steam" { "apps" {
+          "588650" { "LaunchOptions" "FIXTURE_OPTION=1 %command% -user" }
+        } } } } }
+      )VDF");
+      write_tool(proton, "FixtureProton", "windows");
+      write(runtime / "_v2-entry-point", "Runtime placeholder; never executed\n");
+      write(library / "steamapps/appmanifest_99.acf",
+        R"VDF("AppState" { "appid" "99" "name" "Steam Linux Runtime" "installdir" "SteamLinuxRuntime_sniper" })VDF");
+      write_prefix_history(proton);
+    }
+
+    void TearDown() override {
+      std::error_code ec;
+      fs::remove_all(base, ec);
+    }
+
+    void write_tool(const fs::path &path, const std::string &name, const std::string &from_os) {
+      write(path / "compatibilitytool.vdf",
+        "\"compatibilitytools\" { \"compat_tools\" { \"" + name +
+        "\" { \"install_path\" \".\" \"display_name\" \"Fixture tool\" \"from_oslist\" \"" +
+        from_os + "\" \"to_oslist\" \"linux\" } } }");
+      if (from_os == "windows") {
+        write(path / "toolmanifest.vdf", R"VDF("manifest" {
+          "version" "2" "commandline" "/proton %verb%" "require_tool_appid" "99" "compatmanager_layer_name" "proton"
+        })VDF");
+        write(path / "proton", "Proton placeholder; never executed\n");
+      } else {
+        write(path / "toolmanifest.vdf", R"VDF("manifest" { "version" "2" "commandline" "/_v2-entry-point --verb=%verb% --" })VDF");
+        write(path / "_v2-entry-point", "Native runtime placeholder; never executed\n");
+      }
+    }
+
+    void write_prefix_history(const fs::path &tool) {
+      // Proton writes these first four lines while preparing a prefix. They
+      // describe a previous launch and can outlive a changed Steam selection.
+      write(library / "steamapps/compatdata/588650/config_info",
+        "11.0-1\n" + (tool / "files/share/fonts").generic_string() + "/\n" +
+        (tool / "files/lib").generic_string() + "/\n" + steam.generic_string() + "\n");
+    }
+
+    void mapping(const std::string &entries) {
+      write(steam / "config/config.vdf",
+        "\"InstallConfigStore\" { \"Software\" { \"Valve\" { \"Steam\" { \"CompatToolMapping\" { " +
+        entries + " } } } } }");
+    }
+
+    game_t scan(bool catalog = false) {
+      const auto config = read(steam / "config/config.vdf");
+      const auto prefix = read(library / "steamapps/compatdata/588650/config_info");
+      const auto options = read(steam / "userdata/123/config/localconfig.vdf");
+      const auto games = catalog ? discover_catalog({steam}) : discover({steam});
+      EXPECT_EQ(read(steam / "config/config.vdf"), config);
+      EXPECT_EQ(read(library / "steamapps/compatdata/588650/config_info"), prefix);
+      EXPECT_EQ(read(steam / "userdata/123/config/localconfig.vdf"), options);
+      const auto game = std::find_if(games.begin(), games.end(), [](const auto &value) {
+        return value.app_id == app_id;
+      });
+      EXPECT_NE(game, games.end());
+      return game == games.end() ? game_t {} : *game;
+    }
+
+    void expect_native() {
+      write(install / "Game.sh", "Native payload; never executed\n");
+      for (const bool catalog : {false, true}) {
+        const auto game = scan(catalog);
+        EXPECT_EQ(game.launch_os, "linux");
+        EXPECT_EQ(game.launch_executable, install / "Game.sh");
+        EXPECT_TRUE(game.proton_path.empty());
+        EXPECT_EQ(launch_command(game).find("waitforexitandrun"), std::string::npos);
+      }
+    }
+  };
+}  // namespace
+
+TEST_F(SteamCompatibilityOverrides, PerAppProtonSelectsWindowsWithNativeAppinfo) {
+  mapping(R"VDF("588650" { "name" "FixtureProton" "config" "" "priority" "250" })VDF");
+  ASSERT_FALSE(fs::exists(install / "Game.sh"));
+  for (const bool catalog : {false, true}) {
+    const auto game = scan(catalog);
+    EXPECT_EQ(game.launch_os, "windows");
+    EXPECT_EQ(game.launch_executable, install / "Game.exe");
+    EXPECT_EQ(game.launch_working_dir, install / "bin");
+    EXPECT_EQ(game.launch_arguments, "-from-appinfo");
+    EXPECT_EQ(game.launch_options, "FIXTURE_OPTION=1 %command% -user");
+    EXPECT_EQ(game.proton_path, proton);
+    EXPECT_EQ(game.proton_runtime_path, runtime);
+    EXPECT_EQ(game.steam_client_path, steam);
+    const auto command = launch_command(game);
+    EXPECT_NE(command.find("Custom tool directory/proton"), std::string::npos);
+    EXPECT_NE(command.find("Game.exe"), std::string::npos);
+    EXPECT_EQ(command.find("Game.sh"), std::string::npos);
+  }
+}
+
+TEST_F(SteamCompatibilityOverrides, PerAppSelectionWinsOverGlobalDefault) {
+  mapping(R"VDF(
+    "0" { "name" "OtherProton" "config" "" "priority" "75" }
+    "588650" { "name" "FixtureProton" "config" "" "priority" "250" }
+  )VDF");
+  for (const bool catalog : {false, true}) {
+    const auto game = scan(catalog);
+    EXPECT_EQ(game.launch_os, "windows");
+    EXPECT_EQ(game.proton_path, proton);
+  }
+}
+
+TEST_F(SteamCompatibilityOverrides, PrefixHistoryAloneDoesNotForceProton) {
+  expect_native();
+}
+
+TEST_F(SteamCompatibilityOverrides, GlobalDefaultDoesNotForceNativeGamesToProton) {
+  mapping(R"VDF("0" { "name" "FixtureProton" "config" "" "priority" "75" })VDF");
+  expect_native();
+}
+
+TEST_F(SteamCompatibilityOverrides, EmptyPerAppSelectionRetainsNativePreference) {
+  mapping(R"VDF(
+    "0" { "name" "FixtureProton" "config" "" "priority" "75" }
+    "588650" { "name" "" "config" "" "priority" "250" }
+  )VDF");
+  expect_native();
+}
+
+TEST_F(SteamCompatibilityOverrides, LinuxToLinuxToolIsNotProton) {
+  write(install / "Game.sh", "Native payload; never executed\n");
+  write_tool(steam / "compatibilitytools.d/NativeRuntime", "FixtureNativeRuntime", "linux");
+  mapping(R"VDF("588650" { "name" "FixtureNativeRuntime" "config" "" "priority" "250" })VDF");
+  // The selected native runtime may require a Steam-owned launch. Either a
+  // correctly wrapped native launch or broker fallback is acceptable here.
+  // In particular, stale Proton history must not select a Windows payload.
+  for (const bool catalog : {false, true}) {
+    const auto game = scan(catalog);
+    EXPECT_NE(game.launch_os, "windows");
+    EXPECT_TRUE(game.proton_path.empty());
+    EXPECT_EQ(launch_command(game).find("Game.exe"), std::string::npos);
+    EXPECT_EQ(launch_command(game).find("waitforexitandrun"), std::string::npos);
+  }
+}
+
+TEST_F(SteamCompatibilityOverrides, UnresolvedOverrideDoesNotRunNativePayload) {
+  mapping(R"VDF("588650" { "name" "UninstalledTool" "config" "" "priority" "250" })VDF");
+  for (const bool catalog : {false, true}) {
+    EXPECT_EQ(launch_command(scan(catalog)), launch_command(app_id));
+  }
+}
+
+TEST_F(SteamCompatibilityOverrides, ProtonOverrideWithoutWindowsEntryDoesNotRunLinuxThroughProton) {
+  write_test_appinfo(steam / "appcache/appinfo.vdf", app_id, "Native only", true, false);
+  mapping(R"VDF("588650" { "name" "FixtureProton" "config" "" "priority" "250" })VDF");
+  for (const bool catalog : {false, true}) {
+    EXPECT_EQ(launch_command(scan(catalog)), launch_command(app_id));
+  }
+}
+
+TEST_F(SteamCompatibilityOverrides, ChangedSelectionDoesNotReusePreviousProton) {
+  const auto old_proton = steam / "compatibilitytools.d/Previous tool";
+  write_tool(old_proton, "PreviousProton", "windows");
+  write_prefix_history(old_proton);
+  mapping(R"VDF("588650" { "name" "FixtureProton" "config" "" "priority" "250" })VDF");
+  for (const bool catalog : {false, true}) {
+    const auto command = launch_command(scan(catalog));
+    EXPECT_EQ(command.find("Previous tool/proton"), std::string::npos);
+    EXPECT_EQ(command.find("Game.sh"), std::string::npos);
+    // Resolving the current tool or declining an incomplete direct launch are
+    // both safe; selecting the native binary or the old Proton is not.
+    EXPECT_TRUE(command == launch_command(app_id) || command.find("Custom tool directory/proton") != std::string::npos);
+  }
+}
+
+TEST_F(SteamCompatibilityOverrides, OfficialProtonResolvesInternalNameAndAliasFromSteamPlayManifest) {
+  const auto official = library / "steamapps/common/Official Proton";
+  write_tool(official, "unused-declaration", "windows");
+  fs::remove(official / "compatibilitytool.vdf");
+  write(library / "steamapps/appmanifest_199.acf",
+    R"VDF("AppState" { "appid" "199" "name" "Official Proton" "installdir" "Official Proton" })VDF");
+  write_test_appinfo(steam / "appcache/appinfo.vdf", app_id, "Dual Game", true, true, true);
+  // Official Steam installs have no custom compatibilitytool.vdf. The name
+  // resolves through appinfo's Steam Play manifest to the installed tool AppID.
+  for (const auto name : {"proton_fixture", "proton-fixture-alias"}) {
+    mapping("\"588650\" { \"name\" \"" + std::string(name) + "\" \"config\" \"\" }");
+    for (const bool catalog : {false, true}) {
+      const auto game = scan(catalog);
+      EXPECT_EQ(game.launch_os, "windows");
+      EXPECT_EQ(game.proton_path, official);
+      EXPECT_EQ(game.proton_runtime_path, runtime);
+      EXPECT_NE(launch_command(game).find("Official Proton/proton"), std::string::npos);
+    }
+  }
+}
+
+TEST_F(SteamCompatibilityOverrides, MissingWindowsPayloadDoesNotSelectNativeInstead) {
+  fs::remove(install / "Game.exe");
+  write(install / "Game.sh", "Native payload; never executed\n");
+  mapping(R"VDF("588650" { "name" "FixtureProton" "config" "" })VDF");
+  for (const bool catalog : {false, true}) {
+    EXPECT_EQ(launch_command(scan(catalog)), launch_command(app_id));
+  }
+}
+
+TEST_F(SteamCompatibilityOverrides, UnsupportedToolConfigDeclinesDirectLaunch) {
+  mapping(R"VDF("588650" { "name" "FixtureProton" "config" "unknown-mode" })VDF");
+  for (const bool catalog : {false, true}) {
+    EXPECT_EQ(launch_command(scan(catalog)), launch_command(app_id));
+  }
+}
+
+TEST_F(SteamCompatibilityOverrides, OtherWindowsCompatibilityProtocolDeclinesDirectLaunch) {
+  write(proton / "toolmanifest.vdf", R"VDF("manifest" {
+    "version" "2" "commandline" "/different-launcher %verb%" "require_tool_appid" "99"
+  })VDF");
+  mapping(R"VDF("588650" { "name" "FixtureProton" "config" "" })VDF");
+  for (const bool catalog : {false, true}) {
+    EXPECT_EQ(launch_command(scan(catalog)), launch_command(app_id));
+  }
+}
+
+TEST_F(SteamCompatibilityOverrides, AmbiguousCustomToolDeclinesDirectLaunch) {
+  write_tool(steam / "compatibilitytools.d/Duplicate", "FixtureProton", "windows");
+  mapping(R"VDF("588650" { "name" "FixtureProton" "config" "" })VDF");
+  for (const bool catalog : {false, true}) {
+    EXPECT_EQ(launch_command(scan(catalog)), launch_command(app_id));
+  }
+}
+
+TEST_F(SteamCompatibilityOverrides, DirectCustomDeclarationResolvesRelativeInstallPath) {
+  fs::remove(proton / "compatibilitytool.vdf");
+  write(steam / "compatibilitytools.d/Fixture.vdf", R"VDF(
+    "compatibilitytools" { "compat_tools" { "FixtureProton" {
+      "install_path" "Custom tool directory" "from_oslist" "windows" "to_oslist" "linux"
+    } } }
+  )VDF");
+  // Steam's structural keys are case-insensitive; preserve the internal name.
+  write(steam / "config/config.vdf", R"VDF(
+    "installconfigstore" { "software" { "valve" { "steam" { "compattoolmapping" {
+      "588650" { "Name" "FixtureProton" "Config" "" }
+    } } } } }
+  )VDF");
+  for (const bool catalog : {false, true}) {
+    const auto game = scan(catalog);
+    EXPECT_EQ(game.launch_os, "windows");
+    EXPECT_EQ(game.proton_path, proton);
+    EXPECT_NE(launch_command(game).find("Custom tool directory/proton"), std::string::npos);
+  }
+}
+
+TEST_F(SteamCompatibilityOverrides, ValidMetadataSurvivesLaterTruncatedCacheEntry) {
+  const auto path = steam / "appcache/appinfo.vdf";
+  auto contents = read(path);
+  std::uint64_t table = 0;
+  for (unsigned shift = 0; shift < 64; shift += 8) {
+    table |= static_cast<std::uint64_t>(static_cast<unsigned char>(contents[8 + shift / 8])) << shift;
+  }
+  ASSERT_GE(table, 4U);
+  ASSERT_LE(table, contents.size());
+  // Turn the last app sentinel into an incomplete entry header. The valid
+  // game before it must survive even though launch resolution is deferred.
+  contents[table - 4] = 1;
+  write(path, contents);
+  expect_native();
+}
+
 TEST(SteamDiscovery, ResolvesDirectLaunchMetadataOptionsAndExistingProton) {
   const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());
   const auto base = fs::temp_directory_path() / ("vibepollo-steam-direct-test-" + std::to_string(nonce));
