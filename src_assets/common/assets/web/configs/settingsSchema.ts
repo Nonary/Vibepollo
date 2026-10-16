@@ -280,6 +280,7 @@ const gamepadOptions = [
   option('vhf_ds5', 'config.gamepad_vhf_ds5'),
   option('usbip_ds5', 'config.gamepad_usbip_ds5'),
   option('vhf_switch', 'config.gamepad_vhf_switch'),
+  option('vhf_steam', 'config.gamepad_vhf_steam'),
 ];
 
 export function gamepadOptionsForPlatform(platform: string): SettingsOption[] {
@@ -296,6 +297,7 @@ export function gamepadOptionsForPlatform(platform: string): SettingsOption[] {
         'vhf_ds5',
         'usbip_ds5',
         'vhf_switch',
+        'vhf_steam',
       ])
     : normalized.includes('linux')
       ? new Set(['auto', 'xone', 'ds4', 'ds5', 'switch'])

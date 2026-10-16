@@ -753,6 +753,7 @@
     "gamepad_vhf_ds5": "Vibepollo Virtual Gamepad (DualSense)",
     "gamepad_usbip_ds5": "DualSense with waveform haptics",
     "gamepad_vhf_switch": "Vibepollo Virtual Gamepad (Switch Pro)",
+    "gamepad_vhf_steam": "Vibepollo Virtual Gamepad (Steam Controller)",
     "gamepad_xone": "XOne (Xbox One)",
     "vigem_missing_title": "Virtual Gamepad Driver (ViGEm) not installed",
     "vigem_missing_desc": "Vibepollo requires the ViGEmBus driver to emulate controllers on Windows. It is no longer bundled. Please download and install it manually:",
