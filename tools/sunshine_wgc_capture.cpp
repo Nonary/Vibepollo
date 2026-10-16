@@ -138,6 +138,7 @@ static std::mutex g_config_mutex;
 static std::condition_variable g_config_cv;
 static std::atomic<int32_t> g_activity_admission_fps {120};
 static std::atomic<uint32_t> g_activity_admission_generation {0};
+static std::atomic<bool> g_cursor_visible {true};
 
 /**
  * @brief Flag indicating whether configuration data has been received from main process.
@@ -1082,6 +1083,7 @@ private:
   std::shared_ptr<frame_callback_state_t> _frame_callback_state;
   Direct3D11CaptureFramePool _frame_pool = nullptr;  ///< WinRT frame pool for capture operations
   GraphicsCaptureSession _capture_session = nullptr;  ///< WinRT capture session for monitor/window capture
+  std::optional<bool> _last_cursor_capture_request;  ///< Avoid repeated WinRT calls/logs for unchanged requests.
   winrt::event_token _frame_arrived_token {};  ///< Event token for frame arrival notifications
   std::optional<WgcCaptureDependencies> _deps;  ///< Dependencies for frame processing
 
@@ -2026,6 +2028,9 @@ public:
       return false;
     }
 
+    _last_cursor_capture_request.reset();
+    update_cursor_capture();
+
     auto session3 = _capture_session.try_as<winrt::Windows::Graphics::Capture::IGraphicsCaptureSession3>();
     if (!session3) {
       BOOST_LOG(warning) << "IGraphicsCaptureSession3 not available; skipping IsBorderRequired(false)";
@@ -2049,6 +2054,32 @@ public:
     }
 
     return true;
+  }
+
+  /**
+   * @brief Apply cursor inclusion on the helper owner thread, before startup or during capture.
+   */
+  void update_cursor_capture() {
+    if (!_capture_session) {
+      return;
+    }
+    const bool visible = g_cursor_visible.load(std::memory_order_acquire);
+    if (_last_cursor_capture_request == visible) {
+      return;
+    }
+    _last_cursor_capture_request = visible;
+    try {
+      auto session2 = _capture_session.try_as<winrt::Windows::Graphics::Capture::IGraphicsCaptureSession2>();
+      if (!session2) {
+        BOOST_LOG(warning) << "IGraphicsCaptureSession2 not available; keeping WGC cursor inclusion at its system default";
+        return;
+      }
+      session2.IsCursorCaptureEnabled(visible);
+    } catch (const winrt::hresult_error &ex) {
+      BOOST_LOG(warning) << "IsCursorCaptureEnabled failed (continuing capture): " << ex.code() << " - " << winrt::to_string(ex.message());
+    } catch (...) {
+      BOOST_LOG(warning) << "IsCursorCaptureEnabled threw an unknown exception (continuing capture)";
+    }
   }
 
   /**
@@ -2184,6 +2215,19 @@ std::string get_temp_log_path() {
  *
  */
 void handle_ipc_message(std::span<const uint8_t> message) {
+  if (message.size() == sizeof(platf::dxgi::cursor_visibility_data_t)) {
+    platf::dxgi::cursor_visibility_data_t update {};
+    memcpy(&update, message.data(), sizeof(update));
+    if (update.magic == platf::dxgi::WGC_CURSOR_VISIBILITY_MESSAGE_MAGIC) {
+      if (update.visible > 1) {
+        BOOST_LOG(warning) << "Ignoring invalid WGC cursor visibility update";
+        return;
+      }
+      g_cursor_visible.store(update.visible != 0, std::memory_order_release);
+      return;
+    }
+  }
+
   if (message.size() == sizeof(platf::dxgi::activity_admission_data_t)) {
     platf::dxgi::activity_admission_data_t update {};
     memcpy(&update, message.data(), sizeof(update));
@@ -2207,6 +2251,7 @@ void handle_ipc_message(std::span<const uint8_t> message) {
 
     memcpy(&g_config, message.data(), sizeof(platf::dxgi::config_data_t));
     g_config_received = true;
+    g_cursor_visible.store((g_config.flags & platf::dxgi::WGC_IPC_FLAG_HIDE_CURSOR) == 0, std::memory_order_release);
     g_activity_admission_fps.store(g_config.activity_admission_fps, std::memory_order_release);
     g_activity_admission_generation.fetch_add(1, std::memory_order_acq_rel);
     // If log_level in config differs from current, update log filter
@@ -2525,6 +2570,7 @@ int main(int argc, char *argv[]) {
     }
 
     poll_pending_secure_desktop_transition();
+    wgc_capture_manager.update_cursor_capture();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1));  // Reduced from 5ms for lower IPC jitter
   }

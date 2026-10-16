@@ -246,6 +246,7 @@ namespace platf::dxgi {
 
     // Reset success flag before attempting
     _initialized = false;
+    _sent_cursor_visible.reset();
 
     if (_pipe) {
       _pipe->stop();
@@ -354,6 +355,9 @@ namespace platf::dxgi {
     config_data.min_update_interval_100ns = wgc_min_update_interval_100ns(_config);
     config_data.target_fps = wgc_target_fps(_config);
     config_data.flags = wgc_ipc_flags(_config);
+    if (!_cursor_visible) {
+      config_data.flags |= WGC_IPC_FLAG_HIDE_CURSOR;
+    }
     config_data.initial_frame_buffer_size = wgc_initial_frame_buffer_size();
     config_data.max_frame_buffer_size = wgc_max_frame_buffer_size(_config);
     config_data.activity_admission_fps = _activity_admission_fps.load(std::memory_order_relaxed);
@@ -508,9 +512,34 @@ namespace platf::dxgi {
 
     cleanup_on_failure.disable();
     _initialized = true;
+    _sent_cursor_visible = (config_data.flags & WGC_IPC_FLAG_HIDE_CURSOR) == 0;
     if (_activity_admission_fps.load(std::memory_order_relaxed) != config_data.activity_admission_fps) {
       (void) set_activity_admission_fps(_activity_admission_fps.load(std::memory_order_relaxed));
     }
+  }
+
+  bool ipc_session_t::set_cursor_visible(const bool visible) {
+    _cursor_visible = visible;
+    if (stop_requested()) {
+      return false;
+    }
+    if (!_initialized) {
+      return true;  // initialize_if_needed() includes the latest state in config.
+    }
+    if (_sent_cursor_visible == visible) {
+      return true;
+    }
+
+    const cursor_visibility_data_t update {
+      .magic = WGC_CURSOR_VISIBILITY_MESSAGE_MAGIC,
+      .visible = visible ? 1u : 0u,
+    };
+    if (!_pipe || !_pipe->send(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&update), sizeof(update)))) {
+      _force_reinit = true;
+      return false;
+    }
+    _sent_cursor_visible = visible;
+    return true;
   }
 
   bool ipc_session_t::set_activity_admission_fps(const int fps) {

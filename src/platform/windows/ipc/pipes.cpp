@@ -1348,16 +1348,21 @@ namespace platf::dxgi {
     }
   }
 
-  void AsyncNamedPipe::send(std::span<const uint8_t> message) {
+  bool AsyncNamedPipe::send(std::span<const uint8_t> message) {
     // Multiple producers (the pipe worker, helper state callbacks, and
     // dispatcher completions) can reply concurrently. Serialize complete
     // writes so their byte-mode frames cannot be interleaved on the wire.
     std::lock_guard<std::mutex> lock(_send_mutex);
-    safe_execute_operation("send", [this, message]() {
-      if (_pipe && _pipe->is_connected() && !_pipe->send(message, 5000)) {  // 5 second timeout for async sends
+    bool sent = false;
+    safe_execute_operation("send", [this, message, &sent]() {
+      if (_pipe && _pipe->is_connected()) {
+        sent = _pipe->send(message, 5000);
+      }
+      if (!sent) {
         BOOST_LOG(warning) << "Failed to send message through AsyncNamedPipe (timeout or error)";
       }
     });
+    return sent;
   }
 
   void AsyncNamedPipe::disconnect_pipe() {

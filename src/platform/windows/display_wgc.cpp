@@ -274,6 +274,9 @@ namespace platf::dxgi {
       return capture_e::reinit;
     }
 
+    if (!_ipc_session->set_cursor_visible(cursor_visible)) {
+      return _ipc_session->stop_requested() ? capture_e::interrupted : capture_e::reinit;
+    }
     _ipc_session->initialize_if_needed();
     if (_ipc_session->stop_requested()) {
       return capture_e::interrupted;
@@ -429,6 +432,9 @@ namespace platf::dxgi {
     if (!_ipc_session) {
       return capture_e::error;
     }
+    if (!_ipc_session->set_cursor_visible(cursor_visible)) {
+      return _ipc_session->stop_requested() ? capture_e::interrupted : capture_e::reinit;
+    }
 
     winrt::com_ptr<ID3D11Texture2D> gpu_tex;
     auto status = _ipc_session->acquire(effective_wgc_timeout(timeout, _config.framerate), gpu_tex, frame_qpc);
@@ -555,6 +561,9 @@ namespace platf::dxgi {
       return capture_e::reinit;
     }
 
+    if (!_ipc_session->set_cursor_visible(cursor_visible)) {
+      return _ipc_session->stop_requested() ? capture_e::interrupted : capture_e::reinit;
+    }
     _ipc_session->initialize_if_needed();
     if (_ipc_session->stop_requested()) {
       return capture_e::interrupted;

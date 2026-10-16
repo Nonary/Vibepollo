@@ -79,6 +79,7 @@ namespace platf::dxgi {
     WGC_IPC_FLAG_DRAIN_TO_LATEST = 1u << 0,
     WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE = 1u << 1,
     WGC_IPC_FLAG_FORCE_SDR_CAPTURE_FORMAT = 1u << 2,
+    WGC_IPC_FLAG_HIDE_CURSOR = 1u << 3,
   };
 
   struct config_data_t {
@@ -102,6 +103,15 @@ namespace platf::dxgi {
   struct activity_admission_data_t {
     uint32_t magic;
     int32_t admission_fps;
+  };
+
+  constexpr uint32_t WGC_CURSOR_VISIBILITY_MESSAGE_MAGIC = 0x57474343;  // "WGCC"
+
+  // Separate from activity updates despite the equal size. Keep config_data_t's
+  // wire layout unchanged; older helpers ignore this message and the hide flag.
+  struct cursor_visibility_data_t {
+    uint32_t magic;
+    uint32_t visible;
   };
 
   /**
@@ -218,10 +228,11 @@ namespace platf::dxgi {
     void stop();
 
     /**
-     * @brief Sends a message asynchronously through the pipe.
+     * @brief Sends a message through the pipe, serialized with other writers.
      * @param message The message to send.
+     * @return True only when the underlying write succeeds.
      */
-    void send(std::span<const uint8_t> message);
+    bool send(std::span<const uint8_t> message);
 
     /**
      * @brief Waits for a client to connect to the pipe.

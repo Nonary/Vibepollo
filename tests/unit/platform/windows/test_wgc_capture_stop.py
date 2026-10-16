@@ -50,7 +50,7 @@ for cls in ('display_wgc_ipc_vram_t','display_wgc_ipc_ram_t'):
     start=display.index('  capture_e '+cls+'::snapshot(')
     body=display.index('{',start)
     boundary='    timeout = effective_wgc_timeout' if 'vram' in cls else '    winrt::com_ptr<ID3D11Texture2D> gpu_tex'
-    snapshots.append('capture_e '+cls+'::before_frame() '+display[body:display.index(boundary,body)]+'    return capture_e::ok;\n  }')
+    snapshots.append('capture_e '+cls+'::before_frame(bool cursor_visible) '+display[body:display.index(boundary,body)]+'    return capture_e::ok;\n  }')
 stream=read('src/stream.cpp');start=stream.index('    class join_deadline_t {')
 watch=stream[start:stream.index('\n  }  // namespace',start)].replace('std::chrono::seconds(10)','std::chrono::milliseconds(100)')
 start=stream.index('        auto hung_stage = std::make_shared<std::atomic<const char *>>("video thread");',stream.index('    void join(session_t &session'))
@@ -104,6 +104,7 @@ struct IPC {
 // METHODS
  bool setup_shared_resources_from_shared_handles(const shared_handle_data_t&){++setups;return true;}
  bool should_swap_to_dxgi(){return false;}bool should_reinit(){return false;}bool is_initialized(){return _initialized;}
+ bool set_cursor_visible(bool){return !stop_requested();}
  void handle_desktop_switch_message(std::span<const uint8_t>){}
  void initialize_if_needed(){
 // PRE
@@ -116,8 +117,8 @@ struct IPC {
 };
 namespace platf {enum class capture_e{ok,error,reinit,interrupted};struct display_t{virtual ~display_t()=default;};namespace dxgi {
 struct display_base_t:display_t{virtual void request_capture_stop() noexcept {}};
-struct display_wgc_ipc_vram_t:display_base_t{std::shared_ptr<IPC> _ipc_session;void request_capture_stop() noexcept override;capture_e before_frame();};
-struct display_wgc_ipc_ram_t:display_base_t{std::shared_ptr<IPC> _ipc_session;void request_capture_stop() noexcept override;capture_e before_frame();};
+struct display_wgc_ipc_vram_t:display_base_t{std::shared_ptr<IPC> _ipc_session;void request_capture_stop() noexcept override;capture_e before_frame(bool cursor_visible=true);};
+struct display_wgc_ipc_ram_t:display_base_t{std::shared_ptr<IPC> _ipc_session;void request_capture_stop() noexcept override;capture_e before_frame(bool cursor_visible=true);};
 // FORWARD
 // SNAPSHOTS
 }}
