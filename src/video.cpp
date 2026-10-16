@@ -3044,9 +3044,30 @@ namespace video {
     int display_p = -1;
     std::shared_ptr<platf::display_t> disp;
     std::size_t display_retry_failures = 0;
+    config_t producer_config {};
+
+    auto capture_pacing_for_display = [&]() {
+      capture_pacing_context_t pacing;
+#ifdef _WIN32
+      pacing.adjust_to_display = true;
+      if (auto *windows_display = dynamic_cast<platf::dxgi::display_base_t *>(disp.get())) {
+        pacing.display_refresh = {
+          static_cast<int>(windows_display->display_refresh_rate.Numerator),
+          static_cast<int>(windows_display->display_refresh_rate.Denominator)
+        };
+        pacing.rounded_refresh = windows_display->display_refresh_rate_rounded;
+      }
+#endif
+      return pacing;
+    };
 
     while (capture_ctx_queue->running()) {
-      const auto &capture_config = capture_ctxs.front().config;
+      const auto demand = await_capture_config(capture_ctxs, *capture_ctx_queue, capture_pacing_for_display());
+      if (!demand) {
+        return;
+      }
+      producer_config = *demand;
+      const auto &capture_config = producer_config;
       if (capture_config.capture_source == capture_source_e::synthetic_black) {
         disp = make_black_display(capture_config);
         if (disp) break;
@@ -3087,7 +3108,7 @@ namespace video {
         BOOST_LOG(info) << "Capture worker selecting source=" << static_cast<int>(capture_config.capture_source)
                         << " output='" << display_names[display_p] << "'.";
       }
-      disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
+      disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_config);
       if (disp) {
         break;
       }
@@ -3301,7 +3322,15 @@ namespace video {
           while (auto pending_context = capture_ctx_queue->pop(0ms)) {
             capture_ctxs.emplace_back(std::move(*pending_context));
           }
-        } else if (capture_ctxs.empty()) {
+        }
+
+        const auto pacing = capture_pacing_for_display();
+        if (const auto demand = capture_config_for_consumers(capture_ctxs, pacing);
+            demand && !same_capture_pacing(producer_config, *demand, pacing)) {
+          // Reuse the existing serialized teardown: all encoders release the
+          // old display before its single replacement is created. This also
+          // refreshes WGC admission and the capture loop's pacing state.
+          artificial_reinit = true;
           return false;
         }
 
@@ -3407,12 +3436,14 @@ namespace video {
                 capture_ctxs.emplace_back(std::move(*pending_context));
               }
             }
-            if (capture_ctxs.empty()) {
-              return;
-            }
-
             std::size_t display_retry_failures = 0;
             while (capture_ctx_queue->running()) {
+              const auto demand = await_capture_config(capture_ctxs, *capture_ctx_queue, capture_pacing_for_display());
+              if (!demand) {
+                return;
+              }
+              producer_config = *demand;
+
               // Release the display before reenumerating displays, since some capture backends
               // only support a single display session per device/application.
               disp.reset();
@@ -3449,7 +3480,7 @@ namespace video {
               }
 
               // reset_display() will sleep between retries
-              reset_display(disp, encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
+              reset_display(disp, encoder.platform_formats->dev_type, display_names[display_p], producer_config);
               if (disp) {
                 if (!exact_output) {
                   proc::proc.display_name = display_names[display_p];

@@ -50,6 +50,114 @@ namespace {
   };
 }  // namespace
 
+namespace {
+  struct consumer_config_t {
+    int framerate;
+    int framerateX100;
+    int encodingFramerate;
+    int width;
+  };
+
+  struct consumer_t {
+    std::shared_ptr<safe::signal_t> images = std::make_shared<safe::signal_t>();
+    consumer_config_t config;
+  };
+}  // namespace
+
+TEST(CaptureDemand, FastestLiveRateDoesNotReplaceEncoderOrDisplaySettings) {
+  std::vector<consumer_t> consumers {
+    {.config = {30, 0, 30000, 1920}},
+    {.config = {60, 0, 60000, 3840}},
+    {.config = {120, 0, 120000, 1280}},
+  };
+  consumers.back().images->stop();
+  const auto selected = video::capture_config_for_consumers(consumers);
+  ASSERT_TRUE(selected);
+  EXPECT_EQ(selected->framerate, 60);
+  EXPECT_EQ(selected->width, 1920);
+  EXPECT_EQ(selected->encodingFramerate, 30000);
+  EXPECT_EQ(consumers.front().config.framerate, 30);
+  EXPECT_EQ(consumers[1].config.width, 3840);
+  EXPECT_EQ(consumers[1].config.encodingFramerate, 60000);
+
+  consumers.front().images->stop();
+  const auto successor = video::capture_config_for_consumers(consumers);
+  ASSERT_TRUE(successor);
+  EXPECT_EQ(successor->framerate, 60);
+  EXPECT_EQ(successor->width, 3840);
+  consumers[1].images->stop();
+  EXPECT_FALSE(video::capture_config_for_consumers(consumers));
+  EXPECT_FALSE(video::capture_config_for_consumers(std::vector<consumer_t> {}));
+}
+
+TEST(CaptureDemand, ComparesEffectiveFractionalRateAndAcceptsEquivalentAliases) {
+  std::vector<consumer_t> consumers {
+    {.config = {120, 5994, 120000, 1920}},
+    {.config = {90, 0, 90000, 1920}},
+  };
+  const auto selected = video::capture_config_for_consumers(consumers);
+  ASSERT_TRUE(selected);
+  EXPECT_EQ(selected->framerate, 90);
+  EXPECT_EQ(selected->framerateX100, 0);
+  EXPECT_TRUE(video::same_capture_pacing(consumer_config_t {24, 2397, 24000, 1920}, consumer_config_t {24, 2398, 24000, 1920}));
+  EXPECT_FALSE(video::same_capture_pacing(consumer_config_t {60, 5994, 60000, 1920}, consumer_config_t {60, 0, 60000, 1920}));
+  EXPECT_FALSE(video::same_capture_pacing(consumer_config_t {120, 11988, 120000, 1920}, consumer_config_t {120, 0, 120000, 1920}));
+}
+
+TEST(CaptureDemand, WindowsAutomaticAdjustmentCannotHideStrictDemand) {
+  const video::capture_pacing_context_t desktop {{120000, 1001}, 120, true};
+  const consumer_config_t automatic {60, 0, 60000, 1920};
+  const consumer_config_t strict {60, 6000, 60000, 1920};
+  EXPECT_FALSE(video::same_capture_pacing(automatic, strict, desktop));
+  std::vector<consumer_t> consumers {{.config = automatic}, {.config = strict}};
+  auto selected = video::capture_config_for_consumers(consumers, desktop);
+  ASSERT_TRUE(selected);
+  EXPECT_EQ(selected->framerateX100, 6000);
+  consumers[1].config.framerateX100 = 5995;
+  selected = video::capture_config_for_consumers(consumers, desktop);
+  ASSERT_TRUE(selected);
+  EXPECT_EQ(selected->framerateX100, 5995);
+  EXPECT_EQ(consumers.front().config.framerateX100, 0);
+  EXPECT_TRUE(video::same_capture_pacing(automatic, strict, {{120, 1}, 120, true}));
+}
+
+TEST(CaptureDemand, StoppedInitialConsumerAdmitsPendingLiveConsumer) {
+  std::vector<consumer_t> consumers {{.config = {30, 0, 30000, 1920}}};
+  consumers.front().images->stop();
+  safe::queue_t<consumer_t> queue {30};
+  consumer_t stopped {.config = {120, 0, 120000, 1280}};
+  stopped.images->stop();
+  ASSERT_TRUE(queue.try_raise(stopped));
+  ASSERT_TRUE(queue.try_raise(consumer_t {.config = {60, 6000, 60000, 3840}}));
+  const auto selected = video::await_capture_config(consumers, queue);
+  ASSERT_TRUE(selected);
+  EXPECT_EQ(selected->framerate, 60);
+  EXPECT_EQ(selected->width, 3840);
+  ASSERT_EQ(consumers.size(), 1);
+  EXPECT_TRUE(consumers.front().images->running());
+}
+
+TEST(CaptureDemand, EmptyRetryWaitsForLiveAdmissionAndShutdownWakesWaiter) {
+  using namespace std::chrono_literals;
+  std::vector<consumer_t> consumers;
+  safe::queue_t<consumer_t> queue {30};
+  auto waiting = std::async(std::launch::async, [&] {
+    return video::await_capture_config(consumers, queue);
+  });
+  EXPECT_EQ(waiting.wait_for(10ms), std::future_status::timeout);
+  EXPECT_TRUE(queue.try_raise(consumer_t {.config = {60, 6000, 60000, 3840}}));
+  const auto selected = waiting.get();
+  ASSERT_TRUE(selected);
+  EXPECT_EQ(selected->framerateX100, 6000);
+  consumers.front().images->stop();
+  auto cancelled = std::async(std::launch::async, [&] {
+    return video::await_capture_config(consumers, queue);
+  });
+  EXPECT_EQ(cancelled.wait_for(10ms), std::future_status::timeout);
+  queue.stop();
+  EXPECT_FALSE(cancelled.get());
+}
+
 TEST_F(CaptureSourceLease, MirrorJoinReusesProducerAndItsFallbackGeneration) {
   auto first = acquire(source_e::active_output);
   auto second = acquire(source_e::active_output);
