@@ -56,6 +56,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repository", type=Path)
     parser.add_argument("compiler", nargs="?", default="c++")
+    parser.add_argument("--compiler-arg", action="append", default=[],
+                        help="Additional compiler/linker argument; repeat as needed")
     parser.add_argument("--source-file", type=Path)
     parser.add_argument("--generate-only", type=Path,
                         help="Write the extracted code without compiling or running it")
@@ -80,7 +82,7 @@ def main():
         directory = Path(temporary)
         (directory / "production.inc").write_text(production)
         binary = directory / "streaming-scheduling"
-        subprocess.run([args.compiler, "-std=c++23", "-pthread", "-Wall", "-Wextra",
+        subprocess.run([args.compiler, *args.compiler_arg, "-std=c++23", "-pthread", "-Wall", "-Wextra",
                         "-Werror", "-I", str(directory), str(fixture), "-o", str(binary)],
                        check=True, timeout=30)
         failures = []
