@@ -658,6 +658,13 @@ namespace display_helper_integration::helpers {
       const std::string merged_device_id =
         !session_.virtual_display_device_id.empty() ? session_.virtual_display_device_id : topology_device_id;
       if (!merged_device_id.empty()) {
+        // The live topology merge below already retains awakened monitors and
+        // peer outputs. SettingsManager must also forget its older transaction
+        // or it can drop a returned physical output again during APPLY.
+        if (const auto active_physical = capture_physical_topology()) {
+          topology.refresh_settings_baseline = request_policy::physical_topology_extends_baseline(
+            *session_.virtual_display_topology_snapshot, *active_physical);
+        }
         // Keep live client outputs when adding the stream to its physical
         // baseline. A physical-only snapshot must never retire another owner.
         auto merged_topology = request_policy::merge_extended_topology(

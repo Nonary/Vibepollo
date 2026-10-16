@@ -57,6 +57,17 @@ namespace display_helper_integration::request_policy {
     return current;
   }
 
+  bool physical_topology_extends_baseline(
+    const std::vector<std::vector<std::string>> &baseline,
+    const std::vector<std::vector<std::string>> &active_physical_topology
+  ) {
+    return std::any_of(active_physical_topology.begin(), active_physical_topology.end(), [&](const auto &group) {
+      return std::any_of(group.begin(), group.end(), [&](const auto &id) {
+        return !id.empty() && !contains_device(baseline, id);
+      });
+    });
+  }
+
   Result evaluate(const Input &input) {
     Result result;
     // A failed virtual-display attempt falls back to a physical target. An

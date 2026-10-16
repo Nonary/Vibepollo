@@ -2084,6 +2084,9 @@ namespace {
         topo.push_back(std::move(group));
       }
       j["sunshine_topology"] = std::move(topo);
+      if (request.topology.refresh_settings_baseline) {
+        j["sunshine_refresh_settings_baseline"] = true;
+      }
     }
 
     if (!request.topology.monitor_positions.empty()) {

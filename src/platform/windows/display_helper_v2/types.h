@@ -138,6 +138,9 @@ namespace display_helper::v2 {
     /// Internal v1-style repair lane. The state machine sets this only on a
     /// copy after a completed full Apply; wire parsing never enables it.
     bool settings_only_repair = false;
+    /// The host preserved newly active physical outputs in its staging base.
+    /// Clear only SettingsManager's cached transaction, never restore snapshots.
+    bool refresh_settings_baseline = false;
     /// Preserve the original preflight-resolved verification scope without
     /// querying or planning topology again during a settings-only repair.
     std::optional<ResolvedConfigurationTarget> repair_target;

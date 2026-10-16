@@ -342,6 +342,18 @@ namespace display_helper::v2 {
       return outcome;
     }
 
+    if (request.refresh_settings_baseline && request.topology &&
+        request.configuration->m_device_prep != SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay) {
+      // A staged live topology cannot override SettingsManager's cached initial
+      // topology. Reset only that transaction; durable restore snapshots belong
+      // to the separate snapshot store and must retain the session baseline.
+      if (!display_.reset_staged_apply_state()) {
+        BOOST_LOG(error) << "Display helper v2: could not refresh the enlarged physical settings baseline.";
+        outcome.status = ApplyStatus::Fatal;
+        return outcome;
+      }
+    }
+
     // Arm the durable restore lease once, immediately before the first possible
     // mutation. The preflight above is deliberately read-only.
     if (mutation_boundary_) {
