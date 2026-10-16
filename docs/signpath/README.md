@@ -175,10 +175,10 @@ package refresh builds the separate x86 layer from pinned source.
 
 The VHF gamepad payload has a strict immutable-artifact boundary.
 The Windows release flow pins `Nonary/libvirtualgamepad` tag
-`v0.1.0-beta.7`, source/tag target
-`9edbce11ad71e9455867c356c8368a6b39fa2242`, and archive SHA-256
-`56e57fc70b9c3fdc5dfd0f44f01255275c114711b46521224204a385cde3a6e2`.
-It also requires DriverVer `10/04/2026,0.1.0.48` and protocol version 2.
+`v0.1.0-beta.8`, source/tag target
+`cc8ee144d47c2a9944f65017fa4ca0f4d6023942`, and archive SHA-256
+`f60953d69ec3e0ffdc193b9c19b5866ce3c020986947698466d83d9943d8a7d8`.
+It also requires DriverVer `10/16/2026,0.1.0.52` and protocol version 2.
 
 The producer sidecars remain outside its ZIP. They travel only in the internal
 CI artifact so the Windows build can revalidate the same public bytes without a

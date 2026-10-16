@@ -162,6 +162,8 @@ namespace {
     CHECK(result.size() == 89 && std::equal(result.begin() + 48, result.end(), lvg::ds5_usb::calibration.begin()));
     result = control(peer, 0xa1, 1, 0x0320, 3, 64);
     CHECK(result.size() == 112 && std::equal(result.begin() + 48, result.end(), lvg::ds5_usb::firmware.begin()));
+    CHECK(result.size() >= 94 &&
+          (unsigned(result[92]) | (unsigned(result[93]) << 8)) >= 0x0630);
     result = control(peer, 0xa1, 1, 0x0309, 3, 20);
     CHECK(result[48] == 9 && result[55] == 8 && result[56] == 0x25);
     result = control(peer, 0xa1, 1, 0x0385, 3, 3);
