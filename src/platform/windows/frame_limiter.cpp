@@ -8,7 +8,9 @@
   #include "frame_limiter.h"
 
   #include "src/config.h"
+  #include "src/display_device.h"
   #include "src/logging.h"
+  #include "src/platform/windows/display.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/misc.h"
 
@@ -138,13 +140,31 @@ namespace platf {
       }
     }
 
-    bool has_amd_gpu() {
-      for (const auto &gpu : enumerate_gpus()) {
-        if (gpu.vendor_id == 0x1002 || gpu.vendor_id == 0x1022) {
-          return true;
+    adapter_resolution_t resolve_stream_adapter(const framegen::stream_start_policy_t &policy) {
+      // A configured identity is authoritative, including resolution failure.
+      // Never let an unrelated adapter rescue a stale or ambiguous selection.
+      if (!config::video.adapter_name.empty() || !config::video.adapter_pnp_id.empty()) {
+        return resolve_adapter(config::video.adapter_name, config::video.adapter_pnp_id);
+      }
+
+      const auto output_name = display_device::map_output_name(config::get_active_output_name());
+      if (!output_name.empty()) {
+        const auto adapter = resolve_output_adapter(output_name);
+        if (adapter || !policy.uses_virtual_display) {
+          return adapter;
         }
       }
-      return false;
+
+      // Stream-start limiting can precede capture initialization and virtual
+      // output publication. Use the same render preference as the VDD, rather
+      // than a sticky adapter from the previous capture session.
+      if (policy.uses_virtual_display) {
+        return resolve_preferred_render_adapter({}, {});
+      }
+      if (const auto output = dxgi::resolve_automatic_capture_output(mem_type_e::dxgi)) {
+        return resolve_output_adapter(output->output_name);
+      }
+      return {};
     }
 
     std::string normalize_frame_generation_provider(const std::string &value) {
@@ -158,18 +178,18 @@ namespace platf {
       return normalized;
     }
 
-    std::string select_framegen_sync_limiter(const framegen::stream_start_policy_t &policy, bool nvidia_gpu_present, bool amd_gpu_present) {
+    std::string select_framegen_sync_limiter(const framegen::stream_start_policy_t &policy, bool stream_adapter_is_nvidia) {
       // Smooth Motion needs RTSS to pace the generated frames from their front edge. Do not
       // let the generic NVIDIA virtual-display policy select Reflex for this provider.
       if (policy.smooth_motion) {
         return "front edge sync";
       }
-      if (policy.auto_virtual_framegen_limiter && nvidia_gpu_present && !amd_gpu_present) {
+      if (policy.auto_virtual_framegen_limiter && stream_adapter_is_nvidia) {
         return "nvidia reflex";
       }
       const auto normalized_provider = normalize_frame_generation_provider(policy.frame_generation_provider);
       const bool game_provided_framegen = normalized_provider == "gameprovided";
-      if (game_provided_framegen && nvidia_gpu_present && !amd_gpu_present) {
+      if (game_provided_framegen && stream_adapter_is_nvidia) {
         return "nvidia reflex";
       }
       return "front edge sync";
@@ -223,7 +243,6 @@ namespace platf {
     const bool policy_overrides_enabled = capture_fix_enabled || auto_framegen_policy_enabled || physical_framegen_policy_enabled;
     const bool frame_limit_enabled = config::frame_limiter.enable || policy_overrides_enabled || (policy.lossless_rtss_limit && *policy.lossless_rtss_limit > 0);
     const bool nvidia_gpu_present = platf::has_nvidia_gpu();
-    const bool amd_gpu_present = has_amd_gpu();
     const bool nvcp_ready = frame_limiter_nvcp::is_available();
     const bool want_smooth_motion = policy.smooth_motion && nvidia_gpu_present;
 
@@ -243,6 +262,10 @@ namespace platf {
     const bool allow_framegen_default_provider = !provider_overridden && configured_provider == frame_limiter_provider::auto_detect;
     const bool default_policy_can_use_rtss =
       configured_provider == frame_limiter_provider::auto_detect || configured_provider == frame_limiter_provider::rtss;
+    const auto stream_adapter = policy_overrides_enabled && default_policy_can_use_rtss && !rtss_sync_overridden ?
+                                  resolve_stream_adapter(policy) :
+                                  adapter_resolution_t {};
+    const bool stream_adapter_is_nvidia = stream_adapter && stream_adapter.vendor_id == 0x10DE;
 
     // Frame generation policy: enable the limiter and tune RTSS sync unless explicitly overridden.
     if (policy_overrides_enabled) {
@@ -257,7 +280,7 @@ namespace platf {
         if (!rtss_sync_overridden) {
           g_prev_rtss_frame_limit_type = config::rtss.frame_limit_type;
           g_prev_rtss_frame_limit_type_set = true;
-          config::rtss.frame_limit_type = select_framegen_sync_limiter(policy, nvidia_gpu_present, amd_gpu_present);
+          config::rtss.frame_limit_type = select_framegen_sync_limiter(policy, stream_adapter_is_nvidia);
         } else {
           g_prev_rtss_frame_limit_type_set = false;
         }
@@ -318,7 +341,9 @@ namespace platf {
                      << " rtss_virtual_display_override=" << config::rtss.allow_virtual_display_override
                      << " rtss_virtual_display_reflex_required=" << virtual_display_reflex_required
                      << " nvidia_gpu=" << nvidia_gpu_present
-                     << " amd_gpu=" << amd_gpu_present
+                     << " stream_adapter='" << stream_adapter.description << "'"
+                     << " stream_adapter_resolution=" << adapter_resolution_status_name(stream_adapter.status)
+                     << " stream_adapter_vendor=" << stream_adapter.vendor_id
                      << " nvcp_ready=" << nvcp_ready
                      << " want_nv_vsync_override=" << want_nv_vsync_override
                      << " want_smooth_motion=" << want_smooth_motion;

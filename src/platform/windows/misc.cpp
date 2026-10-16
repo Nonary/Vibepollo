@@ -2570,6 +2570,7 @@ namespace platf {
         .luid = adapter.desc.AdapterLuid,
         .description = to_utf8(adapter.desc.Description),
         .pnp_id = adapter.pnp_id.value_or(std::string {}),
+        .vendor_id = adapter.desc.VendorId,
         .dedicated_video_memory = adapter.desc.DedicatedVideoMemory,
         .shared_system_memory = adapter.desc.SharedSystemMemory,
       };
@@ -2726,6 +2727,7 @@ namespace platf {
           .luid = adapter_desc.AdapterLuid,
           .description = to_utf8(adapter_desc.Description),
           .pnp_id = query_adapter_pnp_id(adapter_desc.AdapterLuid).value_or(std::string {}),
+          .vendor_id = adapter_desc.VendorId,
           .dedicated_video_memory = adapter_desc.DedicatedVideoMemory,
           .shared_system_memory = adapter_desc.SharedSystemMemory,
         };
