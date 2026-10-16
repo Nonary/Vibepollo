@@ -6,6 +6,7 @@
 
 // standard includes
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bitset>
 #include <chrono>
@@ -465,6 +466,26 @@ namespace platf {
     gamepad_id_t id;
     std::uint8_t state;
     std::uint8_t percentage;
+  };
+
+  /**
+   * @brief The real Steam Controller's firmware attributes, relayed by the client for a virtual one.
+   * @details `valid_mask` holds the client's `LI_SCATTR_*` bits: a field means something only when
+   *          its bit is set. The strings are printable ASCII and NUL terminated.
+   */
+  struct steam_controller_attributes_t {
+    gamepad_id_t id;
+    std::uint8_t transport;  ///< LI_SCATTR_TRANSPORT_* (informational)
+    std::uint8_t valid_mask;  ///< LI_SCATTR_* bits
+    std::uint32_t firmware_build_time;  ///< unix seconds
+    std::uint32_t bootloader_build_time;  ///< unix seconds
+    std::uint32_t board_revision;
+    std::uint32_t capabilities;
+    std::uint32_t radio_firmware_build_time;  ///< unix seconds, 0 when absent
+    std::uint32_t dongle_firmware_build_time;  ///< unix seconds, 0 when absent (puck only)
+    std::array<char, 16> build_id;
+    std::array<char, 16> unit_serial;
+    std::array<char, 16> board_serial;
   };
 
   struct touch_input_t {
@@ -1065,6 +1086,16 @@ namespace platf {
    * @param battery The battery event.
    */
   void gamepad_battery(input_t &input, const gamepad_battery_t &battery);
+
+  /**
+   * @brief Hands the real Steam Controller's firmware attributes to the virtual controller.
+   * @details Only a backend that presents a Steam Controller has a use for them (Steam then sees
+   *          the real firmware build instead of the virtual device's defaults); every other
+   *          backend ignores the call.
+   * @param input The global input context.
+   * @param attributes The attributes, decoded and sanitised by the input layer.
+   */
+  void gamepad_attributes(input_t &input, const steam_controller_attributes_t &attributes);
 
   /**
    * @brief Create a new virtual gamepad.

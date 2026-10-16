@@ -9,6 +9,7 @@
 // standard includes
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -441,6 +442,117 @@ namespace platf::vhf_gamepad {
         // LFO tone, log sweep, script: nothing a rumble motor can stand in for.
         return 0;
     }
+  }
+
+  bool accepts_steam_attributes(const lvg::profile profile, const std::uint16_t client_capabilities) noexcept {
+    return profile == lvg::profile::steam_controller && (client_capabilities & LI_CCAP_STEAM_ATTRIBUTES) != 0;
+  }
+
+  namespace {
+    void copy_printable(std::array<char, 16> &dst, const std::array<char, 16> &src) noexcept {
+      dst.fill('\0');
+      for (std::size_t i = 0; i < dst.size() - 1 && src[i] != '\0'; ++i) {
+        const auto c = static_cast<unsigned char>(src[i]);
+        dst[i] = (c >= 0x20 && c <= 0x7E) ? static_cast<char>(c) : '?';
+      }
+    }
+
+    std::string attribute_string(const std::array<char, 16> &value) {
+      const auto end = std::find(value.begin(), value.end(), '\0');
+      return std::string {value.begin(), end};
+    }
+  }  // namespace
+
+  steam_attributes_request_t make_steam_attributes_request(const steam_attributes_t &attributes) noexcept {
+    steam_attributes_request_t request {};
+    request.flags = attributes.valid_mask & steam_attributes_driver_mask;
+    if (request.flags & LI_SCATTR_FIRMWARE_BUILD_TIME) {
+      request.firmware_build_time = attributes.firmware_build_time;
+    }
+    if (request.flags & LI_SCATTR_BOOTLOADER_BUILD_TIME) {
+      request.bootloader_build_time = attributes.bootloader_build_time;
+    }
+    if (request.flags & LI_SCATTR_BOARD_REVISION) {
+      request.board_revision = attributes.board_revision;
+    }
+    if (request.flags & LI_SCATTR_CAPABILITIES) {
+      request.capabilities = attributes.capabilities;
+    }
+    if (request.flags & LI_SCATTR_BUILD_ID) {
+      copy_printable(request.build_id, attributes.build_id);
+    }
+    if (request.flags & LI_SCATTR_SERIALS) {
+      copy_printable(request.unit_serial, attributes.unit_serial);
+      copy_printable(request.board_serial, attributes.board_serial);
+    }
+    return request;
+  }
+
+  std::string format_unix_time_utc(const std::uint32_t seconds) {
+    // Howard Hinnant's civil_from_days: no locale, no time zone, no <ctime> re-entrancy question.
+    const std::uint32_t days = seconds / 86400;
+    const std::uint32_t second_of_day = seconds % 86400;
+    const std::uint32_t z = days + 719468;
+    const std::uint32_t era = z / 146097;
+    const std::uint32_t doe = z - era * 146097;
+    const std::uint32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const std::uint32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const std::uint32_t mp = (5 * doy + 2) / 153;
+    const std::uint32_t day = doy - (153 * mp + 2) / 5 + 1;
+    const std::uint32_t month = mp < 10 ? mp + 3 : mp - 9;
+    const std::uint32_t year = yoe + era * 400 + (month <= 2 ? 1 : 0);
+    char text[32];
+    std::snprintf(text, sizeof(text), "%04u-%02u-%02u %02u:%02u:%02u UTC", year, month, day,
+                  second_of_day / 3600, (second_of_day / 60) % 60, second_of_day % 60);
+    return text;
+  }
+
+  std::string describe_steam_attributes(const steam_attributes_t &attributes) {
+    const auto build_time = [&](const std::uint32_t flag, const std::uint32_t value) {
+      if (!(attributes.valid_mask & flag)) {
+        return std::string {"unknown"};
+      }
+      char hex[16];
+      std::snprintf(hex, sizeof(hex), " (0x%08x)", value);
+      return format_unix_time_utc(value) + hex;
+    };
+    const auto text = [&](const std::uint32_t flag, const std::array<char, 16> &value) {
+      if (!(attributes.valid_mask & flag) || value[0] == '\0') {
+        return std::string {"unknown"};
+      }
+      std::array<char, 16> printable {};
+      copy_printable(printable, value);
+      return attribute_string(printable);
+    };
+    std::string transport;
+    switch (attributes.transport) {
+      case LI_SCATTR_TRANSPORT_USB:
+        transport = "usb";
+        break;
+      case LI_SCATTR_TRANSPORT_BLE:
+        transport = "ble";
+        break;
+      case LI_SCATTR_TRANSPORT_PUCK:
+        transport = "puck";
+        break;
+      default:
+        transport = "transport " + std::to_string(attributes.transport);
+        break;
+    }
+
+    std::string description = "real controller firmware build " + build_time(LI_SCATTR_FIRMWARE_BUILD_TIME, attributes.firmware_build_time) +
+                              ", bootloader " + build_time(LI_SCATTR_BOOTLOADER_BUILD_TIME, attributes.bootloader_build_time) +
+                              ", board rev " + ((attributes.valid_mask & LI_SCATTR_BOARD_REVISION) ? std::to_string(attributes.board_revision) : std::string {"unknown"}) +
+                              ", build id " + text(LI_SCATTR_BUILD_ID, attributes.build_id) +
+                              ", serial " + text(LI_SCATTR_SERIALS, attributes.unit_serial) +
+                              ", via " + transport;
+    if (attributes.valid_mask & LI_SCATTR_RADIO_FW_BUILD_TIME) {
+      description += ", radio firmware build " + build_time(LI_SCATTR_RADIO_FW_BUILD_TIME, attributes.radio_firmware_build_time);
+    }
+    if (attributes.valid_mask & LI_SCATTR_DONGLE_FW_BUILD_TIME) {
+      description += ", dongle firmware build " + build_time(LI_SCATTR_DONGLE_FW_BUILD_TIME, attributes.dongle_firmware_build_time);
+    }
+    return description;
   }
 
   bool feedback_counters_notable(const lvg::feedback_counters &counters) noexcept {
