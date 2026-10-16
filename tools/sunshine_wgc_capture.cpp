@@ -1121,7 +1121,7 @@ private:
   uint64_t _last_diagnostics_slow_copy = 0;
   uint64_t _last_diagnostics_activity_rate_limited = 0;
   uint32_t _activity_admission_generation = 0;
-  std::chrono::steady_clock::time_point _last_activity_admitted {};
+  platf::dxgi::wgc_policy::source_admission_t _activity_admission;
   std::mutex _delivery_mutex;
   std::condition_variable _delivery_cv;
   std::jthread _delivery_thread;
@@ -1397,12 +1397,13 @@ public:
           QueryPerformanceFrequency(&frequency);
           return static_cast<int64_t>(frequency.QuadPart);
         }();
+        const auto source_time_100ns = frame.SystemRelativeTime().count();
         uint64_t frame_qpc = platf::dxgi::wgc_policy::system_relative_time_to_qpc(
-          frame.SystemRelativeTime().count(),
+          source_time_100ns,
           qpc_frequency
         );
         record_frame_arrival(drained_frames);
-        if (admit_activity_frame()) {
+        if (admit_activity_frame(source_time_100ns)) {
           queue_frame_for_delivery(std::move(frame), surface, frame_qpc);
         }
       } catch (const winrt::hresult_error &ex) {
@@ -1538,27 +1539,23 @@ private:
     }
   }
 
-  bool admit_activity_frame() {
+  bool admit_activity_frame(int64_t source_time_100ns) {
     const auto generation = g_activity_admission_generation.load(std::memory_order_acquire);
     if (generation != _activity_admission_generation) {
       _activity_admission_generation = generation;
-      _last_activity_admitted = {};
+      _activity_admission = {};
     }
 
     const auto admission_fps = g_activity_admission_fps.load(std::memory_order_relaxed);
-    if (admission_fps <= 0) {
-      return true;
-    }
-
-    const auto now = std::chrono::steady_clock::now();
-    const auto minimum_interval = std::chrono::nanoseconds(std::chrono::seconds(1)) / admission_fps;
-    if (_last_activity_admitted.time_since_epoch().count() != 0 &&
-        now - _last_activity_admitted < minimum_interval) {
+    if (!_activity_admission.admit(
+          admission_fps,
+          source_time_100ns,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        )) {
       _activity_rate_limited_frames.fetch_add(1, std::memory_order_relaxed);
       return false;
     }
 
-    _last_activity_admitted = now;
     return true;
   }
 

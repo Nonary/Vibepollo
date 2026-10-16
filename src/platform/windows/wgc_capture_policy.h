@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 
 namespace platf::dxgi::wgc_policy {
@@ -109,6 +110,58 @@ namespace platf::dxgi::wgc_policy {
       (hundred_ns % units_per_second) * frequency / units_per_second
     );
   }
+
+  // This is a minimum-gap source ceiling, with no callback credits or catch-up
+  // budget. FrameArrived scheduling jitter must not lower the compositor rate.
+  class source_admission_t {
+  public:
+    bool admit(const int fps, const std::int64_t source_100ns, const std::chrono::nanoseconds callback_time) noexcept {
+      if (fps <= 0) {
+        *this = {};
+        return true;
+      }
+
+      const bool advancing = source_100ns > 0 && source_100ns > _last_observed_source;
+      if (source_100ns > 0) {
+        _last_observed_source = source_100ns;
+      }
+      if (!advancing) {
+        // Missing/repeated/backwards timestamps cannot supply source cadence.
+        // Keep changing content live with bounded arrival fallback until a fresh
+        // source anchor is admitted.
+        _source_anchored = false;
+      }
+
+      const auto source_gap = 10'000'000LL / fps;
+      const auto callback_gap = 1'000'000'000LL / fps;
+      if (_has_admitted) {
+        if (advancing && _source_anchored) {
+          // Floor in the timestamp's native 100 ns units, so a quantized exact
+          // 60 FPS source (166666/166667 ticks) still meets a 60 FPS ceiling.
+          if (source_100ns - _last_admitted_source < (source_gap > 0 ? source_gap : 1)) {
+            return false;
+          }
+        } else if ((callback_time - _last_admitted_callback).count() < (callback_gap > 0 ? callback_gap : 1)) {
+          return false;
+        }
+      }
+
+      _has_admitted = true;
+      _last_admitted_callback = callback_time;
+      _source_anchored = advancing;
+      if (advancing) {
+        _last_admitted_source = source_100ns;
+      }
+      return true;
+    }
+
+  private:
+    bool _has_admitted = false;
+    bool _source_anchored = false;
+    std::int64_t _last_observed_source = 0;
+    std::int64_t _last_admitted_source = 0;
+    std::chrono::nanoseconds _last_admitted_callback {};
+  };
 
   constexpr std::uint32_t maximum_buffer_size(const bool vrr_low_latency) noexcept {
     return vrr_low_latency ? low_latency_initial_buffer_size : adaptive_max_buffer_size;
