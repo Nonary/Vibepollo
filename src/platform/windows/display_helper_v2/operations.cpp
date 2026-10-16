@@ -951,6 +951,73 @@ namespace display_helper::v2 {
                     << ", previous=" << (removed_previous ? "true" : "false");
   }
 
+  std::optional<Snapshot> RecoveryOperation::live_desktop_to_preserve(const Snapshot &baseline) {
+    if (!state_.preserve_active_physical_primary.load(std::memory_order_acquire) ||
+        state_.always_restore_from_golden.load(std::memory_order_acquire)) {
+      return std::nullopt;
+    }
+
+    auto live = display_.capture_snapshot();
+    const auto primary = codec::normalize_device_id(live.m_primary_device);
+    if (primary.empty() || !display_.topology_is_valid(live.m_topology)) {
+      return std::nullopt;
+    }
+    const auto live_ids = codec::topology_device_set(live.m_topology);
+    if (std::none_of(live_ids.begin(), live_ids.end(), [&](const auto &id) {
+          return codec::normalize_device_id(id) == primary;
+        })) {
+      return std::nullopt;
+    }
+    const auto baseline_ids = codec::topology_device_set(baseline.m_topology);
+    if (std::any_of(baseline_ids.begin(), baseline_ids.end(), [&](const auto &id) {
+          return codec::normalize_device_id(id) == primary;
+        })) {
+      return std::nullopt;
+    }
+    // The stale narrowed baseline must still be active within the live
+    // desktop. A physical dummy plug or TV can be the primary of an
+    // interrupted stream while the saved desktop monitors remain disabled.
+    for (const auto &baseline_id : baseline_ids) {
+      const auto normalized = codec::normalize_device_id(baseline_id);
+      if (std::none_of(live_ids.begin(), live_ids.end(), [&](const auto &id) {
+            return codec::normalize_device_id(id) == normalized;
+          })) {
+        return std::nullopt;
+      }
+    }
+    const auto exclusions = state_.exclusions();
+    if (std::any_of(exclusions.begin(), exclusions.end(), [&](const auto &id) {
+          return codec::normalize_device_id(id) == primary;
+        })) {
+      return std::nullopt;
+    }
+
+    const auto devices = display_.enumerate(display_device::DeviceEnumerationDetail::Minimal);
+    bool physical_primary_active = false;
+    for (const auto &device : devices) {
+      if (!codec::is_active_display_device(device)) {
+        continue;
+      }
+      // A virtual output still active at logon means the interrupted stream
+      // desktop needs recovery. Keep the exact saved baseline in that case.
+      if (codec::is_virtual_display_device(device)) {
+        return std::nullopt;
+      }
+      if (!device.m_display_name.empty() &&
+          codec::normalize_device_id(device.m_device_id) == primary &&
+          live.m_modes.contains(live.m_primary_device)) {
+        physical_primary_active = true;
+      }
+    }
+    if (!physical_primary_active) {
+      return std::nullopt;
+    }
+
+    BOOST_LOG(warning) << "Boot restore: session snapshot omits the active physical primary "
+                       << live.m_primary_device << "; preserving the current physical desktop.";
+    return live;
+  }
+
   RecoveryOutcome RecoveryOperation::run(const CancellationToken &token) {
     RecoveryOutcome outcome;
     if (token.is_cancelled()) {
@@ -969,6 +1036,7 @@ namespace display_helper::v2 {
     }
 
     std::optional<Snapshot> restored;
+    bool preserved_live_desktop = false;
 
     auto try_golden = [&]() -> bool {
       if (token.is_cancelled()) {
@@ -1023,10 +1091,20 @@ namespace display_helper::v2 {
         BOOST_LOG(info) << label << " snapshot rejected due to invalid topology.";
         return false;
       }
-      if (apply_and_confirm(*loaded, label, token)) {
+      bool preserve_live = false;
+      if (auto live = live_desktop_to_preserve(loaded->snapshot)) {
+        loaded->snapshot = std::move(*live);
+        loaded->has_layout_data = false;
+        loaded->layout_rotations.clear();
+        preserve_live = true;
+      }
+      // Confirm the live desktop through the normal stable-read/quiet-period
+      // gate. If it drifts, retry without applying a captured live topology.
+      if (preserve_live ? confirm_matches(*loaded, label, token) : apply_and_confirm(*loaded, label, token)) {
         if (token.is_cancelled()) {
           return false;
         }
+        preserved_live_desktop = preserve_live;
         outcome.staged_state_reset_attempted = true;
         outcome.staged_state_reset_succeeded = display_.reset_staged_apply_state();
         if (!outcome.staged_state_reset_succeeded) {
@@ -1045,7 +1123,7 @@ namespace display_helper::v2 {
       if (try_session(SnapshotTier::Current, "current", attempted_current)) {
         // Confirmed on screen; skip only the tier housekeeping when a
         // supersession arrived after try_session's own cancellation check.
-        if (!token.is_cancelled()) {
+        if (!preserved_live_desktop && !token.is_cancelled()) {
           (void) storage_.promote_current_to_previous();
         }
         return true;
@@ -1065,7 +1143,7 @@ namespace display_helper::v2 {
 
       bool attempted_previous = false;
       if (try_session(SnapshotTier::Previous, "previous", attempted_previous)) {
-        if (attempted_current && !token.is_cancelled()) {
+        if (!preserved_live_desktop && attempted_current && !token.is_cancelled()) {
           BOOST_LOG(warning) << "Restore: previous snapshot recovered the desktop; retaining the unconfirmed current baseline for a later restore.";
         }
         return true;

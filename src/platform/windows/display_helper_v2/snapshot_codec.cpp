@@ -619,11 +619,12 @@ namespace display_helper::v2::codec {
       return std::nullopt;
     }
 
-    // Filter out devices without display_name. These are not safe restore
-    // targets and are intentionally excluded from persisted snapshots.
+    // Enumerate restore-capable physical paths. Every non-excluded physical
+    // path in the captured topology must remain present in this set.
     std::set<std::string> valid_device_ids;
     std::vector<std::string> enumerated_devices;
     std::vector<std::string> virtual_devices;
+    std::set<std::string> virtual_device_ids;
     for (const auto &d : devices) {
       const auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
       if (!id.empty()) {
@@ -634,6 +635,9 @@ namespace display_helper::v2::codec {
         enumerated_devices.push_back(std::move(detail));
       }
       if (is_virtual_display_device(d)) {
+        if (!id.empty()) {
+          virtual_device_ids.insert(id);
+        }
         if (is_active_display_device(d) && !id.empty()) {
           virtual_devices.push_back(id);
         }
@@ -670,6 +674,24 @@ namespace display_helper::v2::codec {
       if (valid_device_ids.empty()) {
         reject_reason = "all devices are excluded";
         return std::nullopt;
+      }
+    }
+
+    // Topology and device enumeration are separate Windows queries. A physical
+    // path can disappear, or lose its display name, between them. Persisting
+    // only the remaining paths would turn that transient into a baseline that
+    // deliberately disables the missing monitor on the next restore. Reject
+    // the capture so the ledger retries and preserves its existing history.
+    // Explicit exclusions and identified virtual displays remain intentional
+    // omissions; a device already absent from the topology stays disabled.
+    for (const auto &group : snap.m_topology) {
+      for (const auto &device_id : group) {
+        if (!valid_device_ids.count(device_id) &&
+            !is_excluded(device_id) &&
+            !virtual_device_ids.count(device_id)) {
+          reject_reason = "physical topology device lost during capture: " + device_id;
+          return std::nullopt;
+        }
       }
     }
 

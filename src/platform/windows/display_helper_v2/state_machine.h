@@ -297,7 +297,7 @@ namespace display_helper::v2 {
 
     /**
      * @brief Legacy capture pipeline: capture, gate on topology validity, filter
-     *        (active virtual displays, exclusions, display_name-less devices),
+     *        virtual displays and exclusions, reject incomplete physical paths,
      *        attach layout rotations, then save with retries.
      */
     bool capture_filtered_and_save(SnapshotTier tier, const std::vector<std::string> &exclusions, const char *reason);

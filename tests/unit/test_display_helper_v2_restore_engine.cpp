@@ -303,20 +303,17 @@ TEST(DisplayHelperV2Codec, FilterSaveRejectsVirtualOnlySnapshot) {
   EXPECT_EQ(reason, "no devices with valid display_name");
 }
 
-TEST(DisplayHelperV2Codec, FilterSaveDropsDevicesWithoutDisplayName) {
+TEST(DisplayHelperV2Codec, FilterSaveRejectsPhysicalPathLosingDisplayName) {
   auto snap = make_snapshot({{"A", "B"}});
   display_device::EnumeratedDeviceList devices {
     make_device("A", "\\\\.\\DISPLAY1", true),
-    make_device("B", "", false),  // no display_name: unsafe restore target
+    make_device("B", "", false),  // changed since the active topology query
   };
 
   std::string reason;
   auto result = codec::filter_snapshot_for_save(snap, devices, {}, reason);
-  ASSERT_TRUE(result.has_value());
-  ASSERT_EQ(result->m_topology.size(), 1u);
-  EXPECT_EQ(result->m_topology.front().size(), 1u);
-  EXPECT_EQ(result->m_topology.front().front(), "A");
-  EXPECT_EQ(result->m_modes.count("B"), 0u);
+  EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(reason, "physical topology device lost during capture: B");
 }
 
 TEST(DisplayHelperV2Codec, FilterSaveRejectsAllExcluded) {
@@ -329,6 +326,43 @@ TEST(DisplayHelperV2Codec, FilterSaveRejectsAllExcluded) {
   auto result = codec::filter_snapshot_for_save(snap, devices, {"a"}, reason);
   EXPECT_FALSE(result.has_value());
   EXPECT_EQ(reason, "all devices are excluded");
+}
+
+TEST(DisplayHelperV2Codec, PrimaryDisappearingBetweenQueriesMustNotNarrowBaseline) {
+  auto snap = make_snapshot({{"ASUS"}, {"DENON"}, {"AOC"}});
+  display_device::EnumeratedDeviceList devices {
+    make_device("DENON", "\\\\.\\DISPLAY2", true),
+    make_device("AOC", "\\\\.\\DISPLAY3", true),
+  };
+  std::string reason;
+  auto result = codec::filter_snapshot_for_save(snap, devices, {}, reason);
+  EXPECT_FALSE(result.has_value()) << "Partial capture would disable the primary at restore";
+}
+
+TEST(DisplayHelperV2Codec, IntentionalExclusionStillAllowsNarrowPhysicalBaseline) {
+  auto snap = make_snapshot({{"ASUS"}, {"DENON"}, {"AOC"}});
+  display_device::EnumeratedDeviceList devices {
+    make_device("ASUS", "", false),
+    make_device("DENON", "\\\\.\\DISPLAY2", true),
+    make_device("AOC", "\\\\.\\DISPLAY3", true),
+  };
+  std::string reason;
+  auto result = codec::filter_snapshot_for_save(snap, devices, {"asus"}, reason);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->m_topology, (display_device::ActiveTopology {{"DENON"}, {"AOC"}}));
+}
+
+TEST(DisplayHelperV2Codec, AlreadyInactivePhysicalDeviceDoesNotGetEnabledByCapture) {
+  auto snap = make_snapshot({{"DENON"}, {"AOC"}});
+  display_device::EnumeratedDeviceList devices {
+    make_device("ASUS", "", false),
+    make_device("DENON", "\\\\.\\DISPLAY2", true),
+    make_device("AOC", "\\\\.\\DISPLAY3", true),
+  };
+  std::string reason;
+  auto result = codec::filter_snapshot_for_save(snap, devices, {}, reason);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->m_topology, snap.m_topology);
 }
 
 // --- golden health (8f062f99: stale warnings only after failures persist) ---
@@ -435,6 +469,9 @@ namespace {
     }
 
     display_device::DisplaySettingsSnapshot capture_snapshot() override {
+      if (on_capture_snapshot) {
+        on_capture_snapshot();
+      }
       return current;
     }
 
@@ -517,6 +554,7 @@ namespace {
     bool apply_layout_rotations_result = true;
     bool layout_matches_result = true;
     bool reassert_result = true;
+    std::function<void()> on_capture_snapshot;
     std::function<void()> on_topology_applied;
     std::function<void()> on_enumerate;
     std::function<void()> on_current_layout_matches;
@@ -569,6 +607,152 @@ namespace {
     }
   };
 }  // namespace
+
+// Reboot logs for #285 show an already healthy ASUS/DENON/AOC desktop
+// narrowed by a stale session snapshot that only includes DENON/AOC.
+TEST(DisplayHelperV2RecoveryEngine, BootPreservesPhysicalPrimaryOmittedFromSessionBaseline) {
+  for (const auto tier : {display_helper::v2::SnapshotTier::Current, display_helper::v2::SnapshotTier::Previous}) {
+    RecoveryHarness harness;
+    harness.state.preserve_active_physical_primary.store(true);
+    harness.add_device("ASUS");
+    harness.add_device("DENON");
+    harness.add_device("AOC");
+    const auto live = make_snapshot({{"ASUS"}, {"DENON"}, {"AOC"}});
+    const auto narrowed = make_snapshot({{"DENON"}, {"AOC"}});
+    harness.display.current = live;
+    ASSERT_TRUE(harness.storage.save(tier, narrowed));
+    const auto other_tier = tier == display_helper::v2::SnapshotTier::Current ?
+                              display_helper::v2::SnapshotTier::Previous :
+                              display_helper::v2::SnapshotTier::Current;
+    const auto other_baseline = make_snapshot({{"MISSING"}});
+    ASSERT_TRUE(harness.storage.save(other_tier, other_baseline));
+
+    const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+    ASSERT_TRUE(outcome.success);
+    ASSERT_TRUE(outcome.snapshot);
+    EXPECT_EQ(outcome.snapshot->m_primary_device, "ASUS");
+    EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(harness.display.current, live));
+    EXPECT_EQ(harness.display.topology_calls, 0);
+    EXPECT_EQ(harness.display.apply_calls, 0);
+    EXPECT_EQ(harness.display.reset_staged_apply_state_calls, 1);
+    // The accepted live desktop must never promote/delete the stale tier or
+    // overwrite a history entry with that stale baseline.
+    ASSERT_TRUE(harness.storage.load(tier));
+    EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(*harness.storage.load(tier), narrowed));
+    ASSERT_TRUE(harness.storage.load(other_tier));
+    EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(*harness.storage.load(other_tier), other_baseline));
+  }
+}
+
+// A physical HDMI dummy plug or TV is not a virtual-driver device. A
+// persisted stream desktop can therefore have an apparently healthy physical
+// primary while still omitting the real desktop's baseline monitors.
+TEST(DisplayHelperV2RecoveryEngine, BootRestoresInterruptedPhysicalTargetStream) {
+  for (const auto tier : {display_helper::v2::SnapshotTier::Current, display_helper::v2::SnapshotTier::Previous}) {
+    for (const bool one_baseline_member_active : {false, true}) {
+      SCOPED_TRACE(static_cast<int>(tier));
+      SCOPED_TRACE(one_baseline_member_active);
+      RecoveryHarness harness;
+      harness.state.preserve_active_physical_primary.store(true);
+      harness.display.devices = {
+        make_device("ASUS", "", false),
+        make_device("DENON", one_baseline_member_active ? "\\\\.\\DISPLAY_DENON" : "", one_baseline_member_active),
+        make_device("AOC", "", false),
+        make_device("DUMMY", "\\\\.\\DISPLAY_DUMMY", true, "GSM", "HDMI dummy plug"),
+      };
+      const auto baseline = make_snapshot({{"ASUS"}, {"DENON"}, {"AOC"}});
+      harness.display.on_topology_applied = [&]() {
+        // Model CCD publishing the paths activated by SetDisplayConfig.
+        const auto active = codec::topology_device_set(harness.display.current.m_topology);
+        for (auto &device : harness.display.devices) {
+          if (active.contains(device.m_device_id)) {
+            device.m_info = display_device::EnumeratedDevice::Info {};
+            device.m_display_name = "\\\\.\\DISPLAY_" + device.m_device_id;
+          } else {
+            device.m_info.reset();
+            device.m_display_name.clear();
+          }
+        }
+      };
+      harness.display.current = one_baseline_member_active ?
+                                  make_snapshot({{"DUMMY"}, {"DENON"}}) :
+                                  make_snapshot({{"DUMMY"}});
+      ASSERT_TRUE(harness.storage.save(tier, baseline));
+
+      const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+      ASSERT_TRUE(outcome.success);
+      ASSERT_TRUE(outcome.snapshot);
+      EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(*outcome.snapshot, baseline));
+      EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(harness.display.current, baseline));
+      EXPECT_GT(harness.display.topology_calls, 0);
+      EXPECT_GT(harness.display.apply_calls, 0);
+      EXPECT_EQ(harness.display.reset_staged_apply_state_calls, 1);
+    }
+  }
+}
+
+TEST(DisplayHelperV2RecoveryEngine, BootPrimaryGuardRetriesWithoutMutationWhenLiveDesktopDrifts) {
+  RecoveryHarness harness;
+  harness.state.preserve_active_physical_primary.store(true);
+  harness.add_device("ASUS");
+  harness.add_device("DENON");
+  harness.display.current = make_snapshot({{"ASUS"}, {"DENON"}});
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, make_snapshot({{"DENON"}})));
+  int captures = 0;
+  harness.display.on_capture_snapshot = [&]() {
+    if (++captures > 1) {
+      harness.display.current.m_modes["ASUS"].m_resolution.m_width = 2560;
+    }
+  };
+
+  const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+  EXPECT_FALSE(outcome.success);
+  EXPECT_EQ(harness.display.topology_calls, 0);
+  EXPECT_EQ(harness.display.apply_calls, 0);
+  EXPECT_EQ(harness.display.reset_staged_apply_state_calls, 0);
+  EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Current));
+}
+
+TEST(DisplayHelperV2RecoveryEngine, BootPrimaryGuardKeepsExactStreamAndGoldenRestorePolicies) {
+  enum class Case { Stream, VirtualPrimary, ActiveVirtual, ExcludedPrimary, GoldenFirst, PrimaryInBaseline };
+  for (const auto test_case : {Case::Stream, Case::VirtualPrimary, Case::ActiveVirtual,
+                              Case::ExcludedPrimary, Case::GoldenFirst, Case::PrimaryInBaseline}) {
+    SCOPED_TRACE(static_cast<int>(test_case));
+    RecoveryHarness harness;
+    harness.state.preserve_active_physical_primary.store(test_case != Case::Stream);
+    harness.add_device("ASUS");
+    harness.add_device("DENON");
+    harness.add_device("AOC");
+    harness.display.current = make_snapshot({{"ASUS"}, {"DENON"}, {"AOC"}});
+    auto baseline = make_snapshot({{"DENON"}, {"AOC"}});
+    if (test_case == Case::VirtualPrimary || test_case == Case::ActiveVirtual) {
+      harness.display.devices.push_back(make_device("VDD", "\\\\.\\DISPLAY_VDD", true, "SDD"));
+      harness.display.current.m_topology.push_back({"VDD"});
+      harness.display.current.m_modes["VDD"] = display_device::DisplayMode {};
+      if (test_case == Case::VirtualPrimary) {
+        harness.display.current.m_primary_device = "VDD";
+      }
+    } else if (test_case == Case::ExcludedPrimary) {
+      harness.state.set_exclusions({"asus"});
+    } else if (test_case == Case::GoldenFirst) {
+      harness.state.always_restore_from_golden.store(true);
+      ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, baseline));
+    } else if (test_case == Case::PrimaryInBaseline) {
+      baseline = make_snapshot({{"DENON"}, {"ASUS"}});
+    }
+    ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, baseline));
+
+    const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+    ASSERT_TRUE(outcome.success);
+    EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(harness.display.current, baseline));
+    EXPECT_GT(harness.display.topology_calls, 0);
+    EXPECT_GT(harness.display.apply_calls, 0);
+  }
+}
 
 // fd98755b: once the current state matches the baseline (order-independently),
 // the restore must confirm WITHOUT touching the display stack again.

@@ -679,6 +679,7 @@ int run_v2_helper(int argc, char *argv[]) {
   display_helper::v2::AtomicFileTextStorage golden_status_storage;
   display_helper::v2::GoldenHealth golden_health(golden_status_storage, active_snapshots.golden_status.string());
   display_helper::v2::RestoreState restore_state;
+  restore_state.preserve_active_physical_primary.store(restore_mode);
   display_helper::v2::ApplyPolicy apply_policy(clock);
   display_helper::v2::WinVirtualDisplayDriver virtual_display;
   display_helper::v2::WinPlatformWorkarounds workarounds;

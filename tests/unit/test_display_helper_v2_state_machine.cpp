@@ -4115,4 +4115,23 @@ TEST(DisplayHelperV2StateMachine, DeferredReturnRunsAuthoritativeGoldenRestoreTh
   EXPECT_FALSE(harness.display_settings.devices.back().m_info);
 }
 
+TEST(DisplayHelperV2StateMachine, InconsistentPhysicalCapturePreservesCurrentAndPrevious) {
+  StateMachineHarness h;
+  auto before = make_snapshot("ASUS");
+  before.m_topology = {{"ASUS"}, {"DENON"}, {"AOC"}};
+  before.m_modes["DENON"] = display_device::DisplayMode {};
+  before.m_modes["AOC"] = display_device::DisplayMode {};
+  before.m_primary_device = "ASUS";
+  ASSERT_TRUE(h.storage.save(display_helper::v2::SnapshotTier::Current, before));
+  const auto previous = make_snapshot("OLD");
+  ASSERT_TRUE(h.storage.save(display_helper::v2::SnapshotTier::Previous, previous));
+  h.display_settings.snapshot = before;
+  h.add_active_device("DENON");
+  h.add_active_device("AOC");
+  EXPECT_FALSE(h.snapshot_ledger.refresh_current_preserving_previous({}));
+  ASSERT_TRUE(h.storage.load(display_helper::v2::SnapshotTier::Current).has_value());
+  EXPECT_EQ(h.storage.load(display_helper::v2::SnapshotTier::Current)->m_topology, before.m_topology);
+  EXPECT_EQ(h.storage.load(display_helper::v2::SnapshotTier::Previous)->m_topology, previous.m_topology);
+}
+
 #endif  // _WIN32
