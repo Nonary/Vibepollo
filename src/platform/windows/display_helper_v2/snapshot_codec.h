@@ -11,9 +11,9 @@
 /**
  * @file snapshot_codec.h
  * @brief Pure snapshot serialization/parsing/filtering logic shared with the legacy
- *        display helper. The on-disk JSON format and all filtering rules are ported
- *        verbatim from tools/display_settings_helper.cpp so snapshots written by either
- *        engine round-trip through the other.
+ *        display helper. The on-disk JSON format is shared by both engines; save-side
+ *        filtering also rejects active transient virtual displays unless excluded,
+ *        while permanent virtual displays are filtered out of an otherwise valid snapshot.
  */
 namespace display_helper::v2::codec {
   using layout_rotation_map_t = std::map<std::string, int>;
@@ -64,10 +64,11 @@ namespace display_helper::v2::codec {
   // --- filtering rules ---
 
   /**
-   * @brief Save-side filtering: omit virtual displays, drop devices without a
-   *        display_name (not safe restore targets), apply the exclusion list, and
-   *        reject when nothing restorable remains.
-   * @param exclusions Normalized (normalize_device_id) exclusion list.
+   * @brief Save-side filtering: reject active transient virtual displays unless
+   *        excluded, omit other virtual displays, drop devices without a display_name
+   *        (not safe restore targets), apply exclusions, and reject when nothing
+   *        restorable remains.
+   * @param exclusions Exclusion list (normalized internally).
    * @returns Filtered snapshot, or nullopt with reject_reason set.
    */
   std::optional<Snapshot> filter_snapshot_for_save(

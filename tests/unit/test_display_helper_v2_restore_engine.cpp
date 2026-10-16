@@ -48,7 +48,8 @@ namespace {
     const std::string &display_name,
     bool active,
     const std::string &edid_manufacturer = {},
-    const std::string &friendly_name = "Generic Monitor") {
+    const std::string &friendly_name = "Generic Monitor",
+    const std::string &edid_product_code = {}) {
     display_device::EnumeratedDevice device;
     device.m_device_id = device_id;
     device.m_display_name = display_name;
@@ -56,6 +57,7 @@ namespace {
     if (!edid_manufacturer.empty()) {
       display_device::EdidData edid {};
       edid.m_manufacturer_id = edid_manufacturer;
+      edid.m_product_code = edid_product_code;
       device.m_edid = edid;
     }
     if (active) {
@@ -267,7 +269,7 @@ TEST(DisplayHelperV2Codec, FilterLoadAllowsInactiveButConnectedDevices) {
 
 // --- save-side filtering ---
 
-TEST(DisplayHelperV2Codec, FilterSaveExcludesActiveVirtualDisplay) {
+TEST(DisplayHelperV2Codec, FilterSaveRejectsActiveTransientVirtualDisplayWithoutExclusion) {
   auto snap = make_snapshot({{"PHYS1"}, {"PHYS2"}, {"VDD"}});
   snap.m_origins["PHYS1"] = display_device::Point {0, 0};
   snap.m_origins["PHYS2"] = display_device::Point {1920, 0};
@@ -280,6 +282,21 @@ TEST(DisplayHelperV2Codec, FilterSaveExcludesActiveVirtualDisplay) {
 
   std::string reason;
   auto result = codec::filter_snapshot_for_save(snap, devices, {}, reason);
+  EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(reason, "active transient virtual display device present");
+}
+
+TEST(DisplayHelperV2Codec, FilterSaveAllowsCaseInsensitiveExcludedTransientVirtualDisplay) {
+  auto snap = make_snapshot({{"PHYS1"}, {"PHYS2"}, {"VDD"}});
+  snap.m_origins["VDD"] = display_device::Point {3840, 0};
+  display_device::EnumeratedDeviceList devices {
+    make_device("PHYS1", "\\\\.\\DISPLAY1", true),
+    make_device("PHYS2", "\\\\.\\DISPLAY2", true),
+    make_device("VDD", "\\\\.\\DISPLAY3", true, "SDD"),
+  };
+
+  std::string reason;
+  auto result = codec::filter_snapshot_for_save(snap, devices, {" vDd "}, reason);
   ASSERT_TRUE(result.has_value());
   ASSERT_EQ(result->m_topology.size(), 2u);
   EXPECT_EQ(result->m_topology[0].front(), "PHYS1");
@@ -288,6 +305,38 @@ TEST(DisplayHelperV2Codec, FilterSaveExcludesActiveVirtualDisplay) {
   EXPECT_EQ(result->m_hdr_states.count("VDD"), 0u);
   EXPECT_EQ(result->m_origins.count("VDD"), 0u);
   EXPECT_EQ(result->m_primary_device, "PHYS1");
+  EXPECT_TRUE(reason.empty());
+}
+
+TEST(DisplayHelperV2Codec, FilterSaveAllowsPermanentSunshineVirtualDisplay) {
+  auto snap = make_snapshot({{"PHYS1"}, {"VDD"}});
+  display_device::EnumeratedDeviceList devices {
+    make_device("PHYS1", "\\\\.\\DISPLAY1", true),
+    make_device("VDD", "\\\\.\\DISPLAY2", true, "SDD", "Sunshine Virtual Display", "4ABC"),
+  };
+
+  std::string reason;
+  auto result = codec::filter_snapshot_for_save(snap, devices, {}, reason);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->m_topology.size(), 1u);
+  EXPECT_EQ(result->m_topology.front().front(), "PHYS1");
+  EXPECT_EQ(result->m_modes.count("VDD"), 0u);
+  EXPECT_TRUE(reason.empty());
+}
+
+TEST(DisplayHelperV2Codec, FilterSaveAllowsInactiveVirtualDisplay) {
+  auto snap = make_snapshot({{"PHYS1"}, {"VDD"}});
+  display_device::EnumeratedDeviceList devices {
+    make_device("PHYS1", "\\\\.\\DISPLAY1", true),
+    make_device("VDD", "", false, "SMK"),
+  };
+
+  std::string reason;
+  auto result = codec::filter_snapshot_for_save(snap, devices, {}, reason);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->m_topology.size(), 1u);
+  EXPECT_EQ(result->m_topology.front().front(), "PHYS1");
+  EXPECT_EQ(result->m_modes.count("VDD"), 0u);
   EXPECT_TRUE(reason.empty());
 }
 
@@ -300,7 +349,7 @@ TEST(DisplayHelperV2Codec, FilterSaveRejectsVirtualOnlySnapshot) {
   std::string reason;
   auto result = codec::filter_snapshot_for_save(snap, devices, {}, reason);
   EXPECT_FALSE(result.has_value());
-  EXPECT_EQ(reason, "no devices with valid display_name");
+  EXPECT_EQ(reason, "active transient virtual display device present");
 }
 
 TEST(DisplayHelperV2Codec, FilterSaveDropsDevicesWithoutDisplayName) {

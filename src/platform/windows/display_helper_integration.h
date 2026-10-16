@@ -143,6 +143,11 @@ namespace display_helper_integration {
     display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Minimal
   );
 
+  // Capture metadata from Active paths without waking inactive dummy plugs.
+  std::optional<display_device::EnumeratedDeviceList> enumerate_active_devices();
+  std::vector<std::string> snapshot_excluded_devices();
+  bool coordinator_baseline_protected();
+
   // Enumerate display devices and return JSON payload for API.
   std::string enumerate_devices_json(
     display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Minimal

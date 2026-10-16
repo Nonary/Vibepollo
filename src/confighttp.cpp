@@ -2664,6 +2664,11 @@ namespace confighttp {
   }
 
   void refresh_remote_display_physical_baseline() {
+#ifdef _WIN32
+    // Inventory nodes lack the session's saved coordinates and exact modes.
+    if (remote_display_topology::instance().managed_client_identity_count() != 0) return;
+    if (display_helper_integration::coordinator_baseline_protected()) return;
+#endif
     try {
       const auto devices = nlohmann::json::parse(display_helper_integration::enumerate_devices_json(display_device::DeviceEnumerationDetail::Full));
       if (!devices.is_array()) return;

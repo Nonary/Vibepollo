@@ -398,6 +398,7 @@ sunshine_add_test_target(
     TEST_SOURCES
         "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_snapshot_restore.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_coordinator_restore.cpp"
     PRODUCT_SOURCES
     INCLUDE_DIRECTORIES
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libdisplaydevice/src/common/include"
@@ -1046,6 +1047,11 @@ endif()
 if(WIN32)
     sunshine_register_component(NAME test_component_playnite_protocol TEST_SOURCE test_playnite_protocol.cpp
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_protocol.cpp")
+    if(TARGET libdisplaydevice::display_device)
+        # Exercises the production library with an injected fake Windows API.
+        sunshine_register_component(NAME test_component_display_modes_restore TEST_SOURCE unit/test_display_modes_restore.cpp
+            LINK_LIBRARIES libdisplaydevice::display_device Boost::algorithm)
+    endif()
     foreach(_playnite_test IN ITEMS
             test_playnite_autosync_reconcile.cpp
             test_playnite_sync_autosync.cpp)
