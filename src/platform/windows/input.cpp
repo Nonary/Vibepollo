@@ -24,6 +24,7 @@
 #include "src/globals.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/steam_controller_protocol.h"
 #include "vhf_gamepad.h"
 #include "dualsense_usbip_gamepad.h"
 #include "dualsense_usbip_gamepad_policy.h"
@@ -528,7 +529,8 @@ namespace platf {
            config::input.gamepad == "vhf_xbox_one"sv ||
            config::input.gamepad == "vhf_ds4"sv ||
            config::input.gamepad == "vhf_ds5"sv ||
-           config::input.gamepad == "vhf_switch"sv;
+           config::input.gamepad == "vhf_switch"sv ||
+           config::input.gamepad == "vhf_steam"sv;
   }
 
   /**
@@ -1318,20 +1320,42 @@ namespace platf {
     const bool automatic_vhf_fallback =
       config::input.gamepad == "auto"sv &&
       vhf_gamepad::select_automatic_backend(vigem_available, vhf_available) == vhf_gamepad::backend_e::vhf;
+    // Only the VHF driver can present a Steam Controller; under `auto` with ViGEmBus installed
+    // the client would otherwise silently become an Xbox 360 pad and lose both pads, grips,
+    // motion, battery and haptics. ViGEmBus remains the fallback if the allocation fails.
+    const bool steam_client_prefers_vhf =
+      config::input.gamepad == "auto"sv && vhf_available && metadata.type == LI_CTYPE_STEAM;
 
-    if (vhf_gamepad_selected() || automatic_vhf_fallback) {
+    if (vhf_gamepad_selected() || automatic_vhf_fallback || steam_client_prefers_vhf) {
       const auto desired = vhf_desired_profile(metadata);
 
       if (vhf_available) {
         BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will use the Vibepollo virtual gamepad driver"sv
-                        << (automatic_vhf_fallback ? " (automatic fallback)"sv : ""sv);
+                        << (automatic_vhf_fallback ? " (automatic fallback)"sv :
+                            steam_client_prefers_vhf ? " (Steam Controller client)"sv : ""sv);
 
-        if (raw->vhf->alloc(id, feedback_queue, desired) == 0) {
+        if (raw->vhf->alloc(id, feedback_queue, desired, metadata.capabilities) == 0) {
           raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vhf;
           return 0;
         }
       }
 
+      // Only a vhf_* config value is an explicit choice. A profile inferred from the
+      // client's controller type (Steam Controller, Switch, PlayStation) under plain
+      // `vhf` is a preference: when the installed driver does not offer it, retry with
+      // the driver's automatic profile rather than leaving the client with no controller.
+      const bool explicit_profile = config::input.gamepad != "vhf"sv && config::input.gamepad != "auto"sv;
+      if (vhf_available && desired != vhf_profile_e::automatic && !explicit_profile) {
+        BOOST_LOG(warning) << "Gamepad " << id.globalIndex
+                           << " could not get the profile its controller type suggests; retrying with the driver's automatic profile"sv;
+        if (raw->vhf->alloc(id, feedback_queue, vhf_profile_e::automatic, metadata.capabilities) == 0) {
+          raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vhf;
+          return 0;
+        }
+      }
+
+      // With no ViGEm backend, exhaust the driver's automatic profile before
+      // failing. The client-derived profile above is only a preference under auto.
       if (automatic_vhf_fallback) {
         BOOST_LOG(error) << "Gamepad " << id.globalIndex << " could not be created on the Vibepollo virtual gamepad driver"sv;
         return -1;
@@ -1339,8 +1363,9 @@ namespace platf {
 
       // An explicit profile must not be replaced by an automatic/client-selected profile or by
       // ViGEmBus. Otherwise a failed Switch Pro allocation makes the client override appear to
-      // win even though the user selected a specific VHF profile.
-      if (desired != vhf_profile_e::automatic) {
+      // win even though the user selected a specific VHF profile. A Steam Controller client
+      // under `auto` chose nothing explicitly, so it may still fall back to ViGEmBus.
+      if (explicit_profile && desired != vhf_profile_e::automatic && !steam_client_prefers_vhf) {
         BOOST_LOG(error) << "Gamepad " << id.globalIndex << " could not create the requested Vibepollo controller profile; refusing to substitute another profile"sv;
         return -1;
       }
@@ -2022,6 +2047,7 @@ namespace platf {
         supported_gamepad_t {"vhf_ds5", false, ""},
         supported_gamepad_t {"usbip_ds5", false, ""},
         supported_gamepad_t {"vhf_switch", false, ""},
+        supported_gamepad_t {"vhf_steam", false, ""},
       };
 
       return gps;
@@ -2048,7 +2074,8 @@ namespace platf {
       supported_gamepad_t {"vhf_ds4", vhf_enabled, vhf_reason},
       supported_gamepad_t {"vhf_ds5", vhf_enabled, vhf_reason},
       supported_gamepad_t {"usbip_ds5", usbip_enabled, usbip_reason},
-      supported_gamepad_t {"vhf_switch", vhf_enabled, vhf_reason}
+      supported_gamepad_t {"vhf_switch", vhf_enabled, vhf_reason},
+      supported_gamepad_t {"vhf_steam", vhf_enabled, vhf_reason}
     };
 
     // A gamepad type that is unavailable only because its backend is not installed is not
@@ -2076,6 +2103,12 @@ namespace platf {
   platform_caps::caps_t get_capabilities() {
     platform_caps::caps_t caps = 0;
 
+    // Controller touch depends on which controller the client will get (see
+    // vhf_gamepad::supports_controller_touch): plain `vhf` selects a pad-bearing profile
+    // from the client's controller type (Steam Controller, PlayStation) whatever
+    // motion_as_ds4/touchpad_as_ds4 say, so only x360 and the explicit Xbox and Switch
+    // selections rule a touchpad out. Withholding the flag silences both Steam Controller
+    // trackpads: the client never sends a touch packet without it.
     const bool composite_dualsense = config::input.gamepad == "usbip_ds5"sv || dualsense_usbip_gamepad::enabled();
     if (vhf_gamepad::supports_controller_touch(config::input.gamepad, composite_dualsense)) {
       caps |= platform_caps::controller_touch;
