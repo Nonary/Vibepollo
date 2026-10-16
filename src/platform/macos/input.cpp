@@ -786,6 +786,11 @@ const KeyCodeMap kKeyCodesMap[] = {
       pen_in_proximity = false;
     }
 
+    void touch_right_click(const CGPoint &location) {
+      post_mouse_event(kCGEventRightMouseDown, kCGMouseButtonRight, location, 1);
+      post_mouse_event(kCGEventRightMouseUp, kCGMouseButtonRight, location, 1);
+    }
+
     void touch_click(const CGPoint &location) {
       // Taps close together in time and place are a double or triple click.
       const auto now = std::chrono::steady_clock::now();
@@ -813,6 +818,7 @@ const KeyCodeMap kKeyCodesMap[] = {
       }
       touch_dragging = false;
       touch_points.clear();
+      two_finger_tap = false;
     }
 
     macos_input_t *macos_input;
@@ -829,6 +835,8 @@ const KeyCodeMap kKeyCodesMap[] = {
     std::map<std::uint32_t, touch_point_t> touch_points;
     bool touch_dragging {};  ///< The left button is held for a one-finger drag.
     bool touch_scrolling {};  ///< Two fingers have been down since the last finger lifted.
+    bool two_finger_tap {};  ///< Two fingers are down and neither has moved yet, so lifting them right-clicks.
+    std::chrono::steady_clock::time_point two_finger_down_time {};
     double scroll_remainder_x {};  ///< Movement too small to scroll a whole pixel yet.
     double scroll_remainder_y {};
     int tap_count {1};
@@ -949,8 +957,11 @@ const KeyCodeMap kKeyCodesMap[] = {
             touch_dragging = false;
           }
           touch_scrolling = true;
+          two_finger_tap = touch_points.size() == 2;
+          two_finger_down_time = std::chrono::steady_clock::now();
         } else {
           touch_scrolling = false;
+          two_finger_tap = false;
           post_mouse_event(kCGEventMouseMoved, kCGMouseButtonLeft, location, 0);
         }
         break;
@@ -963,6 +974,14 @@ const KeyCodeMap kKeyCodesMap[] = {
         const auto delta_x = location.x - point->second.last.x;
         const auto delta_y = location.y - point->second.last.y;
         point->second.last = location;
+
+        if (two_finger_tap) {
+          // Small movement still counts as a tap; moving past the slop turns it into a scroll.
+          if (std::hypot(location.x - point->second.start.x, location.y - point->second.start.y) <= TOUCH_SLOP) {
+            return;
+          }
+          two_finger_tap = false;
+        }
 
         if (touch_scrolling) {
           // Two fingers moving together scroll by their average movement; each finger reports
@@ -995,14 +1014,27 @@ const KeyCodeMap kKeyCodesMap[] = {
           return;
         }
 
-        const bool tap = touch_points.size() == 1 && !touch_dragging && !touch_scrolling;
+        const bool single = touch_points.size() == 1 && !touch_dragging && !touch_scrolling;
+        const bool held = std::chrono::steady_clock::now() - point->second.down_time >= LONG_PRESS;
         const auto start = point->second.start;
+        if (two_finger_tap) {
+          // Two fingers tapped together: right-click where the first one landed.
+          two_finger_tap = false;
+          if (std::chrono::steady_clock::now() - two_finger_down_time < LONG_PRESS) {
+            touch_right_click(start);
+          }
+        }
         touch_points.erase(point);
         if (touch_dragging) {
           post_mouse_event(kCGEventLeftMouseUp, kCGMouseButtonLeft, location, 1);
           touch_dragging = false;
-        } else if (tap) {
-          touch_click(start);
+        } else if (single) {
+          // A finger held still and lifted is a right-click, like a long press on an iPad.
+          if (held) {
+            touch_right_click(start);
+          } else {
+            touch_click(start);
+          }
         }
         if (touch_points.empty()) {
           touch_scrolling = false;
