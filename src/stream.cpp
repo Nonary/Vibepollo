@@ -589,6 +589,12 @@ namespace stream {
     control_server_t control_server;
   };
 
+  enum class stop_reason_e {
+    none,
+    abrupt,
+    graceful,
+  };
+
   struct session_t {
     std::shared_ptr<void> display_power_guard;
     std::shared_ptr<void> normal_display_capture;
@@ -689,6 +695,7 @@ namespace stream {
     safe::signal_t controlEnd;
 
     std::atomic<session::state_e> state;
+    std::atomic<stop_reason_e> stop_reason {stop_reason_e::none};
 
     // Real-time performance counters (updated by broadcast/control threads)
     struct {
@@ -1736,7 +1743,7 @@ namespace stream {
         return;
       }
       auto payload = encode_control(session, util::view(termination_plaintext), termination_encrypted_payload);
-      if (server->send(payload, session->control.peer)) {
+      if (payload.empty() || server->send(payload, session->control.peer)) {
         TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
         BOOST_LOG(warning) << "Couldn't send termination code to ["sv << addr << ':' << port << ']';
       }
@@ -1798,12 +1805,20 @@ namespace stream {
             pos = server->_sessions->erase(pos);
 
             if (session->control.peer) {
+              // The control owner alone touches the peer and encryption state.
+              // disconnect_now discards queued application packets before its
+              // own flush, so attempt the termination send first.
+              if (session->stop_reason.load(std::memory_order_relaxed) == stop_reason_e::graceful) {
+                send_termination(session);
+                server->flush();
+              }
               {
                 auto ptslg = server->_peer_to_session.lock();
                 server->_peer_to_session->erase(session->control.peer);
               }
 
               enet_peer_disconnect_now(session->control.peer, 0);
+              session->control.peer = nullptr;
             }
 
             session->controlEnd.raise(true);
@@ -3494,48 +3509,30 @@ namespace stream {
       session.client_disconnected.store(true, std::memory_order_release);
     }
 
-    void stop(session_t &session) {
+    static void request_stop(session_t &session, const stop_reason_e reason) {
       while_starting_do_nothing(session.state);
-      auto expected = state_e::RUNNING;
-      auto already_stopping = !session.state.compare_exchange_strong(expected, state_e::STOPPING);
-      if (already_stopping) {
+      if (session.state.load(std::memory_order_acquire) != state_e::RUNNING) {
+        return;
+      }
+      auto expected = stop_reason_e::none;
+      if (!session.stop_reason.compare_exchange_strong(expected, reason)) {
         return;
       }
 
+      // The first cancellation owns the reason. Publish it and media shutdown
+      // before STOPPING lets the control owner detach this session. In
+      // particular, a later user request must not relabel a transport failure.
       input::reset(session.input);
       session.shutdown_event->raise(true);
+      session.state.store(state_e::STOPPING, std::memory_order_release);
+    }
+
+    void stop(session_t &session) {
+      request_stop(session, stop_reason_e::abrupt);
     }
 
     void graceful_stop(session_t &session) {
-      while_starting_do_nothing(session.state);
-      auto expected = state_e::RUNNING;
-      auto already_stopping = !session.state.compare_exchange_strong(expected, state_e::STOPPING);
-      if (already_stopping) {
-        return;
-      }
-
-      // reason: graceful termination
-      std::uint32_t reason = 0x80030023;
-
-      control_terminate_t plaintext;
-      plaintext.header.type = packetTypes[IDX_TERMINATION];
-      plaintext.header.payloadLength = sizeof(plaintext.ec);
-      plaintext.ec = util::endian::big<uint32_t>(reason);
-
-      // We may not have gotten far enough to have an ENet connection yet
-      if (session.control.peer) {
-        std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
-          encrypted_payload;
-        auto payload = stream::encode_control(&session, util::view(plaintext), encrypted_payload);
-
-        if (send(session, payload)) {
-          TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session.control.peer->address.address));
-          BOOST_LOG(warning) << "Couldn't send termination code to ["sv << addr << ':' << port << ']';
-        }
-      }
-
-      session.shutdown_event->raise(true);
-      session.controlEnd.raise(true);
+      request_stop(session, stop_reason_e::graceful);
     }
 
     void join(session_t &session, const bool lifecycle_lock_held) {

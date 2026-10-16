@@ -1,0 +1,493 @@
+// Only blocks marked PRODUCTION_* are imported from production. The remaining
+// code isolates lifecycle effects; it creates no real threads, peers or sockets.
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <bit>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+using namespace std::string_view_literals;
+using std::uint8_t;
+using std::uint32_t;
+
+void require(bool condition, const char *message) {
+  if (!condition) throw std::runtime_error(message);
+}
+bool control_owner = false;
+int off_owner_transport_calls = 0;
+int input_resets = 0;
+int packet_count = 0;
+int sends_after_disconnect = 0;
+bool completion_before_detach = false;
+std::vector<std::string> effects;
+std::function<void()> after_state_publish;
+std::function<void()> during_input_reset;
+std::function<bool()> still_registered;
+void transport_effect(const char *effect) {
+  effects.emplace_back(effect);
+  off_owner_transport_calls += !control_owner;
+}
+
+struct log_stub_t {
+  template<class T> log_stub_t &operator<<(const T &) { return *this; }
+};
+#define BOOST_LOG(level) log_stub_t {}
+#define TUPLE_2D(port, addr, ignored) const int port = 0; const std::string addr = "fixture"
+
+struct ENetPacket { std::string bytes; };
+struct peer_t {
+  bool connected = true;
+  bool send_failure = false;
+  std::vector<ENetPacket *> queued;
+  std::vector<std::string> wire;
+};
+struct host_t { std::vector<peer_t *> peers; };
+constexpr int ENET_PACKET_FLAG_RELIABLE = 1;
+constexpr int ML_HAPTICS_CHANNEL = 1;
+ENetPacket *enet_packet_create(const void *data, std::size_t size, int flags) {
+  require(flags == ENET_PACKET_FLAG_RELIABLE, "termination must remain reliable");
+  ++packet_count;
+  return new ENetPacket {{static_cast<const char *>(data), size}};
+}
+void enet_packet_destroy(ENetPacket *packet) { --packet_count; delete packet; }
+int enet_peer_send(peer_t *peer, int channel, ENetPacket *packet) {
+  transport_effect("send");
+  require(channel == 0, "termination must use the control channel");
+  if (!peer->connected) ++sends_after_disconnect;
+  if (!peer->connected || peer->send_failure) return -1;
+  peer->queued.push_back(packet);
+  return 0;
+}
+void enet_host_flush(host_t *host) {
+  transport_effect("flush");
+  for (auto peer : host->peers) {
+    for (auto packet : peer->queued) {
+      peer->wire.push_back(packet->bytes);
+      enet_packet_destroy(packet);
+    }
+    peer->queued.clear();
+  }
+}
+void enet_peer_disconnect_now(peer_t *peer, int) {
+  transport_effect("disconnect");
+  // Pinned ENet c7353c0 resets outgoing queues BEFORE its internal flush.
+  // Model only that contract: this never delivers a queued application packet.
+  for (auto packet : peer->queued) enet_packet_destroy(packet);
+  peer->queued.clear();
+  peer->connected = false;
+}
+
+namespace net { using peer_t = ::peer_t *; }
+namespace crypto {
+  enum class PERM { none = 0, _allow_view = 1 };
+  int operator&(PERM a, PERM b) { return static_cast<int>(a) & static_cast<int>(b); }
+  namespace cipher {
+    constexpr std::size_t tag_size = 16;
+    constexpr std::size_t round_to_pkcs7_padded(std::size_t size) { return (size / 16 + 1) * 16; }
+  }
+}
+namespace util {
+  template<class T> std::string_view view(const T &value) {
+    return {reinterpret_cast<const char *>(&value), sizeof(value)};
+  }
+  namespace endian {
+    template<class T> T little(T value) {
+      static_assert(std::endian::native == std::endian::little, "fixture wire checks assume the Deck's endian order");
+      return value;
+    }
+    template<class T> T big(T value) {
+      static_assert(sizeof(T) == 4);
+      if constexpr (std::endian::native == std::endian::little) {
+        return ((value & 0xFF) << 24) | ((value & 0xFF00) << 8) |
+               ((value & 0xFF0000) >> 8) | ((value & 0xFF000000) >> 24);
+      }
+      return value;
+    }
+  }
+}
+namespace input {
+  void reset(int) {
+    ++input_resets;
+    effects.emplace_back("input_reset");
+    if (during_input_reset) {
+      auto callback = std::exchange(during_input_reset, {});
+      callback();
+    }
+  }
+}
+
+namespace proc {
+  struct proc_t {
+    int app_id = 42;
+    int terminations = 0;
+    int pause_continued = 0;
+    struct { bool terminate_on_pause = false; } _app;
+    std::string _app_name = "retained game";
+    int current_app_id() { return app_id; }
+    int running() { return app_id; }
+    void terminate(bool, bool, bool, bool) { ++terminations; app_id = 0; }
+    void pause(bool stream_lifecycle_lock_held);
+  } proc;
+  // Exercise the real pause/terminate decision, excluding command execution.
+  /* PRODUCTION_PAUSE_ADMISSION */
+}
+
+template<class T> struct collection_t {
+  T value;
+  T *operator->() { return &value; }
+  T &operator*() { return value; }
+  struct guard_t { ~guard_t() {} };
+  [[nodiscard]] guard_t lock() { return {}; }
+};
+struct event_t {
+  bool raised = false;
+  void raise(bool) { raised = true; effects.emplace_back("shutdown"); }
+};
+struct signal_t {
+  bool raised = false;
+  void raise(bool) {
+    completion_before_detach |= still_registered && still_registered();
+    raised = true;
+    effects.emplace_back("control_end");
+  }
+};
+
+/* PRODUCTION_PACKET_TYPES */
+constexpr int IDX_TERMINATION = 7;
+namespace stream {
+  /* PRODUCTION_REASON */
+  namespace session {
+    /* PRODUCTION_STATE */
+  }
+  struct state_t {
+    std::atomic<session::state_e> value {session::state_e::RUNNING};
+    session::state_e load(std::memory_order order = std::memory_order_seq_cst) { return value.load(order); }
+    void store(session::state_e next, std::memory_order order = std::memory_order_seq_cst) {
+      value.store(next, order);
+      if (next == session::state_e::STOPPING && after_state_publish) {
+        auto callback = std::exchange(after_state_publish, {});
+        callback();
+      }
+    }
+    bool compare_exchange_strong(session::state_e &expected, session::state_e next) {
+      if (!value.compare_exchange_strong(expected, next)) return false;
+      if (after_state_publish) {
+        auto callback = std::exchange(after_state_publish, {});
+        callback();
+      }
+      return true;
+    }
+  };
+  struct session_t;
+  struct control_server_t {
+    collection_t<std::vector<session_t *>> _sessions;
+    collection_t<std::map<peer_t *, session_t *>> _peer_to_session;
+    std::shared_ptr<host_t> _host = std::make_shared<host_t>();
+    /* PRODUCTION_SEND_METHOD */
+    /* PRODUCTION_FLUSH_METHOD */
+  };
+  struct broadcast_t { control_server_t control_server; };
+  struct session_t {
+    state_t state;
+    /* PRODUCTION_REASON_FIELD */
+    int input = 1;
+    event_t shutdown_storage;
+    event_t *shutdown_event = &shutdown_storage;
+    signal_t controlEnd;
+    std::shared_ptr<broadcast_t> broadcast_ref = std::make_shared<broadcast_t>();
+    struct { int controlProtocolType = 0; unsigned encryptionFlagsEnabled = 0; } config;
+    struct {
+      peer_t *peer = nullptr;
+      std::uint32_t seq = 41;
+      std::vector<std::uint8_t> outgoing_iv = std::vector<std::uint8_t>(16, 0);
+      struct {
+        bool fail = false;
+        std::vector<std::uint8_t> iv;
+        int encrypt(std::string_view plaintext, std::uint8_t *output, const std::vector<std::uint8_t> *outgoing_iv) {
+          transport_effect("encrypt");
+          iv = *outgoing_iv;
+          if (fail) return 0;
+          // A deterministic cipher stand-in. Real production encode_control
+          // must wrap this output, advance its sequence, and form its IV.
+          std::fill_n(output, crypto::cipher::tag_size, 0xA5);
+          for (std::size_t i = 0; i < plaintext.size(); ++i) {
+            output[crypto::cipher::tag_size + i] = static_cast<std::uint8_t>(plaintext[i]) ^ 0x5A;
+          }
+          return static_cast<int>(plaintext.size());
+        }
+      } cipher;
+    } control;
+    std::atomic_bool client_disconnected {false};
+    std::mutex metadata_mutex;
+    std::string device_name = "device";
+    crypto::PERM permission = crypto::PERM::_allow_view;
+    bool joined = false;
+  };
+  /* PRODUCTION_WIRE_HEADER */
+  /* PRODUCTION_WIRE_TERMINATION */
+  /* PRODUCTION_WIRE_ENCRYPTED */
+  constexpr unsigned SS_ENC_CONTROL_V2 = 1;
+  /* PRODUCTION_ENCODE */
+  void while_starting_do_nothing(state_t &state) {
+    require(state.load() != session::state_e::STARTING, "fixture must not wait on startup");
+  }
+  void drain_once(control_server_t *server) {
+    const auto previous_owner = std::exchange(control_owner, true);
+    /* PRODUCTION_SEND_TERMINATION */
+    (void) send_termination;  // The baseline STOPPING branch does not use it.
+    for (auto pos = server->_sessions->begin(); pos != server->_sessions->end();) {
+      auto session = *pos;
+      /* PRODUCTION_STOPPING */
+      ++pos;
+    }
+    control_owner = previous_owner;
+  }
+  namespace session {
+    void graceful_stop(stream::session_t &session);
+    bool send(stream::session_t &session, const std::string_view &payload) {
+      return session.broadcast_ref->control_server.send(payload, session.control.peer);
+    }
+    void mark_client_disconnected(stream::session_t &session) { session.client_disconnected = true; }
+    void join(stream::session_t &session) {
+      drain_once(&session.broadcast_ref->control_server);
+      require(session.controlEnd.raised, "join must observe control completion");
+      const bool rtsp_pending = !session.broadcast_ref->control_server._sessions->empty();
+      const bool webrtc_active = false;
+      /* PRODUCTION_PAUSE_GATE */
+      session.joined = true;
+    }
+    /* PRODUCTION_REQUEST_STOP */
+    /* PRODUCTION_STOP */
+    /* PRODUCTION_GRACEFUL_STOP */
+    /* PRODUCTION_UPDATE_DEVICE */
+  }
+}
+
+namespace remote_session {
+  enum class role_e { input, monitor };
+  bool release_monitor(const std::string &, std::uint64_t, const char *) { return false; }
+}
+namespace rtsp_stream {
+  struct client_disconnect_result_t {
+    bool disconnected;
+    std::vector<remote_session::role_e> pending_roles;
+    std::vector<std::uint64_t> pending_generations;
+  };
+  stream::session_t *route_session = nullptr;
+  struct server_t {
+    void clear(bool) {}
+    client_disconnect_result_t disconnect_client(const std::string &, const bool graceful = false) {
+      (void) graceful;
+      require(route_session, "route target missing");
+      std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
+      to_cleanup.emplace_back(route_session, [](auto *) {});
+      /* PRODUCTION_DISCONNECT */
+      return {true, {}, {}};
+    }
+  } server;
+  /* PRODUCTION_RTSP_DECLARATION */
+  /* PRODUCTION_RTSP_WITH_RESULT */
+  /* PRODUCTION_RTSP_WITHOUT_RESULT */
+  namespace pending_policy {
+    struct pending_owner_t {
+      remote_session::role_e role;
+      std::string client_uuid;
+      std::uint64_t generation;
+    };
+    std::vector<pending_owner_t> disconnect_input_owners_to_forget(const std::vector<pending_owner_t> &) { return {}; }
+  }
+}
+namespace config { struct { bool remote_monitor_disconnect_on_client_disconnect = false; } video; }
+namespace nvhttp {
+  std::mutex lifecycle_mutex;
+  std::mutex &stream_lifecycle_mutex() { return lifecycle_mutex; }
+  std::optional<std::uint64_t> remote_owner_generation(const std::string &, remote_session::role_e) { return std::nullopt; }
+  void forget_remote_owner(const std::string &, remote_session::role_e, std::uint64_t) {}
+  void cleanup_virtual_display_if_idle_locked() {}
+  /* PRODUCTION_NVHTTP_DISCONNECT */
+}
+
+struct fixture_t {
+  stream::session_t session;
+  peer_t peer;
+  stream::control_server_t &server = session.broadcast_ref->control_server;
+  explicit fixture_t(bool connected = true) {
+    if (connected) {
+      session.control.peer = &peer;
+      server._host->peers.push_back(&peer);
+      server._peer_to_session->emplace(&peer, &session);
+    }
+    server._sessions->push_back(&session);
+    still_registered = [&] {
+      return std::find(server._sessions->begin(), server._sessions->end(), &session) != server._sessions->end() ||
+             server._peer_to_session->contains(&peer);
+    };
+  }
+  ~fixture_t() {
+    for (auto packet : peer.queued) enet_packet_destroy(packet);
+    still_registered = {};
+    after_state_publish = {};
+    during_input_reset = {};
+  }
+  void drain() { stream::drain_once(&server); }
+  void completed(bool graceful) {
+    require(session.shutdown_event->raised, "media shutdown must be requested");
+    require(input_resets > 0, "input must be released even when teardown is graceful");
+    require(session.controlEnd.raised, "control completion must be signalled");
+    require(!still_registered(), "target control registries must be detached");
+    require(!completion_before_detach, "controlEnd was signalled while a raw session reference remained");
+    require(off_owner_transport_calls == 0, "transport or cipher accessed outside control owner");
+    require(packet_count == 0, "queued or failed-send packet leaked");
+    if (graceful) {
+      require(peer.wire.size() == 1, "exactly one graceful termination must reach the simulated wire");
+      std::string bytes = peer.wire.front();
+      if (session.config.controlProtocolType == 13) {
+        require(bytes.size() == 32, "encrypted termination frame size changed");
+        stream::control_encrypted_t header {};
+        std::memcpy(&header, bytes.data(), sizeof(header));
+        require(header.encryptedHeaderType == 1 && header.length == 28 && header.seq == 41,
+                "encrypted control envelope/sequence is invalid");
+        require(session.control.seq == 42, "termination sequence must advance exactly once");
+        for (std::size_t i = 8; i < 24; ++i) require(static_cast<unsigned char>(bytes[i]) == 0xA5, "cipher tag missing");
+        bytes = bytes.substr(24);
+        for (auto &byte : bytes) byte ^= 0x5A;
+        const auto &iv = session.control.cipher.iv;
+        if (session.config.encryptionFlagsEnabled & stream::SS_ENC_CONTROL_V2) {
+          require(iv.size() == 12 && iv[0] == 41 && iv[10] == 'H' && iv[11] == 'C', "control-v2 IV is invalid");
+        } else {
+          require(iv.size() == 16 && iv[0] == 41, "legacy control IV is invalid");
+        }
+      }
+      require(bytes.size() == 8, "extended termination size changed");
+      const auto *p = reinterpret_cast<const unsigned char *>(bytes.data());
+      require(p[0] == 0x09 && p[1] == 0x01 && p[2] == 4 && p[3] == 0 &&
+              p[4] == 0x80 && p[5] == 0x03 && p[6] == 0x00 && p[7] == 0x23,
+              "termination must retain 0x0109 and big-endian 0x80030023");
+      auto at = [](const char *name) { return std::find(effects.begin(), effects.end(), name); };
+      require(at("send") < at("flush") && at("flush") < at("disconnect") &&
+              at("disconnect") < at("control_end"), "send/flush/disconnect/completion order violated");
+    } else {
+      require(peer.wire.empty(), "transport failure must not masquerade as graceful termination");
+    }
+  }
+};
+
+int main(int argc, char **argv) {
+  try {
+    require(argc == 2, "expected one test case");
+    const std::string name = argv[1];
+    fixture_t f(name != "pending_peer");
+    auto &session = f.session;
+    rtsp_stream::route_session = &session;
+    if (name == "devices_disconnect" || name == "paused_application" || name == "configured_termination") {
+      proc::proc._app.terminate_on_pause = name == "configured_termination";
+      require(nvhttp::disconnect_client("target"), "Devices route did not report disconnect");
+      require(session.client_disconnected && session.joined, "Devices disconnect must retain bookkeeping and join");
+      f.completed(true);
+      if (name == "configured_termination") {
+        require(proc::proc.terminations == 1 && proc::proc.pause_continued == 0,
+                "explicit terminate-on-pause policy changed");
+      } else {
+        require(proc::proc.app_id == 42 && proc::proc.terminations == 0 && proc::proc.pause_continued == 1,
+                "disconnect must retain the app and enter its existing pause path");
+      }
+    } else if (name == "request_ownership") {
+      stream::session::graceful_stop(session);
+      require(!session.controlEnd.raised, "requester published control completion prematurely");
+      require(off_owner_transport_calls == 0, "requester touched ENet or cipher");
+      f.drain();
+      f.completed(true);
+    } else if (name == "graceful_delivery" || name == "graceful_wins") {
+      stream::session::graceful_stop(session);
+      if (name == "graceful_wins") stream::session::stop(session);
+      stream::session::graceful_stop(session);  // Idempotent repeated request.
+      f.drain();
+      f.drain();
+      f.completed(true);
+    } else if (name == "transport_failure" || name == "failure_wins") {
+      stream::session::stop(session);
+      if (name == "failure_wins") stream::session::graceful_stop(session);
+      f.drain();
+      f.completed(false);
+    } else if (name == "racing_failure_wins" || name == "racing_graceful_wins") {
+      const bool graceful_first = name == "racing_graceful_wins";
+      during_input_reset = [&] {
+        if (graceful_first) stream::session::stop(session);
+        else stream::session::graceful_stop(session);
+      };
+      if (graceful_first) stream::session::graceful_stop(session);
+      else stream::session::stop(session);
+      f.drain();
+      f.completed(graceful_first);
+    } else if (name == "pending_peer" || name == "send_failure") {
+      f.peer.send_failure = true;
+      stream::session::graceful_stop(session);
+      require(!session.controlEnd.raised, "missing peer/send failure must still wait for control detachment");
+      f.drain();
+      f.completed(false);
+    } else if (name == "publication_interleaving") {
+      // Force control cleanup exactly when the stop state becomes visible.
+      // This is deterministic; it uses no sleeps or live threads.
+      after_state_publish = [&] { f.drain(); };
+      stream::session::graceful_stop(session);
+      f.drain();
+      require(sends_after_disconnect == 0, "requester sent using a peer already reset by control");
+      f.completed(true);
+    } else if (name == "permission_revocation") {
+      require(stream::session::update_device_info(session, "device", crypto::PERM::none), "revocation must request disconnect");
+      f.drain();
+      f.completed(true);
+    } else if (name == "permission_update") {
+      require(!stream::session::update_device_info(session, "renamed", crypto::PERM::_allow_view), "ordinary update must keep streaming");
+      require(session.device_name == "renamed" && session.state.load() == stream::session::state_e::RUNNING,
+              "allowed permission/name update unexpectedly stopped transport");
+      require(effects.empty() && !session.controlEnd.raised, "ordinary update must not teardown transport");
+    } else if (name == "administrative_revoke") {
+      require(rtsp_stream::disconnect_client_sessions("target"), "default disconnect did not stop target");
+      f.completed(false);
+    } else if (name == "encrypted_legacy" || name == "encrypted_v2" || name == "encryption_failure") {
+      session.config.controlProtocolType = 13;
+      session.config.encryptionFlagsEnabled = name == "encrypted_v2" ? stream::SS_ENC_CONTROL_V2 : 0;
+      session.control.cipher.fail = name == "encryption_failure";
+      stream::session::graceful_stop(session);
+      f.drain();
+      f.completed(name != "encryption_failure");
+      if (name == "encryption_failure") {
+        require(std::count(effects.begin(), effects.end(), "send") == 0,
+                "failed encryption must not enqueue an empty or plaintext termination");
+      }
+    } else if (name == "other_client_survives") {
+      stream::session_t other;
+      peer_t other_peer;
+      other.broadcast_ref = session.broadcast_ref;
+      other.control.peer = &other_peer;
+      f.server._sessions->push_back(&other);
+      f.server._peer_to_session->emplace(&other_peer, &other);
+      f.server._host->peers.push_back(&other_peer);
+      stream::session::graceful_stop(session);
+      f.drain();
+      f.completed(true);
+      require(other.state.load() == stream::session::state_e::RUNNING && !other.controlEnd.raised &&
+              other_peer.connected && other_peer.wire.empty(), "targeted disconnect affected another client");
+      require(f.server._peer_to_session->contains(&other_peer), "targeted disconnect removed another peer mapping");
+    } else {
+      throw std::runtime_error("unknown lifecycle case");
+    }
+    std::cout << "ok\n";
+  } catch (const std::exception &error) {
+    std::cerr << error.what() << '\n';
+    return 1;
+  }
+}

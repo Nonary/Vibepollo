@@ -1254,7 +1254,7 @@ namespace rtsp_stream {
       return out;
     }
 
-    client_disconnect_result_t disconnect_client(const std::string &client_uuid) {
+    client_disconnect_result_t disconnect_client(const std::string &client_uuid, const bool graceful) {
       if (client_uuid.empty()) {
         return {};
       }
@@ -1299,7 +1299,11 @@ namespace rtsp_stream {
 
       for (auto &slot : to_cleanup) {
         stream::session::mark_client_disconnected(*slot);
-        stream::session::stop(*slot);
+        if (graceful) {
+          stream::session::graceful_stop(*slot);
+        } else {
+          stream::session::stop(*slot);
+        }
         stream::session::join(*slot);
       }
 
@@ -1811,9 +1815,9 @@ namespace rtsp_stream {
     return disconnect_client_sessions_with_result(client_uuid).disconnected;
   }
 
-  client_disconnect_result_t disconnect_client_sessions_with_result(const std::string &client_uuid) {
+  client_disconnect_result_t disconnect_client_sessions_with_result(const std::string &client_uuid, const bool graceful) {
     server.clear(false);
-    return server.disconnect_client(client_uuid);
+    return server.disconnect_client(client_uuid, graceful);
   }
 
   int send(tcp::socket &sock, const std::string_view &sv) {

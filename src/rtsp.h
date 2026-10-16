@@ -381,7 +381,8 @@ namespace rtsp_stream {
    * @return True if one or more sessions were stopped.
    */
   bool disconnect_client_sessions(const std::string &client_uuid);
-  client_disconnect_result_t disconnect_client_sessions_with_result(const std::string &client_uuid);
+  // Preserve abrupt cancellation for administrative callers unless requested.
+  client_disconnect_result_t disconnect_client_sessions_with_result(const std::string &client_uuid, bool graceful = false);
 
   /**
    * @brief Runs the RTSP server loop.
