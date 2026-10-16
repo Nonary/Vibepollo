@@ -93,8 +93,10 @@
   #include <sys/syscall.h>
   #include <unistd.h>
 #endif
+#include "builtin_virtual_display.h"
 #include "httpcommon.h"
 #include "nvhttp.h"
+#include "prep_command_lifetime.h"
 #include "process.h"
 #ifdef _WIN32
   #include "platform/windows/virtual_display.h"
@@ -2412,40 +2414,36 @@ namespace proc {
     std::string lossless_install_dir_hint;
 #endif
 
-    for (; _app_prep_it != std::end(_app.prep_cmds); ++_app_prep_it) {
-      auto &cmd = *_app_prep_it;
+    if (!command_lifetime::prepare(_app_prep_it, _app.prep_cmds.cend(), [&](const auto &cmd) {
+          boost::filesystem::path working_dir = _app.working_dir.empty() ?
+                                                  find_working_directory(cmd.do_cmd, _env) :
+                                                  boost::filesystem::path(_app.working_dir);
+          BOOST_LOG(info) << "Executing Do Cmd: ["sv << cmd.do_cmd << "] elevated: " << cmd.elevated;
+          auto child = platf::run_command(cmd.elevated, true, cmd.do_cmd, working_dir, _env, _pipe.get(), ec, nullptr);
 
-      // Skip empty commands
-      if (cmd.do_cmd.empty()) {
-        continue;
-      }
+          if (ec) {
+            BOOST_LOG(error) << "Couldn't run ["sv << cmd.do_cmd << "]: System: "sv << ec.message();
+            // We don't want any prep commands failing launch of the desktop.
+            // This is to prevent the issue where users reboot their PC and need to log in with Sunshine.
+            // permission_denied is typically returned when the user impersonation fails, which can happen when user is not signed in yet.
+            if (!(_app.cmd.empty() && ec == std::errc::permission_denied)) {
+              return false;
+            }
+          }
 
-      boost::filesystem::path working_dir = _app.working_dir.empty() ?
-                                              find_working_directory(cmd.do_cmd, _env) :
-                                              boost::filesystem::path(_app.working_dir);
-      BOOST_LOG(info) << "Executing Do Cmd: ["sv << cmd.do_cmd << "] elevated: " << cmd.elevated;
-      auto child = platf::run_command(cmd.elevated, true, cmd.do_cmd, working_dir, _env, _pipe.get(), ec, nullptr);
-
-      if (ec) {
-        BOOST_LOG(error) << "Couldn't run ["sv << cmd.do_cmd << "]: System: "sv << ec.message();
-        // We don't want any prep commands failing launch of the desktop.
-        // This is to prevent the issue where users reboot their PC and need to log in with Sunshine.
-        // permission_denied is typically returned when the user impersonation fails, which can happen when user is not signed in yet.
-        if (!(_app.cmd.empty() && ec == std::errc::permission_denied)) {
-          return -1;
-        }
-      }
-
-      child.wait(ec);
-      if (ec) {
-        BOOST_LOG(error) << '[' << cmd.do_cmd << "] wait failed with error code ["sv << ec << ']';
-        return -1;
-      }
-      auto ret = child.exit_code();
-      if (ret != 0) {
-        BOOST_LOG(error) << '[' << cmd.do_cmd << "] exited with code ["sv << ret << ']';
-        return -1;
-      }
+          child.wait(ec);
+          if (ec) {
+            BOOST_LOG(error) << '[' << cmd.do_cmd << "] wait failed with error code ["sv << ec << ']';
+            return false;
+          }
+          auto ret = child.exit_code();
+          if (ret != 0) {
+            BOOST_LOG(error) << '[' << cmd.do_cmd << "] exited with code ["sv << ret << ']';
+            return false;
+          }
+          return true;
+        })) {
+      return -1;
     }
 
     _env["APOLLO_APP_STATUS"] = "RUNNING";
@@ -3263,13 +3261,7 @@ namespace proc {
     const auto undo_timeout = std::max(_app.exit_timeout, std::chrono::seconds(15));
     const auto shutdown_event = mail::man ? mail::man->event<bool>(mail::shutdown) : nullptr;
 
-    for (; _app_prep_it != _app_prep_begin; --_app_prep_it) {
-      auto &cmd = *(_app_prep_it - 1);
-
-      if (cmd.undo_cmd.empty()) {
-        continue;
-      }
-
+    command_lifetime::undo(_app_prep_it, _app_prep_begin, [&](const auto &cmd) {
       boost::filesystem::path working_dir = _app.working_dir.empty() ?
                                               find_working_directory(cmd.undo_cmd, _env) :
                                               boost::filesystem::path(_app.working_dir);
@@ -3279,7 +3271,7 @@ namespace proc {
       if (ec) {
         BOOST_LOG(warning) << "System: "sv << ec.message();
         ec.clear();
-        continue;
+        return;
       }
 
       const auto deadline = std::chrono::steady_clock::now() + undo_timeout;
@@ -3301,21 +3293,21 @@ namespace proc {
           child.detach();
         } catch (...) {
         }
-        continue;
+        return;
       }
 
       child.wait(ec);
       if (ec) {
         BOOST_LOG(warning) << '[' << cmd.undo_cmd << "] wait failed with error code ["sv << ec << ']';
         ec.clear();
-        continue;
+        return;
       }
       auto ret = child.exit_code();
 
       if (ret != 0) {
         BOOST_LOG(warning) << "Return code ["sv << ret << ']';
       }
-    }
+    });
 
 #ifdef _WIN32
     // Restore after terminating the app and running its undo commands so a
@@ -4735,22 +4727,10 @@ namespace proc {
     // Virtual Display entry
 #ifdef _WIN32
     if (vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK) {
-      proc::ctx_t ctx {};
+      auto ctx = make_builtin_virtual_display(config::sunshine, [&](const auto &value) {
+        return parse_env_val(this_env, value);
+      });
       ctx.idx = std::to_string(i);
-      ctx.uuid = VIRTUAL_DISPLAY_UUID;
-      ctx.name = "Virtual Display";
-      ctx.image_path = parse_env_val(this_env, "virtual_desktop.png");
-      ctx.virtual_display = true;
-      ctx.scale_factor = 100;
-      ctx.use_app_identity = false;
-      ctx.per_client_app_identity = false;
-      ctx.allow_client_commands = false;
-      ctx.terminate_on_pause = false;
-
-      ctx.elevated = false;
-      ctx.auto_detach = true;
-      ctx.wait_all = false;
-      ctx.exit_timeout = 5s;
 
       auto possible_ids = calculate_app_id(ctx.name, ctx.uuid, ctx.image_path, i++);
       if (ids.count(std::get<0>(possible_ids)) == 0) {
