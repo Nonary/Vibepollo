@@ -25,10 +25,13 @@ namespace pyrowave::policy {
   std::size_t max_bitstream_bytes(int packetsize, bool length_prefixed, bool critical_fec = false);
 
   /// Packets per pacing quantum, using the routed link speed or stream bitrate.
+  /// A client-calibrated pace replaces the default 80% link headroom; neither
+  /// paces below the stream's own demand or above the link.
   std::size_t pacing_packets_per_ms(
     std::uint64_t link_bps, int bitrate_kbps,
     std::size_t payload_bytes, std::size_t wire_bytes,
-    std::size_t frame_bytes = 0, int framerate = 0
+    std::size_t frame_bytes = 0, int framerate = 0,
+    std::uint64_t calibrated_pace_bps = 0
   );
 
   enum class framing_e {
@@ -218,6 +221,20 @@ namespace pyrowave::policy {
     double stable_seconds = 0.0;
   };
 
+  /// RTP extension, Ethernet framing, IPv6, UDP, and AES-GCM prefix.
+  constexpr std::size_t MAX_PACKET_WIRE_OVERHEAD_BYTES = 16 + 38 + 40 + 8 + 32;
+
+  struct wire_budget_t {
+    int packetsize;
+    int critical_fec_percentage;
+    std::size_t min_parity_shards = 2;
+    std::size_t envelope_bytes = 0;
+  };
+
+  /// Frame payload that fits a wire allowance, including headers and baseline FEC.
+  /// Reserve the largest feasible critical-block parity, without taxing all detail.
+  std::size_t frame_payload_budget(std::size_t wire_bytes, const wire_budget_t &transport);
+
   /**
    * @brief Per-frame byte budget for an intra-only codec.
    *
@@ -226,10 +243,12 @@ namespace pyrowave::policy {
    * With stable_frame_size, the encoded image budget never exceeds one negotiated
    * frame's allowance at the current bitrate, leaving slower cadence's savings for FEC.
    * The transport capacity bounds accumulation after stalls in either mode.
+   * An optional wire budget deducts packet headers and baseline critical FEC
+   * before assigning bytes to the codec and record framing.
    */
   class budget_t {
   public:
-    budget_t(int framerate, int bitrate_kbps, std::size_t max_frame_bytes, bool stable_frame_size = false);
+    budget_t(int framerate, int bitrate_kbps, std::size_t max_frame_bytes, bool stable_frame_size = false, std::optional<wire_budget_t> transport = std::nullopt);
 
     void set_bitrate(int bitrate_kbps);
 
@@ -248,6 +267,7 @@ namespace pyrowave::policy {
   private:
     void update();
 
+    std::optional<wire_budget_t> transport;
     int bitrate_kbps;
     std::size_t max_frame_bytes;
     double nominal_interval;

@@ -40,6 +40,8 @@
       </div>
     </section>
 
+    <VirtualDisplayRecovery v-if="displayRecoverySupported(configStore.metadata?.platform || '')" />
+
     <!-- Fatal startup errors moved into Version card to avoid layout shift -->
 
     <!-- Main Grid -->
@@ -354,10 +356,24 @@
             <n-alert v-if="installedVersionNotStable" type="info" :show-icon="true">
               {{ $t('index.installed_version_not_stable') }}
             </n-alert>
-            <!-- Git compare alerts removed; date-based update checks only -->
-            <n-alert v-else-if="!stableBuildAvailable && !buildVersionIsDirty" type="success">
+            <!-- Release availability uses the shared verified updater policy. -->
+            <n-alert v-else-if="!availableUpdate && !updateFailed && !buildVersionIsDirty" type="success">
               {{ $t('index.version_latest') }}
             </n-alert>
+
+            <n-alert v-if="updateFailed" type="warning" :show-icon="true">
+              {{ $t('index.update_check_failed') }}
+            </n-alert>
+            <div class="flex justify-end">
+              <n-button
+                size="small"
+                :loading="updateLoading"
+                :disabled="updateLoading"
+                @click="retryUpdateCheck"
+              >
+                {{ $t('index.check_updates') }}
+              </n-button>
+            </div>
 
             <!-- Pre-release notice (modern banner) -->
             <n-alert
@@ -377,7 +393,7 @@
                     <div class="min-w-0">
                       <p class="text-sm m-0 font-medium">{{ $t('index.new_pre_release') }}</p>
                       <p class="text-xs opacity-80 m-0">
-                        {{ displayVersion }} → {{ preReleaseVersion.version }}
+                        {{ displayVersion }} → {{ availableVersion }}
                       </p>
                     </div>
                   </div>
@@ -402,11 +418,19 @@
                       type="primary"
                       strong
                       class="w-full justify-center sm:w-auto"
-                      :href="preReleaseRelease?.html_url"
+                      :href="availableReleaseUrl"
                       target="_blank"
                     >
                       <i class="fas fa-download" />
                       <span>{{ $t('index.download') }}</span>
+                    </n-button>
+                    <n-button
+                      size="small"
+                      secondary
+                      class="w-full justify-center sm:w-auto"
+                      @click="dismissAvailableUpdate"
+                    >
+                      {{ $t('index.dismiss_update') }}
                     </n-button>
                   </div>
                 </div>
@@ -414,8 +438,8 @@
                   v-if="showPreNotes"
                   class="rounded-lg border border-dark/10 dark:border-light/10 bg-surface/60 dark:bg-dark/40 p-3 overflow-auto max-h-72 text-xs"
                 >
-                  <p class="font-semibold mb-2">{{ preReleaseRelease?.name }}</p>
-                  <pre class="font-mono whitespace-pre-wrap">{{ preReleaseRelease?.body }}</pre>
+                  <p class="font-semibold mb-2">{{ availableRelease?.name }}</p>
+                  <pre class="font-mono whitespace-pre-wrap">{{ availableRelease?.body }}</pre>
                 </div>
               </div>
             </n-alert>
@@ -438,7 +462,7 @@
                     <div class="min-w-0">
                       <p class="text-sm m-0 font-medium">{{ $t('index.new_stable') }}</p>
                       <p class="text-xs opacity-80 m-0">
-                        {{ displayVersion }} → {{ githubVersion.version }}
+                        {{ displayVersion }} → {{ availableVersion }}
                       </p>
                     </div>
                   </div>
@@ -463,11 +487,19 @@
                       type="primary"
                       strong
                       class="w-full justify-center sm:w-auto"
-                      :href="githubRelease?.html_url"
+                      :href="availableReleaseUrl"
                       target="_blank"
                     >
                       <i class="fas fa-download" />
                       <span>{{ $t('index.download') }}</span>
+                    </n-button>
+                    <n-button
+                      size="small"
+                      secondary
+                      class="w-full justify-center sm:w-auto"
+                      @click="dismissAvailableUpdate"
+                    >
+                      {{ $t('index.dismiss_update') }}
                     </n-button>
                   </div>
                 </div>
@@ -475,8 +507,8 @@
                   v-if="showStableNotes"
                   class="rounded-lg border border-dark/10 dark:border-light/10 bg-surface/60 dark:bg-dark/40 p-3 overflow-auto max-h-72 text-xs"
                 >
-                  <p class="font-semibold mb-2">{{ githubRelease?.name }}</p>
-                  <pre class="font-mono whitespace-pre-wrap">{{ githubRelease?.body }}</pre>
+                  <p class="font-semibold mb-2">{{ availableRelease?.name }}</p>
+                  <pre class="font-mono whitespace-pre-wrap">{{ availableRelease?.body }}</pre>
                 </div>
               </div>
             </n-alert>
@@ -507,13 +539,25 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { NCard, NAlert, useMessage, useDialog } from 'naive-ui';
 import ResourceCard from '@/ResourceCard.vue';
+import VirtualDisplayRecovery from '@/components/VirtualDisplayRecovery.vue';
+import { displayRecoverySupported } from '../../web/utils/displayRecovery';
 import ChangelogPanel from '@/components/ChangelogPanel.vue';
 import PlayniteReinstallButton from '@/components/PlayniteReinstallButton.vue';
-import VibepolloVersion, { GitHubRelease } from '@/sunshine_version';
+import VibepolloVersion from '@/sunshine_version';
+import type { ChangelogEntry } from '../../web/utils/changelog';
+import {
+  apiNightlyMetadata,
+  fetchUpdateReleases,
+  selectAvailableUpdate,
+  prereleasesEnabled,
+  dismissedUpdate,
+  dismissUpdate,
+  type UpdateRelease,
+} from '../../web/utils/updates';
 import { useConfigStore } from '@/stores/config';
 import { useAuthStore } from '@/stores/auth';
 import { useAppsStore } from '@/stores/apps';
@@ -523,20 +567,27 @@ import { isCrashDumpEligible, sanitizeCrashDumpStatus } from '@/utils/crashDump'
 import { toIntlLocale } from '@/utils/intlLocale';
 
 const installedVersion = ref<VibepolloVersion>(new VibepolloVersion('0.0.0'));
-const githubRelease = ref<GitHubRelease | null>(null);
-const preReleaseRelease = ref<GitHubRelease | null>(null);
-
-const githubVersion = computed(() =>
-  githubRelease.value
-    ? VibepolloVersion.fromRelease(githubRelease.value)
-    : new VibepolloVersion('0.0.0'),
-);
-const preReleaseVersion = computed(() =>
-  preReleaseRelease.value
-    ? VibepolloVersion.fromRelease(preReleaseRelease.value)
-    : new VibepolloVersion('0.0.0'),
-);
-const notifyPreReleases = ref(false);
+const availableUpdate = ref<ChangelogEntry | null>(null);
+const availableRelease = ref<UpdateRelease | null>(null);
+const availableVersion = computed(() => {
+  const embeddedVersion = availableRelease.value ? apiNightlyMetadata(availableRelease.value)?.['version'] : undefined;
+  return typeof embeddedVersion === 'string'
+    ? embeddedVersion
+    : (availableUpdate.value?.tag || '').replace(/^v/, '');
+});
+const availableReleaseUrl = computed(() => {
+  const url = availableUpdate.value?.url;
+  return url?.startsWith('https://github.com/Nonary/Vibepollo/releases/')
+    ? url
+    : 'https://github.com/Nonary/Vibepollo/releases';
+});
+const notifyPreReleases = ref(true);
+const installedUpdateVersion = ref('');
+const updateLoading = ref(false);
+const updateFailed = ref(false);
+let stopped = false;
+let updateController: AbortController | undefined;
+let updateTimeout: ReturnType<typeof setTimeout> | undefined;
 const showPreNotes = ref(false);
 const showStableNotes = ref(false);
 const loading = ref(true);
@@ -561,6 +612,7 @@ if (typeof window !== 'undefined') {
 // Playnite extension status
 type PlayniteStatus = {
   installed: boolean | null;
+  legacy_plugin?: boolean;
   active: boolean;
   extensions_dir?: string;
   installed_version?: string;
@@ -675,6 +727,115 @@ async function refreshPlayniteAndApps() {
   await Promise.all([refreshPlayniteStatus(), refreshAppsSnapshot()]);
 }
 
+function isUpdateDismissed(tag: string): boolean {
+  try {
+    return dismissedUpdate(window.localStorage, tag);
+  } catch {
+    return false;
+  }
+}
+
+function dismissAvailableUpdate(): void {
+  if (availableUpdate.value) {
+    try {
+      dismissUpdate(window.localStorage, availableUpdate.value.tag);
+    } catch {
+      // A blocked browser storage must not prevent dismissing this notice.
+    }
+  }
+  availableUpdate.value = null;
+  availableRelease.value = null;
+}
+
+function initializeVersion(cfg: Record<string, unknown>): void {
+  const serverVersion = configStore.metadata?.version || cfg['version'];
+  installedUpdateVersion.value = typeof serverVersion === 'string' ? serverVersion : '';
+  installedVersion.value = new VibepolloVersion(installedUpdateVersion.value || '0.0.0');
+  branch.value = typeof cfg['branch'] === 'string' ? cfg['branch'] : '';
+  commit.value = typeof cfg['commit'] === 'string' ? cfg['commit'] : '';
+  installedIsPrerelease.value =
+    installedVersion.value.preRelease.length > 0 &&
+    String(installedVersion.value.preRelease[0]).toLowerCase() !== 'stable';
+}
+
+async function checkForUpdates(
+  cfg: { notify_pre_releases?: unknown; update_check_interval?: unknown },
+  forced = false,
+): Promise<void> {
+  if (stopped || updateLoading.value) return;
+  notifyPreReleases.value = prereleasesEnabled(cfg.notify_pre_releases);
+  const interval = Number(cfg.update_check_interval ?? 86400);
+  if (Number.isFinite(interval) && interval === 0 && !forced) {
+    availableUpdate.value = null;
+    availableRelease.value = null;
+    updateFailed.value = false;
+    return;
+  }
+  if (!installedUpdateVersion.value) return;
+  updateLoading.value = true;
+  const controller = new AbortController();
+  updateController = controller;
+  updateTimeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const platform = configStore.metadata?.platform || 'unknown';
+    const architecture = configStore.metadata?.architecture || 'unknown';
+    const releases = await fetchUpdateReleases(
+      controller.signal,
+      platform,
+      notifyPreReleases.value,
+      architecture,
+    );
+    if (stopped) return;
+    controller.signal.throwIfAborted();
+    const selected = selectAvailableUpdate(
+      installedUpdateVersion.value,
+      releases,
+      cfg.notify_pre_releases,
+      platform,
+      architecture,
+    );
+    availableUpdate.value = selected && !isUpdateDismissed(selected.tag) ? selected : null;
+    availableRelease.value = availableUpdate.value
+      ? releases.find(
+          (release) =>
+            typeof release?.tag_name === 'string' &&
+            release.tag_name.replace(/^v/, '') === selected?.tag.replace(/^v/, ''),
+        ) || null
+      : null;
+    const installedTag = installedVersion.value.version.replace(/^v/, '');
+    const installedRelease = releases.find(
+      (release) =>
+        release?.draft === false &&
+        typeof release.tag_name === 'string' &&
+        release.tag_name.replace(/^v/, '') === installedTag,
+    );
+    if (installedRelease) installedIsPrerelease.value = installedRelease.prerelease === true;
+    updateFailed.value = false;
+  } catch (error) {
+    availableUpdate.value = null;
+    availableRelease.value = null;
+    if (!stopped) {
+      updateFailed.value = true;
+      // eslint-disable-next-line no-console
+      console.warn('[Dashboard] update check failed', error);
+    }
+  } finally {
+    clearTimeout(updateTimeout);
+    updateTimeout = undefined;
+    updateController = undefined;
+    updateLoading.value = false;
+  }
+}
+
+async function retryUpdateCheck(): Promise<void> {
+  if (stopped || updateLoading.value) return;
+  const cfg = await configStore.fetchConfig();
+  if (cfg && !stopped) {
+    initializeVersion(cfg);
+    await checkForUpdates(cfg, true);
+  }
+}
+
 async function runVersionChecks() {
   if (started) return; // guard
   started = true;
@@ -688,63 +849,9 @@ async function runVersionChecks() {
       loading.value = false;
       return;
     }
-    // Normalize notify pre-release flag to boolean
-    notifyPreReleases.value =
-      cfg.notify_pre_releases === true || cfg.notify_pre_releases === 'enabled';
-    const serverVersion = configStore.metadata?.version || cfg.version;
-    installedVersion.value = new VibepolloVersion(serverVersion || '0.0.0');
-    branch.value = cfg.branch || '';
-    commit.value = cfg.commit || '';
-
-    // Remote release checks (GitHub)
-    try {
-      githubRelease.value = await fetch(
-        'https://api.github.com/repos/Nonary/Vibepollo/releases/latest',
-      ).then((r) => r.json());
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[Dashboard] latest release fetch failed', e);
-    }
-    // Fetch list of releases to locate prereleases and determine installed stability
-    try {
-      const releases = await fetch('https://api.github.com/repos/Nonary/Vibepollo/releases').then(
-        (r) => r.json(),
-      );
-      if (Array.isArray(releases)) {
-        // Pick the latest prerelease by semver (not just the first one)
-        const prereleases = releases.filter((r: any) => r && r.prerelease && !r.draft);
-        if (prereleases.length > 0) {
-          let best = prereleases[0];
-          let bestV = VibepolloVersion.fromRelease(best);
-          for (let i = 1; i < prereleases.length; i++) {
-            const cand = prereleases[i];
-            const candV = VibepolloVersion.fromRelease(cand);
-            if (candV.isGreater(bestV)) {
-              best = cand;
-              bestV = candV;
-            }
-          }
-          preReleaseRelease.value = best as GitHubRelease;
-        }
-        // Determine if installed tag corresponds to a prerelease on GitHub
-        const installedTag = installedVersion.value?.version || '';
-        const installedTagV = installedTag.toLowerCase().startsWith('v')
-          ? installedTag
-          : 'v' + installedTag;
-        const match = releases.find(
-          (r: any) =>
-            r &&
-            !r.draft &&
-            typeof r.tag_name === 'string' &&
-            (r.tag_name === installedTag || r.tag_name === installedTagV),
-        );
-        installedIsPrerelease.value = !!(match && match.prerelease === true);
-      }
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[Dashboard] releases list fetch failed', e);
-    }
-    // Tag-based comparison handled below via VibepolloVersion
+    initializeVersion(cfg);
+    await checkForUpdates(cfg);
+    if (stopped) return;
 
     const plat = (configStore.metadata?.platform || '').toLowerCase();
     // ViGEm health (Windows only)
@@ -800,7 +907,12 @@ async function runVersionChecks() {
 
 onMounted(async () => {
   await auth.waitForAuthentication();
-  await runVersionChecks();
+  if (!stopped) await runVersionChecks();
+});
+onBeforeUnmount(() => {
+  stopped = true;
+  clearTimeout(updateTimeout);
+  updateController?.abort();
 });
 
 function exportCrashBundle() {
@@ -1078,26 +1190,9 @@ const installedVersionNotStable = computed(() => {
   if (installedIsPrerelease.value) return true;
   return false;
 });
-// If build is untagged (e.g., 0.0.0), display the current pre-release tag instead (when available)
-const displayVersion = computed(() => {
-  const v = installedVersion.value?.version || '0.0.0';
-  if (!v || v === '0.0.0') {
-    const pre = preReleaseRelease.value?.tag_name || '';
-    if (pre) return pre.replace(/^v/i, '');
-  }
-  return v;
-});
-const stableBuildAvailable = computed(() => {
-  if (!githubRelease.value) return false;
-  return githubVersion.value.isGreater(installedVersion.value);
-});
-const preReleaseBuildAvailable = computed(() => {
-  if (!preReleaseRelease.value || !githubRelease.value) return false;
-  return (
-    preReleaseVersion.value.isGreater(installedVersion.value) &&
-    preReleaseVersion.value.isGreater(githubVersion.value)
-  );
-});
+const displayVersion = computed(() => installedVersion.value?.version || '0.0.0');
+const stableBuildAvailable = computed(() => availableUpdate.value?.prerelease === false);
+const preReleaseBuildAvailable = computed(() => availableUpdate.value?.prerelease === true);
 const buildVersionIsDirty = computed(() => {
   if (!installedVersion.value) return false;
   return (
@@ -1156,7 +1251,7 @@ const showGoldenSnapshotOutOfDateBanner = computed(() => {
 });
 
 const playniteUpdateAvailable = computed(() => {
-  return !!(playnite.value && playnite.value.installed && playnite.value.update_available);
+  return !!(playnite.value && playnite.value.update_available);
 });
 
 const playniteApps = computed(() => getAppsSnapshot().filter((app) => isPlayniteApp(app)));
@@ -1169,7 +1264,12 @@ const hasPlayniteFullscreenApp = computed(() => {
 const showPlayniteMissingPluginBanner = computed(() => {
   const plat = (configStore.metadata?.platform || '').toLowerCase();
   if (plat !== 'windows') return false;
-  if (!playnite.value || playnite.value.active === true || playnite.value.installed !== false)
+  if (
+    !playnite.value ||
+    playnite.value.active === true ||
+    playnite.value.installed !== false ||
+    playnite.value.legacy_plugin === true
+  )
     return false;
   return playniteAutoSyncedAppsCount.value > 0 || hasPlayniteFullscreenApp.value;
 });

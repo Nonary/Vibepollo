@@ -213,6 +213,12 @@ namespace platf::dxgi {
     }
   }
 
+  void display_wgc_ipc_vram_t::request_capture_stop() noexcept {
+    if (_ipc_session) {
+      _ipc_session->request_stop();
+    }
+  }
+
   int display_wgc_ipc_vram_t::init(
     const ::video::config_t &config,
     const std::string &display_name,
@@ -254,6 +260,9 @@ namespace platf::dxgi {
     if (!_ipc_session) {
       return capture_e::error;
     }
+    if (_ipc_session->stop_requested()) {
+      return capture_e::interrupted;
+    }
 
     // We return capture::reinit for most scenarios because the logic in picking which mode to capture is all handled in the factory function.
     if (_ipc_session->should_swap_to_dxgi()) {
@@ -266,6 +275,9 @@ namespace platf::dxgi {
     }
 
     _ipc_session->initialize_if_needed();
+    if (_ipc_session->stop_requested()) {
+      return capture_e::interrupted;
+    }
     if (!_ipc_session->is_initialized()) {
       BOOST_LOG(warning) << "WGC IPC helper failed to initialize; requesting capture reinit.";
       return capture_e::reinit;
@@ -476,6 +488,12 @@ namespace platf::dxgi {
     game_refresh_target.reset();
   }
 
+  void display_wgc_ipc_ram_t::request_capture_stop() noexcept {
+    if (_ipc_session) {
+      _ipc_session->request_stop();
+    }
+  }
+
   int display_wgc_ipc_ram_t::init(
     const ::video::config_t &config,
     const std::string &display_name,
@@ -524,6 +542,9 @@ namespace platf::dxgi {
     if (!_ipc_session) {
       return capture_e::error;
     }
+    if (_ipc_session->stop_requested()) {
+      return capture_e::interrupted;
+    }
 
     if (_ipc_session->should_swap_to_dxgi()) {
       return capture_e::reinit;
@@ -535,6 +556,9 @@ namespace platf::dxgi {
     }
 
     _ipc_session->initialize_if_needed();
+    if (_ipc_session->stop_requested()) {
+      return capture_e::interrupted;
+    }
     if (!_ipc_session->is_initialized()) {
       BOOST_LOG(warning) << "WGC IPC helper failed to initialize; requesting capture reinit.";
       return capture_e::reinit;

@@ -1,4 +1,16 @@
 {
+  "service_startup": {
+    "title": "Windows startup",
+    "description": "Choose whether the installed service starts automatically with Windows. Turning this off selects Manual startup, so you can still launch the app when needed. This changes future startup only; the current stream keeps running.",
+    "automatic": "Start automatically with Windows",
+    "mode": "Service startup mode",
+    "manual": "Manual",
+    "disabled": "Disabled",
+    "unknown": "Unavailable",
+    "saved": "Startup preference saved. The current service and stream keep running.",
+    "unavailable": "Unable to read or save the service startup preference. Refresh and try again.",
+    "automatic_mode": "Automatic"
+  },
   "_common": {
     "all": "All",
     "apply": "Apply",
@@ -388,6 +400,15 @@
     "exclude_global_state_cmd": "Exclude Global State Commands"
   },
   "config": {
+    "app_focus_title": "Managed application focus",
+    "app_focus_description": "Bring games launched from managed libraries to the foreground. Applies to Steam, Lutris and Playnite on their supported platforms.",
+    "app_focus_attempts": "Focus count",
+    "app_focus_attempts_desc": "Number of confirmed focus applications after launch (0 disables automatic focus).",
+    "app_focus_timeout_secs": "Focus timeout (seconds)",
+    "app_focus_timeout_secs_desc": "Wait for the game window and reapply focus within this time (0 disables automatic focus).",
+    "app_focus_exit_on_first": "Stop after the first successful focus",
+    "app_focus_exit_on_first_desc": "Stop once a game window reaches the foreground; otherwise continue until the focus count or timeout is reached.",
+
     "adapter_name": "Adapter Name",
     "adapter_name_default": "Automatic (recommended)",
     "adapter_name_desc_linux_1": "Manually specify a GPU to use for capture.",
@@ -412,7 +433,7 @@
     "amd_preanalysis_desc": "This enables rate-control preanalysis, which may increase quality at the expense of increased encoding latency.",
     "amd_quality": "AMF Quality",
     "amd_quality_balanced": "balanced -- balance speed and quality",
-    "amd_quality_desc": "This controls the balance between encoding speed and quality. The default is Balanced. Auto leaves the property unset so the selected AMF usage preset can choose it.",
+    "amd_quality_desc": "This controls the balance between encoding speed and quality. The default is Speed. Auto leaves the property unset so the selected AMF usage preset can choose it.",
     "amd_quality_group": "AMF Quality Settings (native + FFmpeg)",
     "amd_quality_quality": "quality -- prefer quality",
     "amd_quality_speed": "speed -- prefer speed",

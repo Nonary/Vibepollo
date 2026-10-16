@@ -19,9 +19,22 @@
   <Fragment>
     <!-- Pull this fragment into the CPack-generated MSI -->
     <FeatureRef Id="ProductFeature"/>
-    
+    <Property Id="DAILY_UNSIGNED_DRIVER_POLICY" Value="$(var.DailyUnsignedDriverPolicy)" Secure="yes"/>
+    <!-- Driver selection covers the verified reusable beta signer; opt-outs skip trust. -->
+    <CustomAction Id="RestoreSavedDisplayDriverSelection" Property="INSTALL_DISPLAY_DRIVERS" Value="[SAVED_DISPLAY_DRIVER_SELECTION]"/>
+    <CustomAction Id="DefaultDisplayDriverSelection" Property="INSTALL_DISPLAY_DRIVERS" Value="1"/>
+    <CustomAction Id="RestoreSavedGamepadDriverSelection" Property="INSTALL_VIRTUAL_GAMEPAD_DRIVER" Value="[SAVED_GAMEPAD_DRIVER_SELECTION]"/>
+    <CustomAction Id="DefaultGamepadDriverSelection" Property="INSTALL_VIRTUAL_GAMEPAD_DRIVER" Value="$(var.VhfGamepadDriverBundled)"/>
+    <CustomAction Id="EnsureDriverSelectionsRepair" Property="REINSTALL" Value="InstallerDriverSelections"/>
+    <CustomAction Id="ExtendDriverSelectionsRepair" Property="REINSTALL" Value="[REINSTALL],InstallerDriverSelections"/>
+    <CustomAction Id="DefaultDriverSelectionsRepairMode" Property="REINSTALLMODE" Value="m"/>
+    <Property Id="ALLOW_LOCAL_GAMEPAD_CERTIFICATE_TRUST" Value="$(var.VhfGamepadAllowLocalTest)" Secure="yes"/>
+    <Property Id="LOCAL_GAMEPAD_CERTIFICATE_THUMBPRINT" Value="$(var.LocalGamepadCertificateThumbprint)" Secure="yes"/>
+    <Property Id="LOCAL_GAMEPAD_CERTIFICATE_SUBJECT" Value="$(var.LocalGamepadCertificateSubject)"/>
+    <Property Id="LOCAL_GAMEPAD_DRIVER_VERSION" Value="$(var.LocalGamepadDriverVersion)"/>
+
     <!-- Keep Restart Manager enabled (default) to stop services in basic/silent UI -->
-    
+
     <!-- VBScript to show a final repair-complete notification (full UI only) -->
     <Binary Id="RepairCompleteVbs" SourceFile="$(sys.SOURCEFILEDIR)repair_complete.vbs"/>
 
@@ -74,6 +87,12 @@
 
   <Fragment>
     <DirectoryRef Id="INSTALL_ROOT">
+      <Component Id="InstallerDriverSelectionPreferences" Guid="*" Win64="yes">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Nonary\Vibepollo\Installer\DriverSelections">
+          <RegistryValue Name="DisplayEnabled" Type="string" Value="[INSTALL_DISPLAY_DRIVERS]" KeyPath="yes"/>
+          <RegistryValue Name="GamepadEnabled" Type="string" Value="[INSTALL_VIRTUAL_GAMEPAD_DRIVER]"/>
+        </RegistryKey>
+      </Component>
       <Component Id="SudoVdaRegistryDefaults" Guid="*" Win64="yes">
         <RegistryKey Root="HKLM" Key="SOFTWARE\SudoMaker\SudoVDA">
           <RegistryValue Id="RegSudoVdaSdrBits" Name="sdrBits" Type="integer" Value="10" KeyPath="yes"/>
@@ -137,10 +156,11 @@
          quarantine, ACLs, missing payload on upgrade) must NOT roll back an otherwise
          complete install. Vibepollo reconciles drivers and the layer at startup and
          surfaces a Web UI toggle + dashboard warning. -->
-    <CustomAction Id="InstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="InstallVirtualDisplayDriver" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="InstallVirtualGamepadDriver" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="RegisterVulkanHdrLayer" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="InstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="InstallVirtualDisplayDriver" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="InstallVirtualGamepadDriver" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="InstallUsbIpTransport" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="RegisterVulkanHdrLayer" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UpdatePathAdd" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="UpdatePathRemove" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
 
@@ -156,10 +176,10 @@
     <CustomAction Id="KillProcsQuietImmediate" BinaryKey="WixCA" DllEntry="CAQuietExec" Return="ignore" />
     <CustomAction Id="KillProcsQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="RemoveServiceQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="UninstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="UninstallVirtualDisplayDriver" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="RemoveVirtualGamepadRoot" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="UnregisterVulkanHdrLayer" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="UninstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="UninstallVirtualDisplayDriver" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="RemoveVirtualGamepadRoot" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="UnregisterVulkanHdrLayer" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="FactoryResetAppData" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="CleanupEmptyInstallRoot" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
 
@@ -179,19 +199,19 @@
          server while probing or installing the driver. -->
     <CustomAction Id="SetInstallSudovda"
                  Property="InstallSudovda"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sudovda\install.ps1&quot;"/>
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sudovda\install.ps1&quot; -InstallerBestEffort"/>
 
     <!-- The Sunshine virtual display driver is installed by default unless explicitly opted out. -->
     <CustomAction Id="SetInstallVirtualDisplayDriver"
                  Property="InstallVirtualDisplayDriver"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sunshine\install.ps1&quot; -InstallerBestEffort"/>
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sunshine\install.ps1&quot; -InstallerBestEffort -DailyUnsignedPolicy [DAILY_UNSIGNED_DRIVER_POLICY]"/>
 
     <!-- The VHF package is a 64-bit UMDF source driver. Its own signed setup
          tool creates the ROOT\VIBESHINEVIRTUALGAMEPAD source node after the
          catalog has been staged in the Driver Store. -->
     <CustomAction Id="SetInstallVirtualGamepadDriver"
                  Property="InstallVirtualGamepadDriver"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\vhf-gamepad\install.ps1&quot; -InstallerBestEffort -AllowLocalTestCertificate:[ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE]"/>
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\vhf-gamepad\install.ps1&quot; -InstallerBestEffort -AllowLocalTestCertificate:[ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE] -DailyUnsignedPolicy [DAILY_UNSIGNED_DRIVER_POLICY] -AllowLocalGamepadCertificateTrust [ALLOW_LOCAL_GAMEPAD_CERTIFICATE_TRUST] -ConsentCertificateThumbprint &quot;[LOCAL_GAMEPAD_CERTIFICATE_THUMBPRINT]&quot;"/>
 
     <CustomAction Id="SetRegisterVulkanHdrLayer"
                  Property="RegisterVulkanHdrLayer"
@@ -200,6 +220,10 @@
     <CustomAction Id="SetUpdatePathAdd"
                  Property="UpdatePathAdd"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\update-path.bat&quot; add&quot;"/>
+
+    <CustomAction Id="SetInstallUsbIpTransport"
+                 Property="InstallUsbIpTransport"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\usbip-win2\install.ps1&quot; -InstallerBestEffort"/>
 
 
     <!-- Guard NV prefs restore on uninstall: only run if sunshine.exe still exists -->
@@ -246,10 +270,10 @@
     <!-- Immediate setters for quiet process kill and service removal on manual uninstall -->
     <CustomAction Id="SetKillProcsQuietImmediate"
                  Property="QtExecCmdLine"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','sunshine_display_helper','playnite-launcher','playnite_launcher','apollo','apollosvc'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','sunshine_display_helper','playnite-launcher','playnite_launcher','apollo','apollosvc','vibepollo_dualsense_haptics'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
     <CustomAction Id="SetKillProcsQuiet"
                  Property="KillProcsQuiet"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','sunshine_display_helper','playnite-launcher','playnite_launcher','apollo','apollosvc'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','sunshine_display_helper','playnite-launcher','playnite_launcher','apollo','apollosvc','vibepollo_dualsense_haptics'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
 
     <CustomAction Id="SetUpdatePathRemove"
                  Property="UpdatePathRemove"

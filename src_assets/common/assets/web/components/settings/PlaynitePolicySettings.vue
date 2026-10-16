@@ -7,6 +7,9 @@ import { apiGet, apiPatch } from '@/api/client';
 import { AppButton, InlineAlert, SettingRow } from '@/components/ui';
 import { extendedDefaults, playnitePolicyFields } from '@/configs/extendedSettings';
 import { configBoolean } from '@/utils/settings';
+import SettingsIntegrationPath from './SettingsIntegrationPath.vue';
+defineProps<{ needsDirectory?: boolean }>();
+const emit = defineEmits<{ saved: [] }>();
 interface Entry {
   id: string;
   name: string;
@@ -120,6 +123,7 @@ async function save() {
     const result = await apiPatch<{ status?: boolean }>('/api/config', patch);
     if (result.status === false) throw new Error('save-rejected');
     original.value = submitted;
+    emit('saved');
   } catch {
     failed.value = true;
   } finally {
@@ -135,7 +139,7 @@ onMounted(() => {
   <details
     id="playnite-policies"
     class="integration-settings"
-    :open="route.hash === '#playnite-policies'"
+    :open="needsDirectory || route.hash === '#playnite-policies'"
   >
     <summary>{{ t('ui.integrations.playnite.policies_title') }}</summary>
     <form @submit.prevent="save">
@@ -149,7 +153,11 @@ onMounted(() => {
           <SettingRow
             v-for="field in playnitePolicyFields"
             :key="field.key"
-            :label="label(field.key)"
+            :label="
+              field.key === 'playnite_install_dir'
+                ? t('ui.settings.integrations.playnite.directory_label')
+                : label(field.key)
+            "
             :control-id="field.key"
           >
             <input
@@ -157,6 +165,12 @@ onMounted(() => {
               :id="field.key"
               v-model="values[field.key]"
               type="checkbox"
+            />
+            <SettingsIntegrationPath
+              v-else-if="field.key === 'playnite_install_dir'"
+              kind="playnite"
+              :input-id="field.key"
+              v-model="values[field.key]"
             />
             <input
               v-else

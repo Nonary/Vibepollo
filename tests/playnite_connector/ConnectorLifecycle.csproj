@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <ConnectorFrameworkMajor Condition="'$(ConnectorFrameworkMajor)' == ''">8</ConnectorFrameworkMajor>
+    <TargetFramework>net$(ConnectorFrameworkMajor).0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <ConnectorSourceRoot Condition="'$(ConnectorSourceRoot)' == ''">../../plugins/playnite/SunshinePlaynite/src</ConnectorSourceRoot>
+    <NoWarn>CS0067</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(ConnectorSourceRoot)/ConnectorService.cs" Link="ConnectorService.cs" />
+    <Compile Include="$(ConnectorSourceRoot)/PipeConnection.cs" Link="PipeConnection.cs" />
+    <Compile Include="$(ConnectorSourceRoot)/PlayniteDataMapper.cs" Link="PlayniteDataMapper.cs" />
+    <Compile Include="$(ConnectorSourceRoot)/EnvironmentScopes.cs" Link="EnvironmentScopes.cs" />
+  </ItemGroup>
+</Project>

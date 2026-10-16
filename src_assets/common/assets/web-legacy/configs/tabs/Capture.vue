@@ -438,6 +438,9 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
   <div class="config-page space-y-6">
     <div class="space-y-4">
       <ConfigFieldRenderer setting-key="capture" v-model="config.capture" />
+      <NAlert v-if="platform === 'linux' && config.capture && config.capture !== 'kms'" type="warning">
+        {{ t('config.capture_virtual_warning') }}
+      </NAlert>
       <ConfigFieldRenderer setting-key="encoder" v-model="config.encoder" />
 
       <section

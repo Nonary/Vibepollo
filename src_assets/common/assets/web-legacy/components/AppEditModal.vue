@@ -130,6 +130,17 @@
             </n-checkbox>
             <n-checkbox
               v-if="isWindows"
+              v-model:checked="form.dualsenseHaptics"
+              size="small"
+              class="md:col-span-2"
+            >
+              <div class="flex flex-col">
+                <span>{{ t('apps.dualsense_haptics') }}</span>
+                <span class="text-[11px] opacity-60">{{ t('apps.dualsense_haptics_desc') }}</span>
+              </div>
+            </n-checkbox>
+            <n-checkbox
+              v-if="isWindows"
               v-model:checked="displayOverrideEnabled"
               size="small"
               class="md:col-span-2"
@@ -611,6 +622,7 @@ function fresh(): AppForm {
     excludeGlobalStateCmd: false,
     configOverrides: {},
     elevated: false,
+    dualsenseHaptics: false,
     autoDetach: true,
     waitAll: true,
     terminateOnPause: false,
@@ -981,6 +993,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     excludeGlobalStateCmd: !!src['exclude-global-state-cmd'],
     configOverrides: rtxHdrOverrides.rest,
     elevated: !!src.elevated,
+    dualsenseHaptics: !!src['dualsense-haptics'],
     autoDetach: src['auto-detach'] !== undefined ? !!src['auto-detach'] : base.autoDetach,
     waitAll: src['wait-all'] !== undefined ? !!src['wait-all'] : base.waitAll,
     terminateOnPause:
@@ -1050,6 +1063,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
       ? { 'config-overrides': configOverridesPayload }
       : {}),
     elevated: !!f.elevated,
+    'dualsense-haptics': !!f.dualsenseHaptics,
     'auto-detach': !!f.autoDetach,
     'wait-all': !!f.waitAll,
     'terminate-on-pause': !!f.terminateOnPause,

@@ -1045,6 +1045,14 @@ struct WgcCaptureDependencies {
 
 class WgcCaptureManager {
 private:
+  struct frame_callback_state_t {
+    std::mutex mutex;
+    std::condition_variable drained;
+    WgcCaptureManager *owner = nullptr;
+    std::size_t active = 0;
+    bool shutting_down = false;
+  };
+
   enum class scratch_state_e {
     free,
     reserved,
@@ -1067,6 +1075,7 @@ private:
   static constexpr auto WGC_DRAIN_LOG_INTERVAL = std::chrono::seconds(5);
 
   std::atomic<bool> _shutting_down {false};
+  std::shared_ptr<frame_callback_state_t> _frame_callback_state;
   Direct3D11CaptureFramePool _frame_pool = nullptr;  ///< WinRT frame pool for capture operations
   GraphicsCaptureSession _capture_session = nullptr;  ///< WinRT capture session for monitor/window capture
   winrt::event_token _frame_arrived_token {};  ///< Event token for frame arrival notifications
@@ -1139,6 +1148,8 @@ public:
       _capture_format(capture_format),
       _height(height),
       _width(width) {
+    _frame_callback_state = std::make_shared<frame_callback_state_t>();
+    _frame_callback_state->owner = this;
     _max_buffer_size = std::clamp<uint32_t>(
       g_config.max_frame_buffer_size ? g_config.max_frame_buffer_size : ABSOLUTE_MAX_BUFFER_SIZE,
       1,
@@ -1175,22 +1186,32 @@ public:
       return;
     }
 
-    cleanup_capture_session();
-    cleanup_frame_pool();
+    const auto callback_state = _frame_callback_state;
+    {
+      std::lock_guard lock(callback_state->mutex);
+      callback_state->shutting_down = true;
+    }
+    revoke_frame_arrived_handler();
 
-    // Ensure any in-flight FrameArrived callbacks have finished before destructing.
-    // This avoids use-after-free on shutdown paths triggered by display reinit/HDR changes.
-    auto last_log = std::chrono::steady_clock::now();
-    while (_outstanding_frames.load(std::memory_order_acquire) > 0) {
-      auto now = std::chrono::steady_clock::now();
-      if (now - last_log > std::chrono::seconds(2)) {
-        last_log = now;
-        BOOST_LOG(warning) << "Waiting for " << _outstanding_frames.load(std::memory_order_relaxed)
-                           << " in-flight frame(s) to finish before shutdown...";
+    // The handler captures callback_state by shared ownership. A callback that
+    // was dispatched before revocation may still enter after this object is
+    // destroyed, but it will observe shutting_down without touching owner.
+    // Callbacks admitted before shutdown keep owner valid until they leave.
+    {
+      std::unique_lock lock(callback_state->mutex);
+      while (callback_state->active != 0) {
+        if (!callback_state->drained.wait_for(lock, std::chrono::seconds(2), [&]() {
+              return callback_state->active == 0;
+            })) {
+          BOOST_LOG(warning) << "Waiting for " << callback_state->active
+                             << " in-flight frame(s) to finish before shutdown...";
+        }
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      callback_state->owner = nullptr;
     }
 
+    cleanup_capture_session();
+    cleanup_frame_pool();
     stop_delivery_thread();
   }
 
@@ -1225,13 +1246,23 @@ private:
     }
   }
 
+  void revoke_frame_arrived_handler() noexcept {
+    try {
+      if (_frame_pool && _frame_arrived_token.value != 0) {
+        _frame_pool.FrameArrived(_frame_arrived_token);
+        _frame_arrived_token.value = 0;
+      }
+    } catch (const winrt::hresult_error &ex) {
+      BOOST_LOG(error) << "Exception removing FrameArrived handler: " << ex.code() << " - " << winrt::to_string(ex.message());
+    } catch (...) {
+      BOOST_LOG(error) << "Unknown exception removing FrameArrived handler";
+    }
+  }
+
   void cleanup_frame_pool() noexcept {
     try {
       if (_frame_pool) {
-        if (_frame_arrived_token.value != 0) {
-          _frame_pool.FrameArrived(_frame_arrived_token);  // Remove handler
-          _frame_arrived_token.value = 0;
-        }
+        revoke_frame_arrived_handler();
         _frame_pool.Close();
         _frame_pool = nullptr;
       }
@@ -1947,30 +1978,33 @@ public:
       return false;
     }
 
-    _frame_arrived_token = _frame_pool.FrameArrived([this](Direct3D11CaptureFramePool const &sender, winrt::Windows::Foundation::IInspectable const &) {
-      if (_shutting_down.load(std::memory_order_acquire)) {
-        return;
-      }
-
-      struct outstanding_guard_t {
-        std::atomic<int> &counter;
-        const int value;
-
-        explicit outstanding_guard_t(std::atomic<int> &c):
-            counter(c),
-            value(c.fetch_add(1, std::memory_order_acq_rel) + 1) {}
-
-        ~outstanding_guard_t() {
-          counter.fetch_sub(1, std::memory_order_acq_rel);
+    const auto callback_state = _frame_callback_state;
+    _frame_arrived_token = _frame_pool.FrameArrived([callback_state](Direct3D11CaptureFramePool const &sender, winrt::Windows::Foundation::IInspectable const &) {
+      WgcCaptureManager *owner = nullptr;
+      {
+        std::lock_guard lock(callback_state->mutex);
+        if (callback_state->shutting_down || !callback_state->owner) {
+          return;
         }
-      } guard {_outstanding_frames};
-
-      int prev_peak = _peak_outstanding.load(std::memory_order_relaxed);
-      while (guard.value > prev_peak &&
-             !_peak_outstanding.compare_exchange_weak(prev_peak, guard.value, std::memory_order_release, std::memory_order_relaxed)) {
+        ++callback_state->active;
+        owner = callback_state->owner;
       }
 
-      process_frame(sender);
+      const int value = owner->_outstanding_frames.fetch_add(1, std::memory_order_acq_rel) + 1;
+      auto outstanding_guard = util::fail_guard([callback_state, owner]() {
+        owner->_outstanding_frames.fetch_sub(1, std::memory_order_acq_rel);
+        std::lock_guard lock(callback_state->mutex);
+        if (--callback_state->active == 0) {
+          callback_state->drained.notify_all();
+        }
+      });
+
+      int prev_peak = owner->_peak_outstanding.load(std::memory_order_relaxed);
+      while (value > prev_peak &&
+             !owner->_peak_outstanding.compare_exchange_weak(prev_peak, value, std::memory_order_release, std::memory_order_relaxed)) {
+      }
+
+      owner->process_frame(sender);
     });
 
     try {

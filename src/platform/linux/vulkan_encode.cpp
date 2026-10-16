@@ -504,6 +504,16 @@ namespace vk {
         case DRM_FORMAT_XBGR8888:
         case DRM_FORMAT_ABGR8888:
           return {VK_FORMAT_R8G8B8A8_UNORM, identity};
+        // Little-endian RA24/BA24 put alpha first in memory. Sample them
+        // as RGBA bytes and restore the actual RGB channels in the image view.
+        case DRM_FORMAT_RGBA8888:
+          return {VK_FORMAT_R8G8B8A8_UNORM, {
+            VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_B,
+            VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R}};
+        case DRM_FORMAT_BGRA8888:
+          return {VK_FORMAT_R8G8B8A8_UNORM, {
+            VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B,
+            VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_R}};
         case DRM_FORMAT_XRGB2101010:
         case DRM_FORMAT_ARGB2101010:
           return {VK_FORMAT_A2R10G10B10_UNORM_PACK32, identity};

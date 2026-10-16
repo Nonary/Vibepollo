@@ -36,9 +36,10 @@ require_root() { return 0; }
 load_settings() { return 0; }
 fixture_getent() { return 0; }
 fixture_stat() {
-  if [[ "${@: -1}" == /var/lib ]]; then printf 'root:root:755:directory\n'
-  elif [[ "$fail_at" == policy ]]; then printf 'alice:alice:644:regular file\n'
-  else printf 'root:root:600:regular file\n'; fi
+  [[ "$1" == -c && "$2" == '%U:%G:%a' ]] || return 1
+  if [[ "${@: -1}" == /var/lib ]]; then printf 'root:root:755\n'
+  elif [[ "$fail_at" == policy ]]; then printf 'alice:alice:644\n'
+  else printf 'root:root:600\n'; fi
 }
 service_user=vibepollo
 machine_host=/usr/libexec/vibeshine/vibepollo-machine-host

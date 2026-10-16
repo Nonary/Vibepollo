@@ -1,0 +1,64 @@
+// Test-only replacement methods. Only inventory, MSI metadata/process, logging,
+// and secure-directory creation/deletion boundaries are replaced. The stash,
+// pre-uninstall decision/dispatch, restore, and recovery methods stay production.
+    public static InstalledProductInfo GetInstalledVibeshineProduct() {
+      return RollbackRegression.Installed;
+    }
+    public static InstalledProductInfo GetInstalledVibepolloProduct() {
+      return RollbackRegression.InstalledTarget;
+    }
+    private static PayloadMsiInfo TryGetPayloadMsiInfo(string msiPath) {
+      if (msiPath == RollbackRegression.IncomingPath) return RollbackRegression.Incoming;
+      RollbackRegression.Events.Add("validate-stash");
+      if (RollbackRegression.MetadataThrows) throw new IOException("mock unreadable MSI");
+      return RollbackRegression.Cached;
+    }
+    private static string TryGetProductLocalPackagePath(string productCode) {
+      RollbackRegression.Check(productCode == RollbackRegression.Code, "stash requests exact installed identity");
+      RollbackRegression.Events.Add("locate-cache");
+      return RollbackRegression.CachePath;
+    }
+    private static bool TryCreateSecureInstallerRecoveryDirectory(out string recoveryDirectory, out string errorMessage) {
+      recoveryDirectory = Path.Combine(RollbackRegression.Root, "recovery-" + Guid.NewGuid().ToString("N"));
+      errorMessage = string.Empty;
+      RollbackRegression.Events.Add("create-recovery");
+      Directory.CreateDirectory(recoveryDirectory);
+      RollbackRegression.LastRecoveryDirectory = recoveryDirectory;
+      if (RollbackRegression.CopyFails) Directory.CreateDirectory(Path.Combine(recoveryDirectory, "previous_cached.msi"));
+      return !RollbackRegression.DirectoryFails;
+    }
+    private static void TryDeleteInstallerRecoveryDirectory(string recoveryDirectory) {
+      RollbackRegression.Check(Path.GetDirectoryName(recoveryDirectory) == RollbackRegression.Root, "cleanup stays inside exact test root");
+      RollbackRegression.Events.Add("delete-recovery");
+      if (Directory.Exists(recoveryDirectory)) Directory.Delete(recoveryDirectory, true);
+    }
+    private static void TryDeleteFile(string path) {
+      RollbackRegression.Check(Path.GetDirectoryName(path) == RollbackRegression.Root, "file cleanup stays inside exact test root");
+      File.Delete(path);
+    }
+    private static InstallerResult UninstallInstalledProducts(string logPhase, bool hiddenWindow, bool requestElevationIfNeeded, bool factoryResetAppData, bool removeVirtualDisplayDriver, bool failWhenMissing, IReadOnlyCollection<InstalledProductKind> uninstallKinds, bool removeVirtualGamepadDriver = false) {
+      RollbackRegression.Events.Add("uninstall");
+      RollbackRegression.Check(RollbackRegression.Events.Contains("validate-stash"), "uninstall follows production stash identity validation");
+      var copy = Path.Combine(RollbackRegression.LastRecoveryDirectory, "previous_cached.msi");
+      RollbackRegression.Check(File.Exists(copy) && File.ReadAllBytes(copy).SequenceEqual(File.ReadAllBytes(RollbackRegression.CachePath)), "uninstall sees byte-exact stash before removing source");
+      RollbackRegression.Check(!factoryResetAppData && !removeVirtualDisplayDriver && !removeVirtualGamepadDriver && !failWhenMissing, "legacy replacement preserves configuration and driver selections");
+      RollbackRegression.Check(uninstallKinds.Count == 1 && uninstallKinds.Contains(InstalledProductKind.Vibeshine), "only own product is selected");
+      RollbackRegression.Check(hiddenWindow == RollbackRegression.Hidden && requestElevationIfNeeded == RollbackRegression.Elevate, "pre-uninstall forwards window/elevation policy");
+      if (RollbackRegression.UninstallCode == 0 || RollbackRegression.UninstallCode == 3010) RollbackRegression.Installed = null;
+      return new InstallerResult { Operation = InstallerOperation.Uninstall, ExitCode = RollbackRegression.UninstallCode };
+    }
+    private static string BuildLogPath(string phase) {
+      return Path.Combine(RollbackRegression.Root, phase + ".log");
+    }
+    private static void AppendInstallerLogMessage(string logPath, string message) {
+      RollbackRegression.Events.Add("restore-log");
+    }
+    private static int RunMsiexec(IReadOnlyList<string> arguments, bool hiddenWindow, bool requestElevationIfNeeded) {
+      RollbackRegression.Events.Add("restore");
+      RollbackRegression.RestoreArguments = arguments.ToList();
+      RollbackRegression.Check(hiddenWindow && !requestElevationIfNeeded, "restore is quiet and does not silently elevate");
+      if (RollbackRegression.RestoreThrows) throw new IOException("mock restore start failure");
+      RollbackRegression.Installed = RollbackRegression.RestoredProduct;
+      RollbackRegression.InstalledTarget = RollbackRegression.RestoredTarget;
+      return RollbackRegression.RestoreCode;
+    }

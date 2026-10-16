@@ -23,6 +23,11 @@ on:
         required: false
         type: string
         default: ''
+      daily_unsigned:
+        description: Enforce unsigned daily driver safety and execute mandatory tests
+        required: false
+        type: boolean
+        default: false
       build_only:
         required: false
         type: boolean
@@ -117,6 +122,10 @@ on:
       signpath_api_token:
         required: false
       truehdr_runtime_token:
+        required: false
+      daily_gamepad_pfx_base64:
+        required: false
+      daily_gamepad_pfx_password:
         required: false
 
 jobs:
@@ -227,11 +236,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ inputs.release_commit }}
-          VHF_ARCHIVE_SHA256: a45a8ae27d2764ad26a4b89d43d1e2dc43510d84bddd5899aac7c80499754782
-          VHF_DRIVER_VER: 09/22/2026,0.1.0.39
+          VHF_ARCHIVE_SHA256: 56e57fc70b9c3fdc5dfd0f44f01255275c114711b46521224204a385cde3a6e2
+          VHF_DRIVER_VER: 10/04/2026,0.1.0.48
           VHF_PROTOCOL_VERSION: '2'
-          VHF_SOURCE_REVISION: 4b56fb9da177f320fb2d7ddb1b6262e5d55d2750
-          VHF_TAG: v0.1.0-beta.6
+          VHF_SOURCE_REVISION: 9edbce11ad71e9455867c356c8368a6b39fa2242
+          VHF_TAG: v0.1.0-beta.7
         run: |
           $ErrorActionPreference = 'Stop'
           $gitlink = (git rev-parse "$($env:RELEASE_COMMIT):third-party/libvirtualgamepad").Trim()
@@ -263,7 +272,7 @@ jobs:
     needs:
       - fetch_vhf_gamepad_release
     if: inputs.artifact_source_run_id == '' && needs.fetch_vhf_gamepad_release.result == 'success'
-    runs-on: ${{ inputs.use_self_hosted && github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Windows", "X64", "windows-release"]') || fromJSON('["windows-2022"]') }}
+    runs-on: ${{ !inputs.daily_unsigned && inputs.use_self_hosted && github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Windows", "X64", "windows-release"]') || fromJSON('["windows-2022"]') }}
     outputs:
       msi_name: ${{ steps.package-windows-msi.outputs.msi_name }}
       symbol_pack_name: ${{ steps.package-windows-symbols.outputs.symbol_pack_name }}
@@ -301,6 +310,16 @@ jobs:
             toolchain: ucrt-x86_64
     steps:
 
+      - name: Enforce GitHub-hosted daily builds
+        if: inputs.daily_unsigned
+        shell: pwsh
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+            throw 'Daily builds require GitHub-hosted runners.'
+          }
+
       - name: Prepare self-hosted build tools
         if: runner.environment == 'self-hosted'
         shell: pwsh
@@ -321,8 +340,26 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           ref: ${{ inputs.release_commit }}
-          fetch-depth: 1
+          fetch-depth: ${{ inputs.daily_unsigned && '0' || '1' }}
+          fetch-tags: ${{ inputs.daily_unsigned }}
           submodules: recursive
+
+      - name: Enforce unsigned daily build policy
+        if: inputs.daily_unsigned
+        shell: pwsh
+        env:
+          BUILD_TESTS: ${{ inputs.build_tests }}
+          BUILD_ONLY: ${{ inputs.build_only }}
+          ARTIFACT_SOURCE_RUN_ID: ${{ inputs.artifact_source_run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SIGNPATH_ENABLED -ne 'false' -or $env:BUILD_TESTS -ne 'true' -or $env:BUILD_ONLY -ne 'false' -or $env:ARTIFACT_SOURCE_RUN_ID -ne '') {
+            throw 'Daily builds require fresh packaging, running tests, and no SignPath token.'
+          }
+          cmake -P .\scripts\tests\test_daily_version_contract.cmake
+          if ($LASTEXITCODE -ne 0) { throw 'Daily application/MSI version contract failed.' }
+          & powershell.exe -NoLogo -NoProfile -File .\scripts\tests\test_daily_gamepad_signing.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Daily gamepad signing contract failed.' }
 
       - name: Test VHF publisher trust policy
         if: inputs.build_tests
@@ -344,6 +381,16 @@ jobs:
         shell: pwsh
         run: cmake -P .\packaging\windows\wix\tests\test_sortable_product_guid_contract.cmake
 
+      - name: Test daily resource version ordering
+        if: inputs.build_tests
+        shell: pwsh
+        run: python packaging/windows/bootstrapper/tests/test_daily_versioninfo.py
+
+      - name: Test compiled setup upgrade classification
+        if: inputs.build_tests
+        shell: powershell
+        run: .\packaging\windows\bootstrapper\tests\test_upgrade_classification.ps1
+
       - name: Download verified VHF producer package
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
@@ -353,11 +400,11 @@ jobs:
       - name: Revalidate VHF producer package for packaging
         shell: pwsh
         env:
-          VHF_ARCHIVE_SHA256: a45a8ae27d2764ad26a4b89d43d1e2dc43510d84bddd5899aac7c80499754782
-          VHF_DRIVER_VER: 09/22/2026,0.1.0.39
+          VHF_ARCHIVE_SHA256: 56e57fc70b9c3fdc5dfd0f44f01255275c114711b46521224204a385cde3a6e2
+          VHF_DRIVER_VER: 10/04/2026,0.1.0.48
           VHF_PROTOCOL_VERSION: '2'
-          VHF_SOURCE_REVISION: 4b56fb9da177f320fb2d7ddb1b6262e5d55d2750
-          VHF_TAG: v0.1.0-beta.6
+          VHF_SOURCE_REVISION: 9edbce11ad71e9455867c356c8368a6b39fa2242
+          VHF_TAG: v0.1.0-beta.7
         run: |
           $ErrorActionPreference = 'Stop'
           $packageRoot = Join-Path $env:RUNNER_TEMP 'vhf-gamepad-producer-release'
@@ -442,19 +489,39 @@ jobs:
             src_assets/common/assets/web/package-lock.json
             src_assets/common/assets/web-legacy/package-lock.json
 
-      - name: NodeJS Path
+      - name: Resolve managed tool paths
         shell: pwsh
         run: |
           $nodeBinaryPath = (Get-Command node).Source
           $nodePath = Split-Path -Path $nodeBinaryPath -Parent
+          $dotnetBinaryPath = (Get-Command dotnet).Source
           "NODEJS_PATH=$nodePath" >> $env:GITHUB_ENV
+          "DOTNET_PATH=$dotnetBinaryPath" >> $env:GITHUB_ENV
           "nodejs-path=$nodePath"
+          "dotnet-path=$dotnetBinaryPath"
 
       - name: Install WiX Toolset
         if: runner.environment != 'self-hosted'
         shell: pwsh
         run: |
           choco install wixtoolset -y
+
+      - name: Test installer driver safety and rollback
+        if: inputs.build_tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\packaging\windows\test_driver_install_safety.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Mandatory driver safety tests failed.' }
+
+      - name: Test production bootstrap migration
+        if: inputs.build_tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outputDirectory = Join-Path $env:RUNNER_TEMP 'bootstrap-migration-regression'
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\packaging\windows\bootstrapper\tests\test_bootstrap_migration.ps1 -OutputDirectory $outputDirectory
+          if ($LASTEXITCODE -ne 0) { throw 'Production bootstrap migration regression failed.' }
 
       - name: Resolve WebRTC toolchain
         shell: pwsh
@@ -496,7 +563,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          LIBVIRTUALDISPLAY_RELEASE_TAG: v1.6.3
+          LIBVIRTUALDISPLAY_RELEASE_TAG: v1.6.4
         run: |
           $ErrorActionPreference = 'Stop'
           # The folder name carries the release version. refresh_driver_package.ps1
@@ -508,6 +575,7 @@ jobs:
             -Repository Nonary/libvirtualdisplay `
             -Tag $env:LIBVIRTUALDISPLAY_RELEASE_TAG `
             -OutDir $downloadDir `
+            -LockPath .\third-party\libvirtualdisplay-release\windows-x64.json `
             -GitHubToken $env:GH_TOKEN
           "VDD_PREBUILT_PACKAGE_DIR=$downloadDir" >> $env:GITHUB_ENV
           "Using virtual display driver package: $downloadDir"
@@ -548,6 +616,27 @@ jobs:
           .\scripts\download_truehdr_runtime_release.ps1 @args
           "SUNSHINE_TRUEHDR_RUNTIME_DIR=$env:TRUEHDR_RUNTIME_ROOT" >> $env:GITHUB_ENV
 
+      - name: Self-sign only the daily gamepad catalog and setup tool
+        if: inputs.daily_unsigned
+        shell: pwsh
+        env:
+          DAILY_GAMEPAD_PFX_BASE64: ${{ secrets.daily_gamepad_pfx_base64 }}
+          DAILY_GAMEPAD_PFX_PASSWORD: ${{ secrets.daily_gamepad_pfx_password }}
+          DAILY_GAMEPAD_SIGNER_THUMBPRINT: ${{ vars.NIGHTLY_GAMEPAD_SIGNER_THUMBPRINT }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:DAILY_GAMEPAD_PFX_BASE64 -or -not $env:DAILY_GAMEPAD_PFX_PASSWORD) { throw 'Reusable nightly signing secrets are required.' }
+          $pfx = Join-Path $env:RUNNER_TEMP ('daily-gamepad-' + [Guid]::NewGuid().ToString('N') + '.pfx')
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:DAILY_GAMEPAD_PFX_BASE64))
+            $dailyRoot = Join-Path $env:RUNNER_TEMP 'daily-vhf-signed-package'
+            .\scripts\sign_daily_gamepad.ps1 -SourceRoot $env:VHF_PACKAGE_ROOT -OutRoot $dailyRoot -PfxPath $pfx -ExpectedSignerThumbprint $env:DAILY_GAMEPAD_SIGNER_THUMBPRINT
+            "VHF_PACKAGE_ROOT=$dailyRoot" >> $env:GITHUB_ENV
+          } finally {
+            if (Test-Path -LiteralPath $pfx) { Remove-Item -LiteralPath $pfx -Force }
+            Remove-Item Env:DAILY_GAMEPAD_PFX_BASE64, Env:DAILY_GAMEPAD_PFX_PASSWORD -ErrorAction SilentlyContinue
+          }
+
       - name: Build Windows
         shell: msys2 {0}
         env:
@@ -557,14 +646,18 @@ jobs:
           BRANCH: ${{ github.head_ref || github.ref_name }}
           COMMIT: ${{ inputs.release_commit }}
           REQUIRE_TRUEHDR_RUNTIME: ${{ inputs.require_truehdr_runtime }}
+          DAILY_UNSIGNED: ${{ inputs.daily_unsigned }}
         run: |
           echo "Using BUILD_VERSION=${BUILD_VERSION}"
 
           NODEJS_PATH=$(cygpath -u "$NODEJS_PATH")
+          DOTNET_PATH=$(cygpath -m "$DOTNET_PATH")
           export PATH="${NODEJS_PATH}:$PATH"
           NPM_PATH="$(cygpath -m "${NODEJS_PATH}/npm.cmd")"
           echo "Using node: $(command -v node) ($(node --version))"
           echo "Using npm: ${NPM_PATH} ($(npm --version))"
+          DOTNET_VERSION="$("${DOTNET_PATH}" --version)"
+          echo "Using dotnet: ${DOTNET_PATH} (${DOTNET_VERSION})"
 
           vdd_prebuilt_arg=()
           if [[ -n "${VDD_PREBUILT_PACKAGE_DIR:-}" ]]; then
@@ -578,13 +671,16 @@ jobs:
           vhf_gamepad_package_arg=(
             -DSUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER=ON
             -DSUNSHINE_LIBVIRTUALGAMEPAD_PREBUILT_DIR="$(cygpath -u "${VHF_PACKAGE_ROOT}")"
-            -DSUNSHINE_VHF_GAMEPAD_RELEASE_TAG=v0.1.0-beta.6
-            -DSUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256=a45a8ae27d2764ad26a4b89d43d1e2dc43510d84bddd5899aac7c80499754782
-            -DSUNSHINE_VHF_GAMEPAD_SOURCE_REVISION=4b56fb9da177f320fb2d7ddb1b6262e5d55d2750
-            -DSUNSHINE_VHF_GAMEPAD_DRIVER_VER=09/22/2026,0.1.0.39
+            -DSUNSHINE_VHF_GAMEPAD_RELEASE_TAG=v0.1.0-beta.7
+            -DSUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256=56e57fc70b9c3fdc5dfd0f44f01255275c114711b46521224204a385cde3a6e2
+            -DSUNSHINE_VHF_GAMEPAD_SOURCE_REVISION=9edbce11ad71e9455867c356c8368a6b39fa2242
+            -DSUNSHINE_VHF_GAMEPAD_DRIVER_VER=10/04/2026,0.1.0.48
             -DSUNSHINE_VHF_GAMEPAD_PROTOCOL_VERSION=2
           )
-          echo "Using verified VHF producer release v0.1.0-beta.6"
+          if [[ "${DAILY_UNSIGNED}" == "true" ]]; then
+            vhf_gamepad_package_arg+=(-DSUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE=ON)
+          fi
+          echo "Using verified VHF producer release v0.1.0-beta.7"
           truehdr_runtime_arg=()
           if [[ "${REQUIRE_TRUEHDR_RUNTIME}" == "true" ]]; then
             truehdr_runtime_arg=(
@@ -617,6 +713,7 @@ jobs:
             -DWEBRTC_MSYS2_BIN="$(cygpath -u "${WEBRTC_MSYS2_BIN}")" \
             -DWEBRTC_VS_PATH="$(cygpath -u "${WEBRTC_VS_PATH}")" \
             -DWEBRTC_WINSDK_DIR="$(cygpath -u "${WEBRTC_WINSDK_DIR}")" \
+            -DSUNSHINE_DOTNET_EXECUTABLE="${DOTNET_PATH}" \
             -DSUNSHINE_NPM_EXECUTABLE="${NPM_PATH}" \
             -DSUNSHINE_ASSETS_DIR=assets \
             -DSUNSHINE_PUBLISHER_NAME="${GITHUB_REPOSITORY_OWNER}" \
@@ -642,6 +739,13 @@ jobs:
             tests/unit/platform/windows/test_native_amf_review.cpp \
             -o build/native-amf-lifecycle-test.exe
           ./build/native-amf-lifecycle-test.exe
+
+      - name: Execute Windows tests
+        if: inputs.build_tests
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          ctest --test-dir build --output-on-failure --no-tests=error
 
       - name: Install cv2pdb
         if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
@@ -672,6 +776,8 @@ jobs:
             '.\build\sunshine.exe',
             '.\build\tools\audio-info.exe',
             '.\build\tools\dxgi-info.exe',
+            '.\build\tools\vibepollo_dualsense_haptics.exe',
+            '.\build\tools\vibepollo_dualsense_audio.dll',
             '.\build\tools\playnite-launcher.exe',
             '.\build\tools\sunshine_display_helper.exe',
             '.\build\tools\sunshine_wgc_capture.exe',
@@ -819,10 +925,11 @@ jobs:
           cp "${msi_path}" "../unsigned-signpath-msi/${msi_name}"
           echo "msi_name=${msi_name}" >> "${GITHUB_OUTPUT}"
 
-      - name: Verify unsigned MSI contains the pinned VHF package
+      - name: Verify unsigned MSI contains the pinned drivers and Vulkan layers
         shell: pwsh
         env:
           MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
+          DAILY_UNSIGNED: ${{ inputs.daily_unsigned }}
         run: |
           $ErrorActionPreference = 'Stop'
           $extractRoot = Join-Path $env:RUNNER_TEMP 'unsigned-vhf-msi-extract'
@@ -832,15 +939,21 @@ jobs:
           if ($process.ExitCode -ne 0) {
             throw "Administrative extraction of unsigned MSI failed with exit code $($process.ExitCode)."
           }
+          $vulkanInstaller = Join-Path $extractRoot 'Apollo\drivers\sunshine\install.ps1'
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $vulkanInstaller -RegisterVulkanLayerOnly -ValidateOnly
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unsigned MSI Vulkan layer payload validation failed with exit code $LASTEXITCODE."
+          }
           $packageDir = Join-Path $extractRoot 'Apollo\drivers\vhf-gamepad'
           .\packaging\windows\virtual_gamepad_driver\refresh_driver_package.ps1 `
+            -AllowLocalTestPackage:($env:DAILY_UNSIGNED -eq 'true') `
             -ValidateOnly `
             -PrebuiltPackageDir $env:VHF_PACKAGE_ROOT `
             -PackageDir $packageDir `
-            -ReleaseTag v0.1.0-beta.6 `
-            -ExpectedReleaseAssetSha256 a45a8ae27d2764ad26a4b89d43d1e2dc43510d84bddd5899aac7c80499754782 `
-            -ExpectedSourceRevision 4b56fb9da177f320fb2d7ddb1b6262e5d55d2750 `
-            -ExpectedDriverVer '09/22/2026,0.1.0.39' `
+            -ReleaseTag v0.1.0-beta.7 `
+            -ExpectedReleaseAssetSha256 56e57fc70b9c3fdc5dfd0f44f01255275c114711b46521224204a385cde3a6e2 `
+            -ExpectedSourceRevision 9edbce11ad71e9455867c356c8368a6b39fa2242 `
+            -ExpectedDriverVer '10/04/2026,0.1.0.48' `
             -ExpectedProtocolVersion 2
           $expected = @(
             'cleanup.ps1',
@@ -852,6 +965,7 @@ jobs:
             'release-lock.json',
             'tools/VibeshineVhfGamepadDeviceSetup.exe'
           )
+          if ($env:DAILY_UNSIGNED -eq 'true') { $expected = @(($expected + 'driver/VibeshineVhfGamepad.cer') | Sort-Object) }
           $actual = @(Get-ChildItem -LiteralPath $packageDir -Recurse -File | ForEach-Object {
             $_.FullName.Substring($packageDir.Length).TrimStart('\', '/').Replace('\', '/')
           } | Sort-Object)
@@ -869,6 +983,44 @@ jobs:
           retention-days: ${{ inputs.release_artifact_retention_days }}
           archive: false
           overwrite: true
+
+      - name: Verify MSI carries the tested daily driver safeguards
+        if: inputs.daily_unsigned
+        shell: pwsh
+        env:
+          MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
+          DAILY_UNSIGNED: ${{ inputs.daily_unsigned }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'daily-driver-policy-msi'
+          New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
+          $msi = Join-Path $PWD "unsigned-signpath-msi/$($env:MSI_NAME)"
+          $proc = Start-Process msiexec.exe -WindowStyle Hidden -ArgumentList @('/a', "`"$msi`"", '/qn', "TARGETDIR=`"$extractRoot`"") -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "Daily MSI extraction failed: $($proc.ExitCode)" }
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $database = $installer.OpenDatabase($msi, 0)
+          foreach ($property in @('DAILY_UNSIGNED_DRIVER_POLICY', 'ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE')) {
+            $view = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$property'")
+            $view.Execute()
+            $record = $view.Fetch()
+            if ($null -eq $record -or $record.StringData(1) -cne '1') { throw "Daily MSI must enforce $property=1." }
+            $view.Close()
+          }
+          $gamepadRoot = Join-Path $extractRoot 'Apollo/drivers/vhf-gamepad'
+          $manifest = Get-Content (Join-Path $gamepadRoot 'manifest.json') -Raw | ConvertFrom-Json
+          $lock = Get-Content (Join-Path $gamepadRoot 'release-lock.json') -Raw | ConvertFrom-Json
+          $cer = [Security.Cryptography.X509Certificates.X509Certificate2]::new((Join-Path $gamepadRoot 'driver/VibeshineVhfGamepad.cer'))
+          if ($manifest.signing.channel -cne 'self-signed-local-test' -or $lock.channel -cne 'self-signed-local-test' -or $lock.signing_channel -cne $manifest.signing.channel -or $lock.catalog_signer_thumbprint -cne $cer.Thumbprint -or $lock.device_setup_signer_thumbprint -cne $cer.Thumbprint) { throw 'Daily signing channel/public certificate/release lock is inconsistent.' }
+          if (@(Get-ChildItem -LiteralPath $extractRoot -Recurse -File | Where-Object { $_.Extension -in '.pfx', '.pem', '.key' }).Count -ne 0) { throw 'A daily MSI contains private signing material.' }
+          foreach ($driver in @('sunshine', 'sudovda', 'vhf-gamepad')) {
+            $source = Join-Path $PWD "src_assets/windows/drivers/$driver/install.ps1"
+            $packaged = Join-Path $extractRoot "Apollo/drivers/$driver/install.ps1"
+            if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $packaged -Algorithm SHA256).Hash) {
+              throw "Packaged $driver installer is not the policy-tested source script."
+            }
+          }
+          & powershell.exe -NoProfile -NonInteractive -File packaging/windows/test_gamepad_published_package.ps1 -FixtureRoot $gamepadRoot -RepositoryRoot $PWD
+          if ($LASTEXITCODE -ne 0) { throw 'Actual daily MSI gamepad package validation failed.' }
 
       - name: Upload unsigned MSI for package job
         id: upload-unsigned-msi-for-package
@@ -1277,6 +1429,10 @@ jobs:
       actions: read
       contents: read
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.release_commit }}
+          persist-credentials: false
       - name: Download signed installer
         if: env.SIGNPATH_ENABLED == 'true'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
@@ -1297,6 +1453,26 @@ jobs:
         with:
           artifact-ids: ${{ needs.sign_windows_msi.outputs.signed_msi_artifact_id }}
           path: signed-msi
+
+      - name: Download qualified internal unsigned MSI
+        if: env.SIGNPATH_ENABLED != 'true'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          artifact-ids: ${{ needs.release_artifacts.outputs.unsigned_msi_artifact_id }}
+          github-token: ${{ github.token }}
+          path: signed-msi
+          run-id: ${{ needs.release_artifacts.outputs.source_run_id }}
+
+      - name: Verify setup contains the exact qualified internal MSI
+        shell: pwsh
+        env:
+          INSTALLER_NAME: ${{ needs.package_windows.outputs.installer_name }}
+          MSI_NAME: ${{ needs.release_artifacts.outputs.msi_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $proof = & powershell.exe -NoProfile -NonInteractive -File scripts/verify_setup_embedded_msi.ps1 -SetupPath "artifacts/$env:INSTALLER_NAME" -MsiPath "signed-msi/$env:MSI_NAME"
+          if ($LASTEXITCODE -ne 0) { throw 'Setup embedded MSI qualification failed.' }
+          $proof | Set-Content embedded-msi-proof.json -Encoding utf8
 
       - name: Download symbols package
         if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
@@ -1329,6 +1505,7 @@ jobs:
           INSTALLER_NAME: ${{ needs.package_windows.outputs.installer_name }}
           MSI_NAME: ${{ needs.release_artifacts.outputs.msi_name }}
           REQUIRE_TRUEHDR_RUNTIME: ${{ inputs.require_truehdr_runtime }}
+          DAILY_UNSIGNED: ${{ inputs.daily_unsigned }}
           SIGNPATH_SIGNING_POLICY_SLUG: ${{ inputs.signpath_signing_policy_slug }}
         run: |
           $ErrorActionPreference = 'Stop'
@@ -1400,6 +1577,11 @@ jobs:
           $virtualDisplayCatalog = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.cat'
           $virtualDisplayInf = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.inf'
           $virtualDisplayDll = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.dll'
+          $vulkanInstaller = Join-Path $virtualDisplayRoot 'install.ps1'
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $vulkanInstaller -RegisterVulkanLayerOnly -ValidateOnly
+          if ($LASTEXITCODE -ne 0) {
+            $failures.Add("Signed MSI Vulkan layer payload validation failed with exit code $LASTEXITCODE.")
+          }
           $expectedSignPathFoundationSigner = 'CN=SignPath Foundation, O=SignPath Foundation, L=Lewes, S=Delaware, C=US'
           if (-not (Test-Path -LiteralPath $virtualDisplayCatalog -PathType Leaf)) {
             $failures.Add('Sunshine virtual display catalog is missing from the signed MSI')
@@ -1429,7 +1611,8 @@ jobs:
             'sunshine.exe','uninstall.exe','libwebrtc.dll','zlib1.dll',
             'sunshinesvc.exe','dxgi-info.exe','audio-info.exe',
             'playnite-launcher.exe','sunshine_wgc_capture.exe','sunshine_display_helper.exe',
-            'virtualdisplay_probe.exe','VkLayer_sunshine_hdr.dll'
+            'vibepollo_dualsense_haptics.exe','vibepollo_dualsense_audio.dll',
+            'virtualdisplay_probe.exe','VkLayer_sunshine_hdr.dll','VkLayer_sunshine_hdr_x86.dll','VibepolloPlaynite.dll'
           )
           $optionalFirstParty = @('vibeshine_truehdr.dll')
           $vendorSkip = @(
@@ -1543,8 +1726,8 @@ jobs:
                   'tools/VibeshineVhfGamepadDeviceSetup.exe'
                 )
                 if ($vhfManifest.schema_version -ne 1 -or
-                    $vhfManifest.source_revision -cne '4b56fb9da177f320fb2d7ddb1b6262e5d55d2750' -or
-                    $vhfManifest.driver_ver -cne '09/22/2026,0.1.0.39' -or
+                    $vhfManifest.source_revision -cne '9edbce11ad71e9455867c356c8368a6b39fa2242' -or
+                    $vhfManifest.driver_ver -cne '10/04/2026,0.1.0.48' -or
                     [uint16] $vhfManifest.protocol_version -ne 2 -or
                     $vhfManifest.platform -cne 'x64' -or
                     $vhfManifest.signing.channel -cne 'msi-request-signing') {
@@ -1627,9 +1810,9 @@ jobs:
                 $vhfManifestHash = (Get-FileHash -LiteralPath $vhfManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
                 if ($vhfReleaseLock.channel -cne 'production' -or
                     $vhfReleaseLock.repository -cne 'Nonary/libvirtualgamepad' -or
-                    $vhfReleaseLock.release_tag -cne 'v0.1.0-beta.6' -or
-                    $vhfReleaseLock.release_asset_name -cne 'libvirtualgamepad-0.1.0-beta.6-windows-x64.zip' -or
-                    $vhfReleaseLock.release_asset_sha256 -cne 'a45a8ae27d2764ad26a4b89d43d1e2dc43510d84bddd5899aac7c80499754782' -or
+                    $vhfReleaseLock.release_tag -cne 'v0.1.0-beta.7' -or
+                    $vhfReleaseLock.release_asset_name -cne 'libvirtualgamepad-0.1.0-beta.7-windows-x64.zip' -or
+                    $vhfReleaseLock.release_asset_sha256 -cne '56e57fc70b9c3fdc5dfd0f44f01255275c114711b46521224204a385cde3a6e2' -or
                     $vhfReleaseLock.source_revision -cne $vhfManifest.source_revision -or
                     $vhfReleaseLock.driver_ver -cne $vhfManifest.driver_ver -or
                     [uint16] $vhfReleaseLock.protocol_version -ne [uint16] $vhfManifest.protocol_version -or
@@ -1689,6 +1872,7 @@ jobs:
             release_commit = $env:RELEASE_COMMIT
             source_build_run_id = $env:SOURCE_BUILD_RUN_ID
             assets = $assetHashes
+            embedded_msi = Get-Content embedded-msi-proof.json -Raw | ConvertFrom-Json
           }
           $manifestPath = Join-Path $artifactRoot 'release-provenance.json'
           $provenance | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding utf8

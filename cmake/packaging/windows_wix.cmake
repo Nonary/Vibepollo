@@ -51,6 +51,37 @@ set(CPACK_WIX_CANDLE_EXTRA_FLAGS
   "-dVibeshineSemVer=${PROJECT_VERSION_FULL}"
 )
 
+# Daily packages forbid unattended trust changes; production defaults stay zero.
+set(SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY 0)
+if(PROJECT_VERSION_FULL MATCHES "-daily[.]")
+  set(SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY 1)
+endif()
+list(APPEND CPACK_WIX_CANDLE_EXTRA_FLAGS "-dDailyUnsignedDriverPolicy=${SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY}")
+
+# Display the exact bundled certificate identity before optional recipient trust.
+set(SUNSHINE_LOCAL_GAMEPAD_CERT_THUMBPRINT "none")
+set(SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT "No local gamepad certificate")
+set(SUNSHINE_LOCAL_GAMEPAD_DRIVER_VERSION "none")
+if(SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE)
+  execute_process(
+    COMMAND powershell.exe -NoLogo -NoProfile -NonInteractive -File
+      "${CMAKE_SOURCE_DIR}/scripts/read_gamepad_certificate_identity.ps1"
+      -PackageRoot "${SUNSHINE_EFFECTIVE_LIBVIRTUALGAMEPAD_PREBUILT_DIR}"
+    RESULT_VARIABLE _certificate_result OUTPUT_VARIABLE _certificate_json ERROR_VARIABLE _certificate_error)
+  if(NOT _certificate_result EQUAL 0)
+    message(FATAL_ERROR "Cannot bind gamepad consent to its bundled certificate: ${_certificate_error}")
+  endif()
+  string(JSON SUNSHINE_LOCAL_GAMEPAD_CERT_THUMBPRINT GET "${_certificate_json}" thumbprint)
+  string(JSON SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT GET "${_certificate_json}" subject)
+  string(JSON SUNSHINE_LOCAL_GAMEPAD_DRIVER_VERSION GET "${_certificate_json}" driver_ver)
+  string(REPLACE "&" "&amp;" SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT "${SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT}")
+  string(REPLACE "<" "&lt;" SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT "${SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT}")
+  string(REPLACE "\"" "&quot;" SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT "${SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT}")
+endif()
+list(APPEND CPACK_WIX_CANDLE_EXTRA_FLAGS
+  "-dLocalGamepadCertificateThumbprint=${SUNSHINE_LOCAL_GAMEPAD_CERT_THUMBPRINT}"
+  "-dLocalGamepadCertificateSubject=${SUNSHINE_LOCAL_GAMEPAD_CERT_SUBJECT}"
+  "-dLocalGamepadDriverVersion=${SUNSHINE_LOCAL_GAMEPAD_DRIVER_VERSION}")
 # The patch fragment needs build-time defaults so it never invokes a missing
 # VHF package from an MSI built before the first signed driver release.
 if(NOT DEFINED SUNSHINE_VHF_GAMEPAD_WIX_BUNDLED)
@@ -59,9 +90,13 @@ endif()
 if(NOT DEFINED SUNSHINE_VHF_GAMEPAD_WIX_ALLOW_LOCAL_TEST)
   set(SUNSHINE_VHF_GAMEPAD_WIX_ALLOW_LOCAL_TEST 0)
 endif()
+if(NOT DEFINED SUNSHINE_USBIP_WIX_BUNDLED)
+  set(SUNSHINE_USBIP_WIX_BUNDLED 0)
+endif()
 list(APPEND CPACK_WIX_CANDLE_EXTRA_FLAGS
   "-dVhfGamepadDriverBundled=${SUNSHINE_VHF_GAMEPAD_WIX_BUNDLED}"
   "-dVhfGamepadAllowLocalTest=${SUNSHINE_VHF_GAMEPAD_WIX_ALLOW_LOCAL_TEST}"
+  "-dUsbIpTransportBundled=${SUNSHINE_USBIP_WIX_BUNDLED}"
 )
 
 
@@ -151,7 +186,8 @@ if(PROJECT_VERSION_FULL MATCHES "-([A-Za-z]+)(\\.([0-9]+))?")
     math(EXPR _WIX_PRERELEASE_ORDINAL "60 + ${_pre_num}")
   elseif(_pre_tag STREQUAL "stable")
     # Stable respins remain in the stable channel. Their sortable ProductCodes
-    # distinguish stable.N packages that share this MSI ProductVersion.
+    # distinguish packages in setup UI only; the unbounded Upgrade table
+    # authored by AllowDowngrades enables transactional equal-version replacement.
     set(_WIX_PRERELEASE_ORDINAL 99)
   else()
     # Unknown prerelease tag: rank below stable but above rc.

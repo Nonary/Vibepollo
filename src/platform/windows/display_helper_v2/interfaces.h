@@ -4,6 +4,7 @@
 #include "src/platform/windows/display_helper_v2/types.h"
 
 #include <chrono>
+#include <functional>
 #include <optional>
 #include <set>
 #include <string>
@@ -20,6 +21,9 @@ namespace display_helper::v2 {
     /// may set their supplied base topology once immediately before this call;
     /// the backend must still receive the original device-preparation request.
     virtual ApplyStatus apply(const SingleDisplayConfiguration &config) = 0;
+    virtual bool blank_hdr_states(std::chrono::milliseconds, const std::function<bool()> &) {
+      return true;
+    }
     virtual ApplyStatus apply_topology(const ActiveTopology &topology) = 0;
     virtual EnumeratedDeviceList enumerate(display_device::DeviceEnumerationDetail detail) = 0;
     virtual ActiveTopology capture_topology() = 0;

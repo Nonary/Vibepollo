@@ -1,6 +1,7 @@
 #pragma once
 
 #include "src/platform/windows/display_helper_v2/types.h"
+#include "src/platform/windows/recovery_status.h"
 
 #include <atomic>
 #include <functional>
@@ -30,5 +31,6 @@ namespace display_helper::v2 {
     std::jthread worker_;
     HPOWERNOTIFY power_cookie_ = nullptr;
     HDEVNOTIFY device_cookie_ = nullptr;
+    display_helper::recovery_status::monitor_power_edge_policy monitor_power_policy_;
   };
 }  // namespace display_helper::v2

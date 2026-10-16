@@ -576,7 +576,9 @@ static bool drop_to_session(const struct session_identity *identity) {
 
 static bool display_argument_is_safe(const char *argument) {
   static const char pattern[] =
-    "^output\\.[A-Za-z0-9_-]+\\.(enable|disable|vrrpolicy\\.always|hdr\\.(enable|disable)|"
+    "^output\\.[A-Za-z0-9_-]+\\.(enable|disable|"
+    "rotation\\.(none|left|inverted|right|flipped|flipped90|flipped180|flipped270)|"
+    "vrrpolicy\\.always|hdr\\.(enable|disable)|"
     "mode\\.[A-Za-z0-9_-]+|scale\\.[0-9]+(\\.[0-9]+)?|position\\.-?[0-9]+,-?[0-9]+|"
     "priority\\.[0-9]+|addCustomMode\\.[1-9][0-9]*\\.[1-9][0-9]*\\.[1-9][0-9]*\\.reduced)$";
   regex_t expression;
@@ -584,6 +586,19 @@ static bool display_argument_is_safe(const char *argument) {
   const bool matches = regexec(&expression, argument, 0, NULL, 0) == 0;
   regfree(&expression);
   return matches;
+}
+
+static bool display_apply_arguments_are_safe(int argc, char **argv) {
+  if (!argv || argc < 3 ||
+      (uint32_t) (argc - 2) > VIBEPOLLO_SESSION_PROTOCOL_MAX_DISPLAY_PROPERTIES) return false;
+  for (int index = 2; index < argc; ++index) {
+    if (!display_argument_is_safe(argv[index])) {
+      // Avoid reflecting arbitrary control bytes from rejected input.
+      fprintf(stderr, "vibepollo-session-broker: rejected display argument %d\n", index - 1);
+      return false;
+    }
+  }
+  return true;
 }
 
 static bool sink_name_is_safe(const char *name) {
@@ -1211,6 +1226,30 @@ static int exec_user_service(const struct session_identity *identity, const char
   return 126;
 }
 
+static bool managed_focus_arguments_are_safe(int argc, char **argv) {
+  unsigned long id = 0, attempts = 0, timeout = 0, first = 0;
+  return argc == 7 &&
+         (!strcmp(argv[2], "steam") || !strcmp(argv[2], "lutris")) &&
+         parse_number(argv[3], 1, !strcmp(argv[2], "steam") ? UINT32_MAX : LONG_MAX, &id) &&
+         parse_number(argv[4], 0, 100, &attempts) &&
+         parse_number(argv[5], 0, 300, &timeout) &&
+         parse_number(argv[6], 0, 1, &first);
+}
+
+static bool display_observe_arguments_are_safe(int argc, char **argv) {
+  return argc == 2 && (!strcmp(argv[1], "display-observe") || !strcmp(argv[1], "display-observe-events"));
+}
+
+static bool display_request_uses_bounded_reply(int argc, char **argv) {
+  return argc >= 2 && (!strcmp(argv[1], "display-query") ||
+                       !strcmp(argv[1], "display-apply") ||
+                       (argc == 2 && !strcmp(argv[1], "display-observe")));
+}
+
+static bool display_request_is_mutating(const char *operation) {
+  return operation && !strcmp(operation, "display-apply");
+}
+
 static const char *steam_big_picture_uri(const char *command) {
   // These are the two commands shipped in the default Linux apps.json. Treat
   // them as fixed Steam actions: a fresh install creates its command manifest
@@ -1234,8 +1273,8 @@ static int execute_request(int argc, char **argv,
                            gid_t service_gid) {
   if (argc < 2) return 2;
   enum operation {
-    DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_POWER, DISPLAY_WAKE, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
-    AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS,
+    DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_OBSERVE, DISPLAY_POWER, DISPLAY_WAKE, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
+    AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS, MANAGED_FOCUS,
     PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, APP, APP_WAYLAND_HDR
   } operation;
   unsigned long first_number = 0, second_number = 0, third_number = 0;
@@ -1253,12 +1292,13 @@ static int execute_request(int argc, char **argv,
     if (!vibepollo_stream_environment_is_safe(stream_environment_count, stream_environment)) return 126;
   }
   if (!strcmp(argv[1], "display-query") && argc == 2) operation = DISPLAY_QUERY;
+#ifdef VIBEPOLLO_HAVE_WAYLAND_OBSERVER
+  else if (display_observe_arguments_are_safe(argc, argv)) operation = DISPLAY_OBSERVE;
+#endif
   else if (!strcmp(argv[1], "display-power") && argc == 2) operation = DISPLAY_POWER;
   else if (!strcmp(argv[1], "display-wake") && argc == 2) operation = DISPLAY_WAKE;
-  else if (!strcmp(argv[1], "display-apply") && argc >= 3 && argc <= 66) {
-    operation = DISPLAY_APPLY;
-    for (int index = 2; index < argc; ++index) if (!display_argument_is_safe(argv[index])) return 126;
-  } else if (!strcmp(argv[1], "audio-get-default") && argc == 2) operation = AUDIO_GET_DEFAULT;
+  else if (!strcmp(argv[1], "display-apply") && display_apply_arguments_are_safe(argc, argv)) operation = DISPLAY_APPLY;
+  else if (!strcmp(argv[1], "audio-get-default") && argc == 2) operation = AUDIO_GET_DEFAULT;
   else if (!strcmp(argv[1], "audio-list-sinks") && argc == 2) operation = AUDIO_LIST_SINKS;
   else if (!strcmp(argv[1], "audio-set-default") && argc == 3 && sink_name_is_safe(argv[2])) operation = AUDIO_SET_DEFAULT;
   else if (!strcmp(argv[1], "audio-create-null") && argc == 4 &&
@@ -1280,6 +1320,9 @@ static int execute_request(int argc, char **argv,
            steam_direct_arguments_are_safe(argc, argv) &&
            !strcmp(identity->role, "desktop")) operation = STEAM_DIRECT;
   else if (!strcmp(argv[1], "lutris") && argc == 3 && numeric_suffix(argv[2], "") && !strcmp(identity->role, "desktop")) operation = LUTRIS;
+  else if (!strcmp(argv[1], "managed-focus") &&
+           managed_focus_arguments_are_safe(argc, argv) &&
+           !strcmp(identity->role, "desktop")) operation = MANAGED_FOCUS;
   else if (!strcmp(argv[1], "provider-steam-scan") && argc == 2 && !strcmp(identity->role, "desktop")) operation = PROVIDER_STEAM_SCAN;
   else if (!strcmp(argv[1], "provider-lutris-scan") && argc == 2 && !strcmp(identity->role, "desktop")) operation = PROVIDER_LUTRIS_SCAN;
   else if (argc == 2 && !strcmp(identity->role, "desktop") &&
@@ -1321,6 +1364,17 @@ static int execute_request(int argc, char **argv,
       execv("/usr/bin/kscreen-doctor", arguments);
       break;
     }
+    case DISPLAY_OBSERVE:
+#ifdef VIBEPOLLO_HAVE_WAYLAND_OBSERVER
+      {
+        char *const arguments[] = {"vibepollo-display-observer",
+          !strcmp(argv[1], "display-observe-events") ? "--watch" : NULL, NULL};
+        execv("/usr/libexec/vibeshine/vibepollo-display-observer", arguments);
+        break;
+      }
+#else
+      break;
+#endif
     case DISPLAY_APPLY:
       argv[1] = "kscreen-doctor";
       execv("/usr/bin/kscreen-doctor", &argv[1]);
@@ -1405,6 +1459,11 @@ static int execute_request(int argc, char **argv,
         (char *) steam_launch_path, argv[2], argv[3], argv[4], argv[5],
         argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], argv[13], NULL
       };
+      return exec_user_service(identity, NULL, arguments, false, false, 0, NULL);
+    }
+    case MANAGED_FOCUS: {
+      char *const arguments[] = {"/usr/libexec/vibeshine/vibepollo-app-focus", "--managed",
+                                argv[2], argv[3], argv[4], argv[5], argv[6], NULL};
       return exec_user_service(identity, NULL, arguments, false, false, 0, NULL);
     }
     case LUTRIS: {
@@ -1656,12 +1715,27 @@ static uint64_t monotonic_milliseconds(void) {
   return (uint64_t) now.tv_sec * UINT64_C(1000) + (uint64_t) now.tv_nsec / UINT64_C(1000000);
 }
 
-static bool terminate_worker(pid_t worker, bool *worker_exited, int *status) {
+static bool terminate_display_worker(pid_t worker, bool *worker_exited, int *status,
+                                     bool (*signal_worker)(pid_t, int)) {
+  (void) signal_worker(-worker, SIGKILL);
+  (void) signal_worker(worker, SIGKILL);
+  const uint64_t now = monotonic_milliseconds();
+  *worker_exited = now && reap_child_until(worker, now + 1000, status);
+  return *worker_exited;
+}
+
+static bool terminate_worker(pid_t worker, bool *worker_exited, int *status, bool display_request) {
   if (*worker_exited) return true;
   // The worker has already changed to the selected session UID. CAP_KILL is
   // therefore the broker supervisor's only capability beyond SETUID/SETGID,
   // and is required solely to cancel this direct descendant on disconnect or
   // generation change. It is never inherited past drop_to_session().
+  if (display_request) {
+    // KScreen has no application teardown to drain. Stop the entire helper
+    // group and reap before acknowledging cancellation to the host, which
+    // holds the topology serialization fence until that acknowledgement.
+    return terminate_display_worker(worker, worker_exited, status, signal_cross_uid_worker);
+  }
   if (!signal_cross_uid_worker(worker, SIGTERM)) return false;
   const struct timespec delay = {.tv_sec = 0, .tv_nsec = 50000000};
   for (unsigned int attempt = 0; attempt < 240; ++attempt) {
@@ -1695,17 +1769,29 @@ static bool forward_output(int socket_fd, int *pipe_fd, uint16_t type,
   return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
 }
 
+static int display_worker_completion_status(int status, bool cancelled, bool display_mutating) {
+  // A killed Wayland/D-Bus client cannot retract a mutation already delivered
+  // to KWin. Reaping the client proves only process completion.
+  if (display_mutating && (cancelled || WIFSIGNALED(status))) return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
+  return cancelled ? 126 : wait_status_exit_code(status);
+}
+
 static int relay_worker(int socket_fd, pid_t worker, int output_fd[2],
                         const struct session_identity *identity,
-                        gid_t service_gid) {
+                        gid_t service_gid, bool display_request, bool display_mutating) {
   bool worker_exited = false;
   int status = 126 << 8;
   const char *cancellation_reason = NULL;
   bool client_connected = true;
   uint64_t last_identity_check = monotonic_milliseconds();
+  const uint64_t display_deadline = last_identity_check + VIBEPOLLO_SESSION_DISPLAY_TIMEOUT_MS;
 
   while (!worker_exited || output_fd[0] >= 0 || output_fd[1] >= 0) {
     const uint64_t now = monotonic_milliseconds();
+    if (display_request && (!now || now >= display_deadline)) {
+      cancellation_reason = "Vibepollo display helper timed out; request cancelled.\n";
+      break;
+    }
     if (!now || !last_identity_check || now - last_identity_check >= 250) {
       if (!identity_is_current(identity, service_gid)) {
         cancellation_reason = "Vibepollo session changed; request cancelled.\n";
@@ -1768,15 +1854,18 @@ static int relay_worker(int socket_fd, pid_t worker, int output_fd[2],
     }
   }
 
-  if (!worker_exited) (void) terminate_worker(worker, &worker_exited, &status);
+  if (!worker_exited) (void) terminate_worker(worker, &worker_exited, &status, display_request);
   if (output_fd[0] >= 0) close(output_fd[0]);
   if (output_fd[1] >= 0) close(output_fd[1]);
   if (!client_connected) return 126;
+  // A failed reap must never look like completion. Closing the connection
+  // makes session-exec report unknown completion and the host fail closed.
+  if (!worker_exited) return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
+  const int exit_code = display_worker_completion_status(status, cancellation_reason != NULL, display_mutating);
   if (cancellation_reason) {
-    send_rejection(socket_fd, identity->generation, cancellation_reason);
-    return 126;
+    (void) send_frame(socket_fd, VIBEPOLLO_SESSION_STDERR, identity->generation, 0,
+                      cancellation_reason, strlen(cancellation_reason));
   }
-  const int exit_code = wait_status_exit_code(status);
   (void) send_frame(socket_fd, VIBEPOLLO_SESSION_EXIT, identity->generation,
                     exit_code, NULL, 0);
   return exit_code;
@@ -1824,7 +1913,10 @@ int main(int argc, char **argv) {
     free(packet);
     return 126;
   }
-  const int result = relay_worker(STDIN_FILENO, worker, output_fd, &identity, service_gid);
+  const bool display_request = display_request_uses_bounded_reply(request.argc, request.argv);
+  const bool display_mutating = request.argc >= 2 && display_request_is_mutating(request.argv[1]);
+  const int result = relay_worker(STDIN_FILENO, worker, output_fd, &identity, service_gid,
+                                 display_request, display_mutating);
   free(packet);
   return result;
 }

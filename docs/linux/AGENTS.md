@@ -126,6 +126,44 @@ socket and starts the host after binding an authoritative session.
 
 ## Managed display and readiness
 
+Desktop restoration uses a serialized background dispatcher and the existing
+generation-bound `vibepollo-session-exec` display helper. Immediate restores,
+delayed restores and persistence resets return after request admission; their
+boolean result does not assert that the compositor has completed restoration.
+New display ownership supersedes queued restore generations. The worker checks
+capture and retained Remote Monitor ownership under the lifecycle gate before
+mutating outputs, preserves the saved topology on failure, and clears reset
+state only after restoration succeeds.
+
+The Linux desktop baseline is saved in the service-owned auxiliary state before
+private connector hotplug. Its payload is schema-validated and bound to the
+selected session UID and role; another user's or greeter's baseline is ignored.
+Idle startup baselines remain unarmed: physical-only streams and idle settings
+changes preserve the user's current layout. Private display acquisition saves
+restore intent before changing connectors; successful restoration clears that
+intent, including for always-connected explicit outputs. A genuinely idle
+desktop refreshes the baseline before the snapshot gate, so old failed restores
+do not override newly disabled monitors. Restart recovery
+uses the same asynchronous, capture-verified handoff and retires orphan managed
+connectors only after a distinct saved guard is ready. Missing/unusable saved
+intent can fall back only to currently enabled physical outputs. If every
+physical monitor is disabled and no saved baseline survives, the private image
+is retained: recovering an older, already-orphaned desktop requires an operator
+to enable the intended physical monitor first.
+
+The session broker gives KScreen five seconds, then kills/reaps its helper
+before acknowledging cancellation. Cancelled display-apply requests still
+report unknown compositor completion, since killing a D-Bus client does not
+retract an already delivered mutation. The host allows ten seconds for the reply;
+if mutation completion cannot be confirmed it refuses further display mutations
+until host restart. Failed read-only queries do not fence later mutations.
+Restore requests have a thirty-second admission budget beginning at worker execution, including waiting for lifecycle/display locks. Each helper
+operation reserves its full safe reply interval before starting. Shutdown
+closes mutation admission, cancels queued
+machine-host restores, and joins the owned worker before platform teardown.
+Standalone shutdown drains its final restore. Validate real topology and Web UI
+responsiveness across suspend/resume before calling an installed fix complete.
+
 The privileged virtual-display helpers and units use fixed root-owned `/usr`
 paths. `vibeshine-drm-setup.service` rebuilds the installed module when its
 source fingerprint changes, but cannot replace a module already used by the

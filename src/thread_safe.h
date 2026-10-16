@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -388,6 +389,17 @@ namespace safe {
       _poll_state.set_ready(true);
       _cv.notify_all();
       return true;
+    }
+
+    // Remove one producer's stale messages without disturbing other items
+    // sharing this queue (for example controllers in the same stream).
+    template<class Predicate>
+    void discard_if(Predicate matches) {
+      std::lock_guard ul {_lock};
+      _queue.erase(std::remove_if(_queue.begin(), _queue.end(), matches), _queue.end());
+      if (_poll_state.running()) {
+        _poll_state.set_ready(!_queue.empty());
+      }
     }
 
     bool peek() {

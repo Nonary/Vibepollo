@@ -2325,6 +2325,7 @@ namespace platf::dxgi {
       amf_cfg.high_motion_quality_boost_enable = amf_tristate(config::video.amd.amd_high_motion_quality_boost);
       amf_cfg.av1_screen_content_tools = amf_tristate(config::video.amd.amd_av1_screen_content);
       amf_cfg.av1_encoding_latency_mode = config::video.amd.amd_av1_latency_mode;
+      amf_cfg.av1_tiles = config::video.amd.amd_av1_tiles;
 
       const auto concurrent_feature_plan = ::amf::lifecycle::resolve_concurrent_session_features(
         active_encoder_count,
@@ -2351,6 +2352,7 @@ namespace platf::dxgi {
       }
 
       if (!amf_d3d->create_encoder(amf_cfg, client_config, colorspace, buffer_format)) {
+        initialization_failure = amf_d3d->initialization_failure;
         return false;
       }
       const auto registered_count = g_active_native_amf_encoders.fetch_add(1, std::memory_order_acq_rel) + 1;

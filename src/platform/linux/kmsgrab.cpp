@@ -2139,7 +2139,9 @@ namespace platf {
           return -1;
         }
 
-        gbm.reset(gbm::create_device(card.fd.el));
+        // The display-only virtual card has no GL renderer. Use the same
+        // physical render node as hardware encoding for DMA-BUF readback.
+        gbm.reset(gbm::create_device(card.render_fd.el));
         if (!gbm) {
           BOOST_LOG(error) << "Couldn't create GBM device: ["sv << util::hex(eglGetError()).to_string_view() << ']';
           return -1;

@@ -40,6 +40,8 @@ namespace platf::linux_display {
     // Backends capturing an existing scene own no display topology to mutate.
     virtual bool initialize() const { return true; }
     virtual bool apply_session(rtsp_stream::launch_session_t &) const { return true; }
+    // Desktop restore/reset dispatch to the session helper asynchronously;
+    // true reports request admission, not completed topology verification.
     virtual bool revert() const { return true; }
     virtual bool reset_persistence() const { return true; }
     virtual void schedule_revert(std::chrono::milliseconds, std::string) const {}

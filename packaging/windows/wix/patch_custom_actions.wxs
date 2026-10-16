@@ -14,10 +14,21 @@
     <Property Id="REMOVEVIRTUALDISPLAYDRIVER" Value="0" Secure="yes"/>
     <Property Id="REMOVEVIRTUALGAMEPADDRIVER" Value="0" Secure="yes"/>
     <Property Id="FACTORYRESET" Value="0" Secure="yes"/>
+    <Property Id="INSTALL_DISPLAY_DRIVERS" Secure="yes"/>
+    <Property Id="SAVED_DISPLAY_DRIVER_SELECTION">
+      <RegistrySearch Id="SavedDisplayDriverSelection" Root="HKLM" Key="SOFTWARE\Nonary\Vibepollo\Installer\DriverSelections" Name="DisplayEnabled" Type="raw" Win64="yes"/>
+    </Property>
     <Property Id="INSTALL_SUDOVDA" Value="1" Secure="yes"/>
     <Property Id="INSTALL_VIRTUAL_DISPLAY_DRIVER" Secure="yes"/>
-    <Property Id="INSTALL_VIRTUAL_GAMEPAD_DRIVER" Value="$(var.VhfGamepadDriverBundled)" Secure="yes"/>
+    <Property Id="INSTALL_VIRTUAL_GAMEPAD_DRIVER" Secure="yes"/>
+    <!-- Private, build-time capability: independent of saved/caller selection. -->
+    <Property Id="VhfGamepadDriverBundled" Value="$(var.VhfGamepadDriverBundled)"/>
+    <Property Id="SAVED_GAMEPAD_DRIVER_SELECTION">
+      <RegistrySearch Id="SavedGamepadDriverSelection" Root="HKLM" Key="SOFTWARE\Nonary\Vibepollo\Installer\DriverSelections" Name="GamepadEnabled" Type="raw" Win64="yes"/>
+    </Property>
     <Property Id="ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE" Value="$(var.VhfGamepadAllowLocalTest)" Secure="yes"/>
+    <Property Id="USBIP_TRANSPORT_BUNDLED" Value="$(var.UsbIpTransportBundled)"/>
+    <Property Id="INSTALL_USBIP_TRANSPORT" Value="0" Secure="yes"/>
     <Property Id="SKIP_REMOVE_CONFLICTING_PRODUCTS" Value="0" Secure="yes"/>
     <Condition Message="Administrator privileges are required.">Privileged</Condition>
     <Property Id="VIGEMBUS_PRESENT">
@@ -33,7 +44,19 @@
       <ComponentRef Id="SudoVdaRegistryDefaults"/>
       <ComponentRef Id="ArpCustomUninstallEntry"/>
     </Feature>
+    <Feature Id="InstallerDriverSelections" Title="Saved driver choices" Display="hidden" Level="1" Absent="disallow">
+      <ComponentRef Id="InstallerDriverSelectionPreferences"/>
+    </Feature>
     <InstallExecuteSequence>
+      <Custom Action="RestoreSavedDisplayDriverSelection" After="AppSearch">INSTALL_DISPLAY_DRIVERS="" AND (SAVED_DISPLAY_DRIVER_SELECTION="0" OR SAVED_DISPLAY_DRIVER_SELECTION="1")</Custom>
+      <Custom Action="DefaultDisplayDriverSelection" After="RestoreSavedDisplayDriverSelection">INSTALL_DISPLAY_DRIVERS=""</Custom>
+      <Custom Action="RestoreSavedGamepadDriverSelection" After="DefaultDisplayDriverSelection">INSTALL_VIRTUAL_GAMEPAD_DRIVER="" AND (SAVED_GAMEPAD_DRIVER_SELECTION="0" OR SAVED_GAMEPAD_DRIVER_SELECTION="1")</Custom>
+      <Custom Action="DefaultGamepadDriverSelection" After="RestoreSavedGamepadDriverSelection">INSTALL_VIRTUAL_GAMEPAD_DRIVER=""</Custom>
+      <!-- Same-product /i maintenance must rewrite only the saved-choice feature.
+           Existing full or targeted repair options retain their caller semantics. -->
+      <Custom Action="EnsureDriverSelectionsRepair" After="DefaultGamepadDriverSelection">Installed AND NOT REMOVE AND REINSTALL=""</Custom>
+      <Custom Action="ExtendDriverSelectionsRepair" After="EnsureDriverSelectionsRepair">Installed AND NOT REMOVE AND REINSTALL&lt;&gt;"" AND REINSTALL&lt;&gt;"ALL" AND NOT (REINSTALL &gt;&lt; "InstallerDriverSelections")</Custom>
+      <Custom Action="DefaultDriverSelectionsRepairMode" After="ExtendDriverSelectionsRepair">Installed AND NOT REMOVE AND REINSTALLMODE=""</Custom>
       <!-- Remove conflicting products before installation starts. -->
       <Custom Action="RemoveConflictingProducts" Before="InstallValidate">NOT Installed AND NOT REMOVE AND SKIP_REMOVE_CONFLICTING_PRODUCTS &lt;&gt; "1"</Custom>
 
@@ -62,15 +85,19 @@
       <!-- Post-install chores -->
       <Custom Action="SetResetAcls" After="InstallFiles">NOT REMOVE</Custom>
       <Custom Action="ResetAcls" After="SetResetAcls">NOT REMOVE</Custom>
-      <Custom Action="SetInstallSudovda" After="ResetAcls">NOT REMOVE AND INSTALL_SUDOVDA = "1"</Custom>
-      <Custom Action="InstallSudovda" After="SetInstallSudovda">NOT REMOVE AND INSTALL_SUDOVDA = "1"</Custom>
-      <Custom Action="SetInstallVirtualDisplayDriver" After="InstallSudovda">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; "0"</Custom>
-      <Custom Action="InstallVirtualDisplayDriver" After="SetInstallVirtualDisplayDriver">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; "0"</Custom>
+      <Custom Action="SetInstallSudovda" After="ResetAcls">NOT REMOVE AND INSTALL_SUDOVDA = "1" AND INSTALL_DISPLAY_DRIVERS = "1"</Custom>
+      <Custom Action="InstallSudovda" After="SetInstallSudovda">NOT REMOVE AND INSTALL_SUDOVDA = "1" AND INSTALL_DISPLAY_DRIVERS = "1"</Custom>
+      <Custom Action="SetInstallVirtualDisplayDriver" After="InstallSudovda">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; "0" AND INSTALL_DISPLAY_DRIVERS = "1"</Custom>
+      <Custom Action="InstallVirtualDisplayDriver" After="SetInstallVirtualDisplayDriver">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; "0" AND INSTALL_DISPLAY_DRIVERS = "1"</Custom>
       <Custom Action="SetInstallVirtualGamepadDriver" After="InstallVirtualDisplayDriver">NOT REMOVE AND INSTALL_VIRTUAL_GAMEPAD_DRIVER &lt;&gt; "0"</Custom>
       <Custom Action="InstallVirtualGamepadDriver" After="SetInstallVirtualGamepadDriver">NOT REMOVE AND INSTALL_VIRTUAL_GAMEPAD_DRIVER &lt;&gt; "0"</Custom>
+      <!-- Explicit opt-in only; existing shared transports are left unchanged.
+           There is intentionally no matching USB/IP uninstall action. -->
+      <Custom Action="SetInstallUsbIpTransport" After="InstallVirtualGamepadDriver">NOT REMOVE AND USBIP_TRANSPORT_BUNDLED = "1" AND INSTALL_USBIP_TRANSPORT = "1"</Custom>
+      <Custom Action="InstallUsbIpTransport" After="SetInstallUsbIpTransport">NOT REMOVE AND USBIP_TRANSPORT_BUNDLED = "1" AND INSTALL_USBIP_TRANSPORT = "1"</Custom>
       <!-- Vibepollo registers the Vulkan HDR layer on every install (SudoVDA needs it too,
            not just the virtual-display driver), so keep this gated only on NOT REMOVE. -->
-      <Custom Action="SetRegisterVulkanHdrLayer" After="InstallVirtualGamepadDriver">NOT REMOVE</Custom>
+      <Custom Action="SetRegisterVulkanHdrLayer" After="InstallUsbIpTransport">NOT REMOVE</Custom>
       <Custom Action="RegisterVulkanHdrLayer" After="SetRegisterVulkanHdrLayer">NOT REMOVE</Custom>
       <!-- Tightened to NOT Installed so repair/upgrade does not rerun install-time migration work. -->
       <Custom Action="SetMigrateConfig" After="RegisterVulkanHdrLayer">NOT Installed AND NOT REMOVE</Custom>

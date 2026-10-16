@@ -1,4 +1,8 @@
-import { test, expect, type Page } from '@playwright/test';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { localRoute, test, expect, type Page } from './fixtures';
+
+const screenshotDirectory = process.env.VIBEPOLLO_TEST_OUTPUT || process.env.VIBESHINE_TEST_OUTPUT || join(tmpdir(), 'vibepollo-ui-results');
 
 async function host(
   page: Page,
@@ -6,12 +10,13 @@ async function host(
   config: Record<string, unknown> = {},
   ready = true,
   providers: Record<string, boolean> = { steam: true, lutris: platform === 'linux', mangohud: platform === 'linux' },
+  metadata: Record<string, unknown> = {},
 ) {
   const patches: Record<string, unknown>[] = [];
-  await page.route('**/api/**', async (route) => {
+  await localRoute(page, '**/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (!path.startsWith('/api/')) {
-      await route.continue();
+      await route.fallback();
       return;
     }
     const method = route.request().method();
@@ -30,6 +35,7 @@ async function host(
     } else if (path === '/api/metadata')
       body = {
         platform,
+        architecture: 'x86_64',
         providers,
         version: '1.0.0',
         encoder_status: { state: 'ready', h264: true },
@@ -46,6 +52,7 @@ async function host(
         },
         linux: { session_role: 'desktop' },
         windows_build_number: 26100,
+        ...metadata,
       };
     else if (path === '/api/session/status')
       body = { status: true, activeSessions: 0, appRunning: false, lastEncoderProbeFailed: false };
@@ -77,13 +84,235 @@ test('Linux Everyday presents essentials and preserves unrelated values when sav
     'value',
     'per_client',
   );
-  await expect(page.locator('#setting-frame_limiter_auto_virtual_framegen')).toHaveCount(0);
-  await expect(page.locator('#setting-capture')).toHaveCount(0);
-  await expect(page.locator('#setting-controller')).toBeVisible();
-  await page.locator('#setting-stream_audio').uncheck();
+  await expect(page.locator('#setting-frame_limiter_auto_virtual_framegen')).toBeVisible();
+  await expect(page.locator('#setting-capture')).not.toBeVisible();
+  await expect(page.locator('#setting-encoder')).not.toBeVisible();
+  await expect(page.locator('#setting-fec_percentage')).not.toBeVisible();
+  await expect(page.locator('#setting-dd_config_revert_on_disconnect')).not.toBeVisible();
+  await expect(page.locator('#setting-controller')).toHaveCount(0);
+  await page.locator('#setting-pyrowave').uncheck();
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect.poll(() => patches.length).toBe(1);
-  expect(patches[0]).toEqual({ stream_audio: false });
+  expect(patches[0]).toEqual({ pyrowave: false });
+  await page.getByRole('button', { name: 'Audio', exact: true }).click();
+  await expect(page.locator('#setting-stream_audio')).toBeChecked();
+  await page.getByRole('button', { name: 'Input', exact: true }).click();
+  await expect(page.locator('#setting-controller')).toBeVisible();
+});
+
+test('Everyday restores impactful choices and shares drafts with detailed categories', async ({
+  page,
+}) => {
+  const patches = await host(page, 'linux', {
+    encoder: 'nvenc',
+    nvenc_twopass: 'full_res',
+    dd_paused_virtual_display_timeout_secs: 1234,
+  });
+  await page.goto('/v2/settings');
+  await page.locator('#settings-group-everyday-everyday_encoding summary').click();
+  await page.locator('#settings-group-everyday-everyday_recovery summary').click();
+  await page.locator('#settings-group-everyday-everyday_compatibility summary').click();
+  await expect(page.locator('#setting-dd_configuration_option')).toHaveCount(0);
+  await expect(page.locator('#setting-dd_hdr_request_override')).toBeVisible();
+  await expect(page.locator('#setting-nvenc_preset')).toBeVisible();
+  await expect(page.locator('#setting-dd_paused_virtual_display_timeout_secs')).toHaveValue('1234');
+  await expect(page.locator('#setting-rtss_install_path')).toHaveCount(0);
+  await expect(page.locator('#setting-nvenc_twopass')).toHaveCount(0);
+  await expect(page.locator('#settings-group-everyday-everyday_automation')).toBeVisible();
+
+  await page.locator('#setting-capture').selectOption('kwin');
+  await page.locator('#setting-nvenc_preset').selectOption('3');
+  await page.locator('#setting-fec_percentage').fill('10');
+  await page.locator('#setting-dd_config_revert_on_disconnect').check();
+  await expect(page.locator('#setting-dd_paused_virtual_display_timeout_secs')).toHaveCount(0);
+  await page.locator('#setting-dd_config_revert_on_disconnect').uncheck();
+  await expect(page.locator('#setting-dd_paused_virtual_display_timeout_secs')).toHaveValue('1234');
+  await page.locator('#setting-dd_paused_virtual_display_timeout_secs').selectOption('3600');
+
+  await page.locator('#settings-group-everyday-everyday_encoding a.settings-more').click();
+  await expect(page).toHaveURL(/category=video/);
+  await page.locator('#settings-group-video-encoder_nvenc summary').click();
+  await expect(page.locator('#setting-nvenc_preset')).toHaveValue('3');
+  await expect(page.locator('#setting-nvenc_twopass')).toHaveValue('full_res');
+  await page.getByRole('button', { name: 'Everyday setup', exact: true }).click();
+  await page.locator('#settings-group-everyday-everyday_compatibility summary').click();
+  await expect(page.locator('#setting-capture')).toHaveValue('kwin');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toEqual({
+    capture: 'kwin',
+    nvenc_preset: '3',
+    fec_percentage: 10,
+    dd_paused_virtual_display_timeout_secs: 3600,
+  });
+});
+
+test('Everyday encoder presets follow automatic GPU selection and explicit overrides', async ({
+  page,
+}) => {
+  await host(page, 'windows', { capture: '' }, true, undefined, {
+    gpus: [{ description: 'NVIDIA GPU', vendor_id: 0x10de, dedicated_video_memory: 8192 }],
+  });
+  await page.goto('/v2/settings');
+  await page.locator('#settings-group-everyday-everyday_encoding summary').click();
+  await expect(page.locator('#setting-nvenc_preset')).toBeVisible();
+  await expect(page.locator('#setting-qsv_preset')).toHaveCount(0);
+  await expect(page.locator('#setting-amd_quality')).toHaveCount(0);
+  await page.locator('#setting-encoder').selectOption('quicksync');
+  await expect(page.locator('#setting-qsv_preset')).toBeVisible();
+  await expect(page.locator('#setting-nvenc_preset')).toHaveCount(0);
+  await page.locator('#setting-encoder').selectOption('amdvce_ffmpeg');
+  await expect(page.locator('#setting-amd_quality')).toBeVisible();
+  await expect(page.locator('#setting-qsv_preset')).toHaveCount(0);
+});
+
+test('Everyday integrates Linux pacing tools and Remote Monitor with the shared save', async ({
+  page,
+}) => {
+  const patches = await host(page);
+  await page.goto('/v2/settings');
+  await expect(
+    page.locator('#setting-frame_limiter_auto_virtual_framegen option[value="vrr"]'),
+  ).toHaveCount(0);
+  await page.locator('#settings-group-everyday-everyday_integrations summary').click();
+  await expect(page.locator('#setting-rtss_install_path')).toHaveCount(0);
+  await expect(page.locator('#setting-lossless_scaling_path')).toHaveCount(0);
+  const libraries = page.getByRole('navigation', { name: 'Game library integrations' });
+  await expect(libraries.getByRole('link', { name: 'Steam' })).toHaveAttribute(
+    'href',
+    '/v2/integrations#integration-steam',
+  );
+  await expect(libraries.getByRole('link', { name: 'Lutris' })).toBeVisible();
+  await expect(libraries.getByRole('link', { name: /Playnite/ })).toHaveCount(0);
+  await page.locator('#setting-frame_limiter_enable').check();
+  await page.locator('#setting-frame_limiter_provider').selectOption('mangohud');
+  await page.locator('#setting-mangohud_limiter_method').selectOption('early');
+  await page.locator('#setting-frame_limiter_fps_limit').fill('119.88');
+  await page.locator('#setting-mangohud_preset').selectOption('3');
+  await page.locator('#settings-group-everyday-everyday_remote_monitor summary').click();
+  await page.locator('#setting-virtual_display_max_clients').fill('6');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toEqual({
+    frame_limiter_enable: true,
+    frame_limiter_provider: 'mangohud',
+    mangohud_limiter_method: 'early',
+    frame_limiter_fps_limit: 119.88,
+    mangohud_preset: '3',
+    virtual_display_max_clients: 6,
+  });
+});
+
+test('Everyday integrates Windows RTSS and Lossless Scaling paths', async ({ page }) => {
+  const patches = await host(page, 'windows');
+  await localRoute(page, '**/api/rtss/status', (route) =>
+    route.fulfill({
+      json: {
+        path_exists: true,
+        hooks_found: true,
+        configured_provider: 'auto',
+        resolved_path: 'C:\\RTSS',
+      },
+    }),
+  );
+  await page.goto('/v2/settings');
+  await page.locator('#settings-group-everyday-everyday_integrations summary').click();
+  await expect(page.locator('#setting-mangohud_preset')).toHaveCount(0);
+  await expect(page.locator('#setting-rtss_install_path')).toBeVisible();
+  await expect(page.locator('#setting-lossless_scaling_path')).toBeVisible();
+  const playnite = page
+    .getByRole('navigation', { name: 'Game library integrations' })
+    .getByRole('link', { name: /Playnite/ });
+  await expect(playnite).toHaveAttribute('href', '/v2/integrations#integration-playnite');
+  await expect(page.locator('#setting-frame_limiter_provider option[value="proton"]')).toHaveCount(
+    0,
+  );
+  await expect(
+    page.locator('#setting-frame_limiter_provider option[value="mangohud-proton"]'),
+  ).toHaveCount(0);
+  await page.locator('#setting-rtss_install_path').fill('C:\\Tools\\RTSS');
+  await page.locator('#setting-lossless_scaling_path').fill('C:\\Games\\LosslessScaling.exe');
+  await expect(page.getByText('Saved installation ready', { exact: true })).toBeVisible();
+  await expect(page.getByText(/RTSS status checks the saved installation/)).toBeVisible();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toEqual({
+    rtss_install_path: 'C:\\Tools\\RTSS',
+    lossless_scaling_path: 'C:\\Games\\LosslessScaling.exe',
+  });
+  await playnite.click();
+  await expect(page).toHaveURL(/integrations#integration-playnite/);
+  await expect(page.locator('#integration-playnite')).toBeVisible();
+});
+
+test('Windows identifies unsupported saved providers without silently rewriting them', async ({
+  page,
+}) => {
+  const patches = await host(page, 'windows', { frame_limiter_provider: 'proton' });
+  await page.goto('/v2/settings');
+  await page.locator('#settings-group-everyday-everyday_integrations summary').click();
+  await expect(page.locator('#setting-frame_limiter_provider')).toHaveValue('proton');
+  await expect(page.locator('#setting-frame_limiter_provider option:checked')).toHaveText(
+    'Unsupported saved value (proton)',
+  );
+  expect(patches).toHaveLength(0);
+  await page.locator('#setting-frame_limiter_provider').selectOption('auto');
+  await expect(page.locator('#setting-frame_limiter_provider option[value="proton"]')).toHaveCount(
+    0,
+  );
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toEqual({ frame_limiter_provider: 'auto' });
+});
+
+test('legacy saved FEC zero preserves unrelated saves and can be corrected explicitly', async ({
+  page,
+}) => {
+  const patches = await host(page, 'linux', { fec_percentage: 0, pyrowave: true });
+  await page.goto('/v2/settings');
+  await page.locator('#setting-pyrowave').uncheck();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toEqual({ pyrowave: false });
+  await page.locator('#settings-group-everyday-everyday_encoding summary').click();
+  await expect(page.getByText(/The saved zero is ignored by the host/)).toBeVisible();
+  await page.locator('#setting-fec_percentage').fill('1');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => patches.length).toBe(2);
+  expect(patches[1]).toEqual({ fec_percentage: 1 });
+  await page.locator('#setting-fec_percentage').fill('0');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect
+    .poll(() =>
+      page
+        .locator('#setting-fec_percentage')
+        .evaluate((input: HTMLInputElement) => input.validity.rangeUnderflow),
+    )
+    .toBe(true);
+  expect(patches).toHaveLength(2);
+});
+
+test('standard FEC rejects zero while PyroWave critical FEC saves zero', async ({ page }) => {
+  const patches = await host(page, 'linux', { pyrowave_critical_fec_percentage: 20 });
+  await page.goto('/v2/settings');
+  await page.locator('#settings-group-everyday-everyday_encoding summary').click();
+  await page.locator('#setting-fec_percentage').fill('0');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect
+    .poll(() =>
+      page
+        .locator('#setting-fec_percentage')
+        .evaluate((input: HTMLInputElement) => input.validity.rangeUnderflow),
+    )
+    .toBe(true);
+  expect(patches).toHaveLength(0);
+  await page.locator('#setting-fec_percentage').fill('1');
+  await page.getByRole('button', { name: 'Video & quality', exact: true }).click();
+  await expect(page.locator('#setting-fec_percentage')).toHaveAttribute('min', '1');
+  await page.locator('#setting-pyrowave_critical_fec_percentage').fill('0');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toEqual({ fec_percentage: 1, pyrowave_critical_fec_percentage: 0 });
 });
 
 test('settings deep links open advanced encoders and back navigation preserves drafts', async ({
@@ -122,14 +351,14 @@ test('unavailable virtual screens explain repair and keep physical selection ava
 
 test('HTTP save rejection retains the draft', async ({ page }) => {
   await host(page);
-  await page.route('**/api/config', async (route) => {
+  await localRoute(page, '**/api/config', async (route) => {
     if (route.request().method() === 'PATCH') await route.fulfill({ json: { status: false } });
     else await route.fallback();
   });
   await page.goto('/v2/settings');
-  await page.locator('#setting-stream_audio').uncheck();
+  await page.locator('#setting-pyrowave').uncheck();
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
-  await expect(page.locator('#setting-stream_audio')).not.toBeChecked();
+  await expect(page.locator('#setting-pyrowave')).not.toBeChecked();
   await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeEnabled();
 });
 
@@ -138,8 +367,8 @@ for (const width of [390, 768, 1100, 1440]) {
     await host(page);
     await page.setViewportSize({ width, height: 1000 });
     await page.goto('/v2/settings');
-    await expect(page.locator('#setting-stream_audio')).toBeVisible();
-    await page.locator('#setting-stream_audio').uncheck();
+    await expect(page.locator('#setting-pyrowave')).toBeVisible();
+    await page.locator('#setting-pyrowave').uncheck();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
@@ -149,7 +378,7 @@ for (const width of [390, 768, 1100, 1440]) {
     expect(save!.x + save!.width).toBeLessThanOrEqual(width);
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({
-      path: `/tmp/vibeshine-ui-results/everyday-${width}.png`,
+      path: join(screenshotDirectory, `everyday-${width}.png`),
       fullPage: true,
     });
   });
@@ -158,7 +387,7 @@ for (const width of [390, 768, 1100, 1440]) {
 test('bulk unpair requires a confirmation and calls the existing endpoint', async ({ page }) => {
   await host(page);
   let calls = 0;
-  await page.route('**/api/clients/unpair-all', async (route) => {
+  await localRoute(page, '**/api/clients/unpair-all', async (route) => {
     calls++;
     await route.fulfill({ json: { status: true } });
   });
@@ -183,12 +412,12 @@ for (const theme of ['dark', 'light']) {
     await page.addInitScript((theme) => localStorage.setItem('vibepollo.theme', theme), theme);
     await page.goto('/v2/settings');
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-    await page.locator('#setting-stream_audio').focus();
+    await page.locator('#setting-pyrowave').focus();
     await page.keyboard.press('Space');
-    await expect(page.locator('#setting-stream_audio')).not.toBeChecked();
+    await expect(page.locator('#setting-pyrowave')).not.toBeChecked();
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({
-      path: `/tmp/vibeshine-ui-results/everyday-${theme}.png`,
+      path: join(screenshotDirectory, `everyday-${theme}.png`),
       fullPage: true,
     });
   });
@@ -270,16 +499,16 @@ test('failed configuration load keeps editing unavailable until retry succeeds',
 }) => {
   await host(page);
   let failed = true;
-  await page.route('**/api/config', async (route) => {
+  await localRoute(page, '**/api/config', async (route) => {
     if (failed) await route.fulfill({ status: 503, json: { status: false } });
     else await route.fallback();
   });
   await page.goto('/v2/settings');
   await expect(page.getByRole('alert')).toBeVisible();
-  await expect(page.locator('#setting-stream_audio')).toHaveCount(0);
+  await expect(page.locator('#setting-pyrowave')).toHaveCount(0);
   failed = false;
   await page.getByRole('button', { name: 'Reload', exact: true }).click();
-  await expect(page.locator('#setting-stream_audio')).toBeVisible();
+  await expect(page.locator('#setting-pyrowave')).toBeVisible();
 });
 
 test('edits made during a settings save remain unsaved', async ({ page }) => {
@@ -289,7 +518,7 @@ test('edits made during a settings save remain unsaved', async ({ page }) => {
     finish = resolve;
   });
   let started = false;
-  await page.route('**/api/config', async (route) => {
+  await localRoute(page, '**/api/config', async (route) => {
     if (route.request().method() !== 'PATCH') {
       await route.fallback();
       return;
@@ -299,13 +528,13 @@ test('edits made during a settings save remain unsaved', async ({ page }) => {
     await route.fulfill({ json: { status: true } });
   });
   await page.goto('/v2/settings');
-  await page.locator('#setting-stream_audio').uncheck();
+  await page.locator('#setting-pyrowave').uncheck();
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect.poll(() => started).toBe(true);
-  await page.locator('#setting-mouse').uncheck();
+  await page.locator('#setting-wayland_hdr_compatibility').check();
   finish();
   await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeEnabled();
-  await expect(page.locator('#setting-mouse')).not.toBeChecked();
+  await expect(page.locator('#setting-wayland_hdr_compatibility')).toBeChecked();
   await expect(page.locator('.save-bar')).toContainText('1 unsaved change');
 });
 
@@ -334,9 +563,9 @@ test('settings reflow at a 200% zoom-equivalent viewport with forced colors and 
   // Browser zoom halves the CSS viewport; CSS zoom alone does not update media queries.
   await page.setViewportSize({ width: 640, height: 450 });
   await page.goto('/v2/settings');
-  await page.locator('#setting-stream_audio').focus();
+  await page.locator('#setting-pyrowave').focus();
   await page.keyboard.press('Space');
-  await expect(page.locator('#setting-stream_audio')).not.toBeChecked();
+  await expect(page.locator('#setting-pyrowave')).not.toBeChecked();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect(page.locator('.save-bar')).toHaveCount(0);
@@ -344,7 +573,7 @@ test('settings reflow at a 200% zoom-equivalent viewport with forced colors and 
 
 test('MangoHud saves preserve later edits and report rejected requests', async ({ page }) => {
   await host(page);
-  await page.route('**/api/frame-limiter/status', async (route) => {
+  await localRoute(page, '**/api/frame-limiter/status', async (route) => {
     await route.fulfill({
       json: {
         enabled: true,
@@ -359,7 +588,7 @@ test('MangoHud saves preserve later edits and report rejected requests', async (
     finish = resolve;
   });
   let calls = 0;
-  await page.route('**/api/config', async (route) => {
+  await localRoute(page, '**/api/config', async (route) => {
     if (route.request().method() !== 'PATCH') {
       await route.fallback();
       return;
@@ -464,8 +693,8 @@ test('unknown readiness and unavailable utilization do not render as successful 
   page,
 }) => {
   await host(page);
-  await page.route('**/api/metadata', (route) => route.fulfill({ json: { platform: 'linux' } }));
-  await page.route('**/api/host/stats', (route) =>
+  await localRoute(page, '**/api/metadata', (route) => route.fulfill({ json: { platform: 'linux' } }));
+  await localRoute(page, '**/api/host/stats', (route) =>
     route.fulfill({ json: { cpu_percent: -1, gpu_percent: null } }),
   );
   await page.goto('/v2/');
@@ -481,7 +710,7 @@ test('unknown readiness and unavailable utilization do not render as successful 
 });
 
 async function libraryWithMissingCovers(page: Page) {
-  await page.route('**/api/apps', (route) =>
+  await localRoute(page, '**/api/apps', (route) =>
     route.fulfill({
       json: {
         apps: [
@@ -496,7 +725,7 @@ async function libraryWithMissingCovers(page: Page) {
       },
     }),
   );
-  await page.route('**/api/apps/*/cover', (route) => route.fulfill({ status: 404, body: '' }));
+  await localRoute(page, '**/api/apps/*/cover', (route) => route.fulfill({ status: 404, body: '' }));
 }
 
 test('library placeholders preserve search, keyboard selection, and list preferences', async ({
@@ -550,7 +779,7 @@ test('a failed performance refresh retains the sample and visibly marks it as st
 }) => {
   await host(page);
   let unavailable = false;
-  await page.route('**/api/host/stats', (route) =>
+  await localRoute(page, '**/api/host/stats', (route) =>
     unavailable
       ? route.fulfill({ status: 503, json: { status: false } })
       : route.fulfill({
@@ -595,7 +824,7 @@ for (const platform of ['windows', 'linux']) {
   }) => {
     await host(page, platform, {}, true, { steam: true, lutris: platform === 'linux' });
     const saved: Record<string, unknown>[] = [];
-    await page.route('**/api/apps', (route) => {
+    await localRoute(page, '**/api/apps', (route) => {
       if (route.request().method() === 'POST') {
         saved.push(route.request().postDataJSON());
         return route.fulfill({
@@ -605,13 +834,13 @@ for (const platform of ['windows', 'linux']) {
       }
       return route.fulfill({ json: { apps: [] } });
     });
-    await page.route('**/api/playnite/status', (route) =>
+    await localRoute(page, '**/api/playnite/status', (route) =>
       route.fulfill({ json: { installed: true, active: true } }),
     );
-    await page.route('**/api/playnite/games', (route) =>
+    await localRoute(page, '**/api/playnite/games', (route) =>
       route.fulfill({ json: [{ id: 'playnite-portal', name: 'Portal', installed: true }] }),
     );
-    await page.route('**/api/steam/games*', (route) =>
+    await localRoute(page, '**/api/steam/games*', (route) =>
       route.fulfill({
         json: {
           games: [
@@ -633,7 +862,7 @@ for (const platform of ['windows', 'linux']) {
         },
       }),
     );
-    await page.route('**/api/lutris/games', (route) =>
+    await localRoute(page, '**/api/lutris/games', (route) =>
       route.fulfill({
         json: {
           games: [
@@ -693,7 +922,7 @@ test('game library setup supports multiple Windows libraries without enabling St
   page,
 }, testInfo) => {
   const patches = await host(page, 'windows', {}, true, { steam: true, playnite_toggle: true });
-  await page.route('**/api/playnite/status', (route) =>
+  await localRoute(page, '**/api/playnite/status', (route) =>
     route.fulfill({ json: { installed: true, active: true } }),
   );
   await page.goto('/v2/library');
@@ -726,7 +955,7 @@ test('game library setup supports multiple Windows libraries without enabling St
 test('saving a Steam selection waits for its prepared cover', async ({ page }) => {
   await host(page, 'windows', {}, true, { steam: true });
   const saved: Record<string, unknown>[] = [];
-  await page.route('**/api/steam/games*', async (route) => {
+  await localRoute(page, '**/api/steam/games*', async (route) => {
     const selected = new URL(route.request().url()).searchParams.has('appid');
     if (selected) await new Promise((resolve) => setTimeout(resolve, 350));
     await route.fulfill({
@@ -742,7 +971,7 @@ test('saving a Steam selection waits for its prepared cover', async ({ page }) =
       },
     });
   });
-  await page.route('**/api/apps', (route) => {
+  await localRoute(page, '**/api/apps', (route) => {
     if (route.request().method() === 'POST') saved.push(route.request().postDataJSON());
     return route.fulfill({
       json: route.request().method() === 'POST' ? { status: true } : { apps: [] },
@@ -762,7 +991,7 @@ test('saving a Steam selection waits for its prepared cover', async ({ page }) =
 
 test('encoder failures direct the overview to diagnostics', async ({ page }) => {
   await host(page, 'windows');
-  await page.route('**/api/metadata', (route) =>
+  await localRoute(page, '**/api/metadata', (route) =>
     route.fulfill({
       json: {
         platform: 'windows',
@@ -817,7 +1046,7 @@ for (const width of [390, 1440]) {
       'config-overrides': { rtx_hdr: 'disabled' },
     };
     let saved: Record<string, unknown> | undefined;
-    await page.route('**/api/apps', async (route) => {
+    await localRoute(page, '**/api/apps', async (route) => {
       if (route.request().method() === 'POST') {
         saved = route.request().postDataJSON();
         await route.fulfill({ json: { status: true } });
@@ -834,7 +1063,7 @@ for (const width of [390, 1440]) {
     );
     await page
       .locator('.app-compatibility')
-      .screenshot({ path: `/tmp/vibepollo-ui-results/app-behavior-${width}.png` });
+      .screenshot({ path: join(screenshotDirectory, `app-behavior-${width}.png`) });
     await page.locator('#app-state-do-0').fill('new start');
     await page.locator('#app-terminate-on-pause').selectOption('true');
     await page.getByRole('button', { name: 'Save application', exact: true }).first().click();
@@ -856,7 +1085,7 @@ test('app behavior validates edited scaling and can return explicit options to d
   await host(page, 'windows');
   const uuid = '12345678-1234-4234-8234-123456789abc';
   let saved: Record<string, unknown> | undefined;
-  await page.route('**/api/apps', async (route) => {
+  await localRoute(page, '**/api/apps', async (route) => {
     if (route.request().method() === 'POST') {
       saved = route.request().postDataJSON();
       await route.fulfill({ json: { status: true } });
@@ -888,13 +1117,13 @@ for (const platform of ['windows', 'linux']) {
     const legacyUrl = process.env.VIBEPOLLO_LEGACY_TEST_URL;
     test.skip(!legacyUrl, 'Set VIBEPOLLO_LEGACY_TEST_URL to a served classic UI build.');
     const patches = await host(page, platform, {}, true, { steam: true, lutris: platform === 'linux' });
-    await page.route('**/api/playnite/status', (route) =>
+    await localRoute(page, '**/api/playnite/status', (route) =>
       route.fulfill({ json: { installed: true, active: true } }),
     );
-    await page.route('**/api/playnite/games', (route) =>
+    await localRoute(page, '**/api/playnite/games', (route) =>
       route.fulfill({ json: [{ id: 'pn-portal', name: 'Portal', installed: true }] }),
     );
-    await page.route('**/api/steam/games*', (route) =>
+    await localRoute(page, '**/api/steam/games*', (route) =>
       route.fulfill({
         json: {
           games: [
@@ -908,11 +1137,11 @@ for (const platform of ['windows', 'linux']) {
         },
       }),
     );
-    await page.route('**/api/lutris/games', (route) =>
+    await localRoute(page, '**/api/lutris/games', (route) =>
       route.fulfill({ json: { games: [{ id: 9, name: 'Portal', directory: '/games/portal' }] } }),
     );
     const saved: Record<string, unknown>[] = [];
-    await page.route('**/api/apps', (route) => {
+    await localRoute(page, '**/api/apps', (route) => {
       if (route.request().method() === 'POST') saved.push(route.request().postDataJSON());
       return route.fulfill({
         json:
@@ -926,7 +1155,7 @@ for (const platform of ['windows', 'linux']) {
               },
       });
     });
-    await page.route('**/api/apps/*/cover*', (route) =>
+    await localRoute(page, '**/api/apps/*/cover*', (route) =>
       route.fulfill({
         contentType: 'image/png',
         body: Buffer.from(
@@ -992,15 +1221,19 @@ for (const platform of ['windows', 'linux']) {
 
 test('initial library setup refreshes apps and persists editable settings', async ({ page }) => {
   await host(page, 'windows', {}, true, { steam: true });
-  await page.route('**/api/playnite/status', route => route.fulfill({ json: { installed: false } }));
+  await localRoute(page, '**/api/playnite/status', route => route.fulfill({ json: { installed: false } }));
   let synced = false;
-  await page.route('**/api/steam/force_sync', route => {
+  await localRoute(page, '**/api/steam/force_sync', (route) => {
     synced = true;
     return route.fulfill({ json: { status: true } });
   });
-  await page.route('**/api/apps', route => route.fulfill({ json: {
-    apps: synced ? [{ name: 'Synced Steam game', uuid: 'steam-test', 'steam-id': '42' }] : [],
-  } }));
+  await localRoute(page, '**/api/apps', (route) =>
+    route.fulfill({
+      json: {
+        apps: synced ? [{ name: 'Synced Steam game', uuid: 'steam-test', 'steam-id': '42' }] : [],
+      },
+    }),
+  );
   await page.goto('/v2/library');
   await page.getByRole('button', { name: 'Setup Game Library Integration', exact: true }).click();
   const dialog = page.getByRole('dialog');
@@ -1010,11 +1243,15 @@ test('initial library setup refreshes apps and persists editable settings', asyn
   await dialog.getByRole('button', { name: 'Save settings', exact: true }).click();
   await dialog.getByRole('button', { name: 'Done', exact: true }).click();
   await expect(page.getByText('Synced Steam game', { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Setup Game Library Integration', exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Setup Game Library Integration', exact: true }),
+  ).toHaveCount(0);
   await page.reload();
   await page.getByRole('button', { name: 'Library manager settings', exact: true }).click();
   await dialog.getByRole('button', { name: 'Next: Library settings' }).click();
-  await expect(dialog.getByRole('spinbutton', { name: 'Recent games', exact: true })).toHaveValue('6');
+  await expect(dialog.getByRole('spinbutton', { name: 'Recent games', exact: true })).toHaveValue(
+    '6',
+  );
 });
 
 for (const platform of ['linux', 'windows'] as const) {
@@ -1022,10 +1259,10 @@ for (const platform of ['linux', 'windows'] as const) {
     page,
   }) => {
     await host(page, platform, {});
-    await page.route('**/api/logs?*', (route) =>
+    await localRoute(page, '**/api/logs?*', (route) =>
       route.fulfill({ body: '', contentType: 'text/plain' }),
     );
-    await page.route('**/api/logs/export', (route) =>
+    await localRoute(page, '**/api/logs/export', (route) =>
       route.fulfill({
         body: 'test bundle',
         contentType: 'application/zip',
@@ -1039,12 +1276,18 @@ for (const platform of ['linux', 'windows'] as const) {
   });
 }
 
+async function settleUpdaterRendering(page: Page) {
+  await page.evaluate(() => new Promise<void>((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+  ));
+}
+
 test('Linux shows an automatic update notice across pages and retries failed checks', async ({
   page,
 }) => {
   await host(page);
   let unavailable = true;
-  await page.route('https://api.github.com/repos/Nonary/Vibepollo/releases', async (route) => {
+  await page.route('https://api.github.com/repos/Nonary/Vibepollo/releases?**', async (route) => {
     await route.fulfill(
       unavailable
         ? { status: 403, json: { message: 'API rate limit exceeded' } }
@@ -1052,7 +1295,9 @@ test('Linux shows an automatic update notice across pages and retries failed che
             json: [
               {
                 tag_name: 'v1.1.0',
+                draft: false,
                 prerelease: false,
+                assets: [{ name: 'Vibepollo-x86_64.AppImage', state: 'uploaded', size: 100 }],
                 html_url: 'https://github.com/Nonary/Vibepollo/releases/tag/v1.1.0',
               },
             ],
@@ -1075,13 +1320,529 @@ test('Linux shows an automatic update notice across pages and retries failed che
   await expect(notice.getByText('Vibepollo 1.1.0 is available')).toBeVisible();
 });
 
-test('Linux stable install does not advertise a prerelease without opt-in', async ({ page }) => {
-  await host(page);
-  await page.route('https://api.github.com/repos/Nonary/Vibepollo/releases', async (route) => {
-    await route.fulfill({ json: [{ tag_name: 'v2.0.0-beta.1', prerelease: true }] });
+test('Linux stable install respects an explicit prerelease opt-out', async ({ page }) => {
+  await host(page, 'linux', { notify_pre_releases: false });
+  await page.route('https://api.github.com/repos/Nonary/Vibepollo/releases?**', async (route) => {
+    await route.fulfill({
+      json: [{
+        tag_name: 'v2.0.0-beta.1',
+        draft: false,
+        prerelease: true,
+        assets: [{ name: 'Vibepollo-x86_64.AppImage', state: 'uploaded', size: 100 }],
+      }],
+    });
   });
-  const response = page.waitForResponse('https://api.github.com/repos/Nonary/Vibepollo/releases');
+  const response = page.waitForResponse((response) =>
+    response.url().startsWith('https://api.github.com/repos/Nonary/Vibepollo/releases?'),
+  );
   await page.goto('/v2/');
-  await response;
+  await (await response).finished();
+  await settleUpdaterRendering(page);
   await expect(page.locator('.update-notice')).toHaveCount(0);
 });
+
+test('Windows default nightly notification validates metadata and dismissal survives reload', async ({
+  page,
+}) => {
+  await host(page, 'windows', {}, true, undefined, { version: '1.9.0' });
+  const tag = 'daily-2026-10-11';
+  const metadata = {
+    schema_version: 1, channel: 'nightly', tag,
+    version: '2.0.0-daily.d20261011+aaaaaaaaaaaa',
+    source_commit: 'a'.repeat(40), nightly_sequence: 20261011,
+  };
+  const assetRequests: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/api/updates/nightly-metadata') || request.url().includes('/releases/download/'))
+      assetRequests.push(request.url());
+  });
+  await page.route('https://api.github.com/repos/Nonary/Vibepollo/releases?**', (route) =>
+    route.fulfill({
+      json: [{
+        tag_name: tag,
+        body: `<!-- nightly-identity: ${JSON.stringify(metadata)} -->\n`,
+        draft: false,
+        prerelease: true,
+        html_url: `https://github.com/Nonary/Vibepollo/releases/tag/${tag}`,
+        assets: ['VibepolloSetup.exe', 'nightly-metadata.json', 'SHA256SUMS'].map((name) => ({
+          name,
+          state: 'uploaded',
+          size: 100,
+        })),
+      }],
+    }),
+  );
+  await page.goto('/v2/');
+  const notice = page.locator('.update-notice');
+  await expect(notice.getByText(`Vibepollo ${tag} is available`)).toBeVisible();
+  await notice.getByRole('button', { name: 'Dismiss this update' }).click();
+  await expect(notice).toHaveCount(0);
+  const checked = page.waitForResponse((response) => response.url().includes('/releases?per_page=100&page=1'));
+  await page.reload();
+  await (await checked).finished();
+  await settleUpdaterRendering(page);
+  await expect(notice).toHaveCount(0);
+  expect(assetRequests).toEqual([]);
+});
+
+test('Windows prerelease install opts out persistently and still receives a stable update', async ({
+  page,
+}) => {
+  await host(page, 'windows', { notify_pre_releases: 'disabled' }, true, undefined, {
+    version: '2.0.0-beta.1',
+  });
+  await page.route('https://api.github.com/repos/Nonary/Vibepollo/releases?**', (route) =>
+    route.fulfill({
+      json: [
+        {
+          tag_name: '3.0.0-beta.1',
+          draft: false,
+          prerelease: true,
+          assets: [{ name: 'VibepolloSetup.exe', state: 'uploaded', size: 100 }],
+        },
+        {
+          tag_name: '2.0.0',
+          draft: false,
+          prerelease: false,
+          assets: [{ name: 'VibepolloSetup.exe', state: 'uploaded', size: 100 }],
+        },
+      ],
+    }),
+  );
+  await page.goto('/v2/');
+  await expect(
+    page.locator('.update-notice').getByText('Vibepollo 2.0.0 is available'),
+  ).toBeVisible();
+  await page.reload();
+  await expect(
+    page.locator('.update-notice').getByText('Vibepollo 2.0.0 is available'),
+  ).toBeVisible();
+});
+
+// Both production UIs use one origin so their actual shared dismissal policy is exercised.
+const updaterReleasesUrl = 'https://api.github.com/repos/Nonary/Vibepollo/releases';
+type UpdaterReleaseFixture = {
+  tag_name: string;
+  draft: boolean;
+  prerelease: boolean;
+  html_url: string;
+  name: string;
+  body: string;
+  assets: { name: string; state: string; size: number }[];
+};
+
+function updaterRelease(tag: string, assets = ['VibepolloSetup.exe']): UpdaterReleaseFixture {
+  return {
+    tag_name: tag,
+    draft: false,
+    prerelease: tag.startsWith('daily-') || /-(alpha|beta|rc)/.test(tag),
+    html_url: `https://github.com/Nonary/Vibepollo/releases/tag/${tag}`,
+    name: `Fixture ${tag}`,
+    body: `Release notes for ${tag}`,
+    assets: assets.map((name) => ({ name, state: 'uploaded', size: 100 })),
+  };
+}
+
+function updaterDaily(tag: string, source = 'a') {
+  const date = tag.replace('daily-', '').replaceAll('-', '');
+  return {
+    release: updaterRelease(tag, ['VibepolloSetup.exe', 'nightly-metadata.json', 'SHA256SUMS']),
+    metadata: {
+      schema_version: 1,
+      channel: 'nightly',
+      tag,
+      version: `2.0.0-daily.d${date}+${source.repeat(12)}`,
+      source_commit: source.repeat(40),
+      nightly_sequence: Number(date),
+    },
+  };
+}
+
+async function mockUpdaterFeed(
+  page: Page,
+  releases: UpdaterReleaseFixture[],
+  metadata: Record<string, unknown> = {},
+) {
+  const calls = { releases: 0, metadata: 0 };
+  await page.route(`${updaterReleasesUrl}?**`, async (route) => {
+    calls.releases++;
+    const pageNumber = new URL(route.request().url()).searchParams.get('page');
+    await route.fulfill({ json: pageNumber === '1' ? releases.map((release) => metadata[release.tag_name]
+      ? { ...release, body: `<!-- nightly-identity: ${JSON.stringify(metadata[release.tag_name])} -->\n${release.body}` }
+      : release) : [] });
+  });
+  await localRoute(page, '**/api/updates/nightly-metadata?**', async (route) => {
+    calls.metadata++;
+    const tag = new URL(route.request().url()).searchParams.get('tag') ?? '';
+    await route.fulfill({ json: metadata[tag] ?? { invalid: true } });
+  });
+  return calls;
+}
+
+async function legacyUpdaterHost(
+  page: Page,
+  config: Record<string, unknown> = {},
+  metadata: Record<string, unknown> = {},
+  platform = 'windows',
+) {
+  const patches = await host(page, platform, config, true, undefined, metadata);
+  const saves: Record<string, unknown>[] = [];
+  const health = { vigem: 0, logs: 0 };
+  let persistedSnapshot = false;
+  await localRoute(page, '**/api/config', async (route) => {
+    const method = route.request().method();
+    if (method === 'GET' && persistedSnapshot) {
+      // Native config::parse_config returns scalar values as strings after persistence.
+      const stored = Object.fromEntries(Object.entries(config).map(([key, value]) => [
+        key, typeof value === 'boolean' || typeof value === 'number' ? String(value) : value,
+      ]));
+      return route.fulfill({ json: { status: true, capture: 'kms', virtual_display_mode: 'per_client', ...stored } });
+    }
+    if (method !== 'PATCH' && method !== 'POST') return route.fallback();
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    if (method === 'PATCH') patches.push(body);
+    else {
+      saves.push(body);
+      persistedSnapshot = true;
+      // POST rewrites native configuration. A dropped opt-out must not survive by accidental merging.
+      for (const key of Object.keys(config)) delete config[key];
+    }
+    for (const [key, value] of Object.entries(body)) {
+      if (value === null || value === '') delete config[key];
+      else config[key] = value;
+    }
+    await route.fulfill({ json: { status: true, appliedNow: true, deferred: false, restartRequired: false } });
+  });
+  await localRoute(page, '**/api/auth/sessions', (route) => route.fulfill({ json: { status: true, sessions: [] } }));
+  await localRoute(page, '**/api/health/vigem', (route) => {
+    health.vigem++;
+    return route.fulfill({ json: { installed: true, required: true, version: 'fixture' } });
+  });
+  await localRoute(page, '**/api/health/vulkan-hdr-layer', (route) => route.fulfill({ json: { installed: true, enabled: false } }));
+  await localRoute(page, '**/api/health/crashdump', (route) => route.fulfill({ json: { available: false } }));
+  await localRoute(page, '**/api/display/golden_status', (route) => route.fulfill({ json: {
+    exists: true, out_of_date: false, needs_layout_upgrade: false, restore_failure_count: 0,
+  } }));
+  await localRoute(page, '**/api/playnite/status', (route) => route.fulfill({ json: {
+    installed: true, active: false, update_available: false,
+    installed_version: 'fixture', packaged_version: 'fixture',
+  } }));
+  await localRoute(page, '**/api/frame-limiter/status', (route) => route.fulfill({ json: {
+    enabled: false, configured_provider: 'rtss', active_provider: '',
+    rtss_available: false, nvidia_available: false, mangohud_available: false,
+  } }));
+  await localRoute(page, '**/api/lossless_scaling/status', (route) => route.fulfill({ json: {} }));
+  await localRoute(page, '**/api/logs', (route) => {
+    health.logs++;
+    return route.fulfill({ contentType: 'text/plain', body: '' });
+  });
+  return { patches, saves, health };
+}
+
+function classicUpdaterUrl() {
+  const url = process.env.VIBEPOLLO_LEGACY_TEST_URL;
+  test.skip(!url, 'Set VIBEPOLLO_LEGACY_TEST_URL to a classic production build on the v2 test origin.');
+  const baseUrl = test.info().project.use.baseURL;
+  if (baseUrl) expect(new URL(url!).origin).toBe(new URL(baseUrl).origin);
+  return url!;
+}
+
+function legacyUpdaterCompleted(page: Page) {
+  return page.waitForResponse((response) => new URL(response.url()).pathname === '/api/logs');
+}
+
+async function stallUpdaterReleaseBody(page: Page) {
+  await page.addInitScript(() => {
+    const state = { started: 0, aborted: 0 };
+    Object.assign(window, { __vibepolloUpdaterBody: state });
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await originalFetch(input, init);
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      if (url.hostname !== 'api.github.com' || !url.pathname.endsWith('/releases') || !url.searchParams.has('page')) return response;
+      const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+      // Only release API body decoding is controlled; selection stays real.
+      response.json = () => {
+        state.started++;
+        return new Promise((_, reject) => {
+          const aborted = () => {
+            state.aborted++;
+            reject(signal?.reason ?? new DOMException('Fixture metadata body aborted', 'AbortError'));
+          };
+          if (signal?.aborted) aborted();
+          else signal?.addEventListener('abort', aborted, { once: true });
+        });
+      };
+      return response;
+    };
+  });
+}
+
+async function updaterBodyState(page: Page) {
+  return page.evaluate(() => (window as typeof window & {
+    __vibepolloUpdaterBody?: { started: number; aborted: number };
+  }).__vibepolloUpdaterBody);
+}
+
+test('Apollo updater paginates before selecting a complete release', async ({ page }) => {
+  await host(page, 'windows');
+  const pages: string[] = [];
+  await page.route(`${updaterReleasesUrl}?**`, (route) => {
+    const pageNumber = new URL(route.request().url()).searchParams.get('page') ?? '';
+    pages.push(pageNumber);
+    return route.fulfill({ json: pageNumber === '1'
+      ? Array.from({ length: 100 }, (_, index) => updaterRelease(`0.0.${index}`))
+      : [updaterRelease('v2.0.0')] });
+  });
+  await page.goto('/v2/');
+  await expect(page.locator('.update-notice')).toContainText('Vibepollo 2.0.0 is available');
+  expect(pages).toEqual(['1', '2']);
+});
+
+test('Apollo interval zero suppresses automatic updater requests', async ({ page }) => {
+  await page.clock.install();
+  await host(page, 'windows', { update_check_interval: 0 });
+  const daily = updaterDaily('daily-2026-10-11');
+  const calls = await mockUpdaterFeed(page, [daily.release], { [daily.metadata.tag]: daily.metadata });
+  await page.goto('/v2/');
+  await expect(page.getByRole('heading', { name: 'Ready to stream' })).toBeVisible();
+  await settleUpdaterRendering(page);
+  await page.clock.fastForward(300001);
+  expect(calls).toEqual({ releases: 0, metadata: 0 });
+  await expect(page.locator('.update-notice')).toHaveCount(0);
+});
+
+test('Apollo updater interval zero still permits an explicit retry without resuming its timer', async ({ page }) => {
+  await page.clock.install();
+  const config = { update_check_interval: 1 };
+  await host(page, 'windows', config);
+  let calls = 0;
+  await page.route(`${updaterReleasesUrl}?**`, (route) => {
+    calls++;
+    return route.fulfill(calls === 1
+      ? { status: 403, json: { message: 'fixture unavailable' } }
+      : { json: [updaterRelease('v2.0.0')] });
+  });
+  await page.goto('/v2/');
+  const notice = page.locator('.update-notice');
+  await expect(notice.getByText('Release information is unavailable. Try again later.')).toBeVisible();
+  config.update_check_interval = 0;
+  await notice.getByRole('button', { name: 'Check for updates', exact: true }).click();
+  await expect(notice.getByText('Vibepollo 2.0.0 is available')).toBeVisible();
+  expect(calls).toBe(2);
+  await page.clock.fastForward(300001);
+  expect(calls).toBe(2);
+});
+
+for (const preference of [false, 'false', 'disabled', 0, '0']) {
+  test(`legacy updater preserves explicit ${JSON.stringify(preference)} after PATCH and full save`, async ({ page }) => {
+    const legacyUrl = classicUpdaterUrl();
+    const config: Record<string, unknown> = { notify_pre_releases: preference, sunshine_name: 'Original host' };
+    const { patches, saves } = await legacyUpdaterHost(page, config, { version: '2.0.0-beta.1' });
+    const daily = updaterDaily('daily-2026-10-11');
+    const calls = await mockUpdaterFeed(page, [daily.release, updaterRelease('3.0.0-beta.1')], { [daily.metadata.tag]: daily.metadata });
+    const firstCheck = legacyUpdaterCompleted(page);
+    await page.goto(legacyUrl + '/');
+    await (await firstCheck).finished();
+    const check = page.getByRole('button', { name: 'Check for updates', exact: true });
+    await expect.poll(() => calls.releases).toBe(1);
+    await expect(check).toBeEnabled();
+    await expect(page.locator('.dashboard-release-alert')).toHaveCount(0);
+    expect(calls.metadata).toBe(0);
+    await page.locator('.dashboard-page a[href="/settings"]').click();
+    const name = page.locator('input#sunshine_name, #sunshine_name input');
+    await expect(name).toBeVisible();
+    await name.fill('Renamed host');
+    await name.blur();
+    await expect.poll(() => patches.some((patch) => patch.sunshine_name === 'Renamed host')).toBe(true);
+    expect(patches.every((patch) => !Object.hasOwn(patch, 'notify_pre_releases'))).toBe(true);
+    await page.locator('#global_prep_cmd').getByRole('button', { name: '+ Add', exact: true }).click();
+    await page.locator('textarea#global_prep_cmd_do_0, #global_prep_cmd_do_0 textarea').fill('fixture-only-command');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect.poll(() => saves.length).toBe(1);
+    expect(saves[0]['notify_pre_releases']).toBe(preference);
+    expect(saves[0]['sunshine_name']).toBe('Renamed host');
+    expect(config['notify_pre_releases']).toBe(preference);
+    const reloadedCheck = legacyUpdaterCompleted(page);
+    await page.goto(legacyUrl + '/');
+    await (await reloadedCheck).finished();
+    await expect.poll(() => calls.releases).toBe(2);
+    await expect(check).toBeEnabled();
+    await expect(page.locator('.dashboard-release-alert')).toHaveCount(0);
+    expect(calls.metadata).toBe(0);
+  });
+}
+
+test('legacy updater orders embedded daily versions and shares dismissal across reload and UI switch', async ({ page }) => {
+  const legacyUrl = classicUpdaterUrl();
+  await legacyUpdaterHost(page, {}, { version: '2.0.0-daily.d20261009+cccccccccccc' });
+  const older = updaterDaily('daily-2026-10-10', 'b');
+  const newer = updaterDaily('daily-2026-10-11');
+  const later = updaterDaily('daily-2026-10-12', 'd');
+  // The older release is deliberately first; the shared helper must use embedded lineage.
+  const releases = [older.release, newer.release];
+  const metadata = { [older.metadata.tag]: older.metadata, [newer.metadata.tag]: newer.metadata, [later.metadata.tag]: later.metadata };
+  await mockUpdaterFeed(page, releases, metadata);
+  await page.goto(legacyUrl + '/');
+  const notice = page.locator('.dashboard-release-alert');
+  await expect(notice).toHaveCount(1);
+  await expect(notice).toContainText(newer.metadata.version);
+  const downloadLink = notice.getByRole('link', { name: /\bDownload$/ });
+  await expect(downloadLink).toHaveCount(1);
+  await expect(downloadLink).toHaveAttribute('href', newer.release.html_url);
+  const releaseNotesButton = notice.getByRole('button', { name: /\bRelease Notes$/ });
+  await expect(releaseNotesButton).toHaveCount(1);
+  await releaseNotesButton.click();
+  await expect(notice).toContainText(newer.release.body);
+  await notice.getByRole('button', { name: 'Dismiss this update', exact: true }).click();
+  await expect(notice).toHaveCount(0);
+  const reloadedCheck = legacyUpdaterCompleted(page);
+  await page.reload();
+  await (await reloadedCheck).finished();
+  await expect(page.getByRole('button', { name: 'Check for updates', exact: true })).toBeEnabled();
+  await expect(notice).toHaveCount(0);
+  const switchedCheck = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.hostname === 'api.github.com' && url.pathname.endsWith('/releases') && url.searchParams.has('page');
+  });
+  await page.locator('.dashboard-page a[href="/v2/"]').click();
+  await (await switchedCheck).finished();
+  await expect(page.getByRole('heading', { name: 'Ready to stream' })).toBeVisible();
+  await settleUpdaterRendering(page);
+  await expect(page.locator('.update-notice')).toHaveCount(0);
+  releases.unshift(later.release);
+  await page.reload();
+  await expect(page.locator('.update-notice')).toContainText(`Vibepollo ${later.metadata.tag} is available`);
+  await expect(page.locator('.update-notice').getByRole('link', { name: 'Read release notes' })).toHaveAttribute('href', later.release.html_url);
+  await page.locator('.sidebar__legacy[href="/"]').click();
+  await expect(notice).toContainText(later.metadata.version);
+});
+
+test('legacy updater rejects malformed metadata and incomplete or wrong-platform assets', async ({ page }) => {
+  const legacyUrl = classicUpdaterUrl();
+  await legacyUpdaterHost(page, {}, { version: '1.9.0' });
+  const malformed = updaterDaily('daily-2026-10-11');
+  const incomplete = updaterDaily('daily-2026-10-12', 'b');
+  incomplete.release.assets = incomplete.release.assets.filter((asset) => asset.name !== 'SHA256SUMS');
+  const wrongPlatform = updaterDaily('daily-2026-10-13', 'c');
+  wrongPlatform.release.assets[0].name = 'Vibepollo-aarch64.AppImage';
+  const empty = updaterDaily('daily-2026-10-14', 'd');
+  empty.release.assets[0].size = 0;
+  const calls = await mockUpdaterFeed(page, [malformed.release, incomplete.release, wrongPlatform.release, empty.release], {
+    [malformed.metadata.tag]: { ...malformed.metadata, source_commit: 'b'.repeat(40) },
+  });
+  const completedCheck = legacyUpdaterCompleted(page);
+  await page.goto(legacyUrl + '/');
+  await (await completedCheck).finished();
+  await expect.poll(() => calls.releases).toBe(1);
+  expect(calls.metadata).toBe(0);
+  await expect(page.getByRole('button', { name: 'Check for updates', exact: true })).toBeEnabled();
+  await expect(page.locator('.dashboard-release-alert')).toHaveCount(0);
+});
+
+for (const [architecture, available] of [['x86_64', true], ['aarch64', false], ['unknown', false], [undefined, false]] as const) {
+  test(`legacy updater checks Linux package architecture ${String(architecture)}`, async ({ page }) => {
+    const legacyUrl = classicUpdaterUrl();
+    await legacyUpdaterHost(page, {}, { version: '1.9.0', architecture }, 'linux');
+    const daily = updaterDaily('daily-2026-10-11');
+    daily.release.assets[0].name = 'vibepollo-2.0.0-1-x86_64.pkg.tar.zst';
+    const calls = await mockUpdaterFeed(page, [daily.release], { [daily.metadata.tag]: daily.metadata });
+    const completedCheck = legacyUpdaterCompleted(page);
+    await page.goto(legacyUrl + '/');
+    await (await completedCheck).finished();
+    if (available) await expect(page.locator('.dashboard-release-alert')).toContainText(daily.metadata.version);
+    else await expect(page.locator('.dashboard-release-alert')).toHaveCount(0);
+    expect(calls).toEqual({ releases: 1, metadata: 0 });
+  });
+}
+
+test('legacy updater interval zero retains health and logs and permits one forced check', async ({ page }) => {
+  const legacyUrl = classicUpdaterUrl();
+  await page.clock.install();
+  const { health } = await legacyUpdaterHost(page, { update_check_interval: 0, controller: 'enabled' });
+  const daily = updaterDaily('daily-2026-10-11');
+  const calls = await mockUpdaterFeed(page, [daily.release], { [daily.metadata.tag]: daily.metadata });
+  const completedCheck = legacyUpdaterCompleted(page);
+  await page.goto(legacyUrl + '/');
+  await (await completedCheck).finished();
+  await expect.poll(() => health.vigem > 0 && health.logs > 0).toBe(true);
+  expect(calls).toEqual({ releases: 0, metadata: 0 });
+  await page.getByRole('button', { name: 'Check for updates', exact: true }).click();
+  await expect(page.locator('.dashboard-release-alert')).toContainText(daily.metadata.version);
+  expect(calls).toEqual({ releases: 1, metadata: 0 });
+  await page.clock.fastForward(300001);
+  expect(calls).toEqual({ releases: 1, metadata: 0 });
+});
+
+for (const ui of ['legacy', 'v2'] as const) {
+  test(`${ui} updater aborts release API body on unmount without resuming its timer`, async ({ page }) => {
+    const legacyUrl = ui === 'legacy' ? classicUpdaterUrl() : undefined;
+    await page.clock.install();
+    await stallUpdaterReleaseBody(page);
+    if (ui === 'legacy') await legacyUpdaterHost(page);
+    else await host(page, 'windows');
+    let authenticated = true;
+    await localRoute(page, '**/api/auth/status', (route) => route.fulfill({ json: {
+      authenticated, login_required: !authenticated, credentials_configured: true,
+    } }));
+    await localRoute(page, '**/api/auth/logout', (route) => {
+      authenticated = false;
+      return route.fulfill({ json: { status: true } });
+    });
+    const daily = updaterDaily('daily-2026-10-11');
+    // A newer selectable stable release exposes swallowed cancellation after metadata enrichment.
+    const calls = await mockUpdaterFeed(page, [daily.release, updaterRelease('v3.0.0')], { [daily.metadata.tag]: daily.metadata });
+    await page.goto(ui === 'legacy' ? legacyUrl + '/' : '/v2/');
+    await expect.poll(async () => (await updaterBodyState(page))?.started).toBe(1);
+    if (ui === 'legacy') {
+      await page.locator('.dashboard-page a[href="/settings"]').click();
+      await expect(page.locator('.dashboard-page')).toHaveCount(0);
+    } else {
+      await page.locator('.sidebar__logout').click();
+      await expect(page.locator('.app-shell')).toHaveCount(0);
+    }
+    await expect.poll(async () => (await updaterBodyState(page))?.aborted).toBe(1);
+    await page.clock.fastForward(300001);
+    expect(calls).toEqual({ releases: 1, metadata: 0 });
+    await expect(page.locator('.update-notice, .dashboard-release-alert')).toHaveCount(0);
+  });
+}
+
+for (const ui of ['legacy', 'v2'] as const) {
+  test(`${ui} updater interval zero release-body timeout cannot select stable or resume checks`, async ({ page }) => {
+    const legacyUrl = ui === 'legacy' ? classicUpdaterUrl() : undefined;
+    await page.clock.install();
+    await stallUpdaterReleaseBody(page);
+    const config = { update_check_interval: ui === 'legacy' ? 0 : 1 };
+    if (ui === 'legacy') await legacyUpdaterHost(page, config);
+    else await host(page, 'windows', config);
+    const daily = updaterDaily('daily-2026-10-11');
+    const calls = await mockUpdaterFeed(page, [daily.release, updaterRelease('v3.0.0')], { [daily.metadata.tag]: daily.metadata });
+    if (ui === 'v2') {
+      await page.route(`${updaterReleasesUrl}?**`, (route) => route.fulfill({ status: 403, json: { message: 'fixture unavailable' } }));
+    }
+    await page.goto(ui === 'legacy' ? legacyUrl + '/' : '/v2/');
+    const check = page.getByRole('button', { name: 'Check for updates', exact: true });
+    await expect(check).toBeVisible();
+    await expect(check).toBeEnabled();
+    config.update_check_interval = 0;
+    if (ui === 'v2') await page.unroute(`${updaterReleasesUrl}?**`);
+    // Restore the controlled release route removed together with the one-off failure route.
+    if (ui === 'v2') await page.route(`${updaterReleasesUrl}?**`, (route) => {
+      calls.releases++;
+      return route.fulfill({ json: [daily.release, updaterRelease('v3.0.0')] });
+    });
+    await check.click();
+    await expect.poll(async () => (await updaterBodyState(page))?.started).toBe(1);
+    await page.clock.fastForward(15001);
+    await expect.poll(async () => (await updaterBodyState(page))?.aborted).toBe(1);
+    await expect(check).toBeEnabled();
+    await expect(page.getByText(ui === 'legacy'
+      ? 'Update check unavailable. Try again.'
+      : 'Release information is unavailable. Try again later.', { exact: true })).toBeVisible();
+    await expect(page.locator('.update-notice a')).toHaveCount(0);
+    await expect(page.locator('.dashboard-release-alert')).toHaveCount(0);
+    await page.clock.fastForward(300001);
+    expect(calls).toEqual({ releases: 1, metadata: 0 });
+  });
+}

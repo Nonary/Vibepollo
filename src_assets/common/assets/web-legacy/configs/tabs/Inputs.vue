@@ -27,6 +27,17 @@ const platform = computed(() =>
       class="mb-3"
     />
 
+    <ConfigFieldRenderer
+      v-if="platform === 'windows' || platform === 'linux'"
+      setting-key="dualsense_haptics_gain"
+      v-model="config.dualsense_haptics_gain"
+      kind="number"
+      :min="0"
+      :max="4"
+      :step="0.1"
+      class="mb-3"
+    />
+
     <template v-if="config.controller === 'enabled'">
       <template
         v-if="

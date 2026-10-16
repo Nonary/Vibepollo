@@ -16,12 +16,14 @@
   signed by sudovda@su.mk; nefconc.exe, signed by Nefarius; nvngx_truehdr.dll,
   the NVIDIA RTX Video SDK runtime), nor any file a catalog hashes.
 
-  Only two files in the whole package are catalog-bound, because each driver's
-  INF copies exactly one binary:
+  These first-party driver files are catalog-bound, because each driver's INF
+  copies exactly one binary:
     SunshineVirtualDisplayDriver.dll   ([SourceDisksFiles] lists only it)
     VibeshineVhfGamepad.dll            ([VibeshineVhfGamepad.CopyFiles] ditto)
   Signing either changes the bytes its catalog attests to and the driver stops
-  installing. Everything else beside them is fair game.
+  installing. The optional usbip-win2 transport also contains catalog-bound
+  third-party SYS and INF files. Keep its entire drivers/usbip-win2 subtree
+  byte-for-byte unchanged, including its existing Microsoft-signed catalogs.
 
   The Sunshine virtual-display catalog is intentionally signed here. Its DLL
   remains untouched because the catalog hashes it; signing the catalog itself
@@ -59,10 +61,15 @@
     <pe-file path="Apollo/zlib1.dll"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/vibeshine_truehdr.dll"><authenticode-sign/></pe-file>
 
+    <!-- Bundled first-party Playnite extension -->
+    <pe-file path="Apollo/plugins/playnite/SunshinePlaynite/VibepolloPlaynite.dll"><authenticode-sign/></pe-file>
+
     <!-- Apollo/tools\ -->
     <pe-file path="Apollo/tools/sunshinesvc.exe"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/tools/dxgi-info.exe"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/tools/audio-info.exe"><authenticode-sign/></pe-file>
+    <pe-file path="Apollo/tools/vibepollo_dualsense_haptics.exe"><authenticode-sign/></pe-file>
+    <pe-file path="Apollo/tools/vibepollo_dualsense_audio.dll"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/tools/playnite-launcher.exe"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/tools/sunshine_wgc_capture.exe"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/tools/sunshine_display_helper.exe"><authenticode-sign/></pe-file>
@@ -89,6 +96,10 @@
              min-matches="1" max-matches="1">
       <authenticode-sign/>
     </pe-file>
+    <pe-file path="Apollo/drivers/sunshine/vulkan-layer/VkLayer_sunshine_hdr_x86.dll"
+             min-matches="1" max-matches="1">
+      <authenticode-sign/>
+    </pe-file>
 
     <!--
       Vibepollo VHF gamepad driver. Present only when the installer is built
@@ -111,6 +122,8 @@
       Catalog-bound. Signing changes the hash its catalog attests to:
         Apollo/drivers/sunshine/SunshineVirtualDisplayDriver.dll
         Apollo/drivers/vhf-gamepad/driver/VibeshineVhfGamepad.dll
+        Apollo/drivers/usbip-win2/usbip2_ude.sys    (+ usbip2_ude.inf)
+        Apollo/drivers/usbip-win2/usbip2_filter.sys (+ usbip2_filter.inf)
 
       Third-party, already signed by their own publishers. Re-signing would
       both misattribute them and break sudovda's catalog:
@@ -118,6 +131,8 @@
         Apollo/drivers/sudovda/nefconc.exe        CN=Nefarius Software Solutions e.U.
         Apollo/drivers/sunshine/nefconc.exe       CN=Nefarius Software Solutions e.U.
         nvngx_truehdr.dll                  NVIDIA RTX Video SDK runtime
+        drivers/usbip-win2/usbip2_ude.cat    Microsoft Windows Hardware Compatibility Publisher
+        drivers/usbip-win2/usbip2_filter.cat Microsoft Windows Hardware Compatibility Publisher
     -->
 
     <!-- sign the MSI container LAST -->
@@ -140,6 +155,7 @@
         <include path="Apollo/*.dll"       min-matches="0" max-matches="unbounded"/>
         <include path="Apollo/tools/*.exe" min-matches="0" max-matches="unbounded"/>
         <include path="Apollo/tools/*.dll" min-matches="0" max-matches="unbounded"/>
+        <include path="Apollo/plugins/playnite/SunshinePlaynite/*.dll" min-matches="0" max-matches="unbounded"/>
         <for-each><authenticode-sign/></for-each>
       </pe-file-set>
       <authenticode-sign/>

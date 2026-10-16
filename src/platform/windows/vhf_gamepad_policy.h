@@ -8,9 +8,26 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 
 // lib includes
 #include <libvirtualgamepad/protocol.h>
+
+namespace platf {
+
+  /**
+   * @brief The controller the VHF driver should present.
+   */
+  enum class vhf_profile_e {
+    automatic,  ///< Best available console profile, preferring Xbox Series on the XInput path.
+    xbox_series,
+    xbox_one,
+    dualshock4,
+    dualsense,
+    switch_pro
+  };
+
+}  // namespace platf
 
 namespace platf::vhf_gamepad {
 
@@ -40,6 +57,25 @@ namespace platf::vhf_gamepad {
     }
     return backend_e::unavailable;
   }
+
+  /**
+   * @brief Chooses the VHF controller profile from the setting and client metadata.
+   * @details Explicit profile selections take precedence. Client-reported PlayStation, Xbox,
+   *          and Nintendo types win over motion/touchpad preferences, which apply to other pads.
+   * @param configured_gamepad The selected gamepad setting.
+   * @param client_type The client-reported controller type.
+   * @param client_capabilities The client-reported capability flags.
+   * @param motion_as_ds4 Whether motion sensors should select a PlayStation profile.
+   * @param touchpad_as_ds4 Whether a touchpad should select a PlayStation profile.
+   * @return The requested profile; `automatic` prefers the driver's Xbox Series XInput profile.
+   */
+  [[nodiscard]] vhf_profile_e select_desired_profile(
+    std::string_view configured_gamepad,
+    std::uint8_t client_type,
+    std::uint16_t client_capabilities,
+    bool motion_as_ds4,
+    bool touchpad_as_ds4
+  ) noexcept;
 
   /**
    * @brief Vibepollo's normalized controller state, copied field-for-field out of `gamepad_state_t`.

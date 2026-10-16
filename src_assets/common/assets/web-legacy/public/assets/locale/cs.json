@@ -429,7 +429,7 @@
     "amd_preanalysis_desc": "To umožňuje předběžnou analýzu kontroly sazeb, která může zvýšit kvalitu na úkor zvýšené latence kódování.",
     "amd_quality": "Kvalita AMF",
     "amd_quality_balanced": "balanced -- vyvážení rychlosti a kvality",
-    "amd_quality_desc": "Toto nastavení určuje poměr mezi rychlostí kódování a kvalitou. Výchozí volbou je „balanced“. Při volbě „auto“ zůstane vlastnost nenastavená, aby její hodnotu mohla zvolit vybraná předvolba použití AMF.",
+    "amd_quality_desc": "Toto nastavení určuje poměr mezi rychlostí kódování a kvalitou. Výchozí volbou je „speed“. Při volbě „auto“ zůstane vlastnost nenastavená, aby její hodnotu mohla zvolit vybraná předvolba použití AMF.",
     "amd_quality_group": "Nastavení kvality AMF (nativní + FFmpeg)",
     "amd_quality_quality": "kvalita -- preferovat kvalitu",
     "amd_quality_speed": "Rychlost -- preferovat rychlost",

@@ -28,6 +28,9 @@
 
 set -euo pipefail
 
+# Requirement and package-ownership checks parse command output.
+export LC_ALL=C
+
 readonly REPO_OWNER='Nonary'
 readonly REPO_NAME='Vibepollo'
 readonly REPO_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -40,6 +43,8 @@ readonly MIN_KERNEL_MINOR=16
 readonly DRM_INSTALL='/usr/libexec/vibeshine/vibeshine-drm-install'
 readonly DS5_INSTALL='/usr/libexec/vibeshine/vibeshine-ds5-install'
 readonly MACHINE_HOST='/usr/libexec/vibeshine/vibepollo-machine-host'
+readonly PRIVATE_HOST='/usr/libexec/vibeshine/vibepollo-host'
+readonly SESSION_CONTROLLER='/usr/libexec/vibeshine/vibepollo-session-controller'
 
 requested_version=''
 local_package=''
@@ -62,6 +67,13 @@ ok() { printf '    \033[1;32mOK\033[0m   %s\n' "$*"; }
 warn() { printf '    \033[1;33mWARN\033[0m %s\n' "$*" >&2; warnings+=("$*"); }
 fail() { printf '    \033[1;31mFAIL\033[0m %s\n' "$*" >&2; check_failures=$((check_failures + 1)); }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+
+run_from_root() (
+  # Old package hooks and configure helpers drop UID without changing cwd.
+  # Keep their children out of the invoking user's private home.
+  cd / || die 'cannot enter a safe working directory'
+  "$@"
+)
 
 cleanup() {
   if [[ -n "$workdir" && -d "$workdir" ]]; then
@@ -383,7 +395,7 @@ install_from_repo() {
   stage_upgrade_guard "${candidates[0]}"
   prepare_driver_replacement
   log 'Installing Vibepollo and its dependencies; no full system upgrade is requested'
-  pacman -S "${replacement_confirm[@]}" "${driver_overwrite[@]}" \
+  run_from_root pacman -S "${replacement_confirm[@]}" "${driver_overwrite[@]}" \
     --cachedir "$workdir/cache" --hookdir "$workdir/hooks" "${repo_target[@]}"
 }
 
@@ -419,6 +431,19 @@ download_release_package() {
   log "Downloading ${asset_name} from release ${tag}"
   local_package="${workdir}/${asset_name}"
   curl -fL --progress-bar --max-time 900 -o "$local_package" "$asset_url"
+
+  # This is an explicit installation, never an availability check.
+  local sums checksum_expected checksum_actual
+  sums=$(curl -fsSL --max-time 60 "${REPO_URL}/releases/download/${tag}/SHA256SUMS" 2>/dev/null || true)
+  if [[ -n "$sums" ]]; then
+    checksum_expected=$(awk -v name="$asset_name" '$2 == name {print $1}' <<<"$sums")
+    [[ "$checksum_expected" =~ ^[0-9a-f]{64}$ ]] || die "missing or ambiguous checksum for ${asset_name}"
+    checksum_actual=$(sha256sum "$local_package" | awk '{print $1}')
+    [[ "$checksum_actual" == "$checksum_expected" ]] || die "checksum mismatch for ${asset_name}; refusing to install"
+    ok "Package checksum matches SHA256SUMS."
+  elif [[ "$tag" == daily-* || "$tag" == *-daily.d* ]]; then
+    die "nightly checksums unavailable; refusing to install"
+  fi
 
   # Verify against the release provenance manifest when the release ships one.
   local provenance expected actual
@@ -529,15 +554,16 @@ prepare_driver_replacement() {
 
 install_from_package() {
   [[ -f "$local_package" ]] || die "package file not found: ${local_package}"
-  local identity
+  local identity package_path
   identity=$(pacman -Qp -- "$local_package") || die 'could not inspect the local package'
   [[ "$identity" == 'vibepollo '* && "$identity" != *$'\n'* ]] || die 'local package is not Vibepollo'
+  package_path=$(readlink -f -- "$local_package") || die 'cannot resolve the local package path'
   stage_upgrade_guard "$local_package"
   prepare_driver_replacement
   log "Installing ${local_package##*/} with pacman"
   # Installing a local build must not also upgrade the operating system.
-  pacman -U "${replacement_confirm[@]}" "${driver_overwrite[@]}" \
-    --hookdir "$workdir/hooks" -- "$local_package"
+  run_from_root pacman -U "${replacement_confirm[@]}" "${driver_overwrite[@]}" \
+    --hookdir "$workdir/hooks" -- "$package_path"
 }
 
 install_vibepollo() {
@@ -643,12 +669,64 @@ check_session_restart() {
   fi
 }
 
+repair_machine_setup() {
+  local helper=${1:-$MACHINE_HOST} controller=${2:-$SESSION_CONTROLLER}
+  local unit_root=${3:-/etc/systemd/system} unit=vibepollo-session-controller.service
+  local path attributes owner group mode cursor temporary
+  for path in "$helper" "$controller"; do
+    [[ -f "$path" && ! -L "$path" && -x "$path" &&
+       $(stat -c '%u:%g:%a:%h' -- "$path") == '0:0:755:1' ]] ||
+      die "missing or unsafe machine setup helper: $path"
+  done
+  log 'Repairing machine setup from earlier installs; active streams disconnect during setup.'
+  # systemd does not inherit the installer's LC_ALL. Older controllers need a
+  # service-local override even though package hooks now run in the C locale.
+  if ! head -n 12 -- "$controller" | grep -qx 'export LC_ALL=C'; then
+    path="$unit_root/$unit.d/99-vibepollo-machine-locale.conf"
+    [[ "$unit_root" == /* && "$unit_root" != */../* && "$unit_root" != */.. ]] ||
+      die 'unsafe system unit directory'
+    cursor=${path%/*}
+    while [[ "$cursor" != / ]]; do
+      if [[ -e "$cursor" || -L "$cursor" ]]; then
+        [[ -d "$cursor" && ! -L "$cursor" ]] || die "unsafe service directory: $cursor"
+        attributes=$(stat -c '%u:%g:%a' -- "$cursor") || die "cannot inspect $cursor"
+        IFS=: read -r owner group mode <<< "$attributes"
+        [[ "$owner:$group" == 0:0 && "$mode" =~ ^[0-7]{3,4}$ ]] &&
+          (((8#$mode & 0022) == 0)) || die "unsafe service directory: $cursor"
+      fi
+      cursor=${cursor%/*}; [[ -n "$cursor" ]] || cursor=/
+    done
+    if [[ -e "$path" || -L "$path" ]]; then
+      [[ -f "$path" && ! -L "$path" &&
+         $(stat -c '%u:%g:%a:%h' -- "$path") == '0:0:644:1' ]] ||
+        die "unsafe locale recovery file: $path"
+    fi
+    if [[ ! -d "${path%/*}" ]]; then
+      install -d -m755 -- "${path%/*}" || die 'cannot create the service recovery directory'
+    fi
+    temporary=$(mktemp "${path%/*}/.locale.XXXXXXXX") || die 'cannot stage the service locale recovery'
+    if ! printf '[Service]\nEnvironment=LC_ALL=C\n' > "$temporary" ||
+       ! chmod 644 "$temporary" || ! mv -fT -- "$temporary" "$path"; then
+      rm -f -- "$temporary"
+      die 'cannot install the service locale recovery'
+    fi
+  fi
+  systemctl daemon-reload || die 'cannot reload the repaired machine service'
+  timeout --signal=KILL 40 systemctl stop "$unit" || die 'cannot stop the machine controller for setup'
+  run_from_root timeout --signal=KILL 40 "$controller" cleanup ||
+    die 'cannot safely drain the previous machine host; installation is not complete'
+  run_from_root "$helper" configure-auto ||
+    die 'automatic machine profile setup failed; installation is not complete'
+  systemctl enable "$unit" || die 'cannot enable the configured machine controller'
+  systemctl start "$unit" || die 'cannot start the configured machine controller'
+  ok 'Machine profile is configured and the session controller is enabled.'
+}
+
 check_services() {
   if systemctl is-enabled --quiet vibepollo-session-controller.service 2>/dev/null; then
     ok 'vibepollo-session-controller.service is enabled.'
   else
-    warn "The session controller is not enabled. If the install printed an ACTION REQUIRED line about choosing a user, run: sudo ${MACHINE_HOST} configure YOUR_USER && sudo systemctl enable --now vibepollo-session-controller.service"
-    reboot_required=1
+    die 'the configured session controller is not enabled; installation is not complete'
   fi
 }
 
@@ -666,7 +744,7 @@ print_summary() {
   printf '    %d. Log out and back in once (or restart PipeWire) so the audio quantum drop-in takes effect.\n' "$step"; step=$((step + 1))
   printf '\n    Status:  sudo systemctl status vibepollo-session-controller.service vibepollo.service\n'
   printf '    Logs:    sudo journalctl -u vibepollo-session-controller.service -u vibepollo.service -b\n'
-  printf '    Guide:   %s/blob/vibe-test/docs/linux/install.md\n' "$REPO_URL"
+  printf '    Guide:   %s/blob/master/docs/linux/install.md\n' "$REPO_URL"
   if ((${#warnings[@]} > 0)); then
     printf '\n    Warnings raised during installation:\n'
     local w
@@ -674,6 +752,15 @@ print_summary() {
       printf '      - %s\n' "$w"
     done
   fi
+}
+
+check_private_host_security() {
+  local expected='cap_sys_admin,cap_sys_nice=p' actual
+  [[ -e "$PRIVATE_HOST" ]] || return 0
+  actual=$(getcap -n "$PRIVATE_HOST" 2>/dev/null || true)
+  [[ "$actual" == "$PRIVATE_HOST $expected" ]] ||
+    die 'installed private host executable has incorrect capabilities'
+  ok 'Private host executable capabilities verified.'
 }
 
 main() {
@@ -684,8 +771,10 @@ main() {
   install_kernel_headers
   check_session_restart
   install_vibepollo
+  check_private_host_security
   install_virtual_driver
   install_dualsense_driver
+  repair_machine_setup || die 'machine setup recovery failed; installation is not complete'
   open_firewall
   check_driver_state
   check_services

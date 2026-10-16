@@ -3,6 +3,7 @@
  * @brief Pure PyroWave host policy: frame framing and the per-frame byte budget.
  */
 #include "pyrowave_policy.h"
+#include "pyrowave_bandwidth.h"
 
 #include "pyrowave_protocol.h"
 
@@ -291,9 +292,17 @@ namespace pyrowave::policy {
 
     if (frame_limit && out.size() - frame_start > frame_limit) {
       out.resize(frame_start);
-      out.insert(out.end(), bitstream.begin(), bitstream.end());
+      out.insert(out.end(), bitstream.begin(), bitstream.begin() + 8);
       stats = {};
       stats.block_records = records.size();
+      for (const auto *group : {&coarse, &fine}) {
+        for (const auto i : *group) {
+          place(records[i]);
+        }
+        if (group == &coarse) {
+          stats.critical_bytes = out.size() - frame_start;
+        }
+      }
     }
     return stats;
   }
@@ -717,7 +726,8 @@ namespace pyrowave::policy {
   std::size_t pacing_packets_per_ms(
     std::uint64_t link_bps, int bitrate_kbps,
     std::size_t payload_bytes, std::size_t wire_bytes,
-    std::size_t frame_bytes, int framerate
+    std::size_t frame_bytes, int framerate,
+    std::uint64_t calibrated_pace_bps
   ) {
     if (payload_bytes == 0 || wire_bytes == 0) {
       return 1;
@@ -727,13 +737,28 @@ namespace pyrowave::policy {
     const auto frame_allowance = (frame_packets * std::uint64_t(std::max(framerate, 0)) + 999) / 1000;
     const auto bitrate_allowance = (std::uint64_t(std::max(bitrate_kbps, 0)) + 8 * payload_bytes - 1) / (8 * payload_bytes);
     // Round demand up so quantizing to a pacing quantum cannot create a backlog.
+    const auto demand = std::max(frame_allowance, bitrate_allowance);
+    // The client measured this pace with frame-shaped UDP probes on this path.
+    const auto calibrated_packets = calibrated_pace_bps / 8 / 1000 / wire_bytes;
+    if (link_bps == 0) {
+      return std::max<std::size_t>(1, std::max(calibrated_packets, demand));
+    }
     // Round link capacity down so pacing never exceeds the reported link speed.
-    const auto packets = link_bps != 0 ? link_bps / 8 / 1000 / wire_bytes :
-                                       std::max(frame_allowance, bitrate_allowance);
-    return std::max<std::size_t>(1, packets);
+    const auto link_packets = link_bps / 8 / 1000 / wire_bytes;
+    // A receiver's negotiated speed overstates what it can absorb back-to-back:
+    // a USB 2.5GbE dock measured lossless at 2.2 Gbps but dropped 12-16 packet
+    // runs at 2.35+. Uncalibrated, pace at 80% of the link.
+    const auto target_packets = calibrated_pace_bps ? calibrated_packets : link_bps * 80 / 100 / 8 / 1000 / wire_bytes;
+    return std::max<std::size_t>(1, std::min(link_packets, std::max(target_packets, demand)));
   }
 
-  budget_t::budget_t(int framerate, int bitrate_kbps, std::size_t max_frame_bytes, bool stable_frame_size):
+  std::size_t frame_payload_budget(std::size_t wire_bytes, const wire_budget_t &transport) {
+    return bandwidth::image_bytes(wire_bytes, {transport.packetsize, transport.critical_fec_percentage,
+                                               transport.min_parity_shards, transport.envelope_bytes});
+  }
+
+  budget_t::budget_t(int framerate, int bitrate_kbps, std::size_t max_frame_bytes, bool stable_frame_size, std::optional<wire_budget_t> transport):
+      transport {transport},
       bitrate_kbps {bitrate_kbps},
       max_frame_bytes {max_frame_bytes},
       nominal_interval {framerate > 0 ? 1.0 / framerate : 0.0},
@@ -765,6 +790,9 @@ namespace pyrowave::policy {
   void budget_t::update() {
     const auto budget_interval = stable_frame_size ? std::min(frame_interval, nominal_interval) : frame_interval;
     double bytes = std::max(0.0, double(bitrate_kbps) * 1000.0 * budget_interval / 8.0);
+    if (transport) {
+      bytes = double(frame_payload_budget(std::size_t(std::min(bytes, double(std::numeric_limits<std::uint32_t>::max()))), *transport));
+    }
     if (max_frame_bytes) {
       bytes = std::min(bytes, double(max_frame_bytes));
     }

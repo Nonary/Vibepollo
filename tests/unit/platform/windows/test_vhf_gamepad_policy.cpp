@@ -23,12 +23,14 @@ namespace {
   using platf::vhf_gamepad::rumble_rgb_t;
   using platf::vhf_gamepad::select_automatic_backend;
   using platf::vhf_gamepad::select_automatic_profile;
+  using platf::vhf_gamepad::select_desired_profile;
   using platf::vhf_gamepad::supported_button_mask;
   using platf::vhf_gamepad::to_milli_units;
   using platf::vhf_gamepad::to_normalized_touch;
   using platf::vhf_gamepad::to_protocol_battery_state;
   using platf::vhf_gamepad::to_protocol_motion_kind;
   using platf::vhf_gamepad::to_protocol_touch_event;
+  using platf::vhf_profile_e;
 
   lvg::feedback_event make_rumble_event(
     const lvg::generic_rumble_rgb_feedback &payload,
@@ -72,6 +74,67 @@ namespace {
       lvg::profile_bit(lvg::profile::generic_hid);
 
     EXPECT_FALSE(select_automatic_profile(reserved_generics).has_value());
+  }
+
+  TEST_F(VhfGamepadPolicyTest, XboxClientTypeWinsOverMotionAndTouchpadPreferences) {
+    // The Ally reports Xbox with motion sensors. Its extra capabilities must not change the
+    // controller family under plain VHF or the Automatic setting's VHF fallback.
+    for (const auto setting : {"vhf", "auto"}) {
+      for (const auto capabilities : {0, LI_CCAP_ACCEL, LI_CCAP_GYRO, LI_CCAP_TOUCHPAD, LI_CCAP_ACCEL | LI_CCAP_GYRO | LI_CCAP_TOUCHPAD}) {
+        SCOPED_TRACE(setting);
+        SCOPED_TRACE(capabilities);
+        EXPECT_EQ(select_desired_profile(setting, LI_CTYPE_XBOX, capabilities, true, true), vhf_profile_e::automatic);
+      }
+    }
+  }
+
+  TEST_F(VhfGamepadPolicyTest, XboxClientUsesTheXinputAutomaticProfile) {
+    const auto desired = select_desired_profile("vhf", LI_CTYPE_XBOX, LI_CCAP_GYRO, true, true);
+    ASSERT_EQ(desired, vhf_profile_e::automatic);
+    const auto profiles = lvg::profile_bit(lvg::profile::xbox_series) | lvg::profile_bit(lvg::profile::dualsense);
+    EXPECT_EQ(select_automatic_profile(profiles), lvg::profile::xbox_series);
+  }
+
+  TEST_F(VhfGamepadPolicyTest, KnownClientTypesSelectTheirConsoleProfiles) {
+    for (const auto setting : {"vhf", "auto"}) {
+      for (const bool preferences : {false, true}) {
+        SCOPED_TRACE(setting);
+        SCOPED_TRACE(preferences);
+        EXPECT_EQ(select_desired_profile(setting, LI_CTYPE_PS, 0, preferences, preferences), vhf_profile_e::dualsense);
+        EXPECT_EQ(select_desired_profile(setting, LI_CTYPE_NINTENDO, LI_CCAP_GYRO | LI_CCAP_TOUCHPAD, preferences, preferences), vhf_profile_e::switch_pro);
+      }
+    }
+  }
+
+  TEST_F(VhfGamepadPolicyTest, UnknownClientUsesEnabledMotionPreference) {
+    for (const auto capabilities : {LI_CCAP_ACCEL, LI_CCAP_GYRO}) {
+      SCOPED_TRACE(capabilities);
+      EXPECT_EQ(select_desired_profile("vhf", LI_CTYPE_UNKNOWN, capabilities, true, false), vhf_profile_e::dualsense);
+      EXPECT_EQ(select_desired_profile("vhf", LI_CTYPE_UNKNOWN, capabilities, false, true), vhf_profile_e::automatic);
+    }
+  }
+
+  TEST_F(VhfGamepadPolicyTest, UnknownClientUsesEnabledTouchpadPreference) {
+    EXPECT_EQ(select_desired_profile("vhf", LI_CTYPE_UNKNOWN, LI_CCAP_TOUCHPAD, false, true), vhf_profile_e::dualsense);
+    EXPECT_EQ(select_desired_profile("vhf", LI_CTYPE_UNKNOWN, LI_CCAP_TOUCHPAD, true, false), vhf_profile_e::automatic);
+    EXPECT_EQ(select_desired_profile("vhf", LI_CTYPE_UNKNOWN, 0, true, true), vhf_profile_e::automatic);
+  }
+
+  TEST_F(VhfGamepadPolicyTest, ExplicitProfilesOverrideClientMetadata) {
+    const std::pair<std::string_view, vhf_profile_e> overrides[] {
+      {"vhf_xbox", vhf_profile_e::xbox_series},
+      {"vhf_xbox_one", vhf_profile_e::xbox_one},
+      {"vhf_ds4", vhf_profile_e::dualshock4},
+      {"vhf_ds5", vhf_profile_e::dualsense},
+      {"vhf_switch", vhf_profile_e::switch_pro}
+    };
+    for (const auto &[setting, expected] : overrides) {
+      for (const auto type : {LI_CTYPE_XBOX, LI_CTYPE_PS, LI_CTYPE_NINTENDO, LI_CTYPE_UNKNOWN}) {
+        SCOPED_TRACE(setting);
+        SCOPED_TRACE(type);
+        EXPECT_EQ(select_desired_profile(setting, type, LI_CCAP_ACCEL | LI_CCAP_GYRO | LI_CCAP_TOUCHPAD, true, true), expected);
+      }
+    }
   }
 
   TEST_F(VhfGamepadPolicyTest, InputStateCarriesAValidProtocolHeader) {

@@ -1,4 +1,16 @@
 {
+  "service_startup": {
+    "title": "Windows startup",
+    "description": "Choose whether the installed service starts automatically with Windows. Turning this off selects Manual startup, so you can still launch the app when needed. This changes future startup only; the current stream keeps running.",
+    "automatic": "Start automatically with Windows",
+    "mode": "Service startup mode",
+    "manual": "Manual",
+    "disabled": "Disabled",
+    "unknown": "Unavailable",
+    "saved": "Startup preference saved. The current service and stream keep running.",
+    "unavailable": "Unable to read or save the service startup preference. Refresh and try again.",
+    "automatic_mode": "Automatic"
+  },
   "_common": {
     "all": "All",
     "apply": "Apply",
@@ -383,6 +395,15 @@
     "exclude_global_state_cmd": "Exclude Global State Commands"
   },
   "config": {
+    "app_focus_title": "Managed application focus",
+    "app_focus_description": "Bring games launched from managed libraries to the foreground. Applies to Steam, Lutris and Playnite on their supported platforms.",
+    "app_focus_attempts": "Focus count",
+    "app_focus_attempts_desc": "Number of confirmed focus applications after launch (0 disables automatic focus).",
+    "app_focus_timeout_secs": "Focus timeout (seconds)",
+    "app_focus_timeout_secs_desc": "Wait for the game window and reapply focus within this time (0 disables automatic focus).",
+    "app_focus_exit_on_first": "Stop after the first successful focus",
+    "app_focus_exit_on_first_desc": "Stop once a game window reaches the foreground; otherwise continue until the focus count or timeout is reached.",
+
     "adapter_name": "Adapter Name",
     "adapter_name_default": "Automatic (recommended)",
     "adapter_name_desc_linux_1": "Manually specify a GPU to use for capture.",
@@ -407,7 +428,7 @@
     "amd_preanalysis_desc": "This enables rate-control preanalysis, which may increase quality at the expense of increased encoding latency.",
     "amd_quality": "AMF Quality",
     "amd_quality_balanced": "balanced -- balance speed and quality",
-    "amd_quality_desc": "This controls the balance between encoding speed and quality. The default is Balanced. Auto leaves the property unset so the selected AMF usage preset can choose it.",
+    "amd_quality_desc": "This controls the balance between encoding speed and quality. The default is Speed. Auto leaves the property unset so the selected AMF usage preset can choose it.",
     "amd_quality_group": "AMF Quality Settings (native + FFmpeg)",
     "amd_quality_quality": "quality -- prefer quality",
     "amd_quality_speed": "speed -- prefer speed",
@@ -468,7 +489,8 @@
     "bind_address": "Bind address",
     "bind_address_desc": "Set the specific IP address Sunshine will bind to. If left blank, Sunshine will bind to all available addresses.",
     "capture": "Force a Specific Capture Method",
-    "capture_desc": "Automatic mode uses the first capture method available on this host. Override it only for compatibility or a specific capture path. On Linux, managed private HDR sessions use direct KMS capture while KWin remains recommended for SDR. NvFBC requires a supported NVIDIA driver.",
+    "capture_virtual_warning": "For virtual screens on Linux, KMS is recommended for maximum compatibility. Other capture methods are allowed, but may not work properly and do not benefit from Vibepollo's low-latency virtual-screen capture. Your explicit selection will be honored.",
+    "capture_desc": "Automatic mode uses KMS for managed virtual screens on Linux for maximum compatibility and low latency. You can explicitly choose another capture method for physical or virtual screens. NvFBC requires a supported NVIDIA driver.",
     "capture_auto_wgc": "Automatic (Windows Graphics Capture)",
     "capture_wgc_auto": "Windows Graphics Capture (variable)",
     "capture_ddx_legacy": "Desktop Duplication API (legacy)",
@@ -1532,7 +1554,7 @@
     "hdr_profile_label": "HDR Color Profile",
     "hdr_profile_placeholder": "Automatic (no override)",
     "hdr_profile_auto": "Automatic (no override)",
-    "hdr_profile_desc": "Install and run the Windows HDR Calibration app from the Microsoft Store while this client is streaming, save the profile, then come back here (Clients tab → HDR Color Profile) and select the profile you saved. Profiles are loaded from the system color profile directory and sorted by newest first.",
+    "hdr_profile_desc": "The Vibeshine virtual display driver retains Windows HDR calibration profiles automatically. Select an override here only for physical displays or other virtual display drivers.",
     "hdr_profile_load_failed": "Failed to load HDR color profiles.",
     "hdr_peak_nits_label": "HDR peak brightness",
     "hdr_peak_nits_placeholder": "Auto (profile or global default)",

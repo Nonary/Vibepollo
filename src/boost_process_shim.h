@@ -23,8 +23,11 @@
 #include <algorithm>
 #include <boost/filesystem/path.hpp>
 #include <boost/system/error_code.hpp>
+#include <boost/system/system_error.hpp>
 #include <filesystem>
+#include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -35,7 +38,9 @@
   #include <processthreadsapi.h>
   #include <Windows.h>
 #else
+  #include <cerrno>
   #include <csignal>
+  #include <sys/wait.h>
   #include <unistd.h>
 #endif
 
@@ -47,6 +52,26 @@ namespace boost_process_shim {
   using pid_t = v2::pid_type;
 
   namespace detail {
+#ifndef _WIN32
+    struct detached_children_t {
+      std::mutex mutex;
+      std::set<pid_t> pids;
+    };
+
+    inline detached_children_t &detached_children() {
+      static detached_children_t children;
+      return children;
+    }
+
+    inline bool externally_reaped(const boost::system::error_code &ec) {
+      return ec == boost::system::errc::no_child_process;
+    }
+#else
+    inline bool externally_reaped(const boost::system::error_code &) {
+      return false;
+    }
+#endif
+
     inline std::string to_utf8(const std::wstring &input) {
 #ifdef _WIN32
       if (input.empty()) {
@@ -302,7 +327,12 @@ namespace boost_process_shim {
       if (!_proc) {
         return false;
       }
-      return _proc->running();
+      boost::system::error_code ec;
+      const auto res = running_impl(ec);
+      if (ec && !detail::externally_reaped(ec)) {
+        throw boost::system::system_error(ec, "running failed");
+      }
+      return res;
     }
 
     bool running(std::error_code &ec) {
@@ -311,7 +341,7 @@ namespace boost_process_shim {
         return false;
       }
       boost::system::error_code bec;
-      auto res = _proc->running(bec);
+      auto res = running_impl(bec);
       ec = std::error_code(bec.value(), bec.category());
       return res;
     }
@@ -322,14 +352,19 @@ namespace boost_process_shim {
         return -1;
       }
       boost::system::error_code bec;
-      auto res = _proc->wait(bec);
+      auto res = wait_impl(bec);
       ec = std::error_code(bec.value(), bec.category());
       return res;
     }
 
     int wait() {
       if (_proc) {
-        return _proc->wait();
+        boost::system::error_code ec;
+        const auto res = wait_impl(ec);
+        if (ec && !detail::externally_reaped(ec)) {
+          throw boost::system::system_error(ec, "wait failed");
+        }
+        return res;
       }
       return 0;
     }
@@ -338,14 +373,14 @@ namespace boost_process_shim {
       if (!_proc) {
         return 0;
       }
-      return _proc->exit_code();
+      return _externally_reaped ? -1 : _proc->exit_code();
     }
 
     v2::native_exit_code_type native_exit_code() const {
       if (!_proc) {
         return {};
       }
-      return _proc->native_exit_code();
+      return _externally_reaped ? static_cast<v2::native_exit_code_type>(-1) : _proc->native_exit_code();
     }
 
     pid_t id() const {
@@ -357,6 +392,13 @@ namespace boost_process_shim {
 
     void detach() {
       if (_proc) {
+#ifndef _WIN32
+        auto &children = detail::detached_children();
+        std::lock_guard lock {children.mutex};
+        if (!_externally_reaped && _proc->id() > 0 && v2::process_is_running(_proc->native_exit_code())) {
+          children.pids.insert(_proc->id());
+        }
+#endif
         _proc->detach();
         _proc.reset();
       }
@@ -370,7 +412,46 @@ namespace boost_process_shim {
       return valid();
     }
 
+    /** Reap only relinquished children; never steal another owner's wait status. */
+    static void reap_detached() {
+#ifndef _WIN32
+      auto &children = detail::detached_children();
+      std::lock_guard lock {children.mutex};
+      for (auto child = children.pids.begin(); child != children.pids.end();) {
+        const auto waited = ::waitpid(*child, nullptr, WNOHANG);
+        if (waited > 0 || (waited < 0 && errno == ECHILD)) {
+          child = children.pids.erase(child);
+        } else {
+          ++child;
+        }
+      }
+#endif
+    }
+
   private:
+    bool running_impl(boost::system::error_code &ec) {
+      if (_externally_reaped) {
+        ec = make_error_code(boost::system::errc::no_child_process);
+        return false;
+      }
+      const auto result = _proc->running(ec);
+      _externally_reaped = detail::externally_reaped(ec);
+      return result;
+    }
+
+    int wait_impl(boost::system::error_code &ec) {
+      if (_externally_reaped) {
+        ec = make_error_code(boost::system::errc::no_child_process);
+        return -1;
+      }
+      const auto result = _proc->wait(ec);
+      _externally_reaped = detail::externally_reaped(ec);
+      return _externally_reaped ? -1 : result;
+    }
+
+    // ECHILD proves termination, but the exit status belongs to the external
+    // reaper. Keep it unknown so auto-detach/preparation never infer success.
+    bool _externally_reaped {false};
     std::optional<v2::process> _proc;
   };
 

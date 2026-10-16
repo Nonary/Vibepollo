@@ -14,7 +14,14 @@ set(SUNSHINE_VDD_DRIVER_REQUIRED_FILES
 set(SUNSHINE_VDD_DRIVER_OPTIONAL_FILES SunshineVirtualDisplayDriver.cer)
 set(SUNSHINE_VDD_VULKAN_LAYER_FILES
     vulkan-layer/VkLayer_sunshine_hdr.dll
-    vulkan-layer/VkLayer_sunshine_hdr.json)
+    vulkan-layer/VkLayer_sunshine_hdr.json
+    vulkan-layer/VkLayer_sunshine_hdr_x86.dll
+    vulkan-layer/VkLayer_sunshine_hdr_x86.json)
+# Built from the pinned source by package refresh, independently of the signed
+# x64 driver release. These files do not exist at initial CMake configuration.
+set(SUNSHINE_VDD_VULKAN_LAYER_GENERATED_FILES
+    vulkan-layer/VkLayer_sunshine_hdr_x86.dll
+    vulkan-layer/VkLayer_sunshine_hdr_x86.json)
 set(SUNSHINE_VDD_TRUEHDR_FILES vibeshine_truehdr.dll nvngx_truehdr.dll)
 
 set(SUNSHINE_VDD_DRIVER_DESTINATION "drivers/sunshine")
@@ -26,7 +33,10 @@ set(SUNSHINE_VDD_LIBVIRTUALDISPLAY_REPOSITORY "Nonary/libvirtualdisplay")
 # Windows packaging always stages this pinned release before it refreshes the
 # product payload. The local source checkout remains available for development,
 # but is not used to build the driver as part of product packaging.
-set(SUNSHINE_VDD_LIBVIRTUALDISPLAY_RELEASE_TAG "v1.6.3")
+set(SUNSHINE_VDD_LIBVIRTUALDISPLAY_RELEASE_LOCK "${CMAKE_CURRENT_LIST_DIR}/../../third-party/libvirtualdisplay-release/windows-x64.json")
+file(READ "${SUNSHINE_VDD_LIBVIRTUALDISPLAY_RELEASE_LOCK}" _sunshine_vdd_release_lock)
+string(JSON SUNSHINE_VDD_LIBVIRTUALDISPLAY_RELEASE_TAG GET "${_sunshine_vdd_release_lock}" tag)
+unset(_sunshine_vdd_release_lock)
 set(SUNSHINE_VDD_VULKAN_LAYER_NAME "VK_LAYER_SUNSHINE_virtual_hdr")
 set(SUNSHINE_VDD_VULKAN_LAYER_LIBRARY ".\\VkLayer_sunshine_hdr.dll")
 set(SUNSHINE_VDD_VULKAN_LAYER_DISABLE_ENVIRONMENT "DISABLE_SUNSHINE_VIRTUAL_HDR")

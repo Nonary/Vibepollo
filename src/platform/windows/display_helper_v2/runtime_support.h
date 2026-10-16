@@ -181,8 +181,11 @@ namespace display_helper::v2 {
         return candidate == DisplayEvent::DeviceArrival || candidate == DisplayEvent::DeviceRemoval;
       };
       // Preserve a device-identity signal if a generic WM_DISPLAYCHANGE or
-      // power notification lands later in the same quiet-window burst.
+      // power notification lands later in the same owner's quiet-window burst.
+      // A retired owner must not suppress a newer owner's generic evidence.
       const bool preserve_existing_device_event = pending_ &&
+                                                  ticket_.generation == generation &&
+                                                  ticket_.connection_epoch == connection_epoch &&
                                                   is_device_identity_event(ticket_.event) &&
                                                   !is_device_identity_event(event);
       if (!preserve_existing_device_event) {
@@ -421,6 +424,16 @@ namespace display_helper::v2 {
       // A reconnect during the v1 recovery grace window is healthy again; do
       // not allow an old missed-ping deadline to restore a live session.
       recovery_deadline_.reset();
+    }
+
+    /// Refresh transport liveness without cancelling a restore deadline that
+    /// was already armed after a missed heartbeat.
+    void record_liveness_ping() {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!armed_) {
+        return;
+      }
+      last_ping_ = clock_.now();
     }
 
     bool check_timeout() {

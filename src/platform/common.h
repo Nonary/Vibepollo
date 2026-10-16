@@ -6,6 +6,7 @@
 
 // standard includes
 #include <algorithm>
+#include <atomic>
 #include <bitset>
 #include <chrono>
 #include <cstdint>
@@ -26,6 +27,7 @@
 // local includes
 #include "src/boost_process_shim.h"
 #include "src/config.h"
+#include "src/amf/amf_initialization_policy.h"
 #include "src/host_stats_types.h"
 #include "src/logging.h"
 #include "src/thread_safe.h"
@@ -309,6 +311,7 @@ namespace platf {
     std::uint8_t type;
     std::uint16_t capabilities;
     std::uint32_t supportedButtons;
+    bool persist_after_disconnect = false;
   };
 
   struct gamepad_touch_t {
@@ -489,6 +492,9 @@ namespace platf {
   };
 
   struct amf_encode_device_t: encode_device_t {
+    // Set only by the AMF runtime/component boundary; D3D/capture preparation
+    // failures must never authorize an implementation fallback.
+    ::amf::lifecycle::initialization_failure_e initialization_failure = ::amf::lifecycle::initialization_failure_e::device_or_capture;
     // Native backends prepare only non-driver state on the capture thread.
     // D3D/AMF construction is invoked by the bounded initialization worker.
     virtual bool initialize_hardware_device() {
@@ -862,6 +868,12 @@ namespace platf {
     uint16_t target_port;
     boost::asio::ip::address &source_address;
 
+    // Checked between bounded retries after temporary send-buffer pressure.
+    std::function<bool()> send_cancelled {};
+    // Output: a rejected segmented batch may be retried as individual packets.
+    // Terminal errors, cancellation and exhausted pressure retries forbid that.
+    bool allow_fallback {true};
+
     /**
      * @brief Returns a payload buffer descriptor for the given payload offset.
      * @param offset The offset in the total payload data (bytes).
@@ -894,6 +906,7 @@ namespace platf {
     boost::asio::ip::address &target_address;
     uint16_t target_port;
     boost::asio::ip::address &source_address;
+    std::function<bool()> send_cancelled {};
   };
 
   bool send(send_info_t &send_info);

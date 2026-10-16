@@ -33,6 +33,8 @@ fi
 
 run_definition=$(declare -f run_host)
 profile_definition=$(declare -f prepare_service_profile)
+[[ "$run_definition" != *'capture=kms'* ]] ||
+  fail_test 'machine host overrides the configured capture method'
 [[ "$run_definition" == *'capability_free_exec "$machine_host" prepare-profile'* ]] ||
   fail_test 'capability-free supervisor does not delegate profile preparation'
 [[ "$run_definition" == *'"$machine_host_executable" "$machine_profile/vibepollo.conf"'* ]] ||

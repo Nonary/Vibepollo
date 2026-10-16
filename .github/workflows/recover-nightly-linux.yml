@@ -1,0 +1,36 @@
+name: Complete qualified nightly Linux publication
+permissions: {}
+on:
+  workflow_dispatch:
+jobs:
+  publish-qualified-linux:
+    if: github.repository == 'Nonary/Vibepollo' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Test native qualification gates
+        run: python -m unittest discover -s scripts/tests -p test_nightly_linux_qualification.py
+      - name: Validate exact qualified package, preserve binaries, and publish missing Linux payload
+        env:
+          NIGHTLY_VALIDATION_ROOT: ${{ runner.temp }}/qualified-nightly-linux
+        run: python scripts/recover_nightly_linux.py --product Vibepollo
+      - name: Retain qualification and publication evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-publication-evidence
+          path: |
+            ${{ runner.temp }}/qualified-nightly-linux/*-linux-publication-report.json
+            ${{ runner.temp }}/qualified-nightly-linux/*-nightly-linux-qualification.log
+          if-no-files-found: error
+          retention-days: 7
+

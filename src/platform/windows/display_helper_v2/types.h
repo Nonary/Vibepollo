@@ -127,6 +127,7 @@ namespace display_helper::v2 {
     /// display creation resets them.
     std::vector<std::pair<std::string, std::pair<unsigned int, unsigned int>>> refresh_rate_overrides;
     bool hdr_blank = false;
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max();
     bool prefer_golden_first = false;
     /// When false, a broken Sunshine connection must not autonomously restore
     /// (stream is intentionally pause-retained).
@@ -179,6 +180,22 @@ namespace display_helper::v2 {
     /// True when triggered by a broken connection / heartbeat loss rather than an
     /// explicit client REVERT; honors the restore-on-disconnect policy.
     bool from_disconnect = false;
+    /// Host-issued monotonic recovery ticket carried by the restore request.
+    std::uint64_t restore_ticket = 0;
+  };
+
+  enum class RecoveryStatus : std::uint8_t {
+    Unknown = 0,
+    Active = 1,
+    Failed = 2,
+    Restored = 3,
+  };
+
+  struct RecoveryStatusCommand {
+    std::uint64_t ticket = 0;
+    std::uint64_t generation = 0;
+    std::uint64_t connection_epoch = 0;
+    bool park = false;
   };
 
   struct DisarmCommand {
@@ -312,6 +329,7 @@ namespace display_helper::v2 {
     ResetCommand,
     PingCommand,
     StopCommand,
+    RecoveryStatusCommand,
     ApplyCompleted,
     VerificationCompleted,
     ResetCompleted,

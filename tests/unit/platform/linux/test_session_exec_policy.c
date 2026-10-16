@@ -49,12 +49,119 @@ static int broker_fixture_execv(const char *path, char *const arguments[]) {
   return execv(arguments[index + 3], &arguments[index + 3]);
 }
 
+#include "test_session_display_request.h"
+
 #define CHECK(expression) do { \
   if (!(expression)) { \
     fprintf(stderr, "FAIL: %s:%d: %s\n", __FILE__, __LINE__, #expression); \
     return 1; \
   } \
 } while (0)
+
+static bool signal_test_worker(pid_t target, int signal_number) {
+  return !kill(target, signal_number) || errno == ESRCH;
+}
+
+static int check_display_cancellation(void) {
+  int ready[2];
+  CHECK(!pipe(ready));
+  const pid_t worker = fork();
+  CHECK(worker >= 0);
+  if (!worker) {
+    close(ready[0]);
+    if (setpgid(0, 0) || signal(SIGTERM, SIG_IGN) == SIG_ERR) _exit(1);
+    if (write(ready[1], "r", 1) != 1) _exit(1);
+    close(ready[1]);
+    for (;;) pause();
+  }
+  close(ready[1]);
+  char byte;
+  CHECK(read(ready[0], &byte, 1) == 1);
+  close(ready[0]);
+  bool exited = false;
+  int status = 0;
+  const uint64_t started = monotonic_milliseconds();
+  CHECK(terminate_display_worker(worker, &exited, &status, signal_test_worker));
+  CHECK(exited && WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+  CHECK(display_worker_completion_status(status, true, true) == VIBEPOLLO_SESSION_COMPLETION_UNKNOWN);
+  CHECK(display_worker_completion_status(status, false, true) == VIBEPOLLO_SESSION_COMPLETION_UNKNOWN);
+  CHECK(display_worker_completion_status(status, true, false) == 126);
+  CHECK(display_worker_completion_status(0, false, true) == 0);
+  CHECK(display_worker_completion_status(1 << 8, false, true) == 1);
+  CHECK(monotonic_milliseconds() - started < 1000);
+  errno = 0;
+  CHECK(waitpid(worker, &status, WNOHANG) < 0 && errno == ECHILD);
+  return 0;
+}
+
+static int check_display_request_limits(void) {
+  struct display_request_fixture fixture;
+  struct decoded_request request;
+  unsigned char *packet = malloc(VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE + 1);
+  CHECK(packet);
+  CHECK(compose_eight_client_display_request(&fixture));
+  CHECK(fixture.argc == 67); // three retained physical outputs plus eight clients
+  const size_t composed_length = encode_display_request(&fixture, packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE);
+  CHECK(composed_length == fixture.message_length);
+  CHECK(decode_request(packet, composed_length, &request));
+  CHECK(request.argc == fixture.argc && request.header.argument_count == 66);
+  CHECK(request.header.payload_length + sizeof(request.header) == composed_length);
+  CHECK(request.header.generation == 42 && !request.argv[request.argc]);
+  CHECK(display_apply_arguments_are_safe(request.argc, request.argv));
+  for (int index = 1; index < request.argc; ++index) CHECK(!strcmp(request.argv[index], fixture.argv[index]));
+
+  while (fixture.argc < TEST_DISPLAY_MAX_PROPERTIES + 2) {
+    CHECK(append_display_property(&fixture, "output.Virtual-8.enable"));
+  }
+  CHECK(display_apply_arguments_are_safe(fixture.argc, fixture.argv));
+  size_t length = encode_display_request(&fixture, packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE);
+  CHECK(length == fixture.message_length && decode_request(packet, length, &request));
+  CHECK(request.argc == TEST_DISPLAY_MAX_PROPERTIES + 2 && !request.argv[request.argc]);
+  CHECK(display_apply_arguments_are_safe(request.argc, request.argv));
+  CHECK(append_display_property(&fixture, "output.Virtual-8.enable"));
+  CHECK(!display_apply_arguments_are_safe(fixture.argc, fixture.argv));
+  length = encode_display_request(&fixture, packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE);
+  CHECK(length && !decode_request(packet, length, &request));
+  // Unsafe properties remain forbidden at the larger property budget.
+  fixture.argc--;
+  fixture.argv[fixture.argc] = NULL;
+  fixture.argv[fixture.argc - 1] = "output.Virtual-8.enable;touch /tmp/untrusted";
+  CHECK(!display_apply_arguments_are_safe(fixture.argc, fixture.argv));
+  CHECK(!display_apply_arguments_are_safe(2, fixture.argv));
+  CHECK(!display_apply_arguments_are_safe(3, NULL));
+
+  // Check transport capacity for the maximum persisted restore shape;
+  // property authorization remains independent of framing and count limits.
+  CHECK(compose_maximum_restore_request(&fixture));
+  length = encode_display_request(&fixture, packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE);
+  CHECK(length == fixture.message_length && length < VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE);
+  CHECK(decode_request(packet, length, &request));
+  CHECK(request.argc == TEST_DISPLAY_MAX_PROPERTIES + 2 && !request.argv[request.argc]);
+
+  // A syntactically complete frame at the byte limit decodes; adding a byte
+  // remains forbidden even though the request has only two wire arguments.
+  const size_t half_payload = (VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE - sizeof(request.header)) / 2;
+  struct vibepollo_session_message header = {
+    .magic = VIBEPOLLO_SESSION_PROTOCOL_MAGIC,
+    .version = VIBEPOLLO_SESSION_PROTOCOL_VERSION,
+    .type = VIBEPOLLO_SESSION_REQUEST,
+    .payload_length = (uint32_t) (half_payload * 2),
+    .argument_count = 2,
+    .generation = 42,
+  };
+  memcpy(packet, &header, sizeof(header));
+  memset(packet + sizeof(header), 'A', half_payload * 2);
+  packet[sizeof(header) + half_payload - 1] = 0;
+  packet[VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE - 1] = 0;
+  CHECK(decode_request(packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE, &request));
+  header.payload_length++;
+  memcpy(packet, &header, sizeof(header));
+  packet[VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE - 1] = 'A';
+  packet[VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE] = 0;
+  CHECK(!decode_request(packet, VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE + 1, &request));
+  free(packet);
+  return 0;
+}
 
 int main(void) {
   char *stream_environment[] = {
@@ -170,6 +277,47 @@ int main(void) {
   CHECK(!getenv("APOLLO_CLIENT_FPS") && !getenv("ENABLE_HDR_WSI"));
   user_service_fixture = false;
 
+  CHECK(!check_display_cancellation());
+  char *observe_request[] = {"broker", "display-observe", NULL};
+  CHECK(display_observe_arguments_are_safe(2, observe_request));
+  CHECK(!display_observe_arguments_are_safe(3, observe_request));
+  observe_request[1] = "display-observe-extra";
+  CHECK(!display_observe_arguments_are_safe(2, observe_request));
+  observe_request[1] = "display-observe";
+  CHECK(display_request_uses_bounded_reply(2, observe_request));
+  CHECK(!display_request_is_mutating(observe_request[1]));
+  observe_request[1] = "display-observe-events";
+  CHECK(display_observe_arguments_are_safe(2, observe_request));
+  CHECK(!display_observe_arguments_are_safe(3, observe_request));
+  CHECK(!display_request_uses_bounded_reply(2, observe_request));
+  CHECK(!display_request_is_mutating(observe_request[1]));
+  CHECK(display_request_is_mutating("display-apply"));
+  char *focus_request[] = {"broker", "managed-focus", "steam", "42", "3", "15", "0", NULL};
+  CHECK(managed_focus_arguments_are_safe(7, focus_request));
+  CHECK(!managed_focus_arguments_are_safe(6, focus_request));
+  focus_request[2] = "playnite";
+  CHECK(!managed_focus_arguments_are_safe(7, focus_request));
+  focus_request[2] = "lutris";
+  CHECK(managed_focus_arguments_are_safe(7, focus_request));
+  focus_request[3] = "42; /bin/true";
+  CHECK(!managed_focus_arguments_are_safe(7, focus_request));
+  focus_request[3] = "0";
+  CHECK(!managed_focus_arguments_are_safe(7, focus_request));
+  focus_request[3] = "42";
+  focus_request[4] = "101";
+  CHECK(!managed_focus_arguments_are_safe(7, focus_request));
+  focus_request[4] = "3";
+  focus_request[5] = "301";
+  CHECK(!managed_focus_arguments_are_safe(7, focus_request));
+  focus_request[5] = "15";
+  focus_request[6] = "2";
+  CHECK(!managed_focus_arguments_are_safe(7, focus_request));
+  focus_request[6] = "0";
+  struct session_identity focus_greeter = {0};
+  strcpy(focus_greeter.role, "greeter");
+  CHECK(execute_request(7, focus_request, &focus_greeter, getgid()) == 126);
+
+  CHECK(!check_display_request_limits());
   CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://open/bigpicture"), "steam://open/bigpicture"));
   CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://close/bigpicture"), "steam://close/bigpicture"));
   CHECK(!steam_big_picture_uri(NULL));
@@ -472,13 +620,37 @@ int main(void) {
   const char *valid_display_arguments[] = {
     "output.Virtual-1.enable",
     "output.HDMI-A-1.disable",
+    "output.DP-1.rotation.none",
+    "output.DP-1.rotation.left",
+    "output.DP-1.rotation.inverted",
+    "output.DP-1.rotation.right",
+    "output.DP-1.rotation.flipped",
+    "output.DP-1.rotation.flipped90",
+    "output.DP-1.rotation.flipped180",
+    "output.DP-1.rotation.flipped270",
     "output.Virtual-2.mode.123",
     "output.Virtual-2.vrrpolicy.always",
     "output.Virtual-2.hdr.enable",
     "output.Virtual-2.hdr.disable",
+    "output.DP-3.rotation.none",
+    "output.DP-3.rotation.left",
+    "output.DP-3.rotation.inverted",
+    "output.DP-3.rotation.right",
+    "output.DP-3.rotation.flipped",
+    "output.DP-3.rotation.flipped90",
+    "output.DP-3.rotation.flipped180",
+    "output.DP-3.rotation.flipped270",
     "output.Virtual-2.scale.1.250000",
     "output.Virtual-2.position.-3840,0",
     "output.Virtual-2.priority.2",
+    "output.HDMI-A-1.rotation.none",
+    "output.HDMI-A-1.rotation.left",
+    "output.HDMI-A-1.rotation.inverted",
+    "output.HDMI-A-1.rotation.right",
+    "output.HDMI-A-1.rotation.flipped",
+    "output.HDMI-A-1.rotation.flipped90",
+    "output.HDMI-A-1.rotation.flipped180",
+    "output.HDMI-A-1.rotation.flipped270",
     "output.Virtual-2.addCustomMode.3840.2160.120000.reduced",
   };
   for (size_t index = 0; index < sizeof(valid_display_arguments) / sizeof(valid_display_arguments[0]); ++index) {
@@ -488,10 +660,24 @@ int main(void) {
   const char *invalid_display_arguments[] = {
     "output.Virtual-1.enable;touch /tmp/x",
     "output.Virtual-1.scale.-1",
+    "output.DP-1.rotation.foo",
+    "output.DP-1.rotation.none;touch /tmp/x",
+    "output.HDMI-A-1.rotation.90",
+    "output.HDMI-A-1.rotation.flipped360",
+    "output.HDMI-A-1.rotation.left.extra",
+    "output.HDMI-A-1.rotation.none;touch /tmp/x",
+    "output.HDMI-A-1.rotation.none\noutput.eDP-1.enable",
     "output.Virtual-1.mode../../bin/sh",
     "output.Virtual-1.addCustomMode.0.2160.120000.reduced",
     "output.Virtual-1.addCustomMode.3840.2160.0.reduced",
     "output.Virtual-1.position.0,0\noutput.Virtual-2.enable",
+    "output.DP-3.rotation.foo",
+    "output.DP-3.rotation.NONE",
+    "output.DP-3.rotation.",
+    "output.DP-3.rotation.none.extra",
+    "output.DP-3.rotation.none;touch /tmp/x",
+    "output.DP-3.rotation.none\noutput.Virtual-2.enable",
+    "output.DP-3.rotation.none ",
     "--help",
   };
   for (size_t index = 0; index < sizeof(invalid_display_arguments) / sizeof(invalid_display_arguments[0]); ++index) {

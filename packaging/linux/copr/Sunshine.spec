@@ -348,6 +348,7 @@ rm -f %{buildroot}%{_datadir}/vibepollo/arch-package-hooks
 rmdir %{buildroot}%{_datadir}/libalpm/hooks %{buildroot}%{_datadir}/libalpm 2>/dev/null || true
 
 %pre
+export LC_ALL=C
 vibepollo_controller=%{_prefix}/libexec/vibeshine/vibepollo-session-controller
 vibepollo_legacy_host=%{_prefix}/libexec/vibeshine/vibepollo-machine-host
 vibepollo_legacy_handoff=%{_prefix}/libexec/vibeshine/vibepollo-session-handoff
@@ -1060,6 +1061,7 @@ if ! vibepollo_quiesce_machine_host; then
 fi
 
 %post
+export LC_ALL=C
 # Note: this is copied from the postinst script
 
 vibepollo_controller=%{_prefix}/libexec/vibeshine/vibepollo-session-controller
@@ -1486,6 +1488,7 @@ else
 fi
 
 %preun
+export LC_ALL=C
 vibepollo_controller=%{_prefix}/libexec/vibeshine/vibepollo-session-controller
 vibepollo_machine_host=%{_prefix}/libexec/vibeshine/vibepollo-machine-host
 vibepollo_session_record=/run/vibepollo/session.env
@@ -1711,11 +1714,13 @@ fi
 %{_prefix}/libexec/vibeshine/vibeshine-vkms-quiesce
 %{_prefix}/libexec/vibeshine/vibeshine-vkms-peercred
 %{_prefix}/libexec/vibeshine/vibepollo-session-controller
+%attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-display-observer
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-session-exec
 %attr(0700,root,root) %caps(cap_kill,cap_setgid,cap_setuid+p) %{_prefix}/libexec/vibeshine/vibepollo-session-broker
 %{_prefix}/libexec/vibeshine/vibepollo-provider-scan
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-global-limiter.py
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-steam-launch
+%attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-app-focus
 %{_prefix}/libexec/vibeshine/vibepollo-profile-import
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-app-supervisor
 %{_prefix}/libexec/vibeshine/vibepollo-machine-host

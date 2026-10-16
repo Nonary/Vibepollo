@@ -151,6 +151,12 @@ namespace statefile {
   /** Load the last compositor scale selected for a stable virtual-display owner. */
   std::optional<double> load_virtual_display_scale(const std::string &identity);
 
+  /** Persist/clear a bounded Linux desktop baseline through the atomic state writer. */
+  bool save_linux_display_snapshot(const std::optional<std::string> &snapshot);
+
+  /** Read the Linux baseline; topology/schema/session validation belongs to its consumer. */
+  std::optional<std::string> load_linux_display_snapshot();
+
   /** Clear retained virtual-display scales when display state is reset. */
   void clear_virtual_display_scales();
 

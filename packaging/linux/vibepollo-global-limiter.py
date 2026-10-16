@@ -247,6 +247,19 @@ def tools_in(roots):
     return result
 
 
+def manageable_tool(tool):
+    try:
+        info = tool.stat()
+    except OSError:
+        return False
+
+    return (
+        stat.S_ISDIR(info.st_mode)
+        and info.st_uid == os.getuid()
+        and os.access(tool, os.W_OK)
+    )
+
+
 def serve(policy, roots):
     environment(policy, {})  # Validate before opening the endpoint or editing files.
     payload = json.dumps(policy).encode()
@@ -277,6 +290,13 @@ def serve(policy, roots):
             if time.monotonic() - scanned_at >= 30:
                 count = 0
                 for tool in tools_in(roots):
+                    if not manageable_tool(tool):
+                        if not ready:
+                            print(
+                                f"Vibepollo limiter: skipping read-only Proton tool {tool}",
+                                file=sys.stderr,
+                            )
+                        continue
                     try:
                         install(tool, module)
                         count += 1
