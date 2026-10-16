@@ -1344,6 +1344,11 @@ endif()
 
 find_program(SUNSHINE_TEST_POWERSHELL NAMES pwsh powershell)
 if(SUNSHINE_TEST_POWERSHELL)
+    add_test(NAME regression_windows_display_reboot_state
+        COMMAND "${SUNSHINE_TEST_POWERSHELL}" -NoLogo -NonInteractive -NoProfile
+            -File "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/windows/test_display_reboot_state.ps1"
+            -RepositoryRoot "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+    set_tests_properties(regression_windows_display_reboot_state PROPERTIES LABELS "component" TIMEOUT 120)
     add_test(NAME regression_windows_usbip_package
         COMMAND "${SUNSHINE_TEST_POWERSHELL}" -NoLogo -NonInteractive -NoProfile
             -File "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/windows/usbip_transport/tests/test_package_contract.ps1")

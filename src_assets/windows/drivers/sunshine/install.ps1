@@ -30,12 +30,17 @@ $vulkanLayers = @(
 )
 $vulkanImplicitLayersSubKey = 'SOFTWARE\Khronos\Vulkan\ImplicitLayers'
 $userModeDriversSid = 'S-1-5-84-0-0-0-0-0'
+# Sticky for this invocation: an old active driver passing a probe cannot
+# make changes which Windows deferred until reboot effective.
 $script:rebootRequired = $false
 $script:apolloServiceWasRunning = $false
 $script:virtualDisplayBrokerWasRunning = $false
 
 trap {
     $failure = $_
+    if ($script:rebootRequired) {
+        Write-DriverRestartRequired
+    }
     try {
         Start-VirtualDisplayBrokerIfNeeded
     } catch {
@@ -54,6 +59,11 @@ trap {
     }
 
     throw
+}
+
+function Write-DriverRestartRequired {
+    Write-Warning '[SunshineVirtualDisplay] VIRTUAL_DISPLAY_RESTART_REQUIRED: Windows restart is required to finalize virtual display driver changes; further driver repair is deferred.'
+    Write-Host '[SunshineVirtualDisplay] A reboot is required to finalize driver installation.'
 }
 
 # DRIVER_INSTALL_SAFETY_BEGIN
@@ -872,6 +882,7 @@ function Stop-SunshineVirtualDisplayDriverHost {
 }
 
 function Restart-SunshineVirtualDisplayRuntime {
+    if ($script:rebootRequired) { return }
     Stop-VirtualDisplayBrokerForDriverInstall
     Stop-SunshineVirtualDisplayDriverHost
     Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices') -AllowedExitCodes @(0, 259, 3010)
@@ -879,6 +890,7 @@ function Restart-SunshineVirtualDisplayRuntime {
 }
 
 function Install-DriverPackage {
+    if ($script:rebootRequired) { return }
     Write-Host '[SunshineVirtualDisplay] Installing driver package.'
     Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/add-driver', $infPath, '/install')
 }
@@ -1225,6 +1237,7 @@ function Test-DriverPackageRefreshNeeded {
 }
 
 function Remove-DriverPackage {
+    if ((-not $Uninstall) -and $script:rebootRequired) { return }
     $publishedNames = @(Get-SunshineDriverPublishedNames)
     if ($publishedNames.Count -eq 0) {
         Write-Host '[SunshineVirtualDisplay] No Sunshine virtual display driver package was found in the driver store.'
@@ -1235,6 +1248,7 @@ function Remove-DriverPackage {
     foreach ($publishedName in $publishedNames) {
         Write-Host "[SunshineVirtualDisplay] Removing driver package $publishedName."
         Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/delete-driver', $publishedName, '/uninstall', '/force')
+        if ((-not $Uninstall) -and $script:rebootRequired) { return }
     }
 
     # PnP package bookkeeping can settle just after pnputil exits. Retry any
@@ -1244,6 +1258,7 @@ function Remove-DriverPackage {
     foreach ($publishedName in $remainingNames) {
         Write-Host "[SunshineVirtualDisplay] Retrying removal of driver package $publishedName."
         Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/delete-driver', $publishedName, '/uninstall', '/force')
+        if ((-not $Uninstall) -and $script:rebootRequired) { return }
     }
 }
 
@@ -1302,26 +1317,32 @@ function Get-SunshineDeviceInstanceId {
 }
 
 function Reset-SunshineVirtualDisplayDeviceNode {
+    if ($script:rebootRequired) { return $false }
     Write-Host '[SunshineVirtualDisplay] Clean-restaging the driver and device node after failed runtime revive.'
 
     try {
         Stop-VirtualDisplayBrokerForDriverInstall
         Remove-DeviceNode
+        if ($script:rebootRequired) { return $false }
         Remove-DriverPackage
+        if ($script:rebootRequired) { return $false }
         Install-DriverPackage
+        if ($script:rebootRequired) { return $false }
         if (-not (Wait-DriverStoreMatchesPackagedPayload -TimeoutSeconds 10)) {
             Write-DriverStorePayloadDiagnostics
             throw '[SunshineVirtualDisplay] DriverStore payload did not match the packaged driver after recovery restaging.'
         }
 
         Invoke-DriverProcess -FilePath $nefConc -ArgumentList @('--create-device-node', '--class-name', 'Display', '--class-guid', $classGuid, '--hardware-id', $hardwareId)
+        if ($script:rebootRequired) { return $false }
         Install-DriverPackage
+        if ($script:rebootRequired) { return $false }
         Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices') -AllowedExitCodes @(0, 259, 3010)
+        if ($script:rebootRequired) { return $false }
         Initialize-DriverStateRegistryAccess
         Start-VirtualDisplayBrokerIfNeeded
 
         if (Test-TemporaryVirtualDisplay) {
-            $script:rebootRequired = $false
             Write-Host '[SunshineVirtualDisplay] Clean driver and device-node restaging restored the virtual display driver without a restart.'
             return $true
         }
@@ -1339,20 +1360,22 @@ function Reset-SunshineVirtualDisplayDeviceNode {
 }
 
 function Invoke-InstallerHealthCheck {
+    # A successful old driver can answer the probe while a replacement is still
+    # pending reboot. Health observations cannot cancel a native 3010 result.
+    if ($script:rebootRequired) { return }
     if (Test-TemporaryVirtualDisplay) {
-        $script:rebootRequired = $false
         return
     }
 
     $instanceId = Get-SunshineDeviceInstanceId
     if ([string]::IsNullOrWhiteSpace($instanceId)) {
-        Write-Warning "[SunshineVirtualDisplay] Unable to resolve device instance ID for $hardwareId; restart is required."
-        $script:rebootRequired = $true
+        Write-Warning "[SunshineVirtualDisplay] Unable to resolve device instance ID for $hardwareId; attempting clean restaging."
     } else {
         Write-Host "[SunshineVirtualDisplay] Restarting device instance after failed temporary display self-test: $instanceId"
         $restart = Invoke-DriverHealthProcess -FilePath $pnputil -ArgumentList @('/restart-device', $instanceId) -TimeoutSeconds 120
         if ($restart.ExitCode -eq 3010) {
             $script:rebootRequired = $true
+            return
         } elseif ($restart.ExitCode -ne 0) {
             if (-not [string]::IsNullOrWhiteSpace($restart.Output)) {
                 Write-Warning "[SunshineVirtualDisplay] pnputil restart-device failed with exit code $($restart.ExitCode): $($restart.Output)"
@@ -1366,8 +1389,8 @@ function Invoke-InstallerHealthCheck {
         } catch {
             Write-Warning $_.Exception.Message
         }
+        if ($script:rebootRequired) { return }
         if (Test-TemporaryVirtualDisplay) {
-            $script:rebootRequired = $false
             return
         }
 
@@ -1375,6 +1398,7 @@ function Invoke-InstallerHealthCheck {
         $disable = Invoke-DriverHealthProcess -FilePath $pnputil -ArgumentList @('/disable-device', $instanceId, '/force') -TimeoutSeconds 120
         if ($disable.ExitCode -eq 3010) {
             $script:rebootRequired = $true
+            return
         } elseif ($disable.ExitCode -ne 0) {
             if (-not [string]::IsNullOrWhiteSpace($disable.Output)) {
                 Write-Warning "[SunshineVirtualDisplay] pnputil disable-device failed with exit code $($disable.ExitCode): $($disable.Output)"
@@ -1386,6 +1410,7 @@ function Invoke-InstallerHealthCheck {
         $enable = Invoke-DriverHealthProcess -FilePath $pnputil -ArgumentList @('/enable-device', $instanceId) -TimeoutSeconds 120
         if ($enable.ExitCode -eq 3010) {
             $script:rebootRequired = $true
+            return
         } elseif ($enable.ExitCode -ne 0) {
             if (-not [string]::IsNullOrWhiteSpace($enable.Output)) {
                 Write-Warning "[SunshineVirtualDisplay] pnputil enable-device failed with exit code $($enable.ExitCode): $($enable.Output)"
@@ -1399,8 +1424,8 @@ function Invoke-InstallerHealthCheck {
         } catch {
             Write-Warning $_.Exception.Message
         }
+        if ($script:rebootRequired) { return }
         if (Test-TemporaryVirtualDisplay) {
-            $script:rebootRequired = $false
             return
         }
 
@@ -1410,8 +1435,8 @@ function Invoke-InstallerHealthCheck {
         } catch {
             Write-Warning $_.Exception.Message
         }
+        if ($script:rebootRequired) { return }
         if (Test-TemporaryVirtualDisplay) {
-            $script:rebootRequired = $false
             return
         }
     }
@@ -1421,8 +1446,56 @@ function Invoke-InstallerHealthCheck {
     }
 
     $script:rebootRequired = $true
-    Write-Warning '[SunshineVirtualDisplay] VIRTUAL_DISPLAY_RESTART_REQUIRED: Virtual display driver installed, but Windows restart is required before virtual display can function.'
-    Write-Host '[SunshineVirtualDisplay] A reboot is required to finalize driver installation.'
+}
+
+function Install-SunshineVirtualDisplayDriver {
+    # Once Windows requests a reboot, only the common completion/service restore
+    # path may run. Do not diagnose an old active payload as a failed replacement.
+    if ($script:rebootRequired) { return }
+    $driverPackageRefreshNeeded = Test-DriverPackageRefreshNeeded
+    $deviceNodePresent = Test-DeviceNodePresent
+    Stop-ApolloForDriverInstall
+    Stop-VirtualDisplayBrokerForDriverInstall
+
+    if ((-not $driverPackageRefreshNeeded) -and $deviceNodePresent) {
+        Initialize-DriverStateRegistryAccess
+        Invoke-InstallerHealthCheck
+        return
+    }
+
+    Install-DriverPackage
+    if ($script:rebootRequired) { return }
+
+    if (-not (Wait-DriverStoreMatchesPackagedPayload)) {
+        Write-Warning '[SunshineVirtualDisplay] Windows retained stale or mixed Sunshine DriverStore payloads; removing Sunshine driver packages before restaging.'
+        Write-DriverStorePayloadDiagnostics
+        Remove-DeviceNode
+        if ($script:rebootRequired) { return }
+        Remove-DriverPackage
+        if ($script:rebootRequired) { return }
+        Install-DriverPackage
+        if ($script:rebootRequired) { return }
+        if (-not (Wait-DriverStoreMatchesPackagedPayload -TimeoutSeconds 10)) {
+            Write-DriverStorePayloadDiagnostics
+            throw '[SunshineVirtualDisplay] DriverStore payload still does not match the packaged driver after clean restaging.'
+        }
+        Write-Host '[SunshineVirtualDisplay] Clean DriverStore restaging replaced the stale driver payload.'
+    }
+
+    if (-not (Test-DeviceNodePresent)) {
+        Write-Host '[SunshineVirtualDisplay] Creating device node.'
+        Invoke-DriverProcess -FilePath $nefConc -ArgumentList @('--create-device-node', '--class-name', 'Display', '--class-guid', $classGuid, '--hardware-id', $hardwareId)
+        if ($script:rebootRequired) { return }
+        Install-DriverPackage
+        if ($script:rebootRequired) { return }
+    }
+
+    Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices')
+    if ($script:rebootRequired) { return }
+    Restart-SunshineVirtualDisplayRuntime
+    if ($script:rebootRequired) { return }
+    Initialize-DriverStateRegistryAccess
+    Invoke-InstallerHealthCheck
 }
 
 if ($RegisterVulkanLayerOnly -and $UnregisterVulkanLayerOnly) {
@@ -1501,53 +1574,12 @@ try {
 }
 Register-VulkanLayer
 
-$driverPackageRefreshNeeded = Test-DriverPackageRefreshNeeded
-$deviceNodePresent = Test-DeviceNodePresent
-Stop-ApolloForDriverInstall
-Stop-VirtualDisplayBrokerForDriverInstall
-
-if ((-not $driverPackageRefreshNeeded) -and $deviceNodePresent) {
-    Initialize-DriverStateRegistryAccess
-    Invoke-InstallerHealthCheck
-    Start-VirtualDisplayBrokerIfNeeded
-    Start-ApolloServiceIfNeeded
-    Write-Host '[SunshineVirtualDisplay] Driver install complete.'
-    if ($script:rebootRequired) {
-        Write-Host '[SunshineVirtualDisplay] A reboot is required to finalize driver installation.'
-    }
-    exit 0
-}
-
-Install-DriverPackage
-
-if (-not (Wait-DriverStoreMatchesPackagedPayload)) {
-    Write-Warning '[SunshineVirtualDisplay] Windows retained stale or mixed Sunshine DriverStore payloads; removing Sunshine driver packages before restaging.'
-    Write-DriverStorePayloadDiagnostics
-    Remove-DeviceNode
-    Remove-DriverPackage
-    Install-DriverPackage
-    if (-not (Wait-DriverStoreMatchesPackagedPayload -TimeoutSeconds 10)) {
-        Write-DriverStorePayloadDiagnostics
-        throw '[SunshineVirtualDisplay] DriverStore payload still does not match the packaged driver after clean restaging.'
-    }
-    Write-Host '[SunshineVirtualDisplay] Clean DriverStore restaging replaced the stale driver payload.'
-}
-
-if (-not (Test-DeviceNodePresent)) {
-    Write-Host '[SunshineVirtualDisplay] Creating device node.'
-    Invoke-DriverProcess -FilePath $nefConc -ArgumentList @('--create-device-node', '--class-name', 'Display', '--class-guid', $classGuid, '--hardware-id', $hardwareId)
-    Install-DriverPackage
-}
-
-Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices')
-Restart-SunshineVirtualDisplayRuntime
-Initialize-DriverStateRegistryAccess
-Invoke-InstallerHealthCheck
+Install-SunshineVirtualDisplayDriver
 Start-VirtualDisplayBrokerIfNeeded
 Start-ApolloServiceIfNeeded
 
 Write-Host '[SunshineVirtualDisplay] Driver install complete.'
 if ($script:rebootRequired) {
-    Write-Host '[SunshineVirtualDisplay] A reboot is required to finalize driver installation.'
+    Write-DriverRestartRequired
     exit 0
 }

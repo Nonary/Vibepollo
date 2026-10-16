@@ -115,8 +115,8 @@ try {
                 Assert-That ($failed -and !$script:removed) 'Failed SudoVDA staging must preserve existing node'
             } else {
                 $stage = $body.LastIndexOf("-ArgumentList @('/add-driver', " + '$infPath' + ')')
-                $stop = [regex]::Match($body, '(?m)^Stop-(Sunshine|Apollo)ForDriverInstall').Index
-                Assert-That ($stage -gt $guard -and $stage -lt $stop -and $stage -lt $body.LastIndexOf('Stop-VirtualDisplayBrokerForDriverInstall')) 'Display catalog staging must precede service stops'
+                $stop = $body.LastIndexOf("`nInstall-SunshineVirtualDisplayDriver")
+                Assert-That ($stage -gt $guard -and $stage -lt $stop) 'Display catalog staging must precede driver setup and its service stops'
                 Assert-That ($text.Contains('[int]$DailyUnsignedPolicy = 0')) 'Stable display publisher handling must remain the default'
                 Assert-That ($body.Contains('Install-ExpectedDisplayTrust')) 'Display trust must use independently verified release identity'
             }
@@ -146,6 +146,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Display release identity/trust validation tests failed.' }
     & (Join-Path $RepositoryRoot 'packaging/windows/test_gamepad_cleanup_paths.ps1') -RepositoryRoot $RepositoryRoot
     & (Join-Path $RepositoryRoot 'packaging/windows/test_optional_display_guard.ps1') -RepositoryRoot $RepositoryRoot
+    & (Join-Path $RepositoryRoot 'packaging/windows/test_display_reboot_state.ps1') -RepositoryRoot $RepositoryRoot
     Write-Host 'Driver installation safety checks passed. No installers, drivers, trust stores, services or restarts were executed.'
 } finally {
     # Only delete the exact uniquely created scratch directory.
