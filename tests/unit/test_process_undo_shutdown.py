@@ -15,6 +15,7 @@ body = source[start:finish]
 body = body.replace("std::chrono::steady_clock", "fake_clock")
 body = body.replace("std::this_thread::sleep_for", "fake_sleep_for")
 program = r'''
+#include "src/prep_command_lifetime.h"
 #include "src/thread_safe.h"
 #include <algorithm>
 #include <cassert>
@@ -26,6 +27,7 @@ program = r'''
 #include <vector>
 using namespace std::literals;
 using milliseconds = std::chrono::milliseconds;
+namespace command_lifetime = proc::command_lifetime;
 struct fake_clock {
   static inline milliseconds elapsed {};
   static milliseconds now() { return elapsed; }
