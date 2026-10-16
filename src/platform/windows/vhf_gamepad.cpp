@@ -81,6 +81,14 @@ namespace platf {
     // Global indices address driver slots directly, so the two limits have to agree.
     static_assert(MAX_GAMEPADS <= lvg::k_max_controllers);
 
+    // The client's LI_SCATTR_* bits are handed to the driver as its sc_attr_* flags unchanged.
+    static_assert(lvg::sc_attr_firmware_build_time == LI_SCATTR_FIRMWARE_BUILD_TIME);
+    static_assert(lvg::sc_attr_bootloader_build_time == LI_SCATTR_BOOTLOADER_BUILD_TIME);
+    static_assert(lvg::sc_attr_board_revision == LI_SCATTR_BOARD_REVISION);
+    static_assert(lvg::sc_attr_capabilities == LI_SCATTR_CAPABILITIES);
+    static_assert(lvg::sc_attr_build_id == LI_SCATTR_BUILD_ID);
+    static_assert(lvg::sc_attr_serials == LI_SCATTR_SERIALS);
+
     struct slot_t {
       bool active {};
       std::uint16_t client_relative_index {};
@@ -726,6 +734,14 @@ namespace platf {
 
     BOOST_LOG(info) << "VHF gamepad "sv << id.globalIndex << " created as "sv
                     << describe_profile(profile);
+    if (is_steam_controller(profile)) {
+      // Steam offers firmware updates to this device as if it were the real unit. The update
+      // cannot reach the real controller through the stream and leaves Steam confused.
+      BOOST_LOG(warning) << "VHF gamepad "sv << id.globalIndex
+                         << " (Steam Controller): Do not start a Steam Controller firmware update from Steam while streaming: "sv
+                         << "the update would target this virtual controller, not the real one. "sv
+                         << "Update with the controller connected directly to a PC."sv;
+    }
     return 0;
   }
 
@@ -907,6 +923,65 @@ namespace platf {
     request.flags = vhf_gamepad::to_protocol_battery_state(battery_event.state);
 
     std::ignore = impl->client.submit_battery_state(request);
+  }
+
+  void vhf_gamepad_t::attributes(const int nr, const steam_controller_attributes_t &attributes_event) {
+    if (nr < 0 || nr >= MAX_GAMEPADS) {
+      return;
+    }
+
+    std::shared_lock lock {impl->lifetime};
+    auto &slot = impl->slots[nr];
+    if (!slot.active) {
+      return;
+    }
+    if (!vhf_gamepad::accepts_steam_attributes(slot.profile, slot.client_capabilities)) {
+      BOOST_LOG(debug) << "VHF gamepad "sv << nr
+                       << " ignores Steam Controller attributes: not a Steam Controller slot with LI_CCAP_STEAM_ATTRIBUTES"sv;
+      return;
+    }
+
+    const vhf_gamepad::steam_attributes_t attributes {
+      attributes_event.transport,
+      attributes_event.valid_mask,
+      attributes_event.firmware_build_time,
+      attributes_event.bootloader_build_time,
+      attributes_event.board_revision,
+      attributes_event.capabilities,
+      attributes_event.radio_firmware_build_time,
+      attributes_event.dongle_firmware_build_time,
+      attributes_event.build_id,
+      attributes_event.unit_serial,
+      attributes_event.board_serial,
+    };
+    const auto request = vhf_gamepad::make_steam_attributes_request(attributes);
+
+    lvg::steam_controller_attributes driver_attributes {};
+    driver_attributes.flags = request.flags;
+    driver_attributes.firmware_build_time = request.firmware_build_time;
+    driver_attributes.bootloader_build_time = request.bootloader_build_time;
+    driver_attributes.board_revision = request.board_revision;
+    driver_attributes.capabilities = request.capabilities;
+    static_assert(sizeof(driver_attributes.build_id) == sizeof(request.build_id));
+    static_assert(sizeof(driver_attributes.unit_serial) == sizeof(request.unit_serial));
+    static_assert(sizeof(driver_attributes.board_serial) == sizeof(request.board_serial));
+    std::copy(request.build_id.begin(), request.build_id.end(), std::begin(driver_attributes.build_id));
+    std::copy(request.unit_serial.begin(), request.unit_serial.end(), std::begin(driver_attributes.unit_serial));
+    std::copy(request.board_serial.begin(), request.board_serial.end(), std::begin(driver_attributes.board_serial));
+
+    const DWORD status = impl->client.set_steam_controller_attributes(static_cast<std::uint32_t>(nr), driver_attributes);
+    if (status == ERROR_REVISION_MISMATCH) {
+      BOOST_LOG(info) << "VHF gamepad "sv << nr
+                      << " (Steam Controller): the driver predates firmware attributes; Steam sees the virtual controller's defaults, not the "sv
+                      << vhf_gamepad::describe_steam_attributes(attributes);
+      return;
+    }
+    if (status != ERROR_SUCCESS) {
+      BOOST_LOG(warning) << "VHF gamepad "sv << nr << " (Steam Controller): couldn't apply the real controller's firmware attributes ["sv
+                         << util::hex(status).to_string_view() << "]; Steam sees the virtual controller's defaults"sv;
+      return;
+    }
+    BOOST_LOG(info) << "VHF gamepad "sv << nr << " (Steam Controller): "sv << vhf_gamepad::describe_steam_attributes(attributes);
   }
 
   void vhf_gamepad_t::update(const int nr, const gamepad_state_t &gamepad_state) {

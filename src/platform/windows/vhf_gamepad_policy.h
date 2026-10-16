@@ -351,6 +351,87 @@ namespace platf::vhf_gamepad {
   [[nodiscard]] std::int32_t to_milli_units(float value) noexcept;
 
   /**
+   * @brief The real Steam Controller's firmware attributes as the client relayed them.
+   * @details Mirrors `platf::steam_controller_attributes_t` without the slot id, so the
+   *          translation can be tested without the platform headers. `valid_mask` holds the
+   *          client's LI_SCATTR_* bits; the strings are NUL padded.
+   */
+  struct steam_attributes_t {
+    std::uint8_t transport {};  ///< LI_SCATTR_TRANSPORT_*
+    std::uint8_t valid_mask {};  ///< LI_SCATTR_*
+    std::uint32_t firmware_build_time {};
+    std::uint32_t bootloader_build_time {};
+    std::uint32_t board_revision {};
+    std::uint32_t capabilities {};
+    std::uint32_t radio_firmware_build_time {};
+    std::uint32_t dongle_firmware_build_time {};
+    std::array<char, 16> build_id {};
+    std::array<char, 16> unit_serial {};
+    std::array<char, 16> board_serial {};
+  };
+
+  /**
+   * @brief What the driver applies to the virtual controller: `lvg::steam_controller_attributes`
+   *        field for field.
+   * @details A host-side copy so this translation unit and its test build against a driver header
+   *          that predates the call; vhf_gamepad.cpp copies it into the driver's struct. `flags`
+   *          are LI_SCATTR_* bits, which the driver's `sc_attr_*` values equal by design.
+   */
+  struct steam_attributes_request_t {
+    std::uint32_t flags {};
+    std::uint32_t firmware_build_time {};
+    std::uint32_t bootloader_build_time {};
+    std::uint32_t board_revision {};
+    std::uint32_t capabilities {};
+    std::array<char, 16> build_id {};
+    std::array<char, 16> unit_serial {};
+    std::array<char, 16> board_serial {};
+
+    bool operator==(const steam_attributes_request_t &other) const noexcept = default;
+  };
+
+  /// The LI_SCATTR_* bits the driver takes. The radio and dongle build times are logged only:
+  /// the virtual device is a wired unit and has neither.
+  inline constexpr std::uint32_t steam_attributes_driver_mask =
+    LI_SCATTR_FIRMWARE_BUILD_TIME | LI_SCATTR_BOOTLOADER_BUILD_TIME | LI_SCATTR_BOARD_REVISION |
+    LI_SCATTR_CAPABILITIES | LI_SCATTR_BUILD_ID | LI_SCATTR_SERIALS;
+
+  /**
+   * @brief Whether a slot has a use for the real controller's attributes.
+   * @param profile The slot's profile.
+   * @param client_capabilities The client's LI_CCAP_* flags for the controller.
+   * @return `true` only for a Steam Controller slot whose client advertised LI_CCAP_STEAM_ATTRIBUTES.
+   */
+  [[nodiscard]] bool accepts_steam_attributes(lvg::profile profile, std::uint16_t client_capabilities) noexcept;
+
+  /**
+   * @brief Builds the driver request from the client's attributes.
+   * @details Flags pass straight through for the fields the driver takes; a field whose bit is
+   *          clear is zeroed. Strings keep at most 15 printable ASCII characters (anything else
+   *          becomes '?') and are NUL terminated.
+   * @param attributes The client's attributes.
+   * @return The request to copy into `lvg::steam_controller_attributes`.
+   */
+  [[nodiscard]] steam_attributes_request_t make_steam_attributes_request(const steam_attributes_t &attributes) noexcept;
+
+  /**
+   * @brief Formats unix seconds as `YYYY-MM-DD HH:MM:SS UTC`.
+   * @details No locale and no time zone: a firmware build time must read the same in every log.
+   * @param seconds Seconds since the epoch.
+   * @return The formatted time.
+   */
+  [[nodiscard]] std::string format_unix_time_utc(std::uint32_t seconds);
+
+  /**
+   * @brief Renders the real controller's attributes for the log.
+   * @param attributes The client's attributes.
+   * @return `real controller firmware build <time> (0x%08x), bootloader <time> (0x%08x), board rev N,
+   *         build id X, serial Y, via usb|ble|puck`, with a field whose bit is clear shown as
+   *         `unknown`, and the radio/dongle firmware build times appended when present.
+   */
+  [[nodiscard]] std::string describe_steam_attributes(const steam_attributes_t &attributes);
+
+  /**
    * @brief Whether the driver discarded anything for a slot.
    * @details A quiet controller and one whose output the driver is throwing away look the
    * same from the client; `lvg::feedback_counters` is the only tell, so a slot with any

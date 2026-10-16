@@ -71,6 +71,40 @@ it (`haptic_evicted`, `settings_evicted`, `transitions_dropped`,
 output the driver had to discard, and discards any feedback still queued for
 the slot's client-relative index before it can be reused.
 
+## Firmware attributes and Steam's update notice
+
+The virtual controller answers Steam's attribute reads (GET_ATTRIBUTES_VALUES
+0x83, GET_DEVICE_INFO 0xF2) with defaults captured from one wired unit, so
+Steam used to show "controller firmware update available" for the streamed
+controller whenever those defaults fell behind. A client advertising
+`LI_CCAP_STEAM_ATTRIBUTES` (0x4000) reads the real controller's attributes at
+link setup (USB cable, puck and BLE alike) and sends them after the arrival
+event as the `SS_STEAM_CONTROLLER_ATTRIBUTES` input packet (magic
+`0x55000008`, 84 bytes, every u32 little-endian): firmware and bootloader
+build times, board revision, capabilities, radio/dongle firmware build times,
+build id and the unit/board serials, with a mask saying which were actually
+read.
+
+The host honours the packet only for a controller the arrival announced as
+`LI_CTYPE_STEAM` with that capability, sanitises the strings (printable ASCII,
+at most 15 characters) and hands the six fields the driver takes to the VHF
+driver's `set_steam_controller_attributes` call. The radio and dongle build
+times are logged only: the virtual device is a wired unit. An installed driver
+that predates the call answers `ERROR_REVISION_MISMATCH`; the host logs one
+info line and the virtual controller keeps its defaults. On success the host
+log shows what Steam will see:
+
+```
+VHF gamepad 0 (Steam Controller): real controller firmware build 2026-07-07 23:04:03 UTC (0x6a4d85e3), bootloader 2025-09-23 19:46:54 UTC (0x68d2f92e), board rev 74, build id 26e1f7ef1955, serial FXA..., via usb
+```
+
+Steam re-polls the attributes periodically, so a packet that arrives late is
+picked up. Attributes are reset whenever the slot is recreated and are re-sent
+with the next arrival.
+
+> **Warning:** Do not start a Steam Controller firmware update from Steam while streaming: the update would target this virtual controller, not the real one. Update with the controller connected directly to a PC.
+> Vibepollo logs this warning every time a Steam Controller slot is created.
+
 ## Protocol notes
 
 The new client type, capability bits, button flags and packet types are
@@ -83,8 +117,9 @@ capability never receives the corresponding packet.
 ## Driver dependency
 
 The profile, the extra button bits, the `steam_haptic`/`steam_settings`
-feedback types and the per-slot feedback counters are part of the
-libvirtualgamepad protocol (header and driver). The host must be built against
+feedback types, the per-slot feedback counters and the
+`set_steam_controller_attributes` call are part of the libvirtualgamepad
+protocol (header and driver). The host must be built against
 a libvirtualgamepad that defines them and ships a driver that offers the
 profile; an installed driver without the profile falls back as described
 above.
@@ -94,7 +129,10 @@ above.
 * `tests/unit/platform/windows/test_vhf_gamepad_policy.cpp`: profile
   selection, the button mask and the explicit-click metadata bit, split-pad
   touch ownership, haptic/settings decoding and rumble synthesis (including
-  the side conventions) and the feedback counters.
+  the side conventions), the feedback counters and the firmware attribute
+  relay (packet layout, gating, field and flag mapping, string sanitising,
+  UTC formatting and the log line).
 * `tests/input/test_haptic_queue.py`, `test_steam_settings_forward.py`,
   `test_vhf_feedback_retirement.py`, `test_vhf_fallback.py`,
-  `test_sc26_buttons.py`: see `tests/input/README.md`.
+  `test_sc26_buttons.py`, `test_steam_attributes_forward.py`: see
+  `tests/input/README.md`.

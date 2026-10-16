@@ -1943,6 +1943,21 @@ namespace platf {
   }
 
   /**
+   * @brief Hands the real Steam Controller's firmware attributes to the virtual controller.
+   * @details Only the VHF driver presents a Steam Controller; ViGEmBus and the DualSense USB/IP
+   *          backend have no device that answers Steam's attribute reads, so they get nothing.
+   * @param input The global input context.
+   * @param attributes The attributes.
+   */
+  void gamepad_attributes(input_t &input, const steam_controller_attributes_t &attributes) {
+    auto raw = (input_raw_t *) input.get();
+
+    if (vhf_owns_gamepad(raw, attributes.id.globalIndex)) {
+      raw->vhf->attributes(attributes.id.globalIndex, attributes);
+    }
+  }
+
+  /**
    * @brief Sends a gamepad battery event to the OS.
    * @param input The global input context.
    * @param battery The battery event.

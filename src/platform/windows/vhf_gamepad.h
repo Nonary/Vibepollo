@@ -92,6 +92,16 @@ namespace platf {
      */
     void battery(int nr, const gamepad_battery_t &battery_event);
 
+    /**
+     * @brief Hands the real Steam Controller's firmware attributes to the driver.
+     * @details Ignored unless the slot runs the Steam Controller profile for a client that
+     *          advertised LI_CCAP_STEAM_ATTRIBUTES. A driver that predates the call is logged
+     *          once and the virtual controller keeps its default attributes.
+     * @param nr The gamepad index.
+     * @param attributes_event The attributes.
+     */
+    void attributes(int nr, const steam_controller_attributes_t &attributes_event);
+
   private:
     struct impl_t;
     std::unique_ptr<impl_t> impl;

@@ -407,7 +407,11 @@ editing the `conf` file in a text editor. Use the examples as reference.
             driver with the Steam Controller profile. Steam recognises it as a real Steam
             Controller: two trackpads (the client's touchpad 0 and 1), four grip buttons, motion
             sensors, battery and pad haptics rendered as rumble. Plain `vhf` and `auto` select it
-            for clients that report a Steam Controller.}</td>
+            for clients that report a Steam Controller. A client that reads the real controller's
+            firmware attributes (firmware and bootloader build times, board revision, build id,
+            serials) relays them, so Steam sees the real firmware build and offers an update only
+            when the real controller needs one; a driver that predates this keeps its defaults.}
+            @warning{Do not start a Steam Controller firmware update from Steam while streaming: the update would target this virtual controller, not the real one. Update with the controller connected directly to a PC.}</td>
     </tr>
     <tr>
         <td>vhf_xbox</td>
