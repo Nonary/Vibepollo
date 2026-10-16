@@ -30,6 +30,7 @@
 #include "nvhttp.h"
 #include "process.h"
 #include "rtsp.h"
+#include "shutdown_signal.h"
 #include "system_tray.h"
 #include "update.h"
 #include "upnp.h"
@@ -98,8 +99,6 @@ void on_signal(int sig, FN &&fn) {
 #endif
 
 namespace {
-  static_assert(std::atomic_bool::is_always_lock_free, "shutdown signal flag must be lock-free in a signal handler");
-
   class shutdown_deadline_t {
   public:
     explicit shutdown_deadline_t(std::atomic_bool *signal_requested, bool supervised_machine_host):
@@ -445,7 +444,7 @@ int main(int argc, char *argv[]) {
   // Its cleanup guard also runs on early startup returns, so it must be able
   // to bound that join as well as the ordinary shutdown path below.
   auto shutdown_event = mail::man->event<bool>(mail::shutdown);
-  std::atomic_bool shutdown_signal_requested {false};
+  auto &shutdown_signal_requested = lifetime::shutdown_signal_requested;
   shutdown_deadline_t shutdown_deadline {&shutdown_signal_requested, supervised_machine_host};
 
 #ifdef __linux__
@@ -684,8 +683,8 @@ int main(int argc, char *argv[]) {
     shutdown_signal_requested.store(true, std::memory_order_relaxed);
     BOOST_LOG(info) << "Interrupt handler called"sv;
 
-    // Preserve Vibepollo's eager application cleanup; the owned deadline above
-    // replaces the detached task-pool watchdog that used to follow it.
+    // Undo waits also observe the signal flag above. Keep eager cleanup before
+    // waking main so its teardown cannot overlap this callback's termination.
     proc::proc.terminate();
     // Break out of the main loop
     shutdown_event->raise(true);
