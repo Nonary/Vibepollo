@@ -96,10 +96,10 @@ namespace platf {
   void on_system_will_sleep(std::function<void()> handler);
 
   /**
-   * @brief Run `handler` whenever a MacBook's lid goes from open to closed.
-   * @details The handler runs on a background queue. Only the first call registers a handler.
+   * @brief Run `closed` whenever a MacBook's lid goes from open to closed, and `opened` when it opens again.
+   * @details The handlers run on a background queue. Only the first call registers them.
    */
-  void on_lid_closed(std::function<void()> handler);
+  void watch_lid(std::function<void()> closed, std::function<void()> opened);
 
   /**
    * @brief Whether a MacBook's lid is closed right now. Always false on a Mac without one.

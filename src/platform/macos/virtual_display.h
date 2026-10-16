@@ -119,8 +119,9 @@ namespace platf::macos_virtual_display {
   bool display_changes_settled();
 
   /**
-   * @brief Turn back on displays that a previous run turned off and never restored.
-   * @details Schedules the work on the main event loop, so call it once at startup.
+   * @brief Turn back on displays left off: by a previous run, or by a stream that ended with the lid closed.
+   * @details Schedules the work on the main event loop. Does nothing while a virtual display is up, as
+   *          during a stream or a paused session: removing it turns the displays back on.
    */
   void recover_disabled_displays();
 

@@ -1238,15 +1238,19 @@ namespace platf::macos_virtual_display {
 
   void recover_disabled_displays() {
     dispatch_async(dispatch_get_main_queue(), ^{
+      // Not under state_mutex, which removing a display holds for seconds.
+      if (current_id.load() != kCGNullDirectDisplay) {
+        return;
+      }
       const auto ids = read_marker();
       if (ids.empty()) {
         return;
       }
       const auto [online, offline] = split_offline(ids);
       if (online.empty()) {
-        return;  // still offline; checked again at the next launch
+        return;  // still offline; checked again when the lid opens or at the next launch
       }
-      BOOST_LOG(warning) << "Virtual display: turning back on displays a previous run left off"sv;
+      BOOST_LOG(warning) << "Virtual display: turning back on displays that were left off"sv;
       if (turn_on(online)) {
         settle_marker(offline);
       } else {

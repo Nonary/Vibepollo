@@ -354,7 +354,8 @@ namespace platf {
       IONotificationPortRef port = nullptr;
       io_object_t notifier = IO_OBJECT_NULL;
       bool closed = false;
-      std::function<void()> handler;
+      std::function<void()> closed_handler;
+      std::function<void()> opened_handler;
     } lid_watch;
 
     void root_domain_message(void *, io_service_t, natural_t message, void *argument) {
@@ -367,9 +368,10 @@ namespace platf {
       const bool just_opened = !closed && lid_watch.closed;
       lid_watch.closed = closed;
       if (just_closed) {
-        lid_watch.handler();
+        lid_watch.closed_handler();
       } else if (just_opened) {
         BOOST_LOG(info) << "The lid was opened"sv;
+        lid_watch.opened_handler();
       }
     }
   }  // namespace
@@ -388,15 +390,16 @@ namespace platf {
     return closed;
   }
 
-  void on_lid_closed(std::function<void()> handler) {
+  void watch_lid(std::function<void()> closed, std::function<void()> opened) {
     static std::once_flag once;
-    std::call_once(once, [&handler]() {
+    std::call_once(once, [&closed, &opened]() {
       const io_service_t root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"));
       if (root == IO_OBJECT_NULL) {
         return;
       }
       lid_watch.closed = lid_closed();
-      lid_watch.handler = std::move(handler);
+      lid_watch.closed_handler = std::move(closed);
+      lid_watch.opened_handler = std::move(opened);
       lid_watch.port = IONotificationPortCreate(kIOMainPortDefault);
       IONotificationPortSetDispatchQueue(lid_watch.port, dispatch_queue_create("dev.vibepollo.lid", DISPATCH_QUEUE_SERIAL));
       if (IOServiceAddInterestNotification(lid_watch.port, root, kIOGeneralInterest, root_domain_message, nullptr, &lid_watch.notifier) != KERN_SUCCESS) {

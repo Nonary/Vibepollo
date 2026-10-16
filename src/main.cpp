@@ -1084,8 +1084,9 @@ int main(int argc, char *argv[]) {
   // By default, closing a MacBook's lid ends its streams and quits the app: a Mac usually sleeps
   // when its lid closes. With lid_close_ends_streams off, the lid alone changes nothing, and the
   // streams last as long as macOS or another utility keeps the Mac awake. Sleep is handled above
-  // either way.
-  platf::on_lid_closed([]() {
+  // either way. A stream that ends with the lid closed leaves the built-in display off until it
+  // opens, so it's turned back on then.
+  platf::watch_lid([]() {
     using platf::macos_display_policy::lid_close_action_e;
     const auto sessions = rtsp_stream::session_count();
     switch (platf::macos_display_policy::lid_close_action(config::sunshine.lid_close_ends_streams, sessions, proc::proc.running() > 0)) {
@@ -1106,7 +1107,8 @@ int main(int argc, char *argv[]) {
         }
         break;
     }
-  });
+  },
+                   platf::macos_virtual_display::recover_disabled_displays);
 
   // AppKit only delivers events on the main thread, so it waits here instead: the menu bar and
   // the virtual display's display configuration both depend on them.
