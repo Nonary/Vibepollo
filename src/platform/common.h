@@ -38,6 +38,7 @@
 extern "C" {
 #include <moonlight-common-c/src/Limelight.h>
 }
+#include "src/steam_controller_protocol.h"
 
 using namespace std::literals;
 
@@ -94,6 +95,20 @@ namespace platf {
   constexpr std::uint32_t PADDLE4 = 0x080000;
   constexpr std::uint32_t TOUCHPAD_BUTTON = 0x100000;
   constexpr std::uint32_t MISC_BUTTON = 0x200000;
+  // Moonlight extension (LI_CCAP_GRIP_SENSE): the Steam Controller (2026)'s capacitive
+  // grip sensors, "held" rather than pressed. Only the VHF Steam Controller profile
+  // consumes them; every other backend ignores the two bits.
+  constexpr std::uint32_t LEFT_GRIP_TOUCH = LEFT_GRIP_TOUCH_FLAG;
+  constexpr std::uint32_t RIGHT_GRIP_TOUCH = RIGHT_GRIP_TOUCH_FLAG;
+  // Moonlight extension (LI_CCAP_STICK_TOUCH): capacitive touch of the Steam Controller's
+  // sticks, held rather than pressed. Same consumer as the grips.
+  constexpr std::uint32_t LEFT_STICK_TOUCH = LEFT_STICK_TOUCH_FLAG;
+  constexpr std::uint32_t RIGHT_STICK_TOUCH = RIGHT_STICK_TOUCH_FLAG;
+  // LI_CCAP_SC26_BUTTONS: independent physical pad and trigger end-stop clicks.
+  constexpr std::uint32_t LEFT_PAD_CLICK = LEFT_PAD_CLICK_FLAG;
+  constexpr std::uint32_t RIGHT_PAD_CLICK = RIGHT_PAD_CLICK_FLAG;
+  constexpr std::uint32_t LEFT_TRIGGER_CLICK = LEFT_TRIGGER_CLICK_FLAG;
+  constexpr std::uint32_t RIGHT_TRIGGER_CLICK = RIGHT_TRIGGER_CLICK_FLAG;
 
   struct supported_gamepad_t {
     std::string name;
@@ -108,6 +123,8 @@ namespace platf {
     set_rgb_led,  ///< Set RGB LED
     set_adaptive_triggers,  ///< Set adaptive triggers
     haptics_pcm,  ///< 5 ms of 48 kHz S16LE stereo actuator samples
+    steam_haptic,  ///< A Steam Controller (2026) haptic output report, verbatim (Vibepollo extension)
+    steam_settings,  ///< A Steam Controller (2026) settings write, verbatim (Vibepollo extension)
   };
 
   struct gamepad_feedback_msg_t {
@@ -152,6 +169,36 @@ namespace platf {
       return msg;
     }
 
+    /**
+     * @brief A Steam Controller (2026) haptic output report for a client that has the real pads.
+     * @param length Bytes of `report` that carry the controller's report, its id included.
+     * @param report The report as the host wrote it: 0x80 rumble, 0x81 pulse, 0x82 command, ...
+     */
+    static gamepad_feedback_msg_t make_steam_haptic(std::uint16_t id, std::uint8_t length, const std::array<std::uint8_t, 12> &report) {
+      gamepad_feedback_msg_t msg;
+      msg.type = gamepad_feedback_e::steam_haptic;
+      msg.id = id;
+      msg.data.steam_haptic.length = length;
+      msg.data.steam_haptic.report = report;
+      return msg;
+    }
+
+    /**
+     * @brief A Steam Controller (2026) settings write for a client that drives the real controller.
+     * @param command 0x87 SET_SETTINGS_VALUES (1..9 triples) or 0x8E LOAD_DEFAULT_SETTINGS (none).
+     * @param count Triples valid in `triples`.
+     * @param triples `(id, lo, hi)` triples as Steam wrote them.
+     */
+    static gamepad_feedback_msg_t make_steam_settings(std::uint16_t id, std::uint8_t command, std::uint8_t count, const std::array<std::uint8_t, 27> &triples) {
+      gamepad_feedback_msg_t msg;
+      msg.type = gamepad_feedback_e::steam_settings;
+      msg.id = id;
+      msg.data.steam_settings.command = command;
+      msg.data.steam_settings.count = count;
+      msg.data.steam_settings.triples = triples;
+      return msg;
+    }
+
     gamepad_feedback_e type;
     std::uint16_t id;
 
@@ -189,10 +236,26 @@ namespace platf {
         std::array<uint8_t, 10> left;
         std::array<uint8_t, 10> right;
       } adaptive_triggers;
+
+      struct {
+        std::uint8_t length;
+        std::array<std::uint8_t, 12> report;
+      } steam_haptic;
+
+      struct {
+        std::uint8_t command;
+        std::uint8_t count;
+        std::array<std::uint8_t, 27> triples;
+      } steam_settings;
     } data;
   };
 
   using feedback_queue_t = safe::mail_raw_t::queue_t<gamepad_feedback_msg_t>;
+
+  // The verbatim payloads above are sized by literal so the tests/input harnesses can slice
+  // them standalone; the protocol header is the authority they must agree with.
+  static_assert(sizeof(gamepad_feedback_msg_t::data.steam_haptic.report) == STEAM_HAPTIC_REPORT_MAX);
+  static_assert(sizeof(gamepad_feedback_msg_t::data.steam_settings.triples) == STEAM_SETTINGS_PAYLOAD_SIZE);
 
   namespace speaker {
     enum speaker_e {
@@ -323,6 +386,9 @@ namespace platf {
     float x;
     float y;
     float pressure;
+    // Which physical touchpad the event belongs to (LI_CCAP_DUAL_TOUCHPAD clients send 0 and 1;
+    // everything else sends 0). Backends with a single pad ignore it.
+    std::uint8_t touchpadIndex;
   };
 
   struct gamepad_motion_t {

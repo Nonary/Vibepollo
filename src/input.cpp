@@ -1266,6 +1266,7 @@ namespace input {
       from_clamped_netfloat(packet->x, 0.0f, 1.0f),
       from_clamped_netfloat(packet->y, 0.0f, 1.0f),
       from_clamped_netfloat(packet->pressure, 0.0f, 1.0f),
+      packet->touchpadIndex,
     };
 
     platf::gamepad_touch(platf_input, touch);
@@ -1379,7 +1380,10 @@ namespace input {
     }
 
     std::uint16_t bf = packet->buttonFlags;
-    std::uint32_t bf2 = packet->buttonFlags2;
+    // buttonFlags2 is a `short` on the wire; the client masks the upper flags to 16 bits
+    // (LE16((short)(buttonFlags >> 16))), so a flag at bit 15 of it (0x80000000 overall)
+    // must not sign-extend into the lower half here.
+    std::uint32_t bf2 = static_cast<std::uint16_t>(packet->buttonFlags2);
     platf::gamepad_state_t gamepad_state {
       bf | (bf2 << 16),
       packet->leftTrigger,
@@ -1556,8 +1560,14 @@ namespace input {
       return batch_result_e::not_batchable;
     }
 
-    // Do not allow batching if the button state changes on this controller
-    if (dest->buttonFlags != src->buttonFlags || dest->buttonFlags2 != src->buttonFlags2) {
+    // Preserve trigger press/release edges as well as buttons. The virtual Steam
+    // Controller synthesizes an additional full-pull click at 0xF0. Coalescing
+    // across either boundary can erase a complete tap before the driver sees it.
+    if (dest->buttonFlags != src->buttonFlags || dest->buttonFlags2 != src->buttonFlags2 ||
+        (dest->leftTrigger == 0) != (src->leftTrigger == 0) ||
+        (dest->rightTrigger == 0) != (src->rightTrigger == 0) ||
+        (dest->leftTrigger >= 0xF0) != (src->leftTrigger >= 0xF0) ||
+        (dest->rightTrigger >= 0xF0) != (src->rightTrigger >= 0xF0)) {
       return batch_result_e::terminate_batch;
     }
 
@@ -1656,6 +1666,13 @@ namespace input {
     if (src->eventType != LI_TOUCH_EVENT_MOVE &&
         src->eventType != LI_TOUCH_EVENT_HOVER) {
       return batch_result_e::terminate_batch;
+    }
+
+    // Each physical pad is its own pointer space: a dual-touchpad Steam Controller
+    // client sends pointer id 0 on both pads, so a move on pad 1 must not replace
+    // the queued move on pad 0 (that froze the left pad under backlog).
+    if (dest->touchpadIndex != src->touchpadIndex) {
+      return batch_result_e::not_batchable;
     }
 
     // Batched events must be the same pointer ID
