@@ -320,8 +320,9 @@ public:
   /**
    * @brief Sets GPU scheduling priority for optimal capture performance under high GPU load.
    *
-   * Configures the process GPU scheduling priority to REALTIME. This is critical for maintaining
-   * capture performance when the GPU is under heavy load from games or other applications.
+   * Tries REALTIME, then HIGH if the first request fails (for example, when the
+   * interactive user's token lacks the privilege required for REALTIME).
+   * Priority boosts are optional; capture can continue at the existing priority.
    *
    * @return true if GPU priority was successfully set, false otherwise.
    */
@@ -338,18 +339,20 @@ public:
       return false;
     }
 
-    auto priority = static_cast<LONG>(D3DKMT_SchedulingPriorityClass::REALTIME);
+    for (const auto priority : {D3DKMT_SchedulingPriorityClass::REALTIME, D3DKMT_SchedulingPriorityClass::HIGH}) {
+      const auto priority_name = priority == D3DKMT_SchedulingPriorityClass::REALTIME ? "REALTIME" : "HIGH";
+      const LONG status = d3dkmt_set_process_priority(GetCurrentProcess(), static_cast<LONG>(priority));
+      if (status >= 0) {
+        BOOST_LOG(info) << "GPU scheduling priority set to " << priority_name << " for optimal capture performance";
+        _gpu_priority_set = true;
+        return true;
+      }
 
-    HRESULT hr = d3dkmt_set_process_priority(GetCurrentProcess(), priority);
-    if (FAILED(hr)) {
-      BOOST_LOG(warning) << "Failed to set GPU scheduling priority to REALTIME: " << hr
-                         << " (may require administrator privileges for optimal performance)";
-      return false;
+      BOOST_LOG(warning) << "Failed to set GPU scheduling priority to " << priority_name << ": " << status;
     }
 
-    BOOST_LOG(info) << "GPU scheduling priority set to REALTIME for optimal capture performance";
-    _gpu_priority_set = true;
-    return true;
+    BOOST_LOG(warning) << "GPU scheduling priority boost unavailable; continuing capture at the existing priority";
+    return false;
   }
 
   /**
@@ -375,14 +378,15 @@ public:
    * - MMCSS characteristics setup
    * - WinRT apartment initialization
    *
-   * DPI awareness is best-effort because Windows may have already selected it for the process.
+   * DPI awareness and GPU scheduling priority are best-effort. Windows may have
+   * already selected DPI awareness, and the user's token may deny GPU priority boosts.
    * @return true if all required initialization steps succeeded, false if any required step failed.
    */
   bool initialize_all() {
     bool success = true;
     initialize_dpi_awareness();
     success &= initialize_thread_priority();
-    success &= initialize_gpu_scheduling_priority();
+    initialize_gpu_scheduling_priority();
     success &= initialize_mmcss_characteristics();
     success &= initialize_winrt_apartment();
     return success;
