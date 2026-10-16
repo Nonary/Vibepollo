@@ -444,7 +444,10 @@ namespace platf::dxgi {
     sleep_overshoot_logger.reset();
 
     while (true) {
-      if (output_monitor && output_monitor->reinit_requested()) return capture_e::reinit;
+      if (output_monitor && output_monitor->reinit_requested()) {
+        BOOST_LOG(debug) << "Capture restart: source=output-monitor phase=before-snapshot monitor_id=" << output_monitor->diagnostic_id();
+        return capture_e::reinit;
+      }
 
       if (auto diag_now = std::chrono::steady_clock::now(); diag_now - pacing_diag_last_log >= 10s) {
         if (pacing_bust_woke_late || pacing_bust_snapshot_miss || pacing_phase_preserved || pacing_phase_reanchored) {
@@ -580,12 +583,16 @@ namespace platf::dxgi {
       }
 
       if (output_monitor && output_monitor->reinit_requested()) {
+        BOOST_LOG(debug) << "Capture restart: source=output-monitor phase=after-snapshot backend_status=" << static_cast<int>(status)
+                         << " monitor_id=" << output_monitor->diagnostic_id();
         release_snapshot();
         return capture_e::reinit;
       }
 
       switch (status) {
         case platf::capture_e::reinit:
+          BOOST_LOG(debug) << "Capture restart: source=backend phase=snapshot";
+          return status;
         case platf::capture_e::error:
         case platf::capture_e::interrupted:
           return status;
@@ -606,6 +613,9 @@ namespace platf::dxgi {
 
       status = release_snapshot();
       if (status != platf::capture_e::ok) {
+        if (status == platf::capture_e::reinit) {
+          BOOST_LOG(debug) << "Capture restart: source=backend phase=release-snapshot";
+        }
         return status;
       }
     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "src/platform/windows/display_helper_v2/types.h"
+#include "src/platform/windows/device_notification_diagnostics.h"
 #include "src/platform/windows/recovery_status.h"
 
 #include <atomic>
@@ -23,6 +24,7 @@ namespace display_helper::v2 {
     static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     void signal(DisplayEvent event);
+    void log_device_event(WPARAM event, LPARAM payload) noexcept;
     void cleanup_notifications();
     void thread_proc(std::stop_token st);
 
@@ -32,5 +34,6 @@ namespace display_helper::v2 {
     HPOWERNOTIFY power_cookie_ = nullptr;
     HDEVNOTIFY device_cookie_ = nullptr;
     display_helper::recovery_status::monitor_power_edge_policy monitor_power_policy_;
+    device_diagnostics::context_t device_diagnostics_;
   };
 }  // namespace display_helper::v2

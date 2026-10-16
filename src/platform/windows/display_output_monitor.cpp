@@ -29,6 +29,7 @@
 namespace platf::dxgi {
   using namespace std::chrono_literals;
   namespace {
+    std::atomic_uint64_t next_monitor_id {1};
     template<class T> using com_ptr = Microsoft::WRL::ComPtr<T>;
     struct output_sample_t {
       com_ptr<IDXGIFactory1> factory;
@@ -70,6 +71,7 @@ namespace platf::dxgi {
                                                      int offset_x, int offset_y, int env_width, int env_height):
       adapter_(adapter), output_(output), hdr_valid_(hdr_valid), hdr_(hdr),
       offset_x_(offset_x), offset_y_(offset_y), env_width_(env_width), env_height_(env_height),
+      diagnostic_id_(next_monitor_id.fetch_add(1, std::memory_order_relaxed)),
       worker_([this](std::stop_token stop) { run(stop); }) {}
 
   display_output_monitor_t::~display_output_monitor_t() {
@@ -107,7 +109,8 @@ namespace platf::dxgi {
           const auto notifications = notifications_;
           const auto monitor = output_.Monitor;
           const bool captured_hdr = hdr_;
-          if (controller.DispatcherQueue().TryEnqueue([subscription, notifications, monitor, captured_hdr, registration, messaging] {
+          const auto observation_id = diagnostic_id_;
+          if (controller.DispatcherQueue().TryEnqueue([subscription, notifications, monitor, captured_hdr, observation_id, registration, messaging] {
                 try {
                   constexpr GUID iid {0x7449121c, 0x382b, 0x4705, {0x8d, 0xa7, 0xa7, 0x95, 0xba, 0x48, 0x20, 0x13}};
                   auto factory = winrt::get_activation_factory<winrt::Windows::Graphics::Display::DisplayInformation>();
@@ -116,13 +119,17 @@ namespace platf::dxgi {
                   winrt::check_hresult(interop->GetForMonitor(monitor, winrt::guid_of<winrt::Windows::Graphics::Display::DisplayInformation>(), winrt::put_abi(subscription->info)));
                   // Older runtimes can expose DisplayInformation without the
                   // color API. Leave those runtimes on the DXGI polling fallback.
-                  const bool initial_hdr = subscription->info.GetAdvancedColorInfo().CurrentAdvancedColorKind() ==
-                    winrt::Windows::Graphics::Display::AdvancedColorKind::HighDynamicRange;
-                  const auto color_changed = [notifications, captured_hdr](auto const &sender) {
+                  const auto initial_kind = subscription->info.GetAdvancedColorInfo().CurrentAdvancedColorKind();
+                  const bool initial_hdr = initial_kind == winrt::Windows::Graphics::Display::AdvancedColorKind::HighDynamicRange;
+                  const auto color_changed = [notifications, captured_hdr, observation_id](auto const &sender) {
                     try {
-                      const bool hdr = sender.GetAdvancedColorInfo().CurrentAdvancedColorKind() ==
-                        winrt::Windows::Graphics::Display::AdvancedColorKind::HighDynamicRange;
-                      if (hdr != captured_hdr) notifications->reinit.store(true, std::memory_order_release);
+                      const auto kind = sender.GetAdvancedColorInfo().CurrentAdvancedColorKind();
+                      const bool hdr = kind == winrt::Windows::Graphics::Display::AdvancedColorKind::HighDynamicRange;
+                      if (hdr != captured_hdr && !notifications->reinit.exchange(true, std::memory_order_release)) {
+                        BOOST_LOG(debug) << "Capture restart request: source=output-monitor reason=winrt-color-event captured_hdr="
+                                         << captured_hdr << " observed_hdr=" << hdr << " observed_kind=" << static_cast<int>(kind)
+                                         << " monitor_id=" << observation_id;
+                      }
                     } catch (...) {
                       // Unknown color is not SDR; refresh the DXGI observation.
                     }
@@ -132,7 +139,11 @@ namespace platf::dxgi {
                   subscription->token = subscription->info.AdvancedColorInfoChanged(
                     [color_changed](auto const &sender, auto const &) { color_changed(sender); });
                   subscription->registered = true;
-                  if (initial_hdr != captured_hdr) notifications->reinit.store(true, std::memory_order_release);
+                  if (initial_hdr != captured_hdr && !notifications->reinit.exchange(true, std::memory_order_release)) {
+                    BOOST_LOG(debug) << "Capture restart request: source=output-monitor reason=winrt-initial-color captured_hdr="
+                                     << captured_hdr << " observed_hdr=" << initial_hdr << " observed_kind=" << static_cast<int>(initial_kind)
+                                     << " monitor_id=" << observation_id;
+                  }
                   registration->set_value(true);
                 } catch (...) { registration->set_value(false); }
               }) && ready.wait_for(2s) == std::future_status::ready) subscribed = ready.get();
@@ -140,7 +151,8 @@ namespace platf::dxgi {
       }
     } catch (...) { subscribed = false; }
 #endif
-    BOOST_LOG(debug) << "Display color monitoring: " << (subscribed ? "AdvancedColorInfoChanged events" : "background polling fallback");
+    BOOST_LOG(debug) << "Display color monitoring: " << (subscribed ? "AdvancedColorInfoChanged events" : "background polling fallback")
+                     << " monitor_id=" << diagnostic_id_;
     auto next_poll = std::chrono::steady_clock::time_point::min();
     std::optional<std::chrono::steady_clock::time_point> sample_failure_since;
     constexpr auto sample_retry_interval = 100ms;
@@ -150,11 +162,19 @@ namespace platf::dxgi {
       const auto now = std::chrono::steady_clock::now();
       const bool notified = notifications_->dirty.exchange(false, std::memory_order_acq_rel);
       const bool stale = last_sample && !last_sample->factory->IsCurrent();
+      const wgc_policy::desktop_bounds_t current_bounds {
+        GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
+        GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN)};
       const auto input_change = wgc_policy::assess_input_geometry(
         {offset_x_, offset_y_, env_width_, env_height_}, output_.DesktopCoordinates.left, output_.DesktopCoordinates.top,
-        {GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN)});
+        current_bounds);
       if (input_change == wgc_policy::input_geometry_change_e::changed) {
-        notifications_->reinit.store(true, std::memory_order_release);
+        if (!notifications_->reinit.exchange(true, std::memory_order_release)) {
+          BOOST_LOG(debug) << "Capture restart request: source=output-monitor reason=input-geometry captured="
+                           << offset_x_ << ',' << offset_y_ << ',' << env_width_ << ',' << env_height_
+                           << " observed_desktop=" << current_bounds.origin_x << ',' << current_bounds.origin_y
+                           << ',' << current_bounds.width << ',' << current_bounds.height << " monitor_id=" << diagnostic_id_;
+        }
         break;
       }
       if (notified || stale || ((!subscribed || sample_failure_since) && now >= next_poll)) {
@@ -173,7 +193,9 @@ namespace platf::dxgi {
           }
           if (failed_at - *sample_failure_since >= sample_failure_timeout) {
             BOOST_LOG(warning) << "Display output observation remained unavailable; requesting capture reinitialization.";
-            notifications_->reinit.store(true, std::memory_order_release);
+            if (!notifications_->reinit.exchange(true, std::memory_order_release)) {
+              BOOST_LOG(debug) << "Capture restart request: source=output-monitor reason=observation-timeout monitor_id=" << diagnostic_id_;
+            }
             break;
           }
           next_poll = failed_at + sample_retry_interval;
@@ -187,7 +209,16 @@ namespace platf::dxgi {
               a.left != sample->desc.DesktopCoordinates.left || a.top != sample->desc.DesktopCoordinates.top ||
               a.right != sample->desc.DesktopCoordinates.right || a.bottom != sample->desc.DesktopCoordinates.bottom ||
               sample->hdr_valid != hdr_valid_ || sample->hdr != hdr_) {
-            notifications_->reinit.store(true, std::memory_order_release);
+            if (!notifications_->reinit.exchange(true, std::memory_order_release)) {
+              const auto &b = sample->desc.DesktopCoordinates;
+              BOOST_LOG(debug) << "Capture restart request: source=output-monitor reason=output-state attached="
+                               << sample->desc.AttachedToDesktop << " monitor_changed=" << (sample->desc.Monitor != output_.Monitor)
+                               << " rotation=" << static_cast<int>(output_.Rotation) << "->" << static_cast<int>(sample->desc.Rotation)
+                               << " rect=" << a.left << ',' << a.top << ',' << a.right << ',' << a.bottom
+                               << "->" << b.left << ',' << b.top << ',' << b.right << ',' << b.bottom
+                               << " hdr_valid=" << hdr_valid_ << "->" << sample->hdr_valid << " hdr=" << hdr_ << "->" << sample->hdr
+                               << " monitor_id=" << diagnostic_id_;
+            }
             break;
           }
           last_sample = std::move(sample);

@@ -1,5 +1,9 @@
 #include "src/platform/windows/display_helper_v2/win_event_pump.h"
+#include "src/color_profile_policy.h"
+#include "src/logging.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <dbt.h>
 #include <powrprof.h>
 
@@ -10,6 +14,7 @@ namespace display_helper::v2 {
 
   void WinEventPump::start(Callback callback) {
     stop();
+    device_diagnostics_ = {};
     callback_ = std::move(callback);
     worker_ = std::jthread(&WinEventPump::thread_proc, this);
   }
@@ -50,8 +55,10 @@ namespace display_helper::v2 {
         break;
       case WM_DEVICECHANGE:
         if (wParam == DBT_DEVICEARRIVAL) {
+          self->log_device_event(wParam, lParam);
           self->signal(DisplayEvent::DeviceArrival);
         } else if (wParam == DBT_DEVICEREMOVECOMPLETE) {
+          self->log_device_event(wParam, lParam);
           self->signal(DisplayEvent::DeviceRemoval);
         } else if (wParam == DBT_DEVNODES_CHANGED) {
           self->signal(DisplayEvent::DisplayChange);
@@ -86,6 +93,73 @@ namespace display_helper::v2 {
   void WinEventPump::signal(DisplayEvent event) {
     if (callback_) {
       callback_(event);
+    }
+  }
+
+  void WinEventPump::log_device_event(WPARAM event, LPARAM payload) noexcept {
+    try {
+      const auto admitted = device_diagnostics_.admit(device_diagnostics::context_t::clock::now());
+      if (!admitted) return;
+      const char *type = "missing", *state = "missing", *interface_class = "n/a", *family = "unknown";
+      std::string model = "unknown";
+      unsigned identity = 0;
+      DWORD type_id = 0xffffffff;
+      const auto *header = reinterpret_cast<const DEV_BROADCAST_HDR *>(payload);
+      // The OS owns the payload for this callback. Validate its declared bounds
+      // before inspecting a variant or its variable-length UTF-16 name.
+      if (header) {
+        state = "invalid";
+        if (header->dbch_size >= sizeof(DEV_BROADCAST_HDR) && header->dbch_size <= 65536) {
+          state = "valid";
+          type_id = header->dbch_devicetype;
+          const auto bounded_name = [&](const wchar_t *name, std::size_t offset) -> std::wstring_view {
+            if (header->dbch_size < offset + sizeof(wchar_t)) { state = "invalid"; return {}; }
+            const auto count = std::min<std::size_t>((header->dbch_size - offset) / sizeof(wchar_t), device_diagnostics::context_t::max_name + 1);
+            const auto end = std::find(name, name + count, L'\0');
+            if (end == name + count) { state = "unterminated-or-long"; return {}; }
+            return {name, static_cast<std::size_t>(end - name)};
+          };
+          switch (header->dbch_devicetype) {
+            case DBT_DEVTYP_DEVICEINTERFACE:
+              type = "interface";
+              if (header->dbch_size >= offsetof(DEV_BROADCAST_DEVICEINTERFACE_W, dbcc_name) + sizeof(wchar_t)) {
+                const auto *item = reinterpret_cast<const DEV_BROADCAST_DEVICEINTERFACE_W *>(header);
+                const bool monitor = item->dbcc_classguid == kMonitorInterfaceGuid;
+                interface_class = monitor ? "monitor" : "other";
+                const auto name = bounded_name(item->dbcc_name, offsetof(DEV_BROADCAST_DEVICEINTERFACE_W, dbcc_name));
+                identity = device_diagnostics_.identity(monitor ? L'M' : L'I', name);
+                if (monitor && !name.empty()) {
+                  model = device_diagnostics::monitor_model(name);
+                  family = color_profile_policy::is_sunshine_driver_monitor_path(name) ? "managed-virtual" : "other";
+                }
+              } else { state = "invalid"; }
+              break;
+            case DBT_DEVTYP_PORT:
+              type = "port";
+              if (header->dbch_size >= offsetof(DEV_BROADCAST_PORT_W, dbcp_name) + sizeof(wchar_t)) {
+                const auto *item = reinterpret_cast<const DEV_BROADCAST_PORT_W *>(header);
+                identity = device_diagnostics_.identity(L'P', bounded_name(item->dbcp_name, offsetof(DEV_BROADCAST_PORT_W, dbcp_name)));
+              } else { state = "invalid"; }
+              break;
+            case DBT_DEVTYP_VOLUME:
+              type = "volume";
+              if (header->dbch_size >= sizeof(DEV_BROADCAST_VOLUME)) {
+                const auto *item = reinterpret_cast<const DEV_BROADCAST_VOLUME *>(header);
+                identity = device_diagnostics_.identity(L'V', std::to_wstring(item->dbcv_unitmask));
+              } else { state = "invalid"; }
+              break;
+            default:
+              type = "other";
+              break;
+          }
+        }
+      }
+      BOOST_LOG(debug) << "Display notification: event=" << (event == DBT_DEVICEARRIVAL ? "arrival" : "removal")
+                       << " type=" << type << " type_id=" << type_id << " class=" << interface_class << " family=" << family
+                       << " model=" << model << " identity=" << identity << " payload=" << state
+                       << " suppressed=" << *admitted;
+    } catch (...) {
+      // Diagnostics must never prevent the existing event from being routed.
     }
   }
 

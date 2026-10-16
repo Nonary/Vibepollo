@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -19,6 +20,7 @@ namespace platf::dxgi {
     bool reinit_requested() const {
       return notifications_->reinit.load(std::memory_order_acquire);
     }
+    std::uint64_t diagnostic_id() const { return diagnostic_id_; }
 
   private:
     void run(std::stop_token stop);
@@ -26,6 +28,7 @@ namespace platf::dxgi {
     const DXGI_OUTPUT_DESC output_;
     const bool hdr_valid_, hdr_;
     const int offset_x_, offset_y_, env_width_, env_height_;
+    const std::uint64_t diagnostic_id_;
     struct notifications_t {
       std::atomic_bool dirty {true};
       std::atomic_bool reinit {false};
