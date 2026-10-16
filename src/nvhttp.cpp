@@ -2353,7 +2353,14 @@ namespace nvhttp {
       };
       const auto parse_state = [](nlohmann::json &tree) -> std::optional<parsed_state_t> {
         try {
-          if (!state_policy::normalize_snapshot(tree)) return std::nullopt;
+          // Named records retain their UUID, permission mask and client commands;
+          // a matching legacy alias must never create another authorized client.
+          if (!state_policy::normalize_snapshot(tree, [](const std::string &pem) {
+                return exact_certificate_identity(crypto::x509(pem));
+              })) {
+            BOOST_LOG(error) << "Vibepollo pairing state contains invalid or duplicate client certificates.";
+            return std::nullopt;
+          }
           const auto &root = tree["root"];
           client_t client;
           client.remote_display_layout_json = root.value("remote_display_layout", client.remote_display_layout_json);

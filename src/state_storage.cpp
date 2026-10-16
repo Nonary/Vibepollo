@@ -132,27 +132,16 @@ namespace statefile {
     }
 
     bool valid_primary_snapshot(const pt::ptree &tree, bool allow_bootstrap) {
-      if (!nvhttp::state_policy::valid_primary_tree(tree, allow_bootstrap)) return false;
-      std::set<std::string> identities;
-      const auto certificate = [&identities](const std::string &pem) {
+      auto normalized = tree;
+      const auto certificate = [](const std::string &pem) -> std::optional<std::string> {
         auto parsed = crypto::x509(pem);
-        return parsed && identities.insert(crypto::pem(parsed)).second;
+        if (!parsed) {
+          return std::nullopt;
+        }
+        return crypto::pem(parsed);
       };
-      if (const auto devices = tree.get_child_optional("root.named_devices")) {
-        for (const auto &[key, device] : *devices) {
-          if (!certificate(device.get<std::string>("cert"))) return false;
-        }
-      }
-      if (const auto devices = tree.get_child_optional("root.devices")) {
-        for (const auto &[key, device] : *devices) {
-          if (const auto certs = device.get_child_optional("certs")) {
-            for (const auto &[cert_key, cert] : *certs) {
-              if (!certificate(cert.get_value<std::string>())) return false;
-            }
-          }
-        }
-      }
-      return true;
+      return policy::normalize_legacy_pairing_state(normalized, certificate) &&
+             nvhttp::state_policy::valid_primary_tree(normalized, allow_bootstrap);
     }
 
     bool is_auxiliary_state(const std::string &path) {
@@ -173,10 +162,27 @@ namespace statefile {
 
     policy_load_result_e load_tree_for_update(const fs::path &path, pt::ptree &out) {
       if (is_primary_state_path(path.string())) {
-        return policy::load_primary_state_for_update(sunshine_state_path(), out, read_state_file,
-          [](const std::string &target, const std::string &contents) {
-            return file_handler::write_file(target.c_str(), contents) == 0;
-          }, valid_primary_snapshot, nvhttp::state_policy::valid_primary_json);
+        const auto &primary_path = sunshine_state_path();
+        std::string failure_reason;
+        const auto result = policy::load_primary_state_for_update(primary_path, out, read_state_file, [](const std::string &target, const std::string &contents) {
+          return file_handler::write_file(target.c_str(), contents) == 0;
+        },
+                                                                  valid_primary_snapshot,
+                                                                  [](const std::string &contents) {
+                                                                    return nvhttp::state_policy::valid_primary_json_with_certificates(contents, [](const std::string &pem) -> std::optional<std::string> {
+                                                                      auto parsed = crypto::x509(pem);
+                                                                      if (!parsed) {
+                                                                        return std::nullopt;
+                                                                      }
+                                                                      return crypto::pem(parsed);
+                                                                    });
+                                                                  },
+                                                                  &failure_reason);
+        if (result == policy::load_result_e::failed) {
+          BOOST_LOG(error) << "statefile: could not select pairing state " << primary_path
+                           << " or recovery copy " << primary_path + ".bak" << ": " << failure_reason;
+        }
+        return result;
       }
       if (is_auxiliary_state(path.string())) {
         return load_auxiliary_state(path.string(), out);

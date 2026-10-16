@@ -57,7 +57,7 @@ namespace nvhttp::state_policy {
 
   // Old property-tree writers encode empty arrays as "". Normalize only those
   // known containers; preserve every Apollo permission, command and unknown key.
-  inline bool normalize_snapshot(nlohmann::json &tree) {
+  inline bool normalize_snapshot(nlohmann::json &tree, const statefile::policy::certificate_identity_t &certificate_identity = {}) {
     if (!tree.is_object() || !tree.contains("root") || !tree["root"].is_object()) return false;
     auto &root = tree["root"];
     if (!root.contains("uniqueid") || !root["uniqueid"].is_string() || !valid_uuid(root["uniqueid"])) return false;
@@ -70,14 +70,21 @@ namespace nvhttp::state_policy {
     };
     std::unordered_set<std::string> uuids;
     std::unordered_set<std::string> certs;
+    const auto identity = [&](const nlohmann::json &certificate) -> std::optional<std::string> {
+      const auto &pem = certificate.get_ref<const std::string &>();
+      return certificate_identity ? certificate_identity(pem) : std::make_optional(pem);
+    };
     if (root.contains("named_devices")) {
       auto &devices = root["named_devices"];
       if (!array(devices) || devices.size() > 256) return false;
       for (auto &device : devices) {
-        if (!device.is_object() || !device.contains("uuid") || !device["uuid"].is_string() ||
-            !valid_uuid(device["uuid"]) || !uuids.insert(device["uuid"]).second ||
-            !device.contains("cert") || !device["cert"].is_string() || device["cert"].get_ref<const std::string &>().empty() ||
-            device["cert"].get_ref<const std::string &>().size() > 65536 || !certs.insert(device["cert"]).second) return false;
+        if (!device.is_object() || !device.contains("uuid") || !device["uuid"].is_string() || !valid_uuid(device["uuid"]) || !uuids.insert(device["uuid"]).second || !device.contains("cert") || !device["cert"].is_string() || device["cert"].get_ref<const std::string &>().empty() || device["cert"].get_ref<const std::string &>().size() > 65536) {
+          return false;
+        }
+        const auto certificate = identity(device["cert"]);
+        if (!certificate || certificate->empty() || !certs.insert(*certificate).second) {
+          return false;
+        }
         if (device.contains("perm") && !permission(device["perm"])) return false;
         if (device.contains("enabled") && !boolean(device["enabled"])) return false;
         if (device.contains("enabled") && device["enabled"].is_number_integer()) device["enabled"] = device["enabled"] == 1;
@@ -110,13 +117,29 @@ namespace nvhttp::state_policy {
     if (root.contains("devices")) {
       if (!array(root["devices"])) return false;
       std::size_t legacy_count = uuids.size();
+      std::unordered_set<std::string> legacy_certs;
       for (auto &device : root["devices"]) {
         if (!device.is_object()) return false;
         if (!device.contains("certs")) continue;
         if (!array(device["certs"])) return false;
-        for (const auto &cert : device["certs"]) {
-          if (++legacy_count > 256 || !cert.is_string() || cert.get_ref<const std::string &>().empty() ||
-              cert.get_ref<const std::string &>().size() > 65536 || !certs.insert(cert).second) return false;
+        for (auto it = device["certs"].begin(); it != device["certs"].end();) {
+          if (!it->is_string() || it->get_ref<const std::string &>().empty() || it->get_ref<const std::string &>().size() > 65536) {
+            return false;
+          }
+          const auto certificate = identity(*it);
+          if (!certificate || certificate->empty()) {
+            return false;
+          }
+          // Old writers retained a legacy copy after importing this named
+          // record. Keep its Apollo permissions and commands authoritative.
+          if (certs.contains(*certificate)) {
+            it = device["certs"].erase(it);
+          } else {
+            if (++legacy_count > 256 || !legacy_certs.insert(*certificate).second) {
+              return false;
+            }
+            ++it;
+          }
         }
       }
     }
@@ -126,15 +149,19 @@ namespace nvhttp::state_policy {
   // The shared property-tree policy validates structure and certificates, but
   // erases scalar types. Check the original JSON before choosing a recovery
   // snapshot so a typed-parser failure cannot bypass a usable backup.
-  inline bool valid_primary_json(const std::string &contents) {
+  inline bool valid_primary_json_with_certificates(const std::string &contents, const statefile::policy::certificate_identity_t &certificate_identity) {
     try {
       auto typed = nlohmann::json::parse(contents);
       if (!typed.is_object()) return false;
       if (!typed.contains("root") || !typed["root"].is_object() || !typed["root"].contains("uniqueid")) return true;
-      return normalize_snapshot(typed);
+      return normalize_snapshot(typed, certificate_identity);
     } catch (...) {
       return false;
     }
+  }
+
+  inline bool valid_primary_json(const std::string &contents) {
+    return valid_primary_json_with_certificates(contents, {});
   }
 
   // Restore only the timestamp type lost by property-tree serialization. The

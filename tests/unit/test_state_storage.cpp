@@ -473,6 +473,161 @@ namespace {
       [&store](const std::string &path) { return store.read(path); },
       [&store](const std::string &path, const std::string &contents) { return store.write(path, contents); }, policy::valid_primary_state);
   }
+
+  // Synthetic certificate encodings of the same identity exercise selection
+  // independently of OpenSSL. Production callers canonicalize parsed X.509.
+  std::optional<std::string> certificate_identity(const std::string &certificate) {
+    if (certificate == "certificate" || certificate == "alternate-encoding") {
+      return "same-client";
+    }
+    if (certificate == "legacy-only") {
+      return "other-client";
+    }
+    return std::nullopt;
+  }
+
+  bool valid_migrated_primary(const pt::ptree &tree, bool allow_bootstrap) {
+    auto normalized = tree;
+    return policy::normalize_legacy_pairing_state(normalized, certificate_identity) &&
+           policy::valid_primary_state(normalized, allow_bootstrap);
+  }
+
+  pt::ptree with_legacy_alias(memory_state_store_t &store) {
+    store.files["shared.json"] = paired_snapshot;
+    pt::ptree tree;
+    EXPECT_EQ(load_for_read(store, "shared.json", tree), policy::load_result_e::loaded);
+    pt::ptree legacy, device, certs, cert;
+    cert.put_value("alternate-encoding");
+    certs.push_back({"", cert});
+    device.put("uniqueid", "old-client-id");
+    device.put_child("certs", certs);
+    legacy.push_back({"", device});
+    tree.put_child("root.devices", legacy);
+    tree.get_child("root.named_devices").front().second.put("hdr_profile", "preserved-profile");
+    return tree;
+  }
+}  // namespace
+
+TEST(StateStorageLegacyPairing, NamedRecordKeepsIdentityRevocationAndSettings) {
+  memory_state_store_t store;
+  auto tree = with_legacy_alias(store);
+  const auto named = tree.get_child("root.named_devices");
+  const auto identity = tree.get<std::string>("root.uniqueid");
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(tree, certificate_identity));
+  EXPECT_EQ(tree.get_child("root.named_devices"), named);
+  EXPECT_EQ(tree.get<std::string>("root.uniqueid"), identity);
+  EXPECT_TRUE(tree.get_child("root.devices").front().second.get_child("certs").empty());
+  EXPECT_FALSE(tree.get_child("root.named_devices").front().second.get<bool>("enabled"));
+  EXPECT_EQ(tree.get_child("root.api_tokens").front().second.get<std::string>("hash"), "token");
+}
+
+TEST(StateStorageLegacyPairing, UpgradeSelectsCurrentSnapshotWithoutChangingDurableFiles) {
+  memory_state_store_t store;
+  const auto tree = with_legacy_alias(store);
+  write_atomic(store, "shared.json", tree);
+  // A stale recovery snapshot must not re-enable the named record.
+  auto stale = tree;
+  stale.get_child("root.named_devices").front().second.put("enabled", true);
+  write_atomic(store, "shared.json.bak", stale);
+  const auto original = store.files;
+  pt::ptree selected;
+  ASSERT_EQ(policy::load_primary_state_for_update("shared.json", selected, [&store](const std::string &path) {
+              return store.read(path);
+            },
+                                                  [&store](const std::string &path, const std::string &contents) {
+                                                    return store.write(path, contents);
+                                                  },
+                                                  valid_migrated_primary),
+            policy::load_result_e::loaded);
+  EXPECT_EQ(selected, tree);
+  EXPECT_EQ(store.files, original);
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(selected, certificate_identity));
+  EXPECT_FALSE(selected.get_child("root.named_devices").front().second.get<bool>("enabled"));
+}
+
+TEST(StateStorageLegacyPairing, LegacyOnlyClientsRemainAvailableForImport) {
+  memory_state_store_t store;
+  auto tree = with_legacy_alias(store);
+  pt::ptree cert;
+  cert.put_value("legacy-only");
+  tree.get_child("root.devices").front().second.get_child("certs").push_back({"", cert});
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(tree, certificate_identity));
+  const auto &certs = tree.get_child("root.devices").front().second.get_child("certs");
+  ASSERT_EQ(certs.size(), 1U);
+  EXPECT_EQ(certs.front().second.get_value<std::string>(), "legacy-only");
+  EXPECT_TRUE(policy::valid_primary_state(tree, false));
+}
+
+TEST(StateStorageLegacyPairing, RecoveryRestoresLegacySnapshotWithNamedRevocationIntact) {
+  memory_state_store_t store;
+  const auto tree = with_legacy_alias(store);
+  write_atomic(store, "shared.json.bak", tree);
+  const auto backup = store.files["shared.json.bak"];
+  store.files["shared.json"] = "broken";
+  pt::ptree selected;
+  ASSERT_EQ(policy::load_primary_state_for_update("shared.json", selected, [&store](const std::string &path) {
+              return store.read(path);
+            },
+                                                  [&store](const std::string &path, const std::string &contents) {
+                                                    return store.write(path, contents);
+                                                  },
+                                                  valid_migrated_primary),
+            policy::load_result_e::loaded);
+  EXPECT_EQ(store.files["shared.json"], backup);
+  EXPECT_EQ(store.files["shared.json.bak"], backup);
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(selected, certificate_identity));
+  EXPECT_FALSE(selected.get_child("root.named_devices").front().second.get<bool>("enabled"));
+}
+
+TEST(StateStorageLegacyPairing, AmbiguousNamedRecordsAndInvalidCertificatesFailWithoutMutation) {
+  for (int scenario = 0; scenario < 5; ++scenario) {
+    memory_state_store_t store;
+    auto tree = with_legacy_alias(store);
+    if (scenario == 0) {
+      auto duplicate = tree.get_child("root.named_devices").front().second;
+      duplicate.put("uuid", "33333333-3333-3333-3333-333333333333");
+      duplicate.put("enabled", true);
+      tree.get_child("root.named_devices").push_back({"", duplicate});
+    } else if (scenario == 1) {
+      tree.get_child("root.devices").front().second.get_child("certs").front().second.put_value("invalid");
+    } else if (scenario == 2) {
+      tree.get_child("root.named_devices").front().second.put("cert", "invalid");
+    } else if (scenario == 3) {
+      auto &certs = tree.get_child("root.devices").front().second.get_child("certs");
+      auto cert = certs.front().second;
+      certs.clear();
+      certs.push_back({"malformed-object-key", cert});
+    } else {
+      pt::ptree cert;
+      cert.put_value("invalid");
+      // The valid alias is removed in the working copy before this failure.
+      tree.get_child("root.devices").front().second.get_child("certs").push_back({"", cert});
+    }
+    const auto original = tree;
+    EXPECT_FALSE(policy::normalize_legacy_pairing_state(tree, certificate_identity));
+    EXPECT_EQ(tree, original);
+  }
+}
+
+TEST(StateStoragePrimary, FailureDiagnosticsDistinguishCorruptionAndRecoveryWriteFailure) {
+  memory_state_store_t store;
+  store.files["shared.json"] = "broken";
+  pt::ptree tree;
+  std::string reason;
+  const auto read = [&store](const std::string &path) {
+    return store.read(path);
+  };
+  const auto refuse_write = [](const std::string &, const std::string &) {
+    return false;
+  };
+  EXPECT_EQ(policy::load_primary_state_for_update("shared.json", tree, read, refuse_write, policy::valid_primary_state, {}, &reason), policy::load_result_e::failed);
+  EXPECT_EQ(reason, "primary: blank or malformed JSON; recovery: missing");
+  store.files["shared.json.bak"] = paired_snapshot;
+  EXPECT_EQ(policy::load_primary_state_for_update("shared.json", tree, read, refuse_write, policy::valid_primary_state, {}, &reason), policy::load_result_e::failed);
+  EXPECT_EQ(reason, "could not restore the validated recovery snapshot");
+  EXPECT_TRUE(tree.empty());
+  EXPECT_EQ(store.files["shared.json"], "broken");
+  EXPECT_EQ(store.files["shared.json.bak"], paired_snapshot);
 }
 
 TEST(StateStoragePrimary, SharedMetadataUpdateRecoversIdentityAndAuthorization) {

@@ -228,6 +228,52 @@ namespace statefile::policy {
     return load_result_e::loaded;
   }
 
+  bool normalize_legacy_pairing_state(pt::ptree &tree, const certificate_identity_t &certificate_identity) {
+    if (!certificate_identity) {
+      return false;
+    }
+    auto normalized = tree;
+    try {
+      std::set<std::string> named_identities;
+      if (const auto devices = normalized.get_child_optional("root.named_devices")) {
+        for (const auto &[key, device] : *devices) {
+          const auto identity = certificate_identity(device.get<std::string>("cert"));
+          if (!identity || identity->empty() || !named_identities.insert(*identity).second) {
+            return false;
+          }
+        }
+      }
+      std::set<std::string> legacy_identities;
+      if (auto devices = normalized.get_child_optional("root.devices")) {
+        for (auto &[key, device] : *devices) {
+          if (auto certs = device.get_child_optional("certs")) {
+            for (auto it = certs->begin(); it != certs->end();) {
+              if (!it->first.empty() || !it->second.empty() || it->second.data().empty() || it->second.data().size() > 65536) {
+                return false;
+              }
+              const auto identity = certificate_identity(it->second.get_value<std::string>());
+              if (!identity || identity->empty()) {
+                return false;
+              }
+              if (named_identities.contains(*identity)) {
+                it = certs->erase(it);
+              } else {
+                if (!legacy_identities.insert(*identity).second) {
+                  return false;
+                }
+                ++it;
+              }
+            }
+          }
+        }
+      }
+    } catch (const std::exception &) {
+      return false;
+    }
+    tree = std::move(normalized);
+    return true;
+  }
+
   bool valid_primary_state(const pt::ptree &tree, bool allow_bootstrap) {
     const auto object = [](const pt::ptree &node) {
       if (!node.data().empty()) return false;
@@ -306,15 +352,50 @@ namespace statefile::policy {
   }
 
   load_result_e load_primary_state_for_update(
-    const std::string &path, pt::ptree &tree, const read_file_t &read_file,
-    const write_file_t &write_file, const validate_primary_t &validate,
-    const std::function<bool(const std::string &)> &validate_json) {
-    tree = {};
-    if (path.empty() || !read_file) return load_result_e::failed;
+    const std::string &path,
+    pt::ptree &tree,
+    const read_file_t &read_file,
+    const write_file_t &write_file,
+    const validate_primary_t &validate,
+    const std::function<bool(const std::string &)> &validate_json,
+    std::string *failure_reason
+  ) {
+    if (failure_reason) {
+      failure_reason->clear();
+    }
+    const auto fail = [&](const std::string &reason) {
+      tree = {};
+      if (failure_reason) {
+        *failure_reason = reason;
+      }
+      return load_result_e::failed;
+    };
+    const auto describe = [](load_result_e status) {
+      switch (status) {
+        case load_result_e::loaded:
+          return "invalid pairing snapshot";
+        case load_result_e::missing:
+          return "missing";
+        case load_result_e::corrupt:
+          return "blank or malformed JSON";
+        case load_result_e::failed:
+          return "inspection or read failed";
+      }
+      return "unknown";
+    };
+    if (path.empty() || !read_file) {
+      return fail("primary path or reader is unavailable");
+    }
     const auto primary_file = read_file(path);
-    const auto primary_status = load_json_for_read(path, tree,
-      [&primary_file](const std::string &) { return primary_file; });
-    if (primary_status == load_result_e::failed || !validate || !write_file) return load_result_e::failed;
+    const auto primary_status = load_json_for_read(path, tree, [&primary_file](const std::string &) {
+      return primary_file;
+    });
+    if (primary_status == load_result_e::failed) {
+      return fail("primary inspection or read failed");
+    }
+    if (!validate || !write_file) {
+      return fail("state recovery callbacks are unavailable");
+    }
     const auto backup_file = read_file(path + ".bak");
     pt::ptree backup;
     const auto backup_status = load_json_for_read(path + ".bak", backup,
@@ -327,15 +408,20 @@ namespace statefile::policy {
     if (primary_status == load_result_e::loaded && validate(tree, true) && !validate(tree, false)) {
       // A valid explicit credential/bootstrap decision must not be silently
       // replaced by older credentials just because its host identity is absent.
-      tree = {};
-      return load_result_e::failed;
+      return fail("primary has no host identity and conflicts with the recovery snapshot; refusing credential rollback");
     }
     tree = {};
     if (primary_status == load_result_e::missing && backup_status == load_result_e::missing) return load_result_e::missing;
-    if (backup_status != load_result_e::loaded || !backup_json_valid || !validate(backup, false)) return load_result_e::failed;
-    if (!write_file(path, backup_file.contents)) return load_result_e::failed;
+    if (backup_status != load_result_e::loaded || !backup_json_valid || !validate(backup, false)) {
+      return fail(std::string("primary: ") + describe(primary_status) + "; recovery: " + describe(backup_status));
+    }
+    if (!write_file(path, backup_file.contents)) {
+      return fail("could not restore the validated recovery snapshot");
+    }
     const auto restored = read_file(path);
-    if (restored.status != read_status_e::loaded || restored.contents != backup_file.contents) return load_result_e::failed;
+    if (restored.status != read_status_e::loaded || restored.contents != backup_file.contents) {
+      return fail("restored recovery snapshot failed read-back verification");
+    }
     tree = std::move(backup);
     return load_result_e::loaded;
   }

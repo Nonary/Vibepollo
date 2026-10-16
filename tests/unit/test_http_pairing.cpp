@@ -329,6 +329,45 @@ TEST(PairedStateRecovery, RetainsApolloPermissionsCommandsAndSharedState) {
   EXPECT_EQ(nlohmann::json::parse(snapshot.dump()), original);
 }
 
+TEST(PairedStateRecovery, LegacyAliasPreservesNamedUuidRevocationPermissionsAndCommands) {
+  auto snapshot = paired_snapshot();
+  auto &client = snapshot["root"]["named_devices"][0];
+  client["perm"] = 0;
+  client["enabled"] = false;
+  const auto named = snapshot["root"]["named_devices"];
+  snapshot["root"]["devices"] = {{{"uniqueid", "old-id"}, {"certs", {"certificate"}}}};
+  ASSERT_TRUE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  EXPECT_EQ(snapshot["root"]["named_devices"], named);
+  EXPECT_TRUE(snapshot["root"]["devices"][0]["certs"].empty());
+  EXPECT_EQ(snapshot["root"]["api_tokens"][0]["hash"], "token");
+  EXPECT_EQ(snapshot["root"]["uniqueid"], "11111111-1111-1111-1111-111111111111");
+}
+
+TEST(PairedStateRecovery, CanonicalLegacyAliasRetainsTypedPolicyAndDistinctLegacyClient) {
+  const auto identity = [](const std::string &pem) -> std::optional<std::string> {
+    if (pem == "certificate" || pem == "alternate-encoding") {
+      return "same-client";
+    }
+    if (pem == "legacy-only") {
+      return "other-client";
+    }
+    return std::nullopt;
+  };
+  auto snapshot = paired_snapshot();
+  const auto named = snapshot["root"]["named_devices"];
+  snapshot["root"]["devices"] = {{{"certs", {"alternate-encoding", "legacy-only"}}}};
+  EXPECT_TRUE(nvhttp::state_policy::valid_primary_json_with_certificates(snapshot.dump(), identity));
+  ASSERT_TRUE(nvhttp::state_policy::normalize_snapshot(snapshot, identity));
+  EXPECT_EQ(snapshot["root"]["named_devices"], named);
+  EXPECT_EQ(snapshot["root"]["devices"][0]["certs"], nlohmann::json::array({"legacy-only"}));
+  snapshot["root"]["named_devices"][0]["perm"] = -1;
+  EXPECT_FALSE(nvhttp::state_policy::valid_primary_json_with_certificates(snapshot.dump(), identity));
+  snapshot["root"]["named_devices"][0] = named[0];
+  snapshot["root"]["named_devices"].push_back(named[0]);
+  snapshot["root"]["named_devices"][1]["uuid"] = "33333333-3333-3333-3333-333333333333";
+  EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot, identity));
+}
+
 TEST(PairedStateRecovery, RejectsMalformedPermissionRatherThanGrantingDefault) {
   for (const auto &invalid : {nlohmann::json("bad"), nlohmann::json(-1), nlohmann::json(4294967296ULL), nlohmann::json::object()}) {
     auto snapshot = paired_snapshot();

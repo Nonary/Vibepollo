@@ -5,8 +5,8 @@
 #pragma once
 
 #include <boost/property_tree/ptree_fwd.hpp>
-
 #include <functional>
+#include <optional>
 #include <string>
 
 namespace statefile::policy {
@@ -71,6 +71,19 @@ namespace statefile::policy {
 
   using validate_primary_t = std::function<bool(const boost::property_tree::ptree &, bool allow_bootstrap)>;
 
+  using certificate_identity_t = std::function<std::optional<std::string>(const std::string &)>;
+
+  /** Older writers retained root.devices after importing its certificates into
+   * named_devices. Remove only those legacy aliases from an in-memory snapshot;
+   * the named record retains its UUID, enabled policy and all client settings.
+   * Invalid certificates and duplicate named identities still fail closed.
+   * Failure leaves the supplied snapshot unchanged.
+   */
+  bool normalize_legacy_pairing_state(
+    boost::property_tree::ptree &tree,
+    const certificate_identity_t &certificate_identity
+  );
+
   /** Structural validation shared by primary reads and writes. */
   bool valid_primary_state(const boost::property_tree::ptree &tree, bool allow_bootstrap);
 
@@ -84,7 +97,9 @@ namespace statefile::policy {
     const read_file_t &read_file,
     const write_file_t &write_file,
     const validate_primary_t &validate,
-    const std::function<bool(const std::string &)> &validate_json = {});
+    const std::function<bool(const std::string &)> &validate_json = {},
+    std::string *failure_reason = nullptr
+  );
 
   /** Never let an incomplete metadata/bootstrap write replace an existing identity. */
   bool primary_write_allowed(
