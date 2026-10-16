@@ -11,7 +11,8 @@ $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($source,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw ($errors | Out-String)}
 foreach($statement in $ast.EndBlock.Statements) {
- if($statement -is [Management.Automation.Language.FunctionDefinitionAst]){break}
+ # Helpers may precede package constants. Load every top-level assignment,
+ # while leaving the installer entry point and all trust/install calls inert.
  if($statement -is [Management.Automation.Language.AssignmentStatementAst]){. ([scriptblock]::Create($statement.Extent.Text))}
 }
 foreach($fn in $ast.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst]},$false)) {
