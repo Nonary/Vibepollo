@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <cctype>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -228,19 +229,32 @@ namespace statefile::policy {
     return load_result_e::loaded;
   }
 
-  bool normalize_legacy_pairing_state(pt::ptree &tree, const certificate_identity_t &certificate_identity) {
-    if (!certificate_identity) {
+  bool normalize_legacy_pairing_state(pt::ptree &tree, const certificate_identity_t &certificate_identity, std::string *failure_reason) {
+    if (failure_reason) failure_reason->clear();
+    const auto fail = [&](const std::string &reason) {
+      if (failure_reason) *failure_reason = reason;
       return false;
+    };
+    if (!certificate_identity) {
+      return fail("certificate validation is unavailable");
     }
     auto normalized = tree;
     try {
-      std::set<std::string> named_identities;
+      std::map<std::string, std::size_t> named_identities;
       if (const auto devices = normalized.get_child_optional("root.named_devices")) {
+        std::size_t index = 0;
         for (const auto &[key, device] : *devices) {
           const auto identity = certificate_identity(device.get<std::string>("cert"));
-          if (!identity || identity->empty() || !named_identities.insert(*identity).second) {
-            return false;
+          const auto field = "root.named_devices[" + std::to_string(index) + "].cert";
+          if (!identity || identity->empty()) {
+            return fail(field + " is invalid");
           }
+          const auto [previous, inserted] = named_identities.emplace(*identity, index);
+          if (!inserted) {
+            return fail(field + " duplicates root.named_devices[" + std::to_string(previous->second) +
+                        "].cert; distinct pairing records require administrator reconciliation");
+          }
+          ++index;
         }
       }
       std::set<std::string> legacy_identities;
@@ -249,17 +263,17 @@ namespace statefile::policy {
           if (auto certs = device.get_child_optional("certs")) {
             for (auto it = certs->begin(); it != certs->end();) {
               if (!it->first.empty() || !it->second.empty() || it->second.data().empty() || it->second.data().size() > 65536) {
-                return false;
+                return fail("invalid legacy certificate record");
               }
               const auto identity = certificate_identity(it->second.get_value<std::string>());
               if (!identity || identity->empty()) {
-                return false;
+                return fail("invalid legacy certificate identity");
               }
               if (named_identities.contains(*identity)) {
                 it = certs->erase(it);
               } else {
                 if (!legacy_identities.insert(*identity).second) {
-                  return false;
+                  return fail("duplicate legacy certificate identity");
                 }
                 ++it;
               }
@@ -268,7 +282,7 @@ namespace statefile::policy {
         }
       }
     } catch (const std::exception &) {
-      return false;
+      return fail("malformed certificate records");
     }
     tree = std::move(normalized);
     return true;
@@ -358,7 +372,8 @@ namespace statefile::policy {
     const write_file_t &write_file,
     const validate_primary_t &validate,
     const std::function<bool(const std::string &)> &validate_json,
-    std::string *failure_reason
+    std::string *failure_reason,
+    const primary_diagnostic_t &diagnostic
   ) {
     if (failure_reason) {
       failure_reason->clear();
@@ -370,9 +385,13 @@ namespace statefile::policy {
       }
       return load_result_e::failed;
     };
-    const auto describe = [](load_result_e status) {
+    const auto describe = [&diagnostic](load_result_e status, const pt::ptree &snapshot) -> std::string {
       switch (status) {
         case load_result_e::loaded:
+          if (diagnostic) {
+            const auto reason = diagnostic(snapshot);
+            if (!reason.empty()) return reason;
+          }
           return "invalid pairing snapshot";
         case load_result_e::missing:
           return "missing";
@@ -410,10 +429,17 @@ namespace statefile::policy {
       // replaced by older credentials just because its host identity is absent.
       return fail("primary has no host identity and conflicts with the recovery snapshot; refusing credential rollback");
     }
+    if (primary_status == load_result_e::loaded) {
+      // A readable snapshot can contain newer revocations, credentials or
+      // pairings even when its identities are ambiguous or otherwise invalid.
+      // There is no safe basis for replacing those decisions with an older copy.
+      return fail("primary: " + describe(primary_status, tree) +
+                  "; refusing recovery snapshot to avoid authorization rollback");
+    }
     tree = {};
     if (primary_status == load_result_e::missing && backup_status == load_result_e::missing) return load_result_e::missing;
     if (backup_status != load_result_e::loaded || !backup_json_valid || !validate(backup, false)) {
-      return fail(std::string("primary: ") + describe(primary_status) + "; recovery: " + describe(backup_status));
+      return fail(std::string("primary: ") + describe(primary_status, tree) + "; recovery: " + describe(backup_status, backup));
     }
     if (!write_file(path, backup_file.contents)) {
       return fail("could not restore the validated recovery snapshot");

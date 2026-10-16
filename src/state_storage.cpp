@@ -131,17 +131,23 @@ namespace statefile {
         (path == vibeshine_state_path() && share_state_file()));
     }
 
+    std::optional<std::string> primary_certificate_identity(const std::string &pem) {
+      auto parsed = crypto::x509(pem);
+      if (!parsed) return std::nullopt;
+      return crypto::pem(parsed);
+    }
+
     bool valid_primary_snapshot(const pt::ptree &tree, bool allow_bootstrap) {
       auto normalized = tree;
-      const auto certificate = [](const std::string &pem) -> std::optional<std::string> {
-        auto parsed = crypto::x509(pem);
-        if (!parsed) {
-          return std::nullopt;
-        }
-        return crypto::pem(parsed);
-      };
-      return policy::normalize_legacy_pairing_state(normalized, certificate) &&
+      return policy::normalize_legacy_pairing_state(normalized, primary_certificate_identity) &&
              nvhttp::state_policy::valid_primary_tree(normalized, allow_bootstrap);
+    }
+
+    std::string primary_snapshot_diagnostic(const pt::ptree &tree) {
+      auto normalized = tree;
+      std::string reason;
+      (void) policy::normalize_legacy_pairing_state(normalized, primary_certificate_identity, &reason);
+      return reason;
     }
 
     bool is_auxiliary_state(const std::string &path) {
@@ -169,15 +175,10 @@ namespace statefile {
         },
                                                                   valid_primary_snapshot,
                                                                   [](const std::string &contents) {
-                                                                    return nvhttp::state_policy::valid_primary_json_with_certificates(contents, [](const std::string &pem) -> std::optional<std::string> {
-                                                                      auto parsed = crypto::x509(pem);
-                                                                      if (!parsed) {
-                                                                        return std::nullopt;
-                                                                      }
-                                                                      return crypto::pem(parsed);
-                                                                    });
+                                                                    return nvhttp::state_policy::valid_primary_json_with_certificates(contents, primary_certificate_identity);
                                                                   },
-                                                                  &failure_reason);
+                                                                  &failure_reason,
+                                                                  primary_snapshot_diagnostic);
         if (result == policy::load_result_e::failed) {
           BOOST_LOG(error) << "statefile: could not select pairing state " << primary_path
                            << " or recovery copy " << primary_path + ".bak" << ": " << failure_reason;
