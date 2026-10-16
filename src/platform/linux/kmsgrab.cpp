@@ -942,6 +942,7 @@ namespace platf {
             auto monitor = pos->crtc_to_monitor.find(plane->crtc_id);
             if (monitor != std::end(pos->crtc_to_monitor)) {
               auto &viewport = monitor->second.viewport;
+              input_output_name = viewport.output_name;
 
               width = viewport.width;
               height = viewport.height;
@@ -2520,6 +2521,7 @@ namespace platf {
       }
 
       auto &monitor_descriptor = *candidates.front();
+      monitor_descriptor.viewport.output_name = std::string(name);
       monitor_descriptor.viewport.offset_x = monitor->viewport.offset_x;
       monitor_descriptor.viewport.offset_y = monitor->viewport.offset_y;
       monitor_descriptor.viewport.logical_width = monitor->viewport.logical_width;

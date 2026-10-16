@@ -2,6 +2,7 @@
 
 #include "vibepollo-session-protocol.h"
 #include "vibepollo-session-stream-environment.h"
+#include "vibepollo-touch-map-policy.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -1273,7 +1274,7 @@ static int execute_request(int argc, char **argv,
                            gid_t service_gid) {
   if (argc < 2) return 2;
   enum operation {
-    DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_OBSERVE, DISPLAY_POWER, DISPLAY_WAKE, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
+    DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_OBSERVE, DISPLAY_POWER, DISPLAY_WAKE, TOUCH_MAP, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
     AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS, MANAGED_FOCUS,
     PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, APP, APP_WAYLAND_HDR
   } operation;
@@ -1297,6 +1298,8 @@ static int execute_request(int argc, char **argv,
 #endif
   else if (!strcmp(argv[1], "display-power") && argc == 2) operation = DISPLAY_POWER;
   else if (!strcmp(argv[1], "display-wake") && argc == 2) operation = DISPLAY_WAKE;
+  else if (!strcmp(argv[1], "touch-map") && argc == 4 &&
+           touch_map_arguments_are_safe(argv[2], argv[3])) operation = TOUCH_MAP;
   else if (!strcmp(argv[1], "display-apply") && display_apply_arguments_are_safe(argc, argv)) operation = DISPLAY_APPLY;
   else if (!strcmp(argv[1], "audio-get-default") && argc == 2) operation = AUDIO_GET_DEFAULT;
   else if (!strcmp(argv[1], "audio-list-sinks") && argc == 2) operation = AUDIO_LIST_SINKS;
@@ -1351,6 +1354,11 @@ static int execute_request(int argc, char **argv,
   }
 
   switch (operation) {
+    case TOUCH_MAP: {
+      char *const arguments[] = {"vibepollo-touch-map", argv[2], argv[3], NULL};
+      execv("/usr/libexec/vibeshine/vibepollo-touch-map", arguments);
+      break;
+    }
     case DISPLAY_POWER:
     case DISPLAY_WAKE: {
       char *const arguments[] = {"vibepollo-display-power",

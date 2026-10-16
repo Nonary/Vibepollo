@@ -905,6 +905,27 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
     add_test(NAME test_component_linux_session_exec_policy COMMAND test_linux_session_exec_policy)
     set_tests_properties(test_component_linux_session_exec_policy PROPERTIES LABELS "component")
 
+    add_executable(test_linux_touch_map_wait
+        "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_touch_map_wait.cpp")
+    target_link_libraries(test_linux_touch_map_wait PRIVATE PkgConfig::TEST_GIO Threads::Threads)
+    add_test(NAME test_component_linux_touch_map_wait COMMAND test_linux_touch_map_wait)
+    set_tests_properties(test_component_linux_touch_map_wait PROPERTIES LABELS "component" TIMEOUT 5)
+
+    pkg_check_modules(TEST_TOUCH_WAYLAND IMPORTED_TARGET wayland-client wayland-server)
+    if(TEST_TOUCH_WAYLAND_FOUND)
+        add_executable(test_linux_touch_output
+            "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_touch_output.c")
+        target_link_libraries(test_linux_touch_output PRIVATE PkgConfig::TEST_TOUCH_WAYLAND PkgConfig::TEST_GIO Threads::Threads)
+        add_test(NAME test_component_linux_touch_output COMMAND test_linux_touch_output)
+        set_tests_properties(test_component_linux_touch_output PROPERTIES LABELS "component" TIMEOUT 5)
+    endif()
+
+    add_executable(test_linux_touch_map
+        "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_touch_map.c")
+    target_link_libraries(test_linux_touch_map PRIVATE PkgConfig::TEST_GIO)
+    add_test(NAME test_component_linux_touch_map COMMAND test_linux_touch_map)
+    set_tests_properties(test_component_linux_touch_map PROPERTIES LABELS "component" TIMEOUT 15)
+
     add_executable(test_linux_display_power
         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_display_power.c")
     target_link_libraries(test_linux_display_power PRIVATE PkgConfig::TEST_GIO)

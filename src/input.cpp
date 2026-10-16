@@ -1127,7 +1127,10 @@ namespace input {
       touch_port.offset_x,
       touch_port.offset_y,
       static_cast<int>(monitor_logical_w),
-      static_cast<int>(monitor_logical_h)
+      static_cast<int>(monitor_logical_h),
+      0,
+      0,
+      touch_port.output_name,
     };
   }
 

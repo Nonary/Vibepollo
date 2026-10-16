@@ -276,6 +276,7 @@ namespace platf {
     int offset_x, offset_y;
     int width, height;
     int logical_width, logical_height;
+    std::string output_name; // Compositor connector for native touch association.
   };
 
   // These values must match Limelight-internal.h's SS_FF_* constants!
@@ -691,6 +692,7 @@ namespace platf {
 
     int width, height;
     int logical_width, logical_height;
+    std::string input_output_name;
 
   protected:
     // collect capture timing data (at loglevel debug)

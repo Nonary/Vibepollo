@@ -88,6 +88,7 @@ class ArchiveTests(unittest.TestCase):
             members = deploy.inspect_archive(archive, VERSION)
         self.assertIn('usr/libexec/vibeshine/vibepollo-display-power', members)
         self.assertIn('usr/libexec/vibeshine/vibepollo-display-observer', members)
+        self.assertIn('usr/libexec/vibeshine/vibepollo-touch-map', members)
 
     def test_missing_recovery_helper_fails_preflight(self):
         with package(omit=['usr/libexec/vibeshine/vibepollo-display-power']) as archive:
@@ -104,6 +105,11 @@ class ArchiveTests(unittest.TestCase):
         with package([tarfile.TarInfo(name) for name in deploy.OPTIONAL]) as archive:
             self.assertTrue(deploy.OPTIONAL <= deploy.inspect_archive(archive, VERSION).keys())
         self.assertFalse(deploy.allowed('usr/share/icons/hicolor/scalable/apps/unrelated.svg'))
+
+    def test_missing_touch_mapping_helper_fails_preflight(self):
+        with package(omit=['usr/libexec/vibeshine/vibepollo-touch-map']) as archive:
+            with self.assertRaises(deploy.DeployError):
+                deploy.inspect_archive(archive, VERSION)
 
     def test_paths_special_files_links_duplicates_and_symlink_parents(self):
         entries = []
@@ -129,6 +135,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(deploy.install_mode('usr/libexec/vibeshine/vibepollo-host', 0o7777), 0o750)
         self.assertEqual(deploy.install_mode('usr/libexec/vibeshine/vibepollo-session-broker', 0o7777), 0o700)
         self.assertEqual(deploy.install_mode('usr/libexec/vibeshine/vibepollo-display-observer', 0o4777), 0o755)
+        self.assertEqual(deploy.install_mode('usr/libexec/vibeshine/vibepollo-touch-map', 0o4777), 0o755)
         self.assertEqual(deploy.install_mode('usr/lib/libvibeshine-kwin-gpu.so'), 0o4755)
 
 

@@ -23,7 +23,12 @@ struct controller_packet {
 using PNV_MULTI_CONTROLLER_PACKET = controller_packet *;
 namespace platf {
   struct gamepad_id_t { int globalIndex; uint8_t clientRelativeIndex; };
-  struct gamepad_arrival_t {};
+  struct gamepad_arrival_t {
+    uint8_t type;
+    uint16_t capabilities;
+    uint32_t supportedButtons;
+    bool persist_after_disconnect = false;
+  };
   int alloc_gamepad(int, gamepad_id_t, gamepad_arrival_t, int) { return 0; }
 }
 int alloc_id(std::bitset<16> &mask) {
@@ -296,7 +301,7 @@ def main():
     parser.add_argument('--source', type=Path, default=ROOT / 'src/input.cpp')
     args = parser.parse_args()
     source = args.source.read_text()
-    prelude = production_prelude(source).replace('std::list<int> input_queue;', 'std::list<std::vector<uint8_t>> input_queue;\n  std::atomic_bool input_queue_task_scheduled {false};\n  int feedback_queue = 0;')
+    prelude = production_prelude(source).replace('std::list<int> input_queue;', 'std::list<std::vector<uint8_t>> input_queue;\n  std::atomic_bool input_queue_task_scheduled {false};\n  int feedback_queue = 0;\n  bool persist_gamepads = false;')
     prelude = prelude.replace('void push(std::function<void()> f) { tasks.push_back(std::move(f)); }',
                               'template<class F, class... A> void push(F f, A... a) { tasks.push_back([=] { f(a...); }); }')
     prelude = prelude.replace('constexpr int KEY_UP_EVENT_MAGIC = 2;', 'constexpr int KEY_UP_EVENT_MAGIC = 0x04;')

@@ -112,12 +112,20 @@ else()
         set_target_properties(vibepollo_session_broker PROPERTIES OUTPUT_NAME "vibepollo-session-broker")
         target_include_directories(vibepollo_session_broker PRIVATE "${LIBCAP_INCLUDE_DIRS}")
         target_link_libraries(vibepollo_session_broker PRIVATE "${LIBCAP_LIBRARIES}")
+        add_executable(vibepollo_touch_map
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-touch-map.c")
+        set_target_properties(vibepollo_touch_map PROPERTIES OUTPUT_NAME "vibepollo-touch-map")
+        target_include_directories(vibepollo_touch_map PRIVATE ${GIO_INCLUDE_DIRS})
+        target_link_libraries(vibepollo_touch_map PRIVATE ${GIO_LIBRARIES})
         add_executable(vibepollo_display_power
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-display-power.c")
         set_target_properties(vibepollo_display_power PROPERTIES OUTPUT_NAME "vibepollo-display-power")
         target_include_directories(vibepollo_display_power PRIVATE ${GIO_INCLUDE_DIRS})
         target_link_libraries(vibepollo_display_power PRIVATE ${GIO_LIBRARIES})
         if(WAYLAND_FOUND)
+            target_compile_definitions(vibepollo_touch_map PRIVATE VIBEPOLLO_HAVE_WAYLAND_TOUCH_MAP=1)
+            target_include_directories(vibepollo_touch_map PRIVATE ${WAYLAND_INCLUDE_DIRS})
+            target_link_libraries(vibepollo_touch_map PRIVATE ${WAYLAND_LIBRARIES})
             add_executable(vibepollo_display_observer
                     "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-display-observer.c"
                     "${CMAKE_BINARY_DIR}/generated-src/dpms.c")
@@ -203,7 +211,7 @@ else()
                 DESTINATION "${CMAKE_INSTALL_DATADIR}/libalpm/hooks")
         install(TARGETS vibepollo_session_exec vibepollo_app_supervisor
                 vibepollo_profile_import vibepollo_kwin_session_environment
-                vibepollo_provider_scan vibepollo_steam_launch vibepollo_display_power vibepollo_app_focus
+                vibepollo_provider_scan vibepollo_steam_launch vibepollo_display_power vibepollo_app_focus vibepollo_touch_map
                 RUNTIME DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
         if(TARGET vibepollo_display_observer)
             install(TARGETS vibepollo_display_observer
@@ -344,6 +352,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-session-exec"
             "%attr(0700,root,root) %caps(cap_kill,cap_setgid,cap_setuid+p) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-session-broker"
             "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-app-supervisor"
+            "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-touch-map"
             "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-steam-launch"
             "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-app-focus"
             "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-kwin-session-environment"
