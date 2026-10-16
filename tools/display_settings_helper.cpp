@@ -3415,31 +3415,34 @@ namespace {
     bool quiet_period(
       std::chrono::milliseconds duration = 750ms,
       std::chrono::milliseconds interval = 150ms,
-      std::stop_token st = {}
+      std::stop_token st = {},
+      const display_device::DisplaySettingsSnapshot *expected = nullptr,
+      const std::function<bool()> &cancelled = [] { return false; }
     ) {
       display_device::DisplaySettingsSnapshot base;
-      if (!read_stable_snapshot(base, 2000ms, 150ms, st)) {
+      if (cancelled() || !read_stable_snapshot(base, 2000ms, 150ms, st) || cancelled() ||
+          (expected && !equal_snapshots_strict(base, *expected))) {
         return false;
       }
       auto t0 = std::chrono::steady_clock::now();
       while (std::chrono::steady_clock::now() - t0 < duration) {
-        if (st.stop_possible() && st.stop_requested()) {
+        if (cancelled() || (st.stop_possible() && st.stop_requested())) {
           return false;
         }
         display_device::DisplaySettingsSnapshot cur;
         if (!read_stable_snapshot(cur, 2000ms, 150ms, st)) {
           return false;
         }
-        if (!(cur == base)) {
+        if (expected ? !equal_snapshots_strict(cur, *expected) : !(cur == base)) {
           // topology changed during quiet period
           return false;
         }
-        if (st.stop_possible() && st.stop_requested()) {
+        if (cancelled() || (st.stop_possible() && st.stop_requested())) {
           return false;
         }
         std::this_thread::sleep_for(interval);
       }
-      return true;
+      return !cancelled();
     }
 
     void signal_restore_event(
@@ -3753,9 +3756,11 @@ namespace {
       }
 
       bool preserve_live = false;
+      std::optional<display_device::DisplaySettingsSnapshot> preserved_session_baseline;
       if (preserve_active_physical_primary.load(std::memory_order_acquire) &&
           !always_restore_from_golden.load(std::memory_order_acquire)) {
         if (auto live = controller.live_desktop_to_preserve(base_loaded->snapshot)) {
+          preserved_session_baseline = base_loaded->snapshot;
           base_loaded->snapshot = std::move(*live);
           base_loaded->has_layout_data = false;
           base_loaded->layout_rotations.clear();
@@ -3787,7 +3792,25 @@ namespace {
           return false;
         }
         const bool layout_ok = !require_layout_match || controller.current_layout_matches(base_layouts);
-        const bool ok = got_stable && equal_snapshots_strict(cur, base) && layout_ok && quiet_period(750ms, 150ms, st);
+        const bool state_ok = got_stable && equal_snapshots_strict(cur, base) && layout_ok;
+        // Preservation must stay equal to the physical candidate throughout
+        // the quiet period, rather than accepting a different stable desktop
+        // that arrives before quiet_period establishes its own baseline.
+        bool ok = state_ok && (preserve_live ?
+                                quiet_period(750ms, 150ms, st, &base, should_cancel) :
+                                quiet_period(750ms, 150ms, st));
+        if (ok && preserve_live) {
+          if (!preserved_session_baseline || should_cancel()) {
+            return false;
+          }
+          // Enumeration/intent can change even when snapshot values do not.
+          // Recheck the original session baseline and physical-only eligibility
+          // immediately before publishing successful preservation.
+          const auto live = controller.live_desktop_to_preserve(*preserved_session_baseline);
+          ok = live && equal_snapshots_strict(*live, base) &&
+               preserve_active_physical_primary.load(std::memory_order_acquire) &&
+               !always_restore_from_golden.load(std::memory_order_acquire) && !should_cancel();
+        }
         if (ok) {
           BOOST_LOG(info) << "Session restore (" << (label ? label : "session")
                           << "): current state already matches baseline; skipping apply.";

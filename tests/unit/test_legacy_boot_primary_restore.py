@@ -160,7 +160,9 @@ struct DisplayController {
   layout_rotation_map_t live_rotations;
   std::vector<Snapshot> applied;
   mutable int captures = 0;
+  mutable int enumerations = 0;
   std::function<void(int)> on_capture;
+  std::function<void(int)> on_enumerate;
   bool enumeration_known = true;
   Snapshot snapshot() const {
     ++captures;
@@ -178,6 +180,8 @@ struct DisplayController {
   }
   auto enumerate_nonempty_devices_known(display_device::DeviceEnumerationDetail) const
       -> std::optional<display_device::EnumeratedDeviceList> {
+    ++enumerations;
+    if (on_enumerate) on_enumerate(enumerations);
     if (!enumeration_known || devices.empty()) return std::nullopt;
     return devices;
   }
@@ -300,6 +304,49 @@ void invalid_saved_topology(const fs::path &root) {
   assert(contents(f.state.session_current_path) == "current-marker");
   assert(contents(f.state.session_previous_path) == "previous-marker");
 }
+void late_preservation_transition(const fs::path &root, const std::string &kind) {
+  Fixture f(root, kind);
+  configure_boot(f.state);
+  const bool previous = kind == "late_virtual_previous";
+  f.save(f.state.session_current_path, previous ? snapshot({"MISSING"}) : snapshot({"B", "C"}), "current-marker");
+  f.save(f.state.session_previous_path, previous ? snapshot({"B", "C"}) : snapshot({"MISSING"}), "previous-marker");
+  const auto add_virtual = [&] {
+    f.state.controller.devices.push_back({"V", "DISPLAY_V", "Sunshine Virtual Display", {}, 1});
+  };
+  f.state.controller.on_capture = [&](int capture) {
+    // Capture 5 is the first quiet-period read, after the expected desktop
+    // already passed the initial two stable reads. This is the review repro.
+    if (capture == 5) {
+      if (kind == "late_virtual" || kind == "late_virtual_previous") {
+        f.state.controller.live = snapshot({"A", "B", "C", "V"});
+        f.state.controller.live.m_primary_device = "V";
+        add_virtual();
+      } else if (kind == "late_physical") {
+        f.state.controller.live.m_modes["A"] = 120;
+      } else if (kind == "late_cancel") {
+        f.state.restore_cancel_generation.store(8);
+      } else if (kind == "late_stop") {
+        f.state.restore_requested.store(false);
+      } else if (kind == "late_golden") {
+        f.state.always_restore_from_golden.store(true);
+      }
+    }
+    // Capture 13 is the completion eligibility read after the quiet interval.
+    if (capture == 13 && kind == "late_exclusion") {
+      f.state.controller.exclusions = {" a "};
+    }
+  };
+  f.state.controller.on_enumerate = [&](int enumeration) {
+    if (enumeration == 2) {
+      if (kind == "virtual_during_revalidation") add_virtual();
+      else if (kind == "cancel_during_revalidation") f.state.restore_cancel_generation.store(8);
+    }
+  };
+  assert(!f.run());
+  assert(f.state.controller.applied.empty());
+  assert(contents(f.state.session_current_path) == "current-marker");
+  assert(contents(f.state.session_previous_path) == "previous-marker");
+}
 void exact_restore_control(const fs::path &root, const std::string &kind) {
   Fixture f(root, kind);
   configure_boot(f.state);
@@ -357,6 +404,7 @@ int main(int argc, char **argv) {
   else if (name == "drift") drift_or_cancel(root, false);
   else if (name == "cancel") drift_or_cancel(root, true);
   else if (name == "invalid_saved") invalid_saved_topology(root);
+  else if (name.starts_with("late_") || name.ends_with("_during_revalidation")) late_preservation_transition(root, name);
   else exact_restore_control(root, name);
   std::cout << name << ": pass\n";
 }
@@ -365,7 +413,9 @@ int main(int argc, char **argv) {
 cases = ["boot_current", "boot_previous", "drift", "cancel", "invalid_saved", "ordinary", "exclusive",
          "golden", "golden_missing", "excluded", "primary_in_baseline", "dummy",
          "partial_baseline", "virtual", "virtual_primary", "unknown_enumeration",
-         "missing_primary_mode", "inactive_primary", "invalid_live"]
+         "missing_primary_mode", "inactive_primary", "invalid_live", "late_virtual",
+         "late_virtual_previous", "late_physical", "late_cancel", "late_stop", "late_golden",
+         "late_exclusion", "virtual_during_revalidation", "cancel_during_revalidation"]
 if args.cases:
     selected = args.cases.split(",")
     if any(name not in cases for name in selected):
