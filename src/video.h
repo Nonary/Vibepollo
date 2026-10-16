@@ -9,6 +9,7 @@
 #include "platform/common.h"
 #include "pyrowave_policy.h"
 #include "video_policy.h"
+#include "video_capture_source.h"
 #include "thread_safe.h"
 #include "video_colorspace.h"
 
@@ -26,13 +27,6 @@ extern "C" {
 struct AVPacket;
 
 namespace video {
-  enum class capture_source_e : std::uint8_t {
-    active_output,
-    exact_output,
-    synthetic_black,
-  };
-
-
   /* Encoding configuration requested by remote client */
   struct config_t {
     // DO NOT CHANGE ORDER OR ADD FIELDS IN THE MIDDLE!!!!!
@@ -75,9 +69,9 @@ namespace video {
 
     int encodingFramerate = 0;  // Requested display framerate
     bool input_only = false;
-    // Capture ownership is session-local. Exact remote outputs must not fall
-    // back through the mutable process-wide output selection, while input-only
-    // sessions use an in-memory black producer and never initialize capture.
+    // Capture selection is session-local; normal game clients share a producer.
+    // Exact remote outputs bypass mutable process-wide output selection.
+    // Input-only sessions use an in-memory black producer without desktop capture.
     capture_source_e capture_source {capture_source_e::active_output};
     std::optional<std::string> capture_output;
     // Opt into the smallest supported host-side queues for a launch-qualified VRR

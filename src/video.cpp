@@ -1800,6 +1800,7 @@ namespace video {
   void end_capture_async(capture_thread_async_ctx_t &ctx);
 
   // Keep a reference counter to ensure the capture thread only runs when other threads have a reference to the capture thread
+  auto capture_thread_async = safe::make_shared<capture_thread_async_ctx_t>(start_capture_async, end_capture_async);
   auto capture_thread_sync = safe::make_shared<capture_thread_sync_ctx_t>(start_capture_sync, end_capture_sync);
 
 #ifdef _WIN32
@@ -6298,22 +6299,28 @@ namespace video {
     auto shutdown_event = mail->event<bool>(mail::shutdown);
 
     auto images = std::make_shared<img_event_t::element_type>();
-    // A capture worker belongs to the session's source key. The former shared
-    // worker selected its first context's display for every later context,
-    // which made a second Remote Monitor silently capture the wrong output.
-    capture_thread_async_ctx_t source_ctx {};
-    if (start_capture_async(source_ctx) != 0) {
+    // DXGI allows only one duplication per process/output. Normal mirror
+    // clients must share that producer, including WGC's secure-desktop fallback.
+    // Exact Remote Monitor outputs and synthetic Input stay session-local.
+    capture_source_lease_t source {
+      config.capture_source,
+      capture_thread_async,
+      start_capture_async,
+      end_capture_async
+    };
+    if (!source.get()) {
       return;
     }
-    auto stop_source = util::fail_guard([&]() {
-      end_capture_async(source_ctx);
-    });
+    auto &source_ctx = *source.get();
     auto lg = util::fail_guard([&]() {
       images->stop();
       shutdown_event->raise(true);
     });
 
-    source_ctx.capture_ctx_queue->raise(capture_ctx_t {images, config});
+    if (!source_ctx.capture_ctx_queue->try_raise(capture_ctx_t {images, config})) {
+      BOOST_LOG(error) << "Shared capture session queue is full or stopped; rejecting the session."sv;
+      return;
+    }
 
     if (!source_ctx.capture_ctx_queue->running()) {
       return;
