@@ -619,18 +619,32 @@ for unsafe_output in \
 done
 
 # A manager that acknowledges stop but keeps the exact unit active cannot make
-# cleanup succeed; the overall deadline still bounds retries.
-mock_reset_app_state
-mock_app_default_output=$'vibepollo-app-42-606.service loaded active running wedged\n'
-mock_app_list_outputs=()
-mock_stopped_units=()
-mock_stop_effective=0
-cleanup_started=$SECONDS
-if stop_session_generation_apps desktop 1000 1000 /run/user/1000 42 "$((SECONDS + 1))"; then
-  fail_test 'cleanup accepted a unit that remained active after stop'
-fi
-((SECONDS - cleanup_started <= 2)) || fail_test 'wedged application cleanup exceeded its total deadline'
-((${#mock_stopped_units[@]} == 1)) || fail_test 'wedged application stop was retried instead of polled'
+# cleanup succeed. Advance a virtual clock at each polling sleep so scheduler
+# delays cannot consume the entire budget before the first stop request. Real
+# command deadlines remain covered by test_session_command_timeout.sh below.
+(
+  mock_reset_app_state
+  mock_app_default_output=$'vibepollo-app-42-606.service loaded active running wedged\n'
+  mock_app_list_outputs=()
+  mock_stopped_units=()
+  mock_stop_effective=0
+  polling_definition=$(declare -f stop_session_generation_apps)
+  [[ "$polling_definition" == *'/usr/bin/sleep 0.1'* ]] || fail_test 'cleanup polling sleep not found'
+  polling_definition=${polling_definition/\/usr\/bin\/sleep 0.1/advance_cleanup_clock}
+  [[ "$polling_definition" != *'/usr/bin/sleep 0.1'* ]] || fail_test 'multiple cleanup polling sleeps found'
+  eval "$polling_definition"
+  # Unsetting SECONDS removes Bash's wall-clock behavior in this subshell only.
+  unset SECONDS
+  SECONDS=0
+  advance_cleanup_clock() { ((SECONDS += 1)); }
+  if stop_session_generation_apps desktop 1000 1000 /run/user/1000 42 3; then
+    fail_test 'cleanup accepted a unit that remained active after stop'
+  fi
+  ((SECONDS == 3)) || fail_test 'wedged application cleanup did not honor its deadline'
+  ((${#mock_stopped_units[@]} == 1)) || fail_test 'wedged application stop was retried instead of polled'
+  mock_list_count=$(<"$mock_app_list_counter")
+  ((mock_list_count == 3)) || fail_test 'wedged application was not polled until the deadline'
+) || fail_test 'wedged application cleanup regression'
 
 for supported in plasmalogin plasmalogin-autologin sddm sddm-autologin; do
   desktop_service_supported "$supported" || fail_test "desktop login service $supported was rejected"
