@@ -43,9 +43,13 @@ namespace platf {
      * @brief Creates a virtual controller in the driver.
      * @param id The gamepad ID.
      * @param feedback_queue The queue for posting messages back to the client.
+     * @param desired The profile the configuration or the client's controller type asks for.
+     * @param client_capabilities The client's `LI_CCAP_*` flags for this controller; the Steam
+     *        Controller profile uses them to tell a two-touchpad client from one that sends both
+     *        pads as halves of a single touchpad.
      * @return 0 on success.
      */
-    int alloc(const gamepad_id_t &id, feedback_queue_t &feedback_queue, vhf_profile_e desired);
+    int alloc(const gamepad_id_t &id, feedback_queue_t &feedback_queue, vhf_profile_e desired, std::uint16_t client_capabilities = 0);
 
     /**
      * @brief Reports whether a slot's controller has a touchpad, motion sensors, and a battery.
