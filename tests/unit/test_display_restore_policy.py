@@ -3,14 +3,21 @@
 The host writer is compiled with filesystem collaborators in place of the host
 runtime. Both boot startup assignments are compiled from the helper source.
 """
+import argparse
 from pathlib import Path
 import re
 import subprocess
-import sys
 import tempfile
 
 root = Path(__file__).resolve().parents[2]
-compiler = sys.argv[1] if len(sys.argv) > 1 else "g++"
+parser = argparse.ArgumentParser(description=__doc__)
+mode = parser.add_mutually_exclusive_group(required=True)
+mode.add_argument("--generate-only", action="store_true")
+mode.add_argument("--binary", type=Path)
+parser.add_argument("--output", type=Path)
+args = parser.parse_args()
+if args.generate_only and args.output is None:
+    parser.error("--generate-only requires --output")
 
 
 def function(source, signature):
@@ -46,10 +53,7 @@ assert "platf::from_utf8(config::nvhttp.vibeshine_file_state)" in integration
 for task_source in [legacy, (root / "src/platform/windows/display_helper_v2/win_scheduled_task_manager.cpp").read_text()]:
     assert "put_Arguments(_bstr_t(display_helper_paths::restore_task_arguments().c_str()))" in task_source
 
-with tempfile.TemporaryDirectory(prefix="display-restore-policy-") as temporary:
-    directory = Path(temporary)
-    source = directory / "test.cpp"
-    source.write_text(r'''#include <cassert>
+fixture = r'''#include <cassert>
 #include <atomic>
 #include <iostream>
 #include <mutex>
@@ -190,8 +194,11 @@ int main(int argc, char **argv) {
   assert(quoted.find(L"--restore-state-file=") != std::wstring::npos);
 }
 
-''')
-    binary = directory / "test"
-    subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I", str(root),
-                    str(source), str(root / "src/state_storage_policy.cpp"), "-o", str(binary)], check=True)
-    subprocess.run([str(binary), str(directory)], check=True)
+'''
+
+if args.generate_only:
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(fixture)
+else:
+    with tempfile.TemporaryDirectory(prefix="display-restore-policy-") as temporary:
+        subprocess.run([str(args.binary.resolve()), temporary], check=True)

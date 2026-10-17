@@ -733,9 +733,36 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_restore_task.py" "${CMAKE_CXX_COMPILER}")
         set_tests_properties(test_component_display_restore_task PROPERTIES LABELS "component")
+        # Build the extracted production fixture with the same modular Boost
+        # usage requirements as other targets; CTest only runs the built binary.
+        set(_restore_policy_fixture "${CMAKE_CURRENT_BINARY_DIR}/display-restore-policy/test.cpp")
+        add_custom_command(
+            OUTPUT "${_restore_policy_fixture}"
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_restore_policy.py"
+                --generate-only --output "${_restore_policy_fixture}"
+            DEPENDS unit/test_display_restore_policy.py
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/state_storage.cpp"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/tools/display_helper_paths.h"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/tools/display_settings_helper.cpp"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/tools/display_settings_helper_v2.cpp"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config.cpp"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_integration.cpp"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/win_scheduled_task_manager.cpp"
+            VERBATIM)
+        add_executable(test_component_display_restore_policy
+            "${_restore_policy_fixture}"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/state_storage_policy.cpp")
+        target_include_directories(test_component_display_restore_policy PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+        target_link_libraries(test_component_display_restore_policy PRIVATE Boost::property_tree)
+        # The previous direct compiler invocation kept every assert enabled.
+        target_compile_options(test_component_display_restore_policy PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+        set_target_properties(test_component_display_restore_policy PROPERTIES
+            CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "tests/component")
         add_test(NAME test_component_display_restore_policy
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
-                "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_restore_policy.py" "${CMAKE_CXX_COMPILER}")
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_restore_policy.py"
+                --binary "$<TARGET_FILE:test_component_display_restore_policy>")
         set_tests_properties(test_component_display_restore_policy PROPERTIES LABELS "component")
         add_test(NAME test_component_legacy_boot_primary_restore
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
