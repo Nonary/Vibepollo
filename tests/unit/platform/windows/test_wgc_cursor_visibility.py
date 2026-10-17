@@ -62,7 +62,8 @@ def generate(root):
     snapshots.append(display[start:display.index("    winrt::com_ptr<ID3D11Texture2D> gpu_tex", start)] + "    return capture_e::ok;\n  }")
     update = function(helper, "  void update_cursor_capture()") if "  void update_cursor_capture()" in helper else "void update_cursor_capture() {}"
     dispatch = function(helper, "void handle_ipc_message(")
-    framed = pipes[pipes.index("  FramedPipe::FramedPipe("):pipes.index("  SelfHealingPipe::SelfHealingPipe(")]
+    stream = declaration(helper, "class WgcControlStream") if "class WgcControlStream" in helper else ""
+    callbacks = function(helper, "bool setup_pipe_callbacks(")
     # Creation and live-loop hooks are tested as production source boundaries;
     # session creation itself requires WinRT/D3D and is outside this fixture.
     creation = function(helper, "  bool create_capture_session()")
@@ -88,6 +89,7 @@ def generate(root):
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 struct LUID {uint32_t LowPart; int32_t HighPart;};
 struct Log {template<class T> Log& operator<<(const T&){return *this;}};
@@ -102,7 +104,6 @@ int severity=0; constexpr int INITIAL_LOG_LEVEL=2;
 namespace platf {struct img_t{};namespace dxgi {
 // WIRE
 // INTERFACE
-// FRAMED_CLASS
 struct NativeState {bool connected=true,success=true,throws=false;int sends=0;std::vector<uint8_t> wire;std::deque<std::vector<uint8_t>> chunks;};
 struct NativePipe: INamedPipe {
  std::shared_ptr<NativeState> state;explicit NativePipe(std::shared_ptr<NativeState> s):state(std::move(s)){}
@@ -111,16 +112,18 @@ struct NativePipe: INamedPipe {
  PipeResult receive_latest(std::span<uint8_t> dst,size_t& size,int ms) override{return receive(dst,size,ms);}
  void wait_for_client_connection(int) override{} void disconnect() override{state->connected=false;}bool is_connected() override{return state->connected;}
 };
-// FRAMED_METHODS
 class AsyncNamedPipe {
 public:
+ using MessageCallback=std::function<void(std::span<const uint8_t>)>;using ErrorCallback=std::function<void(const std::string&)>;
+ MessageCallback on_message;
+ bool start(const MessageCallback& message,const ErrorCallback&){on_message=message;return true;}
  std::unique_ptr<INamedPipe> _pipe;std::mutex _send_mutex;
  bool send(std::span<const uint8_t>);
  // LEGACY_DECL
  void safe_execute_operation(const std::string&,const std::function<void()>& operation) const noexcept {try{operation();}catch(...){}}
 };
 // SEND
-std::unique_ptr<AsyncNamedPipe> channel(std::shared_ptr<NativeState> state){auto out=std::make_unique<AsyncNamedPipe>();out->_pipe=std::make_unique<FramedPipe>(std::make_unique<NativePipe>(state));return out;}
+std::unique_ptr<AsyncNamedPipe> channel(std::shared_ptr<NativeState> state){auto out=std::make_unique<AsyncNamedPipe>();out->_pipe=std::make_unique<NativePipe>(state);return out;}
 struct ipc_session_t {
  bool _initialized=false,_force_reinit=false,_stop_requested=false,_cursor_visible=true;
  std::optional<bool> _sent_cursor_visible;std::unique_ptr<AsyncNamedPipe> _pipe;int _config=0;
@@ -147,6 +150,7 @@ using namespace platf::dxgi;
 static config_data_t g_config{};static bool g_config_received=false;static std::mutex g_config_mutex;static std::condition_variable g_config_cv;
 static std::atomic<int32_t> g_activity_admission_fps{120};static std::atomic<uint32_t> g_activity_admission_generation{0};static std::atomic<bool> g_cursor_visible{true};
 // DISPATCH
+// CONTROL_CALLBACK
 struct CaptureState {bool supported=true,throws=false,unknown=false,visible=true;int queries=0,calls=0;};
 struct NativeSession {
  std::shared_ptr<CaptureState> state;explicit operator bool() const{return bool(state);}
@@ -157,17 +161,35 @@ struct NativeSession {
 struct WgcCaptureManager {NativeSession _capture_session;std::optional<bool> _last_cursor_capture_request;
  // UPDATE
 };
-int failures=0;void check(bool ok,const char* message){if(!ok){++failures;std::cerr<<"FAIL: "<<message<<'\n';}}
+int failures=0,checks=0;void check(bool ok,const char* message){++checks;if(!ok){++failures;std::cerr<<"FAIL: "<<message<<'\n';}}
 template<class T> auto bytes(const T& x){return std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&x),sizeof(x));}
 void reset_helper(){g_config_received=false;g_config={};g_cursor_visible=true;g_activity_admission_fps=120;g_activity_admission_generation=0;}
+std::unique_ptr<AsyncNamedPipe> receiver(){auto pipe=channel(std::make_shared<NativeState>());check(setup_pipe_callbacks(*pipe),"production callback starts");return pipe;}
 void deliver(const std::vector<uint8_t>& wire,size_t split=0){
- auto state=std::make_shared<NativeState>();
- if(split){for(size_t at=0;at<wire.size();at+=split)state->chunks.emplace_back(wire.begin()+at,wire.begin()+std::min(at+split,wire.size()));}
- else state->chunks.push_back(wire);
- FramedPipe pipe(std::make_unique<NativePipe>(state));std::array<uint8_t,65536> data{};
- for(int n=0;n<1000;++n){size_t count=0;auto result=pipe.receive(data,count,0);if(result==PipeResult::Success)handle_ipc_message({data.data(),count});else if(state->chunks.empty())return;}
- check(false,"fixture bounded decode loop");
+ auto pipe=receiver();auto initial=g_config;if(initial.activity_admission_fps<=0)initial.activity_admission_fps=120;
+ pipe->on_message(bytes(initial));
+ if(!split){pipe->on_message(wire);return;}
+ for(size_t at=0;at<wire.size();at+=split)pipe->on_message({wire.data()+at,std::min(split,wire.size()-at)});
 }
+void test_control_stream(){
+ config_data_t initial{};initial.activity_admission_fps=120;
+ cursor_visibility_data_t hide{WGC_CURSOR_VISIBILITY_MESSAGE_MAGIC,0},show{WGC_CURSOR_VISIBILITY_MESSAGE_MAGIC,1},invalid{WGC_CURSOR_VISIBILITY_MESSAGE_MAGIC,2},unknown{0xabcdef,0};
+ activity_admission_data_t a{WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC,240},b{WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC,360},zero{WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC,0},negative{WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC,-1};
+ std::vector<uint8_t> wire;
+ auto append=[&](const auto& value){auto data=bytes(value);wire.insert(wire.end(),data.begin(),data.end());};
+ append(initial);append(hide);append(a);append(show);append(b);append(hide);
+ for(size_t split=1;split<wire.size();++split){reset_helper();auto pipe=receiver();pipe->on_message({wire.data(),split});pipe->on_message({wire.data()+split,wire.size()-split});check(g_config_received&&!g_cursor_visible&&g_activity_admission_fps==360&&g_activity_admission_generation==3,"every two-read split preserves config, ordered cursor and activity updates");}
+ for(size_t chunk: {size_t(1),size_t(2),size_t(3),size_t(5),size_t(7),size_t(8),size_t(11),size_t(120),size_t(128),size_t(65536)}){reset_helper();auto pipe=receiver();for(size_t at=0;at<wire.size();at+=chunk)pipe->on_message({wire.data()+at,std::min(chunk,wire.size()-at)});check(g_config_received&&!g_cursor_visible&&g_activity_admission_fps==360&&g_activity_admission_generation==3,"raw coalesced and fragmented interleaved updates lose no activity messages");}
+ reset_helper();auto pipe=receiver();pipe->on_message(bytes(initial).first(sizeof(initial)-1));check(!g_config_received,"incomplete startup is retained");pipe->on_message(bytes(initial).last(1));check(g_config_received,"last startup byte completes config");
+ pipe->on_message(bytes(hide).first(3));pipe->on_message({});check(g_cursor_visible,"empty read cannot flush incomplete cursor data");
+ pipe->on_message(bytes(hide).subspan(3));pipe->on_message(bytes(a).first(6));check(!g_cursor_visible&&g_activity_admission_fps==120&&g_activity_admission_generation==1,"complete cursor applies while incomplete trailing activity remains buffered");
+ pipe->on_message(bytes(a).subspan(6));pipe->on_message(bytes(show));check(g_cursor_visible&&g_activity_admission_fps==240&&g_activity_admission_generation==2,"trailing activity completes without losing next cursor");
+ wire.clear();append(invalid);append(a);append(unknown);append(zero);append(negative);append(hide);append(b);pipe->on_message(wire);check(!g_cursor_visible&&g_activity_admission_fps==360&&g_activity_admission_generation==4,"invalid runtime payloads consume their record without losing valid neighbors");
+ reset_helper();auto old=receiver();old->on_message(bytes(initial));old->on_message(bytes(hide).first(3));old.reset();reset_helper();auto fresh=receiver();fresh->on_message(bytes(initial));fresh->on_message(bytes(b));check(g_cursor_visible&&g_activity_admission_fps==360&&g_activity_admission_generation==2,"fresh helper connection has no retired partial cursor prefix");fresh->on_message(bytes(hide));check(!g_cursor_visible,"reconnected helper accepts cursor update normally");
+ reset_helper();auto state=std::make_shared<NativeState>();ipc_session_t host;host._pipe=channel(state);host.initialize_if_needed();auto live=receiver();live->on_message(bytes(initial));host.set_cursor_visible(false);host._pipe->send(bytes(a));check(state->wire.size()==16,"production sender preserves two unframed eight-byte records");live->on_message(state->wire);auto writes=state->sends;check(host.set_cursor_visible(false)&&state->sends==writes&&!g_cursor_visible&&g_activity_admission_fps==240&&g_activity_admission_generation==2,"coalesced hide plus activity applies even when host suppresses unchanged hide resend");
+ reset_helper();auto legacy=receiver();legacy->on_message(bytes(initial));legacy->on_message(bytes(b));check(g_cursor_visible&&g_activity_admission_fps==360,"old host raw config and activity wire remains compatible");
+}
+
 int main(){
  check(sizeof(wchar_t)==2&&sizeof(config_data_t)==120&&offsetof(config_data_t,flags)==108&&offsetof(config_data_t,activity_admission_fps)==112,"Windows config ABI remains 120 bytes with original offsets");
  check(sizeof(cursor_visibility_data_t)==8&&sizeof(activity_admission_data_t)==8&&WGC_CURSOR_VISIBILITY_MESSAGE_MAGIC!=WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC,"runtime messages have distinct magic");
@@ -182,7 +204,7 @@ int main(){
  check(session->set_cursor_visible(true)&&state->sends==1,"duplicate live state is coalesced");
  state->wire.clear();check(session->set_cursor_visible(false),"live hide request succeeds");deliver(state->wire);manager.update_cursor_capture();check(!native->visible&&native->calls==3,"live hide reaches the native session");
  state->wire.clear();activity_admission_data_t activity{WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC,240};session->_pipe->send(bytes(activity));session->set_cursor_visible(true);session->_pipe->send(bytes(activity));session->set_cursor_visible(false);session->set_cursor_visible(true);
- auto mixed=state->wire;for(size_t split: {size_t(0),size_t(1),size_t(3),size_t(7)}){reset_helper();deliver(mixed,split);check(g_cursor_visible&&g_activity_admission_fps==240&&g_activity_admission_generation==2,"coalesced/split framing keeps cursor and activity independent");}
+ auto mixed=state->wire;for(size_t split: {size_t(0),size_t(1),size_t(3),size_t(7)}){reset_helper();deliver(mixed,split);check(g_cursor_visible&&g_activity_admission_fps==240&&g_activity_admission_generation==3,"coalesced/split raw stream keeps cursor and activity independent");}
  cursor_visibility_data_t invalid{WGC_CURSOR_VISIBILITY_MESSAGE_MAGIC,2};reset_helper();handle_ipc_message(bytes(invalid));check(g_cursor_visible&&g_activity_admission_generation==0,"invalid cursor state is ignored");
  cursor_visibility_data_t unknown{0xabcdef,0};handle_ipc_message(bytes(unknown));check(g_cursor_visible&&g_activity_admission_fps==120,"unknown magic changes neither state");
  auto peer=std::make_shared<ipc_session_t>();peer->_pipe=channel(std::make_shared<NativeState>());peer->initialize_if_needed();session->set_cursor_visible(false);check(peer->_cursor_visible&&!(peer->startup_config().flags&WGC_IPC_FLAG_HIDE_CURSOR),"capture session cursor state is isolated");
@@ -197,14 +219,13 @@ int main(){
  capture->_initialized=false;capture->_cursor_visible=!visible;texture2d_t tex{};uint64_t qpc{};check(v.acquire_next_frame(std::chrono::milliseconds(0),tex,qpc,visible)==capture_e::ok&&capture->_cursor_visible==visible,"VRAM acquire path forwards requested visibility");}
  auto stopped=std::make_shared<ipc_session_t>();stopped->_stop_requested=true;check(!stopped->set_cursor_visible(false),"retired capture generation cannot send a cursor update");
  display_wgc_ipc_vram_t cancelled_v{stopped};display_wgc_ipc_ram_t cancelled_r{stopped};std::shared_ptr<platf::img_t> empty;check(cancelled_v.snapshot(0,empty,std::chrono::milliseconds(0),false)==capture_e::interrupted&&cancelled_r.snapshot(0,empty,std::chrono::milliseconds(0),false)==capture_e::interrupted,"cancelled snapshots preserve interrupted status");
- std::cout<<"Production cursor ownership/startup/live/restart/IPC/optional-API contract: failures="<<failures<<'\n';return failures?1:0;
+ test_control_stream();
+ std::cout<<"Production cursor ownership/startup/live/restart/IPC/optional-API contract: failures="<<failures<<", checks="<<checks<<'\n';return failures?1:0;
 }
 '''
     replacements = {
         "WIRE": wire,
         "INTERFACE": declaration(header, "  enum class PipeResult") + "\n" + declaration(header, "  class INamedPipe"),
-        "FRAMED_CLASS": declaration(header, "  class FramedPipe:"),
-        "FRAMED_METHODS": framed,
         "SEND": send,
         "LEGACY_DECL": "void legacy_send(std::span<const uint8_t>);" if old_send else "",
         "FLAGS": flags,
@@ -213,6 +234,7 @@ int main(){
         "SETTER": setter,
         "SNAPSHOTS": "\n".join(snapshots),
         "DISPATCH": dispatch,
+        "CONTROL_CALLBACK": stream + "\n" + callbacks,
         "UPDATE": update,
     }
     for name, value in replacements.items():

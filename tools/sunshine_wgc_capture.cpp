@@ -2279,6 +2279,35 @@ void handle_ipc_message(std::span<const uint8_t> message) {
 }
 
 /**
+ * @brief Reconstruct WGC control records from arbitrary byte-pipe reads.
+ */
+class WgcControlStream {
+public:
+  // AnonymousPipeFactory supplies a byte stream, not message boundaries. Keep
+  // the existing wire format: one config followed by fixed-size live updates.
+  void receive(std::span<const uint8_t> bytes) {
+    static_assert(sizeof(platf::dxgi::cursor_visibility_data_t) == sizeof(platf::dxgi::activity_admission_data_t));
+    while (!bytes.empty()) {
+      const auto message_size = _configured ? sizeof(platf::dxgi::activity_admission_data_t) : sizeof(platf::dxgi::config_data_t);
+      const auto count = std::min(bytes.size(), message_size - _buffered);
+      std::copy_n(bytes.data(), count, _buffer.data() + _buffered);
+      _buffered += count;
+      bytes = bytes.subspan(count);
+      if (_buffered == message_size) {
+        handle_ipc_message(std::span<const uint8_t>(_buffer.data(), message_size));
+        _configured = true;
+        _buffered = 0;
+      }
+    }
+  }
+
+private:
+  std::array<uint8_t, sizeof(platf::dxgi::config_data_t)> _buffer {};
+  size_t _buffered = 0;
+  bool _configured = false;
+};
+
+/**
  * @brief Helper function to setup the communication pipe with the main process.
  *
  * Configures the AsyncNamedPipe with callback functions for message handling:
@@ -2290,8 +2319,10 @@ void handle_ipc_message(std::span<const uint8_t> message) {
  * @return true if the pipe was successfully configured and started, false otherwise.
  */
 bool setup_pipe_callbacks(AsyncNamedPipe &pipe) {
-  auto on_message = [](std::span<const uint8_t> message) {
-    handle_ipc_message(message);
+  // Each connection owns its accumulator. Retiring the pipe discards an
+  // incomplete tail instead of carrying it into the next helper generation.
+  auto on_message = [stream = WgcControlStream {}](std::span<const uint8_t> message) mutable {
+    stream.receive(message);
   };
 
   auto on_error = [](std::string_view /*err*/) {
