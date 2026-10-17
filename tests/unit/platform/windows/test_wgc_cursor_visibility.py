@@ -52,7 +52,9 @@ def generate(root):
         send += "\nbool AsyncNamedPipe::send(std::span<const uint8_t> data){legacy_send(data);return true;}"
     flag_start = ipc.index("    config_data.flags = wgc_ipc_flags(_config);")
     flags = ipc[flag_start:ipc.index("    config_data.initial_frame_buffer_size", flag_start)]
-    sent = re.search(r"^    _sent_cursor_visible = .*;", ipc, re.M)
+    reconcile_start = ipc.index("    _sent_cursor_visible = (config_data.flags")
+    reconcile_end = ipc.index("\n  }\n\n  bool ipc_session_t::set_cursor_visible", reconcile_start)
+    reconcile = ipc[reconcile_start:reconcile_end]
     reset = "_sent_cursor_visible.reset();" if "_sent_cursor_visible.reset();" in ipc else ""
     snapshots = []
     for cls in ("display_wgc_ipc_vram_t", "display_wgc_ipc_ram_t"):
@@ -91,6 +93,7 @@ def generate(root):
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 struct LUID {uint32_t LowPart; int32_t HighPart;};
 struct Log {template<class T> Log& operator<<(const T&){return *this;}};
@@ -105,10 +108,10 @@ int severity=0; constexpr int INITIAL_LOG_LEVEL=2;
 namespace platf {struct img_t{};namespace dxgi {
 // WIRE
 // INTERFACE
-struct NativeState {bool connected=true,success=true,throws=false;int sends=0;std::vector<uint8_t> wire;std::deque<std::vector<uint8_t>> chunks;};
+struct NativeState {bool connected=true,success=true,throws=false;int sends=0;std::function<void()> before_send;std::vector<uint8_t> wire;std::deque<std::vector<uint8_t>> chunks;};
 struct NativePipe: INamedPipe {
  std::shared_ptr<NativeState> state;explicit NativePipe(std::shared_ptr<NativeState> s):state(std::move(s)){}
- bool send(std::span<const uint8_t> bytes,int) override {++state->sends;if(state->throws)throw std::runtime_error("write");if(!state->success)return false;state->wire.insert(state->wire.end(),bytes.begin(),bytes.end());return true;}
+ bool send(std::span<const uint8_t> bytes,int) override {++state->sends;if(state->before_send)state->before_send();if(state->throws)throw std::runtime_error("write");if(!state->success)return false;state->wire.insert(state->wire.end(),bytes.begin(),bytes.end());return true;}
  PipeResult receive(std::span<uint8_t> dst,size_t& size,int) override {size=0;if(state->chunks.empty())return PipeResult::Timeout;auto bytes=std::move(state->chunks.front());state->chunks.pop_front();size=bytes.size();std::copy(bytes.begin(),bytes.end(),dst.begin());return PipeResult::Success;}
  PipeResult receive_latest(std::span<uint8_t> dst,size_t& size,int ms) override{return receive(dst,size,ms);}
  void wait_for_client_connection(int) override{} void disconnect() override{state->connected=false;}bool is_connected() override{return state->connected;}
@@ -128,19 +131,18 @@ std::unique_ptr<AsyncNamedPipe> channel(std::shared_ptr<NativeState> state){auto
 struct ipc_session_t {
  bool _initialized=false,_force_reinit=false,_stop_requested=false,_cursor_visible=true;
  std::optional<bool> _sent_cursor_visible;std::unique_ptr<AsyncNamedPipe> _pipe;std::mutex _pipe_mutex;int _config=0;
- std::atomic<int> _activity_admission_fps{120};
+ std::atomic<int> _activity_admission_fps{120};int _startup_activity_admission_fps=120;
  bool stop_requested()const{return _stop_requested;}
  bool should_swap_to_dxgi()const{return false;}bool should_reinit()const{return _force_reinit;}bool is_initialized()const{return _initialized;}
  bool set_cursor_visible(bool);
  bool set_activity_admission_fps(int);
  uint32_t wgc_ipc_flags(int)const{return WGC_IPC_FLAG_DRAIN_TO_LATEST|WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE;}
- config_data_t startup_config(){config_data_t config_data{};
+ config_data_t startup_config(){config_data_t config_data{};config_data.activity_admission_fps=_startup_activity_admission_fps;
  // FLAGS
  return config_data;}
  void initialize_if_needed(){if(_initialized)return;auto config_data=startup_config();(void)config_data;
  // RESET
- _initialized=true;
- // SENT
+ // RECONCILE
  }
 };
 // SETTER
@@ -228,6 +230,11 @@ int main(){
  activity_session->_initialized=true;auto activity_state=static_cast<NativePipe*>(activity_session->_pipe->_pipe.get())->state;
  check(activity_session->set_activity_admission_fps(360)&&activity_state->sends==1,"live activity update reports a completed pipe send");
  activity_state->success=false;check(!activity_session->set_activity_admission_fps(480)&&activity_session->_force_reinit,"failed activity update forces reinit and reports failure");
+ auto reconcile_session=std::make_shared<ipc_session_t>();auto reconcile_state=std::make_shared<NativeState>();reconcile_session->_pipe=channel(reconcile_state);reconcile_session->_activity_admission_fps=240;
+ std::atomic<bool> reconcile_send_entered=false;reconcile_state->before_send=[&]{if(reconcile_state->sends==1){reconcile_send_entered=true;while(reconcile_session->_activity_admission_fps!=360)std::this_thread::yield();}};
+ std::jthread transition([&]{while(!reconcile_send_entered)std::this_thread::yield();check(reconcile_session->set_activity_admission_fps(360),"concurrent startup transition sends after reconciliation");});
+ reconcile_session->initialize_if_needed();transition.join();check(reconcile_session->_activity_admission_fps==360&&reconcile_state->sends==2,"startup reconciliation cannot overwrite newer desired activity rate");
+ activity_admission_data_t final_activity{};memcpy(&final_activity,reconcile_state->wire.data()+reconcile_state->wire.size()-sizeof(final_activity),sizeof(final_activity));check(final_activity.admission_fps==360,"newer activity rate is the final helper update");
  display_wgc_ipc_vram_t cancelled_v{stopped};display_wgc_ipc_ram_t cancelled_r{stopped};std::shared_ptr<platf::img_t> empty;check(cancelled_v.snapshot(0,empty,std::chrono::milliseconds(0),false)==capture_e::interrupted&&cancelled_r.snapshot(0,empty,std::chrono::milliseconds(0),false)==capture_e::interrupted,"cancelled snapshots preserve interrupted status");
  test_control_stream();
  std::cout<<"Production cursor ownership/startup/live/restart/IPC/optional-API contract: failures="<<failures<<", checks="<<checks<<'\n';return failures?1:0;
@@ -240,7 +247,7 @@ int main(){
         "LEGACY_DECL": "void legacy_send(std::span<const uint8_t>);" if old_send else "",
         "FLAGS": flags,
         "RESET": reset,
-        "SENT": sent.group() if sent else "",
+        "RECONCILE": reconcile,
         "SETTER": setter,
         "ADMISSION_SETTER": admission_setter,
         "SNAPSHOTS": "\n".join(snapshots),

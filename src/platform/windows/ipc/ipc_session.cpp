@@ -522,10 +522,20 @@ namespace platf::dxgi {
     }
 
     cleanup_on_failure.disable();
-    _initialized = true;
     _sent_cursor_visible = (config_data.flags & WGC_IPC_FLAG_HIDE_CURSOR) == 0;
-    if (_activity_admission_fps.load(std::memory_order_relaxed) != config_data.activity_admission_fps) {
-      (void) set_activity_admission_fps(_activity_admission_fps.load(std::memory_order_relaxed));
+    {
+      const std::scoped_lock lock(_pipe_mutex);
+      _initialized = true;
+      const auto desired_fps = _activity_admission_fps.load(std::memory_order_relaxed);
+      if (desired_fps != config_data.activity_admission_fps) {
+        const activity_admission_data_t update {
+          .magic = WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC,
+          .admission_fps = desired_fps,
+        };
+        if (!_pipe || !_pipe->send(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&update), sizeof(update)))) {
+          _force_reinit = true;
+        }
+      }
     }
   }
 
