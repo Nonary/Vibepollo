@@ -31,6 +31,7 @@ PRELUDE = r'''
 #include <cassert>
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <deque>
 #include <functional>
 #include <iostream>
@@ -117,6 +118,10 @@ void free_id(std::bitset<16> &mask, int id) { mask[id] = false; }
 enum class button_state_e { NONE, DOWN, UP };
 struct gamepad_t {
   int id = -1;
+  bool alloc_failed = false;
+  std::uint8_t arrival_type = 0;
+  std::uint16_t arrival_capabilities = 0;
+  std::optional<int> pending_steam_attributes;
   worker_t::task_id_t back_timeout_id = nullptr;
   platf::gamepad_state_t gamepad_state;
   button_state_e back_button_state = button_state_e::NONE;
@@ -141,6 +146,7 @@ struct input_t {
   uint16_t repeating_key = 0;
   bool input_closed = false;
   std::vector<gamepad_t> gamepads {16};
+  std::atomic_uint32_t allocated_gamepads {0};
   std::unique_ptr<platf::client_input_t> client_context;
   int accumulated_vscroll_delta = 0, accumulated_hscroll_delta = 0;
   worker_t::task_id_t mouse_left_button_timeout = nullptr;
