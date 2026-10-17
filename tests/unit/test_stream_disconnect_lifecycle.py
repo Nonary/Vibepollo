@@ -51,6 +51,13 @@ def program(root, revision=None):
     pause += "    ++pause_continued;\n  }"
     termination_setup = stream[stream.index("    std::uint32_t termination_reason ="):
                                stream.index("    auto send_termination =")]
+    packet_types = block(stream, "static const short packetTypes[] =") + ";"
+    if "STEAM_HAPTIC_PACKET_TYPE" in packet_types:
+        # The fork's control table also carries the Steam Controller extension types;
+        # take their values from the protocol header instead of repeating them here.
+        steam = read("src/steam_controller_protocol.h")
+        packet_types = "".join(f"#define {name} {value}\n" for name, value in
+                               re.findall(r"#define (STEAM_\w+_PACKET_TYPE) (0x[0-9A-Fa-f]+)", steam)) + packet_types
     snippets = {
         "STATE": block(header, "enum class state_e : int") + ";",
         "REASON": block(stream, "enum class stop_reason_e") + ";" if "enum class stop_reason_e" in stream else "",
@@ -60,7 +67,7 @@ def program(root, revision=None):
         "WIRE_TERMINATION": block(stream, "struct control_terminate_t") + ";",
         "WIRE_ENCRYPTED": block(stream, "typedef struct control_encrypted_t") + " *control_encrypted_p;",
         "ENCODE": block(stream, "template<std::size_t max_payload_size>"),
-        "PACKET_TYPES": block(stream, "static const short packetTypes[] =") + ";",
+        "PACKET_TYPES": packet_types,
         "SEND_METHOD": block(stream, "int send(const std::string_view &payload, net::peer_t peer, bool haptics = false)"),
         "FLUSH_METHOD": block(stream, "void flush()"),
         "STOP": block(stream, "void stop(session_t &session)"),

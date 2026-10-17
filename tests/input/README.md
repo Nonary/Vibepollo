@@ -51,3 +51,43 @@ Use both Moonlight and browser streaming, including two connected viewers:
 9. Repeat disconnect while capture teardown is delayed. Input cleanup should
    run before the capture joins finish. Verify healthy Alt+Tab, typing, mouse,
    controller and pen/touch use after reconnect.
+
+# Steam Controller (2026) host regressions
+
+These harnesses slice the production Steam Controller code out of the host
+sources by marker and compile it with fake driver/slot boundaries under
+ASan/UBSan. `nlohmann/json` headers are needed (`AUDIT_JSON_INCLUDE` can
+override the include directory); `--baseline` reads the production files from
+`HEAD` where supported.
+
+`python3 tests/input/test_haptic_queue.py` runs the production
+`raise_steam_haptic` forwarding and the gamepad feedback mailbox policy: the
+`forward_rumble` switch, stop-key coalescing behind an older effect, per-side
+stops surviving a full queue, and every controller's state keys surviving a
+sustained haptic burst with a bounded event backlog.
+
+`python3 tests/input/test_steam_settings_forward.py` runs the production
+`raise_steam_settings` forwarding: only a `LI_CCAP_STEAM_SETTINGS` client gets
+settings writes, a chunked SET_SETTINGS_VALUES write stays whole and in order
+around haptic traffic, settings chunks are a reserved class a haptic burst
+cannot evict, floods keep the newest sixteen chunks, and all nine triples
+reach the client byte for byte.
+
+`python3 tests/input/test_vhf_feedback_retirement.py` runs the production VHF
+slot retirement (`vhf_gamepad_t::free`) against a real feedback queue: a
+retired controller's queued haptic and settings output is discarded, the other
+controller's feedback keeps its FIFO order, and a reused client-relative index
+receives only its new messages.
+
+`python3 tests/input/test_vhf_fallback.py` executes the production Windows
+allocation and profile-selection functions with fake VHF/ViGEm driver objects:
+a Steam Controller client under `auto` prefers the VHF driver, a client-derived
+profile the driver lacks retries with the automatic profile under `auto`/`vhf`,
+an explicit `vhf_*` profile is never substituted, and controller touch is
+advertised for every selection that can yield a touchpad.
+
+`python3 tests/input/test_sc26_buttons.py` compiles the production VHF input
+adapter together with the driver's real Steam Controller encoder from the
+`third-party/libvirtualgamepad` submodule and checks all sixteen physical
+pad/trigger click combinations and their releases, the capability/profile
+gating of the `sc26_buttons_explicit` metadata bit, and the legacy fallbacks.
