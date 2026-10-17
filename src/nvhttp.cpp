@@ -4509,6 +4509,13 @@ namespace nvhttp {
         const auto owner = remote_role_gate_snapshot_for_client(request_client_identity.uuid).owner;
         const auto decision = remote_session::dispatch(caller, game, owner, synthetic_control);
         if (!decision.allowed) {
+          BOOST_LOG(warning) << "Remote session control rejected with 409: control=" << static_cast<int>(synthetic_control)
+                             << " caller=" << request_client_identity.uuid
+                             << " game_running=" << game.running
+                             << " game_owner=" << (game.owner_uuid.empty() ? "<none>" : game.owner_uuid)
+                             << " owner_role=" << static_cast<int>(owner.role)
+                             << " owner_retained=" << owner.retained
+                             << " owner_ready=" << owner.ready;
           tree.put("root.resume", 0);
           // Authentication and paired-client capabilities were already checked
           // above. A denial here is a state/role conflict, not an authorization
