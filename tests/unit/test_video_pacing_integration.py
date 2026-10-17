@@ -36,6 +36,7 @@ def section(begin, end, offset=0):
 
 
 updated = 'static bool pacing_admits_locked(' in source
+fractional = 'video_pacing_delay_ns(' in read('src/stream_protocol.h')
 helpers = section('  static video_pacing_reservation_t pacing_reservation_for_config(', '  int set_bitrate_for_sessions(') if updated else ''
 abr = section('  int set_bitrate_for_sessions(', '\n  static const char *state_name')
 start_at = source.index('    int start(session_t &session,')
@@ -43,11 +44,19 @@ publish = section('      // Insert this session into the session list', '\n     
 if updated:
     assert 'constexpr int START_PACING_REJECTED = -2;' in read('src/stream.h')
     pacer = section('        const auto pacing_ceiling =', '        if (pyrowave_session) {')
-    clamp = section('          // An adaptive pace may be slower', '          const std::pair pacing_source')
+    clamp = '' if fractional else section('          // An adaptive pace may be slower', '          const std::pair pacing_source')
 else:
     pacer = section('        size_t pacing_bps;', '        if (pyrowave_session) {')
     clamp = ''
 batches = section('        size_t max_batch_size_bytes =', '        // Don\'t ignore the last ratecontrol group')
+frame_delay = '' if fractional else '''
+    const auto frame_pacing_delay = [&](std::uint64_t packets_sent) {
+      return std::chrono::nanoseconds(1'000'000 * packets_sent / ratecontrol_packets_in_1ms);
+    };'''
+if fractional:
+    assert source.count('frame_pacing_delay(ratecontrol_frame_packets_sent)') == 3
+    assert 'if (!wait_for_video_pacing(due,' in source
+    assert 'throw video_send_failed_t {true, unsigned(blockIndex), 0};' in source
 pacing_at = source.index('              // Do pacing within the frame.')
 condition = section('              if (', ') {', pacing_at).strip()[len('if ('):]
 fec_count = section('      auto payload_size = payload.size();', '\n      // If we need to store a zero-padded data shard', source.index('static fec_t encode('))
@@ -65,8 +74,9 @@ if updated:
 template = (Path(__file__).with_suffix('.cpp.in')).read_text()
 program = template
 for key, text in {'HELPERS': helpers, 'ABR': abr, 'PUBLISH': publish, 'PACER': pacer, 'CLAMP': clamp,
-                  'BATCHES': batches, 'CONDITION': condition, 'FEC_COUNT': fec_count, 'SPLITTER': splitter,
+                  'BATCHES': batches, 'FRAME_DELAY': frame_delay, 'CONDITION': condition, 'FEC_COUNT': fec_count, 'SPLITTER': splitter,
                   'DETAIL_MAX': detail_max, 'UPDATED': '1' if updated else '0',
+                  'RATE_HELPERS': ('using stream::video_pacing_batch_packets; using stream::video_pacing_delay_ns;' if fractional else 'using stream::video_pacing_packets_per_ms;'),
                   'HTTP_HANDLER': http_handler, 'RTSP_MAPPING': rtsp_mapping}.items():
     program = program.replace('@' + key + '@', text)
 

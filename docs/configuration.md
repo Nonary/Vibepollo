@@ -5033,6 +5033,8 @@ Sets a ceiling in Kbps on the shared video UDP payload pacer, including RTP/pack
 
 Positive values reject a stream start or runtime bitrate increase when the combined nominal video demand cannot fit. Admission conservatively reserves per-frame padding and per-block FEC rounding/minimums at the negotiated bitrate and cadence; large IDR frames can still create temporary pacing debt. Reduce the requested video bitrate or explicitly raise the ceiling if admission fails. The host never raises this ceiling automatically. PyroWave keeps its adaptive policy, bounded by this ceiling when configured; admission conservatively allows its maximum critical/detail FEC.
 
+Positive pacing deadlines use cumulative datagram bit-time, including rates below one packet per millisecond. A single packet may take several milliseconds of budget; admission does not impose a one-packet/ms minimum. Long positive-cap waits use sleep requests of at most one millisecond between media cancellation checks.
+
 Set `0` to preserve the existing legacy/adaptive pacing behavior without this admission check.
 
 ### packetsize

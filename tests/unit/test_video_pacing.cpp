@@ -11,9 +11,9 @@ namespace {
 }
 
 TEST(VideoPacingTests, ExplicitCeilingNeverBecomesAnEncoderFloor) {
-  EXPECT_EQ(stream::video_pacing_packets_per_ms(1, 1408), 0u);
-  EXPECT_EQ(stream::video_pacing_packets_per_ms(200000, 1408), 17u);
-  EXPECT_EQ(stream::video_pacing_packets_per_ms(2000000, 1408), 177u);
+  EXPECT_EQ(stream::video_pacing_batch_packets(1, 1408), 1u);
+  EXPECT_EQ(stream::video_pacing_batch_packets(200000, 1408), 17u);
+  EXPECT_EQ(stream::video_pacing_batch_packets(2000000, 1408), 177u);
   EXPECT_FALSE(stream::video_pacing_reservation(1, demand()).admissible);
   EXPECT_FALSE(stream::video_pacing_reservation(165000, demand(10)).admissible);
   EXPECT_FALSE(stream::video_pacing_reservation(165000, demand(20)).admissible);
@@ -30,18 +30,90 @@ TEST(VideoPacingTests, ZeroDisablesAdmissionWithoutValidatingUnusedDemand) {
   EXPECT_EQ(used, 0u);
 }
 
-TEST(VideoPacingTests, CountsHeadersEncryptionAndWholePacketQuantization) {
+TEST(VideoPacingTests, CountsHeadersEncryptionAndCumulativeBitTime) {
   const auto plain = demand();
   const auto encrypted = demand(20, 120, 1376, 32);
   const auto plan = stream::video_pacing_reservation(200000, plain);
-  const auto quantum = (plan.packets_per_second + 999) / 1000;
-  const int exact_ceiling = int(quantum * plain.datagram_bytes * 8);
+  const int exact_ceiling = int((plan.packets_per_second * plain.datagram_bytes * 8 + 999) / 1000);
   EXPECT_TRUE(stream::video_pacing_reservation(exact_ceiling, plain).admissible);
   EXPECT_FALSE(stream::video_pacing_reservation(exact_ceiling - 1, plain).admissible);
   EXPECT_FALSE(stream::video_pacing_reservation(exact_ceiling, encrypted).admissible);
   auto without_frame_header = plain;
   without_frame_header.frame_header_bytes = 0;
   EXPECT_GT(plan.packets_per_second, stream::video_pacing_reservation(200000, without_frame_header).packets_per_second);
+}
+
+TEST(VideoPacingTests, FractionalPacketRatesAdmitDemandThatFits) {
+  for (const auto bytes : {1404u, 1408u, 1436u, 1440u}) {
+    stream::video_pacing_demand_t low {1000, 60, 1376, bytes, 8, 20, 2};
+    const auto plan = stream::video_pacing_reservation(8000, low);
+    ASSERT_TRUE(plan.admissible) << bytes;
+    EXPECT_EQ(plan.packets_per_second, 301u);
+    EXPECT_EQ(stream::video_pacing_batch_packets(8000, bytes), 1u);
+    EXPECT_GT(stream::video_pacing_delay_ns(1, bytes, 8000), 1'000'000u);
+    EXPECT_EQ(plan.send_ns_per_second, stream::video_pacing_delay_ns(301, bytes, 8000));
+    const int required_kbps = int((301 * bytes * 8 + 999) / 1000);
+    EXPECT_TRUE(stream::video_pacing_reservation(required_kbps, low).admissible);
+    EXPECT_FALSE(stream::video_pacing_reservation(required_kbps - 1, low).admissible);
+    low.encoder_kbps = 20000;
+    EXPECT_FALSE(stream::video_pacing_reservation(8000, low).admissible);
+  }
+}
+
+TEST(VideoPacingTests, ExactPacketPerMillisecondBoundariesDoNotChangeAdmission) {
+  for (const auto bytes : {1404u, 1408u, 1436u, 1440u}) {
+    for (const int delta : {-1, 0, 1}) {
+      const int cap = int(bytes * 8) + delta;
+      EXPECT_TRUE(stream::video_pacing_reservation(cap, {1000, 60, 1376, bytes, 8, 20, 2}).admissible);
+    }
+  }
+}
+
+TEST(VideoPacingTests, CumulativeNanosecondRoundingNeverExceedsTheBitCeiling) {
+  for (const auto bytes : {1404u, 1408u, 1436u, 1440u}) {
+    for (const int cap : {1, 8000, 8001, 11231, 11232, 11233, 11487, 11488, 100000, INT_MAX}) {
+      for (const std::uint64_t packets : {1u, 2u, 71u, 301u, 1000u}) {
+        const auto delay = stream::video_pacing_delay_ns(packets, bytes, cap);
+        const auto numerator = packets * bytes * 8 * 1'000'000;
+        EXPECT_GE(delay * cap, numerator);
+        EXPECT_LT((delay - 1) * cap, numerator);
+        EXPECT_LE(delay, packets * stream::video_pacing_delay_ns(1, bytes, cap));
+      }
+    }
+  }
+  EXPECT_EQ(stream::video_pacing_delay_ns(0, 1408, 8000), 0u);
+  EXPECT_EQ(stream::video_pacing_delay_ns(301, 1408, 0), 0u);
+  EXPECT_EQ(stream::video_pacing_delay_ns(UINT64_MAX, 65583, INT_MAX), std::uint64_t(INT64_MAX));
+}
+
+TEST(VideoPacingTests, FractionalRatesShareCapacityWithoutRoundingEachPacketUp) {
+  const auto plan = stream::video_pacing_reservation(8000, {1000, 60, 1376, 1408, 8, 20, 2});
+  ASSERT_TRUE(plan.admissible);
+  std::uint64_t used = 0;
+  EXPECT_TRUE(stream::reserve_video_pacing_capacity(used, plan));
+  EXPECT_TRUE(stream::reserve_video_pacing_capacity(used, plan));
+  const auto before = used;
+  EXPECT_FALSE(stream::reserve_video_pacing_capacity(used, plan));
+  EXPECT_EQ(used, before);
+}
+
+TEST(VideoPacingTests, LongPositivePacingWaitIsCancellableWithoutWaitingForThePacketInterval) {
+  using namespace std::chrono;
+  auto current = steady_clock::time_point {};
+  const auto origin = current;
+  const auto due = current + nanoseconds(stream::video_pacing_delay_ns(1, 1408, 40));
+  bool cancelled = false;
+  unsigned sleeps = 0;
+  EXPECT_FALSE(stream::wait_for_video_pacing(due, [&] { return current; }, [&](auto duration) {
+    EXPECT_LE(duration, milliseconds(1)); current += duration; ++sleeps; cancelled = true;
+  }, [&] { return cancelled; }));
+  EXPECT_EQ(sleeps, 1u);
+  EXPECT_EQ(current - origin, milliseconds(1));
+  cancelled = false;
+  EXPECT_TRUE(stream::wait_for_video_pacing(due, [&] { return current; }, [&](auto duration) {
+    EXPECT_LE(duration, milliseconds(1)); current += duration;
+  }, [&] { return cancelled; }));
+  EXPECT_EQ(current, due);
 }
 
 TEST(VideoPacingTests, ReservationsCoverTheProductionDerivedFecCounterexamples) {

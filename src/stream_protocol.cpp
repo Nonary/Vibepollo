@@ -1,13 +1,30 @@
 #include "stream_protocol.h"
 
 #include <algorithm>
+#include <limits>
 
 namespace stream {
-  std::size_t video_pacing_packets_per_ms(int ceiling_kbps, std::size_t datagram_bytes) {
+  std::size_t video_pacing_batch_packets(int ceiling_kbps, std::size_t datagram_bytes) {
     if (ceiling_kbps <= 0 || datagram_bytes == 0) {
       return 0;
     }
-    return std::uint64_t(ceiling_kbps) / 8 / datagram_bytes;
+    return std::max<std::uint64_t>(1, std::uint64_t(ceiling_kbps) / 8 / datagram_bytes);
+  }
+
+  std::uint64_t video_pacing_delay_ns(std::uint64_t packets, std::size_t datagram_bytes, int ceiling_kbps) {
+    if (ceiling_kbps == 0 || packets == 0) {
+      return 0;
+    }
+    constexpr auto limit = std::uint64_t(std::numeric_limits<std::int64_t>::max());
+    if (ceiling_kbps < 0 || datagram_bytes == 0 || datagram_bytes > 65535 + 16 + 32) {
+      return limit;
+    }
+    const auto packet_bit_ns = std::uint64_t(datagram_bytes) * 8 * 1'000'000;
+    if (packets > limit / packet_bit_ns) {
+      return limit;
+    }
+    const auto numerator = packets * packet_bit_ns;
+    return (numerator + std::uint64_t(ceiling_kbps) - 1) / std::uint64_t(ceiling_kbps);
   }
 
   video_pacing_reservation_t video_pacing_reservation(int ceiling_kbps, const video_pacing_demand_t &demand) {
@@ -43,11 +60,7 @@ namespace stream {
                blocks * std::max(demand.min_parity_shards, 1) - 1;
     }
     const auto packets = data + parity;
-    const auto pace = video_pacing_packets_per_ms(ceiling_kbps, demand.datagram_bytes);
-    if (pace == 0) {
-      return {false, packets, 0};
-    }
-    const auto send_ns = ceil_div(packets * 1'000'000, pace);
+    const auto send_ns = video_pacing_delay_ns(packets, demand.datagram_bytes, ceiling_kbps);
     return {send_ns <= 1'000'000'000, packets, send_ns};
   }
 

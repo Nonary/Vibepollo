@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -14,7 +16,26 @@ namespace stream {
 
   // An explicit ceiling counts complete video UDP payloads (including RTP,
   // packet/FEC headers and encryption prefixes), not encoded image bytes.
-  std::size_t video_pacing_packets_per_ms(int ceiling_kbps, std::size_t datagram_bytes);
+  // Batch allowance only: one datagram may take longer than a millisecond.
+  std::size_t video_pacing_batch_packets(int ceiling_kbps, std::size_t datagram_bytes);
+  // Cumulative bit-time, rounded upward once. Used by both admission and send
+  // deadlines so fractional packets/ms never become an admission floor.
+  // Invalid/overflowing positive demand saturates at signed nanoseconds max.
+  std::uint64_t video_pacing_delay_ns(std::uint64_t packets, std::size_t datagram_bytes, int ceiling_kbps);
+
+  template<class Now, class Sleep, class Cancelled>
+  bool wait_for_video_pacing(std::chrono::steady_clock::time_point due, Now now, Sleep sleep, Cancelled cancelled) {
+    while (!cancelled()) {
+      const auto current = now();
+      if (current >= due) {
+        return true;
+      }
+      // Explicit low caps can need long packet intervals. Keep media stop
+      // responsive without changing the uncapped timer's existing behavior.
+      sleep(std::min(due - current, std::chrono::steady_clock::duration(std::chrono::milliseconds(1))));
+    }
+    return false;
+  }
 
   struct video_pacing_demand_t {
     int encoder_kbps;

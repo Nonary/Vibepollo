@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -15,6 +16,7 @@
 #include <utility>
 #include <vector>
 using namespace std::literals;
+using namespace std::chrono_literals;
 using std::size_t;
 #define BOOST_LOG(level) if (false) std::cerr
 #define UPDATED_SOURCE @UPDATED@
@@ -60,7 +62,7 @@ namespace session { void stop(session_t &) {} }
 using stream::video_pacing_reservation_t;
 using stream::video_pacing_reservation;
 using stream::reserve_video_pacing_capacity;
-using stream::video_pacing_packets_per_ms;
+@RATE_HELPERS@
 #endif
 using stream::video_send_batch_size;
 @HELPERS@
@@ -69,7 +71,8 @@ int publish_session(session_t &session) {
 @PUBLISH@
   return 0;
 }
-std::pair<size_t, size_t> pace(int cap, bool encrypted = false, bool pyro = false, size_t blocksize = 1408) {
+std::pair<size_t, size_t> pace(int cap, bool encrypted = false, bool pyro = false, size_t blocksize = 1408,
+                             std::uint64_t packets = 0, bool delay_mode = false) {
   config::stream.pacing_max_bitrate_kbps = cap;
   session_t instance;
   instance.video.cipher = encrypted;
@@ -82,9 +85,13 @@ std::pair<size_t, size_t> pace(int cap, bool encrypted = false, bool pyro = fals
 @CLAMP@
     }
 @BATCHES@
-    return {ratecontrol_packets_in_1ms, send_batch_size};
+@FRAME_DELAY@
+    return {delay_mode ? size_t(frame_pacing_delay(packets).count()) : ratecontrol_packets_in_1ms, send_batch_size};
   }
   return {0, 0};
+}
+std::uint64_t sender_delay(int cap, bool encrypted = false, bool pyro = false, std::uint64_t packets = 1) {
+  return pace(cap, encrypted, pyro, 1408, packets, true).first;
 }
 bool checks_deadline(int pacing_ceiling, size_t ratecontrol_group_packets_sent, size_t ratecontrol_frame_packets_sent, size_t ratecontrol_packets_in_1ms) {
   return @CONDITION@;
@@ -181,22 +188,69 @@ TEST(VideoPacingIntegration, ZeroKeepsLegacyAdmissionUpdatesAndPacing) {
   EXPECT_FALSE(checks_deadline(0, 0, 5, 71));
 }
 TEST(VideoPacingIntegration, PositiveCeilingIsNotRaisedAndIncludesEncryption) {
-  EXPECT_EQ(pace(1).first, 0u);
   for (const int cap : {100000, 200000, 400000, 2000000}) {
     for (const bool encrypted : {false, true}) {
-      const auto selected = pace(cap, encrypted).first;
-      EXPECT_LE(selected * (1408 + (encrypted ? 32 : 0)) * 8, size_t(cap));
+      const auto delay = sender_delay(cap, encrypted, false, 1000);
+      const auto bit_time = 1000ull * (1408 + (encrypted ? 32 : 0)) * 8 * 1'000'000;
+      EXPECT_GE(delay * cap, bit_time);
     }
   }
-  EXPECT_GT(pace(2000000).first, 71u);
-  EXPECT_EQ(pace(200000, false, true).first, 17u);
+  EXPECT_LT(sender_delay(2000000, false, false, 1000), sender_delay(0, false, false, 1000));
+  EXPECT_GE(sender_delay(200000, false, true, 1000) * 200000, 1000ull * 1408 * 8 * 1'000'000);
+  EXPECT_EQ(pace(10000000, false, true, 216, 1000, true).first,
+            pace(0, false, true, 216, 1000, true).first);
 }
 TEST(VideoPacingIntegration, ExplicitBatchAndDeadlineRespectThePacingQuantum) {
   const auto [rate, batch] = pace(200000);
-  EXPECT_LE(batch, rate);
+  EXPECT_LE(batch, 200000u / 8 / 1408);
   EXPECT_TRUE(checks_deadline(200000, 0, 5, rate));
   config::stream.video_max_batch_size_kb = 16;
   EXPECT_EQ(pace(200000).second, 11u);
+}
+TEST(VideoPacingIntegration, FeasibleSubPacketRatesReachStartupAndFractionalSendDeadlines) {
+  for (const bool encrypted : {false, true}) {
+    reset(8000);
+    session_t low; low.config.monitor.bitrate = low.config.monitor.client_requested_bitrate = 1000;
+    low.config.monitor.framerate = 60; low.config.monitor.encodingFramerate = 60000; low.config.monitor.framerateX100 = 6000;
+    low.config.encryptionFlagsEnabled = encrypted ? SS_ENC_VIDEO : 0;
+    attach(low);
+    EXPECT_EQ(publish_session(low), 0);
+    EXPECT_EQ(pace(8000, encrypted).second, 1u);
+    EXPECT_GT(sender_delay(8000, encrypted), 1'000'000u);
+    EXPECT_EQ(sender_delay(8000, encrypted), encrypted ? 1'440'000u : 1'408'000u);
+    const auto total = sender_delay(8001, encrypted, false, 301);
+    const auto bit_time = 301ull * (encrypted ? 1440 : 1408) * 8 * 1'000'000;
+    EXPECT_GE(total * 8001, bit_time);
+    EXPECT_LT((total - 1) * 8001, bit_time);
+    EXPECT_EQ(sender_delay(8000, encrypted, true), sender_delay(8000, encrypted));
+  }
+}
+TEST(VideoPacingIntegration, FractionalMultiSessionChangesStayAtomicAndReleaseCapacity) {
+  for (const bool encrypted : {false, true}) {
+    reset(8000);
+    session_t one, two, three;
+    for (auto *candidate : {&one, &two, &three}) {
+      candidate->config.monitor.bitrate = candidate->config.monitor.client_requested_bitrate = 1000;
+      candidate->config.monitor.framerate = 60; candidate->config.monitor.encodingFramerate = 60000; candidate->config.monitor.framerateX100 = 6000;
+      candidate->config.encryptionFlagsEnabled = encrypted ? SS_ENC_VIDEO : 0;
+      attach(*candidate);
+    }
+    ASSERT_EQ(publish_session(one), 0);
+    ASSERT_EQ(publish_session(two), 0);
+    EXPECT_EQ(publish_session(three), START_PACING_REJECTED);
+    EXPECT_EQ(set_bitrate_for_sessions("client", 1200), 2);
+    EXPECT_EQ(set_bitrate_for_sessions("client", 2000), -1);
+    for (auto *candidate : {&one, &two}) {
+      EXPECT_EQ(candidate->config.monitor.bitrate, 1200);
+      EXPECT_EQ(candidate->video.bitrate_events->raised, std::vector<int>{1200});
+    }
+    // #510's control owner removes the stopped entry before controlEnd. Once
+    // detached it no longer reserves the shared sender; the other owner stays.
+    auto &sessions = broadcast.value->control_server._sessions.values;
+    sessions.erase(std::find(sessions.begin(), sessions.end(), &one));
+    EXPECT_EQ(publish_session(three), 0);
+    EXPECT_EQ(two.config.monitor.bitrate, 1200);
+  }
 }
 TEST(VideoPacingIntegration, AdmissionFailureIsAClientErrorAndPreservesOtherStatuses) {
   Tree rejected, absent, accepted;
