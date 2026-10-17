@@ -1105,7 +1105,7 @@ TEST(StateStorageApollo, NullLastSeenSurvivesMetadataSerializationAndBackupRecov
   EXPECT_EQ(store.files["shared.json"], persisted.dump());
 }
 
-TEST(StateStorageApollo, TypedClientDamageRecoversExactBackupBeforeStartup) {
+TEST(StateStorageApollo, TypedClientDamageFailsClosedWithoutRestoringOlderBackup) {
   for (const auto key : {"name", "display_mode", "hdr_profile", "output_name_override", "virtual_display_mode", "virtual_display_layout"}) {
     SCOPED_TRACE(key);
     memory_state_store_t store;
@@ -1113,16 +1113,11 @@ TEST(StateStorageApollo, TypedClientDamageRecoversExactBackupBeforeStartup) {
     damaged["root"]["named_devices"][0][key] = 123;
     store.files["shared.json"] = damaged.dump();
     store.files["shared.json.bak"] = apollo_snapshot;
+    const auto original = store.files;
     pt::ptree tree;
-    ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
-    EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
-    EXPECT_EQ(store.files["shared.json.bak"], apollo_snapshot);
-    auto selected = nlohmann::json::parse(store.files["shared.json"]);
-    ASSERT_TRUE(nvhttp::state_policy::normalize_snapshot(selected));
-    EXPECT_EQ(selected["root"]["named_devices"][0].value("name", ""), "Client");
-    EXPECT_TRUE(selected["root"]["named_devices"][0]["perm"].is_number_integer());
-    EXPECT_TRUE(selected["root"]["named_devices"][0]["allow_client_commands"].is_boolean());
-    EXPECT_EQ(selected["root"]["named_devices"][0]["future_field"]["count"], 7);
+    EXPECT_EQ(load_apollo_primary(store, tree), policy::load_result_e::failed);
+    EXPECT_TRUE(tree.empty());
+    EXPECT_EQ(store.files, original);
   }
 }
 
@@ -1138,33 +1133,32 @@ TEST(StateStorageApollo, InvalidTypedBackupIsNeverRestored) {
   EXPECT_EQ(store.files["shared.json.bak"], damaged.dump());
 }
 
-TEST(StateStorageApollo, InvalidTypedLayoutRecoversAndValidPrimaryKeepsExactTypes) {
+TEST(StateStorageApollo, InvalidTypedLayoutFailsClosedWithoutRestoringOlderBackup) {
   memory_state_store_t store;
   auto damaged = nlohmann::json::parse(apollo_snapshot);
   damaged["root"]["remote_display_layout"] = nlohmann::json::object();
   EXPECT_FALSE(nvhttp::state_policy::valid_primary_json(damaged.dump()));
   store.files["shared.json"] = damaged.dump();
   store.files["shared.json.bak"] = apollo_snapshot;
+  const auto original = store.files;
   pt::ptree tree;
-  ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
-  EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
-  store.files["shared.json.bak"] = "broken";
-  ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
-  EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
-  EXPECT_EQ(store.files["shared.json.bak"], "broken");
+  EXPECT_EQ(load_apollo_primary(store, tree), policy::load_result_e::failed);
+  EXPECT_TRUE(tree.empty());
+  EXPECT_EQ(store.files, original);
 }
 
 
-TEST(StateStorageApollo, InvalidNotificationVersionRecoversBeforeTypedStartupRead) {
+TEST(StateStorageApollo, InvalidNotificationVersionFailsClosedWithoutRestoringOlderBackup) {
   memory_state_store_t store;
   auto damaged = nlohmann::json::parse(apollo_snapshot);
   damaged["root"]["last_notified_version"] = 123;
   store.files["shared.json"] = damaged.dump();
   store.files["shared.json.bak"] = apollo_snapshot;
+  const auto original = store.files;
   pt::ptree tree;
-  ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
-  EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
-  EXPECT_NO_THROW(nlohmann::json::parse(store.files["shared.json"])["root"].value("last_notified_version", ""));
+  EXPECT_EQ(load_apollo_primary(store, tree), policy::load_result_e::failed);
+  EXPECT_TRUE(tree.empty());
+  EXPECT_EQ(store.files, original);
 }
 
 TEST(StateStorageApollo, LegacyNumericBooleansRemainUsableByTypedClientAndCommandParser) {
@@ -1183,7 +1177,7 @@ TEST(StateStorageApollo, LegacyNumericBooleansRemainUsableByTypedClientAndComman
 }
 
 
-TEST(StateStorageApollo, InvalidLastSeenCannotBypassRecovery) {
+TEST(StateStorageApollo, InvalidLastSeenFailsClosedWithoutRestoringOlderBackup) {
   auto backup = nlohmann::json::parse(apollo_snapshot);
   backup["root"]["named_devices"][0]["last_seen"] = 1759000000;
   for (const auto &invalid : {nlohmann::json(true), nlohmann::json(false), nlohmann::json(1.0), nlohmann::json(1.5),
@@ -1200,10 +1194,11 @@ TEST(StateStorageApollo, InvalidLastSeenCannotBypassRecovery) {
     ASSERT_FALSE(nvhttp::state_policy::valid_primary_json(damaged.dump()));
     store.files["shared.json"] = damaged.dump();
     store.files["shared.json.bak"] = backup.dump();
+    const auto original = store.files;
     pt::ptree tree;
-    ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
-    EXPECT_EQ(store.files["shared.json"], backup.dump());
-    EXPECT_EQ(store.files["shared.json.bak"], backup.dump());
+    EXPECT_EQ(load_apollo_primary(store, tree), policy::load_result_e::failed);
+    EXPECT_TRUE(tree.empty());
+    EXPECT_EQ(store.files, original);
 
     store.files["shared.json"] = "broken";
     store.files["shared.json.bak"] = damaged.dump();
