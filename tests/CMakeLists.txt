@@ -621,7 +621,7 @@ sunshine_register_component(NAME test_component_process_policy TEST_SOURCE unit/
     LINK_LIBRARIES Boost::crc)
 sunshine_register_component(NAME test_component_builtin_virtual_display TEST_SOURCE unit/test_builtin_virtual_display.cpp
     INCLUDE_DIRECTORIES "${OPENSSL_INCLUDE_DIR}"
-    LINK_LIBRARIES nlohmann_json::nlohmann_json Boost::process Boost::log sunshine_test_moonlight_headers)
+    LINK_LIBRARIES nlohmann_json::nlohmann_json Boost::process Boost::log Boost::format sunshine_test_moonlight_headers)
 sunshine_register_component(NAME test_component_process_framegen_json TEST_SOURCE unit/test_process_framegen_json.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/app_framegen_config.cpp"
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
