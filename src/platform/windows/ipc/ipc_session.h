@@ -11,6 +11,7 @@
 #include <winsock2.h>
 #include <d3d11.h>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -201,6 +202,9 @@ namespace platf::dxgi {
 
     // --- members ---
     std::unique_ptr<ProcessHandler> _process_helper;  ///< Helper process owner.
+    // The activity worker can publish cadence changes while the capture owner
+    // tears down or replaces the helper pipe.
+    mutable std::mutex _pipe_mutex;
     std::unique_ptr<AsyncNamedPipe> _pipe;  ///< Async control/message pipe.
     winrt::com_ptr<IDXGIKeyedMutex> _keyed_mutex;  ///< Keyed mutex for shared texture.
     winrt::com_ptr<ID3D11Texture2D> _shared_texture;  ///< Shared texture duplicated from helper.

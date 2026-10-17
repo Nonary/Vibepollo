@@ -170,9 +170,12 @@ namespace platf::dxgi {
         }
       }
 
-      if (_pipe) {
-        _pipe->stop();
-        _pipe.reset();
+      {
+        const std::scoped_lock lock(_pipe_mutex);
+        if (_pipe) {
+          _pipe->stop();
+          _pipe.reset();
+        }
       }
 
       if (_frame_metadata) {
@@ -248,9 +251,12 @@ namespace platf::dxgi {
     _initialized = false;
     _sent_cursor_visible.reset();
 
-    if (_pipe) {
-      _pipe->stop();
-      _pipe.reset();
+    {
+      const std::scoped_lock lock(_pipe_mutex);
+      if (_pipe) {
+        _pipe->stop();
+        _pipe.reset();
+      }
     }
     if (_frame_metadata) {
       UnmapViewOfFile(_frame_metadata);
@@ -486,9 +492,12 @@ namespace platf::dxgi {
     }
 
     auto cleanup_on_failure = util::fail_guard([this]() {
-      if (_pipe) {
-        _pipe->stop();
-        _pipe.reset();
+      {
+        const std::scoped_lock lock(_pipe_mutex);
+        if (_pipe) {
+          _pipe->stop();
+          _pipe.reset();
+        }
       }
       if (_frame_metadata) {
         UnmapViewOfFile(_frame_metadata);
@@ -503,11 +512,13 @@ namespace platf::dxgi {
       }
     });
 
-    _pipe = std::make_unique<AsyncNamedPipe>(std::move(control_pipe));
-
-    if (!_pipe->start(on_message, on_error, on_broken_pipe)) {
-      BOOST_LOG(error) << "Failed to start AsyncNamedPipe for helper communication";
-      return;
+    {
+      const std::scoped_lock lock(_pipe_mutex);
+      _pipe = std::make_unique<AsyncNamedPipe>(std::move(control_pipe));
+      if (!_pipe->start(on_message, on_error, on_broken_pipe)) {
+        BOOST_LOG(error) << "Failed to start AsyncNamedPipe for helper communication";
+        return;
+      }
     }
 
     cleanup_on_failure.disable();
@@ -534,6 +545,7 @@ namespace platf::dxgi {
       .magic = WGC_CURSOR_VISIBILITY_MESSAGE_MAGIC,
       .visible = visible ? 1u : 0u,
     };
+    const std::scoped_lock lock(_pipe_mutex);
     if (!_pipe || !_pipe->send(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&update), sizeof(update)))) {
       _force_reinit = true;
       return false;
@@ -547,18 +559,23 @@ namespace platf::dxgi {
       return false;
     }
     _activity_admission_fps.store(fps, std::memory_order_relaxed);
-    if (!_pipe || !_initialized) {
-      return true;
-    }
-    if (!_pipe->is_connected()) {
+    if (stop_requested()) {
       return false;
+    }
+
+    const std::scoped_lock lock(_pipe_mutex);
+    if (!_initialized) {
+      return true;
     }
 
     const activity_admission_data_t update {
       .magic = WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC,
       .admission_fps = fps,
     };
-    _pipe->send(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&update), sizeof(update)));
+    if (!_pipe || !_pipe->send(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&update), sizeof(update)))) {
+      _force_reinit = true;
+      return false;
+    }
     return true;
   }
 

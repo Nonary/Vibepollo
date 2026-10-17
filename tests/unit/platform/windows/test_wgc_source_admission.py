@@ -48,6 +48,7 @@ def main():
 #include <span>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 #include "src/platform/windows/wgc_capture_policy.h"
@@ -232,7 +233,7 @@ int main() {
   reset(); replay::Manager caps;
   submit(caps, 10'000'000, 1'000'000'000);
   update(30);
-  check(g_activity_admission_fps == 30 && g_activity_admission_generation == 1, "production IPC changes explicit cap and generation");
+  check(g_activity_admission_fps == 30 && g_activity_admission_generation == 2, "production IPC changes explicit cap and generation");
   check(submit(caps, 20'000'000, 2'000'000'000), "cap update resets source admission state");
   check(!submit(caps, 20'166'667, 2'100'000'000), "explicit 30 FPS cap applies to source despite long callback gap");
   check(submit(caps, 20'333'333, 2'101'000'000), "explicit 30 FPS source interval admitted");
@@ -241,7 +242,26 @@ int main() {
   check(!submit(caps, 20'333'335, 2'102'000'001), "higher cap creates no credit burst");
   check(submit(caps, 20'416'667, 2'103'000'000), "explicit 120 FPS cap honors quantized source interval");
   update(0); update(-1); update(30, false);
-  check(g_activity_admission_fps == 120 && g_activity_admission_generation == 2, "invalid IPC updates preserve current cap and generation");
+  check(g_activity_admission_fps == 120 && g_activity_admission_generation == 4, "invalid IPC updates preserve current cap and generation");
+
+  reset(240); replay::Manager transition;
+  check(submit(transition, 30'000'000, 3'000'000'000), "transition fixture establishes old cadence state");
+  g_activity_admission_generation.store(1, std::memory_order_release);
+  g_activity_admission_fps.store(120, std::memory_order_relaxed);
+  std::atomic<bool> reader_started = false, reader_finished = false;
+  bool transition_admitted = false;
+  std::jthread reader([&] {
+    reader_started = true;
+    transition_admitted = submit(transition, 30'041'667, 3'004'166'700);
+    reader_finished = true;
+  });
+  while (!reader_started) std::this_thread::yield();
+  std::this_thread::sleep_for(1ms);
+  check(!reader_finished, "reader waits while cadence snapshot generation is odd");
+  g_activity_admission_generation.store(2, std::memory_order_release);
+  reader.join();
+  check(transition_admitted, "completed cadence snapshot resets admission once");
+  check(!submit(transition, 30'083'334, 3'008'333'400), "new cap rejects the adjacent post-transition source frame");
 
   reset(0); replay::Manager disabled;
   for (int index = 0; index < 10; ++index) submit(disabled, 0, 1'000'000'000 + index);

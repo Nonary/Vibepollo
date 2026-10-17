@@ -137,6 +137,8 @@ static platf::dxgi::config_data_t g_config = {0, 0, 0, L"", {0, 0}, 10000, 60, 1
 static std::mutex g_config_mutex;
 static std::condition_variable g_config_cv;
 static std::atomic<int32_t> g_activity_admission_fps {120};
+// Even generations expose a complete FPS snapshot; odd generations mean the
+// single pipe-reader writer is publishing a replacement value.
 static std::atomic<uint32_t> g_activity_admission_generation {0};
 static std::atomic<bool> g_cursor_visible {true};
 
@@ -1540,13 +1542,24 @@ private:
   }
 
   bool admit_activity_frame(int64_t source_time_100ns) {
-    const auto generation = g_activity_admission_generation.load(std::memory_order_acquire);
+    uint32_t generation;
+    int32_t admission_fps;
+    for (;;) {
+      generation = g_activity_admission_generation.load(std::memory_order_acquire);
+      if ((generation & 1u) != 0) {
+        std::this_thread::yield();
+        continue;
+      }
+      admission_fps = g_activity_admission_fps.load(std::memory_order_relaxed);
+      if (generation == g_activity_admission_generation.load(std::memory_order_acquire)) {
+        break;
+      }
+    }
     if (generation != _activity_admission_generation) {
       _activity_admission_generation = generation;
       _activity_admission = {};
     }
 
-    const auto admission_fps = g_activity_admission_fps.load(std::memory_order_relaxed);
     if (!_activity_admission.admit(
           admission_fps,
           source_time_100ns,
@@ -2233,8 +2246,9 @@ void handle_ipc_message(std::span<const uint8_t> message) {
       return;
     }
 
-    g_activity_admission_fps.store(update.admission_fps, std::memory_order_release);
     g_activity_admission_generation.fetch_add(1, std::memory_order_acq_rel);
+    g_activity_admission_fps.store(update.admission_fps, std::memory_order_relaxed);
+    g_activity_admission_generation.fetch_add(1, std::memory_order_release);
     BOOST_LOG(info) << "WGC activity admission updated to " << update.admission_fps << "fps";
     return;
   }
@@ -2249,8 +2263,9 @@ void handle_ipc_message(std::span<const uint8_t> message) {
     memcpy(&g_config, message.data(), sizeof(platf::dxgi::config_data_t));
     g_config_received = true;
     g_cursor_visible.store((g_config.flags & platf::dxgi::WGC_IPC_FLAG_HIDE_CURSOR) == 0, std::memory_order_release);
-    g_activity_admission_fps.store(g_config.activity_admission_fps, std::memory_order_release);
     g_activity_admission_generation.fetch_add(1, std::memory_order_acq_rel);
+    g_activity_admission_fps.store(g_config.activity_admission_fps, std::memory_order_relaxed);
+    g_activity_admission_generation.fetch_add(1, std::memory_order_release);
     // If log_level in config differs from current, update log filter
     if (INITIAL_LOG_LEVEL != g_config.log_level) {
       // Update log filter to new log level
