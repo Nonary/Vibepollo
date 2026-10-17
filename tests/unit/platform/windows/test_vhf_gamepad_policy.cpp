@@ -134,8 +134,9 @@ namespace {
         SCOPED_TRACE(preferences);
         EXPECT_EQ(select_desired_profile(setting, LI_CTYPE_PS, 0, preferences, preferences), vhf_profile_e::dualsense);
         EXPECT_EQ(select_desired_profile(setting, LI_CTYPE_NINTENDO, LI_CCAP_GYRO | LI_CCAP_TOUCHPAD, preferences, preferences), vhf_profile_e::switch_pro);
-        // A client that identifies a Steam Controller gets the real thing, whatever the DS4 preferences say.
-        EXPECT_EQ(select_desired_profile(setting, LI_CTYPE_STEAM, LI_CCAP_GYRO | LI_CCAP_TOUCHPAD, preferences, preferences), vhf_profile_e::steam_controller);
+        // A client that identifies a Steam Controller (the Steam type with a Steam extension) gets
+        // the real thing, whatever the DS4 preferences say.
+        EXPECT_EQ(select_desired_profile(setting, LI_CTYPE_STEAM, LI_CCAP_GYRO | LI_CCAP_TOUCHPAD | LI_CCAP_GRIP_SENSE, preferences, preferences), vhf_profile_e::steam_controller);
       }
     }
   }
@@ -173,7 +174,7 @@ namespace {
     EXPECT_TRUE(platf::vhf_gamepad::supports_controller_touch("vhf_steam", false));
     for (const bool preferences : {false, true}) {
       SCOPED_TRACE(preferences);
-      EXPECT_EQ(select_desired_profile("vhf", LI_CTYPE_STEAM, LI_CCAP_TOUCHPAD, preferences, preferences), vhf_profile_e::steam_controller);
+      EXPECT_EQ(select_desired_profile("vhf", LI_CTYPE_STEAM, LI_CCAP_TOUCHPAD | LI_CCAP_SC26_BUTTONS, preferences, preferences), vhf_profile_e::steam_controller);
     }
     EXPECT_TRUE(platf::vhf_gamepad::supports_controller_touch("vhf", false));
   }
@@ -198,8 +199,7 @@ namespace {
       {"vhf_xbox_one", vhf_profile_e::xbox_one},
       {"vhf_ds4", vhf_profile_e::dualshock4},
       {"vhf_ds5", vhf_profile_e::dualsense},
-      {"vhf_switch", vhf_profile_e::switch_pro},
-      {"vhf_steam", vhf_profile_e::steam_controller}
+      {"vhf_switch", vhf_profile_e::switch_pro}
     };
     for (const auto &[setting, expected] : overrides) {
       for (const auto type : {LI_CTYPE_XBOX, LI_CTYPE_PS, LI_CTYPE_NINTENDO, LI_CTYPE_UNKNOWN, LI_CTYPE_STEAM}) {
@@ -208,6 +208,29 @@ namespace {
         EXPECT_EQ(select_desired_profile(setting, type, LI_CCAP_ACCEL | LI_CCAP_GYRO | LI_CCAP_TOUCHPAD, true, true), expected);
       }
     }
+  }
+
+  TEST_F(VhfGamepadPolicyTest, SteamProfileNeedsASteamControllerClient) {
+    using platf::vhf_gamepad::is_steam_controller_client;
+    const std::uint16_t generic = LI_CCAP_ACCEL | LI_CCAP_GYRO | LI_CCAP_TOUCHPAD;
+    // Any one of the Steam extensions with the Steam type is the real controller's client driver.
+    for (const int caps : {LI_CCAP_GRIP_SENSE, LI_CCAP_STEAM_HAPTIC, LI_CCAP_SC26_BUTTONS}) {
+      SCOPED_TRACE(caps);
+      EXPECT_TRUE(is_steam_controller_client(LI_CTYPE_STEAM, static_cast<std::uint16_t>(caps)));
+      EXPECT_FALSE(is_steam_controller_client(LI_CTYPE_XBOX, static_cast<std::uint16_t>(caps)));
+      EXPECT_EQ(select_desired_profile("vhf_steam", LI_CTYPE_STEAM, static_cast<std::uint16_t>(caps), false, false), vhf_profile_e::steam_controller);
+      EXPECT_EQ(select_desired_profile("auto", LI_CTYPE_STEAM, static_cast<std::uint16_t>(caps), false, false), vhf_profile_e::steam_controller);
+    }
+    // A Steam Deck's built-in controls through SDL: the Steam type with generic capabilities only.
+    EXPECT_FALSE(is_steam_controller_client(LI_CTYPE_STEAM, generic));
+    EXPECT_EQ(select_desired_profile("auto", LI_CTYPE_STEAM, generic, true, false), vhf_profile_e::dualsense);
+    EXPECT_EQ(select_desired_profile("auto", LI_CTYPE_STEAM, generic, false, false), vhf_profile_e::automatic);
+    // vhf_steam forced: the other controllers a client forwards get the automatic choice, not a
+    // second Steam Controller.
+    EXPECT_EQ(select_desired_profile("vhf_steam", LI_CTYPE_XBOX, generic, false, false), vhf_profile_e::automatic);
+    EXPECT_EQ(select_desired_profile("vhf_steam", LI_CTYPE_PS, generic, false, false), vhf_profile_e::dualsense);
+    EXPECT_EQ(select_desired_profile("vhf_steam", LI_CTYPE_UNKNOWN, 0, false, false), vhf_profile_e::automatic);
+    EXPECT_EQ(select_desired_profile("vhf_steam", LI_CTYPE_STEAM, generic, false, false), vhf_profile_e::automatic);
   }
 
   TEST_F(VhfGamepadPolicyTest, InputStateCarriesAValidProtocolHeader) {

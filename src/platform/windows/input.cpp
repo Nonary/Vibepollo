@@ -1324,10 +1324,17 @@ namespace platf {
     // the client would otherwise silently become an Xbox 360 pad and lose both pads, grips,
     // motion, battery and haptics. ViGEmBus remains the fallback if the allocation fails.
     const bool steam_client_prefers_vhf =
-      config::input.gamepad == "auto"sv && vhf_available && metadata.type == LI_CTYPE_STEAM;
+      config::input.gamepad == "auto"sv && vhf_available &&
+      vhf_gamepad::is_steam_controller_client(metadata.type, metadata.capabilities);
 
     if (vhf_gamepad_selected() || automatic_vhf_fallback || steam_client_prefers_vhf) {
       const auto desired = vhf_desired_profile(metadata);
+
+      if (config::input.gamepad == "vhf_steam"sv && desired != vhf_profile_e::steam_controller) {
+        BOOST_LOG(info) << "Gamepad " << id.globalIndex << " is not a Steam Controller (2026) client controller (type "sv
+                        << static_cast<int>(metadata.type) << ", capabilities "sv << metadata.capabilities
+                        << "); vhf_steam is kept for Steam Controllers and this one gets the automatic choice"sv;
+      }
 
       if (vhf_available) {
         BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will use the Vibepollo virtual gamepad driver"sv

@@ -407,7 +407,12 @@ editing the `conf` file in a text editor. Use the examples as reference.
             driver with the Steam Controller profile. Steam recognises it as a real Steam
             Controller: two trackpads (the client's touchpad 0 and 1), four grip buttons, motion
             sensors, battery and pad haptics rendered as rumble. Plain `vhf` and `auto` select it
-            for clients that report a Steam Controller. A client that reads the real controller's
+            for clients that report a Steam Controller. Whether selected here or automatically, only
+            a client controller that reports the Steam type together with the Steam extensions (grip
+            sense, the pad haptic relay or explicit pad clicks) gets this profile; any other controller
+            the same client forwards, a keyboard's joystick interface for instance, or a Steam Deck's
+            built-in controls through SDL, gets the automatic choice instead of becoming a second
+            Steam Controller. A client that reads the real controller's
             firmware attributes (firmware and bootloader build times, board revision, build id,
             serials) relays them, so Steam sees the real firmware build and offers an update only
             when the real controller needs one; a driver that predates this keeps its defaults.}

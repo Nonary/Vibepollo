@@ -97,6 +97,22 @@ namespace platf::vhf_gamepad {
     bool touchpad_as_ds4
   ) noexcept;
 
+  /// The capability bits only a Steam Controller (2026) client driver reports.
+  inline constexpr std::uint16_t STEAM_CONTROLLER_CLIENT_CAPS = LI_CCAP_GRIP_SENSE | LI_CCAP_STEAM_HAPTIC | LI_CCAP_SC26_BUTTONS;
+
+  /**
+   * @brief Whether a client controller is a Steam Controller (2026) behind a client that speaks its extensions.
+   * @details `LI_CTYPE_STEAM` alone is not enough: a Steam Deck's built-in controls arrive through
+   *          SDL with that type and none of the Steam capabilities, and a client forwards other
+   *          gamepads (even a keyboard's joystick interface) alongside the real controller. Only
+   *          the type together with grip sense, the pad haptic relay or the explicit pad/trigger
+   *          clicks earns the Steam Controller profile.
+   * @param client_type The client-reported controller type.
+   * @param client_capabilities The client-reported capability flags.
+   * @return `true` for a Steam Controller (2026) client controller.
+   */
+  [[nodiscard]] bool is_steam_controller_client(std::uint8_t client_type, std::uint16_t client_capabilities) noexcept;
+
   /**
    * @brief Reports whether controller selection can create a touchpad-capable profile.
    * @details Capabilities are advertised before controller arrival. Automatic modes can still

@@ -63,6 +63,10 @@ namespace platf::vhf_gamepad {
     return std::nullopt;
   }
 
+  bool is_steam_controller_client(const std::uint8_t client_type, const std::uint16_t client_capabilities) noexcept {
+    return client_type == LI_CTYPE_STEAM && (client_capabilities & STEAM_CONTROLLER_CLIENT_CAPS) != 0;
+  }
+
   vhf_profile_e select_desired_profile(
     const std::string_view configured_gamepad,
     const std::uint8_t client_type,
@@ -85,11 +89,14 @@ namespace platf::vhf_gamepad {
     if (configured_gamepad == "vhf_switch") {
       return vhf_profile_e::switch_pro;
     }
-    if (configured_gamepad == "vhf_steam") {
+    if (configured_gamepad == "vhf_steam" && is_steam_controller_client(client_type, client_capabilities)) {
       return vhf_profile_e::steam_controller;
     }
+    // vhf_steam for anything else falls through to what the controller's own metadata earns:
+    // a virtual Steam Controller fed by a client without the pads, the haptic relay and the
+    // click flags would be a second, half-dead Steam Controller next to the real one.
 
-    if (client_type == LI_CTYPE_STEAM) {
+    if (is_steam_controller_client(client_type, client_capabilities)) {
       // A client that identifies a Steam Controller gets the real thing: two pads, grips,
       // motion and Steam's own glyphs, instead of a DualSense approximation.
       return vhf_profile_e::steam_controller;
