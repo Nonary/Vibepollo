@@ -70,12 +70,15 @@ makedepends=(
   'desktop-file-utils'
   "gcc${_gcc_dep_suffix}"
   'git'
+  'kwin'  # public allocator headers/library for the native KWin GPU bridge
   'make'
   'ninja'
   'nodejs'
   'npm'
   'python-jinja'  # required by the glad OpenGL/EGL loader generator
+  'qt6-base'  # Qt Core headers used by KWin's public allocator API
   'shaderc'
+  'vulkan-headers'  # included by KWin's public graphics-buffer API
 )
 
 optdepends=(

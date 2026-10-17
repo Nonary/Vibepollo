@@ -400,6 +400,9 @@ jobs:
           grep -qx $'\tmakedepends = nodejs' .SRCINFO
           grep -qx $'\tmakedepends = npm' .SRCINFO
           grep -qx $'\tmakedepends = ninja' .SRCINFO
+          grep -qx $'\tmakedepends = kwin' .SRCINFO
+          grep -qx $'\tmakedepends = qt6-base' .SRCINFO
+          grep -qx $'\tmakedepends = vulkan-headers' .SRCINFO
           grep -qx 'usr/bin/vibepollo' <<< "${package_files}"
           if grep -qx 'usr/bin/sunshine' <<< "${package_files}"; then
             echo "::error::The Vibepollo package unexpectedly contains the legacy Sunshine executable."
@@ -414,16 +417,29 @@ jobs:
           grep -qx 'usr/libexec/vibeshine/vibepollo-session-broker' <<< "${package_files}"
           grep -qx 'usr/libexec/vibeshine/vibepollo-provider-scan' <<< "${package_files}"
           grep -qx 'usr/libexec/vibeshine/vibepollo-profile-import' <<< "${package_files}"
+          grep -qx 'usr/lib/libvibeshine-kwin-gpu.so' <<< "${package_files}"
           grep -qx 'usr/lib/sysusers.d/vibepollo.conf' <<< "${package_files}"
 
-          # Extract only the two network-facing execution-chain binaries and
-          # verify that the package archive does not grant either file
+          # Extract the bridge and the two network-facing execution-chain
+          # binaries. The package must not grant either executable file
           # capabilities. systemd supplies the host's narrowly bounded runtime
           # capabilities; the session client must remain entirely unprivileged.
           capability_check_root="$(mktemp -d)"
           bsdtar --xattrs -xpf "${package}" -C "${capability_check_root}" \
             usr/bin/vibepollo \
-            usr/libexec/vibeshine/vibepollo-session-exec
+            usr/libexec/vibeshine/vibepollo-session-exec \
+            usr/lib/libvibeshine-kwin-gpu.so
+          # Matching KWin 6.8 builds must include both native hooks, not just
+          # the legacy bridge that silently leaves these outputs on CPU copies.
+          if [[ "$(readlink -f /usr/lib/libkwin.so)" == /usr/lib/libkwin.so.6.8.* ]]; then
+            readelf --dyn-syms --wide \
+              "${capability_check_root}/usr/lib/libvibeshine-kwin-gpu.so" \
+              > "${capability_check_root}/kwin-bridge-symbols.txt"
+            grep -q ' _ZN4KWin26GbmGraphicsBufferAllocator8allocateERKNS_21GraphicsBufferOptionsE$' \
+              "${capability_check_root}/kwin-bridge-symbols.txt"
+            grep -q ' _ZNK4KWin10GpuManager26findCompatibleRenderDeviceEP10_drmDevice$' \
+              "${capability_check_root}/kwin-bridge-symbols.txt"
+          fi
           for capability_path in \
             "${capability_check_root}/usr/bin/vibepollo" \
             "${capability_check_root}/usr/libexec/vibeshine/vibepollo-session-exec"; do
