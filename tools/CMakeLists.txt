@@ -55,6 +55,7 @@ add_executable(playnite-launcher
         playnite_launcher/launcher.cpp
         playnite_launcher/arguments.cpp
         playnite_launcher/cleanup.cpp
+        playnite_launcher/focus_policy.cpp
         playnite_launcher/focus_utils.cpp
         playnite_launcher/lossless_scaling.cpp
         playnite_launcher/lossless_scaling_policy.cpp
