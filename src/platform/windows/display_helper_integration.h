@@ -71,6 +71,10 @@ namespace display_helper_integration {
   // Returns true if a deferred APPLY request is currently queued.
   bool has_pending_apply();
 
+  // Returns true if a REVERT could not reach the helper and the watchdog will
+  // retry it once the helper responds and no stream or app is active.
+  bool has_failed_revert();
+
   // Retry a deferred APPLY request once a user session is available. The
   // optional predicate lets an owned shutdown worker abandon a long helper
   // operation before teardown begins.
