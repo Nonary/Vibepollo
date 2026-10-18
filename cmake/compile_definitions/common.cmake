@@ -196,6 +196,7 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/app_framegen_config.h"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/smooth_motion_policy.h"
         "${CMAKE_SOURCE_DIR}/src/deferred_action.h"
+        "${CMAKE_SOURCE_DIR}/src/paused_app_monitor.h"
         "${CMAKE_SOURCE_DIR}/src/process_catalog.cpp"
         "${CMAKE_SOURCE_DIR}/src/process_catalog.h"
         "${CMAKE_SOURCE_DIR}/src/process_context.h"

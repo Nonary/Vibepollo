@@ -58,6 +58,7 @@
 #include "file_handler.h"
 #include "globals.h"
 #include "logging.h"
+#include "paused_app_monitor.h"
 #include "platform/common.h"
 #if defined(_WIN32) || defined(__linux__)
   #include "display_helper_integration.h"
@@ -960,6 +961,35 @@ namespace proc {
 
   proc_t proc;
 
+  namespace {
+    // Restore the displays within seconds of a paused app exiting, at a
+    // fraction of the stream control thread's polling rate.
+    constexpr auto kPausedAppPollInterval = 3s;
+
+    paused_app_monitor_t &paused_app_monitor() {
+      static paused_app_monitor_t monitor {
+        {
+          .app_active = [] {
+            return proc.current_app_id() > 0;
+          },
+          // running() would start a login-deferred launch with no client attached.
+          .should_poll = [] {
+            return !proc.is_launch_deferred();
+          },
+          .poll = [] {
+            try {
+              (void) proc.running();
+            } catch (const std::exception &e) {
+              BOOST_LOG(error) << "Paused app monitor: app liveness check failed: " << e.what();
+            }
+          },
+        },
+        kPausedAppPollInterval,
+      };
+      return monitor;
+    }
+  }  // namespace
+
   int input_only_app_id = -1;
   std::string input_only_app_id_str;
   int terminate_app_id = -1;
@@ -1268,6 +1298,7 @@ namespace proc {
     }
 
     ~deinit_t() {
+      paused_app_monitor().stop();
       proc.terminate();
     }
 
@@ -3014,6 +3045,9 @@ namespace proc {
     }
 
     BOOST_LOG(info) << "Session pausing for app [" << _app_name << "].";
+
+    // No stream thread observes the app while it is paused.
+    paused_app_monitor().start();
 
     std::function<void()> finish_screen_saver_restore = [] {};
 #ifdef _WIN32
