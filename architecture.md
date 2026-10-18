@@ -875,3 +875,28 @@ the HTTPS peer for at most 1500 ms, then starts the measured two-second probe
 using the client's observed UDP source port. This establishes outbound UDP
 state on both peers without changing firewall rules. Warmups and handshake
 time are excluded from results; legacy clients retain the original transfer.
+
+## Managed application focus timing
+
+Timing follow-up reviewed from source primary `97835dbfb14faafd8b4f13d98bc00cc921d45296`
+(2026-10-18). `src/managed_app_focus.h` owns the shared steady-clock discovery
+and activation bounds. Steam/Lutris sessions and both Playnite game launch
+branches wait up to `max(180s, app_focus_timeout_secs)` for eligible window
+identities. Each unseen process/window identity arms the configured focus
+window, capped by the original hard limit; observations and status refreshes do
+not move that limit or restore confirmed-success counts. Expired activation
+windows permit further discovery but no activation of stale windows.
+
+Windows retains visible, unowned target-window discovery and confirms the
+specific window/PID; direct Playnite keeps its foreground confirmation dedupe
+and Lossless Scaling refocus callback. The fullscreen library UI has its own
+existing focus budget. Linux resolves the installed Steam/Lutris catalog target,
+filters process identity (including protected Steam exclusions), then inspects
+KWin normal taskbar windows by PID/internalId before activating a selected ID.
+The same script handles native Wayland and XWayland windows. Each script is
+one-shot and unloaded. Broker/session generation cancellation remains external
+to the timing budget. macOS observes Core Graphics window ID/PID/geometry for
+target applications before existing AppKit activation; it requests no new
+Accessibility or capture permission. Windows and macOS own cancellable workers
+joined on session destruction. An exhausted confirmation count or exit-on-first
+ends a session even if a later replacement window would otherwise be eligible.

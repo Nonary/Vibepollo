@@ -1480,3 +1480,14 @@ if(WIN32)
         set_tests_properties(test_script_bootstrap_migration PROPERTIES LABELS "installer;component")
     endif()
 endif()
+
+# Managed focus has native effect ports; execute its production portable logic.
+if(Python3_Interpreter_FOUND AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_program(SUNSHINE_TEST_FOCUS_NODE NAMES node nodejs)
+    if(SUNSHINE_TEST_FOCUS_NODE)
+        add_test(NAME regression_managed_app_focus_adapters
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_managed_app_focus_adapters.py"
+                --compiler "${CMAKE_CXX_COMPILER}" --node "${SUNSHINE_TEST_FOCUS_NODE}")
+        set_tests_properties(regression_managed_app_focus_adapters PROPERTIES LABELS "component" TIMEOUT 60)
+    endif()
+endif()
