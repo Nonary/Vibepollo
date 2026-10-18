@@ -330,8 +330,8 @@ optional XML field `clientWarning=virtual_display_disabled_by_client`. It requir
 an actual `virtualDisplay=0` request, an otherwise virtual effective choice, and
 a successful session without a newly selected virtual output. It excludes joins of an existing capture output,
 virtual output, creation failures and Linux backends that only capture an existing
-compositor scene. The observer reconstructs only display intent, using the same
-explicit-choice resolver; it never changes display selection, preparation,
+compositor scene. Assembly captures warning intent from the same app/client snapshots using the
+explicit-choice resolver. The response observer never re-reads mutable settings; it never changes display selection, preparation,
 authentication, success status or persistent settings. Resume uses the application
 actually resolved into the session; it does not import missing app policy merely
 for the warning. Absence of `virtualDisplay` always inherits.

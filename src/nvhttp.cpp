@@ -2864,6 +2864,61 @@ namespace nvhttp {
     }
 
     /**
+     * @brief Capture display-warning intent from the same snapshots used by session assembly.
+     * @param args Original request; only literal virtualDisplay=0 requests this warning.
+     * @param client Authenticated paired-client snapshot used to assemble display fields.
+     * @param app Application snapshot used to assemble display fields, or no application.
+     * @return Whether removing only the explicit wire disable would request a virtual mode.
+     * @note Capture before preparation; never re-read mutable settings after admission.
+     */
+    template<class Client, class App>
+    bool client_display_warning_requested(const args_t &args, const Client &client, const App &app) {
+      if (get_arg(args, "virtualDisplay", "") != "0") return false;
+      std::optional<config::video_t::virtual_display_mode_e> mode;
+      std::optional<std::string> output;
+      bool client_requests_virtual = false;
+      if (client) {
+        client_requests_virtual = client->always_use_virtual_display;
+        if (!client->output_name_override.empty()) output = client->output_name_override;
+        mode = parse_virtual_display_mode_override(client->virtual_display_mode_override);
+      }
+      if (app) {
+        if (!mode) mode = app->virtual_display_mode_override;
+        if (!output) output = app->output_name_override;
+      }
+      auto output_choice = proc::display_policy::app_override_e::inherit;
+      if (output) {
+        const auto trimmed = boost::algorithm::trim_copy(*output);
+        output_choice = !trimmed.empty() && VDISPLAY::policy::is_virtual_display_selection(trimmed, true) ?
+                          proc::display_policy::app_override_e::virtual_display : proc::display_policy::app_override_e::physical;
+      }
+      // Layout-only and legacy app flags do not consistently request creation on
+      // both Launch and Resume. Do not attribute those paths to the wire disable.
+      const bool mode_requests_virtual = mode.value_or(config::video.virtual_display_mode) !=
+                                         config::video_t::virtual_display_mode_e::disabled;
+      return proc::display_policy::resolve_virtual_display_request(mode_requests_virtual, output_choice) || client_requests_virtual;
+    }
+
+    /**
+     * @brief Append the captured warning only after successful normal RTSP admission.
+     * @param tree Successful response; existing fields remain unchanged.
+     * @param session Prepared session with immutable request-time warning intent.
+     * @param joining_existing Whether an existing capture output is being joined.
+     */
+    void add_client_display_warning(pt::ptree &tree, const rtsp_stream::launch_session_t &session, bool joining_existing) {
+      if (!session.client_display_warning_requested || joining_existing ||
+          session.input_only || session.role != remote_session::role_e::game || session.virtual_display || session.virtual_display_failed ||
+          tree.get<int>("root.<xmlattr>.status_code", 0) != 200) {
+        return;
+      }
+  #ifdef __linux__
+      // An existing compositor scene ignores virtual-display requests altogether.
+      if (!platf::linux_display::backend().capabilities().independent_outputs) return;
+  #endif
+      tree.put("root.clientWarning", "virtual_display_disabled_by_client");
+    }
+
+    /**
      * @brief Resolve preparation after all launch or resumed-app display fields are present.
      * @param session Session carrying the original client display-policy choice.
      * @param client Verified paired-client snapshot for this request.
@@ -2881,58 +2936,6 @@ namespace nvhttp {
       );
       session.dd_config_option_override = preparation.option;
       session.virtual_display_preparation_override = preparation.virtual_override;
-    }
-
-    /**
-     * @brief Add a nonfatal, code-only warning for a suppressed virtual-display choice.
-     * @param tree Successful launch or resume response, after RTSP admission.
-     * @param args Original request; omission of virtualDisplay always means inheritance.
-     * @param session Actual prepared session, including display-creation outcome.
-     * @param client Authenticated paired-client settings for this request.
-     * @param joining_existing Whether this request joins an already selected capture output.
-     * @note This observes policy only; it cannot change admission, display or authorization.
-     */
-    template<class Client>
-    void add_client_display_warning(
-      pt::ptree &tree, const args_t &args, const rtsp_stream::launch_session_t &session,
-      const Client &client, bool joining_existing
-    ) {
-      if (get_arg(args, "virtualDisplay", "") != "0" || joining_existing ||
-          session.input_only || session.role != remote_session::role_e::game || session.virtual_display || session.virtual_display_failed ||
-          tree.get<int>("root.<xmlattr>.status_code", 0) != 200) {
-        return;
-      }
-
-  #ifdef __linux__
-      // An existing compositor scene ignores virtual-display requests altogether.
-      if (!platf::linux_display::backend().capabilities().independent_outputs) return;
-  #endif
-
-      // Reconstruct only the display choice with the wire disable absent. Use the
-      // same explicit-choice resolver as preparation; never treat absence as off.
-      rtsp_stream::launch_session_t intended {};
-      if (client) {
-        intended.client_requests_virtual_display = client->always_use_virtual_display;
-        if (!client->output_name_override.empty()) intended.output_name_override = client->output_name_override;
-        intended.virtual_display_mode_override = parse_virtual_display_mode_override(client->virtual_display_mode_override);
-      }
-      if (const auto app = proc::proc.resolve_app(session.appid)) {
-        if (!intended.virtual_display_mode_override) intended.virtual_display_mode_override = app->virtual_display_mode_override;
-        if (!intended.output_name_override) intended.output_name_override = app->output_name_override;
-      }
-      auto output_choice = proc::display_policy::app_override_e::inherit;
-      if (intended.output_name_override) {
-        const auto output = boost::algorithm::trim_copy(*intended.output_name_override);
-        output_choice = !output.empty() && VDISPLAY::policy::is_virtual_display_selection(output, true) ?
-                          proc::display_policy::app_override_e::virtual_display : proc::display_policy::app_override_e::physical;
-      }
-      // Layout-only and legacy app flags do not consistently request creation on
-      // both Launch and Resume. Do not attribute those paths to the wire disable.
-      const bool mode_requests_virtual = intended.virtual_display_mode_override.value_or(config::video.virtual_display_mode) !=
-                                         config::video_t::virtual_display_mode_e::disabled;
-      const bool otherwise_virtual = proc::display_policy::resolve_virtual_display_request(mode_requests_virtual, output_choice) ||
-                                     intended.client_requests_virtual_display;
-      if (otherwise_virtual) tree.put("root.clientWarning", "virtual_display_disabled_by_client");
     }
 
     static std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session_from_snapshot(
@@ -3154,6 +3157,7 @@ namespace nvhttp {
       const auto launch_appid_arg = get_arg(args, "appid", "0");
       const auto launch_appuuid_arg = get_arg(args, "appuuid", "");
       auto launch_app_ctx = proc::proc.resolve_app(launch_appid_arg, launch_appuuid_arg);
+      launch_session->client_display_warning_requested = client_display_warning_requested(args, verified_client, launch_app_ctx);
       int app_scale_factor = 100;
       launch_session->appid = launch_app_ctx ? (int) util::from_view(launch_app_ctx->id) : (int) util::from_view(launch_appid_arg);
       if (!verified_client->output_name_override.empty()) {
@@ -3198,6 +3202,7 @@ namespace nvhttp {
             metadata.has_command = !app_ctx->cmd.empty();
             metadata.has_playnite = !app_ctx->playnite_id.empty();
             metadata.playnite_fullscreen = app_ctx->playnite_fullscreen;
+            launch_session->client_display_warning_requested = client_display_warning_requested(args, verified_client, app_ctx);
             launch_session->virtual_display = app_ctx->virtual_screen;
             if (!launch_session->virtual_display_mode_override && app_ctx->virtual_display_mode_override) {
               launch_session->virtual_display_mode_override = app_ctx->virtual_display_mode_override;
@@ -5477,7 +5482,7 @@ namespace nvhttp {
       revert_display_configuration = false;
       output_override_guard.disable();
       runtime_overrides_guard.disable();
-      add_client_display_warning(tree, args, *launch_session, verified_client, !no_active_sessions || is_input_only);
+      add_client_display_warning(tree, *launch_session, !no_active_sessions || is_input_only);
     }
 
   void resume(bool &host_audio, resp_https_t response, req_https_t request, int current_appid, const bool normal_app_transition, const bool launched_from_applist) {
@@ -5691,6 +5696,7 @@ namespace nvhttp {
       try {
         if (auto app_ctx = proc::proc.resolve_app(current_appid)) {
           launch_session->appid = (int) util::from_view(app_ctx->id);
+          launch_session->client_display_warning_requested = client_display_warning_requested(args, verified_client, app_ctx);
           launch_session->gen1_framegen_fix = app_ctx->gen1_framegen_fix;
           launch_session->gen2_framegen_fix = app_ctx->gen2_framegen_fix;
           launch_session->frame_generation_enabled = app_ctx->frame_generation_enabled;
@@ -6137,7 +6143,7 @@ namespace nvhttp {
     output_override_guard.disable();
     runtime_overrides_guard.disable();
     revert_display_configuration = false;
-    add_client_display_warning(tree, args, *launch_session, verified_client, joining_existing_game_output || is_input_only);
+    add_client_display_warning(tree, *launch_session, joining_existing_game_output || is_input_only);
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
     system_tray::update_tray_client_connected(verified_client->name);

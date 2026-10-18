@@ -28,7 +28,11 @@ def function(signature):
 
 if 'void add_client_display_warning(' not in nvhttp:
     raise SystemExit('NEGATIVE CONTROL: successful responses have no warning observer')
-helper = 'template<class Client>\n' + function('void add_client_display_warning(')
+legacy_observer = 'bool client_display_warning_requested(' not in nvhttp
+helper = ('template<class Client>\n' if legacy_observer else '') + function('void add_client_display_warning(')
+capture = '' if legacy_observer else 'template<class Client, class App>\n' + function('bool client_display_warning_requested(')
+observe_call = 'add_client_display_warning(tree, args, session, client, joining);' if legacy_observer else 'add_client_display_warning(tree, session, joining);'
+capture_call = '(void) args; (void) session; (void) client;' if legacy_observer else 'session.client_display_warning_requested = client_display_warning_requested(args, client, proc::proc.resolve_app(session.appid));'
 mode_parser = function('  std::optional<config::video_t::virtual_display_mode_e> parse_virtual_display_mode_override(')
 layout_parser = function('  std::optional<config::video_t::virtual_display_layout_e> parse_virtual_display_layout_override(')
 linux = (source / 'platform/linux/private_display.cpp').read_text()
@@ -51,7 +55,7 @@ namespace config { video_t video {}; }
 namespace remote_session { enum class role_e { game, input, monitor }; }
 namespace rtsp_stream {
 struct launch_session_t {
- bool virtual_display = false, client_requests_virtual_display = false, virtual_display_failed = false, input_only = false;
+ bool virtual_display = false, client_requests_virtual_display = false, virtual_display_failed = false, client_display_warning_requested = false, input_only = false;
  remote_session::role_e role = remote_session::role_e::game;
  int appid = 42;
  std::optional<bool> client_virtual_display_override;
@@ -84,7 +88,14 @@ using args_t = std::unordered_map<std::string, std::string>;
 std::string get_arg(const args_t &args, const std::string &key, const std::string &fallback) {
  auto it = args.find(key); return it == args.end() ? fallback : it->second;
 }
-''' + mode_parser + '\n' + layout_parser + '\n' + helper + r'''
+''' + mode_parser + '\n' + layout_parser + '\n' + capture + '\n' + helper + r'''
+void capture_intent(const args_t &args, rtsp_stream::launch_session_t &session, const std::optional<Client> &client) {
+''' + capture_call + r'''
+}
+void observe(pt::ptree &tree, const args_t &args, const rtsp_stream::launch_session_t &session, const std::optional<Client> &client, bool joining) {
+ (void) args; (void) client;
+''' + observe_call + r'''
+}
 bool linux_requests_virtual(const rtsp_stream::launch_session_t &session) {
  struct { bool requested = false; } result;
 ''' + selection + r'''
@@ -105,7 +116,8 @@ int main(int argc, char **argv) {
    tree.put(verb == "launch" ? "root.gamesession" : "root.resume", status == 200 ? 1 : 0);
    tree.put("root.sessionUrl0", "rtsp://127.0.0.1:48010");
    auto before = tree;
-   add_client_display_warning(tree, args, session, client, joining);
+   capture_intent(args, session, client);
+   observe(tree, args, session, client, joining);
    const auto code = tree.get<std::string>("root.clientWarning", "");
    assert(!code.empty() == expected);
    assert(code.empty() || code == "virtual_display_disabled_by_client");
@@ -165,11 +177,38 @@ int main(int argc, char **argv) {
  platf::linux_display::independent = true;
  physical.appid = 0; proc::application->output_name_override = "DP-1";
  check("0", true, physical, false, 200, "resume"); // Unresolved app isn't imported just for warning.
+ // A settings edit between preparation and admission must not rewrite the
+ // intent captured from the app/client snapshots that actually built the session.
+ args_t zero {{"virtualDisplay", "0"}};
+ physical.appid = 42;
+ proc::application = App {};
+ config::video.virtual_display_mode = Mode::disabled;
+ auto race = [&](bool original_virtual) {
+   proc::application->virtual_display_mode_override = original_virtual ? Mode::per_client : Mode::disabled;
+   capture_intent(zero, physical, client);
+   proc::application->virtual_display_mode_override = original_virtual ? Mode::disabled : Mode::per_client;
+   pt::ptree response;
+   response.put("root.<xmlattr>.status_code", 200); response.put("root.resume", 1);
+   observe(response, zero, physical, client, false);
+   assert(!response.get<std::string>("root.clientWarning", "").empty() == original_virtual);
+   ++checks;
+ };
+ race(false); race(true);
+ proc::application = App {};
+ config::video.virtual_display_mode = Mode::per_client;
+ client->virtual_display_mode_override = "disabled";
+ capture_intent(zero, physical, client);
+ client->virtual_display_mode_override.clear();
+ pt::ptree changed_client; changed_client.put("root.<xmlattr>.status_code", 200);
+ observe(changed_client, zero, physical, client, false);
+ assert(changed_client.get<std::string>("root.clientWarning", "").empty());
+ ++checks;
  if (argc == 2) {
    pt::ptree tree; tree.put("root.<xmlattr>.status_code", 200); tree.put("root.resume", 1);
    tree.put("root.sessionUrl0", "rtsp://127.0.0.1:48010");
    args_t args {{"virtualDisplay", "0"}};
-   add_client_display_warning(tree, args, physical, client, false);
+   capture_intent(args, physical, client);
+   observe(tree, args, physical, client, false);
    std::ofstream output(argv[1]); pt::write_xml(output, tree);
  }
  std::cout << checks << " production warning cases passed\n";

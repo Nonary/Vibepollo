@@ -116,6 +116,7 @@ namespace rtsp_stream {
     bool secondary_game_client = false;
     // Present only when the client explicitly selected a virtual or physical display.
     std::optional<bool> client_virtual_display_override;
+    bool client_display_warning_requested = false;  ///< Ephemeral intent captured from request-time display snapshots.
     bool virtual_display;
     uint32_t scale_factor = 100;
     bool normal_vdd_capacity_rejected = false;
