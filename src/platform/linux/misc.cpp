@@ -1680,7 +1680,12 @@ namespace platf {
 #ifdef SUNSHINE_BUILD_PORTAL
     if (linux_private_display_capture::probe_portal(
           config::video.capture.empty(), config::video.capture == "portal",
-          native_compositor_selected, sources[source::KMS]
+          native_compositor_selected,
+#ifdef SUNSHINE_BUILD_DRM
+          sources[source::KMS]
+#else
+          false
+#endif
         ) && verify_portal()) {
       sources[source::PORTAL] = true;
     }
