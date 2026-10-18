@@ -3143,6 +3143,10 @@ namespace confighttp {
     const char *session_role = std::getenv("VIBEPOLLO_SESSION_ROLE");
     const std::string role = session_role ? session_role : "unknown";
     output_tree["linux"] = {{"session_role", role == "desktop" || role == "greeter" ? role : "unknown"}};
+    const char *machine_host = std::getenv("VIBEPOLLO_MACHINE_HOST");
+    // The machine service forces the tray off outside the desktop session.
+    // Keep its launch policy separate from the saved user preference.
+    output_tree["linux"]["machine_host"] = machine_host && machine_host[0] == '1' && machine_host[1] == '\0';
     const bool managed_active = platf::linux_capture_status::managed_event_capture_active();
     output_tree["capture_status"] = {
       {"configured_backend", config::video.capture},

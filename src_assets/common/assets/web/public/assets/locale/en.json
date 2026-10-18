@@ -977,6 +977,7 @@
     "sw_tune_zerolatency": "zerolatency -- good for fast encoding and low-latency streaming (default)",
     "system_tray": "Enable system tray",
     "system_tray_desc": "Show icon in system tray and display desktop notifications",
+    "system_tray_desc_machine_host": "The Linux system service cannot display a tray icon or desktop notifications. Use the Web UI to manage the host. Your saved tray preference is kept for desktop launches.",
     "touchpad_as_ds4": "Emulate a DS4 gamepad if the client gamepad reports a touchpad is present",
     "touchpad_as_ds4_desc": "If disabled, touchpad presence will not be taken into account during gamepad type selection.",
     "upnp": "UPnP",

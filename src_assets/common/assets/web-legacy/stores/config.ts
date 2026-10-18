@@ -6,6 +6,7 @@ import { http } from '@/http';
 export interface MetaInfo {
   platform?: string;
   architecture?: string;
+  linux?: { machine_host?: boolean };
   status?: boolean;
   version?: string;
   commit?: string;
