@@ -5,6 +5,7 @@
 #ifdef _WIN32
 
   #include "display_helper_request_helpers.h"
+  #include "src/session_display_policy.h"
 
   #include "src/platform/windows/display_helper_request_policy.h"
 
@@ -110,6 +111,8 @@ namespace display_helper_integration::helpers {
       snapshot.virtual_display_mode_override = session.virtual_display_mode_override;
       snapshot.virtual_display_layout_override = session.virtual_display_layout_override;
       snapshot.dd_config_option_override = session.dd_config_option_override;
+      snapshot.virtual_display_preparation_override = session.virtual_display_preparation_override;
+      snapshot.display_preparation_client_virtual_override = session.display_preparation_client_virtual_override;
       snapshot.output_name_override = session.output_name_override;
       snapshot.virtual_display_device_id = session.virtual_display_device_id;
       snapshot.virtual_display_ready_since = session.virtual_display_ready_since;
@@ -285,9 +288,9 @@ namespace display_helper_integration::helpers {
       video_config_ {video_config},
       effective_video_config_ {video_config},
       session_ {session} {
-    if (session.dd_config_option_override) {
-      effective_video_config_.dd.configuration_option = *session.dd_config_option_override;
-    }
+    effective_video_config_.dd.configuration_option = proc::display_policy::effective_preparation(
+      video_config.dd.configuration_option, session, virtual_display_intended
+    );
     if (session.virtual_display_mode_override) {
       effective_video_config_.virtual_display_mode = *session.virtual_display_mode_override;
     }
@@ -597,9 +600,9 @@ namespace display_helper_integration::helpers {
       video_config_ {video_config},
       effective_video_config_ {video_config},
       session_ {session} {
-    if (session.dd_config_option_override) {
-      effective_video_config_.dd.configuration_option = *session.dd_config_option_override;
-    }
+    effective_video_config_.dd.configuration_option = proc::display_policy::effective_preparation(
+      video_config.dd.configuration_option, session
+    );
     if (session.virtual_display_mode_override) {
       effective_video_config_.virtual_display_mode = *session.virtual_display_mode_override;
     }
@@ -858,7 +861,7 @@ namespace display_helper_integration::helpers {
 
   std::optional<DisplayApplyRequest> build_request_from_session(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
     const auto effective_config_option =
-      session.dd_config_option_override.value_or(video_config.dd.configuration_option);
+      proc::display_policy::effective_preparation(video_config.dd.configuration_option, session);
     const auto policy = request_policy::evaluate({
       .configuration_option = effective_config_option == config::video_t::dd_t::config_option_e::disabled ?
                                 request_policy::ConfigurationOption::Disabled :

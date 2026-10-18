@@ -63,6 +63,7 @@
 #include "nvhttp.h"
 #include "process.h"
 #include "rtsp.h"
+#include "session_display_policy.h"
 #include "session_history.h"
 #include "stream.h"
 #include "utility.h"
@@ -2970,8 +2971,11 @@ namespace webrtc_stream {
             if (!launch_session->virtual_display_layout_override && app_ctx->virtual_display_layout_override) {
               launch_session->virtual_display_layout_override = app_ctx->virtual_display_layout_override;
             }
-            if (!launch_session->dd_config_option_override && app_ctx->dd_config_option_override) {
+            if (!launch_session->dd_config_option_override) {
               launch_session->dd_config_option_override = app_ctx->dd_config_option_override;
+              if (!launch_session->dd_config_option_override) {
+                launch_session->dd_config_option_override = proc::display_policy::preparation_override(app_ctx->config_overrides);
+              }
             }
             if (app_ctx->output_name_override) {
               launch_session->output_name_override = *app_ctx->output_name_override;
@@ -2981,6 +2985,17 @@ namespace webrtc_stream {
         } catch (...) {
         }
       }
+
+      // Resolve display preparation after client and application fields.
+      const auto display_preparation = proc::display_policy::resolve_preparation(
+        config::video.dd.configuration_option,
+        launch_session->dd_config_option_override,
+        options.client_uuid ? proc::display_policy::preparation_override(nvhttp::get_client_config_overrides(*options.client_uuid)) : std::nullopt,
+        false,
+        proc::display_policy::virtual_display_override(*launch_session).value_or(false)
+      );
+      launch_session->dd_config_option_override = display_preparation.option;
+      launch_session->virtual_display_preparation_override = display_preparation.virtual_override;
 
       auto key = crypto::rand(16);
       launch_session->gcm_key.assign(key.begin(), key.end());

@@ -45,6 +45,11 @@ request_policy_input = request_builder[request_builder.index("{") + 1:request_bu
 constructor_start = request_helpers.index("SessionDisplayConfigurationHelper::SessionDisplayConfigurationHelper(")
 constructor_end = request_helpers.index("  std::optional<display_device::Resolution>", constructor_start)
 constructor = request_helpers[constructor_start:constructor_end]
+preparation_policy = ""
+policy_file = args.source_dir / "session_display_policy.h"
+if policy_file.exists():
+    preparation_policy = "namespace proc::display_policy { using preparation_e = config::video_t::dd_t::config_option_e;\ntemplate <class Session>\n" + function(policy_file.read_text(), "preparation_e effective_preparation(") + "\n}\n"
+
 topology = (args.source_dir / "platform/windows/display_helper_v2/topology_policy.cpp").read_text()
 preparation_mapping = function(display, "[[maybe_unused]] std::optional<SingleDisplayConfiguration::DevicePreparation> parse_device_prep_option(")
 validation_start = launch.index("      const auto requested_output_name =")
@@ -204,11 +209,12 @@ namespace rtsp_stream {
     std::optional<config::video_t::virtual_display_layout_e> virtual_display_layout_override;
     std::optional<std::string> output_name_override;
     bool virtual_display = false, virtual_display_failed = false;
+    bool virtual_display_preparation_override = false;
     std::string virtual_display_device_id;
   };
 }
 namespace display_device {
-''' + display_helpers + "\n" + preparation_mapping + "\n}\n" + driver_helpers + r'''
+''' + display_helpers + "\n" + preparation_mapping + "\n}\n" + driver_helpers + preparation_policy + r'''
 namespace display_helper_integration::helpers {
 ''' + function(request_helpers, "bool output_name_targets_virtual(") + "\n" + function(request_helpers, "bool session_has_physical_output_override(") + r'''
   struct SessionDisplayConfigurationHelper {

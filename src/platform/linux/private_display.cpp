@@ -29,6 +29,7 @@
 #include "src/process.h"
 #include "src/remote_display_topology.h"
 #include "src/rtsp.h"
+#include "src/session_display_policy.h"
 #include "src/state_storage.h"
 #include "src/stream.h"
 #include "src/virtual_display_scale.h"
@@ -1294,9 +1295,9 @@ namespace platf::linux_private_display {
 
     auto effective_video = config::video;
     effective_video.output_name = session.virtual_display_device_id;
-    if (session.dd_config_option_override) {
-      effective_video.dd.configuration_option = *session.dd_config_option_override;
-    }
+    effective_video.dd.configuration_option = proc::display_policy::effective_preparation(
+      config::video.dd.configuration_option, session
+    );
     const auto parsed = display_device::parse_configuration(effective_video, session);
     if (std::holds_alternative<display_device::failed_to_parse_tag_t>(parsed)) {
       BOOST_LOG(error) << "Linux private display: failed to parse the requested display mode.";

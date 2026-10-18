@@ -1522,6 +1522,14 @@ this option to replace the running app immediately. The default is `true`.
     </tr>
 </table>
 
+Display preparation follows Client → Application → Global precedence. A client's
+`dd_configuration_option` override wins over the application's dedicated or generic
+preparation setting. A virtual-display selection or layout at a higher level can
+use its normal virtual layout preparation despite inherited `verify_only`.
+An explicit `verify_only` at the same or a higher level remains authoritative.
+These overrides are temporary for the session. If virtual-display creation falls
+back to a physical output, the virtual-only promotion is not applied.
+
 ### dd_resolution_option
 
 <table>
