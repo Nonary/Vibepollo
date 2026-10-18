@@ -323,6 +323,27 @@ display settings, retaining the verified client's original display choice.
 These policy rules do not establish that a physical monitor honors a disable
 request; that requires separate runtime evidence.
 
+#### Nonblocking client display warning
+
+After normal RTSP launch/resume admission succeeds, `nvhttp.cpp` can add the
+optional XML field `clientWarning=virtual_display_disabled_by_client`. It requires
+an actual `virtualDisplay=0` request, an otherwise virtual effective choice, and
+a successful session without a newly selected virtual output. It excludes joins of an existing capture output,
+virtual output, creation failures and Linux backends that only capture an existing
+compositor scene. The observer reconstructs only display intent, using the same
+explicit-choice resolver; it never changes display selection, preparation,
+authentication, success status or persistent settings. Resume uses the application
+actually resolved into the session; it does not import missing app policy merely
+for the warning. Absence of `virtualDisplay` always inherits.
+
+A session flag does not certify the later capture target or physical scanout;
+the warning describes the suppressed request and continued existing-display stream.
+Only a client implementing this optional code can display the warning. Nonary
+Moonlight has a bounded, localized, temporary in-stream overlay receiver, but does
+not itself send the explicit disable today. Unchanged Artemis clients can ignore
+the field. An app virtual request that still creates a virtual display is silent;
+this extension does not change that platform-dependent display policy.
+
 #### Launch + display prep (Windows-specific heavy lifting)
 
 If an app must be launched, it uses the same process infrastructure as classic sessions (`proc::proc.execute(...)`). It also prepares the display environment (virtual display, display helper integration) before capture:
