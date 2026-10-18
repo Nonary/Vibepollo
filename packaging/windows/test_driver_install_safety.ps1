@@ -146,6 +146,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Display release identity/trust validation tests failed.' }
     & (Join-Path $RepositoryRoot 'packaging/windows/test_gamepad_cleanup_paths.ps1') -RepositoryRoot $RepositoryRoot
     & (Join-Path $RepositoryRoot 'packaging/windows/test_optional_display_guard.ps1') -RepositoryRoot $RepositoryRoot
+    & (Join-Path $RepositoryRoot 'packaging/windows/test_retained_display_device.ps1') -RepositoryRoot $RepositoryRoot
     & (Join-Path $RepositoryRoot 'packaging/windows/test_display_reboot_state.ps1') -RepositoryRoot $RepositoryRoot
     Write-Host 'Driver installation safety checks passed. No installers, drivers, trust stores, services or restarts were executed.'
 } finally {

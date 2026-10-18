@@ -1000,6 +1000,122 @@ function Test-DeviceNodePresent {
     return $false
 }
 
+function Get-SunshineDeviceHealth {
+    # A signed/staged package is not evidence that a present device can start.
+    # Use numeric PnP properties, not localized pnputil labels or registry ghosts.
+    $nodes = @(Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction Stop | Where-Object {
+        @($_.HardwareID) -icontains $hardwareId
+    })
+    foreach ($node in $nodes) {
+        if ($null -eq $node.Present -or $null -eq $node.ConfigManagerErrorCode) {
+            throw 'Unknown virtual display device health; retained packages unchanged.'
+        }
+    }
+    $present = @($nodes | Where-Object { $_.Present -eq $true })
+    if ($present.Count -gt 1) { throw 'Multiple present virtual display devices; automatic repair deferred.' }
+    $signed = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
+        @($_.HardwareID) -icontains $hardwareId -or
+        @($nodes.DeviceID) -icontains ([string]$_.DeviceID)
+    })
+    $versions = @($signed | ForEach-Object { ConvertTo-DriverComponentVersion ([string]$_.DriverVersion) })
+    $active = @($signed | Where-Object { @($present.DeviceID) -icontains ([string]$_.DeviceID) })
+    if ($active.Count -gt 1) { throw 'Ambiguous active virtual display driver versions; automatic repair deferred.' }
+    return [pscustomobject]@{
+        Node = if ($present.Count) { $present[0] } else { $null }
+        Version = if ($active.Count) { ConvertTo-DriverComponentVersion ([string]$active[0].DriverVersion) } else { $null }
+        Versions = $versions
+    }
+}
+
+function Get-RetainedSunshinePackage {
+    param([Parameter(Mandatory = $true)][version]$MinimumVersion)
+    $storeRoot = [IO.Path]::GetFullPath((Join-Path $env:windir 'System32/DriverStore/FileRepository')) + [IO.Path]::DirectorySeparatorChar
+    $candidates = @()
+    foreach ($package in @(Get-WindowsDriver -Online -All -ErrorAction Stop)) {
+        $path = [string]$package.OriginalFileName
+        if ([IO.Path]::GetFileName($path) -ine 'SunshineVirtualDisplayDriver.inf') { continue }
+        if (-not [IO.Path]::IsPathRooted($path) -or [string]$package.Driver -notmatch '^oem\d+\.inf$') {
+            throw 'Unknown retained virtual display package identity.'
+        }
+        $path = [IO.Path]::GetFullPath($path)
+        if (-not $path.StartsWith($storeRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Retained virtual display package is outside the Windows Driver Store.'
+        }
+        $version = Get-InfComponentVersion $path
+        $publishedInf = Join-Path (Join-Path $env:windir 'INF') ([string]$package.Driver)
+        if ((Get-InfComponentVersion $publishedInf) -ne $version) { throw 'Retained published INF version mismatch.' }
+        if ($version -ge $MinimumVersion) { $candidates += [pscustomobject]@{ InfPath=$path; Version=$version } }
+    }
+    $selected = $candidates | Sort-Object Version -Descending | Select-Object -First 1
+    if ($null -eq $selected) { throw 'No retained display package can repair the device without a component downgrade.' }
+    $directory = Split-Path -Parent $selected.InfPath
+    $catalog = Join-Path $directory 'SunshineVirtualDisplayDriver.cat'
+    $driver = Join-Path $directory 'SunshineVirtualDisplayDriver.dll'
+    # Verify the selected stored payload, not the bundled (possibly older) DLL.
+    # Existing Windows trust is required; this recovery never provisions trust.
+    $verified = Assert-ExpectedDisplayPackage -InfPath $selected.InfPath -CatalogPath $catalog -HardwareId $hardwareId -CertificatePath $certPath -DriverPath $driver
+    $signature = Get-AuthenticodeSignature -LiteralPath $catalog -ErrorAction Stop
+    if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate -or
+        $signature.SignerCertificate.Thumbprint -ine $verified.Certificate.Thumbprint) {
+        throw 'Windows does not trust the retained display catalog; device repair deferred.'
+    }
+    return $selected
+}
+
+function Repair-RetainedSunshineDevice {
+    if ($script:rebootRequired) { Write-DriverRestartRequired; return }
+    $target = Get-InfComponentVersion $infPath
+    $health = Get-SunshineDeviceHealth
+    if ($health.Node -and $health.Node.ConfigManagerErrorCode -eq 0 -and $health.Version -and $health.Version -ge $target) {
+        Write-Host '[SunshineVirtualDisplay] Present equal/newer device reports healthy; no device changes required.'
+        return
+    }
+    if ($health.Node -and $health.Node.ConfigManagerErrorCode -eq 22) {
+        throw 'The retained virtual display device is disabled. Enable it explicitly in Device Manager before retrying; automatic repair preserves this choice.'
+    }
+    if ($health.Node -and $health.Node.ConfigManagerErrorCode -eq 14) {
+        $script:rebootRequired = $true
+        Write-DriverRestartRequired
+        return
+    }
+    if ($health.Node -and -not $health.Version) {
+        throw 'Unknown active virtual display component version; retained device unchanged. Automatic repair deferred.'
+    }
+    $minimum = @(@($target) + @($health.Versions)) | Sort-Object -Descending | Select-Object -First 1
+    $package = Get-RetainedSunshinePackage -MinimumVersion $minimum
+    Assert-Administrator
+    $script:pnputil = Resolve-SystemToolPath -ToolName 'pnputil.exe'
+    if (-not $health.Node) { Assert-Artifact -Path $nefConc }
+    try {
+        Stop-ApolloForDriverInstall
+        Stop-VirtualDisplayBrokerForDriverInstall
+        if (-not $health.Node) {
+            Write-Host "[SunshineVirtualDisplay] Recreating missing device using retained component $($package.Version)."
+            Invoke-DriverProcess -FilePath $nefConc -ArgumentList @('--create-device-node', '--class-name', 'Display', '--class-guid', $classGuid, '--hardware-id', $hardwareId)
+            if ($script:rebootRequired) { Write-DriverRestartRequired; return }
+        }
+        # Never enter bundled-payload reconciliation, remove packages, or force a
+        # driver downgrade. Windows still chooses the applicable signed driver.
+        Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/add-driver', $package.InfPath, '/install') -AllowedExitCodes @(0, 3010)
+        if ($script:rebootRequired) { Write-DriverRestartRequired; return }
+        if ($health.Node) {
+            Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/restart-device', ([string]$health.Node.DeviceID)) -AllowedExitCodes @(0, 3010)
+            if ($script:rebootRequired) { Write-DriverRestartRequired; return }
+        }
+        Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices') -AllowedExitCodes @(0, 3010)
+        if ($script:rebootRequired) { Write-DriverRestartRequired; return }
+        $repaired = Get-SunshineDeviceHealth
+        if (-not $repaired.Node -or $repaired.Node.ConfigManagerErrorCode -ne 0 -or
+            -not $repaired.Version -or $repaired.Version -lt $minimum) {
+            throw 'Retained virtual display device is still missing, unhealthy or reports an older component; no packages were removed. Native Windows repair is required.'
+        }
+        Initialize-DriverStateRegistryAccess
+        Write-Host '[SunshineVirtualDisplay] Retained virtual display device reports healthy after repair.'
+    } finally {
+        try { Start-VirtualDisplayBrokerIfNeeded } finally { Start-ApolloServiceIfNeeded }
+    }
+}
+
 function Add-MatchingDriverPublishedName {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$PublishedNames,
@@ -1529,7 +1645,7 @@ if ($UnregisterVulkanLayerOnly) {
 
 if (-not $Uninstall -and -not $ValidateOnly) {
     try {
-        if (-not (Test-SafeDriverInstall -InfPath $infPath -CatalogPath $catPath -HardwareId $hardwareId)) { exit 0 }
+        $retainedComponent = -not (Test-SafeDriverInstall -InfPath $infPath -CatalogPath $catPath -HardwareId $hardwareId)
     } catch {
         # No service or driver mutation has occurred when the guard rejects.
         if ($InstallerBestEffort) {
@@ -1537,6 +1653,15 @@ if (-not $Uninstall -and -not $ValidateOnly) {
             exit 0
         }
         throw
+    }
+    if ($retainedComponent) {
+        try {
+            Repair-RetainedSunshineDevice
+        } catch {
+            if (-not $InstallerBestEffort) { throw }
+            Write-Warning "[SunshineVirtualDisplay] VIRTUAL_DISPLAY_DRIVER_WARNING: Retained-device repair did not complete; virtual display may be unavailable. $($_.Exception.Message)"
+        }
+        exit 0
     }
 }
 
