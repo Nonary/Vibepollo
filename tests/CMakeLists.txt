@@ -1129,8 +1129,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}")
             set_tests_properties(test_component_linux_machine_locale PROPERTIES LABELS "component" TIMEOUT 30)
             foreach(package_fixture IN ITEMS
-                    package_kill_mode package_metadata package_host_stop package_host_scope package_transaction_recovery package_postconfigure
-                    package_removal package_masked_host package_mask_ownership package_arch_guard package_force_backup installer_compat installer_ownership installer_real_guard installer_2_0_1 installer_hookdirs)
+                    package_kill_mode package_metadata package_host_stop package_host_scope package_cgroup_absence package_fuse_identity package_quiesce_diagnostics package_transaction_recovery package_postconfigure
+                    package_removal package_masked_host package_mask_ownership package_arch_guard package_force_backup installer_compat installer_fuse_bootstrap installer_ownership installer_real_guard installer_2_0_1 installer_hookdirs)
                 add_test(NAME "test_component_linux_${package_fixture}"
                     COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_${package_fixture}.py"

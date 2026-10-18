@@ -470,6 +470,37 @@ if host_unit_is_stopped $'LoadState=loaded\nActiveState=inactive\nSubState=dead\
   fail_test 'nonzero host MainPID was accepted as stopped'
 fi
 
+
+# Package cleanup can observe a failed unit after its activation file was
+# masked. Failure alone neither proves nor disproves process ownership.
+(
+  session_app_control_group_is_empty() { [[ "$1" != /test/populated ]]; }
+  for load in loaded masked masked-runtime; do
+    for unit in "$host_service" "$broker_socket_service" 'vibepollo-session-exec@fixture.service'; do
+      for state in inactive:dead failed:failed; do
+        properties="LoadState=$load"$'\nActiveState='${state%:*}$'\nSubState='${state#*:}$'\nControlGroup='
+        [[ "$unit" == *.socket ]] || properties+=$'\nMainPID=0'
+        system_unit_is_stopped "$unit" "$properties" || fail_test 'empty masked/failed unit was rejected'
+        if system_unit_is_stopped "$unit" "$properties"$'\nMainPID=321'; then
+          fail_test 'masked/failed unit with live or duplicate MainPID was accepted'
+        fi
+        if system_unit_is_stopped "$unit" "${properties/ControlGroup=/ControlGroup=\/test\/populated}"; then
+          fail_test 'masked/failed populated cgroup was accepted'
+        fi
+      done
+    done
+  done
+  for properties in \
+    $'LoadState=masked\nActiveState=failed\nSubState=failed\nControlGroup=' \
+    $'LoadState=masked\nActiveState=failed\nSubState=failed\nMainPID=0\nMainPID=0\nControlGroup=' \
+    $'LoadState=masked\nActiveState=active\nSubState=running\nMainPID=0\nControlGroup=' \
+    $'LoadState=not-found\nActiveState=failed\nSubState=failed\nMainPID=0\nControlGroup='; do
+    if host_unit_is_stopped "$properties"; then fail_test 'uncertain host state was accepted'; fi
+  done
+  system_systemctl_bounded() { return 1; }
+  if system_unit_is_stopped "$host_service"; then fail_test 'failed manager query proved absence'; fi
+) || fail_test 'masked failed cleanup-state regression'
+
 # Host stop is requested once, then the exact cgroup is polled to completion.
 # The controller never escalates the GPU-owning service to SIGKILL.
 mock_system_systemctl_calls_file=$mock_app_state_directory/system-systemctl-calls

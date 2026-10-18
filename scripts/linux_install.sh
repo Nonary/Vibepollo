@@ -632,6 +632,8 @@ stage_upgrade_guard() {
   local hook_dir="$workdir/hooks"
   local outgoing_library=${2:-/usr/share/vibepollo/arch-package-hooks}
   local hook_name=00-vibepollo-incoming-quiesce.hook
+  local compat_recheck_script=''
+  vibepollo_compat_fuse_scan_recheck=0
   vibepollo_compat_override_hook=0
   [[ -f "$candidate" ]] || die "package preflight candidate is missing: $candidate"
   command -v bsdtar >/dev/null 2>&1 || die 'bsdtar is required for the safe package preflight'
@@ -646,7 +648,7 @@ stage_upgrade_guard() {
   local migration_entry migration migration_name installed_identity=''
   local archive_entries
   archive_entries=$(bsdtar -tf "$candidate") || die 'could not inspect candidate compatibility scripts'
-  for migration_name in upgrade-2.0-lifecycle.sh upgrade-2.0.1-lifecycle.sh; do
+  for migration_name in upgrade-2.0-lifecycle.sh upgrade-2.0.1-lifecycle.sh upgrade-2.0.2-fuse-scan.sh; do
     migration_entry=$(printf '%s\n' "$archive_entries" | grep -Fx \
       -e "usr/share/vibepollo/installer-migrations/$migration_name" \
       -e "./usr/share/vibepollo/installer-migrations/$migration_name" || true)
@@ -663,6 +665,9 @@ stage_upgrade_guard() {
         vibepollo_upgrade_2_0_lifecycle_compat "$installed_identity" "$outgoing_library" "$library" || die 'outgoing 2.0.0 lifecycle compatibility check failed' ;;
       upgrade-2.0.1-lifecycle.sh)
         vibepollo_upgrade_2_0_1_lifecycle_compat "$installed_identity" "$outgoing_library" "$library" || die 'outgoing 2.0.1 lifecycle compatibility check failed' ;;
+      upgrade-2.0.2-fuse-scan.sh)
+        vibepollo_upgrade_2_0_2_fuse_scan_compat "$installed_identity" "$outgoing_library" "$library" || die 'outgoing 2.0.2 FUSE-scan compatibility check failed'
+        if ((vibepollo_compat_fuse_scan_recheck)); then compat_recheck_script=$migration; fi ;;
     esac
   done
   if ((vibepollo_compat_override_hook)); then hook_name=00-vibepollo-quiesce.hook; fi
@@ -670,7 +675,16 @@ stage_upgrade_guard() {
   # especially an override whose legacy version/condition no longer matches.
   rm -f -- "$hook_dir/00-vibepollo-quiesce.hook" "$hook_dir/00-vibepollo-incoming-quiesce.hook" ||
     die 'could not retire the previous private transaction guard'
-  printf '#!/usr/bin/bash\n. %q || exit 1\nvibepollo_quiesce_or_abort\n' "$library" > "$preflight"
+  printf '#!/usr/bin/bash\n' > "$preflight"
+  if [[ -n "$compat_recheck_script" ]]; then
+    # Requalify under ALPM's transaction lock. A different installed version,
+    # edited library or changed path cannot inherit a staging-time override.
+    printf '. %q || exit 1\nvibepollo_compat_override_hook=0\n' "$compat_recheck_script" >> "$preflight"
+    printf 'vibepollo_upgrade_2_0_2_fuse_scan_compat "$(pacman -Q vibepollo)" %q %q >/dev/null || exit 1\n' "$outgoing_library" "$library" >> "$preflight"
+    printf '[[ "$%s" = 1 && "$%s" = 1 ]] || { echo "error: installed FUSE-scan guard changed after staging; no shutdown started." >&2; exit 1; }\n' \
+      vibepollo_compat_override_hook vibepollo_compat_fuse_scan_recheck >> "$preflight"
+  fi
+  printf '. %q || exit 1\nvibepollo_quiesce_or_abort\n' "$library" >> "$preflight"
   chmod 0700 "$preflight" || die 'could not protect the transaction preflight'
   cat > "$hook_dir/$hook_name" <<EOF
 [Trigger]

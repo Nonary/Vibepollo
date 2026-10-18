@@ -30,7 +30,22 @@ vibepollo_cgroup_is_quiescent() {
   esac
   vibepollo_cgroup_path=/sys/fs/cgroup$vibepollo_control_group
   if [ ! -e "$vibepollo_cgroup_path" ] && [ ! -L "$vibepollo_cgroup_path" ]; then
-    return 0
+    # Shell existence tests also fail on denied lookup. Only ENOENT
+    # proves absence; errors or a path that reappeared stay blocked.
+    [ -x /usr/bin/python3 ] || return 1
+    timeout --signal=KILL 5 /usr/bin/python3 -I - "$vibepollo_cgroup_path" <<'PY'
+import os
+import sys
+
+try:
+    os.lstat(sys.argv[1])
+except FileNotFoundError:
+    sys.exit(0)
+except OSError:
+    pass
+sys.exit(1)
+PY
+    return $?
   fi
   [ -d "$vibepollo_cgroup_path" ] && [ ! -L "$vibepollo_cgroup_path" ] && \
     [ -f "$vibepollo_cgroup_path/cgroup.events" ] && \
@@ -264,6 +279,36 @@ import stat
 import sys
 
 paths = ("/usr/bin/vibepollo", "/usr/libexec/vibeshine/vibepollo-host")
+def inaccessible_fuse_is_unrelated(fd, target, identities):
+    # O_PATH pins the kernel executable path without opening it for I/O. FUSE
+    # may refuse getattr even to root when allow_other is absent. Never infer
+    # absence from EACCES, argv, process UID, or an AppImage-looking pathname.
+    # fdinfo supplies the pinned mount ID without consulting the FUSE daemon;
+    # mountinfo binds it to a kernel device, even across PID reuse or exec.
+    if target in paths or target in tuple(name + " (deleted)" for name in paths):
+        return False
+    info = pathlib.Path(f"/proc/self/fdinfo/{fd}").read_text()
+    mounts = [line.split()[1:] for line in info.splitlines() if line.startswith("mnt_id:")]
+    if len(mounts) != 1 or len(mounts[0]) != 1 or not mounts[0][0].isdecimal():
+        return False
+    mount_id = mounts[0][0]
+    entries = [line for line in pathlib.Path("/proc/self/mountinfo").read_text().splitlines()
+               if line.split()[0] == mount_id]
+    if len(entries) != 1:
+        return False
+    before, separator, after = entries[0].partition(" - ")
+    fields, filesystem = before.split(), after.split()
+    if not separator or len(fields) < 6 or len(filesystem) != 3:
+        return False
+    if filesystem[0] != "fuse" and not filesystem[0].startswith("fuse."):
+        return False
+    device = fields[2].split(":")
+    if len(device) != 2 or not all(value.isdecimal() for value in device):
+        return False
+    # Even on FUSE, a retained executable on this device remains ambiguous.
+    # Do not use daemon-controlled inode numbers to exclude an old host.
+    return os.makedev(*map(int, device)) not in {dev for dev, ino in identities}
+
 try:
     records = json.loads(sys.argv[1])
     if not isinstance(records, list) or len(records) > 2:
@@ -284,12 +329,22 @@ try:
     for process in pathlib.Path("/proc").iterdir():
         if not process.name.isdecimal():
             continue
+        executable = process / "exe"
         try:
-            executable = process / "exe"
-            identity = executable.stat()
-            target = os.readlink(executable)
+            fd = os.open(executable, os.O_PATH | os.O_CLOEXEC)
         except (FileNotFoundError, ProcessLookupError):
             continue
+        try:
+            pinned = f"/proc/self/fd/{fd}"
+            target = os.readlink(pinned)
+            try:
+                identity = os.fstat(fd)
+            except PermissionError:
+                if inaccessible_fuse_is_unrelated(fd, target, identities):
+                    continue
+                raise ValueError(f"PID {process.name}: inaccessible executable identity is ambiguous; replacement is blocked")
+        finally:
+            os.close(fd)
         def report_old_owner(deleted=False):
             uid, scope = "unknown", "<unavailable>"
             try:
@@ -2092,16 +2147,16 @@ vibepollo_quiesce_machine_host() {
   fi
 
   if [ "$vibepollo_have_systemd" -eq 0 ]; then
-    vibepollo_disable_legacy_handoff || return 1
+    vq vibepollo_disable_legacy_handoff || return 1
   fi
-  vibepollo_runtime_root_is_safe_or_absent || return 1
+  vq vibepollo_runtime_root_is_safe_or_absent || return 1
 
   if [ "$vibepollo_have_systemd" -eq 0 ] && \
      { [ -e "$vibepollo_controller" ] || [ -L "$vibepollo_controller" ]; }; then
-    vibepollo_privileged_helper_is_safe "$vibepollo_controller" || return 1
-    timeout --signal=KILL 40 "$vibepollo_controller" cleanup || return 1
+    vq vibepollo_privileged_helper_is_safe "$vibepollo_controller" || return 1
+    vq timeout --signal=KILL 40 "$vibepollo_controller" cleanup || return 1
   elif [ "$vibepollo_have_systemd" -eq 0 ]; then
-    vibepollo_run_optional_legacy_command cleanup
+    vq vibepollo_run_optional_legacy_command cleanup
     vibepollo_legacy_status=$?
     case "$vibepollo_legacy_status" in
       0 | 2) ;;
@@ -2111,7 +2166,7 @@ vibepollo_quiesce_machine_host() {
 
   # Both the immediately prior helper and the current helper support this
   # migration. Exit 2 alone means an older helper did not implement the verb.
-  vibepollo_run_optional_legacy_command remove-pam
+  vq vibepollo_run_optional_legacy_command remove-pam
   vibepollo_legacy_status=$?
   case "$vibepollo_legacy_status" in
     0 | 2) ;;
@@ -2121,36 +2176,38 @@ vibepollo_quiesce_machine_host() {
   if [ "$vibepollo_have_systemd" -eq 1 ]; then
     # Repeat after cleanup to catch a worker accepted just before admission
     # closed, then prove every old/new cgroup is empty before replacement.
-    vibepollo_restore_template_is_masked || return 1
-    vibepollo_host_unit_is_masked || return 1
-    vibepollo_broker_socket_is_masked || return 1
-    vibepollo_stop_restore_instances || return 1
-    vibepollo_stop_exact_unit vibepollo.service
-    vibepollo_unit_is_quiescent vibepollo.service || return 1
-    vibepollo_stop_exact_unit vibepollo-session-exec.socket
-    vibepollo_stop_brokers || return 1
+    vq vibepollo_restore_template_is_masked || return 1
+    vq vibepollo_host_unit_is_masked || return 1
+    vq vibepollo_broker_socket_is_masked || return 1
+    vq vibepollo_stop_restore_instances || return 1
+    vq vibepollo_stop_exact_unit vibepollo.service
+    vq vibepollo_unit_is_quiescent vibepollo.service || return 1
+    vq vibepollo_stop_exact_unit vibepollo-session-exec.socket
+    vq vibepollo_stop_brokers || return 1
     for vibepollo_unit in \
       vibepollo-session-exec.socket \
       vibepollo-session-controller.service \
       vibepollo.service \
       vibepollo-prelogin.service \
       vibepollo-machine-prepare.service; do
-      vibepollo_stop_exact_unit "$vibepollo_unit"
-      vibepollo_unit_is_quiescent "$vibepollo_unit" || return 1
+      vq vibepollo_stop_exact_unit "$vibepollo_unit"
+      vq vibepollo_unit_is_quiescent "$vibepollo_unit" || return 1
     done
-    vibepollo_brokers_are_quiescent || return 1
-    vibepollo_restore_instances_are_quiescent || return 1
+    vq vibepollo_brokers_are_quiescent || return 1
+    vq vibepollo_restore_instances_are_quiescent || return 1
   fi
 
   # Only after PAM admission and the directly executed legacy helper are both
   # closed may obsolete transition state be validated and removed.
-  vibepollo_cleanup_legacy_transition_state || return 1
+  vq vibepollo_cleanup_legacy_transition_state || return 1
 
   # A stopped socket may leave only its inert filesystem node on older units.
   # Remove that exact socket after every owning cgroup has been proven empty.
+  vibepollo_quiesce_step='remove stale session broker socket'
   if [ -S "$vibepollo_broker_socket" ] && [ ! -L "$vibepollo_broker_socket" ]; then
     rm -f -- "$vibepollo_broker_socket" || return 1
   fi
+  vibepollo_quiesce_step='verify broker and legacy runtime state is absent'
     [ ! -e "$vibepollo_broker_socket" ] && [ ! -L "$vibepollo_broker_socket" ] && \
     [ ! -e "$vibepollo_legacy_handoff_directory" ] && \
     [ ! -L "$vibepollo_legacy_handoff_directory" ] && \
@@ -2160,6 +2217,7 @@ vibepollo_quiesce_machine_host() {
     [ ! -L "$vibepollo_legacy_transition_lock" ] && \
     [ ! -e "$vibepollo_legacy_prelogin_marker" ] && \
     [ ! -L "$vibepollo_legacy_prelogin_marker" ] || return 1
+  vibepollo_quiesce_step='verify trusted session record is absent'
   [ ! -e /run/vibepollo/session.env ] && [ ! -L /run/vibepollo/session.env ] || return 1
 
 }

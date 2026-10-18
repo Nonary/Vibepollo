@@ -393,7 +393,7 @@ system_unit_is_stopped() {
     [[ "$pid" == 0 ]] || return 1
   fi
   case "$load:$active:$substate" in
-    loaded:inactive:dead|loaded:failed:failed|masked:inactive:dead|masked-runtime:inactive:dead|not-found:inactive:dead) ;;
+    loaded:inactive:dead|loaded:failed:failed|masked:inactive:dead|masked:failed:failed|masked-runtime:inactive:dead|masked-runtime:failed:failed|not-found:inactive:dead) ;;
     *) return 1 ;;
   esac
   session_app_control_group_is_empty "$control_group"
@@ -473,7 +473,22 @@ session_app_control_group_is_empty() {
      "$control_group" != */.. && "$control_group" != *$'\n'* ]] || return 1
   cgroup_path=/sys/fs/cgroup$control_group
   if [[ ! -e "$cgroup_path" && ! -L "$cgroup_path" ]]; then
-    return 0
+    # Shell existence tests also fail on denied lookup. Only ENOENT
+    # proves absence; errors or a path that reappeared stay blocked.
+    [ -x /usr/bin/python3 ] || return 1
+    timeout --signal=KILL 5 /usr/bin/python3 -I - "$cgroup_path" <<'PY'
+import os
+import sys
+
+try:
+    os.lstat(sys.argv[1])
+except FileNotFoundError:
+    sys.exit(0)
+except OSError:
+    pass
+sys.exit(1)
+PY
+    return $?
   fi
   [[ -d "$cgroup_path" && ! -L "$cgroup_path" &&
      -f "$cgroup_path/cgroup.events" && ! -L "$cgroup_path/cgroup.events" ]] || return 1

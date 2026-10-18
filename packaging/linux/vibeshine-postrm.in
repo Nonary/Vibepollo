@@ -28,7 +28,24 @@ vibepollo_cgroup_is_quiescent() {
   case "$vibepollo_control_group" in /*) ;; *) return 1 ;; esac
   case "$vibepollo_control_group" in */../* | */..) return 1 ;; esac
   vibepollo_cgroup_path=/sys/fs/cgroup$vibepollo_control_group
-  if [ ! -e "$vibepollo_cgroup_path" ] && [ ! -L "$vibepollo_cgroup_path" ]; then return 0; fi
+  if [ ! -e "$vibepollo_cgroup_path" ] && [ ! -L "$vibepollo_cgroup_path" ]; then
+    # Shell existence tests also fail on denied lookup. Only ENOENT
+    # proves absence; errors or a path that reappeared stay blocked.
+    [ -x /usr/bin/python3 ] || return 1
+    timeout --signal=KILL 5 /usr/bin/python3 -I - "$vibepollo_cgroup_path" <<'PY'
+import os
+import sys
+
+try:
+    os.lstat(sys.argv[1])
+except FileNotFoundError:
+    sys.exit(0)
+except OSError:
+    pass
+sys.exit(1)
+PY
+    return $?
+  fi
   [ -d "$vibepollo_cgroup_path" ] && [ ! -L "$vibepollo_cgroup_path" ] && \
     [ -f "$vibepollo_cgroup_path/cgroup.events" ] && \
     [ ! -L "$vibepollo_cgroup_path/cgroup.events" ] && \
@@ -295,6 +312,36 @@ import stat
 import sys
 
 paths = ("/usr/bin/vibepollo", "/usr/libexec/vibeshine/vibepollo-host")
+def inaccessible_fuse_is_unrelated(fd, target, identities):
+    # O_PATH pins the kernel executable path without opening it for I/O. FUSE
+    # may refuse getattr even to root when allow_other is absent. Never infer
+    # absence from EACCES, argv, process UID, or an AppImage-looking pathname.
+    # fdinfo supplies the pinned mount ID without consulting the FUSE daemon;
+    # mountinfo binds it to a kernel device, even across PID reuse or exec.
+    if target in paths or target in tuple(name + " (deleted)" for name in paths):
+        return False
+    info = pathlib.Path(f"/proc/self/fdinfo/{fd}").read_text()
+    mounts = [line.split()[1:] for line in info.splitlines() if line.startswith("mnt_id:")]
+    if len(mounts) != 1 or len(mounts[0]) != 1 or not mounts[0][0].isdecimal():
+        return False
+    mount_id = mounts[0][0]
+    entries = [line for line in pathlib.Path("/proc/self/mountinfo").read_text().splitlines()
+               if line.split()[0] == mount_id]
+    if len(entries) != 1:
+        return False
+    before, separator, after = entries[0].partition(" - ")
+    fields, filesystem = before.split(), after.split()
+    if not separator or len(fields) < 6 or len(filesystem) != 3:
+        return False
+    if filesystem[0] != "fuse" and not filesystem[0].startswith("fuse."):
+        return False
+    device = fields[2].split(":")
+    if len(device) != 2 or not all(value.isdecimal() for value in device):
+        return False
+    # Even on FUSE, a retained executable on this device remains ambiguous.
+    # Do not use daemon-controlled inode numbers to exclude an old host.
+    return os.makedev(*map(int, device)) not in {dev for dev, ino in identities}
+
 try:
     records = json.loads(sys.argv[1])
     if not isinstance(records, list) or len(records) > 2:
@@ -315,12 +362,22 @@ try:
     for process in pathlib.Path("/proc").iterdir():
         if not process.name.isdecimal():
             continue
+        executable = process / "exe"
         try:
-            executable = process / "exe"
-            identity = executable.stat()
-            target = os.readlink(executable)
+            fd = os.open(executable, os.O_PATH | os.O_CLOEXEC)
         except (FileNotFoundError, ProcessLookupError):
             continue
+        try:
+            pinned = f"/proc/self/fd/{fd}"
+            target = os.readlink(pinned)
+            try:
+                identity = os.fstat(fd)
+            except PermissionError:
+                if inaccessible_fuse_is_unrelated(fd, target, identities):
+                    continue
+                raise ValueError(f"PID {process.name}: inaccessible executable identity is ambiguous; replacement is blocked")
+        finally:
+            os.close(fd)
         def report_old_owner(deleted=False):
             uid, scope = "unknown", "<unavailable>"
             try:
