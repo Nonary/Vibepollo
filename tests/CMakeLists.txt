@@ -1169,6 +1169,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
                 "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}/tests/linux/test-vkms-peercred.py"
                 "$<TARGET_FILE:vibeshine_vkms_peercred>")
         set_tests_properties(test_component_linux_vibepollo_vkms_peercred PROPERTIES LABELS "component")
+        set(_sunshine_native_drm_source_root "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}")
+        if(NOT _sunshine_native_drm_source_root)
+            set(_sunshine_native_drm_source_root "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualdisplay")
+        endif()
+        add_test(
+            NAME test_component_linux_drm_native_allocation
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${_sunshine_native_drm_source_root}/tests/linux/test-native-dumb-allocation.py"
+                "${_sunshine_native_drm_source_root}/linux/vibeshine-drm")
+        set_tests_properties(test_component_linux_drm_native_allocation PROPERTIES LABELS "component" TIMEOUT 30)
+        unset(_sunshine_native_drm_source_root)
         add_test(
             NAME test_component_linux_vibepollo_drm_contract
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
