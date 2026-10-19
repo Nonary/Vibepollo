@@ -276,6 +276,16 @@ namespace platf::dxgi {
     _client_security_flags = SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION;
   }
 
+  void NamedPipeFactory::set_quiet_connect_failures() {
+    _quiet_connect_failures = true;
+  }
+
+  namespace {
+    bool is_expected_connect_failure(DWORD err) {
+      return err == ERROR_FILE_NOT_FOUND || err == ERROR_PIPE_BUSY;
+    }
+  }  // namespace
+
   std::unique_ptr<INamedPipe> NamedPipeFactory::create_client(const std::string &pipeName) {
     return create_client(pipeName, {}, std::chrono::steady_clock::time_point::max());
   }
@@ -293,8 +303,12 @@ namespace platf::dxgi {
 
     winrt::file_handle hPipe = create_client_pipe(fullPipeName, cancelled, operation_deadline);
     if (!hPipe) {
-      DWORD err = GetLastError();
-      BOOST_LOG(error) << "CreateFileW failed (" << err << ")";
+      const DWORD err = _last_connect_error;
+      if (_quiet_connect_failures && is_expected_connect_failure(err)) {
+        BOOST_LOG(debug) << "CreateFileW failed (" << err << ")";
+      } else {
+        BOOST_LOG(error) << "CreateFileW failed (" << err << ")";
+      }
       return nullptr;
     }
 
@@ -318,6 +332,7 @@ namespace platf::dxgi {
       };
 
       if (pipe) {
+        _last_connect_error = 0;
         if (retry_count > 0) {
           BOOST_LOG(debug) << "CreateFileW succeeded after " << retry_count << " retries in "
                            << (GetTickCount64() - start_time) << "ms";
@@ -330,7 +345,7 @@ namespace platf::dxgi {
       retry_count++;
 
       if (err == ERROR_PIPE_BUSY) {
-        if (retry_count == 1 || retry_count % 20 == 0) {
+        if (!_quiet_connect_failures && (retry_count == 1 || retry_count % 20 == 0)) {
           BOOST_LOG(debug) << "Pipe busy, waiting... (retry " << retry_count << ")";
         }
         const int wait_ms = client_wait_ms(deadline, cancelled ? 50 : 250, cancelled);
@@ -341,7 +356,9 @@ namespace platf::dxgi {
         continue;
       }
       if (err == ERROR_FILE_NOT_FOUND) {
-        if (retry_count == 1) {
+        if (_quiet_connect_failures) {
+          // The caller reports repeated failures itself.
+        } else if (retry_count == 1) {
           BOOST_LOG(debug) << "Pipe not found, waiting for server to create it...";
         } else if (retry_count % 40 == 0) {
           BOOST_LOG(warning) << "Still waiting for pipe after " << (GetTickCount64() - start_time)
@@ -359,7 +376,8 @@ namespace platf::dxgi {
       break;  // unrecoverable error
     }
 
-    if (last_error == ERROR_FILE_NOT_FOUND) {
+    _last_connect_error = last_error;
+    if (last_error == ERROR_FILE_NOT_FOUND && !_quiet_connect_failures) {
       BOOST_LOG(error) << "CreateFileW timed out after " << (GetTickCount64() - start_time)
                        << "ms waiting for pipe server (ERROR_FILE_NOT_FOUND). "
                        << "The helper process may not be running or failed to create the pipe.";
@@ -424,6 +442,10 @@ namespace platf::dxgi {
 
   void AnonymousPipeFactory::set_client_identification_only() {
     _pipe_factory.set_client_identification_only();
+  }
+
+  void AnonymousPipeFactory::set_quiet_connect_failures() {
+    _pipe_factory.set_quiet_connect_failures();
   }
 
   class PrefetchedPipe: public INamedPipe {
