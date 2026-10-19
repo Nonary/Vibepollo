@@ -1,0 +1,11 @@
+--- a/src/config_display_transition.h
++++ b/src/config_display_transition.h
+@@ -37,7 +37,7 @@
+   void apply(Install &&install, ActiveOwners &&active_owners, const before_mutation_f &capture, Revert &&revert) {
+     const auto state = std::forward<Install>(install)();
+     if (state.dd_changed && !std::forward<ActiveOwners>(active_owners)() && state.runtime_overrides_empty) {
+-      capture_best_effort(capture);
++      (void) capture;
+       std::forward<Revert>(revert)(state);
+     }
+   }

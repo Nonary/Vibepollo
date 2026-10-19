@@ -68,6 +68,7 @@
 #include "stream.h"
 #include "utility.h"
 #include "uuid.h"
+#include "webrtc_capture_owner.h"
 #include "video.h"
 #include "video_colorspace.h"
 #include "webrtc_stream.h"
@@ -884,7 +885,7 @@ namespace webrtc_stream {
       bool prefer_sdr_10bit = false;
     };
 
-    struct WebRtcCaptureState {
+    struct WebRtcCaptureState: CaptureThreadOwner {
       std::mutex mutex;
       std::condition_variable teardown_cv;
       std::atomic_bool active {false};
@@ -896,8 +897,6 @@ namespace webrtc_stream {
       std::shared_ptr<safe::mail_raw_t> mail;
       std::shared_ptr<rtsp_stream::launch_session_t> launch_session;
       std::shared_ptr<void> normal_display_capture;
-      std::thread video_thread;
-      std::thread audio_thread;
       std::thread feedback_thread;
       safe::mail_raw_t::queue_t<platf::gamepad_feedback_msg_t> feedback_queue;
       std::atomic_bool feedback_shutdown {false};
@@ -3110,17 +3109,6 @@ namespace webrtc_stream {
     }
 #endif
 
-    struct WebRtcCaptureTeardown {
-      std::thread feedback_thread;
-      std::thread video_thread;
-      std::thread audio_thread;
-#ifdef SUNSHINE_ENABLE_WEBRTC
-      std::thread media_thread;
-#endif
-      bool capture_was_active {false};
-      std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes;
-    };
-
     std::optional<std::string> start_webrtc_capture(const SessionOptions &options) {
       // RTSP launch requests hold the same gate from their first session-state
       // observation until launch_session_raise() publishes the pending owner.
@@ -3211,6 +3199,8 @@ namespace webrtc_stream {
       // capture or limiter policy: global config, then application, then client.
       // An existing capture owns the process-wide runtime config, so additional
       // WebRTC sessions must reuse it rather than mutating the active stream.
+      // Outlive runtime rollback and pending metadata on every failed start.
+      audio::display_change_hold_t request_audio_hold {[] { return audio::capture_before_display_change(); }};
       bool runtime_overrides_applied = false;
       bool keep_runtime_overrides = false;
       auto runtime_overrides_guard = util::fail_guard([&]() {
@@ -3220,7 +3210,7 @@ namespace webrtc_stream {
         config::clear_runtime_config_overrides();
         if (!rtsp_sessions_active.load(std::memory_order_relaxed) &&
             !webrtc_capture.active.load(std::memory_order_acquire)) {
-          config::apply_config_now();
+          config::apply_config_now(std::ref(request_audio_hold));
         } else {
           config::mark_deferred_reload();
         }
@@ -3229,7 +3219,7 @@ namespace webrtc_stream {
       if (!rtsp_active && !capture_already_active) {
         config::set_runtime_config_overrides(std::move(requested_runtime_overrides));
         runtime_overrides_applied = true;
-        config::apply_config_now();
+        config::apply_config_now(std::ref(request_audio_hold));
       }
 
       auto stream_start_params = compute_stream_start_params(options, effective_app_id);
@@ -3269,6 +3259,10 @@ namespace webrtc_stream {
 
       webrtc_capture.stream_start_params = std::move(stream_start_params);
       auto launch_session = build_launch_session(options, effective_app_id, audio_channels, prefer_10bit_sdr);
+
+#ifdef _WIN32
+      request_audio_hold.capture_if_empty_and_attach(launch_session->audio_context_guard);
+#endif
 
 #ifdef __linux__
       // WebRTC can share capture with RTSP and then outlive it. Own a lease
@@ -3474,35 +3468,37 @@ namespace webrtc_stream {
       }
 #endif
       auto mail = std::make_shared<safe::mail_raw_t>();
-      webrtc_capture.normal_display_capture = std::move(normal_display_capture);
-      webrtc_capture.mail = mail;
-      webrtc_capture.launch_session = launch_session;
-      webrtc_capture.app_id = effective_app_id > 0 ? std::optional<int> {effective_app_id} : std::nullopt;
-      webrtc_capture.config_key = desired_key;
-      webrtc_capture.published_bitrate_kbps.reset();
+      start_capture_with_audio_hold(webrtc_capture, launch_session->audio_context_guard, [&] {
+        webrtc_capture.normal_display_capture = std::move(normal_display_capture);
+        webrtc_capture.mail = mail;
+        webrtc_capture.launch_session = launch_session;
+        webrtc_capture.app_id = effective_app_id > 0 ? std::optional<int> {effective_app_id} : std::nullopt;
+        webrtc_capture.config_key = desired_key;
+        webrtc_capture.published_bitrate_kbps.reset();
 #if defined(_WIN32) || defined(__linux__)
-      if (pending_output_override_lease) {
-        webrtc_capture.output_override_lease = pending_output_override_lease;
-      }
-      output_override_guard.disable();
+        if (pending_output_override_lease) {
+          webrtc_capture.output_override_lease = pending_output_override_lease;
+        }
+        output_override_guard.disable();
 #endif
 #ifdef __linux__
-      linux_private_display_guard.disable();
+        linux_private_display_guard.disable();
 #endif
-      webrtc_capture.feedback_shutdown.store(false, std::memory_order_release);
+        webrtc_capture.feedback_shutdown.store(false, std::memory_order_release);
 #ifdef SUNSHINE_ENABLE_WEBRTC
-      webrtc_capture.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
-      webrtc_capture.feedback_thread = std::thread([queue = webrtc_capture.feedback_queue]() {
-        feedback_thread_main(queue);
-      });
+        webrtc_capture.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
+        webrtc_capture.feedback_thread = std::thread([queue = webrtc_capture.feedback_queue]() {
+          feedback_thread_main(queue);
+        });
 #endif
-      webrtc_capture.active.store(true, std::memory_order_release);
+        webrtc_capture.active.store(true, std::memory_order_release);
 
-      webrtc_capture.video_thread = std::thread([mail, video_config]() mutable {
-        video::capture(mail, video_config, nullptr);
-      });
-      webrtc_capture.audio_thread = std::thread([mail, audio_config]() mutable {
-        audio::capture(mail, audio_config, nullptr);
+        webrtc_capture.video_thread = std::thread([mail, video_config]() mutable {
+          video::capture(mail, video_config, nullptr);
+        });
+        webrtc_capture.audio_thread = std::thread([mail, audio_config]() mutable {
+          audio::capture(mail, audio_config, nullptr);
+        });
       });
       keep_runtime_overrides = true;
 #if defined(_WIN32) || defined(__linux__)
@@ -3596,6 +3592,7 @@ namespace webrtc_stream {
         teardown.feedback_thread = std::move(webrtc_capture.feedback_thread);
         teardown.video_thread = std::move(webrtc_capture.video_thread);
         teardown.audio_thread = std::move(webrtc_capture.audio_thread);
+        teardown.audio_context_guard = std::move(webrtc_capture.audio_context_guard);
 #ifdef SUNSHINE_ENABLE_WEBRTC
         teardown.media_thread = take_media_thread_for_stop();
 #endif
@@ -3611,12 +3608,7 @@ namespace webrtc_stream {
       if (teardown.feedback_thread.joinable()) {
         teardown.feedback_thread.join();
       }
-      if (teardown.video_thread.joinable()) {
-        teardown.video_thread.join();
-      }
-      if (teardown.audio_thread.joinable()) {
-        teardown.audio_thread.join();
-      }
+      teardown.join_capture();
 
       lifecycle_lock.lock();
       bool finalized_shared_runtime = false;

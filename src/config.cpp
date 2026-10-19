@@ -3204,7 +3204,7 @@ namespace config {
     return video.output_name;
   }
 
-  void apply_config_now() {
+  void apply_config_now(const display_transition::before_mutation_f &before_display_mutation) {
     // Ensure only one apply runs at a time and block session start/resume while applying.
     std::unique_lock<std::shared_mutex> write_gate(g_apply_gate);
     std::unique_lock<std::mutex> apply_once(g_apply_mutex);
@@ -3253,85 +3253,91 @@ namespace config {
       const int old_min_level = sunshine.min_log_level;
       const std::string old_log_file = sunshine.log_file;
 
-      apply_config(std::move(vars));
-      if (sunshine.session_history_enabled != prev_session_history_enabled && has_active_stream_sessions()) {
-        BOOST_LOG(info) << "Hot-apply: deferring session history enablement change until active sessions end.";
-        sunshine.session_history_enabled = prev_session_history_enabled;
-        g_deferred_reload.store(true, std::memory_order_release);
-      }
-      if (sunshine.realtime_stats_enabled != prev_realtime_stats_enabled ||
-          sunshine.realtime_stats_poll_interval_ms != prev_realtime_stats_poll_interval_ms) {
-        host_stats::configuration_changed();
-      }
-      session_history::reload_settings();
+      auto install_effective_configuration = [&] {
+        apply_config(std::move(vars));
+        if (sunshine.session_history_enabled != prev_session_history_enabled && has_active_stream_sessions()) {
+          BOOST_LOG(info) << "Hot-apply: deferring session history enablement change until active sessions end.";
+          sunshine.session_history_enabled = prev_session_history_enabled;
+          g_deferred_reload.store(true, std::memory_order_release);
+        }
+        if (sunshine.realtime_stats_enabled != prev_realtime_stats_enabled || sunshine.realtime_stats_poll_interval_ms != prev_realtime_stats_poll_interval_ms) {
+          host_stats::configuration_changed();
+        }
+        session_history::reload_settings();
 
-      // If only the log level changed, we can reconfigure sinks in place.
-      if (sunshine.min_log_level != old_min_level && sunshine.log_file == old_log_file) {
-        logging::reconfigure_min_log_level(sunshine.min_log_level);
-      }
+        // If only the log level changed, we can reconfigure sinks in place.
+        if (sunshine.min_log_level != old_min_level && sunshine.log_file == old_log_file) {
+          logging::reconfigure_min_log_level(sunshine.min_log_level);
+        }
 
 #ifdef _WIN32
-      const bool rtx_hdr_live_changed =
-        prev_rtx_hdr_enabled != video.rtx_hdr.enabled ||
-        prev_rtx_hdr_sdr_brightness != video.rtx_hdr.sdr_brightness ||
-        prev_rtx_hdr_contrast != video.rtx_hdr.contrast ||
-        prev_rtx_hdr_saturation != video.rtx_hdr.saturation ||
-        prev_rtx_hdr_middle_gray != video.rtx_hdr.middle_gray ||
-        prev_rtx_hdr_peak_brightness != video.rtx_hdr.peak_brightness;
-      if (rtx_hdr_live_changed) {
-        platf::rtx_hdr::notify_live_settings_changed();
-      }
+        const bool rtx_hdr_live_changed =
+          prev_rtx_hdr_enabled != video.rtx_hdr.enabled ||
+          prev_rtx_hdr_sdr_brightness != video.rtx_hdr.sdr_brightness ||
+          prev_rtx_hdr_contrast != video.rtx_hdr.contrast ||
+          prev_rtx_hdr_saturation != video.rtx_hdr.saturation ||
+          prev_rtx_hdr_middle_gray != video.rtx_hdr.middle_gray ||
+          prev_rtx_hdr_peak_brightness != video.rtx_hdr.peak_brightness;
+        if (rtx_hdr_live_changed) {
+          platf::rtx_hdr::notify_live_settings_changed();
+        }
 #endif
 
-      // Persist snapshot exclusion devices to vibeshine_state.json so the display helper
-      // can read them directly without depending on IPC from Sunshine.
-      // This is done unconditionally to ensure the state file is always up-to-date.
-      statefile::save_snapshot_exclude_devices(video.dd.snapshot_exclude_devices);
-      // Persist the resolved config (including custom files and command-line overrides)
-      // so recovery at next logon does not require a live host/IPC connection.
-      statefile::save_display_restore_preference(video.dd.always_restore_from_golden);
+        // Persist snapshot exclusion devices to vibeshine_state.json so the display helper
+        // can read them directly without depending on IPC from Sunshine.
+        // This is done unconditionally to ensure the state file is always up-to-date.
+        statefile::save_snapshot_exclude_devices(video.dd.snapshot_exclude_devices);
+        // Persist the resolved config (including custom files and command-line overrides)
+        // so recovery at next logon does not require a live host/IPC connection.
+        statefile::save_display_restore_preference(video.dd.always_restore_from_golden);
 
-      // Check if any DD configuration changed and handle hot-apply when no active sessions
-      using dd_cfg_e = config::video_t::dd_t::config_option_e;
-      const bool dd_disabled_now = (video.dd.configuration_option == dd_cfg_e::disabled);
-      const bool dd_was_enabled = (prev_dd_config_opt != dd_cfg_e::disabled);
+        // Check if any DD configuration changed and handle hot-apply when no active sessions
+        using dd_cfg_e = config::video_t::dd_t::config_option_e;
+        const bool dd_disabled_now = (video.dd.configuration_option == dd_cfg_e::disabled);
+        const bool dd_was_enabled = (prev_dd_config_opt != dd_cfg_e::disabled);
 
-      // Detect if any DD settings changed
-      const bool dd_config_changed = (prev_dd_config_opt != video.dd.configuration_option) ||
-                                     (prev_dd_resolution_opt != video.dd.resolution_option) ||
-                                     (prev_dd_refresh_rate_opt != video.dd.refresh_rate_option) ||
-                                     (prev_dd_hdr_opt != video.dd.hdr_option) ||
-                                     (prev_dd_hdr_req_override != video.dd.hdr_request_override) ||
-                                     (prev_dd_manual_resolution != video.dd.manual_resolution) ||
-                                     (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
-                                     (prev_dd_revert_delay != video.dd.config_revert_delay) ||
-                                     (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
-                                     (prev_dd_paused_virtual_display_timeout_secs != video.dd.paused_virtual_display_timeout_secs) ||
-                                     (prev_dd_use_sunshine_virtual_display_driver != video.dd.use_sunshine_virtual_display_driver) ||
-                                     (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
-                                     (prev_dd_virtual_display_scale_percent != video.dd.virtual_display_scale_percent) ||
-                                     (prev_dd_virtual_display_permanent_count != video.dd.virtual_display_permanent_count) ||
-                                     (prev_dd_virtual_display_permanent_count_configured != video.dd.virtual_display_permanent_count_configured) ||
-                                     (prev_virtual_display_outputs != video.dd.virtual_display_outputs) ||
-                                     (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||
-                                     (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10);
-
-      // If any DD settings changed and there are no active sessions, revert to clear cached state
-      if (dd_config_changed && !has_active_stream_sessions() && runtime_overrides.empty()) {
+        // Detect if any DD settings changed
+        const bool dd_config_changed = (prev_dd_config_opt != video.dd.configuration_option) ||
+                                       (prev_dd_resolution_opt != video.dd.resolution_option) ||
+                                       (prev_dd_refresh_rate_opt != video.dd.refresh_rate_option) ||
+                                       (prev_dd_hdr_opt != video.dd.hdr_option) ||
+                                       (prev_dd_hdr_req_override != video.dd.hdr_request_override) ||
+                                       (prev_dd_manual_resolution != video.dd.manual_resolution) ||
+                                       (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
+                                       (prev_dd_revert_delay != video.dd.config_revert_delay) ||
+                                       (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
+                                       (prev_dd_paused_virtual_display_timeout_secs != video.dd.paused_virtual_display_timeout_secs) ||
+                                       (prev_dd_use_sunshine_virtual_display_driver != video.dd.use_sunshine_virtual_display_driver) ||
+                                       (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
+                                       (prev_dd_virtual_display_scale_percent != video.dd.virtual_display_scale_percent) ||
+                                       (prev_dd_virtual_display_permanent_count != video.dd.virtual_display_permanent_count) ||
+                                       (prev_dd_virtual_display_permanent_count_configured != video.dd.virtual_display_permanent_count_configured) ||
+                                       (prev_virtual_display_outputs != video.dd.virtual_display_outputs) ||
+                                       (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||
+                                       (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10);
+        return display_transition::state_t {dd_config_changed, runtime_overrides.empty(), dd_was_enabled, dd_disabled_now};
+      };
+      auto revert_after_configuration = [&](const display_transition::state_t &state) {
         stream::session::cleanup_reservation_t cleanup_reservation;
         BOOST_LOG(info) << "Hot-apply: DD configuration changed with no active sessions; reverting cached display state.";
 #ifdef _WIN32
-        display_helper_integration::revert(true, false, dd_was_enabled && dd_disabled_now);
+        display_helper_integration::revert(true, false, state.allow_disabled_recovery());
 #else
         display_helper_integration::revert();
 #endif
 
-        if (dd_was_enabled && dd_disabled_now) {
+        if (state.allow_disabled_recovery()) {
           BOOST_LOG(info) << "Hot-apply: DD configuration changed to disabled.";
-        } else if (!dd_disabled_now) {
+        } else if (!state.dd_disabled_now) {
           BOOST_LOG(info) << "Hot-apply: DD configuration updated. New settings will take effect on next stream.";
         }
-      }
+      };
+      display_transition::apply(
+        install_effective_configuration,
+        [] { return has_active_stream_sessions(); },
+        before_display_mutation,
+        revert_after_configuration
+      );
     } catch (const std::exception &e) {
       BOOST_LOG(warning) << "Hot apply_config_now failed: "sv << e.what();
     }

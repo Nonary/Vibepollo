@@ -1,0 +1,18 @@
+--- a/src/audio_role_control.h
++++ b/src/audio_role_control.h
+@@ -173,9 +173,12 @@
+       if (assigned_.empty()) {
+         // A snapshot taken before topology mutation is authoritative. Reading
+         // live defaults here would replace DP/HDMI with Windows' fallback.
+-        if (!captured_valid_) {
+-          capture(current);
+-        }
++        // Pre-fix first-assignment behavior from 69e163f33179:
++        // recapture every live nonempty role even after an earlier snapshot.
++        for (std::size_t n = 0; n < Count; ++n) {
++          if (!current[n].empty()) captured_[n] = current[n];
++        }
++        captured_valid_ = true;
+         for (const auto &role : inherited) {
+           captured_[index(role.role)] = role.preferred_id;
+         }

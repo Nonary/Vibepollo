@@ -598,6 +598,7 @@ namespace stream {
 
   struct session_t {
     std::shared_ptr<void> display_power_guard;
+    std::shared_ptr<void> audio_context_guard;
     std::shared_ptr<void> normal_display_capture;
     config_t config;
     int stream_fps = 0;
@@ -3612,21 +3613,18 @@ namespace stream {
       // The alternative is that Sunshine can never start another session until it's manually restarted.
       // Name the join stage for the watchdog so a crash bundle says outright what hung
       // (e.g. vibeshine#187 took dump archaeology to learn it was the video thread).
-      {
-        auto hung_stage = std::make_shared<std::atomic<const char *>>("video thread");
-        join_deadline_t join_deadline {hung_stage};
-
-        BOOST_LOG(debug) << "Waiting for video to end..."sv;
-        session.videoThread.join();
-        hung_stage->store("audio thread");
-        BOOST_LOG(debug) << "Waiting for audio to end..."sv;
-        if (session.audioThread.joinable()) {
-          session.audioThread.join();
+      auto hung_stage = std::make_shared<std::atomic<const char *>>("video thread");
+      audio::join_rtsp_capture(
+        session.audio_context_guard, session.videoThread, session.audioThread,
+        [&] { session.controlEnd.view(); },
+        [hung_stage]() -> std::shared_ptr<void> { return std::make_shared<join_deadline_t>(hung_stage); },
+        [hung_stage](audio::join_stage_e stage) {
+          const char *name = stage == audio::join_stage_e::video ? "video thread" :
+                             stage == audio::join_stage_e::audio ? "audio thread" : "control end";
+          hung_stage->store(name);
+          BOOST_LOG(debug) << "Waiting for " << name << " to end...";
         }
-        hung_stage->store("control end");
-        BOOST_LOG(debug) << "Waiting for control to end..."sv;
-        session.controlEnd.view();
-      }
+      );
       // Watchdog coverage ends with the thread joins, which are the unbounded and
       // unrecoverable part. Everything below waits on the process-wide lifecycle
       // gate, which other threads legitimately hold for much longer than
@@ -4027,6 +4025,7 @@ namespace stream {
       session->shutdown_event = mail->event<bool>(mail::shutdown);
       session->launch_session_id = launch_session.id;
       session->display_power_guard = launch_session.display_power_guard;
+      session->audio_context_guard = std::move(launch_session.audio_context_guard);
       session->device_name = launch_session.device_name;
       session->device_uuid = !launch_session.client_uuid.empty() ? launch_session.client_uuid : launch_session.unique_id;
       // Fresh history identifier per stream so each start/stop cycle produces

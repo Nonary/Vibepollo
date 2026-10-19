@@ -1,0 +1,13 @@
+--- a/src/webrtc_capture_owner.h
++++ b/src/webrtc_capture_owner.h
+@@ -13,9 +13,9 @@
+   struct CaptureThreadOwner {
+     // Base members are destroyed after derived teardown threads. Within this
+     // owner, the hold must also outlive both thread destructors if join throws.
+-    std::shared_ptr<void> audio_context_guard;
+     std::thread video_thread;
+     std::thread audio_thread;
++    std::shared_ptr<void> audio_context_guard;
+   };
+ 
+   struct WebRtcCaptureTeardown: CaptureThreadOwner {

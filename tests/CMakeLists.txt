@@ -487,16 +487,22 @@ if(SUNSHINE_TEST_ENABLE_COMPONENT)
     add_subdirectory(process_catalog)
 endif()
 
-if(SUNSHINE_TEST_ENABLE_COMPONENT AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    find_program(SUNSHINE_TEST_PYTHON_EXECUTABLE NAMES python3)
-    if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
-        add_test(NAME test_component_windows_audio_role_restore
-            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
-                "${CMAKE_CURRENT_LIST_DIR}/unit/test_windows_audio_role_restore.py"
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/audio.cpp"
-                --compiler "${CMAKE_CXX_COMPILER}")
-        set_tests_properties(test_component_windows_audio_role_restore PROPERTIES LABELS "component")
-    endif()
+find_package(Threads REQUIRED)
+sunshine_add_test_target(NAME test_component_audio_snapshot CATEGORY component
+    TEST_SOURCES "${CMAKE_CURRENT_LIST_DIR}/unit/test_audio_context.cpp"
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/audio_context.cpp"
+    DEFINITIONS SUNSHINE_ENABLE_WEBRTC
+    LINK_LIBRARIES Threads::Threads nlohmann_json::nlohmann_json)
+if(TARGET test_component_audio_snapshot)
+    add_test(NAME test_component_windows_audio_role_restore COMMAND test_component_audio_snapshot roles.)
+    add_test(NAME test_component_audio_display_snapshot COMMAND test_component_audio_snapshot context.)
+    add_test(NAME test_component_audio_display_transition COMMAND test_component_audio_snapshot transition.)
+    add_test(NAME test_component_webrtc_video_owner_unwind COMMAND test_component_audio_snapshot --owner-unwind-video)
+    add_test(NAME test_component_webrtc_audio_owner_unwind COMMAND test_component_audio_snapshot --owner-unwind-audio)
+    set_tests_properties(test_component_windows_audio_role_restore test_component_audio_display_snapshot
+        test_component_audio_display_transition
+        test_component_webrtc_video_owner_unwind test_component_webrtc_audio_owner_unwind
+        PROPERTIES LABELS "component" TIMEOUT 30)
 endif()
 
 sunshine_register_component(NAME test_component_stream_protocol TEST_SOURCE unit/test_stream.cpp

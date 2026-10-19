@@ -45,6 +45,7 @@
 #include <openssl/sha.h>
 
 // local includes
+#include "app_audio_termination.h"
 #include "app_catalog_policy.h"
 #include "app_framegen_config.h"
 #include "audio.h"
@@ -3165,7 +3166,9 @@ namespace proc {
 
     // Mark termination before process teardown so a concurrent final audio
     // owner restores directly instead of retaining state for the ended app.
-    audio::app_termination_requested();
+    audio::begin_app_audio_termination(_launch_session, [] {
+      audio::app_termination_requested();
+    });
 
     // App termination can remove a display directly and can continue through
     // process, undo-command, helper, watchdog, and deferred-config cleanup.
