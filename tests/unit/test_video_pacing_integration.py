@@ -1,7 +1,11 @@
-"""Compile production pacing/admission call sites with deterministic sessions.
+"""Supplementary replay of native pacing/sender/start/status call sites.
 
-No sockets, encoder, mail bus or platform backend is started. --source-ref
-rebuilds the same behavioral tests from a pinned Git base as a negative control.
+Runtime bitrate operations call the actual linked broadcast controls and real
+shared_t/mail events. Native pacing/admission helpers and sender/start/status
+snippets are still copied into session/OS fixtures: they are supplementary,
+not direct coverage of stream.cpp or NVHTTP/RTSP handlers. --source-ref pins
+only those replayed snippets and protocol files; controls stay linked from
+the current repository, so this is not a complete historical application.
 """
 import argparse
 import json
@@ -37,8 +41,12 @@ def section(begin, end, offset=0):
 
 updated = 'static bool pacing_admits_locked(' in source
 fractional = 'video_pacing_delay_ns(' in read('src/stream_protocol.h')
-helpers = section('  static video_pacing_reservation_t pacing_reservation_for_config(', '  int set_bitrate_for_sessions(') if updated else ''
-abr = section('  int set_bitrate_for_sessions(', '\n  static const char *state_name')
+if not updated:
+    parser.error('supplementary controls replay requires native pacing helpers; no default-allow admission stub is provided')
+helper_end = ('  static broadcast_runtime::controls_t<broadcast_ctx_t>'
+              if '  static broadcast_runtime::controls_t<broadcast_ctx_t>' in source
+              else '  int set_bitrate_for_sessions(')
+helpers = section('  static video_pacing_reservation_t pacing_reservation_for_config(', helper_end)
 start_at = source.index('    int start(session_t &session,')
 publish = section('      // Insert this session into the session list', '\n      auto addr =', start_at)
 if updated:
@@ -73,7 +81,7 @@ if updated:
     assert 'startup_status, startup_status == 400 ? "BAD REQUEST"' in rtsp
 template = (Path(__file__).with_suffix('.cpp.in')).read_text()
 program = template
-for key, text in {'HELPERS': helpers, 'ABR': abr, 'PUBLISH': publish, 'PACER': pacer, 'CLAMP': clamp,
+for key, text in {'HELPERS': helpers, 'PUBLISH': publish, 'PACER': pacer, 'CLAMP': clamp,
                   'BATCHES': batches, 'FRAME_DELAY': frame_delay, 'CONDITION': condition, 'FEC_COUNT': fec_count, 'SPLITTER': splitter,
                   'DETAIL_MAX': detail_max, 'UPDATED': '1' if updated else '0',
                   'RATE_HELPERS': ('using stream::video_pacing_batch_packets; using stream::video_pacing_delay_ns;' if fractional else 'using stream::video_pacing_packets_per_ms;'),
@@ -104,13 +112,16 @@ with tempfile.TemporaryDirectory(prefix='video-pacing-') as temporary:
     import shlex
     common = shlex.split(os.environ.get('CXXFLAGS', ''))
     compile_command = [args.compiler, '-std=c++23', '-O0', '-g0', '-pthread'] + common + [
-        '-I', str(output), str(cpp), str(protocol), '-lgtest_main', '-lgtest', '-o', str(exe)]
+        '-I', str(root), '-I', str(output), str(cpp), str(protocol),
+        str(root / 'src/stream_broadcast_runtime.cpp'),
+        '-lgtest_main', '-lgtest', '-o', str(exe)]
     # Preserve nice 15 when the test runner already has that priority.
     priority = max(0, 15 - os.getpriority(os.PRIO_PROCESS, 0)) if hasattr(os, 'getpriority') else 0
     prefix = ['nice', '-n', str(priority)] if os.name == 'posix' else []
     subprocess.run(prefix + compile_command, check=True)
     result = subprocess.run(prefix + [str(exe), '--gtest_output=json:' + str(output / 'results.json')])
     (output / 'recipe.json').write_text(json.dumps({'source_ref': args.source_ref, 'updated': updated,
+        'coverage': 'real linked controls; native policy/sender/start/status source replay is supplementary',
         'compile_command': prefix + compile_command, 'run_command': prefix + [str(exe)],
         'runner_nice': os.getpriority(os.PRIO_PROCESS, 0) if hasattr(os, 'getpriority') else None,
         'exit_code': result.returncode}, indent=2) + '\n')

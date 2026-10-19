@@ -93,7 +93,8 @@ TEST(ThreadSafeSharedTests, TryRefDoesNotConstructAnIdleObject) {
     },
     [&](int &) {
       ++destructions;
-    });
+    }
+  );
 
   {
     auto idle = shared.try_ref();
@@ -114,6 +115,34 @@ TEST(ThreadSafeSharedTests, TryRefDoesNotConstructAnIdleObject) {
   }
 
   EXPECT_EQ(constructions, 1);
+  EXPECT_EQ(destructions, 1);
+  EXPECT_FALSE(shared.try_ref());
+}
+
+TEST(ThreadSafeSharedTests, TryRefKeepsTheObjectAliveAfterTheOriginalReferenceIsReleased) {
+  int destructions = 0;
+  auto shared = safe::make_shared<int>(
+    [](int &value) {
+      value = 42;
+      return 0;
+    },
+    [&](int &) {
+      ++destructions;
+    }
+  );
+
+  auto original = shared.ref();
+  auto alias = shared.try_ref();
+  ASSERT_TRUE(alias);
+  original.release();
+  EXPECT_EQ(destructions, 0);
+  EXPECT_EQ(*alias.get(), 42);
+
+  auto last = shared.try_ref();
+  ASSERT_TRUE(last);
+  alias.release();
+  EXPECT_EQ(destructions, 0);
+  last.release();
   EXPECT_EQ(destructions, 1);
   EXPECT_FALSE(shared.try_ref());
 }

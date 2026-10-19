@@ -60,6 +60,7 @@ extern "C" {
 #include "rtsp_pending_policy.h"
 #include "session_history.h"
 #include "stream.h"
+#include "stream_broadcast_runtime.h"
 #include "sync.h"
 #include "system_tray.h"
 #include "thread_safe.h"
@@ -780,20 +781,6 @@ namespace stream {
 
   static auto broadcast = safe::make_shared<broadcast_ctx_t>(start_broadcast, end_broadcast);
 
-  void request_idr_for_all_sessions() {
-    auto ref = broadcast.ref();
-    if (!ref) {
-      return;
-    }
-    auto lg = ref->control_server._sessions.lock();
-    for (auto *session : *ref->control_server._sessions) {
-      if (!session || !session->video.idr_events) {
-        continue;
-      }
-      session->video.idr_events->raise(true);
-    }
-  }
-
   static video_pacing_reservation_t pacing_reservation_for_config(const config_t &config, int bitrate_override = 0) {
     if (config::stream.pacing_max_bitrate_kbps == 0 || config.monitor.input_only) {
       return {true, 0, 0};
@@ -848,40 +835,30 @@ namespace stream {
     return !starting || reserve(*starting, 0);
   }
 
+  static broadcast_runtime::controls_t<broadcast_ctx_t> broadcast_controls {
+    broadcast,
+    [](broadcast_ctx_t &ctx, const broadcast_runtime::session_action_t &action) {
+      auto lg = ctx.control_server._sessions.lock();
+      std::vector<broadcast_runtime::session_control_t> sessions;
+      sessions.reserve(ctx.control_server._sessions->size());
+      for (auto *session : *ctx.control_server._sessions) {
+        if (session) {
+          sessions.push_back({session->device_uuid, session->config.monitor.bitrate, session->config.monitor.client_requested_bitrate, session->video.idr_events, session->video.bitrate_events});
+        }
+      }
+      return action(sessions);
+    },
+    [](broadcast_ctx_t &ctx, const std::string &client_uuid, int bitrate_kbps) {
+      return pacing_admits_locked(ctx.control_server, nullptr, &client_uuid, bitrate_kbps);
+    }
+  };
+
+  void request_idr_for_all_sessions() {
+    broadcast_controls.request_idr_for_all_sessions();
+  }
+
   int set_bitrate_for_sessions(const std::string &client_uuid, int bitrate_kbps) {
-    if (bitrate_kbps <= 0) {
-      return 0;
-    }
-    auto ref = broadcast.try_ref();
-    if (!ref) {
-      return 0;
-    }
-    int updated = 0;
-    auto lg = ref->control_server._sessions.lock();
-    const auto matches = [&](const auto *session) {
-      return session && session->video.bitrate_events && (client_uuid.empty() || session->device_uuid == client_uuid);
-    };
-    if (std::none_of(ref->control_server._sessions->begin(), ref->control_server._sessions->end(), matches)) {
-      return 0;
-    }
-    if (!pacing_admits_locked(ref->control_server, nullptr, &client_uuid, bitrate_kbps)) {
-      return -1;
-    }
-    for (auto *session : *ref->control_server._sessions) {
-      if (!session || !session->video.bitrate_events) {
-        continue;
-      }
-      if (!client_uuid.empty() && session->device_uuid != client_uuid) {
-        continue;
-      }
-      // Keep the session metadata (runtime sessions API, history, stats) in sync with the
-      // value the encoder thread will adopt from the event below.
-      session->config.monitor.bitrate = bitrate_kbps;
-      session->config.monitor.client_requested_bitrate = bitrate_kbps;
-      session->video.bitrate_events->raise(bitrate_kbps);
-      ++updated;
-    }
-    return updated;
+    return broadcast_controls.set_bitrate_for_sessions(client_uuid, bitrate_kbps);
   }
 
   static const char *state_name(session::state_e st) {
@@ -2995,18 +2972,18 @@ namespace stream {
     shutdown_event->raise(true);
   }
 
-  int start_broadcast(broadcast_ctx_t &ctx) {
-    // Reset the shutdown event to ensure it's cleared even if something
-    // raised it between the last end_broadcast and now.
-    auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
-    broadcast_shutdown_event->reset();
+  auto broadcast_packet_queues() {
+    return broadcast_runtime::packet_queues<video::packet_t, audio::packet_t>(
+      mail::man,
+      mail::broadcast_shutdown,
+      mail::video_packets,
+      mail::audio_packets
+    );
+  }
 
-    // Reset the packet queues which were stopped in end_broadcast.
-    // If not reset, the broadcast threads will exit immediately when pop() returns null.
-    auto video_packets = mail::man->queue<video::packet_t>(mail::video_packets);
-    auto audio_packets = mail::man->queue<audio::packet_t>(mail::audio_packets);
-    video_packets->reset();
-    audio_packets->reset();
+  int start_broadcast(broadcast_ctx_t &ctx) {
+    // Keep the reset queues and shutdown post alive through worker startup.
+    auto packet_queues = broadcast_packet_queues().reset_for_start();
 
     auto address_family = net::af_from_enum_string(config::sunshine.address_family);
     auto control_port = net::map_port(CONTROL_PORT);
@@ -3102,37 +3079,47 @@ namespace stream {
   }
 
   void end_broadcast(broadcast_ctx_t &ctx) {
-    auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
+    struct transport_t final: broadcast_runtime::transport_t {
+      broadcast_ctx_t &ctx;
 
-    broadcast_shutdown_event->raise(true);
+      explicit transport_t(broadcast_ctx_t &ctx):
+          ctx {ctx} {
+      }
 
-    auto video_packets = mail::man->queue<video::packet_t>(mail::video_packets);
-    auto audio_packets = mail::man->queue<audio::packet_t>(mail::audio_packets);
+      void stop_receiving() override {
+        ctx.message_queue_queue->stop();
+        ctx.io_context.stop();
+      }
 
-    // Minimize delay stopping video/audio threads
-    video_packets->stop();
-    audio_packets->stop();
+      void close_sockets() override {
+        ctx.video_sock.close();
+        ctx.audio_sock.close();
+      }
 
-    ctx.message_queue_queue->stop();
-    ctx.io_context.stop();
+      void join(broadcast_runtime::worker_e worker) override {
+        switch (worker) {
+          case broadcast_runtime::worker_e::receive:
+            BOOST_LOG(debug) << "Waiting for main listening thread to end..."sv;
+            ctx.recv_thread.join();
+            break;
+          case broadcast_runtime::worker_e::video:
+            BOOST_LOG(debug) << "Waiting for main video thread to end..."sv;
+            ctx.video_thread.join();
+            break;
+          case broadcast_runtime::worker_e::audio:
+            BOOST_LOG(debug) << "Waiting for main audio thread to end..."sv;
+            ctx.audio_thread.join();
+            break;
+          case broadcast_runtime::worker_e::control:
+            BOOST_LOG(debug) << "Waiting for main control thread to end..."sv;
+            ctx.control_thread.join();
+            break;
+        }
+      }
+    } transport {ctx};
 
-    ctx.video_sock.close();
-    ctx.audio_sock.close();
-
-    video_packets.reset();
-    audio_packets.reset();
-
-    BOOST_LOG(debug) << "Waiting for main listening thread to end..."sv;
-    ctx.recv_thread.join();
-    BOOST_LOG(debug) << "Waiting for main video thread to end..."sv;
-    ctx.video_thread.join();
-    BOOST_LOG(debug) << "Waiting for main audio thread to end..."sv;
-    ctx.audio_thread.join();
-    BOOST_LOG(debug) << "Waiting for main control thread to end..."sv;
-    ctx.control_thread.join();
+    broadcast_packet_queues().stop_and_join(transport);
     BOOST_LOG(debug) << "All broadcasting threads ended"sv;
-
-    broadcast_shutdown_event->reset();
   }
 
   int recv_ping(session_t *session, decltype(broadcast)::ptr_t ref, socket_e type, std::string_view expected_payload, udp::endpoint &peer, std::chrono::milliseconds timeout) {

@@ -612,6 +612,7 @@ namespace safe {
     }
 
     // Acquire an existing object without constructing one when it is idle.
+    // Like ref(), this serializes with construction and teardown.
     [[nodiscard]] ptr_t try_ref() {
       std::lock_guard lg {_lock};
       if (!_count) {

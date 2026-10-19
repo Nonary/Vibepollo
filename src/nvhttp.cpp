@@ -56,6 +56,8 @@
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
+#include "nvhttp_bitrate_policy.h"
+#include "nvhttp_dispatch.h"
 #include "remote_session.h"
 #include "remote_display_topology.h"
 #include "platform/common.h"
@@ -6155,7 +6157,7 @@ namespace nvhttp {
     return;
   }
 
-  void setBitrate(resp_https_t response, req_https_t request) {
+  void setBitrate(resp_https_t response, req_https_t request, const verified_client_t &verified_client) {
     print_req<SunshineHTTPS>(request);
 
     pt::ptree tree;
@@ -6166,12 +6168,9 @@ namespace nvhttp {
       response->close_connection_after_response = true;
     });
 
-    auto verified_client = get_verified_cert(request);
-    if (!has_client_perm(verified_client, PERM::_allow_view)) {
-      log_permission_denied("SetBitrate"sv, "View stream"sv, verified_client);
-      tree.put("root.bitrate", 0);
-      tree.put("root.<xmlattr>.status_code", 403);
-      tree.put("root.<xmlattr>.status_message", permission_denied_status_message(verified_client, "View stream"sv));
+    if (!bitrate_policy::authorize(verified_client, tree, [](const std::string &message) {
+          BOOST_LOG(warning) << message;
+        })) {
       return;
     }
 
@@ -6540,19 +6539,12 @@ namespace nvhttp {
     // a response and must never execute stale mutations after a client timeout.
     auto mutation_admission = std::make_shared<single_flight::admission_t>();
     auto run_blocking_nvhttp = [&blocking_route_pool, run_on_blocking_pool, mutation_admission](auto response, const char *operation, auto task) {
-      if (mutation_admission->try_submit([&](auto admitted) {
-            run_on_blocking_pool(blocking_route_pool, std::move(admitted));
-          }, std::move(task))) {
-        return;
-      }
-      pt::ptree tree;
-      tree.put(std::string("root.") + operation, 0);
-      tree.put("root.<xmlattr>.status_code", 503);
-      tree.put("root.<xmlattr>.status_message", "Another stream operation is still running. Retry after it completes; if this persists, check the host GPU and system-sleep logs.");
-      std::ostringstream data;
-      pt::write_xml(data, tree);
-      response->close_connection_after_response = true;
-      response->write(data.str());
+      dispatch::run_blocking(*mutation_admission, [&](auto admitted) {
+        run_on_blocking_pool(blocking_route_pool, std::move(admitted));
+      },
+                             std::move(response),
+                             operation,
+                             std::move(task));
     };
 
     auto run_discovery_nvhttp = [&discovery_route_pool, run_on_blocking_pool](auto task) {
@@ -6623,9 +6615,18 @@ namespace nvhttp {
     https_server.resource["^/actions/clipboard$"]["GET"] = getClipboard;
     https_server.resource["^/actions/clipboard$"]["POST"] = setClipboard;
     https_server.resource["^/bitrate$"]["GET"] = [run_blocking_nvhttp](auto response, auto request) {
-      run_blocking_nvhttp(response, "bitrate", [response, request = std::move(request)]() mutable {
-        setBitrate(std::move(response), std::move(request));
-      });
+      bitrate_policy::run(
+        response, request,
+        [](const auto &req) { return get_verified_cert(req); },
+        run_blocking_nvhttp,
+        [](auto resp, auto req, const verified_client_t &client) {
+          setBitrate(std::move(resp), std::move(req), client);
+        },
+        [request](const std::string &message) {
+          print_req<SunshineHTTPS>(request);
+          BOOST_LOG(warning) << message;
+        }
+      );
     };
     https_server.resource["^/api/abr/capabilities$"]["GET"] = getAbrCapabilities;
     https_server.resource["^/pyrowave-bandwidth-probe$"]["GET"] = getPyroWaveBandwidthProbe;

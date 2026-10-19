@@ -1,4 +1,7 @@
+// Supplementary native policy replay; runtime controls are linked production.
 #include "stream_protocol.h"
+#include "src/stream_broadcast_runtime.h"
+#include "src/sync.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <array>
@@ -38,25 +41,22 @@ struct config_t {
            bool input_only = false; } monitor;
   int packetsize = 1392, encryptionFlagsEnabled = 0, minRequiredFecPackets = 2;
 };
-struct Event { std::vector<int> raised; void raise(int value) { raised.push_back(value); } };
-struct Broadcast;
+struct session_t;
+struct control_server_t { sync_util::sync_t<std::vector<session_t *>> _sessions; };
+struct Broadcast { control_server_t control_server; };
+auto broadcast = safe::make_shared<Broadcast>([](Broadcast &) { return 0; }, [](Broadcast &) {});
+decltype(broadcast)::ptr_t broadcast_owner;
 struct session_t {
   config_t config;
   std::string device_uuid = "client";
-  struct { std::shared_ptr<Event> bitrate_events = std::make_shared<Event>(); bool cipher = false; } video;
-  std::shared_ptr<Broadcast> broadcast_ref;
+  safe::mail_t mail = std::make_shared<safe::mail_raw_t>();
+  struct {
+    safe::mail_raw_t::event_t<int> bitrate_events;
+    bool cipher = false;
+  } video;
+  decltype(broadcast)::ptr_t broadcast_ref;
+  session_t() { video.bitrate_events = mail->event<int>("dynamic_bitrate"); }
 };
-struct Sessions {
-  std::vector<session_t *> values;
-  int locked = 0;
-  struct Guard { Sessions *owner; ~Guard() { --owner->locked; } };
-  Guard lock() { ++locked; return {this}; }
-  auto &operator*() { EXPECT_GT(locked, 0); return values; }
-  auto *operator->() { EXPECT_GT(locked, 0); return &values; }
-};
-struct control_server_t { Sessions _sessions; };
-struct Broadcast { control_server_t control_server; };
-struct { std::shared_ptr<Broadcast> value; auto ref() { return value; } auto try_ref() { return value; } } broadcast;
 namespace session { void stop(session_t &) {} }
 #if UPDATED_SOURCE
 using stream::video_pacing_reservation_t;
@@ -66,7 +66,25 @@ using stream::reserve_video_pacing_capacity;
 #endif
 using stream::video_send_batch_size;
 @HELPERS@
-@ABR@
+// Only the native session representation is adapted. Matching, acquisition,
+// callback ordering, metadata writes and publication are the real component.
+stream::broadcast_runtime::controls_t<Broadcast> controls {
+  broadcast,
+  [](Broadcast &ctx, const stream::broadcast_runtime::session_action_t &action) {
+    auto guard = ctx.control_server._sessions.lock();
+    std::vector<stream::broadcast_runtime::session_control_t> views;
+    for (auto *session : *ctx.control_server._sessions) {
+      if (session) {
+        views.push_back({session->device_uuid, session->config.monitor.bitrate,
+          session->config.monitor.client_requested_bitrate, {}, session->video.bitrate_events});
+      }
+    }
+    return action(views);
+  },
+  [](Broadcast &ctx, const std::string &client_uuid, int bitrate_kbps) {
+    return pacing_admits_locked(ctx.control_server, nullptr, &client_uuid, bitrate_kbps);
+  }
+};
 int publish_session(session_t &session) {
 @PUBLISH@
   return 0;
@@ -96,8 +114,13 @@ std::uint64_t sender_delay(int cap, bool encrypted = false, bool pyro = false, s
 bool checks_deadline(int pacing_ceiling, size_t ratecontrol_group_packets_sent, size_t ratecontrol_frame_packets_sent, size_t ratecontrol_packets_in_1ms) {
   return @CONDITION@;
 }
-void reset(int cap) { config::stream = {}; config::stream.pacing_max_bitrate_kbps = cap; broadcast.value = std::make_shared<Broadcast>(); }
-void attach(session_t &session) { session.broadcast_ref = broadcast.value; }
+void reset(int cap) {
+  config::stream = {}; config::stream.pacing_max_bitrate_kbps = cap;
+  if (!broadcast_owner) broadcast_owner = broadcast.ref();
+  auto guard = broadcast_owner->control_server._sessions.lock();
+  broadcast_owner->control_server._sessions->clear();
+}
+void attach(session_t &session) { session.broadcast_ref = broadcast.ref(); }
 
 struct Tree {
   std::map<std::string, std::string> values;
@@ -129,7 +152,7 @@ TEST(VideoPacingIntegration, RejectsInfeasibleStartBeforePublishing) {
   reset(165000);
   session_t candidate; attach(candidate);
   EXPECT_EQ(publish_session(candidate), START_PACING_REJECTED);
-  EXPECT_TRUE(broadcast.value->control_server._sessions.values.empty());
+  EXPECT_TRUE(broadcast_owner->control_server._sessions.raw.empty());
 }
 TEST(VideoPacingIntegration, ReservesAllPublishedStartsInSharedPacer) {
   reset(400000);
@@ -138,29 +161,30 @@ TEST(VideoPacingIntegration, ReservesAllPublishedStartsInSharedPacer) {
   ASSERT_EQ(publish_session(one), 0);
   ASSERT_EQ(publish_session(two), 0);
   EXPECT_EQ(publish_session(three), START_PACING_REJECTED);
-  EXPECT_EQ(broadcast.value->control_server._sessions.values.size(), 2u);
+  EXPECT_EQ(broadcast_owner->control_server._sessions.raw.size(), 2u);
 }
 TEST(VideoPacingIntegration, RejectsBitrateIncreaseAtomicallyAcrossMatchingSessions) {
   reset(400000);
   session_t one, two;
   for (auto *candidate : {&one, &two}) { attach(*candidate); ASSERT_EQ(publish_session(*candidate), 0); }
-  EXPECT_EQ(set_bitrate_for_sessions("client", 160000), -1);
+  EXPECT_EQ(controls.set_bitrate_for_sessions("client", 160000), -1);
   for (auto *candidate : {&one, &two}) {
     EXPECT_EQ(candidate->config.monitor.bitrate, 150000);
     EXPECT_EQ(candidate->config.monitor.client_requested_bitrate, 150000);
-    EXPECT_TRUE(candidate->video.bitrate_events->raised.empty());
+    EXPECT_TRUE(!candidate->video.bitrate_events->peek());
   }
 }
 TEST(VideoPacingIntegration, FeasibleUpdateKeepsOtherClientAndNotFoundSemantics) {
   reset(400000);
   session_t one, two; two.device_uuid = "other";
   for (auto *candidate : {&one, &two}) { attach(*candidate); ASSERT_EQ(publish_session(*candidate), 0); }
-  EXPECT_EQ(set_bitrate_for_sessions("missing", 500000), 0);
-  EXPECT_EQ(set_bitrate_for_sessions("client", 100000), 1);
+  EXPECT_EQ(controls.set_bitrate_for_sessions("missing", 500000), 0);
+  EXPECT_EQ(controls.set_bitrate_for_sessions("client", 100000), 1);
   EXPECT_EQ(one.config.monitor.bitrate, 100000);
   EXPECT_EQ(two.config.monitor.bitrate, 150000);
-  EXPECT_EQ(one.video.bitrate_events->raised, std::vector<int>{100000});
-  EXPECT_TRUE(two.video.bitrate_events->raised.empty());
+  EXPECT_EQ(one.video.bitrate_events->pop(0ms), 100000);
+  EXPECT_FALSE(one.video.bitrate_events->peek());
+  EXPECT_TRUE(!two.video.bitrate_events->peek());
 }
 TEST(VideoPacingIntegration, InputOnlyAndFractionalCadenceAdmission) {
   reset(1);
@@ -176,7 +200,7 @@ TEST(VideoPacingIntegration, ZeroKeepsLegacyAdmissionUpdatesAndPacing) {
   reset(0);
   session_t one, two, three;
   for (auto *candidate : {&one, &two, &three}) { attach(*candidate); EXPECT_EQ(publish_session(*candidate), 0); }
-  EXPECT_EQ(set_bitrate_for_sessions("client", 500000), 3);
+  EXPECT_EQ(controls.set_bitrate_for_sessions("client", 500000), 3);
   for (const size_t block : {216u, 516u, 1408u, 1472u, 9016u, 65551u}) {
     const auto legacy = std::max<size_t>(1, 800000000 / 1000 / block / 8);
     EXPECT_EQ(pace(0, false, false, block).first, legacy);
@@ -238,15 +262,16 @@ TEST(VideoPacingIntegration, FractionalMultiSessionChangesStayAtomicAndReleaseCa
     ASSERT_EQ(publish_session(one), 0);
     ASSERT_EQ(publish_session(two), 0);
     EXPECT_EQ(publish_session(three), START_PACING_REJECTED);
-    EXPECT_EQ(set_bitrate_for_sessions("client", 1200), 2);
-    EXPECT_EQ(set_bitrate_for_sessions("client", 2000), -1);
+    EXPECT_EQ(controls.set_bitrate_for_sessions("client", 1200), 2);
+    EXPECT_EQ(controls.set_bitrate_for_sessions("client", 2000), -1);
     for (auto *candidate : {&one, &two}) {
       EXPECT_EQ(candidate->config.monitor.bitrate, 1200);
-      EXPECT_EQ(candidate->video.bitrate_events->raised, std::vector<int>{1200});
+      EXPECT_EQ(candidate->video.bitrate_events->pop(0ms), 1200);
+      EXPECT_FALSE(candidate->video.bitrate_events->peek());
     }
     // #510's control owner removes the stopped entry before controlEnd. Once
     // detached it no longer reserves the shared sender; the other owner stays.
-    auto &sessions = broadcast.value->control_server._sessions.values;
+    auto &sessions = broadcast_owner->control_server._sessions.raw;
     sessions.erase(std::find(sessions.begin(), sessions.end(), &one));
     EXPECT_EQ(publish_session(three), 0);
     EXPECT_EQ(two.config.monitor.bitrate, 1200);

@@ -332,6 +332,42 @@ sunshine_add_test_target(
     DEPENDENCIES
 )
 
+if(SUNSHINE_TEST_ENABLE_COMPONENT)
+    find_package(Threads REQUIRED)
+    sunshine_add_test_target(
+        NAME test_component_broadcast_runtime
+        CATEGORY component
+        TEST_SOURCES
+            "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_broadcast_runtime.cpp"
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_broadcast_runtime.cpp"
+        LINK_LIBRARIES GTest::gtest Threads::Threads nlohmann_json::nlohmann_json
+    )
+    set_tests_properties(test_component_broadcast_runtime PROPERTIES TIMEOUT 30)
+    sunshine_add_test_target(
+        NAME test_component_nvhttp_dispatch
+        CATEGORY component
+        TEST_SOURCES
+            "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_nvhttp_dispatch.cpp"
+        PRODUCT_SOURCES
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_broadcast_runtime.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_pairing_policy.cpp"
+        LINK_LIBRARIES GTest::gtest Threads::Threads nlohmann_json::nlohmann_json Boost::property_tree
+    )
+    set_tests_properties(test_component_nvhttp_dispatch PROPERTIES TIMEOUT 30)
+    sunshine_add_test_target(
+        NAME test_component_nvhttp_bitrate_policy
+        CATEGORY component
+        TEST_SOURCES
+            "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_nvhttp_bitrate_policy.cpp"
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_broadcast_runtime.cpp"
+        LINK_LIBRARIES GTest::gtest Threads::Threads nlohmann_json::nlohmann_json Boost::property_tree OpenSSL::Crypto
+    )
+    set_tests_properties(test_component_nvhttp_bitrate_policy PROPERTIES TIMEOUT 30)
+endif()
+
 sunshine_add_test_target(
     NAME test_fast_update_release
     CATEGORY fast
@@ -481,6 +517,7 @@ if(SUNSHINE_TEST_ENABLE_COMPONENT)
             DEPENDS unit/test_video_pacing_integration.py unit/test_video_pacing_integration.cpp.in
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream.cpp"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream.h"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_broadcast_runtime.h"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_protocol.cpp"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_protocol.h"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/pyrowave_policy.h"
@@ -490,8 +527,12 @@ if(SUNSHINE_TEST_ENABLE_COMPONENT)
         sunshine_add_test_target(NAME test_component_video_pacing_admission CATEGORY component
             TEST_SOURCES "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp" "${_pacing_fixture_dir}/video_pacing_integration.cpp"
             PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_protocol.cpp"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_broadcast_runtime.cpp"
             INCLUDE_DIRECTORIES "${_pacing_fixture_dir}"
-            DEFINITIONS SUNSHINE_TESTS LINK_LIBRARIES GTest::gtest)
+            DEFINITIONS SUNSHINE_TESTS
+            LINK_LIBRARIES GTest::gtest Threads::Threads nlohmann_json::nlohmann_json)
+        set_tests_properties(test_component_video_pacing_admission PROPERTIES
+            LABELS "component;supplementary" TIMEOUT 30)
     endif()
 endif()
 sunshine_register_component(NAME test_component_remote_session TEST_SOURCE unit/test_remote_session.cpp
