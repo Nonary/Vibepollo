@@ -447,6 +447,10 @@ function(sunshine_register_component)
     )
 endfunction()
 
+if(SUNSHINE_TEST_ENABLE_COMPONENT)
+    add_subdirectory(process_catalog)
+endif()
+
 if(SUNSHINE_TEST_ENABLE_COMPONENT AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     find_program(SUNSHINE_TEST_PYTHON_EXECUTABLE NAMES python3)
     if(SUNSHINE_TEST_PYTHON_EXECUTABLE)

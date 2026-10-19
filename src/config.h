@@ -552,6 +552,8 @@ namespace config {
 
   // Gate helpers so session start/resume can hold a shared lock while apply holds a unique lock.
   std::shared_lock<std::shared_mutex> acquire_apply_read_gate();
+  // Catalog refresh shares the same gate and uses nonblocking admission.
+  std::shared_mutex &apply_gate_mutex();
   void record_active_adapter_config();
 
   // Runtime, non-persisted config overrides (e.g. per-application overrides).

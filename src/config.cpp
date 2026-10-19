@@ -53,6 +53,7 @@
 #include "nvhttp.h"
 #include "platform/common.h"
 #include "process.h"
+#include "process_catalog.h"
 #include "rtsp.h"
 #include "session_history.h"
 #include "state_storage.h"
@@ -3049,6 +3050,10 @@ namespace config {
     return std::shared_lock<std::shared_mutex>(g_apply_gate);
   }
 
+  std::shared_mutex &apply_gate_mutex() {
+    return g_apply_gate;
+  }
+
   void record_active_adapter_config() {
     // Session start/resume calls this while holding acquire_apply_read_gate(),
     // so video's two strings are copied from one effective config generation.
@@ -3203,6 +3208,7 @@ namespace config {
     // Ensure only one apply runs at a time and block session start/resume while applying.
     std::unique_lock<std::shared_mutex> write_gate(g_apply_gate);
     std::unique_lock<std::mutex> apply_once(g_apply_mutex);
+    proc::catalog::config_apply_scope apply_scope;
     try {
       // Capture previous DD configuration state to detect any changes
       const auto prev_dd_config_opt = video.dd.configuration_option;
