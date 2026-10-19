@@ -62,14 +62,13 @@ FIXED = {
 FIXED.update(f'usr/libexec/vibeshine/vibepollo-{name}' for name in HELPERS)
 FIXED.update(f'usr/libexec/vibeshine/vibeshine-{name}' for name in
              ('drm-install', 'ds5-install', 'vkms', 'vkms-peercred', 'vkms-quiesce'))
-FIXED.update(f'usr/libexec/vibeshine/{name}' for name in
-             ('vibepollo-profile-normalize.py', 'pairing_migration.py'))
 FIXED.update(f'usr/lib/systemd/system/{name}' for name in UNITS)
 FIXED.update(f'usr/share/applications/io.github.Nonary.vibepollo{suffix}.desktop'
              for suffix in ('', '.kwin', '.terminal'))
 FIXED.add('usr/share/icons/hicolor/scalable/apps/apollo.svg')
 OPTIONAL = {f'usr/share/icons/hicolor/scalable/status/apollo-{state}.svg'
             for state in ('locked', 'pausing', 'playing', 'tray')}
+OPTIONAL.add('usr/lib/libwebrtc.so')
 FIXED.update(f'usr/lib/systemd/user/{unit}.service.d/{dropin}.conf'
              for unit in ('plasma-kwin_wayland', 'plasma-login-kwin_wayland')
              for dropin in ('vibeshine-kwin-gpu', 'vibepollo-kwin-session-environment'))
