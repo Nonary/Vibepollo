@@ -57,7 +57,9 @@ namespace nvhttp::state_policy {
 
   // Old property-tree writers encode empty arrays as "". Normalize only those
   // known containers; preserve every Apollo permission, command and unknown key.
-  inline bool normalize_snapshot(nlohmann::json &tree, const statefile::policy::certificate_identity_t &certificate_identity = {}) {
+  // Offline duplicate inspection alone may tolerate repeated certificates.
+  // Every loader call keeps the strict default, including all typed validation.
+  inline bool normalize_snapshot(nlohmann::json &tree, const statefile::policy::certificate_identity_t &certificate_identity = {}, bool allow_duplicate_certificates = false) {
     if (!tree.is_object() || !tree.contains("root") || !tree["root"].is_object()) return false;
     auto &root = tree["root"];
     if (!root.contains("uniqueid") || !root["uniqueid"].is_string() || !valid_uuid(root["uniqueid"])) return false;
@@ -82,7 +84,7 @@ namespace nvhttp::state_policy {
           return false;
         }
         const auto certificate = identity(device["cert"]);
-        if (!certificate || certificate->empty() || !certs.insert(*certificate).second) {
+        if (!certificate || certificate->empty() || (!certs.insert(*certificate).second && !allow_duplicate_certificates)) {
           return false;
         }
         if (device.contains("perm") && !permission(device["perm"])) return false;
@@ -135,7 +137,7 @@ namespace nvhttp::state_policy {
           if (certs.contains(*certificate)) {
             it = device["certs"].erase(it);
           } else {
-            if (++legacy_count > 256 || !legacy_certs.insert(*certificate).second) {
+            if (++legacy_count > 256 || (!legacy_certs.insert(*certificate).second && !allow_duplicate_certificates)) {
               return false;
             }
             ++it;

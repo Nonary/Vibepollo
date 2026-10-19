@@ -28,6 +28,7 @@
 #include "logging.h"
 #include "main.h"
 #include "nvhttp.h"
+#include "pairing_recovery.h"
 #include "process.h"
 #include "rtsp.h"
 #include "shutdown_signal.h"
@@ -339,6 +340,12 @@ int main(int argc, char *argv[]) {
   SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
   setlocale(LC_ALL, "C");
 #endif
+
+  // Explicit snapshot copies only: recover without parsing the host profile,
+  // repairing its ACLs, initializing logging or changing driver preferences.
+  if (const auto result = pairing_recovery::dispatch(argc, argv, std::cout, std::cerr)) {
+    return *result;
+  }
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"

@@ -32,6 +32,78 @@ Can't access the web UI?
 
 1. Check firewall rules.
 
+### Startup rejects duplicate paired-client certificates
+
+If the startup log reports that `root.named_devices[N].cert` duplicates another
+named record, the host stops rather than guessing which UUID, settings or
+revocation should win. Reinstalling or resetting the profile can discard the
+evidence and existing pairings. The offline recovery command prepares a separate
+candidate without starting the host or changing its configuration.
+
+1. Arrange a maintenance window and stop the host/service before copying or
+   replacing its state. Stopping the host disconnects active clients. Keep a
+   private backup of the full configuration directory, including credentials,
+   applications, auxiliary state and both pairing-state snapshots.
+2. Work on copies of `sunshine_state.json` and, when present,
+   `sunshine_state.json.bak` in the same private directory. Supply the actual
+   configured pairing-state filename if `file_state` overrides the default.
+   Do not upload these files: they can contain credential hashes and tokens.
+3. Inspect the copies. For example, from PowerShell on Windows:
+
+   ```powershell
+   & 'C:\Program Files\Apollo\sunshine.exe' --pairing-recovery inspect 'C:\PrivateRecovery\sunshine_state.json'
+   ```
+
+   The report lists duplicate groups, existing UUIDs, names and enabled status,
+   plus a `snapshot_token` bound to both input snapshots. It does not print
+   certificates or credentials. Compare each group's original records privately,
+   including per-client settings and any unknown fields, before choosing which
+   existing UUID to retain.
+4. Prepare a candidate, repeating `--keep` once for each duplicate group:
+
+   ```powershell
+   & 'C:\Program Files\Apollo\sunshine.exe' --pairing-recovery prepare 'C:\PrivateRecovery\sunshine_state.json' --expect-snapshot TOKEN --keep EXISTING-UUID --output 'C:\PrivateRecovery\candidate'
+   ```
+
+   Replace `TOKEN` and `EXISTING-UUID` with values from inspection. The output
+   directory must not exist. Changed inputs require a fresh inspection. If any
+   record in a group is disabled, the survivor must also be disabled; intentional
+   reauthorization belongs in the normal pairing flow after recovery.
+5. Review `recovery.json` and `sunshine_state.reconciled.json`. A complete output
+   includes `primary.original.json`, `backup.original.json` when a backup existed,
+   and a manifest marked `complete`. Missing or unreadable files, a missing
+   manifest, or an unexpected hash mean the candidate must not be installed.
+   The original copies remain byte-for-byte unchanged. Credential fields, host
+   identity, unrelated records and unknown JSON values are retained in the
+   candidate; only selected duplicate records and their JSON separators are
+   removed. All other input bytes, including unknown numeric values, survive.
+6. With the host still stopped, verify that live state has not changed since
+   it was copied. Preserve its current primary and backup outside the live
+   filenames. Install the reviewed candidate as the configured primary using
+   the existing owner and file permissions, then restart the host. Do not restore
+   an older backup over newer credentials or revocations. Successful startup
+   refreshes the validated recovery copy through the existing state writer.
+   Verify retained pairings, disabled-client rejection, Web UI credentials and
+   client settings, then restart once more to verify persistence.
+
+Different UUIDs always require administrator selection, even when their visible
+settings appear equal: other state may refer to those UUIDs. Only an entire
+byte-identical record repeated under the same UUID is collapsed without a choice,
+and only while preparing an explicit recovery candidate. Conflicting records
+under one UUID, invalid certificates, malformed state and unresolved legacy-only
+duplicates are refused. The command never installs a candidate, alters live
+pairing data, falls back to stale authorization, or changes startup validation.
+
+Vibepollo also treats a native permission mask with no recognized permissions as
+disabled. An imported `enabled: false` record remains disabled even if its mask
+grants permissions. Recovery retains the selected record's exact permission
+mask, client preferences and unknown fields; it never combines permission masks.
+
+The output directory and files are private to the creating account on POSIX and
+to the owner, Administrators and LocalSystem on Windows. Protect the input copies
+and retained backups with equivalent permissions. This recovery operation does
+not diagnose a separate ten-second shutdown stall or installer-driver warnings.
+
 ### Controller works on Steam but not in games
 One trick might be to change Steam settings and check or uncheck the configuration to support Xbox/PlayStation
 controllers and leave only support for Generic controllers.
