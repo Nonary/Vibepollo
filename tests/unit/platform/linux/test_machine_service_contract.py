@@ -64,6 +64,8 @@ stream = (root / "src/stream.cpp").read_text()
 kmsgrab = (root / "src/platform/linux/kmsgrab.cpp").read_text()
 audio = (root / "src/platform/linux/audio.cpp").read_text()
 nvhttp = (root / "src/nvhttp.cpp").read_text()
+tls_identity = (root / "src/tls_client_identity.h").read_text() + (root / "src/tls_client_identity.cpp").read_text()
+tls_identity_native = (root / "src/tls_client_identity_native.cpp").read_text()
 state_storage = (root / "src/state_storage.cpp").read_text()
 confighttp = (root / "src/confighttp.cpp").read_text()
 linux_misc = (root / "src/platform/linux/misc.cpp").read_text()
@@ -608,23 +610,27 @@ forbid(nvhttp, "tl_peer_certificate", "request-bound TLS identity")
 for invariant in (
     "exact_certificate_identity",
     "build_paired_client_records",
-    "resolve_client_identity_from_peer_cert_locked",
+    "tls_client_identities.authenticate_certificate",
     "Client certificate is not one exact enabled pairing record",
     "revoke_paired_client_access",
     "forget_tls_client_identities_for_uuid",
     "clear_tls_client_identities",
-    "tls_client_identity_by_endpoint.size() >= pairing_policy::max_paired_clients * 8",
+    "request->get_connection_context()",
+    "request->set_connection_context(authority)",
+    "std::vector<std::weak_ptr<authority_t>> authorities",
+    "authority->authorized.load(std::memory_order_acquire)",
     "client_root.named_devices.size() >= pairing_policy::max_paired_clients",
     "if (!add_authorized_client",
 ):
-    require(nvhttp, invariant, "exact enabled-pairing TLS authorization")
+    require(nvhttp + tls_identity, invariant, "exact enabled-pairing TLS authorization")
+forbid(nvhttp, "tls_client_identity_by_endpoint", "transport-owned TLS identity")
 for invariant in ("paired_client_state_valid", "resolve_paired_client", "invalid_state", "disabled"):
     require(pairing_policy, invariant, "paired-client authorization policy")
 # Apollo represents enabled authority with its permission bitmask. Inspect the
 # permission-edit overload, retaining fail-closed persistence and revocation.
 disable_body = nvhttp.rsplit("bool update_device_info(", 1)[1].split("bool unpair_client", 1)[0]
 require(disable_body, "if (!effective || (previous->perm & effective) != previous->perm)", "partial permission revocation")
-require(nvhttp, "(*record)->perm == expected_permissions", "pending admission permission snapshot revalidation")
+require(tls_identity_native, "(*record)->perm == expected_permissions", "pending admission permission snapshot revalidation")
 require(disable_body, "revoke_paired_client_access(uuid)", "paired-client disable revocation")
 enable_fresh_state_position = disable_body.index("config::flag::FRESH_STATE")
 enable_migration_position = disable_body.index("statefile::migrate_recent_state_keys()")
@@ -699,7 +705,7 @@ remembered_identity_body = nvhttp.split(
 )[1].split("std::string get_client_uuid_from_request", 1)[0]
 require(
     remembered_identity_body,
-    "paired_client_uuid_enabled_locked(it->second.uuid)",
+    "tls_client_identities.resolve_snapshot(request, client_root.named_devices)",
     "cached TLS identity live authorization",
 )
 
