@@ -389,7 +389,7 @@
     "detached_cmd_number": "Detached Command #{number}",
     "detached_cmd_placeholder": "Command to execute before the stream",
     "detached_cmd_runtime_desc": "Runs before the primary command. Vibepollo continues even if this command exits.",
-    "image_storage_desc": "Optional; stored only and not fetched by Vibepollo.",
+    "image_storage_desc": "Optional. Custom Moonlight covers need a readable PNG file no larger than 16 MiB. Moonlight may show its default image when the configured cover is unavailable. Renaming another image format to .png does not convert it. Save the application to refresh its cover preview.",
     "lossless": {
       "scaling_bcas": "BCAS (Anime)",
       "scaling_sharp_bilinear": "Sharp Bilinear",

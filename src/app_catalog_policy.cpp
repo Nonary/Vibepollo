@@ -116,6 +116,23 @@ namespace proc::catalog {
     return bytes && has_png_signature(*bytes) ? image_path : default_image;
   }
 
+  std::optional<std::string> read_configured_image(
+    const std::string &image_path,
+    const std::string &assets_root,
+    const image_reader_t &read_header,
+    const image_content_reader_t &read_content
+  ) {
+    const auto path = validate_image_path(image_path, assets_root, {}, read_header);
+    if (path.empty()) {
+      return std::nullopt;
+    }
+    auto content = read_content(path);
+    if (!content || content->size() > maximum_image_bytes || !has_png_signature(std::span<const std::uint8_t> {reinterpret_cast<const std::uint8_t *>(content->data()), content->size()})) {
+      return std::nullopt;
+    }
+    return content;
+  }
+
   std::tuple<std::string, std::string> calculate_ids(
     const std::string &app_name,
     const std::string &app_uuid,

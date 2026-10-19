@@ -99,6 +99,101 @@ namespace {
       "/home/chasep/custom.png", assets, covers));
   }
 
+  TEST(ProcessArtwork, ConfiguredPreviewUsesTheClientPngPathAndBytes) {
+    const std::string assets = "virtual-assets";
+    const auto cover = proc::catalog::asset_path(assets, "cover.png");
+    const auto box = proc::catalog::asset_path(assets, "box.png");
+    const auto steam = proc::catalog::asset_path(assets, "steam.png");
+    fake_images_t images {{{cover, png(1)}, {"custom.PNG", png(2)}, {box, png(3)}, {steam, png(4)}}};
+    const auto read = [&](const std::string &path) {
+      return images.read(path);
+    };
+    const auto content = [&](const std::string &path) -> std::optional<std::string> {
+      const auto bytes = images.read(path);
+      if (!bytes) {
+        return std::nullopt;
+      }
+      return std::string(bytes->begin(), bytes->end());
+    };
+
+    for (const auto &path : {"cover.png", "custom.PNG", "box.png", "./assets/steam.png"}) {
+      const auto client_path = proc::catalog::validate_image_path(path, assets, "fallback", read);
+      EXPECT_EQ(proc::catalog::read_configured_image(path, assets, read, content), content(client_path));
+    }
+  }
+
+  TEST(ProcessArtwork, ConfiguredPreviewRejectsBrowserOnlyArtworkWithoutSubstitution) {
+    const std::string assets = "virtual-assets";
+    const auto box = proc::catalog::asset_path(assets, "box.png");
+    fake_images_t images {{{box, png()}, {"cover.jpg", {0xff, 0xd8, 0xff, 0xe0}}, {"renamed.png", {0xff, 0xd8, 0xff, 0xe0}}, {"truncated.png", {0x89, 0x50, 0x4e, 0x47}}, {"covers/game.png", png()}, {"config/relative.png", png()}}};
+    const auto read = [&](const std::string &path) {
+      return images.read(path);
+    };
+    int complete_reads = 0;
+    const auto content = [&](const std::string &) -> std::optional<std::string> {
+      ++complete_reads;
+      return "unexpected read";
+    };
+
+    for (const auto &path : {"", "missing.png", "cover.jpg", "renamed.png", "truncated.png", "relative.png"}) {
+      EXPECT_EQ(proc::catalog::validate_image_path(path, assets, box, read), box);
+      EXPECT_FALSE(proc::catalog::read_configured_image(path, assets, read, content));
+    }
+    EXPECT_EQ(complete_reads, 0);
+  }
+
+  TEST(ProcessArtwork, ConfiguredPreviewRechecksCompleteBytesAndTheSizeLimit) {
+    const auto header = png();
+    const auto read_header = [&](const std::string &) {
+      return std::optional {header};
+    };
+    std::optional<std::string> bytes;
+    const auto content = [&](const std::string &) {
+      return bytes;
+    };
+    const auto preview = [&] {
+      return proc::catalog::read_configured_image("cover.png", "virtual-assets", read_header, content);
+    };
+
+    EXPECT_FALSE(preview());  // Disappeared after header validation.
+    bytes = std::string(8, 'x');
+    EXPECT_FALSE(preview());  // Replaced after header validation.
+    bytes = std::string(header.begin(), header.begin() + 4);
+    EXPECT_FALSE(preview());
+    bytes = std::string(proc::catalog::maximum_image_bytes, 'x');
+    std::copy(header.begin(), header.end(), bytes->begin());
+    EXPECT_EQ(preview(), bytes);
+    bytes->push_back('x');
+    EXPECT_FALSE(preview());
+  }
+
+  TEST(ProcessArtwork, ConfiguredPreviewKeepsRuntimeReaderRestrictions) {
+    const auto root = std::filesystem::temp_directory_path() / "vibeshine-preview-policy";
+    const std::string assets = (root / "assets").string();
+    const std::string covers = (root / "covers").string();
+    const auto header = png();
+    const auto confined = [&](const std::string &path) {
+      return proc::catalog::machine_image_path_is_confined(path, assets, covers);
+    };
+    const auto read_header = [&](const std::string &path) -> std::optional<proc::catalog::byte_buffer_t> {
+      return confined(path) ? std::optional {header} : std::nullopt;
+    };
+    bool allow_complete_read = true;
+    const auto content = [&](const std::string &path) -> std::optional<std::string> {
+      if (!confined(path) || !allow_complete_read) {
+        return std::nullopt;
+      }
+      return std::string(header.begin(), header.end());
+    };
+
+    EXPECT_TRUE(proc::catalog::read_configured_image("remote-session/remote-input.png", assets, read_header, content));
+    EXPECT_TRUE(proc::catalog::read_configured_image(covers + "/game.png", assets, read_header, content));
+    EXPECT_FALSE(proc::catalog::read_configured_image("../../outside.png", assets, read_header, content));
+    EXPECT_FALSE(proc::catalog::read_configured_image((root / "custom.png").string(), assets, read_header, content));
+    allow_complete_read = false;
+    EXPECT_FALSE(proc::catalog::read_configured_image("cover.png", assets, read_header, content));
+  }
+
   TEST(ProcessCatalog, FirstSeenUuidVersionsArtworkAndRetainsLegacyLaunchId) {
     app_identity_t app {"Game", "11111111-1111-1111-1111-111111111111", "ignored-cover", "sha256:first"};
     std::set<std::string> ids;

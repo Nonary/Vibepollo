@@ -728,6 +728,47 @@ async function libraryWithMissingCovers(page: Page) {
   await localRoute(page, '**/api/apps/*/cover', (route) => route.fulfill({ status: 404, body: '' }));
 }
 
+for (const available of [false, true]) {
+  test(`application cover explains Moonlight availability (${available})`, async ({
+    page,
+  }, testInfo) => {
+    await host(page, 'windows');
+    await page.route('**/api/apps', (route) =>
+      route.fulfill({
+        json: {
+          apps: [
+            { uuid: '11111111-2222-4333-8444-555555555555', name: 'Custom desktop', 'image-path': 'C:/covers/custom.png' },
+          ],
+        },
+      }),
+    );
+    await page.route('**/api/apps/11111111-2222-4333-8444-555555555555/cover*', (route) =>
+      available
+        ? route.fulfill({
+            contentType: 'image/png',
+            body: Buffer.from(
+              'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQI12P4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==',
+              'base64',
+            ),
+          })
+        : route.fulfill({ status: 404, json: { error: 'Configured cover unavailable' } }),
+    );
+    await page.goto('/v2/library/11111111-2222-4333-8444-555555555555');
+    await expect(page.locator('#app-image-path')).toHaveValue('C:/covers/custom.png');
+    await expect(
+      page.getByText(/Custom Moonlight covers need a readable PNG file no larger than 16 MiB/),
+    ).toBeVisible();
+    if (available) {
+      await expect(page.locator('.editor-artwork img')).toBeVisible();
+      await expect(page.getByText('Configured cover unavailable', { exact: true })).toHaveCount(0);
+    } else {
+      await expect(page.locator('.editor-artwork img')).toHaveCount(0);
+      await expect(page.getByText('Configured cover unavailable', { exact: true })).toBeVisible();
+    }
+    await page.screenshot({ path: testInfo.outputPath('cover.png'), fullPage: true });
+  });
+}
+
 test('library placeholders preserve search, keyboard selection, and list preferences', async ({
   page,
 }) => {

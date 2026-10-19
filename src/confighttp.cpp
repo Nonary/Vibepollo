@@ -269,130 +269,21 @@ namespace confighttp {
   namespace fs = std::filesystem;
   using enum confighttp::StatusCode;
 
-  static std::string trim_copy(const std::string &input) {
-    auto begin = input.begin();
-    auto end = input.end();
-    while (begin != end && std::isspace(static_cast<unsigned char>(*begin))) {
-      ++begin;
-    }
-    while (end != begin && std::isspace(static_cast<unsigned char>(*(end - 1)))) {
-      --end;
-    }
-    return std::string {begin, end};
-  }
-
-  static bool file_is_regular(const fs::path &path) {
-    if (path.empty()) {
-      return false;
-    }
-    std::error_code ec;
-    return fs::exists(path, ec) && fs::is_regular_file(path, ec);
-  }
-
   static bool resolve_cover_path_for_uuid(const std::string &uuid, fs::path &out_path) {
     if (uuid.empty()) {
       return false;
     }
 
     try {
-      std::string content = file_handler::read_file(config::stream.file_apps.c_str());
-      nlohmann::json file_tree = nlohmann::json::parse(content);
-      if (!file_tree.contains("apps") || !file_tree["apps"].is_array()) {
+      // The runtime catalog has already applied native JSON parsing and app
+      // environment expansion. Alternate web-only cover files must not mask an
+      // image-path that Moonlight cannot use.
+      const auto app = proc::proc.resolve_app("", uuid);
+      if (!app || app->image_path.empty()) {
         return false;
       }
-
-      const fs::path cover_dir = fs::path(platf::appdata()) / "covers";
-      const fs::path config_dir = fs::path(config::stream.file_apps).parent_path();
-      const fs::path assets_dir = fs::path(SUNSHINE_ASSETS_DIR);
-
-      for (const auto &entry : file_tree["apps"]) {
-        if (!entry.is_object()) {
-          continue;
-        }
-        if (!entry.contains("uuid") || !entry["uuid"].is_string()) {
-          continue;
-        }
-        if (entry["uuid"].get<std::string>() != uuid) {
-          continue;
-        }
-
-        std::string image_path;
-        if (entry.contains("image-path") && entry["image-path"].is_string()) {
-          image_path = entry["image-path"].get<std::string>();
-        }
-        std::string playnite_id;
-        if (entry.contains("playnite-id") && entry["playnite-id"].is_string()) {
-          playnite_id = entry["playnite-id"].get<std::string>();
-        }
-
-        std::vector<fs::path> candidates;
-        std::unordered_set<std::string> seen;
-        auto push_candidate = [&](fs::path candidate) {
-          if (candidate.empty()) {
-            return;
-          }
-          auto normalized = candidate.lexically_normal();
-          std::string key = normalized.generic_string();
-#ifdef _WIN32
-          std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
-            return static_cast<char>(std::tolower(c));
-          });
-#endif
-          if (!seen.insert(key).second) {
-            return;
-          }
-          candidates.emplace_back(std::move(normalized));
-        };
-
-        auto trimmed = trim_copy(image_path);
-        auto normalized_path = trimmed;
-        std::replace(normalized_path.begin(), normalized_path.end(), '\\', '/');
-
-        if (!trimmed.empty()) {
-          fs::path direct(trimmed);
-          push_candidate(direct);
-          if (!direct.is_absolute()) {
-            if (!normalized_path.empty() && normalized_path.rfind("./", 0) == 0) {
-              fs::path rel(normalized_path.substr(2));
-              push_candidate(config_dir / rel);
-              push_candidate(assets_dir / rel);
-            }
-            push_candidate(config_dir / direct);
-            push_candidate(assets_dir / direct);
-            if (normalized_path.rfind("covers/", 0) == 0) {
-              fs::path rel(normalized_path.substr(7));
-              push_candidate(cover_dir / rel);
-            }
-            if (normalized_path.rfind("./covers/", 0) == 0) {
-              fs::path rel(normalized_path.substr(9));
-              push_candidate(cover_dir / rel);
-            }
-          }
-        }
-
-        static const std::array<const char *, 4> fallback_exts {".png", ".jpg", ".jpeg", ".webp"};
-        for (const char *ext : fallback_exts) {
-          push_candidate(cover_dir / (uuid + ext));
-        }
-        if (!playnite_id.empty()) {
-          push_candidate(cover_dir / (std::string("playnite_") + playnite_id + ".png"));
-        }
-
-        for (const auto &candidate : candidates) {
-          if (file_is_regular(candidate)) {
-            out_path = candidate;
-            return true;
-          }
-        }
-
-        fs::path fallback = assets_dir / "box.png";
-        if (file_is_regular(fallback)) {
-          out_path = fallback;
-          return true;
-        }
-
-        return false;
-      }
+      out_path = fs::path {app->image_path};
+      return true;
     } catch (const std::exception &e) {
       BOOST_LOG(warning) << "resolve_cover_path_for_uuid: failed for uuid '" << uuid << "': " << e.what();
     } catch (...) {
@@ -2192,8 +2083,7 @@ namespace confighttp {
 #endif
 
   /**
-   * @brief Serve a specific application's cover image by UUID.
-   *        Looks for files named @c uuid with a supported image extension in the covers directory.
+   * @brief Preview the configured artwork that Moonlight can receive.
    * @api_examples{/api/apps/@c uuid/cover| GET| null}
    */
   void getAppCover(resp_https_t response, req_https_t request) {
@@ -2220,34 +2110,18 @@ namespace confighttp {
       return;
     }
 
-    std::ifstream in(cover_path, std::ios::binary);
-    if (!in) {
-      not_found(response, request);
+    const auto image = proc::read_configured_app_image(cover_path.string());
+    if (!image) {
+      not_found(response, request, "Configured cover unavailable. Moonlight may use its default image. Use a readable PNG file no larger than 16 MiB.");
       return;
     }
 
-    std::string ext = cover_path.extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
-      return static_cast<char>(std::tolower(c));
-    });
-    if (!ext.empty() && ext.front() == '.') {
-      ext.erase(ext.begin());
-    }
-
-    std::string mime = "image/png";
-    if (!ext.empty()) {
-      auto it = mime_types.find(ext);
-      if (it != mime_types.end()) {
-        mime = it->second;
-      }
-    }
-
     SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", mime);
+    headers.emplace("Content-Type", "image/png");
     headers.emplace("Cache-Control", "private, max-age=300");
     headers.emplace("X-Frame-Options", "DENY");
     headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(success_ok, in, headers);
+    response->write(success_ok, *image, headers);
   }
 
   /**

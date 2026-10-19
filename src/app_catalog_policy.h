@@ -18,6 +18,8 @@
 namespace proc::catalog {
   using byte_buffer_t = std::vector<std::uint8_t>;
   using image_reader_t = std::function<std::optional<byte_buffer_t>(const std::string &)>;
+  using image_content_reader_t = std::function<std::optional<std::string>(const std::string &)>;
+  inline constexpr std::size_t maximum_image_bytes = 16U * 1024U * 1024U;
 
   bool has_png_signature(std::span<const std::uint8_t> bytes);
   std::string asset_path(const std::string &assets_root, const std::string &relative_path);
@@ -30,6 +32,13 @@ namespace proc::catalog {
     const std::string &assets_root,
     const std::string &default_image,
     const image_reader_t &read_image);
+  // Read configured artwork without substituting a placeholder. Both callbacks
+  // retain the runtime's platform-specific filesystem restrictions.
+  std::optional<std::string> read_configured_image(
+    const std::string &image_path,
+    const std::string &assets_root,
+    const image_reader_t &read_header,
+    const image_content_reader_t &read_content);
 
   std::tuple<std::string, std::string> calculate_ids(
     const std::string &app_name,

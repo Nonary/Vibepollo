@@ -3629,7 +3629,7 @@ namespace proc {
   }
 
   namespace {
-    constexpr std::size_t maximum_machine_cover_bytes = 16U * 1024U * 1024U;
+    constexpr std::size_t maximum_machine_cover_bytes = catalog::maximum_image_bytes;
 
     [[maybe_unused]] bool machine_host_runtime() {
       const char *value = std::getenv("VIBEPOLLO_MACHINE_HOST");
@@ -3819,6 +3819,11 @@ namespace proc {
       return std::nullopt;
     }
     return bytes;
+  }
+
+  std::optional<std::string> read_configured_app_image(const std::string &image_path) {
+    return catalog::read_configured_image(
+      image_path, SUNSHINE_ASSETS_DIR, read_image_for_validation, read_validated_app_image);
   }
 
   std::optional<std::string> calculate_sha256(const std::string &filename) {

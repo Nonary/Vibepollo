@@ -35,7 +35,7 @@
     },
     "cover": {
         "alt": "{name} cover",
-        "unavailable": "Cover preview unavailable",
+        "unavailable": "Configured cover unavailable",
         "unavailableLabel": "{name} cover unavailable"
       },
       "coverPicker": {
@@ -139,7 +139,7 @@
           "label": "Client icon path"
         },
         "imagePath": {
-          "help": "Enter a local PNG path or find matching cover artwork online.",
+          "help": "Custom Moonlight covers need a readable PNG file no larger than 16 MiB. Moonlight may show its default image when the configured cover is unavailable. Renaming another image format to .png does not convert it. Save the application to refresh its cover preview.",
           "label": "Cover image path",
           "placeholder": "C:/path/to/cover.png"
         },
