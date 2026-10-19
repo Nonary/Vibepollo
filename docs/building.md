@@ -213,11 +213,25 @@ fi
 pacman -S "${dependencies[@]}"
 ```
 
-##### WebRTC (optional, Windows only)
+##### WebRTC (optional, Windows and Linux)
 Sunshine can link against the libwebrtc C++ wrapper when `SUNSHINE_ENABLE_WEBRTC=ON`. The wrapper source is vendored as
 the `third-party/libwebrtc` submodule, but you must build WebRTC separately and provide a staging directory that
 contains `include/` and `lib/` (e.g., `libwebrtc.dll` and its import library). We use the `third-party/depot_tools`
 submodule for `gclient`/`gn`.
+
+###### Linux
+On Linux, run the shell counterpart of the script below. It syncs `webrtc-sdk/webrtc` for `target_os=linux`, builds
+`libwebrtc.so` with the wrapper's desktop capturer disabled, and stages `include/` and `lib/` under
+`${XDG_CACHE_HOME:-~/.cache}/Vibepollo/deps/libwebrtc/out` (override with `VIBEPOLLO_DEPS_DIR`):
+
+```bash
+git submodule update --init third-party/libwebrtc
+scripts/build_linux_webrtc.sh            # --stage=sync|build, --debug, --retain-sources
+cmake -DSUNSHINE_ENABLE_WEBRTC=ON ...
+```
+
+The script does not install host packages. Install the Chromium build prerequisites first (git, python3, curl, a
+C/C++ toolchain, pkg-config). The WebRTC branch defaults to `m125_release`, as on Windows.
 
 ###### Quickstart (recommended)
 A helper script automates the full depot_tools / gclient / gn / ninja flow:

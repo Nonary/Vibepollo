@@ -1,4 +1,4 @@
-# libwebrtc dependency (Windows only)
+# libwebrtc dependency (Windows and Linux)
 
 if(NOT SUNSHINE_ENABLE_WEBRTC)
     return()
@@ -10,9 +10,11 @@ endif()
 #   2. $ENV{VIBEPOLLO_DEPS_DIR}/libwebrtc/out
 #   3. $ENV{VIBESHINE_DEPS_DIR}/libwebrtc/out           (legacy override)
 #   4. $ENV{LOCALAPPDATA}/Vibepollo/deps/libwebrtc/out  (Windows default)
-#   5. ${CMAKE_BINARY_DIR}/libwebrtc                    (legacy fallback)
-# build_mingw_webrtc.ps1 uses the same defaults so a single rebuild populates
-# the location every Vibepollo build dir / worktree on this machine sees.
+#   5. ${XDG_CACHE_HOME:-~/.cache}/Vibepollo/deps/libwebrtc/out (Linux default)
+#   6. ${CMAKE_BINARY_DIR}/libwebrtc                    (legacy fallback)
+# build_mingw_webrtc.ps1 and build_linux_webrtc.sh use the same defaults so a
+# single rebuild populates the location every Vibepollo build dir / worktree on
+# this machine sees.
 set(_vibepollo_default_webrtc_root "")
 if(DEFINED ENV{VIBEPOLLO_DEPS_DIR} AND NOT "$ENV{VIBEPOLLO_DEPS_DIR}" STREQUAL "")
     set(_vibepollo_default_webrtc_root "$ENV{VIBEPOLLO_DEPS_DIR}/libwebrtc/out")
@@ -20,6 +22,10 @@ elseif(DEFINED ENV{VIBESHINE_DEPS_DIR} AND NOT "$ENV{VIBESHINE_DEPS_DIR}" STREQU
     set(_vibepollo_default_webrtc_root "$ENV{VIBESHINE_DEPS_DIR}/libwebrtc/out")
 elseif(WIN32 AND DEFINED ENV{LOCALAPPDATA} AND NOT "$ENV{LOCALAPPDATA}" STREQUAL "")
     set(_vibepollo_default_webrtc_root "$ENV{LOCALAPPDATA}/Vibepollo/deps/libwebrtc/out")
+elseif(UNIX AND DEFINED ENV{XDG_CACHE_HOME} AND NOT "$ENV{XDG_CACHE_HOME}" STREQUAL "")
+    set(_vibepollo_default_webrtc_root "$ENV{XDG_CACHE_HOME}/Vibepollo/deps/libwebrtc/out")
+elseif(UNIX AND DEFINED ENV{HOME})
+    set(_vibepollo_default_webrtc_root "$ENV{HOME}/.cache/Vibepollo/deps/libwebrtc/out")
 endif()
 
 if(_vibepollo_default_webrtc_root AND EXISTS "${_vibepollo_default_webrtc_root}/include")
@@ -149,6 +155,8 @@ if(NOT WEBRTC_LIBRARY)
                         PATH_SUFFIXES lib)
             endif()
         else()
+            # find_library skips the search when the cache entry is empty rather than unset.
+            unset(WEBRTC_LIBRARY CACHE)
             find_library(WEBRTC_LIBRARY
                     NAMES webrtc libwebrtc
                     PATHS "${WEBRTC_ROOT}"
@@ -164,6 +172,7 @@ if(NOT WEBRTC_LIBRARY)
                         NAMES libwebrtc.dll.lib libwebrtc.lib webrtc.lib)
             endif()
         else()
+            unset(WEBRTC_LIBRARY CACHE)
             find_library(WEBRTC_LIBRARY
                     NAMES webrtc libwebrtc)
         endif()
@@ -182,6 +191,15 @@ if(NOT WEBRTC_INCLUDE_DIR OR NOT WEBRTC_LIBRARY)
                 "  VIBESHINE_DEPS_DIR env var), or set\n"
                 "  WEBRTC_ROOT (or WEBRTC_INCLUDE_DIR / WEBRTC_LIBRARY) explicitly.\n"
                 "  See docs/building.md for full prerequisites.")
+    elseif(UNIX AND NOT APPLE)
+        message(FATAL_ERROR
+                "libwebrtc not found.\n"
+                "  Build it once with:\n"
+                "    scripts/build_linux_webrtc.sh\n"
+                "  By default this stages the SDK under\n"
+                "  \${XDG_CACHE_HOME:-~/.cache}/Vibepollo/deps/libwebrtc/out. Override with\n"
+                "  VIBEPOLLO_DEPS_DIR, or set WEBRTC_ROOT (or WEBRTC_INCLUDE_DIR /\n"
+                "  WEBRTC_LIBRARY) explicitly. See docs/building.md.")
     else()
         message(FATAL_ERROR
                 "libwebrtc not found. Set WEBRTC_ROOT to the libwebrtc install root, or "
@@ -245,3 +263,8 @@ list(APPEND WEBRTC_INCLUDE_DIRS "${WEBRTC_INCLUDE_DIR}")
 list(APPEND WEBRTC_LIBRARIES "${WEBRTC_LIBRARY}" ${WEBRTC_EXTRA_LIBRARIES})
 list(APPEND SUNSHINE_EXTERNAL_LIBRARIES ${WEBRTC_LIBRARIES})
 list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_ENABLE_WEBRTC=1)
+
+# Linux installs libwebrtc.so next to the binary's libraries.
+if(UNIX AND NOT APPLE AND WEBRTC_LIBRARY MATCHES "\\.so$")
+    set(WEBRTC_RUNTIME_LIB "${WEBRTC_LIBRARY}")
+endif()
