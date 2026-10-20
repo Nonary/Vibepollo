@@ -3064,7 +3064,9 @@ dd_remove_virtual_display_after_restore = disabled
     <tr>
         <td>wlr</td>
         <td>Capture for wlroots based Wayland compositors via wlr-screencopy-unstable-v1. It is possible to capture
-            virtual displays in e.g. Hyprland using this method.
+            virtual displays in e.g. Hyprland using this method in a user-session host.
+            The experimental Hyprland machine-service subset uses physical KMS capture;
+            see <a href="linux/hyprland.md">its supported contract</a>.
             @note{Applies to Linux only.}</td>
     </tr>
     <tr>

@@ -317,3 +317,78 @@ TEST_F(KmsHdr, AnUnknownNewObservationCannotCommitAnOlderPendingPayload) {
   ASSERT_EQ(generation.refresh(7, 10, 11), platf::capture_e::ok);
   EXPECT_FALSE(generation.commit_pending());
 }
+
+TEST_F(KmsHdr, StrictSdrObservationNeverStagesUnknownOrNonSdr) {
+  hdr::generation_t generation;
+  auto sdr = pq_metadata();
+  sdr.hdmi_metadata_type1.eotf = 0;
+  publish(10, sdr);
+  const auto selected = generation.selected(7, 10);
+  ASSERT_TRUE(selected);
+  for (auto eotf : {1u, 2u, 3u, 255u}) {
+    auto changed = pq_metadata();
+    changed.hdmi_metadata_type1.eotf = eotf;
+    publish(11, changed);
+    EXPECT_EQ(generation.refresh(7, 10, 11, true), platf::capture_e::reinit);
+    EXPECT_FALSE(generation.commit_pending());
+    EXPECT_EQ(generation.selected(7, 10), selected);
+  }
+  fail_reads = true;
+  EXPECT_EQ(generation.refresh(7, 10, 11, true), platf::capture_e::reinit);
+  EXPECT_FALSE(generation.commit_pending());
+  fail_reads = false;
+  EXPECT_EQ(generation.refresh(7, 10, std::nullopt, true), platf::capture_e::reinit);
+  EXPECT_FALSE(generation.commit_pending());
+  EXPECT_EQ(generation.refresh(7, 10, 0, true), platf::capture_e::ok);
+  EXPECT_FALSE(generation.commit_pending());
+  publish(11, sdr);
+  EXPECT_EQ(generation.refresh(7, 10, 11, true), platf::capture_e::ok);
+  EXPECT_FALSE(generation.commit_pending());
+}
+
+TEST_F(KmsHdr, StrictRejectedObservationClearsEarlierPendingState) {
+  hdr::generation_t generation;
+  auto sdr = pq_metadata();
+  sdr.hdmi_metadata_type1.eotf = 0;
+  publish(10, sdr);
+  const auto selected = generation.selected(7, 10);
+  publish(11, pq_metadata());
+  ASSERT_EQ(generation.refresh(7, 10, 11), platf::capture_e::reinit);
+  fail_reads = true;
+  EXPECT_EQ(generation.refresh(7, 10, 11, true), platf::capture_e::reinit);
+  EXPECT_FALSE(generation.commit_pending());
+  EXPECT_EQ(generation.selected(7, 10), selected);
+}
+
+TEST_F(KmsHdr, InitialStrictSdrSeedOwnsTheValidatedObservation) {
+  hdr::generation_t generation;
+  hdr::state_t observed {};
+  observed.present = true;
+  observed.eotf = 0;
+  observed.max_content_light_level = 123;
+  ASSERT_TRUE(generation.initialize_sdr(observed));
+  observed.eotf = 2;
+  observed.max_content_light_level = 456;
+  const auto selected = generation.selected(7, 10); // Cached ID 10 is readable PQ.
+  ASSERT_TRUE(selected);
+  EXPECT_FALSE(selected->is_hdr());
+  EXPECT_EQ(selected->max_content_light_level, 123);
+  EXPECT_EQ(reads, 0u);
+  EXPECT_FALSE(generation.commit_pending());
+}
+
+TEST_F(KmsHdr, InitialStrictSdrSeedCannotReplaceAnExposedGeneration) {
+  for (auto eotf : {1u, 2u, 3u, 255u}) {
+    hdr::generation_t fresh;
+    hdr::state_t rejected {};
+    rejected.present = true;
+    rejected.eotf = eotf;
+    EXPECT_FALSE(fresh.initialize_sdr(rejected));
+    EXPECT_TRUE(fresh.initialize_sdr(hdr::state_t {}));
+  }
+  hdr::generation_t exposed;
+  const auto original = exposed.selected(7, 10);
+  ASSERT_TRUE(original->is_hdr());
+  EXPECT_FALSE(exposed.initialize_sdr(hdr::state_t {}));
+  EXPECT_EQ(exposed.selected(7, 10), original);
+}

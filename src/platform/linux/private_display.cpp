@@ -4,6 +4,7 @@
  */
 
 #include "private_display.h"
+#include "session_backend.h"
 #include "private_display_capacity.h"
 #include "display_restore_capture.h"
 
@@ -127,6 +128,7 @@ namespace platf::linux_private_display {
     }
 
     bool broker_set_connected(const std::string &output_name, const bool connected) {
+      if (linux_display::hyprland_kms_session()) return false;
       // The control client waits longer than the broker's mutation/stop bound.
       // Reserve that entire interval rather than shortening its safe drain.
       if (!helper_budget_available(connector_reply_timeout)) return false;
@@ -154,6 +156,10 @@ namespace platf::linux_private_display {
 
     command_result_t run_doctor(const std::vector<std::string> &arguments, const bool mutating = false) {
       command_result_t result;
+      if (linux_display::hyprland_kms_session()) {
+        result.stderr_text = "KScreen operations are unsupported by the Hyprland KMS backend";
+        return result;
+      }
       if (!helper_budget_available(helper_reply_timeout)) {
         result.stderr_text = "display helper fenced, restore superseded, or insufficient reply budget";
         return result;
@@ -332,6 +338,7 @@ namespace platf::linux_private_display {
     }
 
     std::vector<std::string> configured_outputs() {
+      if (linux_display::hyprland_kms_session()) return {};
       if (!config::video.dd.virtual_display_outputs.empty()) {
         return config::video.dd.virtual_display_outputs;
       }
@@ -2724,6 +2731,7 @@ namespace platf::linux_private_display {
   }
 
   termination_result_t terminate_all() {
+    if (linux_display::hyprland_kms_session()) return {};
     auto &manager = state();
     stream::session::cleanup_reservation_t cleanup_reservation;
     const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -2822,6 +2830,7 @@ namespace platf::linux_private_display {
   }
 
   bool kernel_pool_available() {
+    if (linux_display::hyprland_kms_session()) return false;
     return !discover_managed_outputs().empty();
   }
 

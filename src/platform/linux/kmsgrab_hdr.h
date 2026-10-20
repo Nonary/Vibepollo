@@ -90,6 +90,19 @@ namespace platf::kms::hdr {
   /** One observation shared by HDR selection, metadata and capture comparison. */
   class generation_t {
   public:
+    /** Seed a new strict-SDR capture before its factory publishes it. */
+    [[nodiscard]] bool initialize_sdr(const state_t &state) {
+      const std::lock_guard lock {state_mutex};
+      // Never replace a state already exposed to encoder getters. Later
+      // generations must continue through the owned stage/drain/commit path.
+      if (initialized || (state.present && state.eotf != 0)) {
+        return false;
+      }
+      selected_state = std::make_shared<const state_t>(state);
+      initialized = true;
+      return true;
+    }
+
     [[nodiscard]] std::shared_ptr<const state_t> selected(int fd, std::optional<std::uint64_t> initial_id) {
       const std::lock_guard lock {state_mutex};
       if (!initialized) {
@@ -101,11 +114,17 @@ namespace platf::kms::hdr {
       return selected_state;
     }
 
-    [[nodiscard]] capture_e refresh(int fd, std::optional<std::uint64_t> initial_id, std::optional<std::uint64_t> observed_id) {
+    [[nodiscard]] capture_e refresh(int fd, std::optional<std::uint64_t> initial_id, std::optional<std::uint64_t> observed_id, bool require_sdr = false) {
       const auto baseline = selected(fd, initial_id);
       const auto current = read_blob(fd, observed_id);
       const std::lock_guard lock {state_mutex};
       pending_state.reset();
+      // The strict physical-SDR backend must validate this exact observation,
+      // not just an earlier property read. Never stage unknown or non-SDR
+      // state for a later same-instance encoder generation under that policy.
+      if (require_sdr && (!current || (current->present && current->eotf != 0))) {
+        return capture_e::reinit;
+      }
       // Failure to read a blob/property is unknown, not evidence of a change.
       // Keep the selected state and retry on the next capture observation.
       if (!current) {

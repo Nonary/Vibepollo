@@ -1227,6 +1227,35 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
     add_test(NAME test_component_linux_session_exec_client COMMAND test_linux_session_exec_client)
     set_tests_properties(test_component_linux_session_exec_client PROPERTIES LABELS "component")
 
+    add_executable(test_linux_hyprland_broker
+        "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_hyprland_broker.c")
+    target_include_directories(test_linux_hyprland_broker PRIVATE "${LIBCAP_INCLUDE_DIRS}")
+    target_link_libraries(test_linux_hyprland_broker PRIVATE "${LIBCAP_LIBRARIES}")
+    add_test(NAME test_component_linux_hyprland_broker COMMAND test_linux_hyprland_broker)
+    set_tests_properties(test_component_linux_hyprland_broker PROPERTIES LABELS "component")
+    if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+        add_test(NAME test_component_linux_hyprland_backend
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_hyprland_backend.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_linux_hyprland_backend PROPERTIES LABELS "component")
+        add_test(NAME test_component_linux_hyprland_sdr
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_hyprland_sdr.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_linux_hyprland_sdr PROPERTIES LABELS "component")
+        add_test(NAME test_component_linux_hyprland_property_failure
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_hyprland_property_failure.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_linux_hyprland_property_failure PROPERTIES LABELS "component")
+        add_test(NAME test_component_linux_kmsgrab_startup
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_kmsgrab_startup.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_linux_kmsgrab_startup PROPERTIES LABELS "component" TIMEOUT 45)
+        add_test(NAME test_component_linux_hyprland_socket_peer
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_hyprland_socket_peer.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+        set_tests_properties(test_component_linux_hyprland_socket_peer PROPERTIES LABELS "component")
+    endif()
+
     add_executable(test_linux_kwin_session_environment
         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_kwin_session_environment.c")
     add_test(NAME test_component_linux_kwin_session_environment
@@ -1235,6 +1264,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
 
     find_program(SUNSHINE_TEST_BASH_EXECUTABLE bash)
     if(SUNSHINE_TEST_BASH_EXECUTABLE)
+        add_test(NAME test_component_linux_hyprland_session
+            COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_hyprland_session.sh"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+        set_tests_properties(test_component_linux_hyprland_session PROPERTIES LABELS "component")
+        add_test(NAME test_component_linux_hyprland_lifecycle
+            COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_hyprland_lifecycle.sh"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+        set_tests_properties(test_component_linux_hyprland_lifecycle PROPERTIES LABELS "component")
         add_test(NAME test_component_linux_vibeshine_ds5_install
             COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_ds5_install.sh"

@@ -92,6 +92,7 @@ namespace kms {
   struct display_vram_t : display_t {
     mem_type_e type;
     explicit display_vram_t(mem_type_e value) : type(value) {}
+    bool sdr_capture_allowed(bool = false) { return true; }
     int init(const std::string& name, const video::config_t&) {
       if (fake::pause_init) {
         fake::init_started=true;

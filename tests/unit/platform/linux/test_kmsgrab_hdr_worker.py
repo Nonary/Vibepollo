@@ -25,6 +25,7 @@ def function(source, marker, last=False):
 
 PRELUDE = r'''
 #include "src/platform/linux/kmsgrab_hdr.h"
+#include "src/platform/linux/session_backend.h"
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -58,9 +59,12 @@ namespace probe {
 extern "C" drmModePropertyBlobPtr drmModeGetPropertyBlob(int, uint32_t) {
   ++probe::total_reads;
   if (probe::initial_phase) ++probe::init_reads;
+  const bool strict_bad=probe::scenario.starts_with("hyprland-second-") && probe::total_reads>=3;
+  if(strict_bad && probe::scenario=="hyprland-second-unknown") return nullptr;
   if ((probe::initial_phase && probe::fail_initial) || probe::fail_selected || probe::fail_current) return nullptr;
   hdr_output_metadata raw {};
   raw.hdmi_metadata_type1.eotf = probe::eotf;
+  if(strict_bad) raw.hdmi_metadata_type1.eotf=probe::scenario=="hyprland-second-pq"?2:probe::scenario=="hyprland-second-gamma"?1:3;
   raw.hdmi_metadata_type1.max_display_mastering_luminance = probe::luminance;
   raw.hdmi_metadata_type1.max_cll = probe::cll;
   auto *blob = new drmModePropertyBlobRes{};
@@ -134,17 +138,24 @@ namespace platf {
       drmModePropertyBlobPtr p; prop_blob_t(drmModePropertyBlobPtr p):p(p) {}
       ~prop_blob_t() { if (p) drmModeFreePropertyBlob(p); }
       bool operator==(std::nullptr_t) const { return p == nullptr; }
+      explicit operator bool() const { return p != nullptr; }
       auto operator->() const { return p; }
     };
     struct card_t {
       struct { int el=7; } fd;
-      struct connector_t { int crtc_id=1; unsigned connector_id=91; };
+      struct connector_t { int crtc_id=1; unsigned connector_id=91; bool connected=true; std::string name="Virtual-1"; int connection=DRM_MODE_CONNECTED; unsigned encoder_id=4; };
       std::vector<connector_t> monitors() { return {{1,probe::connector_id}}; }
-      int connector_props(unsigned) { return 0; }
-      std::optional<uint64_t> prop_value_by_name(int, std::string_view) { return probe::current_id; }
+      using properties_t=std::vector<std::pair<std::shared_ptr<int>,uint64_t>>;
+      properties_t connector_props(unsigned) { return probe::current_id ? properties_t{{std::make_shared<int>(1),*probe::current_id}} : properties_t{}; }
+      std::optional<uint64_t> prop_value_by_name(const properties_t& properties, std::string_view) { return properties.empty()? std::nullopt : std::optional<uint64_t>(properties.front().second); }
+      std::optional<connector_t> connector(unsigned) { return connector_t{}; }
+      struct encoder_t { unsigned crtc_id=1; };
+      std::optional<encoder_t> encoder(unsigned) { return encoder_t{}; }
     };
     struct display_probe_t: platf::display_t {
       int crtc_id=1; card_t card;
+      struct selected_t { std::string connector_name="Virtual-1"; };
+      std::optional<selected_t> selected_monitor=selected_t{};
 @@KMS_MEMBERS@@
       std::chrono::nanoseconds delay{};
       struct { void reset(){} void first_point(auto){} void second_point_now_and_log(){} } sleep_overshoot_logger;
@@ -155,6 +166,7 @@ namespace platf {
       void initialize() {
 @@KMS_INITIALIZE@@
       }
+@@KMS_STRICT@@
 @@KMS_GETTERS@@
 @@KMS_COMMIT@@
       capture_e metadata_status() {
@@ -245,7 +257,9 @@ namespace platf {
     if (++probe::generations > 8) { video::test_queue->stop(); return {}; }
     if (probe::generations == 2 && probe::scenario == "new-identity") { probe::connector_id=92; probe::luminance=1500; }
     if (probe::generations == 2 && probe::scenario == "recycled-identity") { probe::connector_id=91; probe::luminance=1600; }
-    return std::make_shared<kms::display_probe_t>();
+    auto result=std::make_shared<kms::display_probe_t>();
+    if(!result->sdr_capture_allowed(true)) return {};
+    return result;
   }
 }
 namespace video {
@@ -294,6 +308,12 @@ namespace video {
 }
 int main(int argc,char **argv) {
   probe::scenario = argc > 1 ? argv[1] : "initial-faults";
+  unsetenv("VIBEPOLLO_MACHINE_HOST");
+  if(probe::scenario.starts_with("hyprland-")) {
+    setenv("VIBEPOLLO_MACHINE_HOST","1",1);
+    setenv("VIBEPOLLO_SESSION_BACKEND","hyprland-kms",1);
+    probe::eotf=0;
+  }
   probe::sync_mode=argc > 2;
   probe::forced_restarts=0;
   unsigned expected_generations=1, expected_hdr=1, expected_sdr=0;
@@ -311,7 +331,7 @@ int main(int argc,char **argv) {
     expected_hdr=3;
   } else if (probe::scenario == "new-identity" || probe::scenario == "recycled-identity") {
     probe::forced_restarts=1; expected_generations=expected_hdr=2;
-  } else if (probe::scenario == "sdr") {
+  } else if (probe::scenario == "sdr" || probe::scenario == "hyprland-sdr" || probe::scenario.starts_with("hyprland-second-")) {
     probe::eotf=0; expected_hdr=0; expected_sdr=1;
   } else if (probe::scenario.starts_with("nonpq-churn-")) {
     probe::eotf=std::stoul(probe::scenario.substr(12)); expected_hdr=0; expected_sdr=1;
@@ -373,13 +393,16 @@ int main(int argc,char **argv) {
   std::cout << (probe::sync_mode ? "sync " : "async ") << probe::scenario << ": generations=" << probe::generations << " frames=" << probe::frames
             << " restarts=" << probe::restarts << " handoffs=" << probe::metadata_commits << " init_reads=" << probe::init_reads
             << " hdr=" << probe::selected_hdr << " sdr=" << probe::selected_sdr << '\n';
+  if(probe::scenario.starts_with("hyprland-second-")) {
+    return probe::frames!=0 || probe::deliveries!=0 || probe::generations!=(probe::sync_mode?2u:3u) || probe::selected_hdr!=0 || probe::selected_sdr!=1 || probe::metadata_commits!=0;
+  }
   if (probe::frames != 24 || probe::deliveries != 24 || probe::generations != expected_generations ||
       probe::selected_hdr != expected_hdr || probe::selected_sdr != expected_sdr ||
       probe::metadata_commits != expected_hdr + expected_sdr - expected_generations ||
       probe::restarts != (probe::sync_mode ? expected_generations - 1 : expected_hdr + expected_sdr - 1)) return 1;
   for (size_t i=0; i<video::selections.size(); ++i) {
     auto selection=video::selections[i];
-    const bool expect_hdr=probe::scenario == "nonpq-hdr-transitions" ? i % 2 == 1 : probe::scenario != "sdr" && !probe::scenario.starts_with("nonpq-churn-") && !((probe::scenario == "selected-recovery" || probe::scenario == "persistent-selected-faults") && i == 0);
+    const bool expect_hdr=probe::scenario == "nonpq-hdr-transitions" ? i % 2 == 1 : probe::scenario != "sdr" && probe::scenario != "hyprland-sdr" && !probe::scenario.starts_with("nonpq-churn-") && !((probe::scenario == "selected-recovery" || probe::scenario == "persistent-selected-faults") && i == 0);
     if (selection.hdr != expect_hdr) return 2;
     if (expect_hdr) {
       if (probe::scenario == "nonpq-hdr-transitions") {
@@ -423,7 +446,7 @@ def main():
     members_start = kms.index('      std::optional<uint32_t> connector_id;')
     members = kms[members_start:kms.index('      bool direct_import_required', members_start)]
     refresh = function(kms, '      inline capture_e refresh(')
-    refresh = refresh[refresh.index('        // Check for a change in HDR metadata'):refresh.index('        if (pending_exported_frame)')]
+    refresh = refresh[refresh.index('        // Recheck current connector state'):refresh.index('        if (pending_exported_frame)')]
     sync_function = function(video, '  encode_e encode_run_sync(')
     sync_start = sync_function.index('      auto status = disp->capture(')
     sync_recovery = sync_function[sync_start:sync_function.rindex('    return encode_e::ok;')]
@@ -432,6 +455,7 @@ def main():
         '@@COLOR_TYPES@@': function(types, '  enum class colorspace_e {') + ';\n' + function(types, '  struct sunshine_colorspace_t {') + ';',
         '@@COLOR_FUNCTIONS@@': function(color, '  bool colorspace_is_hdr(') + '\n' + function(color, '  sunshine_colorspace_t colorspace_from_client_config('),
         '@@KMS_MEMBERS@@': members,
+        '@@KMS_STRICT@@': function(kms, '      bool sdr_capture_allowed('),
         '@@KMS_INITIALIZE@@': init,
         '@@KMS_GETTERS@@': function(kms, '      bool is_hdr() {') + '\n' + function(kms, '      bool get_hdr_metadata(SS_HDR_METADATA &metadata) {'),
         '@@KMS_REFRESH@@': refresh,
@@ -462,7 +486,7 @@ def main():
         failed = False
         results = []
         nonpq = ['nonpq-churn-0', 'nonpq-churn-1', 'nonpq-churn-3', 'nonpq-hdr-transitions']
-        scenarios = nonpq if args.nonpq_controls else ['persistent-selected-faults'] if args.persistent_selected_faults else ['initial-faults', 'selected-recovery', 'persistent-selected-faults', 'unreadable-recovery', 'equivalent-churn', 'replacement-aba', 'initial-aba', 'changed-during-drain', 'new-identity', 'recycled-identity', 'sdr', *nonpq]
+        scenarios = nonpq if args.nonpq_controls else ['persistent-selected-faults'] if args.persistent_selected_faults else ['initial-faults', 'selected-recovery', 'persistent-selected-faults', 'unreadable-recovery', 'equivalent-churn', 'replacement-aba', 'initial-aba', 'changed-during-drain', 'new-identity', 'recycled-identity', 'sdr', *nonpq, 'hyprland-sdr', 'hyprland-second-pq', 'hyprland-second-gamma', 'hyprland-second-hlg', 'hyprland-second-unknown']
         for scenario in scenarios:
             for mode in [[], ["sync"]]:
                 result = subprocess.run([str(binary), scenario, *mode], capture_output=True, text=True, timeout=10, env=os.environ.copy())

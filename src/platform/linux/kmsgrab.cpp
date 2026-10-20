@@ -32,6 +32,7 @@
 #include "kmsgrab_pacing.h"
 #include "kmsgrab_selection.h"
 #include "scoped_capability.h"
+#include "session_backend.h"
 #include "src/config.h"
 #include "src/drm_timing_trace.h"
 #include "src/logging.h"
@@ -564,7 +565,9 @@ namespace platf {
 
       std::optional<std::uint64_t> prop_value_by_name(const std::vector<std::pair<prop_t, std::uint64_t>> &props, std::string_view name) {
         for (auto &[prop, val] : props) {
-          if (prop->name == name) {
+          // An individual drmModeGetProperty call can fail even when the
+          // containing object-property list was read successfully.
+          if (prop && prop->name == name) {
             return val;
           }
         }
@@ -984,6 +987,12 @@ namespace platf {
             // Find the connector for this CRTC
             for (auto &connector : card.monitors()) {
               if (connector.crtc_id == crtc_id) {
+                // Mirrored connectors can share a CRTC. This constrained
+                // policy must inspect the explicitly named connector, rather
+                // than whichever connector was enumerated last for that CRTC.
+                if (linux_display::hyprland_kms_session() &&
+                    (!selected_monitor || !connector.connected ||
+                     connector.name != selected_monitor->connector_name)) continue;
                 BOOST_LOG(info) << "Found connector ID ["sv << connector.connector_id << ']';
 
                 connector_id = connector.connector_id;
@@ -1086,6 +1095,36 @@ namespace platf {
 
       [[nodiscard]] bool is_event_driven_capture() const override {
         return presentation_mode.event_capture_enabled();
+      }
+
+      // Unlike is_hdr(), this predicate never treats unknown or unsupported
+      // metadata as SDR. The opt-in Hyprland subset requires the selected
+      // connector's current DRM state to explicitly establish SDR. No output
+      // mutation or SDR conversion is implied by an SDR client request.
+      bool sdr_capture_allowed(bool initialize_metadata = false) {
+        if (!linux_display::hyprland_kms_session()) return true;
+        if (!connector_id) return false;
+        const auto connector = card.connector(*connector_id);
+        if (!connector || connector->connection != DRM_MODE_CONNECTED || !connector->encoder_id) return false;
+        const auto encoder = card.encoder(connector->encoder_id);
+        if (!encoder || encoder->crtc_id != crtc_id) return false;
+        const auto properties = card.connector_props(*connector_id);
+        if (std::ranges::any_of(properties, [](const auto &property) { return !property.first; })) return false;
+        const auto blob_id = card.prop_value_by_name(properties, "HDR_OUTPUT_METADATA"sv);
+        if (!blob_id) return false;
+        std::optional<hdr::state_t> state;
+        if (*blob_id == 0) {
+          state = hdr::state_t {};
+        } else {
+          prop_blob_t blob = drmModeGetPropertyBlob(card.fd.el, *blob_id);
+          if (!blob || !blob->data || blob->length < sizeof(hdr_output_metadata)) return false;
+          state = hdr::parse_blob(blob->data, blob->length);
+          if (!state || state->eotf != 0) return false;
+        }
+        // The factory owns this new display exclusively. Seed the exact
+        // validated SDR observation before publishing it to encoder getters;
+        // the init-time blob ID may now name older readable PQ metadata.
+        return !initialize_metadata || hdr_metadata_generation.initialize_sdr(*state);
       }
 
       bool is_hdr() {
@@ -1296,11 +1335,28 @@ namespace platf {
 
       inline capture_e refresh(egl::owned_surface_t &surface, std::optional<std::chrono::steady_clock::time_point> &frame_timestamp) {
         auto *sd = &surface.sd;
+        // Recheck current connector state before delivering any frame. This
+        // also rejects metadata changes that reuse the original blob ID.
+        if (!sdr_capture_allowed()) {
+          BOOST_LOG(error) << "Hyprland KMS capture requires verified SDR connector state"sv;
+          return capture_e::reinit;
+        }
         // Check for a change in HDR metadata
         if (connector_id) {
           auto connector_props = card.connector_props(*connector_id);
+          const auto current_hdr_metadata_blob_id = card.prop_value_by_name(connector_props, "HDR_OUTPUT_METADATA"sv);
+          // This is a second fallible read after sdr_capture_allowed(). A
+          // failed list read, missing standard HDR property, or missing
+          // property object cannot certify the current SDR state, even if
+          // the preceding read was complete. A present zero value is SDR.
+          if (linux_display::hyprland_kms_session() &&
+              (!current_hdr_metadata_blob_id ||
+               std::ranges::any_of(connector_props, [](const auto &property) { return !property.first; }))) {
+            BOOST_LOG(error) << "Hyprland KMS connector properties became unreadable"sv;
+            return capture_e::reinit;
+          }
           if (hdr_metadata_generation.refresh(card.fd.el, hdr_metadata_blob_id,
-                card.prop_value_by_name(connector_props, "HDR_OUTPUT_METADATA"sv)) == capture_e::reinit) {
+                current_hdr_metadata_blob_id, linux_display::hyprland_kms_session()) == capture_e::reinit) {
             BOOST_LOG(info) << "Reinitializing capture after HDR metadata change"sv;
             return capture_e::reinit;
           }
@@ -2414,6 +2470,10 @@ namespace platf {
       auto disp = std::make_shared<kms::display_vram_t>(hwdevice_type);
 
       if (!disp->init(display_name, config)) {
+        if (!disp->sdr_capture_allowed(true)) {
+          BOOST_LOG(error) << "Hyprland KMS capture requires verified SDR connector state"sv;
+          return nullptr;
+        }
         return disp;
       }
 
@@ -2422,7 +2482,7 @@ namespace platf {
 
     auto disp = std::make_shared<kms::display_ram_t>(hwdevice_type);
 
-    if (disp->init(display_name, config)) {
+    if (disp->init(display_name, config) || !disp->sdr_capture_allowed(true)) {
       return nullptr;
     }
 

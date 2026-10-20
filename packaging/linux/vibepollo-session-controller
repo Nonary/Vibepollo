@@ -24,6 +24,7 @@ readonly quiesce_timeout=30
 
 desktop_user=''
 desktop_uid=''
+desktop_backend=kwin
 candidate_session=''
 candidate_user=''
 candidate_uid=''
@@ -36,6 +37,8 @@ candidate_xauthority=''
 candidate_groups=''
 candidate_role=''
 candidate_generation=''
+candidate_backend=kwin
+candidate_compositor=''
 last_status=''
 shutting_down=0
 health_cycle=0
@@ -117,12 +120,16 @@ clear_candidate() {
   candidate_groups=''
   candidate_role=''
   candidate_generation=''
+  candidate_backend=kwin
+  candidate_compositor=''
 }
 
 read_settings() {
   local attributes line key value entry
   desktop_user=''
   desktop_uid=''
+  desktop_backend=kwin
+  local backend_seen=0
   [[ -f "$settings_file" && ! -L "$settings_file" ]] || return 1
   attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$settings_file") || return 1
   [[ "$attributes" == 'root:root:600' ]] || return 1
@@ -134,6 +141,11 @@ read_settings() {
       desktop_user)
         [[ -z "$desktop_user" ]] || return 1
         desktop_user=$value
+        ;;
+      desktop_backend)
+        ((backend_seen == 0)) && [[ "$value" == kwin || "$value" == hyprland-kms ]] || return 1
+        desktop_backend=$value
+        backend_seen=1
         ;;
       *) return 1 ;;
     esac
@@ -194,6 +206,7 @@ observe_active_session() {
   IFS=: read -r candidate_user _ candidate_uid candidate_gid _ candidate_home _ <<<"$entry"
   [[ "$candidate_user" == "$observed_name" && "$candidate_uid" == "$observed_user" &&
      "$candidate_gid" =~ ^[0-9]+$ && "$candidate_home" == /* ]] || return 1
+  [[ "$candidate_role" != desktop ]] || candidate_backend=$desktop_backend
   candidate_runtime=/run/user/$candidate_uid
   [[ -d "$candidate_runtime" && ! -L "$candidate_runtime" ]] || return 1
   [[ $(/usr/bin/stat -c '%u' -- "$candidate_runtime") == "$candidate_uid" ]] || return 1
@@ -202,7 +215,47 @@ observe_active_session() {
   (((8#$runtime_mode & 0700) == 0700 && (8#$runtime_mode & 0066) == 0 &&
      (8#$runtime_mode & 0007) == 0)) || return 1
   candidate_groups=$(/usr/bin/id -G -- "$candidate_user" | /usr/bin/tr ' ' ',') || return 1
-  [[ "$candidate_groups" =~ ^[0-9]+(,[0-9]+)*$ ]]
+  [[ "$candidate_groups" =~ ^[0-9]+(,[0-9]+)*$ ]] || return 1
+  if [[ "$candidate_backend" == hyprland-kms ]]; then
+    # Observe the unit before requiring its environment/socket. A successful
+    # stopped-unit observation must revoke the old generation even when its
+    # socket has already disappeared. Query failures remain retryable.
+    local invocation status
+    invocation=$(hyprland_invocation) || return $?
+    if ! read_user_environment; then
+      hyprland_observation_failed "$invocation"
+      return $?
+    fi
+    if candidate_compositor=$(hyprland_invocation probe); then
+      status=0
+    else
+      status=$?
+    fi
+    if ((status == 1)); then
+      hyprland_observation_failed "$invocation"
+      return $?
+    elif ((status == 4)); then
+      # The unit identity is known, but the peer was unavailable. It cannot
+      # admit a new generation; a changed known invocation revokes the old one.
+      hyprland_observation_failed "$candidate_compositor"
+      return $?
+    fi
+    ((status == 0)) || return "$status"
+  fi
+}
+
+hyprland_observation_failed() {
+  local invocation=$1
+  local -A bound=()
+  if read_session_record bound; then
+    if [[ "${bound[backend]:-kwin}" != hyprland-kms ||
+          "${bound[session]:-}" != "$candidate_session" ||
+          "${bound[uid]:-}" != "$candidate_uid" ||
+          "${bound[compositor]:-}" != "$invocation"-* ]]; then
+      return 3
+    fi
+  fi
+  return 1
 }
 
 session_command_bounded() {
@@ -258,6 +311,95 @@ user_unit_running() {
   esac
 }
 
+# UWSM is the supported Hyprland lifecycle and environment publisher. Pin one
+# documented desktop entry instead of discovering arbitrary compositor units.
+# Unit invocation and socket peer identity fence restarts with a reused socket.
+hyprland_socket_peer_identity() {
+  local expected_cgroup=$1
+  # UWSM's manager environment is only a publication channel. Bind its socket
+  # to this exact unit's cgroup, allowing the packaged start-hyprland watchdog
+  # without guessing child process names. Include process start time because
+  # the watchdog can replace Hyprland without restarting its systemd unit.
+  session_command_bounded "$command_timeout" "$candidate_uid" "$candidate_gid" \
+    /usr/bin/env -i PATH=/usr/bin /usr/bin/python3 -I -c '
+import os, socket, struct, sys
+try:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
+        peer.settimeout(1)
+        peer.connect(sys.argv[1])
+        pid, uid, gid = struct.unpack("3i", peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
+    if pid <= 0 or uid != os.getuid():
+        sys.exit(3)
+    with open(f"/proc/{pid}/cgroup", encoding="ascii") as stream:
+        groups = stream.read(4097)
+    if len(groups) > 4096:
+        sys.exit(1)
+    groups = [line[3:] for line in groups.splitlines() if line.startswith("0::")]
+    if len(groups) != 1 or not (groups[0] == sys.argv[2] or groups[0].startswith(sys.argv[2] + "/")):
+        sys.exit(3)
+    with open(f"/proc/{pid}/stat", encoding="ascii") as stream:
+        process = stream.read(4097)
+    start = process.rsplit(") ", 1)[1].split()[19]
+    if len(process) > 4096 or not start.isdecimal() or int(start) <= 0:
+        sys.exit(1)
+    print(f"{pid}-{start}")
+except (OSError, ValueError, IndexError):
+    sys.exit(1)
+' "$candidate_runtime/$candidate_display" "$expected_cgroup"
+}
+
+hyprland_invocation() {
+  local properties line key value active='' substate='' pid='' invocation='' cgroup='' peer=''
+  local -A seen=()
+  properties=$(user_systemctl "$candidate_user" "$candidate_uid" "$candidate_gid" "$candidate_runtime" \
+    show wayland-wm@hyprland.desktop.service --property=ActiveState --property=SubState \
+    --property=MainPID --property=InvocationID --property=ControlGroup 2>/dev/null) || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == *=* ]] || return 1
+    key=${line%%=*}; value=${line#*=}
+    [[ "$key" =~ ^(ActiveState|SubState|MainPID|InvocationID|ControlGroup)$ &&
+       -z ${seen[$key]:-} ]] || return 1
+    seen[$key]=1
+    case "$key" in
+      ActiveState) active=$value ;;
+      SubState) substate=$value ;;
+      MainPID) pid=$value ;;
+      InvocationID) invocation=$value ;;
+      ControlGroup) cgroup=$value ;;
+      *) return 1 ;;
+    esac
+  done <<<"$properties"
+  # 1 = unavailable/malformed observation, 3 = authoritative loss or rejected
+  # identity, 4 = known live invocation with an unavailable peer (printed for
+  # old-generation comparison only). Only status 0 admits a compositor.
+  ((${#seen[@]} == 5)) && [[ "$substate" =~ ^[a-z][a-z-]*$ &&
+    "$pid" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+  case "$active" in
+    inactive|failed|deactivating|activating) return 3 ;;
+    active) [[ "$substate" == running && "$pid" != 0 ]] || return 3 ;;
+    *) return 1 ;;
+  esac
+  [[ "$invocation" =~ ^[0-9a-f]{32}$ && "$invocation" != 00000000000000000000000000000000 ]] || return 1
+  if [[ "${1:-}" == probe ]]; then
+    [[ "$cgroup" == /user.slice/user-"$candidate_uid".slice/user@"$candidate_uid".service/*/wayland-wm@hyprland.desktop.service &&
+       "$cgroup" != *..* && "$cgroup" =~ ^[A-Za-z0-9_./@:-]+$ ]] || return 3
+    local peer_status
+    if peer=$(hyprland_socket_peer_identity "$cgroup"); then
+      peer_status=0
+    else
+      peer_status=$?
+    fi
+    if ((peer_status != 0)); then
+      ((peer_status == 3)) && return 3
+      /usr/bin/printf '%s\n' "$invocation"
+      return 4
+    fi
+    [[ "$peer" =~ ^[1-9][0-9]*-[1-9][0-9]*$ ]] || return 3
+    invocation=$invocation-$peer
+  fi
+  /usr/bin/printf '%s\n' "$invocation"
+}
+
 read_user_environment() {
   local environment line key value wayland='' socket_attributes
   candidate_display=''
@@ -286,7 +428,7 @@ read_user_environment() {
   [[ "$socket_attributes" == "$candidate_uid" ]] || return 1
   candidate_display=$wayland
 
-  if [[ "$candidate_role" == desktop ]]; then
+  if [[ "$candidate_role" == desktop && "$candidate_backend" == kwin ]]; then
     valid_xdisplay "$candidate_xdisplay" || return 1
     xauthority_is_private "$candidate_xauthority" || return 1
   else
@@ -300,6 +442,7 @@ probe_wayland() {
     /usr/bin/env -i "HOME=$candidate_home" "USER=$candidate_user" "LOGNAME=$candidate_user" \
         "PATH=/usr/bin" "XDG_RUNTIME_DIR=$candidate_runtime" \
         "WAYLAND_DISPLAY=$candidate_display" /usr/bin/wayland-info >/dev/null 2>&1 || return 1
+  [[ "$candidate_backend" != hyprland-kms ]] || return 0
   # KScreen output is controlled by the session account. Bound both its size
   # and execution time, and keep JSON parsing below the UID boundary.
   session_command_bounded "$command_timeout" "$candidate_uid" "$candidate_gid" \
@@ -323,7 +466,7 @@ probe_wayland() {
 }
 
 probe_x11() {
-  [[ "$candidate_role" == desktop ]] || return 0
+  [[ "$candidate_role" == desktop && "$candidate_backend" == kwin ]] || return 0
   session_command_bounded "$command_timeout" "$candidate_uid" "$candidate_gid" \
     /usr/bin/env -i "HOME=$candidate_home" "USER=$candidate_user" "LOGNAME=$candidate_user" \
         "PATH=/usr/bin" "XDG_RUNTIME_DIR=$candidate_runtime" "DISPLAY=$candidate_xdisplay" \
@@ -339,13 +482,20 @@ session_is_ready() {
     user_unit_running plasma-login-wayland.target || return 1
     user_unit_running plasma-login-kwin_wayland.service || return 1
     user_unit_running plasma-login.service || return 1
+  elif [[ "$candidate_backend" == hyprland-kms ]]; then
+    user_unit_running graphical-session.target || return 1
+    user_unit_running wayland-session@hyprland.desktop.target || return 1
   else
     user_unit_running plasma-workspace-wayland.target || return 1
     user_unit_running graphical-session.target || return 1
     user_unit_running plasma-kwin_wayland.service || return 1
     user_unit_running plasma-plasmashell.service || return 1
   fi
-  read_user_environment && probe_wayland && probe_x11
+  read_user_environment || return 1
+  if [[ "$candidate_backend" == hyprland-kms ]]; then
+    [[ $(hyprland_invocation probe) == "$candidate_compositor" ]] || return 1
+  fi
+  probe_wayland && probe_x11
 }
 
 system_systemctl_bounded() {
@@ -449,11 +599,20 @@ read_session_record() {
     [[ "$line" == *=* ]] || return 1
     key=${line%%=*}
     value=${line#*=}
-    [[ "$key" =~ ^(session|generation|user|uid|gid|home|runtime|display|xdisplay|xauthority|groups|role)$ ]] || return 1
+    [[ "$key" =~ ^(session|generation|user|uid|gid|home|runtime|display|xdisplay|xauthority|groups|role|backend|compositor)$ ]] || return 1
     [[ -z ${record[$key]+x} ]] || return 1
     record[$key]=$value
   done <"$session_file"
-  ((${#record[@]} == 12)) || return 1
+  # Old installed records remain valid until the package cleanup transition.
+  if [[ -z ${record[backend]+x} && -z ${record[compositor]+x} ]]; then
+    record[backend]=kwin
+    record[compositor]=''
+  fi
+  ((${#record[@]} == 14)) || return 1
+  [[ "${record[backend]}" == kwin && -z "${record[compositor]}" ||
+     "${record[backend]}" == hyprland-kms && "${record[role]}" == desktop &&
+     "${record[compositor]}" =~ ^[0-9a-f]{32}-[1-9][0-9]*-[1-9][0-9]*$ &&
+     "${record[compositor]}" != 00000000000000000000000000000000-* ]] || return 1
   [[ "${record[generation]}" =~ ^[1-9][0-9]*$ ]]
 }
 
@@ -862,10 +1021,10 @@ publish_session() {
   local temporary
   next_generation || return 1
   temporary=$(/usr/bin/mktemp --tmpdir="$runtime_root" .session.XXXXXX) || return 1
-  /usr/bin/printf 'session=%s\ngeneration=%s\nuser=%s\nuid=%s\ngid=%s\nhome=%s\nruntime=%s\ndisplay=%s\nxdisplay=%s\nxauthority=%s\ngroups=%s\nrole=%s\n' \
+  /usr/bin/printf 'session=%s\ngeneration=%s\nuser=%s\nuid=%s\ngid=%s\nhome=%s\nruntime=%s\ndisplay=%s\nxdisplay=%s\nxauthority=%s\ngroups=%s\nrole=%s\nbackend=%s\ncompositor=%s\n' \
     "$candidate_session" "$candidate_generation" "$candidate_user" "$candidate_uid" "$candidate_gid" \
     "$candidate_home" "$candidate_runtime" "$candidate_display" "$candidate_xdisplay" \
-    "$candidate_xauthority" "$candidate_groups" "$candidate_role" >"$temporary" || {
+    "$candidate_xauthority" "$candidate_groups" "$candidate_role" "$candidate_backend" "$candidate_compositor" >"$temporary" || {
       /usr/bin/rm -f -- "$temporary"
       return 1
     }
@@ -881,7 +1040,8 @@ binding_matches_candidate() {
   [[ "${bound[session]}" == "$candidate_session" && "${bound[user]}" == "$candidate_user" &&
      "${bound[uid]}" == "$candidate_uid" && "${bound[gid]}" == "$candidate_gid" &&
      "${bound[home]}" == "$candidate_home" && "${bound[runtime]}" == "$candidate_runtime" &&
-     "${bound[groups]}" == "$candidate_groups" && "${bound[role]}" == "$candidate_role" ]] || return 1
+     "${bound[groups]}" == "$candidate_groups" && "${bound[role]}" == "$candidate_role" &&
+     "${bound[backend]:-kwin}" == "$candidate_backend" && "${bound[compositor]:-}" == "$candidate_compositor" ]] || return 1
   [[ "$comparison" == identity ]] && return 0
   [[ "$comparison" == complete && "${bound[display]}" == "$candidate_display" &&
      "${bound[xdisplay]}" == "$candidate_xdisplay" &&
@@ -894,17 +1054,22 @@ candidate_still_active() {
   local expected_runtime=$candidate_runtime expected_groups=$candidate_groups expected_role=$candidate_role
   local expected_display=$candidate_display expected_xdisplay=$candidate_xdisplay
   local expected_xauthority=$candidate_xauthority
+  local expected_backend=$candidate_backend expected_compositor=$candidate_compositor
   # Do not trust the session ID as a stable identity. Re-run logind/passwd/
   # runtime classification, then obtain display credentials from the current
   # target-user manager immediately before publication or host start.
   observe_active_session || return 1
   read_user_environment || return 1
+  if [[ "$candidate_backend" == hyprland-kms ]]; then
+    [[ $(hyprland_invocation probe) == "$expected_compositor" ]] || return 1
+  fi
   [[ "$candidate_session" == "$expected_session" && "$candidate_user" == "$expected_user" &&
      "$candidate_uid" == "$expected_uid" && "$candidate_gid" == "$expected_gid" &&
      "$candidate_home" == "$expected_home" && "$candidate_runtime" == "$expected_runtime" &&
      "$candidate_groups" == "$expected_groups" && "$candidate_role" == "$expected_role" &&
      "$candidate_display" == "$expected_display" && "$candidate_xdisplay" == "$expected_xdisplay" &&
-     "$candidate_xauthority" == "$expected_xauthority" ]]
+     "$candidate_xauthority" == "$expected_xauthority" && "$candidate_backend" == "$expected_backend" &&
+     "$candidate_compositor" == "$expected_compositor" ]]
 }
 
 start_host() {
@@ -931,8 +1096,8 @@ reconcile_once() {
     # machine enters or leaves suspend. Preserve an already-running binding
     # until it recovers so that this transient observation failure does not
     # stop the host during the suspend transition. A confirmed unsupported
-    # session, or loss of the running host, still takes the normal fail-closed
-    # cleanup path.
+    # session, compositor loss/replacement, or loss of the running host still
+    # takes the normal fail-closed cleanup path.
     if ((observed_status == 1)); then
       local -A bound=()
       if read_session_record bound && host_is_active; then
@@ -949,8 +1114,10 @@ reconcile_once() {
       announce session-cleanup-failed 'session selection changed and cleanup failed; retrying immediately'
       return 0
     fi
-    if ((observed_status == 2)); then
-      announce unsupported-session "active graphical session is not the configured desktop or greeter ($rejected_session; expected desktop user $desktop_user on a Plasma Wayland session started by Plasma Login Manager or SDDM); host is off"
+    if ((observed_status == 3)); then
+      announce compositor-changed 'Hyprland compositor stopped or its trusted identity changed; revoked the old host generation'
+    elif ((observed_status == 2)); then
+      announce unsupported-session "active graphical session is not the configured desktop or greeter ($rejected_session; expected desktop user $desktop_user using $desktop_backend on a Wayland session started by Plasma Login Manager or SDDM); host is off"
     else
       announce no-session 'waiting for an authoritative local Wayland session'
     fi

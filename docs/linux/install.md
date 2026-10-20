@@ -5,6 +5,10 @@ and it is developed and tested on **CachyOS with KDE Plasma 6 on Wayland**. Othe
 distributions should work but get less testing. There is no AppImage, Flatpak, Debian, Fedora, or
 Docker build in this beta.
 
+An explicit, experimental [Hyprland physical-display subset](hyprland.md) is available through
+the manual native-package path. It requires UWSM and does not provide private outputs, HDR
+or Steam/Xwayland application launching.
+
 ## Requirements
 
 | Requirement | Detail |

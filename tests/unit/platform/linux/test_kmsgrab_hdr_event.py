@@ -20,8 +20,11 @@ spec.loader.exec_module(worker)
 
 PRELUDE = r'''
 #include "src/platform/linux/kmsgrab_hdr.h"
+#include "src/platform/linux/session_backend.h"
 #include "src/platform/linux/kmsgrab_pacing.h"
 #include <cassert>
+#include <vector>
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <iostream>
@@ -29,10 +32,13 @@ PRELUDE = r'''
 using namespace std::literals;
 struct NullLog { template<class T> NullLog &operator<<(const T&) { return *this; } };
 #define BOOST_LOG(x) NullLog{}
-namespace probe { unsigned eotf=2, luminance=1000, cll=900, reads=0; bool fail=false; }
+namespace probe { unsigned eotf=2, luminance=1000, cll=900, reads=0; bool fail=false; std::string scenario; }
 extern "C" drmModePropertyBlobPtr drmModeGetPropertyBlob(int,uint32_t) {
-  ++probe::reads; if(probe::fail) return nullptr;
+  ++probe::reads;
+  const bool strict_bad=probe::scenario.starts_with("hyprland-second-") && probe::reads>=3;
+  if(probe::fail || (strict_bad && probe::scenario=="hyprland-second-unknown")) return nullptr;
   hdr_output_metadata raw{}; raw.hdmi_metadata_type1.eotf=probe::eotf;
+  if(strict_bad) raw.hdmi_metadata_type1.eotf=probe::scenario=="hyprland-second-pq"?2:probe::scenario=="hyprland-second-gamma"?1:3;
   raw.hdmi_metadata_type1.max_display_mastering_luminance=probe::luminance;
   raw.hdmi_metadata_type1.max_cll=probe::cll;
   auto b=new drmModePropertyBlobRes{}; b->length=sizeof(raw); b->data=new hdr_output_metadata(raw); return b;
@@ -45,8 +51,30 @@ namespace platf {
  namespace kms {
  namespace drm_timing_trace { template<class F> void write(F f) { std::ostringstream s; f(s); } }
  auto timing_trace_ns(auto) { return 0; }
+ struct prop_blob_t {
+   drmModePropertyBlobPtr p; prop_blob_t(drmModePropertyBlobPtr value):p(value){}
+   ~prop_blob_t(){if(p)drmModeFreePropertyBlob(p);}
+   explicit operator bool()const{return p!=nullptr;} auto operator->()const{return p;}
+ };
  struct event_probe_t {
   hdr::generation_t hdr_metadata_generation;
+  struct card_t {
+   struct { int el=7; } fd;
+   struct connector_t { int connection=DRM_MODE_CONNECTED;unsigned encoder_id=4; };
+   struct encoder_t { unsigned crtc_id=1; };
+   auto connector(unsigned){return std::optional<connector_t>(connector_t{});}
+   auto encoder(unsigned){return std::optional<encoder_t>(encoder_t{});}
+   using properties_t=std::vector<std::pair<std::shared_ptr<int>,uint64_t>>;
+   auto connector_props(unsigned){return properties_t{{std::make_shared<int>(1),10}};}
+   std::optional<uint64_t> prop_value_by_name(const properties_t&,std::string_view){return 10;}
+  } card;
+  std::optional<unsigned> connector_id=1;
+  std::optional<uint64_t> hdr_metadata_blob_id=10;
+@@STRICT@@
+  capture_e metadata_status(){
+@@REFRESH@@
+   return capture_e::ok;
+  }
   pacing::presentation_mode_t presentation_mode{true};
   pacing::presentation_latch_t presentation_latch;
   pacing::presentation_rate_limiter_t presentation_rate_limiter{};
@@ -65,7 +93,7 @@ namespace platf {
   frame_export_e dequeue_presentation_frame() { ++dequeues; pending_exported_frame=1; presentation_timestamp=std::chrono::steady_clock::now(); return frame_export_e::ready; }
   void wait_until_capture_deadline(auto) {}
   capture_e snapshot(const pull_free_image_cb_t& pull,std::shared_ptr<platf::img_t>& out,std::chrono::milliseconds,bool) {
-   const auto status=hdr_metadata_generation.refresh(7,10,10); if(status!=capture_e::ok) return status;
+   const auto status=metadata_status(); if(status!=capture_e::ok) return status;
    pending_exported_frame.reset(); assert(pull(out)); out->host_processing_timestamp=std::chrono::steady_clock::now(); return capture_e::ok;
   }
 '''
@@ -76,6 +104,11 @@ POSTLUDE = r'''
 int main(int argc,char**argv) {
  using namespace platf;
  const std::string scenario=argc>1?argv[1]:"nonpq-churn-0";
+ probe::scenario=scenario;
+ unsetenv("VIBEPOLLO_MACHINE_HOST");
+ if(scenario.starts_with("hyprland-")) {
+  setenv("VIBEPOLLO_MACHINE_HOST","1",1);setenv("VIBEPOLLO_SESSION_BACKEND","hyprland-kms",1);probe::eotf=0;
+ }
  const bool churn=scenario.starts_with("nonpq-churn-");
  if(churn) probe::eotf=std::stoul(scenario.substr(12));
  if(scenario=="nonpq-hdr-transitions") probe::eotf=0;
@@ -92,6 +125,12 @@ int main(int argc,char**argv) {
  };
  auto attempt=[&]{return p.capture_presentation_events(push,pull,&cursor);};
  auto commit=[&]{assert(p.commit_pending_capture_metadata()); assert(!p.pending_exported_frame); ++restarts;};
+ if(scenario.starts_with("hyprland-second-")) {
+  assert(attempt()==capture_e::reinit); assert(delivered==0);
+  assert(!p.commit_pending_capture_metadata());
+  assert(!p.hdr_metadata_generation.selected(7,10)->is_hdr());
+  std::cout<<"event "<<scenario<<": deliveries=0 handoffs=0 selected_hdr=0\n";return 0;
+ }
  if(scenario=="teardown-recovery") {
    probe::luminance=1200; assert(attempt()==capture_e::reinit); assert(delivered==0);
    assert(p.hdr_metadata_generation.selected(7,10)->max_display_luminance==1000);
@@ -116,7 +155,7 @@ int main(int argc,char**argv) {
    if(status==capture_e::reinit) { commit(); assert(attempt()==capture_e::ok); }
    else assert(status==capture_e::ok);
  }
- const unsigned expected_restarts=churn?0:3;
+ const unsigned expected_restarts=(churn || scenario=="hyprland-sdr")?0:3;
  std::cout<<"event "<<scenario<<": deliveries="<<delivered<<" restarts="<<restarts<<" reads="<<probe::reads<<" waits="<<p.waits<<" dequeues="<<p.dequeues<<"\n";
  return restarts!=expected_restarts;
 }
@@ -137,11 +176,14 @@ def main():
         '      void request_refresh() override {',
         '      std::optional<capture_e> capture_presentation_events(',
     ]]
+    refresh=worker.function(kms,'      inline capture_e refresh(')
+    refresh=refresh[refresh.index('        // Recheck current connector state'):refresh.index('        if (pending_exported_frame)')]
+    prelude=PRELUDE.replace('@@STRICT@@',worker.function(kms,'      bool sdr_capture_allowed(')).replace('@@REFRESH@@',refresh)
     with tempfile.TemporaryDirectory(prefix='kms-hdr-event-') as temporary:
         output = args.output_dir.resolve() if args.output_dir else Path(temporary)
         output.mkdir(parents=True, exist_ok=True)
         cpp, binary = output / 'event.cpp', output / 'event'
-        cpp.write_text(PRELUDE + '\n'.join(bodies) + POSTLUDE)
+        cpp.write_text(prelude + '\n'.join(bodies) + POSTLUDE)
         flags = shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'libdrm'], text=True))
         command = [args.compiler, '-std=c++23', '-pthread', '-I', str(root), str(cpp), *flags, '-o', str(binary)]
         if args.sanitizers:
@@ -152,7 +194,7 @@ def main():
             print(compiled.stdout + compiled.stderr)
             return compiled.returncode
         results, failed = [], False
-        for scenario in ['nonpq-churn-0', 'nonpq-churn-1', 'nonpq-churn-3', 'nonpq-hdr-transitions', 'teardown-recovery']:
+        for scenario in ['nonpq-churn-0', 'nonpq-churn-1', 'nonpq-churn-3', 'nonpq-hdr-transitions', 'teardown-recovery', 'hyprland-sdr', 'hyprland-second-pq', 'hyprland-second-gamma', 'hyprland-second-hlg', 'hyprland-second-unknown']:
             result = subprocess.run([str(binary), scenario], capture_output=True, text=True, timeout=10, env=os.environ.copy())
             results.append(result.stdout + result.stderr)
             failed |= result.returncode != 0
