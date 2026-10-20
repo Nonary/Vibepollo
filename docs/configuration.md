@@ -1446,6 +1446,34 @@ or safely reprovision the pool with the host and compositor stopped before
 requesting more than four clients. The topology editor reports the effective
 limit. Arbitrarily many displays are not supported.
 
+### Remote Monitor display policy
+
+Remote Monitor uses one stable private virtual display per paired client on
+Windows and Linux. Its display extends the current desktop through the topology
+coordinator. A normal per-client game and Remote Monitor from the same paired
+client share that display identity and release their ownership independently.
+The Remote Monitor disconnect settings below determine whether its display is
+retained for Resume after the stream ends.
+
+Set placement, gap, alignment, and primary status under **Devices → Arrange client
+displays** in the v2 interface. Selecting a physical display as a layout anchor
+positions the client's virtual display relative to it; it does not select that
+physical display for capture.
+
+The ordinary top-level application fields `virtual-display-mode`,
+`virtual-display-layout`, `virtual-screen`, `dd-configuration-option`, and
+`display-output` do not select Remote Monitor's target or layout. The application
+editors hide those controls for Remote Monitor and preserve existing values on
+unrelated saves. Runtime `config-overrides` remain available and follow their
+existing activation rules; they do not create a separate monitor target.
+
+Shared virtual targets, physical capture targets, and duplicate Remote Monitor
+profiles are currently unsupported. The built-in tile uses a reserved identity;
+renaming or copying it does not create another monitor profile. A normal
+application can select a display using ordinary app routing, but follows the
+normal game lifecycle and does not acquire an independent monitor role alongside
+a running game.
+
 ### remote_monitor_mute_audio
 
 Do not capture or transmit host audio for Remote Monitor sessions. Video and
