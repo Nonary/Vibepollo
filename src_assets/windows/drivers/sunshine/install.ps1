@@ -275,10 +275,14 @@ function Assert-ExpectedDisplayPackage {
         [IO.Path]::GetFileName($DriverPath) -ine $expectedDll -or
         [IO.Path]::GetFileName($CatalogPath) -ine $expectedCat) { throw 'Display package filenames do not match the hardware identity.' }
     $inf = (Get-Content -LiteralPath $InfPath -ErrorAction Stop | ForEach-Object { ($_ -split ';',2)[0] }) -join "`n"
-    if ($inf -notmatch '(?im)^\s*Class\s*=\s*Display\s*$' -or
-        $inf -notmatch '(?im)^\s*ClassGuid\s*=\s*\{4d36e968-e325-11ce-bfc1-08002be10318\}\s*$' -or
-        $inf -notmatch ('(?im)^\s*CatalogFile\s*=\s*' + [regex]::Escape($expectedCat) + '\s*$') -or
-        $inf -notmatch ('(?im)^\s*%[^%]+%\s*=\s*[^,\r\n]+,\s*' + [regex]::Escape($HardwareId) + '\s*$')) {
+    # INF identifiers follow Windows package syntax, independent of user locale.
+    $infMatchOptions = [Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
+                       [Text.RegularExpressions.RegexOptions]::Multiline -bor
+                       [Text.RegularExpressions.RegexOptions]::CultureInvariant
+    if (-not [regex]::IsMatch($inf, '^\s*Class\s*=\s*Display\s*$', $infMatchOptions) -or
+        -not [regex]::IsMatch($inf, '^\s*ClassGuid\s*=\s*\{4d36e968-e325-11ce-bfc1-08002be10318\}\s*$', $infMatchOptions) -or
+        -not [regex]::IsMatch($inf, ('^\s*CatalogFile\s*=\s*' + [regex]::Escape($expectedCat) + '\s*$'), $infMatchOptions) -or
+        -not [regex]::IsMatch($inf, ('^\s*%[^%]+%\s*=\s*[^,\r\n]+,\s*' + [regex]::Escape($HardwareId) + '\s*$'), $infMatchOptions)) {
         throw 'Display INF class, catalog or hardware identity mismatch.'
     }
     Initialize-DisplayPackageValidation
@@ -1164,9 +1168,12 @@ function Get-SunshineDriverPublishedNamesFromInfCache {
 
         # This fallback is intentionally strict: all three package-owned
         # identifiers must match before an OEM INF can be selected for removal.
-        $matchesClass = $content -match '(?im)^\s*ClassGuid\s*=\s*\{4d36e968-e325-11ce-bfc1-08002be10318\}\s*$'
-        $matchesCatalog = $content -match '(?im)^\s*CatalogFile(?:\.[^=]+)?\s*=\s*SunshineVirtualDisplayDriver\.cat\s*$'
-        $matchesHardware = $content -match '(?im)^\s*[^;\r\n]+\s*=\s*[^,\r\n]+,\s*Root\\SunshineVirtualDisplay\s*$'
+        $infMatchOptions = [Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
+                           [Text.RegularExpressions.RegexOptions]::Multiline -bor
+                           [Text.RegularExpressions.RegexOptions]::CultureInvariant
+        $matchesClass = [regex]::IsMatch($content, '^\s*ClassGuid\s*=\s*\{4d36e968-e325-11ce-bfc1-08002be10318\}\s*$', $infMatchOptions)
+        $matchesCatalog = [regex]::IsMatch($content, '^\s*CatalogFile(?:\.[^=]+)?\s*=\s*SunshineVirtualDisplayDriver\.cat\s*$', $infMatchOptions)
+        $matchesHardware = [regex]::IsMatch($content, '^\s*[^;\r\n]+\s*=\s*[^,\r\n]+,\s*Root\\SunshineVirtualDisplay\s*$', $infMatchOptions)
         if ($matchesClass -and $matchesCatalog -and $matchesHardware) {
             $publishedName = $publishedInf.Name.ToLowerInvariant()
             if ($publishedName -match '^oem[0-9]+\.inf$' -and -not $publishedNames.Contains($publishedName)) {
