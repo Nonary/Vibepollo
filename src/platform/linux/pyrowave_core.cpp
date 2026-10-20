@@ -7,6 +7,7 @@
 #include "context.hpp"
 #include "device.hpp"
 #include "pyrowave_encoder.hpp"
+#include "pyrowave_import_diagnostics.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -64,6 +65,7 @@ namespace pyrowave::linux_gpu {
     Vulkan::Device device;
     PyroWave::Encoder encoder;
     config_t config;
+    import_diagnostics::device_t diagnostic_device;
     Vulkan::Program *program = nullptr;
     Vulkan::ImageHandle planes[3];
     Vulkan::BufferHandle meta_gpu, bits_gpu, meta_cpu, bits_cpu;
@@ -124,6 +126,13 @@ namespace pyrowave::linux_gpu {
         }
         const char *extensions[] = {VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME};
         if (context.init_device(gpu, VK_NULL_HANDLE, extensions, 1)) {
+          diagnostic_device.configured_device = c.render_device;
+          diagnostic_device.gpu_name.assign(properties.properties.deviceName, strnlen(properties.properties.deviceName, VK_MAX_PHYSICAL_DEVICE_NAME_SIZE));
+          diagnostic_device.vendor_id = properties.properties.vendorID;
+          diagnostic_device.device_id = properties.properties.deviceID;
+          diagnostic_device.has_render = drm.hasRender;
+          diagnostic_device.render_major = drm.renderMajor;
+          diagnostic_device.render_minor = drm.renderMinor;
           found = true;
           break;
         }
@@ -194,7 +203,7 @@ namespace pyrowave::linux_gpu {
       }
       auto format = format_for(s.fourcc);
       if (format == VK_FORMAT_UNDEFINED || s.modifier == DRM_FORMAT_MOD_INVALID || s.fds[0] < 0) {
-        error = "capture format or explicit DMA-BUF modifier unsupported";
+        error = import_diagnostics::describe(s, format, import_diagnostics::classify(s, format, {}), diagnostic_device);
         return {};
       }
       VkDrmFormatModifierPropertiesListEXT mods {VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT};
@@ -203,11 +212,10 @@ namespace pyrowave::linux_gpu {
       std::vector<VkDrmFormatModifierPropertiesEXT> list(mods.drmFormatModifierCount);
       mods.pDrmFormatModifierProperties = list.data();
       vkGetPhysicalDeviceFormatProperties2(context.get_gpu(), format, &props);
-      auto mod = std::find_if(list.begin(), list.end(), [&](auto &m) {
-        return m.drmFormatModifier == s.modifier;
-      });
-      if (mod == list.end() || !mod->drmFormatModifierPlaneCount || mod->drmFormatModifierPlaneCount > 4) {
-        error = "GPU cannot import capture modifier";
+      list.resize(std::min(list.size(), std::size_t(mods.drmFormatModifierCount)));
+      const auto check = import_diagnostics::classify(s, format, list);
+      if (check.rejection != import_diagnostics::rejection_e::none) {
+        error = import_diagnostics::describe(s, format, check, diagnostic_device);
         return {};
       }
       std::array<VkSubresourceLayout, 4> layouts {};
@@ -215,7 +223,7 @@ namespace pyrowave::linux_gpu {
       if (fstat(s.fds[0], &base)) {
         return {};
       }
-      for (unsigned i = 0; i < mod->drmFormatModifierPlaneCount; ++i) {
+      for (unsigned i = 0; i < check.plane_count; ++i) {
         struct stat plane {};
         if (s.fds[i] < 0 || fstat(s.fds[i], &plane) || base.st_ino != plane.st_ino || base.st_dev != plane.st_dev) {
           error = "DMA-BUF planes must share one allocation";
@@ -226,7 +234,7 @@ namespace pyrowave::linux_gpu {
       }
       VkImageDrmFormatModifierExplicitCreateInfoEXT drm {VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT};
       drm.drmFormatModifier = s.modifier;
-      drm.drmFormatModifierPlaneCount = mod->drmFormatModifierPlaneCount;
+      drm.drmFormatModifierPlaneCount = check.plane_count;
       drm.pPlaneLayouts = layouts.data();
       auto info = Vulkan::ImageCreateInfo::immutable_2d_image(s.width, s.height, format);
       info.misc = Vulkan::IMAGE_MISC_EXTERNAL_MEMORY_BIT;
