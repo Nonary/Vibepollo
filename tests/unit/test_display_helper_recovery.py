@@ -84,6 +84,7 @@ assert "display_helper_integration::revert(true, false, state.allow_disabled_rec
 has_disabled_recovery_parameter = "allow_disabled_recovery" in integration[:integration.index("{")]
 has_recovery_ticket_parameter = "RecoveryTicket" in integration[:integration.index("{")]
 has_ownership_policy_parameter = "RevertOwnershipPolicy" in integration[:integration.index("{")]
+has_final_restore_policy_parameter = "FinalRestoreDisplayPolicy" in integration[:integration.index("{")]
 integration_wrapper = "" if has_disabled_recovery_parameter else "\n  bool revert(bool prefer, bool override_owner, bool) { return revert(prefer, override_owner); }\n"
 ticket_declaration = "" if not has_recovery_ticket_parameter else r'''
   struct RecoveryTicket {
@@ -91,12 +92,16 @@ ticket_declaration = "" if not has_recovery_ticket_parameter else r'''
     std::uint64_t connection_generation = 0;
   };
   enum class RevertOwnershipPolicy { AllOwnersMustRelease, RetainPausedNormalGame };
-  bool revert(bool, bool, bool, RecoveryTicket * = nullptr OWNERSHIP_DEFAULT);
+  enum class FinalRestoreDisplayPolicy { Retain, RemoveAfterRestore };
+  bool revert(bool, bool, bool, RecoveryTicket * = nullptr OWNERSHIP_DEFAULT FINAL_RESTORE_DEFAULT);
   struct FakeOrphanRecoveryMonitor {
     struct incident_t {
       RecoveryTicket ticket;
       std::vector<VDISPLAY::TrackedDisplayCleanupTarget> targets;
       std::set<std::string> known_physical_output_ids;
+      bool remove_after_restore {false};
+      std::uint64_t cleanup_generation {0};
+      std::uint64_t control_generation {0};
     };
     std::optional<incident_t> published;
     void publish(incident_t incident) { published = std::move(incident); }
@@ -108,6 +113,7 @@ ticket_declaration = "" if not has_recovery_ticket_parameter else r'''
 '''
 
 ticket_declaration = ticket_declaration.replace("OWNERSHIP_DEFAULT", ", RevertOwnershipPolicy = RevertOwnershipPolicy::AllOwnersMustRelease" if has_ownership_policy_parameter else "")
+ticket_declaration = ticket_declaration.replace("FINAL_RESTORE_DEFAULT", ", FinalRestoreDisplayPolicy = FinalRestoreDisplayPolicy::Retain" if has_final_restore_policy_parameter else "")
 
 program = r'''
 #include <atomic>
@@ -139,6 +145,7 @@ namespace integration_fake {
   std::atomic<bool> restore_expected {false};
   std::atomic<long long> last_revert {0};
   std::atomic<unsigned long long> restore_generation {0};
+  std::atomic<std::uint64_t> cleanup_generation {0}, control_generation {0};
   void reset() {
     ownership_checks = cancels = verification_invalidations = queue_clears = 0;
     helper_calls = helper_starts = revert_sends = active_clears = 0;
@@ -146,6 +153,7 @@ namespace integration_fake {
     helper_force = helper_override = last_prefer_golden = false;
     helper_automation_enabled = true;
     restore_expected.store(false); last_revert.store(0); restore_generation.store(0);
+    cleanup_generation.store(0); control_generation.store(0);
   }
 }
 namespace config {
@@ -202,6 +210,8 @@ namespace {
   auto &g_restore_expected = integration_fake::restore_expected;
   auto &g_last_revert_us = integration_fake::last_revert;
   auto &g_restore_generation = integration_fake::restore_generation;
+  [[maybe_unused]] auto &g_final_restore_cleanup_generation = integration_fake::cleanup_generation;
+  [[maybe_unused]] auto &g_last_apply_generation = integration_fake::control_generation;
   void clear_active_session() { ++integration_fake::active_clears; }
 }
 namespace display_helper_integration {
@@ -292,6 +302,7 @@ static void test_incident_captures_targets_before_dispatch_and_rejects_failed_or
   assert(monitor.published->targets.size() == 1);
   assert(monitor.published->targets.front().device_id == "pre-existing-orphan");
   assert(monitor.published->targets.front().backend == VDISPLAY::ensure_display_backend_e::sunshine);
+  assert(!monitor.published->remove_after_restore); // ordinary REVERT retains displays
 
   reset(); send_result = false; monitor.published.reset();
   assert(!display_helper_integration::revert(true, false, false, &ticket));
@@ -300,6 +311,31 @@ static void test_incident_captures_targets_before_dispatch_and_rejects_failed_or
   reset(); monitor.published.reset();
   assert(display_helper_integration::revert(true, true, false, &ticket));
   assert(!monitor.published);
+}
+#endif
+
+#if HAS_FINAL_RESTORE_POLICY
+static void test_final_restore_incident_preserves_policy_and_generations() {
+  using namespace integration_fake;
+  using namespace display_helper_integration;
+  struct Case { RevertOwnershipPolicy owner; FinalRestoreDisplayPolicy display; bool removes; };
+  const std::array cases {
+    Case {RevertOwnershipPolicy::AllOwnersMustRelease, FinalRestoreDisplayPolicy::Retain, false},
+    Case {RevertOwnershipPolicy::AllOwnersMustRelease, FinalRestoreDisplayPolicy::RemoveAfterRestore, true},
+    Case {RevertOwnershipPolicy::RetainPausedNormalGame, FinalRestoreDisplayPolicy::Retain, false},
+    Case {RevertOwnershipPolicy::RetainPausedNormalGame, FinalRestoreDisplayPolicy::RemoveAfterRestore, false},
+  };
+  auto &monitor = orphan_recovery_monitor();
+  for (const auto &test : cases) {
+    reset(); monitor.published.reset();
+    VDISPLAY::targets = {{{}, "pre-existing-orphan", VDISPLAY::ensure_display_backend_e::sunshine}};
+    cleanup_generation.store(11); control_generation.store(23);
+    assert(revert(true, false, false, nullptr, test.owner, test.display));
+    assert(monitor.published);
+    assert(monitor.published->remove_after_restore == test.removes);
+    assert(monitor.published->cleanup_generation == 11);
+    assert(monitor.published->control_generation == 23);
+  }
 }
 #endif
 
@@ -611,6 +647,9 @@ int main() {
 #if HAS_RECOVERY_TICKET
   test_incident_captures_targets_before_dispatch_and_rejects_failed_or_override_dispatch();
 #endif
+#if HAS_FINAL_RESTORE_POLICY
+  test_final_restore_incident_preserves_policy_and_generations();
+#endif
   test_legacy_stale_epoch_and_no_mutation_paths();
   test_revert_handler_clears_settlement_and_arms_restore();
   test_legacy_false_policy_disarms_without_changing_preference();
@@ -632,5 +671,5 @@ with tempfile.TemporaryDirectory(prefix="display-helper-recovery-") as temporary
         retained_source.parent.mkdir(parents=True, exist_ok=True)
         retained_source.write_text(program)
     binary = directory / "test"
-    subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", f"-DHAS_SETTLEMENT={int(has_settlement)}", f"-DHAS_OWNERSHIP_POLICY={int(has_ownership_policy_parameter)}", f"-DHAS_DISABLED_RECOVERY={int(has_disabled_recovery_parameter)}", f"-DHAS_RECOVERY_TICKET={int(has_recovery_ticket_parameter)}", f"-DHAS_PRESERVE={int(has_preserve)}", "-I", str(root), str(source), "-o", str(binary)], check=True)
+    subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", f"-DHAS_SETTLEMENT={int(has_settlement)}", f"-DHAS_OWNERSHIP_POLICY={int(has_ownership_policy_parameter)}", f"-DHAS_FINAL_RESTORE_POLICY={int(has_final_restore_policy_parameter)}", f"-DHAS_DISABLED_RECOVERY={int(has_disabled_recovery_parameter)}", f"-DHAS_RECOVERY_TICKET={int(has_recovery_ticket_parameter)}", f"-DHAS_PRESERVE={int(has_preserve)}", "-I", str(root), str(source), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
