@@ -13,11 +13,14 @@
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
+#include <istream>
 #include <limits>
 #include <optional>
 #include <regex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <zlib.h>
 
@@ -237,6 +240,126 @@ namespace log_export {
   [[maybe_unused]] static ZipDataEntry make_export_log_entry(export_log_sanitizer_t &sanitizer, std::string name, std::string data, std::optional<std::filesystem::file_time_type> write_time) {
     return ZipDataEntry {std::move(name), sanitizer.sanitize(data), write_time};
   }
+
+  inline constexpr std::size_t support_log_read_limit = 64ull * 1024ull * 1024ull;
+
+  struct log_tail_t {
+    std::string data;
+    std::uintmax_t snapshot_bytes = 0;
+    std::size_t bytes_read = 0;
+    bool truncated = false;
+    bool changed = false;
+  };
+
+  // Seek once to snapshot the end of the opened file. Never chase appended
+  // bytes or use an unbounded rdbuf read, even if the file grows after seeking.
+  // The stream seam is also used by tests with real files that grow on read.
+  inline std::optional<log_tail_t> read_log_tail(std::istream &input, std::size_t limit) {
+    input.seekg(0, std::ios::end);
+    const auto end = input.tellg();
+    if (end < std::streampos {0}) {
+      return std::nullopt;
+    }
+    log_tail_t result;
+    result.snapshot_bytes = static_cast<std::uintmax_t>(end);
+    const auto count = static_cast<std::size_t>(std::min<std::uintmax_t>(result.snapshot_bytes, limit));
+    const auto start = end - static_cast<std::streamoff>(count);
+    input.seekg(start);
+    if (!input) {
+      return std::nullopt;
+    }
+    result.data.resize(count);
+    while (result.bytes_read < count) {
+      const auto chunk = std::min<std::size_t>(count - result.bytes_read, 64 * 1024);
+      input.read(result.data.data() + result.bytes_read, static_cast<std::streamsize>(chunk));
+      const auto received = static_cast<std::size_t>(input.gcount());
+      result.bytes_read += received;
+      if (received != chunk) {
+        break;
+      }
+    }
+    result.data.resize(result.bytes_read);
+    input.clear();
+    input.seekg(0, std::ios::end);
+    result.changed = input.tellg() != end || result.bytes_read != count;
+    result.truncated = result.bytes_read < result.snapshot_bytes;
+    if (start > std::streampos {0}) {
+      // The cut can split a username/address/path. Discard that partial line
+      // before sanitizing, rather than exporting a fragment without its context.
+      const auto newline = result.data.find('\n');
+      result.data.erase(0, newline == std::string::npos ? result.data.size() : newline + 1);
+    }
+    if ((result.truncated || result.changed) && !result.data.empty() && result.data.back() != '\n') {
+      const auto newline = result.data.rfind('\n');
+      result.data.resize(newline == std::string::npos ? 0 : newline + 1);
+    }
+    return result;
+  }
+
+  // One instance per export, shared by session, helper, fallback and installer
+  // sources. The budget counts bytes actually read, including discarded partial
+  // lines, before regex sanitization and ZIP construction allocate more memory.
+  class support_log_collection_t {
+  public:
+    explicit support_log_collection_t(std::size_t limit = support_log_read_limit):
+        remaining_ {limit} {
+    }
+
+    bool add_file(const std::filesystem::path &path, const std::string &name) {
+      if (names_.contains(name)) {
+        return true;
+      }
+      std::error_code ec;
+      if (!std::filesystem::is_regular_file(path, ec)) {
+        return false;
+      }
+      const auto mtime = std::filesystem::last_write_time(path, ec);
+      const auto write_time = ec ? std::nullopt : std::optional {mtime};
+      std::ifstream input(path, std::ios::binary);
+      if (!input) {
+        return false;
+      }
+      auto tail = read_log_tail(input, remaining_);
+      if (!tail) {
+        return false;
+      }
+      remaining_ -= tail->bytes_read;
+      bytes_read_ += tail->bytes_read;
+      std::string notice;
+      if (tail->truncated) {
+        notice = "[Log export truncated: read " + std::to_string(tail->bytes_read) + " of " + std::to_string(tail->snapshot_bytes) +
+                 " snapshot bytes; only complete recent lines are retained.]\n";
+        if (remaining_ == 0) {
+          notice += "[The shared log export read limit was reached; later files may contain omission notices only.]\n";
+        }
+      }
+      if (tail->changed) {
+        notice += "[Log export: file changed while reading; this export may omit later writes.]\n";
+      }
+      entries_.push_back(make_export_log_entry(sanitizer_, name, notice + tail->data, write_time));
+      names_.insert(name);
+      return true;
+    }
+
+    std::size_t bytes_read() const {
+      return bytes_read_;
+    }
+
+    const std::vector<ZipDataEntry> &entries() const {
+      return entries_;
+    }
+
+    std::vector<ZipDataEntry> take_entries() && {
+      return std::move(entries_);
+    }
+
+  private:
+    std::size_t remaining_;
+    std::size_t bytes_read_ = 0;
+    export_log_sanitizer_t sanitizer_;
+    std::unordered_set<std::string> names_;
+    std::vector<ZipDataEntry> entries_;
+  };
 
   [[maybe_unused]] static std::string build_zip_from_entries(const std::vector<ZipDataEntry> &entries) {
     std::string out;

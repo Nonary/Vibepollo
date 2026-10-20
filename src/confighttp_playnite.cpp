@@ -751,8 +751,7 @@ namespace confighttp {
   static std::uint64_t estimate_zip_entry_size(std::size_t name_len, std::uint64_t data_size);
 
   static std::vector<ZipDataEntry> collect_support_logs() {
-    std::vector<ZipDataEntry> entries;
-    export_log_sanitizer_t sanitizer;
+    support_log_collection_t collection;
 
     auto add_recent_logs = [&](const std::filesystem::path &dir, const std::string &prefix, const std::string &suffix, std::size_t limit, const std::string &zip_prefix) {
       std::vector<log_candidate_t> candidates;
@@ -784,20 +783,13 @@ namespace confighttp {
         candidates.resize(limit);
       }
       for (const auto &candidate : candidates) {
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(candidate.path, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, zip_prefix + candidate.path.filename().string(), std::move(data), mtime));
-        }
+        collection.add_file(candidate.path, zip_prefix + candidate.path.filename().string());
       }
     };
 
-    // Vibepollo log directory (session logging). Retention keeps up to ~30
-    // sessions x 5 rollover files here; exporting all of them made the bundle
-    // hundreds of megabytes and blew past the HTTP content deadline. Newest
-    // files win, bounded by both a file count and a total byte budget.
+    // Retain the existing newest-first session/file limits. All sources below
+    // share the collection read budget, enforced while reading opened files.
     constexpr std::size_t k_max_session_export_files = 32;
-    constexpr std::uintmax_t k_max_session_export_bytes = 64ull * 1024ull * 1024ull;
     try {
       bool collected_directory = false;
       if (auto log_dir = logging::session_log_directory()) {
@@ -816,26 +808,13 @@ namespace confighttp {
         std::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) {
           return a.mtime > b.mtime;
         });
-        std::uintmax_t budget_used = 0;
         std::size_t files_added = 0;
         for (const auto &candidate : candidates) {
           if (files_added >= k_max_session_export_files) {
             break;
           }
-          std::error_code size_ec;
-          const auto size = std::filesystem::file_size(candidate.path, size_ec);
-          if (size_ec || size > k_max_session_export_bytes - budget_used) {
-            continue;
-          }
-          std::string data;
-          std::optional<std::filesystem::file_time_type> mtime;
-          if (read_file_if_exists(candidate.path, data, &mtime)) {
-            if (data.size() > k_max_session_export_bytes - budget_used) {
-              continue;
-            }
-            budget_used += data.size();
+          if (collection.add_file(candidate.path, candidate.path.filename().string())) {
             ++files_added;
-            entries.push_back(make_export_log_entry(sanitizer, candidate.path.filename().string(), std::move(data), mtime));
             collected_directory = true;
           }
         }
@@ -843,11 +822,7 @@ namespace confighttp {
       if (!collected_directory) {
         auto current_log = logging::current_log_file();
         if (!current_log.empty()) {
-          std::string data;
-          std::optional<std::filesystem::file_time_type> mtime;
-          if (read_file_if_exists(current_log, data, &mtime)) {
-            entries.push_back(make_export_log_entry(sanitizer, current_log.filename().string(), std::move(data), mtime));
-          }
+          collection.add_file(current_log, current_log.filename().string());
         }
       }
     } catch (...) {}
@@ -860,11 +835,7 @@ namespace confighttp {
       if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, user_token.get(), &roamingW)) && roamingW) {
         std::filesystem::path p = std::filesystem::path(roamingW) / L"Sunshine" / L"sunshine_playnite.log";
         CoTaskMemFree(roamingW);
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-        }
+        collection.add_file(p, p.filename().string());
       }
     } catch (...) {}
 
@@ -876,11 +847,7 @@ namespace confighttp {
       if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, user_token.get(), &localW)) && localW) {
         std::filesystem::path p = std::filesystem::path(localW) / L"Temp" / L"sunshine_playnite.log";
         CoTaskMemFree(localW);
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-        }
+        collection.add_file(p, p.filename().string());
       }
     } catch (...) {}
     try {
@@ -888,40 +855,27 @@ namespace confighttp {
       DWORD n = GetTempPathW(_countof(tmpPathW), tmpPathW);
       if (n > 0 && n < _countof(tmpPathW)) {
         std::filesystem::path p = std::filesystem::path(tmpPathW) / L"sunshine_playnite.log";
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-        }
+        collection.add_file(p, p.filename().string());
       }
     } catch (...) {}
 
     auto add_playnite_from_base = [&](const std::filesystem::path &base) {
       bool any = false;
       {
-        std::string data;
         auto p = base / L"playnite.log";
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
+        if (collection.add_file(p, p.filename().string())) {
           any = true;
         }
       }
       {
-        std::string data;
         auto p = base / L"extensions.log";
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
+        if (collection.add_file(p, p.filename().string())) {
           any = true;
         }
       }
       {
-        std::string data;
         auto p = base / L"launcher.log";
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
+        if (collection.add_file(p, p.filename().string())) {
           any = true;
         }
       }
@@ -992,11 +946,7 @@ namespace confighttp {
           candidates.resize(k_max_helper_logs_per_prefix);
         }
         for (const auto &candidate : candidates) {
-          std::string data;
-          std::optional<std::filesystem::file_time_type> mtime;
-          if (read_file_if_exists(candidate.path, data, &mtime)) {
-            entries.push_back(make_export_log_entry(sanitizer, candidate.path.filename().string(), std::move(data), mtime));
-          }
+          collection.add_file(candidate.path, candidate.path.filename().string());
         }
       }
     };
@@ -1020,43 +970,23 @@ namespace confighttp {
       // Legacy single-file helper logs (kept for backwards compatibility).
       {
         std::filesystem::path p = base / L"sunshine_playnite.log";
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-        }
+        collection.add_file(p, p.filename().string());
       }
       {
         std::filesystem::path p = base / L"sunshine_playnite_launcher.log";
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-        }
+        collection.add_file(p, p.filename().string());
       }
       {
         std::filesystem::path p = base / L"sunshine_launcher.log";
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-        }
+        collection.add_file(p, p.filename().string());
       }
       {
         std::filesystem::path p = base / L"sunshine_display_helper.log";
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-        }
+        collection.add_file(p, p.filename().string());
       }
       {
         std::filesystem::path p = base / L"sunshine_wgc_helper.log";
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-        }
+        collection.add_file(p, p.filename().string());
       }
 
       // Session-mode helper logs live under Roaming/LocalAppData\\Sunshine\\logs.
@@ -1100,11 +1030,7 @@ namespace confighttp {
     try {
       std::filesystem::path cfg = platf::appdata();
       std::filesystem::path p = cfg / "sunshine_launcher.log";
-      std::string data;
-      std::optional<std::filesystem::file_time_type> mtime;
-      if (read_file_if_exists(p, data, &mtime)) {
-        entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-      }
+      collection.add_file(p, p.filename().string());
     } catch (...) {}
 
     // Installer logs persisted by the bootstrapper, plus recent MSI logs still in TEMP.
@@ -1125,17 +1051,7 @@ namespace confighttp {
       }
     } catch (...) {}
 
-    {
-      std::vector<ZipDataEntry> dedup;
-      std::unordered_set<std::string> seen;
-      dedup.reserve(entries.size());
-      for (auto &e : entries) {
-        if (seen.insert(e.name).second) {
-          dedup.emplace_back(std::move(e));
-        }
-      }
-      entries.swap(dedup);
-    }
+    auto entries = std::move(collection).take_entries();
 
     // A crash-bundle part is capped at 30 MiB. Keep its in-memory log corpus
     // within that exact uncompressed ZIP estimate, so logs never force an
