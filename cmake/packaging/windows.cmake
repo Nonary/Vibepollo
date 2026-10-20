@@ -624,5 +624,6 @@ set(CPACK_COMPONENT_FIREWALL_GROUP "Scripts")
 
 # gamepad scripts are bundled under assets and not exposed as a separate component
 
-# include specific packaging (WiX only)
+# include generator-specific packaging
 include(${CMAKE_MODULE_PATH}/packaging/windows_wix.cmake)
+include(${CMAKE_MODULE_PATH}/packaging/windows_portable.cmake)
