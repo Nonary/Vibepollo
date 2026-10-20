@@ -6,10 +6,29 @@
 #include "src/logging.h"
 
 #ifdef _WIN32
-  #include "nvenc_d3d11.h"
   #include "nvenc_api.h"
+  #include "nvenc_d3d11.h"
+  #include "nvenc_event_wait.h"
 
 namespace nvenc {
+  namespace {
+    static_assert(sizeof(DWORD) == sizeof(std::uint32_t));
+    static_assert(WAIT_OBJECT_0 == event_wait::signaled);
+    static_assert(WAIT_TIMEOUT == event_wait::timed_out);
+    static_assert(WAIT_FAILED == event_wait::failed);
+
+    class win32_event_wait_t final: public event_wait::api_t {
+    public:
+      std::uint32_t wait(void *event, std::uint32_t timeout_ms) override {
+        const DWORD result = WaitForSingleObject(event, timeout_ms);
+        return result;
+      }
+
+      std::uint32_t last_error() override {
+        return GetLastError();
+      }
+    };
+  }  // namespace
 
   nvenc_d3d11::nvenc_d3d11(NV_ENC_DEVICE_TYPE device_type):
       nvenc_base(device_type) {
@@ -95,7 +114,12 @@ namespace nvenc {
   }
 
   bool nvenc_d3d11::wait_for_async_event(uint32_t timeout_ms) {
-    return WaitForSingleObject(async_event_handle, timeout_ms) == WAIT_OBJECT_0;
+    win32_event_wait_t api;
+    const auto result = event_wait::wait(async_event_handle, timeout_ms, api);
+    if (!result.succeeded()) {
+      BOOST_LOG(error) << "NvEnc: " << event_wait::describe(result, timeout_ms);
+    }
+    return result.succeeded();
   }
 
 }  // namespace nvenc

@@ -419,6 +419,17 @@ sunshine_add_test_target(
 )
 
 sunshine_add_test_target(
+    NAME test_component_nvenc_event_wait
+    CATEGORY component
+    TEST_SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/unit/test_nvenc_event_wait.cpp"
+    PRODUCT_SOURCES
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/nvenc/nvenc_event_wait.cpp"
+    LINK_LIBRARIES GTest::gmock GTest::gtest
+)
+
+sunshine_add_test_target(
     NAME test_fast_framegen_policy
     CATEGORY fast
     TEST_SOURCES
