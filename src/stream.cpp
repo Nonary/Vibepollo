@@ -675,6 +675,7 @@ namespace stream {
 
       platf::feedback_queue_t feedback_queue;
       std::array<haptics_gain_t, platf::MAX_GAMEPADS> haptics_gains;
+      std::atomic_bool pcm_negotiation_warning_logged {false};
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
     } control;
 
@@ -1308,7 +1309,13 @@ namespace stream {
 
     std::string payload;
     if (msg.type == platf::gamepad_feedback_e::haptics_pcm) {
-      if (!(session->config.mlFeatureFlags & ML_FF_HAPTICS_PCM)) return 0;
+      if (!(session->config.mlFeatureFlags & ML_FF_HAPTICS_PCM)) {
+        // PCM arrives in frequent chunks; report missing negotiation once per session.
+        if (!session->control.pcm_negotiation_warning_logged.exchange(true, std::memory_order_relaxed)) {
+          BOOST_LOG(warning) << "Dropping waveform haptics because the client session did not negotiate PCM feedback support"sv;
+        }
+        return 0;
+      }
       std::array<std::uint8_t, sizeof(control_header_v2) + ML_HAPTICS_MAX_PAYLOAD> plaintext {};
       auto *bytes = plaintext.data();
       MlHapticsWrite16(bytes, ML_HAPTICS_PACKET_TYPE);
