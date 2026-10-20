@@ -116,7 +116,10 @@ namespace platf::touch {
 
     void associate_output(const touch_port_t &port) {
       const bool output_changed = mapping_retry.output != port.output_name;
-      if (!mapping_retry.begin(port.output_name, std::getenv("WAYLAND_DISPLAY") != nullptr)) {
+      // The machine host has no compositor credentials. Its broker enters the
+      // authoritative Wayland session before running the mapping helper.
+      const bool machine_host = std::getenv("VIBEPOLLO_MACHINE_HOST") != nullptr;
+      if (!mapping_retry.begin(port.output_name, machine_host || std::getenv("WAYLAND_DISPLAY") != nullptr)) {
         return;
       }
       if (output_changed) {
@@ -125,7 +128,6 @@ namespace platf::touch {
       for (const auto &device : (*raw->touch).get_nodes()) {
         const auto node = std::filesystem::path(device).filename().string();
         int result = 1;
-        const bool machine_host = std::getenv("VIBEPOLLO_MACHINE_HOST");
         GSubprocess *process = machine_host ?
                                  g_subprocess_new(
                                    static_cast<GSubprocessFlags>(G_SUBPROCESS_FLAGS_STDOUT_SILENCE | G_SUBPROCESS_FLAGS_STDERR_SILENCE),
