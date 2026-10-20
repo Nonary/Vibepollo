@@ -561,11 +561,22 @@ static void test_explicit_restore_and_stop_cannot_be_cleared_by_owner_ping() {
   stopped.disconnect_settlement_deadline_ms.store(30000);
   stopped.restore_requested.store(true);
   stopped.restore_origin_epoch.store(7);
+  stopped.restore_poll_active.store(true);
+  stopped.restore_attempted_unconfirmed.store(true);
+  stopped.restore_stage_running.store(true);
+  stopped.restore_active_until_ms.store(9000);
+  stopped.last_restore_event_ms.store(8000);
+  stopped.restore_active_window.store(ServiceState::RestoreWindow::Primary);
   stopped.disconnect_settlement_origin_epoch = 7;
   stopped.stop_restore_polling();
   assert(!stopped.disconnect_settlement_pending.load());
   assert(stopped.disconnect_settlement_deadline_ms.load() == 0);
   assert(!stopped.restore_requested.load());
+  assert(stopped.restore_origin_epoch.load() == 0);
+  assert(!stopped.restore_poll_active.load() && !stopped.restore_attempted_unconfirmed.load());
+  assert(!stopped.restore_stage_running.load());
+  assert(stopped.restore_active_until_ms.load() == 0 && stopped.last_restore_event_ms.load() == 0);
+  assert(stopped.restore_active_window.load() == ServiceState::RestoreWindow::Event);
 #else
   assert(true);
 #endif
