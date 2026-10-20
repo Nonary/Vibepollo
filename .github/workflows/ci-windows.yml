@@ -871,6 +871,28 @@ jobs:
             fi
           done
 
+      - name: Package and validate Windows portable ZIP (CI only)
+        if: github.event_name != 'pull_request' && inputs.release_version != '' && !startsWith(inputs.release_version, '0.0.0') && !startsWith(inputs.release_version, 'v0.0.0')
+        shell: msys2 {0}
+        env:
+          PORTABLE_PRODUCT: ${{ inputs.symbol_product_name }}
+        run: |
+          set -euo pipefail
+          # A failed CPack invocation must never upload an older valid ZIP.
+          rm -f -- build/cpack_artifacts/*-portable.zip ci-portable/*.zip
+          cmake --build build --target package_portable --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+          python .github/scripts/validate_windows_portable.py --repository . --build build --product "$PORTABLE_PRODUCT" --version "$BUILD_VERSION" --output ci-portable
+
+      - name: Upload Windows portable ZIP (CI only)
+        if: github.event_name != 'pull_request' && inputs.release_version != '' && !startsWith(inputs.release_version, '0.0.0') && !startsWith(inputs.release_version, 'v0.0.0')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ci-portable-${{ matrix.name }}
+          path: ci-portable/*.zip
+          if-no-files-found: error
+          retention-days: ${{ inputs.release_artifact_retention_days }}
+          overwrite: true
+
       # WiX already installed before configure so env:WIX is available
 
       - name: Validate SignPath configuration

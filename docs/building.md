@@ -369,6 +369,14 @@ Virtual display, virtual controller and virtual audio features require separatel
 installed drivers. Elevated applications and secure desktops cannot be controlled
 by this ordinary-user path.
 
+Existing non-PR Windows CI builds with a nonempty nonzero release/nightly version
+also build this target and recheck the extracted ZIP with the configured packaging
+hook. The separate `ci-portable-Windows` CI artifact is unsigned, is not included
+in the MSI/Setup or nightly public assets, and does not establish native runtime
+acceptance. Ordinary branch pushes retain their existing package-build skip;
+PR builds explicitly skip this check, including callers with a nonzero fallback
+version. The next qualifying scheduled/tag build must succeed before a complete product ZIP can be claimed as CI validated.
+
 Creating an archive is a packaging check. Before publishing it, build and extract
 the actual Windows runtime on a clean standard-user account without optional
 drivers, pair a normal Moonlight client and verify physical-desktop video, audio,
