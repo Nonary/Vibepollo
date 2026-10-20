@@ -131,7 +131,7 @@ namespace {
     if (ec) return std::nullopt;
     const auto size = fs::file_size(canonical, ec);
     if (ec) return std::nullopt;
-    const auto mtime = fs::last_write_time(canonical, ec).time_since_epoch().count();
+    const auto mtime = static_cast<std::intmax_t>(fs::last_write_time(canonical, ec).time_since_epoch().count());
     if (ec) return std::nullopt;
     return platf::steam::artwork::source_fingerprint_t {canonical.generic_string(), size, mtime};
   }

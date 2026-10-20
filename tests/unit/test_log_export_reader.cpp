@@ -32,6 +32,9 @@ protected:
 // just before its first read. No timing/sleep race and no copied reader logic.
 class MutatingFileBuffer: public std::filebuf {
 public:
+  MutatingFileBuffer() {
+    pubsetbuf(nullptr, 0);
+  }
   std::function<void()> mutate;
   std::size_t bytes_returned = 0;
 

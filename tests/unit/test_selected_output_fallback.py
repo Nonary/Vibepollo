@@ -10,6 +10,7 @@ regression checks; --emit-only prepares the replay without compiling it.
 import argparse
 import pathlib
 import subprocess
+import sys
 import tempfile
 
 
@@ -354,8 +355,16 @@ with tempfile.TemporaryDirectory(prefix="selected-output-fallback-") as temporar
     source = directory / "test.cpp"
     source.write_text(program)
     binary = directory / "test"
+    extra_flags = []
+    if sys.platform == "darwin":
+        extra_flags = [
+            "-D_UPPER=0x1", "-D_LOWER=0x2", "-D_DIGIT=0x4", "-D_SPACE=0x8",
+            "-D_PUNCT=0x10", "-D_CONTROL=0x20", "-D_BLANK=0x40", "-D_HEX=0x80",
+            "-D_ALPHA=0x103",
+        ]
     subprocess.run([args.compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror",
                     "-Wno-missing-field-initializers", "-D_WIN32",
+                    *extra_flags,
                     "-I", str(args.source_dir.resolve().parent), str(source),
                     str(args.source_dir / "platform/windows/display_helper_request_policy.cpp"),
                     "-o", str(binary)], check=True)

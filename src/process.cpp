@@ -3835,7 +3835,7 @@ namespace proc {
         if (ec) return std::nullopt;
         const auto size = std::filesystem::file_size(path, ec);
         if (ec) return std::nullopt;
-        return std::to_string(modified.time_since_epoch().count()) + "-" + std::to_string(size);
+        return std::to_string(static_cast<std::int64_t>(modified.time_since_epoch().count())) + "-" + std::to_string(size);
       });
   }
 

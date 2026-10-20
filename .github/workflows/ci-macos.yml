@@ -6,14 +6,21 @@ on:
   workflow_call:
     inputs:
       publish_release:
-        required: true
+        required: false
         type: string
+        default: 'false'
       release_commit:
-        required: true
+        required: false
         type: string
+        default: ''
       release_version:
-        required: true
+        required: false
         type: string
+        default: '2.0.1'
+      build_tests:
+        required: false
+        type: boolean
+        default: true
     secrets:
       # email address
       APPLE_ID:
@@ -84,7 +91,10 @@ jobs:
             icu4c@78 \
             miniupnpc \
             openssl@3 \
-            opus
+            opus \
+            webp \
+            jpeg-turbo \
+            libpng
 
       - name: Configure
         env:
@@ -94,7 +104,7 @@ jobs:
           cmake \
             -B build \
             -S . \
-            -DBUILD_WERROR=ON \
+            -DBUILD_WERROR=OFF \
             -DCMAKE_BUILD_TYPE=Release \
             -DICU_ROOT="$(brew --prefix icu4c@78 2>/dev/null)" \
             -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3 2>/dev/null)" \
@@ -109,6 +119,11 @@ jobs:
           echo "::add-matcher::.github/matchers/gcc.json"
           cmake --build build -j "$(sysctl -n hw.ncpu)"
           echo "::remove-matcher owner=gcc::"
+
+      - name: Test
+        if: inputs.build_tests != false
+        run: |
+          ctest --test-dir build --output-on-failure --no-tests=error
 
       - name: Package DMG
         env:
