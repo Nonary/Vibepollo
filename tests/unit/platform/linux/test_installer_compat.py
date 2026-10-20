@@ -130,7 +130,9 @@ pacman() {{
       shift 2
       while [ "$1" != --hookdir ]; do shift; done
       hook_dir=$2
-      preflight=$(sed -n 's/^Exec = //p' "$hook_dir/00-{brand}-incoming-quiesce.hook")
+      hook_file="$hook_dir/00-{brand}-incoming-quiesce.hook"
+      [ -f "$hook_file" ] || hook_file="$hook_dir/00-{brand}-quiesce.hook"
+      preflight=$(sed -n 's/^Exec = //p' "$hook_file") || return
       "$preflight" || return
       printf 'remove\\n' >> "$REMOVAL_TRACE"
       ;;
@@ -157,7 +159,9 @@ pacman() {{
       while [ "$1" != --hookdir ]; do shift; done
       shift 2
       while [ "$1" != --hookdir ]; do shift; done
-      preflight=$(sed -n 's/^Exec = //p' "$2/00-{brand}-incoming-quiesce.hook")
+      hook_file="$2/00-{brand}-incoming-quiesce.hook"
+      [ -f "$hook_file" ] || hook_file="$2/00-{brand}-quiesce.hook"
+      preflight=$(sed -n 's/^Exec = //p' "$hook_file") || return
       "$preflight" || return
       printf 'remove\\n' >> "$REMOVAL_TRACE"
       ;;

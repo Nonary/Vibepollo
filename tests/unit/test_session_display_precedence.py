@@ -11,7 +11,12 @@ import tempfile
 root = pathlib.Path(__file__).resolve().parents[2]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--source-dir', type=pathlib.Path, default=root / 'src')
+parser.add_argument('--compiler', default='g++')
+parser.add_argument('--include-dir', action='append', default=[],
+                    help='Dependency include path, repeatable; accepts CMake semicolon lists')
 args = parser.parse_args()
+dependency_includes = [flag for group in args.include_dir for path in group.split(';')
+                       if path for flag in ('-I', path)]
 source = args.source_dir
 launch = (source / 'nvhttp.cpp').read_text()
 helpers = (source / 'platform/windows/display_helper_request_helpers.cpp').read_text()
@@ -298,5 +303,5 @@ with tempfile.TemporaryDirectory(prefix='session-display-precedence-') as tempor
     cpp = directory / 'test.cpp'
     cpp.write_text(program)
     binary = directory / 'test'
-    subprocess.run(['g++', '-std=c++20', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', '-I', str(source.parent), str(cpp), str(source / 'platform/windows/display_helper_request_policy.cpp'), '-o', str(binary)], check=True)
+    subprocess.run([args.compiler, '-std=c++20', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', '-I', str(source.parent), *dependency_includes, str(cpp), str(source / 'platform/windows/display_helper_request_policy.cpp'), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
