@@ -40,6 +40,16 @@ namespace proc::catalog {
     const image_reader_t &read_header,
     const image_content_reader_t &read_content);
 
+  using image_stamp_reader_t = std::function<std::optional<std::string>(const std::string &)>;
+  // A web preview key belongs to the parsed path and its current file stamp,
+  // never to the saved JSON path that may await catalog publication.
+  std::string configured_image_version(
+    const std::string &image_path,
+    const std::string &assets_root,
+    const std::string &art_version,
+    const image_reader_t &read_header,
+    const image_stamp_reader_t &read_stamp);
+
   std::tuple<std::string, std::string> calculate_ids(
     const std::string &app_name,
     const std::string &app_uuid,

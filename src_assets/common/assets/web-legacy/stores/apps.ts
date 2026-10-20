@@ -18,7 +18,7 @@ export interface App {
   'image-path'?: string;
   'playnite-icon-path'?: string;
   // Cache-busting stamps (file mtimes) the server attaches to GET /api/apps responses.
-  'image-version'?: number;
+  'image-version'?: number | string;
   'playnite-icon-version'?: number;
   'exclude-global-prep-cmd'?: boolean;
   'exclude-global-state-cmd'?: boolean;

@@ -194,6 +194,38 @@ namespace {
     EXPECT_FALSE(proc::catalog::read_configured_image("cover.png", assets, read_header, content));
   }
 
+  TEST(ProcessArtwork, PreviewVersionUsesValidatedParsedPathAndCurrentStamp) {
+    const std::string assets = "virtual-assets";
+    const auto path = proc::catalog::asset_path(assets, "cover.png");
+    fake_images_t images {{{path, png()}}};
+    const auto read = [&](const std::string &p) { return images.read(p); };
+    std::string stamp = "100-9";
+    int stamps = 0;
+    const auto stat = [&](const std::string &p) -> std::optional<std::string> {
+      EXPECT_EQ(p, path);
+      ++stamps;
+      return stamp;
+    };
+    const auto first = proc::catalog::configured_image_version("cover.png", assets, "art-a", read, stat);
+    EXPECT_EQ(stamps, 1);
+    stamp = "200-9";
+    EXPECT_NE(first, proc::catalog::configured_image_version("cover.png", assets, "art-a", read, stat));
+    EXPECT_NE(first, proc::catalog::configured_image_version("cover.png", assets, "art-b", read, stat));
+    const auto raw = proc::catalog::configured_image_version("$(COVER)", assets, "art-a", read, stat);
+    EXPECT_NE(first, raw);
+    EXPECT_EQ(stamps, 3); // Unresolved saved JSON does not drive a filesystem stamp.
+  }
+
+  TEST(ProcessArtwork, PreviewVersionDoesNotStatUnvalidatedPaths) {
+    const auto read = [](const std::string &) -> std::optional<proc::catalog::byte_buffer_t> { return std::nullopt; };
+    const auto stat = [](const std::string &) -> std::optional<std::string> {
+      ADD_FAILURE() << "Rejected paths must not reach the metadata reader";
+      return "unexpected";
+    };
+    const auto version = proc::catalog::configured_image_version("outside.png", "assets", "art-a", read, stat);
+    EXPECT_TRUE(version.ends_with("-unavailable"));
+  }
+
   TEST(ProcessCatalog, FirstSeenUuidVersionsArtworkAndRetainsLegacyLaunchId) {
     app_identity_t app {"Game", "11111111-1111-1111-1111-111111111111", "ignored-cover", "sha256:first"};
     std::set<std::string> ids;

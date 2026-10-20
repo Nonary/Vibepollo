@@ -133,6 +133,23 @@ namespace proc::catalog {
     return content;
   }
 
+  std::string configured_image_version(
+    const std::string &image_path,
+    const std::string &assets_root,
+    const std::string &art_version,
+    const image_reader_t &read_header,
+    const image_stamp_reader_t &read_stamp) {
+    const auto path = validate_image_path(image_path, assets_root, {}, read_header);
+    boost::crc_32_type crc;
+    crc.process_bytes(art_version.data(), art_version.size());
+    const char separator = '\0';
+    crc.process_bytes(&separator, 1);
+    const auto &identity = path.empty() ? image_path : path;
+    crc.process_bytes(identity.data(), identity.size());
+    const auto stamp = path.empty() ? std::nullopt : read_stamp(path);
+    return std::to_string(crc.checksum()) + "-" + stamp.value_or("unavailable");
+  }
+
   std::tuple<std::string, std::string> calculate_ids(
     const std::string &app_name,
     const std::string &app_uuid,

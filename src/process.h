@@ -250,6 +250,7 @@ namespace proc {
   std::string validate_app_image_path(std::string app_image_path);
   std::optional<std::string> read_validated_app_image(const std::string &validated_path);
   std::optional<std::string> read_configured_app_image(const std::string &image_path);
+  std::string configured_app_image_version(const ctx_t &app);
   std::string calculate_app_cover_fingerprint(std::string app_image_path);
   void refresh(const std::string &file_name, bool needs_terminate = true);
   void migrate_apps(nlohmann::json *fileTree_p, nlohmann::json *inputTree_p);
