@@ -621,6 +621,17 @@ namespace platf {
     }
 
     /**
+     * @brief Commit a source metadata change after all old encoders are gone.
+     * @details Called only after capture has returned reinit and all old
+     * encoder sessions/references have been released. A backend may then advance
+     * its metadata generation and retain its capture resources. False requests
+     * the usual complete display recreation. Never use this for a mode change.
+     */
+    virtual bool commit_pending_capture_metadata() {
+      return false;
+    }
+
+    /**
      * @brief Ask a sparse capture source for one fresh image.
      * @details Fixed-rate sources may ignore this because another image is
      *          already scheduled.
