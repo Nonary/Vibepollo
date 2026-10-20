@@ -257,6 +257,7 @@ namespace {
   // that in-flight restore from a later stream-start probe; the helper will either
   // finish restoring or an explicit APPLY will supersede it.
   constexpr std::chrono::milliseconds kDisarmRestoreBudget {150};
+  constexpr std::chrono::milliseconds kStreamStartDisarmReconnectBudget {750};
   constexpr std::chrono::milliseconds kDisarmRetryThrottle {150};
   constexpr std::chrono::milliseconds kDeferredApplyInitialDelay {2000};
   constexpr std::chrono::milliseconds kDeferredApplyRetryBase {500};
@@ -1023,7 +1024,9 @@ namespace {
   bool disarm_helper_restore_if_running(
     const std::function<bool()> &cancellation_predicate = {},
     const std::chrono::steady_clock::time_point operation_deadline =
-      std::chrono::steady_clock::time_point::max()) {
+      std::chrono::steady_clock::time_point::max(),
+    const bool reconnect_for_stream_start = false
+  ) {
     if (shutdown_requested() ||
         cancellation_requested(cancellation_predicate) ||
         operation_deadline_expired(operation_deadline)) {
@@ -1050,7 +1053,8 @@ namespace {
     const auto last_attempt_us = g_last_disarm_attempt_us.load(std::memory_order_relaxed);
 
     // Don't spam DISARM frames (they share the helper's job/message queues with APPLY/REVERT).
-    if ((now_us - last_attempt_us) < (kDisarmRetryThrottle.count() * 1000)) {
+    if (!reconnect_for_stream_start &&
+        (now_us - last_attempt_us) < (kDisarmRetryThrottle.count() * 1000)) {
       const auto last_success_us = g_last_disarm_success_us.load(std::memory_order_relaxed);
       return (now_us - last_success_us) < (kDisarmRetryThrottle.count() * 1000);
     }
@@ -1067,12 +1071,41 @@ namespace {
     }
 
     g_last_disarm_attempt_us.store(now_us, std::memory_order_relaxed);
-    // The short recovery path intentionally makes one cache-only attempt. A
-    // reconnect or a synchronous reset can take seconds and would defeat the
-    // deadline that protects stream startup from a concurrent restore.
-    const bool ok = platf::display_helper_client::send_disarm_restore_fast(
+    // Recovery remains cache-only. Stream admission may make one bounded
+    // reconnect attempt if a live helper still owns an unconfirmed restore;
+    // otherwise a stale cached pipe can suppress virtual-display creation for
+    // the entire session, including on a host with no physical fallback.
+    bool ok = platf::display_helper_client::send_disarm_restore_fast(
       static_cast<int>(kDisarmRestoreBudget.count()),
-      operation_deadline);
+      operation_deadline
+    );
+    const auto operation_cancelled = [&] {
+      return shutdown_requested() ||
+             cancellation_requested(cancellation_predicate) ||
+             operation_deadline_expired(operation_deadline);
+    };
+    if (!ok && reconnect_for_stream_start && restore_expected && !operation_cancelled()) {
+      BOOST_LOG(info) << "Display helper: reconnecting restore IPC before virtual display startup.";
+      const auto reconnect_deadline = std::min(
+        operation_deadline,
+        std::chrono::steady_clock::now() + kStreamStartDisarmReconnectBudget
+      );
+      if (platf::display_helper_client::reset_connection_cancellable(
+            operation_cancelled,
+            reconnect_deadline
+          ) &&
+          platf::display_helper_client::send_ping_cancellable(
+            static_cast<int>(kStreamStartDisarmReconnectBudget.count()),
+            operation_cancelled,
+            reconnect_deadline
+          ) &&
+          !operation_cancelled()) {
+        ok = platf::display_helper_client::send_disarm_restore_fast(
+          static_cast<int>(kDisarmRestoreBudget.count()),
+          reconnect_deadline
+        );
+      }
+    }
 
     if (cancellation_requested(cancellation_predicate) ||
         operation_deadline_expired(operation_deadline)) {
@@ -2259,7 +2292,9 @@ namespace display_helper_integration {
 
   bool disarm_pending_restore(
     std::function<bool()> cancellation_predicate,
-    const std::chrono::steady_clock::time_point operation_deadline) {
+    const std::chrono::steady_clock::time_point operation_deadline,
+    const bool reconnect_for_stream_start
+  ) {
     if ((cancellation_predicate && cancellation_predicate()) ||
         operation_deadline_expired(operation_deadline)) {
       return false;
@@ -2274,7 +2309,8 @@ namespace display_helper_integration {
     invalidate_apply_verification();
     return disarm_helper_restore_if_running(
       cancellation_predicate,
-      operation_deadline
+      operation_deadline,
+      reconnect_for_stream_start
     );
   }
 
