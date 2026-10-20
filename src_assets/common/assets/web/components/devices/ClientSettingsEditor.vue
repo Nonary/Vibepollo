@@ -24,6 +24,7 @@ export interface ClientCommandDraft {
 
 export interface ClientDeviceDraft {
   name: string;
+  allowSleep: boolean;
   permissions: number;
   enableLegacyOrdering: boolean;
   allowClientCommands: boolean;
@@ -425,6 +426,23 @@ function applyDisplaySelection(selection: ClientDisplaySelection): void {
         </div>
       </div>
       <div class="vs-settings-group">
+        <SettingRow
+          class="client-setting-row--switch"
+          :label="t('ui.devices.editor.allow_sleep')"
+          :description="t('ui.devices.editor.allow_sleep_description')"
+          :control-id="`${controlIdPrefix}-allow-sleep`"
+        >
+          <label class="vs-switch">
+            <input
+              :id="`${controlIdPrefix}-allow-sleep`"
+              v-model="draft.allowSleep"
+              type="checkbox"
+              :disabled="busy"
+            />
+            <span class="vs-switch__track" aria-hidden="true" />
+            <span class="vs-sr-only">{{ t('ui.devices.editor.allow_sleep') }}</span>
+          </label>
+        </SettingRow>
         <SettingRow :label="t('pin.device_name')" :control-id="`${controlIdPrefix}-name`">
           <input
             :id="`${controlIdPrefix}-name`"
@@ -788,7 +806,11 @@ function applyDisplaySelection(selection: ClientDisplaySelection): void {
       :control-id-prefix="`${controlIdPrefix}-override`"
     />
 
-    <DisplayTopologyEditor v-if="isWindows" :client-uuid="controlIdPrefix.replace(/^client-/, '')" compact />
+    <DisplayTopologyEditor
+      v-if="isWindows"
+      :client-uuid="controlIdPrefix.replace(/^client-/, '')"
+      compact
+    />
 
     <ClientCommands
       v-model:allow-client-commands="draft.allowClientCommands"

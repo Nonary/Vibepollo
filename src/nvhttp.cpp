@@ -58,6 +58,8 @@
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
+#include "power_action.h"
+#include "power_action_http.h"
 #include "nvhttp_bitrate_policy.h"
 #include "nvhttp_dispatch.h"
 #include "remote_session.h"
@@ -2212,6 +2214,7 @@ namespace nvhttp {
           named_cert_node["perm"] = static_cast<uint32_t>(named_cert_p->perm);
           named_cert_node["enable_legacy_ordering"] = named_cert_p->enable_legacy_ordering;
           named_cert_node["allow_client_commands"] = named_cert_p->allow_client_commands;
+          named_cert_node["allow_sleep"] = named_cert_p->allow_sleep;
           named_cert_node["always_use_virtual_display"] = named_cert_p->always_use_virtual_display;
           if (named_cert_p->prefer_10bit_sdr) {
             named_cert_node["prefer_10bit_sdr"] = true;
@@ -2357,6 +2360,7 @@ namespace nvhttp {
               }
               named_cert_p->enable_legacy_ordering = util::get_non_string_json_value<bool>(el, "enable_legacy_ordering", true);
               named_cert_p->allow_client_commands = util::get_non_string_json_value<bool>(el, "allow_client_commands", true);
+              named_cert_p->allow_sleep = el.contains("allow_sleep") && el["allow_sleep"].is_boolean() && el["allow_sleep"].get<bool>();
               named_cert_p->always_use_virtual_display = util::get_non_string_json_value<bool>(el, "always_use_virtual_display", false);
               named_cert_p->prefer_10bit_sdr =
                 el.contains("prefer_10bit_sdr") && !el["prefer_10bit_sdr"].is_null() &&
@@ -3454,6 +3458,51 @@ namespace nvhttp {
       write_hardware_metrics(std::move(response), result);
     }
 
+  power_action::service_t paired_power_actions {stream_lifecycle_gate};
+
+  power_action::hooks_t power_action_hooks(resp_https_t response, req_https_t request) {
+    return {
+      .authority = [request] {
+        const auto identity = get_verified_cert(request);
+        return identity ? power_action::authority_t {identity->uuid, identity->allow_sleep} : power_action::authority_t {};
+      },
+      .supported = power_action::native_sleep_supported,
+      .activity = [] {
+        return power_action::activity_t {
+          .app = proc::proc.active_session_guard().has_active_app || proc::proc.running() > 0,
+          .pending = rtsp_stream::has_pending_launch_or_startup(),
+          .rtsp = rtsp_stream::session_count_no_cleanup() > 0,
+          .running = stream::session::running_sessions.load(std::memory_order_acquire) != 0,
+          .teardown = stream::session::teardown_sessions.load(std::memory_order_acquire) != 0 || webrtc_stream::has_teardown_in_progress(),
+          .webrtc = webrtc_stream::has_active_or_pending_sessions(),
+          .capture = webrtc_stream::has_capture_active(),
+          .remote_owner = has_remote_role_owner(),
+        };
+      },
+      .suspend_if_authorized = [request] {
+        std::lock_guard lock(client_mutex);
+        const auto identity = tls_client_identities.resolve_snapshot(request, client_root.named_devices);
+        if (!identity || !identity->allow_sleep) return false;
+        return power_action::native_sleep();
+      },
+      .respond = [response](const auto &value) { return power_action::write_response(response, value); },
+    };
+  }
+
+  void get_power_action_capabilities(resp_https_t response, req_https_t request) {
+    const auto hooks = power_action_hooks(response, request);
+    hooks.respond(paired_power_actions.capabilities(hooks));
+  }
+
+  void post_sleep(resp_https_t response, req_https_t request) {
+    const auto result = paired_power_actions.sleep(power_action::parse_request(*request), power_action_hooks(response, request));
+    if (result == power_action::result_e::response_failed) {
+      BOOST_LOG(warning) << "Sleep request was not executed because its acceptance response could not be flushed.";
+    } else if (result == power_action::result_e::native_failed) {
+      BOOST_LOG(warning) << "Sleep request was accepted but native sleep failed or client authorization was revoked before invocation.";
+    }
+  }
+
     // `quiet` keeps high-frequency background polls (e.g. ServerCommand) at debug level
     // so a client that legitimately lacks the permission doesn't flood the log.
     inline void log_permission_denied(std::string_view action, std::string_view perm_label, const verified_client_t &verified_client, bool quiet = false) {
@@ -3800,10 +3849,12 @@ namespace nvhttp {
 
       int pair_status = 0;
       bool metrics_supported = false;
+      bool sleep_allowed = false;
       if constexpr (std::is_same_v<SunshineHTTPS, T>) {
         const auto verified_client = get_verified_cert(request);
         pair_status = !resolve_client_identity(request, verified_client).uuid.empty();
         metrics_supported = hardware_metrics::advertised(hardware_metrics_access(request));
+        sleep_allowed = verified_client && verified_client->allow_sleep;
       }
 
       auto local_endpoint = request->local_endpoint();
@@ -3818,6 +3869,13 @@ namespace nvhttp {
       tree.put("root.uniqueid", http::unique_id);
       tree.put("root.HttpsPort", net::map_port(PORT_HTTPS));
       tree.put("root.HardwareMetricsVersion", metrics_supported ? 1 : 0);
+      if constexpr (std::is_same_v<SunshineHTTPS, T>) {
+        if (pair_status) {
+          tree.put("root.PowerActionVersion", 1);
+          tree.put("root.SleepSupported", power_action::native_sleep_supported() ? 1 : 0);
+          tree.put("root.SleepAllowed", sleep_allowed ? 1 : 0);
+        }
+      }
       tree.put("root.ExternalPort", net::map_port(PORT_HTTP));
 
       // Optional Moonlight extension. These describe integration/configuration,
@@ -4061,6 +4119,7 @@ namespace nvhttp {
         named_cert_node["perm"] = static_cast<uint32_t>(named_cert->perm);
         named_cert_node["enable_legacy_ordering"] = named_cert->enable_legacy_ordering;
         named_cert_node["allow_client_commands"] = named_cert->allow_client_commands;
+        named_cert_node["allow_sleep"] = named_cert->allow_sleep;
         named_cert_node["always_use_virtual_display"] = named_cert->always_use_virtual_display;
         named_cert_node["prefer_10bit_sdr"] = named_cert->prefer_10bit_sdr;
         if (named_cert->last_seen.has_value()) {
@@ -6657,6 +6716,12 @@ namespace nvhttp {
           hardware_metrics_query(metrics_service, std::move(resp), std::move(req));
         });
       };
+    https_server.resource["^/power-actions/v1$"]["GET"] = [run_discovery_nvhttp](auto response, auto request) {
+      run_discovery_nvhttp([response, request] { get_power_action_capabilities(response, request); });
+    };
+    https_server.resource["^/power-actions/v1/sleep$"]["POST"] = [run_blocking_nvhttp](auto response, auto request) {
+      run_blocking_nvhttp(response, "SleepAccepted", [response, request] { post_sleep(response, request); });
+    };
     https_server.resource["^/pair/?$"]["GET"] = pair<SunshineHTTPS>;
     https_server.resource["^/pair/?$"]["POST"] = pair<SunshineHTTPS>;
     https_server.resource["^/unpair/?$"]["GET"] = unpair<SunshineHTTPS>;
@@ -7061,6 +7126,25 @@ namespace nvhttp {
       save_state();
     }
     return updated;
+  }
+
+  bool set_client_sleep_allowed(std::string_view uuid, bool allowed) {
+    const bool fresh_state = config::sunshine.flags[config::flag::FRESH_STATE];
+    if (!fresh_state && !authorization_state_ready.load(std::memory_order_acquire)) return false;
+    if (!fresh_state) statefile::migrate_recent_state_keys();
+    std::lock_guard state_lock(statefile::state_mutex());
+    std::lock_guard client_lock(client_mutex);
+    for (auto &client : client_root.named_devices) {
+      if (client->uuid != uuid) continue;
+      const bool previous = client->allow_sleep;
+      client->allow_sleep = allowed;
+      const bool saved = fresh_state || save_state_snapshot_locked(client_root);
+      // A failed grant cannot expand authority. A failed revocation remains
+      // denied in this process and is reported as an unsuccessful save.
+      if (!saved && allowed) client->allow_sleep = previous;
+      return saved;
+    }
+    return false;
   }
 
   bool set_client_hdr_profile(const std::string &uuid, const std::string &hdr_profile) {

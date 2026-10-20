@@ -31,6 +31,7 @@ interface PairedDevice {
   name: string;
   uuid: string;
   enabled: boolean;
+  allow_sleep?: boolean;
   connected: boolean;
   perm?: number | string;
   enable_legacy_ordering?: boolean;
@@ -55,6 +56,7 @@ interface ClientsResponse {
 }
 
 interface MutationResponse {
+  allow_sleep_updated?: boolean;
   status?: boolean;
 }
 
@@ -177,6 +179,7 @@ function normalizeDevice(device: unknown, index: number): PairedDevice {
     uuid: stringValue(raw.uuid) || `unknown-device-${fallbackIdentity || index + 1}`,
     name: stringValue(raw.name),
     enabled: booleanValue(raw.enabled, true),
+    allow_sleep: raw.allow_sleep === true,
     connected: booleanValue(raw.connected, false),
     last_seen:
       typeof raw.last_seen === 'number' || typeof raw.last_seen === 'string' ? raw.last_seen : null,
@@ -378,6 +381,7 @@ function draftFromDevice(device: PairedDevice): ClientDeviceDraft {
 
   return {
     name: device.name,
+    allowSleep: device.allow_sleep === true,
     permissions: permissionMask(device),
     enableLegacyOrdering: device.enable_legacy_ordering !== false,
     allowClientCommands: device.allow_client_commands !== false,
@@ -592,11 +596,15 @@ function updatePayload(device: PairedDevice, draft: ClientDeviceDraft): Record<s
   const payload: Record<string, unknown> = {
     uuid: device.uuid,
     name: draft.name.trim(),
+    allow_sleep: draft.allowSleep,
     perm: draft.permissions & PERMISSION_ALL,
     enable_legacy_ordering: draft.enableLegacyOrdering,
     allow_client_commands: draft.allowClientCommands,
     do: draft.doCommands.map((entry) => ({ cmd: entry.command.trim(), elevated: entry.elevated })),
-    undo: draft.undoCommands.map((entry) => ({ cmd: entry.command.trim(), elevated: entry.elevated })),
+    undo: draft.undoCommands.map((entry) => ({
+      cmd: entry.command.trim(),
+      elevated: entry.elevated,
+    })),
     display_mode: draft.displayMode.trim(),
     output_name_override: outputName,
     always_use_virtual_display:
@@ -620,6 +628,7 @@ function updatePayload(device: PairedDevice, draft: ClientDeviceDraft): Record<s
 
 const draftScalarKeys = [
   'name',
+  'allowSleep',
   'permissions',
   'enableLegacyOrdering',
   'allowClientCommands',
@@ -718,7 +727,7 @@ async function saveDevice(device: PairedDevice): Promise<void> {
       '/api/clients/update',
       updatePayload(device, saveDraft),
     );
-    if (response.status !== true) {
+    if (response.status !== true || response.allow_sleep_updated !== true) {
       throw new Error(t('ui.devices.error.partial_update'));
     }
     drafts.value[device.uuid] = cloneDraft(saveDraft);

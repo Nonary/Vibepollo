@@ -745,4 +745,23 @@ namespace {
     EXPECT_FALSE(inconsistent);
     EXPECT_FALSE(native_resolve(request));
   }
+
+  TEST_F(NativeTlsClientIdentity, SleepGrantDefaultsOffAndTracksLiveNativeRecord) {
+    auto transport = factory.connect();
+    const auto request = factory.request(transport);
+    records[0]->perm = crypto::PERM::_all;
+    ASSERT_TRUE(native_authenticate(request).identity);
+    ASSERT_TRUE(native_resolve(request));
+    EXPECT_FALSE(native_resolve(request)->allow_sleep);
+    records[0]->allow_sleep = true;
+    EXPECT_TRUE(native_resolve(request)->allow_sleep);
+    const auto views = nvhttp::tls_identity::native_client_views(records);
+    ASSERT_TRUE(views);
+    EXPECT_TRUE((*views)[0].allow_sleep);
+    records[0]->allow_sleep = false;
+    EXPECT_FALSE(native_resolve(request)->allow_sleep);
+    records[0]->allow_sleep = true;
+    records[0]->perm = crypto::PERM::_no;
+    EXPECT_FALSE(native_resolve(request));
+  }
 }  // namespace

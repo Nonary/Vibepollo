@@ -308,6 +308,8 @@ namespace nvhttp {
    * @brief Persist a per-client HDR color profile selection (Windows only).
    * @return True if the client was found and updated.
    */
+  bool set_client_sleep_allowed(std::string_view uuid, bool allowed);
+
   bool set_client_hdr_profile(const std::string &uuid, const std::string &hdr_profile);
 
   /**

@@ -1061,6 +1061,21 @@ sunshine_register_component(NAME test_component_tls_client_identity TEST_SOURCE 
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_pairing_policy.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/crypto.cpp"
     LINK_LIBRARIES nlohmann_json::nlohmann_json sunshine_test_simple_web_headers ${SUNSHINE_TEST_SOCKET_LIBRARIES})
+sunshine_register_component(NAME test_component_power_action TEST_SOURCE unit/test_power_action.cpp
+    PRODUCT_SOURCES
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/power_action.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/tls_client_identity.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_pairing_policy.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/crypto.cpp"
+    LINK_LIBRARIES nlohmann_json::nlohmann_json sunshine_test_simple_web_headers Boost::property_tree ${SUNSHINE_TEST_SOCKET_LIBRARIES})
+if(TARGET test_component_power_action)
+    set_tests_properties(test_component_power_action PROPERTIES TIMEOUT 30)
+endif()
+if(NOT WIN32)
+    sunshine_register_component(NAME test_component_power_action_native
+        TEST_SOURCE unit/test_power_action_native.cpp
+        INCLUDE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/support/power_api")
+endif()
 if(TARGET test_component_tls_client_identity)
     set_tests_properties(test_component_tls_client_identity PROPERTIES TIMEOUT 90)
 endif()
