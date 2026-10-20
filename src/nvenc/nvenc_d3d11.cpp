@@ -6,8 +6,8 @@
 #include "src/logging.h"
 
 #ifdef _WIN32
-  #include "nvenc_api.h"
   #include "nvenc_d3d11.h"
+  #include "nvenc_api.h"
   #include "nvenc_event_wait.h"
 
 namespace nvenc {
