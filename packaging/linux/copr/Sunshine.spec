@@ -1724,6 +1724,8 @@ fi
 %{_prefix}/libexec/vibeshine/vibepollo-profile-import
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-app-supervisor
 %{_prefix}/libexec/vibeshine/vibepollo-machine-host
+%{_bindir}/vibepollo-tray
+%{_sysconfdir}/xdg/autostart/vibepollo-tray.desktop
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-kwin-session-environment
 %attr(0750,root,vibepollo) %caps(cap_sys_admin,cap_sys_nice+p) %{_prefix}/libexec/vibeshine/vibepollo-host
 %attr(4755,root,root) %{_libdir}/libvibeshine-kwin-gpu.so

@@ -97,6 +97,16 @@ else()
     find_package(Udev)
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # A desktop companion owns the tray; the machine host deliberately has
+        # no user session bus or tray. Qt is an optional runtime dependency.
+        configure_file("${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-tray.desktop.in"
+                "${CMAKE_CURRENT_BINARY_DIR}/vibepollo-tray.desktop" @ONLY)
+        install(PROGRAMS "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-tray.py"
+                DESTINATION "${CMAKE_INSTALL_BINDIR}" RENAME "vibepollo-tray")
+        install(FILES "${CMAKE_CURRENT_BINARY_DIR}/vibepollo-tray.desktop"
+                DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications")
+        install(FILES "${CMAKE_CURRENT_BINARY_DIR}/vibepollo-tray.desktop"
+                DESTINATION "${CMAKE_INSTALL_FULL_SYSCONFDIR}/xdg/autostart")
         add_executable(vibepollo_session_exec
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-exec.c")
         set_target_properties(vibepollo_session_exec PROPERTIES OUTPUT_NAME "vibepollo-session-exec")
@@ -430,6 +440,9 @@ set(CPACK_RPM_PACKAGE_REQUIRES "\
             socat, \
             util-linux")
 set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "dkms")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT SUNSHINE_BUILD_APPIMAGE AND NOT SUNSHINE_BUILD_FLATPAK)
+    string(APPEND CPACK_DEBIAN_PACKAGE_RECOMMENDS ", python3-pyside6.qtwidgets")
+endif()
 set(CPACK_RPM_PACKAGE_SUGGESTS "dkms, gcc, kernel-devel")
 list(APPEND CPACK_FREEBSD_PACKAGE_DEPS
         audio/opus
