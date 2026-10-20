@@ -1302,7 +1302,8 @@ static int execute_request(int argc, char **argv,
            touch_map_arguments_are_safe(argv[2], argv[3])) operation = TOUCH_MAP;
   else if (!strcmp(argv[1], "display-apply") && display_apply_arguments_are_safe(argc, argv)) operation = DISPLAY_APPLY;
   else if (!strcmp(argv[1], "audio-get-default") && argc == 2) operation = AUDIO_GET_DEFAULT;
-  else if (!strcmp(argv[1], "audio-list-sinks") && argc == 2) operation = AUDIO_LIST_SINKS;
+  else if (!strcmp(argv[1], "audio-list-sinks") &&
+           (argc == 2 || (argc == 3 && !strcmp(argv[2], "details")))) operation = AUDIO_LIST_SINKS;
   else if (!strcmp(argv[1], "audio-set-default") && argc == 3 && sink_name_is_safe(argv[2])) operation = AUDIO_SET_DEFAULT;
   else if (!strcmp(argv[1], "audio-create-null") && argc == 4 &&
            (audio_channel_count = layout_channel_count(argv[2])) &&
@@ -1394,7 +1395,8 @@ static int execute_request(int argc, char **argv,
       break;
     }
     case AUDIO_LIST_SINKS: {
-      char *const arguments[] = {"pactl", "list", "short", "sinks", NULL};
+      char *const arguments[] = {"pactl", argc == 3 ? "--format=json" : "list",
+                                 argc == 3 ? "list" : "short", "sinks", NULL};
       execv("/usr/bin/pactl", arguments);
       break;
     }

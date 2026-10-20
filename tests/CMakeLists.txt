@@ -643,6 +643,12 @@ sunshine_register_component(NAME test_component_lutris_sync TEST_SOURCE test_lut
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/lutris_integration.cpp"
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/provider_scan_protocol.cpp"
     LINK_LIBRARIES nlohmann_json::nlohmann_json ${SQLITE3_LIBRARIES})
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
+    pkg_check_modules(AUDIO_STATUS_GIO REQUIRED IMPORTED_TARGET gio-2.0)
+    sunshine_register_component(NAME test_component_linux_audio_sink_status
+        TEST_SOURCE unit/test_linux_audio_sink_status.cpp
+        LINK_LIBRARIES nlohmann_json::nlohmann_json PkgConfig::AUDIO_STATUS_GIO)
+endif()
 sunshine_register_component(NAME test_component_provider_scan_protocol TEST_SOURCE test_provider_scan_protocol.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/provider_scan_protocol.cpp"
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
