@@ -244,3 +244,68 @@ TEST_F(LogExportReaderTest, TruncatedAndOmittedFilesStillProduceValidZipEntries)
   EXPECT_EQ(u32(zip.size() - 22), 0x06054b50u);
   EXPECT_EQ(u16(zip.size() - 12), collection.entries().size());
 }
+
+TEST_F(LogExportReaderTest, DuplicateZipNameDoesNotHideUnavailableRequestedPaths) {
+  log_export::support_log_collection_t collection {64};
+  ASSERT_TRUE(collection.add_file(write("session/launcher.log", "first\n"), "launcher.log"));
+  const auto removed = write("removed/launcher.log", "removed\n");
+  ASSERT_TRUE(fs::remove(removed));
+  fs::create_directories(root / "directory.log");
+
+  EXPECT_FALSE(collection.add_file(root / "missing/launcher.log", "launcher.log"));
+  EXPECT_FALSE(collection.add_file(removed, "launcher.log"));
+  EXPECT_FALSE(collection.add_file(root / "directory.log", "launcher.log"));
+  EXPECT_EQ(collection.bytes_read(), 6u);
+  ASSERT_EQ(collection.entries().size(), 1u);
+  EXPECT_EQ(collection.entries().front().data, "first\n");
+}
+
+TEST_F(LogExportReaderTest, MissingKnownFolderDuplicateStillSelectsFallbackLogs) {
+  const auto session_log = write("session/launcher.log", "session\n");
+  const auto known_folder = root / "known/Playnite";
+  fs::create_directories(known_folder);
+  const auto fallback_log = write("csidl/Playnite/extensions.log", "fallback diagnostics\n");
+  log_export::support_log_collection_t collection {128};
+  ASSERT_TRUE(collection.add_file(session_log, "launcher.log"));
+
+  // Exercise the real collector's availability result used by the Windows
+  // discovery caller. This fixture does not emulate Known Folder/CSIDL APIs.
+  const bool known_folder_has_launcher = collection.add_file(known_folder / "launcher.log", "launcher.log");
+  bool selected_fallback = false;
+  if (!known_folder_has_launcher) {
+    selected_fallback = true;
+    EXPECT_TRUE(collection.add_file(fallback_log, "extensions.log"));
+  }
+  EXPECT_FALSE(known_folder_has_launcher);
+  EXPECT_TRUE(selected_fallback);
+  ASSERT_EQ(collection.entries().size(), 2u);
+  EXPECT_EQ(collection.entries().back().name, "extensions.log");
+  EXPECT_EQ(collection.entries().back().data, "fallback diagnostics\n");
+  EXPECT_EQ(collection.bytes_read(), fs::file_size(session_log) + fs::file_size(fallback_log));
+}
+
+TEST_F(LogExportReaderTest, UnreadableDuplicateDoesNotReportPathAvailable) {
+  log_export::support_log_collection_t collection {64};
+  ASSERT_TRUE(collection.add_file(write("first.log", "first\n"), "same.log"));
+  const auto unreadable = write("unreadable.log", "unreadable content\n");
+  const auto permissions = fs::status(unreadable).permissions();
+  std::error_code ec;
+  fs::permissions(unreadable, fs::perms::none, ec);
+  if (ec) {
+    GTEST_SKIP() << "This filesystem cannot restrict the fixture's read permission";
+  }
+  ASSERT_TRUE(fs::is_regular_file(unreadable));
+  {
+    std::ifstream probe(unreadable, std::ios::binary);
+    if (probe) {
+      fs::permissions(unreadable, permissions, ec);
+      GTEST_SKIP() << "This process/filesystem can still open the permission-restricted fixture";
+    }
+  }
+  EXPECT_FALSE(collection.add_file(unreadable, "same.log"));
+  EXPECT_EQ(collection.bytes_read(), 6u);
+  ASSERT_EQ(collection.entries().size(), 1u);
+  EXPECT_EQ(collection.entries().front().data, "first\n");
+  fs::permissions(unreadable, permissions, ec);
+  EXPECT_FALSE(ec);
+}

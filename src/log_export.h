@@ -306,9 +306,6 @@ namespace log_export {
     }
 
     bool add_file(const std::filesystem::path &path, const std::string &name) {
-      if (names_.contains(name)) {
-        return true;
-      }
       std::error_code ec;
       if (!std::filesystem::is_regular_file(path, ec)) {
         return false;
@@ -318,6 +315,11 @@ namespace log_export {
       std::ifstream input(path, std::ios::binary);
       if (!input) {
         return false;
+      }
+      // Callers interpret true as this requested path being available, even
+      // when its ZIP name was collected earlier. Skip only the body read.
+      if (names_.contains(name)) {
+        return true;
       }
       auto tail = read_log_tail(input, remaining_);
       if (!tail) {
