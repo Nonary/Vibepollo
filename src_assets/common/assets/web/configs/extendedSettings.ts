@@ -47,6 +47,8 @@ export const extendedDefaults: Record<string, unknown> = {
   session_token_ttl_seconds: 86400,
   remember_me_refresh_token_ttl_seconds: 604800,
   back_button_timeout: -1,
+  guide_button_key: 0,
+  guide_button_controller: 0,
   key_rightalt_to_key_win: 'disabled',
   ds5_inputtino_randomize_mac: true,
   credentials_file: '',

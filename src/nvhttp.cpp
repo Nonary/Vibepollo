@@ -3027,6 +3027,12 @@ namespace nvhttp {
                              color_control == remote_session::control_e::running_game)) {
         color_app_ctx = proc::proc.resolve_app(current_color_app_id);
       }
+      // This transport owns its input settings even when another client owns
+      // the shared capture/runtime config. Resume requests inherit the running app.
+      launch_session->guide_button = config::guide_button_config_for_session(
+        color_app_ctx ? color_app_ctx->config_overrides : std::unordered_map<std::string, std::string> {},
+        verified_client->config_overrides
+      );
       launch_session->prefer_sdr_10bit = rtsp_stream::hdr_request_policy::resolve_prefer_10bit_sdr(
         verified_client->prefer_10bit_sdr,
         use_app_color_preference && color_app_ctx ? color_app_ctx->prefer_10bit_sdr : std::nullopt

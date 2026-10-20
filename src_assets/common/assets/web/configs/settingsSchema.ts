@@ -62,6 +62,8 @@ export const clientOverrideableKeys = new Set([
   'motion_as_ds4',
   'touchpad_as_ds4',
   'back_button_timeout',
+  'guide_button_key',
+  'guide_button_controller',
   'keyboard',
   'key_repeat_delay',
   'key_repeat_frequency',
@@ -894,6 +896,8 @@ export const settingsCategories: SettingsCategory[] = [
         id: 'input_repeat',
         fields: [
           extendedField('back_button_timeout'),
+          extendedField('guide_button_key'),
+          extendedField('guide_button_controller'),
           extendedField('key_rightalt_to_key_win'),
           extendedField('ds5_inputtino_randomize_mac', { platform: 'linux' }),
           { key: 'keybindings', kind: 'textarea', stacked: true },

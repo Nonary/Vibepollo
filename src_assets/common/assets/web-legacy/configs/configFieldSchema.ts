@@ -53,6 +53,8 @@ const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
   qp: { placeholder: '28' },
   min_threads: { placeholder: '2', min: 1 },
   back_button_timeout: { placeholder: '-1' },
+  guide_button_key: { min: 0, max: 255, step: 1, precision: 0, placeholder: '0' },
+  guide_button_controller: { min: 0, max: 15, step: 1, precision: 0, placeholder: '0' },
   key_repeat_delay: { placeholder: '500' },
   key_repeat_frequency: { placeholder: '24.9', step: 0.1 },
   session_token_ttl_seconds: { min: 60, step: 60, placeholder: '86400' },

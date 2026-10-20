@@ -217,6 +217,7 @@ namespace rtsp_stream {
     snapshot->device_name = device_name;
     snapshot->input_only = input_only;
     snapshot->gcpersist = gcpersist;
+    snapshot->guide_button = guide_button;
     snapshot->client_display_mode_override = client_display_mode_override;
     snapshot->client_display_refresh_millihz = client_display_refresh_millihz;
     snapshot->enable_hdr = enable_hdr;

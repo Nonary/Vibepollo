@@ -3587,6 +3587,7 @@ namespace stream {
     }
 
     bool update_device_info(session_t &session, const std::string &name, const crypto::PERM &newPerm) {
+      input::update_guide_button_permissions(session.input, newPerm);
       session.permission = newPerm;
       std::string device_name;
       {
@@ -3828,7 +3829,8 @@ namespace stream {
     }
 
     int start(session_t &session, const std::string &addr_string) {
-      session.input = input::alloc(session.mail, session.config.gcpersist);
+      session.input = input::alloc(session.mail, session.config.guide_button, session.config.gcpersist);
+      input::update_guide_button_permissions(session.input, session.permission);
 
       session.broadcast_ref = broadcast.ref();
       if (!session.broadcast_ref) {
@@ -4087,6 +4089,7 @@ namespace stream {
 
       session->config = config;
       session->config.gcpersist = launch_session.gcpersist;
+      session->config.guide_button = launch_session.guide_button;
       session->stream_fps = session->config.monitor.framerate;
       session->stream_fps_scaled = session->config.monitor.encodingFramerate;
       if (launch_session.fps > 0) {

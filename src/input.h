@@ -12,6 +12,7 @@
 
 // local includes
 #include "crypto.h"
+#include "input_session_config.h"
 #include "platform/common.h"
 #include "thread_safe.h"
 
@@ -26,6 +27,9 @@ namespace input {
    */
   void reset(std::shared_ptr<input_t> &input);
   void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data, const crypto::PERM &permission);
+  // Order Guide neutralization on the input worker after a live permission loss.
+  // Queued Guide presses retain admission permission and the permission generation.
+  void update_guide_button_permissions(const std::shared_ptr<input_t> &input, const crypto::PERM &permission);
 
 #ifdef SUNSHINE_TESTS
   bool validate_packet_for_tests(const std::vector<std::uint8_t> &input_data);
@@ -35,7 +39,7 @@ namespace input {
 
   bool probe_gamepads();
 
-  std::shared_ptr<input_t> alloc(safe::mail_t mail, bool persist_gamepads = false);
+  std::shared_ptr<input_t> alloc(safe::mail_t mail, guide_button_config_t guide_button, bool persist_gamepads = false);
 
   struct touch_port_t: public platf::touch_port_t {
     int env_width;

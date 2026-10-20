@@ -21,6 +21,7 @@
 // local includes
 #include "audio.h"
 #include "crypto.h"
+#include "input_session_config.h"
 #include "thread_safe.h"
 #include "video.h"
 #include "stream_protocol.h"
@@ -67,6 +68,7 @@ namespace stream {
 
     std::optional<int> gcmap;
     bool gcpersist = false;
+    input::guide_button_config_t guide_button;
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;
     bool frame_generation_enabled;

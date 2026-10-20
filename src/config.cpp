@@ -114,6 +114,7 @@ namespace VDISPLAY {
 
 namespace config {
   namespace {
+    void update_base_session_input_config_snapshot(const std::unordered_map<std::string, std::string> &vars);
     void update_base_adapter_config_snapshot(
       const std::unordered_map<std::string, std::string> &vars
     );
@@ -1023,6 +1024,8 @@ namespace config {
       {0x11, 0xA2},
       {0x12, 0xA4},
     },
+    0,  // guide_button_key (disabled)
+    0,  // guide_button_controller (first controller of the sending client)
     -1ms,  // back_button_timeout
     500ms,  // key_repeat_delay
     std::chrono::duration<double> {1 / 24.9},  // key_repeat_period
@@ -2215,6 +2218,8 @@ namespace config {
     }
 
     map_int_int_f(vars, "keybindings"s, input.keybindings);
+    int_between_f(vars, "guide_button_key", input.guide_button_key, {0, 255});
+    int_between_f(vars, "guide_button_controller", input.guide_button_controller, {0, 15});
 
     // This config option will only be used by the UI
     // When editing in the config file itself, use "keybindings"
@@ -2510,6 +2515,7 @@ namespace config {
 
       merge_config_overrides(vars, cmd_vars);
       update_base_adapter_config_snapshot(vars);
+      update_base_session_input_config_snapshot(vars);
 
       // Apply the config. Note: This will try to create any paths
       // referenced in the config, so we may receive exceptions if
@@ -2613,6 +2619,19 @@ namespace config {
     std::mutex g_runtime_overrides_mutex;
     std::unordered_map<std::string, std::string> g_runtime_config_overrides;
 
+    std::mutex g_session_input_config_mutex;
+    std::unordered_map<std::string, std::string> g_base_guide_button_vars;
+
+    void update_base_session_input_config_snapshot(const std::unordered_map<std::string, std::string> &vars) {
+      std::lock_guard<std::mutex> lock(g_session_input_config_mutex);
+      g_base_guide_button_vars.clear();
+      for (const auto key : {"guide_button_key", "guide_button_controller"}) {
+        if (const auto it = vars.find(key); it != vars.end()) {
+          g_base_guide_button_vars.emplace(*it);
+        }
+      }
+    }
+
     struct adapter_config_pair_t {
       std::string name;
       std::string pnp_id;
@@ -2705,6 +2724,8 @@ namespace config {
         "motion_as_ds4",
         "touchpad_as_ds4",
         "back_button_timeout",
+        "guide_button_key",
+        "guide_button_controller",
         "keyboard",
         "key_repeat_delay",
         "key_repeat_frequency",
@@ -3145,6 +3166,28 @@ namespace config {
     base.insert_or_assign(std::string(adapter_pnp_id_key), adapter_pnp_id->second);
   }
 
+  ::input::guide_button_config_t guide_button_config_for_session(
+    const std::unordered_map<std::string, std::string> &app_overrides,
+    const std::unordered_map<std::string, std::string> &client_overrides
+  ) {
+    std::unordered_map<std::string, std::string> vars;
+    {
+      std::lock_guard<std::mutex> lock(g_session_input_config_mutex);
+      vars = g_base_guide_button_vars;
+    }
+    for (const auto *layer : {&app_overrides, &client_overrides}) {
+      for (const auto key : {"guide_button_key", "guide_button_controller"}) {
+        if (const auto it = layer->find(key); it != layer->end()) {
+          vars.insert_or_assign(it->first, it->second);
+        }
+      }
+    }
+    ::input::guide_button_config_t result;
+    int_between_f(vars, "guide_button_key", result.key, {0, 255});
+    int_between_f(vars, "guide_button_controller", result.controller, {0, 15});
+    return result;
+  }
+
   bool adapter_config_overrides_compatible_with_active(
     const std::unordered_map<std::string, std::string> &requested_overrides
   ) {
@@ -3282,6 +3325,7 @@ namespace config {
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
       merge_config_overrides(vars, command_line_overrides);
       update_base_adapter_config_snapshot(vars);
+      update_base_session_input_config_snapshot(vars);
 
       // Apply runtime overrides (per-app) on top of file values so hot-apply and deferred reloads
       // keep the effective config consistent while an app is running.

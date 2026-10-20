@@ -110,6 +110,8 @@ const defaultGroups = [
       motion_as_ds4: 'enabled',
       touchpad_as_ds4: 'enabled',
       back_button_timeout: -1,
+      guide_button_key: 0,
+      guide_button_controller: 0,
       keyboard: 'enabled',
       key_repeat_delay: 500,
       key_repeat_frequency: 24.9,

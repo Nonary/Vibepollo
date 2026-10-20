@@ -82,6 +82,7 @@ namespace rtsp_stream {
     int fps;
     int gcmap;
     bool gcpersist = false;
+    input::guide_button_config_t guide_button;
     int playstation_gamepad_mask {};
 
     struct app_metadata_t {

@@ -562,6 +562,37 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### guide_button_key
+
+The raw client keyboard virtual-key code to consume as a held Home/Guide button.
+`0` (default) disables the binding; values `1` through `255` enable it. For example,
+set `guide_button_key = 124` and map a Steam Input chord to F13 on the client.
+The key is matched before `keybindings` and host shortcuts. No host keyboard event
+or keyboard repeat is generated for the bound key.
+
+Only the configured controller slot of the client sending the key is targeted.
+Both keyboard and controller input must be enabled, and that controller must
+already be connected. A press without a connected target is consumed; connecting
+or reconnecting a controller while the key is held does not press Guide. Release
+and press the key again. Key-up releases the binding, including after input is
+disabled. Controller removal and session disconnect clear its held Guide state.
+Vibepollo clients also need both keyboard and controller permissions for this
+binding. Revoking either permission releases the binding's held Guide state.
+Native Guide remains independent. The existing `back_button_timeout` is unchanged;
+set it below `0` if the Back/Select shortcut is unwanted.
+
+The binding and target slot are captured for each new session using file/command
+line settings, then that session's application overrides, then its client overrides.
+Concurrent clients can select different keys and slots, including disabling the
+binding. Global, app or per-client changes apply to new sessions; WebRTC input
+reconnection and capture replacement keep the registered session's settings.
+
+### guide_button_controller
+
+Client-relative controller slot for `guide_button_key`, from `0` through `15`.
+The default `0` selects the sending client's first controller, never the first
+controller of another client. This option does not create or redirect controllers.
+
 ### keyboard
 
 <table>

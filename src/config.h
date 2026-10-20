@@ -19,6 +19,7 @@
 // local includes
 #include "config_display_transition.h"
 #include "hardware_metrics_config.h"
+#include "input_session_config.h"
 #include "nvenc/nvenc_config.h"
 
 namespace config {
@@ -317,6 +318,9 @@ namespace config {
   struct input_t {
     std::unordered_map<int, int> keybindings;
 
+    // Raw client virtual key (0 disables) and client-relative controller slot.
+    int guide_button_key;
+    int guide_button_controller;
     std::chrono::milliseconds back_button_timeout;
     std::chrono::milliseconds key_repeat_delay;
     std::chrono::duration<double> key_repeat_period;
@@ -553,6 +557,13 @@ namespace config {
   );
   bool adapter_config_overrides_compatible_with_active(
     const std::unordered_map<std::string, std::string> &requested_overrides
+  );
+
+  // Resolve only this session's app/client layers over file + CLI settings.
+  // Never inherit the shared capture owner's process-wide runtime overrides.
+  ::input::guide_button_config_t guide_button_config_for_session(
+    const std::unordered_map<std::string, std::string> &app_overrides = {},
+    const std::unordered_map<std::string, std::string> &client_overrides = {}
   );
 
   // Hot-reload helpers
