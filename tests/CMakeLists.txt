@@ -222,7 +222,7 @@ find_package(OpenSSL REQUIRED)
 
 set(SUNSHINE_TEST_SOCKET_LIBRARIES "")
 if(WIN32)
-    set(SUNSHINE_TEST_SOCKET_LIBRARIES ws2_32)
+    set(SUNSHINE_TEST_SOCKET_LIBRARIES ws2_32 mswsock)
 endif()
 
 # Header-only SDK boundaries are named targets rather than process-wide include
