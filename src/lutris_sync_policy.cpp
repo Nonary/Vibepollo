@@ -51,7 +51,7 @@ namespace platf::lutris::sync::policy {
       set_or_erase(app, "lutris-directory", game.directory.generic_string());
       set_or_erase(app, "lutris-service", game.service);
       set_or_erase(app, "lutris-service-id", game.service_id);
-      app["cmd"] = "lutris " + launch_uri(game.id);
+      app["cmd"] = launch_command(game.id);
       app["auto-detach"] = true;
       app["wait-all"] = false;
       if (!game.image_path.empty()) app["image-path"] = game.image_path.generic_string();

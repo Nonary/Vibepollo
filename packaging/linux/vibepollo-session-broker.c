@@ -1275,7 +1275,7 @@ static int execute_request(int argc, char **argv,
   if (argc < 2) return 2;
   enum operation {
     DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_OBSERVE, DISPLAY_POWER, DISPLAY_WAKE, TOUCH_MAP, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
-    AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS, MANAGED_FOCUS,
+    AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS, LUTRIS_WAYLAND_HDR, MANAGED_FOCUS,
     PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, APP, APP_WAYLAND_HDR
   } operation;
   unsigned long first_number = 0, second_number = 0, third_number = 0;
@@ -1323,6 +1323,7 @@ static int execute_request(int argc, char **argv,
            steam_direct_arguments_are_safe(argc, argv) &&
            !strcmp(identity->role, "desktop")) operation = STEAM_DIRECT;
   else if (!strcmp(argv[1], "lutris") && argc == 3 && numeric_suffix(argv[2], "") && !strcmp(identity->role, "desktop")) operation = LUTRIS;
+  else if (!strcmp(argv[1], "lutris-wayland-hdr") && argc == 3 && numeric_suffix(argv[2], "") && !strcmp(identity->role, "desktop")) operation = LUTRIS_WAYLAND_HDR;
   else if (!strcmp(argv[1], "managed-focus") &&
            managed_focus_arguments_are_safe(argc, argv) &&
            !strcmp(identity->role, "desktop")) operation = MANAGED_FOCUS;
@@ -1474,12 +1475,13 @@ static int execute_request(int argc, char **argv,
                                 argv[2], argv[3], argv[4], argv[5], argv[6], NULL};
       return exec_user_service(identity, NULL, arguments, false, false, 0, NULL);
     }
-    case LUTRIS: {
+    case LUTRIS:
+    case LUTRIS_WAYLAND_HDR: {
       // Apply the same ownership boundary to an already-running Lutris daemon.
       char uri[160];
       if (snprintf(uri, sizeof(uri), "lutris:rungameid/%s", argv[2]) >= (int) sizeof(uri)) return 126;
       char *const arguments[] = {"/usr/bin/lutris", uri, NULL};
-      return exec_user_service(identity, NULL, arguments, false, false, 0, NULL);
+      return exec_user_service(identity, NULL, arguments, false, operation == LUTRIS_WAYLAND_HDR, 0, NULL);
     }
     case PROVIDER_STEAM_ARTWORK:
     case PROVIDER_LUTRIS_ARTWORK: {
