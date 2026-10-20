@@ -1504,10 +1504,12 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
     set_tests_properties(regression_stream_disconnect_lifecycle PROPERTIES LABELS "component" TIMEOUT 45)
     add_test(NAME regression_display_policy_adapter
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_policy_adapter.py")
+    add_library(sunshine_test_session_display_precedence_dependencies INTERFACE)
+    target_link_libraries(sunshine_test_session_display_precedence_dependencies INTERFACE Boost::algorithm)
     add_test(NAME regression_session_display_precedence
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_session_display_precedence.py"
             --compiler "${CMAKE_CXX_COMPILER}"
-            --include-dir "$<TARGET_PROPERTY:Boost::headers,INTERFACE_INCLUDE_DIRECTORIES>")
+            --include-dir "$<TARGET_PROPERTY:sunshine_test_session_display_precedence_dependencies,INTERFACE_INCLUDE_DIRECTORIES>")
     add_test(NAME regression_touch_mapping_environment
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_touch_mapping_environment.py")
     add_test(NAME regression_selected_output_fallback
