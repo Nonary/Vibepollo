@@ -60,13 +60,14 @@ settlement_signatures = (
     "bool poll_disconnect_settlement()",
 )
 has_settlement = all(signature in legacy_source for signature in settlement_signatures)
+# APPLY and MISC retain weak caller guards because their full paths depend on the
+# display controller and asynchronous pipe. REVERT is exercised as an actual handler below.
 handle_apply = function(legacy_source, "bool handle_apply(ServiceState &state, std::span<const uint8_t> payload, std::string &error_msg)")
-assert "state.stop_restore_polling();" in handle_apply, "accepted APPLY must clear any prior settlement or restore request"
+assert "state.stop_restore_polling();" in handle_apply, "APPLY caller must stop restore polling"
 handle_revert = function(legacy_source, "void handle_revert(ServiceState &state, std::atomic<bool> &running, std::span<const uint8_t> payload)")
 if has_settlement:
-    assert "state.clear_disconnect_settlement();" in handle_revert, "explicit REVERT must clear provisional settlement before restoring"
     handle_misc = function(legacy_source, "void handle_misc(")
-    assert "state.handle_stream_owner_ping(payload, worker_epoch);" in handle_misc, "owner PING must carry its worker connection epoch"
+    assert "state.handle_stream_owner_ping(payload, worker_epoch);" in handle_misc, "MISC owner-PING caller must pass its worker epoch"
 settlement_methods = "\n".join(function(legacy_source, signature) for signature in settlement_signatures) if has_settlement else ""
 settlement_wait = function(legacy_source, "int disconnect_settlement_wait_ms() const") if "int disconnect_settlement_wait_ms() const" in legacy_source else ""
 preserve_signature = "bool preserve_pending_disconnect_settlement(uint64_t connection_epoch)"
@@ -76,7 +77,9 @@ clear_settlement = function(legacy_source, "void clear_disconnect_settlement()")
 stop_restore_polling = function(legacy_source, "void stop_restore_polling()")
 ping_send = function(ipc_path.read_text(), "bool send_ping(std::optional<bool> stream_owner_active)")
 config_source = (root / "src/config.cpp").read_text()
-assert "display_helper_integration::revert(true, false, dd_was_enabled && dd_disabled_now);" in config_source, \
+# The caller sits inside native apply_config_now; retain its wiring guard while the
+# disabled-recovery behavior is checked through the production integration function.
+assert "display_helper_integration::revert(true, false, state.allow_disabled_recovery());" in config_source, \
     "configuration disable transition must be the explicit disabled-recovery caller"
 has_disabled_recovery_parameter = "allow_disabled_recovery" in integration[:integration.index("{")]
 has_recovery_ticket_parameter = "RecoveryTicket" in integration[:integration.index("{")]
@@ -291,6 +294,8 @@ struct ServiceState {
   std::atomic<std::uint64_t> restore_origin_epoch {0};
   std::atomic<bool> restore_poll_active {false}, restore_attempted_unconfirmed {false};
   std::atomic<bool> retry_revert_on_topology {true}, prefer_golden_if_current_missing {true};
+  std::atomic<bool> always_restore_from_golden {false};
+  std::atomic<std::uint64_t> restore_cancel_generation {0};
   std::atomic<long long> restore_active_until_ms {0}, last_restore_event_ms {0};
   std::atomic<bool> restore_stage_running {false};
   std::atomic<std::uint64_t> command_worker_epoch {7};
@@ -299,6 +304,13 @@ struct ServiceState {
   std::atomic<bool> disconnect_settlement_pending {false};
   std::atomic<long long> disconnect_settlement_deadline_ms {0};
   std::mutex disconnect_settlement_mutex;
+  std::mutex recovery_status_mutex;
+  struct RecoveryStatus {
+    std::uint64_t ticket = 0, generation = 0, epoch = 0;
+    void begin(std::uint64_t new_ticket, std::uint64_t new_generation, std::uint64_t new_epoch) {
+      ticket = new_ticket; generation = new_generation; epoch = new_epoch;
+    }
+  } recovery_status;
   std::uint64_t disconnect_settlement_origin_epoch = 0;
   std::jthread restore_poll_thread;
   struct EventPump { void stop() {} } event_pump;
@@ -316,10 +328,11 @@ struct ServiceState {
     return fake_now_ms;
   }
   std::string last_disarm_reason;
+  int post_apply_cancels = 0, golden_tracking_resets = 0;
   bool is_connection_epoch_current(std::uint64_t epoch) const { return epoch_current && epoch == current_epoch; }
   std::uint64_t current_connection_epoch() const { return current_epoch; }
   void cancel_delayed_reapply() { ++reapply_cancels; }
-  void cancel_post_apply_tasks() {}
+  void cancel_post_apply_tasks() { ++post_apply_cancels; }
   void request_restore_cancel() {}
   void supersede_recovery_status() {}
   void reset_restore_backoff() {}
@@ -332,7 +345,7 @@ struct ServiceState {
   }
   void schedule_delayed_reapply() { ++delayed_reapplies; }
   void arm_restore_grace(std::chrono::milliseconds grace, const char *) { ++grace_arms; last_grace = grace; }
-  void reset_golden_restore_request_tracking() { ++golden_resets; }
+  void reset_golden_restore_request_tracking() { ++golden_resets; ++golden_tracking_resets; }
   void ensure_restore_polling(RestoreWindow) {
     if (!disconnect_settlement_pending.load()) ++polling_starts;
   }
@@ -349,6 +362,15 @@ namespace {
 }
 ''' + legacy + r'''
 
+struct RevertOptions {
+  bool prefer_golden_if_current_missing = true;
+  std::optional<bool> always_restore_from_golden;
+  std::uint64_t restore_ticket = 0;
+};
+static RevertOptions fake_revert_options;
+RevertOptions parse_revert_payload(std::span<const uint8_t>) { return fake_revert_options; }
+''' + handle_revert + r'''
+
 static long long now_ms() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
@@ -359,6 +381,31 @@ static void test_legacy_stale_epoch_and_no_mutation_paths() {
   ServiceState empty;
   attempt_revert_after_disconnect(empty, running, 7);
   assert(empty.exit_graces == 1 && empty.grace_arms == 0 && empty.polling_starts == 0);
+}
+
+static void test_revert_handler_clears_settlement_and_arms_restore() {
+  ServiceState state;
+  state.disconnect_settlement_pending.store(true);
+  state.disconnect_settlement_deadline_ms.store(30000);
+  state.disconnect_settlement_origin_epoch = 7;
+  state.current_epoch = 8;
+  state.restore_cancel_generation.store(4);
+  fake_revert_options = {false, true, 55};
+  const std::array<std::uint8_t, 0> payload {};
+  handle_revert(state, running, payload);
+  assert(!state.disconnect_settlement_pending.load());
+  assert(state.disconnect_settlement_deadline_ms.load() == 0);
+  assert(state.direct_revert_bypass_grace.load());
+  assert(state.recovery_status.ticket == 55 && state.recovery_status.generation == 4);
+  assert(state.recovery_status.epoch == 8);
+  assert(!state.retry_apply_on_topology.load());
+  assert(state.reapply_cancels == 1 && state.post_apply_cancels == 1);
+  assert(state.exit_after_revert.load() && state.restore_requested.load());
+  assert(state.always_restore_from_golden.load());
+  assert(!state.prefer_golden_if_current_missing.load());
+  assert(state.restore_origin_epoch.load() == 8);
+  assert(state.grace_arms == 1 && state.last_grace == 5000ms);
+  assert(state.polling_starts == 1 && state.golden_tracking_resets == 1);
 }
 
 static void test_legacy_false_policy_disarms_without_changing_preference() {
@@ -543,6 +590,7 @@ int main() {
   test_incident_captures_targets_before_dispatch_and_rejects_failed_or_override_dispatch();
 #endif
   test_legacy_stale_epoch_and_no_mutation_paths();
+  test_revert_handler_clears_settlement_and_arms_restore();
   test_legacy_false_policy_disarms_without_changing_preference();
   test_legacy_explicit_restore_bypasses_policy_and_recent_apply_grace();
   test_recent_apply_uses_bounded_disconnect_settlement();

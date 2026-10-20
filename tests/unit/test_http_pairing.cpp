@@ -88,6 +88,19 @@ TEST(HttpPairingAuthorization, DisabledAndUnknownCertificatesAreRejected) {
   );
 }
 
+TEST(HttpPairingAuthorization, CertificateIdentityMatchIsExact) {
+  const std::array clients {
+    pairing_policy::paired_client_record_view_t {"2474C237-8089-AB2B-0793-E0367530227B", "cert-a", true},
+  };
+
+  const auto exact_match = pairing_policy::resolve_paired_client(clients, "cert-a");
+  ASSERT_EQ(exact_match.status, pairing_policy::paired_client_resolution_e::authorized);
+  ASSERT_EQ(exact_match.index, 0u);
+
+  const auto case_variant = pairing_policy::resolve_paired_client(clients, "CERT-A");
+  ASSERT_EQ(case_variant.status, pairing_policy::paired_client_resolution_e::unknown_certificate);
+}
+
 TEST(HttpPairingAuthorization, AmbiguousOrMalformedPairingStateFailsClosed) {
   const std::array duplicate_uuid {
     pairing_policy::paired_client_record_view_t {"2474C237-8089-AB2B-0793-E0367530227B", "cert-a", true},

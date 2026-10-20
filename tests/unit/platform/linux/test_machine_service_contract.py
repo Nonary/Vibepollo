@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""Check shipped deployment contracts and retain explicit weak wiring guards.
+
+Unit directives, payload paths and privilege boundaries are static contracts.
+Classifier, binding/stop decisions, pairing policy and status polling run in
+separate production-behavior tests. Remaining native caller/persistence/GPU
+integration guards below only inspect source text; they do not establish
+runtime behavior and must not be reported as such.
+"""
 
 import json
 import pathlib
@@ -44,7 +52,6 @@ controller = (linux / "vibepollo-session-controller").read_text()
 controller_unit = (linux / "vibepollo-session-controller.service").read_text()
 kwin_environment = (linux / "vibepollo-kwin-session-environment.c").read_text()
 kwin_environment_dropin = (linux / "vibepollo-kwin-session-environment.conf").read_text()
-pairing_policy = (root / "src/http_pairing_policy.cpp").read_text()
 host = (linux / "vibepollo-machine-host").read_text()
 host_unit = (linux / "vibepollo.service").read_text()
 broker_unit = (linux / "vibepollo-session-exec@.service").read_text()
@@ -134,18 +141,9 @@ for field in (
     "--property=Service",
 ):
     require(controller, field, "controller logind observation")
-for exact_predicate in (
-    '"$observed_seat" == "$seat_name"',
-    '"$observed_remote" == no',
-    '"$observed_type" == wayland',
-    '"$observed_active" == yes',
-    '"$observed_state" == active',
-    '"$observed_class" == user',
-    'desktop_service_supported "$observed_service"',
-    '"$observed_class" == greeter',
-    '"$observed_service" == plasmalogin-greeter',
-):
-    require(controller, exact_predicate, "controller session classification")
+# Session acceptance and role outcomes are exercised against the production
+# classifier by test_session_classifier.sh; retain the static logind-query
+# fields below as the boundary proving the controller obtains those inputs.
 for readiness in (
     "plasma-login-wayland.target",
     "plasma-login-kwin_wayland.service",
@@ -220,59 +218,12 @@ require(
 )
 for forbidden in ("ExecStart=", "ExecStartPre=", "WantedBy="):
     forbid(kwin_environment_dropin, forbidden, "KWin session environment drop-in")
-require(controller, 'stop_host "$deadline" || return 1', "fail-closed transition ordering")
-require(controller, "binding_matches_candidate complete", "display credential rebinding")
-require(controller, "observe_active_session || return 1", "authoritative transition snapshot")
-require(controller, "read_user_environment || return 1", "current transition credentials")
-for snapshot_field in (
-    "candidate_session", "candidate_user", "candidate_uid", "candidate_gid",
-    "candidate_home", "candidate_role", "candidate_display", "candidate_xdisplay",
-    "candidate_xauthority",
-):
-    require(controller, f'"${snapshot_field}" == "$expected_{snapshot_field.removeprefix("candidate_")}"', "complete transition snapshot")
-require(controller, "host_unit_is_active", "notified systemd host readiness")
-require(controller, "host_unit_is_stopped", "systemd host stop proof")
-for stopped_property in ("ActiveState", "SubState", "MainPID", "ControlGroup", "populated 0"):
-    require(controller, stopped_property, "systemd/cgroup host stop proof")
+# Transition, snapshot, stop-proof, broker-drain, application cleanup, and
+# Xauthority behavior is exercised by test_session_controller.sh against the
+# sourced production functions. Keep static assertions for unit policy and
+# externally visible command/query boundaries below.
 forbid(controller, "/usr/bin/ss", "spoofable global port gating")
-require(controller, 'local pattern="vibepollo-app-${generation}-*.service"', "generation-scoped application cleanup")
-require(controller, 'stop_bound_session_apps "$deadline" || success=1', "application cleanup transition ordering")
-require(controller, "host-stop-cleanup-failed", "stopped existing-binding cleanup")
-inactive_binding_at = controller.index("if ((binding_matches)) && ! host_is_active; then")
-readiness_probe_at = controller.index("if ! session_is_ready; then")
-if inactive_binding_at >= readiness_probe_at:
-    raise AssertionError("inactive existing binding is not quiesced before readiness probes")
-existing_binding_branch = controller.split("\n  if ((binding_matches)); then\n", 1)[1].split(
-    "\n  ((quiesced)) || {", 1
-)[0]
-require(existing_binding_branch, "elif quiesce; then", "stopped existing-binding cleanup")
-forbid(existing_binding_branch, "start_host", "direct existing-binding restart")
-quiesce_body = controller.split("\nquiesce() {\n", 1)[1].split("\n}\n\nnext_generation()", 1)[0]
-quiesce_normalized = " ".join(quiesce_body.split())
-quiesce_order = (
-    quiesce_normalized.index('close_broker_admission "$deadline" || return 1'),
-    quiesce_normalized.index('stop_host "$deadline" || return 1'),
-    quiesce_normalized.index('stop_broker_instances "$deadline" || success=1'),
-    quiesce_normalized.index('stop_bound_session_apps "$deadline" || success=1'),
-    quiesce_normalized.rindex('stop_broker_instances "$deadline" || success=1'),
-    quiesce_normalized.index("((success == 0)) || return 1"),
-    quiesce_normalized.index("remove_session_record || success=1"),
-)
-if tuple(sorted(quiesce_order)) != quiesce_order:
-    raise AssertionError("controller quiesce does not close admission, drain every exact cgroup, then revoke state")
-for broker_stop_proof in (
-    "local deadline=$((SECONDS + quiesce_timeout)) success=0",
-    "local -A stop_requested=()",
-    "broker_unit_is_stopped",
-    "--property=ControlGroup",
-    "session_app_control_group_is_empty",
-    "required_clean_passes=10",
-):
-    require(controller, broker_stop_proof, "bounded broker cgroup quiescence")
-for forced_stop in ("kill --kill-whom=all --signal=KILL",):
-    forbid(controller, forced_stop, "controller graceful cgroup quiescence")
-shutdown_body = controller.split("\nshutdown_controller() {\n", 1)[1].split("\n}\n\nrun_controller()", 1)[0]
-forbid(shutdown_body, "\n  quiesce", "single ExecStopPost quiesce transaction")
+forbid(controller, "kill --kill-whom=all --signal=KILL", "controller graceful cgroup quiescence")
 for forbidden_connector_authority in (
     "connector_request",
     "release_connectors",
@@ -283,9 +234,6 @@ for forbidden_connector_authority in (
 forbid(controller_unit, "SupplementaryGroups=vibeshine vibeshine-vkms", "controller display ownership")
 require(controller, "next_generation", "generation-bound session records")
 require(controller, 'chmod 0640 "$temporary"', "trusted session record mode")
-require(controller, "xauthority_is_private", "private owner-only Xauthority")
-require(controller, "(8#$mode & 0077) == 0", "private owner-only Xauthority mode")
-require(controller, '"$path" != */../* && "$path" != */..', "Xauthority path confinement")
 for forbidden_acl in ("setfacl", "getfacl", "runtime-acl"):
     forbid(controller, forbidden_acl, "controller compositor/home ACL grant")
 forbid(controller, '[[ -S "$candidate_runtime/bus" ]]', "capability-bounded runtime access")
@@ -299,8 +247,6 @@ require(host, 'profile=$home/.config/vibepollo', "canonical pairing profile disc
 require(host, 'profile=$home/.config/sunshine', "legacy pairing profile discovery")
 require(host, '"$profile/vibeshine_state.json"', "existing Vibepollo pairing profile discovery")
 require(host, '"$profile/sunshine_state.json"', "legacy pairing state discovery")
-require(controller, 'desktop_service_supported() { [[ "$1" =~ ^(plasmalogin|plasmalogin-autologin|sddm|sddm-autologin)$ ]]; }',
-        "SDDM and Plasma Login Manager desktop sessions")
 uinput_rules = (linux / "70-vibepollo-uinput.rules").read_text()
 for rule in (
     'KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="vibepollo-uinput", MODE="0660"',
@@ -472,11 +418,6 @@ require(broker, "terminate_display_worker(worker, worker_exited, status, signal_
 require(broker, "display_mutating && (cancelled || WIFSIGNALED(status))", "interrupted compositor mutations remain uncertain")
 for method, handler in (("GET", "getClientDisplayLayout"), ("PUT", "putClientDisplayLayout")):
     require(confighttp, f'register_blocking_api_route("^/api/clients/display-layout$", "{method}", {handler})', "display queries outside HTTPS loop")
-status_body = confighttp.split("void getSessionStatus(", 1)[1].split("\n  void ", 1)[0]
-require(status_body, "session_count_no_cleanup()", "status uses passive stream snapshot")
-require(status_body, "proc::proc.current_app_id()", "status uses passive app snapshot")
-forbid(status_body, "rtsp_stream::session_count()", "no stream teardown from status polling")
-forbid(status_body, "proc::proc.running()", "no app teardown from status polling")
 initialize_body = private_display.split("\n  bool initialize() {", 1)[1].split(
     "\n  prepare_result_t prepare_session", 1
 )[0]
@@ -607,6 +548,7 @@ for forbidden in ("VIBESHINE_ALLOWED_CLIENT_UUIDS", "session_allowed_clients", "
 for forbidden in ("VIBESHINE_ALLOWED_CLIENT_UUIDS", "greeter_client_allowed", "administrator allowlist"):
     forbid(nvhttp, forbidden, "TLS paired-client authorization")
 forbid(nvhttp, "tl_peer_certificate", "request-bound TLS identity")
+forbid(nvhttp, "tls_client_identity_by_endpoint", "transport-owned TLS identity")
 for invariant in (
     "exact_certificate_identity",
     "build_paired_client_records",
@@ -623,9 +565,10 @@ for invariant in (
     "if (!add_authorized_client",
 ):
     require(nvhttp + tls_identity, invariant, "exact enabled-pairing TLS authorization")
-forbid(nvhttp, "tls_client_identity_by_endpoint", "transport-owned TLS identity")
-for invariant in ("paired_client_state_valid", "resolve_paired_client", "invalid_state", "disabled"):
-    require(pairing_policy, invariant, "paired-client authorization policy")
+# Paired-client policy behavior is exercised against the production source by
+# test_component_http_pairing_policy (test_http_pairing.cpp). Keep this contract
+# focused on its static integration boundaries below: request identity wiring,
+# revocation, persistence, and lifecycle admission.
 # Apollo represents enabled authority with its permission bitmask. Inspect the
 # permission-edit overload, retaining fail-closed persistence and revocation.
 disable_body = nvhttp.rsplit("bool update_device_info(", 1)[1].split("bool unpair_client", 1)[0]
@@ -1093,4 +1036,4 @@ for lifecycle in (arch_install, postinst):
 require(special_packaging, 'SUNSHINE_SERVICE_READINESS_COMMAND "ExecStartPre=/bin/sleep 5"', "ordinary user service")
 forbid(special_packaging, "vibepollo-session-ready", "ordinary user service")
 
-print("PASS: least-privilege Linux machine-session controller contract")
+print("PASS: static machine-service contracts and residual source wiring guards")
