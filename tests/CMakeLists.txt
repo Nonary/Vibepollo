@@ -1291,6 +1291,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}" --compiler "${CMAKE_CXX_COMPILER}"
                 --json-include "$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>")
         set_tests_properties(test_component_machine_status_polling_behavior PROPERTIES LABELS "component")
+        add_test(NAME test_component_linux_desktop_tray
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_desktop_tray.py")
+        set_tests_properties(test_component_linux_desktop_tray PROPERTIES LABELS "component" TIMEOUT 60)
         add_test(NAME test_component_linux_machine_tray_metadata
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_machine_tray_metadata.py"

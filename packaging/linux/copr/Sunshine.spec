@@ -8331,6 +8331,8 @@ fi
 %attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-display-power
 %{_bindir}/vibepollo
 %{_bindir}/vibepollo-mangohud
+%{_bindir}/vibepollo-tray
+%{_sysconfdir}/xdg/autostart/vibepollo-tray.desktop
 %{_prefix}/libexec/vibeshine/vibeshine-drm-install
 %{_prefix}/libexec/vibeshine/vibeshine-ds5-install
 %{_prefix}/libexec/vibeshine/vibeshine-vkms

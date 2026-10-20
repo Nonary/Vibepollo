@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Vibepollo Tray
+Comment=Status and controls for the Vibepollo streaming host
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/vibepollo-tray
+TryExec=@CMAKE_INSTALL_FULL_BINDIR@/vibepollo-tray
+Icon=apollo
+Terminal=false
+Categories=RemoteAccess;Network;
+X-KDE-autostart-after=panel
