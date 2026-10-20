@@ -5,6 +5,10 @@ set -uo pipefail
 readonly controller_source=$1
 # shellcheck source=/dev/null
 source "$controller_source"
+controller_binding_definition=$(declare -f binding_matches_candidate)
+controller_host_active_definition=$(declare -f host_unit_is_active)
+controller_shutdown_definition=$(declare -f shutdown_controller)
+controller_candidate_still_active_definition=$(declare -f candidate_still_active)
 controller_quiesce_definition=$(declare -f quiesce)
 controller_close_broker_definition=$(declare -f close_broker_admission)
 controller_stop_host_definition=$(declare -f stop_host)
@@ -135,6 +139,140 @@ start_host() {
 
 remove_session_record() { events+=(D); mock_identity=0; mock_complete=0; }
 announce() { :; }
+
+# Exercise the real systemd-active predicate at its command boundary.
+(
+  eval "$controller_host_active_definition"
+  active_status=0
+  active_calls=()
+  system_systemctl_bounded() {
+    active_calls+=("$*")
+    return "$active_status"
+  }
+  host_unit_is_active || fail_test 'active host response was rejected'
+  [[ "${active_calls[*]}" == "5 is-active --quiet $host_service" ]] ||
+    fail_test "host activity queried an unexpected unit or timeout: ${active_calls[*]}"
+  active_status=3
+  if host_unit_is_active; then fail_test 'inactive host response was accepted'; fi
+) || exit $?
+# EXIT/TERM cleanup only records shutdown; ExecStopPost owns the one bounded
+# quiesce transaction. Verify the production function does not start another.
+(
+  eval "$controller_shutdown_definition"
+  shutting_down=0
+  quiesce_calls=0
+  quiesce() { ((quiesce_calls += 1)); }
+  shutdown_controller
+  [[ "$shutting_down" == 1 && "$quiesce_calls" == 0 ]] ||
+    fail_test 'shutdown started a competing quiesce transaction'
+  shutdown_controller
+  [[ "$quiesce_calls" == 0 ]] || fail_test 'repeated shutdown started quiesce'
+) || exit $?
+
+# Exercise the production binding comparisons with a deterministic session
+# record boundary. Identity checks cover user/session authority; the complete
+# check also binds the current display credentials.
+(
+  eval "$controller_binding_definition"
+  candidate_session=2
+  candidate_user=chasep
+  candidate_uid=1000
+  candidate_gid=1000
+  candidate_home=/home/chasep
+  candidate_runtime=/run/user/1000
+  candidate_groups=1000,998
+  candidate_role=desktop
+  candidate_display=wayland-0
+  candidate_xdisplay=:0
+  candidate_xauthority=/run/user/1000/xauth
+  declare -A fixture_record=(
+    [session]=2 [user]=chasep [uid]=1000 [gid]=1000 [home]=/home/chasep
+    [runtime]=/run/user/1000 [groups]=1000,998 [role]=desktop
+    [display]=wayland-0 [xdisplay]=:0 [xauthority]=/run/user/1000/xauth
+  )
+  read_session_record() {
+    local -n destination=$1
+    destination=()
+    local field
+    for field in "${!fixture_record[@]}"; do destination[$field]=${fixture_record[$field]}; done
+  }
+  binding_matches_candidate identity || fail_test 'matching identity record was rejected'
+  binding_matches_candidate complete || fail_test 'matching complete record was rejected'
+
+  for field in session user uid gid home runtime groups role; do
+    original=${fixture_record[$field]}
+    fixture_record[$field]=changed
+    if binding_matches_candidate identity; then
+      fail_test "identity record mismatch in $field was accepted"
+    fi
+    fixture_record[$field]=$original
+  done
+  for field in display xdisplay xauthority; do
+    original=${fixture_record[$field]}
+    fixture_record[$field]=changed
+    binding_matches_candidate identity || fail_test "display change incorrectly invalidated $field identity"
+    if binding_matches_candidate complete; then
+      fail_test "complete record mismatch in $field was accepted"
+    fi
+    fixture_record[$field]=$original
+  done
+) || exit $?
+
+# Run the production revalidation function with deterministic logind and user
+# manager boundaries, changing each candidate field in turn.
+(
+  eval "$controller_candidate_still_active_definition"
+  candidate_session=2 candidate_user=chasep candidate_uid=1000 candidate_gid=1000
+  candidate_home=/home/chasep candidate_runtime=/run/user/1000 candidate_groups=1000,998
+  candidate_role=desktop candidate_display=wayland-0 candidate_xdisplay=:0
+  candidate_xauthority=/run/user/1000/xauth
+  mutation=''
+  boundary_events=()
+  observe_active_session() {
+    boundary_events+=(logind)
+    candidate_session=2 candidate_user=chasep candidate_uid=1000 candidate_gid=1000
+    candidate_home=/home/chasep candidate_runtime=/run/user/1000 candidate_groups=1000,998
+    candidate_role=desktop
+    case "$mutation" in
+      session) candidate_session=3 ;;
+      user) candidate_user=other ;;
+      uid) candidate_uid=1001 ;;
+      gid) candidate_gid=1001 ;;
+      home) candidate_home=/home/other ;;
+      runtime) candidate_runtime=/run/user/1001 ;;
+      groups) candidate_groups=1000 ;;
+      role) candidate_role=greeter ;;
+      logind-failure) return 1 ;;
+    esac
+  }
+  read_user_environment() {
+    boundary_events+=(user-manager)
+    candidate_display=wayland-0 candidate_xdisplay=:0
+    candidate_xauthority=/run/user/1000/xauth
+    case "$mutation" in
+      display) candidate_display=wayland-1 ;;
+      xdisplay) candidate_xdisplay=:1 ;;
+      xauthority) candidate_xauthority=/run/user/1000/other ;;
+      environment-failure) return 1 ;;
+    esac
+  }
+
+  candidate_still_active || fail_test 'unchanged logind/environment snapshot was rejected'
+  [[ "${boundary_events[*]}" == 'logind user-manager' ]] || fail_test 'revalidation skipped a live boundary'
+  for mutation in session user uid gid home runtime groups role display xdisplay xauthority; do
+    boundary_events=()
+    if candidate_still_active; then fail_test "changed $mutation snapshot was accepted"; fi
+    [[ "${boundary_events[*]}" == 'logind user-manager' ]] || fail_test "changed $mutation skipped a boundary"
+  done
+  mutation=logind-failure
+  boundary_events=()
+  if candidate_still_active; then fail_test 'failed logind revalidation was accepted'; fi
+  [[ "${boundary_events[*]}" == logind ]] || fail_test 'user environment was read after logind failure'
+  mutation=environment-failure
+  boundary_events=()
+  if candidate_still_active; then fail_test 'failed user-manager revalidation was accepted'; fi
+  [[ "${boundary_events[*]}" == 'logind user-manager' ]] || fail_test 'user environment failure ordering changed'
+) || exit $?
 
 # Invalid policy always attempts to turn the host off.
 reset_scenario
@@ -469,6 +607,21 @@ fi
 if host_unit_is_stopped $'LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=1234\nControlGroup='; then
   fail_test 'nonzero host MainPID was accepted as stopped'
 fi
+if host_unit_is_stopped $'LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0'; then
+  fail_test 'host stop proof accepted a missing cgroup property'
+fi
+if host_unit_is_stopped $'LoadState=loaded\nActiveState=inactive\nActiveState=dead\nSubState=dead\nMainPID=0\nControlGroup='; then
+  fail_test 'host stop proof accepted a duplicate property'
+fi
+if host_unit_is_stopped $'LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\nUnexpected=value'; then
+  fail_test 'host stop proof accepted an unknown property'
+fi
+(
+  session_app_control_group_is_empty() { [[ "$1" != /test/populated ]]; }
+  if host_unit_is_stopped $'LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=/test/populated'; then
+    fail_test 'host stop proof accepted a populated cgroup'
+  fi
+) || exit $?
 
 
 # Package cleanup can observe a failed unit after its activation file was

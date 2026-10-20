@@ -28,9 +28,11 @@
 #include "hdr_policy.h"
 #include "kms_capture_client.h"
 #include "kmsgrab_framebuffer.h"
+#include "kmsgrab_hdr.h"
 #include "kmsgrab_pacing.h"
 #include "kmsgrab_selection.h"
 #include "scoped_capability.h"
+#include "session_backend.h"
 #include "src/config.h"
 #include "src/drm_timing_trace.h"
 #include "src/logging.h"
@@ -563,7 +565,9 @@ namespace platf {
 
       std::optional<std::uint64_t> prop_value_by_name(const std::vector<std::pair<prop_t, std::uint64_t>> &props, std::string_view name) {
         for (auto &[prop, val] : props) {
-          if (prop->name == name) {
+          // An individual drmModeGetProperty call can fail even when the
+          // containing object-property list was read successfully.
+          if (prop && prop->name == name) {
             return val;
           }
         }
@@ -983,6 +987,12 @@ namespace platf {
             // Find the connector for this CRTC
             for (auto &connector : card.monitors()) {
               if (connector.crtc_id == crtc_id) {
+                // Mirrored connectors can share a CRTC. This constrained
+                // policy must inspect the explicitly named connector, rather
+                // than whichever connector was enumerated last for that CRTC.
+                if (linux_display::hyprland_kms_session() &&
+                    (!selected_monitor || !connector.connected ||
+                     connector.name != selected_monitor->connector_name)) continue;
                 BOOST_LOG(info) << "Found connector ID ["sv << connector.connector_id << ']';
 
                 connector_id = connector.connector_id;
@@ -1060,6 +1070,19 @@ namespace platf {
         return capture_fixed_rate(push_captured_image_cb, pull_free_image_cb, cursor);
       }
 
+      bool commit_pending_capture_metadata() override {
+        if (!hdr_metadata_generation.commit_pending()) {
+          return false;
+        }
+        // The same card/connector/CRTC owns the observed payload. Never hand a
+        // numeric blob ID to a different display instance. Refresh will sample
+        // and compare current bytes again before delivering the next frame.
+        pending_exported_frame.reset();
+        presentation_rate_limiter.reset();
+        request_refresh();
+        return true;
+      }
+
       void request_refresh() override {
         if (presentation_mode.event_capture_enabled()) {
           presentation_latch.request_capture();
@@ -1074,78 +1097,61 @@ namespace platf {
         return presentation_mode.event_capture_enabled();
       }
 
+      // Unlike is_hdr(), this predicate never treats unknown or unsupported
+      // metadata as SDR. The opt-in Hyprland subset requires the selected
+      // connector's current DRM state to explicitly establish SDR. No output
+      // mutation or SDR conversion is implied by an SDR client request.
+      bool sdr_capture_allowed(bool initialize_metadata = false) {
+        if (!linux_display::hyprland_kms_session()) return true;
+        if (!connector_id) return false;
+        const auto connector = card.connector(*connector_id);
+        if (!connector || connector->connection != DRM_MODE_CONNECTED || !connector->encoder_id) return false;
+        const auto encoder = card.encoder(connector->encoder_id);
+        if (!encoder || encoder->crtc_id != crtc_id) return false;
+        const auto properties = card.connector_props(*connector_id);
+        if (std::ranges::any_of(properties, [](const auto &property) { return !property.first; })) return false;
+        const auto blob_id = card.prop_value_by_name(properties, "HDR_OUTPUT_METADATA"sv);
+        if (!blob_id) return false;
+        std::optional<hdr::state_t> state;
+        if (*blob_id == 0) {
+          state = hdr::state_t {};
+        } else {
+          prop_blob_t blob = drmModeGetPropertyBlob(card.fd.el, *blob_id);
+          if (!blob || !blob->data || blob->length < sizeof(hdr_output_metadata)) return false;
+          state = hdr::parse_blob(blob->data, blob->length);
+          if (!state || state->eotf != 0) return false;
+        }
+        // The factory owns this new display exclusively. Seed the exact
+        // validated SDR observation before publishing it to encoder getters;
+        // the init-time blob ID may now name older readable PQ metadata.
+        return !initialize_metadata || hdr_metadata_generation.initialize_sdr(*state);
+      }
+
       bool is_hdr() {
-        if (!hdr_metadata_blob_id || *hdr_metadata_blob_id == 0) {
-          return false;
+        const auto &state = hdr_metadata_generation.selected(card.fd.el, hdr_metadata_blob_id);
+        if (!state && hdr_metadata_blob_id.value_or(0) != 0) {
+          BOOST_LOG(warning) << "HDR metadata unavailable; selecting SDR for this capture generation"sv;
+        } else if (state && state->present && state->eotf != 0 && !state->is_hdr()) {
+          BOOST_LOG(warning) << "Unsupported HDR EOTF: "sv << static_cast<unsigned int>(state->eotf);
         }
-
-        prop_blob_t hdr_metadata_blob = drmModeGetPropertyBlob(card.fd.el, *hdr_metadata_blob_id);
-        if (hdr_metadata_blob == nullptr) {
-          BOOST_LOG(error) << "Unable to get HDR metadata blob: "sv << strerror(errno);
-          return false;
-        }
-
-        if (hdr_metadata_blob->length < sizeof(uint32_t) + sizeof(hdr_metadata_infoframe)) {
-          BOOST_LOG(error) << "HDR metadata blob is too small: "sv << hdr_metadata_blob->length;
-          return false;
-        }
-
-        auto raw_metadata = (hdr_output_metadata *) hdr_metadata_blob->data;
-        if (raw_metadata->metadata_type != 0) {  // HDMI_STATIC_METADATA_TYPE1
-          BOOST_LOG(error) << "Unknown HDMI_STATIC_METADATA_TYPE value: "sv << raw_metadata->metadata_type;
-          return false;
-        }
-
-        if (raw_metadata->hdmi_metadata_type1.metadata_type != 0) {  // Static Metadata Type 1
-          BOOST_LOG(error) << "Unknown secondary metadata type value: "sv << raw_metadata->hdmi_metadata_type1.metadata_type;
-          return false;
-        }
-
-        // HDR10 capture requires SMPTE ST 2084. Do not mislabel traditional
-        // gamma HDR or HLG scanout as PQ on the encoded stream.
-        switch (raw_metadata->hdmi_metadata_type1.eotf) {
-          case 0:  // HDMI_EOTF_TRADITIONAL_GAMMA_SDR
-            return false;
-          case 1:  // HDMI_EOTF_TRADITIONAL_GAMMA_HDR
-            BOOST_LOG(warning) << "Unsupported HDR EOTF: Traditional Gamma"sv;
-            return false;
-          case 2:  // HDMI_EOTF_SMPTE_ST2084
-            return linux_hdr::is_hdr10_eotf(raw_metadata->hdmi_metadata_type1.eotf);
-          case 3:  // HDMI_EOTF_BT_2100_HLG
-            BOOST_LOG(warning) << "Unsupported HDR EOTF: HLG"sv;
-            return false;
-          default:
-            BOOST_LOG(warning) << "Unsupported HDR EOTF: "sv << raw_metadata->hdmi_metadata_type1.eotf;
-            return false;
-        }
+        return state && state->is_hdr();
       }
 
       bool get_hdr_metadata(SS_HDR_METADATA &metadata) {
-        // This performs all the metadata validation
-        if (!is_hdr()) {
+        const auto &state = hdr_metadata_generation.selected(card.fd.el, hdr_metadata_blob_id);
+        if (!state || !state->is_hdr()) {
           return false;
         }
-
-        prop_blob_t hdr_metadata_blob = drmModeGetPropertyBlob(card.fd.el, *hdr_metadata_blob_id);
-        if (hdr_metadata_blob == nullptr) {
-          BOOST_LOG(error) << "Unable to get HDR metadata blob: "sv << strerror(errno);
-          return false;
+        for (std::size_t i = 0; i < state->display_primaries.size(); ++i) {
+          metadata.displayPrimaries[i].x = state->display_primaries[i].x;
+          metadata.displayPrimaries[i].y = state->display_primaries[i].y;
         }
-
-        auto raw_metadata = (hdr_output_metadata *) hdr_metadata_blob->data;
-
-        for (int i = 0; i < 3; i++) {
-          metadata.displayPrimaries[i].x = raw_metadata->hdmi_metadata_type1.display_primaries[i].x;
-          metadata.displayPrimaries[i].y = raw_metadata->hdmi_metadata_type1.display_primaries[i].y;
-        }
-
-        metadata.whitePoint.x = raw_metadata->hdmi_metadata_type1.white_point.x;
-        metadata.whitePoint.y = raw_metadata->hdmi_metadata_type1.white_point.y;
-        metadata.maxDisplayLuminance = raw_metadata->hdmi_metadata_type1.max_display_mastering_luminance;
-        metadata.minDisplayLuminance = raw_metadata->hdmi_metadata_type1.min_display_mastering_luminance;
-        metadata.maxContentLightLevel = raw_metadata->hdmi_metadata_type1.max_cll;
-        metadata.maxFrameAverageLightLevel = raw_metadata->hdmi_metadata_type1.max_fall;
-
+        metadata.whitePoint.x = state->white_point.x;
+        metadata.whitePoint.y = state->white_point.y;
+        metadata.maxDisplayLuminance = state->max_display_luminance;
+        metadata.minDisplayLuminance = state->min_display_luminance;
+        metadata.maxContentLightLevel = state->max_content_light_level;
+        metadata.maxFrameAverageLightLevel = state->max_frame_average_light_level;
         return true;
       }
 
@@ -1329,10 +1335,28 @@ namespace platf {
 
       inline capture_e refresh(egl::owned_surface_t &surface, std::optional<std::chrono::steady_clock::time_point> &frame_timestamp) {
         auto *sd = &surface.sd;
+        // Recheck current connector state before delivering any frame. This
+        // also rejects metadata changes that reuse the original blob ID.
+        if (!sdr_capture_allowed()) {
+          BOOST_LOG(error) << "Hyprland KMS capture requires verified SDR connector state"sv;
+          return capture_e::reinit;
+        }
         // Check for a change in HDR metadata
         if (connector_id) {
           auto connector_props = card.connector_props(*connector_id);
-          if (hdr_metadata_blob_id != card.prop_value_by_name(connector_props, "HDR_OUTPUT_METADATA"sv)) {
+          const auto current_hdr_metadata_blob_id = card.prop_value_by_name(connector_props, "HDR_OUTPUT_METADATA"sv);
+          // This is a second fallible read after sdr_capture_allowed(). A
+          // failed list read, missing standard HDR property, or missing
+          // property object cannot certify the current SDR state, even if
+          // the preceding read was complete. A present zero value is SDR.
+          if (linux_display::hyprland_kms_session() &&
+              (!current_hdr_metadata_blob_id ||
+               std::ranges::any_of(connector_props, [](const auto &property) { return !property.first; }))) {
+            BOOST_LOG(error) << "Hyprland KMS connector properties became unreadable"sv;
+            return capture_e::reinit;
+          }
+          if (hdr_metadata_generation.refresh(card.fd.el, hdr_metadata_blob_id,
+                current_hdr_metadata_blob_id, linux_display::hyprland_kms_session()) == capture_e::reinit) {
             BOOST_LOG(info) << "Reinitializing capture after HDR metadata change"sv;
             return capture_e::reinit;
           }
@@ -2091,6 +2115,7 @@ namespace platf {
 
       std::optional<uint32_t> connector_id;
       std::optional<uint64_t> hdr_metadata_blob_id;
+      hdr::generation_t hdr_metadata_generation;
       bool direct_import_required {false};
       pacing::presentation_mode_t presentation_mode;
       pacing::presentation_rate_limiter_t presentation_rate_limiter;
@@ -2445,6 +2470,10 @@ namespace platf {
       auto disp = std::make_shared<kms::display_vram_t>(hwdevice_type);
 
       if (!disp->init(display_name, config)) {
+        if (!disp->sdr_capture_allowed(true)) {
+          BOOST_LOG(error) << "Hyprland KMS capture requires verified SDR connector state"sv;
+          return nullptr;
+        }
         return disp;
       }
 
@@ -2453,7 +2482,7 @@ namespace platf {
 
     auto disp = std::make_shared<kms::display_ram_t>(hwdevice_type);
 
-    if (disp->init(display_name, config)) {
+    if (disp->init(display_name, config) || !disp->sdr_capture_allowed(true)) {
       return nullptr;
     }
 

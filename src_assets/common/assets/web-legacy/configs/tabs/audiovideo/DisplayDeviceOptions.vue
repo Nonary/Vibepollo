@@ -1193,6 +1193,12 @@ function clearSnapshotHotkey(): void {
                     class="optional-subsection space-y-2 border-l border-dark/10 dark:border-light/10 pl-3"
                   >
                     <Checkbox
+                      id="dd_remove_virtual_display_after_restore"
+                      v-model="config.dd_remove_virtual_display_after_restore"
+                      locale-prefix="config"
+                      default="false"
+                    />
+                    <Checkbox
                       id="dd_config_revert_on_disconnect"
                       v-model="config.dd_config_revert_on_disconnect"
                       locale-prefix="config"

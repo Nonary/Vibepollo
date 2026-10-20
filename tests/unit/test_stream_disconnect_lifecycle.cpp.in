@@ -18,6 +18,11 @@
 #include <utility>
 #include <vector>
 
+// Admission-aware production bodies use the real collaborator when present.
+#if __has_include("host_stream_control.h")
+#include "host_stream_control.h"
+#endif
+
 using namespace std::string_view_literals;
 using std::uint8_t;
 using std::uint32_t;
@@ -118,6 +123,15 @@ namespace util {
   }
 }
 namespace input {
+  // Record only the permission handoff; real Guide behavior is tested separately.
+  int guide_permission_updates = 0;
+  int guide_permission_input = 0;
+  std::optional<crypto::PERM> guide_permission;
+  void update_guide_button_permissions(int input, const crypto::PERM &permission) {
+    ++guide_permission_updates;
+    guide_permission_input = input;
+    guide_permission = permission;
+  }
   void reset(int) {
     ++input_resets;
     effects.emplace_back("input_reset");
@@ -447,10 +461,14 @@ int main(int argc, char **argv) {
       f.completed(true);
     } else if (name == "permission_revocation") {
       require(stream::session::update_device_info(session, "device", crypto::PERM::none), "revocation must request disconnect");
+      require(input::guide_permission_updates == 1 && input::guide_permission_input == session.input &&
+              input::guide_permission == crypto::PERM::none, "revocation must forward the new input permission");
       f.drain();
       f.completed(true);
     } else if (name == "permission_update") {
       require(!stream::session::update_device_info(session, "renamed", crypto::PERM::_allow_view), "ordinary update must keep streaming");
+      require(input::guide_permission_updates == 1 && input::guide_permission_input == session.input &&
+              input::guide_permission == crypto::PERM::_allow_view, "update must forward the new input permission");
       require(session.device_name == "renamed" && session.state.load() == stream::session::state_e::RUNNING,
               "allowed permission/name update unexpectedly stopped transport");
       require(effects.empty() && !session.controlEnd.raised, "ordinary update must not teardown transport");

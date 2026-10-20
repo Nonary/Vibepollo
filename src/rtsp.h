@@ -82,6 +82,7 @@ namespace rtsp_stream {
     int fps;
     int gcmap;
     bool gcpersist = false;
+    input::guide_button_config_t guide_button;
     int playstation_gamepad_mask {};
 
     struct app_metadata_t {
@@ -382,6 +383,8 @@ namespace rtsp_stream {
    * @brief Get the client UUIDs for all active sessions.
    */
   std::list<std::string> get_all_session_client_uuids();
+  // Read-only observation: never clear, stop or join sessions.
+  bool has_running_video_for_client(std::string_view client_uuid);
 
   /**
    * @brief Stop any active sessions for a given client UUID.

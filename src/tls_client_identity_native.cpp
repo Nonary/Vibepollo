@@ -19,7 +19,7 @@ namespace nvhttp::tls_identity {
       if (!client) {
         return std::nullopt;
       }
-      views.push_back({client->uuid, client->name, client->cert, !!(client->perm & crypto::PERM::_all)});
+      views.push_back({client->uuid, client->name, client->cert, !!(client->perm & crypto::PERM::_all), client->allow_sleep});
     }
     return views;
   }

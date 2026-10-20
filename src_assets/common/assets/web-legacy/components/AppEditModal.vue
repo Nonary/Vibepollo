@@ -140,7 +140,7 @@
               </div>
             </n-checkbox>
             <n-checkbox
-              v-if="isWindows"
+              v-if="isWindows && !isRemoteMonitor"
               v-model:checked="displayOverrideEnabled"
               size="small"
               class="md:col-span-2"
@@ -155,7 +155,20 @@
           </div>
 
           <div
-            v-if="isWindows && displayOverrideEnabled"
+            v-if="isRemoteMonitor"
+            class="space-y-2 rounded-xl border border-primary/20 bg-primary/5 p-4"
+            role="note"
+          >
+            <h3 class="font-semibold">{{ t('config.remote_monitor_display_title') }}</h3>
+            <p>{{ t('config.remote_monitor_display_description') }}</p>
+            <p>{{ t('config.remote_monitor_display_limits') }}</p>
+            <a href="/v2/devices" class="text-primary underline">
+              {{ t('config.remote_monitor_display_layout_action') }}
+            </a>
+          </div>
+
+          <div
+            v-if="isWindows && !isRemoteMonitor && displayOverrideEnabled"
             class="space-y-5 rounded-xl border border-dark/10 dark:border-light/10 bg-light/60 dark:bg-dark/40 p-4"
           >
             <div class="space-y-2">
@@ -530,6 +543,10 @@
 <script setup lang="ts">
 import { providerSupported } from '../../web/utils/providerCapabilities';
 import { groupLibraryGames, providerLabels, type GameProvider } from '../utils/libraryGames';
+import {
+  isRemoteMonitorApplication,
+  preserveRemoteMonitorRouting,
+} from '../utils/remoteMonitorPolicy';
 import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { useMessage } from 'naive-ui';
 import { http } from '@/http';
@@ -607,6 +624,7 @@ const emit = defineEmits<{
   (e: 'deleted'): void;
 }>();
 const open = computed<boolean>(() => !!props.modelValue);
+const isRemoteMonitor = computed(() => isRemoteMonitorApplication(props.app));
 const message = useMessage();
 const { t } = useI18n();
 function fresh(): AppForm {
@@ -1190,6 +1208,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
   if (f.ddConfigurationOption) {
     payload['dd-configuration-option'] = f.ddConfigurationOption;
   }
+  preserveRemoteMonitorRouting(props.app, payload);
   return payload;
 }
 let liveRtxHdrSuppress = false;

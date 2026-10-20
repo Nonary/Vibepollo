@@ -47,6 +47,7 @@ extern "C" {
 #elif defined(__linux__)
   #include "platform/linux/routed_link.h"
 #endif
+#include "hardware_metrics_session.h"
 #include "rtsp.h"
 #include "rtsp_pending_policy.h"
 #include "stream.h"
@@ -216,6 +217,7 @@ namespace rtsp_stream {
     snapshot->device_name = device_name;
     snapshot->input_only = input_only;
     snapshot->gcpersist = gcpersist;
+    snapshot->guide_button = guide_button;
     snapshot->client_display_mode_override = client_display_mode_override;
     snapshot->client_display_refresh_millihz = client_display_refresh_millihz;
     snapshot->enable_hdr = enable_hdr;
@@ -1245,6 +1247,18 @@ namespace rtsp_stream {
       BOOST_LOG(info) << "New streaming session started [active sessions: "sv << _session_state->sessions.size() << ']';
     }
 
+    bool has_running_video_for_client(std::string_view client_uuid) {
+      auto lg = _session_state.lock();
+      return hardware_metrics::has_running_video_for_client(
+        _session_state->sessions,
+        _session_state->client_uuids,
+        client_uuid,
+        [](const auto &session) {
+          return stream::session::has_running_video(session);
+        }
+      );
+    }
+
     std::list<std::string> get_all_client_uuids() {
       std::list<std::string> out;
       auto lg = _session_state.lock();
@@ -1806,6 +1820,10 @@ namespace rtsp_stream {
 
   void terminate_sessions(bool preserve_pending_launch) {
     server.clear(true, preserve_pending_launch);
+  }
+
+  bool has_running_video_for_client(std::string_view client_uuid) {
+    return server.has_running_video_for_client(client_uuid);
   }
 
   std::list<std::string> get_all_session_client_uuids() {

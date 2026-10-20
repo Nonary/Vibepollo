@@ -107,7 +107,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
                 self.assertIn('ninja -C "build" -j"${num_processors}"', linux_script)
             else:
                 commands = [line for line in scripts.splitlines() if 'cmake --build ' in line]
-                self.assertEqual(len(commands), 2)
+                self.assertEqual(len(commands), 3)
                 for command in commands:
                     self.assertIn('--parallel "$CMAKE_BUILD_PARALLEL_LEVEL"', command)
 
@@ -174,26 +174,59 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn("test_daily_version_contract.cmake", daily["run"])
         self.assertIn("test_daily_gamepad_signing.ps1", daily["run"])
 
-    def test_branch_selection_skips_without_git_or_release_api_calls(self) -> None:
-        steps = load_workflow("ci.yml")["jobs"]["release-candidate"]["steps"]
+    def test_nonrelease_selection_skips_without_git_or_release_api_calls(self) -> None:
+        workflow = load_workflow("ci.yml")
+        steps = workflow["jobs"]["release-candidate"]["steps"]
         step = next(step for step in steps if step.get("id") == "release-candidate")
         script = step["run"].split("python <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "outputs"
-            environment = {
-                "EVENT_NAME": "push",
-                "GITHUB_REF_TYPE": "branch",
-                "GITHUB_REF": "refs/heads/master",
-                "GITHUB_REPOSITORY": "Nonary/test",
-                "GITHUB_OUTPUT": str(output),
-            }
-            with patch.dict(os.environ, environment, clear=True), patch(
-                "subprocess.run", side_effect=AssertionError("branch selection invoked a command")
-            ), patch("sys.stdout", new=io.StringIO()), self.assertRaises(SystemExit) as stopped:
-                exec(compile(script, "ci-release-selection", "exec"), {})
-            self.assertEqual(stopped.exception.code, 0)
-            self.assertIn("should_release=false", output.read_text())
-            self.assertIn("tag_name=\n", output.read_text())
+        portable_steps = [step for step in load_workflow("ci-windows.yml")["jobs"]["build_windows"]["steps"]
+                          if step.get("name", "").endswith("Windows portable ZIP (CI only)")]
+        self.assertEqual(len(portable_steps), 2)
+        fallback = re.fullmatch(
+            r"\$\{\{ needs\.release-candidate\.outputs\.release_version \|\| '([^']+)' \}\}",
+            workflow["jobs"]["build-windows"]["with"]["release_version"],
+        ).group(1)
+        for event in ("push", "pull_request"):
+            with self.subTest(event=event), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "outputs"
+                environment = {
+                    "EVENT_NAME": event,
+                    "GITHUB_REF_TYPE": "branch",
+                    "GITHUB_REF": "refs/heads/master",
+                    "GITHUB_REPOSITORY": "Nonary/test",
+                    "GITHUB_OUTPUT": str(output),
+                }
+                with patch.dict(os.environ, environment, clear=True), patch(
+                    "subprocess.run", side_effect=AssertionError("nonrelease selection invoked a command")
+                ), patch("sys.stdout", new=io.StringIO()), self.assertRaises(SystemExit) as stopped:
+                    exec(compile(script, "ci-release-selection", "exec"), {})
+                self.assertEqual(stopped.exception.code, 0)
+                outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                self.assertEqual(outputs["should_release"], "false")
+                self.assertEqual(outputs["tag_name"], "")
+                self.assertEqual(outputs["release_version"], "")
+                if event == "pull_request":
+                    for portable in portable_steps:
+                        expression = portable["if"].replace("github.event_name", repr(event))
+                        expression = expression.replace("inputs.release_version", repr(outputs["release_version"] or fallback))
+                        expression = expression.replace("!startsWith", "not startsWith").replace("&&", "and")
+                        self.assertFalse(eval(expression, {"__builtins__": {}, "startsWith": lambda a, b: a.startswith(b)}))
+        for portable in portable_steps:
+            for event, version, expected in (
+                ("pull_request", "2.0.0", False),
+                ("pull_request", "2.0.1-beta.1", False),
+                ("push", "", False),
+                ("push", "0.0.0", False),
+                ("push", "v0.0.0-pr.1", False),
+                ("push", "2.0.1-beta.1", True),
+                ("workflow_dispatch", "v2.0.1-beta.1", True),
+                ("schedule", "2.0.0-daily.d20261020", True),
+            ):
+                with self.subTest(step=portable["name"], event=event, version=version):
+                    expression = portable["if"].replace("github.event_name", repr(event))
+                    expression = expression.replace("inputs.release_version", repr(version))
+                    expression = expression.replace("!startsWith", "not startsWith").replace("&&", "and")
+                    self.assertEqual(eval(expression, {"__builtins__": {}, "startsWith": lambda a, b: a.startswith(b)}), expected)
 
     def test_package_builds_wait_for_tag_push(self) -> None:
         jobs = load_workflow("ci.yml")["jobs"]

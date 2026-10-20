@@ -145,6 +145,8 @@ static bool signal_cross_uid_worker(pid_t target, int signal_number) {
 struct session_identity {
   char session[128];
   char role[16];
+  char backend[16];
+  char compositor[96];
   char user[64];
   char home[PATH_MAX];
   char runtime[PATH_MAX];
@@ -249,8 +251,31 @@ static bool xauthority_path_is_confined(const struct session_identity *identity)
          (xauthority_length < 3 || strcmp(identity->xauthority + xauthority_length - 3, "/.."));
 }
 
+static bool hyprland_kms_identity(const struct session_identity *identity) {
+  return !strcmp(identity->backend, "hyprland-kms") && !strcmp(identity->role, "desktop");
+}
+
+static bool valid_backend_identity(const struct session_identity *identity) {
+  if (!strcmp(identity->backend, "kwin")) return !identity->compositor[0];
+  const size_t length = strlen(identity->compositor);
+  if (!hyprland_kms_identity(identity) || length < 36 || identity->compositor[32] != '-' ||
+      !strncmp(identity->compositor, "00000000000000000000000000000000", 32)) return false;
+  for (size_t index = 0; index < 32; ++index) {
+    const char value = identity->compositor[index];
+    if (!isdigit((unsigned char) value) && (value < 'a' || value > 'f')) return false;
+  }
+  char numbers[64] = {0};
+  if (!copy_field(numbers, sizeof(numbers), identity->compositor + 33, false)) return false;
+  char *separator = strchr(numbers, '-');
+  if (!separator) return false;
+  *separator++ = 0;
+  unsigned long pid = 0, start = 0;
+  if (!parse_number(numbers, 1, INT_MAX, &pid) || !parse_number(separator, 1, ULONG_MAX, &start)) return false;
+  return !identity->x_display[0] && !identity->xauthority[0];
+}
+
 static bool validate_xauthority(const struct session_identity *identity) {
-  if (!identity->xauthority[0]) return !strcmp(identity->role, "greeter");
+  if (!identity->xauthority[0]) return !strcmp(identity->role, "greeter") || hyprland_kms_identity(identity);
   if (!xauthority_path_is_confined(identity)) return false;
   struct stat attributes;
   return !lstat(identity->xauthority, &attributes) && S_ISREG(attributes.st_mode) &&
@@ -310,6 +335,9 @@ static bool load_identity(struct session_identity *identity, gid_t service_gid,
     return false;
   }
 
+  strcpy(identity->backend, "kwin");
+  identity->compositor[0] = 0;
+  bool have_backend = false, have_compositor = false;
   bool have_session = false, have_generation = false, have_role = false, have_user = false;
   bool have_uid = false, have_gid = false, have_home = false, have_runtime = false;
   bool have_wayland = false, have_xdisplay = false, have_xauthority = false, have_groups = false;
@@ -332,6 +360,13 @@ static bool load_identity(struct session_identity *identity, gid_t service_gid,
     } else if (!strcmp(line, "role")) {
       if (have_role || !copy_field(identity->role, sizeof(identity->role), separator, false)) goto invalid;
       have_role = true;
+    } else if (!strcmp(line, "backend")) {
+      identity->backend[0] = 0;
+      if (have_backend || !copy_field(identity->backend, sizeof(identity->backend), separator, false)) goto invalid;
+      have_backend = true;
+    } else if (!strcmp(line, "compositor")) {
+      if (have_compositor || !copy_field(identity->compositor, sizeof(identity->compositor), separator, true)) goto invalid;
+      have_compositor = true;
     } else if (!strcmp(line, "user")) {
       if (have_user || !copy_field(identity->user, sizeof(identity->user), separator, false)) goto invalid;
       have_user = true;
@@ -370,6 +405,7 @@ static bool load_identity(struct session_identity *identity, gid_t service_gid,
 
   if (!have_session || !have_generation || !have_role || !have_user || !have_uid || !have_gid ||
       !have_home || !have_runtime || !have_wayland || !have_xdisplay || !have_xauthority || !have_groups ||
+      have_backend != have_compositor || !valid_backend_identity(identity) ||
       !safe_identifier(identity->session) ||
       (strcmp(identity->role, "desktop") && strcmp(identity->role, "greeter"))) {
     errno = EINVAL;
@@ -382,7 +418,7 @@ static bool load_identity(struct session_identity *identity, gid_t service_gid,
       snprintf(expected_runtime, sizeof(expected_runtime), "/run/user/%u", identity->uid) >= (int) sizeof(expected_runtime) ||
       strcmp(expected_runtime, identity->runtime) || !numeric_suffix(identity->wayland_display, "wayland-") ||
       (identity->x_display[0] && !valid_xdisplay(identity->x_display)) ||
-      (!strcmp(identity->role, "desktop") && (!identity->x_display[0] || !identity->xauthority[0])) ||
+      (!strcmp(identity->role, "desktop") && !hyprland_kms_identity(identity) && (!identity->x_display[0] || !identity->xauthority[0])) ||
       !groups_match_account(identity)) {
     errno = EPERM;
     return false;
@@ -1159,6 +1195,11 @@ static int exec_user_service(const struct session_identity *identity, const char
     arguments[index++] = "--property=TimeoutStopSec=5s";
     arguments[index++] = "--property=Restart=no";
     arguments[index++] = "--property=RemainAfterExit=no";
+    if (hyprland_kms_identity(identity)) {
+      // UWSM's manager can retain Xwayland variables. This slice deliberately
+      // authorizes native Wayland apps only, with no unverified X11 endpoint.
+      arguments[index++] = "--property=UnsetEnvironment=DISPLAY XAUTHORITY";
+    }
     arguments[index++] = "--unit";
     arguments[index++] = unit;
     arguments[index++] = "--setenv";
@@ -1269,13 +1310,19 @@ static bool steam_big_picture_request(const char *operation, const char *command
          steam_big_picture_uri(command);
 }
 
+static bool hyprland_request_supported(const char *operation) {
+  return !strcmp(operation, "display-observe") || !strcmp(operation, "display-observe-events") ||
+         !strncmp(operation, "audio-", 6) || !strncmp(operation, "provider-", 9) ||
+         !strcmp(operation, "app");
+}
+
 static int execute_request(int argc, char **argv,
                            const struct session_identity *identity,
                            gid_t service_gid) {
   if (argc < 2) return 2;
   enum operation {
     DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_OBSERVE, DISPLAY_POWER, DISPLAY_WAKE, TOUCH_MAP, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
-    AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS, MANAGED_FOCUS,
+    AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS, LUTRIS_WAYLAND_HDR, MANAGED_FOCUS,
     PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, APP, APP_WAYLAND_HDR
   } operation;
   unsigned long first_number = 0, second_number = 0, third_number = 0;
@@ -1302,7 +1349,8 @@ static int execute_request(int argc, char **argv,
            touch_map_arguments_are_safe(argv[2], argv[3])) operation = TOUCH_MAP;
   else if (!strcmp(argv[1], "display-apply") && display_apply_arguments_are_safe(argc, argv)) operation = DISPLAY_APPLY;
   else if (!strcmp(argv[1], "audio-get-default") && argc == 2) operation = AUDIO_GET_DEFAULT;
-  else if (!strcmp(argv[1], "audio-list-sinks") && argc == 2) operation = AUDIO_LIST_SINKS;
+  else if (!strcmp(argv[1], "audio-list-sinks") &&
+           (argc == 2 || (argc == 3 && !strcmp(argv[2], "details")))) operation = AUDIO_LIST_SINKS;
   else if (!strcmp(argv[1], "audio-set-default") && argc == 3 && sink_name_is_safe(argv[2])) operation = AUDIO_SET_DEFAULT;
   else if (!strcmp(argv[1], "audio-create-null") && argc == 4 &&
            (audio_channel_count = layout_channel_count(argv[2])) &&
@@ -1323,6 +1371,7 @@ static int execute_request(int argc, char **argv,
            steam_direct_arguments_are_safe(argc, argv) &&
            !strcmp(identity->role, "desktop")) operation = STEAM_DIRECT;
   else if (!strcmp(argv[1], "lutris") && argc == 3 && numeric_suffix(argv[2], "") && !strcmp(identity->role, "desktop")) operation = LUTRIS;
+  else if (!strcmp(argv[1], "lutris-wayland-hdr") && argc == 3 && numeric_suffix(argv[2], "") && !strcmp(identity->role, "desktop")) operation = LUTRIS_WAYLAND_HDR;
   else if (!strcmp(argv[1], "managed-focus") &&
            managed_focus_arguments_are_safe(argc, argv) &&
            !strcmp(identity->role, "desktop")) operation = MANAGED_FOCUS;
@@ -1344,6 +1393,12 @@ static int execute_request(int argc, char **argv,
   else {
     fprintf(stderr, "vibepollo-session-broker: rejected request '%s' (argc=%d, role=%s)\n",
             argv[1], argc, identity->role);
+    return 126;
+  }
+
+  if (hyprland_kms_identity(identity) &&
+      (!hyprland_request_supported(argv[1]) || operation == STEAM_BIG_PICTURE)) {
+    fprintf(stderr, "vibepollo-session-broker: Hyprland KMS supports existing physical SDR outputs and native Wayland apps; request '%s' is unsupported\n", argv[1]);
     return 126;
   }
 
@@ -1393,7 +1448,8 @@ static int execute_request(int argc, char **argv,
       break;
     }
     case AUDIO_LIST_SINKS: {
-      char *const arguments[] = {"pactl", "list", "short", "sinks", NULL};
+      char *const arguments[] = {"pactl", argc == 3 ? "--format=json" : "list",
+                                 argc == 3 ? "list" : "short", "sinks", NULL};
       execv("/usr/bin/pactl", arguments);
       break;
     }
@@ -1474,12 +1530,13 @@ static int execute_request(int argc, char **argv,
                                 argv[2], argv[3], argv[4], argv[5], argv[6], NULL};
       return exec_user_service(identity, NULL, arguments, false, false, 0, NULL);
     }
-    case LUTRIS: {
+    case LUTRIS:
+    case LUTRIS_WAYLAND_HDR: {
       // Apply the same ownership boundary to an already-running Lutris daemon.
       char uri[160];
       if (snprintf(uri, sizeof(uri), "lutris:rungameid/%s", argv[2]) >= (int) sizeof(uri)) return 126;
       char *const arguments[] = {"/usr/bin/lutris", uri, NULL};
-      return exec_user_service(identity, NULL, arguments, false, false, 0, NULL);
+      return exec_user_service(identity, NULL, arguments, false, operation == LUTRIS_WAYLAND_HDR, 0, NULL);
     }
     case PROVIDER_STEAM_ARTWORK:
     case PROVIDER_LUTRIS_ARTWORK: {
@@ -1646,6 +1703,7 @@ static bool identities_match(const struct session_identity *first,
   return first->generation == second->generation && first->uid == second->uid &&
          first->gid == second->gid && first->group_count == second->group_count &&
          !strcmp(first->session, second->session) && !strcmp(first->role, second->role) &&
+         !strcmp(first->backend, second->backend) && !strcmp(first->compositor, second->compositor) &&
          !strcmp(first->user, second->user) && !strcmp(first->home, second->home) &&
          !strcmp(first->runtime, second->runtime) &&
          !strcmp(first->wayland_display, second->wayland_display) &&

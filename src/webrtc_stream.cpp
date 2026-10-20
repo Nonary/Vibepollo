@@ -1041,13 +1041,32 @@ namespace webrtc_stream {
       std::mutex gamepad_mutex;
       std::bitset<16> gamepads;
     };
+    struct BrowserInputRegistration {
+      input::guide_button_config_t guide_button;
+      std::shared_ptr<BrowserInput> state;
+    };
     std::mutex input_mutex;
     // Entries are registered with sessions; a late callback cannot recreate a
     // disconnected session's input context.
-    std::unordered_map<std::string, std::shared_ptr<BrowserInput>> browser_inputs;
+    std::unordered_map<std::string, BrowserInputRegistration> browser_inputs;
     std::unordered_set<std::string> suspended_browser_inputs;
 
     std::shared_ptr<safe::mail_raw_t> current_capture_mail();
+
+    void register_session_input(const std::string &session_id, input::guide_button_config_t guide_button) {
+      std::lock_guard lg {input_mutex};
+      browser_inputs.emplace(session_id, BrowserInputRegistration {guide_button, {}});
+    }
+
+    input::guide_button_config_t guide_button_config_for_client(const SessionOptions &options) {
+      const int requested_app_id = options.app_id.value_or(0);
+      const int app_id = requested_app_id > 0 ? requested_app_id : proc::proc.current_app_id();
+      const auto app = proc::proc.resolve_app(app_id);
+      return config::guide_button_config_for_session(
+        app ? app->config_overrides : std::unordered_map<std::string, std::string> {},
+        options.client_uuid ? nvhttp::get_client_config_overrides(*options.client_uuid) : std::unordered_map<std::string, std::string> {}
+      );
+    }
 
     std::shared_ptr<BrowserInput> current_input_context(std::string_view session_id) {
       auto capture_mail = current_capture_mail();
@@ -1056,7 +1075,7 @@ namespace webrtc_stream {
       if (it == browser_inputs.end() || suspended_browser_inputs.contains(it->first)) {
         return {};
       }
-      auto &state = it->second;
+      auto &state = it->second.state;
       if (state && capture_mail && state->mail != capture_mail) {
         input::reset(state->context);
         state.reset();
@@ -1064,7 +1083,7 @@ namespace webrtc_stream {
       if (!state) {
         state = std::make_shared<BrowserInput>();
         state->mail = capture_mail ? capture_mail : std::make_shared<safe::mail_raw_t>();
-        state->context = input::alloc(state->mail);
+        state->context = input::alloc(state->mail, it->second.guide_button);
         // Set up a default touch port for WebRTC input when capture mail isn't available.
         if (!capture_mail) {
           auto touch_port_event = state->mail->event<input::touch_port_t>(mail::touch_port);
@@ -1104,8 +1123,8 @@ namespace webrtc_stream {
       std::lock_guard lg {input_mutex};
       auto it = browser_inputs.find(std::string {session_id});
       if (it != browser_inputs.end()) {
-        if (it->second) {
-          input::reset(it->second->context);
+        if (it->second.state) {
+          input::reset(it->second.state->context);
         }
         suspended_browser_inputs.erase(it->first);
         browser_inputs.erase(it);
@@ -1119,9 +1138,9 @@ namespace webrtc_stream {
         return;
       }
       suspended_browser_inputs.insert(it->first);
-      if (it->second) {
-        input::reset(it->second->context);
-        it->second.reset();
+      if (it->second.state) {
+        input::reset(it->second.state->context);
+        it->second.state.reset();
       }
     }
 
@@ -1132,10 +1151,10 @@ namespace webrtc_stream {
 
     [[maybe_unused]] void reset_input_context() {
       std::lock_guard lg {input_mutex};
-      for (auto &[id, state] : browser_inputs) {
-        if (state) {
-          input::reset(state->context);
-          state.reset();
+      for (auto &[id, registration] : browser_inputs) {
+        if (registration.state) {
+          input::reset(registration.state->context);
+          registration.state.reset();
         }
       }
     }
@@ -5680,6 +5699,7 @@ namespace webrtc_stream {
       std::chrono::duration_cast<std::chrono::milliseconds>(session.video_pacing.max_frame_age).count()
     );
 
+    const auto guide_button = guide_button_config_for_client(options);
     SessionState snapshot = session.state;
     bool first_session = false;
     {
@@ -5694,10 +5714,7 @@ namespace webrtc_stream {
       }
       {
         std::lock_guard lg {session_mutex};
-        {
-          std::lock_guard input_lock {input_mutex};
-          browser_inputs.emplace(snapshot.id, nullptr);
-        }
+        register_session_input(snapshot.id, guide_button);
         sessions.emplace(snapshot.id, std::move(session));
         first_session = active_sessions.fetch_add(1, std::memory_order_relaxed) == 0;
         host_stats::webrtc_session_started();

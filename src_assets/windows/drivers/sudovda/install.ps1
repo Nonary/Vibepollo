@@ -232,10 +232,14 @@ function Assert-ExpectedDisplayPackage {
         [IO.Path]::GetFileName($DriverPath) -ine $expectedDll -or
         [IO.Path]::GetFileName($CatalogPath) -ine $expectedCat) { throw 'Display package filenames do not match the hardware identity.' }
     $inf = (Get-Content -LiteralPath $InfPath -ErrorAction Stop | ForEach-Object { ($_ -split ';',2)[0] }) -join "`n"
-    if ($inf -notmatch '(?im)^\s*Class\s*=\s*Display\s*$' -or
-        $inf -notmatch '(?im)^\s*ClassGuid\s*=\s*\{4d36e968-e325-11ce-bfc1-08002be10318\}\s*$' -or
-        $inf -notmatch ('(?im)^\s*CatalogFile\s*=\s*' + [regex]::Escape($expectedCat) + '\s*$') -or
-        $inf -notmatch ('(?im)^\s*%[^%]+%\s*=\s*[^,\r\n]+,\s*' + [regex]::Escape($HardwareId) + '\s*$')) {
+    # INF identifiers follow Windows package syntax, independent of user locale.
+    $infMatchOptions = [Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
+                       [Text.RegularExpressions.RegexOptions]::Multiline -bor
+                       [Text.RegularExpressions.RegexOptions]::CultureInvariant
+    if (-not [regex]::IsMatch($inf, '^\s*Class\s*=\s*Display\s*$', $infMatchOptions) -or
+        -not [regex]::IsMatch($inf, '^\s*ClassGuid\s*=\s*\{4d36e968-e325-11ce-bfc1-08002be10318\}\s*$', $infMatchOptions) -or
+        -not [regex]::IsMatch($inf, ('^\s*CatalogFile\s*=\s*' + [regex]::Escape($expectedCat) + '\s*$'), $infMatchOptions) -or
+        -not [regex]::IsMatch($inf, ('^\s*%[^%]+%\s*=\s*[^,\r\n]+,\s*' + [regex]::Escape($HardwareId) + '\s*$'), $infMatchOptions)) {
         throw 'Display INF class, catalog or hardware identity mismatch.'
     }
     Initialize-DisplayPackageValidation

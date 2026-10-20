@@ -53,8 +53,18 @@ for cls in ('display_wgc_ipc_vram_t','display_wgc_ipc_ram_t'):
     snapshots.append('capture_e '+cls+'::before_frame(bool cursor_visible) '+display[body:display.index(boundary,body)]+'    return capture_e::ok;\n  }')
 stream=read('src/stream.cpp');start=stream.index('    class join_deadline_t {')
 watch=stream[start:stream.index('\n  }  // namespace',start)].replace('std::chrono::seconds(10)','std::chrono::milliseconds(100)')
-start=stream.index('        auto hung_stage = std::make_shared<std::atomic<const char *>>("video thread");',stream.index('    void join(session_t &session'))
-join='      {\n'+stream[start:stream.index('      // Watchdog coverage ends',start)]
+join_anchor=stream.index('void join(session_t &session')
+start=stream.index('auto hung_stage = std::make_shared<std::atomic<const char *>>("video thread");',join_anchor)
+join=stream[start:stream.index('      // Watchdog coverage ends',start)]
+def extract_cpp_function(source,signature):
+    start=source.index(signature);brace=source.index('{',start);depth=1;end=brace+1
+    while depth:
+        depth+=(source[end]=='{')-(source[end]=='}');end+=1
+    return source[start:end]
+audio_header=read('src/audio_context.h');audio_source=read('src/audio_context.cpp')
+join_release=extract_cpp_function(audio_header,'template<class Join>\n  void join_capture_and_release(')
+rtsp_join=extract_cpp_function(audio_source,'void join_rtsp_capture(')
+audio_join='namespace audio {\n  enum class join_stage_e { video, audio, control };\n'+join_release+'\n'+rtsp_join+'\n}\n'
 code=r'''
 #include <algorithm>
 #include <array>
@@ -63,12 +73,14 @@ code=r'''
 #include <condition_variable>
 #include <cstring>
 #include <future>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <span>
 #include <sstream>
 #include <thread>
+#include <utility>
 #include "src/thread_safe.h"
 #include "src/sync.h"
 using namespace std::literals;
@@ -130,7 +142,8 @@ struct capture_thread_async_ctx_t {
 #define _WIN32
 // END
 #undef _WIN32
-struct session_t{std::thread videoThread,audioThread;safe::signal_t controlEnd;};
+struct session_t{std::thread videoThread,audioThread;safe::signal_t controlEnd;std::shared_ptr<void> audio_context_guard=std::make_shared<int>(1);};
+// AUDIO_JOIN
 void join_session(session_t& session){
 // JOIN
 }
@@ -147,7 +160,7 @@ template<class Display> void cancel(int phase){
  auto limit=std::chrono::steady_clock::now()+1s;while(c.capture_ctx_queue->running()&&std::chrono::steady_clock::now()<limit)std::this_thread::yield();
  check(!c.capture_ctx_queue->running(),"capture queue stopped");
  std::thread reaper([&]{join_session(s);});resume.set_value();reaper.join();
- check(traps==0,"WGC cancellation completes before video watchdog");check(ipc->stop_requested(),"stop targets this WGC generation");check(ipc->setups==0,"cancelled helper imports no handles");
+ check(traps==0,"WGC cancellation completes before video watchdog");check(ipc->stop_requested(),"stop targets this WGC generation");check(ipc->setups==0,"cancelled helper imports no handles");check(!s.videoThread.joinable()&&!s.audioThread.joinable(),"video and audio threads are joined");check(!s.audio_context_guard,"capture hold is released after joins");
 }
 int main(){
  for(int p=0;p<3;++p){cancel<platf::dxgi::display_wgc_ipc_vram_t>(p);cancel<platf::dxgi::display_wgc_ipc_ram_t>(p);}
@@ -165,7 +178,7 @@ int main(){
 '''
 budgets='\n'.join(re.findall(r'^    constexpr auto kHelperHandle(?:WaitTimeout|ProgressInterval) = [^\n]+',ipc,re.M))
 if len(budgets.splitlines())!=2:raise RuntimeError('Missing production WGC helper wait budgets')
-for name,value in [('METHODS','\n'.join(methods)),('PRE',pre),('CONNECT',connect),('SEND',send),('WAIT',wait),('FORWARD','\n'.join(forward)),('SNAPSHOTS','\n'.join(snapshots)),('WATCH',watch),('END',end),('JOIN',join),('BUDGETS',budgets)]:code=code.replace('// '+name+'\n',value+'\n')
+for name,value in [('METHODS','\n'.join(methods)),('PRE',pre),('CONNECT',connect),('SEND',send),('WAIT',wait),('FORWARD','\n'.join(forward)),('SNAPSHOTS','\n'.join(snapshots)),('WATCH',watch),('END',end),('JOIN',join),('BUDGETS',budgets),('AUDIO_JOIN',audio_join)]:code=code.replace('// '+name+'\n',value+'\n')
 with tempfile.TemporaryDirectory(prefix='wgc-stop-replay-') as temp:
     cpp=Path(temp)/'test.cpp';exe=Path(temp)/'test';cpp.write_text(code)
     subprocess.run([compiler,'-std=c++23','-O2','-pthread','-Wall','-Wextra',*compile_includes,str(cpp),'-o',str(exe)],check=True)

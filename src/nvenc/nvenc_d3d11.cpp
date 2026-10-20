@@ -2,13 +2,12 @@
  * @file src/nvenc/nvenc_d3d11.cpp
  * @brief Definitions for abstract Direct3D11 NVENC encoder.
  */
-// local includes
-#include "src/logging.h"
-
 #ifdef _WIN32
-  #include "nvenc_api.h"
+  // Include the D3D11 platform header before logging can include Windows.h.
   #include "nvenc_d3d11.h"
+  #include "nvenc_api.h"
   #include "nvenc_event_wait.h"
+  #include "src/logging.h"
 
 namespace nvenc {
   namespace {

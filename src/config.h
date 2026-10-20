@@ -18,6 +18,8 @@
 
 // local includes
 #include "config_display_transition.h"
+#include "hardware_metrics_config.h"
+#include "input_session_config.h"
 #include "nvenc/nvenc_config.h"
 
 namespace config {
@@ -228,6 +230,7 @@ namespace config {
       hdr_option_e hdr_option;
       hdr_request_override_e hdr_request_override;
       std::chrono::milliseconds config_revert_delay;  ///< Time to wait until settings are reverted (after stream ends/app exists).
+      bool remove_virtual_display_after_restore;  ///< Remove captured virtual displays after confirmed final restore (Windows only).
       bool config_revert_on_disconnect;  ///< Specify whether to revert display configuration on client disconnect.
       int paused_virtual_display_timeout_secs;  ///< Optional delay before virtual display cleanup while stream is paused (0 keeps alive).
       enum class helper_engine_e : int {
@@ -315,6 +318,9 @@ namespace config {
   struct input_t {
     std::unordered_map<int, int> keybindings;
 
+    // Raw client virtual key (0 disables) and client-relative controller slot.
+    int guide_button_key;
+    int guide_button_controller;
     std::chrono::milliseconds back_button_timeout;
     std::chrono::milliseconds key_repeat_delay;
     std::chrono::duration<double> key_repeat_period;
@@ -513,6 +519,8 @@ namespace config {
     int session_history_ttl_days {0};  ///< Delete ended sessions older than this many days (0 disables age pruning)
     int session_history_db_size_limit_mb {0};  ///< Approximate live DB quota in MiB (0 disables size pruning)
     std::vector<std::string> csrf_allowed_origins;
+    bool hardware_metrics {false};  ///< Allow paired streaming clients to request hardware metrics
+    int hardware_metrics_interval {1000};  ///< Minimum client sample interval, in milliseconds
     bool realtime_stats_enabled {true};  ///< Sample live host stats (CPU/GPU/RAM/VRAM) for the web UI
     int realtime_stats_poll_interval_ms {2000};  ///< Host stats sampler interval in milliseconds
   };
@@ -520,12 +528,17 @@ namespace config {
   extern video_t video;
   extern audio_t audio;
   extern stream_t stream;
+  // One snapshot of the last completed apply; 0 preserves ENet defaults.
+  std::chrono::milliseconds get_control_peer_timeout();
   extern nvhttp_t nvhttp;
   extern input_t input;
   extern frame_limiter_t frame_limiter;
   extern rtss_t rtss;
   extern lossless_scaling_t lossless_scaling;
   extern sunshine_t sunshine;
+
+  // Only the last completed apply_config publishes this lock-free snapshot.
+  hardware_metrics_settings_t get_hardware_metrics_settings();
 
   int parse(int argc, char *argv[]);
   std::unordered_map<std::string, std::string> parse_config(const std::string_view &file_content);
@@ -544,6 +557,13 @@ namespace config {
   );
   bool adapter_config_overrides_compatible_with_active(
     const std::unordered_map<std::string, std::string> &requested_overrides
+  );
+
+  // Resolve only this session's app/client layers over file + CLI settings.
+  // Never inherit the shared capture owner's process-wide runtime overrides.
+  ::input::guide_button_config_t guide_button_config_for_session(
+    const std::unordered_map<std::string, std::string> &app_overrides = {},
+    const std::unordered_map<std::string, std::string> &client_overrides = {}
   );
 
   // Hot-reload helpers

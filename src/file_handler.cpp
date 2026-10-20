@@ -13,6 +13,8 @@
 #include <thread>
 
 #ifdef _WIN32
+  #include "file_handler_windows.h"
+
   #include <Windows.h>
 #else
   #include <cerrno>
@@ -23,6 +25,33 @@
 
 namespace file_handler {
   namespace {
+#ifdef _WIN32
+    struct windows_file_api_t {
+      std::optional<HANDLE> create(const std::filesystem::path &path) {
+        const auto handle = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (handle == INVALID_HANDLE_VALUE) {
+          return std::nullopt;
+        }
+        return handle;
+      }
+
+      bool write(HANDLE handle, const char *data, uint32_t amount, uint32_t &written) {
+        DWORD bytes_written = 0;
+        const bool success = WriteFile(handle, data, amount, &bytes_written, nullptr) != 0;
+        written = bytes_written;
+        return success;
+      }
+
+      bool flush(HANDLE handle) {
+        return FlushFileBuffers(handle) != 0;
+      }
+
+      bool close(HANDLE handle) {
+        return CloseHandle(handle) != 0;
+      }
+    };
+#endif
+
     class native_filesystem_t: public filesystem_t {
     public:
       bool exists(const std::filesystem::path &path) const override {
@@ -43,14 +72,8 @@ namespace file_handler {
 
       bool write(const std::filesystem::path &path, std::string_view contents) override {
 #ifdef _WIN32
-        std::ofstream output(path, std::ios::binary | std::ios::trunc);
-        if (!output.is_open()) {
-          return false;
-        }
-        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-        output.flush();
-        output.close();
-        return static_cast<bool>(output);
+        windows_file_api_t api;
+        return detail::write_windows_file(api, path, contents);
 #else
         // Atomic callers always write a fresh temporary path. O_EXCL and
         // O_NOFOLLOW prevent a same-directory attacker from redirecting a

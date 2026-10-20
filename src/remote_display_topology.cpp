@@ -233,6 +233,13 @@ namespace remote_display_topology {
       return entry.second.normal_game || entry.second.remote_monitor;
     });
   }
+  bool coordinator_t::physical_display_restore_allowed() const {
+    std::lock_guard lock(mutex_);
+    return std::none_of(clients_.begin(), clients_.end(), [](const auto &entry) {
+      const auto &state = entry.second;
+      return state.remote_monitor || !state.normal_capture_references.empty();
+    });
+  }
   void coordinator_t::set_plaintext_rtsp_warning_provider(std::function<std::string(const std::string &)> provider) { std::lock_guard lock(mutex_); plaintext_rtsp_warning_provider_ = std::move(provider); }
 
   normal_game_reservation_t coordinator_t::reserve_normal_game_identity(const std::string &client_uuid, const std::string &label, mode_t mode) {

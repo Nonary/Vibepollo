@@ -723,3 +723,224 @@ test('browser stream exits auto fullscreen when connection startup fails', async
     )
     .toBeGreaterThan(0);
 });
+
+async function touchStream(page: Page, type: string, options: Record<string, unknown> = {}) {
+  await page.locator('.stream-surface').evaluate(
+    (surface, { type, options }) => {
+      const bounds = surface.querySelector('video')!.getBoundingClientRect();
+      surface.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerType: 'touch',
+          pointerId: 1,
+          isPrimary: true,
+          button: 0,
+          buttons: type === 'pointerup' ? 0 : 1,
+          clientX: bounds.left + bounds.width / 2,
+          clientY: bounds.top + bounds.height / 2,
+          width: 24,
+          height: 24,
+          ...options,
+        }),
+      );
+    },
+    { type, options },
+  );
+}
+
+async function pointerMessages(page: Page) {
+  return page.evaluate(() =>
+    ((window as any).__browserStreamInputs as Record<string, unknown>[]).filter((input) =>
+      ['mouse_move', 'mouse_down', 'mouse_up'].includes(String(input.type)),
+    ),
+  );
+}
+
+async function startTouchStream(page: Page) {
+  await installBrowserStreamFixtures(page);
+  await page.goto('/v2/stream');
+  await page.getByRole('checkbox', { name: 'Auto Fullscreen' }).uncheck();
+  await page.getByRole('button', { name: 'Start browser stream', exact: true }).click();
+  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  await expect(page.locator('.stream-stage__input-status')).toHaveAttribute('data-ready', 'true');
+}
+
+test.describe('v2 touch browser gestures', () => {
+  test.use({ hasTouch: true });
+
+  for (const width of [390, 1440]) {
+    test(`trusted tap sends exactly one left click at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 1000 });
+      await startTouchStream(page);
+      const surface = page.locator('.stream-surface');
+      await expect(surface).toHaveCSS('touch-action', 'none');
+      await surface.scrollIntoViewIfNeeded();
+      const bounds = await surface.locator('video').boundingBox();
+      await page.touchscreen.tap(bounds!.x + bounds!.width / 2, bounds!.y + bounds!.height / 2);
+      expect(await pointerMessages(page)).toMatchObject([
+        { type: 'mouse_down', button: 0, x: 0.5, y: 0.5 },
+        { type: 'mouse_up', button: 0, x: 0.5, y: 0.5 },
+      ]);
+      expect(await pointerMessages(page)).toHaveLength(2);
+    });
+  }
+
+  test('drag ignores every secondary event and clamps its release outside video', async ({
+    page,
+  }) => {
+    await startTouchStream(page);
+    await touchStream(page, 'pointerdown');
+    const bounds = await page.locator('.stream-surface video').boundingBox();
+    await touchStream(page, 'pointermove', { clientX: bounds!.x + bounds!.width * 0.8 });
+    const before = await pointerMessages(page);
+    expect(before.map((m) => m.type)).toEqual(['mouse_down', 'mouse_move']);
+    for (const type of [
+      'pointerdown',
+      'pointermove',
+      'pointerup',
+      'pointercancel',
+      'lostpointercapture',
+    ]) {
+      await touchStream(page, type, { pointerId: 2, isPrimary: false, clientX: bounds!.x });
+    }
+    expect(await pointerMessages(page)).toEqual(before);
+    await touchStream(page, 'pointerup', {
+      clientX: bounds!.x + bounds!.width + 100,
+      clientY: bounds!.y + bounds!.height + 100,
+    });
+    expect((await pointerMessages(page)).at(-1)).toMatchObject({ type: 'mouse_up', x: 1, y: 1 });
+    await touchStream(page, 'pointermove');
+    await touchStream(page, 'pointerup');
+    expect(await pointerMessages(page)).toHaveLength(3);
+  });
+
+  test('touches starting in letterboxing and nonprimary touches cannot become taps', async ({
+    page,
+  }) => {
+    await startTouchStream(page);
+    await page.locator('.stream-surface video').evaluate((video) => {
+      Object.defineProperties(video, { videoWidth: { value: 100 }, videoHeight: { value: 100 } });
+    });
+    const bounds = await page.locator('.stream-surface video').boundingBox();
+    await touchStream(page, 'pointerdown', { clientX: bounds!.x + 1 });
+    await touchStream(page, 'pointermove');
+    await touchStream(page, 'pointerup');
+    await touchStream(page, 'pointerdown', { pointerId: 2, isPrimary: false });
+    await touchStream(page, 'pointermove', { pointerId: 2, isPrimary: false });
+    await touchStream(page, 'pointerup', { pointerId: 2, isPrimary: false });
+    expect(await pointerMessages(page)).toEqual([]);
+  });
+
+  for (const end of ['pointercancel', 'lostpointercapture', 'blur', 'disable input', 'collapse']) {
+    test(`${end} discards pending taps and releases drags exactly once`, async ({ page }) => {
+      await startTouchStream(page);
+      const stop = async () => {
+        if (end === 'disable input')
+          await page.getByRole('checkbox', { name: 'Forward browser input' }).uncheck();
+        else if (end === 'collapse')
+          await page.locator('[aria-controls="browser-stream-surface"]').click();
+        else if (end === 'blur') await page.locator('.stream-surface').dispatchEvent('blur');
+        else await touchStream(page, end);
+      };
+      const resume = async () => {
+        if (end === 'disable input')
+          await page.getByRole('checkbox', { name: 'Forward browser input' }).check();
+        if (end === 'collapse')
+          await page.locator('[aria-controls="browser-stream-surface"]').click();
+      };
+      await touchStream(page, 'pointerdown');
+      await stop();
+      await touchStream(page, 'pointerup');
+      expect(await pointerMessages(page)).toEqual([]);
+      await resume();
+      await touchStream(page, 'pointerdown');
+      const bounds = await page.locator('.stream-surface video').boundingBox();
+      await touchStream(page, 'pointermove', { clientX: bounds!.x + bounds!.width * 0.8 });
+      await stop();
+      await touchStream(page, 'pointerup');
+      expect((await pointerMessages(page)).map((m) => m.type)).toEqual([
+        'mouse_down',
+        'mouse_move',
+        'mouse_up',
+      ]);
+    });
+  }
+
+  test('ordinary mouse still moves immediately and releases its button', async ({ page }) => {
+    await startTouchStream(page);
+    const surface = page.locator('.stream-surface');
+    await surface.scrollIntoViewIfNeeded();
+    const bounds = await surface.locator('video').boundingBox();
+    await page.mouse.move(bounds!.x + bounds!.width * 0.4, bounds!.y + bounds!.height / 2);
+    expect((await pointerMessages(page)).at(-1)).toMatchObject({ type: 'mouse_move' });
+    expect((await pointerMessages(page)).at(-1)!.x).toBeCloseTo(0.4, 5);
+    await page.mouse.down();
+    expect((await pointerMessages(page)).at(-1)).toMatchObject({ type: 'mouse_down', button: 0 });
+    const beforeOrphanTouch = await pointerMessages(page);
+    // A primary touch that began outside the surface has no captured gesture.
+    // Its later move/up/capture-loss must leave the real mouse button held.
+    for (const type of ['pointermove', 'pointerup', 'pointercancel', 'lostpointercapture']) {
+      await touchStream(page, type);
+    }
+    expect(await pointerMessages(page)).toEqual(beforeOrphanTouch);
+    await page.mouse.move(bounds!.x + bounds!.width * 0.8, bounds!.y + bounds!.height / 2);
+    await page.mouse.up();
+    expect((await pointerMessages(page)).slice(-3).map((m) => m.type)).toEqual([
+      'mouse_down',
+      'mouse_move',
+      'mouse_up',
+    ]);
+  });
+});
+
+test('v2 touch tap stays frozen and ignores secondary fingers', async ({ page }) => {
+  await installBrowserStreamFixtures(page);
+  await page.goto('/v2/stream');
+  await page.getByRole('button', { name: 'Start browser stream', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Disconnect stream', exact: true })).toBeVisible();
+  await touchStream(page, 'pointerdown');
+  const bounds = await page.locator('.stream-surface video').boundingBox();
+  await touchStream(page, 'pointermove', { clientX: bounds!.x + bounds!.width / 2 + 4 });
+  for (const type of [
+    'pointerdown',
+    'pointermove',
+    'pointerup',
+    'pointercancel',
+    'lostpointercapture',
+  ]) {
+    await touchStream(page, type, { pointerId: 2, isPrimary: false });
+  }
+  expect(await pointerMessages(page)).toEqual([]);
+  await touchStream(page, 'pointerup', { clientX: bounds!.x + bounds!.width / 2 + 8 });
+  expect(await pointerMessages(page)).toMatchObject([
+    { type: 'mouse_down', x: 0.5, y: 0.5 },
+    { type: 'mouse_up', x: 0.5, y: 0.5 },
+  ]);
+  await touchStream(page, 'pointerup');
+  expect(await pointerMessages(page)).toHaveLength(2);
+});
+
+test('v2 touch drag survives secondary capture loss and releases on cancellation', async ({
+  page,
+}) => {
+  await installBrowserStreamFixtures(page);
+  await page.goto('/v2/stream');
+  await page.getByRole('button', { name: 'Start browser stream', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Disconnect stream', exact: true })).toBeVisible();
+  await expect(page.locator('.stream-surface')).toHaveCSS('touch-action', 'none');
+  await touchStream(page, 'pointerdown');
+  const bounds = await page.locator('.stream-surface video').boundingBox();
+  await touchStream(page, 'pointermove', { clientX: bounds!.x + bounds!.width * 0.8 });
+  const before = await pointerMessages(page);
+  expect(before.map((m) => m.type)).toEqual(['mouse_down', 'mouse_move']);
+  await touchStream(page, 'lostpointercapture', { pointerId: 2, isPrimary: false });
+  expect(await pointerMessages(page)).toEqual(before);
+  await touchStream(page, 'pointercancel');
+  await touchStream(page, 'pointerup');
+  expect((await pointerMessages(page)).map((m) => m.type)).toEqual([
+    'mouse_down',
+    'mouse_move',
+    'mouse_up',
+  ]);
+});

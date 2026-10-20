@@ -62,6 +62,8 @@ export const clientOverrideableKeys = new Set([
   'motion_as_ds4',
   'touchpad_as_ds4',
   'back_button_timeout',
+  'guide_button_key',
+  'guide_button_controller',
   'keyboard',
   'key_repeat_delay',
   'key_repeat_frequency',
@@ -792,6 +794,7 @@ export const settingsCategories: SettingsCategory[] = [
             stacked: true,
           },
           text('fallback_mode'),
+          boolean('dd_remove_virtual_display_after_restore', { platform: 'windows' }),
           boolean('dd_config_revert_on_disconnect', { platform: ['windows', 'linux'] }),
           number('dd_config_revert_delay', {
             min: 0,
@@ -895,6 +898,8 @@ export const settingsCategories: SettingsCategory[] = [
         id: 'input_repeat',
         fields: [
           extendedField('back_button_timeout'),
+          extendedField('guide_button_key'),
+          extendedField('guide_button_controller'),
           extendedField('key_rightalt_to_key_win'),
           extendedField('ds5_inputtino_randomize_mac', { platform: 'linux' }),
           { key: 'keybindings', kind: 'textarea', stacked: true },
@@ -1010,6 +1015,7 @@ export const settingsCategories: SettingsCategory[] = [
           text('bind_address', { monospace: true, stacked: true }),
           text('external_ip', { monospace: true, stacked: true }),
           number('ping_timeout', { min: 0, step: 1 }),
+          number('control_peer_timeout', { min: 0, max: 86399999, step: 1 }),
         ],
       },
       {
@@ -1097,6 +1103,13 @@ export const settingsCategories: SettingsCategory[] = [
             step: 1,
             visibleWhen: { key: 'session_history_enabled', equals: true },
           }),
+          boolean('hardware_metrics'),
+          number('hardware_metrics_interval', {
+            min: 500,
+            max: 10000,
+            step: 100,
+            visibleWhen: { key: 'hardware_metrics', equals: true },
+          }),
           boolean('realtime_stats_enabled'),
           number('realtime_stats_poll_interval_ms', {
             min: 250,
@@ -1176,6 +1189,7 @@ export const settingsDefaults: Record<string, unknown> = {
   vulkan_hdr_layer: true,
   dd_wa_dummy_plug_hdr10: false,
   wayland_hdr_compatibility: false,
+  dd_remove_virtual_display_after_restore: false,
   dd_config_revert_on_disconnect: false,
   dd_config_revert_delay: 3000,
   dd_always_restore_from_golden: true,
@@ -1233,6 +1247,7 @@ export const settingsDefaults: Record<string, unknown> = {
   bind_address: '',
   external_ip: '',
   ping_timeout: 10000,
+  control_peer_timeout: 0,
   lan_encryption_mode: 0,
   wan_encryption_mode: 1,
   csrf_allowed_origins: '',
@@ -1243,6 +1258,8 @@ export const settingsDefaults: Record<string, unknown> = {
   session_history_enabled: true,
   session_history_ttl_days: 0,
   session_history_db_size_limit_mb: 0,
+  hardware_metrics: false,
+  hardware_metrics_interval: 1000,
   realtime_stats_enabled: true,
   realtime_stats_poll_interval_ms: 2000,
 };

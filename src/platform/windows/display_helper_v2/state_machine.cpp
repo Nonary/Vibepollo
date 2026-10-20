@@ -985,8 +985,9 @@ namespace display_helper::v2 {
     const auto notification = std::make_tuple(ticket, status, event, epoch);
     if (last_recovery_notification_ == notification) return;
     last_recovery_notification_ = notification;
-    // An unsolicited update is a hint. Only a requested park ACK may authorize
-    // the host to remove a target after checking its own ownership state.
+    // A failed update is a hint; only a requested park ACK confirms failed
+    // recovery is quiescent. Restored is terminal success with no active or
+    // queued mutation, published before exit retires its generation.
     recovery_status_result_callback_(ticket, status, event, false, epoch);
   }
 
@@ -1825,6 +1826,7 @@ namespace display_helper::v2 {
     }
     if (exit_after_staged_state_reset_ && !staged_state_reset_pending_) {
       exit_after_staged_state_reset_ = false;
+      notify_recovery_status();
       if (exit_callback_) {
         exit_callback_(0);
       }
@@ -2001,6 +2003,9 @@ namespace display_helper::v2 {
         // reset. Keep the helper alive until its ordered completion arrives.
         return;
       }
+      // The exit callback retires the mutation generation. Publish the exact
+      // terminal result first, while its connection and generation still match.
+      notify_recovery_status();
       if (exit_callback_) {
         exit_callback_(0);
       }

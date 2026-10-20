@@ -1534,7 +1534,8 @@
     "app_fallback_name": "App {id}",
     "stats_fps_bitrate": "FPS: {fps} | Bitrate: {bitrate}",
     "stats_latency_dropped": "Latency: {latency} | Dropped: {dropped}",
-    "stats_codec_size": "Codec: {codec} | Size: {size}"
+    "stats_codec_size": "Codec: {codec} | Size: {size}",
+    "touch_input_hint": "Touch: tap to left-click; slide one finger to drag. Extra fingers are ignored."
   },
   "clients": {
     "nav": "Clients",

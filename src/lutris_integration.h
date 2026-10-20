@@ -5,7 +5,9 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace platf::lutris {
@@ -44,6 +46,11 @@ namespace platf::lutris {
   std::uint64_t source_fingerprint(const std::vector<game_t> &games);
 
   std::string launch_uri(std::int64_t id);
+  std::string launch_command(std::int64_t id);
+  // Only the canonical fixed-operation command is semantic. Arbitrary Lutris
+  // commands still use the administrator-authorized application path.
+  std::optional<std::vector<std::string>> session_launch_arguments(
+    std::string_view command, bool wayland_hdr_compatibility = false);
   bool launch(std::int64_t id);
   bool executable_available();
 }  // namespace platf::lutris

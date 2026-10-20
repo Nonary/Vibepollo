@@ -168,6 +168,15 @@ add_custom_target(package_msi
     COMMENT "Building MSI installer via CPack (WiX)"
 )
 
+# Build a standalone ZIP with an as-caller physical-desktop launcher.
+add_custom_target(package_portable
+    COMMAND "${CMAKE_CPACK_COMMAND}" -G ZIP --config "${CMAKE_BINARY_DIR}/CPackConfig.cmake"
+        -C "$<IF:$<CONFIG:>,${CMAKE_BUILD_TYPE},$<CONFIG>>"
+    DEPENDS ${SUNSHINE_WINDOWS_PACKAGED_TARGETS} build_playnite_plugin build_uninstall_ui web_ui
+    COMMENT "Building portable Windows ZIP via CPack"
+    VERBATIM
+)
+
 # This target never signs: it always builds an unsigned installer. Release
 # signing is done exclusively through SignPath origin verification in CI
 # (.github/workflows/ci-windows.yml, docs/signpath/), which invokes

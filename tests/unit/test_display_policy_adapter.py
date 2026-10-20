@@ -26,8 +26,9 @@ def function(source, signature):
 
 adapter = function(adapter_source, 'policy::session_t to_policy_session(')
 refresh = function((root / 'src/rtsp.h').read_text(), 'inline std::uint32_t effective_display_refresh_millihz(')
-# Vibepollo's launch boundary stores millihertz, whereas Vibeshine stores Hz.
-scaled = 'normalize_refresh_millihz(session.fps)' in refresh
+# This is an input contract, not a property to infer from the implementation.
+# Vibepollo's launch boundary stores millihertz. Its refresh helper also accepts
+# legacy integer Hz; removing normalization must fail fixed expectations.
 program = r'''
 #include <cassert>
 #include <iostream>
@@ -55,13 +56,22 @@ int main() {
  rtsp_stream::launch_session_t session;
  session.width = 2560;
  session.height = 1440;
- session.fps = SCALED ? 60000 : 60;
+ session.fps = 60000;
+ assert(rtsp_stream::effective_display_refresh_millihz(session) == 60000);
  check(session, 60000);
- session.fps = SCALED ? 59940 : 60;
- check(session, SCALED ? 59940 : 60000);
+ session.fps = 59940;
+ assert(rtsp_stream::effective_display_refresh_millihz(session) == 59940);
+ check(session, 59940);
  session.client_display_mode_override = true;
- check(session, SCALED ? 59940 : 60000); // Explicit mode fallback keeps fractional stream FPS.
+ check(session, 59940); // Explicit mode fallback keeps fractional stream FPS.
  session.client_display_mode_override = false;
+ session.fps = 60;
+ check(session, 60000); // Legacy integer Hz still needs conversion to millihertz.
+ session.fps = 0;
+ assert(rtsp_stream::effective_display_refresh_millihz(session) == 0);
+ session.fps = -1;
+ assert(rtsp_stream::effective_display_refresh_millihz(session) == 0);
+ session.fps = 60000;
  session.client_display_refresh_millihz = 59940;
  check(session, 59940);
  session.framegen_refresh_rate = 240;
@@ -72,7 +82,7 @@ int main() {
  session.framegen_refresh_millihz.reset();
  check(session, 240000);
  session.framegen_refresh_rate.reset();
- session.fps = SCALED ? 60000 : 60;
+ session.fps = 60000;
  video.dd.refresh_rate_option = policy::video_config_t::dd_t::refresh_rate_option_e::manual;
  video.dd.manual_refresh_rate = "50";
  check(session, 50000);
@@ -86,12 +96,10 @@ int main() {
  video.dd.refresh_rate_option = policy::video_config_t::dd_t::refresh_rate_option_e::automatic;
  video.dd.mode_remapping.mixed = {{"2560x1440", "60", "", "480"}};
  check(session, 480000); // Match streamed 60 FPS, not the promoted 1000 Hz.
- if (SCALED) {
    session.fps = 59940;
    check(session, 1000000); // Exact 59.94 FPS must not match an integer 60 FPS rule.
    session.framegen_refresh_millihz.reset();
    check(session, 59940);
- }
  video.dd.mode_remapping.mixed.clear();
  policy::session_t direct {.width = 1920, .height = 1080, .fps = 60};
  auto direct_result = policy::parse_configuration(video, direct);
@@ -104,7 +112,7 @@ int main() {
  direct.fps = -1;
  assert(std::holds_alternative<policy::failed_to_parse_tag_t>(policy::parse_configuration(video, direct)));
  ++count;
- std::cout << count << " adapter refresh cases passed (scaled=" << SCALED << ")\n";
+ std::cout << count << " adapter refresh cases passed\n";
 }
 '''
 with tempfile.TemporaryDirectory(prefix='display-policy-adapter-') as temporary:
@@ -112,5 +120,5 @@ with tempfile.TemporaryDirectory(prefix='display-policy-adapter-') as temporary:
     source = directory / 'test.cpp'
     source.write_text(program)
     binary = directory / 'test'
-    subprocess.run(['g++', '-std=c++20', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', f'-DSCALED={int(scaled)}', '-I', str(root), str(source), str(root / 'src/display_device_policy.cpp'), '-o', str(binary)], check=True)
+    subprocess.run(['g++', '-std=c++20', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', '-I', str(root), str(source), str(root / 'src/display_device_policy.cpp'), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

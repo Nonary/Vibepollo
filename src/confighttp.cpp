@@ -497,7 +497,7 @@ namespace confighttp {
           continue;
         }
 
-        if (key.rfind("realtime_stats_", 0) == 0) {
+        if (key == "hardware_metrics" || key == "hardware_metrics_interval" || key.rfind("realtime_stats_", 0) == 0) {
           continue;
         }
 
@@ -2825,8 +2825,18 @@ namespace confighttp {
         input_tree.contains("do") ||
         input_tree.contains("undo");
 
-      if (!has_extended_fields && hdr_profile.has_value()) {
-        output_tree["status"] = nvhttp::set_client_hdr_profile(uuid, hdr_profile.value());
+      if (input_tree.contains("allow_sleep") && !input_tree["allow_sleep"].is_boolean()) {
+        bad_request(response, request, "allow_sleep must be a boolean");
+        return;
+      }
+      if (!has_extended_fields && (hdr_profile.has_value() || input_tree.contains("allow_sleep"))) {
+        bool updated = true;
+        if (hdr_profile.has_value()) updated = nvhttp::set_client_hdr_profile(uuid, *hdr_profile);
+        if (input_tree.contains("allow_sleep")) {
+          output_tree["allow_sleep_updated"] = nvhttp::set_client_sleep_allowed(uuid, input_tree["allow_sleep"].get<bool>());
+          updated = output_tree["allow_sleep_updated"].get<bool>() && updated;
+        }
+        output_tree["status"] = updated;
         send_response(response, output_tree);
         return;
       }
@@ -2901,6 +2911,10 @@ namespace confighttp {
           hdr_profile
         )
                   && updated;
+      }
+      if (input_tree.contains("allow_sleep")) {
+        output_tree["allow_sleep_updated"] = nvhttp::set_client_sleep_allowed(uuid, input_tree["allow_sleep"].get<bool>());
+        updated = output_tree["allow_sleep_updated"].get<bool>() && updated;
       }
       output_tree["status"] = updated;
       send_response(response, output_tree);

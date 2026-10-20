@@ -122,7 +122,7 @@ namespace nvhttp::tls_identity {
       return {{}, "Client certificate is not one exact enabled pairing record"};
     }
     const auto &client = clients[resolution.index];
-    identity_t identity {std::string(client.uuid), std::string(client.name)};
+    identity_t identity {std::string(client.uuid), std::string(client.name), client.allow_sleep};
     auto authority = std::make_shared<authority_t>(identity, client.certificate, *presented);
     {
       std::lock_guard lock(mutex);
@@ -161,7 +161,7 @@ namespace nvhttp::tls_identity {
         return std::nullopt;
       }
     }
-    return identity_t {authority->identity.uuid, std::string(client->name)};
+    return identity_t {authority->identity.uuid, std::string(client->name), client->allow_sleep};
   }
 
   void store_t::reset(const request_t &request) {

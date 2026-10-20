@@ -581,6 +581,37 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### guide_button_key
+
+The raw client keyboard virtual-key code to consume as a held Home/Guide button.
+`0` (default) disables the binding; values `1` through `255` enable it. For example,
+set `guide_button_key = 124` and map a Steam Input chord to F13 on the client.
+The key is matched before `keybindings` and host shortcuts. No host keyboard event
+or keyboard repeat is generated for the bound key.
+
+Only the configured controller slot of the client sending the key is targeted.
+Both keyboard and controller input must be enabled, and that controller must
+already be connected. A press without a connected target is consumed; connecting
+or reconnecting a controller while the key is held does not press Guide. Release
+and press the key again. Key-up releases the binding, including after input is
+disabled. Controller removal and session disconnect clear its held Guide state.
+Vibepollo clients also need both keyboard and controller permissions for this
+binding. Revoking either permission releases the binding's held Guide state.
+Native Guide remains independent. The existing `back_button_timeout` is unchanged;
+set it below `0` if the Back/Select shortcut is unwanted.
+
+The binding and target slot are captured for each new session using file/command
+line settings, then that session's application overrides, then its client overrides.
+Concurrent clients can select different keys and slots, including disabling the
+binding. Global, app or per-client changes apply to new sessions; WebRTC input
+reconnection and capture replacement keep the registered session's settings.
+
+### guide_button_controller
+
+Client-relative controller slot for `guide_button_key`, from `0` through `15`.
+The default `0` selects the sending client's first controller, never the first
+controller of another client. This option does not create or redirect controllers.
+
 ### keyboard
 
 <table>
@@ -1465,6 +1496,34 @@ or safely reprovision the pool with the host and compositor stopped before
 requesting more than four clients. The topology editor reports the effective
 limit. Arbitrarily many displays are not supported.
 
+### Remote Monitor display policy
+
+Remote Monitor uses one stable private virtual display per paired client on
+Windows and Linux. Its display extends the current desktop through the topology
+coordinator. A normal per-client game and Remote Monitor from the same paired
+client share that display identity and release their ownership independently.
+The Remote Monitor disconnect settings below determine whether its display is
+retained for Resume after the stream ends.
+
+Set placement, gap, alignment, and primary status under **Devices → Arrange client
+displays** in the v2 interface. Selecting a physical display as a layout anchor
+positions the client's virtual display relative to it; it does not select that
+physical display for capture.
+
+The ordinary top-level application fields `virtual-display-mode`,
+`virtual-display-layout`, `virtual-screen`, `dd-configuration-option`, and
+`display-output` do not select Remote Monitor's target or layout. The application
+editors hide those controls for Remote Monitor and preserve existing values on
+unrelated saves. Runtime `config-overrides` remain available and follow their
+existing activation rules; they do not create a separate monitor target.
+
+Shared virtual targets, physical capture targets, and duplicate Remote Monitor
+profiles are currently unsupported. The built-in tile uses a reserved identity;
+renaming or copying it does not create another monitor profile. A normal
+application can select a display using ordinary app routing, but follows the
+normal game lifecycle and does not acquire an independent monitor role alongside
+a running game.
+
 ### remote_monitor_mute_audio
 
 Do not capture or transmit host audio for Remote Monitor sessions. Video and
@@ -1759,6 +1818,16 @@ back to a physical output, the virtual-only promotion is not applied.
             @endcode</td>
     </tr>
 </table>
+
+### dd_remove_virtual_display_after_restore
+
+Remove owned virtual displays after the application has closed, the last stream has ended, and the display helper confirms successful physical display restoration. Only the exact managed display identities captured for that restore are eligible. A pending, failed, or unavailable confirmation keeps the displays retained. Launching or resuming another session cancels deferred removal.
+
+This option applies to Windows. The default is `disabled`, preserving stable identities between streams. Paused applications retain their displays. This setting does not change when physical restoration is requested; `dd_config_revert_on_disconnect` and application shutdown still control that behavior.
+
+```ini
+dd_remove_virtual_display_after_restore = disabled
+```
 
 ### dd_config_revert_on_disconnect
 
@@ -2445,6 +2514,40 @@ back to a physical output, the virtual-only promotion is not applied.
     </tr>
 </table>
 
+### control_peer_timeout
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Host-side timeout thresholds, in milliseconds, for unacknowledged reliable control traffic.
+            `0` leaves the ENet defaults unchanged (minimum 5000 ms, maximum 30000 ms).
+            A positive value sets both thresholds for each new control peer. Accepted decimal values are
+            0 through 86399999; higher values exceed ENet's timestamp comparison window.
+            Each configuration apply starts from defaults: a missing, empty, malformed, negative or
+            out-of-range value uses `0`, including when reloading a previously valid positive value.
+            New peers take one snapshot of the last timeout published after successful configuration
+            parsing. During a reload they can use the preceding value; a parsing failure does not publish
+            a new timeout. Existing peers keep their connection-time thresholds.
+            To tolerate short network drops, also raise `ping_timeout` and use a client with a matching
+            retry window. The ping deadline or the client's own timeout can still end the stream earlier.
+            This option does not delay explicit session termination or change session resume behavior.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            control_peer_timeout = 60000
+            @endcode</td>
+    </tr>
+</table>
+
 ### video_max_batch_size_kb
 
 <table>
@@ -2980,7 +3083,9 @@ back to a physical output, the virtual-only promotion is not applied.
     <tr>
         <td>wlr</td>
         <td>Capture for wlroots based Wayland compositors via wlr-screencopy-unstable-v1. It is possible to capture
-            virtual displays in e.g. Hyprland using this method.
+            virtual displays in e.g. Hyprland using this method in a user-session host.
+            The experimental Hyprland machine-service subset uses physical KMS capture;
+            see <a href="linux/hyprland.md">its supported contract</a>.
             @note{Applies to Linux only.}</td>
     </tr>
     <tr>
@@ -5117,3 +5222,11 @@ The previous `playnite_focus_attempts`, `playnite_focus_timeout_secs` and
 `playnite_focus_exit_on_first` keys remain readable aliases. Explicit shared
 keys take precedence. The web interface removes the corresponding old key
 when saving a shared focus setting, including resetting it to its default.
+
+### hardware_metrics
+
+Allow enabled paired streaming clients to request hardware metrics v1 during their own running video stream. Default: `disabled`. This disclosure setting is independent of admin realtime stats. Requires a client that implements the overlay protocol; the host does not render an overlay. See [Hardware metrics](hardware-metrics.md).
+
+### hardware_metrics_interval
+
+Minimum time between completed client hardware samples in milliseconds. Default: `1000`; range: `500`–`10000`. Samples are collected on request and shared between clients. Enabling the setting alone does not poll hardware.

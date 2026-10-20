@@ -5,6 +5,10 @@ and it is developed and tested on **CachyOS with KDE Plasma 6 on Wayland**. Othe
 distributions should work but get less testing. There is no AppImage, Flatpak, Debian, Fedora, or
 Docker build in this beta.
 
+An explicit, experimental [Hyprland physical-display subset](hyprland.md) is available through
+the manual native-package path. It requires UWSM and does not provide private outputs, HDR
+or Steam/Xwayland application launching.
+
 ## Requirements
 
 | Requirement | Detail |
@@ -160,6 +164,27 @@ the controller:
 sudo vibepollo configure USER
 sudo systemctl enable --now vibepollo-session-controller.service
 ```
+
+### Authorizing application commands
+
+Custom application commands and per-app preparation commands require administrator approval.
+After reviewing the commands saved in `/var/lib/vibepollo/apps.json`, approve that snapshot:
+
+```bash
+sudo vibepollo authorize-commands
+```
+
+Run this again after adding or changing commands. Saving an application in the Web UI does
+not approve it. This command collects application launch, detached and preparation commands
+from `apps.json`; it does not authorize global preparation commands from `vibepollo.conf`.
+An unapproved command is rejected by the session broker and can exit with status 126.
+
+Managed Steam and Lutris launches use fixed numeric-ID operations instead of approving
+arbitrary commands. The exact reserved helper syntax, such as
+`/usr/libexec/vibeshine/vibepollo-session-exec lutris 16`, selects that fixed operation even
+when entered manually. It does not approve other command strings or shell arguments.
+On a Linux machine-service host, run Lutris synchronization once after upgrading to refresh
+older managed entries. Other custom launch and preparation commands still require approval.
 
 ## Verify
 

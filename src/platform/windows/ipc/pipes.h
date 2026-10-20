@@ -12,6 +12,7 @@
 // standard includes
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -484,6 +485,13 @@ namespace platf::dxgi {
      */
     std::unique_ptr<INamedPipe> create_client(const std::string &pipe_name) override;
 
+    // All client connection/handshake waits share the caller's absolute deadline.
+    std::unique_ptr<INamedPipe> create_client(
+      const std::string &pipe_name,
+      const std::function<bool()> &cancelled,
+      std::chrono::steady_clock::time_point operation_deadline
+    );
+
     /**
      * @brief Creates a server named pipe.
      * @param pipe_name The name of the pipe to create.
@@ -546,7 +554,11 @@ namespace platf::dxgi {
      * @param fullPipeName The full name of the pipe.
      * @return safe handle to the created client pipe.
      */
-    winrt::file_handle create_client_pipe(const std::wstring &fullPipeName) const;
+    winrt::file_handle create_client_pipe(
+      const std::wstring &fullPipeName,
+      const std::function<bool()> &cancelled,
+      std::chrono::steady_clock::time_point operation_deadline
+    ) const;
 
     DWORD _client_security_flags = 0;
     SecurityDescriptorBuilder _secdesc_builder;  // optional custom SD builder (Playnite can override)
@@ -588,19 +600,44 @@ namespace platf::dxgi {
      */
     std::unique_ptr<INamedPipe> create_client(const std::string &pipe_name) override;
 
+    // All client connection/handshake waits share the caller's absolute deadline.
+    std::unique_ptr<INamedPipe> create_client(
+      const std::string &pipe_name,
+      const std::function<bool()> &cancelled,
+      std::chrono::steady_clock::time_point operation_deadline
+    );
+
     // Forward a custom SD builder into the underlying NamedPipeFactory
     void set_security_descriptor_builder(NamedPipeFactory::SecurityDescriptorBuilder builder);
     void set_client_identification_only();
 
   private:
     std::unique_ptr<INamedPipe> handshake_server(std::unique_ptr<INamedPipe> pipe);
-    std::unique_ptr<INamedPipe> handshake_client(std::unique_ptr<INamedPipe> pipe);
+    std::unique_ptr<INamedPipe> handshake_client(
+      std::unique_ptr<INamedPipe> pipe,
+      const std::function<bool()> &cancelled,
+      std::chrono::steady_clock::time_point operation_deadline
+    );
 
     bool send_handshake_message(std::unique_ptr<INamedPipe> &pipe, const std::string &pipe_name) const;
     HandshakeAckResult wait_for_handshake_ack(std::unique_ptr<INamedPipe> &pipe, std::vector<uint8_t> &buffered) const;
-    HandshakeMessageResult receive_handshake_message(std::unique_ptr<INamedPipe> &pipe, AnonConnectMsg &msg, std::vector<uint8_t> &prefetched) const;
-    bool send_handshake_ack(std::unique_ptr<INamedPipe> &pipe) const;
-    std::unique_ptr<INamedPipe> connect_to_data_pipe(const std::string &pipeNameStr);
+    HandshakeMessageResult receive_handshake_message(
+      std::unique_ptr<INamedPipe> &pipe,
+      AnonConnectMsg &msg,
+      std::vector<uint8_t> &prefetched,
+      const std::function<bool()> &cancelled,
+      std::chrono::steady_clock::time_point operation_deadline
+    ) const;
+    bool send_handshake_ack(
+      std::unique_ptr<INamedPipe> &pipe,
+      const std::function<bool()> &cancelled,
+      std::chrono::steady_clock::time_point operation_deadline
+    ) const;
+    std::unique_ptr<INamedPipe> connect_to_data_pipe(
+      const std::string &pipeNameStr,
+      const std::function<bool()> &cancelled,
+      std::chrono::steady_clock::time_point operation_deadline
+    );
 
     NamedPipeFactory _pipe_factory;
   };

@@ -97,6 +97,7 @@ else()
     find_package(Udev)
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        include("${CMAKE_CURRENT_LIST_DIR}/linux_desktop_tray.cmake")
         # The incoming installer extracts this compatibility step before old
         # ALPM hooks run; it cannot depend on an already installed new helper.
         install(FILES "${CMAKE_SOURCE_DIR}/scripts/linux/migrations/upgrade-2.0-lifecycle.sh"
@@ -447,6 +448,10 @@ set(CPACK_RPM_PACKAGE_REQUIRES "\
             util-linux")
 set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "dkms")
 set(CPACK_RPM_PACKAGE_SUGGESTS "dkms, gcc, kernel-devel")
+if(VIBEPOLLO_DESKTOP_TRAY_PACKAGED)
+    string(APPEND CPACK_DEBIAN_PACKAGE_RECOMMENDS ", python3-pyside6.qtwidgets")
+    string(APPEND CPACK_RPM_PACKAGE_SUGGESTS ", python3-pyside6")
+endif()
 list(APPEND CPACK_FREEBSD_PACKAGE_DEPS
         audio/opus
         ftp/curl

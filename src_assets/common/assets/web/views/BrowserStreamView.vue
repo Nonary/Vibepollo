@@ -1118,6 +1118,10 @@ function pointerPosition(
 
 function sendPointerMove(event: PointerEvent): void {
   if (!inputReady.value) return;
+  if (event.pointerType === 'touch' && !touchPointerGestures.has(event.pointerId)) {
+    event.preventDefault();
+    return;
+  }
   const touchGesture = touchPointerGestures.get(event.pointerId);
   if (touchGesture) {
     event.preventDefault();
@@ -1165,7 +1169,14 @@ function sendPointerButton(event: PointerEvent, type: 'mouse_down' | 'mouse_up')
   const surface = streamSurface.value;
   const touchLike = event.pointerType === 'touch' || event.pointerType === 'pen';
   if (touchLike) event.preventDefault();
+  if (
+    event.pointerType === 'touch' &&
+    (!event.isPrimary || (type === 'mouse_down' && touchPointerGestures.size > 0))
+  ) {
+    return;
+  }
   const touchGesture = touchPointerGestures.get(event.pointerId);
+  if (event.pointerType === 'touch' && type === 'mouse_up' && !touchGesture) return;
   if (type === 'mouse_up' && !pressedMouseButtons.has(event.button) && !touchGesture) {
     // WebKit can emit a late pointerup after pointer capture was already lost.
     // Its stale coordinate must not reposition the host cursor a second time.
@@ -1343,6 +1354,11 @@ function finishFullscreenExitSwipe(event?: PointerEvent): void {
   event?.preventDefault();
   event?.stopPropagation();
   fullscreenExitSwipe = null;
+}
+
+function onPointerCaptureEnd(event: PointerEvent): void {
+  if (event.pointerType === 'touch' && !touchPointerGestures.has(event.pointerId)) return;
+  releaseForwardedInput();
 }
 
 function releaseForwardedInput(): void {
@@ -1907,8 +1923,8 @@ onBeforeUnmount(() => {
         @pointerdown="sendPointerButton($event, 'mouse_down')"
         @pointermove="sendPointerMove"
         @pointerup="sendPointerButton($event, 'mouse_up')"
-        @pointercancel="releaseForwardedInput"
-        @lostpointercapture="releaseForwardedInput"
+        @pointercancel="onPointerCaptureEnd"
+        @lostpointercapture="onPointerCaptureEnd"
         @blur="releaseForwardedInput"
         @wheel="sendWheel"
       >
@@ -2026,6 +2042,7 @@ onBeforeUnmount(() => {
           {{ inputStatusLabel }}
         </span>
       </div>
+      <p>{{ t('webrtc.touch_input_hint') }}</p>
     </section>
 
     <div v-if="loading" class="browser-stream-loading" aria-hidden="true">

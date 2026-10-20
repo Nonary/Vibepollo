@@ -121,6 +121,11 @@ namespace remote_display_topology {
     // only drained normal-game identities that have no retained monitor role.
     std::vector<std::string> idle_normal_game_recovery_client_ids(bool capture_runtime_owned) const;
     bool generic_virtual_display_cleanup_allowed() const;
+    // Physical REVERT may retain a paused normal-game output, but cannot
+    // disturb a Remote Monitor or an output still referenced by capture.
+    // The caller separately excludes active/pending/tearing-down transports
+    // while holding the stream lifecycle gate. This grants no removal rights.
+    bool physical_display_restore_allowed() const;
     void set_plaintext_rtsp_warning_provider(std::function<std::string(const std::string &)> provider);
     monitor_runtime_state_t activate_or_resume(const std::string &client_uuid, const std::string &label, mode_t mode, uint64_t generation);
     monitor_runtime_state_t snapshot(const std::string &client_uuid, uint64_t generation) const;

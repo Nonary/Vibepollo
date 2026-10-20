@@ -333,10 +333,55 @@ ninja -C build
       cpack -G WIX --config ./build/CPackConfig.cmake
       ```}
     @tab{Portable | ```bash
-      cpack -G ZIP --config ./build/CPackConfig.cmake
+      cmake --build build --target package_portable --parallel 2
       ```}
   }}
 }
+
+### Windows portable package
+
+The opt-in `package_portable` target builds the runtime and creates
+`Vibepollo-Windows-<architecture>-<version>-portable.zip` in `build/cpack_artifacts`.
+Configure with an explicit `BUILD_VERSION` and `SUNSHINE_ASSETS_DIR=assets`.
+The default Windows package target still creates the WiX installer.
+
+The ZIP stage rejects existing user configuration, missing runtime/UI files,
+unbundled PE imports and debug compiler runtimes. The native host, listed runtime
+helpers, explicitly loaded libraries and resolved DLL imports must pass basic
+PE header checks, match the configured x86, AMD64 or ARM64 target, and have a
+complete section table with every nonempty raw section after that table and
+within the file. Zero-filled sections and trailing data are allowed. This is
+not complete Windows loader or ABI validation, and does not cover managed
+plugins or optional driver installer payloads. The installed
+product's `uninstall.exe` is excluded; remove a portable copy by deleting its
+folder after stopping the host. Release compiler DLLs must come
+from redistributable payloads; Visual Studio release CRT directories and the
+MinGW compiler directory are searched automatically. Additional directories can
+be supplied as a CMake list with `SUNSHINE_PORTABLE_REDISTRIBUTABLE_DIRS`.
+A developer's System32 CRT is not a redistributable source.
+
+Extract the complete ZIP to a private folder writable by the Windows user, then
+run `start-portable.cmd`. The launcher starts the host as the current user with
+physical-display defaults and configuration, pairing keys and logs in `config`.
+The packaged `README-portable.txt` describes setup and upgrade steps. Firewall
+policy must already permit Moonlight; the launcher changes no firewall rules.
+Virtual display, virtual controller and virtual audio features require separately
+installed drivers. Elevated applications and secure desktops cannot be controlled
+by this ordinary-user path.
+
+Existing non-PR Windows CI builds with a nonempty nonzero release/nightly version
+also build this target and recheck the extracted ZIP with the configured packaging
+hook. The separate `ci-portable-Windows` CI artifact is unsigned, is not included
+in the MSI/Setup or nightly public assets, and does not establish native runtime
+acceptance. Ordinary branch pushes retain their existing package-build skip;
+PR builds explicitly skip this check, including callers with a nonzero fallback
+version. The next qualifying scheduled/tag build must succeed before a complete product ZIP can be claimed as CI validated.
+
+Creating an archive is a packaging check. Before publishing it, build and extract
+the actual Windows runtime on a clean standard-user account without optional
+drivers, pair a normal Moonlight client and verify physical-desktop video, audio,
+keyboard/mouse, reconnect and clean exit. Check that no elevation prompt or
+machine setup occurs and that a second launch preserves pairing/configuration.
 
 ### Remote Build
 It may be beneficial to build remotely in some cases. This will enable easier building on different operating systems.

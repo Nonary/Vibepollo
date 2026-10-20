@@ -6,6 +6,10 @@ import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
 
 import { groupLibraryGames, providerLabels } from '@/utils/libraryGames';
+import {
+  isRemoteMonitorApplication,
+  preserveRemoteMonitorRouting,
+} from '../../web-legacy/utils/remoteMonitorPolicy';
 import { ApiError, apiGet, apiPost } from '@/api/client';
 import AppCompatibilitySettings from '@/components/app-edit/AppCompatibilitySettings.vue';
 import { parseAppExtras } from '@/utils/appCompatibility';
@@ -706,7 +710,13 @@ const virtualDisplayOnlyOverrideKeys = new Set([
   'vulkan_hdr_layer',
 ]);
 function overrideVisibleForDisplay(key: string): boolean {
-  return displaySelection.value !== 'physical' || !virtualDisplayOnlyOverrideKeys.has(key);
+  // Remote Monitor owns a virtual output independently of these hidden app
+  // routing fields. They must not hide its functional runtime overrides.
+  return (
+    isRemoteMonitor.value ||
+    displaySelection.value !== 'physical' ||
+    !virtualDisplayOnlyOverrideKeys.has(key)
+  );
 }
 const overrideSearch = ref('');
 const overrideAnnouncement = ref('');
@@ -1366,6 +1376,7 @@ const appCompatibility = computed({
 
 const routeId = computed(() => (typeof route.params.id === 'string' ? route.params.id : ''));
 const isNew = computed(() => route.name === 'application-new' || !routeId.value);
+const isRemoteMonitor = computed(() => isRemoteMonitorApplication(sourceApp.value));
 const isRemoteSession = computed(() => {
   const marker = sourceApp.value?.['remote-session'];
   return marker === 'input' || marker === 'monitor';
@@ -2046,6 +2057,7 @@ function buildPayload(): AppRecord {
   } else {
     delete payload['lossless-scaling-launch-delay'];
   }
+  preserveRemoteMonitorRouting(sourceApp.value, payload);
   return payload;
 }
 
@@ -4180,7 +4192,18 @@ onBeforeUnmount(() => {
               <option :value="false">{{ t('_common.disabled') }}</option>
             </select>
           </SettingRow>
-          <fieldset class="app-display-routing">
+          <InlineAlert
+            v-if="isRemoteMonitor"
+            tone="info"
+            :title="t('config.remote_monitor_display_title')"
+          >
+            <p>{{ t('config.remote_monitor_display_description') }}</p>
+            <p>{{ t('config.remote_monitor_display_limits') }}</p>
+            <RouterLink :to="{ name: 'devices' }">
+              {{ t('config.remote_monitor_display_layout_action') }}
+            </RouterLink>
+          </InlineAlert>
+          <fieldset v-if="!isRemoteMonitor" class="app-display-routing">
             <legend>{{ t('config.app_display_override_label') }}</legend>
             <p>{{ t('config.app_display_override_hint') }}</p>
             <div class="app-display-routing__choices">
@@ -4211,7 +4234,7 @@ onBeforeUnmount(() => {
             </div>
           </fieldset>
 
-          <template v-if="displaySelection === 'physical'">
+          <template v-if="!isRemoteMonitor && displaySelection === 'physical'">
             <SettingRow
               :label="t('config.app_display_physical_label')"
               :description="t('config.app_display_physical_hint')"
@@ -4286,7 +4309,7 @@ onBeforeUnmount(() => {
             </SettingRow>
           </template>
 
-          <template v-else>
+          <template v-else-if="!isRemoteMonitor">
             <SettingRow
               :label="t('ui.application.fields.displayMode.label')"
               :description="t('ui.application.fields.displayMode.description')"
