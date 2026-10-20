@@ -679,6 +679,17 @@ sunshine_register_component(NAME test_component_pairing_recovery TEST_SOURCE uni
     LINK_LIBRARIES Boost::property_tree nlohmann_json::nlohmann_json OpenSSL::Crypto
                    $<$<PLATFORM_ID:Windows>:advapi32>)
 sunshine_register_component(NAME test_component_virtual_display_scale TEST_SOURCE unit/test_virtual_display_scale.cpp)
+
+# The additive host policy deliberately compiles against the pinned 3.7 control
+# headers. A newer installed producer is authorized only by its queried ABI.
+set(SUNSHINE_TEST_VDD_DRIVER_ROOT "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualdisplay/src/driver" CACHE PATH "libvirtualdisplay driver source for catalog consumer tests")
+if(EXISTS "${SUNSHINE_TEST_VDD_DRIVER_ROOT}/control_client.cpp")
+    sunshine_register_component(NAME test_component_virtual_display_catalog_policy
+        TEST_SOURCE unit/platform/windows/test_virtual_display_catalog_policy.cpp
+        PRODUCT_SOURCES "${SUNSHINE_TEST_VDD_DRIVER_ROOT}/control_client.cpp" "${SUNSHINE_TEST_VDD_DRIVER_ROOT}/control_protocol.cpp"
+        INCLUDE_DIRECTORIES "${SUNSHINE_TEST_VDD_DRIVER_ROOT}/include")
+endif()
+
 sunshine_register_component(NAME test_component_color_profile_policy TEST_SOURCE unit/test_color_profile_policy.cpp)
 sunshine_register_component(NAME test_component_legacy_restore_event_policy TEST_SOURCE unit/test_legacy_restore_event_policy.cpp)
 sunshine_register_component(NAME test_component_recovery_status_policy TEST_SOURCE unit/test_recovery_status_policy.cpp)

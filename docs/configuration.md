@@ -1301,6 +1301,10 @@ dualsense_haptics_gain = 1.5
     </tr>
 </table>
 
+The Devices editor can offer **Advertise only this client's resolution** for a private Windows virtual display. The option appears only when the opened bundled driver reports control protocol 3.8 or later; an existing saved choice remains visible so it can be disabled after a downgrade. The default is off. This setting belongs to the paired client, rather than the global configuration or application overrides. Matching refresh rates remain available, including supported base and multiplied rates.
+
+An explicit request fails with a client-visible error when the producer cannot confirm support or the session uses a physical, shared, SudoVDA or peer capture target. Catalog changes take effect at a new session boundary by replacing only a securely reclaimed owned temporary monitor. A matching retained catalog is reused when its refresh and adapter provenance permit it. A capture-ready retained output can be reconciled only by the same paired app owner after all live and pending capture work has ended, with an exact tracked display identity. Changing the create provider does not bypass catalog checks for owned Sunshine displays; restore the bundled provider before resuming that retained private target. Windows driver packaging, signing and native enumeration must qualify a compatible producer before deployment.
+
 ### virtual_display_mode
 
 <table>

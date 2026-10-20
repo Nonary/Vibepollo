@@ -332,6 +332,8 @@ TEST(RemoteSession, SecondaryGameTransportJoinsActiveOrRetainedOutput) {
   EXPECT_TRUE(remote_session::joins_existing_game_output(remote_session::role_e::game, true));
   EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::game, false));
   EXPECT_TRUE(remote_session::joins_existing_game_output(remote_session::role_e::game, false, true));
+  EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::game, false, true, true));
+  EXPECT_TRUE(remote_session::joins_existing_game_output(remote_session::role_e::game, true, true, true));
   EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::monitor, true));
   EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::monitor, false, true));
   EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::input, true));

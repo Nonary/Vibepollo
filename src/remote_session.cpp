@@ -263,9 +263,10 @@ namespace remote_session {
   bool joins_existing_game_output(
     const role_e role,
     const bool stream_active,
-    const bool retained_output_ready
+    const bool retained_output_ready,
+    const bool exclusive_retained_owner
   ) {
-    return role == role_e::game && (stream_active || retained_output_ready);
+    return role == role_e::game && (stream_active || (retained_output_ready && !exclusive_retained_owner));
   }
 
   bool is_secondary_game_client(const std::string_view app_owner_uuid, const std::string_view caller_uuid) {
