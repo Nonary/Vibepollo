@@ -137,6 +137,7 @@ namespace stream {
     void graceful_stop(session_t &session);
     void join(session_t &session, bool lifecycle_lock_held = false);
     state_e state(session_t &session);
+    bool has_running_video(const session_t &session);
     inline bool send(session_t &session, const std::string_view &payload);
   }  // namespace session
 

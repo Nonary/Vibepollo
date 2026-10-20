@@ -274,6 +274,14 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
             "${SUNSHINE_TEST_REPOSITORY_ROOT}"
             "${CMAKE_CXX_COMPILER}")
     set_tests_properties(test_component_control_peer_timeout PROPERTIES LABELS "component" TIMEOUT 30)
+    foreach(_metrics_boundary IN ITEMS config windows_vram)
+        add_test(NAME test_component_hardware_metrics_${_metrics_boundary}
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_hardware_metrics_${_metrics_boundary}.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}"
+                "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_hardware_metrics_${_metrics_boundary} PROPERTIES LABELS "component" TIMEOUT 30)
+    endforeach()
 endif()
 
 if(WIN32)
@@ -720,6 +728,9 @@ sunshine_register_component(NAME test_component_session_history TEST_SOURCE unit
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_storage_diagnostics.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_policy.cpp"
     LINK_LIBRARIES PkgConfig::SQLITE3 nlohmann_json::nlohmann_json)
+sunshine_register_component(NAME test_component_hardware_metrics TEST_SOURCE unit/test_hardware_metrics.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/hardware_metrics.cpp"
+    LINK_LIBRARIES nlohmann_json::nlohmann_json)
 sunshine_register_component(NAME test_component_host_stats TEST_SOURCE unit/test_host_stats.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/host_stats_service.cpp")
 sunshine_register_component(NAME test_component_audio_policy TEST_SOURCE unit/test_audio.cpp

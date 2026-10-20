@@ -237,6 +237,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/host_stats.cpp"
         "${CMAKE_SOURCE_DIR}/src/host_stats.h"
         "${CMAKE_SOURCE_DIR}/src/host_stats_service.cpp"
+        "${CMAKE_SOURCE_DIR}/src/hardware_metrics.cpp"
+        "${CMAKE_SOURCE_DIR}/src/hardware_metrics.h"
         "${CMAKE_SOURCE_DIR}/src/host_stats_service.h"
         "${CMAKE_SOURCE_DIR}/src/host_stats_types.h"
         ${PLATFORM_TARGET_FILES})

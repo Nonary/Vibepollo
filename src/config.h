@@ -18,6 +18,7 @@
 
 // local includes
 #include "config_display_transition.h"
+#include "hardware_metrics_config.h"
 #include "nvenc/nvenc_config.h"
 
 namespace config {
@@ -514,6 +515,8 @@ namespace config {
     int session_history_ttl_days {0};  ///< Delete ended sessions older than this many days (0 disables age pruning)
     int session_history_db_size_limit_mb {0};  ///< Approximate live DB quota in MiB (0 disables size pruning)
     std::vector<std::string> csrf_allowed_origins;
+    bool hardware_metrics {false};  ///< Allow paired streaming clients to request hardware metrics
+    int hardware_metrics_interval {1000};  ///< Minimum client sample interval, in milliseconds
     bool realtime_stats_enabled {true};  ///< Sample live host stats (CPU/GPU/RAM/VRAM) for the web UI
     int realtime_stats_poll_interval_ms {2000};  ///< Host stats sampler interval in milliseconds
   };
@@ -529,6 +532,9 @@ namespace config {
   extern rtss_t rtss;
   extern lossless_scaling_t lossless_scaling;
   extern sunshine_t sunshine;
+
+  // Only the last completed apply_config publishes this lock-free snapshot.
+  hardware_metrics_settings_t get_hardware_metrics_settings();
 
   int parse(int argc, char *argv[]);
   std::unordered_map<std::string, std::string> parse_config(const std::string_view &file_content);

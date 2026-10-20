@@ -1097,6 +1097,13 @@ export const settingsCategories: SettingsCategory[] = [
             step: 1,
             visibleWhen: { key: 'session_history_enabled', equals: true },
           }),
+          boolean('hardware_metrics'),
+          number('hardware_metrics_interval', {
+            min: 500,
+            max: 10000,
+            step: 100,
+            visibleWhen: { key: 'hardware_metrics', equals: true },
+          }),
           boolean('realtime_stats_enabled'),
           number('realtime_stats_poll_interval_ms', {
             min: 250,
@@ -1245,6 +1252,8 @@ export const settingsDefaults: Record<string, unknown> = {
   session_history_enabled: true,
   session_history_ttl_days: 0,
   session_history_db_size_limit_mb: 0,
+  hardware_metrics: false,
+  hardware_metrics_interval: 1000,
   realtime_stats_enabled: true,
   realtime_stats_poll_interval_ms: 2000,
 };

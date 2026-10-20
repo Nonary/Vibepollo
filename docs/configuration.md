@@ -5169,3 +5169,11 @@ The previous `playnite_focus_attempts`, `playnite_focus_timeout_secs` and
 `playnite_focus_exit_on_first` keys remain readable aliases. Explicit shared
 keys take precedence. The web interface removes the corresponding old key
 when saving a shared focus setting, including resetting it to its default.
+
+### hardware_metrics
+
+Allow enabled paired streaming clients to request hardware metrics v1 during their own running video stream. Default: `disabled`. This disclosure setting is independent of admin realtime stats. Requires a client that implements the overlay protocol; the host does not render an overlay. See [Hardware metrics](hardware-metrics.md).
+
+### hardware_metrics_interval
+
+Minimum time between completed client hardware samples in milliseconds. Default: `1000`; range: `500`–`10000`. Samples are collected on request and shared between clients. Enabling the setting alone does not poll hardware.

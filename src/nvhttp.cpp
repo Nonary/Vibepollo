@@ -49,6 +49,7 @@
 #include "display_helper_integration.h"
 #include "file_handler.h"
 #include "globals.h"
+#include "hardware_metrics.h"
 #include "hdr_request_policy.h"
 #include "httpcommon.h"
 #include "http_pairing_policy.h"
@@ -3401,6 +3402,36 @@ namespace nvhttp {
       return !!(client_perm(verified_client) & perm);
     }
 
+    // Require current certificate-bound authority with View or Launch permission.
+    hardware_metrics::access_t hardware_metrics_access(req_https_t request) {
+      const auto settings = config::get_hardware_metrics_settings();
+      const auto verified_client = get_verified_cert(request);
+      return {settings.enabled, verified_client && !verified_client->uuid.empty() && has_client_perm(verified_client, PERM::_allow_view), settings.interval_ms};
+    }
+
+    bool hardware_metrics_has_running_video(req_https_t request) {
+      const auto verified_client = get_verified_cert(request);
+      return has_client_perm(verified_client, PERM::_allow_view) &&
+             rtsp_stream::has_running_video_for_client(verified_client->uuid);
+    }
+
+    void write_hardware_metrics(resp_https_t response, const hardware_metrics::response_t &result) {
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("Content-Type", "application/json");
+      headers.emplace("Cache-Control", "no-store");
+      response->write(static_cast<SimpleWeb::StatusCode>(result.status), result.body.dump(), headers);
+    }
+
+    void hardware_metrics_query(hardware_metrics::service_t &service, resp_https_t response, req_https_t request) {
+      auto result = hardware_metrics::query(service, [&] {
+        return hardware_metrics_access(request);
+      },
+                                            [&] {
+                                              return hardware_metrics_has_running_video(request);
+                                            });
+      write_hardware_metrics(std::move(response), result);
+    }
+
     // `quiet` keeps high-frequency background polls (e.g. ServerCommand) at debug level
     // so a client that legitimately lacks the permission doesn't flood the log.
     inline void log_permission_denied(std::string_view action, std::string_view perm_label, const verified_client_t &verified_client, bool quiet = false) {
@@ -3746,9 +3777,11 @@ namespace nvhttp {
       print_req<T>(request);
 
       int pair_status = 0;
+      bool metrics_supported = false;
       if constexpr (std::is_same_v<SunshineHTTPS, T>) {
         const auto verified_client = get_verified_cert(request);
         pair_status = !resolve_client_identity(request, verified_client).uuid.empty();
+        metrics_supported = hardware_metrics::advertised(hardware_metrics_access(request));
       }
 
       auto local_endpoint = request->local_endpoint();
@@ -3762,6 +3795,7 @@ namespace nvhttp {
       tree.put("root.GfeVersion", GFE_VERSION);
       tree.put("root.uniqueid", http::unique_id);
       tree.put("root.HttpsPort", net::map_port(PORT_HTTPS));
+      tree.put("root.HardwareMetricsVersion", metrics_supported ? 1 : 0);
       tree.put("root.ExternalPort", net::map_port(PORT_HTTP));
 
       // Optional Moonlight extension. These describe integration/configuration,
@@ -6455,6 +6489,12 @@ namespace nvhttp {
     // work, and on a single FIFO worker that made the host undiscoverable until restart.
     thread_pool_util::ThreadPool discovery_route_pool;
     discovery_route_pool.start(1);
+    hardware_metrics::service_t metrics_service {[] {
+      return platf::create_host_stats_provider();
+    }};
+    thread_pool_util::ThreadPool metrics_route_pool;
+    metrics_route_pool.start(1);
+    auto metrics_busy = std::make_shared<std::atomic_bool>(false);
 
     // Verify certificates after establishing connection
     https_server.verify = [](req_https_t req, SSL *ssl) {
@@ -6576,6 +6616,28 @@ namespace nvhttp {
         serverinfo<SunshineHTTPS>(std::move(resp), std::move(req));
       });
     };
+    https_server.resource["^/api/hardware-metrics$"]["GET"] =
+      [&metrics_service, &metrics_route_pool, metrics_busy, run_on_blocking_pool](auto resp, auto req) {
+        const auto access = hardware_metrics_access(req);
+        if (!access.enabled || !access.authenticated_viewer) {
+          write_hardware_metrics(std::move(resp), {403, {{"error", access.enabled ? "An authenticated viewer is required" : "Hardware metrics are disabled"}}});
+          return;
+        }
+        if (!hardware_metrics_has_running_video(req)) {
+          write_hardware_metrics(std::move(resp), {409, {{"error", "An active video stream is required"}}});
+          return;
+        }
+        if (metrics_busy->exchange(true)) {
+          write_hardware_metrics(std::move(resp), {503, {{"error", "Hardware metrics are busy"}}});
+          return;
+        }
+        run_on_blocking_pool(metrics_route_pool, [&metrics_service, metrics_busy, resp = std::move(resp), req = std::move(req)]() mutable {
+          auto release = util::fail_guard([metrics_busy] {
+            metrics_busy->store(false);
+          });
+          hardware_metrics_query(metrics_service, std::move(resp), std::move(req));
+        });
+      };
     https_server.resource["^/pair/?$"]["GET"] = pair<SunshineHTTPS>;
     https_server.resource["^/pair/?$"]["POST"] = pair<SunshineHTTPS>;
     https_server.resource["^/unpair/?$"]["GET"] = unpair<SunshineHTTPS>;
@@ -6733,6 +6795,8 @@ namespace nvhttp {
     blocking_route_pool.join();
     discovery_route_pool.stop();
     discovery_route_pool.join();
+    metrics_route_pool.stop();
+    metrics_route_pool.join();
     webrtc_stream::shutdown_all_sessions();
     rtsp_stream::terminate_sessions(false);
     remote_session::notify_monitor_shutdown();

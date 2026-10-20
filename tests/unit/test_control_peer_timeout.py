@@ -29,15 +29,25 @@ def between(source, start, end):
     return source[first:source.index(end, first)]
 
 
+def function(source, first):
+    begin = source.index(first)
+    depth = 0
+    for end in range(source.index("{", begin), len(source)):
+        depth += (source[end] == "{") - (source[end] == "}")
+        if depth == 0:
+            return source[begin:end + 1] + "\n"
+    raise ValueError("unterminated function")
+
+
 initializers = between(config, "  stream_t stream {", "    APPS_JSON_PATH,")
-publication_state = between(config, "    std::atomic<std::uint32_t> g_control_peer_timeout_ms", "    const video_t default_video =")
-getter = between(config, "  std::chrono::milliseconds get_control_peer_timeout() {", "  bool endline")
-publication = between(config, "    // Publish last,", "\n  int parse(int argc,")
+publication_state = between(config, "    std::atomic<std::uint32_t> g_control_peer_timeout_ms", "\n") + "\n"
+getter = function(config, "  std::chrono::milliseconds get_control_peer_timeout() {")
+publication = between(config, "    g_control_peer_timeout_ms.store(", "\n") + "\n"
 hot_policy = between(http, "    bool can_hot_apply_during_session(", "\n  }  // namespace")
 hot_entry = between(config, "  void apply_config_now(const display_transition::before_mutation_f &before_display_mutation) {", "    try {")
 hot_install = between(config, "      auto install_effective_configuration = [&] {", "        if (sunshine.session_history_enabled")
 default_stream = between(config, "    const stream_t default_stream =", "    const input_t default_input =")
-reset = between(config, "    void reset_runtime_config_to_defaults() {", "  }  // namespace\n\n  std::chrono::milliseconds get_control_peer_timeout")
+reset = function(config, "    void reset_runtime_config_to_defaults() {")
 apply_entry = between(config, "  void apply_config(std::unordered_map<std::string, std::string> &&vars) {", "#ifndef __ANDROID__")
 helpers = between(config, "  void string_f(", "  void string_restricted_f(")
 parse = between(config, '    generic_f(vars, "control_peer_timeout",', '    int_between_f(vars, "lan_encryption_mode",')
@@ -96,7 +106,7 @@ const sunshine_t default_sunshine;
   apply_test_hook(2); // actual timeout parse completed; not yet published
   assert(!vars.contains("control_peer_timeout"));
   apply_test_hook(3); // stand-in for the omitted unrelated parse/side effects
-''' + publication[:publication.rindex('  }')] + r'''
+''' + publication + r'''
   apply_test_hook(4); // store completed; hold writer/gate while CONNECT runs
 }
 // Compile the real hot-apply lock entry and effective-install call. File I/O,

@@ -497,7 +497,7 @@ namespace confighttp {
           continue;
         }
 
-        if (key.rfind("realtime_stats_", 0) == 0) {
+        if (key == "hardware_metrics" || key == "hardware_metrics_interval" || key.rfind("realtime_stats_", 0) == 0) {
           continue;
         }
 

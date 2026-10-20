@@ -1129,6 +1129,8 @@ namespace config {
     // reads the mutable/reset-in-progress configuration objects.
     std::atomic<std::uint32_t> g_control_peer_timeout_ms {0};
 
+    hardware_metrics_config_t g_hardware_metrics_config;
+
     const video_t default_video = video;
     const audio_t default_audio = audio;
     const stream_t default_stream = stream;
@@ -1166,6 +1168,10 @@ namespace config {
 
   std::chrono::milliseconds get_control_peer_timeout() {
     return std::chrono::milliseconds {g_control_peer_timeout_ms.load(std::memory_order_acquire)};
+  }
+
+  hardware_metrics_settings_t get_hardware_metrics_settings() {
+    return g_hardware_metrics_config.snapshot();
   }
 
   bool endline(char ch) {
@@ -2385,6 +2391,8 @@ namespace config {
       }
     }
 
+    bool_f(vars, "hardware_metrics", sunshine.hardware_metrics);
+    int_between_f(vars, "hardware_metrics_interval", sunshine.hardware_metrics_interval, {500, 10000});
     bool_f(vars, "realtime_stats_enabled", sunshine.realtime_stats_enabled);
     int_between_f(vars, "realtime_stats_poll_interval_ms", sunshine.realtime_stats_poll_interval_ms, {250, 60000});
 
@@ -2415,9 +2423,13 @@ namespace config {
       }
     }
 
-    // Publish last, after all configuration parsing and side effects succeed.
+    // Publish the completed timeout after configuration parsing and side effects succeed.
     // A pending CONNECT can keep using the last completed policy during apply.
     g_control_peer_timeout_ms.store(static_cast<std::uint32_t>(control_peer_timeout.count()), std::memory_order_release);
+
+    // Publish only after parsing and apply_config side effects succeed. Reset
+    // and failed applies leave the preceding completed settings visible.
+    g_hardware_metrics_config.publish({sunshine.hardware_metrics, sunshine.hardware_metrics_interval});
   }
 
   int parse(int argc, char *argv[]) {

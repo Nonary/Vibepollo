@@ -6,9 +6,23 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace platf {
+  // Only measurements explicitly tied to this provider-local device belong here.
+  // The legacy flat GPU fields can aggregate different adapters/fallbacks.
+  struct client_gpu_stats_t {
+    std::int32_t id = 0;
+    std::string name;
+    float usage_percent = -1.f;
+    float encoder_percent = -1.f;
+    float temperature_c = -1.f;
+    std::optional<std::uint64_t> vram_used_bytes;
+    std::optional<std::uint64_t> vram_total_bytes;
+  };
+
   struct host_stats_t {
     float cpu_percent = -1.f;
     float cpu_temp_c = -1.f;
@@ -21,6 +35,7 @@ namespace platf {
     std::uint64_t vram_total_bytes = 0;
     double net_rx_bps = -1.0;
     double net_tx_bps = -1.0;
+    std::vector<client_gpu_stats_t> client_gpus;
   };
 
   struct host_info_t {

@@ -186,3 +186,13 @@ test('Linux explicit non-KMS capture warns without rejecting the selection', () 
   assert.equal(linuxVirtualCaptureWarning('windows', 'wgc'), false);
   assert.equal(linuxVirtualCaptureWarning('macos', 'avfoundation'), false);
 });
+
+test('client hardware metrics are opt-in and use bounded request sampling', async () => {
+  const { settingsDefaults } = await import('../configs/settingsSchema.ts');
+  assert.equal(settingsDefaults.hardware_metrics, false);
+  assert.equal(settingsDefaults.hardware_metrics_interval, 1000);
+  const interval = settingsFields.get('hardware_metrics_interval');
+  assert.equal(interval?.min, 500);
+  assert.equal(interval?.max, 10000);
+  assert.deepEqual(interval?.visibleWhen, { key: 'hardware_metrics', equals: true });
+});

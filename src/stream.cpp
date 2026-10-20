@@ -46,6 +46,7 @@ extern "C" {
 #include "display_device.h"
 #include "display_helper_integration.h"
 #include "globals.h"
+#include "hardware_metrics_session.h"
 #include "host_stats.h"
 #include "haptics_gain.h"
 #include "input.h"
@@ -3567,6 +3568,10 @@ namespace stream {
 
     state_e state(session_t &session) {
       return session.state.load(std::memory_order_relaxed);
+    }
+
+    bool has_running_video(const session_t &session) {
+      return hardware_metrics::running_video(session.state.load(std::memory_order_relaxed) == state_e::RUNNING, session.input_only);
     }
 
     inline bool send(session_t &session, const std::string_view &payload) {
