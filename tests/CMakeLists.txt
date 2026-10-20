@@ -675,6 +675,14 @@ sunshine_register_component(NAME test_component_http_auth TEST_SOURCE unit/test_
 sunshine_register_component(NAME test_component_http_policy TEST_SOURCE unit/test_httpcommon.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_policy.cpp"
     LINK_LIBRARIES Boost::property_tree)
+sunshine_register_component(NAME test_component_https_listener_diagnostics
+    TEST_SOURCE unit/test_https_listener_diagnostics.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth_request_policy.cpp"
+    LINK_LIBRARIES nlohmann_json::nlohmann_json sunshine_test_simple_web_headers
+        Boost::algorithm Boost::function Boost::property_tree ${SUNSHINE_TEST_SOCKET_LIBRARIES})
+if(TARGET test_component_https_listener_diagnostics)
+    set_tests_properties(test_component_https_listener_diagnostics PROPERTIES TIMEOUT 30)
+endif()
 sunshine_register_component(NAME test_component_network_policy TEST_SOURCE unit/test_network.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/network_policy.cpp"
     LINK_LIBRARIES Boost::algorithm Boost::asio ${SUNSHINE_TEST_SOCKET_LIBRARIES})

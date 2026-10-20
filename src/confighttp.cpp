@@ -53,6 +53,7 @@
 #include "globals.h"
 #include "http_auth.h"
 #include "httpcommon.h"
+#include "https_listener_diagnostics.h"
 #include "platform/common.h"
 #ifdef _WIN32
   #include "src/platform/windows/image_convert.h"
@@ -6090,6 +6091,9 @@ namespace confighttp {
     auto address_family = net::af_from_enum_string(config::sunshine.address_family);
 
     https_server_t server(config::nvhttp.cert, config::nvhttp.pkey);
+    configure_https_listener_diagnostics(server, [](std::string_view message) {
+      BOOST_LOG(warning) << message;
+    });
     server.default_resource["DELETE"] = [](resp_https_t response, req_https_t request) {
       bad_request(response, request);
     };
