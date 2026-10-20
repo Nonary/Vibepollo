@@ -790,6 +790,7 @@ export const settingsCategories: SettingsCategory[] = [
             stacked: true,
           },
           text('fallback_mode'),
+          boolean('dd_remove_virtual_display_after_restore', { platform: 'windows' }),
           boolean('dd_config_revert_on_disconnect', { platform: ['windows', 'linux'] }),
           number('dd_config_revert_delay', {
             min: 0,
@@ -1175,6 +1176,7 @@ export const settingsDefaults: Record<string, unknown> = {
   vulkan_hdr_layer: true,
   dd_wa_dummy_plug_hdr10: false,
   wayland_hdr_compatibility: false,
+  dd_remove_virtual_display_after_restore: false,
   dd_config_revert_on_disconnect: false,
   dd_config_revert_delay: 3000,
   dd_always_restore_from_golden: true,

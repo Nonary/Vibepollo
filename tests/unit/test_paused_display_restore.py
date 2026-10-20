@@ -85,7 +85,7 @@ namespace fake {
   unsigned rtsp_sessions = 0, webrtc_teardown = 0;
 }
 namespace config {
-  struct DD { bool config_revert_on_disconnect = true; int paused_virtual_display_timeout_secs = 0; std::chrono::milliseconds config_revert_delay {}; };
+  struct DD { bool remove_virtual_display_after_restore = false; bool config_revert_on_disconnect = true; int paused_virtual_display_timeout_secs = 0; std::chrono::milliseconds config_revert_delay {}; };
   struct Video { DD dd; } video;
   void set_runtime_output_name_override(std::optional<std::string>) {}
   void clear_runtime_config_overrides() {}
@@ -125,9 +125,15 @@ namespace VDISPLAY {
 }
 namespace display_helper_integration {
   enum class RevertOwnershipPolicy { AllOwnersMustRelease, RetainPausedNormalGame };
+  enum class FinalRestoreDisplayPolicy { Retain, RemoveAfterRestore };
+  FinalRestoreDisplayPolicy last_retention_policy = FinalRestoreDisplayPolicy::Retain;
+  unsigned cleanup_cancellations = 0;
+  void cancel_final_restore_display_removal() { ++cleanup_cancellations; }
   void clear_pending_apply() { ++fake::pending_clears; }
   bool revert(bool, bool = false, bool = false, void * = nullptr,
-              RevertOwnershipPolicy policy = RevertOwnershipPolicy::AllOwnersMustRelease) {
+              RevertOwnershipPolicy policy = RevertOwnershipPolicy::AllOwnersMustRelease,
+              FinalRestoreDisplayPolicy retention = FinalRestoreDisplayPolicy::Retain) {
+    last_retention_policy = retention;
     ++fake::dispatches;
     assert(remote_display_topology::topology.identities == 0 ||
            policy == RevertOwnershipPolicy::RetainPausedNormalGame);
@@ -189,6 +195,16 @@ void reset() {
 }
 int main() {
   using namespace stream::session;
+  reset();
+  config::video.dd.remove_virtual_display_after_restore = true;
+  assert(!finalize_shared_runtime_if_idle("pause-retains", {}));
+  assert(display_helper_integration::last_retention_policy == display_helper_integration::FinalRestoreDisplayPolicy::Retain);
+  reset();
+  config::video.dd.remove_virtual_display_after_restore = true;
+  proc::proc.app_id = 0;
+  remote_display_topology::topology.identities = 0;
+  assert(finalize_shared_runtime_if_idle("final-removes", {}));
+  assert(display_helper_integration::last_retention_policy == display_helper_integration::FinalRestoreDisplayPolicy::RemoveAfterRestore);
   reset();
   assert(!finalize_shared_runtime_if_idle("pause", {}));
   assert(fake::dispatches == 1); // fails on the unchanged current-master function

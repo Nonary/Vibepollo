@@ -544,6 +544,8 @@
     "dd_config_label": "Device configuration",
     "dd_config_revert_delay": "Config revert delay",
     "dd_config_revert_delay_desc": "Additional delay in milliseconds to wait before reverting configuration when the app has been closed or the last session terminated. Main purpose is to provide a smoother transition when quickly switching between apps.",
+    "dd_remove_virtual_display_after_restore": "Remove virtual display after final restore",
+    "dd_remove_virtual_display_after_restore_desc": "Remove owned virtual displays after the game has closed, the last stream has ended, and physical display restoration is confirmed. Disabled by default to retain a stable display identity. Paused sessions keep their displays; unavailable restore confirmation leaves displays retained.",
     "dd_config_revert_on_disconnect": "Config revert on disconnect",
     "dd_config_revert_on_disconnect_desc": "Revert configuration upon disconnect of all clients instead of app close or last session termination.",
     "dd_paused_virtual_display_timeout_secs": "Paused session virtual display timeout (seconds)",

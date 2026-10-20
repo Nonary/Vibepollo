@@ -948,6 +948,7 @@ namespace config {
       video_t::dd_t::hdr_option_e::automatic,  // hdr_option
       video_t::dd_t::hdr_request_override_e::automatic,  // hdr_request_override
       3s,  // config_revert_delay
+      false,  // remove_virtual_display_after_restore (retain stable identities by default)
       {},  // config_revert_on_disconnect
       7200,  // paused_virtual_display_timeout_secs (2 hours)
       true,  // always_restore_from_golden (uses session fallback until a golden snapshot exists)
@@ -1965,6 +1966,7 @@ namespace config {
         video.dd.config_revert_delay = std::chrono::milliseconds {value};
       }
     }
+    bool_f(vars, "dd_remove_virtual_display_after_restore", video.dd.remove_virtual_display_after_restore);
     bool_f(vars, "dd_config_revert_on_disconnect", video.dd.config_revert_on_disconnect);
     {
       int value = 0;

@@ -2702,8 +2702,24 @@ TEST(DisplayHelperV2StateMachine, NonVirtualDisplayGoesToWaitingState) {
 TEST(DisplayHelperV2StateMachine, RevertRunsRecoveryAndValidation) {
   StateMachineHarness harness;
   harness.seed_current_snapshot();
-
-  harness.state_machine.handle_message(display_helper::v2::RevertCommand {harness.cancellation.current_generation()});
+  bool restored_before_exit = false;
+  harness.state_machine.set_connection_epoch_provider([] { return 3; });
+  harness.state_machine.set_recovery_status_result_callback(
+    [&](std::uint64_t ticket, display_helper::v2::RecoveryStatus status,
+        std::uint64_t, bool, std::uint64_t epoch) {
+      EXPECT_EQ(ticket, 17);
+      EXPECT_EQ(epoch, 3);
+      if (status == display_helper::v2::RecoveryStatus::Restored) restored_before_exit = true;
+    });
+  harness.state_machine.set_exit_callback([&](int code) {
+    EXPECT_TRUE(restored_before_exit);
+    harness.cancellation.cancel();  // Production retires this generation at exit.
+    harness.exit_code = code;
+  });
+  display_helper::v2::RevertCommand revert {harness.cancellation.current_generation()};
+  revert.restore_ticket = 17;
+  revert.connection_epoch = 3;
+  harness.state_machine.handle_message(revert);
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Recovery);
   // The boot-restore scheduled task must survive until the restore is confirmed:
   // a reboot mid-restore still needs it.

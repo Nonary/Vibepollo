@@ -87,20 +87,32 @@ namespace display_helper_integration {
   // Terminal user actions may explicitly override managed display ownership.
   // A saved enabled-to-disabled policy transition may finish old recovery even
   // though future display automation is disabled. Ordinary REVERTs stay gated.
+  // RetainPausedNormalGame is only for an idle paused app with configured
+  // disconnect restoration, under the stream lifecycle gate. It preserves
+  // normal reservations and never grants generic display removal authority.
   enum class RevertOwnershipPolicy {
     AllOwnersMustRelease,
     RetainPausedNormalGame,
   };
 
-  // RetainPausedNormalGame is only for an idle paused app with configured
-  // disconnect restoration, under the stream lifecycle gate. It preserves
-  // normal reservations and never grants generic display removal authority.
+  // RemoveAfterRestore is only selected for a final ended-application restore.
+  // It requires exact helper completion and never grants paused cleanup authority.
+  enum class FinalRestoreDisplayPolicy {
+    Retain,
+    RemoveAfterRestore,
+  };
+
+  // Revoke deferred final-restore removal at launch/resume ingress, including
+  // sessions that reactivate and drain before the completion observer runs.
+  void cancel_final_restore_display_removal();
+
   bool revert(
     bool prefer_golden_if_current_missing = true,
     bool override_managed_ownership = false,
     bool allow_disabled_recovery = false,
     RecoveryTicket *recovery_ticket = nullptr,
-    RevertOwnershipPolicy ownership_policy = RevertOwnershipPolicy::AllOwnersMustRelease
+    RevertOwnershipPolicy ownership_policy = RevertOwnershipPolicy::AllOwnersMustRelease,
+    FinalRestoreDisplayPolicy display_policy = FinalRestoreDisplayPolicy::Retain
   );
 
   std::optional<RecoveryStatusSnapshot> query_recovery_status(

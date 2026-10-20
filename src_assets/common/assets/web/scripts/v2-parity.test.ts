@@ -43,6 +43,18 @@ test('AMD speed default agrees across backend, settings UI and legacy fallbacks'
   }
 });
 
+test('final restore removal defaults to retention and is Windows-only', () => {
+  assert.equal(settingsDefaults.dd_remove_virtual_display_after_restore, false);
+  const field = settingsCategories.flatMap((category) =>
+    category.groups.flatMap((group) => group.fields),
+  ).find((candidate) => candidate.key === 'dd_remove_virtual_display_after_restore');
+  assert.ok(field);
+  assert.equal(field.kind, 'boolean');
+  assert.equal(matchesPlatform(field, 'windows'), true);
+  assert.equal(matchesPlatform(field, 'linux'), false);
+  assert.equal(matchesPlatform(field, 'macos'), false);
+});
+
 test('capture options follow the host platform', () => {
   assert.deepEqual(
     captureOptionsForPlatform('linux').map((option) => option.value),

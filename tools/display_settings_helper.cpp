@@ -4444,12 +4444,6 @@ namespace {
         }
 
         const bool exit_helper = self->should_exit_after_restore();
-        if (exit_helper && self->running_flag) {
-          BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
-          self->running_flag->store(false, std::memory_order_release);
-        } else if (!exit_helper) {
-          BOOST_LOG(info) << "Restore confirmed (initial attempt); keeping helper alive for newer connection.";
-        }
         self->event_pump.stop();
         self->event_pump_running.store(false, std::memory_order_release);
         self->restore_poll_active.store(false, std::memory_order_release);
@@ -4463,6 +4457,12 @@ namespace {
           last_attempt_ticket,
           guard_generation,
           status_epoch);
+        if (exit_helper && self->running_flag) {
+          BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
+          self->running_flag->store(false, std::memory_order_release);
+        } else if (!exit_helper) {
+          BOOST_LOG(info) << "Restore confirmed (initial attempt); keeping helper alive for newer connection.";
+        }
         return;
       }
 
@@ -4599,12 +4599,6 @@ namespace {
           }
 
           const bool exit_helper = self->should_exit_after_restore();
-          if (exit_helper && self->running_flag) {
-            BOOST_LOG(info) << "Restore confirmed; exiting helper.";
-            self->running_flag->store(false, std::memory_order_release);
-          } else if (!exit_helper) {
-            BOOST_LOG(info) << "Restore confirmed while newer connection active; helper remains running.";
-          }
           self->restore_poll_active.store(false, std::memory_order_release);
           self->event_pump.stop();
           self->event_pump_running.store(false, std::memory_order_release);
@@ -4618,6 +4612,12 @@ namespace {
             last_attempt_ticket,
             guard_generation,
             status_epoch);
+          if (exit_helper && self->running_flag) {
+            BOOST_LOG(info) << "Restore confirmed; exiting helper.";
+            self->running_flag->store(false, std::memory_order_release);
+          } else if (!exit_helper) {
+            BOOST_LOG(info) << "Restore confirmed while newer connection active; helper remains running.";
+          }
           return;
         }
 

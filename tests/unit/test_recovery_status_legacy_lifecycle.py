@@ -59,6 +59,14 @@ lifecycle_start = legacy.index("    // Ensure the worker thread is stopped and t
 lifecycle_end = legacy.index("    async_pipe.stop();", lifecycle_start) + len("    async_pipe.stop();")
 lifecycle = legacy[lifecycle_start:lifecycle_end]
 
+success_sequences = []
+search_from = legacy.index("static void restore_poll_proc")
+for _ in range(2):
+    begin = legacy.index("const bool exit_helper = self->should_exit_after_restore();", search_from)
+    end = legacy.index("return;", begin) + len("return;")
+    success_sequences.append(legacy[begin:end])
+    search_from = end
+
 program = r'''
 #include <atomic>
 #include <algorithm>
@@ -226,8 +234,50 @@ static POWERBROADCAST_SETTING power_setting(DWORD data, DWORD length = sizeof(DW
   setting.Data[0] = data;
   return setting;
 }
+
+// Execute each production terminal success sequence with pipe retirement
+// modeled by running_flag. Both paths must publish while the pipe stays live.
+struct SuccessfulRestoreState {
+  std::atomic<bool> running {true};
+  std::atomic<bool> *running_flag {&running};
+  std::atomic<bool> event_pump_running {true}, restore_poll_active {true}, restore_requested {true};
+  std::atomic<int> restore_active_until_ms {1}, last_restore_event_ms {1};
+  enum class RestoreWindow { Event };
+  std::atomic<RestoreWindow> restore_active_window {RestoreWindow::Event};
+  struct Pump { void stop() {} } event_pump;
+  bool should_exit = true;
+  unsigned notices = 0;
+  bool should_exit_after_restore() const { return should_exit; }
+  void clear_restore_origin() {}
+  void publish_recovery_status(display_helper::recovery_status::status value,
+                               std::uint64_t ticket, std::uint64_t generation, std::uint64_t epoch) {
+    assert(running.load() && !restore_poll_active.load() && !event_pump_running.load());
+    assert(value == display_helper::recovery_status::status::restored && ticket == 7 && generation == 9 && epoch == 3);
+    ++notices;
+  }
+};
+struct SuccessLog { template<class T> SuccessLog &operator<<(const T &) { return *this; } };
+#define BOOST_LOG(level) SuccessLog {}
+void initial_restore_success(SuccessfulRestoreState *self) {
+  using RestoreWindow = SuccessfulRestoreState::RestoreWindow;
+  const std::uint64_t last_attempt_ticket = 7, guard_generation = 9, status_epoch = 3;
+''' + success_sequences[0] + r'''
+}
+void retry_restore_success(SuccessfulRestoreState *self) {
+  using RestoreWindow = SuccessfulRestoreState::RestoreWindow;
+  const std::uint64_t last_attempt_ticket = 7, guard_generation = 9, status_epoch = 3;
+''' + success_sequences[1] + r'''
+}
+
 int main() {
   using namespace std::chrono_literals;
+  for (const auto success : {initial_restore_success, retry_restore_success}) {
+    SuccessfulRestoreState state;
+    success(&state); assert(state.notices == 1 && !state.running.load());
+    SuccessfulRestoreState newer_connection;
+    newer_connection.should_exit = false;
+    success(&newer_connection); assert(newer_connection.notices == 1 && newer_connection.running.load());
+  }
   {
     TerminalState state;
     cleanup_failed_restore(&state, false);

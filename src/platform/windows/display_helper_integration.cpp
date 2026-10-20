@@ -900,6 +900,7 @@ namespace {
 #endif
   }
   static std::atomic<std::uint64_t> g_restore_generation {0};
+  static std::atomic<std::uint64_t> g_final_restore_cleanup_generation {0};
   static std::atomic<std::uint64_t> g_disarm_generation_sent {0};
   static std::atomic<std::int64_t> g_last_revert_us {0};
   static std::atomic<std::int64_t> g_last_disarm_attempt_us {0};
@@ -1046,6 +1047,7 @@ namespace {
 
   using display_helper_integration::RecoveryTicket;
   using display_helper_integration::RecoveryStatus;
+  using display_helper_integration::RecoveryStatusSnapshot;
   using display_helper_integration::has_pending_apply;
 
   class OrphanRecoveryMonitor {
@@ -1054,6 +1056,9 @@ namespace {
       RecoveryTicket ticket;
       std::vector<VDISPLAY::TrackedDisplayCleanupTarget> targets;
       std::set<std::string> known_physical_output_ids;
+      bool remove_after_restore {false};
+      std::uint64_t cleanup_generation {0};
+      std::uint64_t control_generation {0};
     };
 
     void start() {
@@ -1121,13 +1126,25 @@ namespace {
       if (!policy.begin(incident.ticket.id, std::move(target_ids))) return;
       if (!policy.set_event_baseline(incident.ticket.id, 0)) return;
 
+      std::optional<RecoveryStatusSnapshot> restored_acknowledgement;
+      const auto completion_current = [&] {
+        return !incident.remove_after_restore ||
+               (g_final_restore_cleanup_generation.load(std::memory_order_acquire) == incident.cleanup_generation &&
+                g_last_apply_generation.load(std::memory_order_acquire) == incident.control_generation);
+      };
       while (!stop.stop_requested() && current_incident(revision, stop)) {
+        if (!completion_current()) return;
         if (!g_restore_expected.load(std::memory_order_acquire) ||
             g_restore_generation.load(std::memory_order_acquire) != incident.ticket.id) return;
         // The existing helper event handler publishes changes. Wait for those
         // messages instead of polling its recovery state or expiring failures.
-        const auto status = query_recovery_status(incident.ticket, false, kStatusTimeout, true);
-        if (!status || status->status == RecoveryStatus::Unknown) {
+        // Keep an exact terminal acknowledgement while stream teardown drains.
+        // Successful helpers may exit immediately after sending this result.
+        const auto status = restored_acknowledgement ? restored_acknowledgement :
+          query_recovery_status(incident.ticket, false, kStatusTimeout, true);
+        if (!status || status->ticket != incident.ticket.id ||
+            status->connection_generation != incident.ticket.connection_generation ||
+            status->status == RecoveryStatus::Unknown) {
           std::unique_lock lock(mutex_);
           cv_.wait_for(lock, kRetryPause, [&] {
             return stop.stop_requested() || stopping_ || incident_revision_ != revision;
@@ -1143,7 +1160,9 @@ namespace {
 
         switch (status->status) {
           case RecoveryStatus::Restored:
-            return;
+            if (!incident.remove_after_restore) return;
+            restored_acknowledgement = *status;
+            break;
           case RecoveryStatus::Active:
             (void) policy.update_status(incident.ticket.id, platf::wake_recovery_cleanup_policy::helper_status_t::active);
             break;
@@ -1153,7 +1172,10 @@ namespace {
           case RecoveryStatus::Unknown:
             return;
         }
-        if (!event_hint_pending || status->status != RecoveryStatus::Failed) {
+        // The optional final-restore path never tears down a failed/pending
+        // restore. Existing wake recovery cleanup remains an independent policy.
+        if (!restored_acknowledgement &&
+            (incident.remove_after_restore || !event_hint_pending || status->status != RecoveryStatus::Failed)) {
           std::unique_lock lock(mutex_);
           cv_.wait_for(lock, kRetryPause, [&] {
             return stop.stop_requested() || stopping_ || incident_revision_ != revision;
@@ -1168,7 +1190,7 @@ namespace {
           std::this_thread::sleep_for(kRetryPause);
           continue;
         }
-        if (!current_incident(revision, stop) ||
+        if (!current_incident(revision, stop) || !completion_current() ||
             !g_restore_expected.load(std::memory_order_acquire) ||
             g_restore_generation.load(std::memory_order_acquire) != incident.ticket.id ||
             !owners_clear_under_lifecycle()) {
@@ -1189,19 +1211,21 @@ namespace {
         // Parking is only requested after the helper already reports a known
         // failed result. A Failed reply confirms all helper mutation workers
         // and queued retries for this ticket are quiescent.
-        const auto parked = query_recovery_status(incident.ticket, true, kStatusTimeout);
-        if (!parked || parked->status != RecoveryStatus::Failed || !parked->parked) {
-          if (parked && parked->status == RecoveryStatus::Restored) return;
-          execution_lock.unlock();
-          lifecycle_lock.unlock();
-          std::this_thread::sleep_for(kRetryPause);
-          continue;
+        if (!restored_acknowledgement) {
+          const auto parked = query_recovery_status(incident.ticket, true, kStatusTimeout);
+          if (!parked || parked->status != RecoveryStatus::Failed || !parked->parked) {
+            if (parked && parked->status == RecoveryStatus::Restored) return;
+            execution_lock.unlock();
+            lifecycle_lock.unlock();
+            std::this_thread::sleep_for(kRetryPause);
+            continue;
+          }
+          (void) policy.update_status(incident.ticket.id, platf::wake_recovery_cleanup_policy::helper_status_t::failed);
         }
-        (void) policy.update_status(incident.ticket.id, platf::wake_recovery_cleanup_policy::helper_status_t::failed);
 
         bool retry_physical_verification = false;
         for (const auto &target : incident.targets) {
-          if (!current_incident(revision, stop) ||
+          if (!current_incident(revision, stop) || !completion_current() ||
               !g_restore_expected.load(std::memory_order_acquire) ||
               g_restore_generation.load(std::memory_order_acquire) != incident.ticket.id) {
             return;
@@ -1230,7 +1254,7 @@ namespace {
             retry_physical_verification = true;
             break;
           }
-          if (!policy.authorize_target(
+          if (!restored_acknowledgement && !policy.authorize_target(
                 incident.ticket.id,
                 status->event_revision,
                 id,
@@ -1239,15 +1263,16 @@ namespace {
                 tracked)) {
             continue;
           }
-          if (!current_incident(revision, stop) ||
+          if (!current_incident(revision, stop) || !completion_current() ||
               !g_restore_expected.load(std::memory_order_acquire) ||
               g_restore_generation.load(std::memory_order_acquire) != incident.ticket.id ||
               !owners_clear_under_lifecycle() ||
               !VDISPLAY::tracked_display_cleanup_target_matches(target)) {
             return;
           }
-          policy.record_attempt(incident.ticket.id, id);
-          BOOST_LOG(info) << "Wake recovery cleanup: removing one captured managed virtual display after verified physical recovery.";
+          if (!restored_acknowledgement) policy.record_attempt(incident.ticket.id, id);
+          BOOST_LOG(info) << (restored_acknowledgement ? "Final restore cleanup" : "Wake recovery cleanup")
+                          << ": removing one captured managed virtual display after verified physical recovery.";
           const bool removed = VDISPLAY::remove_tracked_display_cleanup_target(target);
           const bool identity_gone = removed && !VDISPLAY::tracked_display_cleanup_target_matches(target);
           if (!identity_gone) {
@@ -1257,7 +1282,7 @@ namespace {
           const auto physical_after = capture_physical_settings_snapshot();
           if (!physical_after || !physical_settings_match(*physical_before, *physical_after)) {
             BOOST_LOG(warning) << "Wake recovery cleanup: physical display state changed during targeted removal; restoring the just-verified pre-removal physical layout.";
-            if (!current_incident(revision, stop) ||
+            if (!current_incident(revision, stop) || !completion_current() ||
                 !g_restore_expected.load(std::memory_order_acquire) ||
                 g_restore_generation.load(std::memory_order_acquire) != incident.ticket.id) {
               BOOST_LOG(warning) << "Wake recovery cleanup: restore ticket changed; not applying the prior physical snapshot.";
@@ -1268,6 +1293,7 @@ namespace {
               return;
             }
           }
+          if (!identity_gone && restored_acknowledgement) return;
         }
         if (retry_physical_verification) {
           continue;
@@ -2621,7 +2647,8 @@ namespace display_helper_integration {
     const bool override_managed_ownership,
     const bool allow_disabled_recovery,
     RecoveryTicket *recovery_ticket,
-    const RevertOwnershipPolicy ownership_policy) {
+    const RevertOwnershipPolicy ownership_policy,
+    const FinalRestoreDisplayPolicy display_policy) {
     if (recovery_ticket) *recovery_ticket = {};
     const bool managed_cleanup_allowed = remote_display_topology::instance().generic_virtual_display_cleanup_allowed();
     const bool retained_normal_restore_allowed =
@@ -2680,6 +2707,10 @@ namespace display_helper_integration {
           RecoveryTicket {ticket_id, connection_generation},
           std::move(cleanup_targets),
           std::move(known_physical_output_ids),
+          display_policy == FinalRestoreDisplayPolicy::RemoveAfterRestore &&
+            ownership_policy == RevertOwnershipPolicy::AllOwnersMustRelease,
+          g_final_restore_cleanup_generation.load(std::memory_order_acquire),
+          g_last_apply_generation.load(std::memory_order_acquire),
         });
       }
     }
@@ -2717,6 +2748,10 @@ namespace display_helper_integration {
       case platf::display_helper_client::RecoveryStatus::Unknown: status = RecoveryStatus::Unknown; break;
     }
     return RecoveryStatusSnapshot {result->ticket, result->connection_generation, status, result->event_revision, result->parked};
+  }
+
+  void cancel_final_restore_display_removal() {
+    g_final_restore_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
   }
 
   void start_orphan_recovery_monitor() {

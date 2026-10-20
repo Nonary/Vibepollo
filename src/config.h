@@ -228,6 +228,7 @@ namespace config {
       hdr_option_e hdr_option;
       hdr_request_override_e hdr_request_override;
       std::chrono::milliseconds config_revert_delay;  ///< Time to wait until settings are reverted (after stream ends/app exists).
+      bool remove_virtual_display_after_restore;  ///< Remove captured virtual displays after confirmed final restore (Windows only).
       bool config_revert_on_disconnect;  ///< Specify whether to revert display configuration on client disconnect.
       int paused_virtual_display_timeout_secs;  ///< Optional delay before virtual display cleanup while stream is paused (0 keeps alive).
       enum class helper_engine_e : int {

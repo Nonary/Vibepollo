@@ -305,6 +305,7 @@ namespace stream {
   void cancel_paused_display_cleanup() {
 #ifdef _WIN32
     g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
+    display_helper_integration::cancel_final_restore_display_removal();
 #elif defined(__linux__)
     platf::linux_display::backend().cancel_scheduled_revert();
 #endif
@@ -3351,6 +3352,9 @@ namespace stream {
     }
 
     void start_shared_platform_if_needed() {
+#ifdef _WIN32
+      display_helper_integration::cancel_final_restore_display_removal();
+#endif
       arm_shared_runtime_cleanup();
       shared_runtime_paused_restore_dispatched = false;
       if (shared_platform_started) {
@@ -3483,7 +3487,13 @@ namespace stream {
                             "(config_revert_on_disconnect=false, paused timeout disabled).";
       } else if (display_restore_requested) {
         BOOST_LOG(info) << "Display restore: final stream ended; dispatching restore while keeping virtual display alive.";
-        if (!display_helper_integration::revert(true)) {
+        const auto retention_policy = !is_paused && config::video.dd.remove_virtual_display_after_restore ?
+          display_helper_integration::FinalRestoreDisplayPolicy::RemoveAfterRestore :
+          display_helper_integration::FinalRestoreDisplayPolicy::Retain;
+        if (!display_helper_integration::revert(
+              true, false, false, nullptr,
+              display_helper_integration::RevertOwnershipPolicy::AllOwnersMustRelease,
+              retention_policy)) {
           BOOST_LOG(debug) << "Display helper: restore dispatch failed after final stream; virtual display remains active.";
         }
       } else {

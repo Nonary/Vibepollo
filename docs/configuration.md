@@ -1741,6 +1741,16 @@ back to a physical output, the virtual-only promotion is not applied.
     </tr>
 </table>
 
+### dd_remove_virtual_display_after_restore
+
+Remove owned virtual displays after the application has closed, the last stream has ended, and the display helper confirms successful physical display restoration. Only the exact managed display identities captured for that restore are eligible. A pending, failed, or unavailable confirmation keeps the displays retained. Launching or resuming another session cancels deferred removal.
+
+This option applies to Windows. The default is `disabled`, preserving stable identities between streams. Paused applications retain their displays. This setting does not change when physical restoration is requested; `dd_config_revert_on_disconnect` and application shutdown still control that behavior.
+
+```ini
+dd_remove_virtual_display_after_restore = disabled
+```
+
 ### dd_config_revert_on_disconnect
 
 <table>
