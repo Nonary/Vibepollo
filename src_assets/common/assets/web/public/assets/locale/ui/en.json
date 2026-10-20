@@ -1644,14 +1644,14 @@
           "label": "HDR requested by the client"
         },
         "dd_manual_refresh_rate": {
-          "description": "Enter a whole or decimal refresh rate in hertz."
+          "description": "Enter a whole or decimal refresh rate in hertz. For a new app launch with no app or stream already running, matching configuration values take priority in this order: Client, Application, Global. Joining an active shared session or reconnecting to an existing app, including a paused app, may keep the host's existing settings. A client's Display mode override takes priority over a manual refresh rate."
         },
         "dd_config_revert_delay": {
           "description": "Wait this many milliseconds after the last stream or app ends before restoring the previous display layout.",
           "label": "Display restore delay"
         },
         "dd_manual_resolution": {
-          "description": "Use WIDTHxHEIGHT, for example 2560x1440."
+          "description": "Use WIDTHxHEIGHT, for example 2560x1440. For a new app launch with no app or stream already running, matching configuration values take priority in this order: Client, Application, Global. Joining an active shared session or reconnecting to an existing app, including a paused app, may keep the host's existing settings. A client's Display mode override and launch resolution scaling take priority over a manual resolution."
         },
         "dd_mode_remapping": {
           "description": "Use a different resolution on the streaming display when the client requests a specific size.",
@@ -2217,7 +2217,7 @@
         "inactive_title": "Overrides are currently inactive",
         "invalid_saved_description": "The saved value is not in the supported three-list format. It has been preserved unchanged so these controls cannot silently replace it. Correct it in the configuration file before editing substitutions here.",
         "invalid_saved_title": "Saved resolution overrides could not be read",
-        "manual_description": "A fixed resolution or refresh rate takes priority for that part of the display mode. Overrides remain active for each value set to Match the client.",
+        "manual_description": "A fixed resolution or refresh rate takes priority over remapping rules for that value. For a new app launch with no app or stream already running, matching configuration values take priority in this order: Client, Application, Global. Joining an active shared session or reconnecting to an existing app, including a paused app, may keep the host's existing settings. A client's Display mode override takes priority over manual values. Launch resolution scaling also takes priority over a manual resolution. Rules remain active for each value set to Match the client, unless a client's Display mode override is active; that override bypasses all remapping.",
         "manual_title": "A fixed display mode is active",
         "policy_conflict_description": "The automatic-refresh and fixed-refresh rule lists contain different behavior for the same resolution. Preserve those policy-specific rules in Advanced Display settings, or make them agree before using the simple editor.",
         "policy_conflict_title": "Policy-specific resolution rules need attention",
