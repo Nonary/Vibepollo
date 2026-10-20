@@ -261,3 +261,107 @@ test('device save merges local display and command edits with the latest server 
     undo: [{ cmd: 'new-undo', elevated: false }],
   });
 });
+
+for (const viewport of [
+  { width: 1280, height: 720 },
+  { width: 390, height: 844 },
+]) {
+  test(`device save stays in view when changing stream permission at ${viewport.width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    await installHost(page, { platform: 'windows' });
+    const stored: Record<string, unknown> = {
+      uuid: 'alpha',
+      name: 'Living room',
+      perm: 0x071f1f00,
+      enable_legacy_ordering: true,
+      connected: false,
+      display_mode: '2560x1440x120',
+      hdr_profile: 'living-room.icc',
+      prefer_10bit_sdr: true,
+      config_overrides: { bitrate: '25000' },
+      allow_client_commands: false,
+      do: [{ cmd: 'keep-do', elevated: true }],
+      undo: [{ cmd: 'keep-undo', elevated: false }],
+    };
+    let latestIdentity = false;
+    const updates: Record<string, unknown>[] = [];
+    let releaseUpdate!: () => void;
+    const updatePending = new Promise<void>((resolve) => {
+      releaseUpdate = resolve;
+    });
+    await page.route('**/api/clients/list', async (route) => {
+      if (latestIdentity) stored.name = 'Latest server name';
+      await route.fulfill({ json: { status: true, platform: 'windows', named_certs: [stored] } });
+    });
+    await page.route('**/api/clients/update', async (route) => {
+      const payload = route.request().postDataJSON() as Record<string, unknown>;
+      updates.push(payload);
+      await updatePending;
+      Object.assign(stored, payload);
+      await route.fulfill({ json: { status: true } });
+    });
+
+    await page.goto('/v2/devices');
+    await page.getByRole('button', { name: 'Edit device' }).click();
+    const access = page.getByRole('checkbox', { name: 'View stream', exact: true });
+    await expect(access).toBeChecked();
+    await access.uncheck();
+    const save = page.getByRole('button', { name: 'Save device', exact: true });
+    const cancel = page.getByRole('button', { name: 'Cancel', exact: true });
+    // Check the actual viewport before Save can auto-scroll itself into view.
+    await expect(save).toBeInViewport({ ratio: 1 });
+    await expect(cancel).toBeInViewport({ ratio: 1 });
+    expect(updates).toHaveLength(0);
+    await cancel.click();
+    await expect(access).toBeChecked();
+    expect(updates).toHaveLength(0);
+    await access.uncheck();
+    await expect(save).toBeInViewport({ ratio: 1 });
+
+    latestIdentity = true;
+    try {
+      await save.click();
+      await expect.poll(() => updates.length).toBe(1);
+      await expect(page.getByRole('button', { name: 'Saving', exact: true })).toBeDisabled();
+      await expect(cancel).toBeDisabled();
+    } finally {
+      releaseUpdate();
+    }
+    await expect(save).toBeEnabled();
+    expect(updates[0]).toMatchObject({
+      uuid: 'alpha',
+      name: 'Latest server name',
+      // Only the View stream bit changes; all other permissions remain set.
+      perm: 0x051f1f00,
+      enable_legacy_ordering: true,
+      display_mode: '2560x1440x120',
+      hdr_profile: 'living-room.icc',
+      prefer_10bit_sdr: true,
+      config_overrides: { bitrate: '25000' },
+      allow_client_commands: false,
+      do: [{ cmd: 'keep-do', elevated: true }],
+      undo: [{ cmd: 'keep-undo', elevated: false }],
+    });
+    await page.reload();
+    await page.getByRole('button', { name: 'Edit device' }).click();
+    await expect(page.getByRole('checkbox', { name: 'View stream', exact: true })).not.toBeChecked();
+    await expect(page.getByRole('checkbox', { name: 'Launch applications', exact: true })).toBeChecked();
+    await expect(page.locator('#client-alpha-name')).toHaveValue('Latest server name');
+    await expect(page.locator('#client-alpha-display-mode')).toHaveValue('2560x1440x120');
+    await expect(page.locator('#client-alpha-commands-allow')).not.toBeChecked();
+    // Disabled command policy hides its rows; reveal the retained draft without saving.
+    await page.locator('#client-alpha-commands-allow').check();
+    await expect(page.locator('#client-alpha-commands-do-0')).toHaveValue('keep-do');
+    await expect(page.locator('#client-alpha-commands-undo-0')).toHaveValue('keep-undo');
+    expect(updates).toHaveLength(1);
+    expect(stored).toMatchObject({
+      perm: 0x051f1f00,
+      enable_legacy_ordering: true,
+      allow_client_commands: false,
+      do: [{ cmd: 'keep-do', elevated: true }],
+      undo: [{ cmd: 'keep-undo', elevated: false }],
+    });
+  });
+}

@@ -1002,11 +1002,17 @@ function applyDisplaySelection(selection: ClientDisplaySelection): void {
 }
 
 .client-settings-editor__footer {
+  position: sticky;
+  inset-block-end: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--vs-space-16);
-  padding-top: var(--vs-space-4);
+  padding: var(--vs-space-12);
+  border-top: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-subtle);
 }
 
 .client-settings-editor__actions {
