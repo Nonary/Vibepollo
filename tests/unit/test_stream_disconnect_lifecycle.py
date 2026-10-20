@@ -130,8 +130,17 @@ def main():
         source = pathlib.Path(directory) / "test.cpp"
         binary = pathlib.Path(directory) / "test"
         source.write_text(generated)
+        include_directory = args.repository / "src"
+        if args.revision:
+            # Keep optional collaborators at the same revision as the bodies.
+            include_directory = pathlib.Path(directory)
+            header_path = "src/host_stream_control.h"
+            if subprocess.check_output(["git", "-C", str(args.repository), "ls-tree", "--name-only",
+                                        args.revision, header_path], text=True).strip():
+                (include_directory / "host_stream_control.h").write_text(subprocess.check_output(
+                    ["git", "-C", str(args.repository), "show", f"{args.revision}:{header_path}"], text=True))
         subprocess.run([args.compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror",
-                        str(source), "-o", str(binary)], check=True)
+                        "-I", str(include_directory), str(source), "-o", str(binary)], check=True)
         failed = []
         for case in CASES:
             result = subprocess.run([str(binary), case], check=False, capture_output=True, text=True)
