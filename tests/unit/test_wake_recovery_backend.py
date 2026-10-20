@@ -181,7 +181,7 @@ int main() {
         binary = pathlib.Path(directory) / "test"
         generated.write_text(backend_helpers)
         subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-pthread",
-                        "-I", str(root), str(generated), "-o", str(binary)], check=True)
+                        "-I", str(root), *include_arguments, str(generated), "-o", str(binary)], check=True)
         subprocess.run([str(binary)], check=True, timeout=10)
 
 
