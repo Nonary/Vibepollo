@@ -2064,3 +2064,48 @@ TEST(RemoteDisplayTopology, ExplicitManualRulePreservesIsolatedTargetWithoutAnAn
   EXPECT_EQ(placed->y, 2160);
   EXPECT_FALSE(placed->primary);
 }
+
+TEST(RemoteDisplayTopology, PausedNormalPhysicalRestoreDoesNotGrantDisplayRemoval) {
+  remote_display_topology::coordinator_t coordinator;
+  int removals = 0;
+  coordinator.set_runtime_callbacks({
+    .remove_owned_display = [&](const auto &) { ++removals; return true; },
+  });
+  const auto reservation = coordinator.reserve_normal_game_identity("game", "Game", {});
+  ASSERT_TRUE(reservation.accepted);
+  EXPECT_TRUE(coordinator.physical_display_restore_allowed());
+  EXPECT_FALSE(coordinator.generic_virtual_display_cleanup_allowed());
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+  EXPECT_EQ(removals, 0);
+
+  auto capture = coordinator.retain_normal_game_capture("game", reservation.token);
+  ASSERT_TRUE(capture);
+  EXPECT_FALSE(coordinator.physical_display_restore_allowed());
+  capture.reset();
+  EXPECT_TRUE(coordinator.physical_display_restore_allowed());
+  EXPECT_FALSE(coordinator.generic_virtual_display_cleanup_allowed());
+  EXPECT_EQ(removals, 0);
+  const auto resume = coordinator.reserve_normal_game_identity("game", "Game", {});
+  EXPECT_TRUE(resume.accepted);
+  EXPECT_FALSE(resume.newly_reserved);
+  EXPECT_EQ(resume.token, reservation.token);
+}
+
+TEST(RemoteDisplayTopology, RetainedRemoteMonitorBlocksPhysicalRestoreIncludingSharedGameIdentity) {
+  for (const bool share_game_identity : {false, true}) {
+    remote_display_topology::coordinator_t coordinator;
+    coordinator.set_runtime_callbacks({
+      .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+      .apply_composed_topology = [](const auto &) { return true; },
+      .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) {
+        return std::optional<std::string> {"DISPLAY7"};
+      },
+    });
+    ASSERT_TRUE(coordinator.reserve_normal_game_identity("game", "Game", {}).accepted);
+    const auto uuid = share_game_identity ? "game" : "monitor";
+    ASSERT_TRUE(coordinator.activate_or_resume(uuid, "Monitor", {}, 1).ready);
+    coordinator.transport_lost(uuid, 1);
+    EXPECT_FALSE(coordinator.physical_display_restore_allowed());
+    EXPECT_FALSE(coordinator.generic_virtual_display_cleanup_allowed());
+  }
+}

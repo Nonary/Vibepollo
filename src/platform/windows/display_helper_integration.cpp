@@ -2620,15 +2620,19 @@ namespace display_helper_integration {
     const bool prefer_golden_if_current_missing,
     const bool override_managed_ownership,
     const bool allow_disabled_recovery,
-    RecoveryTicket *recovery_ticket) {
+    RecoveryTicket *recovery_ticket,
+    const RevertOwnershipPolicy ownership_policy) {
     if (recovery_ticket) *recovery_ticket = {};
     const bool managed_cleanup_allowed = remote_display_topology::instance().generic_virtual_display_cleanup_allowed();
-    if (!managed_cleanup_allowed && !override_managed_ownership) {
+    const bool retained_normal_restore_allowed =
+      ownership_policy == RevertOwnershipPolicy::RetainPausedNormalGame &&
+      remote_display_topology::instance().physical_display_restore_allowed();
+    if (!managed_cleanup_allowed && !override_managed_ownership && !retained_normal_restore_allowed) {
       proc::defer_display_revert();
       BOOST_LOG(info) << "Display helper: deferring REVERT until all managed client display sessions release ownership.";
       return false;
     }
-    if (!managed_cleanup_allowed) {
+    if (!managed_cleanup_allowed && override_managed_ownership) {
       BOOST_LOG(warning) << "Display helper: overriding managed display ownership for terminal user-requested REVERT.";
     }
 

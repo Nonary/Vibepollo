@@ -3251,6 +3251,7 @@ namespace stream {
     bool shared_platform_started;
     bool shared_runtime_cleanup_armed;
     bool shared_runtime_force_display_revert_when_idle;
+    bool shared_runtime_paused_restore_dispatched;
     std::optional<std::array<std::uint8_t, 16>> shared_runtime_virtual_display_guid_bytes;
 
     cleanup_reservation_t::cleanup_reservation_t() {
@@ -3341,6 +3342,7 @@ namespace stream {
 
     void start_shared_platform_if_needed() {
       arm_shared_runtime_cleanup();
+      shared_runtime_paused_restore_dispatched = false;
       if (shared_platform_started) {
         return;
       }
@@ -3399,6 +3401,20 @@ namespace stream {
       if (capture_runtime_owned || topology.has_live_managed_client_identity()) {
 #else
       if (capture_runtime_owned || topology.managed_client_identity_count() != 0) {
+#endif
+#ifdef _WIN32
+        // A normal game's reservation survives pause for Resume. Restoring the
+        // physical desktop must not release that reservation or finalize its
+        // platform lifetime. Remote Monitors (even on the same identity) and
+        // every live/startup/teardown capture owner remain protected.
+        if (!capture_runtime_owned && !shared_runtime_paused_restore_dispatched &&
+            proc::proc.current_app_id() > 0 && config::video.dd.config_revert_on_disconnect &&
+            topology.physical_display_restore_allowed()) {
+          shared_runtime_paused_restore_dispatched = display_helper_integration::revert(
+            true, false, false, nullptr,
+            display_helper_integration::RevertOwnershipPolicy::RetainPausedNormalGame
+          );
+        }
 #endif
         return false;
       }
@@ -3523,6 +3539,7 @@ namespace stream {
         config::maybe_apply_deferred();
       }
       shared_runtime_cleanup_armed = false;
+      shared_runtime_paused_restore_dispatched = false;
       shared_runtime_force_display_revert_when_idle = false;
       shared_runtime_virtual_display_guid_bytes.reset();
       return true;

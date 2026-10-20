@@ -83,13 +83,15 @@ assert "display_helper_integration::revert(true, false, state.allow_disabled_rec
     "configuration disable transition must be the explicit disabled-recovery caller"
 has_disabled_recovery_parameter = "allow_disabled_recovery" in integration[:integration.index("{")]
 has_recovery_ticket_parameter = "RecoveryTicket" in integration[:integration.index("{")]
+has_ownership_policy_parameter = "RevertOwnershipPolicy" in integration[:integration.index("{")]
 integration_wrapper = "" if has_disabled_recovery_parameter else "\n  bool revert(bool prefer, bool override_owner, bool) { return revert(prefer, override_owner); }\n"
 ticket_declaration = "" if not has_recovery_ticket_parameter else r'''
   struct RecoveryTicket {
     std::uint64_t id = 0;
     std::uint64_t connection_generation = 0;
   };
-  bool revert(bool, bool, bool, RecoveryTicket * = nullptr);
+  enum class RevertOwnershipPolicy { AllOwnersMustRelease, RetainPausedNormalGame };
+  bool revert(bool, bool, bool, RecoveryTicket * = nullptr OWNERSHIP_DEFAULT);
   struct FakeOrphanRecoveryMonitor {
     struct incident_t {
       RecoveryTicket ticket;
@@ -104,6 +106,8 @@ ticket_declaration = "" if not has_recovery_ticket_parameter else r'''
     return monitor;
   }
 '''
+
+ticket_declaration = ticket_declaration.replace("OWNERSHIP_DEFAULT", ", RevertOwnershipPolicy = RevertOwnershipPolicy::AllOwnersMustRelease" if has_ownership_policy_parameter else "")
 
 program = r'''
 #include <atomic>
@@ -128,7 +132,7 @@ constexpr int info = 0, warning = 1, debug = 2;
 namespace integration_fake {
   int ownership_checks = 0, cancels = 0, verification_invalidations = 0;
   int queue_clears = 0, helper_calls = 0, helper_starts = 0, revert_sends = 0, active_clears = 0;
-  bool cleanup_allowed = true, helper_start_result = true, send_result = true;
+  bool cleanup_allowed = true, physical_restore_allowed = true, helper_start_result = true, send_result = true;
   bool helper_force = false, helper_override = false, last_prefer_golden = false;
   bool helper_automation_enabled = true;
   std::mutex execution_mutex;
@@ -138,7 +142,7 @@ namespace integration_fake {
   void reset() {
     ownership_checks = cancels = verification_invalidations = queue_clears = 0;
     helper_calls = helper_starts = revert_sends = active_clears = 0;
-    cleanup_allowed = helper_start_result = send_result = true;
+    cleanup_allowed = physical_restore_allowed = helper_start_result = send_result = true;
     helper_force = helper_override = last_prefer_golden = false;
     helper_automation_enabled = true;
     restore_expected.store(false); last_revert.store(0); restore_generation.store(0);
@@ -152,6 +156,7 @@ namespace config {
 namespace remote_display_topology {
   struct Topology {
     bool generic_virtual_display_cleanup_allowed() { ++integration_fake::ownership_checks; return integration_fake::cleanup_allowed; }
+    bool physical_display_restore_allowed() { return integration_fake::physical_restore_allowed; }
   };
   Topology &instance() { static Topology topology; return topology; }
 }
@@ -203,6 +208,20 @@ namespace display_helper_integration {
 ''' + ticket_declaration + integration + r'''
 ''' + integration_wrapper + r'''
 }
+
+#if HAS_OWNERSHIP_POLICY
+static void test_paused_normal_restore_retains_removal_guard() {
+  using namespace integration_fake;
+  using namespace display_helper_integration;
+  reset(); cleanup_allowed = false;
+  assert(revert(true, false, false, nullptr, RevertOwnershipPolicy::RetainPausedNormalGame));
+  assert(revert_sends == 1 && cancels == 1);
+  assert(!orphan_recovery_monitor().published); // no device-removal observer authority
+  reset(); cleanup_allowed = false; physical_restore_allowed = false;
+  assert(!revert(true, false, false, nullptr, RevertOwnershipPolicy::RetainPausedNormalGame));
+  assert(revert_sends == 0 && cancels == 0); // Remote Monitor/capture remains protected
+}
+#endif
 
 static void test_disabled_configuration_still_cleans_up_existing_mutation() {
   using namespace integration_fake;
@@ -582,6 +601,9 @@ static void test_ping_does_not_clear_an_explicit_restore_request() {
 }
 
 int main() {
+#if HAS_OWNERSHIP_POLICY
+  test_paused_normal_restore_retains_removal_guard();
+#endif
   test_disabled_configuration_still_cleans_up_existing_mutation();
   test_ordinary_disabled_revert_does_not_start_or_send();
   test_foreign_owner_defers_without_touching_recovery();
@@ -610,5 +632,5 @@ with tempfile.TemporaryDirectory(prefix="display-helper-recovery-") as temporary
         retained_source.parent.mkdir(parents=True, exist_ok=True)
         retained_source.write_text(program)
     binary = directory / "test"
-    subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", f"-DHAS_SETTLEMENT={int(has_settlement)}", f"-DHAS_DISABLED_RECOVERY={int(has_disabled_recovery_parameter)}", f"-DHAS_RECOVERY_TICKET={int(has_recovery_ticket_parameter)}", f"-DHAS_PRESERVE={int(has_preserve)}", "-I", str(root), str(source), "-o", str(binary)], check=True)
+    subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", f"-DHAS_SETTLEMENT={int(has_settlement)}", f"-DHAS_OWNERSHIP_POLICY={int(has_ownership_policy_parameter)}", f"-DHAS_DISABLED_RECOVERY={int(has_disabled_recovery_parameter)}", f"-DHAS_RECOVERY_TICKET={int(has_recovery_ticket_parameter)}", f"-DHAS_PRESERVE={int(has_preserve)}", "-I", str(root), str(source), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

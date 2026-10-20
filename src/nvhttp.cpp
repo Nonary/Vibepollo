@@ -951,18 +951,19 @@ namespace nvhttp {
           return;
         }
 
-        if (!remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
-          BOOST_LOG(info) << "Deferring virtual display cleanup until the remaining managed client display sessions release ownership.";
-          return;
-        }
-
-        // The shared finalizer stays armed while managed display owners exist.
+        // The shared finalizer also retries configured physical restoration
+        // for a paused normal owner without granting generic display cleanup.
         // Re-run it after each owner release so the final release consumes a
         // queued app REVERT exactly once. If no shared finalization is armed,
         // fall back to the bounded cancel cleanup path.
         if (stream::session::finalize_shared_runtime_if_idle("managed_display_owner_release")) {
           return;
         }
+        if (!remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
+          BOOST_LOG(info) << "Deferring virtual display cleanup until the remaining managed client display sessions release ownership.";
+          return;
+        }
+
         cleanup_virtual_display_state(proc::consume_deferred_display_revert());
       } catch (const std::exception &e) {
         BOOST_LOG(warning) << "Virtual display cleanup failed: " << e.what();
