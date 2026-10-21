@@ -12,6 +12,7 @@ readonly generation_file=$runtime_root/session-generation
 readonly legacy_handoff_directory=$runtime_root/session-handoffs
 readonly legacy_restore_directory=$runtime_root/session-restores
 readonly host_service=vibepollo.service
+readonly controller_service=vibepollo-session-controller.service
 readonly broker_socket_service=vibepollo-session-exec.socket
 readonly broker_socket_path=$runtime_root/session-broker.sock
 readonly service_user=vibepollo
@@ -1249,9 +1250,74 @@ shutdown_controller() {
   announce shutdown 'controller is stopping; systemd will quiesce the machine host'
 }
 
+ensure_display_mutation_lock() {
+  local path="$runtime_root/display-mutation.lock"
+  # Never truncate a sticky unknown-completion fence on controller restart.
+  if [[ -e "$path" || -L "$path" ]]; then
+    [[ -f "$path" && ! -L "$path" && $(/usr/bin/stat -c '%U:%G:%a:%h' -- "$path") == root:root:600:1 ]]
+  else
+    /usr/bin/install -o root -g root -m 0600 /dev/null "$path"
+  fi
+}
+
+recover_display_fence_command() {
+  ((EUID == 0)) || { error 'display fence recovery requires root'; return 1; }
+  [[ $# == 1 && "$1" == '--acknowledge-display-state-inspected' ]] || {
+    error 'recovery requires --acknowledge-display-state-inspected after checking the physical display state'; return 2;
+  }
+  local deadline=$((SECONDS + command_timeout)) path="$runtime_root/display-mutation.lock" attributes size
+  local -a broker_units=()
+  local -A stopped_brokers=()
+  [[ -d "$runtime_root" && ! -L "$runtime_root" &&
+     $(/usr/bin/stat -c '%U:%G:%a' -- "$runtime_root") == root:root:755 ]] || {
+    error 'runtime directory is unsafe; display fence was not changed'; return 1;
+  }
+  system_unit_is_stopped "$controller_service" && host_unit_is_stopped &&
+    system_unit_is_stopped "$broker_socket_service" || {
+    error 'stop the session controller, machine host, and broker socket before recovering the display fence'; return 1;
+  }
+  enumerate_broker_instances broker_units "$deadline" || {
+    error 'could not enumerate broker processes; display fence was not changed'; return 1;
+  }
+  collect_stopped_broker_instances stopped_brokers "$deadline" "${broker_units[@]}" || {
+    error 'could not verify broker processes are stopped; display fence was not changed'; return 1;
+  }
+  ((${#broker_units[@]} == ${#stopped_brokers[@]})) || {
+    error 'stop every broker process before recovering the display fence'; return 1;
+  }
+  [[ -f "$path" && ! -L "$path" ]] || {
+    error 'display mutation fence file is missing or unsafe'; return 1;
+  }
+  attributes=$(/usr/bin/stat -c '%U:%G:%a:%h' -- "$path") || return 1
+  [[ "$attributes" == root:root:600:1 ]] || {
+    error 'display mutation fence file ownership or mode is unsafe'; return 1;
+  }
+  size=$(/usr/bin/stat -c '%s' -- "$path") || return 1
+  [[ "$size" =~ ^[0-9]+$ ]] && ((size > 0)) || {
+    error 'display mutation fence is already clear or has invalid metadata'; return 1;
+  }
+  # The nonblocking exclusive lock proves no brokered borrower/mutator still
+  # owns the file. Recovery is manual because a sticky marker means native
+  # completion was not confirmed; the operator must inspect the display first.
+  /usr/bin/flock --exclusive --nonblock -- "$path" /usr/bin/bash -c '
+    set -euo pipefail
+    path=$1
+    [[ -f "$path" && ! -L "$path" ]]
+    [[ $(/usr/bin/stat -c "%U:%G:%a:%h" -- "$path") == root:root:600:1 ]]
+    size=$(/usr/bin/stat -c "%s" -- "$path")
+    [[ "$size" =~ ^[0-9]+$ ]] && ((size > 0))
+    : >"$path"
+    /usr/bin/sync -d -- "$path"
+  ' _ "$path" || {
+    error 'could not exclusively and durably clear the display fence'; return 1;
+  }
+  log 'cleared the sticky display fence after explicit display-state inspection'
+}
+
 run_controller() {
   ((EUID == 0)) || { error 'controller requires root'; return 1; }
   /usr/bin/install -d -o root -g root -m 0755 "$runtime_root"
+  ensure_display_mutation_lock || { error 'display mutation fence is unsafe'; return 1; }
   cleanup_legacy_state || { error 'legacy runtime state is unsafe'; return 1; }
   trap shutdown_controller EXIT INT TERM HUP
   announce startup 'controller started; reconciling machine session state'
@@ -1271,6 +1337,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   case "${1:-}" in
     run) [[ $# == 1 ]] || exit 2; run_controller ;;
     cleanup) [[ $# == 1 ]] || exit 2; cleanup_command ;;
-    *) error "usage: $0 {run|cleanup}"; exit 2 ;;
+    recover-display-fence) shift; recover_display_fence_command "$@" ;;
+    *) error "usage: $0 {run|cleanup|recover-display-fence --acknowledge-display-state-inspected}"; exit 2 ;;
   esac
 fi

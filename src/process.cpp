@@ -1636,14 +1636,18 @@ namespace proc {
           effective_virtual_display_mode == config::video_t::virtual_display_mode_e::shared;
 
         if (use_shared_display) {
-          if (http::shared_virtual_display_guid.empty()) {
+          const auto persisted_shared_guid=http::shared_virtual_display_guid_snapshot();
+          if (persisted_shared_guid.empty()) {
             device_uuid = uuid_util::uuid_t::generate();
             device_uuid_str = device_uuid.string();
-            http::shared_virtual_display_guid = device_uuid_str;
+            if(!http::set_shared_virtual_display_guid(device_uuid_str)) {
+              BOOST_LOG(error) << "Shared display identity is retained by exact target borrowers.";
+              return 409;
+            }
             nvhttp::save_state();
             BOOST_LOG(info) << "Generated new shared virtual display GUID: " << device_uuid_str;
           } else {
-            device_uuid_str = http::shared_virtual_display_guid;
+            device_uuid_str = persisted_shared_guid;
             device_uuid = uuid_util::uuid_t::parse(device_uuid_str);
             BOOST_LOG(info) << "Reusing shared virtual display GUID: " << device_uuid_str;
           }
@@ -4626,6 +4630,7 @@ namespace proc {
         ctx.virtual_screen = util::get_non_string_json_value<bool>(app_node, "virtual-screen", false);
         ctx.remote_monitor_profile = app_node.contains("remote-monitor-profile") &&
           app_node["remote-monitor-profile"].is_boolean() && app_node["remote-monitor-profile"].get<bool>();
+        if (ctx.remote_monitor_profile) ctx.monitor_target = remote_session::monitor_target_from_json(app_node);
         ctx.auto_detach = util::get_non_string_json_value<bool>(app_node, "auto-detach", true);
         ctx.wait_all = util::get_non_string_json_value<bool>(app_node, "wait-all", true);
         ctx.exit_timeout = std::chrono::seconds {util::get_non_string_json_value<int>(app_node, "exit-timeout", 10)};

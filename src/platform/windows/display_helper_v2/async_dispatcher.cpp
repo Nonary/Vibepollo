@@ -1,6 +1,10 @@
 #include "src/platform/windows/display_helper_v2/async_dispatcher.h"
 
 #include "src/platform/windows/display_helper_v2/diagnostics.h"
+#include "src/platform/windows/display_helper_borrow_gate.h"
+#ifdef _WIN32
+#include "src/platform/windows/display_helper_borrow_native.h"
+#endif
 
 namespace display_helper::v2 {
   AsyncDispatcher::AsyncDispatcher(
@@ -332,6 +336,17 @@ namespace display_helper::v2 {
       }
 
       if (task) {
+        auto borrow_scope = display_helper::borrow::process_gate().wait_enter([&] { return st.stop_requested(); });
+        if (!borrow_scope) break;
+#ifdef _WIN32
+        auto native_scope = display_helper::borrow::native_mutation_scope_t::enter(true, [&] { return st.stop_requested(); });
+        if (!native_scope) {
+          if (st.stop_requested()) break;
+          std::lock_guard lock(mutex_);
+          tasks_.push_front(std::move(task));
+          continue;
+        }
+#endif
         task();
       }
     }

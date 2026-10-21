@@ -1,3 +1,4 @@
+#include "src/platform/windows/display_helper_borrow_native.h"
 #include "src/platform/windows/display_helper_v2/win_display_settings.h"
 
 #include "src/logging.h"
@@ -62,6 +63,9 @@ namespace display_helper::v2 {
     }
   }  // namespace
   ApplyStatus WinDisplaySettings::apply(const SingleDisplayConfiguration &config) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return ApplyStatus::HelperUnavailable;
     if (!ensure_initialized()) {
       return ApplyStatus::HelperUnavailable;
     }
@@ -80,6 +84,9 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::blank_hdr_states(std::chrono::milliseconds delay, const std::function<bool()> &cancelled) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (!ensure_initialized() || cancelled()) return false;
     std::lock_guard lock(settings_mutex_);
     const auto topology = display_device_->getCurrentTopology();
@@ -113,6 +120,9 @@ namespace display_helper::v2 {
   }
 
   ApplyStatus WinDisplaySettings::apply_topology(const ActiveTopology &topology) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return ApplyStatus::HelperUnavailable;
     if (!ensure_initialized()) {
       return ApplyStatus::HelperUnavailable;
     }
@@ -217,10 +227,16 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::apply_snapshot(const Snapshot &snapshot) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     return apply_snapshot_with_layouts(snapshot, nullptr);
   }
 
   bool WinDisplaySettings::apply_snapshot_settings(const Snapshot &snapshot) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (!ensure_initialized()) {
       BOOST_LOG(error) << "apply_snapshot_settings: display device not initialized";
       return false;
@@ -247,6 +263,9 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::apply_snapshot_hdr_states(const Snapshot &snapshot) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (!ensure_initialized()) {
       return false;
     }
@@ -259,6 +278,9 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::apply_snapshot_with_layouts(const Snapshot &snapshot, const codec::layout_rotation_map_t *layout_rotations) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (!ensure_initialized()) {
       BOOST_LOG(error) << "apply_snapshot: display device not initialized";
       return false;
@@ -404,6 +426,9 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::set_display_origin(const std::string &device_id, const display_device::Point &origin) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (!ensure_initialized()) {
       return false;
     }
@@ -436,6 +461,9 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::recover_display_stack() {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (!ensure_initialized()) {
       return false;
     }
@@ -508,6 +536,9 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::reset_staged_apply_state() {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (!ensure_initialized()) {
       return false;
     }
@@ -520,6 +551,9 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::set_device_refresh_rate(const std::string &device_id, unsigned int num, unsigned int den) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (device_id.empty() || !ensure_initialized()) {
       return false;
     }
@@ -544,6 +578,9 @@ namespace display_helper::v2 {
 
   std::set<std::string> WinDisplaySettings::set_device_refresh_rates(
     const std::vector<std::pair<std::string, std::pair<unsigned int, unsigned int>>> &overrides) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return {};
     std::set<std::string> applied;
     if (overrides.empty() || !ensure_initialized()) {
       return applied;
@@ -988,6 +1025,9 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::apply_layout_rotations(const codec::layout_rotation_map_t &layout_rotations) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (layout_rotations.empty()) {
       return true;
     }
@@ -1071,6 +1111,9 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::reassert_layout_rotations(const codec::layout_rotation_map_t &layout_rotations) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (layout_rotations.empty()) {
       return true;
     }

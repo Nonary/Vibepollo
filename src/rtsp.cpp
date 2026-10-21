@@ -205,6 +205,7 @@ namespace rtsp_stream {
     snapshot->role = role;
     snapshot->role_generation = role_generation;
     snapshot->monitor_profile_uuid = monitor_profile_uuid;
+    snapshot->exact_monitor_target = exact_monitor_target;
     snapshot->secondary_game_client = secondary_game_client;
     snapshot->remote_capture_output = remote_capture_output;
     snapshot->rtsp_source_address = rtsp_source_address;
@@ -983,12 +984,13 @@ namespace rtsp_stream {
     // Socket aliases can outlive registry removal. Retire outside both mutexes;
     // synchronize the audio field with the existing paused-app retirement path.
     void release_pending_runtime_holds(const std::shared_ptr<launch_session_t> &pending) {
-      std::shared_ptr<void> audio_hold, power_hold;
+      std::shared_ptr<void> audio_hold, power_hold, target_hold;
       {
         std::lock_guard lock {_launch_sessions_mutex};
         std::lock_guard audio_lock {audio::launch_audio_guard_mutex};
         audio_hold = std::move(pending->audio_context_guard);
         power_hold = std::move(pending->display_power_guard);
+        target_hold = std::move(pending->exact_target_hold);
       }
     }
 
@@ -1000,6 +1002,7 @@ namespace rtsp_stream {
             entry.session->unique_id == snapshot->unique_id && entry.expires_at > now) {
           audio::copy_launch_audio_guard(*entry.session, *snapshot);
           snapshot->display_power_guard = entry.session->display_power_guard;
+          snapshot->exact_target_hold = entry.session->exact_target_hold;
           return true;
         }
       }
@@ -2631,6 +2634,7 @@ namespace rtsp_stream {
         auto release_startup_holds = util::fail_guard([&] {
           launch_session->audio_context_guard.reset();
           launch_session->display_power_guard.reset();
+          launch_session->exact_target_hold.reset();
         });
         config::maybe_apply_deferred();
         auto _hot_apply_gate = config::acquire_apply_read_gate();

@@ -64,8 +64,9 @@ static int run_command_bounded(const char *path, char *const arguments[], unsign
 #include "vibepollo-display-power.h"
 
 int main(int argc, char **argv) {
-  if (argc != 2 || getuid() == 0 || geteuid() != getuid() || getegid() != getgid() ||
+  if ((argc != 2 && argc != 3) || getuid() == 0 || geteuid() != getuid() || getegid() != getgid() ||
       prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1) return 126;
+  if(argc==3) return !strcmp(argv[1],"inhibit-v2") ? run_display_power_mode(true,true,argv[2]) : 126;
   if (!strcmp(argv[1], "wake")) {
     if (setenv("QT_QPA_PLATFORM", "wayland", 1)) return 126;
     return display_power_wake() && write(STDOUT_FILENO, "R", 1) == 1 ? 0 : 126;

@@ -20,6 +20,7 @@
   #include <nlohmann/json.hpp>
 
   #include "tools/display_helper_paths.h"
+  #include "src/platform/windows/display_helper_borrow_native.h"
 
 int run_legacy_helper(int argc, char *argv[]);
 int run_v2_helper(int argc, char *argv[]);
@@ -68,6 +69,7 @@ int main(int argc, char *argv[]) {
     engine = engine_from_state_files().value_or("v2");
   }
 
+  display_helper::borrow::helper_process().store(true, std::memory_order_release);
   if (engine == "legacy") {
     return run_legacy_helper(argc, argv);
   }

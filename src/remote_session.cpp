@@ -14,6 +14,7 @@ namespace remote_session {
   namespace {
     std::mutex monitor_runtime_hooks_mutex;
     monitor_runtime_hooks_t monitor_runtime_hooks;
+    display_target::probe_t exact_target_probe;
     // Moonlight refreshes the app catalogue after the first synthetic launch
     // failure before the user can launch Terminate again. That round trip can
     // exceed ten seconds on mobile clients even when the second launch is
@@ -479,7 +480,45 @@ namespace remote_session {
     return activate ? activate(client_uuid, client_label, requested_mode, hdr_requested, generation) : monitor_runtime_state_t {.retryable = true, .error = "Remote Monitor topology is not ready."};
   }
 
+  void register_exact_target_probe(display_target::probe_t probe) {
+    std::lock_guard lock {monitor_runtime_hooks_mutex};
+    exact_target_probe = std::move(probe);
+  }
+
+  bool exact_target_still_valid(const std::shared_ptr<void> &hold) {
+    display_target::probe_t probe;
+    { std::lock_guard lock {monitor_runtime_hooks_mutex}; probe = exact_target_probe; }
+    return display_target::leases().revalidate(hold, probe);
+  }
+
+  monitor_runtime_state_t borrow_monitor_target(const std::string_view client, const std::uint64_t generation, const display_target::descriptor_t &target, const display_target::mode_t mode, const std::optional<std::string> requested_output) {
+#ifndef SUNSHINE_EXPERIMENTAL_TARGET_LEASES
+    return {.error = "Exact target borrowing is an experimental private prototype and is disabled in this build.", .conflict = true};
+#else
+    display_target::probe_t probe;
+    { std::lock_guard lock {monitor_runtime_hooks_mutex}; probe = exact_target_probe; }
+    bool output_conflict = false;
+    const auto checked_probe = [&](const display_target::descriptor_t &descriptor) -> std::optional<display_target::observation_t> {
+      const auto observation = probe ? probe(descriptor) : std::nullopt;
+      if (observation && requested_output && !requested_output->empty() && observation->capture_output != *requested_output) {
+        output_conflict = true;
+        return std::nullopt;
+      }
+      return observation;
+    };
+    auto result = display_target::leases().acquire(std::string {client}, generation, target, mode, checked_probe);
+    if (output_conflict) result.error = "The paired-client output override conflicts with the retained exact target.";
+    const bool accepted = bool(result);
+    return {.accepted = accepted, .ready = bool(result), .output = result.output,
+      .error = result.error, .hdr_enabled = mode.hdr, .target_hold = std::move(result.hold),
+      .exact_target = std::move(result.target), .conflict = !accepted};
+#endif
+  }
+
   monitor_runtime_state_t monitor_runtime_snapshot(const std::string_view client_uuid, const std::uint64_t generation) {
+    if (const auto borrowed = display_target::leases().snapshot(std::string {client_uuid}, generation))
+      return {.accepted = true, .ready = true, .output = borrowed->output,
+        .target_hold = borrowed->hold, .exact_target = borrowed->target};
     std::function<monitor_runtime_state_t(std::string_view, std::uint64_t)> snapshot;
     {
       std::lock_guard lock {monitor_runtime_hooks_mutex};
@@ -489,6 +528,7 @@ namespace remote_session {
   }
 
   bool release_monitor(const std::string_view client_uuid, const std::uint64_t generation, const std::string_view reason) {
+    if (const auto handled = display_target::leases().release(std::string {client_uuid}, generation)) return *handled;
     std::function<bool(std::string_view, std::uint64_t, std::string_view)> release;
     {
       std::lock_guard lock {monitor_runtime_hooks_mutex};
@@ -507,6 +547,7 @@ namespace remote_session {
   }
 
   void notify_monitor_unpair(const std::string_view client_uuid) {
+    display_target::leases().revoke(std::string {client_uuid});
     std::function<void(std::string_view)> unpair;
     {
       std::lock_guard lock {monitor_runtime_hooks_mutex};
@@ -516,6 +557,7 @@ namespace remote_session {
   }
 
   void notify_monitor_shutdown() {
+    display_target::leases().shutdown();
     std::function<void()> shutdown;
     {
       std::lock_guard lock {monitor_runtime_hooks_mutex};

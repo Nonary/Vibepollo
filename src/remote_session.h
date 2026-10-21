@@ -1,6 +1,7 @@
 #pragma once
 
 #include "virtual_display_capacity.h"
+#include "display_target_lease.h"
 
 #include <chrono>
 #include <cstdint>
@@ -135,6 +136,7 @@ namespace remote_session {
   struct monitor_profile_t {
     std::string uuid;
     std::unordered_map<std::string, std::string> app_overrides;
+    std::optional<display_target::descriptor_t> target;
   };
 
   [[nodiscard]] std::optional<monitor_profile_t> select_monitor_profile(
@@ -149,6 +151,9 @@ namespace remote_session {
     std::string output;
     std::string error;
     bool hdr_enabled = false;
+    std::shared_ptr<void> target_hold;
+    std::optional<display_target::descriptor_t> exact_target;
+    bool conflict = false;
   };
 
   struct monitor_runtime_hooks_t {
@@ -234,6 +239,9 @@ namespace remote_session {
   };
 
   void register_monitor_runtime_hooks(monitor_runtime_hooks_t hooks);
+  void register_exact_target_probe(display_target::probe_t probe);
+  bool exact_target_still_valid(const std::shared_ptr<void> &hold);
+  monitor_runtime_state_t borrow_monitor_target(std::string_view client, std::uint64_t generation, const display_target::descriptor_t &target, display_target::mode_t mode, std::optional<std::string> requested_output = {});
   [[nodiscard]] monitor_runtime_state_t activate_or_resume_monitor(std::string_view client_uuid, std::string_view client_label, std::string_view requested_mode, bool hdr_requested, std::uint64_t generation);
   [[nodiscard]] monitor_runtime_state_t monitor_runtime_snapshot(std::string_view client_uuid, std::uint64_t generation);
   [[nodiscard]] bool release_monitor(std::string_view client_uuid, std::uint64_t generation, std::string_view reason);

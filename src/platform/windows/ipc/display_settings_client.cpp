@@ -24,6 +24,7 @@
 
   // local
   #include "display_settings_client.h"
+  #include "src/platform/windows/display_helper_borrow_native.h"
   #include "src/globals.h"
   #include "src/logging.h"
   #include "src/platform/windows/display_helper_v2/timing.h"
@@ -95,6 +96,10 @@ namespace platf::display_helper_client {
     RefreshRateResult = 11,  ///< Helper acknowledgement for RefreshRate (payload: [u8 success]).
     RecoveryStatus = 15,
     RecoveryStatusResult = 16,
+    BorrowAcquire = display_helper::borrow::acquire_message,
+    BorrowAcquireResult = display_helper::borrow::acquire_result_message,
+    BorrowRelease = display_helper::borrow::release_message,
+    BorrowReleaseResult = display_helper::borrow::release_result_message,
     SnapshotResult = 12,  ///< Helper acknowledgement for SnapshotCurrent (payload: [u8 success]).
     Ping = 0xFE,  ///< Health check message; expects a response.
     Stop = 0xFF  ///< Request helper process to terminate gracefully.
@@ -170,7 +175,9 @@ namespace platf::display_helper_client {
              type == static_cast<uint8_t>(MsgType::VerificationResult) ||
              type == static_cast<uint8_t>(MsgType::RefreshRateResult) ||
              type == static_cast<uint8_t>(MsgType::SnapshotResult) ||
-             type == static_cast<uint8_t>(MsgType::RecoveryStatusResult);
+             type == static_cast<uint8_t>(MsgType::RecoveryStatusResult) ||
+             type == static_cast<uint8_t>(MsgType::BorrowAcquireResult) ||
+             type == static_cast<uint8_t>(MsgType::BorrowReleaseResult);
     }
 
     void buffer_response(const SessionPtr &session, std::span<const uint8_t> bytes) {
@@ -670,6 +677,13 @@ namespace platf::display_helper_client {
     const std::vector<uint8_t> &payload,
     std::optional<int> send_timeout_override_ms = std::nullopt
   ) {
+    display_helper::borrow::gate_t::scope_t borrow_mutation;
+    const bool borrow_observer = type == MsgType::BorrowAcquire || type == MsgType::BorrowRelease ||
+      type == MsgType::Ping || type == MsgType::LogLevel || type == MsgType::RecoveryStatus;
+    if (!borrow_observer) {
+      borrow_mutation = display_helper::borrow::process_gate().try_enter();
+      if (!borrow_mutation) return false;
+    }
     const bool is_ping = (type == MsgType::Ping || type == MsgType::LogLevel);
     if (!is_ping) {
       BOOST_LOG(info) << "Display helper IPC: sending frame type=" << static_cast<int>(type)
@@ -1121,8 +1135,10 @@ namespace platf::display_helper_client {
     std::optional<int> send_timeout_cap_ms = std::nullopt,
     std::uint64_t *connection_generation_out = nullptr,
     bool begins_untagged_response = false,
-    const std::function<bool()> &cancelled = {}
+    const std::function<bool()> &cancelled = {},
+    bool *write_attempted_out = nullptr
   ) {
+    if (write_attempted_out) *write_attempted_out = false;
     if (!session || !session->pipe) {
       return false;
     }
@@ -1173,6 +1189,7 @@ namespace platf::display_helper_client {
     if (send_timeout_cap_ms) {
       send_timeout_ms = std::min(send_timeout_ms, *send_timeout_cap_ms);
     }
+    if (write_attempted_out && send_timeout_ms > 0) *write_attempted_out = true;
     const bool sent =
       send_timeout_ms > 0 &&
       send_message(*session->pipe, type, payload, send_timeout_ms);
@@ -2115,6 +2132,75 @@ namespace platf::display_helper_client {
     std::vector<uint8_t> payload;
     return send_serialized_within(session, MsgType::Ping, payload, deadline);
   }
+  namespace {
+    std::optional<display_helper::borrow::result_t> exchange_borrow_control(
+      MsgType command, MsgType result_type, const std::vector<std::uint8_t> &payload,
+      const display_helper::borrow::request_t &request,
+      std::chrono::steady_clock::time_point deadline,
+      const std::function<bool()> &cancelled = {}, bool *write_attempted_out = nullptr) {
+      if (write_attempted_out) *write_attempted_out = false;
+      const auto session = connected_session_within(deadline, kConnectTimeoutMs, cancelled);
+      if (!session) return std::nullopt;
+      const auto stopped = [&] { return !session_is_current(session) || (cancelled && cancelled()); };
+      std::unique_lock<std::timed_mutex> reader;
+      if (!lock_response_reader_until(session, reader, deadline, stopped)) return std::nullopt;
+      if (!send_serialized_within(session, command, payload, deadline, std::nullopt,
+            remaining_timeout_ms(deadline), nullptr, false, stopped, write_attempted_out)) return std::nullopt;
+      const auto decode = [&](std::span<const std::uint8_t> bytes)
+          -> std::optional<display_helper::borrow::result_t> {
+        if (bytes.empty() || bytes.front() != static_cast<std::uint8_t>(result_type)) return std::nullopt;
+        auto result = display_helper::borrow::decode_result(bytes.subspan(1));
+        const auto peer = session->pipe->peer_process_id();
+        if (!result || result->token.request != request || !peer || *peer != result->token.helper.pid) return std::nullopt;
+        return result;
+      };
+      std::array<std::uint8_t, 65536> buffer {};
+      while (std::chrono::steady_clock::now() < deadline && !stopped()) {
+        if (auto buffered = take_buffered_response(session, result_type,
+              [&](auto bytes) { return decode(bytes).has_value(); })) return decode(*buffered);
+        std::size_t received = 0;
+        const auto status = session->pipe->receive(buffer, received,
+          std::clamp(remaining_timeout_ms(deadline), 1, 100));
+        if (status == platf::dxgi::PipeResult::Timeout) continue;
+        if (status != platf::dxgi::PipeResult::Success || received == 0 || stopped()) return std::nullopt;
+        const std::span<const std::uint8_t> bytes(buffer.data(), received);
+        if (auto result = decode(bytes)) return result;
+        buffer_response(session, bytes);
+      }
+      return std::nullopt;
+    }
+  }
+
+  bool release_borrow_quiescence(const display_helper::borrow::token_t &token,
+      std::chrono::steady_clock::time_point deadline) {
+    const auto result = exchange_borrow_control(MsgType::BorrowRelease, MsgType::BorrowReleaseResult,
+      display_helper::borrow::encode_release(token), token.request, deadline);
+    if (!result || !result->success) return false;
+    const bool cancellation = !token.helper.valid() && token.connection_epoch == 0;
+    return cancellation || result->token == token;
+  }
+
+  std::optional<display_helper::borrow::result_t> acquire_borrow_quiescence(
+      const display_helper::borrow::request_t &request,
+      std::chrono::steady_clock::time_point deadline,
+      const std::function<bool()> &cancelled, bool &completion_unknown) {
+    completion_unknown = false;
+    if (!request.valid() || (cancelled && cancelled()) || std::chrono::steady_clock::now() >= deadline)
+      return std::nullopt;
+    bool write_attempted = false;
+    const auto result = exchange_borrow_control(MsgType::BorrowAcquire, MsgType::BorrowAcquireResult,
+      display_helper::borrow::encode_acquire(request), request, deadline, cancelled, &write_attempted);
+    if (result && result->success && !(cancelled && cancelled())) return result;
+    if (!write_attempted || (result && !result->success)) return std::nullopt;
+    // A cancelled/late acquire cannot linger and unexpectedly park a later
+    // transaction. Only an exact cancellation ACK proves its queue retirement.
+    const display_helper::borrow::token_t cancel = result ? result->token :
+      display_helper::borrow::token_t {request, {}, 0};
+    completion_unknown = !release_borrow_quiescence(cancel,
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(500));
+    return std::nullopt;
+  }
+
 }  // namespace platf::display_helper_client
 
 #endif

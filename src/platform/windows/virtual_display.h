@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <memory>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -17,6 +18,10 @@
 #include <windows.h>
 
 namespace VDISPLAY {
+  // Snapshot/duplicate already-open control resources after host writers have
+  // drained. Never opens a device, creates a target or changes its lease.
+  std::optional<std::shared_ptr<void>> retain_borrow_native_resources();
+
   inline constexpr const char *VIRTUAL_DISPLAY_SELECTION = "sunshine:virtual_display";
   inline constexpr const char *SUDOVDA_VIRTUAL_DISPLAY_SELECTION = "sunshine:sudovda_virtual_display";
 

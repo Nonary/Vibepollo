@@ -128,13 +128,19 @@ namespace platf::linux_private_display {
     }
 
     bool broker_set_connected(const std::string &output_name, const bool connected) {
+      auto target_mutation = display_target::leases().begin_mutation();
+      if (!target_mutation) return false;
       if (linux_display::hyprland_kms_session()) return false;
       // The control client waits longer than the broker's mutation/stop bound.
       // Reserve that entire interval rather than shortening its safe drain.
       if (!helper_budget_available(connector_reply_timeout)) return false;
+      const auto producer_mutation = display_power::acquire_broker_mutation();
+      if (!producer_mutation) return false;
       static const virtual_display::driver::LinuxControlClient client;
       const auto result = client.set_connector(output_name, connected);
       if (!result.ok()) {
+        target_mutation.completion_unknown();
+        display_power::broker_mutation_completion_unknown(producer_mutation);
         BOOST_LOG(error) << "Linux private display: broker rejected "
                          << (connected ? "connect" : "disconnect") << " for " << output_name
                          << ": " << virtual_display::driver::to_string(result.status)
@@ -156,6 +162,8 @@ namespace platf::linux_private_display {
 
     command_result_t run_doctor(const std::vector<std::string> &arguments, const bool mutating = false) {
       command_result_t result;
+      auto target_mutation = mutating ? display_target::leases().begin_mutation() : display_target::registry_t::mutation_t {};
+      if (mutating && !target_mutation) { result.stderr_text = "Exact target borrowers still hold display leases."; return result; }
       if (linux_display::hyprland_kms_session()) {
         result.stderr_text = "KScreen operations are unsupported by the Hyprland KMS backend";
         return result;
@@ -230,8 +238,11 @@ namespace platf::linux_private_display {
       auto deadline = std::chrono::steady_clock::now() + helper_reply_timeout;
       result = helper_process::communicate_until(process, deadline, std::getenv("VIBEPOLLO_MACHINE_HOST") != nullptr);
       if (mutating && result.completion_unknown) {
-        std::unique_lock mutation_barrier {topology_mutation_gate};
+        target_mutation.completion_unknown();
         helper_completion_unknown.store(true, std::memory_order_release);
+        // Publish the fail-closed state before waiting for admitted work to
+        // drain. New local helpers reject at their final admission check.
+        std::unique_lock mutation_barrier {topology_mutation_gate};
         BOOST_LOG(error) << "Linux display helper: completion could not be confirmed; refusing further display mutations until host restart.";
       }
       g_object_unref(process);
@@ -1011,6 +1022,8 @@ namespace platf::linux_private_display {
   }  // namespace
 
   bool initialize() {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     if (process_shutdown_preserve_requested()) {
       return false;
     }
@@ -1141,6 +1154,8 @@ namespace platf::linux_private_display {
     const bool no_active_sessions,
     const bool allow_display_changes
   ) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return {.requested = true, .error = "Exact target borrowers still hold display leases."};
     prepare_result_t result;
 
     if (!session.display_power_guard) {
@@ -1232,6 +1247,8 @@ namespace platf::linux_private_display {
   }
 
   bool apply_session(rtsp_stream::launch_session_t &session) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     if (!session.virtual_display || session.virtual_display_device_id.empty()) {
       return true;
     }
@@ -1577,6 +1594,8 @@ namespace platf::linux_private_display {
     const std::string &client_uuid,
     const remote_display_topology::mode_t &mode
   ) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     (void) mode;
     if (client_uuid.empty()) {
       return false;
@@ -1634,6 +1653,8 @@ namespace platf::linux_private_display {
   bool remote_apply_composed_topology(
     const std::vector<remote_display_topology::node_t> &nodes
   ) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     if (process_shutdown_preserve_requested()) {
       return true;
     }
@@ -1962,7 +1983,40 @@ namespace platf::linux_private_display {
     return std::nullopt;
   }
 
+  std::optional<display_target::observation_t> observe_exact_target(const display_target::descriptor_t &target) {
+    if (target.platform != display_target::platform_e::linux_drm || helper_completion_unknown.load(std::memory_order_acquire)) return std::nullopt;
+    const auto power_hold = display_power::acquire_borrow_inhibit();
+    if (!power_hold) return std::nullopt;
+    const auto configuration = query_configuration();
+    if (!configuration) return std::nullopt;
+    const auto captures = capture_output_names();
+    auto &manager = state();
+    std::lock_guard lock {manager.mutex};
+    std::optional<display_target::observation_t> match;
+    for (const auto &output : (*configuration)["outputs"]) {
+      const auto name = output.value("name", std::string {});
+      if (name.empty() || !connected(output) || !enabled(output)) continue;
+      const auto path = connector_sysfs_path(name);
+      std::error_code error;
+      const auto canonical = path.empty() ? std::filesystem::path {} : std::filesystem::canonical(path, error);
+      if (error || canonical.empty() || canonical.string() != target.exact_id) continue;
+      const bool managed = is_managed_output(name);
+      if ((target.kind == display_target::kind_e::physical && managed) ||
+          (target.kind == display_target::kind_e::shared_virtual &&
+           (!managed || !manager.reservations.contains("shared") || manager.reservations.at("shared") != name))) return std::nullopt;
+      if (std::ranges::find(captures, name) == captures.end() || match) return std::nullopt;
+      const auto size = output.value("size", json::object());
+      const auto refresh = output_refresh(output) * 1000.0;
+      if (!std::isfinite(refresh) || refresh <= 0 || refresh > 1000000) return std::nullopt;
+      match = display_target::observation_t {target,
+        {size.value("width", 0), size.value("height", 0), static_cast<std::uint32_t>(std::llround(refresh)), output.value("hdr", false)}, name, power_hold};
+    }
+    return match;
+  }
+
   bool remote_remove_owned_display(const std::string &client_uuid) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     if (process_shutdown_preserve_requested()) {
       return true;
     }
@@ -2026,6 +2080,8 @@ namespace platf::linux_private_display {
     std::vector<std::string> *failed_managed_retirements = nullptr,
     json *verified_physical_topology_before_retirement = nullptr
   ) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     if (failure_result) *failure_result = restore_transaction::result_e::cancelled;
     if (process_shutdown_preserve_requested()) {
       return false;
@@ -2731,6 +2787,8 @@ namespace platf::linux_private_display {
   }
 
   termination_result_t terminate_all() {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return {};
     if (linux_display::hyprland_kms_session()) return {};
     auto &manager = state();
     stream::session::cleanup_reservation_t cleanup_reservation;

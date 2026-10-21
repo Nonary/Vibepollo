@@ -608,6 +608,8 @@ namespace stream {
     std::shared_ptr<void> display_power_guard;
     std::shared_ptr<void> audio_context_guard;
     std::shared_ptr<void> normal_display_capture;
+    std::optional<display_target::descriptor_t> exact_monitor_target;
+    std::shared_ptr<void> exact_target_hold;
     config_t config;
     int stream_fps = 0;
     int stream_fps_scaled = 0;
@@ -3297,7 +3299,7 @@ namespace stream {
     }
 
     bool has_shared_runtime_owner(const shared_runtime_finalize_context_t &context) {
-      return has_capture_runtime_owner(context) ||
+      return display_target::leases().protected_output() || has_capture_runtime_owner(context) ||
 #ifdef __linux__
              remote_display_topology::instance().has_live_managed_client_identity();
 #else
@@ -3418,9 +3420,9 @@ namespace stream {
 #endif
 
 #ifdef __linux__
-      if (capture_runtime_owned || topology.has_live_managed_client_identity()) {
+      if (display_target::leases().protected_output() || capture_runtime_owned || topology.has_live_managed_client_identity()) {
 #else
-      if (capture_runtime_owned || topology.managed_client_identity_count() != 0) {
+      if (display_target::leases().protected_output() || capture_runtime_owned || topology.managed_client_identity_count() != 0) {
 #endif
 #ifdef _WIN32
         // A normal game's reservation survives pause for Resume. Restoring the
@@ -3719,6 +3721,8 @@ namespace stream {
       // The app may already have exited, but its output must survive until
       // this capture has joined and released every encoder/conversion import.
       session.normal_display_capture.reset();
+      session.config.monitor.capture_target_valid = {};
+      session.exact_target_hold.reset();
       remote_display_topology::instance().release_drained_normal_game_identities();
       nvhttp::reconcile_remote_monitor_owners();
 
@@ -4110,6 +4114,13 @@ namespace stream {
       session->remote_role = launch_session.role;
       session->remote_role_generation = launch_session.role_generation;
       session->monitor_profile_uuid = launch_session.monitor_profile_uuid;
+      session->exact_monitor_target = launch_session.exact_monitor_target;
+      session->exact_target_hold = launch_session.exact_target_hold;
+      if (session->exact_target_hold) {
+        if (!remote_session::exact_target_still_valid(session->exact_target_hold)) throw std::runtime_error("The retained exact target is missing or its mode changed");
+        session->config.monitor.capture_target_valid = [hold = session->exact_target_hold] { return remote_session::exact_target_still_valid(hold); };
+      }
+      if (session->exact_monitor_target && !session->exact_target_hold) return nullptr;
 #if defined(_WIN32) || defined(__linux__)
       if (launch_session.role == remote_session::role_e::game) {
         const auto app = proc::proc.active_session_guard();

@@ -1,4 +1,5 @@
 #include "src/host_stream_control.h"
+#include "src/display_target_lease.h"
 #include "src/app_audio_termination.h"
 #include "src/remote_display_topology.h"
 #include <algorithm>
@@ -101,6 +102,8 @@ struct launch_session_t {
  std::shared_ptr<launch_session_t> clone_for_startup() const;
  bool input_only=false,gcpersist=false;int perm=0;std::vector<int> client_do_cmds,client_undo_cmds;
  unsigned id=1;std::string unique_id="id";int fps=60000;remote_session::role_e role=remote_session::role_e::input;std::uint64_t role_generation=1;std::string client_uuid="one",surround_params,monitor_profile_uuid;
+ std::optional<display_target::descriptor_t> exact_monitor_target;
+ std::shared_ptr<void> exact_target_hold;
  std::array<std::uint8_t,16> virtual_display_guid_bytes{};
  std::shared_ptr<void> audio_context_guard,display_power_guard;
  std::string remote_capture_output,rtsp_source_address,av_ping_payload,client_name,device_name,normal_vdd_owner_uuid;

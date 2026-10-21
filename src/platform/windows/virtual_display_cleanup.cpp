@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
   #include "display_helper_integration.h"
+  #include "src/platform/windows/display_helper_borrow_native.h"
   #include "src/logging.h"
   #include "src/platform/windows/impersonating_display_device.h"
   #include "src/platform/windows/virtual_display.h"
@@ -84,6 +85,8 @@ namespace platf::virtual_display_cleanup {
     }
 
     bool restore_windows_display_database() {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
+      if (!borrowed_output_mutation) return false;
       try {
         auto api = std::make_shared<display_device::WinApiLayer>();
         auto win_dd = std::make_shared<display_device::WinDisplayDevice>(api);
@@ -136,6 +139,8 @@ namespace platf::virtual_display_cleanup {
     const recovery_monitor_policy_t recovery_monitor_policy,
     const cleanup_admission_policy_t cleanup_admission_policy
   ) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
+    if (!borrowed_output_mutation) return {};
     cleanup_reservation_t cleanup_reservation;
     cleanup_result_t result;
 
@@ -241,6 +246,8 @@ namespace platf::virtual_display_cleanup {
   }
 
   static bool recover_emergency_physical_display(bool &database_restore_applied) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
+    if (!borrowed_output_mutation) return false;
     try {
       auto api = std::make_shared<display_device::WinApiLayer>();
       auto win_dd = std::make_shared<display_device::WinDisplayDevice>(api);
@@ -278,6 +285,8 @@ namespace platf::virtual_display_cleanup {
   }
 
   cleanup_result_t terminate_all(const std::string_view reason) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
+    if (!borrowed_output_mutation) return {};
     std::lock_guard terminal_lock {g_terminal_cleanup_mutex};
     cleanup_reservation_t cleanup_reservation;
     // A previous ordinary cleanup may have queued a restore behind the same

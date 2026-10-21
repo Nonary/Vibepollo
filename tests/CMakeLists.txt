@@ -1277,6 +1277,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
     add_test(NAME test_component_linux_session_exec_policy COMMAND test_linux_session_exec_policy)
     set_tests_properties(test_component_linux_session_exec_policy PROPERTIES LABELS "component")
 
+    add_executable(test_linux_display_borrow_fence
+        "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_display_borrow_fence.c")
+    target_include_directories(test_linux_display_borrow_fence PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+    add_test(NAME test_component_linux_display_borrow_fence COMMAND test_linux_display_borrow_fence)
+    set_tests_properties(test_component_linux_display_borrow_fence PROPERTIES LABELS "component" TIMEOUT 5)
+
     add_executable(test_linux_touch_map_wait
         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_touch_map_wait.cpp")
     target_link_libraries(test_linux_touch_map_wait PRIVATE PkgConfig::TEST_GIO Threads::Threads)

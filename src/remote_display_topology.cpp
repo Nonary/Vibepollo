@@ -1,4 +1,5 @@
 #include "remote_display_topology.h"
+#include "display_target_lease.h"
 
 #include <algorithm>
 #include <set>
@@ -229,13 +230,13 @@ namespace remote_display_topology {
   }
   bool coordinator_t::generic_virtual_display_cleanup_allowed() const {
     std::lock_guard lock(mutex_);
-    return std::none_of(clients_.begin(), clients_.end(), [](const auto &entry) {
+    return !display_target::leases().protected_output() && std::none_of(clients_.begin(), clients_.end(), [](const auto &entry) {
       return entry.second.normal_game || entry.second.remote_monitor;
     });
   }
   bool coordinator_t::physical_display_restore_allowed() const {
     std::lock_guard lock(mutex_);
-    return std::none_of(clients_.begin(), clients_.end(), [](const auto &entry) {
+    return !display_target::leases().protected_output() && std::none_of(clients_.begin(), clients_.end(), [](const auto &entry) {
       const auto &state = entry.second;
       return state.remote_monitor || !state.normal_capture_references.empty();
     });
@@ -243,6 +244,8 @@ namespace remote_display_topology {
   void coordinator_t::set_plaintext_rtsp_warning_provider(std::function<std::string(const std::string &)> provider) { std::lock_guard lock(mutex_); plaintext_rtsp_warning_provider_ = std::move(provider); }
 
   normal_game_reservation_t coordinator_t::reserve_normal_game_identity(const std::string &client_uuid, const std::string &label, mode_t mode) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return {};
     std::lock_guard lock(mutex_);
     if (display_mutation_deferred_locked()) return {};
     if (client_uuid.empty() || (!clients_.contains(client_uuid) && clients_.size() >= client_identity_capacity_locked())) return {};
@@ -260,6 +263,8 @@ namespace remote_display_topology {
   }
 
   bool coordinator_t::reapply_composed_topology() {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     std::lock_guard lock(mutex_);
     if (display_mutation_deferred_locked()) {
       return false;
@@ -283,6 +288,8 @@ namespace remote_display_topology {
   }
 
   bool coordinator_t::rollback_normal_game_identity(const std::string &client_uuid, const std::uint64_t token) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     std::lock_guard lock(mutex_);
     const auto it = clients_.find(client_uuid);
     if (it == clients_.end() || !it->second.normal_game || it->second.normal_game_token != token) {
@@ -320,12 +327,15 @@ namespace remote_display_topology {
   }
 
   bool coordinator_t::display_mutation_deferred_locked() const {
-    return shutdown_pending_ || std::any_of(clients_.begin(), clients_.end(), [](const auto &entry) {
+    return display_target::leases().protected_output() || shutdown_pending_ || std::any_of(clients_.begin(), clients_.end(), [](const auto &entry) {
       return entry.second.normal_release_pending && !entry.second.normal_capture_references.empty();
     });
   }
 
   void coordinator_t::finalize_shutdown_locked() {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return ;
+    if (display_target::leases().protected_output()) { shutdown_pending_ = true; return; }
     std::vector<std::string> managed_ids;
     for (const auto &[uuid, state] : clients_) {
       if (state.normal_game || state.remote_monitor) managed_ids.push_back(uuid);
@@ -423,6 +433,8 @@ namespace remote_display_topology {
   }
 
   void coordinator_t::release_normal_game_identity_locked(const std::string &client_uuid, client_state_t &state) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return ;
     const auto requested_mode = state.normal_requested_mode;
     const auto token = state.normal_game_token;
     state.normal_game = false;
@@ -485,6 +497,7 @@ namespace remote_display_topology {
 
   void coordinator_t::complete_restored_normal_game_cleanup() {
     std::lock_guard lock(mutex_);
+    if (display_target::leases().protected_output()) return;
     std::erase_if(clients_, [](const auto &entry) {
       const auto &state = entry.second;
       return state.normal_game && state.normal_release_pending &&
@@ -509,6 +522,8 @@ namespace remote_display_topology {
   }
 
   monitor_runtime_state_t coordinator_t::activate_or_resume(const std::string &client_uuid, const std::string &label, mode_t mode, uint64_t generation) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return {false, false, true, {}, "Existing target borrowers hold display leases."};
     std::lock_guard lock(mutex_);
     auto &observed_generation = observed_monitor_generations_[client_uuid];
     if (generation < observed_generation) {
@@ -672,6 +687,8 @@ namespace remote_display_topology {
   }
 
   void coordinator_t::release_locked(const std::string &client_uuid, client_state_t &state, const std::string &reason) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) { state.monitor_release_pending = true; state.monitor_release_reason = reason; return; }
     if (!state.remote_monitor) return;
     if (display_mutation_deferred_locked()) {
       state.monitor_release_pending = true;

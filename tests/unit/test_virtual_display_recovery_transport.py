@@ -87,9 +87,36 @@ PROGRAM = r'''
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "src/platform/windows/display_helper_borrow_gate.h"
 #include "src/platform/windows/virtual_display_policy.h"
 
 #define BOOST_LOG(level) std::clog
+
+// The extracted recovery functions run as a normal host process in this fake
+// I/O fixture. Reuse the production local process gate; helper mode fails
+// closed because this non-Windows harness does not provide its named mutex.
+namespace display_helper::borrow {
+  inline std::atomic_bool &helper_process() {
+    static std::atomic_bool active {false};
+    return active;
+  }
+  class native_mutation_scope_t {
+  public:
+    native_mutation_scope_t() = default;
+    native_mutation_scope_t(const native_mutation_scope_t &) = delete;
+    native_mutation_scope_t &operator=(const native_mutation_scope_t &) = delete;
+    native_mutation_scope_t(native_mutation_scope_t &&) = default;
+    explicit operator bool() const { return static_cast<bool>(local_); }
+    static native_mutation_scope_t enter(bool wait, const std::function<bool()> &cancelled = {}) {
+      auto local = wait ? process_gate().wait_enter(cancelled) : process_gate().try_enter();
+      if (!local || helper_process().load(std::memory_order_acquire)) return {};
+      return native_mutation_scope_t {std::move(local)};
+    }
+  private:
+    explicit native_mutation_scope_t(gate_t::scope_t local): local_(std::move(local)) {}
+    gate_t::scope_t local_;
+  };
+}
 
 struct LUID { std::uint32_t LowPart = 0; std::int32_t HighPart = 0; };
 using GUID = int;
@@ -180,6 +207,11 @@ namespace VDISPLAY_SUNSHINE {
   int device_open_count = 0;
   bool open_succeeds = true;
   bool opened_transport_responsive = true;
+  bool requested_resolution_catalog_supported = true;
+  int requested_resolution_catalog_checks = 0;
+  int retained_release_count = 0;
+  int create_count = 0;
+  bool last_requested_resolution_only = false;
 
   struct LuidProvenance {
     std::weak_ptr<Transport> transport;
@@ -251,6 +283,7 @@ namespace VDISPLAY_SUNSHINE {
     bool framegen_refresh_active = false;
     int framegen_refresh_multiplier = 1;
     std::optional<bool> hdr_requested;
+    bool requested_resolution_only = false;
     std::function<std::function<void()>(const struct VirtualDisplayCreationResult &, std::stop_token)> on_recovery_success;
   };
   struct RecoveryMonitorState {
@@ -260,7 +293,14 @@ namespace VDISPLAY_SUNSHINE {
     std::string describe_target() const { return "test target"; }
     void update_identifiers(const std::optional<std::wstring> &, const std::optional<std::string> &, const std::optional<std::wstring> &) { ++identifier_updates; }
   };
-  bool release_retained_ensure_display_for_stream(GUID, const char *, std::stop_token token) { return !token.stop_requested(); }
+  bool supportsRequestedResolutionCatalog() {
+    ++requested_resolution_catalog_checks;
+    return requested_resolution_catalog_supported;
+  }
+  bool release_retained_ensure_display_for_stream(GUID, const char *, std::stop_token token) {
+    ++retained_release_count;
+    return !token.stop_requested();
+  }
   bool lock_recovery_operation(std::unique_lock<std::recursive_mutex> &lock, const RecoveryMonitorState &state, std::stop_token token) {
     return !state.abort && !token.stop_requested() && lock.try_lock();
   }
@@ -278,8 +318,11 @@ namespace VDISPLAY_SUNSHINE {
   bool render_adapter_request_provenance_matches(const uuid_util::uuid_t &, std::string_view);
   std::optional<VirtualDisplayCreationResult> create_virtual_display_with_stop(
     const char *, const char *, const char *, std::uint32_t, std::uint32_t, std::uint32_t,
-    GUID guid, std::uint32_t, bool, int, std::optional<bool>, bool, bool, bool, std::stop_token
+    GUID guid, std::uint32_t, bool, int, std::optional<bool>, bool, bool, bool,
+    bool requested_resolution_only, std::stop_token
   ) {
+    ++create_count;
+    last_requested_resolution_only = requested_resolution_only;
     provenance_matches = render_adapter_request_provenance_matches(uuid_util::uuid_t {std::to_string(guid)}, "test reclaim");
     const auto plan = VDISPLAY::policy::reclaimed_display_plan_for_session(
       true, true, true, provenance_matches
@@ -303,6 +346,9 @@ namespace VDISPLAY_SUNSHINE {
   void reset_fixture() {
     stop_watchdog_thread();
     clear_control_transport();
+    // The successful recovery case installs a callback that can restart the
+    // production ping thread. Do not leak it into later independent cases.
+    g_watchdog_fail_cb = {};
     {
       std::lock_guard<std::mutex> lock(g_render_adapter_request_mutex);
       g_current_render_adapter_request_transport.reset();
@@ -313,6 +359,11 @@ namespace VDISPLAY_SUNSHINE {
     next_transport_id = 1;
     open_succeeds = true;
     opened_transport_responsive = true;
+    requested_resolution_catalog_supported = true;
+    requested_resolution_catalog_checks = 0;
+    retained_release_count = 0;
+    create_count = 0;
+    last_requested_resolution_only = false;
     provenance_matches = false;
     display_recreated = false;
     proc::setVDisplayDriverStatus(DRIVER_STATUS::UNKNOWN, DRIVER_SELECTION::UNKNOWN);
@@ -433,7 +484,39 @@ namespace VDISPLAY_SUNSHINE {
     check(device_open_count == 0, "cancelled recovery performs no device open");
   }
 
+  void test_requested_resolution_only_recovery_fails_before_retained_probe_without_catalog() {
+    reset_fixture();
+    auto original = replace_control_transport(std::make_unique<Transport>(Transport {1, true, true, 0}));
+    requested_resolution_catalog_supported = false;
+    RecoveryMonitorState state;
+    state.params.requested_resolution_only = true;
+    const bool recovered = attempt_virtual_display_recovery(state, {});
+    check(!recovered, "requested-resolution-only recovery fails when the producer lacks catalog support");
+    check(requested_resolution_catalog_checks == 1, "requested-resolution-only recovery checks catalog support");
+    check(retained_release_count == 0, "unsupported requested-resolution-only recovery keeps retained display probe");
+    check(create_count == 0, "unsupported requested-resolution-only recovery does not recreate a display");
+    check(control_transport_snapshot() == original, "catalog capability failure preserves the healthy transport");
+  }
+
+  void test_requested_resolution_only_recovery_propagates_catalog_policy() {
+    reset_fixture();
+    replace_control_transport(std::make_unique<Transport>(Transport {1, true, true, 0}));
+    RecoveryMonitorState state;
+    state.params.requested_resolution_only = true;
+    const bool recovered = attempt_virtual_display_recovery(state, {});
+    check(recovered, "requested-resolution-only recovery completes with catalog support");
+    check(requested_resolution_catalog_checks == 1, "supported requested-resolution-only recovery checks catalog once");
+    check(retained_release_count == 1, "supported requested-resolution-only recovery releases the retained probe");
+    check(create_count == 1, "supported requested-resolution-only recovery recreates once");
+    check(last_requested_resolution_only, "requested-resolution-only policy reaches production create boundary");
+  }
+
   int run() {
+    [[maybe_unused]] auto cleanup_fixture = util::fail_guard([] {
+      stop_watchdog_thread();
+      clear_control_transport();
+      g_watchdog_fail_cb = {};
+    });
     test_healthy_recovery_preserves_transport_provenance();
     test_ping_open_does_not_replace_shared_transport();
     test_unhealthy_recovery_reopens_and_recreates_for_stale_provenance();
@@ -442,6 +525,8 @@ namespace VDISPLAY_SUNSHINE {
     test_unhealthy_transport_reopens_and_fails_closed();
     test_opened_but_unresponsive_transport_is_rejected();
     test_cancelled_recovery_does_not_open_transport();
+    test_requested_resolution_only_recovery_fails_before_retained_probe_without_catalog();
+    test_requested_resolution_only_recovery_propagates_catalog_policy();
     std::cout << "Recovery transport fixture failures=" << failures << '\n';
     return failures == 0 ? 0 : 1;
   }

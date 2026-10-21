@@ -1,3 +1,4 @@
+#include "src/platform/windows/display_helper_borrow_native.h"
 #include "virtual_display.h"
 #include "virtual_display_catalog_policy.h"
 #include "src/platform/windows/virtual_display_refresh_policy.h"
@@ -449,6 +450,8 @@ namespace VDISPLAY_SUNSHINE {
                 clear_pending();
                 return;
               }
+              auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true, [&] { return stop_token.stop_requested(); });
+              if (!borrowed_output_mutation) { clear_pending(); return; }
               try {
                 if (*fail_cb) {
                   (*fail_cb)();
@@ -810,6 +813,8 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     bool apply_device_state_change(HDEVINFO info_set, SP_DEVINFO_DATA &data, DWORD state_change) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+      if (!borrowed_output_mutation) return false;
       SP_PROPCHANGE_PARAMS params {};
       params.ClassInstallHeader.cbSize = sizeof(SP_CLASSINSTALL_HEADER);
       params.ClassInstallHeader.InstallFunction = DIF_PROPERTYCHANGE;
@@ -1611,6 +1616,8 @@ namespace VDISPLAY_SUNSHINE {
 
     // Clear the color profile association from registry for a display
     bool clear_color_profile_from_registry(const std::wstring &device_path, color_profile_scope_e scope) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+      if (!borrowed_output_mutation) return false;
       auto profile_path = get_color_profile_registry_path(device_path);
       if (!profile_path) {
         return false;
@@ -1648,6 +1655,8 @@ namespace VDISPLAY_SUNSHINE {
       color_profile_scope_e scope,
       LSTATUS *out_status = nullptr
     ) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+      if (!borrowed_output_mutation) return false;
       auto profile_assoc_path = get_color_profile_registry_path(device_path);
       if (!profile_assoc_path) {
         if (out_status) {
@@ -1718,6 +1727,8 @@ namespace VDISPLAY_SUNSHINE {
       const std::optional<std::wstring> &profile_name,
       const color_profile_scope_e scope
     ) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+      if (!borrowed_output_mutation) return false;
       bool api_success = false;
       if (profile_name && !profile_name->empty()) {
         const auto result = VDISPLAY::remove_advanced_color_profile(
@@ -1741,6 +1752,8 @@ namespace VDISPLAY_SUNSHINE {
       const color_profile_scope_e scope,
       LSTATUS *out_status = nullptr
     ) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+      if (!borrowed_output_mutation) return false;
       return VDISPLAY::associate_hdr_profile(
         device_path,
         profile_filename,
@@ -1803,6 +1816,9 @@ namespace VDISPLAY_SUNSHINE {
                                  device_id,
                                  should_clear_mismatched,
                                  allow_active_virtual_display_fallback](std::stop_token work_stop_token) {
+        auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true, [&] { return work_stop_token.stop_requested(); });
+        if (!borrowed_output_mutation) return;
+
         if (work_stop_token.stop_requested()) {
           return;
         }
@@ -2220,6 +2236,8 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     bool apply_virtual_display_dpi_value(const virtual_display_dpi_snapshot_t &snapshot) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+      if (!borrowed_output_mutation) return false;
       HKEY root = nullptr;
       if (RegOpenKeyExW(
             HKEY_CURRENT_USER,
@@ -2666,6 +2684,8 @@ namespace VDISPLAY_SUNSHINE {
 
         // SDC_ALLOW_PATH_ORDER_CHANGES is only legal alongside SDC_TOPOLOGY_SUPPLIED,
         // which is mutually exclusive with SDC_USE_SUPPLIED_DISPLAY_CONFIG.
+        auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
+        if (!borrowed_output_mutation) return static_cast<LONG>(ERROR_BUSY);
         return SetDisplayConfig(
           static_cast<UINT>(paths.size()),
           paths.data(),
@@ -2735,6 +2755,8 @@ namespace VDISPLAY_SUNSHINE {
       const std::uint32_t refresh_millihz,
       std::stop_token stop_token = {}
     ) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+      if (!borrowed_output_mutation) return false;
       const auto deadline = std::chrono::steady_clock::now() + VDISPLAY::policy::enumeration_timeout;
       LONG result = ERROR_NOT_FOUND;
       do {
@@ -2848,6 +2870,8 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     bool set_hdr_state_inner(const DisplayConfigTarget &output, bool enabled) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+      if (!borrowed_output_mutation) return false;
       DISPLAYCONFIG_SET_HDR_STATE_LOCAL state {};
       state.header.type = DISPLAYCONFIG_DEVICE_INFO_SET_HDR_STATE;
       state.header.size = sizeof(state);
@@ -2864,6 +2888,8 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     bool set_advanced_color_inner(const DisplayConfigTarget &output, bool enabled) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+      if (!borrowed_output_mutation) return false;
       DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE state {};
       state.header.type = DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE;
       state.header.size = sizeof(state);
@@ -4937,6 +4963,8 @@ namespace VDISPLAY_SUNSHINE {
   }  // namespace
 
   void applyHdrProfileToOutput(const char *s_client_name, const char *s_hdr_profile, const char *s_device_id) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return ;
     // Only apply HDR profiles when explicitly selected by the user.
     if (!s_hdr_profile || std::strlen(s_hdr_profile) == 0) {
       return;
@@ -4961,6 +4989,8 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   void restorePhysicalHdrProfiles() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return ;
     std::unordered_map<std::wstring, std::optional<std::wstring>> to_restore;
     {
       std::lock_guard<std::mutex> lock(g_physical_hdr_profile_restore_mutex);
@@ -4971,6 +5001,9 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     std::thread([entries = std::move(to_restore)]() mutable {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return;
+
       auto restore_profiles = [&]() {
         for (const auto &[monitor_path, previous] : entries) {
           if (monitor_path.empty()) {
@@ -5198,6 +5231,12 @@ namespace VDISPLAY_SUNSHINE {
     return VIRTUAL_DISPLAY_DRIVER_TRANSPORT;
   }
 
+  std::optional<std::shared_ptr<void>> retain_borrow_native_resources() {
+    // Retain the exact live transport object; its implicit static destructor
+    // cannot close the driver object while a borrow still owns this reference.
+    return std::static_pointer_cast<void>(control_transport_snapshot());
+  }
+
   std::shared_ptr<sunshine_driver::WindowsControlTransport> replace_control_transport(
     std::unique_ptr<sunshine_driver::WindowsControlTransport> replacement
   ) {
@@ -5214,6 +5253,8 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   void clear_control_transport() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return;
     std::shared_ptr<sunshine_driver::WindowsControlTransport> previous;
     {
       std::lock_guard<std::mutex> lock(g_control_transport_mutex);
@@ -5225,6 +5266,8 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   void closeVDisplayDevice() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return ;
     std::lock_guard<std::recursive_mutex> lifecycle_lock(g_watchdog_lifecycle_mutex);
     stop_watchdog_thread();
     set_watchdog_feed_requested(false, false);
@@ -5273,6 +5316,8 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   void ensureVirtualDisplayRegistryDefaults() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return ;
     // The Sunshine driver is runtime-only in this pass and does not require registry defaults.
   }
 
@@ -5369,6 +5414,8 @@ namespace VDISPLAY_SUNSHINE {
     std::stop_token stop_token,
     OpenRecoveryBehavior recovery_behavior
   ) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return DRIVER_STATUS::FAILED;
     proc::setVDisplayDriverStatus(VDISPLAY::DRIVER_STATUS::UNKNOWN, VDISPLAY::DRIVER_SELECTION::UNKNOWN);
     const auto status = open_vdisplay_device_impl(stop_token, recovery_behavior);
     proc::setVDisplayDriverStatus(status, VDISPLAY::DRIVER_SELECTION::VIBESHINE);
@@ -5376,6 +5423,8 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   DRIVER_STATUS openVDisplayDevice() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return DRIVER_STATUS::FAILED;
     // proc::initVDisplayDriver() probes/restarts the adapter immediately before
     // this call. Limit this phase to opening the transport so one initialization
     // attempt cannot enter a second PnP recovery cycle.
@@ -5383,6 +5432,8 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   static bool ensure_driver_is_ready_impl(RestartCooldownBehavior cooldown_behavior, std::stop_token stop_token) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     std::lock_guard<std::recursive_mutex> lifecycle_lock(g_watchdog_lifecycle_mutex);
     if (stop_token.stop_requested()) {
       return false;
@@ -5487,6 +5538,8 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   bool ensure_driver_is_ready() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     return ensure_driver_is_ready_impl(RestartCooldownBehavior::skip);
   }
 
@@ -5495,6 +5548,8 @@ namespace VDISPLAY_SUNSHINE {
     std::stop_token stop_token,
     OpenRecoveryBehavior recovery_behavior
   ) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     std::lock_guard<std::recursive_mutex> lifecycle_lock(g_watchdog_lifecycle_mutex);
     if (stop_token.stop_requested()) {
       return false;
@@ -5628,6 +5683,8 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   void setWatchdogFeedingEnabled(bool enable) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return ;
     std::lock_guard<std::recursive_mutex> lifecycle_lock(g_watchdog_lifecycle_mutex);
     set_watchdog_feed_requested(enable, enable);
     if (!enable) {
@@ -5772,6 +5829,8 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     bool set_render_adapter_luid(const LUID &adapter_luid, const std::wstring &adapter_name, SIZE_T dedicated_memory, SIZE_T shared_memory) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+      if (!borrowed_output_mutation) return false;
       std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
       auto transport = control_transport_snapshot();
       if (!transport || !transport->valid()) {
@@ -5842,6 +5901,8 @@ namespace VDISPLAY_SUNSHINE {
     const std::uint64_t dedicated_video_memory,
     const std::uint64_t shared_system_memory
   ) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     return set_render_adapter_luid(
       adapter_luid,
       adapter_name,
@@ -5851,6 +5912,8 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   bool setRenderAdapterByName(const std::wstring &adapterName) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     const auto transport = control_transport_snapshot();
     if (!transport || !transport->valid()) {
       return false;
@@ -5894,6 +5957,8 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   bool setRenderAdapterWithMostDedicatedMemory() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     const auto transport = control_transport_snapshot();
     if (!transport || !transport->valid()) {
       return false;
@@ -7282,6 +7347,8 @@ namespace VDISPLAY_SUNSHINE {
     bool requested_resolution_only,
     std::stop_token stop_token
   ) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return std::nullopt;
     std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
     if (stop_token.stop_requested()) {
       return std::nullopt;
@@ -7598,6 +7665,8 @@ namespace VDISPLAY_SUNSHINE {
     bool preserve_peer_displays,
     bool requested_resolution_only
   ) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return {};
     if (requested_resolution_only && !supportsRequestedResolutionCatalog()) return std::nullopt;
     if (!release_retained_ensure_display_for_stream(guid, s_client_uid)) {
       return std::nullopt;
@@ -7623,6 +7692,8 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   bool removeAllVirtualDisplays() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     // Request cancellation before taking the operation lock. A recovery
     // monitor may be waiting to take it after an external driver call.
     abort_all_recovery_monitors();
@@ -7675,6 +7746,8 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   bool removeVirtualDisplay(const GUID &guid) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     return remove_virtual_display_impl(guid, true);
   }
 
@@ -7683,6 +7756,8 @@ namespace VDISPLAY_SUNSHINE {
     bool cancel_recovery_monitor,
     std::stop_token stop_token
   ) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     const auto guid_uuid = guid_to_uuid(guid);
     // A recovery-owned rollback must complete removal even after its monitor
     // has been stopped. Otherwise a stale transport at exactly that point can
@@ -7865,6 +7940,8 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   static bool is_sunshine_driver_installed_passive() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     // Status/enumeration paths must not repair or restart a missing device node.
     // Recovery remains limited to explicit driver initialization/use.
     const auto transport = control_transport_snapshot();

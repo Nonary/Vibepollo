@@ -9,8 +9,25 @@ namespace remote_session {
     return app.is_object() && marker != app.end() && marker->is_boolean() && marker->get<bool>();
   }
 
+  inline std::optional<display_target::descriptor_t> monitor_target_from_json(const nlohmann::json &app) {
+    const auto it = app.find("remote-monitor-target");
+    if (it == app.end() || !it->is_object() || it->size() != 3 ||
+        !it->contains("platform") || !it->contains("kind") || !it->contains("id") ||
+        !(*it)["platform"].is_string() || !(*it)["kind"].is_string() || !(*it)["id"].is_string()) return std::nullopt;
+    const auto platform = (*it)["platform"].get<std::string>();
+    const auto kind = (*it)["kind"].get<std::string>();
+    const auto id = (*it)["id"].get<std::string>();
+    if ((platform != "linux-drm" && platform != "windows-device") ||
+        (kind != "physical" && kind != "shared-virtual") || id.empty() || id.size() > 4096 ||
+        id.find_first_of("\r\n\0", 0, 3) != std::string::npos) return std::nullopt;
+    return display_target::descriptor_t {
+      platform == "linux-drm" ? display_target::platform_e::linux_drm : display_target::platform_e::windows_device,
+      kind == "physical" ? display_target::kind_e::physical : display_target::kind_e::shared_virtual, id};
+  }
+
   inline std::string_view monitor_profile_json_error(const nlohmann::json &app, const std::vector<std::string_view> &configured_uuids) {
     if (!marked_monitor_profile(app)) return {};
+    if (app.contains("remote-monitor-target") && !monitor_target_from_json(app)) return "Remote Monitor target requires literal platform, kind, and exact id fields.";
     const auto uuid = app.find("uuid");
     if (uuid == app.end() || !uuid->is_string()) return "Remote Monitor profile requires a valid literal UUID.";
     return monitor_profile_uuid_error(uuid->get_ref<const std::string &>(), configured_uuids);

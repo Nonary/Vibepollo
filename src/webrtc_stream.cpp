@@ -251,10 +251,11 @@ namespace webrtc_stream {
       const bool shared_virtual_display_mode =
         requested_virtual_display_mode == config::video_t::virtual_display_mode_e::shared;
       auto shared_virtual_display_uuid = VDISPLAY::persistentVirtualDisplayUuid();
-      if (shared_virtual_display_mode && !http::shared_virtual_display_guid.empty()) {
+      const auto shared_guid_snapshot=http::shared_virtual_display_guid_snapshot();
+      if (shared_virtual_display_mode && !shared_guid_snapshot.empty()) {
         try {
           shared_virtual_display_uuid =
-            uuid_util::uuid_t::parse(http::shared_virtual_display_guid);
+            uuid_util::uuid_t::parse(shared_guid_snapshot);
         } catch (...) {
           // Creation uses the same persistent fallback and repairs the stored value.
         }
@@ -443,11 +444,11 @@ namespace webrtc_stream {
 
       uuid_util::uuid_t session_uuid;
       if (shared_mode) {
-        if (auto parsed = parse_uuid(http::shared_virtual_display_guid)) {
+        if (auto parsed = parse_uuid(http::shared_virtual_display_guid_snapshot())) {
           session_uuid = *parsed;
         } else {
           session_uuid = VDISPLAY::persistentVirtualDisplayUuid();
-          http::shared_virtual_display_guid = session_uuid.string();
+          http::set_shared_virtual_display_guid(session_uuid.string());
         }
       } else if (auto parsed = parse_uuid(session->unique_id)) {
         session_uuid = *parsed;
