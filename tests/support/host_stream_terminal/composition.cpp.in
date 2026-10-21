@@ -276,7 +276,7 @@ int main() {
  reset();
  auto published_monitor=std::make_shared<launch_session_t>();
  published_monitor->role=remote_session::role_e::monitor;
- server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{published_monitor,std::chrono::steady_clock::now()+1s});
+ server._launch_sessions.entries().push_back(rtsp_server_t::pending_launches_t::entry_t{published_monitor,std::chrono::steady_clock::now()+1s});
  auto monitor_request=std::make_shared<Request>();monitor_request->payload=payload.data();monitor_request->payloadLength=payload.size();
  check(cmd_announce(&server,std::make_shared<socket_t>(),published_monitor,std::move(monitor_request)),"monitor ANNOUNCE accepted");
  server.startup_pool.run();
@@ -290,7 +290,7 @@ int main() {
  for(int failure : {-1,stream::session::START_PACING_REJECTED,99}) {
    reset();auto failed=std::make_shared<launch_session_t>();failed->role=remote_session::role_e::monitor;
    failed->audio_context_guard=std::make_shared<int>(1);std::weak_ptr<void> hold=failed->audio_context_guard;
-   server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{failed,std::chrono::steady_clock::now()+1s});
+   server._launch_sessions.entries().push_back(rtsp_server_t::pending_launches_t::entry_t{failed,std::chrono::steady_clock::now()+1s});
    auto request=std::make_shared<Request>();request->payload=payload.data();request->payloadLength=payload.size();
    stream::session::start_result=failure;stream::session::start_exception=failure==99;
    check(cmd_announce(&server,std::make_shared<socket_t>(),failed,std::move(request)),"failed monitor ANNOUNCE queued");
@@ -304,8 +304,8 @@ int main() {
  for(bool peer : {false,true}) {
    reset();server._session_state->vulkan_hdr_layer_pending_stream=true;
    auto failed=std::make_shared<launch_session_t>();failed->role=remote_session::role_e::monitor;
-   server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{failed,std::chrono::steady_clock::now()+1s});
-   if(peer){auto other=std::make_shared<launch_session_t>();other->id=2;server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{other,std::chrono::steady_clock::now()+1s});}
+   server._launch_sessions.entries().push_back(rtsp_server_t::pending_launches_t::entry_t{failed,std::chrono::steady_clock::now()+1s});
+   if(peer){auto other=std::make_shared<launch_session_t>();other->id=2;server._launch_sessions.entries().push_back(rtsp_server_t::pending_launches_t::entry_t{other,std::chrono::steady_clock::now()+1s});}
    {std::lock_guard lock(nvhttp::lifecycle);server.retire_failed_monitor_start_locked(failed);}
    check(server._session_state->vulkan_hdr_layer_pending_stream==peer,"failed monitor clears final pending HDR flag while preserving peer pending state");
  }
@@ -318,7 +318,7 @@ int main() {
    if(mismatch==2)++stale->role_generation;
    if(mismatch==3)owner->monitor_stream_published=true;
    if(mismatch==4)owner->role=remote_session::role_e::input;
-   server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{owner,std::chrono::steady_clock::now()+1s});
+   server._launch_sessions.entries().push_back(rtsp_server_t::pending_launches_t::entry_t{owner,std::chrono::steady_clock::now()+1s});
    {std::lock_guard lock(nvhttp::lifecycle);server.retire_failed_monitor_start_locked(stale);}
    check(server._launch_sessions.size()==1 && monitor_lost==0,"stale or published monitor retirement preserves current registry owner");
  }
