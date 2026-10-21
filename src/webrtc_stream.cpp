@@ -61,6 +61,7 @@
 #include "input.h"
 #include "logging.h"
 #include "nvhttp.h"
+#include "host_stream_control.h"
 #include "process.h"
 #include "rtsp.h"
 #include "session_display_policy.h"
@@ -1776,17 +1777,131 @@ namespace webrtc_stream {
       std::atomic<bool> active {true};
     };
 
+    // Own the C wrapper and its raw callback contexts through synchronous
+    // control calls and the SDP continuation. Retirement rejects new call_t
+    // guards; work admitted before retirement may finish, including its next
+    // SDP SDK stage. The last admitted call performs Close without holding
+    // either the session mutex or the retirement mutex.
+    struct SessionPeerLifetime {
+      std::mutex mutex;
+      std::mutex setup_mutex;
+      bool retired = false;
+      bool closed = false;
+      unsigned calls = 0;
+      lwrtc_peer_t *peer = nullptr;
+      std::shared_ptr<lwrtc_factory_t> factory;
+      std::shared_ptr<SessionIceContext> ice_context;
+      std::shared_ptr<SessionDataChannelContext> data_channel_context;
+      std::shared_ptr<SessionKeyframeContext> keyframe_context;
+      std::shared_ptr<SessionRateContext> rate_context;
+      std::shared_ptr<lwrtc_audio_source_t> audio_source;
+      std::shared_ptr<lwrtc_video_source_t> video_source;
+      std::shared_ptr<lwrtc_encoded_video_source_t> encoded_video_source;
+      lwrtc_audio_track_t *audio_track = nullptr;
+      lwrtc_video_track_t *video_track = nullptr;
+      std::shared_ptr<lwrtc_data_channel_t> input_channel;
+
+      // Never hold the session or retirement mutex across an SDK call. An SDK
+      // may synchronously dispatch its completion on another thread and wait.
+      class call_t {
+        std::shared_ptr<SessionPeerLifetime> lifetime;
+      public:
+        explicit call_t(const std::shared_ptr<SessionPeerLifetime> &owner) {
+          std::lock_guard lock {owner->mutex};
+          if (owner->retired) return;
+          ++owner->calls;
+          lifetime = owner;
+        }
+        call_t(const call_t &) = delete;
+        explicit operator bool() const { return static_cast<bool>(lifetime); }
+        ~call_t() { if (lifetime) lifetime->finish_call(); }
+      };
+
+      void finish_call() {
+        bool close = false;
+        {
+          std::lock_guard lock {mutex};
+          close = --calls == 0 && retired && !std::exchange(closed, true);
+        }
+        if (close) close_native();
+      }
+
+      void retire() {
+        bool close = false;
+        {
+          std::lock_guard lock {mutex};
+          retired = true;
+          close = calls == 0 && !std::exchange(closed, true);
+        }
+        if (close) close_native();
+      }
+
+      void close_native() {
+        if (ice_context) ice_context->active.store(false, std::memory_order_release);
+        if (data_channel_context) data_channel_context->active.store(false, std::memory_order_release);
+        if (keyframe_context) keyframe_context->active.store(false, std::memory_order_release);
+        if (rate_context) rate_context->active.store(false, std::memory_order_release);
+        if (encoded_video_source) {
+          lwrtc_encoded_video_source_set_keyframe_callback(encoded_video_source.get(), nullptr, nullptr);
+          lwrtc_encoded_video_source_set_rate_callback(encoded_video_source.get(), nullptr, nullptr);
+        }
+        if (peer) lwrtc_peer_close(peer);
+        if (input_channel) {
+          lwrtc_data_channel_unregister_observer(input_channel.get());
+          lwrtc_data_channel_close(input_channel.get());
+        }
+      }
+
+      ~SessionPeerLifetime() {
+        retire();
+        if (peer) lwrtc_peer_release(peer);
+        input_channel.reset();
+        if (audio_track) lwrtc_audio_track_release(audio_track);
+        if (video_track) lwrtc_video_track_release(video_track);
+        encoded_video_source.reset();
+        video_source.reset();
+        audio_source.reset();
+        factory.reset();
+      }
+    };
+
     struct SessionPeerContext {
       std::string session_id;
-      lwrtc_peer_t *peer = nullptr;
+      // Destroy peer/resources before releasing the counted callback tail.
+      host_stream_control::callback_guard_t operation;
+      std::shared_ptr<SessionPeerLifetime> lifetime;
       int audio_channels = 2;
     };
 
     struct LocalDescriptionContext {
       std::string session_id;
-      lwrtc_peer_t *peer = nullptr;
+      // Destroy peer/resources before releasing the counted callback tail.
+      host_stream_control::callback_guard_t operation;
+      std::shared_ptr<SessionPeerLifetime> lifetime;
       std::string sdp;
       std::string type;
+    };
+
+    // A completion can transfer its context to an SDK call that completes
+    // inline and deletes that context before the enclosing SDK call returns.
+    // Retain another shared owner of the existing counted reservation for
+    // the whole entered callback scope.
+    // Reverse member destruction finishes the native call, drops every peer
+    // and context owner, then releases admission, including retired Close and
+    // final wrapper/resource release. No session or retirement mutex spans
+    // an SDK call.
+    template<class Context>
+    struct SessionSdpCallbackScope {
+      host_stream_control::callback_guard_t operation;
+      std::unique_ptr<Context> context;
+      std::shared_ptr<SessionPeerLifetime> lifetime;
+      SessionPeerLifetime::call_t peer_call;
+
+      explicit SessionSdpCallbackScope(Context *incoming):
+          operation(incoming->operation),
+          context(incoming),
+          lifetime(incoming->lifetime),
+          peer_call(lifetime) {}
     };
 
     lwrtc_constraints_t *create_constraints();
@@ -1831,7 +1946,8 @@ namespace webrtc_stream {
       std::shared_ptr<lwrtc_factory_t> factory;
       std::optional<Av1FmtpParams> av1_fmtp;
       std::optional<std::string> hevc_fmtp;
-      lwrtc_peer_t *peer = nullptr;
+      lwrtc_peer_t *peer = nullptr;  // Alias owned by peer_lifetime.
+      std::shared_ptr<SessionPeerLifetime> peer_lifetime = std::make_shared<SessionPeerLifetime>();
       std::shared_ptr<SessionIceContext> ice_context;
       std::shared_ptr<lwrtc_audio_source_t> audio_source;
       std::shared_ptr<lwrtc_video_source_t> video_source;
@@ -1976,6 +2092,8 @@ namespace webrtc_stream {
       uint32_t bitrate_bps,
       uint32_t /*framerate_fps*/
     ) {
+      host_stream_control::activity_guard_t activity;
+      if (!activity) return;
       auto *context = static_cast<SessionRateContext *>(user);
       if (!context || !context->active.load(std::memory_order_acquire) || bitrate_bps == 0) {
         return;
@@ -2044,22 +2162,24 @@ namespace webrtc_stream {
 
     #ifdef SUNSHINE_ENABLE_WEBRTC
     void send_gamepad_feedback_payload(const std::string &payload) {
-      std::lock_guard lg {session_mutex};
-      for (auto &[_, session] : sessions) {
-        if (!session.input_channel) {
-          continue;
+      host_stream_control::activity_guard_t activity;
+      if (!activity) return;
+      std::vector<std::pair<std::shared_ptr<SessionPeerLifetime>, std::shared_ptr<lwrtc_data_channel_t>>> channels;
+      {
+        std::lock_guard lg {session_mutex};
+        for (auto &[_, session] : sessions) {
+          if (session.peer_lifetime->input_channel) {
+            channels.emplace_back(session.peer_lifetime, session.peer_lifetime->input_channel);
+          }
         }
-        if (lwrtc_data_channel_state(session.input_channel) != LWRTC_DATA_CHANNEL_OPEN) {
-          continue;
-        }
-        lwrtc_data_channel_send(
-          session.input_channel,
-          reinterpret_cast<const uint8_t *>(payload.data()),
-          payload.size(),
-          0
-        );
+      }
+      for (auto &[lifetime, channel] : channels) {
+        SessionPeerLifetime::call_t peer_call {lifetime};
+        if (!peer_call || lwrtc_data_channel_state(channel.get()) != LWRTC_DATA_CHANNEL_OPEN) continue;
+        lwrtc_data_channel_send(channel.get(), reinterpret_cast<const uint8_t *>(payload.data()), payload.size(), 0);
       }
     }
+
 #endif
 
     #ifdef SUNSHINE_ENABLE_WEBRTC
@@ -3706,6 +3826,8 @@ namespace webrtc_stream {
     }
 
     void stop_webrtc_capture_if_idle(bool *teardown_reserved = nullptr) {
+    host_stream_control::activity_guard_t activity;
+    if (!activity) return;
       std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
       (void) stop_webrtc_capture_if_idle_with_lifecycle_lock(
         lifecycle_lock,
@@ -3714,6 +3836,8 @@ namespace webrtc_stream {
     }
 
     void cancel_pending_webrtc_session_creation() {
+    host_stream_control::activity_guard_t activity;
+    if (!activity) return;
       stream::session::cleanup_reservation_t cleanup_reservation;
       std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
       {
@@ -3732,6 +3856,8 @@ namespace webrtc_stream {
       int mline_index,
       const char *candidate
     ) {
+      host_stream_control::activity_guard_t activity;
+      if (!activity) return;
       auto *ctx = static_cast<SessionIceContext *>(user);
       if (!ctx || !ctx->active.load(std::memory_order_acquire)) {
         return;
@@ -3808,6 +3934,8 @@ namespace webrtc_stream {
     }
 
     void on_data_channel_message(void *user, const char *buffer, int length, int binary) {
+      host_stream_control::activity_guard_t activity;
+      if (!activity) return;
       if (!buffer || length <= 0) {
         return;
       }
@@ -3830,6 +3958,8 @@ namespace webrtc_stream {
     }
 
     void on_peer_state(void *user, int state) {
+      host_stream_control::activity_guard_t activity;
+      if (!activity) return;
       auto *ctx = static_cast<SessionDataChannelContext *>(user);
       if (!ctx || !ctx->active.load(std::memory_order_acquire)) {
         return;
@@ -3849,6 +3979,8 @@ namespace webrtc_stream {
     }
 
     void on_data_channel_state(void *user, int state) {
+      host_stream_control::activity_guard_t activity;
+      if (!activity) return;
       auto *ctx = static_cast<SessionDataChannelContext *>(user);
       if (!ctx || !ctx->active.load(std::memory_order_acquire) ||
           state != LWRTC_DATA_CHANNEL_CLOSED) {
@@ -3864,52 +3996,47 @@ namespace webrtc_stream {
     }
 
     void on_data_channel(void *user, lwrtc_data_channel_t *channel) {
+      host_stream_control::activity_guard_t activity;
+      if (!activity) { if (channel) lwrtc_data_channel_release(channel); return; }
+      auto incoming = make_lwrtc_ptr<lwrtc_data_channel_t, lwrtc_data_channel_release>(channel);
       auto *ctx = static_cast<SessionDataChannelContext *>(user);
-      if (!ctx || !ctx->active.load(std::memory_order_acquire) || !channel) {
-        if (channel) {
-          lwrtc_data_channel_release(channel);
-        }
-        return;
-      }
-
-      const char *label = lwrtc_data_channel_label(channel);
-      BOOST_LOG(debug) << "WebRTC: data channel opened label=" << (label ? label : "(null)");
-      if (!label || std::string_view {label} != "input") {
-        lwrtc_data_channel_release(channel);
-        return;
-      }
-
+      if (!ctx || !ctx->active.load(std::memory_order_acquire) || !incoming) return;
+      std::shared_ptr<SessionPeerLifetime> lifetime;
       {
         std::lock_guard lg {session_mutex};
         auto it = sessions.find(ctx->id);
-        if (it == sessions.end()) {
-          lwrtc_data_channel_release(channel);
-          return;
-        }
-
-        if (it->second.input_channel) {
-          lwrtc_data_channel_unregister_observer(it->second.input_channel);
-          lwrtc_data_channel_release(it->second.input_channel);
-        }
-        it->second.input_channel = channel;
-        if (it->second.data_channel_context) {
-          it->second.data_channel_context->mouse_move_seq_initialized.store(false, std::memory_order_release);
-          it->second.data_channel_context->last_mouse_move_seq.store(0, std::memory_order_release);
-          it->second.data_channel_context->last_mouse_move_at_ms.store(0, std::memory_order_release);
-        }
-        lwrtc_data_channel_register_observer(channel, &on_data_channel_state, &on_data_channel_message, ctx);
+        if (it == sessions.end() || it->second.data_channel_context.get() != ctx) return;
+        lifetime = it->second.peer_lifetime;
       }
+      SessionPeerLifetime::call_t peer_call {lifetime};
+      if (!peer_call) return;
+      const char *label = lwrtc_data_channel_label(channel);
+      if (!label || std::string_view {label} != "input") return;
+      std::shared_ptr<lwrtc_data_channel_t> previous;
+      {
+        std::lock_guard lg {session_mutex};
+        auto it = sessions.find(ctx->id);
+        if (it == sessions.end() || it->second.peer_lifetime != lifetime) return;
+        previous = std::exchange(lifetime->input_channel, incoming);
+        it->second.input_channel = channel;
+        ctx->mouse_move_seq_initialized.store(false, std::memory_order_release);
+        ctx->last_mouse_move_seq.store(0, std::memory_order_release);
+        ctx->last_mouse_move_at_ms.store(0, std::memory_order_release);
+      }
+      if (previous) lwrtc_data_channel_unregister_observer(previous.get());
+      lwrtc_data_channel_register_observer(channel, &on_data_channel_state, &on_data_channel_message, ctx);
     }
 
     void on_set_local_success(void *user) {
-      auto *ctx = static_cast<LocalDescriptionContext *>(user);
-      if (!ctx) {
-        return;
-      }
+      auto *incoming = static_cast<LocalDescriptionContext *>(user);
+      if (!incoming) return;
+      SessionSdpCallbackScope<LocalDescriptionContext> callback {incoming};
+      auto &ctx = callback.context;
+      [[maybe_unused]] auto &lifetime = callback.lifetime;
+      if (!callback.peer_call) return;
       if (!set_local_answer(ctx->session_id, ctx->sdp, ctx->type)) {
         BOOST_LOG(error) << "WebRTC: failed to store local description for " << ctx->session_id;
       }
-      delete ctx;
     }
 
     void store_negotiation_error(const std::string &session_id, std::string message) {
@@ -3927,24 +4054,26 @@ namespace webrtc_stream {
     }
 
     void on_set_local_failure(void *user, const char *err) {
-      auto *ctx = static_cast<LocalDescriptionContext *>(user);
-      if (!ctx) {
-        return;
-      }
+      auto *incoming = static_cast<LocalDescriptionContext *>(user);
+      if (!incoming) return;
+      SessionSdpCallbackScope<LocalDescriptionContext> callback {incoming};
+      auto &ctx = callback.context;
+      [[maybe_unused]] auto &lifetime = callback.lifetime;
+      if (!callback.peer_call) return;
       BOOST_LOG(error) << "WebRTC: failed to set local description for " << ctx->session_id
                        << ": " << (err ? err : "unknown");
       store_negotiation_error(ctx->session_id, std::string {"Failed to set local description: "} + (err ? err : "unknown"));
-      delete ctx;
     }
 
     void on_create_answer_success(void *user, const char *sdp, const char *type) {
-      auto *ctx = static_cast<SessionPeerContext *>(user);
-      if (!ctx) {
-        return;
-      }
-      if (!ctx->peer) {
+      auto *incoming = static_cast<SessionPeerContext *>(user);
+      if (!incoming) return;
+      SessionSdpCallbackScope<SessionPeerContext> callback {incoming};
+      auto &ctx = callback.context;
+      [[maybe_unused]] auto &lifetime = callback.lifetime;
+      if (!callback.peer_call) return;
+      if (!lifetime->peer) {
         BOOST_LOG(error) << "WebRTC: missing peer connection for " << ctx->session_id;
-        delete ctx;
         return;
       }
       std::string sdp_copy = sdp ? sdp : "";
@@ -3958,63 +4087,66 @@ namespace webrtc_stream {
 
       auto *local_ctx = new LocalDescriptionContext {
         ctx->session_id,
-        ctx->peer,
+        ctx->operation,
+        lifetime,
         std::move(sdp_copy),
         std::move(type_copy)
       };
       lwrtc_peer_set_local_description(
-        ctx->peer,
+        lifetime->peer,
         local_ctx->sdp.c_str(),
         local_ctx->type.c_str(),
         &on_set_local_success,
         &on_set_local_failure,
         local_ctx
       );
-      delete ctx;
     }
 
     void on_create_answer_failure(void *user, const char *err) {
-      auto *ctx = static_cast<SessionPeerContext *>(user);
-      if (!ctx) {
-        return;
-      }
+      auto *incoming = static_cast<SessionPeerContext *>(user);
+      if (!incoming) return;
+      SessionSdpCallbackScope<SessionPeerContext> callback {incoming};
+      auto &ctx = callback.context;
+      [[maybe_unused]] auto &lifetime = callback.lifetime;
+      if (!callback.peer_call) return;
       BOOST_LOG(error) << "WebRTC: failed to create answer for " << ctx->session_id
                        << ": " << (err ? err : "unknown");
       store_negotiation_error(ctx->session_id, std::string {"Failed to create answer: "} + (err ? err : "unknown"));
-      delete ctx;
     }
 
     void on_set_remote_success(void *user) {
-      auto *ctx = static_cast<SessionPeerContext *>(user);
-      if (!ctx) {
-        return;
-      }
-      if (!ctx->peer) {
+      auto *incoming = static_cast<SessionPeerContext *>(user);
+      if (!incoming) return;
+      SessionSdpCallbackScope<SessionPeerContext> callback {incoming};
+      auto &ctx = callback.context;
+      [[maybe_unused]] auto &lifetime = callback.lifetime;
+      if (!callback.peer_call) return;
+      if (!lifetime->peer) {
         BOOST_LOG(error) << "WebRTC: missing peer connection for " << ctx->session_id;
-        delete ctx;
         return;
       }
       auto *constraints = create_constraints();
       if (!constraints) {
         BOOST_LOG(error) << "WebRTC: failed to create media constraints";
-        delete ctx;
         return;
       }
       lwrtc_peer_create_answer(
-        ctx->peer,
+        lifetime->peer,
         &on_create_answer_success,
         &on_create_answer_failure,
         constraints,
-        ctx
+        ctx.release()
       );
       lwrtc_constraints_release(constraints);
     }
 
     void on_set_remote_failure(void *user, const char *err) {
-      auto *ctx = static_cast<SessionPeerContext *>(user);
-      if (!ctx) {
-        return;
-      }
+      auto *incoming = static_cast<SessionPeerContext *>(user);
+      if (!incoming) return;
+      SessionSdpCallbackScope<SessionPeerContext> callback {incoming};
+      auto &ctx = callback.context;
+      [[maybe_unused]] auto &lifetime = callback.lifetime;
+      if (!callback.peer_call) return;
       BOOST_LOG(error) << "WebRTC: failed to set remote description for " << ctx->session_id
                        << ": " << (err ? err : "unknown");
       std::string offer_sdp;
@@ -4031,7 +4163,6 @@ namespace webrtc_stream {
                          << offer_sdp;
       }
       store_negotiation_error(ctx->session_id, std::string {"Failed to set remote description: "} + (err ? err : "unknown"));
-      delete ctx;
     }
 
     std::mutex webrtc_media_mutex;
@@ -5437,6 +5568,8 @@ namespace webrtc_stream {
         lwrtc_encoded_video_source_set_keyframe_callback(
           session.encoded_video_source.get(),
           [](void *user) {
+            host_stream_control::activity_guard_t activity;
+            if (!activity) return;
             auto *ctx = static_cast<SessionKeyframeContext *>(user);
             if (!ctx || !ctx->active.load(std::memory_order_acquire)) {
               return;
@@ -5752,6 +5885,8 @@ namespace webrtc_stream {
   }
 
   bool close_session(std::string_view id) {
+    host_stream_control::activity_guard_t activity;
+    if (!activity) return false;
     // Input release must not wait for the lifecycle gate, peer teardown or
     // the last browser viewer to disconnect.
     reset_session_input(id);
@@ -5769,15 +5904,8 @@ namespace webrtc_stream {
 
 #ifdef SUNSHINE_ENABLE_WEBRTC
     BOOST_LOG(debug) << "WebRTC: close_session enter id=" << id;
-    std::shared_ptr<lwrtc_factory_t> factory;
-    lwrtc_peer_t *peer = nullptr;
+    std::shared_ptr<SessionPeerLifetime> peer_lifetime;
     std::shared_ptr<SessionIceContext> ice_context;
-    lwrtc_audio_track_t *audio_track = nullptr;
-    lwrtc_video_track_t *video_track = nullptr;
-    std::shared_ptr<lwrtc_audio_source_t> audio_source;
-    std::shared_ptr<lwrtc_video_source_t> video_source;
-    std::shared_ptr<lwrtc_encoded_video_source_t> encoded_video_source;
-    lwrtc_data_channel_t *input_channel = nullptr;
     std::shared_ptr<SessionDataChannelContext> data_channel_context;
     std::shared_ptr<SessionKeyframeContext> keyframe_context;
     std::shared_ptr<SessionRateContext> rate_context;
@@ -5796,15 +5924,8 @@ namespace webrtc_stream {
         teardown_sessions.fetch_add(1, std::memory_order_acq_rel);
         teardown_reserved = true;
 #ifdef SUNSHINE_ENABLE_WEBRTC
-        factory = std::move(it->second.factory);
-        peer = it->second.peer;
+        peer_lifetime = it->second.peer_lifetime;
         ice_context = it->second.ice_context;
-        audio_track = it->second.audio_track;
-        video_track = it->second.video_track;
-        audio_source = std::move(it->second.audio_source);
-        video_source = std::move(it->second.video_source);
-        encoded_video_source = std::move(it->second.encoded_video_source);
-        input_channel = it->second.input_channel;
         data_channel_context = it->second.data_channel_context;
         keyframe_context = it->second.keyframe_context;
         rate_context = it->second.rate_context;
@@ -5825,53 +5946,16 @@ namespace webrtc_stream {
       local_answer_cv.notify_all();
     }
 #ifdef SUNSHINE_ENABLE_WEBRTC
-    // These callbacks retain raw context pointers in libwebrtc. Deactivate
-    // them even if peer construction failed partway through track setup.
-    if (ice_context) {
-      ice_context->active.store(false, std::memory_order_release);
-    }
-    if (data_channel_context) {
-      data_channel_context->active.store(false, std::memory_order_release);
-    }
-    if (keyframe_context) {
-      keyframe_context->active.store(false, std::memory_order_release);
-    }
-    if (rate_context) {
-      rate_context->active.store(false, std::memory_order_release);
-    }
-    if (encoded_video_source) {
-      // Quiesce callbacks before releasing their raw session contexts. The
-      // rate bridge waits for SetRates() invocations already in progress.
-      lwrtc_encoded_video_source_set_keyframe_callback(
-        encoded_video_source.get(),
-        nullptr,
-        nullptr
-      );
-      lwrtc_encoded_video_source_set_rate_callback(
-        encoded_video_source.get(),
-        nullptr,
-        nullptr
-      );
-    }
-    if (peer) {
-      lwrtc_peer_close(peer);
-      lwrtc_peer_release(peer);
-    }
-    if (input_channel) {
-      lwrtc_data_channel_unregister_observer(input_channel);
-      lwrtc_data_channel_close(input_channel);
-      lwrtc_data_channel_release(input_channel);
-    }
-    if (audio_track) {
-      lwrtc_audio_track_release(audio_track);
-    }
-    if (video_track) {
-      lwrtc_video_track_release(video_track);
-    }
-    encoded_video_source.reset();
-    video_source.reset();
-    audio_source.reset();
-    factory.reset();
+    // Removal makes new requests fail. Retirement rejects new call_t guards;
+    // an already-admitted callback may still invoke its next SDP SDK stage.
+    // Close waits for admitted calls, and wrapper/resource release waits
+    // for every already-running operation/callback to drop its shared owner.
+    if (ice_context) ice_context->active.store(false, std::memory_order_release);
+    if (data_channel_context) data_channel_context->active.store(false, std::memory_order_release);
+    if (keyframe_context) keyframe_context->active.store(false, std::memory_order_release);
+    if (rate_context) rate_context->active.store(false, std::memory_order_release);
+    peer_lifetime->retire();
+    peer_lifetime.reset();
     if (!last_session && remaining_bitrate_kbps) {
       publish_webrtc_encoder_bitrate(*remaining_bitrate_kbps);
     }
@@ -5927,6 +6011,8 @@ namespace webrtc_stream {
   }
 
   void shutdown_all_sessions() {
+    host_stream_control::activity_guard_t activity;
+    if (!activity) return;
     stream::session::cleanup_reservation_t cleanup_reservation;
     std::vector<std::string> ids;
     {
@@ -6187,25 +6273,40 @@ namespace webrtc_stream {
   }
 
   bool set_remote_offer(std::string_view id, const std::string &sdp, const std::string &type) {
+    host_stream_control::callback_guard_t operation;
+    if (!operation) return false;
     std::string session_id {id};
 #ifdef SUNSHINE_ENABLE_WEBRTC
     BOOST_LOG(debug) << "WebRTC: set_remote_offer enter id=" << session_id;
-    lwrtc_peer_t *peer = nullptr;
+    std::shared_ptr<SessionPeerLifetime> lifetime;
+    {
+      std::lock_guard lg {session_mutex};
+      auto it = sessions.find(session_id);
+      if (it == sessions.end()) return false;
+      lifetime = it->second.peer_lifetime;
+    }
+    // Only offer setup is serialized. Neither close nor SDK callbacks acquire
+    // this mutex. Retirement cancels publication without waiting for the SDK.
+    std::unique_lock setup_lock {lifetime->setup_mutex};
+    SessionPeerLifetime::call_t peer_call {lifetime};
+    if (!peer_call) return false;
+    Session staged;
+    bool created_peer = false;
     int audio_channels = kDefaultAudioChannels;
     std::vector<Session::IceCandidate> queued_remote_candidates;
+    RawAudioFrame latest_audio;
 #endif
     {
       std::lock_guard lg {session_mutex};
       auto it = sessions.find(session_id);
-      if (it == sessions.end()) {
-        return false;
-      }
-
+      if (it == sessions.end()) return false;
+#ifdef SUNSHINE_ENABLE_WEBRTC
+      if (it->second.peer_lifetime != lifetime) return false;
+#endif
       it->second.remote_offer_sdp = sdp;
       it->second.remote_offer_type = type;
       it->second.state.has_remote_offer = true;
       it->second.negotiation_error.clear();
-
 #ifdef SUNSHINE_ENABLE_WEBRTC
       if (it->second.state.codec && boost::iequals(*it->second.state.codec, "av1")) {
         const auto av1_offer = parse_av1_offer(sdp);
@@ -6252,82 +6353,110 @@ namespace webrtc_stream {
         }
       }
 
-      bool created_peer = false;
-      if (!it->second.peer) {
-        if (!it->second.ice_context) {
-          auto ice_context = std::make_shared<SessionIceContext>();
-          ice_context->id = session_id;
-          it->second.ice_context = std::move(ice_context);
-        }
-        BOOST_LOG(debug) << "WebRTC: creating peer id=" << session_id;
-        auto new_peer = create_peer_connection(it->second, it->second.ice_context.get());
-        if (!new_peer) {
-          BOOST_LOG(error) << "WebRTC: failed to create peer id=" << session_id;
-          return false;
-        }
-        it->second.peer = new_peer;
-        created_peer = true;
-      }
-      if (!it->second.data_channel_context) {
-        auto data_context = std::make_shared<SessionDataChannelContext>();
-        data_context->id = session_id;
-        it->second.data_channel_context = std::move(data_context);
-      }
-      lwrtc_peer_register_state_callback(
-        it->second.peer,
-        &on_peer_state,
-        it->second.data_channel_context.get()
-      );
-      BOOST_LOG(debug) << "WebRTC: registering data channel id=" << session_id;
-      lwrtc_peer_register_data_channel(
-        it->second.peer,
-        &on_data_channel,
-        it->second.data_channel_context.get()
-      );
-      BOOST_LOG(debug) << "WebRTC: attaching media tracks id=" << session_id;
-      if (!attach_media_tracks(it->second)) {
-        BOOST_LOG(error) << "WebRTC: failed to attach media tracks id=" << session_id;
-        if (created_peer && it->second.peer) {
-          lwrtc_peer_close(it->second.peer);
-          lwrtc_peer_release(it->second.peer);
-          it->second.peer = nullptr;
-        }
-        return false;
-      }
-      peer = it->second.peer;
       audio_channels = it->second.state.audio_channels.value_or(kDefaultAudioChannels);
-      if (created_peer) {
-        queued_remote_candidates = it->second.candidates;
+      if (!it->second.peer) {
+        staged.state = it->second.state;
+        staged.video_config = it->second.video_config;
+        staged.av1_fmtp = it->second.av1_fmtp;
+        staged.hevc_fmtp = it->second.hevc_fmtp;
+        staged.keyframe_context = std::make_shared<SessionKeyframeContext>();
+        staged.keyframe_context->id = session_id;
+        staged.rate_context = std::make_shared<SessionRateContext>();
+        staged.rate_context->id = session_id;
+        staged.ice_context = std::make_shared<SessionIceContext>();
+        staged.ice_context->id = session_id;
+        staged.data_channel_context = std::make_shared<SessionDataChannelContext>();
+        staged.data_channel_context->id = session_id;
+        created_peer = true;
       }
 #endif
     }
-
 #ifdef SUNSHINE_ENABLE_WEBRTC
-    if (!peer) {
-      return false;
+    if (created_peer) {
+      auto abandon_setup = util::fail_guard([&]() {
+        lifetime->audio_source = staged.audio_source;
+        lifetime->video_source = staged.video_source;
+        lifetime->encoded_video_source = staged.encoded_video_source;
+        lifetime->audio_track = staged.audio_track;
+        lifetime->video_track = staged.video_track;
+        lifetime->retire();
+        std::lock_guard lg {session_mutex};
+        auto it = sessions.find(session_id);
+        if (it != sessions.end() && it->second.peer_lifetime == lifetime) {
+          it->second.peer_lifetime = std::make_shared<SessionPeerLifetime>();
+        }
+      });
+      // Build an unpublished native bundle. All SDK calls can reenter the
+      // session map; no partially attached source/track is visible to media.
+      staged.peer = create_peer_connection(staged, staged.ice_context.get());
+      lifetime->peer = staged.peer;
+      lifetime->factory = staged.factory;
+      lifetime->ice_context = staged.ice_context;
+      lifetime->data_channel_context = staged.data_channel_context;
+      lifetime->keyframe_context = staged.keyframe_context;
+      lifetime->rate_context = staged.rate_context;
+      bool attached = false;
+      if (staged.peer) {
+        lwrtc_peer_register_state_callback(staged.peer, &on_peer_state, staged.data_channel_context.get());
+        lwrtc_peer_register_data_channel(staged.peer, &on_data_channel, staged.data_channel_context.get());
+        attached = attach_media_tracks(staged);
+      }
+      // The owner also retains partial setup on failure, before retirement.
+      lifetime->audio_source = staged.audio_source;
+      lifetime->video_source = staged.video_source;
+      lifetime->encoded_video_source = staged.encoded_video_source;
+      lifetime->audio_track = staged.audio_track;
+      lifetime->video_track = staged.video_track;
+      if (!attached) return false;
+      {
+        std::lock_guard lg {session_mutex};
+        auto it = sessions.find(session_id);
+        if (it == sessions.end() || it->second.peer_lifetime != lifetime) return false;
+        auto &session = it->second;
+        session.peer = staged.peer;
+        session.factory = staged.factory;
+        session.ice_context = staged.ice_context;
+        session.data_channel_context = staged.data_channel_context;
+        session.keyframe_context = staged.keyframe_context;
+        session.rate_context = staged.rate_context;
+        session.audio_source = staged.audio_source;
+        session.video_source = staged.video_source;
+        session.encoded_video_source = staged.encoded_video_source;
+        session.audio_track = staged.audio_track;
+        session.video_track = staged.video_track;
+        // Drop pre-track backlog under the map lock, including frames queued
+        // while the SDK built the unpublished bundle.
+        const auto queued_audio = session.raw_audio_frames.size();
+        if (session.raw_audio_frames.pop_latest(latest_audio) && queued_audio > 1) {
+          session.state.audio_dropped += queued_audio - 1;
+        }
+        const auto queued_video = session.video_frames.size();
+        while (!session.video_frames.empty()) session.video_frames.drop_oldest();
+        session.state.video_dropped += queued_video;
+        session.video_pacing_state = staged.video_pacing_state;
+        session.last_video_push.reset();
+        session.startup_keyframe_until = staged.startup_keyframe_until;
+        session.startup_keyframe_deadline = staged.startup_keyframe_deadline;
+        session.needs_keyframe = staged.needs_keyframe;
+        session.last_keyframe_request = staged.last_keyframe_request;
+        queued_remote_candidates = session.candidates;
+      }
+      abandon_setup.disable();
+      if (staged.audio_source && latest_audio.samples && !latest_audio.samples->empty()) {
+        lwrtc_audio_source_push(staged.audio_source.get(), latest_audio.samples->data(),
+                               static_cast<int>(sizeof(int16_t) * 8), latest_audio.sample_rate,
+                               latest_audio.channels, latest_audio.frames);
+      }
     }
-
-    // ICE can arrive immediately after the browser sets its local offer. The
-    // HTTP route stores those candidates before this peer exists, so replay
-    // the stored set once the peer is ready instead of stranding the first
-    // candidate until a later trickle update happens to arrive.
+    // The call reservation keeps Close deferred even if DELETE removes the
+    // map owner here. The continuation owns the same wrapper and activity.
     for (const auto &candidate : queued_remote_candidates) {
-      lwrtc_peer_add_candidate(
-        peer,
-        candidate.mid.c_str(),
-        candidate.mline_index,
-        candidate.candidate.c_str()
-      );
+      lwrtc_peer_add_candidate(lifetime->peer, candidate.mid.c_str(), candidate.mline_index, candidate.candidate.c_str());
     }
-
-    auto *ctx = new SessionPeerContext {session_id, peer, audio_channels};
+    auto *ctx = new SessionPeerContext {session_id, operation, lifetime, audio_channels};
     lwrtc_peer_set_remote_description(
-      peer,
-      sdp.c_str(),
-      type.c_str(),
-      &on_set_remote_success,
-      &on_set_remote_failure,
-      ctx
+      lifetime->peer, sdp.c_str(), type.c_str(),
+      &on_set_remote_success, &on_set_remote_failure, ctx
     );
     BOOST_LOG(debug) << "WebRTC: set_remote_offer exit id=" << session_id;
     return true;
@@ -6338,7 +6467,10 @@ namespace webrtc_stream {
   }
 
   bool add_ice_candidate(std::string_view id, std::string mid, int mline_index, std::string candidate) {
+    host_stream_control::activity_guard_t activity;
+    if (!activity) return false;
 #ifdef SUNSHINE_ENABLE_WEBRTC
+    std::shared_ptr<SessionPeerLifetime> lifetime;
     lwrtc_peer_t *peer = nullptr;
     std::string stored_mid;
     std::string stored_candidate;
@@ -6358,6 +6490,7 @@ namespace webrtc_stream {
       it->second.candidates.emplace_back(std::move(entry));
       it->second.state.ice_candidates = it->second.candidates.size();
 #ifdef SUNSHINE_ENABLE_WEBRTC
+      lifetime = it->second.peer_lifetime;
       peer = it->second.peer;
       if (!it->second.candidates.empty()) {
         const auto &stored = it->second.candidates.back();
@@ -6368,6 +6501,8 @@ namespace webrtc_stream {
 #endif
     }
 #ifdef SUNSHINE_ENABLE_WEBRTC
+    SessionPeerLifetime::call_t peer_call {lifetime};
+    if (!peer_call) return false;
     if (peer && !stored_candidate.empty()) {
       lwrtc_peer_add_candidate(peer, stored_mid.c_str(), stored_mline_index, stored_candidate.c_str());
     }

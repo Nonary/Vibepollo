@@ -745,6 +745,15 @@ function clearSnapshotHotkey(): void {
             </div>
 
             <div class="mt-4 space-y-2">
+              <label for="end_stream_hotkey" class="form-label">{{ $t('config.end_stream_hotkey') }}</label>
+              <n-input id="end_stream_hotkey" v-model:value="config.end_stream_hotkey" placeholder="Q" />
+              <p class="text-[11px] opacity-60">{{ $t('config.end_stream_hotkey_desc') }}</p>
+              <label for="end_stream_hotkey_modifiers" class="form-label">{{ $t('config.end_stream_hotkey_modifiers') }}</label>
+              <n-input id="end_stream_hotkey_modifiers" v-model:value="config.end_stream_hotkey_modifiers" />
+              <p class="text-[11px] opacity-60">{{ $t('config.end_stream_hotkey_modifiers_desc') }}</p>
+            </div>
+
+            <div class="mt-4 space-y-2">
               <label for="dd_snapshot_restore_hotkey" class="form-label">
                 {{ $t('config.dd_snapshot_restore_hotkey') }}
               </label>

@@ -1982,6 +1982,65 @@ dd_remove_virtual_display_after_restore = disabled
     </tr>
 </table>
 
+### end_stream_hotkey
+
+Optional Windows host keyboard shortcut that ends **all** RTSP and WebRTC streams,
+cancels pending launches and previously queued launch/resume/WebRTC starts,
+terminates the current application (including its undo
+commands), and restores the physical desktop. This is separate from the
+restore-only `dd_snapshot_restore_hotkey` action.
+
+Default: empty (disabled). Accepts letters, digits, or F1-F24. At least one modifier
+is required. To opt in to Ctrl+Alt+Shift+Q:
+
+```ini
+end_stream_hotkey = Q
+end_stream_hotkey_modifiers = ctrl+alt+shift
+```
+
+The shortcut is registered by a helper owned by the active console user on the
+ordinary Windows desktop, including when the host runs as a machine service.
+It follows console user changes and is unavailable on the lock screen, secure
+UAC desktop, or an RDP-only session. Registration conflicts are logged; choose a
+combination different from the restore shortcut and other applications. Applying a
+new combination retires the old helper. Requests accepted during terminal cleanup
+are canceled too; submit a fresh request after cleanup finishes to start again.
+The helper runs as the console user. A manually elevated host passes its elevation
+to the helper; service mode uses the console user's existing token without
+requesting elevation. This does not guarantee a limited token when UAC is disabled.
+Before display recovery the host closes stream admission and drains in-process
+startup, teardown, pending-expiry work and WebRTC negotiation through its SDK
+completion callbacks and the cleanup of each enclosing native call, callback
+context and owned peer resource. Inline nested completions retain a shared owner
+of that cleanup reservation until the enclosing callback returns. WebRTC peer
+retirement refuses new native-call guards. Work admitted before retirement may
+finish, including its next SDP SDK stage, while remaining counted for cleanup.
+A missing SDK completion also defers recovery. If existing work does not drain
+within 30 seconds, or a topology failure retains display ownership, recovery is deferred
+and the log explains the failure; retry after that condition is resolved. The
+30-second limit covers admission draining, not the existing synchronous capture
+joins or per-command app shutdown timeouts. Configured undo commands can be left
+running by the process manager after their timeout. Side effects from those
+external children are outside this in-process cleanup guarantee.
+Display recovery is best effort if a monitor or driver is unavailable.
+
+Application startup remains counted while waiting for lifecycle serialization and
+through its in-process completion tail. Queued starts from an earlier terminal
+epoch are canceled; submit a new request after cleanup returns. A process execute
+first reached while cleanup has closed admission returns 503 before changing app
+or display state, while an execute already admitted may finish before terminal
+teardown proceeds.
+The paired sleep POST uses the same epoch fence, covering acceptance response
+flush and the native power callback. An accepted callback must finish or cause
+the bounded drain to defer recovery; queued stale power requests are canceled.
+
+### end_stream_hotkey_modifiers
+
+Modifiers for `end_stream_hotkey`. Default: `ctrl+alt+shift`. Accepts `ctrl` /
+`control`, `alt`, `shift`, and `win` / `windows` / `meta`, joined with `+`, `|`,
+commas or spaces. An empty or `none` modifier disables the end-stream shortcut.
+These settings are host-wide and are not application runtime overrides.
+
 ### dd_use_sunshine_virtual_display_driver
 
 <table>

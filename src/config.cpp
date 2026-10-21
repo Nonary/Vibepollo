@@ -960,6 +960,8 @@ namespace config {
 #else
       0,  // snapshot_restore_hotkey_modifiers
 #endif
+      0,  // end_stream_hotkey (disabled by default)
+      0x7,  // end_stream_hotkey_modifiers (ctrl+alt+shift)
       true,  // use_sunshine_virtual_display_driver
       false,  // activate_virtual_display
       0,  // virtual_display_scale_percent
@@ -2026,6 +2028,14 @@ namespace config {
         vars.erase(it);
       }
     }
+    generic_f(vars, "end_stream_hotkey", video.dd.end_stream_hotkey, dd::snapshot_restore_hotkey_from_view);
+    {
+      auto it = vars.find("end_stream_hotkey_modifiers");
+      if (it != std::end(vars)) {
+        video.dd.end_stream_hotkey_modifiers = dd::snapshot_restore_hotkey_modifiers_from_view(it->second);
+        vars.erase(it);
+      }
+    }
     generic_f(vars, "dd_mode_remapping", video.dd.mode_remapping, dd::mode_remapping_from_view);
     // Legacy HDR workaround options (no longer supported). Consume keys to avoid unknown-option warnings.
     {
@@ -2416,6 +2426,10 @@ namespace config {
     }
 
 #ifdef _WIN32
+    platf::hotkey::update_end_stream_hotkey(
+      video.dd.end_stream_hotkey,
+      video.dd.end_stream_hotkey_modifiers
+    );
     platf::hotkey::update_restore_hotkey(
       video.dd.snapshot_restore_hotkey,
       video.dd.snapshot_restore_hotkey_modifiers

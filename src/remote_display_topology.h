@@ -158,6 +158,9 @@ namespace remote_display_topology {
     void unpair_client(const std::string &client_uuid);
     /** Drop runtime state, optionally preserving every platform display untouched. */
     void shutdown(bool preserve_owned_displays = false);
+    // Terminal callers must distinguish zero role owners from a failed,
+    // still-pending shutdown topology transaction (including an empty map).
+    bool shutdown_complete() const;
     nlohmann::json snapshot(const std::vector<nlohmann::json> &paired_clients) const;
 
   private:

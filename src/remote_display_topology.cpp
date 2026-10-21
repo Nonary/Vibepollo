@@ -641,6 +641,11 @@ namespace remote_display_topology {
     disconnect_monitor(client_uuid);
   }
 
+  bool coordinator_t::shutdown_complete() const {
+    std::lock_guard lock(mutex_);
+    return !shutdown_pending_ && clients_.empty();
+  }
+
   void coordinator_t::shutdown(const bool preserve_owned_displays) {
     std::lock_guard lock(mutex_);
     if (preserve_owned_displays) {

@@ -25,6 +25,7 @@
 #include <sstream>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
@@ -46,6 +47,7 @@
 #endif
 // local includes
 #include "config.h"
+#include "host_stream_control.h"
 #include "update.h"
 #include "confighttp.h"
 #include "crypto.h"
@@ -5789,8 +5791,19 @@ namespace confighttp {
    * @param response The HTTP response object.
    * @param request The HTTP request object.
    */
-  void launchApp(resp_https_t response, req_https_t request) {
+  void launchApp(resp_https_t response, req_https_t request, host_stream_control::ticket_t ticket = host_stream_control::request_ticket()) {
     if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
+      return;
+    }
+
+    // Direct callers and queued routes share the same whole-operation boundary.
+    // Carry the registered intake ticket, or capture before direct-call
+    // authentication, then reject an epoch crossed while it ran. Reserve before
+    // running()/lifecycle; terminal drains before taking lifecycle, and this
+    // reservation covers the lock wait and execute tail.
+    host_stream_control::start_guard_t admission {ticket};
+    if (!admission) {
+      service_unavailable(response, "Stream request canceled by the host end-stream shortcut. Submit a new request.");
       return;
     }
 
@@ -6135,8 +6148,11 @@ namespace confighttp {
     thread_pool_util::ThreadPool metadata_route_pool;
     metadata_route_pool.start(1);
     clear_token_route_catalog();
-    auto register_api_route = [&](const char *pattern, const char *method, const auto &handler) {
-      server.resource[pattern][method] = [method, handler](resp_https_t response, req_https_t request) {
+    auto register_api_route = [&](const char *pattern, const char *method, const auto &handler, bool stream_start = false) {
+      server.resource[pattern][method] = [method, handler, stream_start](resp_https_t response, req_https_t request) {
+        // Preserve startup intake across every outer authentication/CSRF gate.
+        // Ordinary operations receive no admission fence.
+        const auto ticket = stream_start ? host_stream_control::request_ticket() : host_stream_control::ticket_t {};
         const std::string_view verb {method};
         if (verb == "POST" || verb == "PATCH" || verb == "PUT" || verb == "DELETE") {
           const auto client_id = get_client_id(request);
@@ -6144,19 +6160,27 @@ namespace confighttp {
             return;
           }
         }
-        handler(std::move(response), std::move(request));
+        if constexpr (std::is_invocable_v<decltype(handler), resp_https_t, req_https_t, host_stream_control::ticket_t>) {
+          handler(std::move(response), std::move(request), ticket);
+        } else {
+          handler(std::move(response), std::move(request));
+        }
       };
       record_token_route(normalize_route_pattern(pattern), method);
     };
-    auto register_blocking_api_route = [&](const char *pattern, const char *method, const auto &handler, thread_pool_util::ThreadPool *route_pool = nullptr) {
+    auto register_blocking_api_route = [&](const char *pattern, const char *method, const auto &handler, thread_pool_util::ThreadPool *route_pool = nullptr, bool stream_start = false) {
       auto *worker_pool = route_pool ? route_pool : &blocking_route_pool;
-      register_api_route(pattern, method, [worker_pool, handler](resp_https_t response, req_https_t request) {
+      register_api_route(pattern, method, [worker_pool, handler, stream_start](resp_https_t response, req_https_t request, host_stream_control::ticket_t ticket) {
         if (!authenticate(response, request)) {
           return;
         }
-        worker_pool->push([handler, response = std::move(response), request = std::move(request)]() mutable {
+        auto task = [handler, response, request = std::move(request), ticket]() mutable {
           try {
-            handler(response, request);
+            if constexpr (std::is_invocable_v<decltype(handler), resp_https_t, req_https_t, host_stream_control::ticket_t>) {
+              handler(response, request, ticket);
+            } else {
+              handler(response, request);
+            }
           } catch (const std::exception &e) {
             BOOST_LOG(error) << "Blocking config API handler failed: " << e.what();
             bad_request(response, request, "Internal server error");
@@ -6164,8 +6188,21 @@ namespace confighttp {
             BOOST_LOG(error) << "Blocking config API handler failed with an unknown exception";
             bad_request(response, request, "Internal server error");
           }
-        });
-      });
+        };
+#ifdef _WIN32
+        if (stream_start) {
+          host_stream_control::submit_start(ticket, [worker_pool](auto guarded) {
+            worker_pool->push(std::move(guarded));
+          }, std::move(task), [response] {
+            service_unavailable(response, "Stream request canceled by the host end-stream shortcut. Submit a new request.");
+          });
+          return;
+        }
+#else
+        (void) stream_start;
+#endif
+        worker_pool->push(std::move(task));
+      }, stream_start);
     };
 
     register_api_route("^/api/pin$", "POST", savePin);
@@ -6178,7 +6215,7 @@ namespace confighttp {
     register_api_route("^/api/apps/([^/]+)/cover$", "GET", getAppCover);
     register_api_route("^/api/apps/reorder$", "POST", reorderApps);
     register_api_route("^/api/apps/delete$", "POST", deleteApp);
-    register_api_route("^/api/apps/launch$", "POST", launchApp);
+    register_blocking_api_route("^/api/apps/launch$", "POST", launchApp, nullptr, true);
     register_api_route("^/api/apps/close$", "POST", closeApp);
 #ifdef _WIN32
     register_api_route("^/api/apps/rtx_hdr/live$", "POST", updateAppRtxHdrLive);
@@ -6245,7 +6282,7 @@ namespace confighttp {
     register_api_route("^/api/history/sessions/active$", "GET", getActiveSessionHistory);
     register_api_route("^/api/history/sessions/([A-Fa-f0-9-]+)$", "GET", getSessionHistoryDetail);
     register_api_route("^/api/history/sessions/([A-Fa-f0-9-]+)$", "DELETE", deleteSessionHistory);
-    register_blocking_api_route("^/api/webrtc/sessions$", "POST", createWebRTCSession);
+    register_blocking_api_route("^/api/webrtc/sessions$", "POST", createWebRTCSession, nullptr, true);
     register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)$", "GET", getWebRTCSession);
     register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)$", "DELETE", deleteWebRTCSession);
     register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)/offer$", "POST", postWebRTCOffer);
