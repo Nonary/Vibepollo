@@ -62,6 +62,7 @@ extern "C" {
 #include "remote_display_topology.h"
 #include "rtsp.h"
 #include "rtsp_pending_policy.h"
+#include "send_result_observation.h"
 #include "session_history.h"
 #include "stream.h"
 #include "stream_broadcast_runtime.h"
@@ -687,6 +688,8 @@ namespace stream {
       platf::feedback_queue_t feedback_queue;
       std::array<haptics_gain_t, platf::MAX_GAMEPADS> haptics_gains;
       std::atomic_bool pcm_negotiation_warning_logged {false};
+      std::array<std::atomic_bool, platf::MAX_GAMEPADS> vigem_rumble_send_success_logged {};
+      std::array<std::atomic_bool, platf::MAX_GAMEPADS> vigem_rumble_send_failure_logged {};
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
     } control;
 
@@ -1442,7 +1445,35 @@ namespace stream {
       return -1;
     }
 
-    if (session->broadcast_ref->control_server.send(payload, session->control.peer, msg.type == platf::gamepad_feedback_e::haptics_pcm)) {
+    const auto send_result = detail::send_and_observe_result(
+      [&] {
+        return session->broadcast_ref->control_server.send(payload, session->control.peer, msg.type == platf::gamepad_feedback_e::haptics_pcm);
+      },
+      [&](const int result) {
+        if (!msg.from_vigem ||
+            msg.type != platf::gamepad_feedback_e::rumble ||
+            msg.id >= session->control.vigem_rumble_send_success_logged.size()) {
+          return;
+        }
+
+        if (!detail::claim_first_send_result_log(
+              result,
+              session->control.vigem_rumble_send_success_logged[msg.id],
+              session->control.vigem_rumble_send_failure_logged[msg.id]
+            )) {
+          return;
+        }
+
+        if (result == 0) {
+          BOOST_LOG(info) << "control_server.send() returned success after ENet accepted the packet into its outgoing queue for sending; ViGEm "sv
+                          << detail::format_client_relative_controller_index_field(msg.id);
+        } else {
+          BOOST_LOG(warning) << "control_server.send() returned failure for ViGEm rumble feedback; ENet queue acceptance was not reported; result="sv
+                             << result << "; "sv << detail::format_client_relative_controller_index_field(msg.id);
+        }
+      }
+    );
+    if (send_result) {
       TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
       BOOST_LOG(warning) << "Couldn't send gamepad feedback to ["sv << addr << ':' << port << ']';
 

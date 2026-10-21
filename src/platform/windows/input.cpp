@@ -10,6 +10,7 @@
 
 // standard includes
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <thread>
 #include <vector>
@@ -225,6 +226,7 @@ namespace platf {
   class vigem_t {
   private:
     bool driver_available {false};
+    std::array<std::atomic_bool, MAX_GAMEPADS> first_rumble_callback_logged {};
 
   public:
     // Set before init() so the ViGEmBus diagnostics can tell "no gamepad support at all" from
@@ -269,6 +271,7 @@ namespace platf {
     int alloc_gamepad_internal(const gamepad_id_t &id, feedback_queue_t &feedback_queue, VIGEM_TARGET_TYPE gp_type) {
       auto &gamepad = gamepads[id.globalIndex];
       assert(!gamepad.gp);
+      first_rumble_callback_logged[id.globalIndex].store(false, std::memory_order_relaxed);
 
       gamepad.client_relative_index = id.clientRelativeIndex;
       gamepad.last_report_ts = std::chrono::steady_clock::now();
@@ -385,6 +388,10 @@ namespace platf {
         auto &gamepad = gamepads[x];
 
         if (gamepad.gp.get() == target) {
+          if (!first_rumble_callback_logged[x].exchange(true, std::memory_order_relaxed)) {
+            BOOST_LOG(info) << "ViGEm rumble output callback observed for gamepad slot "sv << x;
+          }
+
           // Convert from 8-bit to 16-bit values
           uint16_t normalizedLargeMotor = largeMotor << 8;
           uint16_t normalizedSmallMotor = smallMotor << 8;
@@ -398,6 +405,7 @@ namespace platf {
               normalizedLargeMotor,
               normalizedSmallMotor
             );
+            msg.from_vigem = true;
             gamepad.feedback_queue->raise(msg);
             gamepad.last_rumble = msg;
           }

@@ -6,6 +6,7 @@
 #include "../tests_common.h"
 #include "src/deferred_stream_start_policy.h"
 #include "src/haptics_gain.h"
+#include "src/send_result_observation.h"
 #include "src/stream_protocol.h"
 #include "src/video_send.h"
 
@@ -532,4 +533,57 @@ TEST(ControlPacketParsing, AllowsTypeOnlyPacketWithoutPayloadUnderflow) {
   ASSERT_TRUE(decoded);
   EXPECT_EQ(decoded->type, 0x1234);
   EXPECT_TRUE(decoded->payload.empty());
+}
+
+TEST(SendResultObservation, ReportsSuccessfulSendReturnAfterSendCompletes) {
+  std::vector<std::string> events;
+
+  const auto result = stream::detail::send_and_observe_result(
+    [&] {
+      events.emplace_back("send");
+      return 0;
+    },
+    [&](const int send_result) {
+      EXPECT_EQ(events, std::vector<std::string> {"send"});
+      events.emplace_back("result=" + std::to_string(send_result));
+    }
+  );
+
+  EXPECT_EQ(result, 0);
+  EXPECT_EQ(events, (std::vector<std::string> {"send", "result=0"}));
+}
+
+TEST(SendResultObservation, ReportsFailedSendReturnAfterSendCompletes) {
+  std::vector<std::string> events;
+
+  const auto result = stream::detail::send_and_observe_result(
+    [&] {
+      events.emplace_back("send");
+      return -1;
+    },
+    [&](const int send_result) {
+      EXPECT_EQ(events, std::vector<std::string> {"send"});
+      events.emplace_back("result=" + std::to_string(send_result));
+    }
+  );
+
+  EXPECT_EQ(result, -1);
+  EXPECT_EQ(events, (std::vector<std::string> {"send", "result=-1"}));
+}
+
+TEST(SendResultObservation, FormatsClientRelativeControllerIndexField) {
+  EXPECT_EQ(
+    stream::detail::format_client_relative_controller_index_field(7),
+    "client-relative controller index=7"
+  );
+}
+
+TEST(SendResultObservation, LogsFirstSuccessAndFailureIndependently) {
+  std::atomic_bool success_logged {false};
+  std::atomic_bool failure_logged {false};
+
+  EXPECT_TRUE(stream::detail::claim_first_send_result_log(0, success_logged, failure_logged));
+  EXPECT_FALSE(stream::detail::claim_first_send_result_log(0, success_logged, failure_logged));
+  EXPECT_TRUE(stream::detail::claim_first_send_result_log(-1, success_logged, failure_logged));
+  EXPECT_FALSE(stream::detail::claim_first_send_result_log(-1, success_logged, failure_logged));
 }

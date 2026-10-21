@@ -154,6 +154,8 @@ namespace platf {
 
     gamepad_feedback_e type;
     std::uint16_t id;
+    // Internal provenance for bounded host-side ViGEm send-result diagnostics.
+    bool from_vigem {false};
 
     union {
       struct {
