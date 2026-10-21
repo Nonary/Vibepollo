@@ -912,6 +912,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 --json-include "$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>"
                 --boost-include "$<TARGET_PROPERTY:Boost::property_tree,INTERFACE_INCLUDE_DIRECTORIES>")
         set_tests_properties(test_component_host_app_start_composition PROPERTIES LABELS "component" TIMEOUT 60)
+        add_library(sunshine_test_host_power_terminal_dependencies INTERFACE)
+        target_link_libraries(sunshine_test_host_power_terminal_dependencies INTERFACE Boost::asio Boost::property_tree)
         add_test(NAME test_component_host_power_terminal_composition
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/scripts/test_host_power_terminal_composition.py"
@@ -919,7 +921,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 --build-dir "${CMAKE_CURRENT_BINARY_DIR}/host-power-terminal-composition"
                 --compiler "${CMAKE_CXX_COMPILER}"
                 --json-include "$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>"
-                --boost-include "$<TARGET_PROPERTY:Boost::property_tree,INTERFACE_INCLUDE_DIRECTORIES>")
+                --boost-include "$<TARGET_PROPERTY:sunshine_test_host_power_terminal_dependencies,INTERFACE_INCLUDE_DIRECTORIES>")
         set_tests_properties(test_component_host_power_terminal_composition PROPERTIES LABELS "component" TIMEOUT 60)
         add_test(NAME test_component_webrtc_peer_lifetime_composition
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
