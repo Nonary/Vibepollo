@@ -213,7 +213,11 @@ namespace display_helper::v2 {
     display_device::EnumeratedDeviceList devices;
     ActiveTopology active_topology;
     try {
-      devices = service_.enumerate();
+      const auto enumerated = service_.try_enumerate();
+      if (!enumerated) {
+        return std::nullopt;
+      }
+      devices = *enumerated;
       active_topology = service_.capture().m_topology;
     } catch (const std::exception &ex) {
       BOOST_LOG(debug) << "Display helper: physical return observation unavailable: " << ex.what();
@@ -236,9 +240,8 @@ namespace display_helper::v2 {
       return std::nullopt;
     }
 
-    // A failed or incomplete enumeration is not evidence that a saved output
-    // disappeared. Require every captured active path, including the virtual
-    // target, to be represented before changing the session's observations.
+    // Require every captured active path, including the virtual target, to be
+    // represented before changing the session's observations.
     for (const auto &group : active_topology) {
       for (const auto &id : group) {
         if (id.empty() || !std::any_of(devices.begin(), devices.end(), [&](const auto &device) {
@@ -378,8 +381,13 @@ namespace display_helper::v2 {
         }
       }
 
+      const auto enumerated = service_.try_enumerate();
+      if (!enumerated) {
+        return std::nullopt;
+      }
+
       std::set<std::string> present;
-      for (const auto &device : service_.enumerate()) {
+      for (const auto &device : *enumerated) {
         const auto normalized = codec::normalize_device_id(device.m_device_id);
         if (required.contains(normalized) && !codec::is_virtual_display_device(device)) {
           present.insert(normalized);

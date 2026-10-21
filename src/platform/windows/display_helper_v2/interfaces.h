@@ -26,6 +26,14 @@ namespace display_helper::v2 {
     }
     virtual ApplyStatus apply_topology(const ActiveTopology &topology) = 0;
     virtual EnumeratedDeviceList enumerate(display_device::DeviceEnumerationDetail detail) = 0;
+    /// Return nullopt when an enumeration observation could not be obtained.
+    /// A successful empty list remains distinguishable from an unavailable
+    /// observation. The default adapts existing implementations that expose
+    /// only the legacy list-returning API.
+    virtual std::optional<EnumeratedDeviceList> try_enumerate(
+      display_device::DeviceEnumerationDetail detail) {
+      return enumerate(detail);
+    }
     virtual ActiveTopology capture_topology() = 0;
     /// Validate a topology stored in a restore snapshot. Structurally invalid
     /// snapshots must be rejected; transient OS validation failures should be

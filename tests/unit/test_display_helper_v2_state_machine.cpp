@@ -7,6 +7,7 @@
   #include "../tests_common.h"
   #include "src/platform/windows/display_helper_v2/async_dispatcher.h"
   #include "src/platform/windows/display_helper_v2/operations.h"
+  #include "src/platform/windows/display_helper_v2/enumeration_status.h"
   #include "src/platform/windows/display_helper_v2/runtime_support.h"
   #include "src/platform/windows/display_helper_v2/snapshot.h"
   #include "src/platform/windows/display_helper_v2/state_machine.h"
@@ -237,10 +238,21 @@ namespace {
     }
 
     display_device::EnumeratedDeviceList enumerate(display_device::DeviceEnumerationDetail) override {
+      if (query_display_config_unavailable) {
+        return {};
+      }
       if (throw_enumeration) {
         throw std::runtime_error("transient display query failure");
       }
       return devices;
+    }
+
+    std::optional<display_device::EnumeratedDeviceList> try_enumerate(
+      display_device::DeviceEnumerationDetail detail) override {
+      if (query_display_config_unavailable || path_mapping_incomplete) {
+        return std::nullopt;
+      }
+      return enumerate(detail);
     }
 
     display_device::ActiveTopology capture_topology() override {
@@ -307,6 +319,8 @@ namespace {
     bool configuration_matches_result = true;
     bool topology_same_result = true;
     bool throw_enumeration = false;
+    bool query_display_config_unavailable = false;
+    bool path_mapping_incomplete = false;
     bool enact_restore = false;
     int apply_snapshot_calls = 0;
   };
@@ -3050,6 +3064,96 @@ TEST(DisplayHelperV2SnapshotLedger, FailedPhysicalObservationCannotAuthorizeInac
   }
 }
 
+TEST(DisplayHelperV2SnapshotLedger, EnumerationFailuresDifferFromSuccessfulEmptyObservation) {
+  StateMachineHarness harness;
+  ASSERT_TRUE(harness.storage.save(
+    display_helper::v2::SnapshotTier::Golden,
+    make_snapshot("physical_b")
+  ));
+  harness.display_settings.devices.clear();
+
+  harness.display_settings.query_display_config_unavailable = true;
+  EXPECT_TRUE(harness.display_settings.enumerate(display_device::DeviceEnumerationDetail::Minimal).empty());
+  EXPECT_FALSE(harness.snapshot_ledger.present_physical_restore_baseline_devices(true, {}));
+
+  harness.display_settings.query_display_config_unavailable = false;
+  harness.display_settings.path_mapping_incomplete = true;
+  harness.display_settings.devices.clear();
+  harness.add_inactive_device("physical_a");
+  EXPECT_FALSE(harness.display_settings.enumerate(display_device::DeviceEnumerationDetail::Minimal).empty());
+  EXPECT_FALSE(harness.snapshot_ledger.present_physical_restore_baseline_devices(true, {}));
+
+  harness.display_settings.path_mapping_incomplete = false;
+  harness.display_settings.devices.clear();
+  const auto empty = harness.snapshot_ledger.present_physical_restore_baseline_devices(true, {});
+  ASSERT_TRUE(empty);
+  EXPECT_TRUE(empty->empty());
+}
+
+TEST(DisplayHelperV2SnapshotLedger, IncompleteEnumerationCannotRecordSavedBaselineAsAbsent) {
+  StateMachineHarness harness;
+  ASSERT_TRUE(harness.storage.save(
+    display_helper::v2::SnapshotTier::Golden,
+    make_snapshot("physical_b")
+  ));
+  harness.display_settings.snapshot.m_topology = {{"virtual_current"}};
+  harness.add_active_device("virtual_current");
+  harness.display_settings.path_mapping_incomplete = true;
+
+  std::set<std::string> absent;
+  std::set<std::string> disabled;
+  EXPECT_FALSE(harness.snapshot_ledger.topology_with_returned_baseline_devices(
+    "virtual_current", {}, absent, disabled));
+  EXPECT_TRUE(absent.empty());
+  EXPECT_TRUE(disabled.empty());
+
+  harness.display_settings.path_mapping_incomplete = false;
+  EXPECT_FALSE(harness.snapshot_ledger.topology_with_returned_baseline_devices(
+    "virtual_current", {}, absent, disabled));
+  EXPECT_EQ(absent, (std::set<std::string> {display_helper::v2::codec::normalize_device_id("physical_b")}));
+  EXPECT_TRUE(disabled.empty());
+}
+
+TEST(DisplayHelperV2SnapshotLedger, CheckedEnumerationStatusRejectsIncompleteObservations) {
+  using display_helper::v2::enumeration_status::is_complete_observation;
+  using display_helper::v2::enumeration_status::is_complete_path_mapping;
+
+  EXPECT_TRUE(is_complete_path_mapping(true, true, true));
+  EXPECT_FALSE(is_complete_path_mapping(false, true, true));
+  EXPECT_FALSE(is_complete_path_mapping(true, false, true));
+  EXPECT_FALSE(is_complete_path_mapping(true, true, false));
+  EXPECT_FALSE(is_complete_observation(false, false, false, true));
+  EXPECT_FALSE(is_complete_observation(true, true, true, false));
+  EXPECT_FALSE(is_complete_observation(true, true, false, true));
+  EXPECT_TRUE(is_complete_observation(true, false, false, true));
+  EXPECT_TRUE(is_complete_observation(true, true, false, false));
+}
+
+TEST(DisplayHelperV2SnapshotLedger, EveryAvailablePathMustAppearInTheEnumeratedResult) {
+  using display_helper::v2::enumeration_status::all_available_path_ids_were_enumerated;
+
+  EXPECT_TRUE(all_available_path_ids_were_enumerated({}, {}));
+  EXPECT_TRUE(all_available_path_ids_were_enumerated({"physical_a"}, {"physical_a"}));
+  EXPECT_TRUE(all_available_path_ids_were_enumerated(
+    {"physical_a", "physical_b"},
+    {"physical_a", "PHYSICAL_B"}
+  ));
+  EXPECT_FALSE(all_available_path_ids_were_enumerated(
+    {"physical_a", "physical_b"},
+    {"physical_a"}
+  ));
+  EXPECT_FALSE(all_available_path_ids_were_enumerated({"physical_a"}, {}));
+  EXPECT_FALSE(all_available_path_ids_were_enumerated({""}, {"physical_a"}));
+}
+
+TEST(DisplayHelperV2SnapshotLedger, PathHashFallbackIdIsRecognizedAsUnstableIdentity) {
+  const std::u16string monitor_path = u"\\\\?\\DISPLAY#LGD06B5#5&22c0c0be&0&UID4352";
+  const auto fallback = display_helper::v2::enumeration_status::path_fallback_device_id(monitor_path);
+  EXPECT_EQ(fallback, "{44f8dac4-b69b-5287-ab4a-ea7a72166af4}");
+  EXPECT_TRUE(display_helper::v2::enumeration_status::is_path_fallback_device_id(monitor_path, fallback));
+  EXPECT_FALSE(display_helper::v2::enumeration_status::is_path_fallback_device_id(monitor_path, "{stable-device-id}"));
+}
+
 TEST(DisplayHelperV2SnapshotLedger, ManualDisableSurvivesPowerCycleUntilAnActiveObservation) {
   StateMachineHarness harness;
   ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, make_snapshot("physical_b")));
@@ -4983,6 +5087,33 @@ TEST(DisplayHelperV2StateMachine, FailedPhysicalObservationDoesNotPreventAuthori
   harness.clock.advance(std::chrono::milliseconds(1000));
   harness.state_machine.handle_tick();
   // Unknown prior presence cannot prove a return or reset exhausted backoff.
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+}
+
+TEST(DisplayHelperV2StateMachine, FailedEnumerationCannotBecomeDeferredPhysicalReturnEvidence) {
+  StateMachineHarness harness;
+  harness.add_inactive_device(kReturnedPhysicalBaseline);
+  harness.display_settings.query_display_config_unavailable = true;
+  start_physical_baseline_recovery(harness);
+  ASSERT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+
+  // The same baseline monitor remains present, but the initial observation
+  // could not establish whether it was connected or absent. The legacy list
+  // API still reports empty, matching libdisplaydevice's failure behavior.
+  EXPECT_TRUE(harness.display_settings.enumerate(display_device::DeviceEnumerationDetail::Minimal).empty());
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation()
+  });
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+
+  fail_physical_baseline_recovery(harness);
+  harness.display_settings.query_display_config_unavailable = false;
+  harness.clock.advance(std::chrono::milliseconds(1000));
+  harness.state_machine.handle_tick();
+
+  // A later successful enumeration of the already-present monitor cannot
+  // convert the earlier unknown sample into evidence of a physical return.
   EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
 }
 

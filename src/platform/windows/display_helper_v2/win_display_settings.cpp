@@ -1,4 +1,5 @@
 #include "src/platform/windows/display_helper_borrow_native.h"
+#include "src/platform/windows/display_helper_v2/enumeration_status.h"
 #include "src/platform/windows/display_helper_v2/win_display_settings.h"
 
 #include "src/logging.h"
@@ -13,7 +14,11 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <cmath>
 #include <cstdint>
+#include <limits>
+#include <map>
 #include <sstream>
+#include <tuple>
+#include <unordered_map>
 #include <vector>
 #include <display_device/windows/persistent_state.h>
 #include <display_device/windows/win_api_recovery.h>
@@ -22,6 +27,43 @@
 
 namespace display_helper::v2 {
   namespace {
+    std::optional<std::u16string> monitor_path_to_utf16(const std::string &monitor_path) {
+      if (monitor_path.empty() || monitor_path.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        return std::nullopt;
+      }
+
+      const auto output_size = MultiByteToWideChar(
+        CP_UTF8,
+        MB_ERR_INVALID_CHARS,
+        monitor_path.data(),
+        static_cast<int>(monitor_path.size()),
+        nullptr,
+        0
+      );
+      if (output_size <= 0) {
+        return std::nullopt;
+      }
+
+      std::wstring wide_path(static_cast<std::size_t>(output_size), L'\0');
+      if (MultiByteToWideChar(
+            CP_UTF8,
+            MB_ERR_INVALID_CHARS,
+            monitor_path.data(),
+            static_cast<int>(monitor_path.size()),
+            wide_path.data(),
+            output_size
+          ) != output_size) {
+        return std::nullopt;
+      }
+
+      std::u16string utf16_path;
+      utf16_path.reserve(wide_path.size());
+      for (const auto code_unit : wide_path) {
+        utf16_path.push_back(static_cast<char16_t>(code_unit));
+      }
+      return utf16_path;
+    }
+
     template <typename MapType>
     std::string format_map_keys(const MapType &map) {
       std::ostringstream oss;
@@ -143,13 +185,172 @@ namespace display_helper::v2 {
       return {};
     }
 
-    // TopologyTransition owns the retry cadence; keep each poll short and
-    // side-effect free instead of letting a query trigger nested recovery.
+    // Keep legacy callers on the initialized device and preserve its list-shaped fallback.
     display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
     try {
       return display_device_->enumAvailableDevices(detail);
     } catch (...) {
       return {};
+    }
+  }
+
+  std::optional<EnumeratedDeviceList> WinDisplaySettings::try_enumerate(
+    display_device::DeviceEnumerationDetail detail) {
+    if (!ensure_initialized()) {
+      return std::nullopt;
+    }
+
+    // TopologyTransition owns the retry cadence; keep each poll short and
+    // side-effect free instead of letting a query trigger nested recovery.
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+    try {
+      // libdisplaydevice can report an empty list after QDC failure, or a partial
+      // list after an available path fails identity mapping. Track both outcomes
+      // so neither can be mistaken for a successful observation of no devices.
+      struct EnumerationApi: display_device::WinApiLayer {
+        using PathKey = std::tuple<LONG, DWORD, UINT32, LONG, DWORD, UINT32>;
+
+        struct PathObservation {
+          std::string monitor_path;
+          std::string device_id;
+          bool monitor_path_observed = false;
+          bool device_id_observed = false;
+          bool display_name_observed = false;
+        };
+
+        mutable bool query_available = false;
+        mutable bool query_has_available_paths = false;
+        mutable bool path_mapping_incomplete = false;
+        mutable std::map<PathKey, PathObservation> path_observations;
+        mutable std::vector<DISPLAYCONFIG_PATH_INFO> available_paths;
+
+        PathKey path_key(const DISPLAYCONFIG_PATH_INFO &path) const {
+          return {
+            path.sourceInfo.adapterId.HighPart,
+            path.sourceInfo.adapterId.LowPart,
+            path.sourceInfo.id,
+            path.targetInfo.adapterId.HighPart,
+            path.targetInfo.adapterId.LowPart,
+            path.targetInfo.id
+          };
+        }
+
+        std::optional<display_device::PathAndModeData> queryDisplayConfig(
+          display_device::QueryType type) const override {
+          auto result = WinApiLayer::queryDisplayConfig(type);
+          query_available = result.has_value();
+          query_has_available_paths = false;
+          path_mapping_incomplete = false;
+          path_observations.clear();
+          available_paths.clear();
+          query_has_available_paths = result && std::any_of(
+            result->m_paths.begin(),
+            result->m_paths.end(),
+            [](const auto &path) { return display_device::win_utils::isAvailable(path); }
+          );
+          if (result) {
+            for (const auto &path : result->m_paths) {
+              if (display_device::win_utils::isAvailable(path)) {
+                const bool inserted = path_observations.try_emplace(path_key(path)).second;
+                path_mapping_incomplete |= !inserted;
+                available_paths.push_back(path);
+              } else if (display_device::win_utils::isActive(path)) {
+                path_mapping_incomplete = true;
+              }
+            }
+          }
+          return result;
+        }
+
+        std::string getMonitorDevicePath(const DISPLAYCONFIG_PATH_INFO &path) const override {
+          auto value = WinApiLayer::getMonitorDevicePath(path);
+          if (display_device::win_utils::isAvailable(path)) {
+            const auto observation = path_observations.find(path_key(path));
+            if (observation == path_observations.end()) {
+              path_mapping_incomplete = true;
+            } else {
+              observation->second.monitor_path_observed = true;
+              observation->second.monitor_path = value;
+              path_mapping_incomplete |= value.empty();
+            }
+          }
+          return value;
+        }
+
+        std::string getDeviceId(const DISPLAYCONFIG_PATH_INFO &path) const override {
+          auto value = WinApiLayer::getDeviceId(path);
+          if (display_device::win_utils::isAvailable(path)) {
+            path_mapping_incomplete |= value.empty();
+            const auto observation = path_observations.find(path_key(path));
+            if (observation == path_observations.end()) {
+              path_mapping_incomplete = true;
+            } else {
+              observation->second.device_id_observed = true;
+              observation->second.device_id = value;
+              if (const auto utf16_path = monitor_path_to_utf16(observation->second.monitor_path)) {
+                path_mapping_incomplete |= enumeration_status::is_path_fallback_device_id(*utf16_path, value);
+              } else {
+                path_mapping_incomplete = true;
+              }
+              // libdisplaydevice resolves the target path again inside getDeviceId.
+              // Reject observations whose path changed during those separate reads.
+              const auto path_after_identity_lookup = WinApiLayer::getMonitorDevicePath(path);
+              path_mapping_incomplete |= path_after_identity_lookup.empty() ||
+                                         path_after_identity_lookup != observation->second.monitor_path;
+            }
+          }
+          return value;
+        }
+
+        std::string getDisplayName(const DISPLAYCONFIG_PATH_INFO &path) const override {
+          auto value = WinApiLayer::getDisplayName(path);
+          if (display_device::win_utils::isAvailable(path)) {
+            const auto observation = path_observations.find(path_key(path));
+            if (observation == path_observations.end()) {
+              path_mapping_incomplete = true;
+            } else {
+              observation->second.display_name_observed = true;
+              path_mapping_incomplete |= value.empty();
+            }
+          }
+          return value;
+        }
+      };
+      auto api = std::make_shared<EnumerationApi>();
+      display_device::WinDisplayDevice enumeration_device(api);
+      const auto devices = enumeration_device.enumAvailableDevices(detail);
+      std::vector<std::string> available_path_ids;
+      for (const auto &path : api->available_paths) {
+        const auto observation = api->path_observations.find(api->path_key(path));
+        if (observation == api->path_observations.end() || !enumeration_status::is_complete_path_mapping(observation->second.monitor_path_observed, observation->second.device_id_observed, observation->second.display_name_observed)) {
+          api->path_mapping_incomplete = true;
+          continue;
+        }
+        available_path_ids.push_back(observation->second.device_id);
+        const auto path_after_enumeration = api->WinApiLayer::getMonitorDevicePath(path);
+        api->path_mapping_incomplete |= path_after_enumeration.empty() ||
+                                        path_after_enumeration != observation->second.monitor_path;
+      }
+      std::vector<std::string> enumerated_device_ids;
+      enumerated_device_ids.reserve(devices.size());
+      for (const auto &device : devices) {
+        enumerated_device_ids.push_back(device.m_device_id);
+      }
+      api->path_mapping_incomplete |= !enumeration_status::all_available_path_ids_were_enumerated(
+        available_path_ids,
+        enumerated_device_ids
+      );
+      if (!enumeration_status::is_complete_observation(
+            api->query_available,
+            api->query_has_available_paths,
+            api->path_mapping_incomplete,
+            devices.empty()
+          )) {
+        return std::nullopt;
+      }
+      return devices;
+    } catch (...) {
+      return std::nullopt;
     }
   }
 
