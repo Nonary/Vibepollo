@@ -29,12 +29,13 @@ for result in ('-1', 'START_PACING_REJECTED'):
 pacing = re.search(r'constexpr int START_PACING_REJECTED\s*=\s*-?\d+;', (root/'src/stream.h').read_text()).group()
 program = r'''
 #include <cassert>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 namespace remote_session { enum class role_e {game,monitor,input}; }
-struct Launch {remote_session::role_e role=remote_session::role_e::monitor; bool monitor_stream_published=false;};
+struct Launch {std::uint32_t id=7; std::string unique_id="launch-7"; remote_session::role_e role=remote_session::role_e::monitor; bool monitor_stream_published=false;};
 std::mutex lifecycle, apply;
 bool unlocked_on_destroy=false, partial_registration=false;
 int result=0;
@@ -55,8 +56,14 @@ namespace stream {
  }
 }
 struct Server {
- int retired=0, inserted=0;
+ int retired=0, inserted=0, finished=0;
+ bool finished_ok=false, finished_before_insert=false;
  void insert(const auto&,const auto&,bool) {++inserted;}
+ // The launch's startup claim ends with the start result, before publication.
+ void finish_launch_startup(std::uint32_t id,const std::string &unique_id,bool ok) {
+   assert(id==7&&unique_id=="launch-7");
+   ++finished;finished_ok=ok;finished_before_insert=inserted==0;
+ }
  void retire_failed_monitor_start_locked(const auto&) {++retired;}
 };
 bool activates_vulkan_hdr_layer_for_stream(int) {return false;}
@@ -66,6 +73,8 @@ void run(int code,bool late) {
  auto launch_session=std::make_shared<Launch>();auto session=launch_session;
  const std::string remote_address="fake",client_uuid="client";
  struct {int monitor=0;} config;
+ // Stands in for the scope guard that finishes the claim if startup unwinds early.
+ struct {bool armed=true; void disable() {armed=false;}} startup_claim_guard;
  {
  std::unique_lock lifecycle_lock{lifecycle};std::unique_lock _hot_apply_gate{apply};
  @GATE@
@@ -79,6 +88,8 @@ void run(int code,bool late) {
  assert(value.inserted==(!late&&code==0));
  assert(launch_session->monitor_stream_published==(!late&&code==0));
  assert(partial_registration==late);
+ assert(!startup_claim_guard.armed);
+ assert(value.finished==1&&value.finished_ok==(!late&&code==0)&&value.finished_before_insert);
 }
 int main(){run(-1,false);run(stream::session::START_PACING_REJECTED,false);run(0,false);run(0,true);}
 '''.replace('@PACING@',pacing).replace('@GATE@',gate)
@@ -87,4 +98,4 @@ with tempfile.TemporaryDirectory(prefix='rtsp-startup-gate-') as directory:
     sanitizer_flags = ['-fsanitize=address,undefined'] if os.name != 'nt' else []
     subprocess.run([args.compiler,'-std=c++23','-Wall','-Wextra','-Werror','-Wno-misleading-indentation',*sanitizer_flags,str(cpp),'-o',str(binary)],check=True)
     subprocess.run([str(binary)],check=True)
-print('PASS: production early startup errors, late exception, publication and destructor lock release')
+print('PASS: production early startup errors, late exception, startup claim release, publication and destructor lock release')
