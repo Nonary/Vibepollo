@@ -129,6 +129,14 @@ namespace pyrowave::host {
             failed = true;
             return -1;
           }
+          // video.cpp routes PyroWave exclusively through the async pool. A
+          // retained existing control block excludes pool reuse; all actual DDA/
+          // WGC pixel writers acquire the capture resource's keyed mutex. Metadata
+          // replacement is not pixel mutation of the independently pinned resource.
+          source.capture_owner = img->weak_from_this().lock();
+          source.capture_texture = img->capture_texture.get();
+          source.capture_mutex = img->capture_mutex.get();
+          source.lease = d3d11::source_lease_e::async_capture_pool;
           source.srv = ctx->srv.Get();
           source.mutex = ctx->mutex.Get();
           source.width = unsigned(img->width);
@@ -180,9 +188,9 @@ namespace pyrowave::host {
     private:
       struct img_ctx_t {
         ComPtr<ID3D11Texture2D> texture;
+        ComPtr<ID3D11Texture2D> capture_texture_identity;
         ComPtr<IDXGIKeyedMutex> mutex;
         ComPtr<ID3D11ShaderResourceView> srv;
-        ID3D11Texture2D *capture_texture_p = nullptr;
         std::weak_ptr<const platf::img_t> img_weak;
       };
 
@@ -201,6 +209,9 @@ namespace pyrowave::host {
         config.ten_bit = params.colorspace.bit_depth > 8;
         config.color_matrix = color_matrix_for(params.colorspace);
         config.shader_path = utf_utils::from_utf8(SUNSHINE_SHADERS_DIR "/convert_pyrowave_cs.hlsl");
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+        config.experimental_d3d12_conversion = true;
+#endif
 
         core = d3d11::core_t::create(adapter.Get(), config, log_core_message);
         if (!core) {
@@ -218,7 +229,7 @@ namespace pyrowave::host {
         }
 
         auto &ctx = img_ctxs[img.id];
-        if (ctx.texture && ctx.capture_texture_p == img.capture_texture.get()) {
+        if (ctx.texture && ctx.capture_texture_identity.Get() == img.capture_texture.get()) {
           return &ctx;
         }
 
@@ -239,7 +250,10 @@ namespace pyrowave::host {
           img_ctxs.erase(img.id);
           return nullptr;
         }
-        ctx.capture_texture_p = img.capture_texture.get();
+        // Keep the object alive while its raw interface pointer is the cache
+        // key, preventing address reuse from binding a replacement image to
+        // this entry's previously opened shared texture.
+        ctx.capture_texture_identity = img.capture_texture.get();
         ctx.img_weak = img.weak_from_this();
         return &ctx;
       }
@@ -269,8 +283,8 @@ namespace pyrowave::host {
       std::shared_ptr<platf::display_t> display;
       d3d11::framing_params_t framing;
       policy::budget_t budget;
-      std::unique_ptr<d3d11::core_t> core;
       std::map<std::uint32_t, img_ctx_t> img_ctxs;
+      std::unique_ptr<d3d11::core_t> core;
       bool failed = false;
       bool warned_unorm_hdr = false;
       logging::min_max_avg_periodic_logger<double> encode_logger;

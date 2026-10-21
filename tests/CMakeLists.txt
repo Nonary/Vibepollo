@@ -262,6 +262,27 @@ enable_testing()
 # native test host without requiring a physical Windows desktop.
 find_program(SUNSHINE_TEST_PYTHON_EXECUTABLE NAMES python3)
 if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
+    # Exercise exact production quarantine/admission/destructor bodies with
+    # controlled CPU leaves. This does not execute Windows or GPU APIs.
+    add_test(NAME test_component_pyrowave_capture_guard
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_pyrowave_capture_guard.py"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_pyrowave_capture_guard PROPERTIES LABELS "component" TIMEOUT 60)
+    # V6 extracts actual source staging, completion, collection, release, and
+    # teardown bodies with controlled CPU leaves. The separate conversion
+    # matrix covers preparation/copy/producer/consumer failure paths. Neither
+    # fixture executes Windows or GPU APIs.
+    add_test(NAME test_component_pyrowave_source_lease
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_pyrowave_source_lease.py"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_pyrowave_source_lease PROPERTIES LABELS "component" TIMEOUT 60)
+    add_test(NAME test_component_pyrowave_pre_copy
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_pyrowave_pre_copy.py"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_pyrowave_pre_copy PROPERTIES LABELS "component" TIMEOUT 60)
     add_test(NAME test_component_windows_input_desktop
         COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/tools/tests/test_input_desktop.py"
@@ -1818,6 +1839,14 @@ if(WIN32 AND TARGET pyrowave::capi)
     target_compile_definitions(test_pyrowave_windows_gpu PRIVATE
         "PYROWAVE_TEST_SHADER_PATH=L\"${SUNSHINE_TEST_REPOSITORY_ROOT}/src_assets/windows/assets/shaders/directx/convert_pyrowave_cs.hlsl\"")
     target_link_libraries(test_pyrowave_windows_gpu PRIVATE pyrowave::capi d3d11 dxgi d3dcompiler)
+    if(SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12)
+        target_sources(test_pyrowave_windows_gpu PRIVATE
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/pyrowave_d3d12_conversion.cpp")
+        target_compile_definitions(test_pyrowave_windows_gpu PRIVATE SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12=1)
+        target_link_libraries(test_pyrowave_windows_gpu PRIVATE d3d12)
+        add_test(NAME pyrowave_windows_d3d12_gpu COMMAND test_pyrowave_windows_gpu 0 d3d12)
+        set_tests_properties(pyrowave_windows_d3d12_gpu PROPERTIES SKIP_RETURN_CODE 77 LABELS "integration;gpu;experimental")
+    endif()
     add_test(NAME pyrowave_windows_gpu COMMAND test_pyrowave_windows_gpu)
     set_tests_properties(pyrowave_windows_gpu PROPERTIES SKIP_RETURN_CODE 77 LABELS "integration;gpu")
 endif()

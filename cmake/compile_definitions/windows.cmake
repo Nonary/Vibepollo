@@ -362,6 +362,13 @@ if(SUNSHINE_ENABLE_PYROWAVE)
             "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_d3d11_core.h"
             "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_d3d11_core.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_encode.cpp")
+    if(SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12)
+        list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12=1)
+        list(APPEND PLATFORM_LIBRARIES d3d12)
+        list(APPEND PLATFORM_TARGET_FILES
+                "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_d3d12_conversion.h"
+                "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_d3d12_conversion.cpp")
+    endif()
 endif()
 
 list(APPEND PLATFORM_TARGET_FILES "${CMAKE_SOURCE_DIR}/src/platform/windows/managed_app_focus.cpp")
