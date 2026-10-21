@@ -16,6 +16,8 @@ internal static class RollbackRegression {
   internal static List<string> RestoreArguments;
   internal static bool MetadataThrows, DirectoryFails, CopyFails, RestoreThrows, Hidden, Elevate;
   internal static int UninstallCode, RestoreCode, Checks;
+  internal static bool NativeRegistrationPresent, NativeStateThrows, RestoreMakesRegistration;
+  internal static int NativeProductState, RegistrationReadFailure;
   internal static void Check(bool condition, string name) {
     if (!condition) throw new Exception(name);
     Checks++;
@@ -32,8 +34,9 @@ internal static class RollbackRegression {
   }
   private static void Reset(bool transactional = false, string payloadCode = Other) {
     Events.Clear(); RestoreArguments = null; LastRecoveryDirectory = null;
+    RegistrationReadFailure = 0;
     MetadataThrows = DirectoryFails = CopyFails = RestoreThrows = false;
-    Hidden = true; Elevate = false; UninstallCode = RestoreCode = 0;
+    Hidden = true; Elevate = false; UninstallCode = RestoreCode = 0; NativeRegistrationPresent = true; NativeProductState = -1; NativeStateThrows = RestoreMakesRegistration = false;
     CachePath = Path.Combine(Root, "cached.msi");
     File.WriteAllBytes(CachePath, new byte[] { 0, 1, 2, 127, 255 });
     IncomingPath = Path.Combine(Root, "incoming.msi");
@@ -150,9 +153,63 @@ internal static class RollbackRegression {
       Reset(); retained = RemoveLegacy(); Installed = Product();
       Recover(retained);
       Check(!Events.Contains("restore") && !Directory.Exists(retained.RecoveryDirectory), "already restored exact product cleans stash without reinstall");
+      // Cross-product rollback must verify the exact restored identity in
+      // both source and downstream builds, independent of branding getters.
+      Reset(); retained = RemoveLegacy(); RestoredProduct = null; RestoredTarget = Product();
+      RestoredTarget.Kind = InstallerRunner.InstalledProductKind.Vibepollo;
+      var crossProductResult = Recover(retained);
+      Check(crossProductResult.Message.Contains("automatically restored"), "restored competitor is verified by exact ProductCode");
+      Check(crossProductResult.ExitCode == 1603 && !Directory.Exists(retained.RecoveryDirectory), "verified competitor rollback preserves incoming failure and cleans only its stash");
+      Reset(); retained = RemoveLegacy(); NativeRegistrationPresent = false;
+      var ghostResult = Recover(retained);
+      Check(ghostResult.ExitCode == 1603 && !ghostResult.Message.Contains("automatically restored") && File.Exists(retained.MsiPath),
+        "matching ARP identity without Windows Installer registration cannot validate restoration");
+      foreach (var marker in new[] { true, false }) {
+        Reset(); retained = RemoveLegacy(); NativeRegistrationPresent = false; RestoreMakesRegistration = true;
+        Installed = Product(); Installed.IsWindowsInstaller = marker;
+        Installed.UninstallString = "msiexec.exe /x " + Code;
+        var staleResult = Recover(retained);
+        Console.WriteLine("STALE marker=" + marker + " restore=" + Events.Contains("restore") + " restored=" + staleResult.Message.Contains("automatically restored") + " stashExists=" + File.Exists(retained.MsiPath) + " exit=" + staleResult.ExitCode);
+        Check(Events.Contains("restore") && staleResult.Message.Contains("automatically restored") && staleResult.ExitCode == 1603,
+          "proven unregistered MSI-shaped ARP row does not suppress exact rollback, marker=" + marker);
+        Check(!Directory.Exists(retained.RecoveryDirectory), "native-confirmed stale-row recovery cleans only verified restored stash");
+      }
+      foreach (var mode in new[] { "bad-configuration", "different-user", "advertised", "api-throws", "generic-legacy", "per-user" }) {
+        Reset(); retained = RemoveLegacy(); NativeRegistrationPresent = false;
+        Installed = Product(Other);
+        if (mode == "bad-configuration") NativeProductState = -6;
+        if (mode == "different-user") NativeProductState = 2;
+        if (mode == "advertised") NativeProductState = 1;
+        if (mode == "api-throws") NativeStateThrows = true;
+        if (mode == "generic-legacy") { Installed.IsWindowsInstaller = false; Installed.UninstallString = "legacy-uninstaller.exe /S"; }
+        if (mode == "per-user") Installed.IsPerUser = true;
+        Recover(retained);
+        Check(!Events.Contains("restore") && File.Exists(retained.MsiPath), mode + " retains conservative overwrite protection and rollback source");
+      }
+      Reset(); retained = RemoveLegacy(); RestoredProduct.IsWindowsInstaller = false;
+      var markerlessRestore = Recover(retained);
+      Check(markerlessRestore.Message.Contains("automatically restored") && !Directory.Exists(retained.RecoveryDirectory),
+        "exact native-owned restoration is verified even if its ARP MSI marker is unavailable");
+      Reset(); retained = RemoveLegacy(); Installed = Product(); Installed.IsWindowsInstaller = false;
+      Installed.UninstallString = "msiexec.exe /x " + Code;
+      var ownedMarkerless = Recover(retained);
+      Check(!Events.Contains("restore") && ownedMarkerless.ExitCode == 1603 && !Directory.Exists(retained.RecoveryDirectory),
+        "native-owned exact product without MSI marker is protected before any repair and recognized without reinstall");
+      foreach (var readFailure in new[] { 1, 2 }) {
+        foreach (var owned in new[] { false, true }) {
+          Reset(); retained = RemoveLegacy();
+          if (owned) Installed = Product();
+          NativeRegistrationPresent = owned; RegistrationReadFailure = readFailure;
+          var inventoryFailure = Recover(retained);
+          Check(!Events.Contains("restore") && File.Exists(retained.MsiPath),
+            "inventory failure retains exact source and does not authorize repair, owned=" + owned);
+          Check(inventoryFailure.ExitCode == 1603 && !inventoryFailure.Message.Contains("automatically restored"),
+            "inventory verification failure cannot escape or replace incoming outcome");
+        }
+      }
       // Vibepollo also protects its own installed product during recovery of
       // the intentionally retained upstream Vibeshine migration source.
-      if (typeof(InstallerRunner).GetMethod("GetInstalledVibepolloProduct", BindingFlags.Static | BindingFlags.Public) != null) {
+      {
         foreach (var code in new[] { Code, Other }) {
           Reset(); retained = RemoveLegacy(); InstalledTarget = Product(code);
           InstalledTarget.Kind = InstallerRunner.InstalledProductKind.Vibepollo;
