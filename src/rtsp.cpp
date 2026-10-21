@@ -50,6 +50,7 @@ extern "C" {
 #endif
 #include "hardware_metrics_session.h"
 #include "rtsp.h"
+#include "rtsp_launch_registry.h"
 #include "rtsp_pending_policy.h"
 #include "stream.h"
 #include "sync.h"
@@ -195,6 +196,11 @@ namespace rtsp_stream {
 
   bool activates_vulkan_hdr_layer_for_stream(const video::config_t &config) {
     return config.dynamicRange != 0 && !config.prefer_sdr_10bit && !config.force_sdr;
+  }
+
+  static bool session_still_running(const std::weak_ptr<stream::session_t> &weak_session) {
+    const auto session = weak_session.lock();
+    return session && stream::session::state(*session) == stream::session::state_e::RUNNING;
   }
 
   std::shared_ptr<launch_session_t> launch_session_t::clone_for_startup() const {
@@ -930,35 +936,23 @@ namespace rtsp_stream {
         std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
         const auto now = std::chrono::steady_clock::now();
         expired_guids = expire_launch_sessions_locked(now, &expired_owners, &expired_sessions);
-        const bool duplicate_id = std::any_of(_launch_sessions.begin(), _launch_sessions.end(), [launch_session_id](const launch_session_entry_t &entry) {
-          return entry.session && entry.session->id == launch_session_id;
-        });
-        const bool duplicate_plaintext =
-          !launch_session->rtsp_cipher &&
-          std::any_of(_launch_sessions.begin(), _launch_sessions.end(), [&launch_session, now](const launch_session_entry_t &entry) {
-            return entry.session &&
-                   !entry.session->rtsp_cipher &&
-                   entry.expires_at > now &&
-                   entry.session->rtsp_source_address == launch_session->rtsp_source_address;
-          });
-        if (_launch_sessions.size() >= remote_session::max_client_vdds * 2) {
-          BOOST_LOG(error) << "RTSP pending-launch registry is full; refusing launch " << launch_session_id;
-        } else if (duplicate_id) {
-          BOOST_LOG(error) << "RTSP pending-launch ID collision for " << launch_session_id;
-        } else if (duplicate_plaintext) {
-          plaintext_route_warning =
-            "Plaintext RTSP has more than one pending launch for one source address; rejecting the new launch.";
-          BOOST_LOG(error) << plaintext_route_warning;
-        } else {
-          _launch_sessions.emplace_back(
-            launch_session_entry_t {
-              .session = std::move(launch_session),
-              .expires_at = now + config::stream.ping_timeout,
-            }
-          );
-          accepted = true;
-          BOOST_LOG(debug) << "Queued RTSP launch session "sv << launch_session_id
-                           << " [pending launches: "sv << _launch_sessions.size() << ']';
+        switch (_launch_sessions.add(std::move(launch_session), now, config::stream.ping_timeout, remote_session::max_client_vdds * 2)) {
+          case pending_launches_t::add_result_e::full:
+            BOOST_LOG(error) << "RTSP pending-launch registry is full; refusing launch " << launch_session_id;
+            break;
+          case pending_launches_t::add_result_e::duplicate_id:
+            BOOST_LOG(error) << "RTSP pending-launch ID collision for " << launch_session_id;
+            break;
+          case pending_launches_t::add_result_e::duplicate_plaintext_source:
+            plaintext_route_warning =
+              "Plaintext RTSP has more than one pending launch for one source address; rejecting the new launch.";
+            BOOST_LOG(error) << plaintext_route_warning;
+            break;
+          case pending_launches_t::add_result_e::added:
+            accepted = true;
+            BOOST_LOG(debug) << "Queued RTSP launch session "sv << launch_session_id
+                             << " [pending launches: "sv << _launch_sessions.size() << ']';
+            break;
         }
         pending_launches_remain = !_launch_sessions.empty();
       }
@@ -998,9 +992,10 @@ namespace rtsp_stream {
     bool retain_pending_runtime_holds(const std::shared_ptr<launch_session_t> &snapshot) {
       std::lock_guard lock {_launch_sessions_mutex};
       const auto now = std::chrono::steady_clock::now();
-      for (const auto &entry : _launch_sessions) {
+      // A claimed startup stays live past its original deadline; see is_live().
+      for (const auto &entry : _launch_sessions.entries()) {
         if (entry.session && entry.session->id == snapshot->id &&
-            entry.session->unique_id == snapshot->unique_id && entry.expires_at > now) {
+            entry.session->unique_id == snapshot->unique_id && pending_launches_t::is_live(entry, now)) {
           audio::copy_launch_audio_guard(*entry.session, *snapshot);
           snapshot->display_power_guard = entry.session->display_power_guard;
           snapshot->exact_target_hold = entry.session->exact_target_hold;
@@ -1021,21 +1016,14 @@ namespace rtsp_stream {
       std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes;
       {
         std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
-        for (auto it = _launch_sessions.begin(); it != _launch_sessions.end();) {
-          if (it->session && it->session->id == launch_session_id) {
-            const auto &guid_bytes = it->session->virtual_display_guid_bytes;
-            if (std::any_of(guid_bytes.begin(), guid_bytes.end(), [](const std::uint8_t byte) {
-                  return byte != 0;
-                })) {
-              virtual_display_guid_bytes = guid_bytes;
-            }
-            removed_pending_sessions.push_back(it->session);
-            it = _launch_sessions.erase(it);
-            removed = true;
-          } else {
-            ++it;
-          }
+        const auto removed_sessions = _launch_sessions.remove_if([launch_session_id](const launch_session_t &session) {
+          return session.id == launch_session_id;
+        });
+        for (const auto &session : removed_sessions) {
+          note_virtual_display_guid(session->virtual_display_guid_bytes, virtual_display_guid_bytes);
+          removed_pending_sessions.push_back(session);
         }
+        removed = !removed_sessions.empty();
         pending_launches_remain = !_launch_sessions.empty();
       }
 
@@ -1082,17 +1070,7 @@ namespace rtsp_stream {
 
     bool has_launch_session(uint32_t id, std::string_view unique_id) {
       std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
-      const auto now = std::chrono::steady_clock::now();
-      return std::any_of(
-        _launch_sessions.begin(),
-        _launch_sessions.end(),
-        [id, unique_id, now](const launch_session_entry_t &entry) {
-          return entry.session &&
-                 entry.session->id == id &&
-                 entry.session->unique_id == unique_id &&
-                 entry.expires_at > now;
-        }
-      );
+      return _launch_sessions.contains_live(id, unique_id, std::chrono::steady_clock::now());
     }
 
     // RTSP sends OPTIONS, DESCRIBE, SETUP, and ANNOUNCE on separate TCP
@@ -1101,33 +1079,33 @@ namespace rtsp_stream {
     // worker for a pending launch.
     bool claim_launch_startup(uint32_t id, std::string_view unique_id) {
       std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
-      const auto now = std::chrono::steady_clock::now();
-      for (auto &entry : _launch_sessions) {
-        if (!entry.session ||
-            entry.session->id != id ||
-            entry.session->unique_id != unique_id ||
-            entry.expires_at <= now) {
-          continue;
-        }
-        if (entry.startup_claimed) {
-          return false;
-        }
-        entry.startup_claimed = true;
-        return true;
-      }
-      return false;
+      return _launch_sessions.claim_startup(id, unique_id, std::chrono::steady_clock::now());
     }
 
     void release_launch_startup_claim(uint32_t id, std::string_view unique_id) {
-      std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
-      for (auto &entry : _launch_sessions) {
-        if (entry.session &&
-            entry.session->id == id &&
-            entry.session->unique_id == unique_id) {
-          entry.startup_claimed = false;
-          return;
-        }
+      {
+        std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
+        _launch_sessions.release_startup(id, unique_id);
       }
+      // The deadline may have passed while the claim suspended expiry.
+      asio::post(io_context, [this]() {
+        arm_launch_timer();
+      });
+    }
+
+    /**
+     * @brief Hand a claimed launch back to the expiry timer once its startup worker finishes.
+     * @param started Whether the stream session started. A started session gets a fresh
+     *                ping_timeout for PLAY and the control connection, which clears the launch.
+     */
+    void finish_launch_startup(uint32_t id, std::string_view unique_id, bool started) {
+      {
+        std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
+        _launch_sessions.finish_startup(id, unique_id, started, std::chrono::steady_clock::now(), config::stream.ping_timeout);
+      }
+      asio::post(io_context, [this]() {
+        arm_launch_timer();
+      });
     }
 
     bool vulkan_hdr_layer_active_locked() {
@@ -1157,19 +1135,15 @@ namespace rtsp_stream {
       bool cleared = false;
       {
         std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
-        for (const auto &entry : _launch_sessions) {
-          if (entry.session) {
-            removed_pending_sessions.push_back(entry.session);
-            const auto &guid_bytes = entry.session->virtual_display_guid_bytes;
-            if (std::any_of(guid_bytes.begin(), guid_bytes.end(), [](const std::uint8_t byte) {
-                  return byte != 0;
-                })) {
-              virtual_display_guid_bytes = guid_bytes;
-            }
-          }
+        const auto canceled = _launch_sessions.clear();
+        for (const auto &session : canceled) {
+          removed_pending_sessions.push_back(session);
+          note_virtual_display_guid(session->virtual_display_guid_bytes, virtual_display_guid_bytes);
         }
-        cleared = !_launch_sessions.empty();
-        _launch_sessions.clear();
+        cleared = !canceled.empty();
+        if (cleared) {
+          BOOST_LOG(info) << "Canceled "sv << canceled.size() << " pending RTSP launch(es) (reason="sv << reason << ").";
+        }
       }
       for (const auto &launch_session : removed_pending_sessions) {
         release_pending_runtime_holds(launch_session);
@@ -1333,18 +1307,15 @@ namespace rtsp_stream {
       [[maybe_unused]] bool vulkan_hdr_layer_active = false;
       {
         std::lock_guard<std::mutex> lock {_launch_sessions_mutex};
-        for (auto it = _launch_sessions.begin(); it != _launch_sessions.end();) {
-          const auto &pending = it->session;
-          if (pending && pending->client_uuid == client_uuid) {
-            result.pending_roles.push_back(pending->role);
-            result.pending_generations.push_back(pending->role_generation);
-            removed_pending_sessions.push_back(pending);
-            it = _launch_sessions.erase(it);
-            removed_pending = true;
-          } else {
-            ++it;
-          }
+        const auto removed_sessions = _launch_sessions.remove_if([&client_uuid](const launch_session_t &pending) {
+          return pending.client_uuid == client_uuid;
+        });
+        for (const auto &pending : removed_sessions) {
+          result.pending_roles.push_back(pending->role);
+          result.pending_generations.push_back(pending->role_generation);
+          removed_pending_sessions.push_back(pending);
         }
+        removed_pending = !removed_sessions.empty();
       }
       for (const auto &pending : removed_pending_sessions) release_pending_runtime_holds(pending);
       {
@@ -1408,24 +1379,15 @@ namespace rtsp_stream {
       const bool all_clients = client_uuid.empty();
       {
         std::lock_guard<std::mutex> lock {_launch_sessions_mutex};
-        for (auto it = _launch_sessions.begin(); it != _launch_sessions.end();) {
-          const auto &pending = it->session;
-          if (pending &&
-              pending_policy::disconnect_scope_matches(pending->role, role, pending->client_uuid == client_uuid, all_clients) &&
-              (!generation || pending->role_generation == *generation)) {
-            const auto &guid_bytes = pending->virtual_display_guid_bytes;
-            if (std::any_of(guid_bytes.begin(), guid_bytes.end(), [](const std::uint8_t byte) {
-                  return byte != 0;
-                })) {
-              virtual_display_guid_bytes = guid_bytes;
-            }
-            removed_pending_sessions.push_back(pending);
-            it = _launch_sessions.erase(it);
-            removed_pending = true;
-          } else {
-            ++it;
-          }
+        const auto removed_sessions = _launch_sessions.remove_if([&](const launch_session_t &pending) {
+          return pending_policy::disconnect_scope_matches(pending.role, role, pending.client_uuid == client_uuid, all_clients) &&
+                 (!generation || pending.role_generation == *generation);
+        });
+        for (const auto &pending : removed_sessions) {
+          note_virtual_display_guid(pending->virtual_display_guid_bytes, virtual_display_guid_bytes);
+          removed_pending_sessions.push_back(pending);
         }
+        removed_pending = !removed_sessions.empty();
         pending_launches_remain = !_launch_sessions.empty();
       }
       for (const auto &pending : removed_pending_sessions) release_pending_runtime_holds(pending);
@@ -1544,13 +1506,18 @@ namespace rtsp_stream {
     }
 
   private:
-    struct launch_session_entry_t {
-      std::shared_ptr<launch_session_t> session;
-      std::chrono::steady_clock::time_point expires_at;
-      bool accepted = false;
-      bool startup_claimed = false;
-      std::string remote_address;
-    };
+    using pending_launches_t = launch_registry_t<launch_session_t>;
+
+    static void note_virtual_display_guid(
+      const std::array<std::uint8_t, 16> &guid_bytes,
+      std::optional<std::array<std::uint8_t, 16>> &virtual_display_guid_bytes
+    ) {
+      if (std::any_of(guid_bytes.begin(), guid_bytes.end(), [](const std::uint8_t byte) {
+            return byte != 0;
+          })) {
+        virtual_display_guid_bytes = guid_bytes;
+      }
+    }
 
     struct route_candidates_t {
       std::shared_ptr<launch_session_t> plaintext;
@@ -1606,7 +1573,7 @@ namespace rtsp_stream {
           std::chrono::steady_clock::now(),
           &expired_owners, &expired_sessions
         );
-        for (const auto &entry : _launch_sessions) {
+        for (const auto &entry : _launch_sessions.entries()) {
           if (!entry.session) {
             continue;
           }
@@ -1656,7 +1623,7 @@ namespace rtsp_stream {
           &expired_owners, &expired_sessions
         );
 
-        for (auto &entry : _launch_sessions) {
+        for (auto &entry : _launch_sessions.entries()) {
           if (entry.session != candidate || !entry.session || entry.session->rtsp_cipher) {
             continue;
           }
@@ -1700,7 +1667,7 @@ namespace rtsp_stream {
           std::chrono::steady_clock::now(),
           &expired_owners, &expired_sessions
         );
-        for (const auto &entry : _launch_sessions) {
+        for (const auto &entry : _launch_sessions.entries()) {
           if (entry.session && entry.session->rtsp_cipher) {
             candidates.push_back(entry.session);
           }
@@ -1730,9 +1697,9 @@ namespace rtsp_stream {
         std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
         const auto now = std::chrono::steady_clock::now();
         expired_guids = expire_launch_sessions_locked(now, &expired_owners, &expired_sessions);
-        for (auto &entry : _launch_sessions) {
+        for (auto &entry : _launch_sessions.entries()) {
           if (entry.session != candidate ||
-              entry.expires_at <= now ||
+              !pending_launches_t::is_live(entry, now) ||
               !entry.session->rtsp_cipher ||
               entry.session->id != candidate->id ||
               entry.session->unique_id != candidate->unique_id) {
@@ -1776,44 +1743,31 @@ namespace rtsp_stream {
       std::vector<std::shared_ptr<launch_session_t>> *expired_sessions = nullptr
     ) {
       std::vector<std::array<std::uint8_t, 16>> expired_guids;
-      for (auto it = _launch_sessions.begin(); it != _launch_sessions.end();) {
-        if (it->expires_at > now) {
-          ++it;
-          continue;
+      for (const auto &session : _launch_sessions.expire(now)) {
+        if (expired_sessions) expired_sessions->push_back(session);
+        BOOST_LOG(debug) << "Event timeout: "sv << session->unique_id;
+        expired_guids.push_back(session->virtual_display_guid_bytes);
+        if (expired_owners) {
+          expired_owners->push_back({
+            .role = session->role,
+            .client_uuid = session->client_uuid,
+            .generation = session->role_generation,
+          });
         }
-
-        if (it->session) {
-          if (expired_sessions) expired_sessions->push_back(it->session);
-          BOOST_LOG(debug) << "Event timeout: "sv << it->session->unique_id;
-          expired_guids.push_back(it->session->virtual_display_guid_bytes);
-          if (expired_owners) {
-            expired_owners->push_back({
-              .role = it->session->role,
-              .client_uuid = it->session->client_uuid,
-              .generation = it->session->role_generation,
-            });
-          }
-        }
-        it = _launch_sessions.erase(it);
       }
       return expired_guids;
     }
 
     void arm_launch_timer_locked() {
       raised_timer.cancel();
-      if (_launch_sessions.empty()) {
+
+      // finish_launch_startup() re-arms the timer for running startups.
+      const auto next_expiry = _launch_sessions.next_expiry();
+      if (!next_expiry) {
         return;
       }
 
-      const auto next_expiry = std::min_element(
-        _launch_sessions.begin(),
-        _launch_sessions.end(),
-        [](const launch_session_entry_t &lhs, const launch_session_entry_t &rhs) {
-          return lhs.expires_at < rhs.expires_at;
-        }
-      )->expires_at;
-
-      raised_timer.expires_at(next_expiry);
+      raised_timer.expires_at(*next_expiry);
       raised_timer.async_wait([this](const boost::system::error_code &ec) {
         if (!ec) {
           arm_launch_timer();
@@ -1832,7 +1786,7 @@ namespace rtsp_stream {
 
     sync_util::sync_t<session_state_t> _session_state;
     std::mutex _launch_sessions_mutex;
-    std::vector<launch_session_entry_t> _launch_sessions;
+    pending_launches_t _launch_sessions;
     std::string plaintext_route_warning;
 
     boost::asio::io_context io_context;
@@ -2616,6 +2570,11 @@ namespace rtsp_stream {
       server->run_startup(
         launch_session->virtual_display_guid_bytes,
         [server, socket = std::move(socket), session = std::move(session), launch_session, config = std::move(config), remote_address = std::move(remote_address), client_uuid, sequence_number](bool admitted) mutable {
+        // The claim suspends expiry, so hand the launch back to the timer on every exit.
+        auto startup_claim_guard = util::fail_guard([server, launch_session]() {
+          server->finish_launch_startup(launch_session->id, launch_session->unique_id, false);
+        });
+
         // Apply deferred updates and take the hot-apply gate on the startup worker so
         // display/config churn cannot stall the RTSP io_context.
         std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
@@ -2669,6 +2628,9 @@ namespace rtsp_stream {
           startup_error = "unknown exception";
         }
 
+        startup_claim_guard.disable();
+        server->finish_launch_startup(launch_session->id, launch_session->unique_id, !startup_failed);
+
         const bool stream_hdr_enabled = activates_vulkan_hdr_layer_for_stream(config.monitor);
         if (!startup_failed) {
           // Publish the active session before releasing the lifecycle gate.
@@ -2680,21 +2642,33 @@ namespace rtsp_stream {
         // scope. A failed start can hold the last reference, and ~session_t may then run
         // end_broadcast(), which joins a control thread that itself waits on this gate.
         lifecycle_lock.unlock();
-        server->post([server, socket = std::move(socket), session = std::move(session), sequence_number, startup_failed, startup_status, startup_error = std::move(startup_error), virtual_display_guid_bytes = launch_session->virtual_display_guid_bytes]() mutable {
+        // Weak, so the reply never becomes the session's owner.
+        std::weak_ptr<stream::session_t> started_session;
+        if (!startup_failed) {
+          started_session = stream_session;
+        }
+        server->post([server, socket = std::move(socket), session = std::move(session), sequence_number, startup_failed, startup_status, startup_error = std::move(startup_error), started_session = std::move(started_session), virtual_display_guid_bytes = launch_session->virtual_display_guid_bytes]() mutable {
           OPTION_ITEM completion_option {};
           completion_option.option = const_cast<char *>("CSeq");
           auto completion_seqn = std::to_string(sequence_number);
           completion_option.content = const_cast<char *>(completion_seqn.c_str());
 
-          if (startup_failed) {
-            if (startup_error.empty()) {
-              BOOST_LOG(error) << "Failed to start a streaming session"sv;
-            } else {
-              BOOST_LOG(error) << "Failed to start a streaming session: "sv << startup_error;
-            }
-            respond(socket->sock, *session, &completion_option, startup_status, startup_status == 400 ? "BAD REQUEST" : "Internal Server Error", sequence_number, {});
-          } else {
-            respond(socket->sock, *session, &completion_option, 200, "OK", sequence_number, {});
+          switch (pending_policy::announce_reply(startup_failed, session_still_running(started_session))) {
+            case pending_policy::announce_reply_e::startup_failed:
+              if (startup_error.empty()) {
+                BOOST_LOG(error) << "Failed to start a streaming session"sv;
+              } else {
+                BOOST_LOG(error) << "Failed to start a streaming session: "sv << startup_error;
+              }
+              respond(socket->sock, *session, &completion_option, startup_status, startup_status == 400 ? "BAD REQUEST" : "Internal Server Error", sequence_number, {});
+              break;
+            case pending_policy::announce_reply_e::stopped_before_reply:
+              BOOST_LOG(warning) << "Streaming session stopped before its ANNOUNCE reply was sent; reporting the start as failed."sv;
+              respond(socket->sock, *session, &completion_option, 503, "Service Unavailable", sequence_number, {});
+              break;
+            case pending_policy::announce_reply_e::ok:
+              respond(socket->sock, *session, &completion_option, 200, "OK", sequence_number, {});
+              break;
           }
 
           server->shutdown_socket(*socket);
@@ -2754,12 +2728,10 @@ namespace rtsp_stream {
       while (!shutdown_event->peek() || server.total_startup_count() > 0) {
         server.iterate();
 
-        if (broadcast_shutdown_event->peek()) {
-          server.clear();
-        } else {
-          // cleanup all stopped sessions
-          server.clear(false);
-        }
+        // Clear every session while the broadcast shuts down, otherwise only
+        // stopped ones. Launches queued for the next stream are kept either way.
+        const auto clear = pending_policy::rtsp_loop_clear(broadcast_shutdown_event->peek());
+        server.clear(clear.all_sessions, clear.preserve_pending_launches);
       }
 
       server.clear();
