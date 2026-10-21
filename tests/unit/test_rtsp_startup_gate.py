@@ -55,12 +55,9 @@ program = r'''
 #include <string>
 #include <string_view>
 #include <vector>
+#include "src/rtsp_launch_registry.h"
 using namespace std::string_view_literals;
-namespace remote_session {
- enum class role_e {game,monitor,input};
- constexpr unsigned max_client_vdds=8;
-}
-namespace pending_policy {struct pending_owner_t {};}
+namespace pending_policy = rtsp_stream::pending_policy;
 namespace host_stream_control {struct activity_guard_t {explicit operator bool() const {return true;}};}
 namespace config {
  struct {std::chrono::seconds ping_timeout{30};} stream;
@@ -135,21 +132,24 @@ namespace stream {
 }
 struct Server {
  using launch_session_t=Launch;
- struct launch_session_entry_t {
-   std::shared_ptr<Launch> session;
-   std::chrono::steady_clock::time_point expires_at;
- };
- std::vector<launch_session_entry_t> _launch_sessions;
+ using pending_launches_t=rtsp_stream::launch_registry_t<Launch>;
+ pending_launches_t _launch_sessions;
  std::mutex _launch_sessions_mutex;
  std::string plaintext_route_warning;
  bool pending_hdr=true;
- int inserted=0, io_context=0;
+ int inserted=0, io_context=0, finished=0;
+ bool finished_ok=false, finished_before_insert=false;
  void insert(const auto&,const auto&,bool) {++inserted;}
  void arm_launch_timer() {}
  void set_pending_vulkan_hdr_layer_stream(bool active) {pending_hdr=active;}
  // These cases never expire a session. Expiry is covered by the reconnect fixture.
  std::vector<std::array<std::uint8_t,16>> expire_launch_sessions_locked(auto, auto *, auto *) {return {};}
  void finalize_expired_launch_sessions(const auto&, bool, const auto&, const auto&) {}
+ // The launch's startup claim ends with the start result, before publication.
+ void finish_launch_startup(std::uint32_t id,const std::string &unique_id,bool ok) {
+   assert(id==1&&unique_id=="pending");
+   ++finished;finished_ok=ok;finished_before_insert=inserted==0;
+ }
  @RETIREMENT@
 };
 bool activates_vulkan_hdr_layer_for_stream(int) {return false;}
@@ -167,6 +167,8 @@ void run(int code,bool late,bool can_start=true,bool new_display=false) {
  assert(value.session_raise(launch_session));
  const std::string remote_address="fake",client_uuid="client";
  struct {int monitor=0,mlFeatureFlags=ML_FF_SESSION_ID_V1;} config;
+ // Stands in for the scope guard that finishes the claim if startup unwinds early.
+ struct {bool armed=true; void disable() {armed=false;}} startup_claim_guard;
  {
  std::unique_lock lifecycle_lock{lifecycle};std::unique_lock _hot_apply_gate{apply};
  @GATE@
@@ -200,6 +202,8 @@ void run(int code,bool late,bool can_start=true,bool new_display=false) {
  assert(launch_session->monitor_stream_published==published);
  assert(released==(!compatible&&new_display));
  assert(partial_registration==late);
+ assert(!startup_claim_guard.armed);
+ assert(value.finished==1&&value.finished_ok==(compatible&&!late&&code==0)&&value.finished_before_insert);
 }
 int main(){
  run(-1,false);run(stream::session::START_PACING_REJECTED,false);run(0,false);run(0,true);
@@ -209,6 +213,6 @@ int main(){
 with tempfile.TemporaryDirectory(prefix='rtsp-startup-gate-') as directory:
     cpp=Path(directory)/'gate.cpp'; cpp.write_text(program); binary=cpp.with_suffix('')
     sanitizer_flags = ['-fsanitize=address,undefined'] if os.name != 'nt' else []
-    subprocess.run([args.compiler,'-std=c++23','-Wall','-Wextra','-Werror','-Wno-misleading-indentation',*sanitizer_flags,str(cpp),'-o',str(binary)],check=True)
+    subprocess.run([args.compiler,'-std=c++23','-Wall','-Wextra','-Werror','-Wno-misleading-indentation',*sanitizer_flags,f'-I{root}',str(cpp),str(root/'src/rtsp_pending_policy.cpp'),'-o',str(binary)],check=True)
     subprocess.run([str(binary)],check=True)
-print('PASS: startup rejection retires pending monitor holds, retains its display GUID, and allows a new generation')
+print('PASS: startup rejection retires pending monitor holds, retains its display GUID, allows a new generation, and releases the startup claim')
