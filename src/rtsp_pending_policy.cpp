@@ -1,5 +1,6 @@
 #include "rtsp_pending_policy.h"
 
+#include <algorithm>
 #include <charconv>
 #include <limits>
 
@@ -70,5 +71,31 @@ namespace rtsp_stream::pending_policy {
     std::vector<pending_owner_t> result;
     for (const auto &owner : removed) if (owner.role == remote_session::role_e::input) result.push_back(owner);
     return result;
+  }
+
+  bool launch_entry_expired(const bool startup_running, const std::chrono::steady_clock::time_point expires_at, const std::chrono::steady_clock::time_point now) {
+    return !startup_running && expires_at <= now;
+  }
+
+  loop_clear_t rtsp_loop_clear(const bool broadcast_shutdown_raised) {
+    return {
+      .all_sessions = broadcast_shutdown_raised,
+      .preserve_pending_launches = true,
+    };
+  }
+
+  std::chrono::steady_clock::time_point launch_deadline_after_startup(
+    const std::chrono::steady_clock::time_point expires_at,
+    const std::chrono::steady_clock::time_point now,
+    const std::chrono::milliseconds ping_timeout
+  ) {
+    return std::max(expires_at, now + ping_timeout);
+  }
+
+  announce_reply_e announce_reply(const bool startup_failed, const bool session_running) {
+    if (startup_failed) {
+      return announce_reply_e::startup_failed;
+    }
+    return session_running ? announce_reply_e::ok : announce_reply_e::stopped_before_reply;
   }
 }  // namespace rtsp_stream::pending_policy
