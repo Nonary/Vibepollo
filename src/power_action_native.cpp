@@ -10,10 +10,26 @@
 #endif
 
 namespace nvhttp::power_action {
+#ifdef _WIN32
+  namespace {
+    template<class T>
+    bool modern_standby_supported(const T &caps) {
+      if constexpr (requires { caps.AoAc; }) {
+        return caps.AoAc != 0;
+      } else {
+        // Older MinGW headers reserve Hiberboot, WakeAlarmPresent and AoAc
+        // as three bytes following FastSystemS4.
+        static_assert(sizeof(caps.spare2) == 3);
+        return caps.spare2[2] != 0;
+      }
+    }
+  }  // namespace
+#endif
+
   bool native_sleep_supported() {
 #ifdef _WIN32
     SYSTEM_POWER_CAPABILITIES caps {};
-    return GetPwrCapabilities(&caps) && (caps.SystemS1 || caps.SystemS2 || caps.SystemS3 || caps.AoAc);
+    return GetPwrCapabilities(&caps) && (caps.SystemS1 || caps.SystemS2 || caps.SystemS3 || modern_standby_supported(caps));
 #else
     // Linux's machine host needs a dedicated privileged broker operation.
     // Never substitute a shell command or an interactive elevation prompt.

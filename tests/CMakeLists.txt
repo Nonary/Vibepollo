@@ -1160,6 +1160,10 @@ if(NOT WIN32)
     sunshine_register_component(NAME test_component_power_action_native
         TEST_SOURCE unit/test_power_action_native.cpp
         INCLUDE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/support/power_api")
+    sunshine_register_component(NAME test_component_power_action_native_legacy_headers
+        TEST_SOURCE unit/test_power_action_native.cpp
+        INCLUDE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/support/power_api"
+        DEFINITIONS SUNSHINE_TEST_LEGACY_POWER_CAPABILITIES)
 endif()
 if(TARGET test_component_tls_client_identity)
     set_tests_properties(test_component_tls_client_identity PROPERTIES TIMEOUT 90)
