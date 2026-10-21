@@ -5,7 +5,11 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <iterator>
+#include <sstream>
+#include <string>
 #include <unistd.h>
 
 namespace egl {
@@ -19,6 +23,36 @@ namespace egl {
     std::uint32_t offsets[4] {};
     bool direct_import_required {};
   };
+
+  inline std::string describe_surface_layout(const surface_descriptor_t &surface) {
+    std::ostringstream description;
+    description << "width=" << surface.width
+                << " height=" << surface.height
+                << " fourcc=0x" << std::hex << surface.fourcc
+                << " modifier=0x" << surface.modifier
+                << std::dec;
+
+    std::size_t plane_count = 0;
+    for (const int fd : surface.fds) {
+      plane_count += static_cast<std::size_t>(fd >= 0);
+    }
+
+    description << " plane_count=" << plane_count << " planes=[";
+    bool first_plane = true;
+    for (std::size_t plane = 0; plane < std::size(surface.fds); ++plane) {
+      if (surface.fds[plane] < 0) {
+        continue;
+      }
+      if (!first_plane) {
+        description << ',';
+      }
+      first_plane = false;
+      description << plane << "{pitch=" << surface.pitches[plane]
+                  << ",offset=" << surface.offsets[plane] << '}';
+    }
+    description << ']';
+    return description.str();
+  }
 
   inline bool can_cpu_upload_surface(const surface_descriptor_t &surface) noexcept {
     constexpr std::uint64_t implicit_modifier = 0x00ffffffffffffffULL;
