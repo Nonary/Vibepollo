@@ -54,6 +54,43 @@ namespace display_helper::v2 {
       return std::nullopt;
     }
 
+    // Recovery writes only fields present in the saved snapshot. Unknown HDR,
+    // empty primary, and legacy snapshots without origins are therefore
+    // unrequested fields, while topology and display modes remain exact. An
+    // empty mode map cannot prove a restorable display mode and fails closed.
+    bool recovery_snapshot_matches(const Snapshot &current, const Snapshot &requested) {
+      if (requested.m_modes.empty() ||
+          codec::canonical_topology(current.m_topology) != codec::canonical_topology(requested.m_topology) ||
+          !topology::equal_display_modes(current.m_modes, requested.m_modes)) {
+        return false;
+      }
+
+      if (!requested.m_primary_device.empty() && current.m_primary_device != requested.m_primary_device) {
+        return false;
+      }
+
+      for (const auto &[id, requested_state] : requested.m_hdr_states) {
+        if (!requested_state) {
+          continue;
+        }
+        const auto current_state = current.m_hdr_states.find(id);
+        if (current_state == current.m_hdr_states.end() || !current_state->second ||
+            current_state->second != requested_state) {
+          return false;
+        }
+      }
+
+      for (const auto &[id, requested_origin] : requested.m_origins) {
+        const auto current_origin = current.m_origins.find(id);
+        if (current_origin == current.m_origins.end() ||
+            current_origin->second.m_x != requested_origin.m_x ||
+            current_origin->second.m_y != requested_origin.m_y) {
+          return false;
+        }
+      }
+      return true;
+    }
+
   }  // namespace
 
   TopologyTransition::TopologyTransition(IDisplaySettings &display, IClock &clock)
@@ -726,12 +763,35 @@ namespace display_helper::v2 {
     if (token.is_cancelled()) {
       return false;
     }
-    const bool state_ok = got_stable && codec::equal_snapshots_strict(cur, loaded.snapshot) &&
-                          quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
+    bool state_ok = got_stable && recovery_snapshot_matches(cur, loaded.snapshot);
+    if (state_ok) {
+      state_ok = quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
+    }
+    // quiet_period proves stability between its own captures, but does not
+    // return its final observation. Re-read the requested fields after quiet
+    // so a stable change during that window cannot pass confirmation.
+    if (state_ok && !token.is_cancelled()) {
+      Snapshot after_quiet;
+      const bool got_after_quiet = read_stable_snapshot(
+        after_quiet,
+        std::chrono::milliseconds(2000),
+        std::chrono::milliseconds(150),
+        token);
+      state_ok = got_after_quiet && !token.is_cancelled() &&
+                 recovery_snapshot_matches(after_quiet, loaded.snapshot);
+      if (state_ok) {
+        cur = std::move(after_quiet);
+      }
+    } else {
+      state_ok = false;
+    }
+    if (token.is_cancelled()) {
+      return false;
+    }
     // Rotation is not part of the snapshot, so the quiet period cannot observe
     // rotation drift; the layout must be checked after it, not before.
     const bool layout_ok = !loaded.has_layout_data || display_.current_layout_matches(loaded.layout_rotations);
-    const bool ok = state_ok && layout_ok;
+    const bool ok = !token.is_cancelled() && state_ok && layout_ok;
     if (ok) {
       BOOST_LOG(info) << "Restore (" << label << "): current state already matches baseline; skipping apply.";
     }
@@ -742,6 +802,13 @@ namespace display_helper::v2 {
     const auto &base = loaded.snapshot;
     const auto &layouts = loaded.layout_rotations;
     const bool require_layout_match = loaded.has_layout_data;
+    // A topology left after filtering is not enough to perform a safe
+    // restoration when every saved display mode was filtered out. Keep the
+    // snapshot unconfirmed and leave the live display stack untouched.
+    if (base.m_modes.empty()) {
+      BOOST_LOG(warning) << "Restore (" << label << "): no saved display modes remain; refusing to mutate the display.";
+      return false;
+    }
     if (!require_layout_match && loaded.snapshot_version < codec::kSnapshotLayoutVersionLatest) {
       BOOST_LOG(info) << label << " snapshot uses legacy schema (version "
                       << loaded.snapshot_version << "): no display layout metadata.";
@@ -789,12 +856,32 @@ namespace display_helper::v2 {
       if (token.is_cancelled()) {
         return false;
       }
-      const bool state_ok = got_stable && codec::equal_snapshots_strict(cur, base) &&
-                            quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
+      bool state_ok = got_stable && recovery_snapshot_matches(cur, base);
+      if (state_ok) {
+        state_ok = quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
+      }
+      if (state_ok && !token.is_cancelled()) {
+        Snapshot after_quiet;
+        const bool got_after_quiet = read_stable_snapshot(
+          after_quiet,
+          std::chrono::milliseconds(2000),
+          std::chrono::milliseconds(150),
+          token);
+        state_ok = got_after_quiet && !token.is_cancelled() &&
+                   recovery_snapshot_matches(after_quiet, base);
+        if (state_ok) {
+          cur = std::move(after_quiet);
+        }
+      } else {
+        state_ok = false;
+      }
+      if (token.is_cancelled()) {
+        return false;
+      }
       // Same ordering as confirm_matches: rotation drift is invisible to the
       // quiet period, so the layout check must come after it.
       const bool layout_ok = !require_layout_match || display_.current_layout_matches(layouts);
-      const bool ok = state_ok && layout_ok;
+      const bool ok = !token.is_cancelled() && state_ok && layout_ok;
       BOOST_LOG(info) << "Restore (" << label << ") attempt " << attempt << ": before_sig=" << before_sig
                       << ", current_sig=" << codec::signature(cur)
                       << ", baseline_sig=" << codec::signature(base)
