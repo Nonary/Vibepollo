@@ -22,10 +22,14 @@ def function(text, marker):
 named_setter = function(source, '  void NamedPipeFactory::set_client_identification_only()')
 anonymous_setter = function(source, '  void AnonymousPipeFactory::set_client_identification_only()')
 pipe_open = function(source, '  winrt::file_handle NamedPipeFactory::create_client_pipe(')
+client_wait = function(source, '    int client_wait_ms(')
 connect = function(ipc, '  std::unique_ptr<platf::dxgi::INamedPipe> IpcClient::connect_to_plugin()')
 field = re.search(r'DWORD _client_security_flags\s*=\s*[^;]+;', header).group()
 fixture = r'''
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -51,20 +55,23 @@ uintptr_t CreateFileW(const wchar_t *, DWORD, DWORD, void *, DWORD, DWORD flags,
     return failure ? 0 : 1;
 }
 namespace platf::dxgi {
+CLIENT_WAIT
 struct INamedPipe {};
 class NamedPipeFactory {
 public:
     FIELD
     void set_client_identification_only();
-    winrt::file_handle create_client_pipe(const std::wstring &) const;
+    winrt::file_handle create_client_pipe(const std::wstring &, const std::function<bool()> &,
+                                          std::chrono::steady_clock::time_point) const;
 };
 class AnonymousPipeFactory {
 public:
     NamedPipeFactory _pipe_factory;
     void set_client_identification_only();
     std::unique_ptr<INamedPipe> create_client(const char *) {
-        if (!_pipe_factory.create_client_pipe(L"control")) return nullptr;
-        if (!_pipe_factory.create_client_pipe(L"data")) return nullptr;
+        const auto deadline = std::chrono::steady_clock::time_point::max();
+        if (!_pipe_factory.create_client_pipe(L"control", {}, deadline)) return nullptr;
+        if (!_pipe_factory.create_client_pipe(L"data", {}, deadline)) return nullptr;
         return std::make_unique<INamedPipe>();
     }
 };
@@ -81,14 +88,15 @@ public:
 CONNECT
 int main() {
     platf::dxgi::NamedPipeFactory other;
-    assert(other.create_client_pipe(L"other"));
+    const auto deadline = std::chrono::steady_clock::time_point::max();
+    assert(other.create_client_pipe(L"other", {}, deadline));
     assert(opens.back() == FILE_FLAG_OVERLAPPED);
     IpcClient playnite;
     assert(playnite.connect_to_plugin());
     assert(opens.size() == 3);
     assert(opens[1] == (FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION));
     assert(opens[2] == opens[1]);
-    assert(other.create_client_pipe(L"other-again"));
+    assert(other.create_client_pipe(L"other-again", {}, deadline));
     assert(opens.back() == FILE_FLAG_OVERLAPPED);
     failure = 5;
     assert(!playnite.connect_to_plugin());
@@ -98,6 +106,7 @@ int main() {
 '''
 for marker, value in [('FIELD', field), ('NAMED_SETTER', named_setter),
                       ('ANONYMOUS_SETTER', anonymous_setter), ('PIPE_OPEN', pipe_open),
+                      ('CLIENT_WAIT', client_wait),
                       ('CONNECT', connect)]:
     fixture = fixture.replace(marker, value)
 with tempfile.TemporaryDirectory(prefix='playnite-identification-') as directory:
