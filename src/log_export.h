@@ -11,6 +11,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -363,6 +364,50 @@ namespace log_export {
     std::vector<ZipDataEntry> entries_;
   };
 
+  // Windows resolves these roots through Known Folder APIs first and uses
+  // CSIDL only when none of the Known Folder paths yielded an available log.
+  // Keep this caller policy here so tests can inject the Playnite base visits.
+  template<typename Collection>
+  static bool add_playnite_logs_from_base(Collection &collection, const std::filesystem::path &base) {
+    static constexpr std::array<const wchar_t *, 3> filenames {L"playnite.log", L"extensions.log", L"launcher.log"};
+    bool any = false;
+    for (const auto *filename : filenames) {
+      const auto path = base / filename;
+      if (collection.add_file(path, path.filename().string())) {
+        any = true;
+      }
+    }
+    return any;
+  }
+
+  template<typename VisitKnownFolderRoots, typename VisitCsidlRoots, typename Collection>
+  static bool add_playnite_logs_from_known_or_csidl(VisitKnownFolderRoots &&visit_known_folder_roots, VisitCsidlRoots &&visit_csidl_roots, Collection &collection) {
+    bool found_playnite_logs = false;
+    const auto add_known_base = [&](const std::filesystem::path &playnite_base) {
+      if (add_playnite_logs_from_base(collection, playnite_base)) {
+        found_playnite_logs = true;
+      }
+    };
+    try {
+      visit_known_folder_roots(add_known_base);
+    } catch (...) {}
+    if (found_playnite_logs) {
+      return found_playnite_logs;
+    }
+
+    const auto add_csidl_base = [&](const std::filesystem::path &playnite_base) {
+      try {
+        if (add_playnite_logs_from_base(collection, playnite_base)) {
+          found_playnite_logs = true;
+        }
+      } catch (...) {}
+    };
+    try {
+      visit_csidl_roots(add_csidl_base);
+    } catch (...) {}
+    return found_playnite_logs;
+  }
+
   [[maybe_unused]] static std::string build_zip_from_entries(const std::vector<ZipDataEntry> &entries) {
     std::string out;
 
@@ -471,6 +516,27 @@ namespace log_export {
       year = 2107;
     }
     dos_date = static_cast<uint16_t>(((year - 1980) << 9) | (((tm.tm_mon + 1) & 0x0F) << 5) | (tm.tm_mday & 0x1F));
+  }
+
+  static std::string make_support_log_archive_filename(const std::tm &tm) {
+    char filename[64];
+    std::snprintf(filename, sizeof(filename), "vibeshine_logs-%04d%02d%02d-%02d%02d%02d.zip", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    return filename;
+  }
+
+  // Build the archive before asking the caller for its filename. The Windows
+  // endpoint samples its timestamp after ZIP construction, as it did before
+  // this response path was extracted.
+  template<typename HeaderMap, typename Response, typename StatusCode, typename BuildArchive, typename BuildFilename>
+  static void write_archive_response(Response &&response, StatusCode status, const std::vector<ZipDataEntry> &entries, BuildArchive &&build_archive, BuildFilename &&build_filename) {
+    const auto zip = build_archive(entries);
+    const auto filename = build_filename();
+    HeaderMap headers;
+    headers.emplace("Content-Type", "application/zip");
+    headers.emplace("Content-Disposition", std::string("attachment; filename=\"") + filename + "\"");
+    headers.emplace("X-Frame-Options", "DENY");
+    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+    response->write(status, zip, headers);
   }
 
 }  // namespace log_export
