@@ -101,6 +101,7 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/remote_session.h"
         "${CMAKE_SOURCE_DIR}/src/rtsp_pending_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/rtsp_pending_policy.h"
+        "${CMAKE_SOURCE_DIR}/src/rtsp_launch_registry.h"
         "${CMAKE_SOURCE_DIR}/src/remote_display_topology.cpp"
         "${CMAKE_SOURCE_DIR}/src/remote_display_topology.h"
         "${CMAKE_SOURCE_DIR}/src/tls_client_identity.cpp"
