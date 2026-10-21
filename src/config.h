@@ -525,6 +525,11 @@ namespace config {
     int hardware_metrics_interval {1000};  ///< Minimum client sample interval, in milliseconds
     bool realtime_stats_enabled {true};  ///< Sample live host stats (CPU/GPU/RAM/VRAM) for the web UI
     int realtime_stats_poll_interval_ms {2000};  ///< Host stats sampler interval in milliseconds
+    // Refuse a launch request (new session, or a different app while one is
+    // running) if genuine local mouse/keyboard/controller input was seen
+    // within this many seconds. 0 disables the guard entirely. Windows only;
+    // see local_input_monitor.h for what counts as "genuine local input".
+    int local_activity_guard_seconds {5};
   };
 
   extern video_t video;

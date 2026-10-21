@@ -2410,6 +2410,7 @@ namespace config {
     int_between_f(vars, "hardware_metrics_interval", sunshine.hardware_metrics_interval, {500, 10000});
     bool_f(vars, "realtime_stats_enabled", sunshine.realtime_stats_enabled);
     int_between_f(vars, "realtime_stats_poll_interval_ms", sunshine.realtime_stats_poll_interval_ms, {250, 60000});
+    int_between_f(vars, "local_activity_guard_seconds", sunshine.local_activity_guard_seconds, {0, 3600});
 
     // Web-UI-only realtime stats preferences; consumed here so they are not
     // reported as unrecognized options.
