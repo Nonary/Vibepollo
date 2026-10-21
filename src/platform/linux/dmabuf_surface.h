@@ -32,23 +32,23 @@ namespace egl {
                 << " modifier=0x" << surface.modifier
                 << std::dec;
 
-    std::size_t plane_count = 0;
+    std::size_t fd_slot_count = 0;
     for (const int fd : surface.fds) {
-      plane_count += static_cast<std::size_t>(fd >= 0);
+      fd_slot_count += static_cast<std::size_t>(fd >= 0);
     }
 
-    description << " plane_count=" << plane_count << " planes=[";
-    bool first_plane = true;
-    for (std::size_t plane = 0; plane < std::size(surface.fds); ++plane) {
-      if (surface.fds[plane] < 0) {
+    description << " fd_slot_count=" << fd_slot_count << " fd_slots=[";
+    bool first_fd_slot = true;
+    for (std::size_t slot = 0; slot < std::size(surface.fds); ++slot) {
+      if (surface.fds[slot] < 0) {
         continue;
       }
-      if (!first_plane) {
+      if (!first_fd_slot) {
         description << ',';
       }
-      first_plane = false;
-      description << plane << "{pitch=" << surface.pitches[plane]
-                  << ",offset=" << surface.offsets[plane] << '}';
+      first_fd_slot = false;
+      description << slot << "{pitch=" << surface.pitches[slot]
+                  << ",offset=" << surface.offsets[slot] << '}';
     }
     description << ']';
     return description.str();

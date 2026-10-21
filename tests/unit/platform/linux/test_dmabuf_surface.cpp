@@ -24,14 +24,14 @@ namespace {
 
     EXPECT_EQ(egl::describe_surface_layout(surface),
               "width=2190 height=1179 fourcc=0x34325258 modifier=0x100000000000001 "
-              "plane_count=1 planes=[0{pitch=8960,offset=0}]");
+              "fd_slot_count=1 fd_slots=[0{pitch=8960,offset=0}]");
   }
 
   TEST(DmabufSurface, LayoutDiagnosticPreservesSlotsOfMalformedSparseDescriptor) {
     egl::surface_descriptor_t surface;
     surface.width = 2190;
     surface.height = 1179;
-    surface.fourcc = 0x34325258;  // Deliberately invalid: XRGB has no plane 2.
+    surface.fourcc = 0x34325258;  // Deliberately malformed: XRGB has no second image plane.
     surface.modifier = 0x0100000000000001;
     surface.fds[0] = 17;
     surface.pitches[0] = 8960;
@@ -42,7 +42,7 @@ namespace {
 
     EXPECT_EQ(egl::describe_surface_layout(surface),
               "width=2190 height=1179 fourcc=0x34325258 modifier=0x100000000000001 "
-              "plane_count=2 planes=[0{pitch=8960,offset=0},2{pitch=4480,offset=10557440}]");
+              "fd_slot_count=2 fd_slots=[0{pitch=8960,offset=0},2{pitch=4480,offset=10557440}]");
   }
 
   TEST(DmabufSurface, CpuFallbackRequiresKnownLayoutForManagedImports) {
