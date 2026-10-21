@@ -125,9 +125,12 @@ namespace display_helper::v2 {
           completed.durable_recovery_armed = outcome.durable_recovery_armed;
           completed.durable_recovery_attempted = outcome.durable_recovery_attempted;
           completed.staged_state_prepared = outcome.staged_state_prepared;
+          completed.exclusive_pre_apply_topology = outcome.exclusive_pre_apply_topology;
+          completed.exclusive_rollback_only = outcome.exclusive_rollback_only;
           completed.generation = generation;
           enqueue(completed);
-        });
+        }
+      );
       return generation;
     }
 
@@ -436,10 +439,14 @@ namespace display_helper::v2 {
     void enter_steady_state();
     void reset_apply_verification_state();
     void reset_transient_disconnect_settlement();
+    void defer_transient_disconnect_settlement_for_staged_reset();
+    void resume_transient_disconnect_settlement_after_staged_reset();
     void prepare_transient_disconnect_settlement();
+    void dispatch_transient_disconnect_final_verification();
     bool dispatch_next_verification_reapply();
     bool dispatch_next_transient_disconnect_verification();
     void dispatch_transient_disconnect_repair();
+    void dispatch_exclusive_topology_rollback();
     void dispatch_settings_only_repair();
     void dispatch_apply_worker(const ApplyRequest &request, std::chrono::milliseconds delay, bool reset_virtual_display);
     void queue_after_active_mutation(
@@ -507,6 +514,9 @@ namespace display_helper::v2 {
     bool transient_disconnect_settlement_requested_ = false;
     bool transient_disconnect_check_pending_ = false;
     bool transient_disconnect_repair_in_flight_ = false;
+    bool transient_disconnect_settlement_deferred_by_staged_reset_ = false;
+    bool transient_disconnect_settlement_deferred_final_check_ = false;
+    bool transient_disconnect_final_check_pending_ = false;
     std::size_t next_transient_disconnect_check_ = 0;
     std::optional<std::chrono::steady_clock::time_point> last_apply_started_;
     ApplyRequest current_request_ {};

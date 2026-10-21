@@ -1351,6 +1351,929 @@ TEST(DisplayHelperV2StateMachine, InitialVirtualApplyFailureDoesNotEnterMonitori
   EXPECT_FALSE(*harness.verification_result);
 }
 
+TEST(DisplayHelperV2StateMachine, InitialExclusiveApplyVerifiesRequestedTopology) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-TARGET";
+  request.topology = display_device::ActiveTopology {{"VDD-TARGET"}};
+  request.virtual_layout = "exclusive";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, *request.topology);
+}
+
+TEST(DisplayHelperV2StateMachine, ExclusiveApplyWithoutTopologyDerivesTargetSingleton) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-TARGET";
+  request.virtual_layout = "exclusive";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+
+  const display_device::ActiveTopology expected {{"VDD-TARGET"}};
+  ASSERT_TRUE(harness.dispatcher.apply_request.topology);
+  EXPECT_EQ(*harness.dispatcher.apply_request.topology, expected);
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, expected);
+}
+
+TEST(DisplayHelperV2StateMachine, ExclusiveApplyWithoutTargetIsRejectedBeforeDispatch) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.virtual_layout = "exclusive";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 0);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 0);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
+  ASSERT_TRUE(harness.apply_result.has_value());
+  EXPECT_EQ(*harness.apply_result, display_helper::v2::ApplyStatus::InvalidRequest);
+}
+
+TEST(DisplayHelperV2StateMachine, ExclusiveApplyRejectsStaleNonemptyTopology) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-TARGET";
+  request.topology = display_device::ActiveTopology {{"STALE-TARGET"}};
+  request.virtual_layout = "exclusive";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 0);
+  ASSERT_TRUE(harness.apply_result);
+  EXPECT_EQ(*harness.apply_result, display_helper::v2::ApplyStatus::InvalidRequest);
+}
+
+TEST(DisplayHelperV2StateMachine, TransientExclusiveCheckRejectsExtraActiveOutput) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-TARGET";
+  request.topology = display_device::ActiveTopology {{"VDD-TARGET"}};
+  request.virtual_layout = "exclusive";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+  ASSERT_TRUE(harness.state_machine.begin_transient_disconnect_settlement());
+
+  display_helper::v2::ApplyOutcome failed;
+  failed.status = display_helper::v2::ApplyStatus::Fatal;
+  failed.display_may_have_changed = true;
+  failed.exclusive_pre_apply_topology = display_device::ActiveTopology {{"PHYSICAL"}};
+  harness.dispatcher.apply_completion(failed);
+  harness.drain_messages();
+
+  const display_device::ActiveTopology singleton {{"VDD-TARGET"}};
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, singleton);
+  EXPECT_EQ(harness.dispatcher.verification_delay, std::chrono::milliseconds(250));
+
+  // Exercise the operation with the actual transient request and an extra
+  // active output, even though this lane's dispatcher call is allowed to omit
+  // its expected-topology argument.
+  harness.display_settings.topology = {{"PHYSICAL"}, {"VDD-TARGET"}};
+  display_helper::v2::VerificationOperation verification(harness.display_settings, harness.clock);
+  const bool exact = verification.run(
+    harness.dispatcher.verification_request,
+    std::nullopt,
+    std::nullopt,
+    harness.cancellation.token()
+  );
+  EXPECT_FALSE(exact);
+  harness.dispatcher.verification_completion(exact);
+  harness.drain_messages();
+  ASSERT_TRUE(harness.dispatcher.apply_request.settings_only_repair);
+  ASSERT_TRUE(harness.dispatcher.apply_request.topology);
+  EXPECT_EQ(*harness.dispatcher.apply_request.topology, singleton);
+}
+
+TEST(DisplayHelperV2StateMachine, ExclusiveTransientDisconnectRechecksExactTopologyAfterBoundedRepairs) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-TARGET";
+  request.topology = display_device::ActiveTopology {{"VDD-TARGET"}};
+  request.virtual_layout = "exclusive";
+  harness.virtual_display.current_device_id = "VDD-TARGET";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+
+  ASSERT_TRUE(harness.state_machine.begin_transient_disconnect_settlement());
+  const display_device::ActiveTopology singleton {{"VDD-TARGET"}};
+  const display_device::ActiveTopology original {{"PHYSICAL"}};
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  applied.display_may_have_changed = true;
+  applied.exclusive_pre_apply_topology = original;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, singleton);
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 2);
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, singleton);
+  EXPECT_EQ(harness.dispatcher.verification_delay, std::chrono::milliseconds(250));
+
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 2);
+  EXPECT_TRUE(harness.dispatcher.apply_request.settings_only_repair);
+  ASSERT_TRUE(harness.dispatcher.apply_request.exclusive_pre_apply_topology);
+  EXPECT_EQ(*harness.dispatcher.apply_request.exclusive_pre_apply_topology, original);
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+
+  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 3);
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, singleton);
+  EXPECT_EQ(harness.dispatcher.verification_delay, std::chrono::milliseconds(750));
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 3);
+  EXPECT_TRUE(harness.dispatcher.apply_request.settings_only_repair);
+
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 4);
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, singleton);
+
+  // After the last bounded repair, the immediate exact probe is still
+  // required. A physical path that reappeared must enter recovery.
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Recovery);
+}
+
+TEST(DisplayHelperV2StateMachine, ExclusiveVerifiedIdentityRepairRefreshesRollbackSnapshot) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-CURRENT";
+  request.topology = display_device::ActiveTopology {{"VDD-CURRENT"}};
+  request.virtual_layout = "exclusive";
+  harness.virtual_display.current_device_id = "VDD-CURRENT";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+
+  const display_device::ActiveTopology pre_session {{"PHYSICAL"}};
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  applied.exclusive_pre_apply_topology = pre_session;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+
+  harness.virtual_display.current_device_id = "VDD-REPLACEMENT";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation(),
+  });
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 2);
+  ASSERT_TRUE(harness.dispatcher.apply_request.configuration);
+  EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "VDD-REPLACEMENT");
+  EXPECT_FALSE(harness.dispatcher.apply_request.exclusive_pre_apply_topology);
+
+  // The replacement's own pre-mutation topology is the previous live VDD.
+  // Preserve that newer rollback base across its bounded settings retry.
+  const display_device::ActiveTopology pre_repair {{"VDD-CURRENT"}};
+  applied.exclusive_pre_apply_topology = pre_repair;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 3);
+  ASSERT_TRUE(harness.dispatcher.apply_request.settings_only_repair);
+  ASSERT_TRUE(harness.dispatcher.apply_request.exclusive_pre_apply_topology);
+  EXPECT_EQ(*harness.dispatcher.apply_request.exclusive_pre_apply_topology, pre_repair);
+
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 4);
+  ASSERT_TRUE(harness.dispatcher.apply_request.exclusive_topology_rollback_only);
+  ASSERT_TRUE(harness.dispatcher.apply_request.exclusive_pre_apply_topology);
+  EXPECT_EQ(*harness.dispatcher.apply_request.exclusive_pre_apply_topology, pre_repair);
+}
+
+TEST(DisplayHelperV2StateMachine, FailedVerifiedExclusiveIdentityRollbackKeepsMonitoringAndAllowsRetry) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-CURRENT";
+  request.topology = display_device::ActiveTopology {{"VDD-CURRENT"}};
+  request.virtual_layout = "exclusive";
+  harness.virtual_display.current_device_id = "VDD-CURRENT";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  applied.exclusive_pre_apply_topology = display_device::ActiveTopology {{"PHYSICAL"}};
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  ASSERT_EQ(harness.apply_result_count, 1);
+  ASSERT_EQ(harness.verification_result_count, 1);
+  ASSERT_TRUE(harness.verification_result);
+  EXPECT_TRUE(*harness.verification_result);
+
+  harness.virtual_display.current_device_id = "VDD-REPLACEMENT";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation(),
+  });
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 2);
+  EXPECT_FALSE(harness.dispatcher.apply_request.exclusive_pre_apply_topology);
+
+  // The replacement's bounded settings retry keeps its fresh rollback base.
+  const display_device::ActiveTopology pre_repair {{"VDD-CURRENT"}};
+  applied.exclusive_pre_apply_topology = pre_repair;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 3);
+  ASSERT_TRUE(harness.dispatcher.apply_request.settings_only_repair);
+  ASSERT_TRUE(harness.dispatcher.apply_request.exclusive_pre_apply_topology);
+  EXPECT_EQ(*harness.dispatcher.apply_request.exclusive_pre_apply_topology, pre_repair);
+
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 4);
+  ASSERT_TRUE(harness.dispatcher.apply_request.exclusive_topology_rollback_only);
+
+  display_helper::v2::ApplyOutcome rolled_back;
+  rolled_back.status = display_helper::v2::ApplyStatus::Ok;
+  rolled_back.display_may_have_changed = true;
+  rolled_back.exclusive_rollback_only = true;
+  rolled_back.exclusive_pre_apply_topology = pre_repair;
+  harness.dispatcher.apply_completion(rolled_back);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_EQ(harness.apply_result_count, 1);
+  EXPECT_EQ(harness.apply_result, display_helper::v2::ApplyStatus::Ok);
+  EXPECT_EQ(harness.verification_result_count, 1);
+  ASSERT_TRUE(harness.verification_result);
+  EXPECT_TRUE(*harness.verification_result);
+
+  // A later identity event remains actionable after rollback and can verify
+  // the next replacement without sending a second client gate result.
+  harness.virtual_display.current_device_id = "VDD-REPLACEMENT-2";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation(),
+  });
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 5);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
+  EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "VDD-REPLACEMENT-2");
+  EXPECT_FALSE(harness.dispatcher.apply_request.exclusive_pre_apply_topology);
+
+  applied.exclusive_pre_apply_topology = display_device::ActiveTopology {{"VDD-REPLACEMENT"}};
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_EQ(harness.apply_result_count, 1);
+  EXPECT_EQ(harness.verification_result_count, 1);
+}
+
+TEST(DisplayHelperV2StateMachine, ExclusiveRollbackDisconnectSettlementSurvivesRepeatAndReconnect) {
+  StateMachineHarness harness;
+  std::uint64_t active_connection_epoch = 1;
+  harness.state_machine.set_connection_epoch_provider([&] {
+    return active_connection_epoch;
+  });
+
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-CURRENT";
+  request.topology = display_device::ActiveTopology {{"VDD-CURRENT"}};
+  request.virtual_layout = "exclusive";
+  request.request_id = 1;
+  harness.virtual_display.current_device_id = "VDD-CURRENT";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+    active_connection_epoch,
+  });
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  applied.display_may_have_changed = true;
+  applied.exclusive_pre_apply_topology = display_device::ActiveTopology {{"PHYSICAL"}};
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+
+  harness.virtual_display.current_device_id = "VDD-REPLACEMENT";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation(),
+  });
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 2);
+  const display_device::ActiveTopology pre_repair {{"VDD-CURRENT"}};
+  applied.exclusive_pre_apply_topology = pre_repair;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 3);
+  ASSERT_TRUE(harness.dispatcher.apply_request.settings_only_repair);
+  ASSERT_TRUE(harness.dispatcher.apply_request.exclusive_pre_apply_topology);
+  EXPECT_EQ(*harness.dispatcher.apply_request.exclusive_pre_apply_topology, pre_repair);
+
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 4);
+  ASSERT_TRUE(harness.dispatcher.apply_request.exclusive_topology_rollback_only);
+  ASSERT_TRUE(harness.dispatcher.apply_request.exclusive_pre_apply_topology);
+  EXPECT_EQ(*harness.dispatcher.apply_request.exclusive_pre_apply_topology, pre_repair);
+
+  // The first disconnect is accepted while the rollback owns the mutation
+  // fence, so the runtime suppresses REVERT. A repeated pipe break remains
+  // joined to this settlement even after the original five-second admission
+  // window expires.
+  ASSERT_TRUE(harness.state_machine.begin_transient_disconnect_settlement());
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 3);
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 0);
+  harness.clock.advance(std::chrono::seconds(6));
+  EXPECT_TRUE(harness.state_machine.begin_transient_disconnect_settlement());
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 3);
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 0);
+
+  display_helper::v2::ApplyOutcome rolled_back;
+  rolled_back.status = display_helper::v2::ApplyStatus::Ok;
+  rolled_back.display_may_have_changed = true;
+  rolled_back.exclusive_rollback_only = true;
+  rolled_back.exclusive_pre_apply_topology = pre_repair;
+  harness.dispatcher.apply_completion(rolled_back);
+  harness.drain_messages();
+
+  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 4);
+  EXPECT_EQ(harness.dispatcher.verification_delay, std::chrono::milliseconds(250));
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, display_device::ActiveTopology {{"VDD-REPLACEMENT"}});
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
+  EXPECT_TRUE(harness.state_machine.recovery_armed());
+  EXPECT_EQ(harness.task_manager.created, 1);
+  EXPECT_EQ(harness.task_manager.deleted, 0);
+  EXPECT_EQ(harness.apply_result_count, 1);
+  EXPECT_EQ(harness.apply_result, display_helper::v2::ApplyStatus::Ok);
+  EXPECT_EQ(harness.verification_result_count, 1);
+  EXPECT_TRUE(harness.verification_result);
+
+  // A reconnecting Apply supersedes the not-yet-fired disconnect check. Its
+  // cancellation makes a late callback from that check stale, while the
+  // original restore task and the new session's one-shot result gates remain
+  // correctly owned.
+  auto stale_disconnect_check = harness.dispatcher.verification_completion;
+  active_connection_epoch = 2;
+  display_helper::v2::ApplyRequest reconnected = request;
+  reconnected.configuration->m_device_id = "VDD-RECONNECTED";
+  reconnected.topology = display_device::ActiveTopology {{"VDD-RECONNECTED"}};
+  reconnected.request_id = 2;
+  harness.virtual_display.current_device_id = "VDD-RECONNECTED";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    reconnected,
+    harness.cancellation.current_generation(),
+    active_connection_epoch,
+  });
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 5);
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
+  stale_disconnect_check(false);
+  harness.drain_messages();
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 4);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 0);
+
+  applied.exclusive_pre_apply_topology = display_device::ActiveTopology {{"VDD-REPLACEMENT"}};
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 5);
+  EXPECT_EQ(harness.apply_result_count, 2);
+  EXPECT_EQ(harness.apply_result, display_helper::v2::ApplyStatus::Ok);
+  EXPECT_EQ(harness.verification_result_count, 2);
+  EXPECT_TRUE(harness.verification_result);
+  EXPECT_TRUE(harness.state_machine.recovery_armed());
+  EXPECT_EQ(harness.task_manager.created, 1);
+  EXPECT_EQ(harness.task_manager.deleted, 0);
+}
+
+TEST(DisplayHelperV2StateMachine, ExclusiveRollbackDisconnectSettlementWaitsForResetAndDropsRetiredIdentityRepair) {
+  StateMachineHarness harness;
+  std::uint64_t active_connection_epoch = 1;
+  harness.state_machine.set_connection_epoch_provider([&] {
+    return active_connection_epoch;
+  });
+
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-CURRENT";
+  request.topology = display_device::ActiveTopology {{"VDD-CURRENT"}};
+  request.virtual_layout = "exclusive";
+  request.request_id = 1;
+  harness.virtual_display.current_device_id = "VDD-CURRENT";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+    active_connection_epoch,
+  });
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  applied.display_may_have_changed = true;
+  applied.exclusive_pre_apply_topology = display_device::ActiveTopology {{"PHYSICAL"}};
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+
+  harness.virtual_display.current_device_id = "VDD-REPLACEMENT";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation(),
+    active_connection_epoch,
+  });
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 2);
+  const display_device::ActiveTopology pre_repair {{"VDD-CURRENT"}};
+  applied.exclusive_pre_apply_topology = pre_repair;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 3);
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 4);
+  ASSERT_TRUE(harness.dispatcher.apply_request.exclusive_topology_rollback_only);
+
+  // The pipe breaks while rollback owns the worker; a replacement pipe then
+  // queues RESET and a later display observation behind the rollback. The
+  // observation belongs to the new pipe, but its deferred repair is still
+  // stamped with the old current-request epoch and must be dropped.
+  active_connection_epoch = 2;
+  ASSERT_TRUE(harness.state_machine.begin_transient_disconnect_settlement());
+  harness.state_machine.handle_message(display_helper::v2::ResetCommand {
+    harness.cancellation.current_generation(),
+    active_connection_epoch,
+  });
+  harness.virtual_display.current_device_id = "VDD-LATEST";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation(),
+    active_connection_epoch,
+  });
+  EXPECT_EQ(harness.dispatcher.reset_dispatch_count, 0);
+
+  display_helper::v2::ApplyOutcome rolled_back;
+  rolled_back.status = display_helper::v2::ApplyStatus::Ok;
+  rolled_back.display_may_have_changed = true;
+  rolled_back.exclusive_rollback_only = true;
+  rolled_back.exclusive_pre_apply_topology = pre_repair;
+  harness.dispatcher.apply_completion(rolled_back);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.dispatcher.reset_dispatch_count, 1);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 3);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 4);
+  ASSERT_TRUE(harness.dispatcher.reset_completion);
+  harness.dispatcher.reset_completion(true);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 4);
+  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 4);
+  EXPECT_EQ(harness.dispatcher.verification_delay, std::chrono::milliseconds(250));
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, display_device::ActiveTopology {{"VDD-CURRENT"}});
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 0);
+  EXPECT_EQ(harness.apply_result_count, 1);
+  EXPECT_EQ(harness.verification_result_count, 1);
+  EXPECT_EQ(harness.task_manager.created, 1);
+  EXPECT_EQ(harness.task_manager.deleted, 0);
+}
+
+TEST(DisplayHelperV2StateMachine, DisconnectSettlementWaitsWhenResetPrecedesDisconnect) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-CURRENT";
+  request.topology = display_device::ActiveTopology {{"VDD-CURRENT"}};
+  request.virtual_layout = "exclusive";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  applied.display_may_have_changed = true;
+  applied.exclusive_pre_apply_topology = display_device::ActiveTopology {{"PHYSICAL"}};
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
+  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 1);
+
+  harness.state_machine.handle_message(display_helper::v2::ResetCommand {
+    harness.cancellation.current_generation(),
+  });
+  ASSERT_EQ(harness.dispatcher.reset_dispatch_count, 1);
+  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 1);
+
+  ASSERT_TRUE(harness.state_machine.begin_transient_disconnect_settlement());
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 1);
+  ASSERT_TRUE(harness.dispatcher.reset_completion);
+  harness.dispatcher.reset_completion(true);
+  harness.drain_messages();
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 1);
+
+  // RESET completion must preserve the original Apply verification gate. Its
+  // completion then starts the bounded disconnect check on the same request.
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 2);
+  EXPECT_EQ(harness.dispatcher.verification_delay, std::chrono::milliseconds(250));
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, display_device::ActiveTopology {{"VDD-CURRENT"}});
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 0);
+  EXPECT_EQ(harness.apply_result_count, 1);
+  EXPECT_EQ(harness.verification_result_count, 1);
+  EXPECT_EQ(harness.task_manager.created, 1);
+  EXPECT_EQ(harness.task_manager.deleted, 0);
+}
+
+TEST(DisplayHelperV2StateMachine, DisconnectSettlementWaitsForResetQueuedBehindTransientRepair) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-CURRENT";
+  request.topology = display_device::ActiveTopology {{"VDD-CURRENT"}};
+  request.virtual_layout = "exclusive";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  applied.display_may_have_changed = true;
+  applied.exclusive_pre_apply_topology = display_device::ActiveTopology {{"PHYSICAL"}};
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+
+  ASSERT_TRUE(harness.state_machine.begin_transient_disconnect_settlement());
+  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 2);
+  EXPECT_EQ(harness.dispatcher.verification_delay, std::chrono::milliseconds(250));
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 2);
+  ASSERT_TRUE(harness.dispatcher.apply_request.settings_only_repair);
+
+  harness.state_machine.handle_message(display_helper::v2::ResetCommand {
+    harness.cancellation.current_generation(),
+  });
+  EXPECT_EQ(harness.dispatcher.reset_dispatch_count, 0);
+
+  applied.exclusive_pre_apply_topology = display_device::ActiveTopology {{"VDD-CURRENT"}};
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  EXPECT_EQ(harness.dispatcher.reset_dispatch_count, 1);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 2);
+
+  ASSERT_TRUE(harness.dispatcher.reset_completion);
+  harness.dispatcher.reset_completion(true);
+  harness.drain_messages();
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 3);
+  EXPECT_EQ(harness.dispatcher.verification_delay, std::chrono::milliseconds(750));
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, display_device::ActiveTopology {{"VDD-CURRENT"}});
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 0);
+  EXPECT_EQ(harness.apply_result_count, 1);
+  EXPECT_EQ(harness.verification_result_count, 1);
+  EXPECT_EQ(harness.task_manager.created, 1);
+  EXPECT_EQ(harness.task_manager.deleted, 0);
+}
+
+TEST(DisplayHelperV2StateMachine, DisconnectSettlementWaitsForResetQueuedBehindFailedTransientRepair) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-CURRENT";
+  request.topology = display_device::ActiveTopology {{"VDD-CURRENT"}};
+  request.virtual_layout = "exclusive";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  applied.display_may_have_changed = true;
+  applied.exclusive_pre_apply_topology = display_device::ActiveTopology {{"PHYSICAL"}};
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+
+  ASSERT_TRUE(harness.state_machine.begin_transient_disconnect_settlement());
+  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 2);
+  EXPECT_EQ(harness.dispatcher.verification_delay, std::chrono::milliseconds(250));
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 2);
+  ASSERT_TRUE(harness.dispatcher.apply_request.settings_only_repair);
+
+  harness.state_machine.handle_message(display_helper::v2::ResetCommand {
+    harness.cancellation.current_generation(),
+  });
+  EXPECT_EQ(harness.dispatcher.reset_dispatch_count, 0);
+
+  applied.status = display_helper::v2::ApplyStatus::VerificationFailed;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  EXPECT_EQ(harness.dispatcher.reset_dispatch_count, 1);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 2);
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 0);
+
+  ASSERT_TRUE(harness.dispatcher.reset_completion);
+  harness.dispatcher.reset_completion(true);
+  harness.drain_messages();
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 3);
+  EXPECT_EQ(harness.dispatcher.verification_delay, std::chrono::milliseconds(750));
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, display_device::ActiveTopology {{"VDD-CURRENT"}});
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 0);
+  EXPECT_EQ(harness.apply_result_count, 1);
+  EXPECT_EQ(harness.verification_result_count, 1);
+  EXPECT_EQ(harness.task_manager.created, 1);
+  EXPECT_EQ(harness.task_manager.deleted, 0);
+}
+
+TEST(DisplayHelperV2StateMachine, ExclusiveRollbackDisconnectResetSupersedesDelayedCheckBeforeReconnectApply) {
+  StateMachineHarness harness;
+  std::uint64_t active_connection_epoch = 1;
+  harness.state_machine.set_connection_epoch_provider([&] {
+    return active_connection_epoch;
+  });
+
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-CURRENT";
+  request.topology = display_device::ActiveTopology {{"VDD-CURRENT"}};
+  request.virtual_layout = "exclusive";
+  request.request_id = 1;
+  harness.virtual_display.current_device_id = "VDD-CURRENT";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+    active_connection_epoch,
+  });
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  applied.display_may_have_changed = true;
+  applied.exclusive_pre_apply_topology = display_device::ActiveTopology {{"PHYSICAL"}};
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  harness.virtual_display.current_device_id = "VDD-REPLACEMENT";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation(),
+  });
+  const display_device::ActiveTopology pre_repair {{"VDD-CURRENT"}};
+  applied.exclusive_pre_apply_topology = pre_repair;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_TRUE(harness.dispatcher.apply_request.exclusive_topology_rollback_only);
+
+  ASSERT_TRUE(harness.state_machine.begin_transient_disconnect_settlement());
+  display_helper::v2::ApplyOutcome rolled_back;
+  rolled_back.status = display_helper::v2::ApplyStatus::Ok;
+  rolled_back.display_may_have_changed = true;
+  rolled_back.exclusive_rollback_only = true;
+  rolled_back.exclusive_pre_apply_topology = pre_repair;
+  harness.dispatcher.apply_completion(rolled_back);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 3);
+  const auto stale_disconnect_check = harness.dispatcher.verification_completion;
+
+  // A reconnect can send RESET and APPLY while the disconnect timer is still
+  // pending. RESET cancels the old check; APPLY supersedes the settlement lane
+  // while it waits behind the persistence barrier.
+  active_connection_epoch = 2;
+  harness.state_machine.handle_message(display_helper::v2::ResetCommand {
+    harness.cancellation.current_generation(),
+    active_connection_epoch,
+  });
+  ASSERT_EQ(harness.dispatcher.reset_dispatch_count, 1);
+  display_helper::v2::ApplyRequest reconnected = request;
+  reconnected.configuration->m_device_id = "VDD-RECONNECTED";
+  reconnected.topology = display_device::ActiveTopology {{"VDD-RECONNECTED"}};
+  reconnected.request_id = 2;
+  harness.virtual_display.current_device_id = "VDD-RECONNECTED";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    reconnected,
+    harness.cancellation.current_generation(),
+    active_connection_epoch,
+  });
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 4);
+
+  stale_disconnect_check(false);
+  harness.drain_messages();
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 4);
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 0);
+
+  ASSERT_TRUE(harness.dispatcher.reset_completion);
+  harness.dispatcher.reset_completion(true);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 5);
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 3);
+
+  applied.exclusive_pre_apply_topology = display_device::ActiveTopology {{"VDD-REPLACEMENT"}};
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 4);
+  EXPECT_EQ(harness.apply_result_count, 2);
+  EXPECT_EQ(harness.verification_result_count, 2);
+  EXPECT_EQ(harness.task_manager.created, 1);
+  EXPECT_EQ(harness.task_manager.deleted, 0);
+}
+
+TEST(DisplayHelperV2StateMachine, FailedInitialExclusiveRetryRollsBackToWaitingWithFailureResult) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-TARGET";
+  request.topology = display_device::ActiveTopology {{"VDD-TARGET"}};
+  request.virtual_layout = "exclusive";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+
+  const display_device::ActiveTopology original {{"PHYSICAL"}};
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  applied.exclusive_pre_apply_topology = original;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, *request.topology);
+
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_TRUE(harness.dispatcher.apply_request.settings_only_repair);
+  ASSERT_TRUE(harness.dispatcher.apply_request.exclusive_pre_apply_topology);
+  EXPECT_EQ(*harness.dispatcher.apply_request.exclusive_pre_apply_topology, original);
+
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 3);
+  ASSERT_TRUE(harness.dispatcher.apply_request.exclusive_topology_rollback_only);
+  ASSERT_TRUE(harness.dispatcher.apply_request.exclusive_pre_apply_topology);
+  EXPECT_EQ(*harness.dispatcher.apply_request.exclusive_pre_apply_topology, original);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
+
+  display_helper::v2::ApplyOutcome rolled_back;
+  rolled_back.status = display_helper::v2::ApplyStatus::Ok;
+  rolled_back.display_may_have_changed = true;
+  rolled_back.exclusive_rollback_only = true;
+  rolled_back.exclusive_pre_apply_topology = original;
+  harness.dispatcher.apply_completion(rolled_back);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
+  ASSERT_TRUE(harness.apply_result);
+  EXPECT_EQ(*harness.apply_result, display_helper::v2::ApplyStatus::VerificationFailed);
+  ASSERT_TRUE(harness.verification_result);
+  EXPECT_FALSE(*harness.verification_result);
+  EXPECT_EQ(harness.apply_result_count, 1);
+  EXPECT_EQ(harness.verification_result_count, 1);
+}
+
+TEST(DisplayHelperV2StateMachine, ExclusiveSettingsOnlyRetryReverifiesDerivedTopology) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-TARGET";
+  request.virtual_layout = "exclusive";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+
+  const display_device::ActiveTopology expected {{"VDD-TARGET"}};
+  ASSERT_TRUE(harness.dispatcher.apply_request.topology);
+  EXPECT_EQ(*harness.dispatcher.apply_request.topology, expected);
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  ASSERT_TRUE(harness.dispatcher.verification_completion);
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, expected);
+
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
+  ASSERT_TRUE(harness.dispatcher.apply_request.settings_only_repair);
+  ASSERT_TRUE(harness.dispatcher.apply_request.topology);
+  EXPECT_EQ(*harness.dispatcher.apply_request.topology, expected);
+
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 2);
+  ASSERT_TRUE(harness.dispatcher.verification_completion);
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, expected);
+
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  ASSERT_TRUE(harness.verification_result.has_value());
+  EXPECT_TRUE(*harness.verification_result);
+}
+
 TEST(DisplayHelperV2StateMachine, SuccessfulRepairReturnsToSteadyState) {
   StateMachineHarness harness;
   display_helper::v2::ApplyRequest request;

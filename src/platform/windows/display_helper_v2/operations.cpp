@@ -10,6 +10,23 @@
 
 namespace display_helper::v2 {
   namespace {
+    bool is_exclusive_request(const ApplyRequest &request) {
+      return request.virtual_layout && boost::iequals(*request.virtual_layout, "exclusive");
+    }
+
+    bool is_exclusive_singleton(const ActiveTopology &topology, const std::string &device_id) {
+      return topology.size() == 1 && topology.front().size() == 1 &&
+             boost::iequals(topology.front().front(), device_id);
+    }
+
+    bool restore_exclusive_topology(IDisplaySettings &display, const ActiveTopology &topology) {
+      if (topology.empty() || display.apply_topology(topology) != ApplyStatus::Ok) {
+        return false;
+      }
+      const auto restored = display.capture_topology();
+      return !restored.empty() && display.is_topology_same(topology, restored);
+    }
+
     const char *tier_to_string(SnapshotTier tier) {
       switch (tier) {
         case SnapshotTier::Current:
@@ -302,6 +319,9 @@ namespace display_helper::v2 {
     bool durable_recovery_already_attempted) {
     ApplyOutcome outcome;
     outcome.virtual_display_requested = request.virtual_layout.has_value();
+    outcome.exclusive_pre_apply_topology = request.exclusive_pre_apply_topology;
+    outcome.exclusive_rollback_only = request.exclusive_topology_rollback_only;
+    const bool exclusive = is_exclusive_request(request);
     bool durable_recovery_armed = durable_recovery_already_armed;
     bool durable_recovery_attempted = durable_recovery_already_armed || durable_recovery_already_attempted;
     outcome.durable_recovery_armed = durable_recovery_armed;
@@ -317,6 +337,18 @@ namespace display_helper::v2 {
       durable_recovery_armed = arm_durable_recovery_boundary();
       return durable_recovery_armed;
     };
+    if (request.exclusive_topology_rollback_only) {
+      if (!exclusive || !request.configuration || request.configuration->m_device_id.empty() || !request.exclusive_pre_apply_topology || request.exclusive_pre_apply_topology->empty()) {
+        outcome.status = ApplyStatus::InvalidRequest;
+        return outcome;
+      }
+      outcome.display_may_have_changed = true;
+      outcome.status = restore_exclusive_topology(display_, *request.exclusive_pre_apply_topology) ?
+                         ApplyStatus::Ok :
+                         ApplyStatus::Fatal;
+      return outcome;
+    }
+
     if ((token.is_cancelled() || clock_.now() >= request.deadline)) {
       outcome.status = ApplyStatus::Fatal;
       return outcome;
@@ -325,6 +357,19 @@ namespace display_helper::v2 {
     if (!request.configuration) {
       outcome.status = ApplyStatus::InvalidRequest;
       return outcome;
+    }
+
+    std::optional<ActiveTopology> exclusive_contract;
+    if (exclusive) {
+      if (request.configuration->m_device_id.empty()) {
+        outcome.status = ApplyStatus::InvalidRequest;
+        return outcome;
+      }
+      exclusive_contract = ActiveTopology {{request.configuration->m_device_id}};
+      if (request.topology && !request.topology->empty() && !is_exclusive_singleton(*request.topology, request.configuration->m_device_id)) {
+        outcome.status = ApplyStatus::InvalidRequest;
+        return outcome;
+      }
     }
 
     if (request.settings_only_repair) {
@@ -343,8 +388,16 @@ namespace display_helper::v2 {
       outcome.display_may_have_changed = true;
       outcome.durable_recovery_attempted = true;
       outcome.staged_state_prepared = true;
+      if (exclusive && (!request.exclusive_pre_apply_topology || request.exclusive_pre_apply_topology->empty())) {
+        outcome.status = ApplyStatus::Fatal;
+        return outcome;
+      }
       outcome.status = display_.apply(*request.configuration);
       if ((token.is_cancelled() || clock_.now() >= request.deadline)) {
+        outcome.status = ApplyStatus::Fatal;
+      }
+      if (exclusive && outcome.status != ApplyStatus::Ok && !restore_exclusive_topology(display_, *request.exclusive_pre_apply_topology)) {
+        BOOST_LOG(error) << "Display helper v2: failed to restore pre-APPLY Exclusive topology after settings-only apply failure.";
         outcome.status = ApplyStatus::Fatal;
       }
       return outcome;
@@ -354,7 +407,8 @@ namespace display_helper::v2 {
     // against the supplied staging topology and no global display-stack
     // recovery. Recovery belongs to REVERT, where a broad topology jog is
     // intentional; doing it here destabilizes DWM immediately before capture.
-    auto preflight = display_.preflight_apply(*request.configuration, request.topology);
+    const auto &preflight_topology = exclusive ? exclusive_contract : request.topology;
+    auto preflight = display_.preflight_apply(*request.configuration, preflight_topology);
     if (preflight.status != ApplyStatus::Ok || !preflight.plan) {
       BOOST_LOG(error) << "Display helper v2: configuration failed the non-mutating APPLY preflight.";
       outcome.status = preflight.status == ApplyStatus::Ok ? ApplyStatus::Fatal : preflight.status;
@@ -377,6 +431,18 @@ namespace display_helper::v2 {
     if ((token.is_cancelled() || clock_.now() >= request.deadline)) {
       outcome.status = ApplyStatus::Fatal;
       return outcome;
+    }
+
+    if (exclusive) {
+      if (!outcome.exclusive_pre_apply_topology) {
+        outcome.exclusive_pre_apply_topology = display_.capture_topology();
+      }
+      if (!outcome.exclusive_pre_apply_topology || outcome.exclusive_pre_apply_topology->empty()) {
+        BOOST_LOG(error) << "Display helper v2: refusing Exclusive APPLY without a readable pre-APPLY topology for rollback.";
+        outcome.exclusive_pre_apply_topology.reset();
+        outcome.status = ApplyStatus::Fatal;
+        return outcome;
+      }
     }
 
     if (request.refresh_settings_baseline && request.topology &&
@@ -406,10 +472,11 @@ namespace display_helper::v2 {
       return outcome;
     }
 
-    // The supplied topology is a base, not an exact post-apply contract. Set it
-    // once as v1 does, then let one original SettingsManager request own
-    // topology, primary, mode, HDR, and its transactional rollback guards.
-    if (request.topology && display_.topology_is_valid(*request.topology)) {
+    // Ordinary requests stage their supplied base before SettingsManager.
+    // Exclusive lets EnsureOnlyDisplay apply its singleton inside the
+    // SettingsManager transaction, preserving the true pre-APPLY rollback
+    // topology captured above.
+    if (!exclusive && request.topology && display_.topology_is_valid(*request.topology)) {
       outcome.display_may_have_changed = true;
       (void) display_.apply_topology(*request.topology);
     }
@@ -426,6 +493,9 @@ namespace display_helper::v2 {
 
     if ((token.is_cancelled() || clock_.now() >= request.deadline)) {
       outcome.status = ApplyStatus::Fatal;
+      if (exclusive && !restore_exclusive_topology(display_, *outcome.exclusive_pre_apply_topology)) {
+        BOOST_LOG(error) << "Display helper v2: failed to restore pre-APPLY Exclusive topology after cancellation.";
+      }
       return outcome;
     }
 
@@ -445,6 +515,11 @@ namespace display_helper::v2 {
       }
     }
     if (clock_.now() >= request.deadline) outcome.status = ApplyStatus::Fatal;
+
+    if (exclusive && outcome.status != ApplyStatus::Ok && !restore_exclusive_topology(display_, *outcome.exclusive_pre_apply_topology)) {
+      BOOST_LOG(error) << "Display helper v2: failed to restore pre-APPLY Exclusive topology after apply failure.";
+      outcome.status = ApplyStatus::Fatal;
+    }
 
     return outcome;
   }
@@ -618,21 +693,33 @@ namespace display_helper::v2 {
       return false;
     }
 
+    std::optional<ActiveTopology> exclusive_contract;
+    if (is_exclusive_request(request)) {
+      if (!request.configuration || request.configuration->m_device_id.empty()) {
+        return false;
+      }
+      exclusive_contract = ActiveTopology {{request.configuration->m_device_id}};
+      if ((request.topology && !request.topology->empty() && !is_exclusive_singleton(*request.topology, request.configuration->m_device_id)) || (expected_topology && !is_exclusive_singleton(*expected_topology, request.configuration->m_device_id))) {
+        return false;
+      }
+    }
+    const auto &topology_contract = exclusive_contract ? exclusive_contract : expected_topology;
+
     // Observe immediately, then confirm the same target 250 ms later. This is
     // the legacy helper's capture-readiness boundary; sleeping before the first
     // sample only serialized another quarter second onto every stable start.
-    // Sticky verification re-evaluates any explicit exact topology contract
-    // supplied by a future caller, plus the resolved target and requested
-    // settings. Normal APPLY treats `sunshine_topology` as a staging/base
-    // topology, matching v1, so unrelated paths may be adjusted while a
-    // sleeping monitor comes online.
+    // Verification re-evaluates an explicit exact topology contract, plus the
+    // resolved target and requested settings. Ordinary APPLY treats
+    // `sunshine_topology` as a staging/base topology, matching v1, so unrelated
+    // paths may be adjusted while a sleeping monitor comes online. Exclusive
+    // APPLY supplies its requested singleton as an exact contract.
     const auto matches_requested_state = [&]() {
       std::optional<ActiveTopology> current_topology;
-      if (expected_topology) {
+      if (topology_contract) {
         current_topology = display_.capture_topology();
       }
-      if (expected_topology) {
-        if (!current_topology || !display_.is_topology_same(*expected_topology, *current_topology)) {
+      if (topology_contract) {
+        if (!current_topology || (exclusive_contract && current_topology->empty()) || !display_.is_topology_same(*topology_contract, *current_topology)) {
           return false;
         }
       }
