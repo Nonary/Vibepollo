@@ -28,6 +28,8 @@ STUBS = r'''
 #include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <functional>
+namespace display_target { struct descriptor_t {}; }
 namespace input { using input_t = ::input_t; using ::alloc; using ::update_guide_button_permissions; }
 namespace crypto {
   using aes_t = std::vector<unsigned char>;
@@ -49,6 +51,7 @@ namespace remote_session {
   enum class role_e { game, input, monitor };
   enum class capture_source_e { synthetic_black, exact_output, invalid, active_output };
   struct capture_plan_t { capture_source_e source; std::optional<std::string> output; };
+  bool exact_target_still_valid(const std::shared_ptr<void> &) { return true; }
   bool uses_audio(role_e, bool) { return false; }
   capture_plan_t capture_plan(role_e, const std::optional<std::string> &) {
     return {capture_source_e::active_output, {}};
@@ -61,6 +64,7 @@ namespace video {
     bool input_only = false;
     capture_source_e capture_source {};
     std::optional<std::string> capture_output;
+    std::function<bool()> capture_target_valid;
   };
   struct hdr_info_t {};
 }
@@ -97,6 +101,8 @@ namespace stream {
     int shutdown_event = 0;
     uint32_t launch_session_id = 0;
     std::shared_ptr<void> display_power_guard, audio_context_guard, normal_display_capture;
+    std::optional<display_target::descriptor_t> exact_monitor_target;
+    std::shared_ptr<void> exact_target_hold;
     std::string device_name, device_uuid, history_uuid;
     config_t config {};
     int stream_fps = 0, stream_fps_scaled = 0;
