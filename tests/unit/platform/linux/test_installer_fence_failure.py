@@ -141,6 +141,7 @@ if "$preflight"; then touch {shlex.quote(str(replacement))}; fi
     assert sentinel.read_text() == "keep\n", "private runtime fence target was modified"
     output = completed.stdout + completed.stderr
     assert f"failed step: {brand}_prepare_host_upgrade_fence" in output, output
+    assert f"error: {brand} host-upgrade fence preparation failed at phase: reject-dropin-directory-symlink" in output, output
     calls = trace.read_text().splitlines()
     assert calls, "the private systemd shim should observe the inactive host/controller proof"
     assert not any(call.split()[0] in {"freeze", "stop", "start", "kill"} for call in calls), calls
