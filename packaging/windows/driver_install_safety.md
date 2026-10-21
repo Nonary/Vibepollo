@@ -38,3 +38,50 @@ payloads and incorrect pinned identity. It does not install or change trust.
 - https://learn.microsoft.com/en-us/windows-hardware/drivers/install/trusted-root-certification-authorities-certificate-store
 - https://learn.microsoft.com/en-us/windows-hardware/drivers/install/test-signing
 - https://learn.microsoft.com/en-us/windows/win32/api/wintrust/ns-wintrust-wintrust_catalog_info
+
+Legacy display certificate cleanup remains advisory. The packaged
+`scripts/plan-legacy-driver-trust-cleanup.ps1` performs read-only inventory and
+prints JSON; it has no apply mode, never imports/removes trust, and is not called
+by MSI custom actions. Run it from native 64-bit Windows PowerShell in an elevated
+terminal so DISM can inspect the online image. Any permission/query/signature or
+parsing failure produces `Preserve` decisions and no removal proposal.
+
+The planner pins only Sunshine
+`37E100B2B382866FA7CE04EE33FE53DF53AEDC6D` and SudoVDA
+`3C918FC73525AD8B1521B6DB26B71F694277CC49`. It inventories every DISM `-All`
+package and active CIM INF binding, and cryptographically checks every catalog
+under both `System32/DriverStore/FileRepository` and `System32/CatRoot`.
+Inspecting only selected product INF names or versions would miss retained or
+shared packages. Inbox INFs may omit CatalogFile, so their registered system
+catalogs must also be included. Every literal third-party CatalogFile declaration
+must resolve in the scan; unsupported/decorated syntax, missing catalogs,
+reparse points, pending reboot/replacements, failed reads and unresolved active
+bindings prevent all proposals. All embedded/nested certificate identities are
+preserved conservatively, even if a legacy certificate is only present in a
+catalog certificate set or the catalog no longer belongs to a selected product.
+No subject-name matching or certificate-expiry shortcut is used.
+
+Two identical complete snapshots, including INF/catalog hashes and trust
+identities, are required before the report can list exact LocalMachine
+Root/TrustedPublisher entries as `ReviewRemoval`. Inventory changes preserve
+both pins. Unrelated publisher and VHF trust never enter that list. This is an
+advisory observation, not a lock on Windows servicing or permission to apply an
+old plan. Native Windows must still qualify completeness of the catalog roots,
+DISM/CIM mappings, all supported OS/package forms and concurrent-servicing
+behavior before installer cleanup can be designed/enabled. This read-only
+planner alone does not resolve obsolete trust left by an upgrade or authorize
+manual certificate deletion.
+
+Run `pwsh -NoProfile -File packaging/windows/test_legacy_driver_trust_plan.ps1`
+for the portable behavior fixtures. They execute the actual filesystem scanner,
+CMS verifier and planner against existing public signed catalogs and changed
+copies; DISM, CIM, reboot state and read-only trust-store queries are mocked.
+They verify preservation for active/staged/shared legacy catalogs and unknown
+state, exact-thumbprint proposals, inventory changes, malformed evidence, and
+cryptographic tampering. These fixtures do not qualify native Windows inventory
+or the installed driver outcome.
+
+Inventory contract references: [Driver Store](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/driver-store),
+[Catalog files and digital signatures](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/catalog-files),
+[INF Version section](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/inf-version-section),
+and [Get-WindowsDriver](https://learn.microsoft.com/en-us/powershell/module/dism/get-windowsdriver).
