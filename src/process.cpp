@@ -4137,6 +4137,28 @@ namespace proc {
     return catalog::calculate_ids(app_name, app_uuid, legacy_image_identity, index);
   }
 
+  void assign_unique_generated_app_id(ctx_t &ctx, int index, std::set<std::string> &ids, const std::vector<ctx_t> &apps) {
+    const auto [primary, indexed] = calculate_app_id(ctx.name, ctx.uuid, ctx.image_path, index);
+    const auto available = [&ids, &apps](const std::string &id) {
+      std::int32_t value {};
+      const auto [end, error] = std::from_chars(id.data(), id.data() + id.size(), value);
+      return error == std::errc {} && end == id.data() + id.size() && value > 0 &&
+             remote_session::identify(value) == remote_session::control_e::none && !ids.contains(id) &&
+             !resolve_app_from_snapshot(apps, id, "");
+    };
+    ctx.id = available(primary) ? primary : indexed;
+    // Retain configured aliases that still resolve, including after partial
+    // parsing skips pruning. Preserve nonconflicting primary/indexed IDs;
+    // do not retain an unavailable candidate as a native-row alias.
+    std::uint32_t candidate {};
+    std::from_chars(ctx.id.data(), ctx.id.data() + ctx.id.size(), candidate);
+    while (!available(ctx.id)) {
+      candidate = candidate >= std::numeric_limits<std::int32_t>::max() ? 1 : candidate + 1;
+      ctx.id = std::to_string(candidate);
+    }
+    ids.insert(ctx.id);
+  }
+
   /**
    * @brief Migrate the applications stored in the file tree by merging in a new app.
    *
@@ -4757,15 +4779,7 @@ namespace proc {
       ctx.exit_timeout = 5s;
 
       // Calculate unique ID
-      auto possible_ids = calculate_app_id(ctx.name, ctx.uuid, ctx.image_path, i++);
-      if (ids.count(std::get<0>(possible_ids)) == 0) {
-        // Avoid using index to generate id if possible
-        ctx.id = std::get<0>(possible_ids);
-      } else {
-        // Fallback to include index on collision
-        ctx.id = std::get<1>(possible_ids);
-      }
-      ids.insert(ctx.id);
+      assign_unique_generated_app_id(ctx, i++, ids, apps);
 
       apps.emplace_back(std::move(ctx));
     }
@@ -4778,15 +4792,7 @@ namespace proc {
       });
       ctx.idx = std::to_string(i);
 
-      auto possible_ids = calculate_app_id(ctx.name, ctx.uuid, ctx.image_path, i++);
-      if (ids.count(std::get<0>(possible_ids)) == 0) {
-        // Avoid using index to generate id if possible
-        ctx.id = std::get<0>(possible_ids);
-      } else {
-        // Fallback to include index on collision
-        ctx.id = std::get<1>(possible_ids);
-      }
-      ids.insert(ctx.id);
+      assign_unique_generated_app_id(ctx, i++, ids, apps);
 
       apps.emplace_back(std::move(ctx));
     }
@@ -4812,15 +4818,7 @@ namespace proc {
         ctx.wait_all = true;
         ctx.exit_timeout = 5s;
 
-        auto possible_ids = calculate_app_id(ctx.name, ctx.uuid, ctx.image_path, i++);
-        if (ids.count(std::get<0>(possible_ids)) == 0) {
-          // Avoid using index to generate id if possible
-          ctx.id = std::get<0>(possible_ids);
-        } else {
-          // Fallback to include index on collision
-          ctx.id = std::get<1>(possible_ids);
-        }
-        ids.insert(ctx.id);
+        assign_unique_generated_app_id(ctx, i++, ids, apps);
 
         input_only_app_id_str = ctx.id;
         input_only_app_id = util::from_view(ctx.id);
@@ -4848,15 +4846,7 @@ namespace proc {
       ctx.wait_all = true;
       ctx.exit_timeout = 5s;
 
-      auto possible_ids = calculate_app_id(ctx.name, ctx.uuid, ctx.image_path, i++);
-      if (ids.count(std::get<0>(possible_ids)) == 0) {
-        // Avoid using index to generate id if possible
-        ctx.id = std::get<0>(possible_ids);
-      } else {
-        // Fallback to include index on collision
-        ctx.id = std::get<1>(possible_ids);
-      }
-      // ids.insert(ctx.id);
+      assign_unique_generated_app_id(ctx, i++, ids, apps);
 
       terminate_app_id_str = ctx.id;
       terminate_app_id = util::from_view(ctx.id);
