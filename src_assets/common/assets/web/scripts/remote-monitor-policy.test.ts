@@ -110,3 +110,29 @@ test('new app and Remote Input payloads do not acquire monitor routing policy', 
     assert.deepEqual(payload, expected);
   }
 });
+
+test('explicit duplicate profile policy preserves marker and hidden routing', () => {
+  for (const uuid of ['profile-a', 'profile-b']) {
+    const source = {
+      uuid,
+      'remote-monitor-profile': true,
+      'virtual-screen': false,
+      'display-output': 'ineffective-stored-target',
+    };
+    const payload: Record<string, unknown> = {
+      uuid,
+      name: 'Renamed profile',
+      'virtual-screen': true,
+      'config-overrides': { remote_monitor_mute_audio: false },
+    };
+    assert.equal(isRemoteMonitorApplication(source), true);
+    preserveRemoteMonitorRouting(source, payload);
+    assert.equal(payload['remote-monitor-profile'], true);
+    assert.equal(payload['virtual-screen'], false);
+    assert.equal(payload['display-output'], 'ineffective-stored-target');
+    assert.equal(payload.name, 'Renamed profile');
+    assert.deepEqual(payload['config-overrides'], { remote_monitor_mute_audio: false });
+  }
+  assert.equal(isRemoteMonitorApplication({ 'remote-monitor-profile': false }), false);
+  assert.equal(isRemoteMonitorApplication({ 'remote-monitor-profile': 'true' }), false);
+});

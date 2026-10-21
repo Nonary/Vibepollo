@@ -106,6 +106,7 @@ namespace stream {
     bool secondary_game_client = false, input_only = false, audio_disabled = false;
     remote_session::role_e remote_role {};
     uint64_t remote_role_generation = 0;
+    std::string monitor_profile_uuid;
     struct { bool active = false; } virtual_display;
     struct {
       uint32_t connect_data = 0;
@@ -213,10 +214,23 @@ int main(int argc, char **argv) {
     pending.perm = crypto::PERM::_all_inputs; pending.fps = 144000;
     pending.client_do_cmds.push_back({"client-start", false});
     pending.client_undo_cmds.push_back({"client-stop", true});
+    pending.id = 43; pending.unique_id = "live-pending-owner";
     pending.audio_context_guard = std::make_shared<int>(9);
     pending.display_power_guard = std::make_shared<int>(10);
     auto audio_owner = pending.audio_context_guard, display_owner = pending.display_power_guard;
     auto startup = pending.clone_for_startup();
+    if (fixture_admitted_runtime_holds) {
+      // Current startup snapshots are metadata-only until an admitted worker
+      // revalidates the exact live pending identity under the real registry body.
+      assert(!startup->audio_context_guard && !startup->display_power_guard);
+      auto pending_alias = std::shared_ptr<rtsp_stream::launch_session_t>(&pending, [](auto *) {});
+      auto stale = pending.clone_for_startup(); stale->unique_id = "stale-pending-owner";
+      assert(!fixture_retain_pending_holds(stale, pending_alias));
+      assert(!stale->audio_context_guard && !stale->display_power_guard);
+      assert(!fixture_retain_pending_holds(startup, pending_alias, true));
+      assert(!startup->audio_context_guard && !startup->display_power_guard);
+      assert(fixture_retain_pending_holds(startup, pending_alias));
+    }
     assert(startup->audio_context_guard == audio_owner && startup->display_power_guard == display_owner);
     assert(startup->input_only && startup->gcpersist && startup->perm == pending.perm);
     assert(pending.client_do_cmds.size() == 1 && pending.client_undo_cmds.size() == 1);
@@ -254,6 +268,31 @@ def main():
     args = parser.parse_args()
     launch = declaration((ROOT / 'src/rtsp.h').read_text(), '  struct launch_session_t {', '\n  struct client_disconnect_result_t')
     snapshot = function(args.rtsp_source.read_text(), 'std::shared_ptr<launch_session_t> launch_session_t::clone_for_startup() const')
+    runtime_holds = r"""
+constexpr bool fixture_admitted_runtime_holds = false;
+bool fixture_retain_pending_holds(const std::shared_ptr<rtsp_stream::launch_session_t>&,
+ const std::shared_ptr<rtsp_stream::launch_session_t>&, bool = false) { return false; }
+"""
+    rtsp_source = args.rtsp_source.read_text()
+    if 'bool retain_pending_runtime_holds(' in rtsp_source:
+        retain = function(rtsp_source, 'bool retain_pending_runtime_holds(')
+        runtime_holds = r"""
+constexpr bool fixture_admitted_runtime_holds = true;
+namespace rtsp_stream {
+struct fixture_pending_registry_t {
+  std::mutex _launch_sessions_mutex;
+  struct entry_t { std::shared_ptr<launch_session_t> session; std::chrono::steady_clock::time_point expires_at; };
+  std::vector<entry_t> _launch_sessions;
+""" + retain + r"""
+};
+}
+bool fixture_retain_pending_holds(const std::shared_ptr<rtsp_stream::launch_session_t>& snapshot,
+ const std::shared_ptr<rtsp_stream::launch_session_t>& pending, bool expired = false) {
+ rtsp_stream::fixture_pending_registry_t registry;
+ registry._launch_sessions.push_back({pending, std::chrono::steady_clock::now() + (expired ? -std::chrono::hours(1) : std::chrono::hours(1))});
+ return registry.retain_pending_runtime_holds(snapshot);
+}
+"""
     stream_config = declaration((ROOT / 'src/stream.h').read_text(), '  struct config_t {', '\n  namespace session {')
     stream_source = args.stream_source.read_text()
     allocate = function(stream_source, 'std::shared_ptr<session_t> alloc(config_t &config,')
@@ -265,7 +304,7 @@ def main():
     crypto_types = declaration(crypto_source, '  struct command_entry_t', '\n  struct named_cert_t')
     code = (input_harness((ROOT / 'src/input.cpp').read_text()) + '\nnamespace crypto {\n' + crypto_types + '\n}\n' + STUBS +
             'namespace rtsp_stream {\n' + launch + snapshot + '\n}\n' +
-            'namespace stream {\n' + stream_config + '\n}\n' + STREAM_TYPES +
+            runtime_holds + 'namespace stream {\n' + stream_config + '\n}\n' + STREAM_TYPES +
             'namespace stream::session {\n' + allocate + start + '\n}\n' + TESTS)
     if args.save_cpp:
         args.save_cpp.write_text(code)

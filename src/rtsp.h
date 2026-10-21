@@ -56,6 +56,8 @@ namespace rtsp_stream {
     uint32_t id;
     remote_session::role_e role {remote_session::role_e::game};
     std::uint64_t role_generation {};
+    // Bound to this pending launch and then to the admitted stream generation.
+    std::string monitor_profile_uuid;
     // The exact topology-owned capture target for Remote Monitor. Empty means
     // no target was verified and must never fall back to a physical display.
     std::optional<std::string> remote_capture_output;

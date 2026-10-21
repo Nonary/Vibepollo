@@ -7,8 +7,11 @@ import argparse
 import pathlib
 import subprocess
 import tempfile
+import sys
 
 root = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(root / 'tests/input'))
+from test_delayed_mouse_release import function as production_function
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--source-dir', type=pathlib.Path, default=root / 'src')
 parser.add_argument('--compiler', default='g++')
@@ -53,7 +56,7 @@ finalize_function = ''
 resume_finalize = ''
 if '    void finalize_display_preparation(' in launch:
     start = launch.index('    void finalize_display_preparation(')
-    finalize_function = launch[start:launch.index('    static std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session_from_snapshot(', start)]
+    finalize_function = production_function(launch, 'void finalize_display_preparation(')
     resume_finalize = ' finalize_display_preparation(*launch_session, verified_client);'
 start = launch.index('    // A resume request carries no appid or appuuid')
 start = launch.index('          // launch_session->virtual_display is deliberately left alone:', start)

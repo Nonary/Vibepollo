@@ -39,6 +39,11 @@ namespace remote_session {
     std::string uuid;
     std::string title;
     bool synthetic {};
+    bool monitor_profile {};
+    // Retained configured numeric identities participate in synthetic allocation.
+    std::vector<std::string> id_aliases;
+    // Hidden configured rows still occupy their current and retained IDs.
+    bool catalogue_visible {true};
   };
 
   struct game_t {
@@ -124,6 +129,19 @@ namespace remote_session {
     std::chrono::steady_clock::time_point expires_at {};
   };
 
+  // One selected profile per paired client, matching the protocol's one
+  // Resume/Disconnect pair. Application overrides are copied at acceptance so
+  // editing/deleting a configured profile cannot retarget retained ownership.
+  struct monitor_profile_t {
+    std::string uuid;
+    std::unordered_map<std::string, std::string> app_overrides;
+  };
+
+  [[nodiscard]] std::optional<monitor_profile_t> select_monitor_profile(
+    monitor_profile_t requested,
+    const std::optional<monitor_profile_t> &retained
+  );
+
   struct monitor_runtime_state_t {
     bool accepted {};
     bool ready {};
@@ -161,11 +179,20 @@ namespace remote_session {
 
   [[nodiscard]] bool reserved_name(std::string_view name);
   [[nodiscard]] control_e identify(std::int32_t id, std::string_view uuid = {});
-  [[nodiscard]] control_e identify(std::int32_t id, std::string_view uuid, std::int32_t running_app_id);
+  // All fixed current/legacy controls and configured-ID admission share this policy.
+  [[nodiscard]] bool configured_app_id(std::int32_t id);
+  // Marked profiles require a literal, non-nil UUID outside every fixed control
+  // identity, unique among all configured rows. Existing controls are unmarked.
+  [[nodiscard]] std::string_view monitor_profile_uuid_error(std::string_view uuid, const std::vector<std::string_view> &configured_uuids);
+
+  // Contextual numeric identities must use the same complete configured snapshot
+  // (including aliases) as projection. An explicit configured UUID is never a
+  // contextual running-game identity.
+  [[nodiscard]] control_e identify(std::int32_t id, std::string_view uuid, std::int32_t running_app_id, const std::vector<app_t> &configured);
   [[nodiscard]] std::string synthetic_uuid(control_e control);
   [[nodiscard]] app_t synthetic(control_e control);
-  [[nodiscard]] std::int32_t synthetic_running_game_id(std::int32_t app_id);
-  [[nodiscard]] app_t synthetic_running_game(const app_t &game);
+  [[nodiscard]] std::int32_t synthetic_running_game_id(std::int32_t app_id, const std::vector<app_t> &configured = {});
+  [[nodiscard]] app_t synthetic_running_game(const app_t &game, const std::vector<app_t> &configured = {});
   [[nodiscard]] std::optional<std::string_view> synthetic_artwork_filename(control_e control);
   [[nodiscard]] bool exposes_active_game(
     const caller_t &caller,

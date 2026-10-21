@@ -3282,6 +3282,9 @@ namespace webrtc_stream {
 
       const int raw_requested_app_id = options.app_id.value_or(0);
       const auto requested_app_ctx = raw_requested_app_id > 0 ? proc::proc.resolve_app(raw_requested_app_id) : std::optional<proc::ctx_t> {};
+      if (requested_app_ctx && requested_app_ctx->remote_monitor_profile) {
+        return std::string {"Remote Monitor profiles require a paired Moonlight client."};
+      }
       const int requested_app_id = requested_app_ctx ? (int) util::from_view(requested_app_ctx->id) : raw_requested_app_id;
       const bool resume_only = options.resume.value_or(false);
 

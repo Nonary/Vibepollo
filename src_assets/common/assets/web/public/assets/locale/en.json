@@ -1680,7 +1680,8 @@
     "apps_purged": "Removed {count} Playnite applications.",
     "apps_purge_failed": "Failed to purge Playnite applications: {error}",
     "purge_apps_title": "Purge Playnite games?",
-    "purge_apps_body": "This removes all Playnite entries from Vibepollo, including auto-synced games and the Playnite (Fullscreen) launcher.",
+    "purge_apps_body": "This removes ordinary Playnite entries from Vibepollo, including auto-synced games and the Playnite (Fullscreen) launcher.",
+    "monitor_profiles_retained": "Explicit Monitor profiles are kept; delete a profile individually to remove it.",
     "extension_updated": "Playnite Extension updated",
     "update_failed": "Update failed",
     "extension_update_available": "Playnite Extension update available",
@@ -1691,7 +1692,7 @@
     "auto_synced_apps": "{count} auto-synced app(s)",
     "fullscreen_launcher_entry": "a Playnite (Fullscreen) launcher entry",
     "entries": "Playnite entries",
-    "missing_plugin_message": "Detected {details}, but the Playnite plugin is no longer installed. Reinstall the plugin to restore integration, or purge Playnite games to remove all Playnite entries from Vibepollo.",
+    "missing_plugin_message": "Detected {details}, but the Playnite plugin is no longer installed. Reinstall the plugin to restore integration, or purge Playnite games to remove ordinary Playnite entries from Vibepollo. Explicit Monitor profiles are kept; delete a profile individually to remove it.",
     "fullscreen_entry_removed": "Playnite Fullscreen entry removed. The Playnite Desktop option was turned off in Settings → Playnite.",
     "fullscreen_entry": "Add 'Playnite (Fullscreen)' to Applications",
     "fullscreen_entry_desc": "When enabled, Vibepollo adds a launcher entry that opens Playnite in fullscreen desktop mode."

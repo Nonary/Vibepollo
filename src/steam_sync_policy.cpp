@@ -1,4 +1,5 @@
 #include "steam_sync_policy.h"
+#include "remote_monitor_profile_policy.h"
 
 #include <algorithm>
 #include <cctype>
@@ -281,6 +282,12 @@ namespace platf::steam::sync::policy {
     std::unordered_set<std::string> seen;
     for (auto it = entries.begin(); it != entries.end();) {
       auto &app = *it;
+      // Explicit Monitor profiles retain their identity and configuration,
+      // even when provider metadata or a legacy provider UUID is present.
+      if (remote_session::marked_monitor_profile(app)) {
+        ++it;
+        continue;
+      }
       const auto steam_id = id_of(app);
       const auto parsed_id = app_id_of(app);
       const bool managed = app.contains("steam-managed") &&

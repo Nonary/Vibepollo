@@ -100,7 +100,7 @@ struct launch_session_t {
  int guide_button=0;
  std::shared_ptr<launch_session_t> clone_for_startup() const;
  bool input_only=false,gcpersist=false;int perm=0;std::vector<int> client_do_cmds,client_undo_cmds;
- unsigned id=1;std::string unique_id="id";int fps=60000;remote_session::role_e role=remote_session::role_e::input;std::uint64_t role_generation=1;std::string client_uuid="one",surround_params;
+ unsigned id=1;std::string unique_id="id";int fps=60000;remote_session::role_e role=remote_session::role_e::input;std::uint64_t role_generation=1;std::string client_uuid="one",surround_params,monitor_profile_uuid;
  std::array<std::uint8_t,16> virtual_display_guid_bytes{};
  std::shared_ptr<void> audio_context_guard,display_power_guard;
  std::string remote_capture_output,rtsp_source_address,av_ping_payload,client_name,device_name,normal_vdd_owner_uuid;
@@ -193,7 +193,7 @@ void blocked_cleanup(Pause &pause,const char *name,std::function<void()> cleanup
  check(waited && !before && physical && !late_ordinary,name);
 }
 int main() {
- launch_session_t metadata;metadata.guide_button=37;auto copied=metadata.clone_for_startup();check(copied->guide_button==37,"actual startup snapshot preserves Guide metadata");
+ launch_session_t metadata;metadata.guide_button=37;metadata.monitor_profile_uuid="exact-monitor-profile";auto copied=metadata.clone_for_startup();check(copied->guide_button==37,"actual startup snapshot preserves Guide metadata");check(copied->monitor_profile_uuid=="exact-monitor-profile","actual startup snapshot preserves Monitor profile metadata");
  reset();running=1;join_pause.reset(true);server._session_state->sessions.insert(std::make_shared<stream::session_t>());
  blocked_cleanup(join_pause,"actual natural clear drains removed owner before recovery",[]{server.clear(false);});
  reset();expiry_pause.reset(true);auto session=std::make_shared<launch_session_t>();server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{session,std::chrono::steady_clock::now()-1s});

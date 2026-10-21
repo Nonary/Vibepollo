@@ -7,6 +7,7 @@
 #include <src/app_display_policy.h>
 #include <src/app_catalog_policy.h>
 #include <src/deferred_action.h>
+#include <src/remote_session.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -330,4 +331,154 @@ namespace {
     EXPECT_NE(std::get<0>(first), std::get<0>(second));
     EXPECT_NE(std::get<1>(first), std::get<1>(indexed));
   }
+  TEST(ProcessCatalog, FreshDefaultArtCollisionCannotUseSyntheticMonitorId) {
+    app_identity_t app {"Work Monitor", "00211013-3213-4121-8110-000000000000", {}, "default"};
+    EXPECT_EQ(std::get<0>(proc::catalog::calculate_versioned_ids(app.uuid, app.art_version, 0)), std::to_string(remote_session::monitor_id));
+    std::set<std::string> ids, active;
+    std::map<std::string, alias_state_t> state;
+    bool changed = false;
+    proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
+    EXPECT_NE(app.id, std::to_string(remote_session::monitor_id));
+    EXPECT_EQ(remote_session::identify(std::stoi(app.id), app.uuid), remote_session::control_e::none);
+    const auto assigned = app.id;
+    ids.clear();
+    changed = false;
+    proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
+    EXPECT_EQ(app.id, assigned);
+    EXPECT_FALSE(changed);
+  }
+
+  TEST(ProcessCatalog, EverySyntheticIdIsRemappedAndRemovedFromAliases) {
+    const std::vector<int> reserved {
+      remote_session::resume_id,
+      remote_session::disconnect_monitor_id,
+      remote_session::disconnect_input_id,
+      remote_session::terminate_id,
+      remote_session::monitor_id,
+      remote_session::input_id,
+      remote_session::running_game_id,
+      remote_session::secondary_resume_id,
+      remote_session::secondary_terminate_id,
+      remote_session::secondary_monitor_id,
+      remote_session::secondary_input_id
+    };
+    for (const auto id : reserved) {
+      app_identity_t app {"Ordinary game", "game-" + std::to_string(id), {}, "default"};
+      std::vector<std::string> aliases;
+      for (const auto alias : reserved) {
+        aliases.push_back(std::to_string(alias));
+      }
+      aliases.push_back("123");
+      std::map<std::string, alias_state_t> state {{app.uuid, {std::to_string(id), app.art_version, {aliases.begin(), aliases.end()}}}};
+      std::set<std::string> ids, active;
+      bool changed = false;
+      proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
+      std::vector<app_identity_t> apps {app};
+      proc::catalog::prune_and_filter_aliases(apps, state, active, changed);
+      EXPECT_EQ(remote_session::identify(std::stoi(app.id), app.uuid), remote_session::control_e::none);
+      EXPECT_EQ(apps[0].aliases, std::vector<std::string> {"123"});
+      EXPECT_EQ(proc::catalog::resolve_app(apps, "123"), 0u);
+      EXPECT_TRUE(changed);
+    }
+  }
+
+  TEST(ProcessCatalog, ExhaustedPreferredIdsRetryWithoutDuplicatingAnAppId) {
+    app_identity_t app {"Game", "collision-game", {}, "default"};
+    const auto legacy = proc::catalog::calculate_ids(app.name, app.uuid, {}, 0);
+    const auto versioned = proc::catalog::calculate_versioned_ids(app.uuid, app.art_version, 0);
+    std::set<std::string> ids {"101", std::get<0>(legacy), std::get<1>(legacy), std::get<0>(versioned), std::get<1>(versioned)};
+    const auto occupied = ids;
+    std::set<std::string> active;
+    std::map<std::string, alias_state_t> state {{app.uuid, {"101", app.art_version, {}}}};
+    bool changed = false;
+    proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
+    EXPECT_FALSE(occupied.contains(app.id));
+    EXPECT_EQ(ids.size(), occupied.size() + 1);
+    EXPECT_EQ(remote_session::identify(std::stoi(app.id), app.uuid), remote_session::control_e::none);
+  }
+
+  TEST(ProcessCatalog, DuplicatePersistedIdsPreserveFirstAppAndResolveSecondUniquely) {
+    std::vector<app_identity_t> apps {{"A", "uuid-a", {}, "default"}, {"B", "uuid-b", {}, "default"}};
+    std::map<std::string, alias_state_t> state {{"uuid-a", {"101", "default", {"201"}}}, {"uuid-b", {"101", "default", {"201"}}}};
+    std::set<std::string> ids, active;
+    bool changed = false;
+    proc::catalog::assign_compatible_id(apps[0], 0, ids, state, active, changed);
+    proc::catalog::assign_compatible_id(apps[1], 1, ids, state, active, changed);
+    proc::catalog::prune_and_filter_aliases(apps, state, active, changed);
+    EXPECT_EQ(apps[0].id, "101");
+    EXPECT_NE(apps[1].id, "101");
+    EXPECT_EQ(proc::catalog::resolve_app(apps, "101"), 0u);
+    EXPECT_EQ(proc::catalog::resolve_app(apps, apps[1].id), 1u);
+    EXPECT_FALSE(proc::catalog::resolve_app(apps, "201"));
+  }
+
+  TEST(ProcessCatalog, MalformedPersistedIdsCannotReachNumericCatalogueConversion) {
+    for (const std::string bad : {"", "bad", "0", "-1", "2147483648", "+2147483505", "2147483505suffix", "02147483505"}) {
+      app_identity_t app {"Game", "malformed-game", {}, "default"};
+      std::map<std::string, alias_state_t> state {{app.uuid, {bad, "default", {bad, "123"}}}};
+      std::set<std::string> ids, active;
+      bool changed = false;
+      proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
+      std::vector<app_identity_t> apps {app};
+      proc::catalog::prune_and_filter_aliases(apps, state, active, changed);
+      EXPECT_GT(std::stoi(app.id), 0);
+      EXPECT_EQ(remote_session::identify(std::stoi(app.id), app.uuid), remote_session::control_e::none);
+      EXPECT_NE(std::find(apps[0].aliases.begin(), apps[0].aliases.end(), "123"), apps[0].aliases.end());
+      EXPECT_EQ(std::find(apps[0].aliases.begin(), apps[0].aliases.end(), bad), apps[0].aliases.end());
+      for (const auto &alias : apps[0].aliases) {
+        EXPECT_EQ(remote_session::identify(std::stoi(alias), app.uuid), remote_session::control_e::none);
+      }
+    }
+  }
+
+  TEST(ProcessCatalog, LegacyNamesReserveControlsAndExhaustedFallbacksRetry) {
+    app_identity_t app {"00211013-3213-4121-8110-000000000000\ndefault", {}, {}, {}};
+    const auto legacy = proc::catalog::calculate_ids(app.name, {}, {}, 0);
+    EXPECT_EQ(std::get<0>(legacy), std::to_string(remote_session::monitor_id));
+    std::set<std::string> ids {std::get<1>(legacy)}, active;
+    const auto occupied = ids;
+    std::map<std::string, alias_state_t> state;
+    bool changed = false;
+    proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
+    EXPECT_FALSE(occupied.contains(app.id));
+    EXPECT_EQ(remote_session::identify(std::stoi(app.id), {}), remote_session::control_e::none);
+    EXPECT_TRUE(state.empty());
+  }
 }  // namespace
+
+TEST(ProcessCatalog, FreshLegacyControlWitnessesSurviveAllocationProjectionAndSelection) {
+  const std::vector<std::pair<int, std::string>> witnesses {
+    {2147483601, "02113232-3321-4330-8110-000000000000"},
+    {2147483602, "31332122-3011-4022-8100-000000000000"},
+    {2147483603, "20323020-0201-4131-8110-000000000000"},
+    {2147483604, "31213120-0033-4220-8010-000000000000"},
+    {2147483605, "20202022-3223-4333-8000-000000000000"},
+    {2147483606, "13023332-3113-4021-8010-000000000000"},
+  };
+  for (const auto &[old_id, uuid] : witnesses) {
+    proc::catalog::app_identity_t app {.name = "Custom profile", .uuid = uuid, .art_version = "default"};
+    ASSERT_EQ(std::get<0>(proc::catalog::calculate_versioned_ids(uuid, "default", 0)), std::to_string(old_id));
+    std::set<std::string> occupied, active;
+    std::map<std::string, proc::catalog::alias_state_t> state;
+    bool changed = false;
+    proc::catalog::assign_compatible_id(app, 0, occupied, state, active, changed);
+    // Persisted cached controls must also be scrubbed from safe current apps.
+    app.aliases.push_back(std::to_string(old_id));
+    app.aliases.push_back("123");
+    std::vector<proc::catalog::app_identity_t> apps {app};
+    proc::catalog::prune_and_filter_aliases(apps, state, active, changed);
+    app = apps[0];
+    EXPECT_NE(app.id, std::to_string(old_id));
+    EXPECT_EQ(std::find(app.aliases.begin(), app.aliases.end(), std::to_string(old_id)), app.aliases.end());
+    EXPECT_NE(std::find(app.aliases.begin(), app.aliases.end(), "123"), app.aliases.end());
+    remote_session::app_t row {std::stoi(app.id), uuid, app.name, false, true, app.aliases};
+    const auto projected = remote_session::project({}, {}, {}, {row}, false);
+    ASSERT_EQ(projected.catalogue.front().uuid, uuid);
+    EXPECT_EQ(remote_session::identify(row.id, {}, 0, {row}), remote_session::control_e::none);
+    const auto selected = proc::catalog::resolve_app(apps, std::to_string(projected.catalogue.front().id), {});
+    ASSERT_TRUE(selected);
+    EXPECT_EQ(apps[*selected].uuid, uuid);
+    EXPECT_EQ(proc::catalog::resolve_app(apps, "123", {}), selected);
+    EXPECT_EQ(remote_session::identify(old_id), static_cast<remote_session::control_e>(old_id - 2147483600));
+  }
+}

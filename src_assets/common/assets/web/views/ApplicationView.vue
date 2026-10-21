@@ -2968,7 +2968,11 @@ async function submit(): Promise<void> {
     leavingAfterSave.value = true;
     await router.push({ name: 'library' });
   } catch (cause) {
-    saveError.value = localizedError(cause, 'ui.application.errors.save');
+    const payload = cause instanceof ApiError ? cause.payload : null;
+    saveError.value =
+      payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string'
+        ? payload.error
+        : localizedError(cause, 'ui.application.errors.save');
   } finally {
     saving.value = false;
   }

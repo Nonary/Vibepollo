@@ -543,8 +543,8 @@
         "playniteInstallTitle": "Install the Playnite extension?",
         "playniteRemoveDescription": "Playnite will close to remove the extension. Library synchronization will stop until the extension is installed again.",
         "playniteRemoveTitle": "Remove the Playnite extension?",
-        "playnitePurgeAutosyncDescriptionOne": "There is currently {count} Playnite-managed auto-synced application entry. Confirm to remove auto-synced entries only; manually added apps and other providers are kept.",
-        "playnitePurgeAutosyncDescriptionOther": "There are currently {count} Playnite-managed auto-synced application entries. Confirm to remove auto-synced entries only; manually added apps and other providers are kept.",
+        "playnitePurgeAutosyncDescriptionOne": "There is currently {count} Playnite-managed auto-synced application entry. Confirm to remove auto-synced entries only; manually added apps and other providers are kept. Explicit Monitor profiles are kept; delete a profile individually to remove it.",
+        "playnitePurgeAutosyncDescriptionOther": "There are currently {count} Playnite-managed auto-synced application entries. Confirm to remove auto-synced entries only; manually added apps and other providers are kept. Explicit Monitor profiles are kept; delete a profile individually to remove it.",
         "playnitePurgeAutosyncTitle": "Remove auto-synced Playnite apps?",
         "playniteUpdateTitle": "Update the Playnite extension?",
         "vigemDescription": "The bundled elevated installer will modify the virtual controller driver on this host.",
@@ -835,8 +835,8 @@
       "purgePlaynite": {
         "busy": "Removing Playnite entries",
         "confirm": "Remove Playnite entries",
-        "descriptionOne": "There is currently {count} Playnite-linked application entry. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept.",
-        "descriptionOther": "There are currently {count} Playnite-linked application entries. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept.",
+        "descriptionOne": "There is currently {count} Playnite-linked application entry. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept. Explicit Monitor profiles are kept; delete a profile individually to remove it.",
+        "descriptionOther": "There are currently {count} Playnite-linked application entries. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept. Explicit Monitor profiles are kept; delete a profile individually to remove it.",
         "errorTitle": "Playnite removal failed",
         "failed": "One or more Playnite entries could not be removed.",
         "title": "Remove Playnite entries?"

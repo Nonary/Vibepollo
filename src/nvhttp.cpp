@@ -113,6 +113,7 @@ namespace nvhttp {
       remote_session::role_e role {remote_session::role_e::none};
       std::uint64_t generation {};
       std::string client_uuid;
+      std::optional<remote_session::monitor_profile_t> monitor_profile;
     };
 
     std::mutex remote_role_owners_mutex;
@@ -164,9 +165,16 @@ namespace nvhttp {
       return result;
     }
 
-    void remember_remote_owner(std::string_view uuid, remote_session::role_e role, std::uint64_t generation) {
+    std::optional<remote_session::monitor_profile_t> retained_monitor_profile(std::string_view uuid) {
       std::lock_guard lock {remote_role_owners_mutex};
-      remote_role_owners.insert_or_assign(remote_role_owner_key(uuid, role), remote_role_owner_t {role, generation, std::string {uuid}});
+      const auto it = remote_role_owners.find(remote_role_owner_key(uuid, remote_session::role_e::monitor));
+      return it == remote_role_owners.end() ? std::nullopt : it->second.monitor_profile;
+    }
+
+    void remember_remote_owner(std::string_view uuid, remote_session::role_e role, std::uint64_t generation,
+      std::optional<remote_session::monitor_profile_t> monitor_profile = std::nullopt) {
+      std::lock_guard lock {remote_role_owners_mutex};
+      remote_role_owners.insert_or_assign(remote_role_owner_key(uuid, role), remote_role_owner_t {role, generation, std::string {uuid}, std::move(monitor_profile)});
     }
 
     std::optional<std::uint64_t> remote_owner_generation(std::string_view uuid, remote_session::role_e role) {
@@ -2835,6 +2843,15 @@ namespace nvhttp {
       session.virtual_display_preparation_override = preparation.virtual_override;
     }
 
+    std::vector<remote_session::app_t> remote_configured_catalogue(const std::vector<proc::ctx_t> &configured_apps) {
+      std::vector<remote_session::app_t> result;
+      result.reserve(configured_apps.size());
+      for (const auto &configured : configured_apps) {
+        result.push_back({static_cast<std::int32_t>(util::from_view(configured.id)), configured.uuid, configured.name, false, configured.remote_monitor_profile, configured.id_aliases});
+      }
+      return result;
+    }
+
     static std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session_from_snapshot(
       bool host_audio,
       bool input_only,
@@ -3054,7 +3071,11 @@ namespace nvhttp {
       launch_session->perm = verified_client->perm;
       const auto launch_appid_arg = get_arg(args, "appid", "0");
       const auto launch_appuuid_arg = get_arg(args, "appuuid", "");
-      auto launch_app_ctx = proc::proc.resolve_app(launch_appid_arg, launch_appuuid_arg);
+      const auto launch_identity_control = remote_session::identify(
+        util::from_view(launch_appid_arg), launch_appuuid_arg, proc::proc.current_app_id(), remote_configured_catalogue(proc::proc.get_apps())
+      );
+      auto launch_app_ctx = launch_identity_control == remote_session::control_e::none ?
+        proc::proc.resolve_app(launch_appid_arg, launch_appuuid_arg) : std::nullopt;
       launch_session->client_display_warning_requested = client_display_warning_requested(args, verified_client, launch_app_ctx);
       int app_scale_factor = 100;
       launch_session->appid = launch_app_ctx ? (int) util::from_view(launch_app_ctx->id) : (int) util::from_view(launch_appid_arg);
@@ -3081,7 +3102,7 @@ namespace nvhttp {
         launch_session->client_name = original_client_name;
       }
 
-      if (launch_app_ctx || launch_session->appid > 0) {
+      if (launch_app_ctx || (launch_identity_control == remote_session::control_e::none && launch_session->appid > 0)) {
         try {
           if (auto app_ctx = launch_app_ctx ? launch_app_ctx : proc::proc.resolve_app(launch_session->appid)) {
             launch_session->appid = (int) util::from_view(app_ctx->id);
@@ -3145,7 +3166,7 @@ namespace nvhttp {
       launch_session->client_vrr_requested = util::from_view(get_arg(args, "clientVrrRequested", "0"));
       auto color_app_ctx = launch_app_ctx;
       const auto current_color_app_id = proc::proc.current_app_id();
-      const auto color_control = remote_session::identify(launch_session->appid, launch_appuuid_arg, current_color_app_id);
+      const auto color_control = launch_identity_control;
       if (!color_app_ctx && ((launch_session->appid <= 0 && launch_appuuid_arg.empty()) ||
                              color_control == remote_session::control_e::resume ||
                              color_control == remote_session::control_e::running_game)) {
@@ -4400,16 +4421,13 @@ namespace nvhttp {
           visible_apps.push_back(&app);
         }
 
-        std::vector<remote_session::app_t> configured_apps;
-        configured_apps.reserve(visible_apps.size());
-        for (const auto *app : visible_apps) {
-          const auto appid = util::from_view(app->id);
-          // The source remote-session controls replace Vibepollo's legacy
-          // synthetic input/terminate entries; do not advertise both sets.
-          if (appid == proc::input_only_app_id || appid == proc::terminate_app_id) {
-            continue;
-          }
-          configured_apps.push_back({static_cast<std::int32_t>(appid), app->uuid, app->name, false});
+        auto configured_apps = remote_configured_catalogue(app_list);
+        for (std::size_t i = 0; i < configured_apps.size(); ++i) {
+          const auto appid = configured_apps[i].id;
+          // Preserve visibility policy while reserving hidden IDs and aliases.
+          configured_apps[i].catalogue_visible =
+            appid != proc::input_only_app_id && appid != proc::terminate_app_id &&
+            std::find(visible_apps.begin(), visible_apps.end(), &app_list[i]) != visible_apps.end();
         }
 
         const auto current_app = proc::proc.resolve_app(current_appid);
@@ -4551,7 +4569,13 @@ namespace nvhttp {
       // Synthetic controls are host actions, never configured applications.
       // Identify them before resolve_app() so they cannot collide with an
       // apps.json id and accidentally launch a real process.
-      const auto synthetic_control = remote_session::identify(util::from_view(appid_str), appuuid_str, current_appid);
+      auto synthetic_control = remote_session::identify(util::from_view(appid_str), appuuid_str, current_appid, remote_configured_catalogue(proc::proc.get_apps()));
+      // Configured profiles are host Monitor actions, never normal process
+      // launches. Resolve only an explicit marker on the selected UUID/ID.
+      const auto selected_app = synthetic_control == remote_session::control_e::none ?
+        proc::proc.resolve_app(appid_str, appuuid_str) : std::nullopt;
+      const bool selected_monitor_profile = selected_app && selected_app->remote_monitor_profile;
+      if (selected_monitor_profile) synthetic_control = remote_session::control_e::monitor;
       // A secondary client sees the active game in its projected catalogue
       // while serverinfo is deliberately presented as free. Selecting it is a
       // Resume request, not a second process launch.
@@ -4721,18 +4745,38 @@ namespace nvhttp {
         }
 
         const bool no_active_sessions = !has_stream_session_activity();
-        const auto runtime_app = proc::proc.resolve_app(
-          "0",
-          remote_session::synthetic(
-            synthetic_control == remote_session::control_e::input ? remote_session::control_e::input : remote_session::control_e::monitor
-          ).uuid
-        );
+        const auto retained_profile = retained_monitor_profile(request_client_identity.uuid);
+        const bool monitor_request = synthetic_control != remote_session::control_e::input;
+        const auto builtin_uuid = remote_session::synthetic(
+          monitor_request ? remote_session::control_e::monitor : remote_session::control_e::input
+        ).uuid;
+        // Generic Resume resolves the retained profile, including after its app
+        // entry has been deleted. A cached different tile cannot replace it.
+        const auto requested_profile_uuid = selected_monitor_profile ? selected_app->uuid :
+          ((synthetic_control == remote_session::control_e::resume ||
+            synthetic_control == remote_session::control_e::running_game) && retained_profile ? retained_profile->uuid : builtin_uuid);
+        const auto runtime_app = proc::proc.resolve_app("0", requested_profile_uuid);
+        std::optional<remote_session::monitor_profile_t> monitor_profile;
+        if (monitor_request) {
+          monitor_profile = remote_session::select_monitor_profile(
+            {requested_profile_uuid, runtime_app ? runtime_app->config_overrides : std::unordered_map<std::string, std::string> {}},
+            retained_profile
+          );
+          if (!monitor_profile) {
+            tree.put("root.resume", 0);
+            tree.put("root.<xmlattr>.status_code", 409);
+            tree.put("root.<xmlattr>.status_message", "Disconnect Monitor before selecting a different Remote Monitor profile");
+            return;
+          }
+        }
         auto client_settings = verified_client;
         if (!client_settings && !request_client_identity.uuid.empty()) {
           client_settings = get_client_snapshot_by_uuid(request_client_identity.uuid);
         }
         std::unordered_map<std::string, std::string> requested_runtime_overrides;
-        if (runtime_app) {
+        if (monitor_profile) {
+          config::merge_config_overrides(requested_runtime_overrides, monitor_profile->app_overrides);
+        } else if (runtime_app) {
           config::merge_config_overrides(requested_runtime_overrides, runtime_app->config_overrides);
         }
         if (client_settings) {
@@ -4811,6 +4855,7 @@ namespace nvhttp {
         launch_session->role = is_remote_input ?
                                  remote_session::role_e::input :
                                  remote_session::role_e::monitor;
+        if (monitor_profile) launch_session->monitor_profile_uuid = monitor_profile->uuid;
         launch_session->host_audio = remote_session::uses_host_audio(launch_session->role);
         launch_session->continuous_audio = false;
         if (launch_session->role == remote_session::role_e::monitor) {
@@ -4846,7 +4891,8 @@ namespace nvhttp {
             remember_remote_owner(
               request_client_identity.uuid,
               launch_session->role,
-              launch_session->role_generation
+              launch_session->role_generation,
+              monitor_profile
             );
           }
           if (!monitor.ready || monitor.output.empty()) {
@@ -6350,8 +6396,9 @@ namespace nvhttp {
     const auto appid = get_arg(args, "appid", "0");
     const auto appuuid = get_arg(args, "appuuid", "");
     const auto current_appid = proc::proc.running();
-    const auto synthetic_control = remote_session::identify(util::from_view(appid), appuuid, current_appid);
-    auto app_ctx = proc::proc.resolve_app(appid, appuuid);
+    const auto synthetic_control = remote_session::identify(util::from_view(appid), appuuid, current_appid, remote_configured_catalogue(proc::proc.get_apps()));
+    auto app_ctx = synthetic_control == remote_session::control_e::none ?
+      proc::proc.resolve_app(appid, appuuid) : std::nullopt;
     std::string app_image;
     if (app_ctx) {
       app_image = proc::validate_app_image_path(app_ctx->image_path);

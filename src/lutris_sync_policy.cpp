@@ -1,4 +1,5 @@
 #include "lutris_sync_policy.h"
+#include "remote_monitor_profile_policy.h"
 
 #include <algorithm>
 #include <cctype>
@@ -108,6 +109,12 @@ namespace platf::lutris::sync::policy {
     std::unordered_set<std::string> seen;
     for (auto iterator = entries.begin(); iterator != entries.end();) {
       auto &app = *iterator;
+      // Explicit Monitor profiles retain their identity and configuration,
+      // even when provider metadata or a legacy provider UUID is present.
+      if (remote_session::marked_monitor_profile(app)) {
+        ++iterator;
+        continue;
+      }
       const auto id = id_of(app);
       if (id.empty() || app.value("lutris-managed", std::string {}) != "auto") {
         ++iterator;

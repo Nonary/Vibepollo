@@ -6,6 +6,7 @@ export type AppRecord = ServerApp & Record<string, unknown>;
 
 export interface AppMutationResult extends Record<string, unknown> {
   status?: boolean;
+  removed?: number;
 }
 
 export type AppServiceErrorCode = 'missing-app-uuid' | 'save-rejected';
@@ -13,8 +14,8 @@ export type AppServiceErrorCode = 'missing-app-uuid' | 'save-rejected';
 export class AppServiceError extends Error {
   readonly code: AppServiceErrorCode;
 
-  constructor(code: AppServiceErrorCode) {
-    super(code);
+  constructor(code: AppServiceErrorCode, message: string = code) {
+    super(message);
     this.name = 'AppServiceError';
     this.code = code;
   }
@@ -64,11 +65,14 @@ export function prepareAppForSave(app: AppRecord): AppRecord {
 
 export async function saveApp(app: AppRecord): Promise<AppMutationResult> {
   const result = await apiPost<AppMutationResult>('/api/apps', prepareAppForSave(app));
-  if (result.status === false) throw new AppServiceError('save-rejected');
+  if (result.status === false) {
+    throw new AppServiceError('save-rejected', typeof result.error === 'string' ? result.error : undefined);
+  }
   return result;
 }
 
-export function deleteApp(uuid: string): Promise<AppMutationResult> {
+export function deleteApp(uuid: string, options: { providerMaintenance?: boolean } = {}): Promise<AppMutationResult> {
   if (!uuid) return Promise.reject(new AppServiceError('missing-app-uuid'));
-  return apiDelete<AppMutationResult>(`/api/apps/${encodeURIComponent(uuid)}`);
+  return apiDelete<AppMutationResult>(`/api/apps/${encodeURIComponent(uuid)}`,
+    options.providerMaintenance ? { 'provider-maintenance': true } : undefined);
 }

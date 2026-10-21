@@ -149,6 +149,7 @@ interface LibraryApp {
   uuid?: string;
   name?: string;
   'playnite-managed'?: string;
+  'remote-monitor-profile'?: unknown;
 }
 
 type IntegrationId = 'steam' | 'lutris' | 'mangohud' | 'playnite' | 'rtss' | 'lossless' | 'vigem' | 'vulkan';
@@ -218,7 +219,7 @@ const confirmOpen = ref(false);
 const pendingAction = ref<PendingAction | null>(null);
 
 const playniteAutoSyncCount = computed(
-  () => libraryApps.value.filter((app) => app['playnite-managed'] === 'auto').length,
+  () => libraryApps.value.filter((app) => app['playnite-managed'] === 'auto' && app['remote-monitor-profile'] !== true).length,
 );
 
 const isWindows = computed(() =>

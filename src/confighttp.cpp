@@ -67,6 +67,7 @@
 #include "nvhttp.h"
 #include "remote_display_topology.h"
 #include "remote_session.h"
+#include "remote_monitor_profile_policy.h"
 #include "platform/common.h"
 #include "rtsp.h"
 #include "session_history.h"
@@ -170,13 +171,14 @@ namespace confighttp {
     } catch (...) {}
   }
 
-  std::optional<size_t> find_app_index_by_uuid(const nlohmann::json &apps_node, const std::string &uuid) {
+  std::optional<size_t> find_app_index_by_uuid(const nlohmann::json &apps_node, const std::string &uuid, bool include_marked_profiles = true) {
     if (uuid.empty() || !apps_node.is_array()) {
       return std::nullopt;
     }
     for (size_t i = 0; i < apps_node.size(); ++i) {
       const auto &app = apps_node[i];
-      if (app.is_object() && app.contains("uuid") && app["uuid"].is_string() && app["uuid"].get<std::string>() == uuid) {
+      if (app.is_object() && (include_marked_profiles || !remote_session::marked_monitor_profile(app)) &&
+          app.contains("uuid") && app["uuid"].is_string() && app["uuid"].get<std::string>() == uuid) {
         return i;
       }
     }
@@ -205,7 +207,7 @@ namespace confighttp {
 
       const auto default_image = std::string {"remote-session/"} + std::string {*artwork};
       const auto configured_name = control == remote_session::control_e::input ? "Remote Input" : "Remote Monitor";
-      const auto index = find_app_index_by_uuid(file_tree["apps"], synthetic.uuid);
+      const auto index = find_app_index_by_uuid(file_tree["apps"], synthetic.uuid, false);
       if (!index) {
         file_tree["apps"].push_back({
           {"name", configured_name},
@@ -255,6 +257,19 @@ namespace confighttp {
 
   bool refresh_client_apps_cache(nlohmann::json &file_tree, bool sort_by_name) {
     std::lock_guard lock {apps_file_mutex()};
+    // Validate the exact normalized output against the original file order.
+    // Provider sync must not newly invalidate a retained Monitor profile.
+    if (file_tree.contains("apps") && file_tree["apps"].is_array() &&
+        std::any_of(file_tree["apps"].begin(), file_tree["apps"].end(), remote_session::marked_monitor_profile)) {
+      auto published = file_tree;
+      if (sort_by_name) sort_apps_by_name(published);
+      const auto previous_file = file_handler::read_file(config::stream.file_apps.c_str());
+      const auto previous = nlohmann::json::parse(previous_file);
+      if (const auto error = proc::monitor_profile_changes_error(previous, published, previous_file); !error.empty()) {
+        BOOST_LOG(warning) << "refresh_client_apps_cache: " << error;
+        throw std::invalid_argument(std::string {error});
+      }
+    }
     try {
       if (sort_by_name) {
         sort_apps_by_name(file_tree);
@@ -1708,10 +1723,8 @@ namespace confighttp {
       std::lock_guard apps_lock {apps_file_mutex()};
       std::string content = file_handler::read_file(config::stream.file_apps.c_str());
       nlohmann::json file_tree = nlohmann::json::parse(content);
+      const auto original_file_tree = file_tree;
 
-      file_tree["current_app"] = proc::proc.get_running_app_uuid();
-      file_tree["host_uuid"] = http::unique_id;
-      file_tree["host_name"] = config::nvhttp.sunshine_name;
 #ifdef _WIN32
       // No auto-insert here; controlled by config 'playnite_fullscreen_entry_enabled'.
 #endif
@@ -1804,6 +1817,11 @@ namespace confighttp {
       };
       // Walk fileTree and convert true/false strings to boolean or integer values
       for (auto &app : file_tree["apps"]) {
+        // Keep invalid marked records exactly as loaded so GET can expose them
+        // for explicit repair without rewriting their identity or legacy fields.
+        if (!proc::configured_monitor_profile_error_from_file(app, original_file_tree, content).empty()) {
+          continue;
+        }
         for (const auto &key : boolean_keys) {
           if (app.contains(key) && app[key].is_string()) {
             app[key] = app[key] == "true";
@@ -1839,7 +1857,8 @@ namespace confighttp {
           }
         }
         // Ensure each app has a UUID (auto-insert if missing/empty)
-        if (!app.contains("uuid") || app["uuid"].is_null() || (app["uuid"].is_string() && app["uuid"].get<std::string>().empty())) {
+        if (!remote_session::marked_monitor_profile(app) &&
+            (!app.contains("uuid") || app["uuid"].is_null() || (app["uuid"].is_string() && app["uuid"].get<std::string>().empty()))) {
           app["uuid"] = uuid_util::uuid_t::generate().string();
           mutated = true;
         }
@@ -1847,6 +1866,10 @@ namespace confighttp {
 
       // If any normalization occurred, persist back to disk
       if (mutated) {
+        if (const auto error = proc::monitor_profile_changes_error(original_file_tree, file_tree, content); !error.empty()) {
+          bad_request(response, request, std::string {error});
+          return;
+        }
         try {
           file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
           proc::refresh(config::stream.file_apps, false);
@@ -1855,16 +1878,27 @@ namespace confighttp {
         }
       }
 
+      // Host state is response-only and must be attached after persistence.
+      file_tree["current_app"] = proc::proc.get_running_app_uuid();
+      file_tree["host_uuid"] = http::unique_id;
+      file_tree["host_name"] = config::nvhttp.sunshine_name;
+
       // Add computed app ids for UI clients only after normalized records are
       // persisted. These fields are response metadata and must never enter apps.json.
       if (file_tree.contains("apps") && file_tree["apps"].is_array()) {
         try {
           const auto apps_snapshot = proc::proc.get_apps();
-          const auto count = std::min(file_tree["apps"].size(), apps_snapshot.size());
-          for (size_t idx = 0; idx < count; ++idx) {
+          for (size_t idx = 0; idx < file_tree["apps"].size(); ++idx) {
             auto &app = file_tree["apps"][idx];
-            app["id"] = apps_snapshot[idx].id;
             app["index"] = static_cast<int>(idx);
+            app.erase("id");
+            if (!proc::configured_monitor_profile_error_from_file(app, original_file_tree, content).empty()) continue;
+            const auto runtime = std::find_if(apps_snapshot.begin(), apps_snapshot.end(), [&](const auto &configured) {
+              return configured.configured_index == idx &&
+                     (!remote_session::marked_monitor_profile(app) ||
+                      (configured.remote_monitor_profile && configured.uuid == app.value("uuid", std::string {})));
+            });
+            if (runtime != apps_snapshot.end()) app["id"] = runtime->id;
           }
         } catch (...) {
         }
@@ -1962,8 +1996,26 @@ namespace confighttp {
       std::string content = file_handler::read_file(config::stream.file_apps.c_str());
       nlohmann::json file_tree = nlohmann::json::parse(content);
 
-      // Migrate/merge the new app into the file tree.
-      proc::migrate_apps(&file_tree, &input_tree);
+      const auto original_file_tree = file_tree;
+
+      if (const auto error = proc::configured_monitor_profile_error(input_tree, file_tree); !error.empty()) {
+        bad_request(response, request, std::string {error});
+        return;
+      }
+
+      // An explicit repair selects its invalid marked row by configured index.
+      // Do not let migration append the corrected UUID and then select that copy.
+      const bool repair_marked_profile = index >= 0 && file_tree.contains("apps") && file_tree["apps"].is_array() &&
+        static_cast<size_t>(index) < file_tree["apps"].size() &&
+        remote_session::marked_monitor_profile(file_tree["apps"][index]) &&
+        !proc::configured_monitor_profile_error_from_file(file_tree["apps"][index], original_file_tree, content).empty();
+      if (repair_marked_profile) {
+        auto input_migration = nlohmann::json {{"apps", nlohmann::json::array()}};
+        proc::migrate_apps(&input_migration, &input_tree);
+        proc::migrate_apps(&file_tree, nullptr);
+      } else {
+        proc::migrate_apps(&file_tree, &input_tree);
+      }
 
       if (input_tree.contains("config-overrides") && input_tree["config-overrides"].is_object()) {
         auto &overrides = input_tree["config-overrides"];
@@ -1979,7 +2031,9 @@ namespace confighttp {
       enhance_app_with_playnite_cover(input_tree);
       enhance_app_with_playnite_icon(input_tree);
       try {
-        if (input_tree.contains("playnite-id") && input_tree["playnite-id"].is_string()) {
+        // A marked profile owns its literal identity even with Playnite metadata.
+        if (!remote_session::marked_monitor_profile(input_tree) &&
+            input_tree.contains("playnite-id") && input_tree["playnite-id"].is_string()) {
           const auto playnite_id = input_tree["playnite-id"].get<std::string>();
           if (!playnite_id.empty()) {
             input_tree["uuid"] = platf::playnite::sync::policy::canonical_playnite_app_uuid(playnite_id);
@@ -2027,8 +2081,10 @@ namespace confighttp {
         }
       } catch (...) {}
 
-      if (auto uuid_index = find_app_index_by_uuid(apps_node, input_uuid)) {
-        index = static_cast<int>(*uuid_index);
+      if (!repair_marked_profile) {
+        if (auto uuid_index = find_app_index_by_uuid(apps_node, input_uuid, remote_control == remote_session::control_e::none)) {
+          index = static_cast<int>(*uuid_index);
+        }
       }
       input_tree.erase("index");
 
@@ -2054,6 +2110,16 @@ namespace confighttp {
           }
         }
         file_tree["apps"] = newApps;
+      }
+
+      if (const auto error = proc::configured_monitor_profile_error(input_tree, file_tree); !error.empty()) {
+        bad_request(response, request, std::string {error});
+        return;
+      }
+
+      if (const auto error = proc::monitor_profile_changes_error(original_file_tree, file_tree, content); !error.empty()) {
+        bad_request(response, request, std::string {error});
+        return;
       }
 
       // Update apps file and refresh client cache
@@ -2267,6 +2333,7 @@ namespace confighttp {
     print_req(request);
 
     try {
+      std::lock_guard apps_lock {apps_file_mutex()};
       std::stringstream ss;
       ss << request->content.rdbuf();
 
@@ -2276,6 +2343,7 @@ namespace confighttp {
       // Read the existing apps file.
       std::string content = file_handler::read_file(config::stream.file_apps.c_str());
       nlohmann::json fileTree = nlohmann::json::parse(content);
+      const auto original_file_tree = fileTree;
 
       // Get the desired order of UUIDs from the request.
       if (!input_tree.contains("order") || !input_tree["order"].is_array()) {
@@ -2352,6 +2420,11 @@ namespace confighttp {
       // Update the fileTree with the new, reordered list of apps.
       fileTree["apps"] = reordered_apps_list;
 
+      if (const auto error = proc::monitor_profile_changes_error(original_file_tree, fileTree, content); !error.empty()) {
+        bad_request(response, request, std::string {error});
+        return;
+      }
+
       // Write the modified fileTree back to the apps configuration file.
       file_handler::write_file(config::stream.file_apps.c_str(), fileTree.dump(4));
 
@@ -2368,6 +2441,9 @@ namespace confighttp {
 
   /**
    * @brief Delete an application.
+   * @details Optional JSON boolean provider-maintenance selects ordinary current
+   * rows with the literal UUID, retains every marked Monitor profile, and returns
+   * the actual removed count. Empty or false requests keep deliberate deletion.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
    *
@@ -2395,6 +2471,7 @@ namespace confighttp {
     ss << request->content.rdbuf();
     std::string raw_body = ss.str();
 
+    bool provider_maintenance = false;
     std::optional<std::string> uuid;
     std::optional<size_t> index_from_body;
 
@@ -2404,6 +2481,13 @@ namespace confighttp {
       }
       try {
         nlohmann::json input_tree = nlohmann::json::parse(raw_body);
+        if (input_tree.contains("provider-maintenance")) {
+          if (!input_tree["provider-maintenance"].is_boolean()) {
+            bad_request(response, request, "provider-maintenance must be a boolean");
+            return;
+          }
+          provider_maintenance = input_tree["provider-maintenance"].get<bool>();
+        }
         if (input_tree.contains("uuid") && input_tree["uuid"].is_string()) {
           uuid = input_tree["uuid"].get<std::string>();
         }
@@ -2428,13 +2512,21 @@ namespace confighttp {
       std::lock_guard apps_lock {apps_file_mutex()};
       std::string content = file_handler::read_file(config::stream.file_apps.c_str());
       nlohmann::json file_tree = nlohmann::json::parse(content);
+      const auto original_file_tree = file_tree;
       if (!file_tree.contains("apps") || !file_tree["apps"].is_array()) {
         bad_request(response, request, "Apps configuration missing or invalid");
         return;
       }
 
       auto &apps_node = file_tree["apps"];
-      if (!uuid && !index_from_body && token_from_path) {
+      if (provider_maintenance) {
+        if (!uuid && token_from_path) uuid = *token_from_path;
+        if (!uuid || uuid->empty()) {
+          bad_request(response, request, "Provider maintenance requires an application UUID");
+          return;
+        }
+      }
+      if (!provider_maintenance && !uuid && !index_from_body && token_from_path) {
         if (auto resolved_index = resolve_app_index_token(apps_node, *token_from_path)) {
           target_index = resolved_index;
           const auto &app_entry = apps_node[*resolved_index];
@@ -2453,7 +2545,7 @@ namespace confighttp {
       } else if (target_index && *target_index < apps_node.size()) {
         protected_index = *target_index;
       }
-      if (protected_index &&
+      if (!provider_maintenance && protected_index &&
           configurable_remote_session(apps_node[*protected_index].value("uuid", "")) != remote_session::control_e::none) {
         bad_request(response, request, "Remote session applications cannot be deleted");
         return;
@@ -2483,15 +2575,21 @@ namespace confighttp {
       };
 #endif
 
-      bool removed = false;
+      std::size_t removed_count = 0;
       bool disabled_fullscreen_flag = false;
+#ifdef _WIN32
+      bool disable_fullscreen = false;
+#endif
 
       for (size_t i = 0; i < apps_node.size(); ++i) {
         const auto &app_entry = apps_node[i];
         auto app_uuid = app_entry.contains("uuid") && app_entry["uuid"].is_string() ? app_entry["uuid"].get<std::string>() : std::string {};
 
         bool match = false;
-        if (uuid && !uuid->empty()) {
+        if (provider_maintenance) {
+          match = !remote_session::marked_monitor_profile(app_entry) && app_uuid == *uuid &&
+            configurable_remote_session(*uuid) == remote_session::control_e::none;
+        } else if (uuid && !uuid->empty()) {
           match = app_uuid == *uuid;
         } else if (!uuid && target_index && *target_index == i) {
           match = true;
@@ -2505,37 +2603,54 @@ namespace confighttp {
           continue;
         }
 
-        removed = true;
+        ++removed_count;
 
 #ifdef _WIN32
         try {
           if (is_playnite_fullscreen(app_entry)) {
-            auto current_cfg = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
-            current_cfg["playnite_fullscreen_entry_enabled"] = "false";
-            std::stringstream config_stream;
-            for (const auto &kv : current_cfg) {
-              config_stream << kv.first << " = " << kv.second << std::endl;
-            }
-            file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
-            config::apply_config_now();
-            disabled_fullscreen_flag = true;
+            disable_fullscreen = true;
           }
         } catch (...) {
         }
 #endif
       }
 
-      if (!removed) {
+      if (provider_maintenance && removed_count == 0) {
+        send_response(response, nlohmann::json {{"status", true}, {"removed", 0}});
+        return;
+      }
+      if (removed_count == 0) {
         bad_request(response, request, "App to delete not found");
         return;
       }
 
       file_tree["apps"] = new_apps;
+      if (const auto error = proc::monitor_profile_changes_error(original_file_tree, file_tree, content); !error.empty()) {
+        bad_request(response, request, std::string {error});
+        return;
+      }
+#ifdef _WIN32
+      if (disable_fullscreen) {
+        try {
+          auto current_cfg = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
+          current_cfg["playnite_fullscreen_entry_enabled"] = "false";
+          std::stringstream config_stream;
+          for (const auto &kv : current_cfg) {
+            config_stream << kv.first << " = " << kv.second << std::endl;
+          }
+          file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
+          config::apply_config_now();
+          disabled_fullscreen_flag = true;
+        } catch (...) {}
+      }
+#endif
+
       file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
       proc::refresh(config::stream.file_apps, false);
 
       nlohmann::json output_tree;
       output_tree["status"] = true;
+      if (provider_maintenance) output_tree["removed"] = removed_count;
       if (disabled_fullscreen_flag) {
         output_tree["playniteFullscreenDisabled"] = true;
       }
@@ -4498,7 +4613,7 @@ namespace confighttp {
   }
 
   /**
-   * @brief Purge all auto-synced Playnite applications (playnite-managed == "auto").
+   * @brief Purge ordinary auto-synced Playnite applications; explicit Monitor profiles are retained.
    * @api_examples{/api/apps/purge_autosync| POST| null}
    */
   void purgeAutoSyncedApps(resp_https_t response, req_https_t request) {
@@ -4519,7 +4634,7 @@ namespace confighttp {
       int removed = 0;
       for (auto &app : apps_node) {
         std::string managed = app.contains("playnite-managed") && app["playnite-managed"].is_string() ? app["playnite-managed"].get<std::string>() : std::string();
-        if (managed == "auto") {
+        if (managed == "auto" && !remote_session::marked_monitor_profile(app)) {
           ++removed;
           continue;
         }

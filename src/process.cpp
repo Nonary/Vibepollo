@@ -101,6 +101,7 @@
 #include "nvhttp.h"
 #include "prep_command_lifetime.h"
 #include "process.h"
+#include "remote_monitor_profile_policy.h"
 #ifdef _WIN32
   #include "platform/windows/virtual_display.h"
   #include "platform/windows/virtual_display_legacy.h"
@@ -1373,6 +1374,12 @@ namespace proc {
     // admitted before closure keeps its owner through startup and cleanup tails.
     host_stream_control::start_guard_t admission {host_stream_control::request_ticket()};
     if (!admission) return 503;
+    // Reject before process/display state changes; Monitor profiles are
+    // admitted only by the authenticated paired-client role path.
+    if (app.remote_monitor_profile) {
+      BOOST_LOG(error) << "Remote Monitor profiles require the paired-client Monitor launch path.";
+      return 400;
+    }
 #ifdef _WIN32
     std::optional<std::filesystem::path> resolved_lossless_exe_path;
     std::string resolved_lossless_exe_utf8;
@@ -3624,6 +3631,58 @@ namespace proc {
     return ss.str();
   }
 
+
+  std::vector<std::string> configured_app_uuids(const nlohmann::json &file_tree) {
+    std::vector<std::string> result;
+    if (file_tree.contains("apps") && file_tree["apps"].is_array()) {
+      for (const auto &app : file_tree["apps"]) {
+        // This parser accepts literal JSON string UUIDs, without expansion.
+        if (app.is_object() && app.contains("uuid") && app["uuid"].is_string()) result.push_back(app["uuid"].get<std::string>());
+      }
+    }
+    return result;
+  }
+
+  std::string_view configured_monitor_profile_error_from_file(const nlohmann::json &app, const nlohmann::json &file_tree, const std::string_view content) {
+    (void) content;
+    if (!remote_session::marked_monitor_profile(app)) return {};
+    const auto identities = configured_app_uuids(file_tree);
+    std::vector<std::string_view> views;
+    for (const auto &uuid : identities) views.push_back(uuid);
+    return remote_session::monitor_profile_json_error(app, views);
+  }
+
+  std::string_view configured_monitor_profile_error(const nlohmann::json &app, const nlohmann::json &file_tree) {
+    if (!remote_session::marked_monitor_profile(app)) return {};
+    return configured_monitor_profile_error_from_file(app, file_tree, file_tree.dump());
+  }
+
+  std::string_view monitor_profile_changes_error(const nlohmann::json &before, const nlohmann::json &after, const std::string_view before_file) {
+    if (!after.contains("apps") || !after["apps"].is_array()) return {};
+    if (std::none_of(after["apps"].begin(), after["apps"].end(), remote_session::marked_monitor_profile)) return {};
+    const auto before_ids = configured_app_uuids(before);
+    std::vector<std::string_view> before_views;
+    for (const auto &uuid : before_ids) before_views.push_back(uuid);
+    for (const auto &app : after["apps"]) {
+      const auto error = configured_monitor_profile_error(app, after);
+      if (error.empty()) continue;
+      // Existing invalid marked rows stay available for explicit repair.
+      // An unrelated ordinary edit may preserve them, but cannot invalidate
+      // a previously valid profile by changing an effective ordinary UUID.
+      bool unchanged_invalid = false;
+      if (before.contains("apps") && before["apps"].is_array()) {
+        for (const auto &old : before["apps"]) {
+          if (old == app && remote_session::monitor_profile_json_error(old, before_views) == error) {
+            unchanged_invalid = true;
+            break;
+          }
+        }
+      }
+      if (!unchanged_invalid) return error;
+    }
+    return {};
+  }
+
   /**
    * @brief Validates a path whether it is a valid PNG.
    * @param path The path to the PNG file.
@@ -4183,6 +4242,9 @@ namespace proc {
     std::string new_app_uuid;
 
     if (inputTree_p) {
+      if (const auto error = remote_session::monitor_profile_json_error(*inputTree_p, (*fileTree_p)["apps"]); !error.empty()) {
+        throw std::invalid_argument(std::string {error});
+      }
       // If the input contains a non-empty "uuid", use it; otherwise generate one.
       if (inputTree_p->contains("uuid") && !(*inputTree_p)["uuid"].get<std::string>().empty()) {
         new_app_uuid = (*inputTree_p)["uuid"].get<std::string>();
@@ -4210,6 +4272,12 @@ namespace proc {
     nlohmann::json newApps = nlohmann::json::array();
     if (fileTree_p->contains("apps") && (*fileTree_p)["apps"].is_array()) {
       for (auto &app : (*fileTree_p)["apps"]) {
+        // Preserve invalid marked entries for explicit repair. Migration must
+        // neither generate their identity nor reinterpret them as normal apps.
+        if (!remote_session::monitor_profile_json_error(app, (*fileTree_p)["apps"]).empty()) {
+          newApps.push_back(app);
+          continue;
+        }
         // For apps without a UUID, generate one and remove "launching".
         if (!app.contains("uuid") || app["uuid"].get<std::string>().empty()) {
           app["uuid"] = uuid_util::uuid_t::generate().string();
@@ -4271,6 +4339,7 @@ namespace proc {
 
       // Walk through each app and convert legacy string values.
       for (auto &app : fileTree["apps"]) {
+        if (!configured_monitor_profile_error(app, fileTree).empty()) continue;
         for (const auto &key : boolean_keys) {
           if (app.contains(key)) {
             auto &_key = app[key];
@@ -4342,7 +4411,12 @@ namespace proc {
     }
 
     if (file_version < last_version) {
+      const auto previous_file = file_handler::read_file(fileName.c_str());
+      const auto previous = nlohmann::json::parse(previous_file);
       migration_v2(fileTree);
+      if (const auto error = monitor_profile_changes_error(previous, fileTree, previous_file); !error.empty()) {
+        throw std::invalid_argument(std::string {error});
+      }
       file_handler::write_file(fileName.c_str(), fileTree.dump(4));
     }
   }
@@ -4409,8 +4483,14 @@ namespace proc {
 
         // Iterate over each application in the "apps" array.
         for (auto &app_node : tree["apps"]) {
+          const int json_index = i++;
+          if (const auto error = configured_monitor_profile_error(app_node, tree); !error.empty()) {
+            BOOST_LOG(warning) << "Skipping configured Remote Monitor profile at JSON index " << json_index << ": " << error;
+            continue;
+          }
           proc::ctx_t ctx {};
-          ctx.idx = std::to_string(i);
+          ctx.configured_index = static_cast<std::size_t>(json_index);
+          ctx.idx = std::to_string(json_index);
           ctx.uuid = app_node.at("uuid");
 
           // Build the list of preparation commands.
@@ -4544,6 +4624,8 @@ namespace proc {
         ctx.frame_gen_limiter_fix = util::get_non_string_json_value<bool>(app_node, "frame-gen-limiter-fix", util::get_non_string_json_value<bool>(app_node, "dlss-framegen-limiter-fix", false));
         ctx.elevated = util::get_non_string_json_value<bool>(app_node, "elevated", false);
         ctx.virtual_screen = util::get_non_string_json_value<bool>(app_node, "virtual-screen", false);
+        ctx.remote_monitor_profile = app_node.contains("remote-monitor-profile") &&
+          app_node["remote-monitor-profile"].is_boolean() && app_node["remote-monitor-profile"].get<bool>();
         ctx.auto_detach = util::get_non_string_json_value<bool>(app_node, "auto-detach", true);
         ctx.wait_all = util::get_non_string_json_value<bool>(app_node, "wait-all", true);
         ctx.exit_timeout = std::chrono::seconds {util::get_non_string_json_value<int>(app_node, "exit-timeout", 10)};
@@ -4713,7 +4795,7 @@ namespace proc {
         }
 
         // Calculate a unique application id.
-        assign_compatible_app_id(ctx, name, i++, ids, app_id_alias_state, active_app_uuids, app_id_alias_state_changed);
+        assign_compatible_app_id(ctx, name, json_index, ids, app_id_alias_state, active_app_uuids, app_id_alias_state_changed);
 
         ctx.name = std::move(name);
         ctx.prep_cmds = std::move(prep_cmds);

@@ -40,6 +40,7 @@ support=r'''
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -68,10 +69,11 @@ namespace remote_display_topology {struct Topology{bool shutdown_complete(){retu
 std::mutex lifecycle;
 std::atomic<int> physical_calls{0},launch_sessions{0};
 namespace proc {
- struct ctx_t {std::string uuid="app",name="Application";};
+ struct ctx_t {std::string uuid="app",name="Application";bool remote_monitor_profile=false;};
  struct proc_t {
   std::vector<ctx_t> apps{ctx_t{}};std::atomic<int> app_id{-1},executions{0};
   const auto &get_apps(){return apps;}
+  std::optional<ctx_t> resolve_app(int) const {return apps.empty()?std::nullopt:std::make_optional(apps.front());}
   int running(){return app_id.load();}
   void terminate(){host_stream_control::activity_guard_t guard;if(guard)app_id=-1;}
   int execute(const ctx_t &app,std::shared_ptr<rtsp_stream::launch_session_t> launch_session,bool config_read_gate_held=false);

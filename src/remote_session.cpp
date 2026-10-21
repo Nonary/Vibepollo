@@ -1,6 +1,10 @@
 #include "remote_session.h"
+#include "legacy_generated_app_identities.h"
+#include "utility.h"
+#include "uuid.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <iterator>
 #include <mutex>
@@ -40,11 +44,29 @@ namespace remote_session {
       return std::find(values.begin(), values.end(), value) != values.end();
     }
 
-    bool reserved_synthetic_id(const std::int32_t id) {
-      return (id >= resume_id && id <= running_game_id) ||
-             id == secondary_resume_id || id == secondary_terminate_id ||
-             id == secondary_monitor_id || id == secondary_input_id ||
-             (id >= 2147483601 && id <= 2147483606);
+    struct control_identity_t {
+      control_e control;
+      std::int32_t primary;
+      std::int32_t secondary;
+      std::int32_t legacy;
+      std::string_view uuid;
+    };
+    // One authority for every fixed wire identity, including cached old tiles.
+    constexpr std::array control_identities {
+      control_identity_t {control_e::resume, resume_id, secondary_resume_id, 2147483601, "9a1c5a25-58fe-40e0-b9aa-7d3f00000001"},
+      control_identity_t {control_e::disconnect_monitor, disconnect_monitor_id, 0, 2147483602, "9a1c5a25-58fe-40e0-b9aa-7d3f00000002"},
+      control_identity_t {control_e::disconnect_input, disconnect_input_id, 0, 2147483603, "9a1c5a25-58fe-40e0-b9aa-7d3f00000003"},
+      control_identity_t {control_e::terminate, terminate_id, secondary_terminate_id, 2147483604, "9a1c5a25-58fe-40e0-b9aa-7d3f00000004"},
+      control_identity_t {control_e::monitor, monitor_id, secondary_monitor_id, 2147483605, "9a1c5a25-58fe-40e0-b9aa-7d3f00000005"},
+      control_identity_t {control_e::input, input_id, secondary_input_id, 2147483606, "9a1c5a25-58fe-40e0-b9aa-7d3f00000006"},
+      control_identity_t {control_e::running_game, running_game_id, 0, 0, "9a1c5a25-58fe-40e0-b9aa-7d3f00000007"},
+    };
+
+    bool configured_identity(const std::int32_t id, const std::vector<app_t> &configured) {
+      const auto numeric = std::to_string(id);
+      return std::any_of(configured.begin(), configured.end(), [&](const app_t &app) {
+        return app.id == id || contains(app.id_aliases, numeric);
+      });
     }
 
     std::string ranked_title(const std::string_view rank, const std::string_view title) {
@@ -71,28 +93,52 @@ namespace remote_session {
   }
 
   control_e identify(const std::int32_t id, const std::string_view uuid) {
-    if (id == secondary_resume_id) return control_e::resume;
-    if (id == secondary_terminate_id) return control_e::terminate;
-    if (id == secondary_monitor_id) return control_e::monitor;
-    if (id == secondary_input_id) return control_e::input;
-    if (id == resume_id || id == 2147483601 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000001") return control_e::resume;
-    if (id == disconnect_monitor_id || id == 2147483602 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000002") return control_e::disconnect_monitor;
-    if (id == disconnect_input_id || id == 2147483603 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000003") return control_e::disconnect_input;
-    if (id == terminate_id || id == 2147483604 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000004") return control_e::terminate;
-    if (id == monitor_id || id == 2147483605 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000005") return control_e::monitor;
-    if (id == input_id || id == 2147483606 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000006") return control_e::input;
-    if (id == running_game_id || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000007") return control_e::running_game;
+    // A numeric fixed control has one meaning even if a stale request also
+    // supplies an unrelated UUID. Zero is never a numeric control identity.
+    for (const auto &identity : control_identities) {
+      if (id > 0 && (id == identity.primary || id == identity.secondary || id == identity.legacy)) return identity.control;
+    }
+    for (const auto &identity : control_identities) {
+      if (uuid == identity.uuid) return identity.control;
+    }
     return control_e::none;
   }
 
-  control_e identify(const std::int32_t id, const std::string_view uuid, const std::int32_t running_app_id) {
-    const auto control = identify(id, uuid);
-    if (control != control_e::none) {
-      return control;
+  std::string_view monitor_profile_uuid_error(const std::string_view uuid, const std::vector<std::string_view> &configured_uuids) {
+    try {
+      const auto parsed = uuid_util::uuid_t::parse_raw(std::string {uuid});
+      if (std::all_of(std::begin(parsed.b8), std::end(parsed.b8), [](const auto byte) { return byte == 0; })) {
+        return "Remote Monitor profile requires a non-nil UUID.";
+      }
+    } catch (const std::invalid_argument &) {
+      return "Remote Monitor profile requires a valid literal UUID.";
     }
-    return running_app_id > 0 && id == synthetic_running_game_id(running_app_id) ?
-             control_e::running_game :
-             control_e::none;
+    for (const auto &identity : control_identities) {
+      if (equal_folded(uuid, identity.uuid)) return "Remote Monitor profile UUID is reserved for a builtin control.";
+    }
+    // Native legacy entries may be appended after configured JSON rows. Their
+    // identities remain unavailable to marked profiles even while disabled.
+    for (const auto identity : proc::legacy_generated_app_uuids) {
+      if (equal_folded(uuid, identity)) return "Remote Monitor profile UUID is reserved for a builtin control.";
+    }
+    if (std::count_if(configured_uuids.begin(), configured_uuids.end(), [&](const auto other) { return equal_folded(uuid, other); }) > 1) {
+      return "Remote Monitor profile UUID conflicts with another configured application.";
+    }
+    return {};
+  }
+
+  bool configured_app_id(const std::int32_t id) {
+    return id > 0 && identify(id) == control_e::none;
+  }
+
+  control_e identify(const std::int32_t id, const std::string_view uuid, const std::int32_t running_app_id, const std::vector<app_t> &configured) {
+    const auto control = identify(id, uuid);
+    if (control != control_e::none) return control;
+    // Configured UUIDs and their current/retained numeric IDs keep their normal
+    // meaning. Only an unoccupied numeric-only tile is a contextual control.
+    if (!uuid.empty() || configured_identity(id, configured)) return control_e::none;
+    return running_app_id > 0 && id == synthetic_running_game_id(running_app_id, configured) ?
+             control_e::running_game : control_e::none;
   }
 
   std::string synthetic_uuid(const control_e control) {
@@ -112,28 +158,27 @@ namespace remote_session {
     }
   }
 
-  std::int32_t synthetic_running_game_id(const std::int32_t app_id) {
-    // Toggle a high value bit so the resume-only identity remains stable for
-    // one app/art revision but changes with the configured app identity. Skip
-    // control IDs so the contextual running-game check cannot be shadowed by
-    // an ordinary synthetic-control lookup.
+  std::int32_t synthetic_running_game_id(const std::int32_t app_id, const std::vector<app_t> &configured) {
+    // Preserve the previous app/art-derived ID whenever unambiguous. Probe
+    // deterministically past fixed controls, configured current IDs and safe
+    // aliases. The same complete snapshot is used by projection and routing.
     constexpr std::uint32_t positive_id_mask = 0x7fffffffU;
     constexpr std::uint32_t identity_salt = 0x40000000U;
     const auto source = static_cast<std::uint32_t>(app_id) & positive_id_mask;
     auto candidate = (source ^ identity_salt) & positive_id_mask;
-    while (candidate == 0 || candidate == source || reserved_synthetic_id(static_cast<std::int32_t>(candidate))) {
+    while (candidate == source || !configured_app_id(static_cast<std::int32_t>(candidate)) || configured_identity(static_cast<std::int32_t>(candidate), configured)) {
       candidate = candidate == positive_id_mask ? 1 : candidate + 1;
     }
     return static_cast<std::int32_t>(candidate);
   }
 
-  app_t synthetic_running_game(const app_t &game) {
+  app_t synthetic_running_game(const app_t &game, const std::vector<app_t> &configured) {
     // Moonlight clients commonly alphabetize the received catalogue. Ranked
     // leading spaces keep this resume-only duplicate first, followed by
     // Remote Monitor, Remote Input, Resume, and Terminate, without changing
     // visible labels.
     return {
-      synthetic_running_game_id(game.id),
+      synthetic_running_game_id(game.id, configured),
       synthetic_uuid(control_e::running_game),
       ranked_title("     ", game.title),
       true,
@@ -171,9 +216,15 @@ namespace remote_session {
   projection_t project(const caller_t &caller, const game_t &game, const owner_t &owner, const std::vector<app_t> &configured, const bool remote_sessions_active) {
     projection_t result;
     std::vector<app_t> visible_configured;
-    std::copy_if(configured.begin(), configured.end(), std::back_inserter(visible_configured), [](const app_t &app) {
+    std::copy_if(configured.begin(), configured.end(), std::back_inserter(visible_configured), [&](const app_t &app) {
+      if (app.monitor_profile) {
+        std::vector<std::string_view> uuids;
+        for (const auto &configured_app : configured) uuids.push_back(configured_app.uuid);
+        if (!monitor_profile_uuid_error(app.uuid, uuids).empty()) return false;
+      }
       const auto control = identify(0, app.uuid);
-      return control != control_e::input && control != control_e::monitor && !reserved_name(app.title);
+      return app.catalogue_visible && control != control_e::input && control != control_e::monitor &&
+             (app.monitor_profile || !reserved_name(app.title));
     });
     if (owner.role == role_e::monitor) {
       result.catalogue = {synthetic(control_e::resume), synthetic(control_e::disconnect_monitor)};
@@ -199,7 +250,7 @@ namespace remote_session {
       // resume-only copy of the active game at the front. The configured copy
       // remains available under its normal identity.
       result.catalogue = {
-        synthetic_running_game(game.app),
+        synthetic_running_game(game.app, configured),
         prioritized_secondary_control(control_e::resume),
         prioritized_secondary_control(control_e::terminate),
       };
@@ -400,6 +451,18 @@ namespace remote_session {
       return {.source = capture_source_e::exact_output, .output = std::move(output)};
     }
     return {.source = capture_source_e::active_output};
+  }
+
+  std::optional<monitor_profile_t> select_monitor_profile(
+    monitor_profile_t requested,
+    const std::optional<monitor_profile_t> &retained
+  ) {
+    if (requested.uuid.empty()) return std::nullopt;
+    if (!retained) return requested;
+    if (retained->uuid != requested.uuid) return std::nullopt;
+    // The built-in Monitor retains its existing live-configuration semantics.
+    // Explicit profiles use their accepted application snapshot until release.
+    return identify(0, retained->uuid) == control_e::monitor ? requested : *retained;
   }
 
   void register_monitor_runtime_hooks(monitor_runtime_hooks_t hooks) {
