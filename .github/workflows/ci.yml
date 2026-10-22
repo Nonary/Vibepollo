@@ -81,12 +81,27 @@ jobs:
               for key, value in values.items():
                 print(f"{key}={value}", file=fh)
 
+          def validation_version():
+            # PR jobs compile packages too. Derive a nonzero, commit-bound
+            # prerelease from the latest stable ancestor without publishing it.
+            stable = []
+            for tag in run("git", "tag", "--merged", "HEAD", "--list").splitlines():
+              match = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:-stable\.[0-9]+)?", tag)
+              if match:
+                version = tuple(map(int, match.groups()))
+                if version[0] <= 255 and version[1] <= 255 and version[2] < 655:
+                  stable.append(version)
+            if not stable:
+              raise ValueError("PR validation requires a merged stable version anchor")
+            major, minor, patch = max(stable)
+            return f"{major}.{minor}.{patch + 1}-validation.{run('git', 'rev-parse', 'HEAD')[:12]}"
+
           def skip(reason, *, release_version="", release_commit=""):
             print(f"::notice::{reason}")
             output(
               should_release="false",
               tag_name="",
-              release_version=release_version,
+              release_version=release_version or validation_version(),
               release_commit=release_commit,
             )
             sys.exit(0)
@@ -240,7 +255,7 @@ jobs:
       build_only: ${{ needs.release-candidate.outputs.should_release == 'true' }}
       build_tests: ${{ needs.release-candidate.outputs.should_release == 'true' }}
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
-      release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0' }}
+      release_version: ${{ needs.release-candidate.outputs.release_version }}
       release_tag: ${{ needs.release-candidate.outputs.tag_name }}
       release_artifact_retention_days: ${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}
       symbol_product_name: Vibepollo
@@ -269,7 +284,7 @@ jobs:
       use_self_hosted: ${{ github.event_name == 'workflow_dispatch' && inputs.use_self_hosted }}
       artifact_retention_days: ${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
-      release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0' }}
+      release_version: ${{ needs.release-candidate.outputs.release_version }}
 
   awaiting-signing:
     name: Awaiting manual signing
