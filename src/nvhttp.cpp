@@ -2966,7 +2966,7 @@ namespace nvhttp {
         }
       }
 
-      BOOST_LOG(debug) << "Ignoring unmatched launch uniqueid for per-client settings: " << launch_unique_id;
+      BOOST_LOG(debug) << "Ignoring unmatched launch uniqueid for per-client settings.";
       return {};
     }
 
