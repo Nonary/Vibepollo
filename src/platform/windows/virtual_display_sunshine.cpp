@@ -6471,7 +6471,11 @@ namespace VDISPLAY_SUNSHINE {
                               << "; adopting it as the exact target.";
             }
           }
-          const bool exact_target = VDISPLAY::policy::readiness_candidate_is_exact_target(strong_identity_match, stable_edid_match);
+          const bool exact_target = VDISPLAY::policy::readiness_candidate_is_exact_target(
+            expected_display_id.has_value(),
+            strong_identity_match,
+            stable_edid_match
+          );
 
           if (!exact_target && weak_identity_match) {
             if (VDISPLAY::policy::readiness_rejects_weak_identity_candidate(has_strong_identity_hints, is_virtual)) {
@@ -7402,12 +7406,11 @@ namespace VDISPLAY_SUNSHINE {
         resolved_display_name = display_name_from_identity(*display_config_identity);
       }
 
+      // DisplayConfig's GDI name can be reassigned while a new monitor is
+      // being enumerated. Do not turn that mutable alias into a device ID;
+      // readiness adopts the ID only from a candidate whose EDID matches the
+      // requested stable identity.
       std::optional<std::string> device_id;
-      if (resolved_display_name) {
-        device_id = resolveVirtualDisplayDeviceId(*resolved_display_name);
-        BOOST_LOG(debug) << "resolveVirtualDisplayDeviceId(" << platf::to_utf8(*resolved_display_name) << ") returned '"
-                         << (device_id ? *device_id : std::string("(none)")) << "'";
-      }
       if (stop_token.stop_requested()) {
         rollback_created_display();
         return std::nullopt;
@@ -7464,6 +7467,21 @@ namespace VDISPLAY_SUNSHINE {
         printf("[SunshineVirtualDisplay] Timed out waiting for Windows to enumerate the new virtual display; reverting creation.\n");
         rollback_created_display();
         return std::nullopt;
+      }
+
+      // Readiness selected a candidate by the requested EDID identity. Rebuild
+      // the published name from that selected device ID and discard the
+      // pre-readiness DisplayConfig alias so a reassigned GDI name or path
+      // cannot leak back into the new lease identity.
+      if (display_id) {
+        display_config_identity.reset();
+        resolved_display_name.reset();
+        if (device_id && !device_id->empty()) {
+          if (auto exact_name = resolve_virtual_display_name_for_device_id(*device_id);
+              exact_name && is_gdi_display_name(*exact_name)) {
+            resolved_display_name = std::move(exact_name);
+          }
+        }
       }
 
       // Enumeration has now succeeded, so DisplayConfig state has materially
@@ -7560,7 +7578,11 @@ namespace VDISPLAY_SUNSHINE {
       if (s_client_name && std::strlen(s_client_name) > 0) {
         result.client_name = std::string(s_client_name);
       }
-      if (display_config_identity && display_config_identity->monitor_device_path && !display_config_identity->monitor_device_path->empty()) {
+      if (display_id) {
+        if (device_id && !device_id->empty()) {
+          result.monitor_device_path = resolve_monitor_device_path_for_device_id(*device_id);
+        }
+      } else if (display_config_identity && display_config_identity->monitor_device_path && !display_config_identity->monitor_device_path->empty()) {
         result.monitor_device_path = display_config_identity->monitor_device_path;
       } else if (auto identity = query_display_config_identity(output)) {
         if (identity->monitor_device_path && !identity->monitor_device_path->empty()) {

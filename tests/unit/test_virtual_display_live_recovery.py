@@ -169,6 +169,16 @@ int main() {
  assert(VDISPLAY::policy::readiness_rejects_weak_identity_candidate(true,true));
  assert(!VDISPLAY::policy::readiness_rejects_weak_identity_candidate(false,true));
  assert(VDISPLAY::policy::readiness_rejects_weak_identity_candidate(false,false));
+ // A mutable GDI alias can match the wrong peer's device ID during creation.
+ // With a requested stable identity, only the matching EDID may prove the
+ // exact target; without one, the existing strong-hint behavior still applies.
+ assert(!VDISPLAY::policy::readiness_candidate_is_exact_target(true,true,false));
+ assert(VDISPLAY::policy::readiness_candidate_is_exact_target(true,false,true));
+ assert(VDISPLAY::policy::readiness_candidate_is_exact_target(false,true,false));
+ assert(VDISPLAY::policy::readiness_candidate_is_exact_target(false,false,true));
+ assert(VDISPLAY::policy::defer_unidentified_readiness_candidate(false,false));
+ assert(!VDISPLAY::policy::defer_unidentified_readiness_candidate(false,true));
+ assert(!VDISPLAY::policy::defer_unidentified_readiness_candidate(true,false));
  assert(!VDISPLAY::policy::readiness_has_dynamic_identity_hint(false,false,false,false,false,false));
  assert(!VDISPLAY::policy::readiness_has_strong_identity_hint(false,false,false,false));
  assert(video::capture_recovery::lease_identity_matches(

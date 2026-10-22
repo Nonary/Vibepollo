@@ -80,6 +80,27 @@ namespace VDISPLAY::policy {
     return has_strong_identity_hint || !is_virtual_display;
   }
 
+  inline bool readiness_candidate_is_exact_target(
+    bool require_stable_display_id,
+    bool strong_identity_match,
+    bool stable_edid_match
+  ) noexcept {
+    // During creation, Windows can reassign names and monitor paths while it
+    // publishes topology changes. If the caller knows the requested EDID
+    // identity, only that stable identity may prove the created target.
+    if (require_stable_display_id) {
+      return stable_edid_match;
+    }
+    return strong_identity_match || stable_edid_match;
+  }
+
+  inline bool defer_unidentified_readiness_candidate(
+    bool exact_target,
+    bool has_dynamic_identity_hint
+  ) noexcept {
+    return !exact_target && !has_dynamic_identity_hint;
+  }
+
   class inactive_reactivation_budget_t {
   public:
     using duration = std::chrono::steady_clock::duration;
