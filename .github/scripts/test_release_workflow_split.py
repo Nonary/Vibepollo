@@ -703,6 +703,8 @@ esac
         self.assertEqual(publish_steps["Download exact-build Windows symbols from this run"]["with"]["name"], "windows-symbols-Windows")
         self.assertIn('test -s "symbol-assets/$symbol_pack"',
                       publish_steps["Verify exact-build Windows symbols"]["run"])
+        self.assertIn('VibepolloSymbols-${DAILY_VERSION}-windows-x64.7z',
+                      publish_steps["Verify exact-build Windows symbols"]["run"])
         self.assertLess(
             list(publish_steps).index("Verify exact-build Windows symbols"),
             list(publish_steps).index("Verify finalized provenance, identity and complete asset set"),
