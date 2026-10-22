@@ -5029,6 +5029,16 @@ namespace video {
                        disp.get(), encoder, config, disp->width, disp->height,
                        std::move(encode_device), initialization_deadline, initialization_cancelled,
                        &initialization_was_cancelled, &initialization_gate_contended);
+#if defined(__linux__)
+    BOOST_LOG(info) << "Linux encoder dimensions: encoder=" << encoder.name
+                    << " capture=" << disp->width << 'x' << disp->height
+                    << " encoder_context=" << config.width << 'x' << config.height
+                    << " stream_fps=" << config.framerate
+                    << " encoding_framerate_milli_fps=" << config.encodingFramerate
+                    << " result=" << (session ? "ready" : initialization_gate_contended ? "temporarily_busy" :
+                                                                                          "failed")
+                    << '.';
+#endif
 #ifdef _WIN32
     if (initialization_was_cancelled) return encode_run_result_e::completed;
     if (!session && &encoder == &amdvce_experimental) {

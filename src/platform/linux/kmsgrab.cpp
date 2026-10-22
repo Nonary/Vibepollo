@@ -1049,6 +1049,12 @@ namespace platf {
           return -1;
         }
 
+        BOOST_LOG(info) << "Linux KMS capture dimensions: output="
+                        << (input_output_name.empty() ? "unresolved" : input_output_name)
+                        << " framebuffer=" << img_width << 'x' << img_height
+                        << " viewport=" << width << 'x' << height
+                        << " logical=" << logical_width << 'x' << logical_height
+                        << " stream_request=" << config.width << 'x' << config.height << '.';
         return 0;
       }
 
