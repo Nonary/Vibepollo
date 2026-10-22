@@ -72,6 +72,13 @@ namespace platf::dxgi::wgc_policy {
     unavailable,
   };
 
+  constexpr bool input_geometry_change_requires_capture_restart(
+    const bool preserve_capture,
+    const input_geometry_change_e change
+  ) noexcept {
+    return !preserve_capture && change == input_geometry_change_e::changed;
+  }
+
   constexpr input_geometry_change_e assess_input_geometry(
     const input_geometry_t &captured,
     const int monitor_x,

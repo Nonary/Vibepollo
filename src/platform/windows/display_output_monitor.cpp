@@ -249,7 +249,8 @@ namespace platf::dxgi {
       const auto input_change = wgc_policy::assess_input_geometry(
         policy_input_geometry, output_.DesktopCoordinates.left, output_.DesktopCoordinates.top,
         current_bounds);
-      if (!preserve_capture_for_input_geometry_ && input_change == wgc_policy::input_geometry_change_e::changed) {
+      if (wgc_policy::input_geometry_change_requires_capture_restart(
+            preserve_capture_for_input_geometry_, input_change)) {
         if (!notifications_->reinit.exchange(true, std::memory_order_release)) {
           BOOST_LOG(debug) << "Capture restart request: source=output-monitor reason=input-geometry captured="
                            << offset_x_ << ',' << offset_y_ << ',' << env_width_ << ',' << env_height_

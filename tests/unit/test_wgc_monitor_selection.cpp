@@ -136,6 +136,32 @@ TEST(WgcGeometryUpdatePolicy, VerifiedDesktopOnlyChangePublishesMapping) {
   EXPECT_EQ(decision.mapping.desktop_height, 2160);
 }
 
+TEST(WgcGeometryUpdatePolicy, StableTargetDesktopEnvelopeChangePreservesCapture) {
+  using namespace platf::dxgi::wgc_policy;
+  const input_geometry_t captured {0, 0, 3840, 2160};
+  const desktop_bounds_t expanded {0, 0, 7680, 2160};
+  const auto change = assess_input_geometry(captured, 0, 0, expanded);
+  ASSERT_EQ(change, input_geometry_change_e::changed);
+
+  // Frame-push uses the same verified geometry policy as WGC. The unchanged
+  // target can publish the updated envelope without restarting capture.
+  EXPECT_FALSE(input_geometry_change_requires_capture_restart(true, change));
+  const auto verified = assess_verified_geometry_update(
+    active_capture_state_e::valid, verified_target_state_e::same, true,
+    captured, 0, 0, expanded);
+  EXPECT_EQ(verified.action, geometry_update_action_e::publish);
+  EXPECT_EQ(verified.mapping.desktop_width, 7680);
+
+  // Negative controls retain reinitialization for legacy capture and for any
+  // change that affects the selected DXGI target itself.
+  EXPECT_TRUE(input_geometry_change_requires_capture_restart(false, change));
+  const auto target_changed = assess_verified_geometry_update(
+    active_capture_state_e::valid, verified_target_state_e::changed, true,
+    captured, 0, 0, expanded);
+  EXPECT_EQ(target_changed.action, geometry_update_action_e::reinitialize);
+  EXPECT_FALSE(input_geometry_change_requires_capture_restart(false, input_geometry_change_e::unavailable));
+}
+
 TEST(WgcGeometryUpdatePolicy, NegativeOriginUpdatesTargetOffsetExactlyOnce) {
   using namespace platf::dxgi::wgc_policy;
   const input_geometry_t captured {0, 0, 4480, 2680};

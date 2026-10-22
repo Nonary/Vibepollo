@@ -29,7 +29,9 @@ namespace platf::dxgi {
     const std::optional<LUID> &required_adapter_luid
   ) {
     stop_requested_.store(false, std::memory_order_release);
-    if (display_base_t::init(config, display_name, true, required_adapter_luid) != 0) return -1;
+    // An input-envelope change does not alter the leased output or ring. Keep
+    // capture active while the monitor verifies the target and publishes new geometry.
+    if (display_base_t::init(config, display_name, true, required_adapter_luid, true) != 0) return -1;
 
     const auto target = VDISPLAY::frame_push_target_for_output(display_name);
     if (!target || !target->lease_id || !target->display_id || !target->display_generation ||
