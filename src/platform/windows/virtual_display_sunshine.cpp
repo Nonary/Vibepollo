@@ -6301,10 +6301,20 @@ namespace VDISPLAY_SUNSHINE {
     std::optional<std::chrono::steady_clock::time_point> enumerated_at;
     const auto enumeration_timeout = VDISPLAY::policy::enumeration_timeout;
     const auto poll_interval = VDISPLAY::policy::readiness_poll_interval;
-    const bool has_dynamic_hints =
-      (device_id && !device_id->empty()) || normalized_name || monitor_path_hint || gdi_name_hint || friendly_name_hint;
-    const bool has_strong_identity_hints =
-      (requested_device_id && !requested_device_id->empty()) || monitor_path_hint || gdi_name_hint;
+    const bool has_dynamic_hints = VDISPLAY::policy::readiness_has_dynamic_identity_hint(
+      expected_display_id.has_value(),
+      device_id && !device_id->empty(),
+      normalized_name.has_value(),
+      monitor_path_hint.has_value(),
+      gdi_name_hint.has_value(),
+      friendly_name_hint.has_value()
+    );
+    const bool has_strong_identity_hints = VDISPLAY::policy::readiness_has_strong_identity_hint(
+      expected_display_id.has_value(),
+      requested_device_id && !requested_device_id->empty(),
+      monitor_path_hint.has_value(),
+      gdi_name_hint.has_value()
+    );
 
     while (true) {
       if (stop_token.stop_requested()) {
@@ -6464,7 +6474,7 @@ namespace VDISPLAY_SUNSHINE {
           const bool exact_target = VDISPLAY::policy::readiness_candidate_is_exact_target(strong_identity_match, stable_edid_match);
 
           if (!exact_target && weak_identity_match) {
-            if (has_strong_identity_hints || !is_virtual) {
+            if (VDISPLAY::policy::readiness_rejects_weak_identity_candidate(has_strong_identity_hints, is_virtual)) {
               continue;
             }
             if (!weak_identity_conflict) {
@@ -7392,28 +7402,12 @@ namespace VDISPLAY_SUNSHINE {
         resolved_display_name = display_name_from_identity(*display_config_identity);
       }
 
-      if (!resolved_display_name) {
-        resolved_display_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
-        if (!resolved_display_name && (!s_client_name || std::strlen(s_client_name) == 0)) {
-          resolved_display_name = resolve_virtual_display_name_from_devices();
-        }
-      }
-
       std::optional<std::string> device_id;
       if (resolved_display_name) {
         device_id = resolveVirtualDisplayDeviceId(*resolved_display_name);
         BOOST_LOG(debug) << "resolveVirtualDisplayDeviceId(" << platf::to_utf8(*resolved_display_name) << ") returned '"
                          << (device_id ? *device_id : std::string("(none)")) << "'";
       }
-      if (!device_id) {
-        if (s_client_name && std::strlen(s_client_name) > 0) {
-          device_id = resolveVirtualDisplayDeviceIdForClient(s_client_name);
-        }
-        if (!device_id && (!s_client_name || std::strlen(s_client_name) == 0)) {
-          device_id = resolveAnyVirtualDisplayDeviceId();
-        }
-      }
-
       if (stop_token.stop_requested()) {
         rollback_created_display();
         return std::nullopt;

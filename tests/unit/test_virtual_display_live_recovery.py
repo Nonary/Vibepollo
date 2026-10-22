@@ -164,6 +164,13 @@ bool reactivate_owned_virtual_display(const std::string &id,const std::function<
 }
 ''' + function('    std::optional<std::wstring> resolve_virtual_display_name_for_device_id(') + '\n' + monitor_path_for_id + '\n' + gdi_name_check + '\n' + ccd_presence + '\n' + driver_presence + '\n' + target_presence + '\n' + reactivate_presence + r'''
 int main() {
+ assert(VDISPLAY::policy::readiness_has_dynamic_identity_hint(true,false,false,false,false,false));
+ assert(VDISPLAY::policy::readiness_has_strong_identity_hint(true,false,false,false));
+ assert(VDISPLAY::policy::readiness_rejects_weak_identity_candidate(true,true));
+ assert(!VDISPLAY::policy::readiness_rejects_weak_identity_candidate(false,true));
+ assert(VDISPLAY::policy::readiness_rejects_weak_identity_candidate(false,false));
+ assert(!VDISPLAY::policy::readiness_has_dynamic_identity_hint(false,false,false,false,false,false));
+ assert(!VDISPLAY::policy::readiness_has_strong_identity_hint(false,false,false,false));
  assert(video::capture_recovery::lease_identity_matches(
   2,1,std::string("virtual1"),2,1,std::string("virtual1")));
  assert(!video::capture_recovery::lease_identity_matches(

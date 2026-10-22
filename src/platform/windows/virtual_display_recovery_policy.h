@@ -53,6 +53,33 @@ namespace VDISPLAY::policy {
     return std::forward<ResolveByName>(resolve_by_name)();
   }
 
+  inline bool readiness_has_dynamic_identity_hint(
+    bool expected_display_id,
+    bool device_id,
+    bool display_name,
+    bool monitor_path,
+    bool gdi_name,
+    bool friendly_name
+  ) noexcept {
+    return expected_display_id || device_id || display_name || monitor_path || gdi_name || friendly_name;
+  }
+
+  inline bool readiness_has_strong_identity_hint(
+    bool expected_display_id,
+    bool device_id,
+    bool monitor_path,
+    bool gdi_name
+  ) noexcept {
+    return expected_display_id || device_id || monitor_path || gdi_name;
+  }
+
+  inline bool readiness_rejects_weak_identity_candidate(
+    bool has_strong_identity_hint,
+    bool is_virtual_display
+  ) noexcept {
+    return has_strong_identity_hint || !is_virtual_display;
+  }
+
   class inactive_reactivation_budget_t {
   public:
     using duration = std::chrono::steady_clock::duration;
