@@ -638,14 +638,24 @@ namespace platf::dualsense_usbip {
         reply(request, 0, silence);
       } else {
         std::vector<std::uint8_t> haptics;
+        std::vector<std::uint8_t> speaker;
         haptics.reserve(request.length / 2);
+        if (callbacks_.speaker_pcm) {
+          speaker.reserve(request.length / 2);
+        }
         for (const auto &packet : request.packets) {
           for (std::size_t frame = packet.offset; frame < packet.offset + packet.length; frame += 8) {
             haptics.insert(haptics.end(), request.data.begin() + frame + 4, request.data.begin() + frame + 8);
+            if (callbacks_.speaker_pcm) {
+              speaker.insert(speaker.end(), request.data.begin() + frame, request.data.begin() + frame + 4);
+            }
           }
         }
         if (callbacks_.haptics_pcm && !haptics.empty()) {
           callbacks_.haptics_pcm(haptics);
+        }
+        if (callbacks_.speaker_pcm && !speaker.empty()) {
+          callbacks_.speaker_pcm(speaker);
         }
         reply(request, 0, {}, request.length);
       }

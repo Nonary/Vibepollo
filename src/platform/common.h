@@ -26,6 +26,7 @@
 
 // local includes
 #include "audio.h"
+#include "src/controller_speaker_pcm.h"
 #include "src/input_geometry_snapshot.h"
 #include "src/boost_process_shim.h"
 #include "src/config.h"
@@ -109,6 +110,7 @@ namespace platf {
     set_rgb_led,  ///< Set RGB LED
     set_adaptive_triggers,  ///< Set adaptive triggers
     haptics_pcm,  ///< 5 ms of 48 kHz S16LE stereo actuator samples
+    speaker_pcm,  ///< Independent 5 ms controller speaker samples
   };
 
   struct gamepad_feedback_msg_t {
@@ -157,8 +159,12 @@ namespace platf {
     std::uint16_t id;
     // Internal provenance for bounded host-side ViGEm send-result diagnostics.
     bool from_vigem {false};
+    // Invalidated on detach/rebind/reset, including messages already popped.
+    std::weak_ptr<std::atomic<std::uint32_t>> speaker_epoch;
 
     union {
+      controller_speaker_pcm::block speaker;
+
       struct {
         std::uint32_t sequence;
         std::array<std::uint8_t, 960> samples;

@@ -1852,6 +1852,8 @@ if(SUNSHINE_TEST_POWERSHELL)
     set_tests_properties(regression_windows_usbip_package PROPERTIES LABELS "component")
 endif()
 
+sunshine_register_component(NAME test_component_controller_speaker_pcm TEST_SOURCE unit/test_controller_speaker_pcm.cpp)
+
 sunshine_register_component(NAME test_component_dualsense_audio_pcm TEST_SOURCE unit/test_dualsense_audio_pcm.cpp)
 sunshine_register_component(NAME test_component_dualsense_launch_policy TEST_SOURCE unit/test_dualsense_launch_policy.cpp)
 set(_dualsense_protocol_test_adapter "")

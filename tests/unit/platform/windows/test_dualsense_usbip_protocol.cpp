@@ -162,8 +162,7 @@ namespace {
     CHECK(result.size() == 89 && std::equal(result.begin() + 48, result.end(), lvg::ds5_usb::calibration.begin()));
     result = control(peer, 0xa1, 1, 0x0320, 3, 64);
     CHECK(result.size() == 112 && std::equal(result.begin() + 48, result.end(), lvg::ds5_usb::firmware.begin()));
-    CHECK(result.size() >= 94 &&
-          (unsigned(result[92]) | (unsigned(result[93]) << 8)) >= 0x0630);
+    CHECK(result.size() >= 94 && (unsigned(result[92]) | (unsigned(result[93]) << 8)) >= 0x0630);
     result = control(peer, 0xa1, 1, 0x0309, 3, 20);
     CHECK(result[48] == 9 && result[55] == 8 && result[56] == 0x25);
     result = control(peer, 0xa1, 1, 0x0385, 3, 3);
@@ -221,10 +220,14 @@ namespace {
 
   void audio_capture_and_pacing() {
     bytes haptics;
+    bytes speaker;
     unsigned callbacks = 0;
     session peer(0, {.hid_output = {}, .haptics_pcm = [&](auto data) {
                        haptics.insert(haptics.end(), data.begin(), data.end());
                        ++callbacks;
+                     },
+                     .speaker_pcm = [&](auto data) {
+                       speaker.insert(speaker.end(), data.begin(), data.end());
                      }});
     attach(peer);
     // Two 48-frame USB packets with a deliberate offset gap. The speaker
@@ -252,15 +255,20 @@ namespace {
     peer.poll(after + std::chrono::milliseconds(2));
     auto result = peer.take_output();
     CHECK(result.size() == 80 && callbacks == 1 && haptics.size() == 384);
+    CHECK(speaker.size() == 384);
     CHECK(get32(result, 24) == 800 && get32(result, 32) == 2);
     CHECK(get32(result, 48) == 0 && get32(result, 52) == 384 && get32(result, 56) == 384);
     CHECK(get32(result, 64) == 416 && get32(result, 72) == 384);
     for (unsigned frame = 0; frame < 96; ++frame) {
+      if (speaker.size() == 384) {
+        CHECK(speaker[frame * 4] == 0x55 && speaker[frame * 4 + 1] == 0x66);
+        CHECK(speaker[frame * 4 + 2] == 0x77 && speaker[frame * 4 + 3] == 0x88);
+      }
       CHECK(haptics[frame * 4] == frame % 48 && haptics[frame * 4 + 1] == 0xff);
       CHECK(haptics[frame * 4 + 2] == 255 - frame % 48 && haptics[frame * 4 + 3] == 0x7f);
     }
     peer.poll(after + std::chrono::milliseconds(4));
-    CHECK(peer.take_output().size() == 80 && callbacks == 2);
+    CHECK(peer.take_output().size() == 80 && callbacks == 2 && speaker.size() == 768);
     CHECK(peer.feed(submit(23, true, 2, 416, {}, {}, {{0, 196}, {220, 196}}), before));
     peer.poll(before + std::chrono::milliseconds(2));
     result = peer.take_output();
@@ -336,6 +344,10 @@ namespace {
   }
 
   void malformed_and_fragmented() {
+    unsigned audio_callbacks = 0;
+    platf::dualsense_usbip::callbacks audio {};
+    audio.haptics_pcm = [&](auto) { ++audio_callbacks; };
+    audio.speaker_pcm = [&](auto) { ++audio_callbacks; };
     session peer(0);
     attach(peer);
     const auto descriptor = submit(41, true, 0, 18, {}, control_setup(0x80, 6, 0x0100, 0, 18));
@@ -349,7 +361,7 @@ namespace {
     auto oversized = submit(42, true, 4, 0);
     put32(oversized, 24, 0x80000000);
     CHECK(!peer.feed(oversized) && peer.failed());
-    session bad_iso(0);
+    session bad_iso(0, audio);
     attach(bad_iso);
     CHECK(!bad_iso.feed(submit(43, false, 1, 8, bytes(8), {}, {{4, 8}})));
     session bad_packets(0);
@@ -362,13 +374,14 @@ namespace {
     auto foreign = submit(45, true, 4, 64);
     put32(foreign, 8, 0x10002);
     CHECK(!wrong_device.feed(foreign));
-    session overlap(0);
+    session overlap(0, audio);
     attach(overlap);
     CHECK(!overlap.feed(submit(46, false, 1, 16, bytes(16), {}, {{0, 8}, {4, 8}})));
-    session partial_frame(0);
+    session partial_frame(0, audio);
     attach(partial_frame);
     CHECK(partial_frame.feed(submit(47, false, 1, 7, bytes(7), {}, {{0, 7}})));
     CHECK(get32(partial_frame.take_output(), 20) == std::uint32_t(-32));
+    CHECK(audio_callbacks == 0);
     session partial_mic_frame(0);
     attach(partial_mic_frame);
     CHECK(partial_mic_frame.feed(submit(48, true, 2, 191, {}, {}, {{0, 191}})));

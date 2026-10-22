@@ -1336,7 +1336,14 @@ namespace stream {
     }
 
     std::string payload;
-    if (msg.type == platf::gamepad_feedback_e::haptics_pcm) {
+    if (msg.type == platf::gamepad_feedback_e::speaker_pcm) {
+      const auto plaintext = controller_speaker_pcm::encode(session->config.mlFeatureFlags, session->config.controlProtocolType, msg.id, msg.data.speaker, msg.speaker_epoch);
+      if (!plaintext) {
+        return 0;
+      }
+      std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(controller_speaker_pcm::payload_size + 4) + crypto::cipher::tag_size> encrypted_payload;
+      payload = encode_control(session, std::string_view(reinterpret_cast<const char *>(plaintext->data()), plaintext->size()), encrypted_payload);
+    } else if (msg.type == platf::gamepad_feedback_e::haptics_pcm) {
       if (!(session->config.mlFeatureFlags & ML_FF_HAPTICS_PCM)) {
         // PCM arrives in frequent chunks; report missing negotiation once per session.
         if (!session->control.pcm_negotiation_warning_logged.exchange(true, std::memory_order_relaxed)) {
@@ -1454,7 +1461,7 @@ namespace stream {
 
     const auto send_result = detail::send_and_observe_result(
       [&] {
-        return session->broadcast_ref->control_server.send(payload, session->control.peer, msg.type == platf::gamepad_feedback_e::haptics_pcm);
+        return session->broadcast_ref->control_server.send(payload, session->control.peer, msg.type == platf::gamepad_feedback_e::haptics_pcm || msg.type == platf::gamepad_feedback_e::speaker_pcm);
       },
       [&](const int result) {
         if (msg.type == platf::gamepad_feedback_e::haptics_pcm &&
