@@ -2660,8 +2660,8 @@ These settings are host-wide and are not application runtime overrides.
         <td colspan="2">
             Maximum size in KiB for each outgoing video send batch.
             The default is 64 KiB.
-            Lower values can improve stream stability on cheaper switches, routers, and Wi-Fi hardware by reducing burst size,
-            but at the cost of less than 1 ms of additional host-side delay.
+            A lower value only reduces the maximum payload of an individual send call; it does not cap packets across successive
+            calls before the next pacing wait or guarantee a smaller wire burst. Lower values may increase host-side send work.
             PyroWave resolves its send batch size automatically and ignores this setting.
         </td>
     </tr>
@@ -2679,6 +2679,31 @@ These settings are host-wide and are not application runtime overrides.
         <td>Example</td>
         <td colspan="2">@code{}
             video_max_batch_size_kb = 32
+            @endcode</td>
+    </tr>
+</table>
+
+### pacing_batch_demand_limit
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Experimental opt-in for ordinary video streams. When enabled, Vibepollo uses negotiated bitrate and FEC-expanded
+            frame demand to limit the size of each outgoing send call. It leaves the ordinary pacing group,
+            <code>pacing_max_bitrate_kbps</code> ceiling, and cumulative pacing deadline unchanged.
+            It does not cap aggregate packets across successive calls before a pacing wait, guarantee a wire-level burst limit,
+            or establish the cause of a reported streaming failure. It may increase host-side send work. PyroWave is unchanged.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}false@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            pacing_batch_demand_limit = true
             @endcode</td>
     </tr>
 </table>
