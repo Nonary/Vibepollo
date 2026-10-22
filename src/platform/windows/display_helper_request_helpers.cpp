@@ -102,6 +102,8 @@ namespace display_helper_integration::helpers {
       snapshot.fps = session.fps;
       snapshot.appid = session.appid;
       snapshot.app_metadata = session.app_metadata;
+      snapshot.requested_resolution_only = session.requested_resolution_only;
+      snapshot.virtual_display_catalog_error = session.virtual_display_catalog_error;
       snapshot.client_display_mode_override = session.client_display_mode_override;
       snapshot.client_display_refresh_millihz = session.client_display_refresh_millihz;
       snapshot.client_virtual_display_override = session.client_virtual_display_override;

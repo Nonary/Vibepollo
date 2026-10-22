@@ -69,6 +69,8 @@ program = r'''
 #include <string>
 #include <string_view>
 #include <vector>
+// Load the actual admission guard before selecting the fixture platform.
+#include "src/host_stream_control.h"
 #ifndef _WIN32
 #define _WIN32 1
 #endif
@@ -262,5 +264,6 @@ with tempfile.TemporaryDirectory(prefix="paused-display-restore-") as tmp:
     path = Path(tmp)
     (path / "test.cpp").write_text(program)
     subprocess.run([args.compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-UNDEBUG",
+                    "-pthread", "-I", str(args.repo),
                     str(path / "test.cpp"), "-o", str(path / "test")], check=True)
     subprocess.run([str(path / "test")], check=True)

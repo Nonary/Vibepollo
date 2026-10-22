@@ -482,6 +482,10 @@ namespace VDISPLAY {
 }
 
 namespace VDISPLAY_SUNSHINE {
+  bool supportsRequestedResolutionCatalog();
+  bool hasOwnedVirtualDisplays();
+  bool allowsSharedCatalogCapture();
+  std::optional<bool> virtualDisplayCatalogMatches(const GUID &guid, uint32_t width, uint32_t height, bool requested_only);
   using VDISPLAY::DRIVER_STATUS;
   using VDISPLAY::TrackedDisplayCleanupTarget;
   using VDISPLAY::VirtualDisplayCreationResult;
@@ -517,7 +521,8 @@ namespace VDISPLAY_SUNSHINE {
     std::optional<bool> hdr_requested,
     bool allow_pending_enumeration,
     bool replace_existing,
-    bool preserve_peer_displays
+    bool preserve_peer_displays,
+    bool requested_resolution_only
   );
   void applyHdrProfileToOutput(const char *s_client_name, const char *s_hdr_profile, const char *s_device_id);
   void restorePhysicalHdrProfiles();
@@ -783,12 +788,34 @@ namespace VDISPLAY {
     std::optional<bool> hdr_requested,
     bool allow_pending_enumeration,
     bool replace_existing,
-    bool preserve_peer_displays
+    bool preserve_peer_displays,
+    bool requested_resolution_only
   ) {
     if (use_sunshine_driver()) {
-      return VDISPLAY_SUNSHINE::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, framegen_refresh_multiplier, hdr_requested, allow_pending_enumeration, replace_existing, preserve_peer_displays);
+      return VDISPLAY_SUNSHINE::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, framegen_refresh_multiplier, hdr_requested, allow_pending_enumeration, replace_existing, preserve_peer_displays, requested_resolution_only);
     }
+    if (requested_resolution_only) return std::nullopt;
     return VDISPLAY_SUDOVDA::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, framegen_refresh_multiplier, hdr_requested, allow_pending_enumeration, replace_existing, preserve_peer_displays);
+  }
+
+  bool hasOwnedSunshineVirtualDisplays() {
+    return VDISPLAY_SUNSHINE::hasOwnedVirtualDisplays();
+  }
+
+  bool allowsSharedCatalogCapture() {
+    // The current create-backend choice does not identify an existing capture.
+    // Keep inspecting Sunshine until its last owned lease has been released.
+    return (!use_sunshine_driver() && !hasOwnedSunshineVirtualDisplays()) ||
+           VDISPLAY_SUNSHINE::allowsSharedCatalogCapture();
+  }
+
+  bool supportsRequestedResolutionCatalog() {
+    return use_sunshine_driver() && VDISPLAY_SUNSHINE::supportsRequestedResolutionCatalog();
+  }
+
+  std::optional<bool> virtualDisplayCatalogMatches(const GUID &guid, uint32_t width, uint32_t height, bool requested_only) {
+    if (!use_sunshine_driver() && !hasOwnedSunshineVirtualDisplays()) return requested_only ? std::optional<bool> {} : std::optional<bool> {true};
+    return VDISPLAY_SUNSHINE::virtualDisplayCatalogMatches(guid, width, height, requested_only);
   }
 
   void applyHdrProfileToOutput(const char *s_client_name, const char *s_hdr_profile, const char *s_device_id) {

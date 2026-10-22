@@ -270,10 +270,10 @@
     <!-- Immediate setters for quiet process kill and service removal on manual uninstall -->
     <CustomAction Id="SetKillProcsQuietImmediate"
                  Property="QtExecCmdLine"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','sunshine_display_helper','playnite-launcher','playnite_launcher','apollo','apollosvc','vibepollo_dualsense_haptics'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','sunshine_display_helper','sunshine_end_stream_hotkey','playnite-launcher','playnite_launcher','apollo','apollosvc','vibepollo_dualsense_haptics'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
     <CustomAction Id="SetKillProcsQuiet"
                  Property="KillProcsQuiet"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','sunshine_display_helper','playnite-launcher','playnite_launcher','apollo','apollosvc','vibepollo_dualsense_haptics'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','sunshine_display_helper','sunshine_end_stream_hotkey','playnite-launcher','playnite_launcher','apollo','apollosvc','vibepollo_dualsense_haptics'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
 
     <CustomAction Id="SetUpdatePathRemove"
                  Property="UpdatePathRemove"

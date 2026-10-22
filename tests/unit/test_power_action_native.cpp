@@ -11,10 +11,14 @@
 
 namespace {
   struct api_state_t {
-    SYSTEM_POWER_CAPABILITIES caps {FALSE, FALSE, TRUE, FALSE};
+    SYSTEM_POWER_CAPABILITIES caps = [] {
+      SYSTEM_POWER_CAPABILITIES value {};
+      value.SystemS3 = TRUE;
+      return value;
+    }();
     DWORD error {ERROR_SUCCESS};
     bool has_token {false}, fail_open {false}, fail_impersonation {false}, fail_lookup {false}, deny_privilege {false};
-    bool suspend_success {true}, enabled {false};
+    bool query_success {true}, suspend_success {true}, enabled {false};
     int calls {0}, impersonations {0}, restores {0}, closes {0}, reverts {0};
   } state;
 }  // namespace
@@ -86,7 +90,7 @@ BOOL AdjustTokenPrivileges(HANDLE, BOOL, TOKEN_PRIVILEGES *value, DWORD, TOKEN_P
 
 BOOL GetPwrCapabilities(SYSTEM_POWER_CAPABILITIES *caps) {
   *caps = state.caps;
-  return TRUE;
+  return state.query_success;
 }
 
 BOOL SetSuspendState(BOOL hibernate, BOOL force, BOOL disable_wake) {
@@ -145,10 +149,49 @@ TEST(PowerActionNative, TokenAndLookupFailuresNeverCallSuspend) {
 
 TEST(PowerActionNative, ModernStandbyIsSupportedAndNoSleepStatesIsNot) {
   state = {};
-  state.caps = {FALSE, FALSE, FALSE, TRUE};
+  state.caps = {};
+#ifdef SUNSHINE_TEST_LEGACY_POWER_CAPABILITIES
+  state.caps.spare2[2] = TRUE;
+#else
+  state.caps.AoAc = TRUE;
+#endif
   EXPECT_TRUE(nvhttp::power_action::native_sleep_supported());
   state.caps = {};
   EXPECT_FALSE(nvhttp::power_action::native_sleep_supported());
   EXPECT_FALSE(nvhttp::power_action::native_sleep());
   EXPECT_EQ(state.calls, 0);
+}
+
+TEST(PowerActionNative, OtherPowerFlagsAreNotSleepStates) {
+  state = {};
+  state.caps = {};
+  state.caps.FastSystemS4 = TRUE;
+#ifdef SUNSHINE_TEST_LEGACY_POWER_CAPABILITIES
+  state.caps.spare2[0] = TRUE;
+  state.caps.spare2[1] = TRUE;
+#else
+  state.caps.Hiberboot = TRUE;
+  state.caps.WakeAlarmPresent = TRUE;
+#endif
+  EXPECT_FALSE(nvhttp::power_action::native_sleep_supported());
+  EXPECT_FALSE(nvhttp::power_action::native_sleep());
+  EXPECT_EQ(state.calls, 0);
+}
+
+TEST(PowerActionNative, EachTraditionalSleepStateIsSupported) {
+  for (auto member : {&SYSTEM_POWER_CAPABILITIES::SystemS1, &SYSTEM_POWER_CAPABILITIES::SystemS2, &SYSTEM_POWER_CAPABILITIES::SystemS3}) {
+    state = {};
+    state.caps = {};
+    state.caps.*member = TRUE;
+    EXPECT_TRUE(nvhttp::power_action::native_sleep_supported());
+  }
+}
+
+TEST(PowerActionNative, FailedCapabilityQueryNeverCallsSuspend) {
+  state = {};
+  state.query_success = false;
+  EXPECT_FALSE(nvhttp::power_action::native_sleep_supported());
+  EXPECT_FALSE(nvhttp::power_action::native_sleep());
+  EXPECT_EQ(state.calls, 0);
+  EXPECT_EQ(state.impersonations, 0);
 }

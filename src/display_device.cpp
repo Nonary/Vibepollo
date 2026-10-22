@@ -633,6 +633,26 @@ namespace display_device {
   }
 #endif
 
+  std::optional<std::string> active_display_name_for_device_id(const std::string &device_id) {
+#ifdef _WIN32
+    if (!device_id.empty()) {
+      try {
+        auto api = std::make_shared<display_device::WinApiLayer>();
+        display_device::WinDisplayDevice dd(api);
+        const auto display_name = dd.getDisplayName(device_id);
+        if (!display_name.empty()) {
+          return display_name;
+        }
+      } catch (...) {
+        // A missing or unqueryable exact device cannot establish capture readiness.
+      }
+    }
+#else
+    (void) device_id;
+#endif
+    return std::nullopt;
+  }
+
   std::string map_output_name(const std::string &output_name) {
 #ifdef _WIN32
     try {

@@ -112,6 +112,8 @@ namespace proc {
     void launch_input_only();
 
     // Callers holding the configuration read gate must defer cleanup writes.
+    // The caller owns stream lifecycle serialization. Startup returns 503 before
+    // mutation when terminal admission is closed; an admitted execute stays counted.
     int execute(const ctx_t &_app, std::shared_ptr<rtsp_stream::launch_session_t> launch_session, bool config_read_gate_held = false);
 
     /**

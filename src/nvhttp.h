@@ -7,6 +7,7 @@
 
 // standard includes
 #include <chrono>
+#include <functional>
 #include <cstdint>
 #include <list>
 #include <mutex>
@@ -259,7 +260,8 @@ namespace nvhttp {
     const std::string &virtual_display_layout,
     std::optional<std::unordered_map<std::string, std::string>> config_overrides,
     bool prefer_10bit_sdr,
-    std::optional<std::string> hdr_profile
+    std::optional<std::string> hdr_profile,
+    std::optional<bool> requested_resolution_only = std::nullopt
   );
 
   /**
@@ -303,6 +305,13 @@ namespace nvhttp {
    * publication; final teardown holds it through its shared cleanup decision.
    */
   std::mutex &stream_lifecycle_mutex();
+
+#ifdef _WIN32
+  /** End all transports, pending launches and the app, then restore displays.
+   * Revalidate the pinned local helper after draining in-flight starts.
+   */
+  void terminate_all_streams_from_host(const std::function<bool()> &authorized);
+#endif
 
   /**
    * @brief Persist a per-client HDR color profile selection (Windows only).

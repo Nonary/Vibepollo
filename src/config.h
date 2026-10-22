@@ -243,6 +243,8 @@ namespace config {
       helper_engine_e display_helper_engine;  ///< Which display helper engine to run.
       int snapshot_restore_hotkey;  ///< Virtual-key code for restore hotkey (0 disables).
       std::uint32_t snapshot_restore_hotkey_modifiers;  ///< Modifier flags for the restore hotkey.
+      int end_stream_hotkey;  ///< Optional host end-all-streams virtual key (0 disables).
+      std::uint32_t end_stream_hotkey_modifiers;  ///< Modifier flags; at least one required.
       bool use_sunshine_virtual_display_driver;  ///< Use the Vibepollo Display Driver instead of rollback drivers such as SudoVDA.
       bool activate_virtual_display;  ///< Auto-activate Sunshine virtual display when selected as the target output.
       int virtual_display_scale_percent;  ///< Virtual-display scale percent (-1 is automatic; 0 preserves the compositor's choice).

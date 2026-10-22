@@ -162,6 +162,8 @@ const defaultGroups = [
       dd_always_restore_from_golden: false,
       dd_display_helper_engine: 'auto',
       dd_snapshot_exclude_devices: [] as Array<string>,
+      end_stream_hotkey: '',
+      end_stream_hotkey_modifiers: 'ctrl+alt+shift',
       dd_snapshot_restore_hotkey: '',
       dd_snapshot_restore_hotkey_modifiers: 'ctrl+alt+shift',
       dd_use_sunshine_virtual_display_driver: true,

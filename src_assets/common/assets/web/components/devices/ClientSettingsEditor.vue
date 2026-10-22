@@ -38,6 +38,7 @@ export interface ClientDeviceDraft {
   virtualDisplayLayout: ClientVirtualDisplayLayout;
   hdrProfile: string;
   prefer10BitSdr: boolean;
+  requestedResolutionOnly?: boolean;
   configOverrides: Record<string, unknown>;
 }
 
@@ -60,6 +61,7 @@ export interface HdrProfileEntry {
 
 const props = defineProps<{
   modelValue: ClientDeviceDraft;
+  requestedResolutionCatalogSupported?: boolean;
   commonSettings: Record<string, unknown>;
   metadata: ClientSettingsMetadata;
   displayDevices: DisplayDevice[];
@@ -73,6 +75,8 @@ const props = defineProps<{
   busy: boolean;
   controlIdPrefix: string;
 }>();
+
+const catalogInitiallyRequested = Boolean(props.modelValue.requestedResolutionOnly);
 
 const emit = defineEmits<{
   'update:modelValue': [value: ClientDeviceDraft];
@@ -670,6 +674,7 @@ function applyDisplaySelection(selection: ClientDisplaySelection): void {
               </option>
             </select>
           </SettingRow>
+
           <p class="client-settings-helper">
             {{
               t('ui.devices.editor.common_display_summary', {
@@ -680,6 +685,41 @@ function applyDisplaySelection(selection: ClientDisplaySelection): void {
           </p>
         </template>
       </div>
+    </section>
+
+    <section
+      v-if="
+        isWindows &&
+        (requestedResolutionCatalogSupported ||
+          catalogInitiallyRequested ||
+          draft.requestedResolutionOnly)
+      "
+      class="client-settings-section"
+    >
+      <SettingRow
+        v-if="
+          isWindows &&
+          (requestedResolutionCatalogSupported ||
+            catalogInitiallyRequested ||
+            draft.requestedResolutionOnly)
+        "
+        label="Advertise only this client's resolution"
+        description="Limits this private virtual display's advertised resolutions while retaining matching refresh rates. Requires bundled driver control 3.8 or later and a new session. Shared displays are unsupported."
+        :control-id="`${controlIdPrefix}-requested-resolution-only`"
+      >
+        <input
+          :id="`${controlIdPrefix}-requested-resolution-only`"
+          v-model="draft.requestedResolutionOnly"
+          type="checkbox"
+          :disabled="
+            busy || (!requestedResolutionCatalogSupported && !draft.requestedResolutionOnly)
+          "
+        />
+        <p v-if="!requestedResolutionCatalogSupported" class="client-settings-helper">
+          The opened driver cannot confirm support. Disable this setting or install a qualified
+          compatible driver before streaming.
+        </p>
+      </SettingRow>
     </section>
 
     <section

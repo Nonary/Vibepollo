@@ -1283,14 +1283,33 @@ namespace video {
         return {};
       }
 
+      if (output_identity_failed) {
+        return {};
+      }
+
       auto result = device->nvenc->encode_frame(frame_index, force_idr);
       force_idr = false;
+      if (!result.data.empty() && result.frame_index != frame_index) {
+        // Native NVENC has one synchronous input/output transaction. Delivering
+        // another index would attribute this picture's timestamps to other pixels.
+        // Keep this failure latched until the client stream ends; rebuilding the
+        // encoder alone does not establish a decoder reset or picture continuity.
+        BOOST_LOG(error) << "NvEnc: refusing output with frame index " << result.frame_index
+                         << " for submitted frame " << frame_index;
+        output_identity_failed = true;
+        return {};
+      }
       return result;
+    }
+
+    bool has_output_identity_failure() const {
+      return output_identity_failed;
     }
 
   private:
     std::unique_ptr<platf::nvenc_encode_device_t> device;
     bool force_idr = false;
+    bool output_identity_failed = false;
   };
 
   class amf_encode_session_t: public encode_session_t {
@@ -3623,10 +3642,6 @@ namespace video {
       return -1;
     }
 
-    if (frame_nr != encoded_frame.frame_index) {
-      BOOST_LOG(error) << "NvENC frame index mismatch " << frame_nr << " " << encoded_frame.frame_index;
-    }
-
     auto packet = std::make_unique<packet_raw_generic>(std::move(encoded_frame.data), encoded_frame.frame_index, encoded_frame.idr);
     packet->channel_data = channel_data;
     packet->after_ref_frame_invalidation = encoded_frame.after_ref_frame_invalidation;
@@ -4959,6 +4974,7 @@ namespace video {
 
   enum class encode_run_result_e {
     completed,
+    native_nvenc_identity_failed,
     native_amf_failed,
     temporarily_busy,
     initialization_failed,
@@ -5574,6 +5590,13 @@ namespace video {
       // While streaming check to see if the mouse is present and enable Mouse Keys to force the cursor to appear
       // This is useful for KVM switch scenarios where mouse may disappear during streaming
       platf::enable_mouse_keys();
+    }
+    if (auto *native_session = dynamic_cast<nvenc_encode_session_t *>(session.get());
+        native_session && native_session->has_output_identity_failure()) {
+      // Signal stream termination before driver teardown can block this thread.
+      shutdown_event->raise(true);
+      force_sync_teardown = true;
+      return encode_run_result_e::native_nvenc_identity_failed;
     }
     if (native_amf_runtime_failed) {
       force_sync_teardown = true;
@@ -6579,6 +6602,12 @@ namespace video {
         last_hdr_info,
         rtx_hdr_metadata_refresh
       );
+      if (encode_result == encode_run_result_e::native_nvenc_identity_failed) {
+        // No replacement encoder may resume this client decoder after identity
+        // was lost. The capture scope's guard stops images and signals shutdown.
+        BOOST_LOG(error) << "NvEnc: ending stream after output picture identity failure"sv;
+        return;
+      }
 #ifdef _WIN32
       if (encode_result == encode_run_result_e::native_amf_failed && &session_encoder == &amdvce_experimental) {
         // Runtime fatals (TDR, sustained backpressure, output stalls) are

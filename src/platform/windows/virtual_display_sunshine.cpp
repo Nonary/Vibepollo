@@ -1,4 +1,5 @@
 #include "virtual_display.h"
+#include "virtual_display_catalog_policy.h"
 #include "src/platform/windows/virtual_display_refresh_policy.h"
 #include "virtual_display_recovery_registry.h"
 
@@ -105,6 +106,9 @@ namespace VDISPLAY_SUNSHINE {
     std::string_view context
   );
   void ensureVirtualDisplayRegistryDefaults();
+  bool supportsRequestedResolutionCatalog();
+  bool allowsSharedCatalogCapture();
+  std::optional<bool> virtualDisplayCatalogMatches(const GUID &guid, uint32_t width, uint32_t height, bool requested_only);
   std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
     const char *s_client_uid,
     const char *s_client_name,
@@ -119,7 +123,8 @@ namespace VDISPLAY_SUNSHINE {
     std::optional<bool> hdr_requested = std::nullopt,
     bool allow_pending_enumeration = false,
     bool replace_existing = true,
-    bool preserve_peer_displays = false
+    bool preserve_peer_displays = false,
+    bool requested_resolution_only = false
   );
   bool removeVirtualDisplay(const GUID &guid);
   static bool remove_virtual_display_impl(
@@ -187,6 +192,7 @@ namespace VDISPLAY_SUNSHINE {
     bool allow_pending_enumeration,
     bool replace_existing,
     bool preserve_peer_displays,
+    bool requested_resolution_only,
     std::stop_token stop_token
   );
 
@@ -4584,6 +4590,14 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     bool attempt_virtual_display_recovery(RecoveryMonitorState &state, std::stop_token stop_token) {
+      // Capability failure is not a driver-health failure. Reopen only the
+      // transport, then stop before readiness recovery or retained-probe removal
+      // when this producer cannot honor the session's explicit policy.
+      if (state.params.requested_resolution_only &&
+          (!ensure_control_transport_responsive("Virtual display catalog recovery preflight", stop_token, OpenRecoveryBehavior::transport_only) ||
+           !supportsRequestedResolutionCatalog())) {
+        return false;
+      }
       if (!release_retained_ensure_display_for_stream(
             state.params.guid,
             state.params.client_uid.c_str(),
@@ -4655,6 +4669,7 @@ namespace VDISPLAY_SUNSHINE {
         false,
         true,
         false,
+        state.params.requested_resolution_only,
         stop_token
       );
       if (!recreation) {
@@ -6448,6 +6463,8 @@ namespace VDISPLAY_SUNSHINE {
       bool allow_pending_enumeration,
       bool replace_existing,
       bool preserve_peer_displays,
+      bool requested_resolution_only,
+      bool &retry_owned_replacement,
       bool &allow_driver_recovery,
       std::stop_token stop_token = {}
     ) {
@@ -6470,6 +6487,30 @@ namespace VDISPLAY_SUNSHINE {
                        << " hdr_requested=" << (hdr_requested ? (*hdr_requested ? "enabled" : "disabled") : "unchanged")
                        << " guid=" << requested_uuid.string();
 
+      static const auto windows_build = platf::query_windows_version().build_number;
+      const auto refresh = VDISPLAY::policy::resolve_creation_refresh(
+        fps, base_fps_millihz, framegen_refresh_active ? framegen_refresh_multiplier : 1,
+        height, windows_build
+      );
+      const uint32_t requested_fps = refresh.requested_millihz;
+      // The driver derives its complete mode catalog from the descriptor timing. Keep the
+      // descriptor at the client/base rate so it can advertise both that mode and 4x; the
+      // display helper selects requested_fps after the monitor arrives when a fixed refresh
+      // policy needs to start above the base rate.
+      const uint32_t descriptor_fps = refresh.descriptor_millihz;
+      if (!VDISPLAY::catalog_policy::descriptor_is_valid(width, height, descriptor_fps)) {
+        BOOST_LOG(error) << "Virtual display catalog descriptor failed preflight; preserving the existing target.";
+        allow_driver_recovery = false;
+        return std::nullopt;
+      }
+      if (requested_resolution_only) {
+        allow_driver_recovery = false;
+        sunshine_driver::ControlClient preflight {*transport};
+        if (!VDISPLAY::catalog_policy::supported(preflight)) {
+          BOOST_LOG(error) << "Requested-resolution catalog requires the opened bundled producer control 3.8 or later.";
+          return std::nullopt;
+        }
+      }
       if (VDISPLAY::policy::should_teardown_conflicting_virtual_displays(preserve_peer_displays) &&
           !teardown_conflicting_virtual_displays(requested_uuid, stop_token)) {
         return std::nullopt;
@@ -6504,6 +6545,10 @@ namespace VDISPLAY_SUNSHINE {
         return std::nullopt;
       }
       sunshine_driver::ControlClient client {*transport};
+      if (requested_resolution_only && !VDISPLAY::catalog_policy::supported(client)) {
+        allow_driver_recovery = false;
+        return std::nullopt;
+      }
       if (config::video.dd.virtual_display_permanent_count_configured &&
           !set_permanent_display_count(
             client,
@@ -6516,17 +6561,6 @@ namespace VDISPLAY_SUNSHINE {
         BOOST_LOG(warning) << "Unable to apply configured Sunshine virtual display permanent count before creating temporary display.";
       }
 
-      static const auto windows_build = platf::query_windows_version().build_number;
-      const auto refresh = VDISPLAY::policy::resolve_creation_refresh(
-        fps, base_fps_millihz, framegen_refresh_active ? framegen_refresh_multiplier : 1,
-        height, windows_build
-      );
-      const uint32_t requested_fps = refresh.requested_millihz;
-      // The driver derives its complete mode catalog from the descriptor timing. Keep the
-      // descriptor at the client/base rate so it can advertise both that mode and 4x; the
-      // display helper selects requested_fps after the monitor arrives when a fixed refresh
-      // policy needs to start above the base rate.
-      const uint32_t descriptor_fps = refresh.descriptor_millihz;
       const auto display_id = client_uuid_to_virtual_display_id(guid);
       const auto secure_reclaim_supported = driver_supports_secure_reclaim(client);
       if (!secure_reclaim_supported) {
@@ -6553,19 +6587,29 @@ namespace VDISPLAY_SUNSHINE {
         if (auto existing = find_virtual_display_recovery_entry(recovery_entries, requested_uuid);
             existing != recovery_entries.end()) {
           const auto existing_capability = existing->owner_capability;
-          const auto reclaimed = reclaim_virtual_display_recovery_entry(
-            client,
-            recovery_entries,
-            requested_uuid,
-            std::nullopt,
-            std::nullopt,
-            std::nullopt
+          const auto reconciliation = VDISPLAY::catalog_policy::reconcile_existing(
+            client, display_id, width, height, requested_resolution_only, replace_existing,
+            [&] {
+              const auto reclaimed = reclaim_virtual_display_recovery_entry(
+                client, recovery_entries, requested_uuid, std::nullopt, std::nullopt, std::nullopt);
+              switch (reclaimed) {
+                case VirtualDisplayReclaimResult::reclaimed: return VDISPLAY::catalog_policy::ownership::owned;
+                case VirtualDisplayReclaimResult::absent: return VDISPLAY::catalog_policy::ownership::absent;
+                default: return VDISPLAY::catalog_policy::ownership::failed;
+              }
+            },
+            [&] { return remove_virtual_display_impl(guid, false, stop_token); }
           );
-          if (reclaimed == VirtualDisplayReclaimResult::failed) {
+          if (reconciliation == VDISPLAY::catalog_policy::reconciliation::failed) {
             allow_driver_recovery = false;
             return std::nullopt;
           }
-          if (reclaimed == VirtualDisplayReclaimResult::reclaimed) {
+          if (reconciliation == VDISPLAY::catalog_policy::reconciliation::removed_retry) {
+            allow_driver_recovery = false;
+            retry_owned_replacement = true;
+            return std::nullopt;
+          }
+          if (reconciliation == VDISPLAY::catalog_policy::reconciliation::reuse) {
             const bool reusable_with_current_provenance =
               render_adapter_request_provenance_matches(
                 requested_uuid,
@@ -6579,7 +6623,7 @@ namespace VDISPLAY_SUNSHINE {
             // driver display_id, EDID product/serial, and connector stay stable;
             // the helper still applies the new session resolution and refresh.
             const bool requested_refresh_available =
-              existing_presence == ExistingVirtualDisplayPresence::inactive &&
+              (existing_presence == ExistingVirtualDisplayPresence::inactive || requested_resolution_only) &&
               existing_virtual_display_supports_refresh(client, display_id, width, height, requested_fps);
             const bool resurrect_inactive =
               replace_existing &&
@@ -6587,7 +6631,7 @@ namespace VDISPLAY_SUNSHINE {
               requested_refresh_available;
             const auto reclaimed_plan =
               VDISPLAY::policy::reclaimed_display_plan_for_session(
-                replace_existing,
+                replace_existing && (!requested_resolution_only || !requested_refresh_available),
                 existing_presence == ExistingVirtualDisplayPresence::inactive,
                 requested_refresh_available,
                 reusable_with_current_provenance
@@ -6608,6 +6652,10 @@ namespace VDISPLAY_SUNSHINE {
               if (!remove_virtual_display_impl(guid, false, stop_token)) {
                 allow_driver_recovery = false;
                 return std::nullopt;
+              }
+              if (requested_resolution_only) {
+                allow_driver_recovery = false;
+                retry_owned_replacement = true;
               }
               // Removal may reopen the transport. Return to the outer bounded
               // retry so adapter selection is applied again immediately before
@@ -6682,6 +6730,10 @@ namespace VDISPLAY_SUNSHINE {
       // physical size can make Windows classify the display as a handheld.
       // Apply requested scaling through set_display_scale_percent after activation.
       create_request.refresh_rate_millihz = descriptor_fps;
+      if (!VDISPLAY::catalog_policy::set_create_policy(client, create_request, requested_resolution_only)) {
+        allow_driver_recovery = false;
+        return std::nullopt;
+      }
       create_request.requested_timeout_ms = DRIVER_LEASE_TIMEOUT_MS;
       create_request.hdr_max_luminance_nits = static_cast<std::uint32_t>(
         std::clamp(config::video.rtx_hdr.peak_brightness, 400, 2000)
@@ -6921,6 +6973,13 @@ namespace VDISPLAY_SUNSHINE {
         }
       };
       if (stop_token.stop_requested()) {
+        rollback_created_display();
+        return std::nullopt;
+      }
+      if (VDISPLAY::catalog_policy::inspect(client, display_id, width, height, requested_resolution_only) !=
+          VDISPLAY::catalog_policy::inspection::matches) {
+        BOOST_LOG(error) << "Virtual display producer did not confirm the requested catalog policy and resolution.";
+        allow_driver_recovery = false;
         rollback_created_display();
         return std::nullopt;
       }
@@ -7220,6 +7279,7 @@ namespace VDISPLAY_SUNSHINE {
     bool allow_pending_enumeration,
     bool replace_existing,
     bool preserve_peer_displays,
+    bool requested_resolution_only,
     std::stop_token stop_token
   ) {
     std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
@@ -7231,6 +7291,8 @@ namespace VDISPLAY_SUNSHINE {
       return std::nullopt;
     }
 
+    // A private catalog cannot authorize destroying another client's monitor.
+    preserve_peer_displays = preserve_peer_displays || requested_resolution_only;
     constexpr int kMaxInitializationAttempts = 3;
     const auto requested_uuid = guid_to_uuid(guid);
 
@@ -7238,7 +7300,8 @@ namespace VDISPLAY_SUNSHINE {
       if (stop_token.stop_requested()) {
         return std::nullopt;
       }
-      if (!ensure_control_transport_responsive("Sunshine virtual display creation", stop_token)) {
+      if (!ensure_control_transport_responsive("Sunshine virtual display creation", stop_token,
+            requested_resolution_only ? OpenRecoveryBehavior::transport_only : OpenRecoveryBehavior::recover_driver)) {
         BOOST_LOG(warning) << "Unable to open Sunshine virtual display driver transport for virtual display creation.";
         return std::nullopt;
       }
@@ -7258,6 +7321,7 @@ namespace VDISPLAY_SUNSHINE {
       // displays and violate their independent ownership.
       bool allow_driver_recovery =
         VDISPLAY::policy::may_restart_adapter_after_create_failure(preserve_peer_displays);
+      bool retry_owned_replacement = false;
       auto result = create_virtual_display_once(
         s_hdr_profile,
         s_client_uid,
@@ -7273,6 +7337,8 @@ namespace VDISPLAY_SUNSHINE {
         allow_pending_enumeration,
         replace_existing,
         preserve_peer_displays,
+        requested_resolution_only,
+        retry_owned_replacement,
         allow_driver_recovery,
         stop_token
       );
@@ -7283,6 +7349,7 @@ namespace VDISPLAY_SUNSHINE {
         BOOST_LOG(warning) << "Virtual display creation attempt " << attempt << '/' << kMaxInitializationAttempts
                            << " failed.";
 
+        if (retry_owned_replacement && attempt < kMaxInitializationAttempts) continue;
         if (!allow_driver_recovery) {
           BOOST_LOG(warning) << "Virtual display creation failed closed without restarting the adapter.";
           return std::nullopt;
@@ -7485,6 +7552,35 @@ namespace VDISPLAY_SUNSHINE {
     return std::nullopt;
   }
 
+  bool hasOwnedVirtualDisplays() {
+    // Lease ownership survives pause, transport closure and create-backend edits.
+    // Missing enumeration metadata must not turn an owned target into a bypass.
+    return !driver_lease_tracker().all().empty();
+  }
+
+  bool allowsSharedCatalogCapture() {
+    const auto transport = control_transport_snapshot();
+    if (!transport || !transport->valid()) return false;
+    sunshine_driver::ControlClient client {*transport};
+    return VDISPLAY::catalog_policy::allows_shared_capture(client);
+  }
+
+  bool supportsRequestedResolutionCatalog() {
+    const auto transport = control_transport_snapshot();
+    if (!transport || !transport->valid()) return false;
+    sunshine_driver::ControlClient client {*transport};
+    return VDISPLAY::catalog_policy::supported(client);
+  }
+
+  std::optional<bool> virtualDisplayCatalogMatches(const GUID &guid, uint32_t width, uint32_t height, bool requested_only) {
+    const auto transport = control_transport_snapshot();
+    if (!transport || !transport->valid()) return std::nullopt;
+    sunshine_driver::ControlClient client {*transport};
+    const auto state = VDISPLAY::catalog_policy::inspect(client, client_uuid_to_virtual_display_id(guid), width, height, requested_only);
+    if (state == VDISPLAY::catalog_policy::inspection::unknown) return std::nullopt;
+    return state == VDISPLAY::catalog_policy::inspection::matches;
+  }
+
   std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
     const char *s_client_uid,
     const char *s_client_name,
@@ -7499,8 +7595,10 @@ namespace VDISPLAY_SUNSHINE {
     std::optional<bool> hdr_requested,
     bool allow_pending_enumeration,
     bool replace_existing,
-    bool preserve_peer_displays
+    bool preserve_peer_displays,
+    bool requested_resolution_only
   ) {
+    if (requested_resolution_only && !supportsRequestedResolutionCatalog()) return std::nullopt;
     if (!release_retained_ensure_display_for_stream(guid, s_client_uid)) {
       return std::nullopt;
     }
@@ -7519,6 +7617,7 @@ namespace VDISPLAY_SUNSHINE {
       allow_pending_enumeration,
       replace_existing,
       preserve_peer_displays,
+      requested_resolution_only,
       {}
     );
   }

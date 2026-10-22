@@ -45,6 +45,8 @@ interface PairedDevice {
   virtual_display_mode?: string;
   virtual_display_layout?: string;
   always_use_virtual_display?: boolean;
+  requested_resolution_only?: boolean;
+  requested_resolution_catalog_supported?: boolean;
   prefer_10bit_sdr?: boolean;
   config_overrides?: Record<string, unknown>;
 }
@@ -189,6 +191,11 @@ function normalizeDevice(device: unknown, index: number): PairedDevice {
     virtual_display_mode: stringValue(raw.virtual_display_mode),
     virtual_display_layout: stringValue(raw.virtual_display_layout),
     always_use_virtual_display: booleanValue(raw.always_use_virtual_display, false),
+    requested_resolution_only: booleanValue(raw.requested_resolution_only, false),
+    requested_resolution_catalog_supported: booleanValue(
+      raw.requested_resolution_catalog_supported,
+      false,
+    ),
     prefer_10bit_sdr: booleanValue(raw.prefer_10bit_sdr, false),
     config_overrides: configOverrides ? structuredClone(toRaw(configOverrides)) : {},
   };
@@ -395,6 +402,7 @@ function draftFromDevice(device: PairedDevice): ClientDeviceDraft {
     virtualDisplayLayout,
     hdrProfile: device.hdr_profile?.trim() ?? '',
     prefer10BitSdr: Boolean(device.prefer_10bit_sdr),
+    requestedResolutionOnly: Boolean(device.requested_resolution_only),
     configOverrides:
       device.config_overrides && typeof device.config_overrides === 'object'
         ? structuredClone(toRaw(device.config_overrides))
@@ -558,6 +566,7 @@ function hasCustomSettings(device: PairedDevice): boolean {
       device.always_use_virtual_display ||
       device.hdr_profile ||
       device.prefer_10bit_sdr ||
+      device.requested_resolution_only ||
       Object.keys(device.config_overrides ?? {}).length,
   );
 }
@@ -620,6 +629,7 @@ function updatePayload(device: PairedDevice, draft: ClientDeviceDraft): Record<s
         : '',
     virtual_display_layout: useVirtualDisplay ? (draft.virtualDisplayLayout ?? '') : '',
     prefer_10bit_sdr: draft.prefer10BitSdr,
+    requested_resolution_only: draft.requestedResolutionOnly,
     hdr_profile: draft.hdrProfile.trim(),
     config_overrides: cleanOverrides(draft.configOverrides),
   };
@@ -642,6 +652,7 @@ const draftScalarKeys = [
   'virtualDisplayLayout',
   'hdrProfile',
   'prefer10BitSdr',
+  'requestedResolutionOnly',
 ] as const satisfies ReadonlyArray<Exclude<keyof ClientDeviceDraft, 'configOverrides'>>;
 
 function serializedValue(value: unknown): string {
@@ -1011,6 +1022,9 @@ onBeforeUnmount(() => {
                   v-model="drafts[device.uuid]"
                   :common-settings="commonSettings"
                   :metadata="{ ...metadata, platform: metadata.platform || platform }"
+                  :requested-resolution-catalog-supported="
+                    device.requested_resolution_catalog_supported
+                  "
                   :display-devices="displayDevices"
                   :display-devices-loading="displayDevicesLoading"
                   :display-devices-loaded="displayDevicesLoaded"

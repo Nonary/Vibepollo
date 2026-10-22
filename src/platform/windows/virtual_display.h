@@ -127,6 +127,11 @@ namespace VDISPLAY {
    */
   bool configuredRenderAdapterMatchesVirtualDisplay(const GUID &guid, std::string_view context);
   void ensureVirtualDisplayRegistryDefaults();
+  bool supportsRequestedResolutionCatalog();
+  bool hasOwnedSunshineVirtualDisplays();
+  bool allowsSharedCatalogCapture();
+  // nullopt is an unverified state; false requires a session-boundary create.
+  std::optional<bool> virtualDisplayCatalogMatches(const GUID &guid, uint32_t width, uint32_t height, bool requested_only);
 
   struct VirtualDisplayCreationResult {
     std::optional<std::wstring> display_name;
@@ -151,6 +156,7 @@ namespace VDISPLAY {
     uint32_t height;
     uint32_t fps;
     uint32_t base_fps_millihz = 0;
+    bool requested_resolution_only = false;
     bool framegen_refresh_active = false;
     int framegen_refresh_multiplier = 1;
     // Unset preserves Windows' HDR setting, including during recovery.
@@ -187,7 +193,8 @@ namespace VDISPLAY {
     std::optional<bool> hdr_requested = std::nullopt,
     bool allow_pending_enumeration = false,
     bool replace_existing = true,
-    bool preserve_peer_displays = false
+    bool preserve_peer_displays = false,
+    bool requested_resolution_only = false
   );
 
   // Apply an HDR color profile to a physical output (best-effort).

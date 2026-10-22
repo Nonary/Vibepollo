@@ -7,6 +7,8 @@
 // standard includes
 #include <filesystem>
 #include <memory>
+#include <optional>
+#include <string>
 
 // lib includes
 #include <display_device/types.h>
@@ -34,6 +36,12 @@ namespace display_device {
    * corresponding `\\\\.\\DISPLAY#` string. Otherwise returns `output_name` unchanged.
    */
   [[nodiscard]] std::string map_output_name(const std::string &output_name);
+
+  /**
+   * @brief Resolve an exact device ID to its current active Windows capture name.
+   * No display-name or friendly-name fallback is allowed.
+   */
+  [[nodiscard]] std::optional<std::string> active_display_name_for_device_id(const std::string &device_id);
 
   [[nodiscard]] std::string
     map_display_name(const std::string &display_name);
