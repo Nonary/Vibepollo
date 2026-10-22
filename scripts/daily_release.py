@@ -11,7 +11,7 @@ import subprocess
 import shutil
 
 
-def identity(commit, day, base, revision=None):
+def identity(commit, day, base):
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Expected an exact source commit SHA")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", base):
@@ -21,14 +21,8 @@ def identity(commit, day, base, revision=None):
         raise ValueError("Source version base exceeds MSI limits or is zero")
     if not 2000 <= day.year <= 2099:
         raise ValueError("Daily version year must fit the installer version scheme")
-    if revision is not None and (not isinstance(revision, int) or not 1 <= revision <= 999):
-        raise ValueError("Nightly revision must be in 1..999")
-    suffix = "" if revision is None else f".{revision}"
-    return {
-        "commit": commit,
-        "tag": f"{base}-daily.d{day:%Y%m%d}{suffix}",
-        "version": f"{base}-daily.d{day:%Y%m%d}{suffix}+{commit[:12]}",
-    }
+    tag = f"{base}-nightly.d{day:%Y%m%d}.{commit[:12]}"
+    return {"commit": commit, "tag": tag, "version": tag}
 
 
 def validate_source(repository, branch, confirmation):
@@ -114,18 +108,24 @@ def resolve():
     # Do not change SemVer precedence to place an old nightly above its final stable.
     base = f"{major}.{minor}.{patch + 1}"
     day = dt.datetime.now(dt.timezone.utc).date()
-    prefix = f"daily-{day.isoformat()}"
-    reserved = run("git", "ls-remote", "--tags", "origin", f"refs/tags/{prefix}*", f"refs/tags/*-daily.d{day:%Y%m%d}*")
-    names = [line.split()[-1].removeprefix("refs/tags/") for line in reserved.splitlines()]
-    names += [r["tag_name"] for page in releases for r in page]
-    revisions = []
-    for name in names:
-        legacy = re.fullmatch(re.escape(prefix) + r"(?:\.([1-9][0-9]{0,2}))?", name)
-        semver = re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-daily\.d" + f"{day:%Y%m%d}" + r"(?:\.([1-9][0-9]{0,2}))?", name)
-        match = legacy or semver
-        if match:
-            revisions.append(int(match[1]) if match[1] else 1)
-    info = identity(commit, day, base, max(revisions, default=0) + 1)
+    # A hex SHA is an identity, not an ordinal. Keep at most one published
+    # new-style nightly per UTC day so installed clients and package managers
+    # never need to guess same-day upgrade order from lexical SHA values.
+    published_today = [r for page in releases for r in page
+                       if r.get("draft") is False and r.get("prerelease") is True and
+                       r.get("published_at") and re.fullmatch(
+                           r"[0-9]+\.[0-9]+\.[0-9]+-nightly\.d" + f"{day:%Y%m%d}" + r"\.[0-9a-f]{12}",
+                           r.get("tag_name", ""))]
+    if published_today:
+        emit_outputs({"commit": commit, "should_build": "false",
+                      "skip_reason": f"Nightly already published today: {published_today[0]['tag_name']}"})
+        return
+    info = identity(commit, day, base)
+    reserved = run("git", "ls-remote", "--tags", "origin", f"refs/tags/{info['tag']}")
+    for line in reserved.splitlines():
+        target, ref = line.split()
+        if ref == f"refs/tags/{info['tag']}" and target != commit:
+            raise ValueError("Immutable nightly tag is reserved at another source commit")
     info["should_build"] = "true"
     emit_outputs(info)
 
@@ -136,11 +136,10 @@ def verify_assets(root, product, commit, tag, version):
     actual = {p.name for p in root.iterdir()}
     if actual != expected or any(not p.is_file() or p.is_symlink() or p.stat().st_size == 0 for p in root.iterdir()):
         raise ValueError(f"Expected exactly the finalized nonempty assets {sorted(expected)}; got {sorted(actual)}")
-    match = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)-daily\.d([0-9]{8})(?:\.([1-9][0-9]{0,2}))?", tag)
+    match = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)-nightly\.d([0-9]{8})\.([0-9a-f]{12})", tag)
     if not match:
-        raise ValueError("New releases require a SemVer nightly tag")
-    info = identity(commit, dt.datetime.strptime(match[2], "%Y%m%d").date(), match[1],
-                    int(match[3]) if match[3] else None)
+        raise ValueError("New releases require a commit-bound nightly tag")
+    info = identity(commit, dt.datetime.strptime(match[2], "%Y%m%d").date(), match[1])
     if info["tag"] != tag or info["version"] != version:
         raise ValueError("Release tag/version/source identity is incoherent")
     provenance = json.loads((root / "release-provenance.json").read_text(encoding="utf-8-sig"))

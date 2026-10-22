@@ -53,7 +53,7 @@ set(CPACK_WIX_CANDLE_EXTRA_FLAGS
 
 # Daily packages forbid unattended trust changes; production defaults stay zero.
 set(SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY 0)
-if(PROJECT_VERSION_FULL MATCHES "-daily[.]")
+if(PROJECT_VERSION_FULL MATCHES "-(daily|nightly)[.]")
   set(SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY 1)
 endif()
 list(APPEND CPACK_WIX_CANDLE_EXTRA_FLAGS "-dDailyUnsignedDriverPolicy=${SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY}")

@@ -2,6 +2,8 @@
 
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const {
   handleDailyReleaseFollowUp,
@@ -78,7 +80,7 @@ function makeDaily(overrides = {}) {
   return {
     draft: false,
     prerelease: true,
-    tag_name: "2.0.0-daily.d20261022",
+    tag_name: "2.0.0-nightly.d20261022.222222222222",
     published_at: RELEASE_TIME,
     ...overrides,
   };
@@ -274,6 +276,12 @@ test("dispatch publication fields cannot override a draft or publication timesta
   assertNoIssueStateUpdates(timeResult);
 });
 
+test("legacy daily tags remain eligible for verified follow-up", async () => {
+  const result = await runDaily({ release: makeDaily({ tag_name: "2.0.0-daily.d20261022" }) });
+  assert.equal(result.result.comments_created, 1);
+  assertNoIssueStateUpdates(result);
+});
+
 test("unrelated prereleases are ignored", async () => {
   const result = await runDaily({ release: makeDaily({ tag_name: "2.0.0-beta.1" }) });
   assert.equal(result.result.comments_created, 0);
@@ -376,7 +384,7 @@ test("an eligible containing daily asks for confirmation and leaves the issue op
   assert.equal(result.result.comments_created, 1);
   assert.equal(result.calls.createdComments.length, 1);
   const body = result.calls.createdComments[0].body;
-  assert.match(body, /2\.0\.0-daily\.d20261022/);
+  assert.match(body, /2\.0\.0-nightly\.d20261022\.222222222222/);
   assert.match(body, /Could you test this specific build and confirm/i);
   assert.match(body, /issue remains open until you confirm/i);
   assert.equal(result.issue.state, "open");
@@ -423,4 +431,15 @@ test("release events, dispatch retries, and later dailies deduplicate one candid
 
   assert.equal(mock.calls.createdComments.length, 1);
   assertNoIssueStateUpdates(mock);
+});
+
+
+test("workflow eligibility accepts legacy daily and commit-bound nightly tags", () => {
+  const workflow = fs.readFileSync(path.join(__dirname, "../workflows/fixed-issue-follow-up.yml"), "utf8");
+  const literal = workflow.match(/const dailyTag = (\/[^\n]+\/);/);
+  assert.ok(literal, "workflow must retain its release tag gate");
+  const gate = new Function(`return ${literal[1]}`)();
+  assert.ok(gate.test("2.0.2-daily.d20261020.4"));
+  assert.ok(gate.test("2.0.2-nightly.d20261022.aaaaaaaaaaaa"));
+  assert.equal(gate.test("2.0.2-nightly.d20261022.invalid"), false);
 });

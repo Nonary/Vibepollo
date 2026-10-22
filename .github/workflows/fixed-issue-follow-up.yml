@@ -56,7 +56,8 @@ jobs:
        github.event.action == 'published' &&
        github.event.release.draft == false &&
        github.event.release.prerelease == true &&
-       contains(github.event.release.tag_name, '-daily.d'))
+       (contains(github.event.release.tag_name, '-daily.d') ||
+        contains(github.event.release.tag_name, '-nightly.d')))
     concurrency:
       group: fixed-daily-follow-up-${{ github.repository }}
       cancel-in-progress: false
@@ -82,7 +83,7 @@ jobs:
               '.github/scripts/fixed_issue_follow_up.js',
             ));
             const release = releaseFromContext(context);
-            const dailyTag = /^\d+\.\d+\.\d+-daily\.d\d{8}(?:\.\d+)?$/;
+            const dailyTag = /^\d+\.\d+\.\d+-(?:daily\.d\d{8}(?:\.\d+)?|nightly\.d\d{8}\.[0-9a-f]{12})$/;
             const valid = isPublishedDaily(release) && dailyTag.test(release.tag_name || '') &&
               (context.eventName !== 'repository_dispatch' ||
                 /^[0-9a-f]{40}$/i.test(release.source_commit || ''));

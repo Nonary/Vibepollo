@@ -4,7 +4,7 @@ const { createHash } = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 
 const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
-const DAILY_TAG = /^\d+\.\d+\.\d+-daily\.d\d{8}(?:\.\d+)?$/;
+const DAILY_TAG = /^\d+\.\d+\.\d+-(?:daily\.d\d{8}(?:\.\d+)?|nightly\.d\d{8}\.[0-9a-f]{12})$/;
 const SOURCE_SHA = /^[0-9a-f]{40}$/i;
 const ARCHIVE_SHA256 = /^[0-9a-f]{64}$/i;
 const NOTICE_PREFIX = "<!-- fixed-candidate-notice:v1:";

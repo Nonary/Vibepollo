@@ -23,6 +23,12 @@ class NightlyNotesTests(unittest.TestCase):
         for tag, version in [('daily-2026-10-11.2', f'2.0.1-daily.d20261011.3+{A[:12]}'), ('daily-2026-10-11.1000', f'2.0.1-daily.d20261011.1000+{A[:12]}')]:
             with self.assertRaises(ValueError): n.sequence(REPO, tag, version, A)
 
+    def test_new_nightly_tag_binds_source_and_version(self):
+        tag = '2.0.1-nightly.d20261011.' + A[:12]
+        self.assertEqual(n.sequence(REPO, tag, tag, A), 20261011)
+        for bad_version, bad_source in ((tag + '+extra', A), (tag, B)):
+            with self.assertRaises(ValueError): n.sequence(REPO, tag, bad_version, bad_source)
+
     def test_semver_tags_preserve_legacy_sequence_and_bind_exact_core(self):
         tag = '2.0.1-daily.d20261011.3'
         version = tag + '+' + A[:12]

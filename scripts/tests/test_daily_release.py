@@ -40,8 +40,8 @@ class DailyTests(unittest.TestCase):
 
     def test_calendar_identity_fits_msi(self):
         first = daily.identity(SHA, dt.date(2026, 10, 11), "2.0.0")
-        self.assertEqual(first["tag"], "2.0.0-daily.d20261011")
-        self.assertEqual(first["version"], "2.0.0-daily.d20261011+aaaaaaaaaaaa")
+        self.assertEqual(first["tag"], "2.0.0-nightly.d20261011.aaaaaaaaaaaa")
+        self.assertEqual(first["version"], first["tag"])
         for day in (dt.date(2026, 12, 31), dt.date(2027, 1, 1), dt.date(2028, 2, 29)):
             major, minor, patch_number = daily.identity(SHA, day, "2.0.0")["version"].split("-")[0].split(".")
             self.assertLessEqual(int(major), 255)
@@ -70,21 +70,33 @@ class DailyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 daily.validate_migration("Nonary/Vibepollo", target, source, confirmation)
 
-    def test_existing_day_reserves_next_revision_without_overwriting(self):
+    def test_reserved_nightly_tag_reuses_only_exact_source(self):
         day = dt.datetime.now(dt.timezone.utc).date()
-        prefix = f"daily-{day}"
+        tag = daily.identity(SHA, day, "2.0.1")["tag"]
+        for target, should_pass in ((SHA, True), ("b" * 40, False)):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temp:
+                output = Path(temp) / "output"
+                with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA, DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master", DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:master", GITHUB_OUTPUT=str(output)):
+                    with patch.object(daily, "run", side_effect=["", SHA, "", "[[]]", "", "2.0.0", f"{target} refs/tags/{tag}"]):
+                        if should_pass:
+                            daily.resolve()
+                            self.assertIn(f"tag={tag}", output.read_text())
+                        else:
+                            with self.assertRaisesRegex(ValueError, "Immutable nightly tag"):
+                                daily.resolve()
+
+    def test_published_same_day_nightly_skips_even_when_source_changes(self):
+        day = dt.datetime.now(dt.timezone.utc).date()
+        released = daily.identity("b" * 40, day, "2.0.1")["tag"]
+        releases = [[dict(tag_name=released, draft=False, prerelease=True, published_at="2026-10-22T12:00:00Z")]]
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "output"
             with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA, DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master", DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:master", GITHUB_OUTPUT=str(output)):
-                with patch.object(daily, "run", side_effect=["", SHA, "", "[[]]", "", "2.0.0-beta.4\n2.0.0", f"{SHA} refs/tags/{prefix}\n{SHA} refs/tags/{prefix}.2\n{SHA} refs/tags/2.0.1-daily.d{day:%Y%m%d}.4"]):
-                    daily.resolve()
-            self.assertIn(f"tag=2.0.1-daily.d{day:%Y%m%d}.5", output.read_text())
-            self.assertIn(f"version=2.0.1-daily.d{day:%Y%m%d}.5+", output.read_text())
-
-    def test_revision_identity_is_bound_and_bounded(self):
-        self.assertEqual(daily.identity(SHA, dt.date(2026,10,11), "2.0.1", 2)["version"], "2.0.1-daily.d20261011.2+aaaaaaaaaaaa")
-        for revision in (0, -1, 1000, "2"):
-            with self.assertRaises(ValueError): daily.identity(SHA, dt.date(2026,10,11), "2.0.1", revision)
+                with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps(releases), "", "2.0.0"]):
+                    with patch.object(daily, "previous_successful_nightly", return_value=None):
+                        daily.resolve()
+            self.assertIn("should_build=false", output.read_text())
+            self.assertIn("Nightly already published today", output.read_text())
 
     def test_resolve_fetches_confirmed_remote_commit_and_emits_identity(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -93,7 +105,7 @@ class DailyTests(unittest.TestCase):
                 with patch.object(daily, "run", side_effect=["", SHA, "", "[[]]", "", "2.0.0-beta.4\n2.0.0", ""]) as commands:
                     daily.resolve()
             self.assertIn(f"commit={SHA}", output.read_text())
-            self.assertIn("version=2.0.1-daily", output.read_text())
+            self.assertIn("version=2.0.1-nightly", output.read_text())
             self.assertIn("should_build=true", output.read_text())
             self.assertEqual(commands.call_args_list[0].args, ("git", "fetch", "--no-tags", "origin", "refs/heads/master:refs/remotes/origin/daily-source"))
 

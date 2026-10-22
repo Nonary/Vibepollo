@@ -15,7 +15,7 @@ Schema version 1 fields:
 | `tag`, `version` | Immutable tag and complete embedded application version |
 | `source_commit` | Exact lowercase 40-character Git SHA |
 | `windows_product_version` | Moonlight only: exact `6.2.B`; omitted for hosts. Prior metadata may omit it for migration, but a present value must match `B`. |
-| `nightly_sequence` | Integer host UTC date `YYYYMMDD`, or Moonlight build `B` |
+| `nightly_sequence` | Integer host UTC date `YYYYMMDD` for new SHA-tagged nightlies; historical daily revisions retain their encoded sequence; Moonlight uses build `B` |
 | `previous_successful_tag`, `previous_source_commit` | Preceding published nightly identity; null for first nightly |
 | `changelog_range` | Exact `previous_source_commit..source_commit`; null for first nightly |
 | `compare_url` | Exact-SHA GitHub compare URL; null for first nightly |
@@ -23,7 +23,7 @@ Schema version 1 fields:
 | `no_source_changes` | A previous baseline exists and its source SHA equals this source SHA |
 | `commits_total`, `commits_listed` | Number of newly reachable commits in the exact range; all messages are listed |
 
-Host repositories use `daily-YYYY-MM-DD` and `{base}-daily.dYYYYMMDD+{sha12}`. Moonlight uses `v6.1.0-daily.B` and `6.1.0-daily.B` (Windows product version `6.2.B`). Metadata carries the full source SHA independently of application version display. Clients enable prereleases by default with a persistent stable-only opt-out, and must require a non-draft prerelease with its expected packages and this metadata before treating it as available.
+New host releases use `{base}-nightly.dYYYYMMDD.{sha12}` as tag, title and application version. The suffix is the first 12 hex characters of the exact built source commit. Previously published host `daily-YYYY-MM-DD` and `{base}-daily.dYYYYMMDD+{sha12}` identities remain accepted. Moonlight uses `v6.1.0-daily.B` and `6.1.0-daily.B` (Windows product version `6.2.B`). Metadata carries the full source SHA independently of application version display. Clients enable prereleases by default with a persistent stable-only opt-out, and must require a non-draft prerelease with its expected packages and this metadata before treating it as available.
 
 First nightly notes explicitly claim no baseline or delta. Same-source nightlies explicitly say no source changes and rebuild. Divergent/rewound history warns that `git log previous..source` lists newly reachable commits, without claiming forward ancestry; an empty rewind delta is distinct from identical sources.
 
