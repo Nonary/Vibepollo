@@ -1,4 +1,4 @@
-"""Run the production live-recovery admission against deterministic driver seams."""
+"""Run production live-recovery helpers against deterministic driver and SetupAPI seams."""
 import pathlib
 import subprocess
 import tempfile
@@ -29,13 +29,18 @@ product_code_from_id = function('    std::uint16_t virtual_display_product_code_
 product_code_string_from_id = function('    std::string virtual_display_product_code_string_from_display_id(')
 serial_number_from_id = function('    std::uint32_t virtual_display_serial_number_from_display_id(')
 edid_match = function('    bool matches_virtual_display_id_edid(')
+container_lookup = function('    std::optional<GUID> monitor_container_id_from_device_path(')
+stable_identity_match = function('    bool matches_virtual_display_id_identity(')
 
 program = r'''
 #include "src/capture_recovery.h"
 #include "src/platform/windows/virtual_display_recovery_policy.h"
 #include <cassert>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <cwctype>
+#include <cstring>
 #include <future>
 #include <iomanip>
 #include <optional>
@@ -43,8 +48,77 @@ program = r'''
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 using namespace std::chrono_literals;
+struct GUID {std::uint32_t Data1{};std::uint16_t Data2{},Data3{};std::uint8_t Data4[8]{};};
+using DWORD=std::uint32_t;
+using BOOL=int;
+using DEVPROPTYPE=std::uint32_t;
+using PBYTE=std::uint8_t*;
+struct DEVPROPKEY {};
+constexpr DEVPROPKEY DEVPKEY_Device_ContainerId{};
+constexpr DEVPROPTYPE DEVPROP_TYPE_GUID=13;
+constexpr DWORD ERROR_INSUFFICIENT_BUFFER=122;
+struct DeviceInfoSet {};
+using HDEVINFO=DeviceInfoSet*;
+HDEVINFO const INVALID_HANDLE_VALUE=nullptr;
+struct SP_DEVICE_INTERFACE_DATA {DWORD cbSize{};std::wstring path;};
+struct SP_DEVINFO_DATA {DWORD cbSize{};std::wstring path;};
+struct SP_DEVICE_INTERFACE_DETAIL_DATA_W {DWORD cbSize{};wchar_t DevicePath[1]{};};
+DeviceInfoSet test_device_info_set;
+std::unordered_map<std::wstring,GUID> monitor_container_ids;
+DWORD setupapi_last_error{};
+DWORD GetLastError() {return setupapi_last_error;}
+HDEVINFO SetupDiCreateDeviceInfoList(const GUID*,void*) {return &test_device_info_set;}
+BOOL SetupDiDestroyDeviceInfoList(HDEVINFO) {return 1;}
+BOOL SetupDiOpenDeviceInterfaceW(HDEVINFO,const wchar_t *path,DWORD,SP_DEVICE_INTERFACE_DATA *data) {
+ if(!monitor_container_ids.contains(path)) return 0;
+ data->path=path;return 1;
+}
+BOOL SetupDiGetDeviceInterfaceDetailW(HDEVINFO,const SP_DEVICE_INTERFACE_DATA *interface_data,
+                                      SP_DEVICE_INTERFACE_DETAIL_DATA_W *detail,DWORD detail_size,
+                                      DWORD *required_size,SP_DEVINFO_DATA *device_data) {
+ if(!detail) {
+  *required_size=static_cast<DWORD>(offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W,DevicePath)+
+                                    (interface_data->path.size()+1)*sizeof(wchar_t));
+  setupapi_last_error=ERROR_INSUFFICIENT_BUFFER;return 0;
+ }
+ const auto minimum_size=static_cast<DWORD>(offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W,DevicePath)+
+                                             (interface_data->path.size()+1)*sizeof(wchar_t));
+ if(detail_size<minimum_size) return 0;
+ std::wmemcpy(detail->DevicePath,interface_data->path.c_str(),interface_data->path.size()+1);
+ if(device_data) device_data->path=interface_data->path;
+ return 1;
+}
+BOOL SetupDiGetDevicePropertyW(HDEVINFO,const SP_DEVINFO_DATA *device_data,const DEVPROPKEY *,
+                               DEVPROPTYPE *property_type,PBYTE property_buffer,DWORD property_buffer_size,
+                               DWORD *required_size,DWORD) {
+ const auto found=monitor_container_ids.find(device_data->path);
+ if(found==monitor_container_ids.end()||property_buffer_size<sizeof(GUID)) return 0;
+ std::memcpy(property_buffer,&found->second,sizeof(GUID));
+ *property_type=DEVPROP_TYPE_GUID;*required_size=sizeof(GUID);return 1;
+}
+BOOL IsEqualGUID(const GUID &left,const GUID &right) {return std::memcmp(&left,&right,sizeof(GUID))==0;}
+int _wcsicmp(const wchar_t *left,const wchar_t *right) {
+ while(*left&&*right) {
+  const auto a=std::towlower(*left++),b=std::towlower(*right++);
+  if(a!=b) return a<b?-1:1;
+ }
+ return *left?1:(*right?-1:0);
+}
+namespace sunshine_driver {
+struct DriverGuid {std::uint32_t data1;std::uint16_t data2,data3;std::uint8_t data4[8];};
+DriverGuid container_guid_from_display_id(std::uint64_t id) {
+ return {0x9161d0d5u,static_cast<std::uint16_t>((id>>48)&0xffffu),static_cast<std::uint16_t>((id>>32)&0xffffu),
+         {0x93,0x7d,static_cast<std::uint8_t>(id>>24),static_cast<std::uint8_t>(id>>16),
+          static_cast<std::uint8_t>(id>>8),static_cast<std::uint8_t>(id),0x53,0x44}};
+}
+GUID to_windows_guid(const DriverGuid &guid) {
+ return {guid.data1,guid.data2,guid.data3,{guid.data4[0],guid.data4[1],guid.data4[2],guid.data4[3],
+                                           guid.data4[4],guid.data4[5],guid.data4[6],guid.data4[7]}};
+}
+}
 struct Lease { std::uint64_t display_id=1,lease_id=2; std::optional<std::string> device_id="virtual1"; };
 std::optional<Lease> owned=Lease{};
 int tracker_gets=0;
@@ -164,7 +238,7 @@ void observe_frame(const std::string &output,std::uint64_t instance,
  );
 }
 bool is_virtual_display_device(const display_device::EnumeratedDevice &device) {return device.virtual_display;}
-''' + product_code_from_id + '\n' + product_code_string_from_id + '\n' + serial_number_from_id + '\n' + edid_match + r'''
+''' + product_code_from_id + '\n' + product_code_string_from_id + '\n' + serial_number_from_id + '\n' + edid_match + '\n' + container_lookup + '\n' + stable_identity_match + r'''
 namespace platf::display_helper {
 struct Coordinator {
  static Coordinator &instance() {static Coordinator c;return c;}
@@ -195,8 +269,8 @@ int main() {
  assert(VDISPLAY::policy::readiness_candidate_is_exact_target(false,true,false));
  assert(VDISPLAY::policy::readiness_candidate_is_exact_target(false,false,true));
  // Distinct 64-bit IDs can collide after the driver's EDID projection. The
- // production matcher recognizes both, so readiness must reject an ambiguous
- // enumeration instead of selecting whichever candidate appears first.
+ // production EDID matcher recognizes both, so exact readiness must also
+ // match the driver-assigned PnP ContainerID for the full display ID.
  constexpr std::uint64_t colliding_display_id=0x1234000000000001ull;
  constexpr std::uint64_t colliding_peer_id=colliding_display_id+0x0000100000001000ull;
  assert(colliding_display_id!=colliding_peer_id);
@@ -207,31 +281,53 @@ int main() {
  const display_device::EnumeratedDevice::Edid colliding_edid{
   "SDD",virtual_display_product_code_string_from_display_id(colliding_display_id),
   virtual_display_serial_number_from_display_id(colliding_display_id)};
+ const auto target_container_id=sunshine_driver::to_windows_guid(
+  sunshine_driver::container_guid_from_display_id(colliding_display_id));
+ const auto peer_container_id=sunshine_driver::to_windows_guid(
+  sunshine_driver::container_guid_from_display_id(colliding_peer_id));
+ assert(!IsEqualGUID(target_container_id,peer_container_id));
+ monitor_container_ids.clear();
+ monitor_container_ids[L"path-target"]=target_container_id;
+ monitor_container_ids[L"path-peer"]=peer_container_id;
  display_device::EnumeratedDevice colliding_target{"target-id","path-target","","",true,colliding_edid};
  display_device::EnumeratedDevice colliding_peer{"peer-id","path-peer","","",true,colliding_edid};
  assert(matches_virtual_display_id_edid(colliding_target,colliding_display_id));
  assert(matches_virtual_display_id_edid(colliding_peer,colliding_display_id));
- const std::vector<display_device::EnumeratedDevice> ambiguous_devices{colliding_target,colliding_peer};
+ assert(matches_virtual_display_id_identity(colliding_target,colliding_display_id));
+ assert(!matches_virtual_display_id_identity(colliding_peer,colliding_display_id));
+ // A singleton wrong peer is the key negative control: EDID-only uniqueness
+ // would accept it, but its full container identity must reject it.
+ const std::vector<display_device::EnumeratedDevice> singleton_peer{colliding_peer};
  const auto is_virtual=[](const auto &candidate){return is_virtual_display_device(candidate);};
- const auto matches_colliding_id=[&](const auto &candidate){return matches_virtual_display_id_edid(candidate,colliding_display_id);};
- const auto ambiguous_match_count=VDISPLAY::policy::count_stable_edid_matches(ambiguous_devices,is_virtual,matches_colliding_id);
- assert(ambiguous_match_count==2);
- assert(!VDISPLAY::policy::stable_edid_candidate_is_unique(matches_virtual_display_id_edid(colliding_peer,colliding_display_id),ambiguous_match_count));
+ const auto matches_colliding_id=[&](const auto &candidate){return matches_virtual_display_id_identity(candidate,colliding_display_id);};
+ const auto singleton_peer_count=VDISPLAY::policy::count_stable_identity_matches(singleton_peer,is_virtual,matches_colliding_id);
+ assert(singleton_peer_count==0);
+ assert(!VDISPLAY::policy::stable_identity_candidate_is_unique(matches_virtual_display_id_identity(colliding_peer,colliding_display_id),singleton_peer_count));
  assert(!VDISPLAY::policy::readiness_candidate_is_exact_target(true,false,
-  VDISPLAY::policy::stable_edid_candidate_is_unique(matches_virtual_display_id_edid(colliding_peer,colliding_display_id),ambiguous_match_count)));
+  VDISPLAY::policy::stable_identity_candidate_is_unique(matches_virtual_display_id_identity(colliding_peer,colliding_display_id),singleton_peer_count)));
  const std::vector<display_device::EnumeratedDevice> unique_devices{colliding_target};
- const auto unique_match_count=VDISPLAY::policy::count_stable_edid_matches(unique_devices,is_virtual,matches_colliding_id);
+ const auto unique_match_count=VDISPLAY::policy::count_stable_identity_matches(unique_devices,is_virtual,matches_colliding_id);
  assert(unique_match_count==1);
- assert(VDISPLAY::policy::stable_edid_candidate_is_unique(matches_virtual_display_id_edid(colliding_target,colliding_display_id),unique_match_count));
+ assert(VDISPLAY::policy::stable_identity_candidate_is_unique(matches_virtual_display_id_identity(colliding_target,colliding_display_id),unique_match_count));
  assert(VDISPLAY::policy::readiness_candidate_is_exact_target(true,false,
-  VDISPLAY::policy::stable_edid_candidate_is_unique(matches_virtual_display_id_edid(colliding_target,colliding_display_id),unique_match_count)));
+  VDISPLAY::policy::stable_identity_candidate_is_unique(matches_virtual_display_id_identity(colliding_target,colliding_display_id),unique_match_count)));
+ // Duplicate exact paths/records still fail closed even when each record has
+ // the requested full identity.
+ const std::vector<display_device::EnumeratedDevice> ambiguous_devices{colliding_target,colliding_target};
+ const auto ambiguous_match_count=VDISPLAY::policy::count_stable_identity_matches(ambiguous_devices,is_virtual,matches_colliding_id);
+ assert(ambiguous_match_count==2);
+ assert(!VDISPLAY::policy::stable_identity_candidate_is_unique(matches_virtual_display_id_identity(colliding_target,colliding_display_id),ambiguous_match_count));
+ assert(!VDISPLAY::policy::readiness_candidate_is_exact_target(true,false,
+  VDISPLAY::policy::stable_identity_candidate_is_unique(matches_virtual_display_id_identity(colliding_target,colliding_display_id),ambiguous_match_count)));
+ display_device::EnumeratedDevice unavailable_container{"unavailable-id","missing-path","","",true,colliding_edid};
+ assert(!matches_virtual_display_id_identity(unavailable_container,colliding_display_id));
  auto wrong_edid=colliding_edid;wrong_edid.m_manufacturer_id="XYZ";
- display_device::EnumeratedDevice wrong_candidate{"wrong-id","wrong-path","","",true,wrong_edid};
+ display_device::EnumeratedDevice wrong_candidate{"wrong-id","path-target","","",true,wrong_edid};
  const std::vector<display_device::EnumeratedDevice> wrong_devices{wrong_candidate};
- const auto wrong_match_count=VDISPLAY::policy::count_stable_edid_matches(wrong_devices,is_virtual,matches_colliding_id);
+ const auto wrong_match_count=VDISPLAY::policy::count_stable_identity_matches(wrong_devices,is_virtual,matches_colliding_id);
  assert(wrong_match_count==0);
  assert(!matches_virtual_display_id_edid(wrong_candidate,colliding_display_id));
- assert(!VDISPLAY::policy::stable_edid_candidate_is_unique(matches_virtual_display_id_edid(wrong_candidate,colliding_display_id),wrong_match_count));
+ assert(!VDISPLAY::policy::stable_identity_candidate_is_unique(matches_virtual_display_id_identity(wrong_candidate,colliding_display_id),wrong_match_count));
  assert(VDISPLAY::policy::defer_unidentified_readiness_candidate(false,false));
  assert(!VDISPLAY::policy::defer_unidentified_readiness_candidate(false,true));
  assert(!VDISPLAY::policy::defer_unidentified_readiness_candidate(true,false));
@@ -524,4 +620,4 @@ with tempfile.TemporaryDirectory(prefix='live-recovery-') as d:
     cpp.write_text(program)
     subprocess.run(['g++', '-std=c++23', '-O1', '-pthread', '-Wall', '-Wextra', '-Werror', '-I', str(root), str(cpp), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True, timeout=10)
-print('Live recovery: exact lease, identity provenance, no-devices lifecycle, cancellation, lock contention and capture acknowledgement passed')
+print('Live recovery: exact lease, EDID-collision container identity, no-devices lifecycle, cancellation, lock contention and capture acknowledgement passed')

@@ -126,7 +126,7 @@ namespace VDISPLAY::policy {
   }
 
   template<typename CandidateRange, typename IsVirtual, typename MatchesStableEdid>
-  std::size_t count_stable_edid_matches(
+  std::size_t count_stable_identity_matches(
     const CandidateRange &candidates,
     IsVirtual &&is_virtual,
     MatchesStableEdid &&matches_stable_edid
@@ -140,7 +140,7 @@ namespace VDISPLAY::policy {
     ));
   }
 
-  inline bool stable_edid_candidate_is_unique(
+  inline bool stable_identity_candidate_is_unique(
     bool candidate_matches,
     std::size_t matching_candidate_count
   ) noexcept {

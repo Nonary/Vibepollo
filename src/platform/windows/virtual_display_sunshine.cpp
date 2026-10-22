@@ -44,6 +44,7 @@
 #include <cwchar>
 #include <cwctype>
 #include <devguid.h>
+#include <devpkey.h>
 #include <dxgi.h>
 #include <dxgi1_6.h>
 #include <exception>
@@ -2130,6 +2131,108 @@ namespace VDISPLAY_SUNSHINE {
       const auto expected_serial = virtual_display_serial_number_from_display_id(display_id);
       return equals_ci(device.m_edid->m_product_code, expected_product_code) &&
              device.m_edid->m_serial_number == expected_serial;
+    }
+
+    std::optional<GUID> monitor_container_id_from_device_path(const std::wstring &monitor_device_path) {
+      if (monitor_device_path.empty()) {
+        return std::nullopt;
+      }
+
+      struct DeviceInfoSet {
+        HDEVINFO handle = SetupDiCreateDeviceInfoList(nullptr, nullptr);
+
+        ~DeviceInfoSet() {
+          if (handle != INVALID_HANDLE_VALUE) {
+            SetupDiDestroyDeviceInfoList(handle);
+          }
+        }
+      } device_info_set;
+      if (device_info_set.handle == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
+      }
+
+      SP_DEVICE_INTERFACE_DATA interface_data {};
+      interface_data.cbSize = sizeof(interface_data);
+      if (!SetupDiOpenDeviceInterfaceW(
+            device_info_set.handle,
+            monitor_device_path.c_str(),
+            0,
+            &interface_data
+          )) {
+        return std::nullopt;
+      }
+
+      DWORD required_size = 0;
+      SP_DEVINFO_DATA device_data {};
+      device_data.cbSize = sizeof(device_data);
+      if (SetupDiGetDeviceInterfaceDetailW(
+            device_info_set.handle,
+            &interface_data,
+            nullptr,
+            0,
+            &required_size,
+            &device_data
+          ) ||
+          GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+          required_size == 0) {
+        return std::nullopt;
+      }
+
+      std::vector<std::byte> detail_buffer(required_size);
+      auto *detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W *>(detail_buffer.data());
+      detail->cbSize = sizeof(*detail);
+      if (!SetupDiGetDeviceInterfaceDetailW(
+            device_info_set.handle,
+            &interface_data,
+            detail,
+            required_size,
+            nullptr,
+            &device_data
+          ) ||
+          _wcsicmp(detail->DevicePath, monitor_device_path.c_str()) != 0) {
+        return std::nullopt;
+      }
+
+      GUID container_id {};
+      DEVPROPTYPE property_type = 0;
+      DWORD property_size = 0;
+      if (!SetupDiGetDevicePropertyW(
+            device_info_set.handle,
+            &device_data,
+            &DEVPKEY_Device_ContainerId,
+            &property_type,
+            reinterpret_cast<PBYTE>(&container_id),
+            sizeof(container_id),
+            &property_size,
+            0
+          ) ||
+          property_type != DEVPROP_TYPE_GUID ||
+          property_size != sizeof(container_id)) {
+        return std::nullopt;
+      }
+
+      return container_id;
+    }
+
+    bool matches_virtual_display_id_identity(
+      const display_device::EnumeratedDevice &device,
+      const std::uint64_t display_id
+    ) {
+      if (!matches_virtual_display_id_edid(device, display_id) || device.m_monitor_device_path.empty()) {
+        return false;
+      }
+
+      const auto actual_container_id = monitor_container_id_from_device_path(
+        platf::from_utf8(device.m_monitor_device_path)
+      );
+      if (!actual_container_id) {
+        return false;
+      }
+
+      const auto expected_container_id = sunshine_driver::to_windows_guid(
+        sunshine_driver::container_guid_from_display_id(display_id)
+      );
+      return IsEqualGUID(*actual_container_id, expected_container_id);
     }
 
     std::wstring virtual_display_dpi_settings_prefix(const std::uint64_t display_id) {
@@ -6397,13 +6500,14 @@ namespace VDISPLAY_SUNSHINE {
 
       auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
       if (devices) {
-        // EDID product/serial is a lossy encoding of the 64-bit display ID.
-        // Establish uniqueness across this enumeration before allowing it to
-        // identify a candidate; otherwise the first matching peer could win.
-        const auto stable_edid_match_count = expected_display_id ? VDISPLAY::policy::count_stable_edid_matches(
+        // EDID product/serial is lossy, so require the driver's full container
+        // GUID as well before stable identity can select a readiness target.
+        // Count complete matches to fail closed if Windows exposes duplicate
+        // interface records for the same identity.
+        const auto stable_identity_match_count = expected_display_id ? VDISPLAY::policy::count_stable_identity_matches(
           *devices,
           [](const auto &candidate) { return is_virtual_display_device(candidate); },
-          [&](const auto &candidate) { return matches_virtual_display_id_edid(candidate, *expected_display_id); }
+          [&](const auto &candidate) { return matches_virtual_display_id_identity(candidate, *expected_display_id); }
         ) : 0;
         std::optional<display_device::EnumeratedDevice> unique_resolution_candidate;
         std::optional<display_device::EnumeratedDevice> unique_weak_identity_candidate;
@@ -6464,21 +6568,21 @@ namespace VDISPLAY_SUNSHINE {
           }
 
           // A wedged per-client identity enumerates with no GDI name, no
-          // monitor path hint, and no active mode data, so none of the hint
-          // matchers above can ever select it. Its stable EDID product/serial
-          // still identifies it exactly.
-          bool stable_edid_match = false;
+          // monitor path hint, and no active mode data. Its EDID tuple can
+          // narrow the candidate, while the driver-assigned ContainerID
+          // proves the full display ID.
+          bool stable_identity_match = false;
           if (expected_display_id && is_virtual) {
-            stable_edid_match = VDISPLAY::policy::stable_edid_candidate_is_unique(
-              matches_virtual_display_id_edid(candidate, *expected_display_id),
-              static_cast<std::size_t>(stable_edid_match_count)
+            stable_identity_match = VDISPLAY::policy::stable_identity_candidate_is_unique(
+              matches_virtual_display_id_identity(candidate, *expected_display_id),
+              static_cast<std::size_t>(stable_identity_match_count)
             );
           }
-          if (stable_edid_match) {
+          if (stable_identity_match) {
             if (!strong_identity_match) {
               BOOST_LOG(info) << "Virtual display candidate "
                               << (candidate.m_device_id.empty() ? candidate.m_monitor_device_path : candidate.m_device_id)
-                              << " matched the stable EDID identity for display_id=" << *expected_display_id
+                              << " matched the stable display identity for display_id=" << *expected_display_id
                               << (candidate.m_info ? " (active)" : " (enumerated, not active)")
                               << "; adopting it as the exact target.";
             }
@@ -6486,7 +6590,7 @@ namespace VDISPLAY_SUNSHINE {
           const bool exact_target = VDISPLAY::policy::readiness_candidate_is_exact_target(
             expected_display_id.has_value(),
             strong_identity_match,
-            stable_edid_match
+            stable_identity_match
           );
 
           if (!exact_target && weak_identity_match) {
@@ -6606,7 +6710,7 @@ namespace VDISPLAY_SUNSHINE {
 
       for (const auto &device : *devices) {
         if (!is_virtual_display_device(device) ||
-            !matches_virtual_display_id_edid(device, display_id)) {
+            !matches_virtual_display_id_identity(device, display_id)) {
           continue;
         }
         return device.m_info ?
@@ -6625,7 +6729,7 @@ namespace VDISPLAY_SUNSHINE {
       }
       for (const auto &device : *devices) {
         if (is_virtual_display_device(device) &&
-            matches_virtual_display_id_edid(device, display_id) &&
+            matches_virtual_display_id_identity(device, display_id) &&
             !device.m_device_id.empty()) {
           return device.m_device_id;
         }
@@ -6649,7 +6753,7 @@ namespace VDISPLAY_SUNSHINE {
       if (devices) {
         for (const auto &device : *devices) {
           if (!is_virtual_display_device(device) ||
-              !matches_virtual_display_id_edid(device, display_id)) {
+              !matches_virtual_display_id_identity(device, display_id)) {
             continue;
           }
           if (device.m_supported_refresh_rates.empty()) {
@@ -8486,7 +8590,7 @@ namespace VDISPLAY_SUNSHINE {
       if (!is_virtual_display_device(device) || device.m_device_id.empty()) {
         continue;
       }
-      if (!matches_virtual_display_id_edid(device, expected_display_id)) {
+      if (!matches_virtual_display_id_identity(device, expected_display_id)) {
         continue;
       }
 
@@ -8700,7 +8804,7 @@ namespace {
 
     for (const auto &device : *devices) {
       if (!VDISPLAY_SUNSHINE::is_virtual_display_device(device) ||
-          !VDISPLAY_SUNSHINE::matches_virtual_display_id_edid(device, expected_display_id)) {
+          !VDISPLAY_SUNSHINE::matches_virtual_display_id_identity(device, expected_display_id)) {
         continue;
       }
 
