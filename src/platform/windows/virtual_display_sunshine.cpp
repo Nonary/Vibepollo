@@ -4372,7 +4372,6 @@ namespace VDISPLAY_SUNSHINE {
       uuid_util::uuid_t guid_uuid;
       bool confirmed_active_at_schedule = false;
       std::optional<std::wstring> current_display_name;
-      bool current_display_name_verified = false;
       std::optional<std::string> normalized_display_name;
       std::optional<std::string> current_device_id;
       std::optional<std::wstring> current_monitor_device_path;
@@ -4398,11 +4397,9 @@ namespace VDISPLAY_SUNSHINE {
       void update_identifiers(
         const std::optional<std::wstring> &display_name,
         const std::optional<std::string> &device_id,
-        const std::optional<std::wstring> &monitor_device_path,
-        bool display_name_verified = false
+        const std::optional<std::wstring> &monitor_device_path
       ) {
         current_display_name = display_name;
-        current_display_name_verified = display_name_verified;
         current_device_id = device_id;
         current_monitor_device_path = monitor_device_path;
         normalized_display_name.reset();
@@ -4621,6 +4618,7 @@ namespace VDISPLAY_SUNSHINE {
       const bool has_stable_identity =
         (state.current_device_id && !state.current_device_id->empty()) ||
         state.normalized_monitor_device_path.has_value();
+      const auto lease = driver_lease_tracker().get(state.guid_uuid);
       bool matched_strong_inactive = false;
       std::optional<display_device::EnumeratedDevice> unique_weak_candidate;
       bool weak_candidate_conflict = false;
@@ -4630,29 +4628,29 @@ namespace VDISPLAY_SUNSHINE {
           continue;
         }
 
-        bool strong_match = false;
-        if (state.normalized_monitor_device_path && !device.m_monitor_device_path.empty()) {
-          const auto normalized_path = normalize_display_name(device.m_monitor_device_path);
-          if (!normalized_path.empty() && normalized_path == *state.normalized_monitor_device_path) {
-            strong_match = true;
+        const bool exact_lease_identity =
+          lease && lease->device_id && !lease->device_id->empty() && !device.m_device_id.empty() &&
+          equals_ci(device.m_device_id, *lease->device_id);
+        bool strong_match = exact_lease_identity;
+        if (!lease || !lease->device_id || lease->device_id->empty()) {
+          if (state.normalized_monitor_device_path && !device.m_monitor_device_path.empty()) {
+            const auto normalized_path = normalize_display_name(device.m_monitor_device_path);
+            if (!normalized_path.empty() && normalized_path == *state.normalized_monitor_device_path) {
+              strong_match = true;
+            }
           }
-        }
-        if (!strong_match && state.current_device_id && !state.current_device_id->empty() && !device.m_device_id.empty()) {
-          strong_match = equals_ci(device.m_device_id, *state.current_device_id);
+          if (!strong_match && state.current_device_id && !state.current_device_id->empty() && !device.m_device_id.empty()) {
+            strong_match = equals_ci(device.m_device_id, *state.current_device_id);
+          }
         }
         if (strong_match) {
           const bool is_active = !device.m_display_name.empty();
           if (is_active) {
-            const auto lease = driver_lease_tracker().get(state.guid_uuid);
-            const bool exact_lease_identity =
-              lease && lease->device_id && !lease->device_id->empty() && !device.m_device_id.empty() &&
-              equals_ci(device.m_device_id, *lease->device_id);
             state.update_identifiers(
               platf::from_utf8(device.m_display_name),
               device.m_device_id.empty() ? state.current_device_id : std::optional {device.m_device_id},
               device.m_monitor_device_path.empty() ? state.current_monitor_device_path :
-                                                       std::optional {platf::from_utf8(device.m_monitor_device_path)},
-              exact_lease_identity
+                                                       std::optional {platf::from_utf8(device.m_monitor_device_path)}
             );
             return MonitorTargetPresence::present_active;
           }
@@ -4669,7 +4667,13 @@ namespace VDISPLAY_SUNSHINE {
             const auto normalized_friendly = normalize_display_name(device.m_friendly_name);
             weak_match = !normalized_friendly.empty() && normalized_friendly == *state.normalized_display_name;
           }
-          if (weak_match && !weak_candidate_conflict) {
+          const bool exact_lease_identity =
+            lease && lease->device_id && !lease->device_id->empty() && !device.m_device_id.empty() &&
+            equals_ci(device.m_device_id, *lease->device_id);
+          // A client/friendly name can nominate a candidate, but when this
+          // monitor has an owned driver lease only that lease's device ID can
+          // establish presence or seed identifiers for later checks.
+          if (weak_match && (!lease || exact_lease_identity) && !weak_candidate_conflict) {
             if (!unique_weak_candidate) {
               unique_weak_candidate = device;
             } else {
@@ -4700,7 +4704,11 @@ namespace VDISPLAY_SUNSHINE {
         }
 
         const auto before = state.describe_target();
-        state.update_identifiers(adopted_display_name, adopted_device_id, adopted_monitor_device_path);
+        state.update_identifiers(
+          adopted_display_name,
+          adopted_device_id,
+          adopted_monitor_device_path
+        );
         BOOST_LOG(debug) << "Virtual display recovery monitor adopted unique identifiers via client_name '"
                          << state.params.client_name << "': " << before << " -> " << state.describe_target();
         return !device.m_display_name.empty() ?
@@ -4716,10 +4724,6 @@ namespace VDISPLAY_SUNSHINE {
       if (!lease || !lease->device_id || lease->device_id->empty()) {
         return false;
       }
-      // The GDI display name can be reassigned while the target is inactive.
-      // Re-verify it from the exact device identity after activation before
-      // allowing it to acknowledge capture recovery.
-      state.current_display_name_verified = false;
 
       std::unique_lock<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex, std::defer_lock);
       const auto validate_owner = [&] {
@@ -4760,17 +4764,10 @@ namespace VDISPLAY_SUNSHINE {
         return false;
       }
 
-      std::vector<std::string> outputs {*lease->device_id};
-      if (state.current_display_name_verified) {
-        if (state.current_display_name) {
-          outputs.push_back(platf::to_utf8(*state.current_display_name));
-        }
-        if (state.current_monitor_device_path) {
-          outputs.push_back(platf::to_utf8(*state.current_monitor_device_path));
-        }
-      }
       state.capture_confirmation.start(
-        video::capture_recovery::observations().watch(std::move(outputs)),
+        video::capture_recovery::observations().watch(
+          std::vector<std::string> {*lease->device_id}
+        ),
         std::chrono::steady_clock::now()
       );
       state.capture_lease_id = lease->lease_id;

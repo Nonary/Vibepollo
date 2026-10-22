@@ -91,13 +91,11 @@ struct RecoveryMonitorState {
  std::optional<std::wstring> current_display_name=L"DISPLAY15",current_monitor_device_path=L"monitor1";
  std::optional<std::string> current_device_id="virtual1",normalized_monitor_device_path="monitor1";
  std::optional<std::string> normalized_display_name="display15";
- bool current_display_name_verified=false;
  video::capture_recovery::confirmation_t capture_confirmation;
  std::uint64_t capture_lease_id=0,capture_display_id=0;
  void update_identifiers(const std::optional<std::wstring> &name,const std::optional<std::string> &id,
-                         const std::optional<std::wstring> &path,bool verified=false) {
+                         const std::optional<std::wstring> &path) {
   current_display_name=name;current_device_id=id;current_monitor_device_path=path;
-  current_display_name_verified=verified;
   normalized_display_name=name?std::optional<std::string>{normalize_display_name(std::string(name->begin(),name->end()))}:std::nullopt;
   normalized_monitor_device_path=path?std::optional<std::string>{normalize_display_name(std::string(path->begin(),path->end()))}:std::nullopt;
  }
@@ -121,6 +119,21 @@ struct WinApiLayer {
 };
 }
 std::vector<display_device::EnumeratedDevice> enumerated_devices;
+bool enumeration_ok=true;
+int enumeration_queries=0;
+void observe_frame(const std::string &output,std::uint64_t instance,
+                   std::chrono::steady_clock::time_point now=std::chrono::steady_clock::now()) {
+ video::capture_recovery::observe_frame_from_current_device_list(
+  video::capture_recovery::observations(),output,instance,
+  [] {
+   ++enumeration_queries;
+   if(!enumeration_ok) return std::optional<std::vector<display_device::EnumeratedDevice>>{};
+   return std::optional{enumerated_devices};
+  },
+  [](const auto &device)->const std::string& {return device.m_display_name;},
+  [](const auto &device)->const std::string& {return device.m_device_id;},now
+ );
+}
 bool is_virtual_display_device(const display_device::EnumeratedDevice &device) {return device.virtual_display;}
 namespace platf::display_helper {
 struct Coordinator {
@@ -172,27 +185,30 @@ int main() {
  ccd_paths={{"physical","monitor2",DISPLAYCONFIG_PATH_ACTIVE}};
  assert(actual_monitor_target_presence(identity_state)==MonitorTargetPresence::missing);
  assert(identity_state.current_device_id=="virtual1");
- assert(!identity_state.current_display_name_verified);
  // A fresh display name is trusted only after an exact device-ID/path match.
  enumerated_devices={{"virtual1","monitor1","DISPLAY16","",true}};
  assert(actual_monitor_target_presence(identity_state)==MonitorTargetPresence::present_active);
  assert(identity_state.current_display_name==L"DISPLAY16");
- assert(identity_state.current_display_name_verified);
- // Name-only fallback is retained when stable IDs are unavailable, but is not
- // promoted to a verified capture alias.
+ // A friendly-name candidate with a different ID cannot establish presence
+ // for a monitor that owns an exact driver lease.
  identity_state.current_device_id.reset();
  identity_state.current_monitor_device_path.reset();
  identity_state.normalized_monitor_device_path.reset();
- identity_state.normalized_display_name="display16";
- enumerated_devices={{"replacement-virtual","monitor3","DISPLAY16","DISPLAY16",true}};
+ identity_state.current_display_name.reset();
+ identity_state.normalized_display_name.reset();
+ identity_state.params.client_name="client";
+ enumerated_devices={{"replacement-virtual","monitor3","DISPLAY17","client",true}};
+ ccd_paths={{"physical","monitor2",DISPLAYCONFIG_PATH_ACTIVE}};
+ assert(actual_monitor_target_presence(identity_state)==MonitorTargetPresence::missing);
+ assert(!identity_state.current_device_id);
+ assert(!identity_state.current_display_name);
+ // The same friendly name can establish presence when the candidate ID is
+ // exactly the one retained by the driver lease.
+ enumerated_devices={{"virtual1","monitor1","DISPLAY18","client",true}};
+ ccd_paths={{"virtual1","monitor1",DISPLAYCONFIG_PATH_ACTIVE}};
  assert(actual_monitor_target_presence(identity_state)==MonitorTargetPresence::present_active);
- assert(!identity_state.current_display_name_verified);
- // A subsequent stable match to the weakly adopted ID cannot verify it unless
- // the candidate ID is the exact device ID retained by the driver lease.
- enumerated_devices={{"replacement-virtual","monitor3","DISPLAY17","DISPLAY16",true}};
- assert(actual_monitor_target_presence(identity_state)==MonitorTargetPresence::present_active);
- assert(identity_state.current_display_name==L"DISPLAY17");
- assert(!identity_state.current_display_name_verified);
+ assert(identity_state.current_device_id=="virtual1");
+ assert(identity_state.current_display_name==L"DISPLAY18");
  enumerated_devices.clear();
  ccd_paths={{"virtual1","monitor1",0}};
 
@@ -226,43 +242,74 @@ int main() {
  release.set_value();owner.join();
  assert(helper_applies==0&&resets==0);
  helper_ok=false;assert(!reactivate_owned_virtual_display(state,{}));assert(resets==0);helper_ok=true;
- // The exact active device refreshes the display-name alias before watching.
+ // The exact active device supplies a display name, but capture confirmation
+ // resolves the current name-to-ID mapping and accepts only the lease ID.
  enumerated_devices={{"virtual1","monitor1","DISPLAY15","",true}};
  ccd_paths={{"virtual1","monitor1",DISPLAYCONFIG_PATH_ACTIVE}};
  assert(reactivate_owned_virtual_display(state,{}));
  assert(resets==1&&state.capture_confirmation.pending());
- assert(state.current_display_name_verified);
  assert(state.capture_lease_id==2&&state.capture_display_id==1);
  assert(owned->lease_id==2&&owned->display_id==1);
  assert(state.capture_confirmation.poll(std::chrono::steady_clock::now()+5s)==video::capture_recovery::confirmation_status::retry);
  auto &captures=video::capture_recovery::observations();
- captures.frame("DISPLAY15",captures.begin_capture());
+ observe_frame("DISPLAY15",captures.begin_capture());
  assert(state.capture_confirmation.poll(std::chrono::steady_clock::now()+6s)==video::capture_recovery::confirmation_status::confirmed);
- // When CCD can prove the target is active but enumeration cannot refresh the
- // old GDI alias, a fresh frame for that stale name must not confirm recovery.
+ // Reassigning the same GDI name to another device before the fresh frame
+ // cannot acknowledge the exact leased target.
  enumerated_devices.clear();
  assert(reactivate_owned_virtual_display(state,{}));
- assert(!state.current_display_name_verified);
- captures.frame("DISPLAY15",captures.begin_capture());
+ enumerated_devices={{"replacement-virtual","monitor3","DISPLAY15","",true}};
+ const auto reassigned_instance=captures.begin_capture();
+ observe_frame("DISPLAY15",reassigned_instance);
  assert(state.capture_confirmation.poll(std::chrono::steady_clock::now()+6s)==video::capture_recovery::confirmation_status::retry);
+ // A later capture instance whose current name mapping identifies the lease
+ // is accepted, even if its GDI name was not trusted before reactivation.
+ enumerated_devices={{"virtual1","monitor1","DISPLAY15","",true}};
+ observe_frame("DISPLAY15",captures.begin_capture());
+ assert(state.capture_confirmation.poll(std::chrono::steady_clock::now()+7s)==video::capture_recovery::confirmation_status::confirmed);
 
- // A false friendly-name match can select a candidate for presence tracking,
- // but its display/path aliases cannot acknowledge a frame for the leased ID.
+ // If Windows enumeration temporarily fails on the first frame, retry the
+ // same capture instance after the throttle instead of leaving it unobserved.
+ enumerated_devices.clear();
+ assert(reactivate_owned_virtual_display(state,{}));
+ const auto transient_instance=captures.begin_capture();
+ const auto lookup_time=std::chrono::steady_clock::now();
+ enumeration_ok=false;
+ const auto queries_before=enumeration_queries;
+ observe_frame("DISPLAY15",transient_instance,lookup_time);
+ assert(enumeration_queries==queries_before+1);
+ enumeration_ok=true;
+ enumerated_devices={{"virtual1","monitor1","DISPLAY15","",true}};
+ observe_frame("DISPLAY15",transient_instance,lookup_time+499ms);
+ assert(enumeration_queries==queries_before+1);
+ assert(state.capture_confirmation.poll(lookup_time+6s)==video::capture_recovery::confirmation_status::retry);
+ observe_frame("DISPLAY15",transient_instance,lookup_time+500ms);
+ assert(enumeration_queries==queries_before+2);
+ assert(state.capture_confirmation.poll(lookup_time+7s)==video::capture_recovery::confirmation_status::confirmed);
+
+ // A mismatched friendly-name candidate cannot establish presence or seed the
+ // capture lookup. Exact driver state can still prove the leased target active.
  RecoveryMonitorState weak_state;
  weak_state.params.client_name="client";
  weak_state.current_device_id.reset();
+ weak_state.current_display_name.reset();
  weak_state.current_monitor_device_path.reset();
  weak_state.normalized_monitor_device_path.reset();
  weak_state.normalized_display_name.reset();
  enumerated_devices={{"replacement-virtual","monitor3","DISPLAY17","client",true}};
+ ccd_paths={{"physical","monitor2",DISPLAYCONFIG_PATH_ACTIVE}};
+ assert(actual_monitor_target_presence(weak_state)==MonitorTargetPresence::missing);
+ assert(!weak_state.current_device_id&&!weak_state.current_display_name);
+ ccd_paths={{"virtual1","monitor1",DISPLAYCONFIG_PATH_ACTIVE}};
  assert(actual_monitor_target_presence(weak_state)==MonitorTargetPresence::present_active);
- assert(!weak_state.current_display_name_verified);
+ assert(!weak_state.current_device_id&&!weak_state.current_display_name);
  ccd_paths={{"virtual1","monitor1",DISPLAYCONFIG_PATH_ACTIVE}};
  assert(reactivate_owned_virtual_display(weak_state,{}));
- assert(!weak_state.current_display_name_verified);
- captures.frame("DISPLAY17",captures.begin_capture());
+ const auto weak_candidate_instance=captures.begin_capture();
+ observe_frame("DISPLAY17",weak_candidate_instance);
  assert(weak_state.capture_confirmation.poll(std::chrono::steady_clock::now()+6s)==video::capture_recovery::confirmation_status::retry);
- captures.frame("virtual1",captures.begin_capture());
+ enumerated_devices={{"virtual1","monitor1","DISPLAY17","client",true}};
+ observe_frame("DISPLAY17",captures.begin_capture());
  assert(weak_state.capture_confirmation.poll(std::chrono::steady_clock::now()+7s)==video::capture_recovery::confirmation_status::confirmed);
 }
 '''

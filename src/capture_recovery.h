@@ -7,14 +7,57 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace video::capture_recovery {
+  inline bool same_name(const std::string &left, const std::string &right) {
+    return !left.empty() && left.size() == right.size() &&
+           std::equal(left.begin(), left.end(), right.begin(), [](unsigned char a, unsigned char b) {
+             return std::tolower(a) == std::tolower(b);
+           });
+  }
+
+  // Resolve the current device identity for a GDI output name. A GDI name is
+  // mutable across topology changes, so it is only a lookup key; callers must
+  // compare the resolved device ID with the identity they intend to observe.
+  template<typename DeviceList, typename NameOf, typename IdOf>
+  std::optional<std::string> resolve_device_id_for_output(
+    const std::string &output,
+    const DeviceList &devices,
+    NameOf name_of,
+    IdOf id_of
+  ) {
+    if (output.empty()) {
+      return std::nullopt;
+    }
+
+    std::optional<std::string> resolved;
+    for (const auto &device : devices) {
+      if (!same_name(name_of(device), output)) {
+        continue;
+      }
+      const auto &device_id = id_of(device);
+      if (device_id.empty()) {
+        return std::nullopt;
+      }
+      if (resolved && !same_name(*resolved, device_id)) {
+        return std::nullopt;
+      }
+      resolved = device_id;
+    }
+    return resolved;
+  }
+
   struct observation_t {
     std::uint64_t generation;
-    std::vector<std::string> outputs;
+    // Only stable target IDs can acknowledge the watched recovery.
+    std::vector<std::string> device_ids;
+    std::uint64_t last_identity_lookup_instance {0};
+    std::uint64_t retry_identity_lookup_instance {0};
+    std::chrono::steady_clock::time_point retry_identity_lookup_after {};
     std::atomic<bool> frame_observed {false};
   };
 
@@ -28,9 +71,9 @@ namespace video::capture_recovery {
       return generation_.fetch_add(1, std::memory_order_relaxed);
     }
 
-    std::shared_ptr<observation_t> watch(std::vector<std::string> outputs) {
+    std::shared_ptr<observation_t> watch(std::vector<std::string> device_ids) {
       auto observation = std::make_shared<observation_t>();
-      observation->outputs = std::move(outputs);
+      observation->device_ids = std::move(device_ids);
       std::lock_guard lock(mutex_);
       observation->generation = generation_.fetch_add(1, std::memory_order_relaxed);
       std::erase_if(observers_, [](const auto &entry) {
@@ -41,7 +84,35 @@ namespace video::capture_recovery {
       return observation;
     }
 
-    void frame(const std::string &output, std::uint64_t instance) {
+    bool requires_identity_lookup(
+      std::uint64_t instance,
+      std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
+    ) {
+      if (!active_.load(std::memory_order_acquire)) {
+        return false;
+      }
+      std::lock_guard lock(mutex_);
+      bool required = false;
+      std::erase_if(observers_, [&](const auto &entry) {
+        const auto observation = entry.lock();
+        if (!observation) {
+          return true;
+        }
+        const bool retry_ready =
+          instance != observation->retry_identity_lookup_instance || now >= observation->retry_identity_lookup_after;
+        if (instance > observation->generation && instance != observation->last_identity_lookup_instance && retry_ready) {
+          required = true;
+        }
+        return false;
+      });
+      active_.store(!observers_.empty(), std::memory_order_release);
+      return required;
+    }
+
+    void identity_lookup_failed(
+      std::uint64_t instance,
+      std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
+    ) {
       if (!active_.load(std::memory_order_acquire)) {
         return;
       }
@@ -51,15 +122,36 @@ namespace video::capture_recovery {
         if (!observation) {
           return true;
         }
-        const auto equal = [&](const std::string &candidate) {
-          return !candidate.empty() && candidate.size() == output.size() &&
-                 std::equal(candidate.begin(), candidate.end(), output.begin(), [](unsigned char a, unsigned char b) {
-                   return std::tolower(a) == std::tolower(b);
-                 });
-        };
-        if (instance > observation->generation && std::any_of(observation->outputs.begin(), observation->outputs.end(), equal)) {
-          observation->frame_observed.store(true, std::memory_order_release);
+        if (instance > observation->generation && instance != observation->last_identity_lookup_instance) {
+          observation->retry_identity_lookup_instance = instance;
+          observation->retry_identity_lookup_after = now + std::chrono::milliseconds(500);
+        }
+        return false;
+      });
+      active_.store(!observers_.empty(), std::memory_order_release);
+    }
+
+    void frame(const std::string &device_id, std::uint64_t instance) {
+      if (!active_.load(std::memory_order_acquire)) {
+        return;
+      }
+      std::lock_guard lock(mutex_);
+      std::erase_if(observers_, [&](const auto &entry) {
+        const auto observation = entry.lock();
+        if (!observation) {
           return true;
+        }
+        const auto identity_matches = std::any_of(
+          observation->device_ids.begin(), observation->device_ids.end(),
+          [&](const auto &candidate) { return same_name(candidate, device_id); }
+        );
+        if (instance > observation->generation) {
+          observation->last_identity_lookup_instance = instance;
+          observation->retry_identity_lookup_instance = 0;
+          if (identity_matches) {
+            observation->frame_observed.store(true, std::memory_order_release);
+            return true;
+          }
         }
         return false;
       });
@@ -72,6 +164,36 @@ namespace video::capture_recovery {
     std::mutex mutex_;
     std::vector<std::weak_ptr<observation_t>> observers_;
   };
+
+  // This is the production frame path used by video.cpp. Resolve only while a
+  // live observer is waiting, then confirm by current device ID rather than by
+  // the mutable GDI name alone. Failed lookups are retried with a short delay;
+  // a resolved identity is checked once per capture instance.
+  template<typename DeviceListProvider, typename NameOf, typename IdOf>
+  void observe_frame_from_current_device_list(
+    observations_t &observations,
+    const std::string &output,
+    std::uint64_t instance,
+    DeviceListProvider devices_for_output,
+    NameOf name_of,
+    IdOf id_of,
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
+  ) {
+    if (!observations.requires_identity_lookup(instance, now)) {
+      return;
+    }
+    const auto devices = devices_for_output();
+    if (!devices) {
+      observations.identity_lookup_failed(instance, now);
+      return;
+    }
+    const auto device_id = resolve_device_id_for_output(output, *devices, name_of, id_of);
+    if (device_id) {
+      observations.frame(*device_id, instance);
+    } else {
+      observations.identity_lookup_failed(instance, now);
+    }
+  }
 
   inline observations_t &observations() {
     static observations_t state;
