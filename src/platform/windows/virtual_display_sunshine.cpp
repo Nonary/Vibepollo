@@ -7201,10 +7201,17 @@ namespace VDISPLAY_SUNSHINE {
 
             // Prefer a real GDI display name (\\.\DISPLAYx) over a GUID-like placeholder when available.
             if ((!result.display_name || result.display_name->empty() || !is_gdi_display_name(*result.display_name))) {
-              auto gdi_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
-              if (!gdi_name && (!s_client_name || std::strlen(s_client_name) == 0)) {
-                gdi_name = resolve_virtual_display_name_from_devices();
-              }
+              const bool allow_any_name_fallback = !s_client_name || std::strlen(s_client_name) == 0;
+              auto gdi_name = VDISPLAY::policy::resolve_reuse_display_name(
+                reclaimed_for_reuse,
+                result.device_id,
+                allow_any_name_fallback,
+                [](const std::string &exact_device_id) {
+                  return resolve_virtual_display_name_for_device_id(exact_device_id);
+                },
+                [&] { return resolve_virtual_display_name_from_devices_for_client(s_client_name); },
+                [] { return resolve_virtual_display_name_from_devices(); }
+              );
               if (gdi_name) {
                 if (!gdi_name->empty() && is_gdi_display_name(*gdi_name)) {
                   BOOST_LOG(debug) << "Virtual display: resolved GDI name '" << platf::to_utf8(*gdi_name) << "' after reuse.";

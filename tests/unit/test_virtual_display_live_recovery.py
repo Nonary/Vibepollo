@@ -179,6 +179,28 @@ int main() {
                      {"virtual1","monitor1","DISPLAY18","client",true}};
  assert(resolve_virtual_display_name_for_device_id("virtual1")==L"DISPLAY18");
  assert(!resolve_virtual_display_name_for_device_id("missing-virtual"));
+ int client_name_lookups=0, any_name_lookups=0;
+ auto reclaimed_name=VDISPLAY::policy::resolve_reuse_display_name(
+  true,std::optional<std::string>{"virtual1"},true,
+  [](const std::string &id){return resolve_virtual_display_name_for_device_id(id);},
+  [&]{++client_name_lookups;return std::optional<std::wstring>{L"DISPLAY17"};},
+  [&]{++any_name_lookups;return std::optional<std::wstring>{L"DISPLAY99"};});
+ assert(reclaimed_name&&*reclaimed_name==L"DISPLAY18");
+ assert(client_name_lookups==0&&any_name_lookups==0);
+ auto unresolved_reclaimed_name=VDISPLAY::policy::resolve_reuse_display_name(
+  true,std::optional<std::string>{"missing-virtual"},true,
+  [](const std::string &id){return resolve_virtual_display_name_for_device_id(id);},
+  [&]{++client_name_lookups;return std::optional<std::wstring>{L"DISPLAY17"};},
+  [&]{++any_name_lookups;return std::optional<std::wstring>{L"DISPLAY99"};});
+ assert(!unresolved_reclaimed_name);
+ assert(client_name_lookups==0&&any_name_lookups==0);
+ auto ordinary_reuse_name=VDISPLAY::policy::resolve_reuse_display_name(
+  false,std::nullopt,false,
+  [](const std::string &){return std::optional<std::wstring>{};},
+  [&]{++client_name_lookups;return std::optional<std::wstring>{L"DISPLAY17"};},
+  [&]{++any_name_lookups;return std::optional<std::wstring>{L"DISPLAY99"};});
+ assert(ordinary_reuse_name&&*ordinary_reuse_name==L"DISPLAY17");
+ assert(client_name_lookups==1&&any_name_lookups==0);
  enumerated_devices.clear();
  RecoveryMonitorState state;
  ccd_paths={{"virtual1","monitor1",0},{"physical","monitor2",DISPLAYCONFIG_PATH_ACTIVE}};
