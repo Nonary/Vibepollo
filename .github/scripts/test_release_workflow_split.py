@@ -662,12 +662,50 @@ esac
         self.assertIn("arch_package_version=${arch_package_version//+/.}", workflow_text)
 
         release_steps = jobs["release"]["steps"]
-        close_issues = next(
-            step for step in release_steps if step["name"] == "Close fixed issues for release"
+        self.assertFalse(
+            any(step["name"] == "Close fixed issues for release" for step in release_steps)
         )
-        self.assertEqual(close_issues["if"], "inputs.release_draft == false")
+        self.assertNotIn("state=closed", workflow_text)
         self.assertIn('--argjson draft "${RELEASE_DRAFT}"', workflow_text)
         self.assertIn('if [[ "${RELEASE_DRAFT}" == "true" ]]', workflow_text)
+
+    def test_daily_fixed_issue_follow_up_is_verified_and_permission_bounded(self) -> None:
+        follow_up = load_workflow("fixed-issue-follow-up.yml")
+        self.assertIn("issues", follow_up["on"])
+        self.assertIn("release", follow_up["on"])
+        self.assertIn("repository_dispatch", follow_up["on"])
+        self.assertEqual(
+            follow_up["on"]["repository_dispatch"]["types"],
+            ["daily-release-published"],
+        )
+        self.assertEqual(
+            follow_up["jobs"]["follow-up-verified-daily"]["permissions"],
+            {"issues": "write"},
+        )
+        for workflow_name in ("fixed-issue-follow-up.yml", "sign-release.yml"):
+            workflow_text = (ROOT / ".github" / "workflows" / workflow_name).read_text(
+                encoding="utf-8"
+            )
+            self.assertNotIn("state=closed", workflow_text)
+            self.assertNotIn("state: 'closed'", workflow_text)
+            self.assertNotIn('state: "closed"', workflow_text)
+            self.assertNotIn("state_reason=completed", workflow_text)
+
+        daily = load_workflow("daily-prerelease.yml")
+        publish = daily["jobs"]["publish"]
+        self.assertEqual(publish["permissions"], {"actions": "read", "contents": "write"})
+        self.assertNotIn("issues", publish["permissions"])
+        publish_script = "\n".join(step.get("run", "") for step in publish["steps"])
+        self.assertIn('event_type:"daily-release-published"', publish_script)
+
+    def test_fixed_issue_follow_up_decisions_with_mocked_github_calls(self) -> None:
+        test_file = ROOT / ".github" / "scripts" / "test_fixed_issue_follow_up.js"
+        subprocess.run(
+            ["node", str(test_file)],
+            cwd=ROOT,
+            check=True,
+            text=True,
+        )
 
     def test_reusable_windows_workflow_supports_deferred_signing(self) -> None:
         workflow_path = ROOT / ".github" / "workflows" / "ci-windows.yml"

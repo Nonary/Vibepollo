@@ -9,6 +9,9 @@ on:
   release:
     types:
       - published
+  repository_dispatch:
+    types:
+      - daily-release-published
 
 jobs:
   queue-follow-up:
@@ -19,87 +22,124 @@ jobs:
       github.event.label.name == 'fixed' &&
       github.event.issue.state == 'open' &&
       github.event.issue.pull_request == null
+    concurrency:
+      group: fixed-candidate-label-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       issues: write
     steps:
-      - name: Comment on fixed issue
+      - name: Fetch public follow-up handler without expanding token permissions
+        env:
+          REPOSITORY_URL: https://github.com/${{ github.repository }}.git
+        run: git clone --depth=1 --filter=blob:none "$REPOSITORY_URL" "$RUNNER_TEMP/fixed-issue-follow-up"
+
+      - name: Comment that the issue is a candidate fix
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+        env:
+          FOLLOW_UP_REPOSITORY: ${{ runner.temp }}/fixed-issue-follow-up
         with:
           script: |
-            const pendingMarker = `<!-- fixed-next-release:${context.payload.issue.updated_at} -->`;
-            const { owner, repo } = context.repo;
-            const issue_number = context.issue.number;
+            const path = require('node:path');
+            const { handleFixedLabel } = require(path.join(
+              process.env.FOLLOW_UP_REPOSITORY,
+              '.github/scripts/fixed_issue_follow_up.js',
+            ));
+            const result = await handleFixedLabel({ github, context });
+            core.info(JSON.stringify(result));
 
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner,
-              repo,
-              issue_number,
-              per_page: 100,
-            });
-
-            if (comments.some((comment) => comment.body?.includes(pendingMarker))) {
-              return;
-            }
-
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number,
-              body: `${pendingMarker}\nThis issue has been resolved and will be fixed in the next release. A follow-up comment will be added here once that release is published.`,
-            });
-
-  close-fixed-issues:
-    name: Close Fixed Issues On Release
-    if: github.event_name == 'release' && !github.event.release.draft
+  follow-up-verified-daily:
+    name: Ask for Confirmation of a Verified Daily
+    if: >-
+      github.event_name == 'repository_dispatch' ||
+      (github.event_name == 'release' &&
+       github.event.action == 'published' &&
+       github.event.release.draft == false &&
+       github.event.release.prerelease == true &&
+       contains(github.event.release.tag_name, '-daily.d'))
+    concurrency:
+      group: fixed-daily-follow-up-${{ github.repository }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       issues: write
     steps:
-      - name: Close open fixed issues for the published release
+      - name: Fetch public source history without contents token access
+        env:
+          REPOSITORY_URL: https://github.com/${{ github.repository }}.git
+        run: git clone --filter=blob:none "$REPOSITORY_URL" "$RUNNER_TEMP/fixed-issue-repository"
+
+      - name: Resolve the published daily identity
+        id: release
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+        env:
+          REPOSITORY_PATH: ${{ runner.temp }}/fixed-issue-repository
         with:
           script: |
-            const labelName = 'fixed';
-            const releaseMarker = `<!-- fixed-release-follow-up:${context.payload.release.id} -->`;
-            const { owner, repo } = context.repo;
-            const releaseName = context.payload.release.name || context.payload.release.tag_name;
-            const releaseUrl = context.payload.release.html_url;
+            const path = require('node:path');
+            const { isPublishedDaily, releaseFromContext } = require(path.join(
+              process.env.REPOSITORY_PATH,
+              '.github/scripts/fixed_issue_follow_up.js',
+            ));
+            const release = releaseFromContext(context);
+            const dailyTag = /^\d+\.\d+\.\d+-daily\.d\d{8}(?:\.\d+)?$/;
+            const valid = isPublishedDaily(release) && dailyTag.test(release.tag_name || '') &&
+              (context.eventName !== 'repository_dispatch' ||
+                /^[0-9a-f]{40}$/i.test(release.source_commit || ''));
 
-            const issues = await github.paginate(github.rest.issues.listForRepo, {
-              owner,
-              repo,
-              state: 'open',
-              labels: labelName,
-              per_page: 100,
-            });
-
-            for (const issue of issues) {
-              if (issue.pull_request) {
-                continue;
-              }
-
-              const comments = await github.paginate(github.rest.issues.listComments, {
-                owner,
-                repo,
-                issue_number: issue.number,
-                per_page: 100,
-              });
-
-              if (!comments.some((comment) => comment.body?.includes(releaseMarker))) {
-                await github.rest.issues.createComment({
-                  owner,
-                  repo,
-                  issue_number: issue.number,
-                  body: `${releaseMarker}\nThis issue has been fixed in the latest release, [${releaseName}](${releaseUrl}). Closing this issue now that the release containing the fix is available.`,
-                });
-              }
-
-              await github.rest.issues.update({
-                owner,
-                repo,
-                issue_number: issue.number,
-                state: 'closed',
-                state_reason: 'completed',
-              });
+            core.setOutput('eligible', String(Boolean(valid)));
+            if (valid) {
+              core.setOutput('tag_name', release.tag_name);
+              core.setOutput('source_commit', context.eventName === 'repository_dispatch'
+                ? release.source_commit.toLowerCase()
+                : '');
             }
+
+      - name: Fetch public source history and resolve the immutable release tag
+        id: source
+        if: steps.release.outputs.eligible == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+          EXPECTED_SOURCE_COMMIT: ${{ steps.release.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          repository_path="$RUNNER_TEMP/fixed-issue-repository"
+          git -C "$repository_path" fetch --filter=blob:none --no-tags origin \
+            "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          release_commit="$(git -C "$repository_path" rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          if [[ -n "${EXPECTED_SOURCE_COMMIT}" && "${EXPECTED_SOURCE_COMMIT}" != "${release_commit}" ]]; then
+            echo "::notice::The daily dispatch source did not match its immutable tag; no issue follow-up was sent."
+            exit 0
+          fi
+          {
+            echo "release_commit=${release_commit}"
+            echo "repository_path=${repository_path}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Request reporter confirmation only for verified candidates
+        if: steps.source.outputs.release_commit != ''
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+        env:
+          RELEASE_COMMIT: ${{ steps.source.outputs.release_commit }}
+          REPOSITORY_PATH: ${{ steps.source.outputs.repository_path }}
+        with:
+          script: |
+            const path = require('node:path');
+            const { handleDailyReleaseFollowUp } = require(path.join(
+              process.env.REPOSITORY_PATH,
+              '.github/scripts/fixed_issue_follow_up.js',
+            ));
+            const { releaseFromContext } = require(path.join(
+              process.env.REPOSITORY_PATH,
+              '.github/scripts/fixed_issue_follow_up.js',
+            ));
+            const release = releaseFromContext(context);
+            const result = await handleDailyReleaseFollowUp({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release,
+              releaseCommit: process.env.RELEASE_COMMIT,
+              repositoryPath: process.env.REPOSITORY_PATH,
+            });
+            core.info(JSON.stringify(result));

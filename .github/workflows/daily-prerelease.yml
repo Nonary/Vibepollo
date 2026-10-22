@@ -165,7 +165,21 @@ jobs:
           gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name] | sort' > uploaded-assets.json
           python -c 'import json; from pathlib import Path; assert json.loads(Path("uploaded-assets.json").read_text()) == sorted(p.name for p in Path("public-assets").iterdir()), "Uploaded release asset set is incomplete"'
           gh release edit "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
-          gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease,isDraft --jq 'if .isPrerelease and (.isDraft | not) then "Published prerelease" else error("Incorrect release state") end'
+          release_json="$(gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,isPrerelease,publishedAt)"
+          jq -e --arg tag "$DAILY_TAG" '.tagName == $tag and .isPrerelease == true and .isDraft == false and (.publishedAt | type == "string" and length > 0)' <<< "$release_json" >/dev/null
+          echo "$release_json" | jq -r 'if .isPrerelease and (.isDraft | not) then "Published prerelease" else error("Incorrect release state") end'
+
+          dispatch_payload="$(mktemp)"
+          jq -n \
+            --arg tag "$DAILY_TAG" \
+            --arg source_commit "$DAILY_COMMIT" \
+            --arg published_at "$(jq -r '.publishedAt' <<< "$release_json")" \
+            '{event_type:"daily-release-published",client_payload:{tag_name:$tag,source_commit:$source_commit,published_at:$published_at,draft:false,prerelease:true}}' \
+            > "$dispatch_payload"
+          if ! gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" --input "$dispatch_payload" >/dev/null; then
+            echo "::warning::Could not queue the verification-only issue follow-up. The issue remains open; inspect the published daily and complete the reporter follow-up manually if needed."
+          fi
+          rm -f "$dispatch_payload"
 
   summary:
     needs: [prepare, build, linux, publish]
