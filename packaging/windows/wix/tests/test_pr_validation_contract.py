@@ -185,9 +185,14 @@ class ValidationContractTest(unittest.TestCase):
             self.assertEqual(properties["ProductVersion"], contract["msi"])
             self.assertEqual(properties["UpgradeCode"].upper(), UPGRADE_CODE)
             self.assertEqual(properties["VIBESHINE_TRANSACTIONAL_REPLACEMENT"], "1")
-            # The real Upgrade row detects older, equal, and newer family members.
-            rows = msi.query("SELECT `UpgradeCode`, `VersionMin`, `VersionMax`, `ActionProperty` FROM `Upgrade`")
-            self.assertIn([UPGRADE_CODE, "", "", "WIX_UPGRADE_DETECTED"], rows)
+            # WiX AllowDowngrades emits an inclusive zero lower bound and no
+            # upper bound, detecting older, equal, and newer family members.
+            rows = msi.query(
+                "SELECT `UpgradeCode`, `VersionMin`, `VersionMax`, `ActionProperty`, `Attributes` FROM `Upgrade`"
+            )
+            upgrade_rows = [row for row in rows if row[:4] == [UPGRADE_CODE, "0", "", "WIX_UPGRADE_DETECTED"]]
+            self.assertEqual(len(upgrade_rows), 1, rows)
+            self.assertTrue(int(upgrade_rows[0][4]) & 0x100)  # VersionMinInclusive
             tables = {row[0] for row in msi.query("SELECT `Name` FROM `_Tables`")}
             conditions = (
                 [row[0] for row in msi.query("SELECT `Condition` FROM `LaunchCondition`")]
