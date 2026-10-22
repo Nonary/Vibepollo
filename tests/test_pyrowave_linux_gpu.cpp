@@ -121,6 +121,9 @@ int main(int argc, char **argv) {
       pyrowave_device d;
 
       ~device_guard() {
+        // Match host cleanup: retire the shared instance before the codec's
+        // device releases its Vulkan loader, rather than at static teardown.
+        pyrowave::linux_gpu::core_t::shutdown();
         pyrowave_device_destroy(d);
       }
     } guard {device};
