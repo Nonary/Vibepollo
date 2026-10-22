@@ -10,10 +10,17 @@ namespace VDISPLAY::policy {
   // friendly-name match replace it during reuse.
   inline std::optional<std::string> select_reuse_device_id(
     bool reclaiming_owned_display,
+    bool has_expected_stable_identity,
     std::optional<std::string> exact_owned_device_id,
     std::optional<std::string> client_name_candidate
   ) {
-    return reclaiming_owned_display ? std::move(exact_owned_device_id) : std::move(client_name_candidate);
+    if (reclaiming_owned_display) {
+      return exact_owned_device_id;
+    }
+    if (has_expected_stable_identity) {
+      return std::nullopt;
+    }
+    return client_name_candidate;
   }
 
   template<typename ResolveByDeviceId, typename IsGdiName>

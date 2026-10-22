@@ -7149,6 +7149,7 @@ namespace VDISPLAY_SUNSHINE {
           // with the same client name must never replace the reclaimed target.
           device_id = VDISPLAY::policy::select_reuse_device_id(
             true,
+            display_id != 0,
             exact_owned_device_id,
             std::nullopt
           );
@@ -7167,6 +7168,7 @@ namespace VDISPLAY_SUNSHINE {
           }
           device_id = VDISPLAY::policy::select_reuse_device_id(
             false,
+            display_id != 0,
             std::nullopt,
             client_name_device_id
           );
@@ -7189,7 +7191,7 @@ namespace VDISPLAY_SUNSHINE {
             // did not provide that ID, keep no name rather than persisting the
             // peer's mutable GDI name.
             display_name = VDISPLAY::policy::bind_reuse_display_name_to_device_id(
-              display_id.has_value(),
+              display_id != 0,
               device_id,
               std::move(display_name),
               [](const std::string &exact_device_id) {
@@ -7235,7 +7237,7 @@ namespace VDISPLAY_SUNSHINE {
             if ((!result.display_name || result.display_name->empty() || !is_gdi_display_name(*result.display_name))) {
               const bool allow_any_name_fallback = !s_client_name || std::strlen(s_client_name) == 0;
               auto gdi_name = VDISPLAY::policy::resolve_reuse_display_name(
-                display_id.has_value(),
+                display_id != 0,
                 result.device_id,
                 allow_any_name_fallback,
                 [](const std::string &exact_device_id) {

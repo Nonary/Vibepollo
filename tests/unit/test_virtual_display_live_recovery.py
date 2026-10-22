@@ -216,10 +216,11 @@ int main() {
   2,1,std::string("virtual1"),3,1,std::string("virtual1")));
  assert(!video::capture_recovery::lease_identity_matches(
   2,1,std::nullopt,2,1,std::string("virtual1")));
- auto reclaimed_id=VDISPLAY::policy::select_reuse_device_id(true,std::string("virtual1"),std::string("replacement-virtual"));
+ auto reclaimed_id=VDISPLAY::policy::select_reuse_device_id(true,true,std::string("virtual1"),std::string("replacement-virtual"));
  assert(reclaimed_id&&*reclaimed_id=="virtual1");
- assert(!VDISPLAY::policy::select_reuse_device_id(true,std::nullopt,std::string("replacement-virtual")));
- auto unowned_candidate=VDISPLAY::policy::select_reuse_device_id(false,std::nullopt,std::string("replacement-virtual"));
+ assert(!VDISPLAY::policy::select_reuse_device_id(true,true,std::nullopt,std::string("replacement-virtual")));
+ assert(!VDISPLAY::policy::select_reuse_device_id(false,true,std::nullopt,std::string("replacement-virtual")));
+ auto unowned_candidate=VDISPLAY::policy::select_reuse_device_id(false,false,std::nullopt,std::string("replacement-virtual"));
  assert(unowned_candidate&&*unowned_candidate=="replacement-virtual");
  enumerated_devices={{"replacement-virtual","monitor3","DISPLAY17","client",true},
                      {"virtual1","monitor1","DISPLAY18","client",true}};
