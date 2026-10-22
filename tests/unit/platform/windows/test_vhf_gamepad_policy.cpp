@@ -12,15 +12,27 @@ extern "C" {
 #include <moonlight-common-c/src/Limelight.h>
 }
 
+#include <src/platform/common.h>
 #include <src/platform/windows/vhf_gamepad_policy.h>
+#include <src/thread_safe.h>
 
 namespace {
 
+  using platf::gamepad_feedback_e;
+  using platf::gamepad_feedback_msg_t;
+  using platf::feedback_queue_t;
   using platf::vhf_gamepad::backend_e;
   using platf::vhf_gamepad::decode_rumble_rgb;
+  using platf::vhf_gamepad::dispatch_rumble_poll;
   using platf::vhf_gamepad::make_input_state;
   using platf::vhf_gamepad::normalized_state_t;
+  using platf::vhf_gamepad::observe_rumble_poll;
+  using platf::vhf_gamepad::rumble_poll_outcome_e;
+  using platf::vhf_gamepad::rumble_poll_summary_t;
   using platf::vhf_gamepad::rumble_rgb_t;
+  using platf::vhf_gamepad::record_rumble_poll_summary;
+  using platf::vhf_gamepad::record_rumble_poll_error;
+  using platf::vhf_gamepad::clear_rumble_poll_summary;
   using platf::vhf_gamepad::select_automatic_backend;
   using platf::vhf_gamepad::select_automatic_profile;
   using platf::vhf_gamepad::select_desired_profile;
@@ -355,6 +367,155 @@ namespace {
     EXPECT_EQ(feedback.right_effect.mode, static_cast<std::uint8_t>(lvg::trigger_effect_mode::feedback));
     // A PlayStation pad has no impulse triggers, so the Xbox rumble fields stay clear.
     EXPECT_FALSE(feedback.has_triggers);
+  }
+
+  TEST_F(VhfGamepadPolicyTest, RumblePollObservationDrivesTheOrdinaryRumbleQueue) {
+    lvg::playstation_output_feedback payload {};
+
+    lvg::feedback_event event {};
+    event.header.size = sizeof(event);
+    event.header.version = lvg::k_protocol_version;
+    event.controller_id = 7;  // This driver handle is not part of the observation.
+    event.type = lvg::feedback_type::playstation_output;
+    event.payload_size = sizeof(payload);
+    std::memcpy(event.payload, &payload, sizeof(payload));
+
+    rumble_rgb_t feedback {};
+    ASSERT_TRUE(decode_rumble_rgb(event, feedback));
+    EXPECT_EQ(feedback.low_frequency, 0);
+    EXPECT_EQ(feedback.high_frequency, 0);
+
+    auto feedback_mail = std::make_shared<safe::mail_raw_t>();
+    feedback_queue_t queue = feedback_mail->queue<gamepad_feedback_msg_t>("vhf-policy-rumble");
+    const auto make_rumble = [](const auto client_index, const auto low, const auto high) {
+      return gamepad_feedback_msg_t::make_rumble(client_index, low, high);
+    };
+
+    // The first decoded sample queues the baseline even when both motors are zero.
+    const auto initial_zero = observe_rumble_poll(event, 3, 1, feedback, true, false, {});
+    EXPECT_EQ(initial_zero.driver_slot, 3u);
+    EXPECT_EQ(initial_zero.event_type, static_cast<std::uint32_t>(lvg::feedback_type::playstation_output));
+    EXPECT_EQ(initial_zero.payload_size, sizeof(payload));
+    EXPECT_EQ(initial_zero.client_relative_index, 1);
+    EXPECT_EQ(initial_zero.low_frequency, 0);
+    EXPECT_EQ(initial_zero.high_frequency, 0);
+    EXPECT_EQ(initial_zero.outcome, rumble_poll_outcome_e::raise_attempted);
+    EXPECT_TRUE(dispatch_rumble_poll(initial_zero, queue, make_rumble));
+    ASSERT_EQ(queue->unsafe().size(), 1u);
+    EXPECT_EQ(queue->unsafe().front().type, gamepad_feedback_e::rumble);
+    EXPECT_EQ(queue->unsafe().front().id, 1);
+    EXPECT_EQ(queue->unsafe().front().data.rumble.lowfreq, 0);
+    EXPECT_EQ(queue->unsafe().front().data.rumble.highfreq, 0);
+    queue->reset();
+
+    // A motor transition queues the decoded values with the client-relative ID.
+    const auto zero_feedback = feedback;
+    payload.low_frequency = 0x1234;
+    payload.high_frequency = 0xABCD;
+    std::memcpy(event.payload, &payload, sizeof(payload));
+    ASSERT_TRUE(decode_rumble_rgb(event, feedback));
+    const auto changed = observe_rumble_poll(event, 3, 1, feedback, true, true, zero_feedback);
+    EXPECT_EQ(changed.outcome, rumble_poll_outcome_e::raise_attempted);
+    EXPECT_TRUE(dispatch_rumble_poll(changed, queue, make_rumble));
+    ASSERT_EQ(queue->unsafe().size(), 1u);
+    EXPECT_EQ(queue->unsafe().front().id, 1);
+    EXPECT_EQ(queue->unsafe().front().data.rumble.lowfreq, 0x1234);
+    EXPECT_EQ(queue->unsafe().front().data.rumble.highfreq, 0xABCD);
+    queue->reset();
+
+    // Repeated motor values and lightbar-only changes must not queue ordinary rumble.
+    auto previous = feedback;
+    auto deduplicated = observe_rumble_poll(event, 3, 1, feedback, true, true, previous);
+    EXPECT_EQ(deduplicated.outcome, rumble_poll_outcome_e::deduplicated);
+    EXPECT_FALSE(dispatch_rumble_poll(deduplicated, queue, make_rumble));
+    EXPECT_TRUE(queue->unsafe().empty());
+
+    previous.red = 0x55;
+    previous.has_rgb = true;
+    deduplicated = observe_rumble_poll(event, 3, 1, feedback, true, true, previous);
+    EXPECT_EQ(deduplicated.outcome, rumble_poll_outcome_e::deduplicated);
+    EXPECT_FALSE(dispatch_rumble_poll(deduplicated, queue, make_rumble));
+    EXPECT_TRUE(queue->unsafe().empty());
+
+    // Queue presence does not imply that it is running: raise() is void and drops after stop.
+    queue->stop();
+    const auto stopped_attempt = observe_rumble_poll(event, 3, 1, feedback, true, false, {});
+    EXPECT_EQ(stopped_attempt.outcome, rumble_poll_outcome_e::raise_attempted);
+    EXPECT_TRUE(dispatch_rumble_poll(stopped_attempt, queue, make_rumble));
+    EXPECT_TRUE(queue->unsafe().empty());
+    feedback_queue_t missing_queue;
+    EXPECT_FALSE(dispatch_rumble_poll(stopped_attempt, missing_queue, make_rumble));
+
+    const auto unavailable = observe_rumble_poll(event, 3, 1, feedback, false, false, {});
+    EXPECT_EQ(unavailable.outcome, rumble_poll_outcome_e::unavailable);
+    EXPECT_FALSE(dispatch_rumble_poll(unavailable, queue, make_rumble));
+    EXPECT_TRUE(queue->unsafe().empty());
+  }
+
+  TEST_F(VhfGamepadPolicyTest, RumblePollSummariesAreBoundedAndKeepOutcomeCounts) {
+    using namespace std::chrono_literals;
+    using clock = std::chrono::steady_clock;
+    const auto start = clock::time_point {};
+    rumble_poll_summary_t summary {};
+
+    auto observation = platf::vhf_gamepad::rumble_poll_observation_t {
+      2,
+      7,
+      8,
+      1,
+      100,
+      200,
+      rumble_poll_outcome_e::raise_attempted
+    };
+    EXPECT_TRUE(record_rumble_poll_summary(summary, observation, start));
+    EXPECT_EQ(summary.decoded_events, 1u);
+    EXPECT_EQ(summary.raise_attempts, 1u);
+    EXPECT_EQ(summary.latest.driver_slot, 2u);
+    clear_rumble_poll_summary(summary);
+
+    // Reports within the five-second window update counters without scheduling another log line.
+    observation.outcome = rumble_poll_outcome_e::deduplicated;
+    EXPECT_FALSE(record_rumble_poll_summary(summary, observation, start + 1s));
+    observation.outcome = rumble_poll_outcome_e::unavailable;
+    EXPECT_FALSE(record_rumble_poll_summary(summary, observation, start + 2s));
+    observation.outcome = rumble_poll_outcome_e::raise_attempted;
+    EXPECT_FALSE(record_rumble_poll_summary(summary, observation, start + 4999ms));
+    EXPECT_FALSE(record_rumble_poll_error(summary, 2, 0x1234, start + 4999ms));
+    EXPECT_TRUE(record_rumble_poll_summary(summary, observation, start + 5s));
+
+    EXPECT_EQ(summary.decoded_events, 4u);
+    EXPECT_EQ(summary.raise_attempts, 2u);
+    EXPECT_EQ(summary.deduplicated_events, 1u);
+    EXPECT_EQ(summary.unavailable_events, 1u);
+    EXPECT_EQ(summary.poll_errors, 1u);
+    EXPECT_EQ(summary.latest_poll_error_status, 0x1234u);
+    EXPECT_EQ(summary.latest.outcome, rumble_poll_outcome_e::raise_attempted);
+
+    // A cleared summary retains the window boundary, so sustained input remains rate-limited.
+    clear_rumble_poll_summary(summary);
+    EXPECT_FALSE(record_rumble_poll_summary(summary, observation, start + 9s));
+    EXPECT_TRUE(record_rumble_poll_summary(summary, observation, start + 10s));
+  }
+
+  TEST_F(VhfGamepadPolicyTest, RepeatedDriverPollErrorsAreRateLimited) {
+    using namespace std::chrono_literals;
+    const auto start = std::chrono::steady_clock::time_point {};
+    rumble_poll_summary_t summary {};
+
+    EXPECT_TRUE(record_rumble_poll_error(summary, 4, 0x00000005, start));
+    clear_rumble_poll_summary(summary);
+
+    // A persistent error at the feedback loop's 8 ms cadence accumulates into one five-second
+    // summary instead of producing up to 125 debug records per second for this slot.
+    for (int poll = 1; poll < 625; ++poll) {
+      EXPECT_FALSE(record_rumble_poll_error(summary, 4, 0x00000005, start + poll * 8ms));
+    }
+    EXPECT_TRUE(record_rumble_poll_error(summary, 4, 0x00000005, start + 5s));
+    EXPECT_EQ(summary.poll_errors, 625u);
+    EXPECT_EQ(summary.latest_poll_error_status, 0x00000005u);
+
+    clear_rumble_poll_summary(summary);
+    EXPECT_FALSE(record_rumble_poll_error(summary, 4, 0x00000005, start + 5008ms));
   }
 
   TEST_F(VhfGamepadPolicyTest, PlaystationOutputWithoutLightbarLeavesTheLedAlone) {

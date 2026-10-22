@@ -183,6 +183,100 @@ namespace platf::vhf_gamepad {
     return static_cast<std::int32_t>(scaled);
   }
 
+  rumble_poll_observation_t observe_rumble_poll(
+    const lvg::feedback_event &event,
+    const std::uint32_t driver_slot,
+    const std::uint16_t client_relative_index,
+    const rumble_rgb_t &feedback,
+    const bool queue_present,
+    const bool have_previous,
+    const rumble_rgb_t &previous
+  ) noexcept {
+    const auto outcome = !queue_present ? rumble_poll_outcome_e::unavailable :
+                         (!have_previous ||
+                          previous.low_frequency != feedback.low_frequency ||
+                          previous.high_frequency != feedback.high_frequency) ?
+                           rumble_poll_outcome_e::raise_attempted :
+                           rumble_poll_outcome_e::deduplicated;
+
+    return {
+      driver_slot,
+      static_cast<std::uint32_t>(event.type),
+      static_cast<std::uint32_t>(event.payload_size),
+      client_relative_index,
+      feedback.low_frequency,
+      feedback.high_frequency,
+      outcome
+    };
+  }
+
+  namespace {
+    bool rumble_poll_summary_due(
+      rumble_poll_summary_t &summary,
+      const std::chrono::steady_clock::time_point now
+    ) noexcept {
+      if (!summary.window_started) {
+        summary.window_started_at = now;
+        summary.window_started = true;
+        return true;
+      }
+
+      if (now - summary.window_started_at < rumble_poll_summary_interval) {
+        return false;
+      }
+
+      summary.window_started_at = now;
+      return true;
+    }
+  }  // namespace
+
+  bool record_rumble_poll_summary(
+    rumble_poll_summary_t &summary,
+    const rumble_poll_observation_t &observation,
+    const std::chrono::steady_clock::time_point now
+  ) noexcept {
+    summary.driver_slot = observation.driver_slot;
+    ++summary.decoded_events;
+    switch (observation.outcome) {
+      case rumble_poll_outcome_e::raise_attempted:
+        ++summary.raise_attempts;
+        break;
+      case rumble_poll_outcome_e::deduplicated:
+        ++summary.deduplicated_events;
+        break;
+      case rumble_poll_outcome_e::unavailable:
+        ++summary.unavailable_events;
+        break;
+    }
+    summary.latest = observation;
+    summary.has_latest_observation = true;
+
+    return rumble_poll_summary_due(summary, now);
+  }
+
+  bool record_rumble_poll_error(
+    rumble_poll_summary_t &summary,
+    const std::uint32_t driver_slot,
+    const std::uint32_t status,
+    const std::chrono::steady_clock::time_point now
+  ) noexcept {
+    summary.driver_slot = driver_slot;
+    ++summary.poll_errors;
+    summary.latest_poll_error_status = status;
+    return rumble_poll_summary_due(summary, now);
+  }
+
+  void clear_rumble_poll_summary(rumble_poll_summary_t &summary) noexcept {
+    summary.decoded_events = 0;
+    summary.raise_attempts = 0;
+    summary.deduplicated_events = 0;
+    summary.unavailable_events = 0;
+    summary.poll_errors = 0;
+    summary.latest_poll_error_status = 0;
+    summary.latest = {};
+    summary.has_latest_observation = false;
+  }
+
   bool decode_rumble_rgb(const lvg::feedback_event &event, rumble_rgb_t &feedback) noexcept {
     if (event.type == lvg::feedback_type::playstation_output) {
       if (event.payload_size != sizeof(lvg::playstation_output_feedback)) {

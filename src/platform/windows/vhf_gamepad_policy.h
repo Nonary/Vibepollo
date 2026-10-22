@@ -6,9 +6,11 @@
 
 // standard includes
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string_view>
+#include <utility>
 
 // lib includes
 #include <libvirtualgamepad/protocol.h>
@@ -157,6 +159,123 @@ namespace platf::vhf_gamepad {
              has_trigger_effects == other.has_trigger_effects;
     }
   };
+
+  /**
+   * @brief Outcome for the ordinary rumble part of one decoded VHF feedback event.
+   */
+  enum class rumble_poll_outcome_e {
+    raise_attempted,
+    deduplicated,
+    unavailable
+  };
+
+  /**
+   * @brief Observation at the VHF poll/decode/ordinary-rumble queue boundary.
+   * @details The record contains no raw driver payload or persistent device/client identifier.
+   *          Driver slots and client-relative indexes can be reused; the exact motor values expose
+   *          feedback activity. `raise_attempted` covers the first decoded sample (including zero
+   *          motors) or changed ordinary rumble. A stopped queue may silently reject that attempt,
+   *          so it does not mean the message was inserted, serialized, sent, received, or actuated.
+   */
+  struct rumble_poll_observation_t {
+    std::uint32_t driver_slot {};
+    std::uint32_t event_type {};
+    std::uint32_t payload_size {};
+    std::uint16_t client_relative_index {};
+    std::uint16_t low_frequency {};
+    std::uint16_t high_frequency {};
+    rumble_poll_outcome_e outcome {rumble_poll_outcome_e::unavailable};
+  };
+
+  /**
+   * @brief Per-slot counts folded into a rate-limited debug summary.
+   * @details There is one immediate summary, then no more than one summary every five seconds
+   *          while decoded reports continue. Counters describe decoded poll observations, not
+   *          messages delivered to the client.
+   */
+  struct rumble_poll_summary_t {
+    std::uint32_t driver_slot {};
+    std::uint32_t decoded_events {};
+    std::uint32_t raise_attempts {};
+    std::uint32_t deduplicated_events {};
+    std::uint32_t unavailable_events {};
+    std::uint32_t poll_errors {};
+    std::uint32_t latest_poll_error_status {};
+    rumble_poll_observation_t latest {};
+    std::chrono::steady_clock::time_point window_started_at {};
+    bool has_latest_observation {};
+    bool window_started {};
+  };
+
+  inline constexpr auto rumble_poll_summary_interval = std::chrono::seconds {5};
+
+  /**
+   * @brief Adds one decoded event and reports when a per-slot summary should be emitted.
+   * @details This only updates counters and a steady-clock window. The caller logs at debug
+   *          severity when this returns true, avoiding per-event string formatting and sink work.
+   */
+  [[nodiscard]] bool record_rumble_poll_summary(
+    rumble_poll_summary_t &summary,
+    const rumble_poll_observation_t &observation,
+    std::chrono::steady_clock::time_point now
+  ) noexcept;
+
+  /** @brief Adds one failed driver poll and reports when the per-slot summary should be emitted. */
+  [[nodiscard]] bool record_rumble_poll_error(
+    rumble_poll_summary_t &summary,
+    std::uint32_t driver_slot,
+    std::uint32_t status,
+    std::chrono::steady_clock::time_point now
+  ) noexcept;
+
+  /** @brief Clears counters after the current summary has been considered for logging. */
+  void clear_rumble_poll_summary(rumble_poll_summary_t &summary) noexcept;
+
+  /**
+   * @brief Builds the ordinary-rumble observation and determines whether the feedback changes.
+   * @details This is shared with the VHF feedback loop so the portable policy test exercises the
+   *          same ordinary-rumble queue decision. The first decoded sample attempts a queue call
+   *          even when both motors are zero, preserving the backend's existing initial state
+   *          behavior. A non-null queue may already be stopped, so the helper reports an attempt,
+   *          not successful insertion.
+   */
+  [[nodiscard]] rumble_poll_observation_t observe_rumble_poll(
+    const lvg::feedback_event &event,
+    std::uint32_t driver_slot,
+    std::uint16_t client_relative_index,
+    const rumble_rgb_t &feedback,
+    bool queue_present,
+    bool have_previous,
+    const rumble_rgb_t &previous
+  ) noexcept;
+
+  /**
+   * @brief Attempts the ordinary-rumble queue call recorded by an observation.
+   * @details This shared dispatch helper keeps the VHF feedback path and portable policy test on
+   *          the same outcome gate. The queue's `raise` API is void and may silently drop the
+   *          message after shutdown, so `true` only means the queue call was made.
+   * @param observation The ordinary-rumble decision and decoded values.
+   * @param queue The client feedback queue; a null queue prevents the call.
+   * @param make_rumble Creates the platform's gamepad rumble message.
+   * @return Whether `queue->raise(...)` was attempted.
+   */
+  template<class Queue, class MakeRumble>
+  [[nodiscard]] bool dispatch_rumble_poll(
+    const rumble_poll_observation_t &observation,
+    Queue &queue,
+    MakeRumble &&make_rumble
+  ) {
+    if (observation.outcome != rumble_poll_outcome_e::raise_attempted || !queue) {
+      return false;
+    }
+
+    queue->raise(std::forward<MakeRumble>(make_rumble)(
+      observation.client_relative_index,
+      observation.low_frequency,
+      observation.high_frequency
+    ));
+    return true;
+  }
 
   /**
    * @brief Every button the protocol can carry.
