@@ -12,7 +12,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:unit": "node --experimental-strip-types --test scripts/*.test.ts",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:app-display": "playwright test --config playwright.app-display.config.ts"
   },
   "dependencies": {
     "pinia": "^2.1.8",

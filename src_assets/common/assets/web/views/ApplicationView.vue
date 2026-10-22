@@ -387,6 +387,7 @@ let liveRtxHdrTimer: ReturnType<typeof setTimeout> | null = null;
 let liveRtxHdrSuppress = false;
 let liveRtxHdrLastSentKey = '';
 let liveRtxHdrQueue: Promise<void> = Promise.resolve();
+const hostDisplayConfig = ref<FrameGenConfig | null>(null);
 const displayDevices = ref<DisplayDevice[]>([]);
 const displayDevicesLoading = ref(false);
 const displayDevicesLoaded = ref(false);
@@ -1872,19 +1873,28 @@ async function load(): Promise<void> {
   loading.value = true;
   loadError.value = '';
   saveError.value = '';
+  const displayConfigPromise = apiGet<FrameGenConfig>('/api/config').catch(() => null);
   const metadataPromise = apiGet<FrameGenMetadata>('/api/metadata').catch(
     (): FrameGenMetadata => ({}),
   );
   if (isNew.value) {
-    overrideMetadata.value = await metadataPromise;
+    [overrideMetadata.value, hostDisplayConfig.value] = await Promise.all([
+      metadataPromise,
+      displayConfigPromise,
+    ]);
     hydrateNew();
     loading.value = false;
     return;
   }
 
   try {
-    const [appList, metadata] = await Promise.all([fetchApps(), metadataPromise]);
+    const [appList, metadata, displayConfig] = await Promise.all([
+      fetchApps(),
+      metadataPromise,
+      displayConfigPromise,
+    ]);
     overrideMetadata.value = metadata;
+    hostDisplayConfig.value = displayConfig;
     const app = appList.find(
       (candidate) => appUuid(candidate).toLocaleLowerCase() === routeId.value.toLocaleLowerCase(),
     );
@@ -2926,6 +2936,28 @@ async function loadDisplayDevices(force = false): Promise<void> {
   }
 }
 
+const virtualDisplayLayoutBlocked = computed(() => {
+  const layout =
+    form.virtualDisplayLayout || hostDisplayConfig.value?.virtual_display_layout || 'exclusive';
+  const action =
+    form.ddConfigurationOption || hostDisplayConfig.value?.dd_configuration_option || 'verify_only';
+  return (
+    displaySelection.value === 'virtual' &&
+    layout !== 'exclusive' &&
+    (action === 'verify_only' || action === 'disabled')
+  );
+});
+
+function selectVirtualDisplayLayout(): void {
+  if (!form.virtualDisplayLayout) return;
+  if (
+    !form.ddConfigurationOption ||
+    ['verify_only', 'disabled'].includes(form.ddConfigurationOption)
+  ) {
+    form.ddConfigurationOption = 'ensure_active';
+  }
+}
+
 function applyDisplaySelection(selection: AppDisplaySelection): void {
   if (selection === 'physical') {
     const output = effectiveAppOutput();
@@ -2943,7 +2975,6 @@ function applyDisplaySelection(selection: AppDisplaySelection): void {
   if (!['per_client', 'shared'].includes(form.virtualDisplayMode)) {
     form.virtualDisplayMode = 'per_client';
   }
-  form.ddConfigurationOption = '';
 }
 
 function enableVirtualDisplayForFrameGen(): void {
@@ -3046,12 +3077,7 @@ watch(
 );
 
 watch(
-  () => [
-    form.virtualScreen,
-    form.virtualDisplayMode,
-    form.displayOutput,
-    form.configOverridesJson,
-  ],
+  () => [form.virtualScreen, form.virtualDisplayMode, form.displayOutput, form.configOverridesJson],
   () => {
     if (!frameGenHealth.value && !frameGenHealthLoading.value) return;
     clearFrameGenHealth();
@@ -4284,33 +4310,6 @@ onBeforeUnmount(() => {
                 </span>
               </div>
             </SettingRow>
-            <SettingRow
-              :label="t('ui.application.fields.displayAction.label')"
-              :description="t('ui.application.fields.displayAction.description')"
-              control-id="app-display-configuration"
-            >
-              <select
-                id="app-display-configuration"
-                v-model="form.ddConfigurationOption"
-                class="vs-select"
-              >
-                <option
-                  v-if="optionIsCustom(displayConfigurationOptions, form.ddConfigurationOption)"
-                  :value="form.ddConfigurationOption"
-                >
-                  {{
-                    t('ui.application.options.currentValue', { value: form.ddConfigurationOption })
-                  }}
-                </option>
-                <option
-                  v-for="option in displayConfigurationOptions"
-                  :key="option.value"
-                  :value="option.value"
-                >
-                  {{ option.label }}
-                </option>
-              </select>
-            </SettingRow>
           </template>
 
           <template v-else-if="!isRemoteMonitor">
@@ -4340,7 +4339,12 @@ onBeforeUnmount(() => {
               :description="t('ui.application.fields.displayLayout.description')"
               control-id="app-display-layout"
             >
-              <select id="app-display-layout" v-model="form.virtualDisplayLayout" class="vs-select">
+              <select
+                id="app-display-layout"
+                v-model="form.virtualDisplayLayout"
+                class="vs-select"
+                @change="selectVirtualDisplayLayout"
+              >
                 <option
                   v-if="optionIsCustom(virtualDisplayLayouts, form.virtualDisplayLayout)"
                   :value="form.virtualDisplayLayout"
@@ -4359,6 +4363,47 @@ onBeforeUnmount(() => {
               </select>
             </SettingRow>
           </template>
+          <SettingRow
+            :label="t('ui.application.fields.displayAction.label')"
+            :description="t('ui.application.fields.displayAction.description')"
+            control-id="app-display-configuration"
+          >
+            <select
+              id="app-display-configuration"
+              v-model="form.ddConfigurationOption"
+              class="vs-select"
+            >
+              <option
+                v-if="optionIsCustom(displayConfigurationOptions, form.ddConfigurationOption)"
+                :value="form.ddConfigurationOption"
+              >
+                {{
+                  t('ui.application.options.currentValue', { value: form.ddConfigurationOption })
+                }}
+              </option>
+              <option
+                v-for="option in displayConfigurationOptions"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </SettingRow>
+          <p v-if="displaySelection === 'virtual'" class="vs-field__helper">
+            {{ t('config.app_virtual_display_layout_action_hint') }}
+          </p>
+          <InlineAlert
+            v-if="virtualDisplayLayoutBlocked"
+            tone="warning"
+            :title="t('config.app_virtual_display_layout_blocked')"
+            data-testid="app-display-layout-conflict"
+            announce="assertive"
+          >
+            <AppButton @click="form.ddConfigurationOption = 'ensure_active'">
+              {{ t('config.app_virtual_display_layout_enable') }}
+            </AppButton>
+          </InlineAlert>
         </div>
       </section>
 

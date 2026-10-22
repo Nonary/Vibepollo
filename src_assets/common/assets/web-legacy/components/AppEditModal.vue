@@ -261,7 +261,7 @@
               </div>
             </div>
 
-            <div v-if="displaySelection === 'physical'" class="space-y-3">
+            <div class="space-y-3">
               <div class="flex items-center justify-between gap-3">
                 <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
                   {{ t('config.dd_config_label') }}
@@ -276,6 +276,20 @@
                 </n-button>
               </div>
               <p class="text-[11px] opacity-70">{{ t('config.dd_config_hint') }}</p>
+              <p v-if="displaySelection === 'virtual'" class="text-[11px] opacity-70">
+                {{ t('config.app_virtual_display_layout_action_hint') }}
+              </p>
+              <div
+                v-if="virtualDisplayLayoutBlocked"
+                role="alert"
+                data-testid="app-display-layout-conflict"
+                class="space-y-2 rounded-md border border-amber-500 p-3"
+              >
+                <p>{{ t('config.app_virtual_display_layout_blocked') }}</p>
+                <n-button size="small" @click="form.ddConfigurationOption = 'ensure_active'">
+                  {{ t('config.app_virtual_display_layout_enable') }}
+                </n-button>
+              </div>
               <n-radio-group v-model:value="form.ddConfigurationOption" class="grid gap-2">
                 <n-radio
                   v-for="opt in appDdConfigurationOptions"
@@ -346,9 +360,7 @@
               </div>
               <n-radio-group
                 :value="resolvedVirtualDisplayLayout"
-                @update:value="
-                  (v) => (form.virtualDisplayLayout = v === globalVirtualDisplayLayout ? null : v)
-                "
+                @update:value="selectVirtualDisplayLayout"
                 class="space-y-4"
               >
                 <div
@@ -361,7 +373,7 @@
                   tabindex="0"
                 >
                   <div class="flex items-center gap-3">
-                    <n-radio :value="option.value" />
+                    <n-radio :value="option.value" :aria-label="option.label" />
                     <span class="text-sm font-semibold">{{ option.label }}</span>
                   </div>
                   <span class="text-[11px] opacity-70 leading-snug ml-6">{{
@@ -1106,7 +1118,6 @@ function toServerPayload(f: AppForm): Record<string, any> {
       ...(isWindows.value ? { elevated: !!p.elevated } : {}),
     })),
     detached: Array.isArray(f.detached) ? f.detached : [],
-    // Leave 'virtual-screen' to be persisted only if explicitly different from the global setting.
   };
 
   // Include uuid to enable backend UUID-matching for updates
@@ -1117,14 +1128,11 @@ function toServerPayload(f: AppForm): Record<string, any> {
   if (f.prefer10BitSdr !== null) {
     payload['prefer-10bit-sdr'] = f.prefer10BitSdr;
   }
-  // Only persist virtual display mode/layout if explicitly set and different from global defaults
-  const _globalVDMode = globalVirtualDisplayMode.value;
-  const _globalVDLayout = globalVirtualDisplayLayout.value;
-  const _globalOutput = globalOutputName.value;
-  if (f.virtualDisplayMode !== null && f.virtualDisplayMode !== _globalVDMode) {
+  // Explicit per-game choices must survive later changes to the host defaults.
+  if (f.virtualDisplayMode !== null) {
     payload['virtual-display-mode'] = f.virtualDisplayMode;
   }
-  if (f.virtualDisplayLayout !== null && f.virtualDisplayLayout !== _globalVDLayout) {
+  if (f.virtualDisplayLayout !== null) {
     payload['virtual-display-layout'] = f.virtualDisplayLayout;
   }
   Object.assign(payload, f.providerFields ?? {});
@@ -1200,10 +1208,8 @@ function toServerPayload(f: AppForm): Record<string, any> {
     payload['display-output'] = typeof f.output === 'string' ? f.output.trim() : '';
   }
 
-  // Only persist virtual-screen if it differs from the global virtual output flag.
-  const globalIsVirtual = _globalOutput === VIRTUAL_DISPLAY_SELECTION;
-  if (!!f.virtualScreen !== globalIsVirtual) {
-    payload['virtual-screen'] = !!f.virtualScreen;
+  if (selection !== 'global') {
+    payload['virtual-screen'] = selection === 'virtual';
   }
   if (f.ddConfigurationOption) {
     payload['dd-configuration-option'] = f.ddConfigurationOption;
@@ -2173,10 +2179,29 @@ const appDdConfigurationOptions = computed(() => [
   { label: t('config.dd_config_ensure_only_display') as string, value: 'ensure_only_display' },
 ]);
 
+const virtualDisplayLayoutBlocked = computed(() => {
+  const action =
+    form.value.ddConfigurationOption ??
+    (configStore.config as any)?.dd_configuration_option ??
+    'verify_only';
+  return (
+    displaySelection.value === 'virtual' &&
+    resolvedVirtualDisplayLayout.value !== 'exclusive' &&
+    (action === 'verify_only' || action === 'disabled')
+  );
+});
+
 function selectVirtualDisplayLayout(v: unknown) {
   const sv = String(v).trim().toLowerCase();
   if (APP_VIRTUAL_DISPLAY_LAYOUTS.includes(sv as AppVirtualDisplayLayout)) {
     form.value.virtualDisplayLayout = sv as AppVirtualDisplayLayout;
+    // Only a user layout selection enables preparation; hydration preserves saved policy.
+    if (
+      !form.value.ddConfigurationOption ||
+      ['verify_only', 'disabled'].includes(form.value.ddConfigurationOption)
+    ) {
+      form.value.ddConfigurationOption = 'ensure_active';
+    }
   }
 }
 const lastPhysicalOutput = ref('');
@@ -2184,7 +2209,6 @@ const lastVirtualDisplayMode = ref<AppVirtualDisplayMode | null>(null);
 const displaySelection = computed<DisplaySelection>({
   get: () => {
     const currentOutput = typeof form.value.output === 'string' ? form.value.output.trim() : '';
-    const globalMode = globalVirtualDisplayMode.value;
     const appMode = form.value.virtualDisplayMode;
     if (form.value.virtualScreen || form.value.output === VIRTUAL_DISPLAY_SELECTION) {
       return 'virtual';
@@ -2195,7 +2219,7 @@ const displaySelection = computed<DisplaySelection>({
     if (appMode === 'disabled') {
       return 'physical';
     }
-    if (appMode !== null && appMode !== globalMode) {
+    if (appMode !== null) {
       return 'virtual';
     }
     return 'global';
@@ -2204,11 +2228,9 @@ const displaySelection = computed<DisplaySelection>({
     if (selection === 'virtual') {
       form.value.virtualScreen = true;
       if (form.value.virtualDisplayMode === 'disabled') {
-        form.value.virtualDisplayMode =
-          lastVirtualDisplayMode.value ?? globalVirtualDisplayMode.value ?? null;
+        form.value.virtualDisplayMode = lastVirtualDisplayMode.value ?? 'per_client';
       }
       form.value.output = '';
-      form.value.ddConfigurationOption = null;
     } else if (selection === 'physical') {
       if (form.value.virtualDisplayMode && form.value.virtualDisplayMode !== 'disabled') {
         lastVirtualDisplayMode.value = form.value.virtualDisplayMode;
