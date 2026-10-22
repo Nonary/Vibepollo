@@ -691,6 +691,8 @@ namespace stream {
       platf::feedback_queue_t feedback_queue;
       std::array<haptics_gain_t, platf::MAX_GAMEPADS> haptics_gains;
       std::atomic_bool pcm_negotiation_warning_logged {false};
+      std::array<std::atomic_bool, platf::MAX_GAMEPADS> pcm_send_success_logged {};
+      std::array<std::atomic_bool, platf::MAX_GAMEPADS> pcm_send_failure_logged {};
       std::array<std::atomic_bool, platf::MAX_GAMEPADS> vigem_rumble_send_success_logged {};
       std::array<std::atomic_bool, platf::MAX_GAMEPADS> vigem_rumble_send_failure_logged {};
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
@@ -1338,7 +1340,8 @@ namespace stream {
       if (!(session->config.mlFeatureFlags & ML_FF_HAPTICS_PCM)) {
         // PCM arrives in frequent chunks; report missing negotiation once per session.
         if (!session->control.pcm_negotiation_warning_logged.exchange(true, std::memory_order_relaxed)) {
-          BOOST_LOG(warning) << "Dropping waveform haptics because the client session did not negotiate PCM feedback support"sv;
+          BOOST_LOG(warning) << "Dropping waveform haptics because the client session did not negotiate PCM feedback support; mlFeatureFlags="
+                             << session->config.mlFeatureFlags;
         }
         return 0;
       }
@@ -1454,6 +1457,17 @@ namespace stream {
         return session->broadcast_ref->control_server.send(payload, session->control.peer, msg.type == platf::gamepad_feedback_e::haptics_pcm);
       },
       [&](const int result) {
+        if (msg.type == platf::gamepad_feedback_e::haptics_pcm &&
+            msg.id < session->control.pcm_send_success_logged.size() &&
+            detail::claim_first_send_result_log(result,
+              session->control.pcm_send_success_logged[msg.id],
+              session->control.pcm_send_failure_logged[msg.id])) {
+          BOOST_LOG(debug) << "Waveform haptics ENet queue " << (result == 0 ? "accepted" : "rejected")
+                           << " frame; client-relative controller index=" << msg.id
+                           << "; mlFeatureFlags=" << session->config.mlFeatureFlags
+                           << "; peer channels=" << session->control.peer->channelCount
+                           << "; result=" << result;
+        }
         if (!msg.from_vigem ||
             msg.type != platf::gamepad_feedback_e::rumble ||
             msg.id >= session->control.vigem_rumble_send_success_logged.size()) {

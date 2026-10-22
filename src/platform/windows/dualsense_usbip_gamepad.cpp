@@ -31,6 +31,7 @@ namespace platf {
       bool waveform_capable = false;
       bool persist_after_disconnect = false;
       bool nonzero_pcm_received = false;
+      dualsense_usbip_gamepad::pcm_diagnostics pcm_diagnostics;
       std::uint16_t client_index = 0;
       std::uint8_t global_index = 0;
       feedback_queue_t feedback_queue;
@@ -157,11 +158,37 @@ namespace platf {
       flush_output();
       if (!nonzero_pcm_received && std::any_of(bytes.begin(), bytes.end(), [](auto byte) { return byte != 0; })) {
         nonzero_pcm_received = true;
-        BOOST_LOG(debug) << "Composite DualSense " << global_index << " received nonzero USB actuator PCM";
+        BOOST_LOG(debug) << "Composite DualSense " << static_cast<unsigned>(global_index) << " received nonzero USB actuator PCM";
       }
-      if (!active || !ready || !waveform_capable || !feedback_queue) {
+      using dualsense_usbip_gamepad::pcm_event;
+      const auto log_once = [this](pcm_event event, const char *reason) {
+        if (pcm_diagnostics.first(event)) {
+          BOOST_LOG(debug) << "Composite DualSense " << static_cast<unsigned>(global_index)
+                           << " PCM not forwarded: " << reason << "; client-relative controller index=" << client_index;
+        }
+      };
+      if (const auto blocked = dualsense_usbip_gamepad::pcm_block_reason(active, ready, waveform_capable, bool(feedback_queue))) {
+        switch (*blocked) {
+          case pcm_event::inactive:
+            log_once(*blocked, "controller binding inactive");
+            break;
+          case pcm_event::not_ready:
+            log_once(*blocked, "USB/audio endpoint not ready");
+            break;
+          case pcm_event::incapable:
+            log_once(*blocked, "controller lacks waveform capability");
+            break;
+          case pcm_event::missing_queue:
+            log_once(*blocked, "no feedback queue");
+            break;
+          default:
+            break;
+        }
         pcm.reset();
         return;
+      }
+      if (bytes.size() % 4 != 0) {
+        log_once(pcm_event::malformed, "incomplete stereo sample frame");
       }
       const auto now = std::chrono::steady_clock::now();
       if (last_pcm != std::chrono::steady_clock::time_point {} && now - last_pcm > 50ms) {
@@ -176,11 +203,17 @@ namespace platf {
         message.data.haptics.samples = samples;
         // A stalled control connection must not make the USB transport thread
         // block, grow a queue, or clear feedback from another controller.
-        if (!feedback_queue->try_raise(message)) {
+        bool queued = feedback_queue->try_raise(message);
+        if (!queued) {
           feedback_queue->discard_if([index = client_index](const gamepad_feedback_msg_t &pending) {
             return pending.type == gamepad_feedback_e::haptics_pcm && pending.id == index;
           });
-          feedback_queue->try_raise(std::move(message));
+          queued = feedback_queue->try_raise(std::move(message));
+        }
+        if (pcm_diagnostics.first(queued ? pcm_event::queued : pcm_event::queue_rejected)) {
+          BOOST_LOG(debug) << "Composite DualSense " << static_cast<unsigned>(global_index)
+                           << (queued ? " PCM frame accepted by feedback queue" : " PCM frame rejected by full or stopped feedback queue")
+                           << "; client-relative controller index=" << client_index;
         }
       });
     }
@@ -293,6 +326,8 @@ namespace platf {
           return -1;
         }
         if (retained->ready && retained->controller && retained->controller->connected()) {
+          retained->pcm_diagnostics = {};
+          retained->nonzero_pcm_received = false;
           retained->client_index = id.clientRelativeIndex;
           retained->waveform_capable = (metadata.capabilities & LI_CCAP_HAPTICS_PCM) != 0;
           retained->persist_after_disconnect = metadata.persist_after_disconnect;

@@ -137,3 +137,54 @@ TEST(DualSenseUsbipGamepadPolicyTests, MalformedStereoPayloadCannotShiftChannelA
   ASSERT_EQ(packets.size(), 1);
   EXPECT_EQ(packets[0], samples);
 }
+
+TEST(DualSenseUsbipGamepadPolicyTests, PcmDiagnosticsAreBoundedPerEventAndBinding) {
+  pcm_diagnostics diagnostics;
+  const std::array events {
+    pcm_event::inactive, pcm_event::not_ready, pcm_event::incapable,
+    pcm_event::missing_queue, pcm_event::malformed, pcm_event::queued,
+    pcm_event::queue_rejected,
+  };
+  for (const auto event : events) {
+    EXPECT_TRUE(diagnostics.first(event));
+  }
+  // Repeated callbacks and alternating acceptance/rejection must not spam logs.
+  for (unsigned callback = 0; callback < 1000; ++callback) {
+    for (const auto event : events) {
+      EXPECT_FALSE(diagnostics.first(event));
+    }
+  }
+  diagnostics = {};
+  for (const auto event : events) {
+    EXPECT_TRUE(diagnostics.first(event));
+    EXPECT_FALSE(diagnostics.first(event));
+  }
+}
+
+TEST(DualSenseUsbipGamepadPolicyTests, PcmDiagnosticsDoNotSuppressOtherControllers) {
+  pcm_diagnostics first_controller;
+  pcm_diagnostics second_controller;
+  EXPECT_TRUE(first_controller.first(pcm_event::queued));
+  EXPECT_FALSE(first_controller.first(pcm_event::queued));
+  EXPECT_TRUE(second_controller.first(pcm_event::queued));
+  EXPECT_TRUE(first_controller.first(pcm_event::queue_rejected));
+}
+
+TEST(DualSenseUsbipGamepadPolicyTests, PcmAdmissionRequiresAllFourHostGates) {
+  // Exercise every combination using the same admission function as the callback.
+  for (unsigned flags = 0; flags < 16; ++flags) {
+    const bool active = flags & 1;
+    const bool ready = flags & 2;
+    const bool capable = flags & 4;
+    const bool queue = flags & 8;
+    const auto blocked = pcm_block_reason(active, ready, capable, queue);
+    if (flags == 15) {
+      EXPECT_FALSE(blocked);
+    } else {
+      ASSERT_TRUE(blocked);
+      EXPECT_EQ(*blocked, !active ? pcm_event::inactive :
+                          !ready ? pcm_event::not_ready :
+                          !capable ? pcm_event::incapable : pcm_event::missing_queue);
+    }
+  }
+}

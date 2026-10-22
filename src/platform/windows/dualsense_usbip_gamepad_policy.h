@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <span>
 
 namespace platf::dualsense_usbip_gamepad {
@@ -24,6 +25,39 @@ namespace platf::dualsense_usbip_gamepad {
            (transport_available && selected_profile == vhf_profile_e::dualsense &&
             configured_gamepad != "x360" && configured_gamepad != "ds4");
   }
+
+  // A callback may run every millisecond. Record each boundary once per
+  // controller binding, not once per packet or on every state transition.
+  enum class pcm_event : unsigned {
+    inactive,
+    not_ready,
+    incapable,
+    missing_queue,
+    malformed,
+    queued,
+    queue_rejected,
+  };
+
+  inline std::optional<pcm_event> pcm_block_reason(bool active, bool ready, bool waveform_capable, bool has_queue) {
+    if (!active) return pcm_event::inactive;
+    if (!ready) return pcm_event::not_ready;
+    if (!waveform_capable) return pcm_event::incapable;
+    if (!has_queue) return pcm_event::missing_queue;
+    return std::nullopt;
+  }
+
+  class pcm_diagnostics {
+  public:
+    bool first(pcm_event event) {
+      const auto bit = 1u << static_cast<unsigned>(event);
+      const bool first = !(seen_ & bit);
+      seen_ |= bit;
+      return first;
+    }
+
+  private:
+    unsigned seen_ = 0;
+  };
 
   struct output_update {
     lvg::playstation_output_feedback state {};
