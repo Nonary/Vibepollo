@@ -20,6 +20,21 @@ def run(command, *, env=None, success=True, contains=None):
     return result.stdout
 
 
+def change_dependency(path, output_dir):
+    newest_output = max((output_dir / entry).stat().st_mtime_ns
+                        for entry in ("index.html", "v2/index.html", ".build-stamp"))
+    path.write_text(path.read_text() + "// changed\n")
+    # A fixed delay can stay within the same two-second filesystem timestamp
+    # bucket. Observe a strictly newer dependency instead, without setting a
+    # future mtime that could make the subsequent no-op builds rerun npm.
+    deadline = time.monotonic() + 10
+    while path.stat().st_mtime_ns <= newest_output:
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"Dependency mtime did not advance beyond output mtime {newest_output}: {path}")
+        time.sleep(0.05)
+        path.touch()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", type=Path, default=Path(__file__).resolve().parents[2])
@@ -142,11 +157,6 @@ include("{repository.as_posix()}/cmake/packaging/common.cmake")
             run([args.cmake, "--build", str(build), "--target", "web_ui", "--parallel", "8"], env=env)
             assert calls() == before, "An unchanged build reran npm"
 
-        def change(path):
-            # Stay behind the next output timestamp, including coarse filesystems.
-            time.sleep(1.1)
-            path.write_text(path.read_text() + "// changed\n")
-
         install(success=False, contains="legacy Web UI is missing")
         build_web()
         expect_cycle()
@@ -165,7 +175,7 @@ include("{repository.as_posix()}/cmake/packaging/common.cmake")
             expect_noop()
 
         for application in ("web-legacy", "web"):
-            change(assets / application / "src/page.js")
+            change_dependency(assets / application / "src/page.js", root)
             build_web()
             expect_cycle()
             expect_noop()
@@ -175,7 +185,7 @@ include("{repository.as_posix()}/cmake/packaging/common.cmake")
         expect_noop()
 
         # A failed second build must not publish success or reuse old v2 output.
-        change(assets / "web/package-lock.json")
+        change_dependency(assets / "web/package-lock.json", root)
         fail.touch()
         build_web(success=False)
         expect_cycle()
