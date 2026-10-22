@@ -5422,10 +5422,9 @@ TEST(DisplayHelperV2Reactivation, ReusesVerifiedSessionWithoutReplayingStartupOr
   EXPECT_TRUE(harness.dispatcher.apply_request.reactivation_only);
   EXPECT_FALSE(harness.dispatcher.apply_reset_virtual_display);
   ASSERT_TRUE(harness.dispatcher.apply_request.configuration->m_refresh_rate);
-  EXPECT_EQ(
-    std::get<display_device::Rational>(*harness.dispatcher.apply_request.configuration->m_refresh_rate),
-    (display_device::Rational {1'000'000, 1000})
-  );
+  const auto &rate = std::get<display_device::Rational>(*harness.dispatcher.apply_request.configuration->m_refresh_rate);
+  EXPECT_EQ(rate.m_numerator, 1'000'000u);
+  EXPECT_EQ(rate.m_denominator, 1000u);
   display_helper::v2::ApplyOutcome outcome;
   outcome.status = display_helper::v2::ApplyStatus::Ok;
   harness.dispatcher.apply_completion(outcome);
@@ -5477,10 +5476,9 @@ TEST(DisplayHelperV2Reactivation, UsesLatestConfirmedFractionalRefresh) {
   harness.drain_messages();
   harness.state_machine.handle_message(repair_command(harness));
   ASSERT_TRUE(harness.dispatcher.apply_request.configuration->m_refresh_rate);
-  EXPECT_EQ(
-    std::get<display_device::Rational>(*harness.dispatcher.apply_request.configuration->m_refresh_rate),
-    (display_device::Rational {479'520, 1000})
-  );
+  const auto &rate = std::get<display_device::Rational>(*harness.dispatcher.apply_request.configuration->m_refresh_rate);
+  EXPECT_EQ(rate.m_numerator, 479'520u);
+  EXPECT_EQ(rate.m_denominator, 1000u);
 }
 
 TEST(DisplayHelperV2Reactivation, TeardownWaitsForRepairAndRejectsLateCompletion) {
