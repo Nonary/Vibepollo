@@ -126,6 +126,58 @@ int main() {
         subprocess.run([str(directory / 'route')], check=True)
 
 
+def linux_managed_focus_route(root, compiler):
+    source = (root / 'packaging/linux/vibepollo-session-broker.c').read_text()
+    route = block(source, 'case MANAGED_FOCUS:')
+    peer = block(source, 'static const char *hyprland_compositor_peer(')
+    harness = r"""
+#include <cassert>
+#include <cstring>
+#include <cstddef>
+#include <string>
+#include <vector>
+struct session_identity { char backend[32]; char role[16]; char compositor[96]; };
+static bool hyprland_kms_identity(const session_identity *identity) {
+  return !std::strcmp(identity->backend, "hyprland-kms") && !std::strcmp(identity->role, "desktop");
+}
+PEER
+static std::vector<std::string> executed;
+int execv(const char *, char *const[]) { assert(!"managed focus must stay in a supervised user unit"); return -1; }
+int exec_user_service(const session_identity *identity, const char *directory,
+                      char *const args[], bool recover, bool hdr,
+                      size_t stream_environment_count, char *const stream_environment[]) {
+  assert(identity && !directory && !recover && !hdr);
+  assert(stream_environment_count == 0 && !stream_environment);
+  executed.clear();
+  for (size_t index = 0; args[index]; ++index) executed.emplace_back(args[index]);
+  return 37;
+}
+int route(const session_identity *identity, char **argv) {
+  constexpr int MANAGED_FOCUS=1;
+  switch (MANAGED_FOCUS) { PRODUCTION }
+  return 126;
+}
+int main() {
+  char a0[]="broker", a1[]="managed-focus", a2[]="steam", a3[]="3259780", a4[]="3", a5[]="15", a6[]="0";
+  char *args[]={a0,a1,a2,a3,a4,a5,a6,nullptr};
+  session_identity kwin {"kwin", "desktop", ""};
+  assert(route(&kwin,args)==37);
+  assert((executed==std::vector<std::string>{"/usr/libexec/vibeshine/vibepollo-app-focus","--managed","steam","3259780","3","15","0"}));
+  // The helper binds Hyprland IPC to the record's compositor peer identity,
+  // never to an environment value inherited from the user manager.
+  session_identity hyprland {"hyprland-kms", "desktop", "1234567890abcdef1234567890abcdef-4242-987654"};
+  assert(route(&hyprland,args)==37);
+  assert((executed==std::vector<std::string>{"/usr/libexec/vibeshine/vibepollo-app-focus","--managed-hyprland","4242-987654","steam","3259780","3","15","0"}));
+}
+""".replace('PRODUCTION', route).replace('PEER', peer)
+    with tempfile.TemporaryDirectory(prefix='managed-focus-route-') as directory:
+        directory = Path(directory)
+        cpp = directory / 'route.cpp'
+        cpp.write_text(harness)
+        subprocess.run([compiler, '-std=c++23', str(cpp), '-o', str(directory / 'route')], check=True)
+        subprocess.run([str(directory / 'route')], check=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compiler', default='g++')
@@ -251,6 +303,7 @@ int main(){
         subprocess.run([args.compiler, '-std=c++23', '-pthread', '-I', str(root), str(cpp), '-o', str(directory / 'paths')], check=True)
         subprocess.run([str(directory / 'paths')], check=True)
     linux_rtx_hdr_foreground(root, args.compiler)
+    linux_managed_focus_route(root, args.compiler)
     windows_helpers(root, args.compiler)
     header = (root / 'packaging/linux/managed_app_focus_kwin.h').read_text()
     script = re.search(r'R"JS\((.*?)\)JS"', header, re.S).group(1)

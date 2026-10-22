@@ -56,8 +56,8 @@ are excluded from capture selection.
 
 These operations are explicitly unsupported: wlr capture in the machine-service
 account, private/Remote Monitor creation, display modes/layout/scale/HDR changes,
-DPMS wake/power control, touchscreen mapping and KWin application focus. Physical
-outputs must be enabled by the desktop user. HDR or private-output stream requests
+DPMS wake/power control and touchscreen mapping. Physical outputs must be enabled
+by the desktop user. HDR or private-output stream requests
 fail with an explanation. The backend advertises no independent-output capability.
 KScreen and managed-connector operations are fenced even if called outside the
 normal backend route.
@@ -76,6 +76,19 @@ With a bound display, Steam/Big Picture, Steam-direct and Lutris launches use th
 same broker operations as KDE; Proton games then run on Hyprland's Xwayland. HDR
 compatibility launches and the external Proton stream policy remain
 unsupported.
+
+Managed Steam/Lutris application focus uses the same bounded attempts and
+timeout as KWin. The session broker runs the focus helper in a supervised user
+unit with the record's compositor PID and start time. The helper locates
+`/run/user/UID/hypr/*/.socket.sock` and sends a request only after the
+socket's peer credentials match that bound compositor; Hyprland itself does not
+authenticate IPC clients. `HYPRLAND_INSTANCE_SIGNATURE` is not imported. It
+prefers fullscreen, then tiled windows of the game's processes, since Hyprland
+reports no window type and floats dialogs by default. It activates a window
+with `focuswindow address:` and counts success only when `activewindow`
+reports that window. A compositor restart fails closed until
+the controller binds the new generation. Focus outside that budget is not
+restored.
 
 Before promoting support, test physical KMS/NVENC or VAAPI capture, audio/input,
 a native Wayland application, logout/login and greeter transitions, compositor
