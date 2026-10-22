@@ -131,7 +131,11 @@ namespace video::capture_recovery {
       active_.store(!observers_.empty(), std::memory_order_release);
     }
 
-    void frame(const std::string &device_id, std::uint64_t instance) {
+    void frame(
+      const std::string &device_id,
+      std::uint64_t instance,
+      std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
+    ) {
       if (!active_.load(std::memory_order_acquire)) {
         return;
       }
@@ -146,12 +150,17 @@ namespace video::capture_recovery {
           [&](const auto &candidate) { return same_name(candidate, device_id); }
         );
         if (instance > observation->generation) {
-          observation->last_identity_lookup_instance = instance;
-          observation->retry_identity_lookup_instance = 0;
           if (identity_matches) {
+            observation->last_identity_lookup_instance = instance;
+            observation->retry_identity_lookup_instance = 0;
             observation->frame_observed.store(true, std::memory_order_release);
             return true;
           }
+          // A current name-to-ID mapping can be valid yet point at a different
+          // output after a topology change. Retry on the same capture instance
+          // in case Windows reassigns the output name while that capture lives.
+          observation->retry_identity_lookup_instance = instance;
+          observation->retry_identity_lookup_after = now + std::chrono::milliseconds(500);
         }
         return false;
       });
@@ -167,8 +176,8 @@ namespace video::capture_recovery {
 
   // This is the production frame path used by video.cpp. Resolve only while a
   // live observer is waiting, then confirm by current device ID rather than by
-  // the mutable GDI name alone. Failed lookups are retried with a short delay;
-  // a resolved identity is checked once per capture instance.
+  // the mutable GDI name alone. Failed lookups and mismatched identities are
+  // retried with a short delay.
   template<typename DeviceListProvider, typename NameOf, typename IdOf>
   void observe_frame_from_current_device_list(
     observations_t &observations,
@@ -189,7 +198,7 @@ namespace video::capture_recovery {
     }
     const auto device_id = resolve_device_id_for_output(output, *devices, name_of, id_of);
     if (device_id) {
-      observations.frame(*device_id, instance);
+      observations.frame(*device_id, instance, now);
     } else {
       observations.identity_lookup_failed(instance, now);
     }

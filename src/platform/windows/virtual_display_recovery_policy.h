@@ -1,8 +1,21 @@
 #pragma once
 
 #include <chrono>
+#include <optional>
+#include <string>
+#include <utility>
 
 namespace VDISPLAY::policy {
+  // A reclaimed driver lease is already owned by one stable display ID. Do
+  // not let a client friendly-name match replace that identity during reuse.
+  inline std::optional<std::string> select_reuse_device_id(
+    bool reclaiming_owned_display,
+    std::optional<std::string> exact_owned_device_id,
+    std::optional<std::string> client_name_candidate
+  ) {
+    return reclaiming_owned_display ? std::move(exact_owned_device_id) : std::move(client_name_candidate);
+  }
+
   class inactive_reactivation_budget_t {
   public:
     using duration = std::chrono::steady_clock::duration;

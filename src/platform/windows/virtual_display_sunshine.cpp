@@ -3562,6 +3562,28 @@ namespace VDISPLAY_SUNSHINE {
       return fallback;
     }
 
+    std::optional<std::wstring> resolve_virtual_display_name_for_device_id(const std::string &device_id) {
+      if (device_id.empty()) {
+        return std::nullopt;
+      }
+
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+      if (!devices) {
+        return std::nullopt;
+      }
+      for (const auto &device : *devices) {
+        if (!is_virtual_display_device(device) || device.m_device_id.empty() ||
+            !equals_ci(device.m_device_id, device_id)) {
+          continue;
+        }
+        if (!device.m_display_name.empty()) {
+          return platf::from_utf8(device.m_display_name);
+        }
+        return platf::from_utf8(device.m_device_id);
+      }
+      return std::nullopt;
+    }
+
     std::optional<uuid_util::uuid_t> parse_uuid_string(const std::string &value) {
       if (value.empty()) {
         return std::nullopt;
@@ -4735,6 +4757,8 @@ namespace VDISPLAY_SUNSHINE {
         const auto current = driver_lease_tracker().get(state.guid_uuid);
         const auto transport = control_transport_snapshot();
         if (!current || current->lease_id != lease->lease_id || current->display_id != lease->display_id ||
+            !current->device_id || current->device_id->empty() ||
+            !equals_ci(*current->device_id, *lease->device_id) ||
             !transport || !driver_transport_responsive(transport.get()) ||
             !render_adapter_request_provenance_matches(state.guid_uuid, "live-session reactivation") ||
             monitor_should_abort(state, stop_token)) {
@@ -7086,23 +7110,38 @@ namespace VDISPLAY_SUNSHINE {
           return result;
         }
 
-        auto reuse_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
+        std::optional<std::wstring> reuse_name;
         std::optional<std::string> device_id;
-        if (reuse_name) {
-          device_id = resolveVirtualDisplayDeviceId(*reuse_name);
-          BOOST_LOG(debug) << "resolveVirtualDisplayDeviceId(" << platf::to_utf8(*reuse_name) << ") returned '"
-                           << (device_id ? *device_id : std::string("(none)")) << "'";
-        }
-        if (!device_id) {
-          if (s_client_name && std::strlen(s_client_name) > 0) {
-            device_id = resolveVirtualDisplayDeviceIdForClient(s_client_name);
+        std::optional<std::string> client_name_device_id;
+        const auto exact_owned_device_id = reclaimed_for_reuse ?
+          existing_virtual_display_device_id(display_id) : std::nullopt;
+        if (reclaimed_for_reuse) {
+          // Reconciliation already proved ownership by display ID. Resolve the
+          // output name from that exact EDID identity; another virtual display
+          // with the same client name must never replace the reclaimed target.
+          device_id = VDISPLAY::policy::select_reuse_device_id(
+            true,
+            exact_owned_device_id,
+            std::nullopt
+          );
+          if (device_id) {
+            reuse_name = resolve_virtual_display_name_for_device_id(*device_id);
           }
-        }
-        if (!device_id && reclaimed_for_reuse) {
-          // Inactive devices have no GDI name, and Windows may omit the friendly
-          // name used by the client resolver. The stable EDID product/serial is
-          // still present and is the authoritative identity for resurrection.
-          device_id = existing_virtual_display_device_id(display_id);
+        } else {
+          reuse_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
+          if (reuse_name) {
+            client_name_device_id = resolveVirtualDisplayDeviceId(*reuse_name);
+            BOOST_LOG(debug) << "resolveVirtualDisplayDeviceId(" << platf::to_utf8(*reuse_name) << ") returned '"
+                             << (client_name_device_id ? *client_name_device_id : std::string("(none)")) << "'";
+          }
+          if (!client_name_device_id && s_client_name && std::strlen(s_client_name) > 0) {
+            client_name_device_id = resolveVirtualDisplayDeviceIdForClient(s_client_name);
+          }
+          device_id = VDISPLAY::policy::select_reuse_device_id(
+            false,
+            std::nullopt,
+            client_name_device_id
+          );
         }
 
         if (dpi_snapshot) {

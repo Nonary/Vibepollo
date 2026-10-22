@@ -24,6 +24,7 @@ reactivate_presence = reactivate_presence.replace('monitor_target_presence(', 'a
 
 program = r'''
 #include "src/capture_recovery.h"
+#include "src/platform/windows/virtual_display_recovery_policy.h"
 #include <cassert>
 #include <chrono>
 #include <future>
@@ -33,7 +34,15 @@ program = r'''
 using namespace std::chrono_literals;
 struct Lease { std::uint64_t display_id=1,lease_id=2; std::optional<std::string> device_id="virtual1"; };
 std::optional<Lease> owned=Lease{};
-struct Tracker { std::optional<Lease> get(int) {return owned;} };
+int tracker_gets=0;
+bool mutate_device_id_after_snapshot=false;
+struct Tracker {
+ std::optional<Lease> get(int) {
+  auto snapshot=owned;
+  if(mutate_device_id_after_snapshot&&tracker_gets++==0&&owned) owned->device_id="replacement-virtual";
+  return snapshot;
+ }
+};
 Tracker &driver_lease_tracker() {static Tracker tracker;return tracker;}
 struct Transport { bool valid() const {return true;} };
 std::shared_ptr<Transport> control_transport_snapshot() {return std::make_shared<Transport>();}
@@ -150,8 +159,18 @@ bool reactivate_owned_virtual_display(const std::string &id,const std::function<
  ++helper_applies;return helper_ok;
 }
 }
-''' + ccd_presence + '\n' + driver_presence + '\n' + target_presence + '\n' + reactivate_presence + r'''
+''' + function('    std::optional<std::wstring> resolve_virtual_display_name_for_device_id(') + '\n' + ccd_presence + '\n' + driver_presence + '\n' + target_presence + '\n' + reactivate_presence + r'''
 int main() {
+ auto reclaimed_id=VDISPLAY::policy::select_reuse_device_id(true,std::string("virtual1"),std::string("replacement-virtual"));
+ assert(reclaimed_id&&*reclaimed_id=="virtual1");
+ assert(!VDISPLAY::policy::select_reuse_device_id(true,std::nullopt,std::string("replacement-virtual")));
+ auto unowned_candidate=VDISPLAY::policy::select_reuse_device_id(false,std::nullopt,std::string("replacement-virtual"));
+ assert(unowned_candidate&&*unowned_candidate=="replacement-virtual");
+ enumerated_devices={{"replacement-virtual","monitor3","DISPLAY17","client",true},
+                     {"virtual1","monitor1","DISPLAY18","client",true}};
+ assert(resolve_virtual_display_name_for_device_id("virtual1")==L"DISPLAY18");
+ assert(!resolve_virtual_display_name_for_device_id("missing-virtual"));
+ enumerated_devices.clear();
  RecoveryMonitorState state;
  ccd_paths={{"virtual1","monitor1",0},{"physical","monitor2",DISPLAYCONFIG_PATH_ACTIVE}};
  // Exercise the full production empty-enumeration path. Unknown CCD results
@@ -242,6 +261,13 @@ int main() {
  release.set_value();owner.join();
  assert(helper_applies==0&&resets==0);
  helper_ok=false;assert(!reactivate_owned_virtual_display(state,{}));assert(resets==0);helper_ok=true;
+ // A tracker identity refresh between the initial lease snapshot and helper
+ // admission invalidates the captured ID and must not reactivate a stale target.
+ tracker_gets=0;mutate_device_id_after_snapshot=true;
+ const auto stale_identity_helper_calls=helper_applies;
+ assert(!reactivate_owned_virtual_display(state,{}));
+ assert(helper_applies==stale_identity_helper_calls&&resets==0);
+ mutate_device_id_after_snapshot=false;tracker_gets=0;owned=Lease{};
  // The exact active device supplies a display name, but capture confirmation
  // resolves the current name-to-ID mapping and accepts only the lease ID.
  enumerated_devices={{"virtual1","monitor1","DISPLAY15","",true}};
@@ -267,6 +293,23 @@ int main() {
  enumerated_devices={{"virtual1","monitor1","DISPLAY15","",true}};
  observe_frame("DISPLAY15",captures.begin_capture());
  assert(state.capture_confirmation.poll(std::chrono::steady_clock::now()+7s)==video::capture_recovery::confirmation_status::confirmed);
+
+ // A valid but mismatched name-to-ID result is retried on the same capture
+ // instance, because Windows may reassign that output name after the first frame.
+ enumerated_devices={{"replacement-virtual","monitor3","DISPLAY19","",true}};
+ assert(reactivate_owned_virtual_display(state,{}));
+ const auto remapped_instance=captures.begin_capture();
+ const auto remapped_time=std::chrono::steady_clock::now();
+ const auto remap_queries_before=enumeration_queries;
+ observe_frame("DISPLAY19",remapped_instance,remapped_time);
+ assert(enumeration_queries==remap_queries_before+1);
+ assert(state.capture_confirmation.poll(remapped_time+6s)==video::capture_recovery::confirmation_status::retry);
+ enumerated_devices={{"virtual1","monitor1","DISPLAY19","",true}};
+ observe_frame("DISPLAY19",remapped_instance,remapped_time+499ms);
+ assert(enumeration_queries==remap_queries_before+1);
+ observe_frame("DISPLAY19",remapped_instance,remapped_time+500ms);
+ assert(enumeration_queries==remap_queries_before+2);
+ assert(state.capture_confirmation.poll(remapped_time+7s)==video::capture_recovery::confirmation_status::confirmed);
 
  // If Windows enumeration temporarily fails on the first frame, retry the
  // same capture instance after the throttle instead of leaving it unobserved.
