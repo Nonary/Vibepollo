@@ -2391,10 +2391,11 @@ namespace stream {
         fec_blocks_begin = std::begin(fec_blocks),
         fec_blocks_end = std::begin(fec_blocks) + fec_blocks_needed;
 
-      // The demand quantum only limits a single ordinary-stream send call.
+      // When enabled, the demand quantum limits one ordinary-stream send call;
+      // it does not cap aggregate sends before the next pacing wait.
       // Keep the downstream frame deadline/cumulative pacing calculations intact.
       std::size_t pacing_frame_packets = total_shards;
-      if (!pyrowave_session) {
+      if (!pyrowave_session && config::stream.pacing_batch_demand_limit) {
         pacing_frame_packets = 0;
         for (std::size_t x = 0; x < fec_blocks_needed; ++x) {
           const auto data_shards = (fec_blocks[x].size() + blocksize - 1) / blocksize;
@@ -2501,7 +2502,7 @@ namespace stream {
           }
         }
 
-        if (!pyrowave_session) {
+        if (!pyrowave_session && config::stream.pacing_batch_demand_limit) {
           const auto &monitor = session->config.monitor;
           const auto stream_kbps = session->video.pacing_bitrate_kbps.load(std::memory_order_relaxed);
           const auto ip_header_bytes = session->video.peer.address().is_v6() ? 40u : 20u;
@@ -2528,7 +2529,7 @@ namespace stream {
         max_batch_size_bytes = pyrowave_session ?
                                  std::min(max_batch_size_bytes, ratecontrol_packets_in_1ms * datagram_size) :
                                  std::min<size_t>(max_batch_size_bytes, (size_t) config::stream.video_max_batch_size_kb * 1024);
-        if (!pyrowave_session) {
+        if (!pyrowave_session && config::stream.pacing_batch_demand_limit) {
           max_batch_size_bytes = pacing::max_batch_bytes(max_batch_size_bytes, ordinary_batch_quantum_packets, datagram_size);
         }
         if (pacing_ceiling > 0) {
