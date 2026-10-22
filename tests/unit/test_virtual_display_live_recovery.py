@@ -101,6 +101,7 @@ BOOL SetupDiGetDevicePropertyW(HDEVINFO,const SP_DEVINFO_DATA *device_data,const
  *property_type=DEVPROP_TYPE_GUID;*required_size=sizeof(GUID);return 1;
 }
 BOOL IsEqualGUID(const GUID &left,const GUID &right) {return std::memcmp(&left,&right,sizeof(GUID))==0;}
+#ifndef _WIN32
 int _wcsicmp(const wchar_t *left,const wchar_t *right) {
  while(*left&&*right) {
   const auto a=std::towlower(*left++),b=std::towlower(*right++);
@@ -108,6 +109,7 @@ int _wcsicmp(const wchar_t *left,const wchar_t *right) {
  }
  return *left?1:(*right?-1:0);
 }
+#endif
 namespace sunshine_driver {
 struct DriverGuid {std::uint32_t data1;std::uint16_t data2,data3;std::uint8_t data4[8];};
 DriverGuid container_guid_from_display_id(std::uint64_t id) {
