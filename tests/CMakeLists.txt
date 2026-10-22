@@ -1969,6 +1969,11 @@ if(TARGET pyrowave-linux)
     add_test(NAME pyrowave_instance_gpu COMMAND test_pyrowave_instance_gpu)
     set_tests_properties(pyrowave_instance_gpu PROPERTIES SKIP_RETURN_CODE 77 LABELS "integration;gpu" TIMEOUT 120)
 
+    # Manual benchmark, deliberately outside CTest to avoid concurrent GPU load.
+    add_executable(benchmark_pyrowave_linux benchmark_pyrowave_linux.cpp)
+    target_include_directories(benchmark_pyrowave_linux PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+    target_link_libraries(benchmark_pyrowave_linux PRIVATE pyrowave-linux gbm vulkan)
+
     add_executable(test_pyrowave_linux_gpu test_pyrowave_linux_gpu.cpp)
     target_include_directories(test_pyrowave_linux_gpu PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
     target_link_libraries(test_pyrowave_linux_gpu PRIVATE pyrowave-linux pyrowave::capi gbm vulkan)

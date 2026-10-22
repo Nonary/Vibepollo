@@ -45,6 +45,11 @@ def main():
         reference.write_text(" ".join(map(str, values)))
         env = dict(os.environ, PYROWAVE_TEST_TRUEHDR_RUNTIME=runtime,
                    PYROWAVE_TEST_TRUEHDR_REFERENCE=str(reference))
+        status = subprocess.call([executable, *capture_args], env=env)
+        if status:
+            return status
+        # Exercise identical pixels/settings with the compatibility CPU fences.
+        env["PYROWAVE_TEST_TRUEHDR_CPU_SYNC"] = "1"
         return subprocess.call([executable, *capture_args], env=env)
 
 

@@ -165,6 +165,7 @@ int main(int argc, char **argv) {
             config.hdr = hdr;
             if (hdr_runtime) {
               config.truehdr_runtime = hdr_runtime;
+              config.truehdr_external_sync = !std::getenv("PYROWAVE_TEST_TRUEHDR_CPU_SYNC");
             }
             float max = float((1u << depth) - 1), scale = float(1u << (depth - 8));
             float ym = full ? 1.0f : 219 * scale / max, ya = full ? 0.0f : 16 * scale / max;

@@ -9,8 +9,8 @@
 #include <unistd.h>
 
 namespace pyrowave::linux_gpu {
-  // Vulkan fences and explicit external queue ownership transfers bracket each
-  // CUDA invocation. Only opaque GPU allocations cross the API boundary.
+  // External GPU semaphores and explicit queue ownership transfers bracket each
+  // CUDA invocation (CPU fences remain a compatibility fallback). Only opaque GPU allocations cross the API boundary.
   class truehdr_t {
   public:
     Vulkan::BufferHandle input, output;
@@ -25,6 +25,9 @@ namespace pyrowave::linux_gpu {
           cuda->cuStreamSynchronize(stream);
         }
         effect.reset();
+        if (cuda_timeline) {
+          cuda->cuDestroyExternalSemaphore(cuda_timeline);
+        }
         for (int i = 0; i < 2; ++i) {
           if (pointers[i]) {
             cuda->cuMemFree(pointers[i]);
@@ -83,6 +86,21 @@ namespace pyrowave::linux_gpu {
         }
         import(*input, 0);
         import(*output, 1);
+        if (config.truehdr_external_sync && cuda->cuImportExternalSemaphore && cuda->cuDestroyExternalSemaphore && cuda->cuWaitExternalSemaphoresAsync && cuda->cuSignalExternalSemaphoresAsync) {
+          timeline = device.request_semaphore_external(VK_SEMAPHORE_TYPE_TIMELINE, VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT);
+          if (timeline) {
+            auto handle = timeline->export_to_handle();
+            if (handle) {
+              CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC desc {};
+              desc.type = CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_TIMELINE_SEMAPHORE_FD;
+              desc.handle.fd = handle.handle;
+              if (cuda->cuImportExternalSemaphore(&cuda_timeline, &desc) != CUDA_SUCCESS) {
+                close(handle.handle);
+                cuda_timeline = nullptr;
+              }
+            }
+          }
+        }
       } catch (...) {
         CUcontext popped {};
         cuda->cuCtxPopCurrent(&popped);
@@ -92,9 +110,28 @@ namespace pyrowave::linux_gpu {
       check(cuda->cuCtxPopCurrent(&popped));
     }
 
+    bool asynchronous() const {
+      return cuda_timeline != nullptr;
+    }
+
+    std::uint64_t next_value() {
+      if (value > UINT64_MAX - 2) {
+        throw std::runtime_error("PyroWave RTX HDR: timeline exhausted");
+      }
+      value += 2;
+      return value;
+    }
+
+    Vulkan::Semaphore timeline;
+
     void run(const platf::linux_truehdr::settings_t &settings, int width, int height) {
       check(cuda->cuCtxPushCurrent(context));
       try {
+        if (cuda_timeline) {
+          CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS wait {};
+          wait.params.fence.value = value - 1;
+          check(cuda->cuWaitExternalSemaphoresAsync(&cuda_timeline, &wait, 1, stream));
+        }
         CUDA_MEMCPY2D copy {};
         copy.srcMemoryType = copy.dstMemoryType = CU_MEMORYTYPE_DEVICE;
         copy.srcDevice = pointers[0];
@@ -114,7 +151,13 @@ namespace pyrowave::linux_gpu {
         copy.dstDevice = pointers[1];
         copy.dstPitch = width * 4;
         check(cuda->cuMemcpy2DAsync(&copy, stream));
-        check(cuda->cuStreamSynchronize(stream));
+        if (cuda_timeline) {
+          CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS signal {};
+          signal.params.fence.value = value;
+          check(cuda->cuSignalExternalSemaphoresAsync(&cuda_timeline, &signal, 1, stream));
+        } else {
+          check(cuda->cuStreamSynchronize(stream));
+        }
       } catch (...) {
         CUcontext popped {};
         cuda->cuCtxPopCurrent(&popped);
@@ -130,6 +173,8 @@ namespace pyrowave::linux_gpu {
     CUcontext context = nullptr;
     CUdevice selected = -1;
     CUstream stream = nullptr;
+    CUexternalSemaphore cuda_timeline = nullptr;
+    std::uint64_t value = 0;
     CUexternalMemory memory[2] {};
     CUdeviceptr pointers[2] {};
     std::unique_ptr<platf::linux_truehdr::effect_t> effect;

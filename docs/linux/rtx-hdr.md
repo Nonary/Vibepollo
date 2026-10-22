@@ -24,7 +24,9 @@ the effect has drained; live parameter updates reuse the existing effect.
 PyroWave composes SDR capture, crop, cursor and the scanout LUT in Vulkan, then
 passes GPU buffers to native CUDA TrueHDR and converts its packed BT.2020/PQ
 output to the negotiated YUV planes. Explicit GPU ownership transfers and
-fences order Vulkan and CUDA work. Desktop/non-matching app fallback stays in
+timeline semaphores order Vulkan and CUDA work without intermediate CPU
+waits (CPU fences remain the fallback when external semaphores are unavailable).
+Unchanged cursor and LUT textures are reused. Desktop/non-matching app fallback stays in
 the HDR stream, using SDR Brightness. The capture/encode GPU must be NVIDIA;
 failed conversion ends the stream.
 
@@ -63,3 +65,16 @@ Browser coverage checks Linux visibility,
 non-NVIDIA exclusion, live updates and persistence in both interfaces. These
 checks do not establish Windows pixel parity or client/display behavior; the
 reference capture procedure remains in `tools/linux_truehdr/README.md`.
+
+A manual `benchmark_pyrowave_linux` target measures the complete synchronous
+encode call at 3840x2160 HDR 4:4:4 with a linear GBM DMA-BUF, including any
+linear CPU-upload fallback, GPU waits, readback and packetization:
+
+```sh
+build/tests/benchmark_pyrowave_linux /dev/dri/renderD128 build/truehdr-runtime 240
+```
+
+Use `-` instead of the runtime path for neutral SDR-to-PQ. Record concurrent
+GPU load and interleave baseline/candidate runs. These are wall timings for a
+synthetic frame, not native inference latency or proof of gameplay/client
+120 Hz cadence. The final packet payload checksum helps detect output changes.

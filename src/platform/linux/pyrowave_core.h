@@ -18,6 +18,7 @@ namespace pyrowave::linux_gpu {
     std::array<float, 12> matrix {};
     std::string render_device;
     std::string truehdr_runtime;
+    bool truehdr_external_sync = true;  // False selects the compatibility CPU-fence path.
   };
 
   struct source_t {
@@ -49,6 +50,7 @@ namespace pyrowave::linux_gpu {
     // Called after stream/probe users drain, while the process deadline is live.
     static void shutdown();
     ~core_t();
+    bool using_truehdr_external_sync() const;
     bool encode(const source_t &source, std::size_t budget, std::size_t boundary, std::vector<std::uint8_t> &bitstream, std::vector<packet_t> &packets, std::string &error);
 
   private:
