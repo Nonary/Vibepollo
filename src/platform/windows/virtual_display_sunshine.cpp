@@ -50,6 +50,8 @@
 #include <cwchar>
 #include <cwctype>
 #include <devguid.h>
+// DEFINE_DEVPROPKEY emits the property key only when INITGUID is set first.
+#include <initguid.h>
 #include <devpkey.h>
 #include <dxgi.h>
 #include <dxgi1_6.h>
@@ -59,7 +61,6 @@
 #include <highlevelmonitorconfigurationapi.h>
 #include <icm.h>
 #include <iomanip>
-#include <initguid.h>
 #include <iostream>
 #include <limits>
 #include <map>
