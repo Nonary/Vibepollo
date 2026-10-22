@@ -1936,6 +1936,10 @@ if(WIN32 AND TARGET pyrowave::capi)
 endif()
 
 if(TARGET linux-truehdr)
+    add_test(NAME test_component_linux_truehdr_cuda_abi
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_linux_truehdr_cuda_abi.py"
+            "${CMAKE_BINARY_DIR}")
+    set_tests_properties(test_component_linux_truehdr_cuda_abi PROPERTIES LABELS "component" TIMEOUT 60)
     add_executable(test_linux_truehdr_gpu test_linux_truehdr_gpu.cpp)
     target_include_directories(test_linux_truehdr_gpu PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
     target_link_libraries(test_linux_truehdr_gpu PRIVATE linux-truehdr glad ${CMAKE_DL_LIBS})
