@@ -30,6 +30,11 @@ if(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE)
     endif()
     set(LIBVIRTUALDISPLAY_ENABLE_FRAME_TRANSPORT ON CACHE BOOL
             "Build the experimental Windows frame-ring producer" FORCE)
+else()
+    # Reconfiguration of an existing build tree must keep the producer paired
+    # with the host opt-in instead of retaining a cached ON value.
+    set(LIBVIRTUALDISPLAY_ENABLE_FRAME_TRANSPORT OFF CACHE BOOL
+            "Build the experimental Windows frame-ring producer" FORCE)
 endif()
 
 set(LIBVIRTUALDISPLAY_LINUX_ROOT "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}/linux")
