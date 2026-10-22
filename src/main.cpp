@@ -509,8 +509,9 @@ int main(int argc, char *argv[]) {
   // Later guards drain stream/probe users first, including on startup returns.
   // Final Vulkan instance release must run before the owned deadline completes:
   // a vendor wait during static teardown would otherwise escape supervision.
-  auto pyrowave_shutdown_guard = util::fail_guard([&shutdown_deadline]() {
+  auto pyrowave_shutdown_guard = util::fail_guard([&shutdown_deadline, &shutdown_phase_state]() {
     shutdown_deadline.arm();
+    shutdown_phase_state.set(shutdown_phase::phase_e::pyrowave_host_shutdown);
     pyrowave::host::shutdown();
   });
 
