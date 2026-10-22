@@ -23,6 +23,7 @@ program = r'''
 #include <utility>
 #include <vector>
 #include <iostream>
+#include "src/hdr_stream_policy.h"
 namespace display_device {
 enum class DeviceEnumerationDetail { Full };
 struct EnumeratedDevice { std::string m_device_id, m_display_name, m_friendly_name; };
@@ -34,6 +35,7 @@ struct video_t {
  enum class virtual_display_mode_e { disabled, per_client, shared };
  virtual_display_mode_e virtual_display_mode=virtual_display_mode_e::disabled;
  std::string output_name;
+ bool rtx_hdr=false, runtime_rtx_hdr_override=false;
  struct { std::vector<std::string> virtual_display_outputs={"Reserved-1"}; } dd;
 };
 inline video_t video;
@@ -42,7 +44,7 @@ namespace rtsp_stream {
 struct launch_session_t {
  bool virtual_display=false, virtual_display_failed=false, client_requests_virtual_display=false;
  bool virtual_display_recreated_on_demand=true, virtual_display_needs_resume_apply=true;
- bool hdr=false;
+ bool hdr=false, force_sdr=false, prefer_sdr_10bit=false;
  std::optional<bool> client_virtual_display_override;
  std::optional<config::video_t::virtual_display_mode_e> virtual_display_mode_override;
  std::string virtual_display_device_id="old";
@@ -50,7 +52,13 @@ struct launch_session_t {
  std::optional<bool> virtual_display_hdr_enabled=true;
  std::optional<std::string> output_name_override;
 };
-bool effective_hdr_requested(const launch_session_t& session) { return session.hdr; }
+bool effective_hdr_requested(const launch_session_t& session) {
+ return session.hdr && !session.force_sdr && !session.prefer_sdr_10bit;
+}
+bool hdr_capture_required(const launch_session_t& session, const config::video_t& video_config) {
+ return video::hdr_stream_policy::requires_hdr_source(
+   effective_hdr_requested(session), video_config.runtime_rtx_hdr_override && video_config.rtx_hdr);
+}
 }
 namespace platf {
 std::vector<std::string> outputs={"/dev/dri/card0:Virtual-1", "DP-1", "Reserved-1", "DP-2"};
@@ -111,6 +119,14 @@ int main() {
    if(trigger==3) session.hdr=true;
    assert(!backend.prepare_session(session,true,true).error.empty());
  }
+ config::video.rtx_hdr=true;
+ session={}; session.hdr=true; session.output_name_override="DP-1";
+ assert(!backend.prepare_session(session,true,true).error.empty());
+ config::video.runtime_rtx_hdr_override=true;
+ session={}; session.hdr=true; session.output_name_override="DP-1";
+ assert(backend.prepare_session(session,true,true).error.empty());
+ assert(!session.virtual_display_hdr_enabled);
+ config::video.rtx_hdr=false;
  session={}; session.output_name_override="missing";
  assert(!backend.prepare_session(session,true,true).error.empty());
  outputs={"/dev/dri/card0:Virtual-1"}; session={};
@@ -125,5 +141,6 @@ int main() {
 with tempfile.TemporaryDirectory() as directory:
     path = pathlib.Path(directory)
     (path / 'backend.cpp').write_text(program)
-    subprocess.run([compiler, '-std=c++23', '-Wall', '-Wextra', '-Werror', str(path / 'backend.cpp'), '-o', str(path / 'backend')], check=True)
+    subprocess.run([compiler, '-std=c++23', '-Wall', '-Wextra', '-Werror', '-I', str(root),
+                    str(path / 'backend.cpp'), '-o', str(path / 'backend')], check=True)
     subprocess.run([str(path / 'backend')], check=True)
