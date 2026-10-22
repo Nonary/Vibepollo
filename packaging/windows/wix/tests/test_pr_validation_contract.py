@@ -77,8 +77,19 @@ class Msi:
             function.restype = uint
         self.database = uint()
         self.session = uint()
-        self.check(self.api.MsiOpenDatabaseW(str(path), None, ctypes.byref(self.database)))
+        self.ole32 = ctypes.WinDLL("ole32")
+        self.ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        self.ole32.CoInitializeEx.restype = ctypes.c_int32
+        self.ole32.CoUninitialize.argtypes = []
+        self.ole32.CoUninitialize.restype = None
+        self.com_initialized = False
         try:
+            # MsiOpenPackageEx requires COM initialized on this same thread.
+            result = self.ole32.CoInitializeEx(None, 2)  # COINIT_APARTMENTTHREADED
+            if result not in (0, 1):  # S_OK or S_FALSE, both need CoUninitialize.
+                raise AssertionError(f"COM initialization failed: {result}")
+            self.com_initialized = True
+            self.check(self.api.MsiOpenDatabaseW(str(path), None, ctypes.byref(self.database)))
             # IGNOREMACHINESTATE: no install action, registry write, or elevation.
             self.check(self.api.MsiOpenPackageExW(str(path), 1, ctypes.byref(self.session)))
         except Exception:
@@ -95,6 +106,9 @@ class Msi:
             if handle.value:
                 self.api.MsiCloseHandle(handle)
                 handle.value = 0
+        if self.com_initialized:
+            self.ole32.CoUninitialize()
+            self.com_initialized = False
 
     def query(self, sql):
         view = ctypes.c_uint()
