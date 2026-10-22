@@ -142,7 +142,7 @@ namespace {
   namespace sessions = platf::dualsense_usbip_gamepad;
 
   platf::gamepad_arrival_t arrival(std::uint16_t capabilities = LI_CCAP_HAPTICS_PCM) {
-    return {LI_CTYPE_PS, capabilities, 0};
+    return {LI_CTYPE_PS, capabilities, 0, false, 123};
   }
 
   platf::feedback_queue_t queue(std::uint32_t capacity = 32) {
@@ -752,4 +752,23 @@ TEST_F(DualSenseUsbipGamepadTests, ActuatorTimeoutDoesNotInvalidateFreshSpeaker)
   EXPECT_EQ(messages[0].type, platf::gamepad_feedback_e::speaker_pcm);
   EXPECT_EQ(messages[1].type, platf::gamepad_feedback_e::haptics_pcm);
   EXPECT_TRUE(controller_speaker_pcm::encode(8, 13, 0, messages[0].data.speaker, messages[0].speaker_epoch));
+}
+
+TEST_F(DualSenseUsbipGamepadTests, SpeakerRequiresExplicitOwnerAndEchoesItAcrossReuse) {
+  platf::usbip_gamepad_t backend;
+  auto feedback = queue();
+  auto metadata = arrival(0x4000);
+  metadata.speaker_owner = 0;
+  ASSERT_EQ(backend.alloc({0, 0}, metadata, feedback), 0);
+  drain(feedback);
+  fake_transport::current[0]->handlers.speaker_pcm(samples(1));
+  EXPECT_TRUE(drain(feedback).empty());
+  backend.free(0, false);
+  metadata.speaker_owner = 0x123456789abcdef0ULL;
+  ASSERT_EQ(backend.alloc({0, 0}, metadata, feedback), 0);
+  drain(feedback);
+  fake_transport::current[0]->handlers.speaker_pcm(samples(2));
+  const auto messages = drain(feedback);
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_EQ(messages[0].data.speaker.owner, metadata.speaker_owner);
 }

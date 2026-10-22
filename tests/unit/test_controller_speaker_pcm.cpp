@@ -13,6 +13,7 @@ TEST(ControllerSpeakerPcm, CapabilityIsPlayStationOnlyAndSessionNegotiated) {
   }
   EXPECT_FALSE(capable(2, 0x8000));
   block pcm {};
+  pcm.owner = 0x0102030405060708ULL;
   pcm.generation = 7;
   const auto epoch = std::make_shared<controller_speaker_pcm::producer_epoch>(7);
   EXPECT_FALSE(encode(0, 13, 0, pcm, epoch));
@@ -23,6 +24,7 @@ TEST(ControllerSpeakerPcm, CapabilityIsPlayStationOnlyAndSessionNegotiated) {
 
 TEST(ControllerSpeakerPcm, ExactLittleEndianWireAndSamples) {
   controller_speaker_pcm::block pcm {};
+  pcm.owner = 0x0102030405060708ULL;
   pcm.generation = 0x12345678;
   pcm.sequence = 0x9abcdef0;
   pcm.sample_position = 0x1122334455667788;
@@ -33,18 +35,25 @@ TEST(ControllerSpeakerPcm, ExactLittleEndianWireAndSamples) {
   const auto epoch = std::make_shared<controller_speaker_pcm::producer_epoch>(pcm.generation);
   const auto packet = controller_speaker_pcm::encode(8, 13, 15, pcm, epoch);
   ASSERT_TRUE(packet);
-  EXPECT_EQ(packet->size(), 988u);
-  const std::array<std::uint8_t, 28> expected {2, 0x56, 0xd8, 3, 1, 1, 15, 0, 0x78, 0x56, 0x34, 0x12, 0xf0, 0xde, 0xbc, 0x9a, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0xf0, 0, 1, 0};
+  EXPECT_EQ(packet->size(), 996u);
+  const std::array<std::uint8_t, 36> expected {2, 0x56, 0xe0, 3, 2, 1, 15, 0, 0x78, 0x56, 0x34, 0x12, 0xf0, 0xde, 0xbc, 0x9a, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0xf0, 0, 1, 0, 8, 7, 6, 5, 4, 3, 2, 1};
   EXPECT_TRUE(std::equal(expected.begin(), expected.end(), packet->begin()));
-  EXPECT_TRUE(std::equal(pcm.samples.begin(), pcm.samples.end(), packet->begin() + 28));
+  EXPECT_TRUE(std::equal(pcm.samples.begin(), pcm.samples.end(), packet->begin() + 36));
 }
 
 TEST(ControllerSpeakerPcm, RejectsMalformedAndExpiredOrResetProducer) {
   controller_speaker_pcm::block pcm {};
+  pcm.owner = 0x0102030405060708ULL;
   pcm.generation = 9;
   auto epoch = std::make_shared<controller_speaker_pcm::producer_epoch>(9);
   std::weak_ptr<controller_speaker_pcm::producer_epoch> weak = epoch;
   EXPECT_FALSE(controller_speaker_pcm::encode(8, 13, 16, pcm, weak));
+  pcm.owner = 0;
+  EXPECT_FALSE(controller_speaker_pcm::encode(8, 13, 0, pcm, weak));
+  pcm.owner = 1;
+  pcm.sample_position = UINT64_MAX;
+  EXPECT_FALSE(controller_speaker_pcm::encode(8, 13, 0, pcm, weak));
+  pcm.sample_position = 0;
   pcm.flags = 2;
   EXPECT_FALSE(controller_speaker_pcm::encode(8, 13, 0, pcm, weak));
   pcm.flags = 0;
@@ -63,6 +72,7 @@ TEST(ControllerSpeakerPcm, ResetAfterSerializationPreventsStaleQueueAdmission) {
   using namespace controller_speaker_pcm;
   auto epoch = std::make_shared<producer_epoch>(7);
   block pcm {};
+  pcm.owner = 0x0102030405060708ULL;
   pcm.generation = 7;
   ASSERT_TRUE(encode(8, 13, 0, pcm, epoch));
   // Force the original race: reset after serialization, before queue admission.

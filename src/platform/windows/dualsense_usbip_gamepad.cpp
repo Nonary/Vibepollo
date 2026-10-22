@@ -31,6 +31,7 @@ namespace platf {
       bool ready = false;
       bool waveform_capable = false;
       bool speaker_capable = false;
+      std::uint64_t speaker_owner = 0;
       std::shared_ptr<controller_speaker_pcm::producer_epoch> speaker_epoch = std::make_shared<controller_speaker_pcm::producer_epoch>(0);
       dualsense_usbip_gamepad::pcm_packetizer speaker;
       std::uint32_t speaker_sequence = 0;
@@ -205,6 +206,7 @@ namespace platf {
         msg.type = gamepad_feedback_e::speaker_pcm;
         msg.id = client_index;
         msg.speaker_epoch = speaker_epoch;
+        msg.data.speaker.owner = speaker_owner;
         msg.data.speaker.generation = speaker_epoch->load(std::memory_order_acquire);
         msg.data.speaker.sequence = speaker_sequence++;
         msg.data.speaker.sample_position = speaker_position;
@@ -397,7 +399,8 @@ namespace platf {
           retained->nonzero_pcm_received = false;
           retained->client_index = id.clientRelativeIndex;
           retained->waveform_capable = (metadata.capabilities & LI_CCAP_HAPTICS_PCM) != 0;
-          retained->speaker_capable = controller_speaker_pcm::capable(metadata.type, metadata.capabilities);
+          retained->speaker_owner = metadata.speaker_owner;
+          retained->speaker_capable = metadata.speaker_owner && controller_speaker_pcm::capable(metadata.type, metadata.capabilities);
           retained->persist_after_disconnect = metadata.persist_after_disconnect;
           retained->feedback_queue = feedback_queue;
           retained->clear_pcm();
@@ -420,7 +423,8 @@ namespace platf {
     slot->client_index = id.clientRelativeIndex;
     slot->global_index = id.globalIndex;
     slot->waveform_capable = (metadata.capabilities & LI_CCAP_HAPTICS_PCM) != 0;
-    slot->speaker_capable = controller_speaker_pcm::capable(metadata.type, metadata.capabilities);
+    slot->speaker_owner = metadata.speaker_owner;
+    slot->speaker_capable = metadata.speaker_owner && controller_speaker_pcm::capable(metadata.type, metadata.capabilities);
     slot->persist_after_disconnect = metadata.persist_after_disconnect;
     slot->feedback_queue = feedback_queue;
     slot->state.reset();

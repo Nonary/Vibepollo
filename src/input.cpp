@@ -254,6 +254,7 @@ namespace input {
     bool guide_key_pressed = false;
 
     std::vector<gamepad_t> gamepads;
+    controller_speaker_pcm::owner_bindings speaker_bindings;
     std::unique_ptr<platf::client_input_t> client_context;
 
     safe::mail_raw_t::event_t<input::touch_port_t> touch_port_event;
@@ -1190,6 +1191,9 @@ namespace input {
       return;
     }
 
+    // Binding is single-use, scoped to this input session and controller arrival.
+    const auto speaker_owner = input->speaker_bindings.take(packet->controllerNumber);
+
     if (input->gamepads[packet->controllerNumber].id >= 0) {
       BOOST_LOG(warning) << "ControllerNumber already allocated ["sv << packet->controllerNumber << ']';
       return;
@@ -1200,6 +1204,7 @@ namespace input {
       util::endian::little(packet->capabilities),
       util::endian::little(packet->supportedButtonFlags),
       input->persist_gamepads,
+      speaker_owner,
     };
 
     auto id = alloc_id(gamepadMask);
@@ -1984,6 +1989,13 @@ namespace input {
           break;
         case SS_PEN_MAGIC:
           passthrough(input, (PSS_PEN_PACKET) payload);
+          break;
+        case controller_speaker_pcm::binding_magic:
+          if (config::input.controller) {
+            input->speaker_bindings.bind(entry.data, [&](std::uint16_t slot) {
+              return slot < input->gamepads.size() && input->gamepads[slot].id < 0;
+            });
+          }
           break;
         case SS_CONTROLLER_ARRIVAL_MAGIC:
           passthrough(input, (PSS_CONTROLLER_ARRIVAL_PACKET) payload);

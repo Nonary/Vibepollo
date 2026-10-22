@@ -323,6 +323,7 @@ namespace platf {
     std::uint16_t capabilities;
     std::uint32_t supportedButtons;
     bool persist_after_disconnect = false;
+    std::uint64_t speaker_owner = 0;
   };
 
   struct gamepad_touch_t {

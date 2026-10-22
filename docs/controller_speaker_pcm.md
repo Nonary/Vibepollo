@@ -29,9 +29,9 @@ Steam PR's callback-table changes still require ABI integration review.
 ## Packet and lifecycle
 
 Encrypted control packet 0x5602 uses unreliable channel 0x08, independently of
-actuator packet 0x5601. Its little-endian payload is 984 bytes: version1,
+actuator packet 0x5601. Its little-endian payload is 992 bytes: version2,
 format1 (48 kHz stereo S16LE), controller16, generation32, sequence32,
-sample-position64, frame-count16 (=240), flags16 (bit0 discontinuity), then
+sample-position64, frame-count16 (=240), flags16 (bit0 discontinuity), client-owner64, then
 960 sample bytes. Sample positions count stereo frames, not bytes.
 
 The USB protocol validates isochronous packet ranges and whole eight-byte
@@ -63,3 +63,29 @@ Encryption uses the existing session encoder and unreliable control sender.
 Native Windows SDK/build, live encrypted network delivery and physical
 controller speaker/haptic coexistence require separate validation. Do not
 mark the original issue resolved from these source-stage tests alone.
+
+## Explicit owner binding (version 2)
+
+Generation is not owner identity: the first packet from an old controller can
+arrive after slot reuse before the client has observed any generation. Each
+client allocation therefore has a nonzero 64-bit incarnation; reconnect also
+rotates retained endpoints. The counter never resets or wraps within a process;
+exhaustion disables speaker advertisement. Session transport teardown/keys
+separate different client processes.
+
+The additive client-library arrival API first queues a 20-byte reliable input
+binding on the same controller channel as the unchanged ordinary arrival.
+Input magic0x55000009 is distinct from current1–7 and pending Steam attributes8.
+The binding layout is BE32 size16, LE32 magic, LE16 slot, LE16 version1, LE64
+owner. The host checks exact size/version/slot/nonzero owner, ignores bindings
+for allocated slots, and consumes the pending binding once at arrival. State is
+local to the input session. Legacy arrival remains valid and unbound, with no
+speaker producer. Old hosts can ignore the extension and process normal input.
+
+Every version2 speaker packet echoes the owner; missing, zero or mismatched
+owners are rejected before generation admission, including delayed first
+packets and previous-session data. Version1 is intentionally rejected. The new
+unmerged speaker callback gets an owner argument; the legacy listener table and
+start API remain unchanged. Sample position plus frame count may not overflow.
+The receive callback uses try-lock admission and drops a bounded block under
+registry/backend contention rather than blocking later control packets.
