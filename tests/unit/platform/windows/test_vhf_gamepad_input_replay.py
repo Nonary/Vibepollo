@@ -63,6 +63,7 @@ namespace lvg {
     int left_x{}, left_y{}, right_x{}, right_y{};
   };
 }
+// REAL_PRODUCER
 namespace platf {
 using namespace std::literals;
 using feedback_queue_t = std::shared_ptr<int>;
@@ -87,20 +88,23 @@ namespace vhf_gamepad {
 }
 // REAL_SLOT
 struct client_t {
+  std::map<unsigned, lvg::driver::ds4_state> ds4_states;
+  std::map<unsigned, lvg::driver::ds5_state> ds5_states;
   std::map<unsigned, lvg::input_state_request> reports;
   std::map<unsigned, lvg::profile> controllers;
   std::map<unsigned, lvg::battery_state_request> batteries;
   unsigned battery_submissions{};
   DWORD battery_error{};
+  unsigned fail_battery_call{};
   int fail_battery_slot{-1};
   unsigned submissions{};
   DWORD next_error{};
   int fail_replay_slot{-1};
   DWORD replay_error{ERROR_DEVICE_REMOVED};
-  void close() { controllers.clear(); reports.clear(); batteries.clear(); }
+  void close() { controllers.clear(); reports.clear(); batteries.clear(); ds4_states.clear(); ds5_states.clear(); }
   DWORD connect() { return 0; }
   DWORD create_controller(unsigned nr, lvg::profile profile) {
-    controllers[nr] = profile;
+    controllers[nr] = profile; ds4_states[nr].reset(); ds5_states[nr].reset();
     batteries.erase(nr);
     reports.erase(nr); // The producer does not preserve input on creation.
     return 0;
@@ -110,8 +114,11 @@ struct client_t {
   }
   DWORD submit_battery_state(const lvg::battery_state_request &request) {
     ++battery_submissions;
+    if (battery_submissions == fail_battery_call) { return ERROR_DEVICE_REMOVED; }
     if (battery_error) { const auto status = battery_error; battery_error = 0; return status; }
     if (static_cast<int>(request.controller_id) == fail_battery_slot) { return replay_error; }
+    assert(lvg::driver::apply_ds4_battery(request, &ds4_states.at(request.controller_id)));
+    assert(lvg::driver::apply_ds5_battery(request, &ds5_states.at(request.controller_id)));
     batteries[request.controller_id] = request;
     return 0;
   }
@@ -306,6 +313,97 @@ program = program.replace("// REAL_BATTERY_NORMALIZER", block(policy, "  std::ui
 program = program.replace("// REAL_BATTERY", block(adapter, "  void vhf_gamepad_t::battery("))
 program = program.replace("// REAL_UPDATE", block(adapter, "  void vhf_gamepad_t::update("))
 program = program.replace("// REAL_FREE", block(adapter, "  void vhf_gamepad_t::free("))
+# Execute the pinned producer's actual partial-update and reset semantics, not
+# just a transport that stores requests. Both PlayStation profiles are checked.
+producer_root = root / "third-party/libvirtualgamepad/driver/src"
+producer = "namespace lvg::ds4_usb { struct feature_state {}; }\n"
+producer += "namespace lvg::ds5_usb { struct feature_state {}; }\n"
+producer += "namespace lvg::driver {\n"
+producer += "constexpr unsigned k_ds4_touch_contacts = 2, k_ds5_touch_contacts = 2;\n"
+producer += "constexpr unsigned k_ds4_accel_counts_per_g = 8192;\n"
+for name, kind in [("dualshock4", "ds4"), ("dualsense", "ds5")]:
+    header = (producer_root / (name + ".h")).read_text()
+    source = (producer_root / (name + ".cpp")).read_text()
+    producer += block(header, "struct " + kind + "_state {") + ";\n"
+    producer += block(source, "void " + kind + "_state::reset() noexcept") + "\n"
+    producer += block(source, "bool apply_" + kind + "_battery(") + "\n"
+producer += "}\n"
+program = program.replace("// REAL_PRODUCER", producer)
+producer_tests = r'''
+void partial_battery_tests() {
+  auto check = [](vhf_gamepad_t &pad, const auto &ds4, const auto &ds5) {
+    const auto &a = pad.impl->client.ds4_states.at(0);
+    const auto &b = pad.impl->client.ds5_states.at(0);
+    assert(a.battery_level == ds4.battery_level && a.cable_connected == ds4.cable_connected &&
+           a.battery_full == ds4.battery_full);
+    assert(b.battery_level == ds5.battery_level && b.cable_connected == ds5.cable_connected &&
+           b.battery_full == ds5.battery_full);
+  };
+  for (const auto percentage : {20u, 50u, 95u, 100u}) {
+    for (const auto initial : {LI_BATTERY_STATE_DISCHARGING, LI_BATTERY_STATE_CHARGING, LI_BATTERY_STATE_FULL}) {
+      for (int pending : {0, 1, 2, 3}) {
+        vhf_gamepad_t pad;
+        pad.allocate(0);
+        lvg::driver::ds4_state ds4; ds4.reset();
+        lvg::driver::ds5_state ds5; ds5.reset();
+        auto event = [&](unsigned percent, unsigned flags) {
+          lvg::battery_state_request request{};
+          request.percent = percent;
+          request.flags = vhf_gamepad::to_protocol_battery_state(flags);
+          assert(lvg::driver::apply_ds4_battery(request, &ds4));
+          assert(lvg::driver::apply_ds5_battery(request, &ds5));
+          pad.battery(0, {percent, flags});
+        };
+        if (pending == 2) { pad.impl->recovery.request(); }
+        event(percentage, initial);
+        if (pending == 1) { pad.impl->recovery.request(); }
+        if (pending == 3) { pad.impl->client.battery_error = ERROR_DEVICE_REMOVED; }
+        event(255, LI_BATTERY_STATE_CHARGING);
+        event(255, LI_BATTERY_STATE_FULL);
+        event(255, LI_BATTERY_STATE_NOT_CHARGING);
+        // Original percentage and flags are needed for DS4's cable-dependent rounding.
+        pad.impl->recovery.request();
+        assert(pad.recover(10s) == 0u); check(pad, ds4, ds5);
+        pad.impl->recovery.request();
+        assert(pad.recover(11s) == 0u); check(pad, ds4, ds5);
+        // A new known update replaces the seed; a later partial starts from that state.
+        event(35, LI_BATTERY_STATE_DISCHARGING);
+        assert(!pad.impl->slots[0].battery_level_seed);
+        pad.impl->recovery.request();
+        event(255, LI_BATTERY_STATE_CHARGING);
+        assert(pad.recover(12s) == 0u); check(pad, ds4, ds5);
+      }
+    }
+  }
+  for (unsigned failed_replay : {1u, 2u}) {
+    vhf_gamepad_t pad; pad.allocate(0);
+    lvg::driver::ds4_state ds4; ds4.reset();
+    lvg::driver::ds5_state ds5; ds5.reset();
+    lvg::battery_state_request unknown{};
+    unknown.percent = 255; unknown.flags = unsigned(lvg::battery_state::charging);
+    lvg::driver::apply_ds4_battery(unknown, &ds4);
+    lvg::driver::apply_ds5_battery(unknown, &ds5);
+    pad.impl->recovery.request(); pad.battery(0, {255, LI_BATTERY_STATE_CHARGING});
+    assert(!pad.impl->slots[0].battery_level_seed);
+    assert(pad.recover(10s) == 0u); check(pad, ds4, ds5); // Unknown first retains driver defaults.
+    pad.battery(0, {50, LI_BATTERY_STATE_DISCHARGING});
+    pad.impl->recovery.request(); pad.battery(0, {255, LI_BATTERY_STATE_CHARGING});
+    // Fail either the seed or the following partial replay; both must roll back.
+    pad.impl->client.fail_battery_call = pad.impl->client.battery_submissions + failed_replay;
+    assert(pad.recover(11s) == ERROR_DEVICE_REMOVED);
+    assert(pad.impl->recovery.pending() && pad.impl->client.ds4_states.empty());
+    assert(!pad.recover(11s));
+    assert(pad.recover(12s) == 0u);
+    assert(pad.impl->client.ds4_states.at(0).battery_level == 5); // Not cable-quantized 6.
+    assert(pad.impl->client.ds5_states.at(0).battery_level == 5);
+    pad.free(0); assert(!pad.impl->slots[0].battery_level_seed);
+    pad.allocate(0); pad.battery(0, {255, LI_BATTERY_STATE_CHARGING});
+    pad.impl->recovery.request(); assert(pad.recover(13s) == 0u);
+    check(pad, ds4, ds5); // Reused slot has defaults, never the previous owner's seed.
+  }
+}
+'''
+program = program.replace("int main() {", producer_tests + "\nint main() { partial_battery_tests();")
 with tempfile.TemporaryDirectory(prefix="vhf-replay-") as directory:
     source = pathlib.Path(directory) / "test.cpp"
     binary = pathlib.Path(directory) / "test"

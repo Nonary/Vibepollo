@@ -62,6 +62,11 @@ namespace platf::vhf_gamepad {
               // complete report before submissions resume; failure rolls everything back.
               status = client.submit_input_state(*slots[nr].last_input);
             }
+            if (status == 0 && slots[nr].battery_level_seed) {
+              // DS4 quantization depends on the original cable flag: combining
+              // an old percentage with the latest flags would change its level.
+              status = client.submit_battery_state(*slots[nr].battery_level_seed);
+            }
             if (status == 0 && slots[nr].last_battery) {
               status = client.submit_battery_state(*slots[nr].last_battery);
             }

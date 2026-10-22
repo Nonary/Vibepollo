@@ -33,6 +33,7 @@ namespace {
     bool cached_feedback;
     std::optional<unsigned> last_input {};
     std::optional<unsigned> last_battery {};
+    std::optional<unsigned> battery_level_seed {};
   };
 
   struct client_t {

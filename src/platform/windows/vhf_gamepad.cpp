@@ -75,6 +75,9 @@ namespace platf {
       // Touch contacts and time-dependent motion samples belong to the old device epoch.
       std::optional<lvg::input_state_request> last_input;
       std::optional<lvg::battery_state_request> last_battery;
+      // Unknown percentage updates preserve the producer level. Replay its original
+      // percentage-bearing request first, with its original cable/charging flags.
+      std::optional<lvg::battery_state_request> battery_level_seed;
 
       // A client pointer id is an arbitrary handle; the touchpad has two
       // numbered contacts. Reserving a contact per pointer keeps a moved touch
@@ -97,6 +100,7 @@ namespace platf {
         profile = {};
         last_input.reset();
         last_battery.reset();
+        battery_level_seed.reset();
         contact_of_pointer.clear();
         free_contacts = 0x3;
         feedback_queue.reset();
@@ -803,6 +807,11 @@ namespace platf {
     request.flags = vhf_gamepad::to_protocol_battery_state(battery_event.state);
 
     // Battery events are not periodic: retain even a pending or failed submission.
+    if (request.percent <= 100) {
+      slot.battery_level_seed.reset();
+    } else if (slot.last_battery && slot.last_battery->percent <= 100) {
+      slot.battery_level_seed = slot.last_battery;
+    }
     slot.last_battery = request;
     if (impl->recovery.pending()) {
       return;
