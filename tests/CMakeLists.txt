@@ -2061,4 +2061,12 @@ if(Python3_Interpreter_FOUND AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
 endif()
 
+if(SUNSHINE_TEST_ENABLE_COMPONENT AND SUNSHINE_TEST_PYTHON_EXECUTABLE)
+    add_test(NAME test_component_common_assets
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/integration/test_common_assets.py"
+            --repository "${SUNSHINE_TEST_REPOSITORY_ROOT}" --cmake "${CMAKE_COMMAND}")
+    set_tests_properties(test_component_common_assets PROPERTIES LABELS "component;packaging" TIMEOUT 60)
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/WindowsPortablePackagingTest.cmake")
