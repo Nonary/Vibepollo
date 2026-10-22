@@ -56,8 +56,8 @@ are excluded from capture selection.
 
 These operations are explicitly unsupported: wlr capture in the machine-service
 account, private/Remote Monitor creation, display modes/layout/scale/HDR changes,
-DPMS wake/power control, touchscreen mapping and KWin application focus. Physical
-outputs must be enabled by the desktop user. HDR or private-output stream requests
+DPMS wake/power control and touchscreen mapping. Physical outputs must be enabled
+by the desktop user. HDR or private-output stream requests
 fail with an explanation. The backend advertises no independent-output capability.
 KScreen and managed-connector operations are fenced even if called outside the
 normal backend route.
@@ -69,6 +69,11 @@ Steam/Big Picture, Steam-direct, Lutris, HDR compatibility and other X11-oriente
 broker operations therefore return an explicit unsupported error. Launch native
 Wayland games through authorized application commands or capture the already
 running desktop. This subset does not promise stock Steam/Proton game launching.
+
+Managed application focus uses the same bounded attempts as KWin. The helper
+talks to Hyprland's IPC socket only after its peer credentials match the
+compositor bound in the session record, since Hyprland does not authenticate
+IPC clients. Focus lost after that budget is not restored.
 
 Before promoting support, test physical KMS/NVENC or VAAPI capture, audio/input,
 a native Wayland application, logout/login and greeter transitions, compositor
