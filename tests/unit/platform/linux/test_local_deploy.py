@@ -83,6 +83,9 @@ class InstallerShellTests(unittest.TestCase):
 class ArchiveTests(unittest.TestCase):
     def test_current_native_companion_and_package_preflight_paths(self):
         for path in ('usr/bin/vibepollo-mangohud',
+                     'usr/bin/vibepollo-tray',
+                     'usr/share/applications/vibepollo-tray.desktop',
+                     'etc/xdg/autostart/vibepollo-tray.desktop',
                      'usr/libexec/vibeshine/vibepollo-package-preflight',
                      'usr/share/libalpm/hooks/00-vibepollo-quiesce.hook'):
             with self.subTest(path=path):
