@@ -66,12 +66,14 @@ static int run_command_bounded(const char *path, char *const arguments[], unsign
 int main(int argc, char **argv) {
   if ((argc != 2 && argc != 3) || getuid() == 0 || geteuid() != getuid() || getegid() != getgid() ||
       prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1) return 126;
-  if(argc==3) return !strcmp(argv[1],"inhibit-v2") ? run_display_power_mode(true,true,argv[2]) : 126;
+  if(argc==3) return !strcmp(argv[1],"inhibit-v2") ? run_display_power_mode(true,true,argv[2],false) : 126;
   if (!strcmp(argv[1], "wake")) {
     if (setenv("QT_QPA_PLATFORM", "wayland", 1)) return 126;
     return display_power_wake() && write(STDOUT_FILENO, "R", 1) == 1 ? 0 : 126;
   }
-  if (!strcmp(argv[1], "desktop")) return run_display_power(true);
-  if (!strcmp(argv[1], "greeter")) return run_display_power(false);
+  if (!strcmp(argv[1], "desktop")) return run_display_power(true, false);
+  if (!strcmp(argv[1], "greeter")) return run_display_power(false, false);
+  if (!strcmp(argv[1], "retain")) return run_display_power(true, true);
+  if (!strcmp(argv[1], "retain-greeter")) return run_display_power(false, true);
   return 126;
 }

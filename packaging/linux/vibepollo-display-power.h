@@ -18,6 +18,7 @@ struct display_power_state {
   bool retrying;
   bool wake_pending;
   bool require_inhibit;
+  bool retain_only;
   bool stopping;
   bool inhibit_only;
   bool release_unknown;
@@ -32,6 +33,9 @@ static const char power_interface[] = "org.kde.Solid.PowerManagement.PolicyAgent
 // PowerDevil's freedesktop Inhibit API only blocks session interruption.
 // Capture also needs ChangeScreenSettings (4) to prevent idle DPMS shutdown.
 static const guint power_inhibition_policies = 1u | 4u;
+// A retained private topology blocks only idle dimming/screen-off. It never
+// changes power state itself and must not keep an idle host from suspending.
+static const guint retained_inhibition_policies = 4u;
 
 static bool display_power_wake(void) {
   const int lock=display_borrow_inherited_lock();
@@ -93,7 +97,7 @@ static bool display_power_inhibit(struct display_power_state *state) {
   // cookie or impersonate a successful acquisition in the same transaction.
   reply = g_dbus_connection_call_sync(
     state->bus, new_owner, power_path, power_interface, "AddInhibition",
-    g_variant_new("(uss)", power_inhibition_policies, "Vibepollo", state->inhibit_only?state->reason:"Active remote display"),
+    g_variant_new("(uss)", state->retain_only ? retained_inhibition_policies : power_inhibition_policies, "Vibepollo", state->retain_only ? "Retained remote display" : (state->inhibit_only ? state->reason : "Active remote display")),
     G_VARIANT_TYPE("(u)"), G_DBUS_CALL_FLAGS_NONE, 1500, NULL, &error);
   if (!reply) {
     g_clear_error(&error);
@@ -107,7 +111,7 @@ static bool display_power_inhibit(struct display_power_state *state) {
   g_variant_get(reply, "(u)", &state->cookie);
   g_variant_unref(reply);
   state->inhibited = true;
-  state->wake_pending = !state->inhibit_only;
+  state->wake_pending = !state->inhibit_only && !state->retain_only;
   return true;
 }
 
@@ -173,9 +177,10 @@ static void display_power_resume(GDBusConnection *connection, const gchar *sende
                                  const gchar *signal, GVariant *parameters,
                                  gpointer data) {
   (void) connection; (void) sender; (void) path; (void) interface; (void) signal;
+  struct display_power_state *state = data;
   gboolean sleeping = FALSE;
   g_variant_get(parameters, "(b)", &sleeping);
-  if (!sleeping && !((struct display_power_state *)data)->inhibit_only) ((struct display_power_state *) data)->wake_pending = true;
+  if (!sleeping && !state->inhibit_only && !state->retain_only) state->wake_pending = true;
 }
 
 static gboolean display_power_stop(gpointer data) {
@@ -224,7 +229,7 @@ static void display_power_native_changed(GDBusConnection *connection,const gchar
   if(state->published && (owner_lost || !display_power_active(state))) {state->failed=true;(void)write(STDOUT_FILENO,"X",1);}
 }
 
-static int run_display_power_mode(bool require_inhibit,bool inhibit_only,const char *context) {
+static int run_display_power_mode(bool require_inhibit,bool inhibit_only,const char *context,bool retain_only) {
   if(inhibit_only && (!display_borrow_context_valid(context) || display_borrow_inherited_lock()<0))return 126;
   // GIO connection establishment has no timeout parameter. Bound the entire
   // readiness transaction, including bus authentication, with a process-level
@@ -241,7 +246,7 @@ static int run_display_power_mode(bool require_inhibit,bool inhibit_only,const c
   // The controller binds Wayland sessions only. Do not let Qt choose Xwayland
   // (or an offscreen backend) for the DPMS protocol after a desktop resume.
   if (!inhibit_only && setenv("QT_QPA_PLATFORM", "wayland", 1)) return 126;
-  struct display_power_state state = {.wake_pending = !inhibit_only, .require_inhibit = require_inhibit, .inhibit_only=inhibit_only};
+  struct display_power_state state = {.wake_pending = !inhibit_only && !retain_only, .require_inhibit = require_inhibit, .inhibit_only=inhibit_only, .retain_only=retain_only};
   if(inhibit_only)snprintf(state.reason,sizeof(state.reason),"Borrow existing target %s",context);
   GError *error = NULL;
   state.bus = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, &error);
@@ -317,6 +322,6 @@ static int run_display_power_mode(bool require_inhibit,bool inhibit_only,const c
   return state.failed ? (inhibit_only?VIBEPOLLO_SESSION_COMPLETION_UNKNOWN:126) : 0;
 }
 
-static int run_display_power(bool require_inhibit) { return run_display_power_mode(require_inhibit,false,NULL); }
+static int run_display_power(bool require_inhibit, bool retain_only) { return run_display_power_mode(require_inhibit,false,NULL,retain_only); }
 
 #endif

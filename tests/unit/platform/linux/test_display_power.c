@@ -45,6 +45,7 @@ struct provider {
   guint flags;
   int acquired;
   int released;
+  int retained;
   int reject;
 };
 
@@ -61,10 +62,13 @@ static void power_call(GDBusConnection *bus, const char *sender, const char *pat
     const char *app, *reason;
     g_variant_get(parameters, "(u&s&s)", &policies, &app, &reason);
     // A suspend-only inhibitor still lets DPMS remove capture's scanout.
-    // Require both InterruptSession (1) and ChangeScreenSettings (4).
-    g_assert_cmpuint(policies, ==, 5u);
+    // Require both InterruptSession (1) and ChangeScreenSettings (4). A
+    // retained topology blocks only screen changes; idle suspend remains.
+    const bool retained = !strcmp(reason, "Retained remote display");
+    g_assert_cmpuint(policies, ==, retained ? 4u : 5u);
     g_assert_cmpstr(app, ==, "Vibepollo");
-    g_assert_cmpstr(reason, ==, "Active remote display");
+    if (!retained) g_assert_cmpstr(reason, ==, "Active remote display");
+    if (retained) g_atomic_int_inc(&provider->retained);
     if (g_atomic_int_get(&provider->reject)) {
       g_dbus_method_invocation_return_dbus_error(invocation, "org.test.Unavailable", "restarting");
       return;
@@ -167,8 +171,10 @@ static bool read_ready(GSubprocess *process) {
 int main(int argc, char **argv) {
   if (argc == 2) {
     check_wake_order = false;
-    wake_result = !strcmp(argv[1], "--wake-failure") ? 124 : 0;
-    return run_display_power(strcmp(argv[1], "--greeter") != 0);
+    const bool retain = !strcmp(argv[1], "--retain");
+    // A retained hold must never issue DPMS; a wake would fail its readiness.
+    wake_result = retain || !strcmp(argv[1], "--wake-failure") ? 124 : 0;
+    return run_display_power(strcmp(argv[1], "--greeter") != 0, retain);
   }
   GTestDBus *test_bus = g_test_dbus_new(G_TEST_DBUS_NONE);
   g_test_dbus_up(test_bus);
@@ -235,6 +241,23 @@ int main(int argc, char **argv) {
   display_power_release(&state); // Idempotent cleanup.
   g_assert_cmpint(g_atomic_int_get(&active_inhibitors), ==, 0);
 
+  // A retained private topology only blocks idle screen changes. It never
+  // wakes outputs, including after resume, so it cannot fight desktop DPMS.
+  const int wakes_before_retain = wake_count;
+  struct display_power_state retained = {.bus = bus, .require_inhibit = true, .retain_only = true};
+  g_assert_true(display_power_prepare(&retained));
+  g_assert_true(retained.inhibited);
+  g_assert_cmpint(g_atomic_int_get(&replacement.retained), ==, 1);
+  resume = g_variant_ref_sink(g_variant_new("(b)", FALSE));
+  display_power_resume(NULL, NULL, NULL, NULL, NULL, resume, &retained);
+  g_variant_unref(resume);
+  g_assert_false(retained.wake_pending);
+  g_assert_cmpint(display_power_refresh(&retained), ==, G_SOURCE_CONTINUE);
+  g_assert_false(retained.retrying);
+  g_assert_cmpint(wake_count, ==, wakes_before_retain);
+  display_power_release(&retained);
+  g_assert_cmpint(g_atomic_int_get(&active_inhibitors), ==, 0);
+
   // Exercise the actual readiness pipe and signal-driven lease lifetime.
   g_atomic_int_set(&replacement.reject, 1);
   GSubprocess *worker = start_worker(argv[0], "--worker");
@@ -282,6 +305,16 @@ int main(int argc, char **argv) {
   g_assert_false(read_ready(worker));
   g_assert_true(g_subprocess_wait(worker, NULL, NULL));
   g_assert_cmpint(g_subprocess_get_exit_status(worker), ==, 126);
+  g_object_unref(worker);
+  g_assert_cmpint(g_atomic_int_get(&active_inhibitors), ==, 0);
+
+  // The retain worker becomes ready on its inhibitor alone and releases it.
+  worker = start_worker(argv[0], "--retain");
+  g_assert_true(read_ready(worker));
+  g_assert_cmpint(g_atomic_int_get(&active_inhibitors), ==, 1);
+  g_assert_cmpint(g_atomic_int_get(&replacement.retained), ==, 2);
+  g_subprocess_send_signal(worker, SIGTERM);
+  g_assert_true(g_subprocess_wait_check(worker, NULL, NULL));
   g_object_unref(worker);
   g_assert_cmpint(g_atomic_int_get(&active_inhibitors), ==, 0);
 

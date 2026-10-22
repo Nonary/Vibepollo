@@ -1323,7 +1323,7 @@ static int execute_request(int argc, char **argv,
                            gid_t service_gid) {
   if (argc < 2) return 2;
   enum operation {
-    DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_OBSERVE, DISPLAY_POWER, DISPLAY_WAKE, DISPLAY_INHIBIT, TOUCH_MAP, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
+    DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_OBSERVE, DISPLAY_POWER, DISPLAY_WAKE, DISPLAY_INHIBIT, DISPLAY_RETAIN, TOUCH_MAP, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
     AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS, LUTRIS_WAYLAND_HDR, MANAGED_FOCUS,
     PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, APP, APP_WAYLAND_HDR
   } operation;
@@ -1348,6 +1348,7 @@ static int execute_request(int argc, char **argv,
   else if (display_borrow_request(argc,argv) && !strcmp(identity->role,"desktop")) operation = DISPLAY_INHIBIT;
   else if (!strcmp(argv[1], "display-power") && argc == 2) operation = DISPLAY_POWER;
   else if (!strcmp(argv[1], "display-wake") && argc == 2) operation = DISPLAY_WAKE;
+  else if (!strcmp(argv[1], "display-retain") && argc == 2) operation = DISPLAY_RETAIN;
   else if (!strcmp(argv[1], "touch-map") && argc == 4 &&
            touch_map_arguments_are_safe(argv[2], argv[3])) operation = TOUCH_MAP;
   else if (!strcmp(argv[1], "display-apply") && display_apply_arguments_are_safe(argc, argv)) operation = DISPLAY_APPLY;
@@ -1424,11 +1425,14 @@ static int execute_request(int argc, char **argv,
       break;
     }
     case DISPLAY_POWER:
-    case DISPLAY_WAKE: {
+    case DISPLAY_WAKE:
+    case DISPLAY_RETAIN: {
+      const bool desktop = !strcmp(identity->role, "desktop");
       if(fcntl(DISPLAY_BORROW_LOCK_FD,F_GETFD)>=0 && (fcntl(DISPLAY_BORROW_LOCK_FD,F_SETFD,0)<0 || setenv(DISPLAY_BORROW_LOCK_ENV,"198",1)))return 126;
       char *const arguments[] = {"vibepollo-display-power",
         operation == DISPLAY_WAKE ? "wake" :
-        (!strcmp(identity->role, "desktop") ? "desktop" : "greeter"), NULL};
+        operation == DISPLAY_RETAIN ? (desktop ? "retain" : "retain-greeter") :
+        (desktop ? "desktop" : "greeter"), NULL};
       execv("/usr/libexec/vibeshine/vibepollo-display-power", arguments);
       break;
     }

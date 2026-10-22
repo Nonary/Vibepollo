@@ -19,6 +19,11 @@ namespace platf::display_power {
   std::shared_ptr<void> acquire_broker_mutation();
   void broker_mutation_completion_unknown(const std::shared_ptr<void> &hold);
 
+  // Separate from capture leases: blocks only idle dimming/screen-off while a
+  // private topology outlives its stream. It never wakes outputs or inhibits
+  // suspend. A null result means the session hold could not become ready.
+  std::shared_ptr<void> retain_screen();
+
   struct dpms_state_t {
     bool known {false};
     bool on {false};
