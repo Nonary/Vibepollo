@@ -280,7 +280,10 @@ namespace remote_session {
         break;
       case control_e::input:
         result.permission = permission_e::launch;
-        result.allowed = caller.may_launch && owner.role == role_e::none;
+        // Same idempotent-retry rule as Remote Monitor: a client whose previous
+        // Remote Input stream dropped still owns the input role until cleanup,
+        // so its reconnect must replace that ownership instead of conflicting.
+        result.allowed = caller.may_launch && (owner.role == role_e::none || owner.role == role_e::input);
         break;
       case control_e::monitor:
         result.permission = permission_e::launch;

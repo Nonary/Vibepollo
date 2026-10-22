@@ -290,6 +290,7 @@ TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {
   EXPECT_TRUE(ownerless_disconnect.already_complete);
   EXPECT_FALSE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::input).allowed);
   EXPECT_FALSE(remote_session::dispatch(caller("input"), {}, {.role = remote_session::role_e::input}, remote_session::control_e::monitor).allowed);
+  EXPECT_TRUE(remote_session::dispatch(caller("input"), {}, {.role = remote_session::role_e::input}, remote_session::control_e::input).allowed);
   const auto stale_monitor_launch = remote_session::dispatch(
     caller("monitor"),
     {},
