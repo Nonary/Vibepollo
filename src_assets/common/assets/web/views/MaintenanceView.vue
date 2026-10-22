@@ -836,7 +836,7 @@ onBeforeUnmount(() => {
           <StatusBadge :label="crashState.label" :tone="crashState.tone" />
         </div>
         <div class="support-actions">
-          <a class="button button--secondary" href="/api/logs/export" download>
+          <a class="button button--secondary" href="/api/logs/export">
             <UiIcon name="download" aria-hidden="true" />
             {{ t('ui.maintenance.support.downloadLogs') }}
           </a>
