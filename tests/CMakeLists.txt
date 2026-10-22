@@ -1744,6 +1744,28 @@ endif()
 
 # Production-code regression harnesses exercise Windows policies on the native host.
 find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    if(UNIX AND SUNSHINE_TEST_ENABLE_COMPONENT)
+        find_program(SUNSHINE_TEST_WEB_MAKE NAMES gmake make)
+        find_program(SUNSHINE_TEST_WEB_NINJA NAMES ninja ninja-build)
+        foreach(generator IN ITEMS "Unix Makefiles" "Ninja")
+            if(generator STREQUAL "Ninja")
+                set(_web_build_tool "${SUNSHINE_TEST_WEB_NINJA}")
+                set(_web_build_test regression_web_build_ninja)
+            else()
+                set(_web_build_tool "${SUNSHINE_TEST_WEB_MAKE}")
+                set(_web_build_test regression_web_build_makefiles)
+            endif()
+            if(_web_build_tool)
+                add_test(NAME ${_web_build_test}
+                    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/integration/test_web_build.py"
+                        --repository "${SUNSHINE_TEST_REPOSITORY_ROOT}" --cmake "${CMAKE_COMMAND}"
+                        --generator "${generator}" --make-program "${_web_build_tool}")
+                set_tests_properties(${_web_build_test} PROPERTIES LABELS "component" TIMEOUT 120)
+            endif()
+        endforeach()
+    endif()
+endif()
 # Compile the actual notification method against the production C tray ABI.
 if(SUNSHINE_TEST_ENABLE_COMPONENT AND Python3_Interpreter_FOUND AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_test(NAME test_component_update_notification_tray_interface
