@@ -222,38 +222,29 @@ function(sunshine_prepare_windows_portable)
     # The pinned nvngx_truehdr.dll imports nvcuda.dll eagerly, but the host loads
     # its TrueHDR shim only when RTX HDR is used. Never allow this exception to
     # conceal an eager import by sunshine.exe or another always-loaded image.
-    set(_missing_nvcuda FALSE)
-    foreach(_dependency IN LISTS _unresolved)
-        string(TOLOWER "${_dependency}" _dependency_lower)
-        if(_dependency_lower STREQUAL "nvcuda.dll")
-            set(_missing_nvcuda TRUE)
+    file(GLOB_RECURSE _portable_images LIST_DIRECTORIES FALSE
+        "${PORTABLE_STAGE}/*.exe" "${PORTABLE_STAGE}/*.dll")
+    foreach(_image IN LISTS _portable_images)
+        # The Playnite extension can carry a managed/non-PE fixture; the
+        # native images are checked by the dependency scan above.
+        file(READ "${_image}" _signature OFFSET 0 LIMIT 2 HEX)
+        if(NOT _signature STREQUAL "4d5a")
+            continue()
+        endif()
+        execute_process(COMMAND "${PORTABLE_OBJDUMP}" -p "${_image}"
+            RESULT_VARIABLE _dump_status OUTPUT_VARIABLE _imports ERROR_VARIABLE _dump_error)
+        if(NOT _dump_status EQUAL 0)
+            message(FATAL_ERROR "Cannot inspect portable DLL imports: ${_image}: ${_dump_error}")
+        endif()
+        string(TOLOWER "${_imports}" _imports)
+        if(_imports MATCHES "dll name:[ \t]*nvcuda[.]dll")
+            file(REAL_PATH "${_image}" _importer)
+            file(REAL_PATH "${PORTABLE_STAGE}/nvngx_truehdr.dll" _expected_ngx)
+            if(NOT _importer STREQUAL _expected_ngx)
+                message(FATAL_ERROR "Unexpected eager nvcuda.dll import in portable image: ${_image}")
+            endif()
         endif()
     endforeach()
-    if(_missing_nvcuda)
-        file(GLOB_RECURSE _portable_images LIST_DIRECTORIES FALSE
-            "${PORTABLE_STAGE}/*.exe" "${PORTABLE_STAGE}/*.dll")
-        foreach(_image IN LISTS _portable_images)
-            # The Playnite extension can carry a managed/non-PE fixture; the
-            # native images are checked by the dependency scan above.
-            file(READ "${_image}" _signature OFFSET 0 LIMIT 2 HEX)
-            if(NOT _signature STREQUAL "4d5a")
-                continue()
-            endif()
-            execute_process(COMMAND "${PORTABLE_OBJDUMP}" -p "${_image}"
-                RESULT_VARIABLE _dump_status OUTPUT_VARIABLE _imports ERROR_VARIABLE _dump_error)
-            if(NOT _dump_status EQUAL 0)
-                message(FATAL_ERROR "Cannot inspect portable DLL imports: ${_image}: ${_dump_error}")
-            endif()
-            string(TOLOWER "${_imports}" _imports)
-            if(_imports MATCHES "dll name:[ \t]*nvcuda[.]dll")
-                file(REAL_PATH "${_image}" _importer)
-                file(REAL_PATH "${PORTABLE_STAGE}/nvngx_truehdr.dll" _expected_ngx)
-                if(NOT _importer STREQUAL _expected_ngx)
-                    message(FATAL_ERROR "Unexpected eager nvcuda.dll import in portable image: ${_image}")
-                endif()
-            endif()
-        endforeach()
-    endif()
     # nvcuda.dll is supplied by an installed NVIDIA display driver. A CPU-only
     # packaging runner cannot resolve it, and bundling a driver DLL is invalid.
     set(_unresolved_package_imports "")

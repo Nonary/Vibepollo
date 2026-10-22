@@ -202,6 +202,12 @@ include(CPack)
             run([args.link, "/entry:main", "/subsystem:console", "/nodefaultlib", f"/machine:{machine}",
                  f"/out:{host}", str(obj), str(fixture / "nvcuda.lib")])
             run(package, success=False, contains="Unexpected eager nvcuda.dll import in portable image")
+            resolved_driver = redist / "nvcuda.dll"
+            shutil.copyfile(fixture / "nvcuda.dll", resolved_driver)
+            try:
+                run(package, success=False, contains="Unexpected eager nvcuda.dll import in portable image")
+            finally:
+                resolved_driver.unlink()
         finally:
             host.write_bytes(host_original)
         print("PASS: an eager sunshine.exe nvcuda.dll import rejects portable packaging")
