@@ -51,7 +51,7 @@ def validate_migration(repository, target_commit, upstream_commit, confirmation)
 
 
 def resolve_migration_upstream(target_commit, confirmation, reserved_tag, event_name):
-    """Resolve a reviewed upstream snapshot from master or its immutable nightly ref."""
+    """Resolve a reviewed upstream canary snapshot or its immutable nightly ref."""
     match = re.fullmatch(r"Nonary/vibeshine:([0-9a-f]{40}):Nonary/Vibepollo:([0-9a-f]{40})", confirmation)
     if not match or match[2] != target_commit:
         raise ValueError("Vibepollo daily migration requires confirmation of this exact target commit")
@@ -63,7 +63,7 @@ def resolve_migration_upstream(target_commit, confirmation, reserved_tag, event_
             raise ValueError("Reserved upstream tag must identify the confirmed source commit")
         ref = f"refs/tags/{reserved_tag}"
     else:
-        ref = "refs/heads/master"
+        ref = "refs/heads/canary"
     upstream = run("git", "ls-remote", "https://github.com/Nonary/vibeshine.git", ref).split()
     if len(upstream) != 2 or upstream[1] != ref or upstream[0] != confirmed_source:
         raise ValueError("Verified Vibeshine upstream ref does not match the exact migration confirmation")

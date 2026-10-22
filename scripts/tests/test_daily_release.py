@@ -93,12 +93,12 @@ class DailyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 daily.resolve_migration_upstream(SHA, confirmation, tag, "workflow_dispatch")
 
-    def test_default_migration_still_requires_live_upstream_master(self):
+    def test_default_migration_requires_live_upstream_canary(self):
         source = "b" * 40
         confirmation = f"Nonary/vibeshine:{source}:Nonary/Vibepollo:{SHA}"
-        with patch.object(daily, "run", return_value=f"{source} refs/heads/master"):
+        with patch.object(daily, "run", return_value=f"{source} refs/heads/canary"):
             self.assertEqual(daily.resolve_migration_upstream(SHA, confirmation, "", "schedule"), source)
-        with patch.object(daily, "run", return_value=f"{'c' * 40} refs/heads/master"):
+        with patch.object(daily, "run", return_value=f"{'c' * 40} refs/heads/canary"):
             with self.assertRaisesRegex(ValueError, "does not match"):
                 daily.resolve_migration_upstream(SHA, confirmation, "", "workflow_dispatch")
 
