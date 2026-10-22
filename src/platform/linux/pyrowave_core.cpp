@@ -8,6 +8,7 @@
 #include "device.hpp"
 #include "pyrowave_encoder.hpp"
 #include "pyrowave_import_diagnostics.h"
+#include "pyrowave_instance.h"
 #include "pyrowave_linear_upload.h"
 
 #include <algorithm>
@@ -28,7 +29,11 @@ namespace pyrowave::linux_gpu {
     const std::vector<std::uint32_t> shader
 #include "shaders/pyrowave.spv.inc"
       ;
-    std::mutex loader_mutex;
+    // Volk reloads global instance entry points during context initialization.
+    // Physical-device queries during encode and Granite teardown also use those
+    // pointers, so they must not overlap a reload. Encoders may run in parallel.
+    dispatch_gate_t loader_gate;
+    instance_lifetime_t process_instances;
 
     VkFormat format_for(std::uint32_t fourcc) {
       switch (fourcc) {
@@ -65,6 +70,9 @@ namespace pyrowave::linux_gpu {
 
   struct core_t::impl_t {
     // Destruction order matters: every GPU resource must die before the device.
+    // Keep the shared instance alive until this context releases its device,
+    // even if the process's factory lease is released first during shutdown.
+    std::shared_ptr<instance_factory_t> instance_factory;
     Vulkan::Context context;
     Vulkan::Device device;
     PyroWave::Encoder encoder;
@@ -87,11 +95,22 @@ namespace pyrowave::linux_gpu {
         error = "invalid output dimensions";
         return false;
       }
-      std::lock_guard lock(loader_mutex);
+      auto lock = loader_gate.lock_exclusive();
+      // Closing process admission is terminal, including failed/retried probes.
+      if (process_instances.is_closed()) {
+        error = "PyroWave is shutting down";
+        return false;
+      }
       if (!Vulkan::Context::init_loader(nullptr)) {
         error = "Vulkan loader unavailable";
         return false;
       }
+      // Per-stream vkDestroyInstance can stall inside the graphics driver even
+      // after device cleanup has completed. Retain one process-owned instance
+      // across probes, reconnects and capture reinitializations instead. Device
+      // and image destruction remains synchronous and ordered below.
+      instance_factory = process_instances.acquire(vkCreateInstance, Vulkan::Context::get_instance_proc_addr());
+      context.set_instance_factory(instance_factory.get());
       context.set_num_thread_indices(1);
       context.set_system_handles({});
       VkApplicationInfo app {VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -100,6 +119,15 @@ namespace pyrowave::linux_gpu {
       context.set_application_info(&app);
       if (!context.init_instance(nullptr, 0)) {
         error = "Vulkan instance creation failed";
+        return false;
+      }
+      // Only loader/instance initialization rewrites global dispatch. Device
+      // creation and shader setup use a per-device table, so existing encoders
+      // can keep running while this session prepares its GPU resources.
+      lock.unlock();
+      auto device_lock = loader_gate.lock_shared();
+      if (process_instances.is_closed()) {
+        error = "PyroWave is shutting down";
         return false;
       }
       std::uint32_t count = 0;
@@ -354,7 +382,23 @@ namespace pyrowave::linux_gpu {
   core_t::core_t():
       impl(std::make_unique<impl_t>()) {}
 
-  core_t::~core_t() = default;
+  core_t::~core_t() {
+    // The lock must span member destruction, including Device and Context.
+    auto lock = loader_gate.lock_shared();
+    impl.reset();
+  }
+
+  void core_t::shutdown() {
+    std::shared_ptr<instance_factory_t> retired;
+    {
+      auto lock = loader_gate.lock_exclusive();
+      retired = process_instances.close();
+    }
+    // All stream/probe cores have joined before the host calls this. Keep a
+    // possible vendor instance-destruction wait outside the dispatch lock and
+    // inside main's still-armed shutdown deadline, rather than static teardown.
+    retired.reset();
+  }
 
   std::unique_ptr<core_t> core_t::create(const config_t &c, std::string &error) {
     auto core = std::unique_ptr<core_t>(new core_t);
@@ -365,6 +409,7 @@ namespace pyrowave::linux_gpu {
   }
 
   bool core_t::encode(const source_t &s, std::size_t budget, std::size_t boundary, std::vector<std::uint8_t> &bitstream, std::vector<packet_t> &packets, std::string &error) {
+    auto lock = loader_gate.lock_shared();
     auto &d = *impl;
     budget = std::min<std::size_t>(budget, UINT32_MAX) & ~std::size_t(3);
     if (!budget || !boundary || s.width <= 0 || s.height <= 0) {

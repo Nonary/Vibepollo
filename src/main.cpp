@@ -30,6 +30,7 @@
 #include "nvhttp.h"
 #include "pairing_recovery.h"
 #include "process.h"
+#include "pyrowave_host.h"
 #include "rtsp.h"
 #include "shutdown_signal.h"
 #include "system_tray.h"
@@ -458,6 +459,13 @@ int main(int argc, char *argv[]) {
   auto &shutdown_signal_requested = lifetime::shutdown_signal_requested;
   shutdown_phase::tracker_t shutdown_phase_state;
   shutdown_deadline_t shutdown_deadline {&shutdown_signal_requested, supervised_machine_host, shutdown_phase_state};
+  // Later guards drain stream/probe users first, including on startup returns.
+  // Final Vulkan instance release must run before the owned deadline completes:
+  // a vendor wait during static teardown would otherwise escape supervision.
+  auto pyrowave_shutdown_guard = util::fail_guard([&shutdown_deadline]() {
+    shutdown_deadline.arm();
+    pyrowave::host::shutdown();
+  });
 
 #ifdef __linux__
   std::atomic_bool termination_signal_monitor_stopping {false};

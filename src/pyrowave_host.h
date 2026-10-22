@@ -89,4 +89,7 @@ namespace pyrowave::host {
    * @param detail Receives the reason when unsupported.
    */
   bool probe(const std::optional<platf::adapter_id_t> &adapter, std::string &detail);
+
+  /// Terminal process cleanup after stream/probe users drain; caller arms its shutdown deadline.
+  void shutdown();
 }  // namespace pyrowave::host

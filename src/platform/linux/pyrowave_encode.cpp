@@ -11,6 +11,10 @@
 #include <limits>
 
 namespace pyrowave::host {
+  void shutdown() {
+    linux_gpu::core_t::shutdown();
+  }
+
   namespace {
     linux_gpu::config_t core_config(const session_params_t &p) {
       linux_gpu::config_t c;

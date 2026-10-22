@@ -1498,7 +1498,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
             NAME test_component_linux_machine_service_contract
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_machine_service_contract.py"
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
         set_tests_properties(test_component_linux_machine_service_contract PROPERTIES LABELS "component")
         add_test(NAME test_component_machine_status_polling_behavior
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
@@ -1869,6 +1869,27 @@ if(WIN32 AND TARGET pyrowave::capi)
 endif()
 
 if(TARGET pyrowave-linux)
+    if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+        add_test(NAME test_component_pyrowave_shutdown
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_pyrowave_shutdown.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_pyrowave_shutdown PROPERTIES LABELS "component" TIMEOUT 45)
+    endif()
+
+    add_executable(test_pyrowave_instance test_pyrowave_instance.cpp)
+    target_include_directories(test_pyrowave_instance PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+    target_compile_features(test_pyrowave_instance PRIVATE cxx_std_20)
+    target_link_libraries(test_pyrowave_instance PRIVATE granite-vulkan Threads::Threads)
+    add_test(NAME pyrowave_instance COMMAND test_pyrowave_instance)
+    set_tests_properties(pyrowave_instance PROPERTIES TIMEOUT 30)
+
+    add_executable(test_pyrowave_instance_gpu test_pyrowave_instance_gpu.cpp)
+    target_include_directories(test_pyrowave_instance_gpu PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+    target_link_libraries(test_pyrowave_instance_gpu PRIVATE pyrowave-linux)
+    add_test(NAME pyrowave_instance_gpu COMMAND test_pyrowave_instance_gpu)
+    set_tests_properties(pyrowave_instance_gpu PROPERTIES SKIP_RETURN_CODE 77 LABELS "integration;gpu" TIMEOUT 120)
+
     add_executable(test_pyrowave_linux_gpu test_pyrowave_linux_gpu.cpp)
     target_include_directories(test_pyrowave_linux_gpu PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
     target_link_libraries(test_pyrowave_linux_gpu PRIVATE pyrowave-linux pyrowave::capi gbm vulkan)

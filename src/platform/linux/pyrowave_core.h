@@ -38,6 +38,8 @@ namespace pyrowave::linux_gpu {
   class core_t {
   public:
     static std::unique_ptr<core_t> create(const config_t &config, std::string &error);
+    // Called after stream/probe users drain, while the process deadline is live.
+    static void shutdown();
     ~core_t();
     bool encode(const source_t &source, std::size_t budget, std::size_t boundary, std::vector<std::uint8_t> &bitstream, std::vector<packet_t> &packets, std::string &error);
 

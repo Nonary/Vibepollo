@@ -16,6 +16,7 @@
 #include "private_display_configuration_policy.h"
 #include "private_display_diagnostic_policy.h"
 #include "private_display_emergency_policy.h"
+#include "private_display_handoff_policy.h"
 #include "private_display_recovery_policy.h"
 #include "private_display_mode_client.h"
 #include "private_display_mode_policy.h"
@@ -40,6 +41,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <display_device/json.h>
@@ -102,6 +104,8 @@ namespace platf::linux_private_display {
       std::optional<json> snapshot;
       bool snapshot_loaded {false};
       bool snapshot_legacy_record {false};
+      bool snapshot_greeter_handoff {false};
+      std::map<std::string, std::string> snapshot_physical_identities;
       std::map<std::string, std::string> reservations;
       std::map<std::string, double> retained_scales;
       std::set<std::string> newly_connected_reservations;
@@ -923,33 +927,137 @@ namespace platf::linux_private_display {
       return std::string {uid ? uid : std::to_string(getuid())} + ":" + (role ? role : "standalone");
     }
 
-    bool persist_snapshot(const json &snapshot, const bool restore_pending = true) {
-      return statefile::save_linux_display_snapshot(json {{"version", 1}, {"owner", snapshot_owner()}, {"restore_pending", restore_pending}, {"topology", snapshot}}.dump());
+    handoff_policy::context_t snapshot_handoff_context() {
+      handoff_policy::context_t context;
+      const auto *machine = std::getenv("VIBEPOLLO_MACHINE_HOST");
+      const auto *role = std::getenv("VIBEPOLLO_SESSION_ROLE");
+      const auto *generation = std::getenv("VIBEPOLLO_SESSION_GENERATION");
+      context.machine_host = machine && std::string_view {machine} == "1";
+      context.role = role ? role : "";
+      if (!context.machine_host || !generation) return context;
+      const std::string_view text {generation};
+      const auto parsed = std::from_chars(text.data(), text.data() + text.size(), context.generation);
+      if (parsed.ec != std::errc {} || parsed.ptr != text.data() + text.size()) context.generation = 0;
+      std::ifstream boot {"/proc/sys/kernel/random/boot_id"};
+      boot >> context.boot_id;
+      return context;
     }
 
-    void load_snapshot_if_needed(state_t &manager) {
+    std::map<std::string, std::string> physical_connector_identities(const json &configuration) {
+      std::map<std::string, std::string> result;
+      for (const auto &output : configuration["outputs"]) {
+        const auto name = output.value("name", std::string {});
+        if (!connected(output) || mode_policy::managed_connector_name(name)) continue;
+        const auto path = connector_sysfs_path(name);
+        if (path.empty()) continue;
+        std::error_code error;
+        const auto resolved = std::filesystem::canonical(path, error);
+        if (error) continue;
+        std::ifstream edid {std::filesystem::path {path} / "edid", std::ios::binary};
+        std::string bytes;
+        char value;
+        constexpr std::string_view hex {"0123456789abcdef"};
+        while (edid.get(value) && bytes.size() <= 8192) {
+          const auto byte = static_cast<unsigned char>(value);
+          bytes.push_back(hex[byte >> 4]);
+          bytes.push_back(hex[byte & 15]);
+        }
+        if (!edid.eof() || bytes.size() < 256 || bytes.size() > 8192) continue;
+        result.emplace(name, resolved.string() + ":" + bytes);
+      }
+      return result;
+    }
+
+    bool persist_snapshot(const json &snapshot, const bool restore_pending = true, const bool greeter_handoff = false,
+                          const std::map<std::string, std::string> *handoff_identities = nullptr) {
+      json record {{"version", 1}, {"owner", snapshot_owner()}, {"restore_pending", restore_pending}, {"topology", snapshot}};
+      const auto context = snapshot_handoff_context();
+      if (context.machine_host && context.generation && !context.boot_id.empty()) {
+        record["machine_handoff"] = {{"boot_id", context.boot_id}, {"generation", context.generation},
+                                     {"role", context.role}, {"physical_identities", handoff_identities ?
+                                       *handoff_identities : physical_connector_identities(snapshot)}};
+      }
+      if (greeter_handoff) record["greeter_handoff"] = true;
+      return statefile::save_linux_display_snapshot(record.dump());
+    }
+
+    bool load_snapshot_if_needed(state_t &manager) {
       if (manager.snapshot_loaded) {
-        return;
+        return true;
       }
       manager.snapshot_loaded = true;
       if (const auto saved = statefile::load_linux_display_snapshot()) {
         bool restore_pending = false;
         auto snapshot = snapshot_policy::decode<json>(*saved, snapshot_owner(), &restore_pending, &manager.snapshot_legacy_record);
         if (!snapshot) {
-          BOOST_LOG(warning) << "Linux private display: ignoring unusable or different-session saved topology.";
+          const auto current = query_configuration();
+          if (current) {
+            snapshot = handoff_policy::adopt(*saved, snapshot_owner(), snapshot_handoff_context(), *current,
+                                             physical_connector_identities(*current));
+          }
+          if (snapshot) {
+            const auto identities = json::parse(*saved).at("machine_handoff").at("physical_identities").get<std::map<std::string, std::string>>();
+            // Rebind durable intent before a new session can acquire outputs.
+            // Carry the identities actually validated above; a fresh EDID read
+            // must not bless a replacement monitor with the greeter's layout.
+            if (!persist_snapshot(*snapshot, true, true, &identities)) {
+              manager.snapshot_loaded = false;
+              BOOST_LOG(error) << "Linux private display: cannot persist the greeter topology handoff; refusing display acquisition.";
+              return false;
+            }
+            manager.snapshot = std::move(snapshot);
+            manager.snapshot_greeter_handoff = true;
+            manager.snapshot_physical_identities = identities;
+            BOOST_LOG(info) << "Linux private display: adopted pending physical topology from the preceding machine greeter.";
+          } else {
+            BOOST_LOG(warning) << "Linux private display: ignoring unusable or different-session saved topology.";
+          }
         } else if (restore_pending) {
+          const auto context = snapshot_handoff_context();
+          if (context.machine_host && context.role == "greeter") {
+            const auto current = query_configuration();
+            const auto refreshed = current ? handoff_policy::refresh_greeter_generation(
+              *saved, snapshot_owner(), context, *current, physical_connector_identities(*current)) : std::nullopt;
+            if (refreshed && !statefile::save_linux_display_snapshot(refreshed->dump())) {
+              manager.snapshot_loaded = false;
+              BOOST_LOG(error) << "Linux private display: cannot persist the rebound greeter generation; refusing display acquisition.";
+              return false;
+            }
+          }
+          const auto record = json::parse(*saved, nullptr, false);
+          const auto handoff = record.find("greeter_handoff");
+          const bool greeter_handoff = handoff != record.end() && handoff->is_boolean() && handoff->get<bool>();
+          std::map<std::string, std::string> identities;
+          if (greeter_handoff) {
+            try {
+              identities = record.at("machine_handoff").at("physical_identities").get<std::map<std::string, std::string>>();
+            } catch (...) {
+              manager.snapshot_loaded = false;
+              BOOST_LOG(error) << "Linux private display: invalid persisted greeter handoff identities; refusing display acquisition.";
+              return false;
+            }
+          }
           manager.snapshot = std::move(snapshot);
+          manager.snapshot_greeter_handoff = greeter_handoff;
+          manager.snapshot_physical_identities = std::move(identities);
         }
       }
+      return true;
     }
 
     bool snapshot_configuration_if_needed(state_t &manager, const json &configuration) {
-      load_snapshot_if_needed(manager);
-      if (!snapshot_policy::capture(manager.snapshot, configuration, private_output_set(), !manager.reservations.empty(), [](const json &snapshot) {
-            return persist_snapshot(snapshot);
+      if (!load_snapshot_if_needed(manager)) return false;
+      bool refreshed = false;
+      if (!handoff_policy::capture(manager.snapshot, configuration, private_output_set(), !manager.reservations.empty(), manager.snapshot_greeter_handoff, [&](const json &snapshot) {
+            refreshed = persist_snapshot(snapshot);
+            return refreshed;
           })) {
         BOOST_LOG(error) << "Linux private display: cannot persist the desktop before changing outputs.";
         return false;
+      }
+      if (refreshed) {
+        manager.snapshot_greeter_handoff = false;
+        manager.snapshot_physical_identities.clear();
       }
       return true;
     }
@@ -1067,7 +1175,7 @@ namespace platf::linux_private_display {
 
     auto &manager = state();
     std::lock_guard lock {manager.mutex};
-    load_snapshot_if_needed(manager);
+    if (!load_snapshot_if_needed(manager)) return false;
     const auto startup = snapshot_policy::prepare_startup(manager.snapshot, *configuration, private_names, [](const json &snapshot) {
       return persist_snapshot(snapshot, false);
     }, manager.snapshot_legacy_record);
@@ -2346,14 +2454,16 @@ namespace platf::linux_private_display {
     if (!current || !restore_allowed()) {
       return false;
     }
-    load_snapshot_if_needed(manager);
+    if (!load_snapshot_if_needed(manager)) return false;
     auto restore_snapshot = manager.snapshot;
     const bool has_enabled_physical_output = std::ranges::any_of((*current)["outputs"], [](const auto &output) {
       return output.value("connected", false) && output.value("enabled", false) &&
              !mode_policy::managed_connector_name(output.value("name", std::string {}));
     });
+    const auto effective_target_policy = manager.snapshot_greeter_handoff ?
+      recovery_policy::target_policy_e::automatic_recovery : target_policy;
     const bool preserve_live_physical_layout = recovery_policy::select_target(
-      target_policy, has_enabled_physical_output) == recovery_policy::target_e::live_physical_layout;
+      effective_target_policy, has_enabled_physical_output) == recovery_policy::target_e::live_physical_layout;
     if (preserve_live_physical_layout) {
       // Automatic recovery must respect physical choices made while an older
       // snapshot was stranded. Keep the durable intent untouched until this
@@ -2363,6 +2473,13 @@ namespace platf::linux_private_display {
         BOOST_LOG(warning) << "Linux private display: automatic recovery has no enabled physical baseline; preserving saved topology.";
         return false;
       }
+    }
+    if (manager.snapshot_greeter_handoff && !preserve_live_physical_layout && restore_snapshot &&
+        !handoff_policy::physical_identities_match(*restore_snapshot, *current,
+                                                  manager.snapshot_physical_identities,
+                                                  physical_connector_identities(*current))) {
+      BOOST_LOG(warning) << "Linux private display: physical monitor identity changed after greeter handoff; preserving saved topology.";
+      return false;
     }
     auto managed = discover_managed_outputs();
     if (allowed_managed_identities) {
@@ -2512,7 +2629,7 @@ namespace platf::linux_private_display {
       }
     } operations {
       allowed_managed_identities,
-      target_policy == recovery_policy::target_policy_e::automatic_recovery,
+      effective_target_policy == recovery_policy::target_policy_e::automatic_recovery,
       require_dpms_on_before_retirement,
       arguments.guard_output,
       failed_managed_retirements,
@@ -2529,6 +2646,8 @@ namespace platf::linux_private_display {
       return false;
     }
     manager.snapshot.reset();
+    manager.snapshot_greeter_handoff = false;
+    manager.snapshot_physical_identities.clear();
     manager.reservations.clear();
     manager.newly_connected_reservations.clear();
     BOOST_LOG(info) << "Linux private display: restored the pre-stream output topology.";
@@ -2735,6 +2854,8 @@ namespace platf::linux_private_display {
                 if (!wait_for_capture_publication(guard_name) || !restore_allowed() || recovery_owner_active() ||
                     !statefile::save_linux_display_snapshot(std::nullopt)) return false;
                 manager.snapshot.reset();
+                manager.snapshot_greeter_handoff = false;
+                manager.snapshot_physical_identities.clear();
                 manager.reservations.clear();
                 manager.newly_connected_reservations.clear();
               }
