@@ -489,6 +489,14 @@ namespace {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
       return static_cast<char>(std::tolower(ch));
     });
+#ifdef _WIN32
+    // Windows installs do not contain Linux-only depots. Selecting their paths
+    // can make even the Steam broker fail before launch (ERROR_DIRECTORY).
+    if (value.empty() || value.find("windows") != std::string::npos) {
+      return "windows";
+    }
+    return {};
+#else
     if (value.find("linux") != std::string::npos) {
       return "linux";
     }
@@ -496,6 +504,7 @@ namespace {
       return "windows";
     }
     return {};
+#endif
   }
 
   void apply_launch_node(platf::steam::game_t &game, const vdf_node &appinfo, std::string_view required_os = {}) {

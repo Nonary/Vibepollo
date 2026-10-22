@@ -72,8 +72,15 @@ namespace {
     append_string(data, value);
   }
 
-  void write_test_appinfo(const fs::path &path, std::uint32_t app_id, std::string_view name = "Example", bool include_linux = false, bool include_windows = true, bool include_official_tool = false) {
-    const std::vector<std::string> keys {
+  struct test_launch_entry {
+    std::string_view executable;
+    std::optional<std::string_view> oslist;
+    std::string_view working_dir;
+    std::string_view arguments;
+  };
+
+  void write_test_appinfo(const fs::path &path, std::uint32_t app_id, std::string_view name, const std::vector<test_launch_entry> &launches, bool include_official_tool = false) {
+    std::vector<std::string> keys {
       "appinfo",
       "config",
       "launch",
@@ -102,24 +109,22 @@ namespace {
     blob.push_back(0x08);
     append_object(blob, 1);
     append_object(blob, 2);
-    if (include_windows) {
-      append_object(blob, 3);
-      append_value(blob, 4, "Game.exe");
-      append_value(blob, 5, "-from-appinfo");
-      append_value(blob, 6, "bin");
+    for (std::size_t index = 0; index < launches.size(); ++index) {
+      const auto &launch = launches[index];
+      append_object(blob, static_cast<std::uint32_t>(keys.size()));
+      keys.push_back(std::to_string(index));
+      append_value(blob, 4, launch.executable);
+      append_value(blob, 5, launch.arguments);
+      if (!launch.working_dir.empty()) {
+        append_value(blob, 6, launch.working_dir);
+      }
       append_value(blob, 7, "default");
-      append_object(blob, 1);
-      append_value(blob, 8, "windows");
-      blob.insert(blob.end(), {0x08, 0x08});
-    }
-    if (include_linux) {
-      append_object(blob, 11);
-      append_value(blob, 4, "Game.sh");
-      append_value(blob, 5, "-native-from-appinfo");
-      append_value(blob, 7, "default");
-      append_object(blob, 1);
-      append_value(blob, 8, "linux");
-      blob.insert(blob.end(), {0x08, 0x08});
+      if (launch.oslist) {
+        append_object(blob, 1);
+        append_value(blob, 8, *launch.oslist);
+        blob.push_back(0x08);
+      }
+      blob.push_back(0x08);
     }
     blob.insert(blob.end(), {0x08, 0x08, 0x08, 0x08});
 
@@ -160,6 +165,42 @@ namespace {
     std::ofstream output(path, std::ios::binary);
     output.write(reinterpret_cast<const char *>(data.data()), static_cast<std::streamsize>(data.size()));
   }
+
+  void write_test_appinfo(const fs::path &path, std::uint32_t app_id, std::string_view name = "Example", bool include_linux = false, bool include_windows = true, bool include_official_tool = false) {
+    std::vector<test_launch_entry> launches;
+    if (include_windows) {
+      launches.push_back({"Game.exe", "windows", "bin", "-from-appinfo"});
+    }
+    if (include_linux) {
+      launches.push_back({"Game.sh", "linux", {}, "-native-from-appinfo"});
+    }
+    write_test_appinfo(path, app_id, name, launches, include_official_tool);
+  }
+
+  class synthetic_steam_install final {
+  public:
+    synthetic_steam_install() {
+      const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());
+      root = fs::temp_directory_path() / ("vibeshine-steam-launch-os-test-" + std::to_string(nonce));
+      install = root / "steamapps/common/DualGame";
+      fs::create_directories(install);
+      fs::create_directories(root / "appcache");
+      std::ofstream(root / "steamapps/appmanifest_42.acf")
+        << R"VDF("AppState" { "appid" "42" "name" "Dual Game" "installdir" "DualGame" })VDF";
+    }
+
+    ~synthetic_steam_install() {
+      std::error_code ec;
+      fs::remove_all(root, ec);
+    }
+
+    void appinfo(const std::vector<test_launch_entry> &launches) const {
+      write_test_appinfo(root / "appcache/appinfo.vdf", 42, "Dual Game", launches);
+    }
+
+    fs::path root;
+    fs::path install;
+  };
 }  // namespace
 
 #if defined(__linux__)
@@ -762,6 +803,101 @@ TEST(SteamPressureVessel, NormalizesContainerHostPaths) {
   EXPECT_EQ(normalize_pressure_vessel_host_path("/run/host/"), "/");
   EXPECT_EQ(normalize_pressure_vessel_host_path("/usr/share/steam"), "/usr/share/steam");
   EXPECT_EQ(normalize_pressure_vessel_host_path(""), "");
+}
+#endif
+
+#if defined(_WIN32) || defined(__linux__)
+TEST(SteamDiscovery, ChoosesHostLaunchEntryWithImplicitWorkingDirectory) {
+  synthetic_steam_install steam;
+  steam.appinfo({
+    {"Windows/DungeonClawler.exe", "windows", {}, "-windows"},
+    {"Mac/DungeonClawler.app", "macos", {}, "-mac"},
+    {"Linux/DungeonClawler.x86_64", "linux", {}, "-linux"},
+  });
+  #ifdef _WIN32
+  const auto executable = steam.install / "Windows/DungeonClawler.exe";
+  const auto os = "windows";
+  #else
+  const auto executable = steam.install / "Linux/DungeonClawler.x86_64";
+  const auto os = "linux";
+  #endif
+  // Only the host's depot exists. A broker command still fails if the sync
+  // selects another platform's nonexistent working directory.
+  fs::create_directories(executable.parent_path());
+  std::ofstream(executable) << "Synthetic payload; never executed";
+  const auto games = discover_catalog({steam.root});
+  ASSERT_EQ(games.size(), 1U);
+  EXPECT_EQ(games[0].app_id, 42U);
+  EXPECT_TRUE(games[0].installed);
+  EXPECT_EQ(games[0].launch_os, os);
+  EXPECT_EQ(games[0].launch_executable, executable);
+  EXPECT_EQ(games[0].launch_working_dir, executable.parent_path());
+  EXPECT_EQ(games[0].launch_arguments, std::string("-") + os);
+  EXPECT_TRUE(fs::is_directory(games[0].launch_working_dir));
+}
+
+TEST(SteamDiscovery, ChoosesHostLaunchEntryWithExplicitWorkingDirectory) {
+  synthetic_steam_install steam;
+  // FTL's Linux launch changes into ./data/, whereas Windows uses ./.
+  steam.appinfo({
+    {"FTLGame.exe", "windows", "./", "-windows"},
+    {"FTL", "linux", "./data/", "-linux"},
+  });
+  #ifdef _WIN32
+  const auto executable = steam.install / "FTLGame.exe";
+  const auto working_dir = steam.install / "./";
+  const auto os = "windows";
+  #else
+  const auto executable = steam.install / "FTL";
+  const auto working_dir = steam.install / "./data/";
+  const auto os = "linux";
+  #endif
+  fs::create_directories(working_dir);
+  std::ofstream(executable) << "Synthetic payload; never executed";
+  const auto games = discover_catalog({steam.root});
+  ASSERT_EQ(games.size(), 1U);
+  EXPECT_EQ(games[0].launch_os, os);
+  EXPECT_EQ(games[0].launch_executable, executable);
+  EXPECT_EQ(games[0].launch_working_dir, working_dir);
+  EXPECT_EQ(games[0].launch_arguments, std::string("-") + os);
+  EXPECT_TRUE(fs::is_directory(games[0].launch_working_dir));
+}
+#endif
+
+#ifdef _WIN32
+TEST(SteamDiscovery, WindowsAcceptsUnspecifiedAndMixedPlatformLaunchEntries) {
+  synthetic_steam_install steam;
+  for (const auto oslist : {std::optional<std::string_view> {}, std::optional<std::string_view> {""}, std::optional<std::string_view> {"WINDOWS"}, std::optional<std::string_view> {"linux,windows"}}) {
+    SCOPED_TRACE(oslist ? *oslist : "missing config");
+    steam.appinfo({{"Game.exe", oslist, {}, "-compatible"}});
+    const auto games = discover_catalog({steam.root});
+    ASSERT_EQ(games.size(), 1U);
+    EXPECT_EQ(games[0].launch_os, "windows");
+    EXPECT_EQ(games[0].launch_executable, steam.install / "Game.exe");
+    EXPECT_EQ(games[0].launch_working_dir, steam.install);
+    EXPECT_EQ(games[0].launch_arguments, "-compatible");
+  }
+}
+
+TEST(SteamDiscovery, WindowsRejectsUnsupportedLaunchesWithoutDroppingInstalledGame) {
+  synthetic_steam_install steam;
+  steam.appinfo({{"Game.exe", "windows", {}, "-compatible"}});
+  ASSERT_EQ(discover_catalog({steam.root}).size(), 1U);
+  // Re-read the same appinfo path after it changes. Do not reuse a previous
+  // Windows entry, or retain incompatible executable/working-dir metadata.
+  for (const auto oslist : {"linux", "macos", "linux,macos"}) {
+    SCOPED_TRACE(oslist);
+    steam.appinfo({{"Other/Game", oslist, "Other", "-incompatible"}});
+    const auto games = discover_catalog({steam.root});
+    ASSERT_EQ(games.size(), 1U);
+    EXPECT_EQ(games[0].app_id, 42U);
+    EXPECT_TRUE(games[0].installed);
+    EXPECT_TRUE(games[0].launch_os.empty());
+    EXPECT_TRUE(games[0].launch_executable.empty());
+    EXPECT_TRUE(games[0].launch_working_dir.empty());
+    EXPECT_TRUE(games[0].launch_arguments.empty());
+    EXPECT_EQ(launch_command(games[0]), launch_command(42));
+  }
 }
 #endif
 
