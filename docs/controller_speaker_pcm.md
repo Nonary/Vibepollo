@@ -44,7 +44,12 @@ so downstream gaps cannot masquerade as contiguous audio.
 
 Detach, retained-slot rebind, malformed input and stale partial blocks reset
 the speaker generation. A weak epoch token is checked by the serializer to
-reject already-popped blocks from an expired or reset producer. Already-sent
+reject already-popped blocks from an expired or reset producer. After encryption,
+a final generation check and ENet queue admission share a dedicated per-producer
+gate with epoch reset. A reset that wins drops the old block; an enqueue that
+wins completes before reset returns. The gate does not acquire a slot mutex,
+run network flush, or call producer callbacks. Serialization/encryption stay
+outside the gate. Already-sent
 network packets cannot be recalled; the client also rejects old generations
 and sequences and clears discontinuities. Slot callbacks use weak ownership
 and the existing mutex/lifecycle rules. Actuator-only gaps do not reset an

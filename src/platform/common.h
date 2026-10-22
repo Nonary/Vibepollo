@@ -160,7 +160,7 @@ namespace platf {
     // Internal provenance for bounded host-side ViGEm send-result diagnostics.
     bool from_vigem {false};
     // Invalidated on detach/rebind/reset, including messages already popped.
-    std::weak_ptr<std::atomic<std::uint32_t>> speaker_epoch;
+    std::weak_ptr<controller_speaker_pcm::producer_epoch> speaker_epoch;
 
     union {
       controller_speaker_pcm::block speaker;

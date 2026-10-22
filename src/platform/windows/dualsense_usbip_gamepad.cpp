@@ -31,7 +31,7 @@ namespace platf {
       bool ready = false;
       bool waveform_capable = false;
       bool speaker_capable = false;
-      std::shared_ptr<std::atomic<std::uint32_t>> speaker_epoch = std::make_shared<std::atomic<std::uint32_t>>(0);
+      std::shared_ptr<controller_speaker_pcm::producer_epoch> speaker_epoch = std::make_shared<controller_speaker_pcm::producer_epoch>(0);
       dualsense_usbip_gamepad::pcm_packetizer speaker;
       std::uint32_t speaker_sequence = 0;
       std::uint64_t speaker_position = 0;
@@ -178,7 +178,7 @@ namespace platf {
       if (generation == 0) {
         generation = next_speaker_generation.fetch_add(1, std::memory_order_relaxed) + 1;
       }
-      speaker_epoch->store(generation, std::memory_order_release);
+      speaker_epoch->reset(generation);
       if (feedback_queue) {
         feedback_queue->discard_if([index = client_index](const gamepad_feedback_msg_t &msg) {
           return msg.type == gamepad_feedback_e::speaker_pcm && msg.id == index;

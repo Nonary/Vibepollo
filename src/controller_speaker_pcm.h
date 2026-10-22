@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 
 namespace controller_speaker_pcm {
@@ -20,6 +21,42 @@ namespace controller_speaker_pcm {
 
   inline bool capable(std::uint8_t type, std::uint16_t capabilities) {
     return type == 0x02 && (capabilities & playstation_capability) != 0;
+  }
+
+  // Only final ENet queue admission and reset share this narrow gate. Never
+  // acquire the producer slot mutex or flush the network inside enqueue().
+  class producer_epoch {
+  public:
+    explicit producer_epoch(std::uint32_t value) : generation_(value) {}
+
+    std::uint32_t load(std::memory_order order = std::memory_order_acquire) const {
+      return generation_.load(order);
+    }
+
+    void reset(std::uint32_t value) {
+      std::lock_guard lock {enqueue_gate_};
+      generation_.store(value, std::memory_order_release);
+    }
+
+    template<class Enqueue>
+    int enqueue(std::uint32_t expected, Enqueue enqueue_packet) {
+      std::lock_guard lock {enqueue_gate_};
+      if (!expected || generation_.load(std::memory_order_acquire) != expected) {
+        return 0;  // Obsolete feedback is intentionally dropped.
+      }
+      return enqueue_packet();
+    }
+
+  private:
+    std::atomic<std::uint32_t> generation_;
+    std::mutex enqueue_gate_;
+  };
+
+  template<class Enqueue>
+  int enqueue_if_current(const std::weak_ptr<producer_epoch> &epoch,
+                         std::uint32_t generation, Enqueue enqueue_packet) {
+    const auto live = epoch.lock();
+    return live ? live->enqueue(generation, enqueue_packet) : 0;
   }
 
   struct block {
@@ -37,7 +74,7 @@ namespace controller_speaker_pcm {
     unsigned control_protocol,
     std::uint16_t controller,
     const block &pcm,
-    const std::weak_ptr<std::atomic<std::uint32_t>> &epoch
+    const std::weak_ptr<producer_epoch> &epoch
   ) {
     const auto live = epoch.lock();
     if (control_protocol != 13 || !(session_flags & session_feature) || controller >= 16 || !pcm.generation ||

@@ -1461,7 +1461,14 @@ namespace stream {
 
     const auto send_result = detail::send_and_observe_result(
       [&] {
-        return session->broadcast_ref->control_server.send(payload, session->control.peer, msg.type == platf::gamepad_feedback_e::haptics_pcm || msg.type == platf::gamepad_feedback_e::speaker_pcm);
+        if (msg.type == platf::gamepad_feedback_e::speaker_pcm) {
+          // Encryption is complete. Serialize only ENet queue admission with
+          // epoch reset, not network flushing or the producer slot mutex.
+          return controller_speaker_pcm::enqueue_if_current(msg.speaker_epoch, msg.data.speaker.generation, [&] {
+            return session->broadcast_ref->control_server.send(payload, session->control.peer, true);
+          });
+        }
+        return session->broadcast_ref->control_server.send(payload, session->control.peer, msg.type == platf::gamepad_feedback_e::haptics_pcm);
       },
       [&](const int result) {
         if (msg.type == platf::gamepad_feedback_e::haptics_pcm &&
