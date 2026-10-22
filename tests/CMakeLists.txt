@@ -1909,6 +1909,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET libinputtino)
 endif()
 
 if(WIN32 AND TARGET pyrowave::capi)
+    add_executable(test_pyrowave_windows_shaders test_pyrowave_windows_shaders.cpp)
+    target_compile_definitions(test_pyrowave_windows_shaders PRIVATE
+        "PYROWAVE_TEST_SHADER_PATH=L\"${SUNSHINE_TEST_REPOSITORY_ROOT}/src_assets/windows/assets/shaders/directx/convert_pyrowave_cs.hlsl\"")
+    target_link_libraries(test_pyrowave_windows_shaders PRIVATE d3dcompiler)
+    add_test(NAME pyrowave_windows_shaders COMMAND test_pyrowave_windows_shaders)
+    set_tests_properties(pyrowave_windows_shaders PROPERTIES LABELS "component;shader")
     add_executable(test_pyrowave_windows_gpu test_pyrowave_windows_gpu.cpp
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/pyrowave_d3d11_core.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/pyrowave_policy.cpp")

@@ -20,16 +20,14 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
-#include <limits>
-#include <map>
-#include <span>
-
 #include <d3d11_4.h>
 #include <d3dcompiler.h>
 #include <dxgi1_2.h>
-#include <wrl/client.h>
-
+#include <limits>
+#include <map>
+#include <span>
 #include <vulkan/vulkan_core.h>
+#include <wrl/client.h>
 // vulkan_core.h must precede pyrowave.h.
 #include <pyrowave.h>
 
@@ -132,8 +130,7 @@ namespace pyrowave::d3d11 {
       image.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
       VkExternalImageFormatProperties external_properties {VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
       VkImageFormatProperties2 properties {VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, &external_properties};
-      if (get_image(gpu, &image, &properties) != VK_SUCCESS ||
-          !(external_properties.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT)) {
+      if (get_image(gpu, &image, &properties) != VK_SUCCESS || !(external_properties.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT)) {
         detail = std::string("the Vulkan driver cannot import D3D11 ") + (ten_bit ? "R16" : "R8") + " plane textures";
         return false;
       }
@@ -165,6 +162,9 @@ namespace pyrowave::d3d11 {
     ComPtr<ID3D11Buffer> sdr_to_pq_params;
     ComPtr<ID3D11Buffer> params;
     ComPtr<ID3D11SamplerState> sampler;
+    ComPtr<ID3D11Texture2D> transform_texture;
+    ComPtr<ID3D11ShaderResourceView> transform_srv;
+    float last_rgb_parameter = 0.0f;
     std::map<transfer_e, ComPtr<ID3D11ComputeShader>> shaders;
     convert_params_t last_params {};
     bool params_valid = false;
@@ -396,6 +396,7 @@ namespace pyrowave::d3d11 {
 
       sdr_to_pq_params_t sdr {config.sdr_white_nits, {}};
       cb.ByteWidth = sizeof(sdr);
+      cb.Usage = D3D11_USAGE_DEFAULT;
       init = {&sdr, 0, 0};
       hr = device11->CreateBuffer(&cb, &init, &sdr_to_pq_params);
       if (FAILED(hr)) {
@@ -432,6 +433,9 @@ namespace pyrowave::d3d11 {
 
       std::vector<D3D_SHADER_MACRO> macros;
       switch (transfer) {
+        case transfer_e::truehdr_pq:
+          macros.push_back({"TRUEHDR_PEAK", "1"});
+          break;
         case transfer_e::pq:
           macros.push_back({"PQ", "1"});
           break;
@@ -491,6 +495,69 @@ namespace pyrowave::d3d11 {
         last_params = p;
         params_valid = true;
       }
+    }
+
+    bool snapshot_rgb(ID3D11ShaderResourceView *srv) {
+      ComPtr<ID3D11Resource> resource;
+      srv->GetResource(&resource);
+      ComPtr<ID3D11Texture2D> texture;
+      if (!resource || FAILED(resource.As(&texture))) {
+        return false;
+      }
+      D3D11_TEXTURE2D_DESC desc {}, previous {};
+      texture->GetDesc(&desc);
+      if (transform_texture) {
+        transform_texture->GetDesc(&previous);
+      }
+      if (!transform_texture || previous.Width != desc.Width || previous.Height != desc.Height || previous.Format != desc.Format || previous.MipLevels != desc.MipLevels || previous.ArraySize != desc.ArraySize || previous.SampleDesc.Count != desc.SampleDesc.Count || previous.SampleDesc.Quality != desc.SampleDesc.Quality) {
+        transform_srv.Reset();
+        transform_texture.Reset();
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.CPUAccessFlags = desc.MiscFlags = 0;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        if (FAILED(device11->CreateTexture2D(&desc, nullptr, &transform_texture)) || FAILED(device11->CreateShaderResourceView(transform_texture.Get(), nullptr, &transform_srv))) {
+          error("private RGB snapshot creation failed");
+          return false;
+        }
+      }
+      context11->CopyResource(transform_texture.Get(), texture.Get());
+      return true;
+    }
+
+    bool process_rgb(const source_t &captured, capture_mutex_guard_t &capture_guard, ID3D11ShaderResourceView *&srv, ID3D11ComputeShader *&shader) {
+      source_t source = captured;
+      if (!snapshot_rgb(source.srv)) {
+        return false;
+      }
+      // The copy is ordered on this device before ReleaseSync. NGX never
+      // holds the producer's keyed mutex, including asynchronous feature init.
+      if (FAILED(capture_guard.release())) {
+        return false;
+      }
+      source.srv = transform_srv.Get();
+      source.mutex = nullptr;
+      try {
+        if (!config.transform_rgb(transform_texture.Get(), source) || !source.srv) {
+          return false;
+        }
+      } catch (const std::exception &e) {
+        error(std::string("RGB processing failed: ") + e.what());
+        return false;
+      }
+      shader = shader_for(source.transfer);
+      if (!shader) {
+        return false;
+      }
+      update_params(&source);
+      const float rgb_parameter = source.transfer == transfer_e::truehdr_pq ? source.luminance_scale :
+                                                                              (source.sdr_white_nits > 0.0f ? source.sdr_white_nits : config.sdr_white_nits);
+      if (rgb_parameter != last_rgb_parameter) {
+        const sdr_to_pq_params_t values {rgb_parameter, {}};
+        context11->UpdateSubresource(sdr_to_pq_params.Get(), 0, nullptr, &values, 0, 0);
+        last_rgb_parameter = rgb_parameter;
+      }
+      srv = source.srv;
+      return true;
     }
 
     result_e convert(const source_t &source) {
@@ -562,6 +629,10 @@ namespace pyrowave::d3d11 {
 #endif
       }
 
+      ID3D11ShaderResourceView *rgb_srv = source.srv;
+      if (!blank && config.transform_rgb && !process_rgb(source, capture_guard, rgb_srv, shader)) {
+        return result_e::failed;
+      }
       ID3D11Buffer *cbs[] = {color_matrix.Get(), sdr_to_pq_params.Get(), params.Get()};
 #ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
       bool d3d12_fallback = false;
@@ -594,7 +665,7 @@ namespace pyrowave::d3d11 {
         }
       }
 #endif
-      ID3D11ShaderResourceView *srv = source.srv;
+      ID3D11ShaderResourceView *srv = rgb_srv;
       ID3D11UnorderedAccessView *uavs[] = {plane_uavs[0].Get(), plane_uavs[1].Get(), plane_uavs[2].Get()};
       ID3D11SamplerState *samplers[] = {sampler.Get()};
       try {
@@ -664,17 +735,12 @@ namespace pyrowave::d3d11 {
       impl.error("no capture adapter");
       return nullptr;
     }
-    if (config.width <= 0 || config.height <= 0 ||
-        (!config.yuv444 && ((config.width & 1) || (config.height & 1)))) {
+    if (config.width <= 0 || config.height <= 0 || (!config.yuv444 && ((config.width & 1) || (config.height & 1)))) {
       impl.error("invalid encode size " + std::to_string(config.width) + "x" + std::to_string(config.height));
       return nullptr;
     }
 
-    if (!impl.create_d3d11(adapter) ||
-        !impl.create_pyrowave(adapter) ||
-        !impl.create_planes() ||
-        !impl.create_fence() ||
-        !impl.create_constants()) {
+    if (!impl.create_d3d11(adapter) || !impl.create_pyrowave(adapter) || !impl.create_planes() || !impl.create_fence() || !impl.create_constants()) {
       return nullptr;
     }
 
@@ -684,21 +750,24 @@ namespace pyrowave::d3d11 {
       return nullptr;
     }
 #ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
-    if (config.experimental_d3d12_conversion) {
+    if (config.experimental_d3d12_conversion && !config.transform_rgb) {
       impl.d3d12_conversion = d3d12_conversion_t::create(
-        adapter, impl.device11.Get(), impl.context11.Get(),
+        adapter,
+        impl.device11.Get(),
+        impl.context11.Get(),
         {impl.planes11[0].Get(), impl.planes11[1].Get(), impl.planes11[2].Get()},
-        impl.convert_fence.Get(), config, impl.log);
+        impl.convert_fence.Get(),
+        config,
+        impl.log
+      );
       if (!impl.d3d12_conversion) {
         impl.error("experimental D3D12 request could not establish a full-LUID fallback retention sink");
         return nullptr;
       }
-      impl.info(impl.d3d12_conversion->using_conversion() ?
-                  "experimental D3D12 compute conversion selected (D3D11 snapshot copy)" :
-                  "experimental D3D12 conversion unavailable; using retained D3D11 fallback");
+      impl.info(impl.d3d12_conversion->using_conversion() ? "experimental D3D12 compute conversion selected (D3D11 snapshot copy)" : "experimental D3D12 conversion unavailable; using retained D3D11 fallback");
     }
 #else
-    if (config.experimental_d3d12_conversion) {
+    if (config.experimental_d3d12_conversion && !config.transform_rgb) {
       impl.error("experimental D3D12 request needs the build-gated fallback retention sink");
       return nullptr;
     }

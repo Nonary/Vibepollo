@@ -40,6 +40,7 @@ namespace pyrowave::d3d11 {
     linear_sdr,  ///< FP16 scRGB capture, SDR stream: apply the sRGB curve.
     pq,  ///< FP16 scRGB capture, HDR stream: Rec. 2100 PQ.
     sdr_to_pq,  ///< UNORM sRGB capture, HDR stream: SDR white at `sdr_white_nits`.
+    truehdr_pq,  ///< NGX FP16 scRGB with compensation for its 1000-nit ceiling.
   };
 
   /// Same layout as video::color_t (one float4 per plane row, then two ranges).
@@ -53,6 +54,8 @@ namespace pyrowave::d3d11 {
 
   static_assert(sizeof(color_matrix_t) == 64, "color_matrix_t must match the HLSL cbuffer");
 
+  struct source_t;
+
   struct core_config_t {
     int width = 0;  ///< Encoded width; even for 4:2:0.
     int height = 0;  ///< Encoded height; even for 4:2:0.
@@ -62,6 +65,9 @@ namespace pyrowave::d3d11 {
     std::wstring shader_path;  ///< Full path of convert_pyrowave_cs.hlsl.
     float sdr_white_nits = 100.0f;  ///< For transfer_e::sdr_to_pq.
     std::chrono::milliseconds capture_wait {};  ///< Negotiated frame interval, rounded up.
+    // Optional RGB processing on a persistent private snapshot. Capture ownership
+    // is released before this callback; its borrowed SRV must survive encode().
+    std::function<bool(ID3D11Texture2D *, source_t &)> transform_rgb;
     bool experimental_d3d12_conversion = false;  ///< Build-gated conversion-only prototype; D3D11 fallback.
   };
 
@@ -113,6 +119,8 @@ namespace pyrowave::d3d11 {
     unsigned width = 0;  ///< Texture extent before rotation.
     unsigned height = 0;
     transfer_e transfer = transfer_e::unorm;
+    float sdr_white_nits = 0.0f;  ///< Zero uses the session default.
+    float luminance_scale = 1.0f;  ///< Linear scale for transfer_e::truehdr_pq.
     int rotate_texture_steps = 0;  ///< Quarter turns, as passed to Sunshine's vertex shaders.
     // Optional for D3D11. D3D12 nonblank copies require this explicit lease,
     // an existing image/source control block, and exact original COM identities.

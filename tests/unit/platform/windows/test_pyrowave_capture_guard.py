@@ -230,6 +230,7 @@ static void logging_leaf(int level, const std::string &) {
 }
 struct core_leaf_t {
   struct config_t {
+    bool transform_rgb = false;
     std::chrono::milliseconds capture_wait {17};
     bool yuv444 = false;
     int width = 8, height = 8;
@@ -245,6 +246,10 @@ struct core_leaf_t {
   int last_params = 0;
   std::uint64_t convert_value = 0;
   ~core_leaf_t() = default;
+  bool process_rgb(const source_t &, capture_mutex_guard_t &, ID3D11ShaderResourceView *&, ID3D11ComputeShader *&) {
+    require(false, "unexpected RGB processing");
+    return false;
+  }
   ID3D11ComputeShader *shader_for(transfer_e) {
     if (mode("shader-throw")) throw std::bad_alloc();
     return mode("no-shader") ? nullptr : &shader;

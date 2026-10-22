@@ -477,6 +477,8 @@ namespace pyrowave::d3d11 {
       }
       std::vector<D3D_SHADER_MACRO> macros;
       switch (transfer) {
+        case transfer_e::truehdr_pq:
+          return nullptr; // NGX uses the D3D11 private-snapshot conversion path.
         case transfer_e::pq:
           macros.push_back({"PQ", "1"});
           break;

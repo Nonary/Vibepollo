@@ -10,7 +10,7 @@ Enable HDR in the client, select an NVIDIA encoder, and enable RTX HDR for the
 application. The capture output stays SDR while the stream advertises
 BT.2020/PQ and the selected peak luminance. SDR-only clients, forced SDR and
 10-bit SDR do not enable conversion. Linux PyroWave supports RTX HDR on NVIDIA
-GPUs; Windows PyroWave remains excluded.
+GPUs. Windows PyroWave uses the existing D3D11/NGX TrueHDR runtime.
 Other Linux encoder/capture paths reject a requested RTX HDR session rather
 than relabeling unconverted SDR as HDR.
 
