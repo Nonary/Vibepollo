@@ -4584,10 +4584,13 @@ namespace VDISPLAY_SUNSHINE {
       for (std::uint32_t i = 0; i < displays.value.entry_count; ++i) {
         const auto &entry = displays.value.entries[i];
         if (entry.display_id == lease->display_id && entry.lease_id == lease->lease_id) {
-          const auto expected_device_id = state.current_device_id && !state.current_device_id->empty() ?
-                                            state.current_device_id :
-                                            lease->device_id;
-          return ccd_target_presence(expected_device_id, state.normalized_monitor_device_path);
+          if (!lease->device_id || lease->device_id->empty()) {
+            return MonitorTargetPresence::unknown;
+          }
+          // A friendly-name fallback may have adopted identifiers from a
+          // different virtual output. Presence must always be checked against
+          // the device ID carried by the exact driver lease.
+          return ccd_target_presence(lease->device_id, std::nullopt);
         }
       }
       return MonitorTargetPresence::missing;
@@ -4640,12 +4643,16 @@ namespace VDISPLAY_SUNSHINE {
         if (strong_match) {
           const bool is_active = !device.m_display_name.empty();
           if (is_active) {
+            const auto lease = driver_lease_tracker().get(state.guid_uuid);
+            const bool exact_lease_identity =
+              lease && lease->device_id && !lease->device_id->empty() && !device.m_device_id.empty() &&
+              equals_ci(device.m_device_id, *lease->device_id);
             state.update_identifiers(
               platf::from_utf8(device.m_display_name),
               device.m_device_id.empty() ? state.current_device_id : std::optional {device.m_device_id},
               device.m_monitor_device_path.empty() ? state.current_monitor_device_path :
                                                        std::optional {platf::from_utf8(device.m_monitor_device_path)},
-              true
+              exact_lease_identity
             );
             return MonitorTargetPresence::present_active;
           }
@@ -4754,11 +4761,13 @@ namespace VDISPLAY_SUNSHINE {
       }
 
       std::vector<std::string> outputs {*lease->device_id};
-      if (state.current_display_name_verified && state.current_display_name) {
-        outputs.push_back(platf::to_utf8(*state.current_display_name));
-      }
-      if (state.current_monitor_device_path) {
-        outputs.push_back(platf::to_utf8(*state.current_monitor_device_path));
+      if (state.current_display_name_verified) {
+        if (state.current_display_name) {
+          outputs.push_back(platf::to_utf8(*state.current_display_name));
+        }
+        if (state.current_monitor_device_path) {
+          outputs.push_back(platf::to_utf8(*state.current_monitor_device_path));
+        }
       }
       state.capture_confirmation.start(
         video::capture_recovery::observations().watch(std::move(outputs)),

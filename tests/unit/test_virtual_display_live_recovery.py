@@ -187,6 +187,12 @@ int main() {
  enumerated_devices={{"replacement-virtual","monitor3","DISPLAY16","DISPLAY16",true}};
  assert(actual_monitor_target_presence(identity_state)==MonitorTargetPresence::present_active);
  assert(!identity_state.current_display_name_verified);
+ // A subsequent stable match to the weakly adopted ID cannot verify it unless
+ // the candidate ID is the exact device ID retained by the driver lease.
+ enumerated_devices={{"replacement-virtual","monitor3","DISPLAY17","DISPLAY16",true}};
+ assert(actual_monitor_target_presence(identity_state)==MonitorTargetPresence::present_active);
+ assert(identity_state.current_display_name==L"DISPLAY17");
+ assert(!identity_state.current_display_name_verified);
  enumerated_devices.clear();
  ccd_paths={{"virtual1","monitor1",0}};
 
@@ -239,6 +245,25 @@ int main() {
  assert(!state.current_display_name_verified);
  captures.frame("DISPLAY15",captures.begin_capture());
  assert(state.capture_confirmation.poll(std::chrono::steady_clock::now()+6s)==video::capture_recovery::confirmation_status::retry);
+
+ // A false friendly-name match can select a candidate for presence tracking,
+ // but its display/path aliases cannot acknowledge a frame for the leased ID.
+ RecoveryMonitorState weak_state;
+ weak_state.params.client_name="client";
+ weak_state.current_device_id.reset();
+ weak_state.current_monitor_device_path.reset();
+ weak_state.normalized_monitor_device_path.reset();
+ weak_state.normalized_display_name.reset();
+ enumerated_devices={{"replacement-virtual","monitor3","DISPLAY17","client",true}};
+ assert(actual_monitor_target_presence(weak_state)==MonitorTargetPresence::present_active);
+ assert(!weak_state.current_display_name_verified);
+ ccd_paths={{"virtual1","monitor1",DISPLAYCONFIG_PATH_ACTIVE}};
+ assert(reactivate_owned_virtual_display(weak_state,{}));
+ assert(!weak_state.current_display_name_verified);
+ captures.frame("DISPLAY17",captures.begin_capture());
+ assert(weak_state.capture_confirmation.poll(std::chrono::steady_clock::now()+6s)==video::capture_recovery::confirmation_status::retry);
+ captures.frame("virtual1",captures.begin_capture());
+ assert(weak_state.capture_confirmation.poll(std::chrono::steady_clock::now()+7s)==video::capture_recovery::confirmation_status::confirmed);
 }
 '''
 with tempfile.TemporaryDirectory(prefix='live-recovery-') as d:
@@ -247,4 +272,4 @@ with tempfile.TemporaryDirectory(prefix='live-recovery-') as d:
     cpp.write_text(program)
     subprocess.run(['g++', '-std=c++23', '-O1', '-pthread', '-Wall', '-Wextra', '-Werror', '-I', str(root), str(cpp), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True, timeout=10)
-print('Live recovery: lease, stable identity, no-devices lifecycle, cancellation, lock contention and capture acknowledgement passed')
+print('Live recovery: exact lease, identity provenance, no-devices lifecycle, cancellation, lock contention and capture acknowledgement passed')
