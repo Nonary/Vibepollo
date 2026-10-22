@@ -333,6 +333,7 @@ namespace {
       display_device::Rational {60, 1}
     };
     snapshot.m_hdr_states[id] = std::nullopt;
+    snapshot.m_origins[id] = display_device::Point {0, 0};
     return snapshot;
   }
 
@@ -2781,6 +2782,7 @@ TEST(DisplayHelperV2StateMachine, ContinuouslyConnectedInactivePhysicalMemberRem
   harness.display_settings.snapshot.m_topology.push_back({"virtual_current"});
   harness.display_settings.snapshot.m_modes["virtual_current"] = display_device::DisplayMode {};
   harness.display_settings.snapshot.m_hdr_states["virtual_current"] = std::nullopt;
+  harness.display_settings.snapshot.m_origins["virtual_current"] = display_device::Point {0, 0};
   harness.add_inactive_device("physical_b");
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
     display_helper::v2::DisplayEvent::DisplayChange,
@@ -2814,10 +2816,12 @@ TEST(DisplayHelperV2StateMachine, PoweredOffPhysicalBaselineReturnsInactiveAndGe
       harness.add_active_device("virtual_current");
       harness.display_settings.snapshot = make_snapshot("physical_a");
       harness.display_settings.snapshot.m_topology.push_back({"virtual_current"});
+      harness.display_settings.snapshot.m_origins["virtual_current"] = display_device::Point {0, 0};
       if (physical_b_present) {
         if (physical_b_active) {
           harness.add_active_device("physical_b");
           harness.display_settings.snapshot.m_topology.push_back({"physical_b"});
+          harness.display_settings.snapshot.m_origins["physical_b"] = display_device::Point {0, 0};
         } else {
           harness.add_inactive_device("PHYSICAL_B");
         }
@@ -2906,6 +2910,7 @@ TEST(DisplayHelperV2StateMachine, HealthyPhysicalReturnConsumesEvidenceBeforeLat
   harness.add_active_device("virtual_current");
   harness.display_settings.snapshot = make_snapshot("physical_a");
   harness.display_settings.snapshot.m_topology.push_back({"virtual_current"});
+  harness.display_settings.snapshot.m_origins["virtual_current"] = display_device::Point {0, 0};
   harness.display_settings.topology = harness.display_settings.snapshot.m_topology;
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
@@ -2960,6 +2965,7 @@ TEST(DisplayHelperV2StateMachine, InactivePhysicalReturnsRespectExclusiveExclude
     harness.display_settings.snapshot = make_snapshot("virtual_current");
     if (policy != "exclusive") {
       harness.display_settings.snapshot.m_topology.push_back({"physical_a"});
+      harness.display_settings.snapshot.m_origins["physical_a"] = display_device::Point {0, 0};
     }
     harness.display_settings.topology = harness.display_settings.snapshot.m_topology;
     display_helper::v2::ApplyRequest request;
@@ -3003,6 +3009,7 @@ TEST(DisplayHelperV2StateMachine, NewApplyDiscardsPriorInactivePhysicalReturnEvi
   harness.add_active_device("virtual_current");
   harness.display_settings.snapshot = make_snapshot("physical_a");
   harness.display_settings.snapshot.m_topology.push_back({"virtual_current"});
+  harness.display_settings.snapshot.m_origins["virtual_current"] = display_device::Point {0, 0};
   harness.display_settings.topology = harness.display_settings.snapshot.m_topology;
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
@@ -3248,6 +3255,7 @@ TEST(DisplayHelperV2StateMachine, ActivePhysicalBaselineReturnGetsOneTopologyRep
   harness.display_settings.snapshot.m_topology.push_back({"virtual_current"});
   harness.display_settings.snapshot.m_modes["virtual_current"] = display_device::DisplayMode {};
   harness.display_settings.snapshot.m_hdr_states["virtual_current"] = std::nullopt;
+  harness.display_settings.snapshot.m_origins["virtual_current"] = display_device::Point {0, 0};
 
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
@@ -4326,10 +4334,19 @@ TEST(DisplayHelperV2StateMachine, ExportGoldenCapturesSnapshotWithBlacklist) {
 
   display_device::DisplaySettingsSnapshot snapshot;
   snapshot.m_topology = {{"A", "B"}};
-  snapshot.m_modes["A"] = display_device::DisplayMode {};
-  snapshot.m_modes["B"] = display_device::DisplayMode {};
+  snapshot.m_modes["A"] = display_device::DisplayMode {
+    display_device::Resolution {3840, 2160},
+    display_device::Rational {143857, 1000}
+  };
+  snapshot.m_modes["B"] = display_device::DisplayMode {
+    display_device::Resolution {1920, 1080},
+    display_device::Rational {180, 1}
+  };
   snapshot.m_hdr_states["A"] = std::nullopt;
   snapshot.m_hdr_states["B"] = std::nullopt;
+  snapshot.m_primary_device = "A";
+  snapshot.m_origins["A"] = display_device::Point {0, 0};
+  snapshot.m_origins["B"] = display_device::Point {-1920, 0};
   harness.display_settings.snapshot = snapshot;
 
   display_helper::v2::SnapshotCommandPayload payload;
@@ -4343,6 +4360,16 @@ TEST(DisplayHelperV2StateMachine, ExportGoldenCapturesSnapshotWithBlacklist) {
   ASSERT_EQ(stored->m_topology.front().size(), 1u);
   EXPECT_EQ(stored->m_topology.front().front(), "A");
   EXPECT_EQ(stored->m_modes.count("B"), 0u);
+  ASSERT_EQ(stored->m_modes.count("A"), 1u);
+  EXPECT_EQ(stored->m_modes.at("A").m_resolution.m_width, 3840u);
+  EXPECT_EQ(stored->m_modes.at("A").m_resolution.m_height, 2160u);
+  EXPECT_EQ(stored->m_modes.at("A").m_refresh_rate.m_numerator, 143857u);
+  EXPECT_EQ(stored->m_modes.at("A").m_refresh_rate.m_denominator, 1000u);
+  EXPECT_EQ(stored->m_primary_device, "A");
+  ASSERT_EQ(stored->m_origins.count("A"), 1u);
+  EXPECT_EQ(stored->m_origins.at("A").m_x, 0);
+  EXPECT_EQ(stored->m_origins.at("A").m_y, 0);
+  EXPECT_EQ(stored->m_origins.count("B"), 0u);
 }
 
 TEST(DisplayHelperV2StateMachine, SnapshotCurrentRefreshesPreservingPrevious) {
@@ -4367,6 +4394,84 @@ TEST(DisplayHelperV2StateMachine, SnapshotCurrentRefreshesPreservingPrevious) {
   EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(*stored_current, current));
   ASSERT_TRUE(harness.snapshot_result.has_value());
   EXPECT_TRUE(*harness.snapshot_result);
+}
+
+TEST(DisplayHelperV2StateMachine, SnapshotCurrentPersistsModesAndOriginsForEveryActiveOutput) {
+  StateMachineHarness harness;
+  harness.add_active_device("A");
+  harness.add_active_device("B");
+
+  display_device::DisplaySettingsSnapshot captured;
+  captured.m_topology = {{"A", "B"}};
+  captured.m_modes["A"] = display_device::DisplayMode {
+    display_device::Resolution {3840, 2160},
+    display_device::Rational {143857, 1000}
+  };
+  captured.m_modes["B"] = display_device::DisplayMode {
+    display_device::Resolution {1920, 1080},
+    display_device::Rational {180, 1}
+  };
+  captured.m_origins["A"] = display_device::Point {0, 0};
+  captured.m_origins["B"] = display_device::Point {-1920, 0};
+  harness.display_settings.snapshot = captured;
+
+  display_helper::v2::SnapshotCommandPayload payload;
+  harness.state_machine.handle_message(display_helper::v2::SnapshotCurrentCommand {payload, harness.cancellation.current_generation()});
+
+  ASSERT_TRUE(harness.snapshot_result.has_value());
+  EXPECT_TRUE(*harness.snapshot_result);
+  const auto stored = harness.storage.load(display_helper::v2::SnapshotTier::Current);
+  ASSERT_TRUE(stored.has_value());
+  EXPECT_EQ(stored->m_modes.size(), 2u);
+  EXPECT_EQ(stored->m_modes.at("A").m_refresh_rate.m_numerator, 143857u);
+  EXPECT_EQ(stored->m_modes.at("A").m_refresh_rate.m_denominator, 1000u);
+  EXPECT_EQ(stored->m_modes.at("B").m_refresh_rate.m_numerator, 180u);
+  EXPECT_EQ(stored->m_modes.at("B").m_refresh_rate.m_denominator, 1u);
+  EXPECT_EQ(stored->m_origins.at("A").m_x, 0);
+  EXPECT_EQ(stored->m_origins.at("B").m_x, -1920);
+}
+
+TEST(DisplayHelperV2StateMachine, SnapshotCurrentRejectsCaptureMissingActiveOutputOrigin) {
+  StateMachineHarness harness;
+  harness.add_active_device("A");
+  harness.add_active_device("B");
+
+  display_device::DisplaySettingsSnapshot existing;
+  existing.m_topology = {{"A", "B"}};
+  existing.m_modes["A"] = display_device::DisplayMode {
+    display_device::Resolution {3840, 2160},
+    display_device::Rational {143857, 1000}
+  };
+  existing.m_modes["B"] = display_device::DisplayMode {
+    display_device::Resolution {1920, 1080},
+    display_device::Rational {180, 1}
+  };
+  existing.m_origins["A"] = display_device::Point {0, 0};
+  existing.m_origins["B"] = display_device::Point {-1920, 0};
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, existing));
+  const auto previous = make_snapshot("OLD");
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Previous, previous));
+
+  auto incomplete = existing;
+  incomplete.m_origins.erase("B");
+  harness.display_settings.snapshot = incomplete;
+
+  display_helper::v2::SnapshotCommandPayload payload;
+  harness.state_machine.handle_message(display_helper::v2::SnapshotCurrentCommand {payload, harness.cancellation.current_generation()});
+
+  ASSERT_TRUE(harness.snapshot_result.has_value());
+  EXPECT_FALSE(*harness.snapshot_result);
+  const auto stored_current = harness.storage.load(display_helper::v2::SnapshotTier::Current);
+  ASSERT_TRUE(stored_current.has_value());
+  EXPECT_EQ(stored_current->m_topology, existing.m_topology);
+  ASSERT_EQ(stored_current->m_modes.size(), 2u);
+  EXPECT_EQ(stored_current->m_modes.at("A").m_refresh_rate.m_numerator, 143857u);
+  EXPECT_EQ(stored_current->m_modes.at("B").m_refresh_rate.m_numerator, 180u);
+  ASSERT_EQ(stored_current->m_origins.size(), 2u);
+  EXPECT_EQ(stored_current->m_origins.at("B").m_x, -1920);
+  const auto stored_previous = harness.storage.load(display_helper::v2::SnapshotTier::Previous);
+  ASSERT_TRUE(stored_previous.has_value());
+  EXPECT_EQ(stored_previous->m_topology, previous.m_topology);
 }
 
 // f3841ad8: APPLY with no session baseline on disk must self-capture the

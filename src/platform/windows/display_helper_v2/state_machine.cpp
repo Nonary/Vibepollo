@@ -150,6 +150,18 @@ namespace display_helper::v2 {
       return std::nullopt;
     }
 
+    // Positions are part of the saved display baseline. Windows gathers them
+    // through a separate enumeration from the active topology, so a transient
+    // query mismatch can leave a retained output without an origin. Reject the
+    // capture so callers retry instead of persisting an incomplete layout.
+    for (const auto &device_id : codec::flatten_topology_device_ids(filtered->m_topology)) {
+      if (!filtered->m_origins.count(device_id)) {
+        BOOST_LOG(warning) << "Skipping display snapshot save (" << (reason ? reason : "snapshot")
+                           << "); captured origin missing for topology device: " << device_id << ".";
+        return std::nullopt;
+      }
+    }
+
     const auto layout_ids_vec = codec::flatten_topology_device_ids(filtered->m_topology);
     const std::set<std::string> layout_ids(layout_ids_vec.begin(), layout_ids_vec.end());
     auto layouts = service_.capture_layouts(layout_ids);
