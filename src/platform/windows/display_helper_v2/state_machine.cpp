@@ -1144,6 +1144,28 @@ namespace display_helper::v2 {
       BOOST_LOG(debug) << "Display helper: ignoring APPLY from a retired IPC connection.";
       return;
     }
+    if (command.request.reactivation_of) {
+      const auto &config = command.request.configuration;
+      const bool admitted = state_ == State::VirtualDisplayMonitoring && session_was_verified_ && recovery_armed_ &&
+                            !explicit_recovery_required_ && !mutation_worker_active() && !staged_state_reset_pending_ &&
+                            deferred_mutation_commands_.empty() && current_request_.virtual_layout &&
+                            current_request_.configuration && config && current_request_.request_id != 0 &&
+                            *command.request.reactivation_of == current_request_.request_id &&
+                            command.connection_epoch == current_connection_epoch_ && !config->m_device_id.empty() &&
+                            boost::iequals(config->m_device_id, current_request_.configuration->m_device_id);
+      if (!admitted) {
+        if (apply_result_callback_) {
+          apply_result_callback_(ApplyStatus::Retryable, command.connection_epoch, command.request.request_id);
+        }
+        return;
+      }
+      auto repair = current_request_;
+      repair.reactivation_only = true;
+      repair.deadline = command.request.deadline;
+      active_reactivation_ = command;
+      dispatch_apply_worker(repair, std::chrono::milliseconds(0), false);
+      return;
+    }
     recovery_status_policy_.supersede();
     // A live replacement request owns the next desktop even if it must wait
     // behind the current mutation fence. Invalidate older queued HDR work at
@@ -1640,6 +1662,7 @@ namespace display_helper::v2 {
 
     if (is_stale(completed.generation)) {
       if (completed_owns_active_worker) {
+        active_reactivation_.reset();
         if (completed.display_may_have_changed) {
           retain_recovery_after_display_mutation(completed);
           unconfirmed_cancelled_mutation_ = true;
@@ -1661,6 +1684,22 @@ namespace display_helper::v2 {
 
     if (!completed_owns_active_worker) {
       BOOST_LOG(debug) << "Display helper: ignoring APPLY completion without an active worker fence.";
+      return;
+    }
+
+    if (active_reactivation_) {
+      const auto repair = std::exchange(active_reactivation_, std::nullopt);
+      auto status = completed.status;
+      if (has_deferred_apply_intent() || is_stale_connection(repair->connection_epoch)) {
+        status = ApplyStatus::Retryable;
+      }
+      if (apply_result_callback_) {
+        apply_result_callback_(status, repair->connection_epoch, repair->request.request_id);
+      }
+      if (verification_result_callback_) {
+        verification_result_callback_(status == ApplyStatus::Ok, repair->connection_epoch, repair->request.request_id);
+      }
+      drain_deferred_mutation_commands();
       return;
     }
 

@@ -12,6 +12,7 @@
 #include <thread>
 #include <algorithm>
 #include <boost/algorithm/string/predicate.hpp>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -115,7 +116,35 @@ namespace display_helper::v2 {
     std::lock_guard lock(settings_mutex_);
     display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
     try {
-      return map_apply_result(settings_manager_->applySettings(config));
+      const auto status = map_apply_result(settings_manager_->applySettings(config));
+      if (status == ApplyStatus::Ok && !config.m_device_id.empty()) {
+        // Keep only state verified from the active desktop after a successful
+        // full transaction. The recovery lane can use this if the request did
+        // not pin a resolution, refresh rate, or HDR state explicitly.
+        try {
+          const auto active = win_api_->queryDisplayConfig(display_device::QueryType::Active);
+          if (active) {
+            for (const auto &path : active->m_paths) {
+              if (!boost::iequals(win_api_->getDeviceId(path), config.m_device_id)) {
+                continue;
+              }
+              if (const auto index = display_device::win_utils::getSourceIndex(path, active->m_modes)) {
+                verified_sources_[config.m_device_id] = active->m_modes.at(*index).sourceMode;
+                verified_refreshes_[config.m_device_id] = path.targetInfo.refreshRate;
+                const auto states = display_device_->getCurrentHdrStates({config.m_device_id});
+                if (const auto hdr = states.find(config.m_device_id); hdr != states.end() && hdr->second) {
+                  verified_hdr_states_[config.m_device_id] = *hdr->second;
+                }
+              }
+              break;
+            }
+          }
+        } catch (...) {
+          // This cache improves an otherwise underspecified live repair; its
+          // failure must not turn a completed APPLY into an error.
+        }
+      }
+      return status;
     } catch (const std::exception &e) {
       BOOST_LOG(error) << "Display helper v2: display settings apply failed: " << e.what();
       return ApplyStatus::Fatal;
@@ -123,6 +152,260 @@ namespace display_helper::v2 {
       BOOST_LOG(error) << "Display helper v2: display settings apply failed.";
       return ApplyStatus::Fatal;
     }
+  }
+
+  ApplyStatus WinDisplaySettings::reactivate_virtual_target(
+    const SingleDisplayConfiguration &config,
+    const std::function<bool()> &cancelled
+  ) {
+    if (!ensure_initialized() || config.m_device_id.empty() || cancelled()) {
+      return ApplyStatus::Retryable;
+    }
+    std::lock_guard lock(settings_mutex_);
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+
+    auto desired_hdr = config.m_hdr_state;
+    if (!desired_hdr) {
+      if (const auto saved = verified_hdr_states_.find(config.m_device_id); saved != verified_hdr_states_.end()) {
+        desired_hdr = saved->second;
+      }
+    }
+
+    const auto query = win_api_->queryDisplayConfig(display_device::QueryType::All);
+    if (!query || cancelled()) {
+      return ApplyStatus::Retryable;
+    }
+    const auto same_luid = [](const LUID &lhs, const LUID &rhs) {
+      return lhs.LowPart == rhs.LowPart && lhs.HighPart == rhs.HighPart;
+    };
+
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::optional<DISPLAYCONFIG_PATH_INFO> candidate;
+    LONG right = 0;
+    for (const auto &path : query->m_paths) {
+      const bool active = (path.flags & DISPLAYCONFIG_PATH_ACTIVE) != 0;
+      if (boost::iequals(win_api_->getDeviceId(path), config.m_device_id)) {
+        // The fullscreen transition may have settled while the repair was
+        // queued; an active target is already healthy.
+        if (active) {
+          return ApplyStatus::Ok;
+        }
+        const bool source_busy = std::any_of(query->m_paths.begin(), query->m_paths.end(), [&](const auto &other) {
+          return (other.flags & DISPLAYCONFIG_PATH_ACTIVE) &&
+                 same_luid(path.sourceInfo.adapterId, other.sourceInfo.adapterId) &&
+                 path.sourceInfo.id == other.sourceInfo.id;
+        });
+        if (path.targetInfo.targetAvailable && !source_busy && !candidate) {
+          candidate = path;
+        }
+      }
+      if (active) {
+        paths.push_back(path);
+        if (const auto index = display_device::win_utils::getSourceIndex(path, query->m_modes)) {
+          const auto &mode = query->m_modes.at(*index).sourceMode;
+          const auto edge = static_cast<std::int64_t>(mode.position.x) + mode.width;
+          right = static_cast<LONG>(std::min<std::int64_t>(LONG_MAX, std::max<std::int64_t>(right, edge)));
+        }
+      }
+    }
+    if (!candidate) {
+      return ApplyStatus::Retryable;
+    }
+
+    auto resolution = config.m_resolution;
+    if (!resolution) {
+      const auto saved = verified_sources_.find(config.m_device_id);
+      if (saved == verified_sources_.end()) {
+        return ApplyStatus::Retryable;
+      }
+      resolution = display_device::Resolution {saved->second.width, saved->second.height};
+    }
+
+    DISPLAYCONFIG_RATIONAL rate {};
+    if (config.m_refresh_rate) {
+      if (const auto rational = std::get_if<display_device::Rational>(&*config.m_refresh_rate)) {
+        rate = {rational->m_numerator, rational->m_denominator};
+      } else {
+        const auto number = floating_to_double(*config.m_refresh_rate);
+        if (!number || !std::isfinite(*number) || *number <= 0 || *number > UINT32_MAX / 1000.0) {
+          return ApplyStatus::InvalidRequest;
+        }
+        rate = {static_cast<UINT32>(std::llround(*number * 1000.0)), 1000};
+      }
+    } else if (const auto saved = verified_refreshes_.find(config.m_device_id); saved != verified_refreshes_.end()) {
+      rate = saved->second;
+    }
+    if (rate.Numerator == 0 || rate.Denominator == 0) {
+      return ApplyStatus::Retryable;
+    }
+
+    auto modes = query->m_modes;
+    auto target = *candidate;
+    target.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+    DISPLAYCONFIG_MODE_INFO source {};
+    source.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE;
+    source.id = target.sourceInfo.id;
+    source.adapterId = target.sourceInfo.adapterId;
+    source.sourceMode.width = resolution->m_width;
+    source.sourceMode.height = resolution->m_height;
+    source.sourceMode.pixelFormat = DISPLAYCONFIG_PIXELFORMAT_32BPP;
+    source.sourceMode.position = {right, 0};
+    if (const auto saved = verified_sources_.find(config.m_device_id); saved != verified_sources_.end()) {
+      source.sourceMode.position = saved->second.position;
+    }
+    if (const auto index = display_device::win_utils::getSourceIndex(target, query->m_modes)) {
+      source.sourceMode.position = query->m_modes.at(*index).sourceMode.position;
+    }
+    const auto overlaps_peer = [&](const POINTL &origin) {
+      return std::any_of(paths.begin(), paths.end(), [&](const auto &path) {
+        const auto index = display_device::win_utils::getSourceIndex(path, query->m_modes);
+        if (!index) {
+          return true;
+        }
+        const auto &peer = query->m_modes.at(*index).sourceMode;
+        return static_cast<std::int64_t>(origin.x) < static_cast<std::int64_t>(peer.position.x) + peer.width &&
+               static_cast<std::int64_t>(origin.x) + source.sourceMode.width > peer.position.x &&
+               static_cast<std::int64_t>(origin.y) < static_cast<std::int64_t>(peer.position.y) + peer.height &&
+               static_cast<std::int64_t>(origin.y) + source.sourceMode.height > peer.position.y;
+      });
+    };
+    // Windows can promote a peer to (0,0) after losing a virtual primary.
+    // Preserve that live peer instead of introducing overlapping sources.
+    if (overlaps_peer(source.sourceMode.position)) {
+      source.sourceMode.position = {right, 0};
+    }
+
+    target.flags |= DISPLAYCONFIG_PATH_ACTIVE;
+    target.targetInfo.refreshRate = rate;
+    const bool virtual_modes = (target.flags & DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE) != 0;
+    const auto source_index = static_cast<UINT32>(modes.size());
+    modes.push_back(source);
+    if (virtual_modes) {
+      target.sourceInfo.sourceModeInfoIdx = source_index;
+      target.sourceInfo.cloneGroupId = 0xffffu;
+      target.targetInfo.targetModeInfoIdx = DISPLAYCONFIG_PATH_TARGET_MODE_IDX_INVALID;
+      target.targetInfo.desktopModeInfoIdx = DISPLAYCONFIG_PATH_DESKTOP_IMAGE_IDX_INVALID;
+    } else {
+      target.sourceInfo.modeInfoIdx = source_index;
+      target.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    }
+    paths.push_back(target);
+
+    // Start with Windows-selected target timing. If the driver refuses that
+    // timing, retry with the same explicit descriptor used by exact target
+    // activation. In either case only the current peer paths plus this target
+    // are supplied; no topology reset or saved layout is replayed.
+    const auto refresh_millihz = (static_cast<std::uint64_t>(rate.Numerator) * 1000u + rate.Denominator / 2u) /
+                                rate.Denominator;
+    if (resolution->m_width == 0 || resolution->m_height == 0 ||
+        resolution->m_width > static_cast<unsigned int>(LONG_MAX) ||
+        resolution->m_height > static_cast<unsigned int>(LONG_MAX) || refresh_millihz == 0 ||
+        refresh_millihz > UINT32_MAX) {
+      return ApplyStatus::InvalidRequest;
+    }
+    DISPLAYCONFIG_VIDEO_SIGNAL_INFO target_signal {};
+    const auto pixel_count = static_cast<std::uint64_t>(resolution->m_width) * resolution->m_height;
+    const auto pixel_rate = pixel_count > UINT64_MAX / refresh_millihz ?
+                              UINT64_MAX :
+                              (pixel_count * refresh_millihz) / 1000u;
+    target_signal.pixelRate = pixel_rate;
+    target_signal.hSyncFreq.Numerator = static_cast<UINT32>(std::min<std::uint64_t>(
+      UINT32_MAX,
+      refresh_millihz * resolution->m_height
+    ));
+    target_signal.hSyncFreq.Denominator = 1000u;
+    target_signal.vSyncFreq.Numerator = static_cast<UINT32>(refresh_millihz);
+    target_signal.vSyncFreq.Denominator = 1000u;
+    target_signal.activeSize.cx = static_cast<LONG>(resolution->m_width);
+    target_signal.activeSize.cy = static_cast<LONG>(resolution->m_height);
+    target_signal.totalSize = target_signal.activeSize;
+    target_signal.AdditionalSignalInfo.videoStandard = 255;
+    target_signal.AdditionalSignalInfo.vSyncFreqDivider = 1;
+    target_signal.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+
+    std::vector<DISPLAYCONFIG_PATH_INFO> applied_paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> applied_modes;
+    const auto apply_activation = [&](const bool supply_target_mode) {
+      auto attempt_paths = paths;
+      auto attempt_modes = modes;
+      if (supply_target_mode) {
+        const auto target_mode_index = static_cast<UINT32>(attempt_modes.size());
+        DISPLAYCONFIG_MODE_INFO target_mode {};
+        target_mode.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_TARGET;
+        target_mode.id = target.targetInfo.id;
+        target_mode.adapterId = target.targetInfo.adapterId;
+        target_mode.targetMode.targetVideoSignalInfo = target_signal;
+        attempt_modes.push_back(target_mode);
+        auto &attempt_target = attempt_paths.back();
+        if (virtual_modes) {
+          attempt_target.targetInfo.targetModeInfoIdx = target_mode_index;
+        } else {
+          attempt_target.targetInfo.modeInfoIdx = target_mode_index;
+        }
+      }
+      const UINT32 flags = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_VIRTUAL_MODE_AWARE | SDC_ALLOW_CHANGES;
+      if (win_api_->setDisplayConfig(attempt_paths, attempt_modes, flags | SDC_VALIDATE) != ERROR_SUCCESS || cancelled() ||
+          win_api_->setDisplayConfig(attempt_paths, attempt_modes, flags | SDC_APPLY) != ERROR_SUCCESS || cancelled()) {
+        return false;
+      }
+      applied_paths = std::move(attempt_paths);
+      applied_modes = std::move(attempt_modes);
+      return true;
+    };
+    if (!apply_activation(false) && (cancelled() || !apply_activation(true))) {
+      return ApplyStatus::Retryable;
+    }
+
+    if (desired_hdr) {
+      auto states = display_device_->getCurrentHdrStates({config.m_device_id});
+      auto current = states.find(config.m_device_id);
+      if (current == states.end() || current->second != desired_hdr) {
+        if (cancelled() || !display_device_->setHdrStates({{config.m_device_id, desired_hdr}})) {
+          return ApplyStatus::Retryable;
+        }
+        states = display_device_->getCurrentHdrStates({config.m_device_id});
+        current = states.find(config.m_device_id);
+        if (current == states.end() || current->second != desired_hdr || cancelled()) {
+          return ApplyStatus::VerificationFailed;
+        }
+      }
+    }
+
+    const auto verified = win_api_->queryDisplayConfig(display_device::QueryType::Active);
+    if (!verified || cancelled()) {
+      return ApplyStatus::Retryable;
+    }
+    for (const auto &expected : applied_paths) {
+      const auto found = std::find_if(verified->m_paths.begin(), verified->m_paths.end(), [&](const auto &path) {
+        return same_luid(path.targetInfo.adapterId, expected.targetInfo.adapterId) &&
+               path.targetInfo.id == expected.targetInfo.id && (path.flags & DISPLAYCONFIG_PATH_ACTIVE);
+      });
+      if (found == verified->m_paths.end()) {
+        return ApplyStatus::VerificationFailed;
+      }
+      const auto before_index = display_device::win_utils::getSourceIndex(expected, applied_modes);
+      const auto after_index = display_device::win_utils::getSourceIndex(*found, verified->m_modes);
+      if (!before_index || !after_index) {
+        return ApplyStatus::VerificationFailed;
+      }
+      const auto &before = applied_modes.at(*before_index).sourceMode;
+      const auto &after = verified->m_modes.at(*after_index).sourceMode;
+      const auto expected_rate = display_device::Rational {
+        expected.targetInfo.refreshRate.Numerator,
+        expected.targetInfo.refreshRate.Denominator,
+      };
+      const auto actual_rate = display_device::Rational {
+        found->targetInfo.refreshRate.Numerator,
+        found->targetInfo.refreshRate.Denominator,
+      };
+      if (before.width != after.width || before.height != after.height ||
+          before.position.x != after.position.x || before.position.y != after.position.y ||
+          expected.targetInfo.rotation != found->targetInfo.rotation ||
+          !refresh_rates_match(expected_rate, actual_rate)) {
+        return ApplyStatus::VerificationFailed;
+      }
+    }
+    return ApplyStatus::Ok;
   }
 
   bool WinDisplaySettings::blank_hdr_states(std::chrono::milliseconds delay, const std::function<bool()> &cancelled) {

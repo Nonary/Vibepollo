@@ -512,6 +512,7 @@ namespace platf {
 
   class display_t {
   public:
+    std::uint64_t recovery_capture_instance {0};
     /**
      * @brief Callback for when a new image is ready.
      * When display has a new image ready or a timeout occurs, this callback will be called with the image.

@@ -16,11 +16,16 @@
 #include <display_device/windows/win_api_layer.h>
 #include <display_device/windows/win_api_utils.h>
 #include <display_device/windows/win_display_device.h>
+#include <map>
 
 namespace display_helper::v2 {
   class WinDisplaySettings final : public IDisplaySettings {
   public:
     ApplyStatus apply(const SingleDisplayConfiguration &config) override;
+    ApplyStatus reactivate_virtual_target(
+      const SingleDisplayConfiguration &config,
+      const std::function<bool()> &cancelled
+    ) override;
     bool blank_hdr_states(std::chrono::milliseconds delay, const std::function<bool()> &cancelled) override;
     ApplyStatus apply_topology(const ActiveTopology &topology) override;
     EnumeratedDeviceList enumerate(display_device::DeviceEnumerationDetail detail) override;
@@ -88,5 +93,8 @@ namespace display_helper::v2 {
     mutable std::shared_ptr<display_device::WinDisplayDevice> display_device_;
     mutable std::unique_ptr<display_device::SettingsManager> settings_manager_;
     mutable std::mutex settings_mutex_;
+    std::map<std::string, DISPLAYCONFIG_SOURCE_MODE> verified_sources_;
+    std::map<std::string, DISPLAYCONFIG_RATIONAL> verified_refreshes_;
+    std::map<std::string, display_device::HdrState> verified_hdr_states_;
   };
 }  // namespace display_helper::v2

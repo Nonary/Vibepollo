@@ -21,6 +21,14 @@ namespace display_helper::v2 {
     /// may set their supplied base topology once immediately before this call;
     /// the backend must still receive the original device-preparation request.
     virtual ApplyStatus apply(const SingleDisplayConfiguration &config) = 0;
+    /// Reactivate one verified virtual target in place, without replaying the
+    /// session topology or resetting restore state. Other backends may decline.
+    virtual ApplyStatus reactivate_virtual_target(
+      const SingleDisplayConfiguration &,
+      const std::function<bool()> &
+    ) {
+      return ApplyStatus::HelperUnavailable;
+    }
     virtual bool blank_hdr_states(std::chrono::milliseconds, const std::function<bool()> &) {
       return true;
     }

@@ -138,6 +138,10 @@ namespace display_helper::v2 {
     /// Internal v1-style repair lane. The state machine sets this only on a
     /// copy after a completed full Apply; wire parsing never enables it.
     bool settings_only_repair = false;
+    /// Wire requests name the verified APPLY they intend to reactivate. Only
+    /// the state machine may set reactivation_only on its retained session copy.
+    std::optional<std::uint64_t> reactivation_of;
+    bool reactivation_only = false;
     /// The host preserved newly active physical outputs in its staging base.
     /// Clear only SettingsManager's cached transaction, never restore snapshots.
     bool refresh_settings_baseline = false;

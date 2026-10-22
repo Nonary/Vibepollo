@@ -1,6 +1,6 @@
 #include "src/platform/windows/display_helper_v2/golden_health.h"
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(SUNSHINE_TEST_PORTABLE_WINDOWS_TYPES)
 
   #include <algorithm>
   #include <utility>

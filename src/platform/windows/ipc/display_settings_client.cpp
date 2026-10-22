@@ -21,6 +21,7 @@
   #include <vector>
 
   #include <nlohmann/json.hpp>
+  #include <display_device/json.h>
 
   // local
   #include "display_settings_client.h"
@@ -129,6 +130,7 @@ namespace platf::display_helper_client {
 
       PipePtr pipe;
       const std::uint64_t generation;
+      std::atomic<std::uint64_t> configured_apply_id {0};
       std::atomic<ApplyResponseProtocol> protocol {ApplyResponseProtocol::Unknown};
       // An untagged response on an unknown or legacy helper cannot safely
       // cross a superseding command. The control path retires this session
@@ -1392,6 +1394,54 @@ namespace platf::display_helper_client {
     return current_apply_response_protocol(current_session()) == ApplyResponseProtocol::V2;
   }
 
+  bool send_owned_reactivation(const std::string &device_id, std::function<bool()> cancelled, int timeout_ms) {
+    if (device_id.empty() || !uses_v2_response_protocol()) {
+      return false;
+    }
+    const auto owner = current_session();
+    if (!owner) {
+      return false;
+    }
+    const auto owner_id = owner->configured_apply_id.load(std::memory_order_acquire);
+    const auto owner_connection = owner->generation;
+    if (owner_id == 0 || owner_connection == 0) {
+      return false;
+    }
+
+    // The helper retains its latest verified config, including adaptive
+    // refresh. The payload carries only target identity and the owner token.
+    display_device::SingleDisplayConfiguration config;
+    config.m_device_id = device_id;
+    bool serialized = false;
+    auto payload = nlohmann::json::parse(display_device::toJson(config, 0u, &serialized), nullptr, false);
+    if (!serialized || !payload.is_object()) {
+      return false;
+    }
+    payload["sunshine_reactivate_of"] = owner_id;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(timeout_ms, 0));
+    const auto remaining_timeout = [&] {
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now()
+      );
+      return remaining > std::chrono::milliseconds::zero() ? static_cast<int>(remaining.count()) : 0;
+    };
+    std::uint64_t request_id = 0;
+    std::uint64_t wait_generation = 0;
+    std::uint64_t connection_generation = 0;
+    const auto apply_timeout = remaining_timeout();
+    if (apply_timeout <= 0) {
+      return false;
+    }
+    if (!send_apply_json(payload.dump(), &request_id, &wait_generation, &connection_generation, cancelled,
+                         apply_timeout, true) || connection_generation != owner_connection) {
+      return false;
+    }
+    const auto verification_timeout = remaining_timeout();
+    return verification_timeout > 0 &&
+           wait_for_verification_result(verification_timeout, std::move(cancelled), request_id, wait_generation,
+                                        connection_generation).value_or(false);
+  }
+
   bool send_apply_json(
     const std::string &json,
     std::uint64_t *request_id_out,
@@ -1483,6 +1533,15 @@ namespace platf::display_helper_client {
       return false;
     }
     const auto protocol = current_apply_response_protocol(session);
+    const auto parsed_request = nlohmann::json::parse(json, nullptr, false);
+    const bool reactivation = parsed_request.is_object() && parsed_request.contains("sunshine_reactivate_of");
+    if (reactivation) {
+      const auto owner = parsed_request.find("sunshine_reactivate_of");
+      if (protocol != ApplyResponseProtocol::V2 || owner == parsed_request.end() || !owner->is_number_unsigned() ||
+          session->configured_apply_id.load(std::memory_order_acquire) != owner->get<std::uint64_t>()) {
+        return false;
+      }
+    }
     const int protocol_timeout_ms = protocol == ApplyResponseProtocol::Legacy ?
                                       kLegacyApplyResultTimeoutMs :
                                       kV2ApplyResultTimeoutMs;
@@ -1548,6 +1607,9 @@ namespace platf::display_helper_client {
           )) {
         if (result->success && request_id_out && result->protocol == ApplyResponseProtocol::V2) {
           *request_id_out = request_id;
+        }
+        if (result->success && result->protocol == ApplyResponseProtocol::V2 && !reactivation) {
+          session->configured_apply_id.store(request_id, std::memory_order_release);
         }
         return result->success;
       }

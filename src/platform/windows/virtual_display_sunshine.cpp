@@ -6,15 +6,20 @@
 
 #include <virtual_display/driver/control_client.h>
 #include <virtual_display/driver/windows_control_client.h>
+#include <display_device/windows/win_api_layer.h>
 
 #include <openssl/rand.h>
 
 #include "src/color_profile_policy.h"
 #include "src/config.h"
+#include "src/capture_recovery.h"
+#include "src/globals.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/platform/windows/display_helper_coordinator.h"
+#include "src/platform/windows/display_helper_reactivation.h"
 #include "src/platform/windows/misc.h"
+#include "src/platform/windows/virtual_display_recovery_policy.h"
 #include "src/process.h"
 #include "src/state_storage.h"
 #include "src/uuid.h"
@@ -150,6 +155,7 @@ namespace VDISPLAY_SUNSHINE {
   uuid_util::uuid_t persistentVirtualDisplayUuid();
   bool has_active_physical_display();
   bool should_auto_enable_virtual_display();
+  std::shared_ptr<sunshine_driver::WindowsControlTransport> control_transport_snapshot();
   bool has_retained_ensure_display();
   void cleanup_retained_ensure_display();
   ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid);
@@ -4326,7 +4332,7 @@ namespace VDISPLAY_SUNSHINE {
     // re-apply ladder out to 5.5s, so tolerate an inactive target well past that
     // before treating it as driver loss. A truly missing output is a separate,
     // much shorter condition (RECOVERY_MISSING_GRACE).
-    constexpr auto RECOVERY_INACTIVE_GRACE = std::chrono::seconds(12);
+    constexpr auto RECOVERY_INACTIVE_GRACE = VDISPLAY::policy::inactive_reactivation_budget_t::fallback_grace;
     constexpr auto RECOVERY_NO_ACTIVE_GRACE = std::chrono::seconds(10);
     // An empty libdisplaydevice result is ambiguous because it also represents a failed
     // CCD query. The monitor only enters the no-devices state after a separate successful
@@ -4370,6 +4376,9 @@ namespace VDISPLAY_SUNSHINE {
       std::optional<std::string> current_device_id;
       std::optional<std::wstring> current_monitor_device_path;
       std::optional<std::string> normalized_monitor_device_path;
+      video::capture_recovery::confirmation_t capture_confirmation;
+      std::uint64_t capture_lease_id {0};
+      std::uint64_t capture_display_id {0};
 
       explicit RecoveryMonitorState(const VirtualDisplayRecoveryParams &p):
           params(p),
@@ -4476,14 +4485,12 @@ namespace VDISPLAY_SUNSHINE {
     std::optional<bool> ccd_has_active_paths() {
       constexpr UINT flags = QDC_ONLY_ACTIVE_PATHS;
       constexpr int MAX_QUERY_ATTEMPTS = 3;
-
       for (int attempt = 0; attempt < MAX_QUERY_ATTEMPTS; ++attempt) {
         UINT32 path_count = 0;
         UINT32 mode_count = 0;
         if (GetDisplayConfigBufferSizes(flags, &path_count, &mode_count) != ERROR_SUCCESS) {
           return std::nullopt;
         }
-
         // QueryDisplayConfig requires both array pointers to be non-null even
         // when a headless topology reports zero entries.
         path_count = std::max<UINT32>(path_count, 1);
@@ -4506,8 +4513,81 @@ namespace VDISPLAY_SUNSHINE {
         }
         return path_count != 0;
       }
-
       return std::nullopt;
+    }
+
+    MonitorTargetPresence ccd_target_presence(
+      const std::optional<std::string> &expected_device_id,
+      const std::optional<std::string> &expected_monitor_path
+    ) {
+      if ((!expected_device_id || expected_device_id->empty()) &&
+          (!expected_monitor_path || expected_monitor_path->empty())) {
+        return MonitorTargetPresence::unknown;
+      }
+
+      display_device::WinApiLayer win_api;
+      const auto query = win_api.queryDisplayConfig(display_device::QueryType::All);
+      if (!query) {
+        return MonitorTargetPresence::unknown;
+      }
+
+      bool matched = false;
+      bool active = false;
+      bool available = false;
+      bool identity_unavailable = false;
+      for (const auto &path : query->m_paths) {
+        const auto device_id = win_api.getDeviceId(path);
+        const auto monitor_path = win_api.getMonitorDevicePath(path);
+        if (device_id.empty() && monitor_path.empty()) {
+          identity_unavailable = true;
+          continue;
+        }
+        const bool identity_matches =
+          (expected_device_id && !expected_device_id->empty() && !device_id.empty() &&
+           equals_ci(device_id, *expected_device_id)) ||
+          (expected_monitor_path && !expected_monitor_path->empty() && !monitor_path.empty() &&
+           normalize_display_name(monitor_path) == *expected_monitor_path);
+        if (!identity_matches) {
+          continue;
+        }
+        matched = true;
+        active = active || (path.flags & DISPLAYCONFIG_PATH_ACTIVE) != 0;
+        available = available || path.targetInfo.targetAvailable;
+      }
+
+      if (!matched) {
+        return identity_unavailable ? MonitorTargetPresence::unknown : MonitorTargetPresence::missing;
+      }
+      if (active) {
+        return MonitorTargetPresence::present_active;
+      }
+      // An exact but unavailable CCD target cannot be reactivated by the
+      // helper. Treat it like a missing target so it takes the generic
+      // recovery path instead of consuming the inactive reactivation budget.
+      return available ? MonitorTargetPresence::present_inactive : MonitorTargetPresence::missing;
+    }
+
+    MonitorTargetPresence driver_target_presence(const RecoveryMonitorState &state) {
+      const auto lease = driver_lease_tracker().get(state.guid_uuid);
+      const auto transport = control_transport_snapshot();
+      if (!lease || !transport || !transport->valid()) {
+        return MonitorTargetPresence::unknown;
+      }
+      sunshine_driver::ControlClient client {*transport};
+      const auto displays = client.query_display_state();
+      if (!displays.ok()) {
+        return MonitorTargetPresence::unknown;
+      }
+      for (std::uint32_t i = 0; i < displays.value.entry_count; ++i) {
+        const auto &entry = displays.value.entries[i];
+        if (entry.display_id == lease->display_id && entry.lease_id == lease->lease_id) {
+          const auto expected_device_id = state.current_device_id && !state.current_device_id->empty() ?
+                                            state.current_device_id :
+                                            lease->device_id;
+          return ccd_target_presence(expected_device_id, state.normalized_monitor_device_path);
+        }
+      }
+      return MonitorTargetPresence::missing;
     }
 
     MonitorTargetPresence monitor_target_presence(RecoveryMonitorState &state) {
@@ -4517,14 +4597,19 @@ namespace VDISPLAY_SUNSHINE {
         return MonitorTargetPresence::unknown;
       }
       if (devices->empty()) {
-        // libdisplaydevice collapses both query failure and a genuinely empty topology
-        // onto an empty list. Only accept a separate successful zero-active-path query as
-        // evidence of a headless topology; otherwise interrupt the recovery grace.
+        // An empty libdisplaydevice list is ambiguous between a failed device
+        // query and an empty host topology. Preserve the longer no-devices grace
+        // unless the exact tracked target is independently proven to exist.
         const auto has_active_paths = ccd_has_active_paths();
-        if (!has_active_paths || *has_active_paths) {
+        if (!has_active_paths) {
           return MonitorTargetPresence::unknown;
         }
-        return MonitorTargetPresence::no_devices;
+        const auto owned_target = driver_target_presence(state);
+        if (owned_target == MonitorTargetPresence::present_active ||
+            owned_target == MonitorTargetPresence::present_inactive) {
+          return owned_target;
+        }
+        return *has_active_paths ? MonitorTargetPresence::unknown : MonitorTargetPresence::no_devices;
       }
 
       const bool has_stable_identity =
@@ -4557,7 +4642,14 @@ namespace VDISPLAY_SUNSHINE {
         }
 
         if (strong_match) {
-          if (!device.m_display_name.empty()) {
+          const bool is_active = !device.m_display_name.empty();
+          if (is_active) {
+            state.update_identifiers(
+              platf::from_utf8(device.m_display_name),
+              device.m_device_id.empty() ? state.current_device_id : std::optional {device.m_device_id},
+              device.m_monitor_device_path.empty() ? state.current_monitor_device_path :
+                                                       std::optional {platf::from_utf8(device.m_monitor_device_path)}
+            );
             return MonitorTargetPresence::present_active;
           }
           matched_strong_inactive = true;
@@ -4612,7 +4704,71 @@ namespace VDISPLAY_SUNSHINE {
                  MonitorTargetPresence::present_inactive;
       }
 
-      return MonitorTargetPresence::missing;
+      return driver_target_presence(state);
+    }
+
+    bool reactivate_owned_virtual_display(RecoveryMonitorState &state, std::stop_token stop_token) {
+      const auto lease = driver_lease_tracker().get(state.guid_uuid);
+      if (!lease || !lease->device_id || lease->device_id->empty()) {
+        return false;
+      }
+
+      std::unique_lock<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex, std::defer_lock);
+      const auto validate_owner = [&] {
+        // A generic recovery caller may hold this lock while entering helper
+        // admission. Never wait for it while holding the helper admission lock.
+        if (!operation_lock.try_lock()) {
+          return false;
+        }
+        const auto current = driver_lease_tracker().get(state.guid_uuid);
+        const auto transport = control_transport_snapshot();
+        if (!current || current->lease_id != lease->lease_id || current->display_id != lease->display_id ||
+            !transport || !driver_transport_responsive(transport.get()) ||
+            !render_adapter_request_provenance_matches(state.guid_uuid, "live-session reactivation") ||
+            monitor_should_abort(state, stop_token)) {
+          return false;
+        }
+        sunshine_driver::ControlClient client {*transport};
+        const auto displays = client.query_display_state();
+        if (!displays.ok()) {
+          return false;
+        }
+        for (std::uint32_t i = 0; i < displays.value.entry_count; ++i) {
+          const auto &entry = displays.value.entries[i];
+          if (entry.display_id == lease->display_id && entry.lease_id == lease->lease_id) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      const bool repaired = display_helper_integration::reactivate_owned_virtual_display(
+        *lease->device_id,
+        validate_owner,
+        [&] { return monitor_should_abort(state, stop_token); }
+      );
+      if (!repaired || monitor_should_abort(state, stop_token) ||
+          monitor_target_presence(state) != MonitorTargetPresence::present_active) {
+        return false;
+      }
+
+      std::vector<std::string> outputs {*lease->device_id};
+      if (state.current_display_name) {
+        outputs.push_back(platf::to_utf8(*state.current_display_name));
+      }
+      if (state.current_monitor_device_path) {
+        outputs.push_back(platf::to_utf8(*state.current_monitor_device_path));
+      }
+      state.capture_confirmation.start(
+        video::capture_recovery::observations().watch(std::move(outputs)),
+        std::chrono::steady_clock::now()
+      );
+      state.capture_lease_id = lease->lease_id;
+      state.capture_display_id = lease->display_id;
+      mail::man->event<int>(mail::switch_display)->raise(-1);
+      // Capture reinitializes outside the operation lock. Keep this observation
+      // until a frame from the new capture instance arrives.
+      return true;
     }
 
     bool attempt_virtual_display_recovery(RecoveryMonitorState &state, std::stop_token stop_token) {
@@ -4759,6 +4915,7 @@ namespace VDISPLAY_SUNSHINE {
 
     void run_virtual_display_recovery_monitor(RecoveryMonitorState state, std::stop_token stop_token) {
       unsigned int attempts = 0;
+      VDISPLAY::policy::inactive_reactivation_budget_t reactivation_budget;
       unsigned int backoff_cycles = 0;
       constexpr unsigned int MAX_RECOVERY_BACKOFF_CYCLES = 5;
       bool observed_active = state.confirmed_active_at_schedule;
@@ -4816,6 +4973,37 @@ namespace VDISPLAY_SUNSHINE {
         }
 
         if (presence == MonitorTargetPresence::present_active) {
+          if (state.capture_confirmation.pending()) {
+            active_since.reset();
+            std::unique_lock<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex, std::try_to_lock);
+            if (operation_lock.owns_lock()) {
+              const auto lease = driver_lease_tracker().get(state.guid_uuid);
+              if (!lease || lease->lease_id != state.capture_lease_id || lease->display_id != state.capture_display_id ||
+                  !render_adapter_request_provenance_matches(state.guid_uuid, "capture reactivation confirmation") ||
+                  monitor_should_abort(state, stop_token)) {
+                return;
+              }
+              switch (state.capture_confirmation.poll(now)) {
+                case video::capture_recovery::confirmation_status::confirmed:
+                  BOOST_LOG(info) << "Reactivated owned virtual display in place and observed a fresh frame for "
+                                  << state.describe_target();
+                  break;
+                case video::capture_recovery::confirmation_status::retry:
+                  mail::man->event<int>(mail::switch_display)->raise(-1);
+                  break;
+                case video::capture_recovery::confirmation_status::stalled:
+                  BOOST_LOG(error) << "Owned monitor is active, but capture has not resumed after three initialization attempts for "
+                                   << state.describe_target();
+                  break;
+                case video::capture_recovery::confirmation_status::waiting:
+                  break;
+              }
+            }
+            if (wait_for_monitor_stop(stop_token, RECOVERY_CHECK_INTERVAL)) {
+              return;
+            }
+            continue;
+          }
           observed_active = true;
           backoff_cycles = 0;
           missing_since.reset();
@@ -4825,6 +5013,7 @@ namespace VDISPLAY_SUNSHINE {
             active_since = now;
           } else if (now - *active_since >= RECOVERY_STABLE_REQUIREMENT) {
             attempts = 0;
+            reactivation_budget.reset();
           }
           if (wait_for_monitor_stop(stop_token, RECOVERY_CHECK_INTERVAL)) {
             return;
@@ -4833,6 +5022,7 @@ namespace VDISPLAY_SUNSHINE {
         }
 
         active_since.reset();
+        state.capture_confirmation.reset();
 
       // A newly created target may be enumerated before the helper activates it.
         // Keep the monitor dormant until this exact target has been observed active;
@@ -4895,6 +5085,17 @@ namespace VDISPLAY_SUNSHINE {
         }
 
         const auto issue_for = now - **issue_since;
+        if (presence == MonitorTargetPresence::present_inactive &&
+            reactivation_budget.consume_if_due(issue_for)) {
+          if (reactivate_owned_virtual_display(state, stop_token)) {
+            inactive_since.reset();
+            recovery_cooldown_until = std::chrono::steady_clock::now() + RECOVERY_POST_SUCCESS_GRACE;
+          }
+          if (wait_for_monitor_stop(stop_token, VDISPLAY::policy::inactive_reactivation_budget_t::attempt_interval)) {
+            return;
+          }
+          continue;
+        }
         if (issue_for < required_grace) {
           if (wait_for_monitor_stop(stop_token, RECOVERY_CHECK_INTERVAL)) {
             return;

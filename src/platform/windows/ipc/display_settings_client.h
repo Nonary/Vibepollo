@@ -71,6 +71,14 @@ namespace platf::display_helper_client {
   // unknown/legacy connection must use dispatch-only snapshot semantics.
   bool uses_v2_response_protocol();
 
+  // Reactivate the currently verified session's exact target without sending
+  // its full topology or reset state. Requires an acknowledged v2 session.
+  bool send_owned_reactivation(
+    const std::string &device_id,
+    std::function<bool()> cancelled,
+    int timeout_ms = 2500
+  );
+
   // Change only one display's refresh rate. This does not alter session snapshots,
   // topology, resolution, HDR, or the helper's restore state.
   bool send_refresh_rate(const std::string &device_id, std::uint32_t numerator, std::uint32_t denominator);

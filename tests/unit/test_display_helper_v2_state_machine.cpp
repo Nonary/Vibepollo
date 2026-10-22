@@ -2,7 +2,7 @@
  * @file tests/unit/test_display_helper_v2_state_machine.cpp
  * @brief Unit tests for display helper v2 state machine and operations.
  */
-#ifdef _WIN32
+#if defined(_WIN32) || defined(SUNSHINE_TEST_PORTABLE_WINDOWS_TYPES)
 
   #include "../tests_common.h"
   #include "src/platform/windows/display_helper_v2/async_dispatcher.h"
@@ -5309,4 +5309,126 @@ TEST(DisplayHelperV2StateMachine, InconsistentPhysicalCapturePreservesCurrentAnd
   EXPECT_EQ(h.storage.load(display_helper::v2::SnapshotTier::Previous)->m_topology, previous.m_topology);
 }
 
-#endif  // _WIN32
+namespace {
+  void verify_virtual_session(StateMachineHarness &harness, std::uint64_t id = 41) {
+    display_helper::v2::ApplyRequest request;
+    request.configuration = display_device::SingleDisplayConfiguration {};
+    request.configuration->m_device_id = "virtual1";
+    request.configuration->m_resolution = display_device::Resolution {1920, 1280};
+    request.configuration->m_refresh_rate = display_device::Rational {1'000'000, 1000};
+    request.virtual_layout = "extended";
+    request.request_id = id;
+    harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+      request,
+      harness.cancellation.current_generation(),
+      7,
+    });
+    display_helper::v2::ApplyOutcome outcome;
+    outcome.status = display_helper::v2::ApplyStatus::Ok;
+    harness.dispatcher.apply_completion(outcome);
+    harness.drain_messages();
+    harness.dispatcher.verification_completion(true);
+    harness.drain_messages();
+    ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  }
+
+  display_helper::v2::ApplyCommand repair_command(StateMachineHarness &harness, std::uint64_t owner = 41) {
+    display_helper::v2::ApplyRequest request;
+    request.configuration = display_device::SingleDisplayConfiguration {};
+    request.configuration->m_device_id = "virtual1";
+    request.reactivation_of = owner;
+    request.request_id = 99;
+    return {request, harness.cancellation.current_generation(), 7};
+  }
+}  // namespace
+
+TEST(DisplayHelperV2Reactivation, ReusesVerifiedSessionWithoutReplayingStartupOrRestoreState) {
+  StateMachineHarness harness;
+  verify_virtual_session(harness);
+  const int tasks = harness.task_manager.created;
+  const int resets = harness.dispatcher.reset_dispatch_count;
+  const int verifications = harness.dispatcher.verification_dispatch_count;
+  harness.state_machine.handle_message(repair_command(harness));
+  EXPECT_TRUE(harness.dispatcher.apply_request.reactivation_only);
+  EXPECT_FALSE(harness.dispatcher.apply_reset_virtual_display);
+  ASSERT_TRUE(harness.dispatcher.apply_request.configuration->m_refresh_rate);
+  EXPECT_EQ(
+    std::get<display_device::Rational>(*harness.dispatcher.apply_request.configuration->m_refresh_rate),
+    (display_device::Rational {1'000'000, 1000})
+  );
+  display_helper::v2::ApplyOutcome outcome;
+  outcome.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(outcome);
+  harness.drain_messages();
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_TRUE(harness.state_machine.recovery_armed());
+  EXPECT_EQ(harness.task_manager.created, tasks);
+  EXPECT_EQ(harness.dispatcher.reset_dispatch_count, resets);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verifications);
+  // The original session APPLY remains the owner after any number of repairs.
+  harness.state_machine.handle_message(repair_command(harness));
+  EXPECT_TRUE(harness.dispatcher.apply_request.reactivation_only);
+  EXPECT_EQ(harness.dispatcher.apply_request.request_id, 41u);
+}
+
+TEST(DisplayHelperV2Reactivation, RejectsWrongOwnerTargetConnectionAndConcurrentMutation) {
+  StateMachineHarness harness;
+  verify_virtual_session(harness);
+  const int initial = harness.dispatcher.apply_dispatch_count;
+  harness.state_machine.handle_message(repair_command(harness, 40));
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, initial);
+  auto wrong_target = repair_command(harness);
+  wrong_target.request.configuration->m_device_id = "other-client";
+  harness.state_machine.handle_message(wrong_target);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, initial);
+  auto retired = repair_command(harness);
+  retired.connection_epoch = 6;
+  harness.state_machine.handle_message(retired);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, initial);
+  harness.state_machine.handle_message(repair_command(harness));
+  harness.state_machine.handle_message(repair_command(harness));
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, initial + 1);
+}
+
+TEST(DisplayHelperV2Reactivation, UsesLatestConfirmedFractionalRefresh) {
+  StateMachineHarness harness;
+  verify_virtual_session(harness);
+  display_helper::v2::RefreshRateCommand refresh {
+    "virtual1",
+    479'520,
+    1000,
+    harness.cancellation.current_generation(),
+    7,
+    77,
+  };
+  harness.state_machine.handle_message(refresh);
+  ASSERT_TRUE(harness.dispatcher.refresh_completion);
+  harness.dispatcher.refresh_completion(true);
+  harness.drain_messages();
+  harness.state_machine.handle_message(repair_command(harness));
+  ASSERT_TRUE(harness.dispatcher.apply_request.configuration->m_refresh_rate);
+  EXPECT_EQ(
+    std::get<display_device::Rational>(*harness.dispatcher.apply_request.configuration->m_refresh_rate),
+    (display_device::Rational {479'520, 1000})
+  );
+}
+
+TEST(DisplayHelperV2Reactivation, TeardownWaitsForRepairAndRejectsLateCompletion) {
+  StateMachineHarness harness;
+  harness.seed_current_snapshot();
+  verify_virtual_session(harness);
+  harness.state_machine.handle_message(repair_command(harness));
+  const auto generation = harness.cancellation.current_generation();
+  harness.state_machine.handle_message(display_helper::v2::RevertCommand {generation, 7});
+  display_helper::v2::ApplyOutcome outcome;
+  outcome.status = display_helper::v2::ApplyStatus::Ok;
+  outcome.display_may_have_changed = true;
+  harness.dispatcher.apply_completion(outcome);
+  harness.drain_messages();
+  EXPECT_NE(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  const int applies = harness.dispatcher.apply_dispatch_count;
+  harness.state_machine.handle_message(repair_command(harness));
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, applies);
+}
+
+#endif  // _WIN32 || SUNSHINE_TEST_PORTABLE_WINDOWS_TYPES

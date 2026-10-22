@@ -547,6 +547,9 @@ namespace display_helper::v2 {
     // replacement stale. This prevents both obsolete capture-ready replies
     // and an ownerless InProgress state.
     std::optional<ApplyCompleted> deferred_apply_completion_;
+    // A reactivation has its own IPC reply token but retains the verified
+    // session APPLY and must not finish that transaction a second time.
+    std::optional<ApplyCommand> active_reactivation_;
     bool unconfirmed_cancelled_mutation_ = false;
     bool staged_state_reset_pending_ = false;
     // Recovery normally exits the helper after a confirmed restore. If RESET

@@ -371,6 +371,10 @@ namespace {
             j["sunshine_omit_final_initial_hdr_reapply"].get<bool>();
           j.erase("sunshine_omit_final_initial_hdr_reapply");
         }
+        if (j.contains("sunshine_reactivate_of")) {
+          out_request.reactivation_of = j.at("sunshine_reactivate_of").get<std::uint64_t>();
+          j.erase("sunshine_reactivate_of");
+        }
         if (j.contains("sunshine_apply_budget_ms")) {
           const auto ms = j["sunshine_apply_budget_ms"].get<std::int64_t>();
           out_request.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::clamp<std::int64_t>(ms, 0, 15000));

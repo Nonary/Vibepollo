@@ -372,6 +372,20 @@ namespace display_helper::v2 {
       }
     }
 
+    if (request.reactivation_only) {
+      // The verified live transaction already owns the durable restore lease.
+      // Do not snapshot, reset SettingsManager, toggle unrelated HDR, or replay
+      // the original physical topology and position overrides in this lane.
+      outcome.display_may_have_changed = true;
+      outcome.status = display_.reactivate_virtual_target(*request.configuration, [&] {
+        return token.is_cancelled() || clock_.now() >= request.deadline;
+      });
+      if (token.is_cancelled() || clock_.now() >= request.deadline) {
+        outcome.status = ApplyStatus::Fatal;
+      }
+      return outcome;
+    }
+
     if (request.settings_only_repair) {
       // Match v1's best_effort_apply_last_cfg(): the full transaction already
       // established topology, recovery ownership, and target scope. A repair
