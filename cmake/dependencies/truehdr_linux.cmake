@@ -21,7 +21,8 @@ if(SUNSHINE_ENABLE_NV_TRUEHDR AND CUDA_FOUND AND CMAKE_SYSTEM_NAME STREQUAL "Lin
         endif()
     endforeach()
     add_library(linux-truehdr STATIC "${CMAKE_SOURCE_DIR}/src/platform/linux/truehdr.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/linux/truehdr_gl.cpp")
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/truehdr_gl.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/truehdr_peak.cu")
     target_compile_features(linux-truehdr PUBLIC cxx_std_20)
     target_link_libraries(linux-truehdr PRIVATE glad ${CMAKE_DL_LIBS})
     list(APPEND PLATFORM_LIBRARIES linux-truehdr)

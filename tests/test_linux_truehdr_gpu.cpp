@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <glad/egl.h>
 #include <iostream>
 #include <stdexcept>
@@ -12,6 +13,23 @@ static void require(bool value, const char *message) {
   if (!value) {
     throw std::runtime_error(message);
   }
+}
+
+static double nits(unsigned code) {
+  const double p = std::pow(code / 1023.0, 32.0 / 2523.0);
+  return 10000 * std::pow(std::max(p - 3424.0 / 4096, 0.0) / (2413.0 / 128 - 2392.0 / 128 * p), 16384.0 / 2610);
+}
+
+static unsigned corrected_code(unsigned code, int peak, int gray) {
+  double value = nits(code);
+  const double gain = peak / 1000.0;
+  if (gray < 10 * gain) {
+    value = value <= 10 ? value * gray / 10 : gray + (value - 10) * (peak - gray) / 990;
+  } else {
+    value *= gain;
+  }
+  const double x = std::pow(std::clamp(value / 10000, 0.0, 1.0), 2610.0 / 16384);
+  return std::lround(1023 * std::pow((3424.0 / 4096 + 2413.0 / 128 * x) / (1 + 2392.0 / 128 * x), 2523.0 / 32));
 }
 
 static void cu(CUresult status) {
@@ -84,6 +102,10 @@ int main(int argc, char **argv) {
         p[1] = y * 255 / (height - 1);
         p[2] = 64;
         p[3] = 255;
+        if (y >= height - 16) {
+          const unsigned char value = x < 16 ? 128 : x < 32 ? 0 : 255;
+          p[0] = p[1] = p[2] = value;
+        }
       }
     }
     GLuint source = 0, lut = 0, framebuffer = 0;
@@ -161,10 +183,22 @@ int main(int argc, char **argv) {
         input.WidthInBytes = width * 4;
         input.Height = height;
         cu(cuda->cuMemcpy2DAsync(&input, stream));
-        reference.run(settings);
+        auto native = settings;
+        if (settings.peak > 1000) {
+          native.peak = 1000;
+          native.middle_gray = std::clamp(int(std::lround(settings.middle_gray * 1000.0 / settings.peak)), 10, 100);
+        }
+        reference.run(native);
         cu(cuda->cuMemcpy2DAsync(&copy, stream));
         cu(cuda->cuStreamSynchronize(stream));
         for (std::size_t i = 0; i < expected.size(); ++i) {
+          if (settings.peak > 1000) {
+            unsigned mapped = expected[i] & 0xc0000000u;
+            for (unsigned shift : {0u, 10u, 20u}) {
+              mapped |= corrected_code((expected[i] >> shift) & 1023u, settings.peak, settings.middle_gray) << shift;
+            }
+            expected[i] = mapped;
+          }
           if ((actual[i] & 0x3fffffff) != (expected[i] & 0x3fffffff)) {
             std::cerr << "settings " << settings.contrast << ',' << settings.saturation << ',' << settings.middle_gray << ',' << settings.peak
                       << " pixel " << i << " actual " << actual[i] << " expected " << expected[i] << '\n';
@@ -173,11 +207,39 @@ int main(int argc, char **argv) {
         }
       };
       compare_native(original, {});
-      for (auto settings : {settings_t {150, 100, 50, 1000}, settings_t {100, 150, 50, 1000}, settings_t {100, 100, 80, 1000}, settings_t {100, 100, 50, 1600}}) {
-        const auto changed = read(true, 0, settings);
+      for (auto settings : {settings_t {150, 100, 50, 1000}, settings_t {100, 150, 50, 1000}, settings_t {100, 100, 80, 1000}, settings_t {100, 100, 50, 1200}, settings_t {100, 100, 50, 1600}, settings_t {100, 100, 50, 2000}, settings_t {100, 100, 10, 2000}}) {
+        auto baseline_settings = settings;
+        baseline_settings.peak = 1000;
+        // Let native exposure settle while keeping identical reference history.
+        std::vector<std::uint32_t> baseline, changed;
+        for (int frame = 0; frame < 12; ++frame) {
+          baseline = read(true, 0, baseline_settings);
+          compare_native(baseline, baseline_settings);
+        }
+        for (int frame = 0; frame < 12; ++frame) {
+          changed = read(true, 0, settings);
+          compare_native(changed, settings);
+        }
         require(changed != original, "Live tuning did not change HDR pixels");
-        compare_native(changed, settings);
+        if (settings.peak > 1000) {
+          const auto luminance = [&](unsigned x) { return nits(changed[(height - 8) * width + x] & 1023u); };
+          std::cout << "peak " << settings.peak << " gray " << settings.middle_gray << ": highlight " << luminance(width - 8) << " gray " << luminance(8) << " nits\n";
+          require(std::abs(luminance(width - 8) / settings.peak - 1) < 0.04, "Peak failed to reach requested luminance");
+          const double baseline_gray = nits(baseline[(height - 8) * width + 8] & 1023u);
+          std::cout << "baseline gray " << baseline_gray << " nits\n";
+          if (settings.middle_gray >= settings.peak / 100.0) {
+            require(std::abs(luminance(8) / baseline_gray - 1) < 0.12, "Peak correction brightened middle gray");
+          } else {
+            // Native scene-dependent gray need not equal the slider's anchor.
+            // The floor correction must avoid the uniform-gain doubling.
+            require(luminance(8) < baseline_gray * settings.peak / 1000.0 * 0.9, "Gray floor used uniform peak gain");
+          }
+          require(luminance(24) < 0.01, "Peak correction raised black");
+        }
       }
+      const settings_t high {100, 100, 50, 2000};
+      compare_native(read(true, 0, high), high);
+      compare_native(read(true, 0, high), high);
       // Compare the same native frame history when restoring live values.
       compare_native(read(true, 0, {}), {});
       require(read(false, 0, {}) != original, "Disabling RTX HDR did not select the SDR fallback");

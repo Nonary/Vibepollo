@@ -36,6 +36,16 @@ their existing units. Live edits use the same authenticated, UUID-scoped API
 as Windows. Peak changes update the HDR metadata and request an IDR after the
 existing slider-settling interval.
 
+The pinned Linux SDK accepts peak values through 2000 but its packed output
+saturates around 1000 nits. Above 1000, the adapter runs NVIDIA's native effect
+at 1000 with a compensated middle gray, then uses a cached 1024-entry PQ lookup
+on the same CUDA stream to restore the selected linear-light peak. At the SDK's
+minimum gray of 10, the correction anchors the requested gray and expands the
+remaining highlight range instead of brightening the entire image. Settings at
+or below 1000 and the SDR fallback bypass this pass. This covers both NVENC
+paths and PyroWave; metadata alone cannot correct the pixel values. See the
+[peak investigation](rtx-hdr-peak-investigation.md) for measurements and limits.
+
 On KDE, a bounded read-only helper observes the selected desktop's foreground
 window. Steam identity, Lutris catalog ownership, or a custom command's
 executable identifies the application. Desktop, unrelated windows, unknown or
@@ -56,7 +66,8 @@ foreground operation. Restarting the host interrupts active streams.
 
 `linux_truehdr_gpu` and `linux_truehdr_private_context_gpu` exercise actual
 GL/CUDA conversion against the direct native SDK with identical input and
-settings, live tuning, fallback, invalid updates and teardown under both
+settings (with an independent CPU peak correction above 1000), measured highlight
+and gray luminance, live tuning, fallback, invalid updates and teardown under both
 primary and private CUDA contexts. `pyrowave_linux_truehdr_gpu` encodes and
 decodes both chroma modes and ranges,
 compares the converted color against an independent native SDK invocation,

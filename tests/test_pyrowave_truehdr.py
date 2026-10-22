@@ -1,6 +1,7 @@
 """Compare PyroWave GPU encode/decode with a separate native SDK process."""
 import ctypes
 import os
+import math
 from pathlib import Path
 import struct
 import subprocess
@@ -38,10 +39,19 @@ def main():
                     rgb = [round(c + v * 127 / 255) for c, v in zip([64, 0, 32], rgb)]
                 rgba.extend(bytes([*rgb, 255]) * 128)
             for peak in (1000, 1400):
-                with TrueHDR(Path(runtime), 128, 128, peak=peak) as effect:
+                gain = peak / 1000
+                with TrueHDR(Path(runtime), 128, 128, peak=min(peak, 1000),
+                             middle_gray=round(50 / gain)) as effect:
                     output = effect.convert(bytes(rgba))
                 pixel = struct.unpack_from("<I", output, (96 * 128 + 64) * 4)[0]
-                values.extend(255 * ((pixel >> shift) & 1023) / 1023 for shift in (0, 10, 20))
+                for shift in (0, 10, 20):
+                    code = (pixel >> shift) & 1023
+                    if peak > 1000:
+                        p = (code / 1023) ** (32 / 2523)
+                        linear = (max(p - 3424 / 4096, 0) / (2413 / 128 - 2392 / 128 * p)) ** (16384 / 2610)
+                        x = (linear * gain) ** (2610 / 16384)
+                        code = math.floor(1023 * ((3424 / 4096 + 2413 / 128 * x) / (1 + 2392 / 128 * x)) ** (2523 / 32) + 0.5)
+                    values.append(255 * code / 1023)
         reference.write_text(" ".join(map(str, values)))
         env = dict(os.environ, PYROWAVE_TEST_TRUEHDR_RUNTIME=runtime,
                    PYROWAVE_TEST_TRUEHDR_REFERENCE=str(reference))

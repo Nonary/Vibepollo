@@ -1,4 +1,5 @@
 #include "truehdr.h"
+#include "truehdr_peak.h"
 
 #include <algorithm>
 #include <dlfcn.h>
@@ -127,6 +128,7 @@ namespace platf::linux_truehdr {
     api_t &functions;
     void *stream, *effect = nullptr;
     image_t src {}, dst {};
+    void *peak_table = nullptr;
     std::optional<settings_t> applied;
 
     impl_t(const std::filesystem::path &root, void *stream):
@@ -135,6 +137,9 @@ namespace platf::linux_truehdr {
 
     ~impl_t() {
       functions.synchronize(stream);
+      if (peak_table) {
+        destroy_peak_lut(peak_table);
+      }
       if (effect) {
         functions.destroy(effect);
       }
@@ -153,10 +158,20 @@ namespace platf::linux_truehdr {
       if (applied == value) {
         return;
       }
+      const auto native = native_settings(value);
+      if (value.peak > 1000) {
+        if (!peak_table && create_peak_lut(&peak_table)) {
+          throw std::runtime_error("RTX HDR: cannot allocate peak correction table");
+        }
+        const auto table = peak_lut(value);
+        if (upload_peak_lut(peak_table, table.data())) {
+          throw std::runtime_error("RTX HDR: cannot upload peak correction table");
+        }
+      }
       functions.check("Contrast", functions.set_u32(effect, "Contrast", value.contrast));
       functions.check("Saturation", functions.set_u32(effect, "Saturation", value.saturation));
-      functions.check("MiddleGray", functions.set_u32(effect, "MiddleGray", value.middle_gray));
-      functions.check("Luminance", functions.set_u32(effect, "Luminance", value.peak));
+      functions.check("MiddleGray", functions.set_u32(effect, "MiddleGray", native.middle_gray));
+      functions.check("Luminance", functions.set_u32(effect, "Luminance", native.peak));
       applied = value;
     }
   };
@@ -186,6 +201,9 @@ namespace platf::linux_truehdr {
     }
     impl->settings(settings);
     impl->functions.check("run TrueHDR", impl->functions.run(impl->effect, 1));
+    if (settings.peak > 1000 && apply_peak_lut(impl->dst.pixels, impl->dst.pitch, impl->dst.width, impl->dst.height, impl->peak_table, impl->stream)) {
+      throw std::runtime_error("RTX HDR: peak correction failed");
+    }
   }
 
   std::uint64_t effect_t::input() const {
