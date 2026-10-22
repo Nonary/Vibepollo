@@ -1005,6 +1005,16 @@ jobs:
             throw "Unsigned MSI VHF layout is not exact: $($actual -join ', ')"
           }
 
+      - name: Test packaged MSI version and validation safety
+        # Run even when PR builds disable the application suite. This reads the
+        # actual MSI and evaluates its launch condition; it never installs it.
+        shell: pwsh
+        env:
+          MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
+        run: |
+          python packaging/windows/wix/tests/test_pr_validation_contract.py --msi "unsigned-signpath-msi/$env:MSI_NAME" --version "$env:BUILD_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged MSI version/validation contract failed.' }
+
       - name: Upload unsigned MSI for SignPath
         id: upload-unsigned-msi
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -1916,6 +1926,8 @@ jobs:
           name: release-provenance
           path: artifacts/release-provenance.json
           if-no-files-found: error
+          # Keep published release recovery at 90 days; validation honors its caller.
+          retention-days: ${{ inputs.release_tag != '' && 90 || inputs.release_artifact_retention_days }}
           overwrite: true
 
       - name: Upload Artifacts
@@ -1924,6 +1936,8 @@ jobs:
           name: build-Windows
           path: artifacts/
           if-no-files-found: error
+          # Keep published release recovery at 90 days; validation honors its caller.
+          retention-days: ${{ inputs.release_tag != '' && 90 || inputs.release_artifact_retention_days }}
           overwrite: true
 
       - name: Publish private symbols release

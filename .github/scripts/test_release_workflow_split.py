@@ -124,7 +124,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn("build-archlinux", jobs)
         self.assertIn("awaiting-signing", jobs)
         self.assertIn("build-archlinux", awaiting_signing["needs"])
-        self.assertIn("should_release", build_inputs["build_only"])
+        self.assertEqual(build_inputs["build_only"], "true")
         for job in ("build-windows", "build-archlinux"):
             self.assertEqual(
                 jobs[job]["with"]["build_tests"],
@@ -151,6 +151,67 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertNotIn("Linux branch candidate:", workflow_text)
         self.assertIn("should_release=\"false\"", workflow_text)
         self.assertNotIn("def canonical_release_tag", workflow_text)
+
+    def test_ci_stops_before_consumer_setup_for_validation_and_tag_builds(self) -> None:
+        caller = load_workflow("ci.yml")["jobs"]["build-windows"]["with"]
+        windows = load_workflow("ci-windows.yml")["jobs"]
+        self.assertEqual(caller["build_only"], "true")
+
+        def evaluate(condition, values):
+            expression = condition.removeprefix("${{").removesuffix("}}")
+            for key, value in values.items():
+                expression = expression.replace(key, repr(value))
+            expression = expression.replace("always()", "True").replace("!cancelled()", "True")
+            expression = re.sub(r"\btrue\b", "True", expression)
+            expression = re.sub(r"\bfalse\b", "False", expression)
+            expression = expression.replace("&&", "and").replace("||", "or")
+            return eval(" ".join(expression.split()), {"__builtins__": {}})
+
+        # Evaluate the actual reusable job graph. CI (PR or tag) stops after
+        # building the MSI; the independent signing/daily callers still finalize.
+        for build_only, expected in ((True, False), (False, True)):
+            values = {"inputs.build_only": build_only, "needs.release_artifacts.result": "success"}
+            for name in ("sign_windows_msi", "package_windows", "sign_windows_installer", "finalize_windows"):
+                with self.subTest(build_only=build_only, job=name):
+                    selected = evaluate(windows[name]["if"], values)
+                    self.assertEqual(selected, expected)
+                    values[f"needs.{name}.result"] = "success" if selected else "skipped"
+
+        steps = windows["build_windows"]["steps"]
+        names = [step.get("name", "") for step in steps]
+        gate = next(step for step in steps if step.get("name") == "Test packaged MSI version and validation safety")
+        self.assertNotIn("if", gate)
+        self.assertGreater(names.index(gate["name"]), names.index("Package Windows MSI"))
+        self.assertLess(names.index(gate["name"]), names.index("Upload unsigned MSI for SignPath"))
+
+    def test_final_windows_retention_honors_validation_without_shortening_releases(self) -> None:
+        windows = load_workflow("ci-windows.yml")
+        uploads = [step for step in windows["jobs"]["finalize_windows"]["steps"]
+                   if step.get("uses", "").startswith("actions/upload-artifact@")]
+        self.assertEqual({step["with"]["name"] for step in uploads}, {"release-provenance", "build-Windows"})
+        default_days = int(windows["on"]["workflow_call"]["inputs"]["release_artifact_retention_days"]["default"])
+        caller = load_workflow("ci.yml")["jobs"]["build-windows"]["with"]["release_artifact_retention_days"]
+        for release, tag, expected_days in (("false", "", 1), ("true", "2.0.2", 90)):
+            expression = caller.removeprefix("${{").removesuffix("}}")
+            expression = expression.replace("needs.release-candidate.outputs.should_release", repr(release))
+            days = eval(expression.replace("&&", "and").replace("||", "or").strip(), {"__builtins__": {}})
+            for upload in uploads:
+                with self.subTest(release=release, artifact=upload["with"]["name"]):
+                    expression = upload["with"]["retention-days"].removeprefix("${{").removesuffix("}}")
+                    expression = expression.replace("inputs.release_tag", repr(tag))
+                    expression = expression.replace("inputs.release_artifact_retention_days", str(days))
+                    actual = eval(expression.replace("&&", "and").replace("||", "or").strip(), {"__builtins__": {}})
+                    self.assertEqual(actual, expected_days)
+        cases = (("", default_days, 1), ("", 14, 14),
+                 ("2.0.2-nightly.d20261022.aaaaaaaaaaaa", 7, 90), ("2.0.2", default_days, 90))
+        for tag, days, expected in cases:
+            for upload in uploads:
+                with self.subTest(tag=tag, days=days, artifact=upload["with"]["name"]):
+                    expression = upload["with"]["retention-days"].removeprefix("${{").removesuffix("}}")
+                    expression = expression.replace("inputs.release_tag", repr(tag))
+                    expression = expression.replace("inputs.release_artifact_retention_days", str(days))
+                    actual = eval(expression.replace("&&", "and").replace("||", "or").strip(), {"__builtins__": {}})
+                    self.assertEqual(actual, expected)
 
     def test_installer_regressions_run_after_wix_for_all_test_builds(self) -> None:
         steps = load_workflow("ci-windows.yml")["jobs"]["build_windows"]["steps"]
