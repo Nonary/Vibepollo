@@ -88,7 +88,7 @@ namespace platf::frame_push::policy {
       case Selection::BuildDisabled:
         return "frame-push support is disabled in this build";
       case Selection::WrongDisplay:
-        return "the selected output is not a Sunshine virtual display";
+        return "the selected output is not a Vibepollo virtual display";
       case Selection::DriverUnsupported:
         return "the installed driver does not advertise the required frame ring";
       case Selection::HostBackendUnavailable:
