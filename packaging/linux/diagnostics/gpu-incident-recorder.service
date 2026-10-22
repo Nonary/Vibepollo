@@ -1,0 +1,21 @@
+[Unit]
+Description=Capture first GPU fault and blocked thread evidence
+# Start before ordinary services, so reverse ordering keeps the recorder alive
+# throughout their shutdown. Stop before journald and writable log mounts.
+DefaultDependencies=no
+RequiresMountsFor=/var/log/gpu-incidents
+After=local-fs.target systemd-journald.service gpu-diagnostics-setup.service
+Before=basic.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/gpu-incident-recorder watch
+Restart=on-failure
+RestartSec=15
+UMask=0077
+Nice=10
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target
