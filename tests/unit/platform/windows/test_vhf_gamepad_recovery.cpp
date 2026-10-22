@@ -2,19 +2,24 @@
  * @file tests/unit/platform/windows/test_vhf_gamepad_recovery.cpp
  * @brief Exercise the production recovery transaction with a fake driver transport.
  */
-#include <src/platform/windows/vhf_gamepad_recovery.h>
-
 #include <array>
 #include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <shared_mutex>
+#include <src/platform/windows/vhf_gamepad_recovery.h>
 #include <thread>
 #include <utility>
 #include <vector>
 
 // Independent of GoogleTest and the Windows SDK, including in release builds.
-#define CHECK(condition) do { if (!(condition)) { std::cerr << "Failed at line " << __LINE__ << '\n'; std::abort(); } } while (false)
+#define CHECK(condition) \
+  do { \
+    if (!(condition)) { \
+      std::cerr << "Failed at line " << __LINE__ << '\n'; \
+      std::abort(); \
+    } \
+  } while (false)
 
 namespace {
   using recovery_t = platf::vhf_gamepad::connection_recovery_t;
@@ -26,6 +31,7 @@ namespace {
     int owner;
     int contacts;
     bool cached_feedback;
+    std::optional<unsigned> last_input {};
   };
 
   struct client_t {
@@ -42,11 +48,17 @@ namespace {
       live.clear();
       ++closes;
     }
+
     unsigned connect() {
       ++connections;
       connected = connect_error == 0;
       return connect_error;
     }
+
+    unsigned submit_input_state(unsigned) {
+      return 0;
+    }
+
     unsigned create_controller(unsigned nr, int profile) {
       CHECK(connected);
       if (static_cast<int>(nr) == fail_slot) {
@@ -81,7 +93,7 @@ namespace {
     CHECK((client.live == std::vector<std::pair<unsigned, int>> {{0, 5}, {2, 9}}));
     CHECK(pads[0].owner == 101 && pads[2].owner == 303);
     CHECK(pads[0].contacts == 0 && !pads[2].cached_feedback);
-    CHECK(pads[1].contacts == 2 && pads[1].cached_feedback); // Another backend's slot is untouched.
+    CHECK(pads[1].contacts == 2 && pads[1].cached_feedback);  // Another backend's slot is untouched.
   }
 
   void rolls_back_partial_recreation_and_throttles_retries() {
@@ -94,11 +106,11 @@ namespace {
     CHECK(recovery.attempt(client, pads, now, reset_transient) == 50u);
     CHECK(recovery.pending() && !client.connected && client.live.empty());
     CHECK(client.connections == 1 && client.closes == 2);
-    recovery.request(); // Repeated removed errors must not defeat the retry delay.
+    recovery.request();  // Repeated removed errors must not defeat the retry delay.
     CHECK(!recovery.attempt(client, pads, now + 999ms, reset_transient));
     CHECK(client.connections == 1);
     client.fail_slot = -1;
-    pads[2].active = false; // Freed while recovery was pending: never resurrect it.
+    pads[2].active = false;  // Freed while recovery was pending: never resurrect it.
     CHECK(recovery.attempt(client, pads, now + 1s, reset_transient) == 0u);
     CHECK((client.live == std::vector<std::pair<unsigned, int>> {{0, 5}}));
   }
@@ -112,10 +124,10 @@ namespace {
     recovery.request();
     CHECK(recovery.attempt(client, pads, now, reset_transient) == 1168u);
     CHECK(recovery.pending() && client.created.empty() && !client.connected);
-    recovery.reset(); // Last owner freed under exclusive lifetime lock.
+    recovery.reset();  // Last owner freed under exclusive lifetime lock.
     CHECK(!recovery.attempt(client, pads, now + 2s, reset_transient));
     client.connect_error = 0;
-    recovery.request(); // New ownership epoch is not throttled by the old attempt.
+    recovery.request();  // New ownership epoch is not throttled by the old attempt.
     CHECK(recovery.attempt(client, pads, now, reset_transient) == 0u);
   }
 
@@ -128,7 +140,7 @@ namespace {
     for (int i = 0; i < 16; ++i) {
       reporters.emplace_back([&] {
         std::shared_lock lock {lifetime};
-        recovery.request(); // Same shared-lock contract as input/motion/battery/feedback.
+        recovery.request();  // Same shared-lock contract as input/motion/battery/feedback.
       });
     }
     for (auto &thread : reporters) {
@@ -146,7 +158,7 @@ namespace {
     CHECK((client.live == std::vector<std::pair<unsigned, int>> {{2, 9}}));
     CHECK(!recovery.pending());
   }
-}
+}  // namespace
 
 int main() {
   restores_exact_owners_and_profiles();

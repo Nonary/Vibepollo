@@ -71,6 +71,8 @@ namespace platf {
       bool active {};
       std::uint16_t client_relative_index {};
       lvg::profile profile {};
+      // Guarded by lifetime exclusively, including updates while recovery is pending.
+      std::optional<lvg::input_state_request> last_input;
 
       // A client pointer id is an arbitrary handle; the touchpad has two
       // numbered contacts. Reserving a contact per pointer keeps a moved touch
@@ -91,6 +93,7 @@ namespace platf {
         active = false;
         client_relative_index = 0;
         profile = {};
+        last_input.reset();
         contact_of_pointer.clear();
         free_contacts = 0x3;
         feedback_queue.reset();
@@ -413,17 +416,16 @@ namespace platf {
           recovery.reset();
           continue;
         }
-        const auto result = recovery.attempt(client, slots, vhf_gamepad::connection_recovery_t::clock::now(),
-          [](const auto nr, auto &slot) {
-            // Retain logical ownership, profile and feedback routing, but not
-            // touch contacts or feedback cached for the previous device.
-            slot.contact_of_pointer.clear();
-            slot.free_contacts = 0x3;
-            slot.submit_failed.store(false, std::memory_order_relaxed);
-            slot.have_feedback = false;
-            slot.last_feedback = {};
-            dualsense_audio::set_slot(nr, false);
-          });
+        const auto result = recovery.attempt(client, slots, vhf_gamepad::connection_recovery_t::clock::now(), [](const auto nr, auto &slot) {
+          // Retain logical ownership, profile and feedback routing, but not
+          // touch contacts or feedback cached for the previous device.
+          slot.contact_of_pointer.clear();
+          slot.free_contacts = 0x3;
+          slot.submit_failed.store(false, std::memory_order_relaxed);
+          slot.have_feedback = false;
+          slot.last_feedback = {};
+          dualsense_audio::set_slot(nr, false);
+        });
         if (result && *result == ERROR_SUCCESS) {
           for (int nr = 0; nr < MAX_GAMEPADS; ++nr) {
             if (slots[nr].active) {
@@ -658,7 +660,7 @@ namespace platf {
     }
 
     const DWORD status = impl->recovery.pending() ? ERROR_SUCCESS :
-                           impl->client.destroy_controller(static_cast<std::uint32_t>(nr));
+                                                    impl->client.destroy_controller(static_cast<std::uint32_t>(nr));
     impl->observe_status(status);
     if (status != ERROR_SUCCESS) {
       BOOST_LOG(warning) << "Couldn't destroy VHF gamepad "sv << nr << " ["sv
@@ -805,9 +807,10 @@ namespace platf {
       return;
     }
 
-    std::shared_lock lock {impl->lifetime};
+    // Serialize the cached snapshot and submission with reconstruction and slot reuse.
+    std::unique_lock lock {impl->lifetime};
     auto &slot = impl->slots[nr];
-    if (!slot.active || impl->recovery.pending()) {
+    if (!slot.active) {
       return;
     }
 
@@ -822,6 +825,10 @@ namespace platf {
     };
 
     const auto request = vhf_gamepad::make_input_state(static_cast<std::uint32_t>(nr), normalized);
+    slot.last_input = request;
+    if (impl->recovery.pending()) {
+      return;
+    }
     const DWORD status = impl->client.submit_input_state(request);
     impl->observe_status(status);
     if (status != ERROR_SUCCESS) {

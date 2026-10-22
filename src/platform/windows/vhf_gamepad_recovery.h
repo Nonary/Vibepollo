@@ -33,7 +33,11 @@ namespace platf::vhf_gamepad {
 
     template<class Client, class Slots, class ResetTransient>
     std::optional<std::uint32_t> attempt(
-      Client &client, Slots &slots, const clock::time_point now, ResetTransient reset_transient) {
+      Client &client,
+      Slots &slots,
+      const clock::time_point now,
+      ResetTransient reset_transient
+    ) {
       if (!pending() || now < retry_at) {
         return std::nullopt;
       }
@@ -53,6 +57,11 @@ namespace platf::vhf_gamepad {
           if (slots[nr].active) {
             // Preserve the exact profile and slot ID, not an automatic fallback.
             status = client.create_controller(nr, slots[nr].profile);
+            if (status == 0 && slots[nr].last_input) {
+              // Clients need not repeat unchanged held controls. Restore the latest
+              // complete report before submissions resume; failure rolls everything back.
+              status = client.submit_input_state(*slots[nr].last_input);
+            }
             if (status != 0) {
               break;
             }
