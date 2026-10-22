@@ -206,13 +206,13 @@ for (const ui of ['classic', 'v2'] as const) {
     });
     if (ui === 'v2') {
       await page.goto(`/v2/library/${uuid}`);
-      await page.getByRole('radio', { name: 'Use Vibeshine virtual display', exact: true }).check();
+      await page.getByRole('radio', { name: 'Use Vibepollo virtual display', exact: true }).check();
       await page.locator('#app-display-mode').selectOption('per_client');
       await page.locator('#app-display-layout').selectOption('extended_primary_isolated');
     } else {
       await page.goto('http://127.0.0.1:5174/applications');
       await page.getByRole('button', { name, exact: false }).click();
-      await page.getByText('Use Vibeshine virtual display', { exact: true }).click();
+      await page.getByText('Use Vibepollo virtual display', { exact: true }).click();
       await page.getByText('Virtual Display (Per Client) — Recommended', { exact: true }).click();
       await page.getByText('Extended + Primary (Isolated)', { exact: true }).click();
     }

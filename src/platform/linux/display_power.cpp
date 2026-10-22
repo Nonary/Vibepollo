@@ -151,7 +151,7 @@ namespace platf::display_power {
   }
 
   std::shared_ptr<void> retain_screen() {
-    if (!std::getenv("VIBESHINE_MACHINE_HOST")) {
+    if (!std::getenv("VIBEPOLLO_MACHINE_HOST")) {
       static const auto noop = std::make_shared<int>(0);
       return noop;
     }
