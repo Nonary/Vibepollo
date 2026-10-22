@@ -26,7 +26,7 @@
 
 // local includes
 #include "audio.h"
-#include "input_geometry_snapshot.h"
+#include "src/input_geometry_snapshot.h"
 #include "src/boost_process_shim.h"
 #include "src/config.h"
 #include "src/amf/amf_initialization_policy.h"
