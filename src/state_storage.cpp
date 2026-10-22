@@ -161,7 +161,8 @@ namespace statefile {
           return file_handler::write_file(target.c_str(), contents) == 0;
         });
       if (result == policy::load_result_e::failed) {
-        BOOST_LOG(error) << "statefile: refusing to replace unavailable auxiliary state " << path;
+        BOOST_LOG(error) << "statefile: refusing to replace unavailable auxiliary state " << path
+                         << "; preserve this file and its .bak. If both are empty or zero-filled, --auxiliary-recovery can prepare an explicit reset candidate; it cannot recover lost tokens or metadata. Do not replace pairing state or credentials.";
       }
       return result;
     }

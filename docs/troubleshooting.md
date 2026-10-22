@@ -32,6 +32,55 @@ Can't access the web UI?
 
 1. Check firewall rules.
 
+### Zero-filled auxiliary state prevents crash dismissal or token saves
+
+If both `vibeshine_state.json` and `vibeshine_state.json.bak` are empty or contain
+only zero bytes after an unexpected shutdown, their contents cannot be recovered.
+The host deliberately refuses to overwrite them. A newer file writer prevents
+known write/flush failures from replacing an existing target, but does not repair
+already-lost data or establish power-loss durability on every storage device.
+
+The native `--auxiliary-recovery` command can prepare an **explicit reset**, not a
+repair. It does not start the host or install anything. Resetting auxiliary state
+loses API tokens, Web UI sessions, app-ID aliases, display metadata and crash/update
+notification metadata. API integrations need new tokens, the Web UI needs a fresh
+login, and display settings/launch shortcuts may need reconfiguration. It does
+**not** reset the Web UI username/password or Moonlight pairings.
+
+1. Stop the host/service and keep a private copy of the entire configuration
+   directory. This disconnects active streams. Confirm that the configured
+   auxiliary file is the separate `vibeshine_state.json`, **not** the pairing or
+   credentials file. Custom/shared filenames are unsupported by this command;
+   do not rename a pairing/credential file to bypass this check. Copy the auxiliary
+   file and its `.bak` into `C:\PrivateRecovery`. Never upload either snapshot.
+2. In PowerShell, inspect those two copies:
+
+   ```powershell
+   & 'C:\Program Files\Sunshine\sunshine.exe' --auxiliary-recovery inspect 'C:\PrivateRecovery\vibeshine_state.json'
+   ```
+
+   Adjust the executable path for your installation. Both snapshots must exist
+   and be entirely empty/zero-filled. A valid, partially readable, missing or
+   inaccessible snapshot requires separate investigation, not this reset. Copy
+   the `snapshot_token` from the report.
+3. If you accept the listed data loss, prepare the reset. Replace `TOKEN` with
+   that value; `C:\PrivateRecovery\reset` must not exist:
+
+   ```powershell
+   & 'C:\Program Files\Sunshine\sunshine.exe' --auxiliary-recovery prepare-reset 'C:\PrivateRecovery\vibeshine_state.json' --expect-snapshot TOKEN --accept-token-and-metadata-loss --output 'C:\PrivateRecovery\reset'
+   ```
+
+   Success creates private copies of both originals, two identical reset
+   candidates and `recovery.json`. Check that the manifest says `complete: true`.
+   Do not install files from an incomplete output directory. No source file,
+   pairing state, password or running configuration was changed by the command.
+4. With the host still stopped, copy `vibeshine_state.reset.json` and
+   `vibeshine_state.reset.json.bak` from the output directory to the actual
+   configuration directory as `vibeshine_state.json` and `vibeshine_state.json.bak`.
+   Replace **only these two auxiliary files**, retaining the originals privately.
+   Start the host, sign in again, check crash dismissal and re-create API tokens
+   as needed. Do not install an old token-bearing backup over the reset later.
+
 ### Duplicate paired-client records after upgrading from 1.x
 
 Vibeshine 1.x added a new paired-client record every time an already-paired
