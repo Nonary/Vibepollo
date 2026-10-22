@@ -1,12 +1,17 @@
 #include "src/platform/windows/display_helper_borrow_native.h"
 #include "virtual_display.h"
 #include "virtual_display_catalog_policy.h"
+#include "frame_push_capture_policy.h"
 #include "src/platform/windows/virtual_display_refresh_policy.h"
+#include "virtual_display.h"
 #include "virtual_display_recovery_registry.h"
 
 #include <virtual_display/driver/control_client.h>
 #include <virtual_display/driver/windows_control_client.h>
 #include <display_device/windows/win_api_layer.h>
+#if defined(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE) && SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE
+  #include <virtual_display/driver/frame_transport_protocol.h>
+#endif
 
 #include <openssl/rand.h>
 
@@ -1040,6 +1045,7 @@ namespace VDISPLAY_SUNSHINE {
       std::optional<std::wstring> display_name;
       std::optional<std::string> device_id;
       std::optional<std::wstring> monitor_device_path;
+      std::optional<sunshine_driver::OwnerCapability> owner_capability;
     };
 
     struct DriverLeaseTracker {
@@ -4334,7 +4340,8 @@ namespace VDISPLAY_SUNSHINE {
           reclaimed.value.lease_id,
           display_name,
           device_id,
-          monitor_device_path
+          monitor_device_path,
+          recovery->owner_capability
         }
       );
       recovery->phase = VirtualDisplayRecoveryPhase::active;
@@ -5581,6 +5588,76 @@ namespace VDISPLAY_SUNSHINE {
     // Retain the exact live transport object; its implicit static destructor
     // cannot close the driver object while a borrow still owns this reference.
     return std::static_pointer_cast<void>(control_transport_snapshot());
+  }
+
+  bool driver_supports_frame_push_capture() {
+#if defined(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE) && SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE
+    auto opened = sunshine_driver::open_first_control_device();
+    if (!opened.ok()) {
+      return false;
+    }
+
+    sunshine_driver::ControlClient client {*opened.transport};
+    const auto capabilities = client.query_frame_transport_capabilities();
+    return capabilities.ok() && platf::frame_push::policy::supports_required_capability(
+                                  capabilities.value.capabilities,
+                                  capabilities.value.max_ring_slots,
+                                  sunshine_driver::kFrameTransportCapabilityKeyedMutexRing,
+                                  sunshine_driver::kFrameRingSlotCount
+                                );
+#else
+    return false;
+#endif
+  }
+
+  std::optional<VDISPLAY::FramePushTarget> frame_push_target_for_output(
+    const std::string &output_identifier
+  ) {
+#if defined(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE) && SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE
+    if (output_identifier.empty()) return std::nullopt;
+    const auto device_id = resolveVirtualDisplayDeviceId(platf::from_utf8(output_identifier));
+    if (!device_id || device_id->empty()) return std::nullopt;
+
+    std::optional<DriverLeaseInfo> owned_lease;
+    for (const auto &guid : active_virtual_display_tracker().all()) {
+      const auto candidate = driver_lease_tracker().get(guid);
+      if (!candidate || !candidate->device_id || !candidate->owner_capability ||
+          !boost::iequals(*candidate->device_id, *device_id)) continue;
+      if (owned_lease) {
+        BOOST_LOG(warning) << "Frame-push target lookup found more than one owned lease for output '" << output_identifier << "'.";
+        return std::nullopt;
+      }
+      owned_lease = candidate;
+    }
+    if (!owned_lease) return std::nullopt;
+
+    auto opened = sunshine_driver::open_first_control_device();
+    if (!opened.ok()) return std::nullopt;
+    sunshine_driver::FrameTransportTargetRequest request {};
+    request.lease_id = owned_lease->lease_id;
+    request.display_id = owned_lease->display_id;
+    request.owner_capability = *owned_lease->owner_capability;
+    sunshine_driver::ControlClient client {*opened.transport};
+    const auto target = client.query_frame_transport_target(request);
+    if (!target.ok()) return std::nullopt;
+
+    VDISPLAY::FramePushTarget result {};
+    result.lease_id = target.value.lease_id;
+    result.display_id = target.value.display_id;
+    result.display_generation = target.value.display_generation;
+    result.width = target.value.width;
+    result.height = target.value.height;
+    result.format = target.value.format;
+    result.color_space = target.value.color_space;
+    result.adapter_luid_low_part = target.value.adapter_luid.low_part;
+    result.adapter_luid_high_part = target.value.adapter_luid.high_part;
+    result.owner_capability = request.owner_capability.bytes;
+    result.control_device_path = std::move(opened.device_path);
+    return result;
+#else
+    (void) output_identifier;
+    return std::nullopt;
+#endif
   }
 
   std::shared_ptr<sunshine_driver::WindowsControlTransport> replace_control_transport(
@@ -7443,7 +7520,8 @@ namespace VDISPLAY_SUNSHINE {
           create_result.value.lease_id != 0 ? create_result.value.lease_id : *lease_id,
           std::nullopt,
           std::nullopt,
-          std::nullopt
+          std::nullopt,
+          owner_capability
         }
       );
 

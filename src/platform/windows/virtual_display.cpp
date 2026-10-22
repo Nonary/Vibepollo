@@ -559,6 +559,8 @@ namespace VDISPLAY_SUNSHINE {
   );
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
   bool is_virtual_display_output(const std::string &output_identifier);
+  bool driver_supports_frame_push_capture();
+  std::optional<VDISPLAY::FramePushTarget> frame_push_target_for_output(const std::string &output_identifier);
   bool is_virtual_display_selection(const std::string &output_identifier);
   uint64_t client_uuid_to_virtual_display_id(const GUID &client_guid);
   uuid_util::uuid_t virtualDisplayUuidFromStableId(const std::string &stable_id);
@@ -954,6 +956,19 @@ namespace VDISPLAY {
 
   bool is_virtual_display_output(const std::string &output_identifier) {
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::is_virtual_display_output(output_identifier) : VDISPLAY_SUDOVDA::is_virtual_display_output(output_identifier);
+  }
+
+  bool is_sunshine_virtual_display_output(const std::string &output_identifier) {
+    return VDISPLAY_SUNSHINE::is_virtual_display_output(output_identifier);
+  }
+
+  bool driver_supports_frame_push_capture() {
+    return VDISPLAY_SUNSHINE::driver_supports_frame_push_capture();
+  }
+
+  std::optional<FramePushTarget> frame_push_target_for_output(const std::string &output_identifier) {
+    if (!use_sunshine_driver()) return std::nullopt;
+    return VDISPLAY_SUNSHINE::frame_push_target_for_output(output_identifier);
   }
 
   bool is_virtual_display_selection(const std::string &output_identifier) {

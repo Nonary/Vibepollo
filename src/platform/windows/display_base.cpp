@@ -43,6 +43,11 @@ typedef enum _D3DKMT_GPU_PREFERENCE_QUERY_STATE : DWORD {
 #include "src/display_device.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#if defined(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE) && SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE
+#include "src/platform/windows/display_frame_push.h"
+#endif
+#include "src/platform/windows/frame_push_capture_policy.h"
+#include "src/platform/windows/virtual_display.h"
 #include "src/video.h"
 #include "utf_utils.h"
 #include "wgc_capture_policy.h"
@@ -1565,12 +1570,45 @@ namespace platf {
     const bool user_requested_ddx = capture_mode == "ddx";
     const bool default_to_wgc = dxgi::should_use_wgc_default();
     const bool wgc_requested = capture_mode.starts_with("wgc");
-    const bool prefer_wgc_backend = !user_requested_ddx && (wgc_requested || default_to_wgc);
+    const bool frame_push_requested = frame_push::policy::requested(capture_mode);
+    frame_push::policy::Selection frame_push_selection = frame_push::policy::Selection::NotRequested;
+    if (frame_push_requested) {
+#if defined(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE) && SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE
+      const bool sunshine_virtual_display = VDISPLAY::is_sunshine_virtual_display_output(display_name);
+      const bool driver_capable = sunshine_virtual_display && VDISPLAY::driver_supports_frame_push_capture();
+      frame_push_selection = frame_push::policy::select(
+        true,
+        true,
+        sunshine_virtual_display,
+        driver_capable,
+        false
+      );
+      if (frame_push_selection == frame_push::policy::Selection::HostBackendUnavailable &&
+          hwdevice_type == mem_type_e::dxgi) {
+        auto frame_push_display = std::make_shared<dxgi::display_frame_push_vram_t>();
+        if (frame_push_display->init(config, display_name, required_adapter_luid) == 0) {
+          frame_push_selection = frame_push::policy::select(true, true, true, true, true);
+          BOOST_LOG(info) << "capture=idd-push initialized the live frame-push session.";
+          return frame_push_display;
+        }
+      }
+#else
+      frame_push_selection = frame_push::policy::select(true, false, false, false, false);
+#endif
+      if (frame_push_selection != frame_push::policy::Selection::Ready) {
+        BOOST_LOG(warning) << "capture=idd-push requested; "
+                           << frame_push::policy::fallback_reason(frame_push_selection)
+                           << "; using WGC fallback.";
+      }
+    }
+    const bool frame_push_wgc_fallback = frame_push::policy::use_wgc_fallback(frame_push_selection);
+    const bool prefer_wgc_backend = !user_requested_ddx &&
+                                    (wgc_requested || default_to_wgc || frame_push_wgc_fallback);
 
     if (hwdevice_type == mem_type_e::dxgi) {
       if (prefer_wgc_backend) {
         auto disp = dxgi::display_wgc_ipc_vram_t::create(config, display_name, required_adapter_luid);
-        if (disp || wgc_requested) {
+        if (disp || wgc_requested || frame_push_wgc_fallback) {
           return disp;
         }
       }
@@ -1582,7 +1620,7 @@ namespace platf {
     } else if (hwdevice_type == mem_type_e::system) {
       if (prefer_wgc_backend) {
         auto disp = dxgi::display_wgc_ipc_ram_t::create(config, display_name, required_adapter_luid);
-        if (disp || wgc_requested) {
+        if (disp || wgc_requested || frame_push_wgc_fallback) {
           return disp;
         }
       }

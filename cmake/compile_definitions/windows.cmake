@@ -315,6 +315,22 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/amf/amf_d3d11.cpp"
         ${NVPREFS_FILES})
 
+if(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE)
+    list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE=1)
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_io.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_io.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_windows_io.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_windows_io.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_transport.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_transport.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_d3d11.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_d3d11.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/display_frame_push.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/display_frame_push.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_capture_policy.h")
+endif()
+
 set(OPENSSL_LIBRARIES
         libssl.a
         libcrypto.a)

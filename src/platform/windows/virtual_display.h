@@ -22,6 +22,21 @@ namespace VDISPLAY {
   // drained. Never opens a device, creates a target or changes its lease.
   std::optional<std::shared_ptr<void>> retain_borrow_native_resources();
 
+  struct FramePushTarget {
+    std::uint64_t lease_id {};
+    std::uint64_t display_id {};
+    std::uint64_t display_generation {};
+    std::uint32_t width {};
+    std::uint32_t height {};
+    std::uint32_t format {};
+    std::uint32_t color_space {};
+    std::uint32_t adapter_luid_low_part {};
+    std::int32_t adapter_luid_high_part {};
+    std::array<std::uint8_t, 32> owner_capability {};
+    std::wstring control_device_path {};
+  };
+  std::optional<FramePushTarget> frame_push_target_for_output(const std::string &output_identifier);
+
   inline constexpr const char *VIRTUAL_DISPLAY_SELECTION = "sunshine:virtual_display";
   inline constexpr const char *SUDOVDA_VIRTUAL_DISPLAY_SELECTION = "sunshine:sudovda_virtual_display";
 
@@ -240,6 +255,8 @@ namespace VDISPLAY {
   );
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
   bool is_virtual_display_output(const std::string &output_identifier);
+  bool is_sunshine_virtual_display_output(const std::string &output_identifier);
+  bool driver_supports_frame_push_capture();
   std::optional<bool> is_any_managed_virtual_display_output(const std::string &output_identifier);
   bool is_virtual_display_selection(const std::string &output_identifier);
 
