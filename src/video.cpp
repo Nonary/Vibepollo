@@ -7025,12 +7025,6 @@ namespace video {
     return -1;
   }
 
-  static thread_local std::shared_ptr<platf::display_t> cached_probe_display;
-  static thread_local platf::mem_type_e cached_display_type = platf::mem_type_e::system;
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-  static thread_local bool cached_display_is_native_nvenc_probe = false;
-#endif
-
   bool validate_encoder(
     encoder_t &encoder,
     const bool expect_failure,
@@ -7107,31 +7101,12 @@ namespace video {
     config_t config_max_ref_frames {1920, 1080, 60, 6000, 1000, 1, 1, 1, 0, 0, 0};
     config_t config_autoselect {1920, 1080, 60, 6000, 1000, 1, 0, 1, 0, 0, 0};
 
-    // If the encoder isn't supported at all (not even H.264), bail early
-    // Try to reuse cached display if same device type
-    const auto cached_adapter = cached_probe_display ? cached_probe_display->capture_adapter_id() : std::nullopt;
-    const bool cached_display_matches_required =
-      !required_adapter || (cached_adapter && *cached_adapter == *required_adapter);
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-    const bool wants_native_nvenc_probe = &encoder == &nvenc && !required_adapter;
-    const bool cached_probe_kind_matches =
-      cached_display_is_native_nvenc_probe == wants_native_nvenc_probe;
-#else
-    const bool cached_probe_kind_matches = true;
-#endif
-    if (cached_probe_display &&
-        cached_display_type == encoder.platform_formats->dev_type &&
-        cached_probe_kind_matches &&
-        cached_display_matches_required) {
-      disp = cached_probe_display;
-    } else {
-      reset_probe_display(config_autoselect);
-      cached_probe_display = disp;
-      cached_display_type = encoder.platform_formats->dev_type;
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-      cached_display_is_native_nvenc_probe = wants_native_nvenc_probe;
-#endif
-    }
+    // The capability cache stores values, never a live GPU device. Keep the
+    // probe source local to this validation so success, failure, and exceptions
+    // all release it, even when the caller is a long-lived startup/worker thread.
+    // All codec/ref-frame checks below still share this source until HDR needs
+    // a different format.
+    reset_probe_display(config_autoselect);
 
     if (!disp) {
       clear_capabilities();
@@ -7253,7 +7228,6 @@ namespace video {
         // Reset the synthetic surface since we're switching from SDR to HDR.
         // The D3D adapter remains exact while the fake source format changes to
         // FP16, exercising the real 10-bit encoder conversion path.
-        cached_probe_display.reset();
         reset_probe_display(generic_hdr_config);
         if (!disp) {
           return false;
@@ -7462,9 +7436,6 @@ namespace video {
     active_av1_mode = config::video.av1_mode;
     last_encoder_probe_supported_ref_frames_invalidation = false;
     last_encoder_probe_supported_yuv444_for_codec = {};
-
-    // Clear any cached display from previous probes to ensure fresh start
-    cached_probe_display.reset();
 
     auto adjust_encoder_constraints = [&](encoder_t *encoder) {
       // If we can't satisfy both the encoder and codec requirement, prefer the encoder over codec support

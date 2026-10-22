@@ -24,6 +24,7 @@
 #include <wrl/client.h>
 
 // local includes
+#include "gpu_priority.h"
 #include "src/platform/common.h"
 #include "src/platform/windows/ipc/pipes.h"
 #include "src/platform/windows/ipc/process_handler.h"
@@ -227,6 +228,9 @@ namespace platf::dxgi {
 
     std::optional<adapter_id_t> capture_adapter_id() const override;
 
+    // Declared before the D3D resources so the process priority is restored
+    // only after those resources have been released.
+    std::unique_ptr<gpu_priority_manager_t::lease_t> gpu_priority_lease;
     factory1_t factory;
     adapter_t adapter;
     output_t output;

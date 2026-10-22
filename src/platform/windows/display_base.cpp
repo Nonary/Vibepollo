@@ -58,6 +58,35 @@ namespace platf {
 
 namespace platf::dxgi {
   namespace {
+    gpu_priority_manager_t &gpu_priority_manager() {
+      // Capture objects can overlap during reinitialization or multiple streams.
+      // The last successful lease restores the process's original class, not an
+      // assumed NORMAL class and not a boost saved by another capture object.
+      static gpu_priority_manager_t manager {
+        []() -> std::optional<int> {
+          using get_priority_t = NTSTATUS(WINAPI *)(HANDLE, display_base_t::D3DKMT_SCHEDULINGPRIORITYCLASS *);
+          const auto module = GetModuleHandleA("GDI32");
+          const auto get = module ? reinterpret_cast<get_priority_t>(GetProcAddress(module, "D3DKMTGetProcessSchedulingPriorityClass")) : nullptr;
+          display_base_t::D3DKMT_SCHEDULINGPRIORITYCLASS priority {};
+          if (!get || FAILED(get(GetCurrentProcess(), &priority))) {
+            BOOST_LOG(warning) << "Unable to query GPU priority for capture-scoped restoration";
+            return std::nullopt;
+          }
+          return static_cast<int>(priority);
+        },
+        [](int priority) {
+          const auto module = GetModuleHandleA("GDI32");
+          const auto set = module ? reinterpret_cast<display_base_t::PD3DKMTSetProcessSchedulingPriorityClass>(GetProcAddress(module, "D3DKMTSetProcessSchedulingPriorityClass")) : nullptr;
+          if (!set || FAILED(set(GetCurrentProcess(), static_cast<display_base_t::D3DKMT_SCHEDULINGPRIORITYCLASS>(priority)))) {
+            BOOST_LOG(warning) << "Unable to change capture-scoped GPU priority to " << priority;
+            return false;
+          }
+          return true;
+        }
+      };
+      return manager;
+    }
+
     constexpr std::uint32_t WINDOWS_23H2_BUILD = 22631;
 
     std::mutex g_adapter_luid_mutex;
@@ -1042,7 +1071,7 @@ namespace platf::dxgi {
     {
       const DWORD flags = TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY;
       TOKEN_PRIVILEGES tp;
-      HANDLE token;
+      HANDLE token = nullptr;
       LUID val;
 
       if (OpenProcessToken(GetCurrentProcess(), flags, &token) &&
@@ -1056,7 +1085,9 @@ namespace platf::dxgi {
         }
       }
 
-      CloseHandle(token);
+      if (token) {
+        CloseHandle(token);
+      }
 
       HMODULE gdi32 = GetModuleHandleA("GDI32");
       if (gdi32) {
@@ -1113,7 +1144,8 @@ namespace platf::dxgi {
           }
           BOOST_LOG(info) << "Active GPU has HAGS " << (hags_enabled ? "enabled" : "disabled");
           BOOST_LOG(info) << "Using " << (priority == D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH ? "high" : "realtime") << " GPU priority";
-          if (FAILED(d3dkmt_set_process_priority(GetCurrentProcess(), priority))) {
+          gpu_priority_lease = gpu_priority_manager().acquire(static_cast<int>(priority));
+          if (!gpu_priority_lease) {
             BOOST_LOG(warning) << "Failed to adjust GPU priority. Please run application as administrator for optimal performance.";
           }
         } else {
