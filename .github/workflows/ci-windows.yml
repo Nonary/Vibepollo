@@ -881,7 +881,15 @@ jobs:
           # A failed CPack invocation must never upload an older valid ZIP.
           rm -f -- build/cpack_artifacts/*-portable.zip ci-portable/*.zip
           cmake --build build --target package_portable --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
-          python .github/scripts/validate_windows_portable.py --repository . --build build --product "$PORTABLE_PRODUCT" --version "$BUILD_VERSION" --output ci-portable
+
+      - name: Validate Windows portable ZIP with host Python
+        if: github.event_name != 'pull_request' && inputs.release_version != '' && !startsWith(inputs.release_version, '0.0.0') && !startsWith(inputs.release_version, 'v0.0.0')
+        shell: pwsh
+        env:
+          PORTABLE_PRODUCT: ${{ inputs.symbol_product_name }}
+        run: |
+          python .github/scripts/validate_windows_portable.py --repository . --build build --product $env:PORTABLE_PRODUCT --version $env:BUILD_VERSION --output ci-portable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload Windows portable ZIP (CI only)
         if: github.event_name != 'pull_request' && inputs.release_version != '' && !startsWith(inputs.release_version, '0.0.0') && !startsWith(inputs.release_version, 'v0.0.0')
