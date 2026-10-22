@@ -371,6 +371,46 @@ TEST_F(PairingRecovery, SnapshotTokenBindsPrimaryAndBackupIncludingMissingBackup
   EXPECT_FALSE(fs::exists(output / "backup.original.json"));
 }
 
+TEST_F(PairingRecovery, ValidDivergentBackupIsPreservedButNeverSelectedOrMerged) {
+  const auto primary = read(input);
+  auto backup_state = state;
+  backup_state["username"] = "backup-owner";
+  backup_state["password"] = "backup-password-hash";
+  backup_state["salt"] = "backup-salt";
+  auto backup_only = state["root"]["named_devices"][2];
+  backup_only["uuid"] = "22222222-2222-2222-2222-222222222224";
+  backup_only["name"] = "backup-only-client";
+  backup_only["enabled"] = "true";
+  backup_only["config_overrides"]["output_name"] = "backup-output";
+  backup_state["root"]["named_devices"] = json::array({backup_only});
+  const auto backup = backup_state.dump(2) + "\n";
+  boost::property_tree::ptree validated_backup;
+  std::istringstream backup_stream(backup);
+  boost::property_tree::read_json(backup_stream, validated_backup);
+  ASSERT_TRUE(statefile::policy::valid_primary_state(validated_backup, false));
+  write(input.string() + ".bak", backup);
+
+  ASSERT_EQ(invoke({"inspect", input.string()}), 0) << stderr_stream.str();
+  const auto inspection = json::parse(stdout_stream.str());
+  ASSERT_EQ(inspection["duplicate_groups"].size(), 1u);
+  ASSERT_EQ(inspection["duplicate_groups"][0]["records"].size(), 2u);
+  EXPECT_EQ(inspection["duplicate_groups"][0]["records"][0]["uuid"], first_uuid);
+  EXPECT_EQ(inspection["duplicate_groups"][0]["records"][1]["uuid"], second_uuid);
+  EXPECT_EQ(inspection["backup_sha256"], digest(backup));
+
+  ASSERT_EQ(prepare({first_uuid}, inspection["snapshot_token"].get<std::string>()), 0) << stderr_stream.str();
+  auto expected = state;
+  expected["root"]["named_devices"].erase(1);
+  const auto candidate = read(output / "sunshine_state.reconciled.json");
+  EXPECT_EQ(json::parse(candidate), expected);
+  EXPECT_EQ(candidate.find("backup-only-client"), std::string::npos);
+  EXPECT_EQ(candidate.find("backup-owner"), std::string::npos);
+  EXPECT_EQ(read(output / "primary.original.json"), primary);
+  EXPECT_EQ(read(output / "backup.original.json"), backup);
+  EXPECT_EQ(read(input), primary);
+  EXPECT_EQ(read(input.string() + ".bak"), backup);
+}
+
 TEST_F(PairingRecovery, ExistingOutputAndLinksCannotOverwriteOriginalSnapshots) {
   ASSERT_TRUE(fs::create_directory(output));
   write(output / "sentinel", "preserve");
