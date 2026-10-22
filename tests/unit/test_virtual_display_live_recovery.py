@@ -25,16 +25,25 @@ gdi_name_check = function('    bool is_gdi_display_name(')
 presence_check = function('    bool is_virtual_display_present(')
 presence_check = presence_check.replace('is_virtual_display_present(', 'actual_is_virtual_display_present(')
 monitor_path_for_id = function('    std::optional<std::wstring> resolve_monitor_device_path_for_device_id(')
+product_code_from_id = function('    std::uint16_t virtual_display_product_code_from_display_id(')
+product_code_string_from_id = function('    std::string virtual_display_product_code_string_from_display_id(')
+serial_number_from_id = function('    std::uint32_t virtual_display_serial_number_from_display_id(')
+edid_match = function('    bool matches_virtual_display_id_edid(')
 
 program = r'''
 #include "src/capture_recovery.h"
 #include "src/platform/windows/virtual_display_recovery_policy.h"
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <future>
+#include <iomanip>
 #include <optional>
+#include <sstream>
 #include <stop_token>
+#include <string>
 #include <thread>
+#include <vector>
 using namespace std::chrono_literals;
 struct Lease { std::uint64_t display_id=1,lease_id=2; std::optional<std::string> device_id="virtual1"; };
 std::optional<Lease> owned=Lease{};
@@ -125,6 +134,12 @@ enum class QueryType {All};
 struct EnumeratedDevice {
  std::string m_device_id,m_monitor_device_path,m_display_name,m_friendly_name;
  bool virtual_display=true;
+ struct Edid {std::string m_manufacturer_id,m_product_code;std::uint32_t m_serial_number{};};
+ std::optional<Edid> m_edid;
+ EnumeratedDevice(std::string device_id={},std::string monitor_path={},std::string display_name={},
+                  std::string friendly_name={},bool is_virtual=true,std::optional<Edid> edid={})
+  :m_device_id(device_id),m_monitor_device_path(monitor_path),m_display_name(display_name),
+   m_friendly_name(friendly_name),virtual_display(is_virtual),m_edid(edid) {}
 };
 struct WinApiLayer {
  std::optional<CcdConfig> queryDisplayConfig(QueryType) const {return ccd_query_ok?std::optional<CcdConfig>{CcdConfig{ccd_paths}}:std::nullopt;}
@@ -149,6 +164,7 @@ void observe_frame(const std::string &output,std::uint64_t instance,
  );
 }
 bool is_virtual_display_device(const display_device::EnumeratedDevice &device) {return device.virtual_display;}
+''' + product_code_from_id + '\n' + product_code_string_from_id + '\n' + serial_number_from_id + '\n' + edid_match + r'''
 namespace platf::display_helper {
 struct Coordinator {
  static Coordinator &instance() {static Coordinator c;return c;}
@@ -178,6 +194,44 @@ int main() {
  assert(VDISPLAY::policy::readiness_candidate_is_exact_target(true,false,true));
  assert(VDISPLAY::policy::readiness_candidate_is_exact_target(false,true,false));
  assert(VDISPLAY::policy::readiness_candidate_is_exact_target(false,false,true));
+ // Distinct 64-bit IDs can collide after the driver's EDID projection. The
+ // production matcher recognizes both, so readiness must reject an ambiguous
+ // enumeration instead of selecting whichever candidate appears first.
+ constexpr std::uint64_t colliding_display_id=0x1234000000000001ull;
+ constexpr std::uint64_t colliding_peer_id=colliding_display_id+0x0000100000001000ull;
+ assert(colliding_display_id!=colliding_peer_id);
+ assert(virtual_display_product_code_from_display_id(colliding_display_id)==
+        virtual_display_product_code_from_display_id(colliding_peer_id));
+ assert(virtual_display_serial_number_from_display_id(colliding_display_id)==
+        virtual_display_serial_number_from_display_id(colliding_peer_id));
+ const display_device::EnumeratedDevice::Edid colliding_edid{
+  "SDD",virtual_display_product_code_string_from_display_id(colliding_display_id),
+  virtual_display_serial_number_from_display_id(colliding_display_id)};
+ display_device::EnumeratedDevice colliding_target{"target-id","path-target","","",true,colliding_edid};
+ display_device::EnumeratedDevice colliding_peer{"peer-id","path-peer","","",true,colliding_edid};
+ assert(matches_virtual_display_id_edid(colliding_target,colliding_display_id));
+ assert(matches_virtual_display_id_edid(colliding_peer,colliding_display_id));
+ const std::vector<display_device::EnumeratedDevice> ambiguous_devices{colliding_target,colliding_peer};
+ const auto is_virtual=[](const auto &candidate){return is_virtual_display_device(candidate);};
+ const auto matches_colliding_id=[&](const auto &candidate){return matches_virtual_display_id_edid(candidate,colliding_display_id);};
+ const auto ambiguous_match_count=VDISPLAY::policy::count_stable_edid_matches(ambiguous_devices,is_virtual,matches_colliding_id);
+ assert(ambiguous_match_count==2);
+ assert(!VDISPLAY::policy::stable_edid_candidate_is_unique(matches_virtual_display_id_edid(colliding_peer,colliding_display_id),ambiguous_match_count));
+ assert(!VDISPLAY::policy::readiness_candidate_is_exact_target(true,false,
+  VDISPLAY::policy::stable_edid_candidate_is_unique(matches_virtual_display_id_edid(colliding_peer,colliding_display_id),ambiguous_match_count)));
+ const std::vector<display_device::EnumeratedDevice> unique_devices{colliding_target};
+ const auto unique_match_count=VDISPLAY::policy::count_stable_edid_matches(unique_devices,is_virtual,matches_colliding_id);
+ assert(unique_match_count==1);
+ assert(VDISPLAY::policy::stable_edid_candidate_is_unique(matches_virtual_display_id_edid(colliding_target,colliding_display_id),unique_match_count));
+ assert(VDISPLAY::policy::readiness_candidate_is_exact_target(true,false,
+  VDISPLAY::policy::stable_edid_candidate_is_unique(matches_virtual_display_id_edid(colliding_target,colliding_display_id),unique_match_count)));
+ auto wrong_edid=colliding_edid;wrong_edid.m_manufacturer_id="XYZ";
+ display_device::EnumeratedDevice wrong_candidate{"wrong-id","wrong-path","","",true,wrong_edid};
+ const std::vector<display_device::EnumeratedDevice> wrong_devices{wrong_candidate};
+ const auto wrong_match_count=VDISPLAY::policy::count_stable_edid_matches(wrong_devices,is_virtual,matches_colliding_id);
+ assert(wrong_match_count==0);
+ assert(!matches_virtual_display_id_edid(wrong_candidate,colliding_display_id));
+ assert(!VDISPLAY::policy::stable_edid_candidate_is_unique(matches_virtual_display_id_edid(wrong_candidate,colliding_display_id),wrong_match_count));
  assert(VDISPLAY::policy::defer_unidentified_readiness_candidate(false,false));
  assert(!VDISPLAY::policy::defer_unidentified_readiness_candidate(false,true));
  assert(!VDISPLAY::policy::defer_unidentified_readiness_candidate(true,false));

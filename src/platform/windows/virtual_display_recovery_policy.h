@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <utility>
@@ -121,6 +123,28 @@ namespace VDISPLAY::policy {
       return stable_edid_match;
     }
     return strong_identity_match || stable_edid_match;
+  }
+
+  template<typename CandidateRange, typename IsVirtual, typename MatchesStableEdid>
+  std::size_t count_stable_edid_matches(
+    const CandidateRange &candidates,
+    IsVirtual &&is_virtual,
+    MatchesStableEdid &&matches_stable_edid
+  ) {
+    return static_cast<std::size_t>(std::count_if(
+      candidates.begin(),
+      candidates.end(),
+      [&](const auto &candidate) {
+        return is_virtual(candidate) && matches_stable_edid(candidate);
+      }
+    ));
+  }
+
+  inline bool stable_edid_candidate_is_unique(
+    bool candidate_matches,
+    std::size_t matching_candidate_count
+  ) noexcept {
+    return candidate_matches && matching_candidate_count == 1;
   }
 
   inline bool defer_unidentified_readiness_candidate(

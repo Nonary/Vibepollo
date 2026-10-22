@@ -6397,6 +6397,14 @@ namespace VDISPLAY_SUNSHINE {
 
       auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
       if (devices) {
+        // EDID product/serial is a lossy encoding of the 64-bit display ID.
+        // Establish uniqueness across this enumeration before allowing it to
+        // identify a candidate; otherwise the first matching peer could win.
+        const auto stable_edid_match_count = expected_display_id ? VDISPLAY::policy::count_stable_edid_matches(
+          *devices,
+          [](const auto &candidate) { return is_virtual_display_device(candidate); },
+          [&](const auto &candidate) { return matches_virtual_display_id_edid(candidate, *expected_display_id); }
+        ) : 0;
         std::optional<display_device::EnumeratedDevice> unique_resolution_candidate;
         std::optional<display_device::EnumeratedDevice> unique_weak_identity_candidate;
         bool resolution_conflict = false;
@@ -6460,9 +6468,13 @@ namespace VDISPLAY_SUNSHINE {
           // matchers above can ever select it. Its stable EDID product/serial
           // still identifies it exactly.
           bool stable_edid_match = false;
-          if (expected_display_id && is_virtual &&
-              matches_virtual_display_id_edid(candidate, *expected_display_id)) {
-            stable_edid_match = true;
+          if (expected_display_id && is_virtual) {
+            stable_edid_match = VDISPLAY::policy::stable_edid_candidate_is_unique(
+              matches_virtual_display_id_edid(candidate, *expected_display_id),
+              static_cast<std::size_t>(stable_edid_match_count)
+            );
+          }
+          if (stable_edid_match) {
             if (!strong_identity_match) {
               BOOST_LOG(info) << "Virtual display candidate "
                               << (candidate.m_device_id.empty() ? candidate.m_monitor_device_path : candidate.m_device_id)
