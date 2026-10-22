@@ -1430,6 +1430,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
     add_executable(test_linux_hyprland_broker
         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_hyprland_broker.c")
     target_include_directories(test_linux_hyprland_broker PRIVATE "${LIBCAP_INCLUDE_DIRS}")
+    # The fixture asserts the production dispatch boundary; keep it in release builds.
+    target_compile_options(test_linux_hyprland_broker PRIVATE -UNDEBUG)
     target_link_libraries(test_linux_hyprland_broker PRIVATE "${LIBCAP_LIBRARIES}")
     add_test(NAME test_component_linux_hyprland_broker COMMAND test_linux_hyprland_broker)
     set_tests_properties(test_component_linux_hyprland_broker PROPERTIES LABELS "component")
