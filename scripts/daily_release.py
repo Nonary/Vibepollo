@@ -49,6 +49,27 @@ def validate_migration(repository, target_commit, upstream_commit, confirmation)
         raise ValueError("Vibepollo daily is blocked until the exact upstream-to-primary migration is reviewed and confirmed")
 
 
+def resolve_migration_upstream(target_commit, confirmation, reserved_tag, event_name):
+    """Resolve a reviewed upstream snapshot from master or its immutable nightly ref."""
+    match = re.fullmatch(r"Nonary/vibeshine:([0-9a-f]{40}):Nonary/Vibepollo:([0-9a-f]{40})", confirmation)
+    if not match or match[2] != target_commit:
+        raise ValueError("Vibepollo daily migration requires confirmation of this exact target commit")
+    confirmed_source = match[1]
+    if reserved_tag:
+        if event_name != "workflow_dispatch":
+            raise ValueError("A reserved upstream tag is allowed only for an explicit manual nightly")
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-nightly\.d[0-9]{8}\.[0-9a-f]{12}", reserved_tag) or not reserved_tag.endswith(confirmed_source[:12]):
+            raise ValueError("Reserved upstream tag must identify the confirmed source commit")
+        ref = f"refs/tags/{reserved_tag}"
+    else:
+        ref = "refs/heads/master"
+    upstream = run("git", "ls-remote", "https://github.com/Nonary/vibeshine.git", ref).split()
+    if len(upstream) != 2 or upstream[1] != ref or upstream[0] != confirmed_source:
+        raise ValueError("Verified Vibeshine upstream ref does not match the exact migration confirmation")
+    validate_migration("Nonary/Vibepollo", target_commit, upstream[0], confirmation)
+    return upstream[0]
+
+
 def previous_successful_nightly(repository, releases):
     # Share the same verified published baseline used by the release notes.
     spec = importlib.util.spec_from_file_location("nightly_notes", Path(__file__).with_name("nightly_notes.py"))
@@ -91,10 +112,8 @@ def resolve():
         emit_outputs({"commit": commit, "should_build": "false", "skip_reason": f"Source unchanged since {previous['tag']}"})
         return
     if repository == "Nonary/Vibepollo":
-        upstream = run("git", "ls-remote", "https://github.com/Nonary/vibeshine.git", "refs/heads/master").split()
-        if len(upstream) != 2 or upstream[1] != "refs/heads/master":
-            raise ValueError("Could not resolve the verified Vibeshine primary for migration")
-        validate_migration(repository, commit, upstream[0], os.environ.get("DAILY_RELEASE_MIGRATION_CONFIRMED", ""))
+        resolve_migration_upstream(commit, os.environ.get("DAILY_RELEASE_MIGRATION_CONFIRMED", ""),
+                                   os.environ.get("DAILY_RELEASE_UPSTREAM_TAG", ""), os.environ.get("GITHUB_EVENT_NAME", ""))
     # GITHUB_TOKEN has no workflows:write capability. Do not select a target
     # with a different workflow tree and then discover that during publication.
     run("git", "diff", "--exit-code", os.environ["GITHUB_SHA"], commit, "--", ".github/workflows")

@@ -70,6 +70,32 @@ class DailyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 daily.validate_migration("Nonary/Vibepollo", target, source, confirmation)
 
+    def test_manual_migration_can_use_exact_reserved_upstream_tag(self):
+        source = "b" * 40
+        confirmation = f"Nonary/vibeshine:{source}:Nonary/Vibepollo:{SHA}"
+        tag = f"2.0.2-nightly.d20261022.{source[:12]}"
+        with patch.object(daily, "run", return_value=f"{source} refs/tags/{tag}") as command:
+            self.assertEqual(daily.resolve_migration_upstream(SHA, confirmation, tag, "workflow_dispatch"), source)
+            command.assert_called_once_with("git", "ls-remote", "https://github.com/Nonary/vibeshine.git", f"refs/tags/{tag}")
+        for bad_tag, event in ((tag, "schedule"), (f"2.0.2-nightly.d20261022.{'c' * 12}", "workflow_dispatch"), ("2.0.2-daily.d20261022.1", "workflow_dispatch")):
+            with self.assertRaises(ValueError):
+                daily.resolve_migration_upstream(SHA, confirmation, bad_tag, event)
+        with patch.object(daily, "run", return_value=f"{'c' * 40} refs/tags/{tag}"):
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                daily.resolve_migration_upstream(SHA, confirmation, tag, "workflow_dispatch")
+        with patch.object(daily, "run", return_value=f"{source} refs/heads/master"):
+            with self.assertRaises(ValueError):
+                daily.resolve_migration_upstream(SHA, confirmation, tag, "workflow_dispatch")
+
+    def test_default_migration_still_requires_live_upstream_master(self):
+        source = "b" * 40
+        confirmation = f"Nonary/vibeshine:{source}:Nonary/Vibepollo:{SHA}"
+        with patch.object(daily, "run", return_value=f"{source} refs/heads/master"):
+            self.assertEqual(daily.resolve_migration_upstream(SHA, confirmation, "", "schedule"), source)
+        with patch.object(daily, "run", return_value=f"{'c' * 40} refs/heads/master"):
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                daily.resolve_migration_upstream(SHA, confirmation, "", "workflow_dispatch")
+
     def test_reserved_nightly_tag_reuses_only_exact_source(self):
         day = dt.datetime.now(dt.timezone.utc).date()
         tag = daily.identity(SHA, day, "2.0.1")["tag"]
