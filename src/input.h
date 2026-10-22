@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <utility>
@@ -55,8 +56,13 @@ namespace input {
     int env_logical_width;
     int env_logical_height;
 
+    std::uint64_t capture_generation = 0;
+    std::uint64_t geometry_sequence = 0;
+    bool geometry_valid = true;
+    platf::input_geometry_target_identity_t geometry_target;
+
     explicit operator bool() const {
-      return width != 0 && height != 0 && env_width != 0 && env_height != 0;
+      return geometry_valid && width != 0 && height != 0 && env_width != 0 && env_height != 0;
     }
   };
 

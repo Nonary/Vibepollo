@@ -13,6 +13,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 // local includes
@@ -75,6 +76,34 @@ namespace safe {
       _generation.fetch_add(1, std::memory_order_release);
 
       _cv.notify_all();
+    }
+
+    // Publish a replaceable snapshot without allowing a late producer with an
+    // older version to overwrite a newer one. Unlike a queue, an event keeps
+    // only its latest payload, so ordering must be enforced under the same
+    // mutex that updates the payload. `is_older` compares the candidate with
+    // the greatest version ever published through this method since reset,
+    // even if a consumer has already popped that payload.
+    template<class IsOlder>
+    bool raise_monotonic(T value, IsOlder &&is_older) {
+      std::lock_guard lg {_lock};
+      if (!_poll_state.running()) {
+        return false;
+      }
+      if (_last_monotonic_raise && std::invoke(is_older, value, *_last_monotonic_raise)) {
+        return false;
+      }
+
+      _last_monotonic_raise = value;
+      if constexpr (std::is_same_v<std::optional<T>, status_t>) {
+        _status = std::make_optional<T>(std::move(value));
+      } else {
+        _status = status_t {std::move(value)};
+      }
+      _poll_state.set_ready((bool) _status);
+      _generation.fetch_add(1, std::memory_order_release);
+      _cv.notify_all();
+      return true;
     }
 
     // pop and view should not be used interchangeably
@@ -209,6 +238,7 @@ namespace safe {
       std::lock_guard lg {_lock};
 
       _status = util::false_v<status_t>;
+      _last_monotonic_raise.reset();
       _poll_state.set_ready(false);
     }
 
@@ -219,6 +249,7 @@ namespace safe {
   private:
     detail::poll_state_t _poll_state;
     status_t _status {util::false_v<status_t>};
+    std::optional<T> _last_monotonic_raise;
     std::atomic<std::uint64_t> _generation {};
 
     std::condition_variable _cv;
@@ -449,6 +480,24 @@ namespace safe {
       _poll_state.set_ready(!_queue.empty());
 
       return val;
+    }
+
+    // Atomically remove the currently queued values. Unlike pop(0ms), this
+    // waits for the queue lock so callers that must close an admission window
+    // can drain every producer that completed before the lock was acquired.
+    std::vector<T> drain() {
+      std::lock_guard lg {_lock};
+      std::vector<T> values;
+      if (!_poll_state.running()) {
+        return values;
+      }
+      values.reserve(_queue.size());
+      for (auto &value : _queue) {
+        values.emplace_back(std::move(value));
+      }
+      _queue.clear();
+      _poll_state.set_ready(false);
+      return values;
     }
 
     status_t pop() {

@@ -366,6 +366,9 @@ namespace platf::dxgi {
   }
 
   capture_e display_base_t::capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) {
+    auto invalidate_geometry_on_exit = util::fail_guard([this] {
+      if (output_monitor) output_monitor->terminate_input_geometry();
+    });
     auto adjust_client_frame_rate = [&]() -> DXGI_RATIONAL {
       // Use exactly the requested rate if the client sent an X100 value
       if (client_frame_rate_strict.Numerator > 0 && client_frame_rate_strict.Denominator > 0) {
@@ -627,12 +630,17 @@ namespace platf::dxgi {
   display_base_t::~display_base_t() = default;
 
   void display_base_t::prepare_for_reinit() {
+    if (output_monitor) output_monitor->terminate_input_geometry();
     release_snapshot();
 
     if (device_ctx) {
       device_ctx->ClearState();
       device_ctx->Flush();
     }
+  }
+
+  std::optional<input_geometry_snapshot_t> display_base_t::input_geometry_snapshot() const {
+    return output_monitor ? output_monitor->input_geometry_snapshot() : std::nullopt;
   }
 
   /**
@@ -730,7 +738,8 @@ namespace platf::dxgi {
     const ::video::config_t &config,
     const std::string &display_name,
     const bool skip_dd_test,
-    const std::optional<LUID> &required_adapter_luid
+    const std::optional<LUID> &required_adapter_luid,
+    const bool preserve_capture_for_input_geometry
   ) {
     static std::once_flag windows_cpp_once_flag;
 
@@ -1163,7 +1172,8 @@ namespace platf::dxgi {
     }
 
     output_monitor = std::make_unique<display_output_monitor_t>(captured_adapter_luid, captured_output_desc,
-      captured_hdr_state_valid, captured_hdr_state, offset_x, offset_y, env_width, env_height);
+      captured_hdr_state_valid, captured_hdr_state, offset_x, offset_y, env_width, env_height,
+      preserve_capture_for_input_geometry);
 
     return 0;
   }

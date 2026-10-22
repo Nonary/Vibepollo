@@ -2,6 +2,9 @@
 
 #include <chrono>
 #include <cstdint>
+#include <limits>
+#include <string_view>
+#include <utility>
 
 namespace platf::dxgi::wgc_policy {
   inline constexpr std::uint32_t low_latency_initial_buffer_size = 1;
@@ -27,6 +30,42 @@ namespace platf::dxgi::wgc_policy {
     int height;
   };
 
+  // Portable identity for the DXGI output being captured. Input-only geometry
+  // refresh is allowed only when this full target identity still matches.
+  struct output_target_identity_t {
+    std::int32_t adapter_high_part;
+    std::uint32_t adapter_low_part;
+    std::wstring_view output_name;
+    std::uintptr_t monitor;
+    bool attached_to_desktop;
+    int rect_left;
+    int rect_top;
+    int rect_right;
+    int rect_bottom;
+    std::uint32_t rotation;
+    bool hdr_valid;
+    bool hdr;
+  };
+
+  constexpr bool matches_captured_target(
+    const output_target_identity_t &captured,
+    const output_target_identity_t &observed
+  ) noexcept {
+    return captured.adapter_high_part == observed.adapter_high_part &&
+           captured.adapter_low_part == observed.adapter_low_part &&
+           captured.output_name == observed.output_name &&
+           captured.attached_to_desktop == observed.attached_to_desktop &&
+           observed.attached_to_desktop &&
+           captured.monitor == observed.monitor &&
+           captured.rect_left == observed.rect_left &&
+           captured.rect_top == observed.rect_top &&
+           captured.rect_right == observed.rect_right &&
+           captured.rect_bottom == observed.rect_bottom &&
+           captured.rotation == observed.rotation &&
+           captured.hdr_valid == observed.hdr_valid &&
+           captured.hdr == observed.hdr;
+  }
+
   enum class input_geometry_change_e {
     unchanged,
     changed,
@@ -49,6 +88,121 @@ namespace platf::dxgi::wgc_policy {
       captured.offset_y == static_cast<std::int64_t>(monitor_y) - current.origin_y &&
       captured.desktop_width == current.width && captured.desktop_height == current.height;
     return unchanged ? input_geometry_change_e::unchanged : input_geometry_change_e::changed;
+  }
+
+  constexpr bool input_geometry_observation_needed(
+    const bool transport_active,
+    const bool mapping_valid,
+    const input_geometry_change_e change
+  ) noexcept {
+    return transport_active && (!mapping_valid || change != input_geometry_change_e::unchanged);
+  }
+
+  constexpr bool target_observation_needed(
+    const bool notified,
+    const bool factory_stale,
+    const bool geometry_observation_needed,
+    const bool color_events_subscribed,
+    const bool retry_pending,
+    const bool verify_target_periodically,
+    const bool poll_due
+  ) noexcept {
+    return notified || factory_stale || geometry_observation_needed ||
+           ((!color_events_subscribed || retry_pending || verify_target_periodically) && poll_due);
+  }
+
+  enum class verified_target_state_e : std::uint8_t {
+    same,
+    changed,
+    unavailable,
+  };
+
+  enum class active_capture_state_e : std::uint8_t {
+    valid,
+    invalid,
+    item_closed,
+  };
+
+  enum class geometry_update_action_e : std::uint8_t {
+    unchanged,
+    publish,
+    invalidate_and_retry,
+    retry,
+    reinitialize,
+  };
+
+  template<class Invalidate>
+  bool invalidate_unverified_target_geometry_before_retry(
+    const bool input_geometry_transport_active,
+    bool &mapping_valid,
+    Invalidate &&invalidate
+  ) {
+    if (!input_geometry_transport_active) return false;
+    if (mapping_valid) std::forward<Invalidate>(invalidate)();
+    mapping_valid = false;
+    return true;
+  }
+
+  template<class Invalidate>
+  bool invalidate_changed_target_geometry_before_reinitialize(
+    const bool input_geometry_transport_active,
+    bool &mapping_valid,
+    Invalidate &&invalidate
+  ) {
+    if (!input_geometry_transport_active) return false;
+    if (mapping_valid) std::forward<Invalidate>(invalidate)();
+    mapping_valid = false;
+    return true;
+  }
+
+  struct geometry_update_decision_t {
+    geometry_update_action_e action;
+    input_geometry_t mapping;
+  };
+
+  constexpr geometry_update_decision_t assess_verified_geometry_update(
+    const active_capture_state_e capture_state,
+    const verified_target_state_e target_state,
+    const bool mapping_valid,
+    const input_geometry_t &captured,
+    const int target_x,
+    const int target_y,
+    const desktop_bounds_t &current
+  ) noexcept {
+    if (capture_state != active_capture_state_e::valid ||
+        target_state == verified_target_state_e::changed) {
+      return {geometry_update_action_e::reinitialize, captured};
+    }
+    if (target_state == verified_target_state_e::unavailable ||
+        current.width <= 0 || current.height <= 0) {
+      return {
+        mapping_valid ? geometry_update_action_e::invalidate_and_retry : geometry_update_action_e::retry,
+        captured,
+      };
+    }
+
+    const auto offset_x = static_cast<std::int64_t>(target_x) - current.origin_x;
+    const auto offset_y = static_cast<std::int64_t>(target_y) - current.origin_y;
+    if (offset_x < std::numeric_limits<int>::min() ||
+        offset_x > std::numeric_limits<int>::max() ||
+        offset_y < std::numeric_limits<int>::min() ||
+        offset_y > std::numeric_limits<int>::max()) {
+      return {
+        mapping_valid ? geometry_update_action_e::invalidate_and_retry : geometry_update_action_e::retry,
+        captured,
+      };
+    }
+
+    const input_geometry_t updated {
+      static_cast<int>(offset_x),
+      static_cast<int>(offset_y),
+      current.width,
+      current.height,
+    };
+    return {
+      updated == captured && mapping_valid ? geometry_update_action_e::unchanged : geometry_update_action_e::publish,
+      updated,
+    };
   }
 
   /**

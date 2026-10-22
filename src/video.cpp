@@ -42,6 +42,7 @@ extern "C" {
 #include "amf/amf_lifecycle.h"
 #include "globals.h"
 #include "input.h"
+#include "input_geometry_policy.h"
 #include "logging.h"
 #include "nvenc/nvenc_base.h"
 #include "platform/common.h"
@@ -1555,7 +1556,14 @@ namespace video {
   struct capture_ctx_t {
     img_event_t images;
     config_t config;
+    safe::mail_raw_t::event_t<input::touch_port_t> touch_port_events;
   };
+
+  void raise_touch_port_if_geometry_changed(
+    const safe::mail_raw_t::event_t<input::touch_port_t> &event,
+    platf::display_t *display,
+    const config_t &config
+  );
 
 #ifdef _WIN32
   SS_HDR_METADATA synthetic_probe_hdr_metadata() {
@@ -3378,10 +3386,23 @@ namespace video {
         artificial_reinit = false;
       }
 
+      // Close the async session admission gate only for a reinit before draining
+      // the queue. Every capture return still publishes terminal geometry to
+      // already-admitted contexts, without changing non-reinit encoder teardown.
+      input::geometry::terminalize_capture_contexts(
+        reinit_event,
+        *capture_ctx_queue,
+        capture_ctxs,
+        status == platf::capture_e::reinit,
+        [](const auto &capture_ctx) { return capture_ctx.images->running(); },
+        [&](auto &capture_ctx) {
+          raise_touch_port_if_geometry_changed(capture_ctx.touch_port_events, disp.get(), capture_ctx.config);
+        }
+      );
+
       switch (status) {
         case platf::capture_e::reinit:
           {
-            reinit_event.raise(true);
             disp->prepare_for_reinit();
 
             // Some classes of images contain references to the display --> display won't delete unless img is deleted.
@@ -5036,6 +5057,7 @@ namespace video {
     const auto session_encoder_flags = session_encoder->flags;
 
     auto shutdown_event = mail->event<bool>(mail::shutdown);
+    auto touch_port_event = mail->event<input::touch_port_t>(mail::touch_port);
 
     bool force_sync_teardown = false;
 
@@ -5349,6 +5371,7 @@ namespace video {
     } loop_stats;
 
     while (true) {
+      raise_touch_port_if_geometry_changed(touch_port_event, disp.get(), config);
       if (auto now = std::chrono::steady_clock::now(); now - loop_stats.last_log >= 10s) {
         BOOST_LOG(debug) << "Encode loop [" << channel_data << "] " << config.width << 'x' << config.height
                          << ": popped_real=" << loop_stats.popped_real
@@ -5486,6 +5509,7 @@ namespace video {
         }
 
         auto img = images->pop(image_wait_budget);
+        raise_touch_port_if_geometry_changed(touch_port_event, disp.get(), config);
         // Completion can race the pre-wait drain, including when capture and
         // output become ready together. Send the older packet before acquiring
         // the next image's GPU mutex or reserving/converting its input surface.
@@ -5636,7 +5660,7 @@ namespace video {
     auto offsetX = (config.width - w2) * 0.5f;
     auto offsetY = (config.height - h2) * 0.5f;
 
-    return input::touch_port_t {
+    input::touch_port_t result {
       {
         display->offset_x,
         display->offset_y,
@@ -5655,6 +5679,26 @@ namespace video {
       display_env_logical_width,
       display_env_logical_height
     };
+
+    if (auto geometry = display->input_geometry_snapshot()) {
+      input::geometry::apply_snapshot_to_port(result, *geometry);
+    }
+    return result;
+  }
+
+  void publish_touch_port(
+    const safe::mail_raw_t::event_t<input::touch_port_t> &event,
+    input::touch_port_t port
+  ) {
+    input::geometry::publish_monotonic_port(event, std::move(port));
+  }
+
+  void raise_touch_port_if_geometry_changed(
+    const safe::mail_raw_t::event_t<input::touch_port_t> &event,
+    platf::display_t *display,
+    const config_t &config
+  ) {
+    input::geometry::publish_port_if_geometry_changed(event, make_port(display, config));
   }
 
   std::unique_ptr<platf::encode_device_t> make_encode_device(
@@ -5800,7 +5844,7 @@ namespace video {
     if (!encode_device && !session) return std::nullopt;
 
     // absolute mouse coordinates require that the dimensions of the screen are known
-    ctx.touch_port_events->raise(make_port(disp.get(), ctx.config));
+    publish_touch_port(ctx.touch_port_events, make_port(disp.get(), ctx.config));
 
     if (!session) {
       session = make_encode_session(
@@ -5982,6 +6026,7 @@ namespace video {
 
         KITTY_WHILE_LOOP(auto pos = std::begin(synced_sessions), pos != std::end(synced_sessions), {
           auto ctx = pos->ctx;
+          raise_touch_port_if_geometry_changed(ctx->touch_port_events, disp.get(), ctx->config);
           if (ctx->shutdown_event->peek()) {
             // Let waiting thread know it can delete shutdown_event
             ctx->join_event->raise(true);
@@ -6125,6 +6170,12 @@ namespace video {
       };
 
       auto status = disp->capture(push_captured_image_callback, pull_free_image_callback, &display_cursor);
+      // capture() terminalizes this display's geometry before returning. Make
+      // the terminal mapping visible to every active synchronous session before
+      // tearing down their encoder state or returning to the caller.
+      for (auto &ctx : synced_session_ctxs) {
+        raise_touch_port_if_geometry_changed(ctx->touch_port_events, disp.get(), ctx->config);
+      }
       if (status == platf::capture_e::reinit && ec == platf::capture_e::ok) {
         // Synchronous encoders share this thread, so destroying their sessions
         // is the equivalent of the async worker's display-reference barrier.
@@ -6287,6 +6338,7 @@ namespace video {
     const std::chrono::duration<double, std::milli> max_frametime {1000.0 / minimum_fps_target};
 
     auto shutdown_event = mail->event<bool>(mail::shutdown);
+    auto touch_port_event = mail->event<input::touch_port_t>(mail::touch_port);
     auto packets = mail::man->queue<packet_t>(mail::video_packets);
     auto idr_events = mail->event<bool>(mail::idr);
     auto hdr_event = mail->event<hdr_info_t>(mail::hdr);
@@ -6304,6 +6356,7 @@ namespace video {
     std::size_t critical_bytes = 0;
     pyrowave::policy::detail_fec_controller_t detail_fec_controller(config.framerate);
     while (true) {
+      raise_touch_port_if_geometry_changed(touch_port_event, disp.get(), config);
       // Capture can change before the first encoded packet too.
       const bool reinit_pending = reinit_event.peek();
       if (shutdown_event->peek() || !images->running() || reinit_pending) {
@@ -6336,6 +6389,7 @@ namespace video {
       } else if (!images->running()) {
         return false;
       }
+      raise_touch_port_if_geometry_changed(touch_port_event, disp.get(), config);
 
       const auto submitted_at = std::chrono::steady_clock::now();
       encoder->on_frame(submitted_at);
@@ -6380,6 +6434,7 @@ namespace video {
     void *channel_data
   ) {
     auto shutdown_event = mail->event<bool>(mail::shutdown);
+    auto touch_port_event = mail->event<input::touch_port_t>(mail::touch_port);
 
     auto images = std::make_shared<img_event_t::element_type>();
     // DXGI allows only one duplication per process/output. Normal mirror
@@ -6400,7 +6455,7 @@ namespace video {
       shutdown_event->raise(true);
     });
 
-    if (!source_ctx.capture_ctx_queue->try_raise(capture_ctx_t {images, config})) {
+    if (!source_ctx.capture_ctx_queue->try_raise(capture_ctx_t {images, config, touch_port_event})) {
       BOOST_LOG(error) << "Shared capture session queue is full or stopped; rejecting the session."sv;
       return;
     }
@@ -6415,7 +6470,6 @@ namespace video {
     std::optional<hdr_info_raw_t> last_hdr_info;
     rtx_hdr_metadata_refresh_state_t rtx_hdr_metadata_refresh;
 
-    auto touch_port_event = mail->event<input::touch_port_t>(mail::touch_port);
     auto hdr_event = mail->event<hdr_info_t>(mail::hdr);
 #if defined(_WIN32) || (defined(__linux__) && defined(SUNSHINE_BUILD_CUDA))
     int consecutive_encoder_initialization_failures = 0;
@@ -6453,7 +6507,7 @@ namespace video {
         const auto colorspace = pyrowave_session_colorspace(*display, config, hdr_info);
 
         // absolute mouse coordinates require that the dimensions of the screen are known
-        touch_port_event->raise(make_port(display.get(), config));
+        publish_touch_port(touch_port_event, make_port(display.get(), config));
         if (!encode_run_pyrowave(frame_nr, mail, images, config, display, colorspace, source_ctx.reinit_event, channel_data, std::move(hdr_info), last_hdr_info)) {
           // Shutdown, or an encoder failure: end the session either way.
           return;
@@ -6584,7 +6638,7 @@ namespace video {
       auto &session_encoder = *enc_ptr;
 
       // absolute mouse coordinates require that the dimensions of the screen are known
-      touch_port_event->raise(make_port(display.get(), config));
+      publish_touch_port(touch_port_event, make_port(display.get(), config));
 
       hdr_info_t pending_hdr_info = std::make_unique<hdr_info_raw_t>(false);
       if (session_hdr_metadata_valid) pending_hdr_info = std::make_unique<hdr_info_raw_t>(true, session_hdr_metadata);

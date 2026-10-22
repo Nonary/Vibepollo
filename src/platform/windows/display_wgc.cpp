@@ -231,7 +231,8 @@ namespace platf::dxgi {
           config,
           display_name,
           true /* skip_dd_test: WGC doesn't use Desktop Duplication */,
-          required_adapter_luid)) {
+          required_adapter_luid,
+          true /* allow the output monitor's geometry-only WGC policy */)) {
       return -1;
     }
 
@@ -517,7 +518,8 @@ namespace platf::dxgi {
           config,
           display_name,
           true /* skip_dd_test: WGC doesn't use Desktop Duplication */,
-          required_adapter_luid)) {
+          required_adapter_luid,
+          true /* allow the output monitor's geometry-only WGC policy */)) {
       return -1;
     }
 

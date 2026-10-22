@@ -215,11 +215,13 @@ namespace platf::dxgi {
       const ::video::config_t &config,
       const std::string &display_name,
       bool skip_dd_test = false,
-      const std::optional<LUID> &required_adapter_luid = std::nullopt
+      const std::optional<LUID> &required_adapter_luid = std::nullopt,
+      bool preserve_capture_for_input_geometry = false
     );
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override;
     void prepare_for_reinit() override;
+    std::optional<input_geometry_snapshot_t> input_geometry_snapshot() const override;
     // A teardown notification only; derived implementations must not block.
     virtual void request_capture_stop() noexcept {}
 

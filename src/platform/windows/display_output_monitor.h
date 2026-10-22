@@ -5,22 +5,29 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <windows.h>
 #include <dxgi1_6.h>
 
+#include "src/input_geometry_snapshot.h"
+
 namespace platf::dxgi {
-  // Owns all output enumeration and event subscriptions. The capture thread
-  // consumes only atomics; the monitor never modifies a capture D3D/DXGI object.
+  // Owns output enumeration, event subscriptions, and versioned input geometry.
+  // The monitor never modifies a capture D3D/DXGI object.
   class display_output_monitor_t {
   public:
     display_output_monitor_t(LUID adapter, DXGI_OUTPUT_DESC output, bool hdr_valid, bool hdr,
-                             int offset_x, int offset_y, int env_width, int env_height);
+                             int offset_x, int offset_y, int env_width, int env_height,
+                             bool preserve_capture_for_input_geometry);
     ~display_output_monitor_t();
     bool reinit_requested() const {
       return notifications_->reinit.load(std::memory_order_acquire);
     }
     std::uint64_t diagnostic_id() const { return diagnostic_id_; }
+    std::optional<input_geometry_snapshot_t> input_geometry_snapshot() const;
+    void invalidate_input_geometry();
+    void terminate_input_geometry();
 
   private:
     void run(std::stop_token stop);
@@ -28,7 +35,9 @@ namespace platf::dxgi {
     const DXGI_OUTPUT_DESC output_;
     const bool hdr_valid_, hdr_;
     const int offset_x_, offset_y_, env_width_, env_height_;
+    const bool preserve_capture_for_input_geometry_;
     const std::uint64_t diagnostic_id_;
+    input_geometry_snapshot_store_t geometry_snapshot_;
     struct notifications_t {
       std::atomic_bool dirty {true};
       std::atomic_bool reinit {false};
@@ -37,5 +46,7 @@ namespace platf::dxgi {
     };
     std::shared_ptr<notifications_t> notifications_ = std::make_shared<notifications_t>();
     std::jthread worker_;
+
+    bool publish_input_geometry(const int offset_x, const int offset_y, const int desktop_width, const int desktop_height);
   };
 }
