@@ -92,6 +92,88 @@ function Get-InfComponentVersion {
     return $versions[0]
 }
 
+function Invoke-DriverInstallSafetyQuery {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptText,
+        [int]$TimeoutSeconds = 15
+    )
+
+    if ($TimeoutSeconds -le 0) { throw 'Driver safety inventory requires a positive timeout. Driver unchanged.' }
+    return [string](Invoke-DriverInstallSafetyCommand -ScriptText $ScriptText -TimeoutSeconds $TimeoutSeconds)
+}
+
+function ConvertFrom-DriverInstallSafetyInventoryResult {
+    param([Parameter(Mandatory = $true)][string]$OutputText)
+
+    $markerPrefix = 'DRIVER_INSTALL_SAFETY_INVENTORY:'
+    $markerLines = @($OutputText -split '\r?\n' | Where-Object {
+        $_.StartsWith($markerPrefix, [StringComparison]::Ordinal)
+    })
+    if ($markerLines.Count -ne 1) { throw 'Driver safety inventory returned a missing or ambiguous result. Driver unchanged.' }
+
+    $encodedJson = $markerLines[0].Substring($markerPrefix.Length)
+    if ($encodedJson -notmatch '^[A-Za-z0-9+/]+={0,2}$') { throw 'Driver safety inventory returned malformed data. Driver unchanged.' }
+
+    try {
+        $json = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encodedJson))
+        $inventory = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+    } catch {
+        throw "Driver safety inventory returned invalid data. Driver unchanged. $($_.Exception.Message)"
+    }
+
+    $packagesProperty = $inventory.PSObject.Properties['Packages']
+    $devicesProperty = $inventory.PSObject.Properties['Devices']
+    if ($null -eq $packagesProperty -or $null -eq $devicesProperty) {
+        throw 'Driver safety inventory returned an incomplete result. Driver unchanged.'
+    }
+
+    return [pscustomobject]@{
+        Packages = @($packagesProperty.Value)
+        Devices  = @($devicesProperty.Value)
+    }
+}
+
+function Get-DriverInstallSafetyInventory {
+    param(
+        [Parameter(Mandatory = $true)][string]$InfName,
+        [Parameter(Mandatory = $true)][string]$HardwareId,
+        [int]$TimeoutSeconds = 15
+    )
+
+    $requestJson = ConvertTo-Json -InputObject ([pscustomobject]@{ InfName = $InfName; HardwareId = $HardwareId }) -Compress
+    $requestBase64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($requestJson))
+    $queryScript = @'
+$ErrorActionPreference = 'Stop'
+try {
+    $requestJson = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('__REQUEST__'))
+    $request = ConvertFrom-Json -InputObject $requestJson -ErrorAction Stop
+    $packages = @(Get-WindowsDriver -Online -All -ErrorAction Stop | Where-Object {
+        [IO.Path]::GetFileName([string]$_.OriginalFileName) -ieq [string]$request.InfName
+    } | ForEach-Object {
+        [pscustomobject]@{ OriginalFileName = [string]$_.OriginalFileName; Driver = [string]$_.Driver }
+    })
+    $devices = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
+        ([string]$_.DeviceID).StartsWith([string]$request.HardwareId, [StringComparison]::OrdinalIgnoreCase) -or
+        ([string]$_.HardwareID).Equals([string]$request.HardwareId, [StringComparison]::OrdinalIgnoreCase)
+    } | ForEach-Object {
+        [pscustomobject]@{ DeviceID = [string]$_.DeviceID; HardwareID = [string]$_.HardwareID; DriverVersion = [string]$_.DriverVersion }
+    })
+    $inventory = [pscustomobject]@{ Packages = @($packages); Devices = @($devices) }
+    $json = ConvertTo-Json -InputObject $inventory -Compress -Depth 5
+    $encodedJson = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($json))
+    [Console]::Out.WriteLine('DRIVER_INSTALL_SAFETY_INVENTORY:' + $encodedJson)
+    exit 0
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+'@
+    $queryScript = $queryScript.Replace('__REQUEST__', $requestBase64)
+
+    $output = Invoke-DriverInstallSafetyQuery -ScriptText $queryScript -TimeoutSeconds $TimeoutSeconds
+    return ConvertFrom-DriverInstallSafetyInventoryResult -OutputText $output
+}
+
 function Test-SafeDriverInstall {
     param(
         [Parameter(Mandatory = $true)][string]$InfPath,
@@ -104,13 +186,9 @@ function Test-SafeDriverInstall {
     $infName = [IO.Path]::GetFileName($InfPath)
     # Both queries must succeed. An empty successful query means missing;
     # errors, missing active versions, and unreadable store INFs mean unknown.
-    $packages = @(Get-WindowsDriver -Online -All -ErrorAction Stop | Where-Object {
-        [IO.Path]::GetFileName([string]$_.OriginalFileName) -ieq $infName
-    })
-    $devices = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
-        ([string]$_.DeviceID).StartsWith($HardwareId, [StringComparison]::OrdinalIgnoreCase) -or
-        ([string]$_.HardwareID).Equals($HardwareId, [StringComparison]::OrdinalIgnoreCase)
-    })
+    $inventory = Get-DriverInstallSafetyInventory -InfName $infName -HardwareId $HardwareId
+    $packages = @($inventory.Packages)
+    $devices = @($inventory.Devices)
     $installed = @()
     foreach ($device in $devices) {
         # CIM reports the active INF's numeric DriverVersion (not DriverDate).
@@ -488,6 +566,7 @@ function Invoke-DriverProcessCapture {
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             try {
                 $process.Kill()
+                $process.WaitForExit(5000) | Out-Null
             } catch {
                 $null = $_
             }
@@ -507,6 +586,34 @@ function Invoke-DriverProcessCapture {
         return @($output | ForEach-Object { [string]$_ })
     } finally {
         $process.Dispose()
+    }
+}
+
+function Invoke-DriverInstallSafetyCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptText,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $hostProcess = Get-Process -Id $PID -ErrorAction Stop
+    $powerShellPath = [string]$hostProcess.Path
+    if ([string]::IsNullOrWhiteSpace($powerShellPath)) { throw 'Unable to resolve the current PowerShell host. Driver unchanged.' }
+
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($ScriptText))
+    try {
+        $output = Invoke-DriverProcessCapture -FilePath $powerShellPath -ArgumentList @(
+            '-NoLogo', '-NonInteractive', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand
+        ) -AllowedExitCodes @(0) -TimeoutSeconds $TimeoutSeconds
+        return (@($output) -join [Environment]::NewLine)
+    } catch {
+        $detail = [string]$_.Exception.Message
+        if ($detail.Contains("timed out after $TimeoutSeconds seconds")) {
+            throw "Driver safety inventory timed out after $TimeoutSeconds seconds; driver unchanged."
+        }
+        if ($detail -match 'failed with exit code (\d+)') {
+            throw "Driver safety inventory failed with exit code $($Matches[1]); driver unchanged. $detail"
+        }
+        throw "Driver safety inventory failed; driver unchanged. $detail"
     }
 }
 

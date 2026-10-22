@@ -40,7 +40,7 @@ try {
     $tokens = $null; $errors = $null
     $ast = [Management.Automation.Language.Parser]::ParseFile($DriverScript, [ref]$tokens, [ref]$errors)
     Assert-That ($errors.Count -eq 0) 'Installer must parse'
-    foreach ($name in @('ConvertTo-DriverComponentVersion','Get-InfComponentVersion','Test-SafeDriverInstall','Get-SunshineDeviceHealth','Get-RetainedSunshinePackage','Repair-RetainedSunshineDevice')) {
+    foreach ($name in @('ConvertTo-DriverComponentVersion','Get-InfComponentVersion','Test-SafeDriverInstall','Get-DriverInstallSafetyInventory','Get-SunshineDeviceHealth','Get-RetainedSunshinePackage','Repair-RetainedSunshineDevice')) {
         $function = $ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}.GetNewClosure(), $true)
         if ($function) { . ([scriptblock]::Create($function.Extent.Text)) }
     }
@@ -99,6 +99,11 @@ try {
         'older-upgrade' { $script:packages=@($script:packages[0]); $driver.DriverVersion='1.6.3.99' }
     }
     function Get-WindowsDriver { param([switch]$Online,[switch]$All,$ErrorAction) if ($FixtureCase -eq 'inventory-failure') { throw 'Fixture inventory failure' }; $script:packages }
+    function Get-DriverInstallSafetyInventory {
+        param($InfName, $HardwareId, $TimeoutSeconds = 15)
+        if ($FixtureCase -eq 'inventory-failure') { throw 'Fixture bounded inventory failure' }
+        return [pscustomobject]@{ Packages = @($script:packages); Devices = @($script:signed) }
+    }
     function Get-CimInstance {
         param($ClassName,$ErrorAction)
         if ($FixtureCase -eq 'health-query-failure' -and $ClassName -eq 'Win32_PnPEntity') { throw 'Fixture health query failure' }
