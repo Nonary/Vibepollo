@@ -200,27 +200,29 @@ include("${SUNSHINE_TEST_REPOSITORY_ROOT}/cmake/dependencies/nlohmann_json.cmake
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
-if(NOT TARGET Boost::algorithm OR
-   NOT TARGET Boost::asio OR
-   NOT TARGET Boost::crc OR
-   NOT TARGET Boost::format OR
-   NOT TARGET Boost::function OR
-   NOT TARGET Boost::log OR
-   NOT TARGET Boost::log_setup OR
-   NOT TARGET Boost::property_tree OR
-   NOT TARGET Boost::process OR
-   NOT TARGET Boost::system)
+set(_sunshine_test_boost_components
+    algorithm
+    asio
+    crc
+    format
+    function
+    log
+    log_setup
+    property_tree
+    system)
+if(SUNSHINE_TEST_ENABLE_COMPONENT)
+    list(APPEND _sunshine_test_boost_components process)
+endif()
+set(_sunshine_test_missing_boost_target FALSE)
+foreach(_sunshine_test_boost_component IN LISTS _sunshine_test_boost_components)
+    if(NOT TARGET "Boost::${_sunshine_test_boost_component}")
+        set(_sunshine_test_missing_boost_target TRUE)
+        break()
+    endif()
+endforeach()
+if(_sunshine_test_missing_boost_target)
     find_package(Boost CONFIG REQUIRED COMPONENTS
-        algorithm
-        asio
-        crc
-        format
-        function
-        log
-        log_setup
-        property_tree
-        process
-        system)
+        ${_sunshine_test_boost_components})
 endif()
 find_package(OpenSSL REQUIRED)
 
