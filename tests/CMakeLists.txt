@@ -1909,6 +1909,16 @@ if(WIN32 AND TARGET pyrowave::capi)
     set_tests_properties(pyrowave_windows_gpu PROPERTIES SKIP_RETURN_CODE 77 LABELS "integration;gpu")
 endif()
 
+if(TARGET linux-truehdr)
+    add_executable(test_linux_truehdr_gpu test_linux_truehdr_gpu.cpp)
+    target_include_directories(test_linux_truehdr_gpu PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+    target_link_libraries(test_linux_truehdr_gpu PRIVATE linux-truehdr glad ${CMAKE_DL_LIBS})
+    add_test(NAME linux_truehdr_gpu COMMAND test_linux_truehdr_gpu "${SUNSHINE_TRUEHDR_LINUX_ROOT}")
+    add_test(NAME linux_truehdr_private_context_gpu COMMAND test_linux_truehdr_gpu "${SUNSHINE_TRUEHDR_LINUX_ROOT}" private-context)
+    set_tests_properties(linux_truehdr_gpu PROPERTIES SKIP_RETURN_CODE 77 LABELS "integration;gpu" TIMEOUT 60)
+    set_tests_properties(linux_truehdr_private_context_gpu PROPERTIES SKIP_RETURN_CODE 77 LABELS "integration;gpu" TIMEOUT 60)
+endif()
+
 if(TARGET pyrowave-linux)
     if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
         add_test(NAME test_component_pyrowave_shutdown
@@ -1936,6 +1946,13 @@ if(TARGET pyrowave-linux)
     add_executable(test_pyrowave_linux_gpu test_pyrowave_linux_gpu.cpp)
     target_include_directories(test_pyrowave_linux_gpu PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
     target_link_libraries(test_pyrowave_linux_gpu PRIVATE pyrowave-linux pyrowave::capi gbm vulkan)
+    if(TARGET linux-truehdr)
+        add_test(NAME pyrowave_linux_truehdr_gpu COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/test_pyrowave_truehdr.py"
+            "${SUNSHINE_TRUEHDR_LINUX_ROOT}" "$<TARGET_FILE:test_pyrowave_linux_gpu>")
+        set_tests_properties(pyrowave_linux_truehdr_gpu PROPERTIES
+            LABELS "integration;gpu" SKIP_RETURN_CODE 77 TIMEOUT 120)
+    endif()
     add_test(NAME pyrowave_linux_gpu COMMAND test_pyrowave_linux_gpu)
     set_tests_properties(pyrowave_linux_gpu PROPERTIES SKIP_RETURN_CODE 77 LABELS "integration;gpu")
 endif()

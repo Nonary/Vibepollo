@@ -3469,7 +3469,7 @@ namespace webrtc_stream {
         if (webrtc_capture.stream_start_params) {
           webrtc_capture.stream_start_params->uses_virtual_display = launch_session->virtual_display;
         }
-        if (launch_session->virtual_display_hdr_enabled == false) {
+        if (launch_session->virtual_display_hdr_enabled == false && !rtsp_stream::rtx_hdr_conversion_requested(*launch_session, config::video)) {
           video_config.dynamicRange = 0;
           video_config.force_sdr = true;
         }
@@ -3515,7 +3515,7 @@ namespace webrtc_stream {
             !platf::linux_display::backend().apply_session(*launch_session)) {
           return std::string {"Failed to activate the Linux private streaming display."};
         }
-        if (launch_session->virtual_display_hdr_enabled == false) {
+        if (launch_session->virtual_display_hdr_enabled == false && !rtsp_stream::rtx_hdr_conversion_requested(*launch_session, config::video)) {
           video_config.dynamicRange = 0;
           video_config.force_sdr = true;
         }
@@ -3561,7 +3561,7 @@ namespace webrtc_stream {
       apply_rtsp_video_overrides(video_config, rtsp_config);
       apply_rtx_hdr_stream_policy(video_config);
 #ifdef __linux__
-      if (launch_session->virtual_display_hdr_enabled == false) {
+      if (launch_session->virtual_display_hdr_enabled == false && !rtsp_stream::rtx_hdr_conversion_requested(*launch_session, config::video)) {
         video_config.dynamicRange = 0;
         video_config.force_sdr = true;
       }

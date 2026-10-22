@@ -66,6 +66,7 @@
 
 #ifdef __linux__
   #include "platform/linux/private_display.h"
+  #include "platform/linux/rtx_hdr_runtime.h"
 #endif
 
 #ifdef _WIN32
@@ -2451,6 +2452,9 @@ namespace config {
     // Publish only after parsing and apply_config side effects succeed. Reset
     // and failed applies leave the preceding completed settings visible.
     g_hardware_metrics_config.publish({sunshine.hardware_metrics, sunshine.hardware_metrics_interval});
+#ifdef __linux__
+    platf::rtx_hdr::notify_live_settings_changed();
+#endif
   }
 
   int parse(int argc, char *argv[]) {

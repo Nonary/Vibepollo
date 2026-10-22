@@ -1367,7 +1367,7 @@ namespace platf::linux_private_display {
         if (enabled(*output) && capture_available && (!allow_display_changes || shared)) {
           const bool requested_hdr = rtsp_stream::effective_hdr_requested(session);
           const bool current_hdr = output_hdr_capable(output, *output_name) && output->value("hdr", false);
-          if (requested_hdr && !current_hdr) session.force_sdr = true;
+          if (rtsp_stream::hdr_capture_required(session, config::video) && !current_hdr) session.force_sdr = true;
           session.virtual_display_hdr_enabled = requested_hdr && current_hdr;
           session.virtual_display_ready_since = std::chrono::steady_clock::now();
         }
@@ -1592,7 +1592,7 @@ namespace platf::linux_private_display {
       if (output) {
         const bool current_hdr = output->value("hdr", false) &&
                                  output_hdr_capable(nullptr, session.virtual_display_device_id);
-        if (rtsp_stream::effective_hdr_requested(session) && !current_hdr) {
+        if (rtsp_stream::hdr_capture_required(session, config::video) && !current_hdr) {
           session.force_sdr = true;
         }
         session.virtual_display_hdr_enabled = current_hdr;
@@ -1808,7 +1808,6 @@ namespace platf::linux_private_display {
       arguments.push_back(target_prefix + "priority." + std::to_string(primary ? 1 : std::max(1, last_priority + 1)));
     }
 
-    const bool hdr_requested = rtsp_stream::effective_hdr_requested(session);
     const bool hdr_capable = output_hdr_capable(target_before, session.virtual_display_device_id);
     const auto hdr_policy = linux_hdr::resolve_output_state(
       parsed_hdr_state,
@@ -1901,7 +1900,7 @@ namespace platf::linux_private_display {
       return use_current_output();
     }
 
-    if (hdr_requested && !verified_hdr_enabled) {
+    if (rtsp_stream::hdr_capture_required(session, config::video) && !verified_hdr_enabled) {
       session.force_sdr = true;
     }
     log_mode_diagnostic("verified");
@@ -1942,7 +1941,7 @@ namespace platf::linux_private_display {
     }
     const bool requested_hdr = rtsp_stream::effective_hdr_requested(session);
     const bool current_hdr = output_hdr_capable(output, session.virtual_display_device_id) && output->value("hdr", false);
-    if (requested_hdr && !current_hdr) session.force_sdr = true;
+    if (rtsp_stream::hdr_capture_required(session, config::video) && !current_hdr) session.force_sdr = true;
     session.virtual_display_hdr_enabled = requested_hdr && current_hdr;
     session.virtual_display_ready_since = std::chrono::steady_clock::now();
     return true;

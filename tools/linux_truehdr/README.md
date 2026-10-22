@@ -1,9 +1,10 @@
 # NVIDIA TrueHDR on Linux
 
 This runs NVIDIA's actual native TrueHDR implementation on Linux. It is a
-standalone raw-frame converter and reference harness, not yet an integration
-into Vibeshine's capture/encode loop or the local compositor. No replacement
-tone-mapping algorithm is used.
+standalone raw-frame converter and reference harness. Vibeshine's native
+CUDA/GL streaming integration is documented in
+[Linux RTX HDR](../../docs/linux/rtx-hdr.md); these tools remain independent
+reference and benchmark utilities. No replacement tone-mapping algorithm is used.
 
 The pinned NVIDIA `nvidia-vfx` 0.2.0.0 wheel contains VFX SDK 1.3.0 and
 `libnvidia-ngx-truehdr.so.1.2.3`. The downloader verifies its SHA-256 and extracts

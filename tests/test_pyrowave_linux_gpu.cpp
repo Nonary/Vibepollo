@@ -2,8 +2,10 @@
 #include "src/platform/linux/pyrowave_core.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <fstream>
 #include <gbm.h>
 #include <iostream>
 #include <linux/dma-buf.h>
@@ -21,7 +23,7 @@ static void require(bool ok, const char *message) {
   }
 }
 
-static std::array<float, 3> sdr_to_pq(std::array<float, 3> rgb) {
+static std::array<float, 3> sdr_to_pq(std::array<float, 3> rgb, float white_nits = 100) {
   for (auto &c : rgb) {
     c /= 255;
     c = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
@@ -32,7 +34,7 @@ static std::array<float, 3> sdr_to_pq(std::array<float, 3> rgb) {
     0.016391f * rgb[0] + 0.088013f * rgb[1] + 0.895595f * rgb[2]
   };
   for (auto &c : result) {
-    float x = std::pow(c / 100.0f, 2610.0f / 16384.0f);
+    float x = std::pow(c * white_nits / 10000.0f, 2610.0f / 16384.0f);
     c = 255 * std::pow((3424.0f / 4096.0f + 2413.0f / 128.0f * x) / (1 + 2392.0f / 128.0f * x), 2523.0f / 32.0f);
   }
   return result;
@@ -132,12 +134,24 @@ int main(int argc, char **argv) {
     if (argc > 1) {
       dma.init(argv[1], argc > 2);
     }
+    const char *hdr_runtime = std::getenv("PYROWAVE_TEST_TRUEHDR_RUNTIME");
+    std::array<std::array<float, 3>, 8> native_reference {};
+    if (hdr_runtime) {
+      auto *path = std::getenv("PYROWAVE_TEST_TRUEHDR_REFERENCE");
+      require(path, "missing independent native TrueHDR reference");
+      std::ifstream input(path);
+      for (auto &rgb : native_reference) {
+        for (auto &value : rgb) {
+          require(bool(input >> value), "invalid TrueHDR reference");
+        }
+      }
+    }
     unsigned cases = 0;
     for (bool chroma444 : {false, true}) {
       for (unsigned depth : {8u, 10u}) {
         for (bool full : {false, true}) {
           for (bool hdr : {false, true}) {
-            if (hdr && depth == 8) {
+            if ((hdr_runtime && !hdr) || (hdr && depth == 8)) {
               continue;
             }
             pyrowave::linux_gpu::config_t config;
@@ -149,6 +163,9 @@ int main(int argc, char **argv) {
             config.yuv444 = chroma444;
             config.ten_bit = depth > 8;
             config.hdr = hdr;
+            if (hdr_runtime) {
+              config.truehdr_runtime = hdr_runtime;
+            }
             float max = float((1u << depth) - 1), scale = float(1u << (depth - 8));
             float ym = full ? 1.0f : 219 * scale / max, ya = full ? 0.0f : 16 * scale / max;
             float cm = full ? 1.0f : 224 * scale / max, ca = float(1u << (depth - 1)) / max;
@@ -157,7 +174,9 @@ int main(int argc, char **argv) {
             std::string error;
             auto core = pyrowave::linux_gpu::core_t::create(config, error);
             if (!core) {
-              if (argc == 1 && error == "no compatible Vulkan GPU for capture device") return 77;
+              if (argc == 1 && error == "no compatible Vulkan GPU for capture device") {
+                return 77;
+              }
               throw std::runtime_error(error);
             }
             pyrowave_decoder decoder = nullptr;
@@ -201,7 +220,10 @@ int main(int argc, char **argv) {
                 source.y_invert = variant == 1;
                 // Native PQ scanout must survive unchanged at either precision.
                 // Other variants retain SDR expansion and HDR cursor coverage.
-                source.hdr10 = hdr && variant == 4;
+                source.hdr10 = hdr && variant == 4 && !hdr_runtime;
+                source.truehdr_enabled = hdr_runtime && variant != 4;
+                source.sdr_brightness = hdr_runtime && variant == 4 ? 50 : 0;
+                source.truehdr_settings.peak = boundary == UINT32_MAX ? 1000 : 1400;
                 source.lut = variant == 2 ? &inverted_lut : nullptr;
                 source.cursor = variant == 3 ? cursor : nullptr;
                 source.cursor_width = source.cursor_height = 1;
@@ -242,13 +264,16 @@ int main(int argc, char **argv) {
                     }
                   }
                   if (hdr && !source.hdr10 && argc <= 2) {
-                    rgb = sdr_to_pq(rgb);
+                    rgb = sdr_to_pq(rgb, 100.0f + source.sdr_brightness);
                   }
                   if (variant == 3) {
                     auto c = hdr ? sdr_to_pq({64 * 255.0f / 128, 0, 32 * 255.0f / 128}) : std::array<float, 3> {64 * 255.0f / 128, 0, 32 * 255.0f / 128};
                     for (int j = 0; j < 3; ++j) {
                       rgb[j] = c[j] * (128.0f / 255) + rgb[j] * (127.0f / 255);
                     }
+                  }
+                  if (source.truehdr_enabled) {
+                    rgb = native_reference[variant * 2 + (boundary != UINT32_MAX)];
                   }
                   float expected = m[0] * rgb[0] + m[1] * rgb[1] + m[2] * rgb[2] + 255 * m[3];
                   auto dim = out.row_stride_in_bytes[i];

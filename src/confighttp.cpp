@@ -443,7 +443,7 @@ namespace confighttp {
              key == "rtx_hdr_peak_brightness";
     }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     std::string encode_config_override_value(const nlohmann::json &value) {
       if (value.is_string()) {
         return value.get<std::string>();
@@ -2124,7 +2124,7 @@ namespace confighttp {
 
       // Update apps file and refresh client cache
       confighttp::refresh_client_apps_cache(file_tree);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
       const auto edited_uuid = input_tree.value("uuid", ""s);
       if (!edited_uuid.empty()) {
         (void) proc::proc.update_active_app_live_rtx_hdr_overrides(edited_uuid);
@@ -2141,7 +2141,7 @@ namespace confighttp {
     }
   }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   void updateAppRtxHdrLive(resp_https_t response, req_https_t request) {
     if (!check_content_type(response, request, "application/json")) {
       return;
@@ -3183,6 +3183,26 @@ namespace confighttp {
     output_tree["providers"]["lutris"] = true;
     output_tree["providers"]["mangohud"] = true;
     const char *session_role = std::getenv("VIBEPOLLO_SESSION_ROLE");
+    // Read PCI identity without probing encoders or touching the active compositor.
+    bool has_nvidia = false, has_amd = false, has_intel = false;
+    std::error_code gpu_error;
+    for (const auto &entry : std::filesystem::directory_iterator("/sys/class/drm", gpu_error)) {
+      if (entry.path().filename().string().rfind("renderD", 0) != 0) continue;
+      std::ifstream vendor_file(entry.path() / "device/vendor");
+      unsigned vendor = 0;
+      if (!(vendor_file >> std::hex >> vendor)) continue;
+      has_nvidia |= vendor == 0x10de;
+      has_amd |= vendor == 0x1002 || vendor == 0x1022;
+      has_intel |= vendor == 0x8086;
+    }
+    output_tree["has_nvidia_gpu"] = has_nvidia;
+    output_tree["has_amd_gpu"] = has_amd;
+    output_tree["has_intel_gpu"] = has_intel;
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+    output_tree["rtx_hdr_supported"] = has_nvidia;
+#else
+    output_tree["rtx_hdr_supported"] = false;
+#endif
     const std::string role = session_role ? session_role : "unknown";
     output_tree["linux"] = {{"session_role", role == "desktop" || role == "greeter" ? role : "unknown"}};
     const char *machine_host = std::getenv("VIBEPOLLO_MACHINE_HOST");
@@ -6332,7 +6352,7 @@ namespace confighttp {
     register_api_route("^/api/apps/delete$", "POST", deleteApp);
     register_blocking_api_route("^/api/apps/launch$", "POST", launchApp, nullptr, true);
     register_api_route("^/api/apps/close$", "POST", closeApp);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     register_api_route("^/api/apps/rtx_hdr/live$", "POST", updateAppRtxHdrLive);
 #endif
     register_api_route("^/api/logs$", "GET", getLogs);

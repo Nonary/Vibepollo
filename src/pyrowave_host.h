@@ -33,6 +33,7 @@ namespace pyrowave::host {
     int height = 0;
     bool yuv444 = false;
     video::sunshine_colorspace_t colorspace {};
+    bool rtx_hdr = false;
     int framerate = 0;
     int bitrate_kbps = 0;  ///< Video wire budget (audio and control overhead removed).
     policy::framing_e framing = policy::framing_e::records;

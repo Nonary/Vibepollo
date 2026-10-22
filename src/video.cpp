@@ -59,6 +59,9 @@ extern "C" {
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
   #include "platform/linux/cuda.h"
 #endif
+#ifdef __linux__
+  #include "platform/linux/rtx_hdr_runtime.h"
+#endif
 
 #ifdef _WIN32
   #include "src/platform/windows/display.h"
@@ -3851,7 +3854,7 @@ namespace video {
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
   bool refresh_rtx_hdr_metadata_if_needed(
     config_t &config,
-    encode_session_t &encode_session,
+    encode_session_t *encode_session,
     safe::mail_raw_t::event_t<hdr_info_t> &hdr_event,
     std::optional<hdr_info_raw_t> &last_hdr_info,
     rtx_hdr_metadata_refresh_state_t &refresh_state
@@ -3891,7 +3894,7 @@ namespace video {
 
     config.rtx_hdr_peak_nits = peak_nits;
     const auto metadata = synthesize_rtx_hdr_metadata(peak_nits);
-    encode_session.set_hdr_metadata(metadata);
+    if (encode_session) encode_session->set_hdr_metadata(metadata);
     raise_hdr_info_if_changed(
       hdr_event,
       last_hdr_info,
@@ -5585,7 +5588,7 @@ namespace video {
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
           if (refresh_rtx_hdr_metadata_if_needed(
                 config,
-                *session,
+                session.get(),
                 hdr_event,
                 last_hdr_info,
                 rtx_hdr_metadata_refresh
@@ -5820,6 +5823,12 @@ namespace video {
     }
 
     if (result) {
+#ifdef __linux__
+      if (config.rtx_hdr_active && (!result->supports_rtx_hdr() || display_is_hdr)) {
+        BOOST_LOG(error) << "RTX HDR requires an SDR capture source and a CUDA/GL NVIDIA encoder on Linux.";
+        return {};
+      }
+#endif
       result->colorspace = colorspace;
       result->rtx_hdr_active = config.rtx_hdr_active;
 
@@ -6149,7 +6158,7 @@ namespace video {
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
             if (refresh_rtx_hdr_metadata_if_needed(
                   ctx->config,
-                  *pos->session,
+                  pos->session.get(),
                   ctx->hdr_events,
                   ctx->last_hdr_info,
                   ctx->rtx_hdr_metadata_refresh
@@ -6296,18 +6305,21 @@ namespace video {
    * @brief Stream colorspace and HDR info for a PyroWave session.
    *
    * Shares the source state and metadata lifetime of codec streams.
-   * RTX HDR is never active for PyroWave sessions (see rtsp.cpp).
+   * Synthesized HDR uses SDR capture and session-owned HDR10 metadata.
    */
   sunshine_colorspace_t pyrowave_session_colorspace(platf::display_t &disp, const config_t &config, hdr_info_t &hdr_info) {
     const bool display_is_hdr = disp.is_hdr();
-    bool hdr_display = display_is_hdr;
+    bool hdr_display = display_is_hdr || config.rtx_hdr_active;
 
     const auto colorspace = colorspace_from_client_config(config, hdr_display);
 
     hdr_info = std::make_unique<hdr_info_raw_t>(false);
     if (colorspace_is_hdr(colorspace)) {
       SS_HDR_METADATA metadata {};
-      if (display_is_hdr && disp.get_hdr_metadata(metadata)) {
+      if (config.rtx_hdr_active) {
+        metadata = synthesize_rtx_hdr_metadata(config.rtx_hdr_peak_nits);
+        hdr_info = std::make_unique<hdr_info_raw_t>(true, metadata);
+      } else if (display_is_hdr && disp.get_hdr_metadata(metadata)) {
         hdr_info = std::make_unique<hdr_info_raw_t>(true, metadata);
       } else {
         BOOST_LOG(error) << "Couldn't get display hdr metadata when colorspace selection indicates it should have one";
@@ -6355,6 +6367,7 @@ namespace video {
     params.height = config.height;
     params.yuv444 = config.chromaSamplingType == 1;
     params.colorspace = colorspace;
+    params.rtx_hdr = config.rtx_hdr_active;
     params.framerate = config.framerate;
     params.bitrate_kbps = config.bitrate;
     params.framing = config.pyrowave_framing;
@@ -6403,6 +6416,7 @@ namespace video {
     std::vector<std::uint8_t> frame;
     std::size_t critical_bytes = 0;
     pyrowave::policy::detail_fec_controller_t detail_fec_controller(config.framerate);
+    rtx_hdr_metadata_refresh_state_t metadata_refresh;
     while (true) {
       raise_touch_port_if_geometry_changed(touch_port_event, disp.get(), config);
       // Capture can change before the first encoded packet too.
@@ -6451,6 +6465,10 @@ namespace video {
       }
 
       if (pending_hdr_info) raise_hdr_info_if_changed(hdr_event, last_hdr_info, std::move(pending_hdr_info));
+      // Every PyroWave frame is intra-coded; refreshed metadata precedes it.
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      refresh_rtx_hdr_metadata_if_needed(config, nullptr, hdr_event, last_hdr_info, metadata_refresh);
+#endif
 
       const auto detail_fec = params.critical_fec && params.framing == pyrowave::policy::framing_e::records ?
                                 detail_fec_controller.observe(frame, submitted_at, config.bitrate) :

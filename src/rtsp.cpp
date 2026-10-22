@@ -181,11 +181,13 @@ namespace rtsp_stream {
     // per-frame RTX HDR runtime still bypasses conversion while the foreground is
     // desktop or any non-matching app, so we can turn RTX HDR off without changing
     // WGC capture format or reinitializing the encoder.
-    // TrueHDR conversion lives in the avcodec/NVENC/AMF encode devices; the PyroWave
-    // encoder converts on its own device and has no SDR->HDR stage.
+    // Linux PyroWave has its own GPU TrueHDR stage. Windows still requires
+    // conversion support in its separate PyroWave device.
     config.rtx_hdr_active = config::runtime_config_override_enabled("rtx_hdr") &&
                             config::video.rtx_hdr.enabled &&
+#if !defined(__linux__) || !defined(SUNSHINE_ENABLE_NV_TRUEHDR)
                             config.videoFormat != pyrowave::protocol::BITSTREAM_FORMAT &&
+#endif
                             config.dynamicRange > 0 &&
                             !config.prefer_sdr_10bit &&
                             !config.force_sdr;

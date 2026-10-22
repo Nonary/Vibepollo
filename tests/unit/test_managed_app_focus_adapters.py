@@ -85,6 +85,45 @@ std::cout<<"production Windows discovery/focus helpers with OS ports: passed\n";
         subprocess.run([str(directory / 'helpers')], check=True)
 
 
+def linux_rtx_hdr_foreground(root, compiler):
+    source = (root / 'packaging/linux/vibepollo-session-broker.c').read_text()
+    route = block(source, 'case RTX_HDR_FOREGROUND:')
+    harness = r"""
+#include <cassert>
+#include <cstring>
+#include <cstddef>
+struct session_identity {};
+static int user_calls=0, direct_calls=0;
+int execv(const char *, char *const[]) { ++direct_calls; return -1; }
+int exec_user_service(const session_identity *identity, const char *directory,
+                      char *const args[], bool recover, bool hdr) {
+  assert(identity && !directory && !recover && !hdr);
+  assert(!std::strcmp(args[0],"/usr/libexec/vibeshine/vibepollo-app-focus"));
+  assert(!std::strcmp(args[1],"--foreground"));
+  assert(!std::strcmp(args[2],"steam") && !std::strcmp(args[3],"2679460"));
+  assert(!args[4]); ++user_calls; return 37;
+}
+int route(const session_identity *identity, char **argv) {
+  constexpr int RTX_HDR_FOREGROUND=1;
+  switch (RTX_HDR_FOREGROUND) { PRODUCTION }
+  return 126;
+}
+int main() {
+  session_identity identity;
+  char a0[]="broker", a1[]="rtx-hdr-foreground", a2[]="steam", a3[]="2679460";
+  char *args[]={a0,a1,a2,a3,nullptr};
+  assert(route(&identity,args)==37);
+  assert(user_calls==1 && direct_calls==0);
+}
+""".replace('PRODUCTION', route)
+    with tempfile.TemporaryDirectory(prefix='rtx-hdr-foreground-route-') as directory:
+        directory = Path(directory)
+        cpp = directory / 'route.cpp'
+        cpp.write_text(harness)
+        subprocess.run([compiler, '-std=c++23', str(cpp), '-o', str(directory / 'route')], check=True)
+        subprocess.run([str(directory / 'route')], check=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compiler', default='g++')
@@ -209,6 +248,7 @@ int main(){
         cpp.write_text(harness)
         subprocess.run([args.compiler, '-std=c++23', '-pthread', '-I', str(root), str(cpp), '-o', str(directory / 'paths')], check=True)
         subprocess.run([str(directory / 'paths')], check=True)
+    linux_rtx_hdr_foreground(root, args.compiler)
     windows_helpers(root, args.compiler)
     header = (root / 'packaging/linux/managed_app_focus_kwin.h').read_text()
     script = re.search(r'R"JS\((.*?)\)JS"', header, re.S).group(1)
@@ -216,8 +256,8 @@ int main(){
     js = r'''
 const assert=require('assert'),vm=require('vm');
 const production=PRODUCTION;
-function run(windows,pids,activate,accept=()=>true) {
- const workspace={windowList:()=>windows}; let active=null;
+function run(windows,pids,activate,accept=()=>true,initial=null) {
+ const workspace={windowList:()=>windows}; let active=initial;
  Object.defineProperty(workspace,'activeWindow',{get:()=>active,set:w=>{if(accept(w))active=w;}});
  const context={workspace,pids,activate};vm.runInNewContext(production,context);
  return {result:JSON.parse(JSON.stringify(context.result)),active};
@@ -233,6 +273,12 @@ assert.deepStrictEqual(run([native,xwayland],[8],[]).result.windows,['8:xwayland
 assert.deepStrictEqual(run([native,xwayland],[],[]).result.windows,[]);
 assert.deepStrictEqual(run([], [7],[]).result.windows,[]);
 let fallback=run([xwayland,native],[7,8],['8:xwayland-game','7:wayland-game'],w=>w===native);assert.strictEqual(fallback.active,native);assert.strictEqual(fallback.result.focused,true);
+// Read-only HDR observations must not unminimize or activate any window.
+native.minimized=false;
+let observe=run([native,xwayland],[1],[],()=>{throw Error('read-only query attempted activation');},native);
+assert.strictEqual(observe.result.foreground_pid,7);assert.strictEqual(observe.active,native);
+assert.strictEqual(run([native],[1],[],()=>true,{pid:99,normalWindow:false}).result.foreground_pid,0);
+assert.strictEqual(run([native],[1],[],()=>true,{pid:7,normalWindow:true,minimized:true}).result.foreground_pid,0);
 console.log('production KWin script: passed');
 '''.replace('PRODUCTION', json.dumps(script))
     subprocess.run([args.node, '-e', js], check=True)

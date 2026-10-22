@@ -404,6 +404,14 @@ namespace platf {
     video::sunshine_colorspace_t colorspace;
     bool rtx_hdr_active = false;
 
+    virtual bool supports_rtx_hdr() const {
+#ifdef _WIN32
+      return true;
+#else
+      return false;
+#endif
+    }
+
     // Authoritative HDR metadata for the stream, resolved once at device creation so the
     // control-channel HDR mode message and the bitstream mastering-display SEI always agree,
     // and so no consumer re-queries a display that may transiently read SDR during a reinit.

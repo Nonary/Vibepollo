@@ -444,7 +444,7 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
       <ConfigFieldRenderer setting-key="encoder" v-model="config.encoder" />
 
       <section
-        v-if="platform === 'windows' && hasNvidia"
+        v-if="['windows', 'linux'].includes(platform) && hasNvidia"
         class="space-y-4 rounded-xl border border-dark/35 p-4 dark:border-light/25"
       >
         <div class="space-y-1">

@@ -628,7 +628,9 @@ const hasNvidiaGpu = computed(() => {
   // final capability decision and will reject unsupported runtime updates.
   return true;
 });
-const showRtxHdrSection = computed(() => isWindowsHost.value && hasNvidiaGpu.value);
+const showRtxHdrSection = computed(
+  () => (isWindowsHost.value || isLinuxHost.value) && hasNvidiaGpu.value,
+);
 const rtxHdrModeLabel = computed(() => {
   const option = rtxHdrModeOptions.value.find((candidate) => candidate.value === form.rtxHdrMode);
   return option?.label ?? t('ui.application.rtxHdr.modes.inherit.label');

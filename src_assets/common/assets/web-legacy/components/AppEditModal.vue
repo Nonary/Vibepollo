@@ -401,7 +401,7 @@
           </div>
 
           <AppEditRtxHdrSection
-            v-if="isWindows && hasNvidia"
+            v-if="(isWindows || isLinux) && hasNvidia"
             v-model:form="form"
             :live-status="liveRtxHdrStatus"
             :live-error="liveRtxHdrError"

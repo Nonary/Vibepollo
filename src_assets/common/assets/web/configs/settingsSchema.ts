@@ -931,11 +931,11 @@ export const settingsCategories: SettingsCategory[] = [
     groups: [
       {
         id: 'video_rtx_hdr',
-        platform: 'windows',
+        platform: ['windows', 'linux'],
         collapsed: true,
         fields: Object.keys(extendedDefaults)
           .filter((key) => key.startsWith('rtx_hdr'))
-          .map((key) => extendedField(key, { platform: 'windows' })),
+          .map((key) => extendedField(key, { platform: ['windows', 'linux'], encoderFamily: 'nvidia' })),
       },
       {
         id: 'video_encoder',

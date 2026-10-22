@@ -5072,7 +5072,7 @@ namespace nvhttp {
             return;
           }
           launch_session->virtual_display_hdr_enabled = monitor.hdr_enabled;
-          if (rtsp_stream::effective_hdr_requested(*launch_session) && !monitor.hdr_enabled) {
+          if (rtsp_stream::hdr_capture_required(*launch_session, config::video) && !monitor.hdr_enabled) {
             launch_session->force_sdr = true;
           }
           launch_session->remote_capture_output = monitor.output;

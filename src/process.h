@@ -131,6 +131,7 @@ namespace proc {
     std::string get_app_image(int app_id);
     std::optional<ctx_t> resolve_app(const std::string &appid, const std::string &appuuid = "") const;
     std::optional<ctx_t> resolve_app(int app_id) const;
+    std::optional<ctx_t> active_app_snapshot() const;
     std::string get_last_run_app_name();
     std::string get_running_app_uuid();
     bp::environment get_env();
@@ -154,7 +155,7 @@ namespace proc {
 
     // Hot-update app list and environment without disrupting a running app
     void update_apps(std::vector<ctx_t> &&apps, bp::environment &&env);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     bool update_active_app_live_rtx_hdr_overrides(const std::string &app_uuid);
     bool update_active_app_live_rtx_hdr_overrides(
       const std::string &app_uuid,

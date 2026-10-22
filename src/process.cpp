@@ -1776,12 +1776,13 @@ namespace proc {
     const bool stream_hdr = rtsp_stream::effective_hdr_requested(*launch_session);
     _env["SUNSHINE_CLIENT_HDR"] = stream_hdr ? "true" : "false";
 #ifdef __linux__
+    const bool source_hdr = rtsp_stream::hdr_capture_required(*launch_session, config::video);
     const auto wayland_hdr_compatibility = platf::wayland_hdr_compatibility::resolve(
       config::video.dd.wayland_hdr_compatibility,
       platf::wayland_hdr_compatibility::selected_session_is_wayland(
         window_system == window_system_e::WAYLAND
       ),
-      stream_hdr
+      source_hdr
     );
     auto set_stream_environment_default = [&](const char *key, const char *value) {
       if (!_env[key].to_string().empty()) {
@@ -1929,7 +1930,7 @@ namespace proc {
               .smooth_motion = smooth_motion_policy.enabled,
               .smooth_motion_graphics_queue = smooth_motion_policy.enabled &&
                                               smooth_motion_policy.use_graphics_queue,
-              .hdr = stream_hdr,
+              .hdr = source_hdr,
               // The machine-side Steam catalog intentionally omits desktop
               // Proton metadata. The session helper re-discovers the app and
               // applies this policy only when its launch is actually Proton;
@@ -2006,8 +2007,8 @@ namespace proc {
     if (steam_proton_launch) {
       // Steam metadata is the reliable Proton discriminator. Native Steam and
       // arbitrary direct executables do not receive these Proton HDR flags.
-      (void) set_stream_environment_default("PROTON_ENABLE_HDR", stream_hdr ? "1" : "0");
-      (void) set_stream_environment_default("DXVK_HDR", stream_hdr ? "1" : "0");
+      (void) set_stream_environment_default("PROTON_ENABLE_HDR", source_hdr ? "1" : "0");
+      (void) set_stream_environment_default("DXVK_HDR", source_hdr ? "1" : "0");
       if (wayland_hdr_compatibility.enabled) {
         (void) set_stream_environment_default("PROTON_ENABLE_WAYLAND", "1");
         BOOST_LOG(debug) << "Wayland HDR compatibility applied Proton/DXVK launch flags.";
@@ -2383,7 +2384,7 @@ namespace proc {
       platf::frame_limiter_streaming_start(
         platf::frame_limiter_owner::application,
         mangohud_stream_policy,
-        {.color_mode = stream_hdr ? platf::proton_color_mode::hdr :
+        {.color_mode = source_hdr ? platf::proton_color_mode::hdr :
                                     (launch_session->prefer_sdr_10bit ? platf::proton_color_mode::sdr10 : platf::proton_color_mode::sdr),
          .wayland_hdr_compatibility = wayland_hdr_compatibility.enabled}
       );
@@ -3523,6 +3524,19 @@ namespace proc {
       return std::nullopt;
     }
     return resolve_app(std::to_string(app_id), "");
+  }
+
+  std::optional<ctx_t> proc_t::active_app_snapshot() const {
+    // Encode teardown can join a foreground observer while holding the stream
+    // lifecycle gate. An observer must never wait for either producer lock.
+    std::unique_lock stream_lock(nvhttp::stream_lifecycle_mutex(), std::try_to_lock);
+    if (!stream_lock.owns_lock()) return std::nullopt;
+    std::unique_lock app_lock(_apps_mutex, std::try_to_lock);
+    if (!app_lock.owns_lock()) return std::nullopt;
+    if (_app_id <= 0) return std::nullopt;
+    // The editable catalog can change during streaming. Foreground ownership
+    // belongs to the application actually launched, until it is replaced.
+    return _app;
   }
 
   std::string proc_t::get_last_run_app_name() {
@@ -4995,7 +5009,7 @@ namespace proc {
     catalog::update_apps(catalog_state(), std::move(apps), std::move(env));
   }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   bool proc_t::update_active_app_live_rtx_hdr_overrides(const std::string &app_uuid) {
     if (app_uuid.empty()) {
       return false;

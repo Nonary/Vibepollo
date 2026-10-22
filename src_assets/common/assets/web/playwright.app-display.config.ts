@@ -3,7 +3,7 @@ import base from './playwright.config';
 
 export default defineConfig({
   ...base,
-  testMatch: 'application-display.spec.ts',
+  testMatch: ['application-display.spec.ts', 'application-rtx-hdr.spec.ts'],
   testIgnore: [],
   webServer: [
     ...(Array.isArray(base.webServer) ? base.webServer : [base.webServer!]),

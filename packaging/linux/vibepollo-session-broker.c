@@ -1280,6 +1280,16 @@ static bool managed_focus_arguments_are_safe(int argc, char **argv) {
          parse_number(argv[6], 0, 1, &first);
 }
 
+static bool rtx_hdr_foreground_arguments_are_safe(int argc, char **argv) {
+  unsigned long id = 0;
+  if (argc != 4) return false;
+  if (!strcmp(argv[2], "steam") || !strcmp(argv[2], "lutris"))
+    return parse_number(argv[3], 1, !strcmp(argv[2], "steam") ? UINT32_MAX : LONG_MAX, &id);
+  // Compared as data to the selected user's active /proc executable, never
+  // executed or interpreted by a shell. No filesystem contents are returned.
+  return !strcmp(argv[2], "executable") && argv[3][0] && strlen(argv[3]) <= 4096;
+}
+
 static bool display_observe_arguments_are_safe(int argc, char **argv) {
   return argc == 2 && (!strcmp(argv[1], "display-observe") || !strcmp(argv[1], "display-observe-events"));
 }
@@ -1325,7 +1335,7 @@ static int execute_request(int argc, char **argv,
   enum operation {
     DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_OBSERVE, DISPLAY_POWER, DISPLAY_WAKE, DISPLAY_INHIBIT, DISPLAY_RETAIN, TOUCH_MAP, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
     AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS, LUTRIS_WAYLAND_HDR, MANAGED_FOCUS,
-    PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, APP, APP_WAYLAND_HDR
+    PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, RTX_HDR_FOREGROUND, APP, APP_WAYLAND_HDR
   } operation;
   unsigned long first_number = 0, second_number = 0, third_number = 0;
   unsigned char channel_mapping[8] = {0};
@@ -1379,6 +1389,9 @@ static int execute_request(int argc, char **argv,
   else if (!strcmp(argv[1], "managed-focus") &&
            managed_focus_arguments_are_safe(argc, argv) &&
            !strcmp(identity->role, "desktop")) operation = MANAGED_FOCUS;
+  else if (!strcmp(argv[1], "rtx-hdr-foreground") &&
+           rtx_hdr_foreground_arguments_are_safe(argc, argv) &&
+           !strcmp(identity->role, "desktop")) operation = RTX_HDR_FOREGROUND;
   else if (!strcmp(argv[1], "provider-steam-scan") && argc == 2 && !strcmp(identity->role, "desktop")) operation = PROVIDER_STEAM_SCAN;
   else if (!strcmp(argv[1], "provider-lutris-scan") && argc == 2 && !strcmp(identity->role, "desktop")) operation = PROVIDER_LUTRIS_SCAN;
   else if (argc == 2 && !strcmp(identity->role, "desktop") &&
@@ -1543,6 +1556,13 @@ static int execute_request(int argc, char **argv,
       char *const arguments[] = {"/usr/libexec/vibeshine/vibepollo-app-focus", "--managed",
                                 argv[2], argv[3], argv[4], argv[5], argv[6], NULL};
       return exec_user_service(identity, NULL, arguments, false, false, 0, NULL);
+    }
+    case RTX_HDR_FOREGROUND: {
+      // KWin must read a temporary script from the desktop runtime directory.
+      // ProtectHome=read-only in this broker namespace prevents creating it;
+      // observe through the same supervised user boundary as managed focus.
+      char *const arguments[] = {"/usr/libexec/vibeshine/vibepollo-app-focus", "--foreground", argv[2], argv[3], NULL};
+      return exec_user_service(identity, NULL, arguments, false, false);
     }
     case LUTRIS:
     case LUTRIS_WAYLAND_HDR: {

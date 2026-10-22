@@ -127,6 +127,7 @@ namespace video {
 namespace platf {
   struct encode_device_t {
     virtual ~encode_device_t() = default;
+    virtual bool supports_rtx_hdr() const { return false; }
     video::sunshine_colorspace_t colorspace;
     bool rtx_hdr_active{}, hdr_metadata_valid{};
     SS_HDR_METADATA hdr_metadata{};

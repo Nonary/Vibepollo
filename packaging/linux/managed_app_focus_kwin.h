@@ -11,6 +11,8 @@ namespace managed_app_focus {
   inline std::string kwin_script(const std::vector<std::uint64_t> &pids, const std::string &destination, const std::vector<std::string> &activate = {}) {
     return "var pids=" + nlohmann::json(pids).dump() + ";var activate=" + nlohmann::json(activate).dump() + R"JS(;
 var result={windows:[],focused:false};
+var active=workspace.activeWindow;
+result.foreground_pid=active && active.normalWindow && !active.minimized ? Number(active.pid) : 0;
 var windows=workspace.windowList();
 // Prefer a fullscreen game over its launcher/dialog, without matching titles.
 windows.sort(function(a,b) { return Number(b.fullScreen)-Number(a.fullScreen); });

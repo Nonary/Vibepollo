@@ -7,6 +7,7 @@
 // standard includes
 #include "config.h"
 #include "framegen_policy.h"
+#include "hdr_stream_policy.h"
 #include "remote_session.h"
 
 #include <array>
@@ -248,6 +249,10 @@ namespace rtsp_stream {
   inline bool rtx_hdr_conversion_requested(const launch_session_t &session, const config::video_t &video_config) {
     return effective_hdr_requested(session) &&
            rtx_hdr_enabled(video_config);
+  }
+
+  inline bool hdr_capture_required(const launch_session_t &session, const config::video_t &video_config) {
+    return video::hdr_stream_policy::requires_hdr_source(effective_hdr_requested(session), rtx_hdr_enabled(video_config));
   }
 
   /**
