@@ -22,6 +22,8 @@ target_presence = target_presence.replace('monitor_target_presence(', 'actual_mo
 reactivate_presence = function('    bool reactivate_owned_virtual_display(')
 reactivate_presence = reactivate_presence.replace('monitor_target_presence(', 'actual_monitor_target_presence(')
 gdi_name_check = function('    bool is_gdi_display_name(')
+presence_check = function('    bool is_virtual_display_present(')
+presence_check = presence_check.replace('is_virtual_display_present(', 'actual_is_virtual_display_present(')
 monitor_path_for_id = function('    std::optional<std::wstring> resolve_monitor_device_path_for_device_id(')
 
 program = r'''
@@ -162,7 +164,7 @@ bool reactivate_owned_virtual_display(const std::string &id,const std::function<
  ++helper_applies;return helper_ok;
 }
 }
-''' + function('    std::optional<std::wstring> resolve_virtual_display_name_for_device_id(') + '\n' + monitor_path_for_id + '\n' + gdi_name_check + '\n' + ccd_presence + '\n' + driver_presence + '\n' + target_presence + '\n' + reactivate_presence + r'''
+''' + function('    std::optional<std::wstring> resolve_virtual_display_name_for_device_id(') + '\n' + monitor_path_for_id + '\n' + gdi_name_check + '\n' + presence_check + '\n' + ccd_presence + '\n' + driver_presence + '\n' + target_presence + '\n' + reactivate_presence + r'''
 int main() {
  assert(VDISPLAY::policy::readiness_has_dynamic_identity_hint(true,false,false,false,false,false));
  assert(VDISPLAY::policy::readiness_has_strong_identity_hint(true,false,false,false));
@@ -179,6 +181,11 @@ int main() {
  assert(VDISPLAY::policy::defer_unidentified_readiness_candidate(false,false));
  assert(!VDISPLAY::policy::defer_unidentified_readiness_candidate(false,true));
  assert(!VDISPLAY::policy::defer_unidentified_readiness_candidate(true,false));
+ enumerated_devices={{"peer-id","peer-path","\\\\.\\DISPLAY17","client",true}};
+ assert(!actual_is_virtual_display_present(std::nullopt,std::nullopt));
+ assert(!actual_is_virtual_display_present(std::optional<std::wstring>{L"\\\\.\\DISPLAY17"},std::optional<std::string>{"target-id"}));
+ assert(actual_is_virtual_display_present(std::nullopt,std::optional<std::string>{"peer-id"}));
+ assert(actual_is_virtual_display_present(std::optional<std::wstring>{L"client"},std::nullopt));
  assert(!VDISPLAY::policy::readiness_has_dynamic_identity_hint(false,false,false,false,false,false));
  assert(!VDISPLAY::policy::readiness_has_strong_identity_hint(false,false,false,false));
  assert(video::capture_recovery::lease_identity_matches(

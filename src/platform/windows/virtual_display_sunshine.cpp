@@ -6701,27 +6701,30 @@ namespace VDISPLAY_SUNSHINE {
         normalized_name = normalize_display_name(platf::to_utf8(*display_name));
       }
 
+      // A persistence recheck without either identifier cannot prove that this
+      // client's target survived; accepting any virtual display could confirm
+      // a peer after the created output disappeared.
+      if ((!device_id || device_id->empty()) && !normalized_name) {
+        return false;
+      }
+
       for (const auto &device : *devices) {
         if (!is_virtual_display_device(device)) {
           continue;
         }
 
         bool matches = false;
-        if (device_id && !device_id->empty() && !device.m_device_id.empty()) {
+        if (device_id && !device_id->empty()) {
+          // Once a stable device ID is available, a reused GDI name must not
+          // override a mismatch if Windows has reassigned that alias.
           matches = equals_ci(device.m_device_id, *device_id);
-        }
-
-        if (!matches && normalized_name) {
+        } else if (normalized_name) {
           const auto device_name = normalize_display_name(device.m_display_name);
           const auto friendly_name = normalize_display_name(device.m_friendly_name);
           if ((!device_name.empty() && device_name == *normalized_name) ||
               (!friendly_name.empty() && friendly_name == *normalized_name)) {
             matches = true;
           }
-        }
-
-        if (!matches && !device_id && !normalized_name) {
-          matches = true;
         }
 
         if (matches) {
