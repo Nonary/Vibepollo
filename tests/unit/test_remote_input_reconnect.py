@@ -2,10 +2,13 @@
 """Execute NVHTTP input replacement and RTSP retirement against deterministic edges.
 
 Compiles unchanged production dispatch, ownership, launch replacement, pending
-admission/removal, and role-disconnect bodies. Socket, stream join, and shared
-runtime cleanup are deterministic adapters, not real streaming integration.
+runtime gates, and stream matching bodies. RTSP admission, expiry, disconnect,
+stream join and shared runtime cleanup are deterministic boundary adapters.
+Actual target RTSP registry behavior is covered separately by
+tests/scripts/test_host_stream_terminal_composition.py.
 """
 import argparse
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -24,7 +27,6 @@ def function(source, signature):
 
 def fixture(root):
     nv = (root / 'src/nvhttp.cpp').read_text()
-    rtsp = (root / 'src/rtsp.cpp').read_text()
     stream = (root / 'src/stream.cpp').read_text()
     template = (Path(__file__).with_suffix('.cpp.in')).read_text()
     owners = function(nv, 'struct remote_role_owner_t {') + ';\n'
@@ -40,24 +42,30 @@ std::unordered_map<std::string, remote_role_owner_t> remote_role_owners;\n'''
         'void notify_remote_input_transport_lost(',
         'bool has_remote_role_owner()',
     ))
-    methods = function(rtsp, 'struct pending_launch_t {') + ';\n'
-    methods += '\n'.join(function(rtsp, signature) for signature in (
-        'bool session_raise(',
-        'void release_pending_runtime_holds(',
-        'bool retain_pending_runtime_holds(',
-        'void expire_pending_locked(',
-        'void notify_expired_pending(',
-        'bool disconnect_remote_role(',
-    ))
-    start = nv.index('      const auto owner =', nv.index('  void launch('))
-    dispatch = nv[start:nv.index('      remote_session::clear_app_replacement_confirmation', start)]
-    start = nv.index('      std::unique_lock normal_transition_lock', start)
-    replacement = nv[start:nv.index('      const bool no_active_sessions =', start)]
+    def locate(pattern, start):
+        match = re.search(pattern, nv[start:], re.MULTILINE)
+        if match is None:
+            raise ValueError(pattern)
+        return start + match.start()
+
+    start = nv.index('  void launch(')
+    owner = locate(r'^[ \t]*const auto owner =', start)
+    dispatch_end = locate(r'^[ \t]*remote_session::clear_app_replacement_confirmation', owner)
+    dispatch = nv[owner:dispatch_end]
+    replacement_start = locate(r'^[ \t]*std::unique_lock normal_transition_lock', dispatch_end)
+    idle_start = locate(r'^[ \t]*const bool no_active_sessions =', replacement_start)
+    replacement = nv[replacement_start:idle_start]
+    idle_end = locate(r'^[ \t]*const auto retained_profile =', idle_start)
+    runtime_idle = nv[idle_start:idle_end]
+    runtime_start = locate(r'^[ \t]*bool runtime_overrides_applied = false;', idle_end)
+    apply_start = locate(r'^[ \t]*if \(no_active_sessions\) \{', runtime_start)
+    runtime_apply = function(nv[apply_start:], 'if (no_active_sessions) {')
     matches = '\n'.join(function(stream, signature) for signature in (
         'bool uuid_match(', 'bool remote_role_match(',
     ))
-    return (template.replace('/* @OWNERS@ */', owners).replace('/* @RTSP_METHODS@ */', methods)
+    return (template.replace('/* @OWNERS@ */', owners)
             .replace('/* @DISPATCH@ */', dispatch).replace('/* @REPLACEMENT@ */', replacement)
+            .replace('/* @RUNTIME_IDLE@ */', runtime_idle).replace('/* @RUNTIME_APPLY@ */', runtime_apply)
             .replace('/* @MATCHES@ */', matches))
 
 

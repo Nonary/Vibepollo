@@ -1069,7 +1069,9 @@ namespace rtsp_stream {
       return static_cast<int>(_session_state->sessions.size());
     }
 
-    bool has_pending_launch_or_startup() {
+    // Vibepollo stores launch entries separately; this query never expires them,
+    // so either mode provides the conservative non-reentrant snapshot.
+    bool has_pending_launch_or_startup([[maybe_unused]] bool expire_pending = true) {
       bool has_pending_launch = false;
       {
         std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
@@ -1863,8 +1865,8 @@ namespace rtsp_stream {
     server.session_clear(launch_session_id);
   }
 
-  bool has_pending_launch_or_startup() {
-    return server.has_pending_launch_or_startup();
+  bool has_pending_launch_or_startup(bool expire_pending) {
+    return server.has_pending_launch_or_startup(expire_pending);
   }
 
   void set_vulkan_hdr_layer_pending_stream(bool active) {

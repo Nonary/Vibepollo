@@ -350,8 +350,9 @@ namespace rtsp_stream {
   void launch_session_clear(uint32_t launch_session_id);
   /**
    * @brief Whether an RTSP launch or asynchronous session startup is pending.
+   * @param expire_pending False requests a conservative snapshot without expiry callbacks.
    */
-  bool has_pending_launch_or_startup();
+  bool has_pending_launch_or_startup(bool expire_pending = true);
 
   /**
    * @brief Publish whether an HDR stream launch is pending before the RTSP session is active.
