@@ -1522,6 +1522,13 @@ namespace platf::steam {
         shell_command = command + " " + shell_command;
       }
     }
+    // The desktop-session launcher inherits the broker's cwd, not Steam's
+    // per-game working directory. Enter it before evaluating launch options
+    // as well as the game, and never launch from an unrelated cwd on failure.
+    if (!game.launch_working_dir.empty()) {
+      shell_command = "cd -- " + shell_quote(game.launch_working_dir.generic_string()) +
+                      " || exit $?; " + shell_command;
+    }
     // Steam Launch Options are shell expressions, not argv fragments. They
     // commonly begin with environment assignments and may contain wrapper
     // commands or operators, so preserve those semantics explicitly.

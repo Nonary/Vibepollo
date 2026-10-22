@@ -882,7 +882,8 @@ TEST(SteamLaunch, DirectLaunchPlacesVibepolloInsideInheritedSteamOptions) {
   game.launch_options = "PROTON_DLSS_UPGRADE=3.7 mangohud %command% -windowed";
 
   const auto command = launch_command(game);
-  EXPECT_TRUE(command.starts_with("/bin/sh -c 'PROTON_DLSS_UPGRADE=3.7 mangohud "));
+  EXPECT_TRUE(command.starts_with("/bin/sh -c 'cd -- "));
+  EXPECT_NE(command.find(" || exit $?; PROTON_DLSS_UPGRADE=3.7 mangohud "), std::string::npos);
   EXPECT_NE(command.find("/usr/bin/vibepollo-mangohud --appid 1182900 -- env"), std::string::npos);
   EXPECT_NE(command.find("STEAM_COMPAT_APP_ID=1182900"), std::string::npos);
   EXPECT_NE(command.find("STEAM_COMPAT_SHADER_PATH="), std::string::npos);
@@ -917,6 +918,8 @@ TEST(SteamLaunch, RelocatedBundleExecutesItsOwnHelperWithQuotedPath) {
     game.app_id = 480;
     game.launch_executable = "/usr/bin/true";
     game.launch_os = "linux";
+    game.launch_working_dir = fs::path(fixture) / "Game's files";
+    game.launch_options = "test -r ./required-asset && %command%";
     // The generated command must locate its helper independently of cwd/PATH,
     // preserve the apostrophe in the bundle directory, and execute the game.
     fs::current_path("/");
@@ -936,6 +939,8 @@ TEST(SteamLaunch, RelocatedBundleExecutesItsOwnHelperWithQuotedPath) {
     }
   } cleanup {bundle};
   fs::create_directories(bundle);
+  fs::create_directories(bundle / "Game's files");
+  { std::ofstream asset(bundle / "Game's files/required-asset"); }
   const auto host = bundle / "vibepollo-test";
   fs::copy_file(fs::read_symlink("/proc/self/exe"), host);
   const auto helper = bundle / "vibepollo-mangohud";
@@ -963,6 +968,32 @@ TEST(SteamLaunch, RelocatedBundleExecutesItsOwnHelperWithQuotedPath) {
   ASSERT_TRUE(WIFEXITED(status));
   EXPECT_EQ(WEXITSTATUS(status), 0);
   EXPECT_TRUE(fs::is_regular_file(bundle / "helper-ran"));
+}
+
+TEST(SteamLaunch, MissingWorkingDirectoryDoesNotRunLaunchOptions) {
+  const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+  const auto missing = fs::temp_directory_path() / ("vibepollo-missing-game-" + std::to_string(nonce));
+  const auto marker = missing.string() + "-options-ran";
+  struct fixture_cleanup {
+    fs::path path;
+    ~fixture_cleanup() {
+      std::error_code error;
+      fs::remove(path, error);
+    }
+  } cleanup {marker};
+
+  game_t game;
+  game.app_id = 480;
+  game.launch_executable = "/usr/bin/true";
+  game.launch_os = "linux";
+  game.launch_working_dir = missing;
+  // A failed cd must prevent every shell statement, including statements
+  // after a semicolon in user-authored Steam launch options.
+  game.launch_options = "true; touch '" + marker + "'; exit 0; %command%";
+  const int status = std::system(launch_command(game).c_str());
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_NE(WEXITSTATUS(status), 0);
+  EXPECT_FALSE(fs::exists(marker));
 }
 
 TEST(SteamLaunch, FallsBackToBrokerWhenProtonMetadataIsUnavailable) {
