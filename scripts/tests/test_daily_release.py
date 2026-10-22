@@ -58,6 +58,12 @@ class DailyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 daily.validate_source(repository, branch, confirmation)
         daily.validate_source("Nonary/vibeshine", "master", "Nonary/vibeshine:master")
+        daily.validate_source("Nonary/vibeshine", "canary", "Nonary/vibeshine:canary")
+        daily.validate_source("Nonary/Vibepollo", "canary", "Nonary/Vibepollo:canary")
+        for repository, confirmation in (("Nonary/vibeshine", "Nonary/vibeshine:master"),
+                                         ("Nonary/Vibepollo", "Nonary/Vibepollo:master")):
+            with self.assertRaises(ValueError):
+                daily.validate_source(repository, "canary", confirmation)
         for retired in ("vibe", "vibe-test"):
             with self.assertRaises(ValueError):
                 daily.validate_source("Nonary/vibeshine", retired, f"Nonary/vibeshine:{retired}")
@@ -134,6 +140,50 @@ class DailyTests(unittest.TestCase):
             self.assertIn("version=2.0.1-nightly", output.read_text())
             self.assertIn("should_build=true", output.read_text())
             self.assertEqual(commands.call_args_list[0].args, ("git", "fetch", "--no-tags", "origin", "refs/heads/master:refs/remotes/origin/daily-source"))
+
+    def test_canary_pins_remote_tip_separately_from_default_workflow_commit(self):
+        control = "b" * 40
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "output"
+            with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=control,
+                            DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="canary",
+                            DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:canary", GITHUB_OUTPUT=str(output)):
+                with patch.object(daily, "run", side_effect=["", SHA, "", "[[]]", "", "2.0.0", ""]) as commands:
+                    daily.resolve()
+            self.assertIn(f"commit={SHA}", output.read_text())
+            self.assertIn("should_build=true", output.read_text())
+            self.assertEqual(commands.call_args_list[0].args, (
+                "git", "fetch", "--no-tags", "origin", "refs/heads/canary:refs/remotes/origin/daily-source"))
+            self.assertIn((("git", "diff", "--exit-code", control, SHA, "--", ".github/workflows"),),
+                          commands.call_args_list)
+
+    def test_canary_workflow_drift_blocks_publication(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "output"
+            with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA="b" * 40,
+                            DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="canary",
+                            DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:canary", GITHUB_OUTPUT=str(output)):
+                mismatch = daily.subprocess.CalledProcessError(1, ["git", "diff"])
+                with patch.object(daily, "run", side_effect=["", SHA, "", "[[]]", mismatch]):
+                    with self.assertRaises(daily.subprocess.CalledProcessError):
+                        daily.resolve()
+            self.assertFalse(output.exists())
+
+    def test_vibepollo_canary_accepts_independent_commits_without_migration_pin(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "output"
+            with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/Vibepollo", GITHUB_SHA="b" * 40,
+                            DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="canary",
+                            DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/Vibepollo:canary", GITHUB_OUTPUT=str(output),
+                            DAILY_RELEASE_MIGRATION_CONFIRMED="stale primary migration pin"):
+                with patch.object(daily, "run", side_effect=["", SHA, "", "[[]]", "", "2.0.0", ""]) as commands:
+                    with patch.object(daily, "resolve_migration_upstream") as migration:
+                        daily.resolve()
+                        migration.assert_not_called()
+            self.assertIn(f"commit={SHA}", output.read_text())
+            self.assertIn("should_build=true", output.read_text())
+            self.assertEqual(commands.call_args_list[0].args, (
+                "git", "fetch", "--no-tags", "origin", "refs/heads/canary:refs/remotes/origin/daily-source"))
 
     def test_unchanged_repo_skips_before_date_and_upstream_migration_checks(self):
         for repository in ("Nonary/vibeshine", "Nonary/Vibepollo"):

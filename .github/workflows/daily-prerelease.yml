@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-          # Version tags must be reachable through the primary's complete ancestry.
+          # The default branch controls the workflow; the resolver fetches canary.
           fetch-depth: 0
       - name: Test daily release contracts
         run: python -m unittest discover -s scripts/tests -p test_daily_release.py
@@ -186,7 +186,7 @@ jobs:
       - name: Create once, upload all assets, then expose prerelease
         run: |
           set -euo pipefail
-          # The reserved tag pins the tested source even if master advances.
+          # The reserved tag pins the tested source even if canary advances.
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$DAILY_TAG" --jq .object.sha)" = "$DAILY_COMMIT"
           gh release create "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$DAILY_TAG" --notes-file daily-notes.md --draft --prerelease --latest=false
           gh release upload "$DAILY_TAG" public-assets/* --repo "$GITHUB_REPOSITORY"

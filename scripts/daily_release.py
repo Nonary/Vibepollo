@@ -28,8 +28,9 @@ def identity(commit, day, base):
 def validate_source(repository, branch, confirmation):
     if repository not in {"Nonary/vibeshine", "Nonary/Vibepollo"}:
         raise ValueError("Daily publishing is limited to the designated upstream repositories")
-    if branch not in {"master", "main"}:
-        raise ValueError("Daily source must use the verified master/main primary; legacy vibe/test lanes are retired")
+    allowed = {"master", "main", "canary"}
+    if branch not in allowed:
+        raise ValueError("Daily source must use a confirmed primary or canary branch; legacy vibe/test lanes are retired")
     if confirmation != f"{repository}:{branch}":
         raise ValueError("Set DAILY_RELEASE_SOURCE_BRANCH and explicitly confirm repository:branch in DAILY_RELEASE_SOURCE_CONFIRMED")
     subprocess.run(["git", "check-ref-format", f"refs/heads/{branch}"], check=True)
@@ -98,8 +99,8 @@ def resolve():
     repository = os.environ["GITHUB_REPOSITORY"]
     branch = os.environ.get("DAILY_RELEASE_SOURCE_BRANCH", "")
     validate_source(repository, branch, os.environ.get("DAILY_RELEASE_SOURCE_CONFIRMED", ""))
-    if branch != os.environ.get("DAILY_PRIMARY_BRANCH"):
-        raise ValueError("Daily source must equal the verified repository default primary")
+    if branch != os.environ.get("DAILY_PRIMARY_BRANCH") and branch != "canary":
+        raise ValueError("Daily source must equal the verified repository default primary or canary")
     # Fetch only the explicitly confirmed remote branch; ignore local HEAD/tags.
     run("git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}:refs/remotes/origin/daily-source")
     commit = run("git", "rev-parse", "refs/remotes/origin/daily-source^{commit}")
@@ -111,7 +112,9 @@ def resolve():
         # unchanged target into a build or an assertion that migration happened.
         emit_outputs({"commit": commit, "should_build": "false", "skip_reason": f"Source unchanged since {previous['tag']}"})
         return
-    if repository == "Nonary/Vibepollo":
+    # Canary accepts independent contributor work. The reviewed primary lane
+    # retains its exact upstream-to-downstream migration attestation.
+    if repository == "Nonary/Vibepollo" and branch != "canary":
         resolve_migration_upstream(commit, os.environ.get("DAILY_RELEASE_MIGRATION_CONFIRMED", ""),
                                    os.environ.get("DAILY_RELEASE_UPSTREAM_TAG", ""), os.environ.get("GITHUB_EVENT_NAME", ""))
     # GITHUB_TOKEN has no workflows:write capability. Do not select a target
