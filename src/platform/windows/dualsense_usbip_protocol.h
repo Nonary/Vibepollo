@@ -17,7 +17,9 @@ namespace platf::dualsense_usbip {
     // Stereo signed 16-bit little-endian PCM, 48 kHz, actuator channels 3/4.
     std::function<void(std::span<const std::uint8_t>)> haptics_pcm;
     // Independent stereo speaker channels 1/2; spans are borrowed until return.
-    std::function<void(std::span<const std::uint8_t>)> speaker_pcm;
+    std::function<void(std::span<const std::uint8_t>, std::uint64_t)> speaker_pcm;
+    // Capture at URB submission, never at completion. Zero is fail-closed.
+    std::function<std::uint64_t()> capture_speaker_incarnation;
   };
 
   // Portable USB/IP 1.1.1 device endpoint. Except set_input_report(), methods
@@ -53,6 +55,7 @@ namespace platf::dualsense_usbip {
       std::vector<iso_packet> packets;
       std::vector<std::uint8_t> data;
       std::chrono::steady_clock::time_point due {};
+      std::uint64_t speaker_incarnation = 0;
     };
 
     bool parse_one();

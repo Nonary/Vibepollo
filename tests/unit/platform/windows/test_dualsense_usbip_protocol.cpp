@@ -221,14 +221,17 @@ namespace {
   void audio_capture_and_pacing() {
     bytes haptics;
     bytes speaker;
+    std::uint64_t incarnation = 7;
+    std::vector<std::uint64_t> captured;
     unsigned callbacks = 0;
     session peer(0, {.hid_output = {}, .haptics_pcm = [&](auto data) {
                        haptics.insert(haptics.end(), data.begin(), data.end());
                        ++callbacks;
                      },
-                     .speaker_pcm = [&](auto data) {
+                     .speaker_pcm = [&](auto data, auto tag) {
+                       captured.push_back(tag);
                        speaker.insert(speaker.end(), data.begin(), data.end());
-                     }});
+                     }, .capture_speaker_incarnation = [&] { return incarnation; }});
     attach(peer);
     // Two 48-frame USB packets with a deliberate offset gap. The speaker
     // channels and transfer-buffer padding must never reach the actuators.
@@ -251,6 +254,7 @@ namespace {
     CHECK(peer.feed(submit(22, false, 1, 800, pcm, {}, {{0, 384}, {416, 384}}), before));
     peer.poll(before);
     CHECK(peer.take_output().empty() && callbacks == 0);
+    incarnation = 9; // Completion must use the tag captured by each queued URB.
     const auto after = before;
     peer.poll(after + std::chrono::milliseconds(2));
     auto result = peer.take_output();
@@ -269,6 +273,7 @@ namespace {
     }
     peer.poll(after + std::chrono::milliseconds(4));
     CHECK(peer.take_output().size() == 80 && callbacks == 2 && speaker.size() == 768);
+    CHECK((captured == std::vector<std::uint64_t> {7, 7}));
     CHECK(peer.feed(submit(23, true, 2, 416, {}, {}, {{0, 196}, {220, 196}}), before));
     peer.poll(before + std::chrono::milliseconds(2));
     result = peer.take_output();
@@ -347,7 +352,7 @@ namespace {
     unsigned audio_callbacks = 0;
     platf::dualsense_usbip::callbacks audio {};
     audio.haptics_pcm = [&](auto) { ++audio_callbacks; };
-    audio.speaker_pcm = [&](auto) { ++audio_callbacks; };
+    audio.speaker_pcm = [&](auto, auto) { ++audio_callbacks; };
     session peer(0);
     attach(peer);
     const auto descriptor = submit(41, true, 0, 18, {}, control_setup(0x80, 6, 0x0100, 0, 18));

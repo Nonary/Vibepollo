@@ -550,6 +550,9 @@ namespace platf::dualsense_usbip {
   }
 
   void session::submit(urb request) {
+    if (request.direction == 0 && request.endpoint == 1 && callbacks_.capture_speaker_incarnation) {
+      request.speaker_incarnation = callbacks_.capture_speaker_incarnation();
+    }
     const bool iso = request.packet_count != non_iso && request.packet_count != 0;
     if (!request.endpoint && !iso) {
       control(request);
@@ -655,7 +658,7 @@ namespace platf::dualsense_usbip {
           callbacks_.haptics_pcm(haptics);
         }
         if (callbacks_.speaker_pcm && !speaker.empty()) {
-          callbacks_.speaker_pcm(speaker);
+          callbacks_.speaker_pcm(speaker, request.speaker_incarnation);
         }
         reply(request, 0, {}, request.length);
       }

@@ -32,6 +32,15 @@ namespace platf {
       bool waveform_capable = false;
       bool speaker_capable = false;
       std::uint64_t speaker_owner = 0;
+      // Separate from packet generations: idle/malformed resets must not
+      // invalidate unrelated queued USB audio. Only endpoint ownership changes.
+      std::atomic<std::uint64_t> speaker_incarnation {1};
+      void advance_speaker_incarnation() {
+        const auto current = speaker_incarnation.load(std::memory_order_relaxed);
+        // Saturate to disabled rather than allowing a stale incarnation to wrap.
+        speaker_incarnation.store(current == UINT64_MAX || current == 0 ? 0 : current + 1,
+                                  std::memory_order_release);
+      }
       std::shared_ptr<controller_speaker_pcm::producer_epoch> speaker_epoch = std::make_shared<controller_speaker_pcm::producer_epoch>(0);
       dualsense_usbip_gamepad::pcm_packetizer speaker;
       std::uint32_t speaker_sequence = 0;
@@ -129,7 +138,7 @@ namespace platf {
       void clear_pcm();
       void clear_actuators();
       void clear_speaker();
-      void speaker_pcm(std::span<const std::uint8_t> bytes);
+      void speaker_pcm(std::span<const std::uint8_t> bytes, std::uint64_t incarnation);
     };
 
     std::atomic<unsigned> session_count {0};
@@ -187,9 +196,10 @@ namespace platf {
       }
     }
 
-    void usb_slot::speaker_pcm(std::span<const std::uint8_t> bytes) {
+    void usb_slot::speaker_pcm(std::span<const std::uint8_t> bytes, std::uint64_t incarnation) {
       std::lock_guard lock {mutex};
-      if (!active || !ready || !speaker_capable || !feedback_queue) {
+      if (!incarnation || incarnation != speaker_incarnation.load(std::memory_order_acquire) ||
+          !active || !ready || !speaker_capable || !feedback_queue) {
         return;
       }
       const auto now = std::chrono::steady_clock::now();
@@ -399,6 +409,7 @@ namespace platf {
           retained->nonzero_pcm_received = false;
           retained->client_index = id.clientRelativeIndex;
           retained->waveform_capable = (metadata.capabilities & LI_CCAP_HAPTICS_PCM) != 0;
+          retained->advance_speaker_incarnation();
           retained->speaker_owner = metadata.speaker_owner;
           retained->speaker_capable = metadata.speaker_owner && controller_speaker_pcm::capable(metadata.type, metadata.capabilities);
           retained->persist_after_disconnect = metadata.persist_after_disconnect;
@@ -442,6 +453,7 @@ namespace platf {
       std::unique_ptr<dualsense_usbip::controller> controller;
       {
         std::lock_guard slot_lock {slot->mutex};
+        slot->advance_speaker_incarnation();
         slot->active = false;
         slot->clear_pcm();
         controller = std::move(slot->controller);
@@ -462,10 +474,16 @@ namespace platf {
                                                                    alive->haptics_pcm(samples);
                                                                  }
                                                                },
-                                                               [weak](std::span<const std::uint8_t> samples) {
+                                                               [weak](std::span<const std::uint8_t> samples, std::uint64_t incarnation) {
                                                                  if (const auto alive = weak.lock()) {
-                                                                   alive->speaker_pcm(samples);
+                                                                   alive->speaker_pcm(samples, incarnation);
                                                                  }
+                                                               },
+                                                               [weak]() -> std::uint64_t {
+                                                                 if (const auto alive = weak.lock()) {
+                                                                   return alive->speaker_incarnation.load(std::memory_order_acquire);
+                                                                 }
+                                                                 return 0;
                                                                }});
     if (!controller) {
       BOOST_LOG(error) << "Couldn't attach composite DualSense USB gamepad " << id.globalIndex;
@@ -486,6 +504,7 @@ namespace platf {
     }
     {
       std::lock_guard slot_lock {slot->mutex};
+      slot->advance_speaker_incarnation();
       slot->ready = true;
       slot->clear_pcm();
       slot->pending_accel_request = (metadata.capabilities & LI_CCAP_ACCEL) != 0;
@@ -527,6 +546,7 @@ namespace platf {
     std::unique_ptr<dualsense_usbip::controller> controller;
     {
       std::lock_guard lock {slot->mutex};
+      slot->advance_speaker_incarnation();
       slot->active = false;
       slot->clear_pcm();
       slot->feedback_queue.reset();

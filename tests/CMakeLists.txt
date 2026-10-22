@@ -1869,6 +1869,7 @@ sunshine_register_component(NAME test_component_dualsense_usbip_gamepad_policy T
 sunshine_register_component(NAME test_component_dualsense_usbip_gamepad TEST_SOURCE unit/platform/windows/test_dualsense_usbip_gamepad.cpp
     PRODUCT_SOURCES
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/dualsense_usbip_gamepad.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/dualsense_usbip_protocol.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/vhf_gamepad_policy.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/driver/src/dualsense.cpp"
     INCLUDE_DIRECTORIES ${_dualsense_protocol_test_adapter}
