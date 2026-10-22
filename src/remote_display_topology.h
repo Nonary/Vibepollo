@@ -214,6 +214,9 @@ namespace remote_display_topology {
     std::unordered_map<std::string, client_state_t> clients_;
     std::unordered_map<std::string, std::uint64_t> observed_monitor_generations_;
     std::unordered_map<std::string, std::uint64_t> released_monitor_generations_;
+    // A removed monitor no longer owns an output, but its failed restore still
+    // needs the saved physical baseline until a later shutdown retry succeeds.
+    bool physical_restore_pending_ = false;
     bool shutdown_pending_ = false;
     std::uint64_t next_normal_game_token_ = 0;
     std::uint64_t next_placement_order_ = 0;

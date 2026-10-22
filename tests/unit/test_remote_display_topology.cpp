@@ -1665,15 +1665,14 @@ TEST(RemoteDisplayTopology, IdleShutdownAfterDevicesRefreshDoesNotTouchPhysicalM
   // Model a physical inventory refresh from the Devices page, including
   // real (non-overlapping) coordinates for two physical monitors.
   coordinator.refresh_idle_physical_baseline({
-    {.id = "left", .device_id = "left", .physical = true, .active = true,
-     .primary = true, .x = 0, .y = 0, .configured_mode = {1920, 1080, 144}},
-    {.id = "right", .device_id = "right", .physical = true, .active = true,
-     .x = 1920, .y = 0, .configured_mode = {1920, 1080, 144}},
+    {.id = "left", .device_id = "left", .physical = true, .active = true, .primary = true, .x = 0, .y = 0, .configured_mode = {1920, 1080, 144}},
+    {.id = "right", .device_id = "right", .physical = true, .active = true, .x = 1920, .y = 0, .configured_mode = {1920, 1080, 144}},
   });
   const auto devices_page = coordinator.snapshot({});
   ASSERT_EQ(devices_page["nodes"].size(), 2u);
-  const auto right = std::find_if(devices_page["nodes"].begin(), devices_page["nodes"].end(),
-    [](const auto &node) { return node["id"] == "right"; });
+  const auto right = std::find_if(devices_page["nodes"].begin(), devices_page["nodes"].end(), [](const auto &node) {
+    return node["id"] == "right";
+  });
   ASSERT_NE(right, devices_page["nodes"].end());
   EXPECT_EQ((*right)["desired_position"]["x"], 1920);
 
@@ -2162,13 +2161,88 @@ TEST(RemoteDisplayTopology, InventoryRefreshPreservesManagedBaselineAndRejectsEm
 TEST(RemoteDisplayTopology, InventoryRefreshPreservesTransportlessMonitorBaseline) {
   remote_display_topology::coordinator_t coordinator;
   coordinator.set_runtime_callbacks({
-    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
-    .apply_composed_topology = [](const auto &) { return true; },
-    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) { return std::optional<std::string> {"display"}; },
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) {
+      return true;
+    },
+    .apply_composed_topology = [](const auto &) {
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) {
+      return std::optional<std::string> {"display"};
+    },
   });
   coordinator.refresh_idle_physical_baseline({{.id = "original", .physical = true, .active = true}});
   ASSERT_TRUE(coordinator.activate_or_resume("one", "One", {}, 1).ready);
   coordinator.transport_lost("one", 1);
   coordinator.refresh_idle_physical_baseline({{.id = "changed", .physical = true, .active = true}});
   EXPECT_EQ(coordinator.physical_node_ids(), std::vector<std::string> {"original"});
+}
+
+TEST(RemoteDisplayTopology, TerminalRemovalRetainsFailedPhysicalRestoreUntilShutdownSucceeds) {
+  remote_display_topology::coordinator_t coordinator;
+  int creates = 0;
+  int removals = 0;
+  int applies = 0;
+  int right_x = 1920;
+  bool fail_restore = false;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&](const auto &, const auto &, const auto &) {
+      ++creates;
+      return true;
+    },
+    .apply_composed_topology = [&](const auto &nodes) {
+      ++applies;
+      if (fail_restore) {
+        right_x = 3000;
+        return false;
+      }
+      const auto right = std::find_if(nodes.begin(), nodes.end(), [](const auto &node) {
+        return node.id == "right";
+      });
+      if (right != nodes.end()) {
+        right_x = right->x;
+      }
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) {
+      return std::optional<std::string> {"display"};
+    },
+    .terminate_owned_display = [&](const auto &) {
+      ++removals;
+      return true;
+    },
+  });
+  coordinator.refresh_idle_physical_baseline({
+    {.id = "left", .physical = true, .active = true, .primary = true},
+    {.id = "right", .physical = true, .active = true, .x = 1920},
+  });
+  ASSERT_TRUE(coordinator.activate_or_resume("one", "One", {}, 1).ready);
+  fail_restore = true;
+  ASSERT_TRUE(coordinator.explicit_release("one", 1, "terminal removal"));
+  ASSERT_EQ(removals, 1);
+  ASSERT_EQ(coordinator.managed_client_identity_count(), 0u);
+  EXPECT_FALSE(coordinator.shutdown_complete());
+  EXPECT_EQ(right_x, 3000);
+  // A Devices read sees the partially applied layout, not the restore target.
+  coordinator.refresh_idle_physical_baseline({{.id = "right", .physical = true, .active = true, .x = 3000}});
+  for (int retry = 0; retry < 2; ++retry) {
+    const int before = applies;
+    coordinator.shutdown(false);
+    EXPECT_EQ(applies, before + 1);
+    EXPECT_FALSE(coordinator.shutdown_complete());
+    EXPECT_EQ(coordinator.managed_client_identity_count(), 0u);
+    EXPECT_EQ(removals, 1);
+  }
+  fail_restore = false;
+  const int before = applies;
+  coordinator.shutdown(false);
+  EXPECT_EQ(applies, before + 1);
+  EXPECT_EQ(right_x, 1920);
+  EXPECT_TRUE(coordinator.shutdown_complete());
+  EXPECT_EQ(creates, 1);
+  EXPECT_EQ(removals, 1);
+  coordinator.shutdown(false);
+  EXPECT_EQ(applies, before + 1);  // Now genuinely idle: no additional restore.
+  coordinator.refresh_idle_physical_baseline({{.id = "updated", .physical = true, .active = true}});
+  EXPECT_EQ(coordinator.physical_node_ids(), std::vector<std::string> {"updated"});
 }
