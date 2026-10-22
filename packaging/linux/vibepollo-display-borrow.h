@@ -31,22 +31,22 @@
 #define DISPLAY_BORROW_LOCK_PATH "/run/vibepollo/display-mutation.lock"
 #endif
 struct display_borrow_identity { uint32_t version; uint32_t reserved; char context[32]; };
-static bool display_borrow_context_valid(const char *context) {
+static inline bool display_borrow_context_valid(const char *context) {
   if (!context || strlen(context) != 32) return false;
   for (unsigned i=0;i<32;++i) if (!((context[i]>='0' && context[i]<='9') || (context[i]>='a' && context[i]<='f'))) return false;
   return true;
 }
-static bool display_borrow_identity_matches(const struct display_borrow_identity *a, const struct display_borrow_identity *b) {
+static inline bool display_borrow_identity_matches(const struct display_borrow_identity *a, const struct display_borrow_identity *b) {
   return a->version == DISPLAY_BORROW_VERSION && b->version == DISPLAY_BORROW_VERSION &&
     !a->reserved && !b->reserved && !memcmp(a->context,b->context,sizeof(a->context));
 }
-static bool display_borrow_request(int argc,char **argv) {
+static inline bool display_borrow_request(int argc,char **argv) {
   return argc==3 && !strcmp(argv[1],"display-inhibit-v2") && display_borrow_context_valid(argv[2]);
 }
-static bool display_mutation_request(int argc,char **argv) {
+static inline bool display_mutation_request(int argc,char **argv) {
   return argc==3 && !strcmp(argv[1],"display-mutation-v2") && display_borrow_context_valid(argv[2]);
 }
-static int display_borrow_open_lock(void) {
+static inline int display_borrow_open_lock(void) {
   int fd=open(DISPLAY_BORROW_LOCK_PATH,O_RDWR|O_NOFOLLOW|O_CLOEXEC);
   struct stat st;
   if (fd<0) return -1;
@@ -55,14 +55,14 @@ static int display_borrow_open_lock(void) {
 }
 // An empty, correctly opened file is the only clean state. Every non-empty,
 // malformed, unreadable, or short-write result is a sticky fail-closed marker.
-static bool display_borrow_marker_clean(int fd) {
+static inline bool display_borrow_marker_clean(int fd) {
   struct stat st;
   return fd>=0 && fstat(fd,&st)==0 && S_ISREG(st.st_mode) && st.st_size==0;
 }
 // Persist uncertainty before ACK or native mutation. Extending first means a
 // short/failed marker write leaves a non-empty file that every later admission
 // rejects; a failed sync aborts before the caller can start the operation.
-static bool display_borrow_mark_uncertain(int fd) {
+static inline bool display_borrow_mark_uncertain(int fd) {
   if(!display_borrow_marker_clean(fd) || DISPLAY_BORROW_FTRUNCATE(fd,1))return false;
   const char marker='?';
   if(DISPLAY_BORROW_PWRITE(fd,&marker,1,0)!=1)return false;
@@ -71,15 +71,15 @@ static bool display_borrow_mark_uncertain(int fd) {
 // Clearing is only called after a confirmed no-op or clean completion. If
 // truncation/sync cannot be confirmed, the caller remains fenced when the
 // marker persists; if truncation reached disk, the operation was known clean.
-static bool display_borrow_clear_uncertainty(int fd) {
+static inline bool display_borrow_clear_uncertainty(int fd) {
   return fd>=0 && DISPLAY_BORROW_FTRUNCATE(fd,0)==0 && DISPLAY_BORROW_FDATASYNC(fd)==0;
 }
-static void display_borrow_note_mutation_unknown(int fd) {
+static inline void display_borrow_note_mutation_unknown(int fd) {
   // The durable write-ahead marker is already present while the exclusive
   // lock is held. Never replace it with an unchecked post-mutation write.
   (void)fd;
 }
-static void display_borrow_poison(int fd) {
+static inline void display_borrow_poison(int fd) {
   // Upgrade the already-durable '?' to a diagnostic permanent marker. Both
   // values fence; a failed update cannot restore the empty state.
   struct stat st;
@@ -87,7 +87,7 @@ static void display_borrow_poison(int fd) {
   const char marker='!';
   if(DISPLAY_BORROW_PWRITE(fd,&marker,1,0)==1)(void)DISPLAY_BORROW_FDATASYNC(fd);
 }
-static bool display_borrow_acquire_lock(int fd,bool borrow,bool mutation) {
+static inline bool display_borrow_acquire_lock(int fd,bool borrow,bool mutation) {
   if(fd<0)return false;
   if(!borrow && !mutation)return true;
   // Borrow publication and native mutation both retain exclusive admission
@@ -99,7 +99,7 @@ static bool display_borrow_acquire_lock(int fd,bool borrow,bool mutation) {
   }
   return true;
 }
-static int display_borrow_inherited_lock(void) {
+static inline int display_borrow_inherited_lock(void) {
   const char *value=getenv(DISPLAY_BORROW_LOCK_ENV);
   if (!value) return -1; // standalone legacy helper has no broker-owned lock
   if (strcmp(value,"198")) return -2;

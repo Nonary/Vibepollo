@@ -109,7 +109,10 @@ namespace platf::display_power::borrow_protocol {
         const auto native=recv(native_fd_,&byte,1,MSG_PEEK|MSG_DONTWAIT);
         live=native>0 || (native<0 && (errno==EAGAIN || errno==EWOULDBLOCK));
       }
-      if(!live)uncertain();return live;
+      if (!live) {
+        uncertain();
+      }
+      return live;
     }
     // Test seam takes only an already authenticated inert transport. Production
     // always enters through connect() below and validates root peer credentials.
