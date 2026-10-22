@@ -2665,6 +2665,10 @@ namespace confighttp {
 
   void refresh_remote_display_physical_baseline() {
     try {
+#ifdef _WIN32
+      // An inventory read must not replace a live stream's captured baseline.
+      if (remote_display_topology::instance().managed_client_identity_count() != 0) return;
+#endif
       const auto devices = nlohmann::json::parse(display_helper_integration::enumerate_devices_json(display_device::DeviceEnumerationDetail::Full));
       if (!devices.is_array()) return;
       std::vector<remote_display_topology::node_t> nodes;
@@ -2682,10 +2686,31 @@ namespace confighttp {
         node.label = label;
         node.physical = true;
         const auto info = device.value("info", nlohmann::json::object());
+#ifdef _WIN32
+        if (!info.is_object() || !info.value("active", true)) continue;
+#endif
         node.active = info.value("active", true);
         node.primary = info.value("primary", false);
+#ifdef _WIN32
+        // The coordinator may later apply this baseline. A missing origin
+        // must never silently become (0,0) for a second physical monitor.
+        if (!info.contains("origin_point") || !info["origin_point"].is_object() ||
+            !info["origin_point"].contains("x") || !info["origin_point"].contains("y") ||
+            !info["origin_point"]["x"].is_number_integer() || !info["origin_point"]["y"].is_number_integer()) continue;
+        node.device_id = id;
+        node.preexisting = true;
+        node.x = info["origin_point"]["x"].get<int>();
+        node.y = info["origin_point"]["y"].get<int>();
+        if (info.contains("resolution") && info["resolution"].is_object()) {
+          node.configured_mode.width = info["resolution"].value("width", node.configured_mode.width);
+          node.configured_mode.height = info["resolution"].value("height", node.configured_mode.height);
+        }
+#endif
         nodes.push_back(std::move(node));
       }
+#ifdef _WIN32
+      if (nodes.empty()) return;
+#endif
       remote_display_topology::instance().set_physical_baseline(std::move(nodes));
     } catch (const std::exception &e) {
       BOOST_LOG(warning) << "Remote display layout could not refresh physical monitor baseline: " << e.what();

@@ -325,6 +325,15 @@ namespace remote_display_topology {
     }
     std::sort(managed_ids.begin(), managed_ids.end());
 
+    // With no managed display there is nothing to restore or remove. Applying
+    // the physical baseline on idle shutdown can mutate otherwise correct
+    // Windows monitor origins (including a baseline refreshed by the UI).
+    if (managed_ids.empty()) {
+      clients_.clear();
+      shutdown_pending_ = false;
+      return;
+    }
+
     auto retained_clients = std::move(clients_);
     clients_.clear();
     if (callbacks_.apply_composed_topology) {
