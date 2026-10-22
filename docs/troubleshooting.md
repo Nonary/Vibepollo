@@ -30,7 +30,28 @@ If you experience unusual mouse behavior, try attaching a physical mouse to the 
 ### Web UI Access
 Can't access the web UI?
 
-1. Check firewall rules.
+1. Enter the full **HTTPS** URL. On the host, the default is
+   [https://localhost:47990](https://localhost:47990). From another LAN device, use
+   the host's LAN IP address, for example `https://192.168.1.10:47990` (replace the
+   example address with your host's address). Do not omit `https://`: a bare
+   `192.168.1.10:47990` can make the browser use plain HTTP and display
+   `ERR_EMPTY_RESPONSE` instead of opening the Web UI. The Web UI port accepts HTTPS,
+   not plain HTTP, and does not redirect HTTP requests to HTTPS.
+2. Check the host log. The warning
+   `Configuration HTTPS listener: plain HTTP received on the TLS port; use an https:// URL.`
+   means the request reached the listener using the wrong protocol. Correct the URL;
+   changing `origin_web_ui_allowed` to `wan` or opening firewall ports will not fix
+   that protocol mismatch. If you changed the base `port` setting, use the Web UI
+   port in the `Configuration UI available at` startup message. When connecting
+   from another device, replace a loopback host in that message with the host's LAN
+   IP address, keeping the HTTPS scheme and port.
+3. A certificate warning after switching to HTTPS is a separate trust issue: the
+   default certificate is self-signed. See the [configuration introduction](getting_started.md#configuration).
+   Do not enter credentials if you cannot verify the host's identity. Plain HTTP is
+   not a safe workaround for accessing the authenticated administration interface.
+4. If the correct HTTPS URL still cannot connect, check that Vibepollo is running,
+   that its bind address and `origin_web_ui_allowed` permit the intended LAN access,
+   and that firewall rules allow the configured Web UI port on the intended network.
 
 ### Zero-filled auxiliary state prevents crash dismissal or token saves
 
