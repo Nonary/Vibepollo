@@ -8,6 +8,7 @@
 #include "src/nvhttp_dispatch.h"
 #include "src/stream_broadcast_runtime.h"
 
+#include <atomic>
 #include <functional>
 #include <gtest/gtest.h>
 #include <mutex>
@@ -85,6 +86,8 @@ namespace {
     safe::mail_raw_t::event_t<int> event_a = mail->event<int>("bitrate-a");
     safe::mail_raw_t::event_t<int> event_b = mail->event<int>("bitrate-b");
     int bitrate_a = 1000, requested_a = 1000, bitrate_b = 2000, requested_b = 2000;
+    std::atomic<int> pacing_bitrate_a {1000};
+    std::atomic<int> pacing_bitrate_b {2000};
     runtime::controls_t<context_t> controls {
       broadcast,
       [](context_t &ctx, const runtime::session_action_t &action) {
@@ -100,8 +103,8 @@ namespace {
       owner = broadcast.ref();
       ASSERT_TRUE(owner);
       owner->sessions = {
-        {client_a, bitrate_a, requested_a, {}, event_a},
-        {client_b, bitrate_b, requested_b, {}, event_b},
+        {client_a, bitrate_a, requested_a, pacing_bitrate_a, {}, event_a},
+        {client_b, bitrate_b, requested_b, pacing_bitrate_b, {}, event_b},
       };
     }
 
@@ -170,8 +173,10 @@ namespace {
       EXPECT_EQ(result, -99);
       EXPECT_EQ(bitrate_a, 1000);
       EXPECT_EQ(requested_a, 1000);
+      EXPECT_EQ(pacing_bitrate_a.load(std::memory_order_relaxed), 1000);
       EXPECT_EQ(bitrate_b, 2000);
       EXPECT_EQ(requested_b, 2000);
+      EXPECT_EQ(pacing_bitrate_b.load(std::memory_order_relaxed), 2000);
       EXPECT_FALSE(event_a->peek());
       EXPECT_FALSE(event_b->peek());
     }
@@ -217,9 +222,11 @@ namespace {
     EXPECT_EQ(result, 1);
     EXPECT_EQ(bitrate_a, 12000);
     EXPECT_EQ(requested_a, 12000);
+    EXPECT_EQ(pacing_bitrate_a.load(std::memory_order_relaxed), 12000);
     EXPECT_EQ(event_a->pop(std::chrono::milliseconds {0}), 12000);
     EXPECT_EQ(bitrate_b, 2000);
     EXPECT_EQ(requested_b, 2000);
+    EXPECT_EQ(pacing_bitrate_b.load(std::memory_order_relaxed), 2000);
     EXPECT_FALSE(event_b->peek());
     EXPECT_TRUE(logs.empty());
   }

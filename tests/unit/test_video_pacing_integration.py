@@ -48,6 +48,7 @@ helper_end = ('  static broadcast_runtime::controls_t<broadcast_ctx_t>'
               else '  int set_bitrate_for_sessions(')
 helpers = section('  static video_pacing_reservation_t pacing_reservation_for_config(', helper_end)
 start_at = source.index('    int start(session_t &session,')
+bitrate_init = section('      const auto &monitor = session.config.monitor;', '      session.broadcast_ref = broadcast.ref();', start_at)
 publish = section('      // Insert this session into the session list', '\n      auto addr =', start_at)
 if updated:
     assert 'constexpr int START_PACING_REJECTED = -2;' in read('src/stream.h')
@@ -57,6 +58,11 @@ else:
     pacer = section('        size_t pacing_bps;', '        if (pyrowave_session) {')
     clamp = ''
 batches = section('        size_t max_batch_size_bytes =', '        // Don\'t ignore the last ratecontrol group')
+batch_quantum = section(
+    '        if (!pyrowave_session) {\n          const auto &monitor = session->config.monitor;',
+    '        // Send less than 64K in a single batch.',
+    source.index('        const auto pacing_ceiling =')
+)
 frame_delay = '' if fractional else '''
     const auto frame_pacing_delay = [&](std::uint64_t packets_sent) {
       return std::chrono::nanoseconds(1'000'000 * packets_sent / ratecontrol_packets_in_1ms);
@@ -81,8 +87,8 @@ if updated:
     assert 'startup_status, startup_status == 400 ? "BAD REQUEST"' in rtsp
 template = (Path(__file__).with_suffix('.cpp.in')).read_text()
 program = template
-for key, text in {'HELPERS': helpers, 'PUBLISH': publish, 'PACER': pacer, 'CLAMP': clamp,
-                  'BATCHES': batches, 'FRAME_DELAY': frame_delay, 'CONDITION': condition, 'FEC_COUNT': fec_count, 'SPLITTER': splitter,
+for key, text in {'HELPERS': helpers, 'BITRATE_INIT': bitrate_init, 'PUBLISH': publish, 'PACER': pacer, 'CLAMP': clamp,
+                  'BATCH_QUANTUM': batch_quantum, 'BATCHES': batches, 'FRAME_DELAY': frame_delay, 'CONDITION': condition, 'FEC_COUNT': fec_count, 'SPLITTER': splitter,
                   'DETAIL_MAX': detail_max, 'UPDATED': '1' if updated else '0',
                   'RATE_HELPERS': ('using stream::video_pacing_batch_packets; using stream::video_pacing_delay_ns;' if fractional else 'using stream::video_pacing_packets_per_ms;'),
                   'HTTP_HANDLER': http_handler, 'RTSP_MAPPING': rtsp_mapping}.items():

@@ -229,11 +229,13 @@ namespace {
     auto owner = broadcast.ref();
     ASSERT_TRUE(owner);
     int bitrate_a = 1000, requested_a = 1000, bitrate_b = 2000, requested_b = 2000;
+    std::atomic<int> pacing_bitrate_a {1000};
+    std::atomic<int> pacing_bitrate_b {2000};
     auto event_a = mail->event<int>("bitrate-a");
     auto event_b = mail->event<int>("bitrate-b");
     owner->sessions = {
-      {client_a, bitrate_a, requested_a, {}, event_a},
-      {client_b, bitrate_b, requested_b, {}, event_b},
+      {client_a, bitrate_a, requested_a, pacing_bitrate_a, {}, event_a},
+      {client_b, bitrate_b, requested_b, pacing_bitrate_b, {}, event_b},
     };
     auto response = std::make_shared<response_t>();
     int result = -99;
@@ -245,9 +247,11 @@ namespace {
     EXPECT_EQ(result, 1);
     EXPECT_EQ(bitrate_a, 12000);
     EXPECT_EQ(requested_a, 12000);
+    EXPECT_EQ(pacing_bitrate_a.load(std::memory_order_relaxed), 12000);
     EXPECT_EQ(event_a->pop(0ms), 12000);
     EXPECT_EQ(bitrate_b, 2000);
     EXPECT_EQ(requested_b, 2000);
+    EXPECT_EQ(pacing_bitrate_b.load(std::memory_order_relaxed), 2000);
     EXPECT_FALSE(event_b->peek());
 
     admit = false;
@@ -258,6 +262,7 @@ namespace {
     EXPECT_EQ(result, -1);
     EXPECT_EQ(bitrate_a, 12000);
     EXPECT_EQ(requested_a, 12000);
+    EXPECT_EQ(pacing_bitrate_a.load(std::memory_order_relaxed), 12000);
     EXPECT_FALSE(event_a->peek());
     EXPECT_TRUE(response->body.empty()) << "accepted dispatch leaves the handler responsible for its response";
     owner.release();

@@ -73,6 +73,7 @@ extern "C" {
 #include "utility.h"
 #include "uuid.h"
 #include "video_send.h"
+#include "video_pacing_policy.h"
 #include "webrtc_stream.h"
 #ifdef _WIN32
   #include "platform/windows/frame_limiter.h"
@@ -648,6 +649,8 @@ namespace stream {
       safe::mail_raw_t::event_t<bool> idr_events;
       safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
       safe::mail_raw_t::event_t<int> bitrate_events;
+      // HTTP bitrate control is concurrent with the UDP sender.
+      std::atomic<int> pacing_bitrate_kbps {0};
 
       std::unique_ptr<platf::deinit_t> qos;
     } video;
@@ -859,7 +862,8 @@ namespace stream {
       sessions.reserve(ctx.control_server._sessions->size());
       for (auto *session : *ctx.control_server._sessions) {
         if (session) {
-          sessions.push_back({session->device_uuid, session->config.monitor.bitrate, session->config.monitor.client_requested_bitrate, session->video.idr_events, session->video.bitrate_events});
+          sessions.push_back({session->device_uuid, session->config.monitor.bitrate, session->config.monitor.client_requested_bitrate,
+                              session->video.pacing_bitrate_kbps, session->video.idr_events, session->video.bitrate_events});
         }
       }
       return action(sessions);
@@ -2387,6 +2391,17 @@ namespace stream {
         fec_blocks_begin = std::begin(fec_blocks),
         fec_blocks_end = std::begin(fec_blocks) + fec_blocks_needed;
 
+      // The demand quantum only limits a single ordinary-stream send call.
+      // Keep the downstream frame deadline/cumulative pacing calculations intact.
+      std::size_t pacing_frame_packets = total_shards;
+      if (!pyrowave_session) {
+        pacing_frame_packets = 0;
+        for (std::size_t x = 0; x < fec_blocks_needed; ++x) {
+          const auto data_shards = (fec_blocks[x].size() + blocksize - 1) / blocksize;
+          pacing_frame_packets += pacing::fec_expanded_packets(data_shards, fec_block_percentages[x], min_parity_shards);
+        }
+      }
+
       BOOST_LOG(verbose) << "Generating "sv << fec_blocks_needed << " FEC blocks"sv;
 
       std::size_t frame_packets_accepted = 0;
@@ -2407,6 +2422,7 @@ namespace stream {
           pacing_ceiling, blocksize + (session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0));
         size_t ratecontrol_packets_in_1ms = std::giga::num * 80 / 100 / 1000 / blocksize / 8;
         ratecontrol_packets_in_1ms = std::max<size_t>(1, ratecontrol_packets_in_1ms);
+        std::size_t ordinary_batch_quantum_packets = 1;
         if (pacing_ceiling > 0 && capped_batch_packets == 0) {
           BOOST_LOG(error) << "Configured pacing ceiling has an invalid video datagram"sv;
           session::stop(*session);
@@ -2449,7 +2465,7 @@ namespace stream {
             wire_timeline_state.cached_link_bps, session->config.monitor.pyrowave_peer_link_bps);
           const auto link_interface_id = wire_timeline_state.cached_interface_id;
           const auto &monitor = session->config.monitor;
-          const auto stream_kbps = monitor.client_requested_bitrate > 0 ? monitor.client_requested_bitrate : monitor.bitrate;
+          const auto stream_kbps = session->video.pacing_bitrate_kbps.load(std::memory_order_relaxed);
           // Ethernet header/FCS/preamble/interpacket gap, IP header, UDP header,
           // plus the optional encrypted-video prefix all occupy link time.
           const auto ip_header_bytes = session->video.peer.address().is_v6() ? 40u : 20u;
@@ -2485,6 +2501,23 @@ namespace stream {
           }
         }
 
+        if (!pyrowave_session) {
+          const auto &monitor = session->config.monitor;
+          const auto stream_kbps = session->video.pacing_bitrate_kbps.load(std::memory_order_relaxed);
+          const auto ip_header_bytes = session->video.peer.address().is_v6() ? 40u : 20u;
+          const auto wire_bytes = blocksize + 38 + ip_header_bytes + 8 +
+                                  (session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
+          ordinary_batch_quantum_packets = pacing::packets_per_ms(
+            0,
+            stream_kbps,
+            payload_blocksize,
+            wire_bytes,
+            pacing_frame_packets,
+            monitor.framerate,
+            0
+          );
+        }
+
         // Send less than 64K in a single batch.
         // On Windows, batches above 64K seem to bypass SO_SNDBUF regardless of its size,
         // appear in "Other I/O" and begin waiting for interrupts.
@@ -2495,6 +2528,9 @@ namespace stream {
         max_batch_size_bytes = pyrowave_session ?
                                  std::min(max_batch_size_bytes, ratecontrol_packets_in_1ms * datagram_size) :
                                  std::min<size_t>(max_batch_size_bytes, (size_t) config::stream.video_max_batch_size_kb * 1024);
+        if (!pyrowave_session) {
+          max_batch_size_bytes = pacing::max_batch_bytes(max_batch_size_bytes, ordinary_batch_quantum_packets, datagram_size);
+        }
         if (pacing_ceiling > 0) {
           max_batch_size_bytes = std::min(max_batch_size_bytes, capped_batch_packets * datagram_size);
         }
@@ -3871,6 +3907,13 @@ namespace stream {
     int start(session_t &session, const std::string &addr_string) {
       session.input = input::alloc(session.mail, session.config.guide_button, session.config.gcpersist);
       input::update_guide_button_permissions(session.input, session.permission);
+
+      const auto &monitor = session.config.monitor;
+      const bool pyrowave_session = monitor.videoFormat == pyrowave::protocol::BITSTREAM_FORMAT;
+      const auto pacing_bitrate_kbps = pyrowave_session ?
+                                         (monitor.client_requested_bitrate > 0 ? monitor.client_requested_bitrate : monitor.bitrate) :
+                                         (monitor.bitrate > 0 ? monitor.bitrate : monitor.client_requested_bitrate);
+      session.video.pacing_bitrate_kbps.store(pacing_bitrate_kbps, std::memory_order_relaxed);
 
       session.broadcast_ref = broadcast.ref();
       if (!session.broadcast_ref) {

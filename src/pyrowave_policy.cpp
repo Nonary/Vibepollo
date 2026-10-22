@@ -3,6 +3,7 @@
  * @brief Pure PyroWave host policy: frame framing and the per-frame byte budget.
  */
 #include "pyrowave_policy.h"
+#include "video_pacing_policy.h"
 #include "pyrowave_bandwidth.h"
 
 #include "pyrowave_protocol.h"
@@ -729,27 +730,16 @@ namespace pyrowave::policy {
     std::size_t frame_bytes, int framerate,
     std::uint64_t calibrated_pace_bps
   ) {
-    if (payload_bytes == 0 || wire_bytes == 0) {
-      return 1;
-    }
-    // Link capacity includes network headers; the negotiated bitrate is payload.
-    const auto frame_packets = (frame_bytes + payload_bytes - 1) / payload_bytes;
-    const auto frame_allowance = (frame_packets * std::uint64_t(std::max(framerate, 0)) + 999) / 1000;
-    const auto bitrate_allowance = (std::uint64_t(std::max(bitrate_kbps, 0)) + 8 * payload_bytes - 1) / (8 * payload_bytes);
-    // Round demand up so quantizing to a pacing quantum cannot create a backlog.
-    const auto demand = std::max(frame_allowance, bitrate_allowance);
-    // The client measured this pace with frame-shaped UDP probes on this path.
-    const auto calibrated_packets = calibrated_pace_bps / 8 / 1000 / wire_bytes;
-    if (link_bps == 0) {
-      return std::max<std::size_t>(1, std::max(calibrated_packets, demand));
-    }
-    // Round link capacity down so pacing never exceeds the reported link speed.
-    const auto link_packets = link_bps / 8 / 1000 / wire_bytes;
-    // A receiver's negotiated speed overstates what it can absorb back-to-back:
-    // a USB 2.5GbE dock measured lossless at 2.2 Gbps but dropped 12-16 packet
-    // runs at 2.35+. Uncalibrated, pace at 80% of the link.
-    const auto target_packets = calibrated_pace_bps ? calibrated_packets : link_bps * 80 / 100 / 8 / 1000 / wire_bytes;
-    return std::max<std::size_t>(1, std::min(link_packets, std::max(target_packets, demand)));
+    const auto frame_packets = payload_bytes ? (frame_bytes + payload_bytes - 1) / payload_bytes : 0;
+    return stream::pacing::packets_per_ms(
+      link_bps,
+      bitrate_kbps,
+      payload_bytes,
+      wire_bytes,
+      frame_packets,
+      framerate,
+      calibrated_pace_bps
+    );
   }
 
   std::size_t frame_payload_budget(std::size_t wire_bytes, const wire_budget_t &transport) {

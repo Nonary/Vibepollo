@@ -2,6 +2,7 @@
  * @brief Directly linked broadcast lifecycle/control regression tests.
  */
 #include "src/stream_broadcast_runtime.h"
+#include "src/video_pacing_policy.h"
 
 #include <array>
 #include <atomic>
@@ -111,11 +112,12 @@ namespace {
     std::string uuid;
     int bitrate = 1000;
     int requested = 1000;
+    std::atomic<int> pacing_bitrate_kbps {1000};
     safe::mail_raw_t::event_t<bool> idr;
     safe::mail_raw_t::event_t<int> bitrate_event;
 
     runtime::session_control_t view() {
-      return {uuid, bitrate, requested, idr, bitrate_event};
+      return {uuid, bitrate, requested, pacing_bitrate_kbps, idr, bitrate_event};
     }
   };
 
@@ -311,8 +313,11 @@ namespace {
     EXPECT_EQ(controls.set_bitrate_for_sessions("A", 12000), 1);
     EXPECT_EQ(a.bitrate, 12000);
     EXPECT_EQ(a.requested, 12000);
+    EXPECT_EQ(a.pacing_bitrate_kbps.load(std::memory_order_relaxed), 12000);
+    EXPECT_EQ(stream::pacing::packets_per_ms(0, a.pacing_bitrate_kbps.load(std::memory_order_relaxed), 1376, 1474, 5, 120, 0), 2u);
     EXPECT_EQ(a.bitrate_event->pop(0ms), 12000);
     EXPECT_EQ(b.bitrate, 1000);
+    EXPECT_EQ(b.pacing_bitrate_kbps.load(std::memory_order_relaxed), 1000);
     EXPECT_FALSE(b.bitrate_event->peek());
     EXPECT_EQ(controls.set_bitrate_for_sessions("unknown", 12000), 0);
     EXPECT_EQ(controls.set_bitrate_for_sessions("A", -1), 0);
@@ -321,6 +326,8 @@ namespace {
     EXPECT_EQ(a.bitrate_event->pop(0ms), 24000);
     EXPECT_EQ(b.bitrate_event->pop(0ms), 24000);
     EXPECT_EQ(a.bitrate, 24000);
+    EXPECT_EQ(a.pacing_bitrate_kbps.load(std::memory_order_relaxed), 24000);
+    EXPECT_EQ(stream::pacing::packets_per_ms(0, a.pacing_bitrate_kbps.load(std::memory_order_relaxed), 1376, 1474, 5, 120, 0), 3u);
     EXPECT_EQ(b.requested, 24000);
     controls.request_idr_for_all_sessions();
     EXPECT_TRUE(a.idr->pop(0ms));
@@ -340,6 +347,7 @@ namespace {
     EXPECT_EQ(admissions, 1);
     EXPECT_EQ(a.bitrate, 1000);
     EXPECT_EQ(a.requested, 1000);
+    EXPECT_EQ(a.pacing_bitrate_kbps.load(std::memory_order_relaxed), 1000);
     EXPECT_FALSE(a.bitrate_event->peek());
     EXPECT_EQ(controls.set_bitrate_for_sessions("unknown", 12000), 0);
     EXPECT_EQ(admissions, 1);

@@ -2,6 +2,7 @@
 #include "stream_protocol.h"
 #include "src/stream_broadcast_runtime.h"
 #include "src/sync.h"
+#include "src/video_pacing_policy.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <array>
@@ -21,6 +22,7 @@
 using namespace std::literals;
 using namespace std::chrono_literals;
 using std::size_t;
+namespace pacing = stream::pacing;
 #define BOOST_LOG(level) if (false) std::cerr
 #define UPDATED_SOURCE @UPDATED@
 constexpr int MAX_RTP_HEADER_SIZE = 16, SS_ENC_VIDEO = 4, START_PACING_REJECTED = -2;
@@ -50,9 +52,13 @@ struct session_t {
   config_t config;
   std::string device_uuid = "client";
   safe::mail_t mail = std::make_shared<safe::mail_raw_t>();
+  struct address_t { bool is_v6() const { return false; } };
+  struct peer_t { address_t address() const { return {}; } };
   struct {
     safe::mail_raw_t::event_t<int> bitrate_events;
+    std::atomic<int> pacing_bitrate_kbps {0};
     bool cipher = false;
+    peer_t peer;
   } video;
   decltype(broadcast)::ptr_t broadcast_ref;
   session_t() { video.bitrate_events = mail->event<int>("dynamic_bitrate"); }
@@ -76,7 +82,7 @@ stream::broadcast_runtime::controls_t<Broadcast> controls {
     for (auto *session : *ctx.control_server._sessions) {
       if (session) {
         views.push_back({session->device_uuid, session->config.monitor.bitrate,
-          session->config.monitor.client_requested_bitrate, {}, session->video.bitrate_events});
+          session->config.monitor.client_requested_bitrate, session->video.pacing_bitrate_kbps, {}, session->video.bitrate_events});
       }
     }
     return action(views);
@@ -86,6 +92,7 @@ stream::broadcast_runtime::controls_t<Broadcast> controls {
   }
 };
 int publish_session(session_t &session) {
+@BITRATE_INIT@
 @PUBLISH@
   return 0;
 }
@@ -96,12 +103,20 @@ std::pair<size_t, size_t> pace(int cap, bool encrypted = false, bool pyro = fals
   instance.video.cipher = encrypted;
   auto *session = &instance;
   const bool pyrowave_session = pyro;
+  const auto &monitor = session->config.monitor;
+  const auto pacing_bitrate_kbps = pyrowave_session ?
+                                     (monitor.client_requested_bitrate > 0 ? monitor.client_requested_bitrate : monitor.bitrate) :
+                                     (monitor.bitrate > 0 ? monitor.bitrate : monitor.client_requested_bitrate);
+  session->video.pacing_bitrate_kbps.store(pacing_bitrate_kbps, std::memory_order_relaxed);
   for (int once = 0; once != 1; ++once) {
 @PACER@
     if (pyrowave_session) {
       ratecontrol_packets_in_1ms = 900; // deterministic adaptive-policy boundary
 @CLAMP@
     }
+    std::size_t pacing_frame_packets = 5;
+    const std::size_t payload_blocksize = blocksize - sizeof(video_packet_raw_t);
+@BATCH_QUANTUM@
 @BATCHES@
 @FRAME_DELAY@
     return {delay_mode ? size_t(frame_pacing_delay(packets).count()) : ratecontrol_packets_in_1ms, send_batch_size};
@@ -207,8 +222,8 @@ TEST(VideoPacingIntegration, ZeroKeepsLegacyAdmissionUpdatesAndPacing) {
     EXPECT_EQ(pace(0, true, false, block).first, legacy);
   }
   EXPECT_EQ(pace(0, false, true).first, 900u);
-  EXPECT_EQ(pace(0).second, 46u);
-  EXPECT_EQ(pace(0, true).second, 45u);
+  EXPECT_EQ(pace(0).second, 14u);
+  EXPECT_EQ(pace(0, true).second, 14u);
   EXPECT_FALSE(checks_deadline(0, 0, 5, 71));
 }
 TEST(VideoPacingIntegration, PositiveCeilingIsNotRaisedAndIncludesEncryption) {
@@ -304,8 +319,13 @@ size_t frame_packets(size_t image_bytes, int packet_size, int percentage, int mi
   std::array<std::string_view, MAX_FEC_BLOCKS> fec_blocks {};
   std::array<int, MAX_FEC_BLOCKS> fec_block_percentages {};
 @SPLITTER@
-  size_t count = 0;
-  for (size_t i = 0; i != fec_blocks_needed; ++i) count += fec_packets(fec_blocks[i], blocksize, fec_block_percentages[i], minimum);
+  size_t count = 0, policy_count = 0;
+  for (size_t i = 0; i != fec_blocks_needed; ++i) {
+    count += fec_packets(fec_blocks[i], blocksize, fec_block_percentages[i], minimum);
+    const auto data_shards = (fec_blocks[i].size() + blocksize - 1) / blocksize;
+    policy_count += stream::pacing::fec_expanded_packets(data_shards, fec_block_percentages[i], minimum);
+  }
+  EXPECT_EQ(policy_count, count);
   return count;
 }
 TEST(VideoPacingIntegration, DemandBoundCoversActualProductionPacketizationAndFec) {
