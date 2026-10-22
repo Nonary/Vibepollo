@@ -401,7 +401,7 @@
           </div>
 
           <AppEditRtxHdrSection
-            v-if="(isWindows || isLinux) && hasNvidia"
+            v-if="(isWindows || isLinux) && hasNvidia && (!isLinux || rtxHdrSupported)"
             v-model:form="form"
             :live-status="liveRtxHdrStatus"
             :live-error="liveRtxHdrError"
@@ -2094,6 +2094,7 @@ const platformName = computed(() => (configStore.metadata?.platform || '').toLow
 const isWindows = computed(() => platformName.value === 'windows');
 const isLinux = computed(() => platformName.value === 'linux');
 const isMac = computed(() => platformName.value === 'macos');
+const rtxHdrSupported = computed(() => (configStore.metadata as any)?.rtx_hdr_supported === true);
 const gamepadOptions = computed(() => {
   const options = [
     { label: 'Default (Global)', value: '' },

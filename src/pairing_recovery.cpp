@@ -525,16 +525,19 @@ namespace pairing_recovery {
   // This is an explicit destructive reset candidate, never automatic recovery.
   int run_auxiliary(int argc, const char *const argv[], std::ostream &out, std::ostream &error) {
     try {
-      require(argc >= 2, "Usage: --auxiliary-recovery inspect INPUT | prepare-reset INPUT --expect-snapshot TOKEN --accept-token-and-metadata-loss --output NEW_DIRECTORY");
+      require(argc >= 2, "Usage: --auxiliary-recovery inspect INPUT | prepare-reset INPUT --expect-snapshot TOKEN --accept-token-and-metadata-loss --confirm-separate-auxiliary-state --output NEW_DIRECTORY");
       const std::string_view operation = argv[0];
       require(operation == "inspect" || operation == "prepare-reset", "Auxiliary operation must be inspect or prepare-reset.");
       std::string expected, destination;
       bool accept_loss = false;
+      bool confirm_separate = false;
       for (int i = 2; i < argc; ++i) {
         require(operation == "prepare-reset", "Inspection does not accept reset options.");
         const std::string_view option = argv[i];
         if (option == "--accept-token-and-metadata-loss" && !accept_loss) {
           accept_loss = true;
+        } else if (option == "--confirm-separate-auxiliary-state" && !confirm_separate) {
+          confirm_separate = true;
         } else if (option == "--expect-snapshot" && expected.empty() && i + 1 < argc) {
           expected = argv[++i];
         } else if (option == "--output" && destination.empty() && i + 1 < argc) {
@@ -544,9 +547,9 @@ namespace pairing_recovery {
         }
       }
       const auto source = utf8_path(argv[1]);
-      // With zero bytes there is no embedded identity to establish provenance.
-      // Do not guess custom/shared state paths or accept pairing-state inputs.
-      require(source.filename() == "vibeshine_state.json", "Use copies of the configured, separate vibeshine_state.json and its .bak. Custom or shared state filenames are not supported.");
+      // Zero-filled snapshots have no embedded identity. The name check catches
+      // obvious mistakes; the operator must confirm configured path separation.
+      require(source.filename() == "vibeshine_state.json", "Use copies of the configured vibeshine_state.json and its .bak. Custom filenames are not supported.");
       const auto bytes = read_snapshot(source);
       auto backup_path = source;
       backup_path += ".bak";
@@ -558,12 +561,13 @@ namespace pairing_recovery {
       const auto primary_hash = sha256(bytes);
       const auto backup_hash = sha256(backup);
       const auto token = sha256("auxiliary-reset:" + primary_hash + ":" + backup_hash);
-      json report = {{"schema_version", 1}, {"operation", "auxiliary_reset_not_recovery"}, {"snapshot_token", token}, {"primary_sha256", primary_hash}, {"backup_sha256", backup_hash}, {"lost_state", {"API tokens", "Web UI sessions", "application ID aliases", "display metadata", "crash dismissal and notification metadata"}}, {"warning", "This cannot recover lost data. Pairing state and Web UI credentials must remain separate and unchanged. Use only copies of the configured auxiliary state."}};
+      json report = {{"schema_version", 1}, {"operation", "auxiliary_reset_not_recovery"}, {"snapshot_token", token}, {"primary_sha256", primary_hash}, {"backup_sha256", backup_hash}, {"lost_state", {"API tokens", "Web UI sessions", "application ID aliases", "display metadata", "crash dismissal and notification metadata"}}, {"warning", "This cannot recover lost data. Verify the configured auxiliary file is separate from pairing state and Web UI credentials before preparing or installing a reset."}};
       if (operation == "inspect") {
         out << report.dump(2, ' ', true) << '\n';
         return 0;
       }
       require(accept_loss, "Reset requires --accept-token-and-metadata-loss. Existing API tokens, Web UI sessions and auxiliary metadata cannot be recovered.");
+      require(confirm_separate, "Reset requires --confirm-separate-auxiliary-state after verifying the configured auxiliary and pairing paths differ.");
       require(!expected.empty() && expected == token, "Snapshot changed or --expect-snapshot does not match inspection. Inspect the current copies again.");
       require(!destination.empty(), "Preparation requires --output NEW_DIRECTORY.");
       // Explicit empty token containers also prevent startup migration from
@@ -577,6 +581,7 @@ namespace pairing_recovery {
       write_new_file(output / "vibeshine_state.reset.json.bak", candidate);
       require(read_snapshot(output / "primary.original.json") == bytes && read_snapshot(output / "backup.original.json") == backup && read_snapshot(output / "vibeshine_state.reset.json") == candidate && read_snapshot(output / "vibeshine_state.reset.json.bak") == candidate, "Output read-back verification failed; do not use the incomplete output directory.");
       report["candidate_sha256"] = sha256(candidate);
+      report["operator_confirmed_separate_auxiliary_state"] = true;
       report["complete"] = true;
       // Complete manifest is published last, as for pairing recovery.
       write_new_file(output / "recovery.json", report.dump(2, ' ', true) + "\n");

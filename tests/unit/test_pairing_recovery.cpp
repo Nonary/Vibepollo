@@ -726,7 +726,7 @@ protected:
   }
 
   std::optional<int> reset(const std::string &token) {
-    return dispatch({"sunshine", "--auxiliary-recovery", "prepare-reset", input.string(), "--expect-snapshot", token, "--accept-token-and-metadata-loss", "--output", output.string()});
+    return dispatch({"sunshine", "--auxiliary-recovery", "prepare-reset", input.string(), "--expect-snapshot", token, "--accept-token-and-metadata-loss", "--confirm-separate-auxiliary-state", "--output", output.string()});
   }
 };
 
@@ -753,6 +753,7 @@ TEST_F(AuxiliaryRecovery, ExplicitResetPreservesOriginalsAndCannotResurrectToken
   const auto report = json::parse(read(output / "recovery.json"));
   EXPECT_EQ(report["operation"], "auxiliary_reset_not_recovery");
   EXPECT_EQ(report["complete"], true);
+  EXPECT_EQ(report["operator_confirmed_separate_auxiliary_state"], true);
   EXPECT_EQ(report["candidate_sha256"], digest(candidate));
   boost::property_tree::ptree loaded;
   EXPECT_EQ(statefile::policy::load_vibeshine_state("auxiliary", loaded, [&](const std::string &) {
@@ -769,6 +770,13 @@ TEST_F(AuxiliaryRecovery, RequiresExplicitLossAcceptance) {
   const auto inspected = auxiliary_token();
   EXPECT_EQ(dispatch({"sunshine", "--auxiliary-recovery", "prepare-reset", input.string(), "--expect-snapshot", inspected, "--output", output.string()}), 2);
   EXPECT_NE(stderr_stream.str().find("--accept-token-and-metadata-loss"), std::string::npos);
+  EXPECT_FALSE(fs::exists(output));
+}
+
+TEST_F(AuxiliaryRecovery, RequiresSeparateStateConfirmation) {
+  const auto inspected = auxiliary_token();
+  EXPECT_EQ(dispatch({"sunshine", "--auxiliary-recovery", "prepare-reset", input.string(), "--expect-snapshot", inspected, "--accept-token-and-metadata-loss", "--output", output.string()}), 2);
+  EXPECT_NE(stderr_stream.str().find("--confirm-separate-auxiliary-state"), std::string::npos);
   EXPECT_FALSE(fs::exists(output));
 }
 
@@ -902,7 +910,7 @@ TEST_F(AuxiliaryRecovery, Utf8DispatcherPreservesUnicodeInputAndOutputPaths) {
   // separately exercised below; never supply an ACP .string() to this boundary.
   ASSERT_EQ(dispatch({"sunshine", "--auxiliary-recovery", "inspect", encode(input)}), 0) << stderr_stream.str();
   const std::string token = json::parse(stdout_stream.str()).at("snapshot_token");
-  ASSERT_EQ(dispatch({"sunshine", "--auxiliary-recovery", "prepare-reset", encode(input), "--expect-snapshot", token, "--accept-token-and-metadata-loss", "--output", encode(output)}), 0) << stderr_stream.str();
+  ASSERT_EQ(dispatch({"sunshine", "--auxiliary-recovery", "prepare-reset", encode(input), "--expect-snapshot", token, "--accept-token-and-metadata-loss", "--confirm-separate-auxiliary-state", "--output", encode(output)}), 0) << stderr_stream.str();
   EXPECT_TRUE(fs::exists(output / "recovery.json"));
   EXPECT_EQ(read(input), std::string(32, '\0'));
 }
@@ -932,7 +940,7 @@ TEST_F(AuxiliaryRecovery, WindowsWideCommandLinePreservesCp1252AndNonAcpPaths) {
     ASSERT_EQ(pairing_recovery::dispatch_windows_command_line(inspect_command.c_str(), stdout_stream, stderr_stream), 0) << stderr_stream.str();
     const std::string token = json::parse(stdout_stream.str()).at("snapshot_token");
     const auto prepare_command = prefix + std::wstring(L"prepare-reset \"") + input.wstring() + L"\" --expect-snapshot " +
-                                 std::wstring(token.begin(), token.end()) + L" --accept-token-and-metadata-loss --output \"" + output.wstring() + L"\"";
+                                 std::wstring(token.begin(), token.end()) + L" --accept-token-and-metadata-loss --confirm-separate-auxiliary-state --output \"" + output.wstring() + L"\"";
     ASSERT_EQ(pairing_recovery::dispatch_windows_command_line(prepare_command.c_str(), stdout_stream, stderr_stream), 0) << stderr_stream.str();
     EXPECT_TRUE(fs::exists(output / "recovery.json"));
     EXPECT_EQ(read(input), std::string(32, '\0'));

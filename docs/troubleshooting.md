@@ -51,7 +51,9 @@ login, and display settings/launch shortcuts may need reconfiguration. It does
    directory. This disconnects active streams. Confirm that the configured
    auxiliary file is the separate `vibeshine_state.json`, **not** the pairing or
    credentials file. Custom/shared filenames are unsupported by this command;
-   do not rename a pairing/credential file to bypass this check. Copy the auxiliary
+   do not rename a pairing/credential file to bypass this check. The command
+   runs before host configuration is parsed and cannot verify this separation
+   from zero-filled copies. Copy the auxiliary
    file and its `.bak` into `C:\PrivateRecovery`. Never upload either snapshot.
 2. In PowerShell, inspect those two copies:
 
@@ -67,7 +69,7 @@ login, and display settings/launch shortcuts may need reconfiguration. It does
    that value; `C:\PrivateRecovery\reset` must not exist:
 
    ```powershell
-   & 'C:\Program Files\Sunshine\sunshine.exe' --auxiliary-recovery prepare-reset 'C:\PrivateRecovery\vibeshine_state.json' --expect-snapshot TOKEN --accept-token-and-metadata-loss --output 'C:\PrivateRecovery\reset'
+   & 'C:\Program Files\Sunshine\sunshine.exe' --auxiliary-recovery prepare-reset 'C:\PrivateRecovery\vibeshine_state.json' --expect-snapshot TOKEN --accept-token-and-metadata-loss --confirm-separate-auxiliary-state --output 'C:\PrivateRecovery\reset'
    ```
 
    Success creates private copies of both originals, two identical reset

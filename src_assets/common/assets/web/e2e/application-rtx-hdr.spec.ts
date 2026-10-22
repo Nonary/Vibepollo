@@ -3,7 +3,7 @@ import { test, expect, type Page } from '@playwright/test';
 const uuid = '22222222-2222-4222-8222-222222222222';
 const name = 'Linux HDR game';
 
-async function mockHost(page: Page, platform = 'linux', nvidia = true) {
+async function mockHost(page: Page, platform = 'linux', nvidia = true, trueHdrSupported = platform === 'linux' && nvidia) {
   let app = {
     uuid,
     name,
@@ -24,7 +24,7 @@ async function mockHost(page: Page, platform = 'linux', nvidia = true) {
     else if (path === '/api/csrf-token') body = { csrf_token: 'test-token' };
     else if (path === '/api/configLocale') body = { locale: 'en' };
     else if (path === '/api/metadata')
-      body = { platform, has_nvidia_gpu: nvidia, version: '2.0.2' };
+      body = { platform, has_nvidia_gpu: nvidia, rtx_hdr_supported: trueHdrSupported, version: '2.0.2' };
     else if (path === '/api/config')
       body = { capture: 'kms', encoder: 'nvenc', rtx_hdr_peak_brightness: 1000 };
     else if (path === '/api/apps/rtx_hdr/live') {
@@ -91,6 +91,19 @@ for (const ui of ['classic', 'v2'] as const) {
       await expect(page.getByRole('heading', { name: /^RTX HDR/ })).toHaveCount(0);
     });
   }
+
+  test(`${ui} hides Linux RTX HDR controls when TrueHDR is unavailable`, async ({ page }) => {
+    await mockHost(page, 'linux', true, false);
+    await open(page, ui);
+    await expect(page.getByRole('heading', { name: /^RTX HDR/ })).toHaveCount(0);
+    if (ui === 'v2') {
+      await page.goto('/v2/settings?category=video');
+      await expect(page.locator('#settings-group-video-video_rtx_hdr')).toHaveCount(0);
+    } else {
+      await page.goto('http://127.0.0.1:5174/settings?sec=capture');
+      await expect(page.getByRole('heading', { name: 'RTX HDR (AI SDR → HDR)', exact: true })).toHaveCount(0);
+    }
+  });
 
   test(`${ui} exposes Linux global RTX HDR tuning`, async ({ page }) => {
     await mockHost(page);
