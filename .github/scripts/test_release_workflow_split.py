@@ -186,6 +186,27 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             r"\$\{\{ needs\.release-candidate\.outputs\.release_version \|\| '([^']+)' \}\}",
             workflow["jobs"]["build-windows"]["with"]["release_version"],
         ).group(1)
+        self.assertEqual(fallback, "2.0.0-pr-validation")
+        self.assertEqual(
+            workflow["jobs"]["build-archlinux"]["with"]["release_version"],
+            workflow["jobs"]["build-windows"]["with"]["release_version"],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            probe = Path(directory) / "probe-version.cmake"
+            probe.write_text(
+                f'include("{(ROOT / "cmake" / "prep" / "build_version.cmake").as_posix()}")\n'
+                'if(NOT PROJECT_VERSION_NUMERIC STREQUAL "2.0.0")\n'
+                '  message(FATAL_ERROR "PR validation numeric version changed")\n'
+                'endif()\n',
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["cmake", f"-DBUILD_VERSION={fallback}", "-P", str(probe)],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
         for event in ("push", "pull_request"):
             with self.subTest(event=event), tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / "outputs"
