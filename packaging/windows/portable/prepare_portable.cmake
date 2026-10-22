@@ -219,8 +219,19 @@ function(sunshine_prepare_windows_portable)
     if(_copied_runtime)
         message(FATAL_ERROR "Portable compiler runtime dependency closure exceeded 32 staging passes.")
     endif()
-    if(_unresolved)
-        message(FATAL_ERROR "Unresolved portable DLL imports: ${_unresolved}")
+    # nvcuda.dll is supplied by an installed NVIDIA display driver. A CPU-only
+    # packaging runner cannot resolve it, and bundling a driver DLL is invalid.
+    # Filter only this unresolved import here, after all resolved PE and path
+    # checks above; any other missing runtime still fails the package.
+    set(_unresolved_package_imports "")
+    foreach(_dependency IN LISTS _unresolved)
+        string(TOLOWER "${_dependency}" _dependency_lower)
+        if(NOT _dependency_lower STREQUAL "nvcuda.dll")
+            list(APPEND _unresolved_package_imports "${_dependency}")
+        endif()
+    endforeach()
+    if(_unresolved_package_imports)
+        message(FATAL_ERROR "Unresolved portable DLL imports: ${_unresolved_package_imports}")
     endif()
     if(_conflicts_FILENAMES)
         message(FATAL_ERROR "Conflicting portable DLL imports: ${_conflicts_FILENAMES}")

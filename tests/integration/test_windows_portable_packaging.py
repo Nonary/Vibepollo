@@ -151,6 +151,35 @@ include(CPack)
         run(package)
         check_archive()
         print("PASS: /MD TrueHDR and transitive release CRTs are staged from compiler redist into the actual CPack archive")
+        # The NVIDIA driver supplies nvcuda.dll on GPU hosts. It is absent on
+        # CPU-only builders and must not be bundled. A different missing DLL
+        # must still fail the same real CPack dependency-closure hook.
+        truehdr = payload / "nvngx_truehdr.dll"
+        truehdr_original = truehdr.read_bytes()
+        for dependency, allowed in (("nvcuda", True), ("unrelated_missing_driver", False)):
+            source = fixture / "driver-import.c"
+            source.write_text(f"__declspec(dllexport) int {dependency}_fixture(void) {{ return 0; }}\n")
+            obj = fixture / "driver-import.obj"
+            run([args.clang, f"--target={target}", "-c", str(source), "-o", str(obj)])
+            library = fixture / f"{dependency}.lib"
+            run([args.link, "/dll", "/noentry", "/nodefaultlib", f"/machine:{machine}",
+                 f"/out:{fixture / (dependency + '.dll')}", f"/implib:{library}", str(obj)])
+            source.write_text(f"__declspec(dllimport) int {dependency}_fixture(void);\n"
+                              f"__declspec(dllexport) int nvngx_truehdr_fixture(void) {{ return {dependency}_fixture(); }}\n")
+            run([args.clang, f"--target={target}", "-c", str(source), "-o", str(obj)])
+            run([args.link, "/dll", "/noentry", "/nodefaultlib", f"/machine:{machine}",
+                 f"/out:{truehdr}", str(obj), str(library)])
+            try:
+                if allowed:
+                    run(package)
+                    check_archive()
+                    with zipfile.ZipFile(archive) as zipped:
+                        assert not any(name.endswith("/nvcuda.dll") for name in zipped.namelist())
+                else:
+                    run(package, success=False, contains="Unresolved portable DLL imports: unrelated_missing_driver.dll")
+            finally:
+                truehdr.write_bytes(truehdr_original)
+        print("PASS: only the unbundled NVIDIA driver import is allowed; other missing DLLs reject packaging")
         # Replace only one image at a time, keeping its import filename. The
         # real CPack pre-build hook must reject each incompatible PE boundary.
         wrong_target = "i686-pc-windows-msvc" if machine != "x86" else "x86_64-pc-windows-msvc"
