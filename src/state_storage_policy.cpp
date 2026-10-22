@@ -229,8 +229,10 @@ namespace statefile::policy {
     return load_result_e::loaded;
   }
 
-  bool normalize_legacy_pairing_state(pt::ptree &tree, const certificate_identity_t &certificate_identity, std::string *failure_reason) {
+  bool normalize_legacy_pairing_state(pt::ptree &tree, const certificate_identity_t &certificate_identity, std::string *failure_reason,
+                                      std::vector<collapsed_pairing_record_t> *collapsed) {
     if (failure_reason) failure_reason->clear();
+    if (collapsed) collapsed->clear();
     const auto fail = [&](const std::string &reason) {
       if (failure_reason) *failure_reason = reason;
       return false;
@@ -238,23 +240,42 @@ namespace statefile::policy {
     if (!certificate_identity) {
       return fail("certificate validation is unavailable");
     }
+    // An unreadable value counts as disabled so collapsing can never grant access.
+    const auto disabled = [](const pt::ptree &device) {
+      const auto value = device.get_child_optional("enabled");
+      if (!value) return false;
+      const auto enabled = value->get_value_optional<bool>();
+      return !enabled || !*enabled;
+    };
     auto normalized = tree;
+    std::vector<collapsed_pairing_record_t> collapsed_records;
     try {
-      std::map<std::string, std::size_t> named_identities;
-      if (const auto devices = normalized.get_child_optional("root.named_devices")) {
+      struct survivor_t {
+        pt::ptree *record;
+        std::size_t index;
+      };
+
+      std::map<std::string, survivor_t> named_identities;
+      if (auto devices = normalized.get_child_optional("root.named_devices")) {
         std::size_t index = 0;
-        for (const auto &[key, device] : *devices) {
-          const auto identity = certificate_identity(device.get<std::string>("cert"));
-          const auto field = "root.named_devices[" + std::to_string(index) + "].cert";
+        for (auto it = devices->begin(); it != devices->end(); ++index) {
+          const auto identity = certificate_identity(it->second.get<std::string>("cert"));
           if (!identity || identity->empty()) {
-            return fail(field + " is invalid");
+            return fail("root.named_devices[" + std::to_string(index) + "].cert is invalid");
           }
-          const auto [previous, inserted] = named_identities.emplace(*identity, index);
-          if (!inserted) {
-            return fail(field + " duplicates root.named_devices[" + std::to_string(previous->second) +
-                        "].cert; distinct pairing records require administrator reconciliation");
+          const auto [previous, inserted] = named_identities.emplace(*identity, survivor_t {&it->second, index});
+          if (inserted) {
+            ++it;
+            continue;
           }
-          ++index;
+          // Keep the first record, the only one 1.x ever used for this
+          // certificate. A revocation on any duplicate still applies to it.
+          auto &survivor = *previous->second.record;
+          if (disabled(it->second)) {
+            survivor.put("enabled", false);
+          }
+          collapsed_records.push_back({previous->second.index, survivor.get<std::string>("uuid", ""), index, it->second.get<std::string>("uuid", "")});
+          it = devices->erase(it);
         }
       }
       std::set<std::string> legacy_identities;
@@ -269,12 +290,11 @@ namespace statefile::policy {
               if (!identity || identity->empty()) {
                 return fail("invalid legacy certificate identity");
               }
-              if (named_identities.contains(*identity)) {
+              // A legacy certificate carries no UUID, name, settings or
+              // revocation, so dropping a repeated one loses nothing.
+              if (named_identities.contains(*identity) || !legacy_identities.insert(*identity).second) {
                 it = certs->erase(it);
               } else {
-                if (!legacy_identities.insert(*identity).second) {
-                  return fail("duplicate legacy certificate identity");
-                }
                 ++it;
               }
             }
@@ -285,6 +305,7 @@ namespace statefile::policy {
       return fail("malformed certificate records");
     }
     tree = std::move(normalized);
+    if (collapsed) *collapsed = std::move(collapsed_records);
     return true;
   }
 

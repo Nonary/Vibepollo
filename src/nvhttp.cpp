@@ -2451,15 +2451,17 @@ namespace nvhttp {
       struct parsed_state_t {
         client_t client;
         nlohmann::json layout;
+        std::vector<statefile::policy::collapsed_pairing_record_t> collapsed;
       };
       const auto parse_state = [](nlohmann::json &tree) -> std::optional<parsed_state_t> {
         try {
           // Named records retain their UUID, permission mask and client commands;
           // a matching legacy alias must never create another authorized client.
+          std::vector<statefile::policy::collapsed_pairing_record_t> collapsed;
           if (!state_policy::normalize_snapshot(tree, [](const std::string &pem) {
                 return exact_certificate_identity(crypto::x509(pem));
-              })) {
-            BOOST_LOG(error) << "Vibepollo pairing state contains invalid or duplicate client certificates.";
+              }, false, &collapsed)) {
+            BOOST_LOG(error) << "Vibepollo pairing state contains invalid client certificates.";
             return std::nullopt;
           }
           const auto &root = tree["root"];
@@ -2552,7 +2554,7 @@ namespace nvhttp {
           std::vector<std::string> identities;
           std::vector<pairing_policy::paired_client_record_view_t> records;
           if (!build_paired_client_records(client, identities, records)) return std::nullopt;
-          return parsed_state_t {std::move(client), std::move(remote_display_layout)};
+          return parsed_state_t {std::move(client), std::move(remote_display_layout), std::move(collapsed)};
         } catch (...) {
           BOOST_LOG(error) << "Vibepollo pairing state is malformed.";
           return std::nullopt;
@@ -2561,6 +2563,7 @@ namespace nvhttp {
       nlohmann::json tree;
       const auto primary = statefile::load_primary_state(tree);
       if (primary == statefile::json_load_result_e::failed) return false;
+      const auto original_tree = tree;
       auto parsed = primary == statefile::json_load_result_e::loaded ? parse_state(tree) : std::nullopt;
       if (!parsed) {
         if (primary_bootstrap(primary, tree) && http::credentials_created_this_run) {
@@ -2576,6 +2579,24 @@ namespace nvhttp {
         }
         BOOST_LOG(error) << "No valid Vibepollo pairing snapshot; refusing to create a replacement identity.";
         return false;
+      }
+      if (!parsed->collapsed.empty()) {
+        BOOST_LOG(warning) << "Pairing state had " << parsed->collapsed.size()
+                           << " duplicate record(s) from older pairings. Keeping the first record for each certificate.";
+        for (const auto &record : parsed->collapsed) {
+          BOOST_LOG(warning) << "Pairing state: kept client UUID " << record.kept_uuid << " (record " << record.kept_index
+                             << "), removed duplicate UUID " << record.dropped_uuid << " (record " << record.dropped_index << ')';
+        }
+        const auto original_path = statefile::sunshine_state_path() + ".before-dedupe.bak";
+        std::error_code ec;
+        if (!fs::exists(original_path, ec) && !ec) {
+          try {
+            statefile::write_json_atomic(original_path, original_tree);
+            BOOST_LOG(info) << "Saved the original pairing state to " << original_path;
+          } catch (const std::exception &e) {
+            BOOST_LOG(warning) << "Could not save the original pairing state to " << original_path << ": " << e.what();
+          }
+        }
       }
       // Selection has already restored and validated any recovered snapshot.
       try {
@@ -6998,13 +7019,18 @@ launch_session->exact_target_hold.reset();
     bool clean_slate = config::sunshine.flags[config::flag::FRESH_STATE];
 
     if (!clean_slate) {
-      if (!load_state()) {
-        // Do not expose a newly generated uniqueid when durable pairing state
-        // is unavailable. The controller will retry after the filesystem or
-        // profile issue is repaired, while the recovery copy remains intact.
-        BOOST_LOG(fatal) << "HTTP interface is stopping because durable pairing state could not be loaded."sv;
-        shutdown_event->raise(true);
-        return;
+      // Do not expose a newly generated uniqueid when durable pairing state is
+      // unavailable, but do not exit either: that put the host in a service
+      // restart loop and took the Web UI down with it. Keep the rest of the
+      // host up and retry until the filesystem or profile issue is repaired.
+      std::chrono::seconds retry_delay = 15s;
+      while (!load_state()) {
+        BOOST_LOG(error) << "Pairing and streaming are unavailable because durable pairing state could not be loaded; retrying in "sv
+                         << retry_delay.count() << " seconds."sv;
+        if (shutdown_event->view(retry_delay)) {
+          return;
+        }
+        retry_delay = std::min<std::chrono::seconds>(retry_delay * 2, 5min);
       }
     } else {
       // FRESH_STATE is an explicit, non-persistent test/reset mode. It is the

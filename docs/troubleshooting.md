@@ -32,13 +32,34 @@ Can't access the web UI?
 
 1. Check firewall rules.
 
-### Startup rejects duplicate paired-client certificates
+### Duplicate paired-client records after upgrading from 1.x
 
-If the startup log reports that `root.named_devices[N].cert` duplicates another
-named record, the host stops rather than guessing which UUID, settings or
-revocation should win. Reinstalling or resetting the profile can discard the
-evidence and existing pairings. The offline recovery command prepares a separate
-candidate without starting the host or changing its configuration.
+Vibeshine 1.x added a new paired-client record every time an already-paired
+Moonlight client paired again, and could re-import legacy certificates the same
+way. It always used the first record for a client certificate: later copies were
+never used for authorization, the client's identity or its settings.
+
+Builds up to 2.0.2-daily.d20261020.4 refused to start with these duplicates
+(`root.named_devices[N].cert duplicates ...`, then "HTTP interface is stopping")
+and the service restarted them in a loop. Startup now collapses them without any
+manual steps:
+
+- The first record for each certificate, the one 1.x used, keeps its UUID, name
+  and settings. Later copies are removed and each removal is logged.
+- If any copy was disabled, the kept record is disabled. Re-enable it in the Web
+  UI, or pair the client again, if that is intended.
+- The original file is saved once as `sunshine_state.json.before-dedupe.bak` next
+  to the pairing state. Do not upload it: it contains credential hashes.
+
+If pairing state cannot be loaded for any other reason, such as malformed JSON
+without a valid recovery copy, the host and Web UI stay up but refuse pairing and
+streaming, log the reason and retry automatically.
+
+#### Choosing a different record offline
+
+To keep a different duplicate than startup would, the offline recovery command
+prepares a separate candidate without starting the host or changing its
+configuration.
 
 1. Arrange a maintenance window and stop the host/service before copying or
    replacing its state. Stopping the host disconnects active clients. Keep a
@@ -86,13 +107,11 @@ candidate without starting the host or changing its configuration.
    Verify retained pairings, disabled-client rejection, Web UI credentials and
    client settings, then restart once more to verify persistence.
 
-Different UUIDs always require administrator selection, even when their visible
-settings appear equal: other state may refer to those UUIDs. Only an entire
-byte-identical record repeated under the same UUID is collapsed without a choice,
-and only while preparing an explicit recovery candidate. Conflicting records
-under one UUID, invalid certificates, malformed state and unresolved legacy-only
-duplicates are refused. The command never installs a candidate, alters live
-pairing data, falls back to stale authorization, or changes startup validation.
+The command requires an explicit `--keep` choice for every group of different
+UUIDs. Only an entire byte-identical record repeated under the same UUID is
+collapsed without a choice. Conflicting records under one UUID, invalid
+certificates and malformed state are refused. The command never installs a
+candidate, alters live pairing data or falls back to stale authorization.
 
 Vibepollo also treats a native permission mask with no recognized permissions as
 disabled. An imported `enabled: false` record remains disabled even if its mask
@@ -101,8 +120,7 @@ mask, client preferences and unknown fields; it never combines permission masks.
 
 The output directory and files are private to the creating account on POSIX and
 to the owner, Administrators and LocalSystem on Windows. Protect the input copies
-and retained backups with equivalent permissions. This recovery operation does
-not diagnose a separate ten-second shutdown stall or installer-driver warnings.
+and retained backups with equivalent permissions.
 
 ### Controller works on Steam but not in games
 One trick might be to change Steam settings and check or uncheck the configuration to support Xbox/PlayStation

@@ -282,7 +282,13 @@ TEST_F(PairingRecovery, MalformedNativePermissionsNeverProduceCandidates) {
 
 TEST_F(PairingRecovery, NativeDuplicateToleranceIsExplicitAndKeepsTypedValidation) {
   auto strict = state;
-  EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(strict, parsed_identity));
+  std::vector<statefile::policy::collapsed_pairing_record_t> collapsed;
+  ASSERT_TRUE(nvhttp::state_policy::normalize_snapshot(strict, parsed_identity, false, &collapsed));
+  ASSERT_EQ(collapsed.size(), 1u);
+  EXPECT_EQ(collapsed[0].kept_uuid, first_uuid);
+  EXPECT_EQ(collapsed[0].dropped_uuid, second_uuid);
+  ASSERT_EQ(strict["root"]["named_devices"].size(), 2u);
+  EXPECT_EQ(strict["root"]["named_devices"][0]["name"], "first");
   auto inspected = state;
   EXPECT_TRUE(nvhttp::state_policy::normalize_snapshot(inspected, parsed_identity, true));
   inspected = state;
@@ -434,20 +440,21 @@ TEST_F(PairingRecovery, InvalidCertificatesAndDuplicateKeysFailWithoutEchoingSec
   EXPECT_FALSE(fs::exists(output));
 }
 
-TEST_F(PairingRecovery, LegacyAliasesArePreservedButUnresolvedLegacyDuplicatesRefuseCandidate) {
+TEST_F(PairingRecovery, LegacyAliasesAndRepeatedLegacyCertificatesArePreservedInTheCandidate) {
   const auto cert = state["root"]["named_devices"][0]["cert"];
   state["root"]["devices"] = {{{"uniqueid", "legacy"}, {"certs", {cert}}}};
   save();
   ASSERT_EQ(prepare({first_uuid}), 0) << stderr_stream.str();
   EXPECT_EQ(json::parse(read(output / "sunshine_state.reconciled.json"))["root"]["devices"], state["root"]["devices"]);
   fs::remove_all(output);
-  // A legacy-only duplicate is outside this named-client recovery operation.
+  // Startup collapses a repeated legacy-only certificate losslessly, so it no
+  // longer blocks a candidate. This named-client operation leaves it untouched.
   state["root"]["named_devices"].erase(2);
   const auto legacy_cert = certificate(2);
   state["root"]["devices"][0]["certs"] = {legacy_cert, legacy_cert};
   save();
-  EXPECT_EQ(prepare({first_uuid}), 2);
-  EXPECT_FALSE(fs::exists(output));
+  ASSERT_EQ(prepare({first_uuid}), 0) << stderr_stream.str();
+  EXPECT_EQ(json::parse(read(output / "sunshine_state.reconciled.json"))["root"]["devices"], state["root"]["devices"]);
 }
 
 TEST_F(PairingRecovery, BoundedInputAndNestingAreEnforcedBeforeOutput) {
@@ -598,7 +605,7 @@ TEST_F(PairingRecovery, CandidateIsAnExactSourceSpliceRatherThanAJsonRoundTrip) 
   EXPECT_EQ(read(input), original);
 }
 
-TEST_F(PairingRecovery, OriginalDuplicateRejectionAndExplicitCandidateAcceptanceUseProductionPolicies) {
+TEST_F(PairingRecovery, StartupCollapseMatchesAnExplicitFirstRecordCandidate) {
   namespace policy = statefile::policy;
   namespace authorization_policy = nvhttp::pairing_policy;
   const auto original = read(input);
@@ -606,22 +613,22 @@ TEST_F(PairingRecovery, OriginalDuplicateRejectionAndExplicitCandidateAcceptance
   std::istringstream initial(original);
   boost::property_tree::read_json(initial, before);
   ASSERT_TRUE(policy::valid_primary_state(before, false));
-  // Real baseline normalization rejects the reported shape. No copied validator
-  // or fake certificate identities: crypto.cpp parses the actual test PEMs.
-  std::string reason;
-  EXPECT_FALSE(policy::normalize_legacy_pairing_state(before, parsed_identity, &reason));
-  EXPECT_NE(reason.find("duplicates"), std::string::npos);
+  // The raw shape is ambiguous to authorization, so startup normalizes it first.
+  // No copied validator or fake certificate identities: crypto.cpp parses the
+  // actual test PEMs.
   const auto presented = parsed_identity(state["root"]["named_devices"][0]["cert"].get<std::string>()).value();
   EXPECT_EQ(authorization(state, presented), authorization_policy::paired_client_resolution_e::invalid_state);
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(before, parsed_identity));
+  EXPECT_TRUE(policy::valid_primary_state(before, false));
   ASSERT_EQ(prepare({first_uuid}), 0) << stderr_stream.str();
   const auto candidate_bytes = read(output / "sunshine_state.reconciled.json");
   boost::property_tree::ptree after;
   std::istringstream candidate(candidate_bytes);
   boost::property_tree::read_json(candidate, after);
+  EXPECT_EQ(before, after);
   EXPECT_TRUE(policy::normalize_legacy_pairing_state(after, parsed_identity));
-  EXPECT_TRUE(policy::valid_primary_state(after, false));
   EXPECT_EQ(authorization(json::parse(candidate_bytes), presented), authorization_policy::paired_client_resolution_e::authorized);
-  EXPECT_EQ(read(input), original);  // Recovery does not make startup repair automatic.
+  EXPECT_EQ(read(input), original);  // Recovery never changes its input.
 }
 
 TEST_F(PairingRecovery, SelectingARevokedSurvivorStillDeniesItsCertificateThroughProductionAuthorization) {

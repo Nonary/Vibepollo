@@ -4,6 +4,7 @@
  */
 #include "../tests_common.h"
 
+#include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <src/state_storage_policy.h>
 #include <src/paired_state_policy.h>
@@ -12,6 +13,7 @@
 #include <iterator>
 #include <map>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -581,16 +583,77 @@ TEST(StateStorageLegacyPairing, RecoveryRestoresLegacySnapshotWithNamedRevocatio
   EXPECT_FALSE(selected.get_child("root.named_devices").front().second.get<bool>("enabled"));
 }
 
-TEST(StateStorageLegacyPairing, AmbiguousNamedRecordsAndInvalidCertificatesFailWithoutMutation) {
-  for (int scenario = 0; scenario < 5; ++scenario) {
+TEST(StateStorageLegacyPairing, EnabledDuplicateDoesNotReEnableTheKeptRecord) {
+  memory_state_store_t store;
+  auto tree = with_legacy_alias(store);
+  const auto first = tree.get_child("root.named_devices").front().second;
+  auto duplicate = first;
+  duplicate.put("uuid", "33333333-3333-3333-3333-333333333333");
+  duplicate.put("cert", "alternate-encoding");
+  duplicate.put("enabled", true);
+  tree.get_child("root.named_devices").push_back({"", duplicate});
+  std::vector<policy::collapsed_pairing_record_t> collapsed;
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(tree, certificate_identity, nullptr, &collapsed));
+  ASSERT_EQ(tree.get_child("root.named_devices").size(), 1U);
+  EXPECT_EQ(tree.get_child("root.named_devices").front().second, first);
+  EXPECT_FALSE(tree.get_child("root.named_devices").front().second.get<bool>("enabled"));
+  EXPECT_TRUE(tree.get_child("root.devices").front().second.get_child("certs").empty());
+  ASSERT_EQ(collapsed.size(), 1U);
+  EXPECT_EQ(collapsed[0].kept_uuid, "22222222-2222-2222-2222-222222222222");
+  EXPECT_EQ(collapsed[0].dropped_uuid, "33333333-3333-3333-3333-333333333333");
+  EXPECT_TRUE(policy::valid_primary_state(tree, false));
+}
+
+// 1.18.x re-imported root.devices on every start and saved the import, so a
+// profile could hold several copies. The first copy is the one 1.x used.
+TEST(StateStorageLegacyPairing, RepeatedImportsCollapseIntoTheFirstRecord) {
+  memory_state_store_t store;
+  auto tree = with_legacy_alias(store);
+  auto &named = tree.get_child("root.named_devices");
+  named.front().second.put("enabled", true);
+  auto later = named.front().second;
+  later.put("name", "");
+  later.put("uuid", "33333333-3333-3333-3333-333333333333");
+  named.push_back({"", later});
+  later.put("uuid", "44444444-4444-4444-4444-444444444444");
+  later.put("enabled", false);
+  named.push_back({"", later});
+  const auto first = named.front().second;
+  std::vector<policy::collapsed_pairing_record_t> collapsed;
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(tree, certificate_identity, nullptr, &collapsed));
+  ASSERT_EQ(tree.get_child("root.named_devices").size(), 1U);
+  const auto &kept = tree.get_child("root.named_devices").front().second;
+  EXPECT_EQ(kept.get<std::string>("uuid"), first.get<std::string>("uuid"));
+  EXPECT_EQ(kept.get<std::string>("name"), "client");
+  EXPECT_EQ(kept.get<std::string>("hdr_profile"), "preserved-profile");
+  EXPECT_FALSE(kept.get<bool>("enabled"));
+  ASSERT_EQ(collapsed.size(), 2U);
+  EXPECT_EQ(collapsed[0].kept_index, 0U);
+  EXPECT_EQ(collapsed[0].dropped_index, 1U);
+  EXPECT_EQ(collapsed[1].kept_index, 0U);
+  EXPECT_EQ(collapsed[1].dropped_index, 2U);
+  EXPECT_EQ(collapsed[1].dropped_uuid, "44444444-4444-4444-4444-444444444444");
+}
+
+TEST(StateStorageLegacyPairing, RepeatedLegacyCertificatesCollapse) {
+  memory_state_store_t store;
+  auto tree = with_legacy_alias(store);
+  pt::ptree cert;
+  cert.put_value("legacy-only");
+  auto &certs = tree.get_child("root.devices").front().second.get_child("certs");
+  certs.push_back({"", cert});
+  certs.push_back({"", cert});
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(tree, certificate_identity));
+  const auto &remaining = tree.get_child("root.devices").front().second.get_child("certs");
+  ASSERT_EQ(remaining.size(), 1U);
+  EXPECT_EQ(remaining.front().second.get_value<std::string>(), "legacy-only");
+}
+
+TEST(StateStorageLegacyPairing, InvalidCertificatesFailWithoutMutation) {
+  for (int scenario = 1; scenario < 5; ++scenario) {
     memory_state_store_t store;
     auto tree = with_legacy_alias(store);
-    if (scenario == 0) {
-      auto duplicate = tree.get_child("root.named_devices").front().second;
-      duplicate.put("uuid", "33333333-3333-3333-3333-333333333333");
-      duplicate.put("enabled", true);
-      tree.get_child("root.named_devices").push_back({"", duplicate});
-    } else if (scenario == 1) {
+    if (scenario == 1) {
       tree.get_child("root.devices").front().second.get_child("certs").front().second.put_value("invalid");
     } else if (scenario == 2) {
       tree.get_child("root.named_devices").front().second.put("cert", "invalid");
@@ -655,7 +718,7 @@ namespace {
   }
 }  // namespace
 
-TEST(StateStorageIssue298, DuplicateNamedIdentitiesAreNotAnAutomaticMergeDecision) {
+TEST(StateStorageIssue298, DuplicateNamedIdentitiesCollapseIntoTheRecord1xUsed) {
   for (const bool first_enabled : {false, true}) {
     for (const bool second_enabled : {false, true}) {
       for (const bool same_settings : {false, true}) {
@@ -673,10 +736,28 @@ TEST(StateStorageIssue298, DuplicateNamedIdentitiesAreNotAnAutomaticMergeDecisio
           first.put("enabled", first_enabled ? "true" : "false");
           second.put("enabled", second_enabled ? "true" : "false");
           if (reversed) first.swap(second);
-          const auto original = tree;
           ASSERT_TRUE(policy::valid_primary_state(tree, false));
-          EXPECT_FALSE(policy::normalize_legacy_pairing_state(tree, issue298_certificate_identity));
-          EXPECT_EQ(tree, original);
+          const std::vector<pt::ptree> original {named.begin()->second, std::next(named.begin(), 2)->second, std::next(named.begin(), 4)->second};
+          auto expected = first;
+          if (!first_enabled || !second_enabled) expected.put("enabled", false);
+          const auto kept_uuid = first.get<std::string>("uuid");
+          const auto dropped_uuid = second.get<std::string>("uuid");
+          const auto credentials = tree.get<std::string>("password");
+          std::vector<policy::collapsed_pairing_record_t> collapsed;
+          ASSERT_TRUE(policy::normalize_legacy_pairing_state(tree, issue298_certificate_identity, nullptr, &collapsed));
+          const auto &result = tree.get_child("root.named_devices");
+          ASSERT_EQ(result.size(), 4U);
+          EXPECT_EQ(std::next(result.begin(), 1)->second, expected);
+          EXPECT_EQ(result.begin()->second, original[0]);
+          EXPECT_EQ(std::next(result.begin(), 2)->second, original[1]);
+          EXPECT_EQ(std::next(result.begin(), 3)->second, original[2]);
+          EXPECT_EQ(tree.get<std::string>("password"), credentials);
+          ASSERT_EQ(collapsed.size(), 1U);
+          EXPECT_EQ(collapsed[0].kept_index, 1U);
+          EXPECT_EQ(collapsed[0].kept_uuid, kept_uuid);
+          EXPECT_EQ(collapsed[0].dropped_index, 3U);
+          EXPECT_EQ(collapsed[0].dropped_uuid, dropped_uuid);
+          EXPECT_TRUE(policy::valid_primary_state(tree, false));
         }
       }
     }
@@ -696,7 +777,7 @@ TEST(StateStorageIssue298, UniqueIdentityControlRetainsLegacyScalarsAndUnknownSe
   EXPECT_EQ(std::next(tree.get_child("root.named_devices").begin(), 1)->second.get<std::int64_t>("last_seen"), 1790870400);
 }
 
-TEST(StateStorageIssue298, UnreconciledSnapshotsFailWithoutChangingEitherFile) {
+TEST(StateStorageIssue298, DuplicateSnapshotsLoadWithoutChangingEitherFile) {
   for (const bool has_backup : {false, true}) {
     memory_state_store_t store;
     store.files["shared.json"] = issue298_snapshot;
@@ -710,17 +791,19 @@ TEST(StateStorageIssue298, UnreconciledSnapshotsFailWithoutChangingEitherFile) {
                 [&store, &writes](const std::string &path, const std::string &contents) {
                   ++writes;
                   return store.write(path, contents);
-                }, issue298_valid_snapshot, {}, &reason), policy::load_result_e::failed);
-    EXPECT_TRUE(selected.empty());
+                }, issue298_valid_snapshot, {}, &reason), policy::load_result_e::loaded);
+    // Selection returns the stored snapshot; collapsing happens in memory and
+    // reaches disk only through the next normal state save.
+    EXPECT_EQ(selected, issue298_tree());
     EXPECT_EQ(writes, 0U);
     EXPECT_EQ(store.files, original);
     EXPECT_TRUE(store.quarantined.empty());
-    EXPECT_FALSE(reason.empty());
+    EXPECT_TRUE(reason.empty());
   }
 }
 
 // The frozen-master negative control restored stale authorization here.
-TEST(StateStorageIssue298, AmbiguousCurrentPrimaryMustNotRestoreOlderAuthorization) {
+TEST(StateStorageIssue298, CurrentPrimaryWithDuplicatesWinsOverOlderAuthorization) {
   memory_state_store_t store;
   auto current = issue298_tree();
   auto stale = current;
@@ -753,18 +836,33 @@ TEST(StateStorageIssue298, AmbiguousCurrentPrimaryMustNotRestoreOlderAuthorizati
   ASSERT_EQ(policy::recover_credentials("shared.json", read, write, false), policy::load_result_e::loaded);
   pt::ptree selected;
   std::string reason;
+  const auto native_json_valid = [](const std::string &contents) {
+    return nvhttp::state_policy::valid_primary_json_with_certificates(contents, issue298_certificate_identity);
+  };
   EXPECT_EQ(policy::load_primary_state_for_update("shared.json", selected, read, write,
-              issue298_valid_snapshot, {}, &reason), policy::load_result_e::failed);
-  EXPECT_TRUE(selected.empty());
+              issue298_valid_snapshot, native_json_valid, &reason), policy::load_result_e::loaded);
   EXPECT_EQ(writes, 0U);
   EXPECT_EQ(store.files, original);
   EXPECT_TRUE(store.quarantined.empty());
-  EXPECT_FALSE(reason.empty());
+  EXPECT_EQ(selected.get<std::string>("password"), "current-hash");
+  // Both revocations survive collapsing, and so does the newer pairing.
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(selected, issue298_certificate_identity));
+  const auto &named = selected.get_child("root.named_devices");
+  ASSERT_EQ(named.size(), 5U);
+  EXPECT_FALSE(named.begin()->second.get<bool>("enabled"));
+  EXPECT_FALSE(std::next(named.begin(), 1)->second.get<bool>("enabled"));
+  EXPECT_EQ(std::next(named.begin(), 4)->second.get<std::string>("name"), "newly paired");
 }
 
-TEST(StateStorageIssue298, DiagnosticsNameConflictIndicesWithoutExposingRecordContents) {
-  constexpr auto conflict = "root.named_devices[3].cert duplicates root.named_devices[1].cert; distinct pairing records require administrator reconciliation";
+TEST(StateStorageIssue298, DiagnosticsNameInvalidRecordIndicesWithoutExposingRecordContents) {
+  constexpr auto conflict = "root.named_devices[3].cert is invalid";
   auto tree = issue298_tree();
+  std::next(tree.get_child("root.named_devices").begin(), 3)->second.put("cert", "not-a-certificate");
+  const auto invalid_snapshot = [&tree] {
+    std::ostringstream output;
+    pt::write_json(output, tree);
+    return output.str();
+  }();
   const auto original = tree;
   std::string reason = "old diagnostic";
   ASSERT_FALSE(policy::normalize_legacy_pairing_state(tree, issue298_certificate_identity, &reason));
@@ -772,8 +870,8 @@ TEST(StateStorageIssue298, DiagnosticsNameConflictIndicesWithoutExposingRecordCo
   EXPECT_EQ(tree, original);
   for (const bool readable_primary : {false, true}) {
     memory_state_store_t store;
-    store.files["shared.json"] = readable_primary ? issue298_snapshot : "broken";
-    store.files["shared.json.bak"] = issue298_snapshot;
+    store.files["shared.json"] = readable_primary ? invalid_snapshot : "broken";
+    store.files["shared.json.bak"] = invalid_snapshot;
     const auto files = store.files;
     pt::ptree selected;
     unsigned writes = 0;
