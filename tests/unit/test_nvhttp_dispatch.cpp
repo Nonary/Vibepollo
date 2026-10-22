@@ -74,8 +74,10 @@ namespace {
 
     safe::mail_t mail = std::make_shared<safe::mail_raw_t>();
     runtime::packet_queues_t queues = runtime::packet_queues<int, int>(mail, "shutdown", "video", "audio");
+    std::atomic<int> broadcast_start_count {0};
     safe::shared_t<context_t> broadcast {
       [&](context_t &) {
+        ++broadcast_start_count;
         auto startup = queues.reset_for_start();
         return 0;
       },
@@ -176,6 +178,48 @@ namespace {
     });
     EXPECT_EQ(pending.size(), 2) << "a retained completed closure must release admission";
     pending.back()();
+  }
+
+  TEST_F(NvhttpDispatch, DelayedPairedBitrateHandlerCannotRestartAfterTeardownCompletes) {
+    const auto identity = pairing::resolve_paired_client(paired_clients, "certificate-a");
+    ASSERT_EQ(identity.status, pairing::paired_client_resolution_e::authorized);
+    const std::string uuid {paired_clients[identity.index].uuid};
+    auto owner = broadcast.ref();
+    ASSERT_TRUE(owner);
+
+    transport.pause = true;
+    auto teardown_entered = transport.entered.get_future();
+    std::thread teardown([&] {
+      owner.release();
+    });
+    auto cleanup = util::fail_guard([&] {
+      transport.release.set_value();
+      if (teardown.joinable()) {
+        teardown.join();
+      }
+      transport.pause = false;
+    });
+    ASSERT_EQ(teardown_entered.wait_for(2s), std::future_status::ready);
+
+    auto response = std::make_shared<response_t>();
+    int result = -99;
+    dispatch(response, "bitrate", [&, uuid] {
+      result = controls.set_bitrate_for_sessions(uuid, 12000);
+    });
+    ASSERT_EQ(pending.size(), 1);
+    EXPECT_EQ(result, -99) << "the admitted handler is still queued";
+
+    // Finish teardown before running the already-admitted handler. Its control
+    // lookup must see the idle broadcast and leave it idle.
+    transport.release.set_value();
+    teardown.join();
+    transport.pause = false;
+    cleanup.disable();
+
+    pending.front()();
+    EXPECT_EQ(result, 0);
+    EXPECT_EQ(broadcast_start_count.load(), 1) << "a delayed bitrate request must not start a fresh broadcast";
+    EXPECT_FALSE(broadcast.try_ref());
   }
 
   TEST_F(NvhttpDispatch, PairedClientFilteringAndPolicyRejectionSurviveDispatch) {
