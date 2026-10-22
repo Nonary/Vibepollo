@@ -52,6 +52,7 @@ namespace pyrowave::host {
           return 1;
         }
         linux_gpu::source_t source;
+        source.hdr10 = display->is_hdr();
         std::string capture_device;
         if (auto *img = dynamic_cast<egl::img_descriptor_t *>(&image)) {
           if (!img->sequence || img->sd.fds[0] < 0) {

@@ -488,8 +488,9 @@ namespace pyrowave::linux_gpu {
     u.use_lut = s.lut && !s.lut->empty();
     bool linear = source->get_create_info().format == VK_FORMAT_R16G16B16A16_SFLOAT;
     u.transfer = linear ? (d.config.hdr ? 2 : 1) : 0;
-    // Native 10-bit KMS HDR pixels are already PQ; 8-bit captures are SDR.
-    if (!linear && d.config.hdr && (!s.surface || s.surface->fourcc == DRM_FORMAT_XRGB8888 || s.surface->fourcc == DRM_FORMAT_ARGB8888 || s.surface->fourcc == DRM_FORMAT_XBGR8888 || s.surface->fourcc == DRM_FORMAT_ABGR8888)) {
+    // KMS HDR pixels are already PQ even when scanout uses an 8-bit buffer.
+    // Only expand an SDR source; precision alone does not identify its transfer.
+    if (!linear && !s.hdr10 && d.config.hdr && (!s.surface || s.surface->fourcc == DRM_FORMAT_XRGB8888 || s.surface->fourcc == DRM_FORMAT_ARGB8888 || s.surface->fourcc == DRM_FORMAT_XBGR8888 || s.surface->fourcc == DRM_FORMAT_ABGR8888)) {
       u.transfer = 3;
     }
     if (s.cursor) {

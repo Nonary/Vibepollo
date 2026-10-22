@@ -25,6 +25,9 @@ namespace pyrowave::linux_gpu {
     int width = 0, height = 0, stride = 0;
     int offset_x = 0, offset_y = 0;
     bool y_invert = false;
+    // Capture color state is independent of framebuffer component precision.
+    // An 8-bit KMS framebuffer can already contain BT.2020/PQ pixels.
+    bool hdr10 = false;
     const std::uint8_t *cursor = nullptr;
     int cursor_width = 0, cursor_height = 0;
     int cursor_x = 0, cursor_y = 0, cursor_dst_width = 0, cursor_dst_height = 0;

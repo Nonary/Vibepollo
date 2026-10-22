@@ -193,9 +193,12 @@ int main(int argc, char **argv) {
             source.stride = 272;
             const std::vector<std::array<std::uint16_t, 3>> inverted_lut {{{65535, 65535, 65535}}, {{0, 0, 0}}};
             const std::uint8_t cursor[] = {32, 0, 64, 128};
-            for (int variant = 0; variant < 4; ++variant) {
+            for (int variant = 0; variant < 5; ++variant) {
               for (auto boundary : {std::size_t(UINT32_MAX), std::size_t(1024)}) {
                 source.y_invert = variant == 1;
+                // Native PQ scanout must survive unchanged at either precision.
+                // Other variants retain SDR expansion and HDR cursor coverage.
+                source.hdr10 = hdr && variant == 4;
                 source.lut = variant == 2 ? &inverted_lut : nullptr;
                 source.cursor = variant == 3 ? cursor : nullptr;
                 source.cursor_width = source.cursor_height = 1;
@@ -235,7 +238,7 @@ int main(int argc, char **argv) {
                       v = 255 - v;
                     }
                   }
-                  if (hdr && argc <= 2) {
+                  if (hdr && !source.hdr10 && argc <= 2) {
                     rgb = sdr_to_pq(rgb);
                   }
                   if (variant == 3) {
