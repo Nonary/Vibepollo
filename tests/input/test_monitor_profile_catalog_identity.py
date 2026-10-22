@@ -24,7 +24,7 @@ std::optional<settings_t> get_client_snapshot_by_uuid(const std::string&) { retu
 int fixture_current_app = 0;
 namespace proc {
 int input_only_app_id = -1, terminate_app_id = -2;
-struct ctx_t { std::string uuid; bool remote_monitor_profile{}; overrides_t config_overrides; std::string id; std::string name; std::vector<std::string> id_aliases; std::optional<std::size_t> configured_index; };
+struct ctx_t { std::string uuid; bool remote_monitor_profile{}; overrides_t config_overrides; std::string id; std::string name; std::vector<std::string> id_aliases; std::optional<std::size_t> configured_index; std::optional<display_target::descriptor_t> monitor_target; };
 struct process_t { std::vector<ctx_t> apps; std::vector<ctx_t> get_apps() const {return apps;} int current_app_id() const {return fixture_current_app;} bool update_active_app_live_rtx_hdr_overrides(const std::string&) {return true;} std::optional<ctx_t> resolve_app(const std::string& id,const std::string& uuid) {
  std::vector<catalog::app_identity_t> identities;
  for(auto& app:apps)identities.push_back({.uuid=app.uuid,.id=app.id,.aliases=app.id_aliases});
@@ -172,7 +172,7 @@ def fixture(root):
  a=s.index('      const auto retained_profile = retained_monitor_profile(');z=s.index('      if (!no_active_sessions &&',a);block=s[a:z]
  a=s.index('auto synthetic_control =',s.index('auto appid_str ='));z=s.index('if (selected_monitor_profile)',a);z=s.index(';',z)+1;routing=s[a:z]
  struct=function(s,'struct remote_role_owner_t {')+';'
- funcs='\n'.join(function(s,x) for x in ['std::string remote_role_owner_key(','std::optional<remote_session::monitor_profile_t> retained_monitor_profile(','void remember_remote_owner(','void forget_remote_owner(','std::vector<remote_session::app_t> remote_configured_catalogue('])
+ funcs='\n'.join(function(s,x) for x in ['std::string remote_role_owner_key(','std::optional<remote_session::monitor_profile_t> retained_monitor_profile(','void remember_remote_owner(','bool forget_remote_owner(','std::vector<remote_session::app_t> remote_configured_catalogue('])
  fn="""
 std::optional<remote_session::monitor_profile_t> selected; overrides_t merged;
 void admit_id(const std::string& appid_str,const std::string& appuuid_str,int current_appid=0) {

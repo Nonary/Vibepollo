@@ -184,11 +184,15 @@ namespace nvhttp {
       return it == remote_role_owners.end() ? std::nullopt : std::make_optional(it->second.generation);
     }
 
-    void forget_remote_owner(std::string_view uuid, remote_session::role_e role, std::uint64_t generation) {
+    bool forget_remote_owner(std::string_view uuid, remote_session::role_e role, std::uint64_t generation) {
       std::lock_guard lock {remote_role_owners_mutex};
       const auto key = remote_role_owner_key(uuid, role);
       const auto it = remote_role_owners.find(key);
-      if (it != remote_role_owners.end() && it->second.generation == generation) remote_role_owners.erase(it);
+      if (it == remote_role_owners.end() || it->second.generation != generation) {
+        return false;
+      }
+      remote_role_owners.erase(it);
+      return true;
     }
 
     void forget_remote_client(std::string_view uuid) {
@@ -223,8 +227,15 @@ namespace nvhttp {
 
   void notify_remote_input_transport_lost(const std::string_view client_uuid, const std::uint64_t generation) {
     host_stream_control::activity_guard_t activity;
-    if (!activity) return;
-    forget_remote_owner(client_uuid, remote_session::role_e::input, generation);
+    if (!activity) {
+      return;
+    }
+    // A retired input generation may finish while its replacement is still
+    // preparing, before it has an RTSP pending record. It no longer owns the
+    // runtime overrides either, even if no transport is visible yet.
+    if (!forget_remote_owner(client_uuid, remote_session::role_e::input, generation)) {
+      return;
+    }
     if (!has_stream_session_activity() && remote_display_topology::instance().managed_client_identity_count() == 0) {
       config::clear_runtime_config_overrides();
       config::apply_config_now();
@@ -4898,6 +4909,17 @@ namespace nvhttp {
           return;
         }
 
+        std::unique_lock normal_transition_lock {normal_http_app_transition_mutex};
+        if (synthetic_control == remote_session::control_e::input && owner.role == remote_session::role_e::input) {
+          // A cached tile or a retry can arrive before the old input transport
+          // finishes closing. Retire only this client's previous generation,
+          // including pending RTSP startup, before publishing its replacement.
+          // /launch already owns the lifecycle gate; transfer it to teardown.
+          if (const auto generation = remote_owner_generation(request_client_identity.uuid, remote_session::role_e::input)) {
+            (void) rtsp_stream::disconnect_remote_role_session(request_client_identity.uuid, remote_session::role_e::input, *generation, true);
+            forget_remote_owner(request_client_identity.uuid, remote_session::role_e::input, *generation);
+          }
+        }
         const bool no_active_sessions = !has_stream_session_activity();
         const auto retained_profile = retained_monitor_profile(request_client_identity.uuid);
         const bool monitor_request = synthetic_control != remote_session::control_e::input;

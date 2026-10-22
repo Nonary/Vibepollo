@@ -231,6 +231,9 @@ namespace remote_session {
       result.catalogue = {synthetic(control_e::resume), synthetic(control_e::disconnect_monitor)};
       return result;
     }
+    // Moonlight refreshes the catalogue before asynchronous input teardown
+    // completes, then caches it. Keep the owner's Remote Input tile visible
+    // so leaving a stream does not remove its reconnect entry.
     if (!game.running && !remote_sessions_active && owner.role == role_e::none) {
       result.catalogue = std::move(visible_configured);
       result.catalogue.push_back(synthetic(control_e::input));
@@ -241,7 +244,7 @@ namespace remote_session {
       result.free = false;
       result.current_game = game.app.id;
       result.catalogue = visible_configured;
-      if (owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
+      result.catalogue.push_back(synthetic(control_e::input));
       result.catalogue.push_back(synthetic(control_e::monitor));
       return result;
     }
@@ -256,12 +259,12 @@ namespace remote_session {
         prioritized_secondary_control(control_e::terminate),
       };
       result.catalogue.insert(result.catalogue.end(), visible_configured.begin(), visible_configured.end());
-      if (owner.role != role_e::input) result.catalogue.push_back(prioritized_secondary_control(control_e::input));
+      result.catalogue.push_back(prioritized_secondary_control(control_e::input));
       result.catalogue.push_back(prioritized_secondary_control(control_e::monitor));
       return result;
     }
     result.catalogue = visible_configured;
-    if (owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
+    result.catalogue.push_back(synthetic(control_e::input));
     result.catalogue.push_back(synthetic(control_e::monitor));
     return result;
   }
@@ -280,7 +283,9 @@ namespace remote_session {
         break;
       case control_e::input:
         result.permission = permission_e::launch;
-        result.allowed = caller.may_launch && owner.role == role_e::none;
+        // As with Monitor, only this caller's ownership is passed here. The
+        // launch path retires its previous input generation before admission.
+        result.allowed = caller.may_launch && (owner.role == role_e::none || owner.role == role_e::input);
         break;
       case control_e::monitor:
         result.permission = permission_e::launch;
