@@ -62,6 +62,9 @@ namespace platf::vhf_gamepad {
               // complete report before submissions resume; failure rolls everything back.
               status = client.submit_input_state(*slots[nr].last_input);
             }
+            if (status == 0 && slots[nr].last_battery) {
+              status = client.submit_battery_state(*slots[nr].last_battery);
+            }
             if (status != 0) {
               break;
             }

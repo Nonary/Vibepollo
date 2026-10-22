@@ -71,8 +71,10 @@ namespace platf {
       bool active {};
       std::uint16_t client_relative_index {};
       lvg::profile profile {};
-      // Guarded by lifetime exclusively, including updates while recovery is pending.
+      // Durable client state, guarded by lifetime exclusively even while recovery is pending.
+      // Touch contacts and time-dependent motion samples belong to the old device epoch.
       std::optional<lvg::input_state_request> last_input;
+      std::optional<lvg::battery_state_request> last_battery;
 
       // A client pointer id is an arbitrary handle; the touchpad has two
       // numbered contacts. Reserving a contact per pointer keeps a moved touch
@@ -94,6 +96,7 @@ namespace platf {
         client_relative_index = 0;
         profile = {};
         last_input.reset();
+        last_battery.reset();
         contact_of_pointer.clear();
         free_contacts = 0x3;
         feedback_queue.reset();
@@ -784,9 +787,9 @@ namespace platf {
       return;
     }
 
-    std::shared_lock lock {impl->lifetime};
+    std::unique_lock lock {impl->lifetime};
     auto &slot = impl->slots[nr];
-    if (!slot.active || impl->recovery.pending() || !has_motion(slot.profile)) {
+    if (!slot.active || !has_motion(slot.profile)) {
       return;
     }
 
@@ -799,6 +802,11 @@ namespace platf {
                         : battery_event.percentage;
     request.flags = vhf_gamepad::to_protocol_battery_state(battery_event.state);
 
+    // Battery events are not periodic: retain even a pending or failed submission.
+    slot.last_battery = request;
+    if (impl->recovery.pending()) {
+      return;
+    }
     impl->observe_status(impl->client.submit_battery_state(request));
   }
 
