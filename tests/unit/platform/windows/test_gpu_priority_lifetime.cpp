@@ -17,13 +17,15 @@ namespace {
       },
       [this](int value) {
         writes.push_back(value);
-        if (!set_ok) return false;
+        if (!set_ok) {
+          return false;
+        }
         priority = value;
         return true;
       }
     };
   };
-}
+}  // namespace
 
 TEST(GpuPriorityLifetime, RestoresOriginalAfterLastCaptureNotFirst) {
   driver_t driver;
@@ -135,8 +137,13 @@ TEST(GpuPriorityLifetime, LeasesKeepRestorationStateAliveBeyondManager) {
   std::unique_ptr<platf::dxgi::gpu_priority_manager_t::lease_t> capture;
   {
     platf::dxgi::gpu_priority_manager_t manager {
-      [&]() -> std::optional<int> { return priority; },
-      [&](int value) { priority = value; return true; }
+      [&]() -> std::optional<int> {
+        return priority;
+      },
+      [&](int value) {
+        priority = value;
+        return true;
+      }
     };
     capture = manager.acquire(5);
   }
@@ -156,7 +163,9 @@ TEST(GpuPriorityLifetime, ConcurrentCapturesRestoreOnlyAfterFinalOwner) {
       }
     });
   }
-  for (auto &worker : workers) worker.join();
+  for (auto &worker : workers) {
+    worker.join();
+  }
   EXPECT_EQ(driver.priority, 4);
   outer.reset();
   EXPECT_EQ(driver.priority, 2);

@@ -44,12 +44,16 @@ namespace platf::dxgi {
           state->release();
         }
       }
+
       lease_t(const lease_t &) = delete;
       lease_t &operator=(const lease_t &) = delete;
 
     private:
       friend class gpu_priority_manager_t;
-      explicit lease_t(std::shared_ptr<state_t> state): state(std::move(state)) {}
+
+      explicit lease_t(std::shared_ptr<state_t> state):
+          state(std::move(state)) {}
+
       std::shared_ptr<state_t> state;
       bool armed = false;
     };
