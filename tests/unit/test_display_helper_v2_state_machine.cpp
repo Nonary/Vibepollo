@@ -60,6 +60,7 @@ namespace {
       const std::optional<display_helper::v2::ResolvedConfigurationTarget> &resolved_target,
       const display_helper::v2::CancellationToken &,
       std::function<void(bool)> completion) override {
+      verification_delay = std::chrono::milliseconds(0);
       verification_request = request;
       verification_topology = expected_topology;
       verification_target = resolved_target;
@@ -74,8 +75,8 @@ namespace {
       const display_helper::v2::CancellationToken &token,
       std::chrono::milliseconds delay,
       std::function<void(bool)> completion) override {
-      verification_delay = delay;
       dispatch_verification(request, expected_topology, resolved_target, token, std::move(completion));
+      verification_delay = delay;
     }
 
     void dispatch_recovery(

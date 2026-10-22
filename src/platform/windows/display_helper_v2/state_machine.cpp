@@ -664,11 +664,12 @@ namespace display_helper::v2 {
       return false;
     }
     if (next_transient_disconnect_check_ >= kDelays.size()) {
-      if (transient_disconnect_rollback_verification_ && transient_disconnect_topology_ &&
-          !transient_disconnect_topology_->empty()) {
-        // Keep the rollback snapshot and topology-only request through the
-        // final probe; resetting settlement here would revive the retired
-        // replacement identity as the verification target.
+      if (transient_disconnect_topology_ && !transient_disconnect_topology_->empty() &&
+          (transient_disconnect_rollback_verification_ || is_exclusive_request(current_request_))) {
+        // Keep the exact topology and settlement ownership through the final
+        // probe. Resetting here would make its completion look superseded;
+        // rollback also needs its saved topology because the current identity
+        // was retired by the replacement attempt.
         dispatch_transient_disconnect_final_verification();
         return true;
       }
