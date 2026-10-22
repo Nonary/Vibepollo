@@ -392,9 +392,56 @@ namespace {
     CHECK(partial_mic_frame.feed(submit(48, true, 2, 191, {}, {}, {{0, 191}})));
     CHECK(get32(partial_mic_frame.take_output(), 20) == std::uint32_t(-32));
   }
+  void ingress_provenance() {
+    // Every split includes boundaries inside command/header/payload/ISO metadata.
+    const auto audio = submit(90, false, 1, 384, bytes(384, 17), {}, {{0, 384}});
+    for (std::size_t split : {std::size_t(1), std::size_t(47), std::size_t(48),
+                              std::size_t(100), audio.size() - 1}) {
+      std::uint64_t incarnation = 7;
+      std::vector<std::uint64_t> tags;
+      unsigned actuators = 0;
+      session peer(0, {.haptics_pcm = [&](auto) { ++actuators; },
+                       .speaker_pcm = [&](auto, auto tag) { tags.push_back(tag); },
+                       .capture_speaker_incarnation = [&] { return incarnation; }});
+      attach(peer);
+      const auto start = std::chrono::steady_clock::now();
+      CHECK(peer.feed(std::span(audio).first(split), start));
+      incarnation = 9;
+      auto remainder = bytes(audio.begin() + split, audio.end());
+      const auto fresh = submit(91, false, 1, 384, bytes(384, 85), {}, {{0, 384}});
+      remainder.insert(remainder.end(), fresh.begin(), fresh.end());
+      CHECK(peer.feed(remainder, start));
+      peer.poll(start + std::chrono::milliseconds(3));
+      CHECK((tags == std::vector<std::uint64_t> {7, 9}));
+      CHECK(actuators == 2 && !peer.failed());
+    }
+    std::uint64_t incarnation = 7;
+    std::vector<std::uint64_t> tags;
+    unsigned controls = 0;
+    session peer(0, {.hid_output = [&](auto) { ++controls; incarnation = 9; },
+                     .speaker_pcm = [&](auto, auto tag) { tags.push_back(tag); },
+                     .capture_speaker_incarnation = [&] { return incarnation; }});
+    attach(peer);
+    auto batch = submit(89, false, 3, 1, bytes {2});
+    const auto another_control = submit(88, false, 3, 1, bytes {2});
+    batch.insert(batch.end(), another_control.begin(), another_control.end());
+    batch.insert(batch.end(), audio.begin(), audio.end());
+    const auto start = std::chrono::steady_clock::now();
+    CHECK(peer.feed(batch, start)); // HID callback rebinds before the next record parses.
+    peer.poll(start + std::chrono::milliseconds(2));
+    CHECK(controls == 2 && tags == std::vector<std::uint64_t> {7});
+    // Explicit transport tag covers complete bytes received before a rebind but
+    // handed to the parser afterward. Scope ends at this user-space receive.
+    const auto received_tag = peer.capture_receive_incarnation();
+    incarnation = 11;
+    CHECK(peer.feed(submit(92, false, 1, 384, bytes(384), {}, {{0, 384}}), received_tag, start));
+    peer.poll(start + std::chrono::milliseconds(4));
+    CHECK((tags == std::vector<std::uint64_t> {7, 9}));
+  }
 }  // namespace
 
 int main() {
+  ingress_provenance();
   handshake();
   descriptors_and_features();
   hid_and_unlink();
