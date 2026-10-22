@@ -209,7 +209,8 @@ set(_sunshine_test_boost_components
     log
     log_setup
     property_tree
-    system)
+    system
+    uuid)
 if(SUNSHINE_TEST_ENABLE_COMPONENT)
     list(APPEND _sunshine_test_boost_components process)
 endif()
@@ -1172,7 +1173,7 @@ if(NOT WIN32)
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libdisplaydevice/src/common/json.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libdisplaydevice/src/common/json_serializer.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libdisplaydevice/src/common/logging.cpp"
-        LINK_LIBRARIES sunshine_test_displaydevice_headers Boost::algorithm nlohmann_json::nlohmann_json)
+        LINK_LIBRARIES sunshine_test_displaydevice_headers Boost::algorithm Boost::uuid nlohmann_json::nlohmann_json)
 endif()
 
 find_package(ZLIB REQUIRED)

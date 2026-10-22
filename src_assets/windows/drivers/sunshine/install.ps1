@@ -599,7 +599,10 @@ function Invoke-DriverInstallSafetyCommand {
     $powerShellPath = [string]$hostProcess.Path
     if ([string]::IsNullOrWhiteSpace($powerShellPath)) { throw 'Unable to resolve the current PowerShell host. Driver unchanged.' }
 
-    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($ScriptText))
+    # Keep module-autoload progress records out of the child output consumed by
+    # the inventory decoder. Errors, exit status, and timeout handling remain intact.
+    $childScriptText = "`$ProgressPreference = 'SilentlyContinue'`r`n$ScriptText"
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScriptText))
     try {
         $output = Invoke-DriverProcessCapture -FilePath $powerShellPath -ArgumentList @(
             '-NoLogo', '-NonInteractive', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand

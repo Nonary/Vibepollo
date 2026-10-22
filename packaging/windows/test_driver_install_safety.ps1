@@ -76,9 +76,7 @@ try {
             # driver inventory, devices, packages, or trust stores.
             $scriptDir = $testRoot
             $probeOutput = Invoke-DriverInstallSafetyQuery -ScriptText "Write-Output 'bounded-query-ok'" -TimeoutSeconds 15
-            $probeOutputText = [string]$probeOutput
-            $probeOutputBase64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probeOutputText))
-            Assert-That ($probeOutput.Trim() -eq 'bounded-query-ok') "Bounded inventory child must return captured output (length: $($probeOutputText.Length); UTF-16 base64: $probeOutputBase64)"
+            Assert-That ($probeOutput.Trim() -eq 'bounded-query-ok') 'Bounded inventory child must return captured output'
             $failedChild = $false
             try { $null = Invoke-DriverInstallSafetyQuery -ScriptText 'exit 7' -TimeoutSeconds 15 } catch { $failedChild = $_.Exception.Message.Contains('exit code 7') }
             Assert-That $failedChild 'A failed inventory child must fail closed with its exit status'
