@@ -102,6 +102,7 @@ struct RecoveryMonitorState {
  std::optional<std::string> normalized_display_name="display15";
  video::capture_recovery::confirmation_t capture_confirmation;
  std::uint64_t capture_lease_id=0,capture_display_id=0;
+ std::optional<std::string> capture_device_id;
  void update_identifiers(const std::optional<std::wstring> &name,const std::optional<std::string> &id,
                          const std::optional<std::wstring> &path) {
   current_display_name=name;current_device_id=id;current_monitor_device_path=path;
@@ -161,6 +162,14 @@ bool reactivate_owned_virtual_display(const std::string &id,const std::function<
 }
 ''' + function('    std::optional<std::wstring> resolve_virtual_display_name_for_device_id(') + '\n' + ccd_presence + '\n' + driver_presence + '\n' + target_presence + '\n' + reactivate_presence + r'''
 int main() {
+ assert(video::capture_recovery::lease_identity_matches(
+  2,1,std::string("virtual1"),2,1,std::string("virtual1")));
+ assert(!video::capture_recovery::lease_identity_matches(
+  2,1,std::string("replacement-virtual"),2,1,std::string("virtual1")));
+ assert(!video::capture_recovery::lease_identity_matches(
+  2,1,std::string("virtual1"),3,1,std::string("virtual1")));
+ assert(!video::capture_recovery::lease_identity_matches(
+  2,1,std::nullopt,2,1,std::string("virtual1")));
  auto reclaimed_id=VDISPLAY::policy::select_reuse_device_id(true,std::string("virtual1"),std::string("replacement-virtual"));
  assert(reclaimed_id&&*reclaimed_id=="virtual1");
  assert(!VDISPLAY::policy::select_reuse_device_id(true,std::nullopt,std::string("replacement-virtual")));
@@ -275,6 +284,14 @@ int main() {
  assert(reactivate_owned_virtual_display(state,{}));
  assert(resets==1&&state.capture_confirmation.pending());
  assert(state.capture_lease_id==2&&state.capture_display_id==1);
+ assert(state.capture_device_id=="virtual1");
+ // If the tracked device identity changes after watch installation, the
+ // confirmation gate rejects polling the old captured-device observer.
+ owned->device_id="replacement-virtual";
+ assert(!video::capture_recovery::lease_identity_matches(
+  owned->lease_id,owned->display_id,owned->device_id,
+  state.capture_lease_id,state.capture_display_id,state.capture_device_id));
+ owned=Lease{};
  assert(owned->lease_id==2&&owned->display_id==1);
  assert(state.capture_confirmation.poll(std::chrono::steady_clock::now()+5s)==video::capture_recovery::confirmation_status::retry);
  auto &captures=video::capture_recovery::observations();

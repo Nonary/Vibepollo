@@ -4401,6 +4401,7 @@ namespace VDISPLAY_SUNSHINE {
       video::capture_recovery::confirmation_t capture_confirmation;
       std::uint64_t capture_lease_id {0};
       std::uint64_t capture_display_id {0};
+    std::optional<std::string> capture_device_id;
 
       explicit RecoveryMonitorState(const VirtualDisplayRecoveryParams &p):
           params(p),
@@ -4796,6 +4797,7 @@ namespace VDISPLAY_SUNSHINE {
       );
       state.capture_lease_id = lease->lease_id;
       state.capture_display_id = lease->display_id;
+      state.capture_device_id = lease->device_id;
       mail::man->event<int>(mail::switch_display)->raise(-1);
       // Capture reinitializes outside the operation lock. Keep this observation
       // until a frame from the new capture instance arrives.
@@ -5009,13 +5011,21 @@ namespace VDISPLAY_SUNSHINE {
             std::unique_lock<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex, std::try_to_lock);
             if (operation_lock.owns_lock()) {
               const auto lease = driver_lease_tracker().get(state.guid_uuid);
-              if (!lease || lease->lease_id != state.capture_lease_id || lease->display_id != state.capture_display_id ||
+              if (!lease || !video::capture_recovery::lease_identity_matches(
+                              lease->lease_id,
+                              lease->display_id,
+                              lease->device_id,
+                              state.capture_lease_id,
+                              state.capture_display_id,
+                              state.capture_device_id
+                            ) ||
                   !render_adapter_request_provenance_matches(state.guid_uuid, "capture reactivation confirmation") ||
                   monitor_should_abort(state, stop_token)) {
                 return;
               }
               switch (state.capture_confirmation.poll(now)) {
                 case video::capture_recovery::confirmation_status::confirmed:
+                  state.capture_device_id.reset();
                   BOOST_LOG(info) << "Reactivated owned virtual display in place and observed a fresh frame for "
                                   << state.describe_target();
                   break;
@@ -5054,6 +5064,7 @@ namespace VDISPLAY_SUNSHINE {
 
         active_since.reset();
         state.capture_confirmation.reset();
+        state.capture_device_id.reset();
 
       // A newly created target may be enumerated before the helper activates it.
         // Keep the monitor dormant until this exact target has been observed active;

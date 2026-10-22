@@ -20,6 +20,18 @@ namespace video::capture_recovery {
            });
   }
 
+  inline bool lease_identity_matches(
+    std::uint64_t current_lease_id,
+    std::uint64_t current_display_id,
+    const std::optional<std::string> &current_device_id,
+    std::uint64_t watched_lease_id,
+    std::uint64_t watched_display_id,
+    const std::optional<std::string> &watched_device_id
+  ) {
+    return current_lease_id == watched_lease_id && current_display_id == watched_display_id &&
+           current_device_id && watched_device_id && same_name(*current_device_id, *watched_device_id);
+  }
+
   // Resolve the current device identity for a GDI output name. A GDI name is
   // mutable across topology changes, so it is only a lookup key; callers must
   // compare the resolved device ID with the identity they intend to observe.
