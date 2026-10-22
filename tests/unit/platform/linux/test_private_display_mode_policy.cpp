@@ -7,10 +7,58 @@
 #include <src/platform/linux/private_display_configuration_policy.h>
 #include <src/platform/linux/private_display_diagnostic_policy.h>
 #include <src/platform/linux/private_display_mode_policy.h>
+#include <src/video_framerate_policy.h>
 
 namespace policy = platf::linux_private_display::mode_policy;
 namespace configuration = platf::linux_private_display::configuration_policy;
 namespace diagnostic = platf::linux_private_display::diagnostic_policy;
+
+TEST(VideoFrameratePolicy, ReportsTheEffectiveRateAfterProductionFallbackNormalization) {
+  EXPECT_EQ(video::framerate_policy::effective_encoding_framerate_milli_fps(120000, 60), 120000);
+  EXPECT_EQ(video::framerate_policy::effective_encoding_framerate_milli_fps(0, 60), 60000);
+  EXPECT_EQ(video::framerate_policy::effective_encoding_framerate_milli_fps(-1, 90), 90000);
+  EXPECT_EQ(video::framerate_policy::effective_encoding_framerate_milli_fps(0, 0), 60000);
+}
+
+TEST(LinuxPrivateDisplayDiagnosticPolicy, TreatsWrongTypedCurrentModeIdAsUnobserved) {
+  nlohmann::json output = {
+    {"connected", false},
+    {"enabled", false},
+    {"currentModeId", 42},
+    {"modes", nlohmann::json::array()},
+  };
+
+  EXPECT_NO_THROW({
+    EXPECT_FALSE(diagnostic::current_mode_id(output).has_value());
+  });
+
+  output["currentModeId"] = "mode-1";
+  ASSERT_EQ(diagnostic::current_mode_id(output), std::optional<std::string> {"mode-1"});
+  output["currentModeId"] = "";
+  EXPECT_FALSE(diagnostic::current_mode_id(output).has_value());
+  output.erase("currentModeId");
+  EXPECT_FALSE(diagnostic::current_mode_id(output).has_value());
+}
+
+TEST(LinuxPrivateDisplayDiagnosticPolicy, TreatsMalformedModeSizeAsUnobserved) {
+  nlohmann::json output = {
+    {"currentModeId", "mode-1"},
+    {"modes", nlohmann::json::array({
+                 {{"id", 7}, {"size", {{"width", 2448}, {"height", 1848}}}},
+                 {{"id", "mode-1"}, {"size", {{"width", -1}, {"height", 1848}}}},
+               })},
+  };
+
+  EXPECT_NO_THROW({
+    EXPECT_FALSE(diagnostic::current_mode_size(output, "mode-1").has_value());
+  });
+
+  output["modes"][1]["size"]["width"] = 2448;
+  const std::pair<std::uint32_t, std::uint32_t> expected_size {2448, 1848};
+  ASSERT_EQ(diagnostic::current_mode_size(output, "mode-1"), expected_size);
+  output["modes"][1]["size"]["width"] = std::numeric_limits<std::uint64_t>::max();
+  EXPECT_FALSE(diagnostic::current_mode_size(output, "mode-1").has_value());
+}
 
 TEST(LinuxPrivateDisplayConfigurationPolicy, RejectsKScreenFailureWithSuccessfulExit) {
   EXPECT_FALSE(configuration::command_succeeded(true, "applying config failed! The session is not active\n", "locale warning"));

@@ -604,7 +604,11 @@ namespace platf::linux_private_display {
         return std::nullopt;
       }
       for (const auto &mode : *modes) {
-        if (mode.value("id", std::string {}) != mode_id) {
+        if (!mode.is_object()) {
+          continue;
+        }
+        const auto id = mode.find("id");
+        if (id == mode.end() || !id->is_string() || id->get_ref<const std::string &>() != mode_id) {
           continue;
         }
         const auto refresh = mode.find("refreshRate");
@@ -1305,21 +1309,23 @@ namespace platf::linux_private_display {
       facts.requested_mode_known = !diagnostic_mode_id.empty();
       facts.output_present = output != nullptr;
       if (output) {
-        facts.output_connected = connected(*output);
-        facts.output_enabled = enabled(*output);
         const auto connection = output->find("connected");
         facts.connection_observed = connection != output->end() && connection->is_boolean();
+        if (facts.connection_observed) {
+          facts.output_connected = connection->get<bool>();
+        }
         const auto enabled_value = output->find("enabled");
         facts.enabled_observed = enabled_value != output->end() && enabled_value->is_boolean();
-        diagnostic_current_mode_id = output->value("currentModeId", std::string {});
-        const auto [width, height] = mode_size(*output, diagnostic_current_mode_id);
-        if (width > 0 && height > 0) {
-          diagnostic_current_mode_size = std::pair {width, height};
+        if (facts.enabled_observed) {
+          facts.output_enabled = enabled_value->get<bool>();
         }
-        diagnostic_current_refresh_hz = mode_refresh_hz(*output, diagnostic_current_mode_id);
-        const auto mode_id_value = output->find("currentModeId");
-        facts.mode_id_observed = mode_id_value != output->end() && mode_id_value->is_string() &&
-                                 !diagnostic_current_mode_id.empty();
+        const auto observed_mode_id = diagnostic_policy::current_mode_id(*output);
+        facts.mode_id_observed = observed_mode_id.has_value();
+        if (observed_mode_id) {
+          diagnostic_current_mode_id = *observed_mode_id;
+          diagnostic_current_mode_size = diagnostic_policy::current_mode_size(*output, diagnostic_current_mode_id);
+          diagnostic_current_refresh_hz = mode_refresh_hz(*output, diagnostic_current_mode_id);
+        }
         const auto scale_value = output->find("scale");
         if (scale_value != output->end() && scale_value->is_number()) {
           const auto scale = scale_value->get<double>();

@@ -4,8 +4,13 @@
  */
 #pragma once
 
+#include <cstdint>
+#include <limits>
+#include <nlohmann/json.hpp>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <utility>
 
 namespace platf::linux_private_display::diagnostic_policy {
   enum class configuration_e {
@@ -75,6 +80,78 @@ namespace platf::linux_private_display::diagnostic_policy {
     bool scale_matches = true;
     bool hdr_matches = true;
   };
+
+  [[nodiscard]] inline std::optional<std::string> current_mode_id(const nlohmann::json &output) {
+    if (!output.is_object()) {
+      return std::nullopt;
+    }
+    const auto value = output.find("currentModeId");
+    if (value == output.end() || !value->is_string()) {
+      return std::nullopt;
+    }
+    auto mode_id = value->get<std::string>();
+    return mode_id.empty() ? std::nullopt : std::optional<std::string> {mode_id};
+  }
+
+  [[nodiscard]] inline std::optional<std::uint32_t> nonnegative_u32(const nlohmann::json &value) {
+    if (value.is_number_unsigned()) {
+      const auto number = value.get<std::uint64_t>();
+      if (number <= std::numeric_limits<std::uint32_t>::max()) {
+        return static_cast<std::uint32_t>(number);
+      }
+    } else if (value.is_number_integer()) {
+      const auto number = value.get<std::int64_t>();
+      if (number >= 0 && static_cast<std::uint64_t>(number) <= std::numeric_limits<std::uint32_t>::max()) {
+        return static_cast<std::uint32_t>(number);
+      }
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] inline std::optional<std::pair<std::uint32_t, std::uint32_t>> current_mode_size(
+    const nlohmann::json &output,
+    const std::string_view mode_id
+  ) {
+    if (!output.is_object() || mode_id.empty()) {
+      return std::nullopt;
+    }
+
+    const auto read_size = [](const nlohmann::json &size)
+      -> std::optional<std::pair<std::uint32_t, std::uint32_t>> {
+      if (!size.is_object()) {
+        return std::nullopt;
+      }
+      const auto width = size.find("width");
+      const auto height = size.find("height");
+      if (width == size.end() || height == size.end()) {
+        return std::nullopt;
+      }
+      const auto width_value = nonnegative_u32(*width);
+      const auto height_value = nonnegative_u32(*height);
+      if (!width_value || !height_value) {
+        return std::nullopt;
+      }
+      return std::pair {*width_value, *height_value};
+    };
+
+    const auto modes = output.find("modes");
+    if (modes != output.end() && modes->is_array()) {
+      for (const auto &mode : *modes) {
+        if (!mode.is_object()) {
+          continue;
+        }
+        const auto id = mode.find("id");
+        if (id == mode.end() || !id->is_string() || id->get_ref<const std::string &>() != mode_id) {
+          continue;
+        }
+        const auto size = mode.find("size");
+        return size == mode.end() ? std::nullopt : read_size(*size);
+      }
+    }
+
+    const auto size = output.find("size");
+    return size == output.end() ? std::nullopt : read_size(*size);
+  }
 
   inline void record_configuration_result(
     trace_t &trace,

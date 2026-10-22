@@ -50,6 +50,7 @@ extern "C" {
 #include "pyrowave_host.h"
 #include "sync.h"
 #include "video.h"
+#include "video_framerate_policy.h"
 #include "video_encoder_probe_policy.h"
 #include "video_policy.h"
 #include "webrtc_stream.h"
@@ -5021,6 +5022,10 @@ namespace video {
     rtx_hdr_metadata_refresh_state_t &rtx_hdr_metadata_refresh
   ) {
     const encoder_t *session_encoder = &encoder;
+    const int effective_encoding_framerate_milli_fps = framerate_policy::effective_encoding_framerate_milli_fps(
+      config.encodingFramerate,
+      config.framerate
+    );
     bool initialization_was_cancelled = false;
     bool initialization_gate_contended = false;
     auto session = prepared_session ?
@@ -5034,7 +5039,8 @@ namespace video {
                     << " capture=" << disp->width << 'x' << disp->height
                     << " encoder_context=" << config.width << 'x' << config.height
                     << " stream_fps=" << config.framerate
-                    << " encoding_framerate_milli_fps=" << config.encodingFramerate
+                    << " requested_encoding_framerate_milli_fps=" << config.encodingFramerate
+                    << " effective_encoding_framerate_milli_fps=" << effective_encoding_framerate_milli_fps
                     << " result=" << (session ? "ready" : initialization_gate_contended ? "temporarily_busy" :
                                                                                           "failed")
                     << '.';
@@ -5250,7 +5256,7 @@ namespace video {
     };
 
     if (config.encodingFramerate <= 0) {
-      const int fallback_fps = config.framerate > 0 ? config.framerate * 1000 : 60000;
+      const int fallback_fps = effective_encoding_framerate_milli_fps;
       BOOST_LOG(warning) << "Encoding framerate missing; falling back to " << fallback_fps;
       config.encodingFramerate = fallback_fps;
     }
