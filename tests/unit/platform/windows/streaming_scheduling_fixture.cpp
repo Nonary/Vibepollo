@@ -33,7 +33,7 @@ constexpr int MKF_MOUSEKEYSON = 1, MKF_AVAILABLE = 2;
 constexpr int wlan_interface_state_connected = 1, wlan_intf_opcode_media_streaming_mode = 1;
 #define NT_SUCCESS(status) ((status) >= 0)
 #define WLAN_API_MAKE_VERSION(major, minor) ((major) | ((minor) << 16))
-#define BOOST_LOG(level) log_output
+#define BOOST_LOG(level) (log_output << "[" #level "] ")
 
 std::ostringstream log_output;
 struct MOUSEKEYS {
@@ -205,6 +205,15 @@ int main(int argc, char **argv) {
     check(os.native_calls == std::vector<std::pair<ULONG, BOOLEAN>> {{5000, TRUE}, {5000, FALSE}},
           "native release uses FALSE and the acquired resolution");
     check(os.query_calls == 1 && !os.end_calls, "native release neither requeries nor ends WinMM");
+  } else if (scenario == "lifecycle-logs") {
+    start();
+    stop();
+    const auto messages = log_output.str();
+    check(messages.find("[info] Stream scheduling acquired native timer resolution request") != std::string::npos, "successful native timer acquisition is logged at info level");
+    check(messages.find("acquired native timer resolution request") != std::string::npos, "successful native timer acquisition is logged");
+    check(messages.find("raised process priority from") != std::string::npos, "process priority change is logged with its prior class");
+    check(messages.find("restored process priority class") != std::string::npos, "successful process priority restoration is logged");
+    check(messages.find("released native timer resolution request") != std::string::npos, "successful native timer release is logged");
   } else if (scenario == "multi-owner" || scenario == "winmm-multi-owner" || scenario == "threaded-owners") {
     if (scenario == "winmm-multi-owner") os.query_failures = 1;
     if (scenario == "threaded-owners") {
@@ -231,6 +240,10 @@ int main(int argc, char **argv) {
     start(); stop();
     check(os.begin_calls == 1 && os.end_calls == (scenario == "no-timer" ? 0 : 1),
           "WinMM release requires a successful matching begin");
+    if (scenario != "no-timer") {
+      check(log_output.str().find("acquired WinMM 1 ms timer period") != std::string::npos, "successful WinMM fallback acquisition is logged");
+      check(log_output.str().find("released WinMM 1 ms timer period") != std::string::npos, "successful WinMM fallback release is logged");
+    }
   } else if (scenario == "native-release-retry" || scenario == "winmm-release-retry" ||
              scenario == "native-release-new-cycle" || scenario == "winmm-release-new-cycle") {
     const bool winmm = scenario.starts_with("winmm");
@@ -270,6 +283,7 @@ int main(int argc, char **argv) {
     os.priority = BELOW_NORMAL_PRIORITY_CLASS; stop();
     check(os.priority == BELOW_NORMAL_PRIORITY_CLASS && os.priority_sets.size() == (pending ? 2u : 1u),
           "cleanup preserves a later external priority class");
+    check(log_output.str().find("preserved externally changed process priority class") != std::string::npos, "cleanup logs that it preserved a later external priority class");
     start(); stop();
     check(os.priority == BELOW_NORMAL_PRIORITY_CLASS, "later cycle snapshots the new class");
   } else if (scenario == "foreign-native" || scenario == "foreign-winmm") {
@@ -318,6 +332,9 @@ int main(int argc, char **argv) {
     os.priority = original;
     start(); stop();
     check(os.priority == original, "restore the actual prior priority class");
+    if (scenario == "priority-high") {
+      check(log_output.str().find("[info] Stream scheduling kept the preexisting HIGH_PRIORITY_CLASS unchanged") != std::string::npos, "preexisting high priority is logged at info level");
+    }
     check(os.priority_sets.size() == (original == HIGH_PRIORITY_CLASS ? 0u : 2u),
           "already HIGH has no priority change to restore");
   } else {
