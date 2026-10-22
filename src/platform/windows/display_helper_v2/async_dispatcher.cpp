@@ -1,3 +1,8 @@
+#ifdef _WIN32
+// MinGW's threading headers can import windows.h before the native helper header.
+#include <winsock2.h>
+#endif
+
 #include "src/platform/windows/display_helper_v2/async_dispatcher.h"
 
 #include "src/platform/windows/display_helper_v2/diagnostics.h"
