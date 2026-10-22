@@ -844,6 +844,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     sunshine_register_component(NAME test_component_linux_dmabuf_surface TEST_SOURCE unit/platform/linux/test_dmabuf_surface.cpp)
     pkg_check_modules(TEST_PYROWAVE_IMPORT_DRM QUIET IMPORTED_TARGET libdrm)
     if(TEST_PYROWAVE_IMPORT_DRM_FOUND)
+        sunshine_register_component(NAME test_component_linux_pyrowave_linear_upload
+            TEST_SOURCE unit/platform/linux/test_pyrowave_linear_upload.cpp
+            LINK_LIBRARIES PkgConfig::TEST_PYROWAVE_IMPORT_DRM)
         sunshine_register_component(NAME test_component_linux_kmsgrab_hdr
             TEST_SOURCE unit/platform/linux/test_kmsgrab_hdr.cpp
             LINK_LIBRARIES PkgConfig::TEST_PYROWAVE_IMPORT_DRM Threads::Threads)

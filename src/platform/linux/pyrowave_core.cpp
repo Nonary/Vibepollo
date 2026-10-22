@@ -8,14 +8,18 @@
 #include "device.hpp"
 #include "pyrowave_encoder.hpp"
 #include "pyrowave_import_diagnostics.h"
+#include "pyrowave_linear_upload.h"
 
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <drm_fourcc.h>
 #include <fcntl.h>
+#include <linux/dma-buf.h>
 #include <mutex>
 #include <poll.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 
@@ -190,7 +194,85 @@ namespace pyrowave::linux_gpu {
       return device.create_image(info, &data);
     }
 
-    Vulkan::ImageHandle import(const egl::surface_descriptor_t &s, std::string &error) {
+    Vulkan::ImageHandle upload_linear_surface(const egl::surface_descriptor_t &s, VkFormat format, std::string &error) {
+      if (!linear_upload::can_upload_surface(s)) {
+        error = "capture surface is not a supported linear CPU upload";
+        return {};
+      }
+      std::size_t mapped_size = 0;
+      if (!linear_upload::required_mapped_size(s, mapped_size)) {
+        error = "linear DMA-BUF layout size overflow";
+        return {};
+      }
+      if (!linear_upload::backing_extent_matches(s.fds[0], mapped_size)) {
+        error = "linear DMA-BUF backing extent is unavailable or smaller than its layout";
+        return {};
+      }
+      void *mapped = mmap(nullptr, mapped_size, PROT_READ, MAP_SHARED, s.fds[0], 0);
+      if (mapped == MAP_FAILED) {
+        error = "mapping linear capture DMA-BUF failed";
+        return {};
+      }
+
+      struct mapping_guard_t {
+        void *address;
+        std::size_t size;
+
+        ~mapping_guard_t() {
+          munmap(address, size);
+        }
+      } mapping {mapped, mapped_size};
+
+      dma_buf_sync sync {.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ};
+      const auto sync_result = linear_upload::retry_sync_call([&] {
+        return ioctl(s.fds[0], DMA_BUF_IOCTL_SYNC, &sync);
+      });
+      if (sync_result < 0) {
+        error = "synchronizing linear capture DMA-BUF for CPU read failed";
+        return {};
+      }
+
+      struct sync_guard_t {
+        int fd;
+        bool active = true;
+
+        ~sync_guard_t() {
+          if (active) {
+            dma_buf_sync end {.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ};
+            linear_upload::retry_sync_call([&] {
+              return ioctl(fd, DMA_BUF_IOCTL_SYNC, &end);
+            });
+          }
+        }
+
+        bool finish() {
+          dma_buf_sync end {.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ};
+          const auto result = linear_upload::retry_sync_call([&] {
+            return ioctl(fd, DMA_BUF_IOCTL_SYNC, &end);
+          });
+          active = false;
+          return result == 0;
+        }
+      } cpu_access {s.fds[0]};
+
+      std::vector<std::uint8_t> pixels;
+      if (!linear_upload::copy_mapped_rows(s, std::span(static_cast<const std::uint8_t *>(mapped), mapped_size), pixels)) {
+        error = "copying linear capture DMA-BUF pixels failed";
+        return {};
+      }
+      if (!cpu_access.finish()) {
+        error = "synchronizing linear capture DMA-BUF after CPU read failed";
+        return {};
+      }
+      auto image = upload(pixels.data(), s.width, s.height, s.width * 4, format);
+      if (!image) {
+        error = "uploading linear capture pixels to Vulkan failed";
+      }
+      return image;
+    }
+
+    Vulkan::ImageHandle import(const egl::surface_descriptor_t &s, std::string &error, bool &producer_ready) {
+      producer_ready = false;
       // Vulkan does not implicitly wait on the DMA-BUF reservation fence.
       pollfd ready {s.fds[0], POLLIN, 0};
       int waited;
@@ -201,6 +283,7 @@ namespace pyrowave::linux_gpu {
         error = "capture DMA-BUF producer fence did not signal";
         return {};
       }
+      producer_ready = true;
       auto format = format_for(s.fourcc);
       if (format == VK_FORMAT_UNDEFINED || s.modifier == DRM_FORMAT_MOD_INVALID || s.fds[0] < 0) {
         error = import_diagnostics::describe(s, format, import_diagnostics::classify(s, format, {}), diagnostic_device);
@@ -289,8 +372,25 @@ namespace pyrowave::linux_gpu {
       return false;
     }
     d.device.next_frame_context();
-    auto source = s.surface ? d.import(*s.surface, error) :
+    bool producer_ready = false;
+    auto source = s.surface ? d.import(*s.surface, error, producer_ready) :
                               (s.pixels && s.stride >= s.width * 4 ? d.upload(s.pixels, s.width, s.height, s.stride, VK_FORMAT_B8G8R8A8_UNORM) : Vulkan::ImageHandle {});
+    bool used_linear_upload_fallback = false;
+    if (!source && s.surface && linear_upload::should_attempt_linear_upload(*s.surface, producer_ready)) {
+      const auto import_error = error;
+      std::string fallback_error;
+      source = d.upload_linear_surface(*s.surface, format_for(s.surface->fourcc), fallback_error);
+      if (source) {
+        used_linear_upload_fallback = true;
+        error.clear();
+      } else {
+        error = import_error;
+        if (!error.empty()) {
+          error += "; ";
+        }
+        error += "linear CPU upload fallback failed: " + fallback_error;
+      }
+    }
     if (!source) {
       if (error.empty()) {
         error = "no valid capture image";
@@ -319,7 +419,8 @@ namespace pyrowave::linux_gpu {
       return false;
     }
     auto cmd = d.device.request_command_buffer(Vulkan::CommandBuffer::Type::AsyncCompute);
-    if (s.surface) {
+    const bool source_is_external = linear_upload::requires_external_image_barriers(s.surface != nullptr, used_linear_upload_fallback);
+    if (source_is_external) {
       cmd->acquire_image_barrier(*source, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_QUEUE_FAMILY_FOREIGN_EXT);
     }
     for (auto &plane : d.planes) {
@@ -368,7 +469,7 @@ namespace pyrowave::linux_gpu {
       error = "wavelet encode failed";
       return false;
     }
-    if (s.surface) {
+    if (source_is_external) {
       cmd->release_image_barrier(*source, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_QUEUE_FAMILY_FOREIGN_EXT);
     }
     cmd->copy_buffer(*d.meta_cpu, *d.meta_gpu);
