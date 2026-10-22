@@ -747,7 +747,9 @@ set(SUNSHINE_TEST_VDD_DRIVER_ROOT "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/
 if(EXISTS "${SUNSHINE_TEST_VDD_DRIVER_ROOT}/control_client.cpp")
     sunshine_register_component(NAME test_component_virtual_display_catalog_policy
         TEST_SOURCE unit/platform/windows/test_virtual_display_catalog_policy.cpp
-        PRODUCT_SOURCES "${SUNSHINE_TEST_VDD_DRIVER_ROOT}/control_client.cpp" "${SUNSHINE_TEST_VDD_DRIVER_ROOT}/control_protocol.cpp"
+        PRODUCT_SOURCES "${SUNSHINE_TEST_VDD_DRIVER_ROOT}/control_client.cpp"
+                        "${SUNSHINE_TEST_VDD_DRIVER_ROOT}/control_protocol.cpp"
+                        "${SUNSHINE_TEST_VDD_DRIVER_ROOT}/frame_transport_protocol.cpp"
         INCLUDE_DIRECTORIES "${SUNSHINE_TEST_VDD_DRIVER_ROOT}/include")
 endif()
 
