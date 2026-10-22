@@ -156,7 +156,8 @@ include(CPack)
         # must still fail the same real CPack dependency-closure hook.
         truehdr = payload / "nvngx_truehdr.dll"
         truehdr_original = truehdr.read_bytes()
-        for dependency, allowed in (("nvcuda", True), ("unrelated_missing_driver", False)):
+        for dependency, allowed in (("nvcuda", True), ("NVCUDA", True),
+                                    ("unrelated_missing_driver", False)):
             source = fixture / "driver-import.c"
             source.write_text(f"__declspec(dllexport) int {dependency}_fixture(void) {{ return 0; }}\n")
             obj = fixture / "driver-import.obj"
@@ -174,12 +175,36 @@ include(CPack)
                     run(package)
                     check_archive()
                     with zipfile.ZipFile(archive) as zipped:
-                        assert not any(name.endswith("/nvcuda.dll") for name in zipped.namelist())
+                        assert not any(name.casefold().endswith("/nvcuda.dll") for name in zipped.namelist())
+                    if dependency == "nvcuda":
+                        nested = tools / "nvngx_truehdr.dll"
+                        shutil.copyfile(truehdr, nested)
+                        try:
+                            run(package, success=False,
+                                contains="Unexpected eager nvcuda.dll import in portable image")
+                        finally:
+                            nested.unlink()
                 else:
                     run(package, success=False, contains="Unresolved portable DLL imports: unrelated_missing_driver.dll")
             finally:
                 truehdr.write_bytes(truehdr_original)
         print("PASS: only the unbundled NVIDIA driver import is allowed; other missing DLLs reject packaging")
+        # The driver import is optional only while confined to the dlopened NGX
+        # runtime. An eager host import would break startup on non-NVIDIA PCs.
+        host = payload / "sunshine.exe"
+        host_original = host.read_bytes()
+        try:
+            source = fixture / "host-driver-import.c"
+            source.write_text("__declspec(dllimport) int nvcuda_fixture(void);\n"
+                              "int main(void) { return nvcuda_fixture(); }\n")
+            obj = fixture / "host-driver-import.obj"
+            run([args.clang, f"--target={target}", "-c", str(source), "-o", str(obj)])
+            run([args.link, "/entry:main", "/subsystem:console", "/nodefaultlib", f"/machine:{machine}",
+                 f"/out:{host}", str(obj), str(fixture / "nvcuda.lib")])
+            run(package, success=False, contains="Unexpected eager nvcuda.dll import in portable image")
+        finally:
+            host.write_bytes(host_original)
+        print("PASS: an eager sunshine.exe nvcuda.dll import rejects portable packaging")
         # Replace only one image at a time, keeping its import filename. The
         # real CPack pre-build hook must reject each incompatible PE boundary.
         wrong_target = "i686-pc-windows-msvc" if machine != "x86" else "x86_64-pc-windows-msvc"
