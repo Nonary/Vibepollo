@@ -447,6 +447,7 @@ namespace display_helper::v2 {
     bool dispatch_next_transient_disconnect_verification();
     void dispatch_transient_disconnect_repair();
     void dispatch_exclusive_topology_rollback();
+    ApplyRequest transient_disconnect_verification_request() const;
     void dispatch_settings_only_repair();
     void dispatch_apply_worker(const ApplyRequest &request, std::chrono::milliseconds delay, bool reset_virtual_display);
     void queue_after_active_mutation(
@@ -518,6 +519,12 @@ namespace display_helper::v2 {
     bool transient_disconnect_settlement_deferred_final_check_ = false;
     bool transient_disconnect_final_check_pending_ = false;
     std::size_t next_transient_disconnect_check_ = 0;
+    // Exclusive rollback may restore a topology older than current_request_.
+    // Keep that exact target with the disconnect settlement until it finishes.
+    std::optional<ActiveTopology> transient_disconnect_topology_;
+    // After an exclusive identity repair is rolled back, settlement verifies
+    // only the restored topology; the replacement configuration is obsolete.
+    bool transient_disconnect_rollback_verification_ = false;
     std::optional<std::chrono::steady_clock::time_point> last_apply_started_;
     ApplyRequest current_request_ {};
     std::optional<ResolvedConfigurationTarget> resolved_target_;

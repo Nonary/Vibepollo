@@ -166,7 +166,8 @@ class SessionDisplayConfigurationHelper {
 public:
  config::video_t video_config_, effective_video_config_;
  const rtsp_stream::launch_session_t &session_;
- SessionDisplayConfigurationHelper(const config::video_t &, const rtsp_stream::launch_session_t &, bool = false);
+ bool include_request_detail_log_fields_;
+ SessionDisplayConfigurationHelper(const config::video_t &, const rtsp_stream::launch_session_t &, bool = false, bool = true);
 };
 """ + constructor + r"""
 }

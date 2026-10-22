@@ -568,6 +568,8 @@ namespace display_helper::v2 {
     transient_disconnect_settlement_deferred_final_check_ = false;
     transient_disconnect_final_check_pending_ = false;
     next_transient_disconnect_check_ = 0;
+    transient_disconnect_topology_.reset();
+    transient_disconnect_rollback_verification_ = false;
   }
 
   void StateMachine::defer_transient_disconnect_settlement_for_staged_reset() {
@@ -657,9 +659,19 @@ namespace display_helper::v2 {
     if (transient_disconnect_check_pending_) {
       return true;
     }
-    if (!transient_disconnect_settlement_requested_ ||
-        next_transient_disconnect_check_ >= kDelays.size() ||
-        !current_request_.configuration) {
+    if (!transient_disconnect_settlement_requested_ || !current_request_.configuration) {
+      reset_transient_disconnect_settlement();
+      return false;
+    }
+    if (next_transient_disconnect_check_ >= kDelays.size()) {
+      if (transient_disconnect_rollback_verification_ && transient_disconnect_topology_ &&
+          !transient_disconnect_topology_->empty()) {
+        // Keep the rollback snapshot and topology-only request through the
+        // final probe; resetting settlement here would revive the retired
+        // replacement identity as the verification target.
+        dispatch_transient_disconnect_final_verification();
+        return true;
+      }
       reset_transient_disconnect_settlement();
       return false;
     }
@@ -669,11 +681,13 @@ namespace display_helper::v2 {
     BOOST_LOG(info) << "Display helper: validating recent disconnected APPLY after " << delay.count()
                     << "ms before deciding whether a repair is needed.";
     transition(State::Verification, ApplyAction::Apply);
-    const auto verification_topology = is_exclusive_request(current_request_) ? current_request_.topology : std::nullopt;
+    const auto verification_topology = (is_exclusive_request(current_request_) || transient_disconnect_rollback_verification_) ?
+                                         (transient_disconnect_topology_ ? transient_disconnect_topology_ : current_request_.topology) :
+                                         std::nullopt;
     apply_.dispatch_verification(
-      verification_request(),
+      transient_disconnect_verification_request(),
       verification_topology,
-      resolved_target_,
+      transient_disconnect_rollback_verification_ ? std::nullopt : resolved_target_,
       delay,
       VerificationPurpose::TransientDisconnect
     );
@@ -685,9 +699,9 @@ namespace display_helper::v2 {
     transient_disconnect_final_check_pending_ = true;
     transition(State::Verification, ApplyAction::Apply);
     apply_.dispatch_verification(
-      verification_request(),
-      current_request_.topology,
-      resolved_target_,
+      transient_disconnect_verification_request(),
+      transient_disconnect_topology_ ? transient_disconnect_topology_ : current_request_.topology,
+      transient_disconnect_rollback_verification_ ? std::nullopt : resolved_target_,
       std::chrono::milliseconds(0),
       VerificationPurpose::TransientDisconnectFinal
     );
@@ -933,6 +947,23 @@ namespace display_helper::v2 {
     return current_request_;
   }
 
+  ApplyRequest StateMachine::transient_disconnect_verification_request() const {
+    auto request = verification_request();
+    if (transient_disconnect_rollback_verification_) {
+      // The identity-replacement request no longer describes the desktop
+      // restored by Exclusive rollback. Ask VerificationOperation to check the
+      // exact topology only; carrying the replacement configuration would
+      // reject the restored singleton and could reapply the retired identity.
+      request.configuration.reset();
+      request.virtual_layout.reset();
+      request.settings_only_repair = false;
+      request.repair_target.reset();
+      request.exclusive_pre_apply_topology.reset();
+      request.exclusive_topology_rollback_only = false;
+    }
+    return request;
+  }
+
   void StateMachine::retarget_virtual_display_device_id_if_needed(const std::string &resolved) {
     if (!current_request_.virtual_layout.has_value()) {
       return;
@@ -1054,6 +1085,9 @@ namespace display_helper::v2 {
     }
 
     transient_disconnect_settlement_requested_ = true;
+    if (is_exclusive_request(current_request_) && current_request_.topology && !current_request_.topology->empty()) {
+      transient_disconnect_topology_ = current_request_.topology;
+    }
     // A recent disconnect owns the only delayed verification lane: its short
     // 250/750ms verify-before-repair sequence. Prepare it only after the active
     // mutation is known to be finished; cancelling a live APPLY would discard
@@ -1715,6 +1749,11 @@ namespace display_helper::v2 {
     if (is_exclusive_request(current_request_) && completed.exclusive_pre_apply_topology && !completed.exclusive_pre_apply_topology->empty()) {
       current_request_.exclusive_pre_apply_topology = completed.exclusive_pre_apply_topology;
     }
+    if (completed.exclusive_rollback_only && transient_disconnect_settlement_requested_ &&
+        completed.exclusive_pre_apply_topology && !completed.exclusive_pre_apply_topology->empty()) {
+      transient_disconnect_topology_ = completed.exclusive_pre_apply_topology;
+      transient_disconnect_rollback_verification_ = true;
+    }
 
     if (completed.status == ApplyStatus::Ok || completed.display_may_have_changed) {
       activate_recovery_lease();
@@ -1981,6 +2020,13 @@ namespace display_helper::v2 {
         }
         reset_transient_disconnect_settlement();
         enter_steady_state();
+      } else if (transient_disconnect_rollback_verification_) {
+        // The replacement configuration was retired by rollback. Retry the
+        // restored-topology check, then let the final exact probe choose
+        // recovery; never repair using the replacement identity.
+        if (!dispatch_next_transient_disconnect_verification()) {
+          dispatch_transient_disconnect_final_verification();
+        }
       } else if (current_request_.configuration) {
         dispatch_transient_disconnect_repair();
       } else {

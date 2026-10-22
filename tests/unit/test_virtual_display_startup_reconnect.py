@@ -680,6 +680,7 @@ void prepare_resume(ResumeSession &session, bool request_virtual_display) {
   bool retained_resume_recovery_rearm = false;
   std::string virtual_display_stable_id, virtual_display_stable_guid;
   std::optional<std::string> pending_output_override, app_output_override;
+  const bool include_identity_log_fields = true;
   auto reserve_normal_vdd_identity = [] { return identity_available; };
   auto apply_framegen_refresh_policy = [](bool) {};
   const auto display_startup_deadline = fake_now + 2s;

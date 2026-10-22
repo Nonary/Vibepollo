@@ -1,5 +1,5 @@
 #include "src/platform/windows/display_helper_borrow_native.h"
-﻿#include "virtual_display.h"
+#include "virtual_display.h"
 #include "src/platform/windows/virtual_display_refresh_policy.h"
 
 #include "virtual_display_recovery_registry.h"

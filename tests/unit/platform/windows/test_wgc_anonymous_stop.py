@@ -47,6 +47,7 @@ code = r'''
 #include <thread>
 #include <vector>
 using namespace std::literals;
+using DWORD = std::uint32_t;
 #define BOOST_LOG(level) std::ostringstream{}
 #ifndef _WIN32
 constexpr int _TRUNCATE=0;

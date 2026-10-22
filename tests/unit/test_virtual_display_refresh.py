@@ -72,12 +72,13 @@ namespace display_helper_integration::helpers {
 ''' + function(source, "double get_refresh_rate_value(") + function(source, "void limit_virtual_display_refresh(") + r'''
  class SessionDisplayConfigurationHelper {
  public:
-   SessionDisplayConfigurationHelper(const config::video_t &v, const rtsp_stream::launch_session_t &s, bool)
-     : effective_video_config_(v), session_(s) {}
+   SessionDisplayConfigurationHelper(const config::video_t &v, const rtsp_stream::launch_session_t &s, bool, bool = true)
+     : effective_video_config_(v), session_(s), include_request_detail_log_fields_(true) {}
    std::optional<display_device::SingleDisplayConfiguration> initial_virtual_display_configuration() const;
  private:
    config::video_t effective_video_config_;
    const rtsp_stream::launch_session_t &session_;
+   bool include_request_detail_log_fields_;
  };
 ''' + function(source, "std::optional<display_device::SingleDisplayConfiguration> SessionDisplayConfigurationHelper::initial_virtual_display_configuration()") + function(source, "void resolve_virtual_display_refresh(") + r'''
 }
@@ -94,7 +95,7 @@ int main() {
    session.framegen_refresh_millihz = requested;
    session.framegen_refresh_rate = framegen::rounded_fps_from_millihz(requested);
    session.framegen_refresh_multiplier = requested == 240000 ? 4 : 1;
-   helpers::resolve_virtual_display_refresh(video, session);
+   helpers::resolve_virtual_display_refresh(video, session, true);
    assert(rtsp_stream::effective_display_refresh_millihz(session) == expected);
    assert(session.fps == 60);
    assert(session.framegen_fixed_refresh == fixed);

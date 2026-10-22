@@ -21,11 +21,13 @@ def function(name):
 
 program = r'''
 #include <cassert>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <iostream>
 #include <optional>
 #include <string>
+#include "src/platform/windows/display_helper_borrow_gate.h"
 #include "src/color_profile_policy.h"
 using HRESULT = std::int32_t;
 using LSTATUS = long;
@@ -38,6 +40,23 @@ constexpr bool TRUE = true;
 #define HRESULT_FACILITY(hr) ((static_cast<std::uint32_t>(hr) >> 16) & 0x1fff)
 #define HRESULT_CODE(hr) (static_cast<std::uint32_t>(hr) & 0xffff)
 #define BOOST_LOG(level) std::clog
+namespace display_helper::borrow {
+  inline std::atomic_bool &helper_process() {
+    static std::atomic_bool active {false};
+    return active;
+  }
+  class native_mutation_scope_t {
+  public:
+    static native_mutation_scope_t enter(bool wait) {
+      native_mutation_scope_t result;
+      result.scope_ = wait ? process_gate().wait_enter() : process_gate().try_enter();
+      return result;
+    }
+    explicit operator bool() const { return static_cast<bool>(scope_); }
+  private:
+    gate_t::scope_t scope_;
+  };
+}
 struct advanced_color_profile_result_t {
   bool api_available = false, target_found = false, attempted = false, success = false;
   HRESULT association_status = E_NOTIMPL;

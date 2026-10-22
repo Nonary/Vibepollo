@@ -7,6 +7,7 @@
 #include "virtual_display_recovery_registry.h"
 
 #include <virtual_display/driver/control_client.h>
+#include <virtual_display/driver/display_identity.h>
 #include <virtual_display/driver/windows_control_client.h>
 #include <display_device/windows/win_api_layer.h>
 #if defined(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE) && SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE

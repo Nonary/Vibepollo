@@ -297,7 +297,7 @@ namespace {
     }
 
     bool is_topology_same(const display_device::ActiveTopology &expected, const display_device::ActiveTopology &actual) override {
-      return enact_restore ? expected == actual : topology_same_result;
+      return (enact_restore || enforce_topology_equality) ? expected == actual : topology_same_result;
     }
 
     static std::string extract_id(const display_device::ActiveTopology &topology_input) {
@@ -318,6 +318,7 @@ namespace {
     display_device::DisplaySettingsSnapshot snapshot;
     bool configuration_matches_result = true;
     bool topology_same_result = true;
+    bool enforce_topology_equality = false;
     bool throw_enumeration = false;
     bool query_display_config_unavailable = false;
     bool path_mapping_incomplete = false;
@@ -1474,6 +1475,7 @@ TEST(DisplayHelperV2StateMachine, TransientExclusiveCheckRejectsExtraActiveOutpu
   // active output, even though this lane's dispatcher call is allowed to omit
   // its expected-topology argument.
   harness.display_settings.topology = {{"PHYSICAL"}, {"VDD-TARGET"}};
+  harness.display_settings.enforce_topology_equality = true;
   display_helper::v2::VerificationOperation verification(harness.display_settings, harness.clock);
   const bool exact = verification.run(
     harness.dispatcher.verification_request,
@@ -1778,8 +1780,11 @@ TEST(DisplayHelperV2StateMachine, ExclusiveRollbackDisconnectSettlementSurvivesR
 
   ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 4);
   EXPECT_EQ(harness.dispatcher.verification_delay, std::chrono::milliseconds(250));
+  EXPECT_FALSE(harness.dispatcher.verification_request.configuration);
+  EXPECT_FALSE(harness.dispatcher.verification_request.virtual_layout);
+  EXPECT_FALSE(harness.dispatcher.verification_target);
   ASSERT_TRUE(harness.dispatcher.verification_topology);
-  EXPECT_EQ(*harness.dispatcher.verification_topology, display_device::ActiveTopology {{"VDD-REPLACEMENT"}});
+  EXPECT_EQ(*harness.dispatcher.verification_topology, pre_repair);
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
   EXPECT_TRUE(harness.state_machine.recovery_armed());
   EXPECT_EQ(harness.task_manager.created, 1);
@@ -1924,6 +1929,34 @@ TEST(DisplayHelperV2StateMachine, ExclusiveRollbackDisconnectSettlementWaitsForR
   EXPECT_EQ(harness.verification_result_count, 1);
   EXPECT_EQ(harness.task_manager.created, 1);
   EXPECT_EQ(harness.task_manager.deleted, 0);
+
+  const auto apply_dispatches_after_rollback = harness.dispatcher.apply_dispatch_count;
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 5);
+  EXPECT_EQ(harness.dispatcher.verification_delay, std::chrono::milliseconds(750));
+  ASSERT_FALSE(harness.dispatcher.verification_request.configuration);
+  EXPECT_FALSE(harness.dispatcher.verification_request.virtual_layout);
+  EXPECT_FALSE(harness.dispatcher.verification_target);
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, display_device::ActiveTopology {{"VDD-CURRENT"}});
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_after_rollback);
+
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 6);
+  EXPECT_EQ(harness.dispatcher.verification_delay, std::chrono::milliseconds(0));
+  ASSERT_FALSE(harness.dispatcher.verification_request.configuration);
+  EXPECT_FALSE(harness.dispatcher.verification_request.virtual_layout);
+  EXPECT_FALSE(harness.dispatcher.verification_target);
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, display_device::ActiveTopology {{"VDD-CURRENT"}});
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_after_rollback);
+
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_after_rollback);
 }
 
 TEST(DisplayHelperV2StateMachine, DisconnectSettlementWaitsWhenResetPrecedesDisconnect) {
@@ -2143,8 +2176,43 @@ TEST(DisplayHelperV2StateMachine, ExclusiveRollbackDisconnectResetSupersedesDela
   rolled_back.exclusive_pre_apply_topology = pre_repair;
   harness.dispatcher.apply_completion(rolled_back);
   harness.drain_messages();
-  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 3);
+  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 4);
+  ASSERT_FALSE(harness.dispatcher.verification_request.configuration);
+  EXPECT_FALSE(harness.dispatcher.verification_request.virtual_layout);
+  EXPECT_FALSE(harness.dispatcher.verification_target);
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, pre_repair);
+
+  // Exercise the real verification contract: the restored old identity passes
+  // an exact topology check, while the obsolete replacement topology fails.
+  harness.display_settings.enforce_topology_equality = true;
+  harness.display_settings.topology = pre_repair;
+  display_helper::v2::VerificationOperation verification(harness.display_settings, harness.clock);
+  EXPECT_TRUE(verification.run(
+    harness.dispatcher.verification_request,
+    harness.dispatcher.verification_topology,
+    harness.dispatcher.verification_target,
+    harness.cancellation.token()
+  ));
+  harness.display_settings.topology = { {"VDD-REPLACEMENT"} };
+  EXPECT_FALSE(verification.run(
+    harness.dispatcher.verification_request,
+    harness.dispatcher.verification_topology,
+    harness.dispatcher.verification_target,
+    harness.cancellation.token()
+  ));
+
+  const auto apply_dispatches_after_rollback = harness.dispatcher.apply_dispatch_count;
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_after_rollback);
+  ASSERT_EQ(harness.dispatcher.verification_dispatch_count, 5);
+  EXPECT_EQ(harness.dispatcher.verification_delay, std::chrono::milliseconds(750));
+  ASSERT_FALSE(harness.dispatcher.verification_request.configuration);
+  EXPECT_FALSE(harness.dispatcher.verification_target);
+
   const auto stale_disconnect_check = harness.dispatcher.verification_completion;
+  const auto verification_dispatches_before_stale_completion = harness.dispatcher.verification_dispatch_count;
 
   // A reconnect can send RESET and APPLY while the disconnect timer is still
   // pending. RESET cancels the old check; APPLY supersedes the settlement lane
@@ -2171,13 +2239,14 @@ TEST(DisplayHelperV2StateMachine, ExclusiveRollbackDisconnectResetSupersedesDela
   harness.drain_messages();
   EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 4);
   EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 0);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before_stale_completion);
 
   ASSERT_TRUE(harness.dispatcher.reset_completion);
   harness.dispatcher.reset_completion(true);
   harness.drain_messages();
   ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 5);
   ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
-  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 3);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before_stale_completion);
 
   applied.exclusive_pre_apply_topology = display_device::ActiveTopology {{"VDD-REPLACEMENT"}};
   harness.dispatcher.apply_completion(applied);
@@ -2185,7 +2254,7 @@ TEST(DisplayHelperV2StateMachine, ExclusiveRollbackDisconnectResetSupersedesDela
   harness.dispatcher.verification_completion(true);
   harness.drain_messages();
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
-  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 4);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before_stale_completion + 1);
   EXPECT_EQ(harness.apply_result_count, 2);
   EXPECT_EQ(harness.verification_result_count, 2);
   EXPECT_EQ(harness.task_manager.created, 1);

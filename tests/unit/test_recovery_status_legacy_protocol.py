@@ -93,6 +93,7 @@ program = r'''
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "src/platform/windows/recovery_status.h"
+#include "src/platform/windows/display_helper_borrow_protocol.h"
 
 namespace platf::dxgi {
   struct AsyncNamedPipe {

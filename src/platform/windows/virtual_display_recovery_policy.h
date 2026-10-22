@@ -147,13 +147,6 @@ namespace VDISPLAY::policy {
     return candidate_matches && matching_candidate_count == 1;
   }
 
-  inline bool defer_unidentified_readiness_candidate(
-    bool exact_target,
-    bool has_dynamic_identity_hint
-  ) noexcept {
-    return !exact_target && !has_dynamic_identity_hint;
-  }
-
   class inactive_reactivation_budget_t {
   public:
     using duration = std::chrono::steady_clock::duration;

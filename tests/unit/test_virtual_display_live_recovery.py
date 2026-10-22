@@ -34,6 +34,7 @@ stable_identity_match = function('    bool matches_virtual_display_id_identity('
 
 program = r'''
 #include "src/capture_recovery.h"
+#include "src/platform/windows/virtual_display_policy.h"
 #include "src/platform/windows/virtual_display_recovery_policy.h"
 #include <cassert>
 #include <chrono>

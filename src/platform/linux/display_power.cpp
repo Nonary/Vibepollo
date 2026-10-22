@@ -113,6 +113,12 @@ namespace platf::display_power {
   }
 
   std::shared_ptr<void> acquire() {
+    // Serialize admission before taking the display mutation gate. The gate
+    // rejects a second thread rather than waiting, while this lease mutex
+    // already provides the ordering needed for concurrent stream starts.
+    // Taking the gate first would make otherwise compatible concurrent
+    // callers fail while the first caller is starting the shared worker.
+    std::lock_guard lock {lease_mutex};
     auto target_mutation = display_target::leases().begin_mutation();
     if (!target_mutation) return {};
     // Standalone/SteamOS does not have a machine session broker.
@@ -120,7 +126,6 @@ namespace platf::display_power {
       static const auto noop = std::make_shared<int>(0);
       return noop;
     }
-    std::lock_guard lock {lease_mutex};
     if (auto lease = shared_lease.lock()) {
       if (!lease->alive()) {
         auto replacement = start_ready("display-power");

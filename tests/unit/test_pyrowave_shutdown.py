@@ -74,6 +74,7 @@ program = r'''
 #include <utility>
 #include <vector>
 #include "src/utility.h"
+#include "src/shutdown_phase.h"
 using namespace std::literals;
 
 std::mutex records_mutex;

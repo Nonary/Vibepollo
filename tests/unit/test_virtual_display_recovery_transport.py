@@ -50,7 +50,7 @@ production_ensure = extract_function(
 )
 production_control_snapshot = extract_function(
     SOURCE,
-    "std::shared_ptr<sunshine_driver::WindowsControlTransport> control_transport_snapshot()",
+    "std::shared_ptr<sunshine_driver::WindowsControlTransport> control_transport_snapshot() {",
 )
 production_replace_transport = extract_function(
     SOURCE,
@@ -126,6 +126,7 @@ namespace uuid_util {
     std::string string() const { return value; }
   };
 }
+namespace VDISPLAY { struct ensure_display_result {}; }
 namespace sunshine_driver {
   struct WindowsControlTransport {
     int id = 0;
@@ -162,6 +163,7 @@ namespace VDISPLAY_SUNSHINE {
   enum class DRIVER_SELECTION { UNKNOWN, VIBESHINE };
   enum class OpenRecoveryBehavior { transport_only, recover_driver };
   enum class RestartCooldownBehavior { skip, wait };
+  using ::VDISPLAY::ensure_display_result;
   namespace VDISPLAY {
     using DRIVER_STATUS = ::VDISPLAY_SUNSHINE::DRIVER_STATUS;
     using DRIVER_SELECTION = ::VDISPLAY_SUNSHINE::DRIVER_SELECTION;

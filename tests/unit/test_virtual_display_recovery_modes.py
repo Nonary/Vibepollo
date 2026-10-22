@@ -59,7 +59,7 @@ namespace display_device {
   };
   struct EnumeratedDevice {
     bool virtual_display = false;
-    std::uint64_t display_id = 0;
+    std::optional<std::uint64_t> stable_display_id;
     std::vector<Rational> m_supported_refresh_rates;
   };
   using EnumeratedDeviceList = std::vector<EnumeratedDevice>;
@@ -111,11 +111,13 @@ namespace platf::display_helper {
 bool is_virtual_display_device(const display_device::EnumeratedDevice &device) {
   return device.virtual_display;
 }
-bool matches_virtual_display_id_edid(
+bool matches_virtual_display_id_identity(
   const display_device::EnumeratedDevice &device,
   std::uint64_t display_id
 ) {
-  return device.display_id == display_id;
+  // The test's coordinator is the OS enumeration boundary. Its optional
+  // stable ID represents the result of the production EDID+container-ID check.
+  return device.stable_display_id && *device.stable_display_id == display_id;
 }
 
 namespace VDISPLAY_SUNSHINE {
@@ -167,7 +169,7 @@ int main() {
   expect(VDISPLAY_SUNSHINE::invoke(client, id, width, height, refresh), true,
          "exact driver descriptor survives unavailable Full enumeration");
   coordinator.devices = display_device::EnumeratedDeviceList {
-    display_device::EnumeratedDevice {.virtual_display = true, .display_id = id}
+    display_device::EnumeratedDevice {.virtual_display = true, .stable_display_id = id}
   };
   expect(VDISPLAY_SUNSHINE::invoke(client, id, width, height, refresh), true,
          "exact driver descriptor survives empty Full mode list");
@@ -216,7 +218,7 @@ int main() {
   coordinator.devices = display_device::EnumeratedDeviceList {
     display_device::EnumeratedDevice {
       .virtual_display = true,
-      .display_id = id,
+      .stable_display_id = id,
       .m_supported_refresh_rates = {{60, 1}}
     }
   };
@@ -226,7 +228,7 @@ int main() {
   coordinator.devices = display_device::EnumeratedDeviceList {
     display_device::EnumeratedDevice {
       .virtual_display = true,
-      .display_id = id,
+      .stable_display_id = id,
       .m_supported_refresh_rates = {{1'000, 1}}
     }
   };
@@ -234,7 +236,7 @@ int main() {
          "positive helper rate remains supported");
 
   coordinator.devices = display_device::EnumeratedDeviceList {
-    display_device::EnumeratedDevice {.virtual_display = true, .display_id = id}
+    display_device::EnumeratedDevice {.virtual_display = true, .stable_display_id = id}
   };
   expect(VDISPLAY_SUNSHINE::invoke(client, id, width, height, 2'000'000), false,
          "no inferred 2x or 4x driver descriptor mode");
