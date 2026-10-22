@@ -88,7 +88,7 @@ jobs:
       symbol_product_name: Vibepollo
       symbol_release_prefix: polo
       publish_symbols: false
-      upload_symbols_artifact: false
+      upload_symbols_artifact: true
       release_artifact_retention_days: 7
     # Only scoped runtime and reusable gamepad signing secrets; no SignPath or inherit.
     secrets:
@@ -135,6 +135,24 @@ jobs:
         with:
           name: build-Windows
           path: daily-assets
+      - name: Download exact-build Windows symbols from this run
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: windows-symbols-Windows
+          path: symbol-assets
+      - name: Verify exact-build Windows symbols
+        run: |
+          set -euo pipefail
+          symbol_pack="VibeshineSymbols-${DAILY_VERSION}-windows-x64.7z"
+          test -s "symbol-assets/$symbol_pack"
+      - name: Retain exact-build Windows symbols
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-windows-symbols
+          path: symbol-assets/
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
       - name: Verify finalized provenance, identity and complete asset set
         run: python scripts/daily_release.py verify --assets daily-assets --product Vibepollo
       - name: Download qualified Linux package from this run

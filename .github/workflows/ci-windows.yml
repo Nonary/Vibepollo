@@ -1508,7 +1508,7 @@ jobs:
           run-id: ${{ needs.release_artifacts.outputs.source_run_id }}
 
       - name: Include symbols in build artifact
-        if: inputs.upload_symbols_artifact
+        if: inputs.upload_symbols_artifact && !inputs.daily_unsigned
         shell: pwsh
         env:
           SYMBOL_PACK_NAME: ${{ needs.release_artifacts.outputs.symbol_pack_name }}

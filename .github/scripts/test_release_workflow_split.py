@@ -692,9 +692,25 @@ esac
             self.assertNotIn("state_reason=completed", workflow_text)
 
         daily = load_workflow("daily-prerelease.yml")
+        self.assertEqual(daily["jobs"]["build"]["with"]["upload_symbols_artifact"], "true")
         publish = daily["jobs"]["publish"]
         self.assertEqual(publish["permissions"], {"actions": "read", "contents": "write"})
         self.assertNotIn("issues", publish["permissions"])
+        publish_steps = {step["name"]: step for step in publish["steps"] if "name" in step}
+        symbols = publish_steps["Retain exact-build Windows symbols"]
+        self.assertEqual(symbols["with"]["retention-days"], "90")
+        self.assertEqual(symbols["with"]["name"], "nightly-windows-symbols")
+        self.assertEqual(publish_steps["Download exact-build Windows symbols from this run"]["with"]["name"], "windows-symbols-Windows")
+        self.assertIn('test -s "symbol-assets/$symbol_pack"',
+                      publish_steps["Verify exact-build Windows symbols"]["run"])
+        self.assertLess(
+            list(publish_steps).index("Verify exact-build Windows symbols"),
+            list(publish_steps).index("Verify finalized provenance, identity and complete asset set"),
+        )
+        windows = load_workflow("ci-windows.yml")
+        finalize_steps = {step["name"]: step for step in windows["jobs"]["finalize_windows"]["steps"] if "name" in step}
+        self.assertEqual(finalize_steps["Include symbols in build artifact"]["if"],
+                         "inputs.upload_symbols_artifact && !inputs.daily_unsigned")
         publish_script = "\n".join(step.get("run", "") for step in publish["steps"])
         self.assertIn('event_type:"daily-release-published"', publish_script)
 
