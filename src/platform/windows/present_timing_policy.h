@@ -13,6 +13,34 @@
 namespace platf::dxgi::present_timing {
 
   /**
+   * @brief Tracks the process and swap chain that own learned present latency.
+   *
+   * A DXGI swap-chain pointer is only unique within a process. Keep the PID in
+   * the identity so foreground-process changes cannot carry latency samples
+   * across processes that happen to reuse the same pointer value.
+   */
+  class source_identity_t {
+  public:
+    [[nodiscard]] std::uint64_t preferred_swapchain(const std::uint32_t pid) const {
+      return pid == pid_ ? swapchain_ : 0;
+    }
+
+    /**
+     * @return Whether the source identity changed and the refiner must reset.
+     */
+    [[nodiscard]] bool update(const std::uint32_t pid, const std::uint64_t swapchain) {
+      const bool changed = pid != pid_ || swapchain != swapchain_;
+      pid_ = pid;
+      swapchain_ = swapchain;
+      return changed;
+    }
+
+  private:
+    std::uint32_t pid_ {0};
+    std::uint64_t swapchain_ {0};
+  };
+
+  /**
    * A captured frame's composition time C lies on the captured display's
    * refresh grid: the frame became ready somewhere in (C - grid, C]. On the 4x
    * virtual display a 116 FPS stream composes on a 2.156 ms grid, so stamping C
