@@ -518,7 +518,7 @@ namespace log_export {
     dos_date = static_cast<uint16_t>(((year - 1980) << 9) | (((tm.tm_mon + 1) & 0x0F) << 5) | (tm.tm_mday & 0x1F));
   }
 
-  static std::string make_support_log_archive_filename(const std::tm &tm) {
+  inline std::string make_support_log_archive_filename(const std::tm &tm) {
     char filename[64];
     std::snprintf(filename, sizeof(filename), "vibeshine_logs-%04d%02d%02d-%02d%02d%02d.zip", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
     return filename;
