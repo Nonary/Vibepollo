@@ -133,8 +133,9 @@ int main() {
  auto no=[] {return false;};
  {auto a=before();WinDisplaySettings d{&a};d.verified_sources_["virtual1"]={1920,1280,4,{-1920,0}};
   assert(d.reactivate_virtual_target(c,no)==ApplyStatus::Ok);assert(a.flags.size()==2);
-  assert(a.flags[0]==(SDC_VALIDATE|SDC_USE_SUPPLIED_DISPLAY_CONFIG|SDC_VIRTUAL_MODE_AWARE|SDC_ALLOW_CHANGES));
-  assert(a.flags[1]==(SDC_APPLY|SDC_USE_SUPPLIED_DISPLAY_CONFIG|SDC_VIRTUAL_MODE_AWARE|SDC_ALLOW_CHANGES));
+  assert(a.flags[0]==(SDC_VALIDATE|SDC_USE_SUPPLIED_DISPLAY_CONFIG|SDC_VIRTUAL_MODE_AWARE));
+  assert(a.flags[1]==(SDC_APPLY|SDC_USE_SUPPLIED_DISPLAY_CONFIG|SDC_VIRTUAL_MODE_AWARE));
+  assert((a.flags[0]&SDC_ALLOW_CHANGES)==0&&(a.flags[1]&SDC_ALLOW_CHANGES)==0);
   assert(a.data.m_paths.size()==2&&a.data.m_modes[0].sourceMode.width==1920);
   assert(a.data.m_paths[0].targetInfo.refreshRate.Numerator==239760);
   assert(a.data.m_modes.back().sourceMode.position.x==-1920);
@@ -145,6 +146,7 @@ int main() {
  {auto a=before();a.result=31;WinDisplaySettings d{&a};assert(d.reactivate_virtual_target(c,no)==ApplyStatus::Retryable);assert(a.flags.size()==2);}
  {auto a=before();a.refuse_os_timing=true;WinDisplaySettings d{&a};assert(d.reactivate_virtual_target(c,no)==ApplyStatus::Ok);
   assert(a.flags.size()==3);assert(a.flags[0]&SDC_VALIDATE);assert(a.flags[1]&SDC_VALIDATE);assert(a.flags[2]&SDC_APPLY);
+  assert(std::all_of(a.flags.begin(),a.flags.end(),[](unsigned f){return (f&SDC_ALLOW_CHANGES)==0;}));
   assert(a.data.m_modes.back().infoType==DISPLAYCONFIG_MODE_INFO_TYPE_TARGET);
   assert(a.data.m_paths.back().targetInfo.targetModeInfoIdx==a.data.m_modes.size()-1);}
  {auto a=before();a.corrupt_peer=true;WinDisplaySettings d{&a};assert(d.reactivate_virtual_target(c,no)==ApplyStatus::VerificationFailed);}

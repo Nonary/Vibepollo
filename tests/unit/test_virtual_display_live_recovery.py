@@ -15,12 +15,12 @@ def function(signature):
         end += 1
     return source[start:end]
 
-empty_enumeration = function('    MonitorTargetPresence monitor_target_presence(')
-empty_enumeration = empty_enumeration[:empty_enumeration.index('      const bool has_stable_identity')]
-empty_enumeration = empty_enumeration.replace('monitor_target_presence(', 'empty_enumeration_presence(')
-empty_enumeration += 'return MonitorTargetPresence::unknown; }'
 ccd_presence = function('    MonitorTargetPresence ccd_target_presence(')
 driver_presence = function('    MonitorTargetPresence driver_target_presence(')
+target_presence = function('    MonitorTargetPresence monitor_target_presence(')
+target_presence = target_presence.replace('monitor_target_presence(', 'actual_monitor_target_presence(')
+reactivate_presence = function('    bool reactivate_owned_virtual_display(')
+reactivate_presence = reactivate_presence.replace('monitor_target_presence(', 'actual_monitor_target_presence(')
 
 program = r'''
 #include "src/capture_recovery.h"
@@ -37,7 +37,7 @@ struct Tracker { std::optional<Lease> get(int) {return owned;} };
 Tracker &driver_lease_tracker() {static Tracker tracker;return tracker;}
 struct Transport { bool valid() const {return true;} };
 std::shared_ptr<Transport> control_transport_snapshot() {return std::make_shared<Transport>();}
-bool responsive=true,provenance=true,query_ok=true,helper_ok=true,active=true;
+bool responsive=true,provenance=true,query_ok=true,helper_ok=true;
 Lease entry;
 int helper_applies=0,resets=0;
 struct CcdTargetInfo {bool targetAvailable=true;};
@@ -74,6 +74,7 @@ struct ControlClient {
 }
 namespace platf {
 std::string to_utf8(const std::wstring &s) {return {s.begin(),s.end()};}
+std::wstring from_utf8(const std::string &s) {return {s.begin(),s.end()};}
 }
 namespace mail {
 constexpr char switch_display[]="switch";
@@ -84,34 +85,51 @@ struct Manager {
 Manager manager;Manager *man=&manager;
 }
 struct RecoveryMonitorState {
+ struct Params {std::string client_name;};
+ Params params;
  int guid_uuid=1;
  std::optional<std::wstring> current_display_name=L"DISPLAY15",current_monitor_device_path=L"monitor1";
  std::optional<std::string> current_device_id="virtual1",normalized_monitor_device_path="monitor1";
+ std::optional<std::string> normalized_display_name="display15";
+ bool current_display_name_verified=false;
  video::capture_recovery::confirmation_t capture_confirmation;
  std::uint64_t capture_lease_id=0,capture_display_id=0;
+ void update_identifiers(const std::optional<std::wstring> &name,const std::optional<std::string> &id,
+                         const std::optional<std::wstring> &path,bool verified=false) {
+  current_display_name=name;current_device_id=id;current_monitor_device_path=path;
+  current_display_name_verified=verified;
+  normalized_display_name=name?std::optional<std::string>{normalize_display_name(std::string(name->begin(),name->end()))}:std::nullopt;
+  normalized_monitor_device_path=path?std::optional<std::string>{normalize_display_name(std::string(path->begin(),path->end()))}:std::nullopt;
+ }
+ std::string describe_target() const {return current_device_id.value_or("unknown");}
 };
 bool monitor_should_abort(const RecoveryMonitorState&,std::stop_token stop) {return stop.stop_requested();}
-enum class MonitorTargetPresence {unknown,missing,present_inactive,present_active};
+enum class MonitorTargetPresence {unknown,missing,no_devices,present_inactive,present_active};
 std::optional<bool> ccd_result=true;
 std::optional<bool> ccd_has_active_paths() {return ccd_result;}
-namespace display_device {enum class DeviceEnumerationDetail {Minimal};}
 namespace display_device {
+enum class DeviceEnumerationDetail {Minimal};
 enum class QueryType {All};
+struct EnumeratedDevice {
+ std::string m_device_id,m_monitor_device_path,m_display_name,m_friendly_name;
+ bool virtual_display=true;
+};
 struct WinApiLayer {
  std::optional<CcdConfig> queryDisplayConfig(QueryType) const {return ccd_query_ok?std::optional<CcdConfig>{CcdConfig{ccd_paths}}:std::nullopt;}
  std::string getDeviceId(const CcdPath &path) const {return path.device_id;}
  std::string getMonitorDevicePath(const CcdPath &path) const {return path.monitor_path;}
 };
 }
+std::vector<display_device::EnumeratedDevice> enumerated_devices;
+bool is_virtual_display_device(const display_device::EnumeratedDevice &device) {return device.virtual_display;}
 namespace platf::display_helper {
 struct Coordinator {
  static Coordinator &instance() {static Coordinator c;return c;}
- std::optional<std::vector<int>> enumerate_devices(display_device::DeviceEnumerationDetail) {return std::vector<int>{};}
+ std::optional<std::vector<display_device::EnumeratedDevice>> enumerate_devices(display_device::DeviceEnumerationDetail) {return enumerated_devices;}
 };
 }
 struct Log {template<class T> Log &operator<<(T) {return *this;}};
 #define BOOST_LOG(level) Log{}
-MonitorTargetPresence monitor_target_presence(RecoveryMonitorState&) {return active?MonitorTargetPresence::present_active:MonitorTargetPresence::present_inactive;}
 namespace display_helper_integration {
 bool reactivate_owned_virtual_display(const std::string &id,const std::function<bool()> &validate,std::function<bool()> cancelled) {
  assert(id=="virtual1");
@@ -119,18 +137,19 @@ bool reactivate_owned_virtual_display(const std::string &id,const std::function<
  ++helper_applies;return helper_ok;
 }
 }
-''' + ccd_presence + '\n' + driver_presence + '\n' + function('    bool reactivate_owned_virtual_display(') + '\n' + empty_enumeration + r'''
+''' + ccd_presence + '\n' + driver_presence + '\n' + target_presence + '\n' + reactivate_presence + r'''
 int main() {
  RecoveryMonitorState state;
  ccd_paths={{"virtual1","monitor1",0},{"physical","monitor2",DISPLAYCONFIG_PATH_ACTIVE}};
- // Preserve indeterminate enumeration, exact owned inactive detection, and
- // the existing missing-target classification when the driver has no lease.
+ // Exercise the full production empty-enumeration path. Unknown CCD results
+ // stay unknown, and an exact available inactive lease remains recoverable.
  ccd_result.reset();
- assert(empty_enumeration_presence(state)==MonitorTargetPresence::unknown);
+ assert(actual_monitor_target_presence(state)==MonitorTargetPresence::unknown);
  ccd_result=true;
- assert(empty_enumeration_presence(state)==MonitorTargetPresence::present_inactive);
+ assert(actual_monitor_target_presence(state)==MonitorTargetPresence::present_inactive);
+ ccd_paths={{"virtual1","monitor1",0}};
  ccd_result=false;
- assert(empty_enumeration_presence(state)==MonitorTargetPresence::present_inactive);
+ assert(actual_monitor_target_presence(state)==MonitorTargetPresence::present_inactive);
  // A retained driver lease alone must not turn a missing target into a 12s
  // inactive grace. Other enumerated CCD outputs do not prove this target exists.
  ccd_result=true;
@@ -146,11 +165,36 @@ int main() {
  ccd_query_ok=false;
  assert(driver_target_presence(state)==MonitorTargetPresence::unknown);
  ccd_query_ok=true;
+
+ // A stale GDI display name cannot override mismatching stable target IDs.
+ RecoveryMonitorState identity_state;
+ enumerated_devices={{"other-virtual","monitor2","DISPLAY15","",true}};
+ ccd_paths={{"physical","monitor2",DISPLAYCONFIG_PATH_ACTIVE}};
+ assert(actual_monitor_target_presence(identity_state)==MonitorTargetPresence::missing);
+ assert(identity_state.current_device_id=="virtual1");
+ assert(!identity_state.current_display_name_verified);
+ // A fresh display name is trusted only after an exact device-ID/path match.
+ enumerated_devices={{"virtual1","monitor1","DISPLAY16","",true}};
+ assert(actual_monitor_target_presence(identity_state)==MonitorTargetPresence::present_active);
+ assert(identity_state.current_display_name==L"DISPLAY16");
+ assert(identity_state.current_display_name_verified);
+ // Name-only fallback is retained when stable IDs are unavailable, but is not
+ // promoted to a verified capture alias.
+ identity_state.current_device_id.reset();
+ identity_state.current_monitor_device_path.reset();
+ identity_state.normalized_monitor_device_path.reset();
+ identity_state.normalized_display_name="display16";
+ enumerated_devices={{"replacement-virtual","monitor3","DISPLAY16","DISPLAY16",true}};
+ assert(actual_monitor_target_presence(identity_state)==MonitorTargetPresence::present_active);
+ assert(!identity_state.current_display_name_verified);
+ enumerated_devices.clear();
+ ccd_paths={{"virtual1","monitor1",0}};
+
  ccd_result=false;
  owned.reset();
- assert(empty_enumeration_presence(state)==MonitorTargetPresence::missing);
+ assert(actual_monitor_target_presence(state)==MonitorTargetPresence::no_devices);
  ccd_result=true;
- assert(empty_enumeration_presence(state)==MonitorTargetPresence::unknown);
+ assert(actual_monitor_target_presence(state)==MonitorTargetPresence::unknown);
  owned=Lease{};
  assert(driver_target_presence(state)==MonitorTargetPresence::present_inactive);
  query_ok=false;
@@ -176,14 +220,25 @@ int main() {
  release.set_value();owner.join();
  assert(helper_applies==0&&resets==0);
  helper_ok=false;assert(!reactivate_owned_virtual_display(state,{}));assert(resets==0);helper_ok=true;
+ // The exact active device refreshes the display-name alias before watching.
+ enumerated_devices={{"virtual1","monitor1","DISPLAY15","",true}};
+ ccd_paths={{"virtual1","monitor1",DISPLAYCONFIG_PATH_ACTIVE}};
  assert(reactivate_owned_virtual_display(state,{}));
  assert(resets==1&&state.capture_confirmation.pending());
+ assert(state.current_display_name_verified);
  assert(state.capture_lease_id==2&&state.capture_display_id==1);
  assert(owned->lease_id==2&&owned->display_id==1);
  assert(state.capture_confirmation.poll(std::chrono::steady_clock::now()+5s)==video::capture_recovery::confirmation_status::retry);
  auto &captures=video::capture_recovery::observations();
  captures.frame("DISPLAY15",captures.begin_capture());
  assert(state.capture_confirmation.poll(std::chrono::steady_clock::now()+6s)==video::capture_recovery::confirmation_status::confirmed);
+ // When CCD can prove the target is active but enumeration cannot refresh the
+ // old GDI alias, a fresh frame for that stale name must not confirm recovery.
+ enumerated_devices.clear();
+ assert(reactivate_owned_virtual_display(state,{}));
+ assert(!state.current_display_name_verified);
+ captures.frame("DISPLAY15",captures.begin_capture());
+ assert(state.capture_confirmation.poll(std::chrono::steady_clock::now()+6s)==video::capture_recovery::confirmation_status::retry);
 }
 '''
 with tempfile.TemporaryDirectory(prefix='live-recovery-') as d:
@@ -192,4 +247,4 @@ with tempfile.TemporaryDirectory(prefix='live-recovery-') as d:
     cpp.write_text(program)
     subprocess.run(['g++', '-std=c++23', '-O1', '-pthread', '-Wall', '-Wextra', '-Werror', '-I', str(root), str(cpp), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True, timeout=10)
-print('Live recovery: exact lease, adapter provenance, cancellation, lock contention and capture acknowledgement passed')
+print('Live recovery: lease, stable identity, no-devices lifecycle, cancellation, lock contention and capture acknowledgement passed')

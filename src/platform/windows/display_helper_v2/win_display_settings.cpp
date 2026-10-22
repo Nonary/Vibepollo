@@ -343,7 +343,11 @@ namespace display_helper::v2 {
           attempt_target.targetInfo.modeInfoIdx = target_mode_index;
         }
       }
-      const UINT32 flags = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_VIRTUAL_MODE_AWARE | SDC_ALLOW_CHANGES;
+      // This narrow reactivation lane must not let Windows retime the peer
+      // paths copied from the active topology. If the exact target timing
+      // cannot be added without changing those supplied modes, fail this
+      // attempt and let the existing recovery path handle it.
+      const UINT32 flags = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_VIRTUAL_MODE_AWARE;
       if (win_api_->setDisplayConfig(attempt_paths, attempt_modes, flags | SDC_VALIDATE) != ERROR_SUCCESS || cancelled() ||
           win_api_->setDisplayConfig(attempt_paths, attempt_modes, flags | SDC_APPLY) != ERROR_SUCCESS || cancelled()) {
         return false;

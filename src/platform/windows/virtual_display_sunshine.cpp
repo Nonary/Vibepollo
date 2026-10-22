@@ -4372,6 +4372,7 @@ namespace VDISPLAY_SUNSHINE {
       uuid_util::uuid_t guid_uuid;
       bool confirmed_active_at_schedule = false;
       std::optional<std::wstring> current_display_name;
+      bool current_display_name_verified = false;
       std::optional<std::string> normalized_display_name;
       std::optional<std::string> current_device_id;
       std::optional<std::wstring> current_monitor_device_path;
@@ -4397,9 +4398,11 @@ namespace VDISPLAY_SUNSHINE {
       void update_identifiers(
         const std::optional<std::wstring> &display_name,
         const std::optional<std::string> &device_id,
-        const std::optional<std::wstring> &monitor_device_path
+        const std::optional<std::wstring> &monitor_device_path,
+        bool display_name_verified = false
       ) {
         current_display_name = display_name;
+        current_display_name_verified = display_name_verified;
         current_device_id = device_id;
         current_monitor_device_path = monitor_device_path;
         normalized_display_name.reset();
@@ -4634,13 +4637,6 @@ namespace VDISPLAY_SUNSHINE {
         if (!strong_match && state.current_device_id && !state.current_device_id->empty() && !device.m_device_id.empty()) {
           strong_match = equals_ci(device.m_device_id, *state.current_device_id);
         }
-        if (!strong_match && state.normalized_display_name && !device.m_display_name.empty()) {
-          const auto normalized_display = normalize_display_name(device.m_display_name);
-          if (!normalized_display.empty() && normalized_display == *state.normalized_display_name) {
-            strong_match = true;
-          }
-        }
-
         if (strong_match) {
           const bool is_active = !device.m_display_name.empty();
           if (is_active) {
@@ -4648,7 +4644,8 @@ namespace VDISPLAY_SUNSHINE {
               platf::from_utf8(device.m_display_name),
               device.m_device_id.empty() ? state.current_device_id : std::optional {device.m_device_id},
               device.m_monitor_device_path.empty() ? state.current_monitor_device_path :
-                                                       std::optional {platf::from_utf8(device.m_monitor_device_path)}
+                                                       std::optional {platf::from_utf8(device.m_monitor_device_path)},
+              true
             );
             return MonitorTargetPresence::present_active;
           }
@@ -4712,6 +4709,10 @@ namespace VDISPLAY_SUNSHINE {
       if (!lease || !lease->device_id || lease->device_id->empty()) {
         return false;
       }
+      // The GDI display name can be reassigned while the target is inactive.
+      // Re-verify it from the exact device identity after activation before
+      // allowing it to acknowledge capture recovery.
+      state.current_display_name_verified = false;
 
       std::unique_lock<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex, std::defer_lock);
       const auto validate_owner = [&] {
@@ -4753,7 +4754,7 @@ namespace VDISPLAY_SUNSHINE {
       }
 
       std::vector<std::string> outputs {*lease->device_id};
-      if (state.current_display_name) {
+      if (state.current_display_name_verified && state.current_display_name) {
         outputs.push_back(platf::to_utf8(*state.current_display_name));
       }
       if (state.current_monitor_device_path) {
