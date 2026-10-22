@@ -89,14 +89,12 @@ jobs:
               match = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:-stable\.[0-9]+)?", tag)
               if match:
                 version = tuple(map(int, match.groups()))
-                if version[0] <= 255 and version[1] <= 255 and version[2] <= 654:
+                if version[0] <= 255 and version[1] <= 255 and version[2] < 655:
                   stable.append(version)
             if not stable:
               raise ValueError("PR validation requires a merged stable version anchor")
             major, minor, patch = max(stable)
-            # Stay below the current stable package version so a PR artifact
-            # cannot replace a stable installation by version precedence.
-            return f"{major}.{minor}.{patch}-validation.{run('git', 'rev-parse', 'HEAD')[:12]}"
+            return f"{major}.{minor}.{patch + 1}-validation.{run('git', 'rev-parse', 'HEAD')[:12]}"
 
           def skip(reason, *, release_version="", release_commit=""):
             print(f"::notice::{reason}")
