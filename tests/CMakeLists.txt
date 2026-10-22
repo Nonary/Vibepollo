@@ -352,6 +352,14 @@ set(SUNSHINE_TEST_FAST_FOUNDATION_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
 )
 
+# Header-only VHF ownership recovery runs on every platform without a driver.
+find_package(Threads REQUIRED)
+sunshine_add_test_target(
+    NAME test_fast_vhf_gamepad_recovery
+    CATEGORY FAST
+    TEST_SOURCES unit/platform/windows/test_vhf_gamepad_recovery.cpp
+    LINK_LIBRARIES Threads::Threads)
+
 sunshine_add_test_target(
     NAME test_fast_foundation
     CATEGORY fast
