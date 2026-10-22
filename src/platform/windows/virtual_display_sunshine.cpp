@@ -3252,7 +3252,7 @@ namespace VDISPLAY_SUNSHINE {
       return name;
     }
 
-    std::optional<std::wstring> resolve_virtual_monitor_device_path_for_id(const std::string &device_id) {
+    std::optional<std::wstring> resolve_monitor_device_path_for_device_id(const std::string &device_id) {
       if (device_id.empty()) {
         return std::nullopt;
       }
@@ -3261,8 +3261,7 @@ namespace VDISPLAY_SUNSHINE {
       );
       if (devices) {
         for (const auto &device : *devices) {
-          if (equals_ci(device.m_device_id, device_id) &&
-              is_virtual_display_device(device) && !device.m_monitor_device_path.empty()) {
+          if (equals_ci(device.m_device_id, device_id) && !device.m_monitor_device_path.empty()) {
             return platf::from_utf8(device.m_monitor_device_path);
           }
         }
@@ -3270,33 +3269,19 @@ namespace VDISPLAY_SUNSHINE {
       return std::nullopt;
     }
 
-    std::optional<std::wstring> resolve_monitor_device_path_once(
+    std::optional<std::wstring> resolve_monitor_device_path_by_names_once(
       const std::optional<std::wstring> &display_name,
-      const std::optional<std::string> &device_id,
       const std::optional<std::string> &client_name = std::nullopt
     ) {
-      // Creation can return before a GDI name exists. The helper's stable
-      // device GUID is not a CCD name: resolve it again on every attempt so a
-      // deferred scale can follow the exact target as Windows publishes it.
-      if (device_id) {
-        if (auto path = resolve_virtual_monitor_device_path_for_id(*device_id)) {
-          return path;
-        }
-      }
-
       std::optional<std::string> normalized_target;
       if (display_name && !display_name->empty()) {
         normalized_target = normalize_display_name(platf::to_utf8(*display_name));
-      }
-      std::optional<std::string> normalized_device_id;
-      if (device_id && !device_id->empty()) {
-        normalized_device_id = normalize_display_name(*device_id);
       }
       std::optional<std::string> normalized_client_name;
       if (client_name && !client_name->empty()) {
         normalized_client_name = normalize_display_name(*client_name);
       }
-      const bool has_any_criteria = normalized_target || normalized_device_id || normalized_client_name;
+      const bool has_any_criteria = normalized_target || normalized_client_name;
 
       // Use QDC_ALL_PATHS to include virtual displays that may not be "active" yet
       UINT path_count = 0;
@@ -3408,8 +3393,7 @@ namespace VDISPLAY_SUNSHINE {
         }
 
         const bool target_match =
-          (target_friendly && normalized_target && *target_friendly == *normalized_target) ||
-          (target_friendly && normalized_device_id && *target_friendly == *normalized_device_id);
+          target_friendly && normalized_target && *target_friendly == *normalized_target;
         if (target_match) {
           return std::wstring(target_name.monitorDevicePath);
         }
@@ -3428,14 +3412,30 @@ namespace VDISPLAY_SUNSHINE {
           source_view = normalize_display_name(platf::to_utf8(std::wstring(source_name.viewGdiDeviceName)));
         }
         const bool source_match =
-          (source_view && normalized_target && *source_view == *normalized_target) ||
-          (source_view && normalized_device_id && *source_view == *normalized_device_id);
+          source_view && normalized_target && *source_view == *normalized_target;
         if (source_match) {
           return std::wstring(target_name.monitorDevicePath);
         }
       }
 
       return std::nullopt;
+    }
+
+    std::optional<std::wstring> resolve_monitor_device_path_once(
+      const std::optional<std::wstring> &display_name,
+      const std::optional<std::string> &device_id,
+      const std::optional<std::string> &client_name = std::nullopt
+    ) {
+      // A supplied device ID is authoritative. If it has no current monitor
+      // path, a GDI name may already have been reassigned to a peer; do not
+      // return a path based on that mutable alias.
+      return VDISPLAY::policy::resolve_monitor_device_path(
+        device_id,
+        [](const std::string &exact_device_id) {
+          return resolve_monitor_device_path_for_device_id(exact_device_id);
+        },
+        [&] { return resolve_monitor_device_path_by_names_once(display_name, client_name); }
+      );
     }
 
     std::optional<std::wstring> resolve_monitor_device_path(

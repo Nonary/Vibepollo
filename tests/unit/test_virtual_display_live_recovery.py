@@ -21,6 +21,8 @@ target_presence = function('    MonitorTargetPresence monitor_target_presence(')
 target_presence = target_presence.replace('monitor_target_presence(', 'actual_monitor_target_presence(')
 reactivate_presence = function('    bool reactivate_owned_virtual_display(')
 reactivate_presence = reactivate_presence.replace('monitor_target_presence(', 'actual_monitor_target_presence(')
+gdi_name_check = function('    bool is_gdi_display_name(')
+monitor_path_for_id = function('    std::optional<std::wstring> resolve_monitor_device_path_for_device_id(')
 
 program = r'''
 #include "src/capture_recovery.h"
@@ -160,7 +162,7 @@ bool reactivate_owned_virtual_display(const std::string &id,const std::function<
  ++helper_applies;return helper_ok;
 }
 }
-''' + function('    std::optional<std::wstring> resolve_virtual_display_name_for_device_id(') + '\n' + ccd_presence + '\n' + driver_presence + '\n' + target_presence + '\n' + reactivate_presence + r'''
+''' + function('    std::optional<std::wstring> resolve_virtual_display_name_for_device_id(') + '\n' + monitor_path_for_id + '\n' + gdi_name_check + '\n' + ccd_presence + '\n' + driver_presence + '\n' + target_presence + '\n' + reactivate_presence + r'''
 int main() {
  assert(video::capture_recovery::lease_identity_matches(
   2,1,std::string("virtual1"),2,1,std::string("virtual1")));
@@ -200,6 +202,28 @@ int main() {
   [&]{++client_name_lookups;return std::optional<std::wstring>{L"DISPLAY17"};},
   [&]{++any_name_lookups;return std::optional<std::wstring>{L"DISPLAY99"};});
  assert(ordinary_reuse_name&&*ordinary_reuse_name==L"DISPLAY17");
+ assert(client_name_lookups==1&&any_name_lookups==0);
+ enumerated_devices={{"replacement-virtual","monitor3","\\\\.\\DISPLAY18","client",true}};
+ int name_path_lookups=0;
+ auto stale_gdi_alias_path=VDISPLAY::policy::resolve_monitor_device_path(
+  std::optional<std::string>{"virtual1"},
+  [](const std::string &id){return resolve_monitor_device_path_for_device_id(id);},
+  [&]{++name_path_lookups;return std::optional<std::wstring>{L"monitor3"};});
+ assert(!stale_gdi_alias_path&&name_path_lookups==0);
+ auto name_only_path=VDISPLAY::policy::resolve_monitor_device_path(
+  std::nullopt,
+  [](const std::string &){return std::optional<std::wstring>{};},
+  [&]{++name_path_lookups;return std::optional<std::wstring>{L"monitor3"};});
+ assert(name_only_path&&*name_only_path==L"monitor3"&&name_path_lookups==1);
+ enumerated_devices={{"replacement-virtual","monitor3","\\\\.\\DISPLAY17","client",true},
+                     {"virtual1","monitor1","","client",true}};
+ auto reclaimed_name_without_gdi=VDISPLAY::policy::resolve_reuse_display_name(
+  true,std::optional<std::string>{"virtual1"},true,
+  [](const std::string &id){return resolve_virtual_display_name_for_device_id(id);},
+  [&]{++client_name_lookups;return std::optional<std::wstring>{L"\\\\.\\DISPLAY17"};},
+  [&]{++any_name_lookups;return std::optional<std::wstring>{L"\\\\.\\DISPLAY17"};});
+ assert(reclaimed_name_without_gdi&&*reclaimed_name_without_gdi==L"virtual1");
+ assert(!is_gdi_display_name(*reclaimed_name_without_gdi));
  assert(client_name_lookups==1&&any_name_lookups==0);
  enumerated_devices.clear();
  RecoveryMonitorState state;

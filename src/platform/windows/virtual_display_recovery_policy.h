@@ -41,6 +41,18 @@ namespace VDISPLAY::policy {
     return std::nullopt;
   }
 
+  template<typename ResolveByDeviceId, typename ResolveByName>
+  std::optional<std::wstring> resolve_monitor_device_path(
+    const std::optional<std::string> &device_id,
+    ResolveByDeviceId &&resolve_by_device_id,
+    ResolveByName &&resolve_by_name
+  ) {
+    if (device_id && !device_id->empty()) {
+      return std::forward<ResolveByDeviceId>(resolve_by_device_id)(*device_id);
+    }
+    return std::forward<ResolveByName>(resolve_by_name)();
+  }
+
   class inactive_reactivation_budget_t {
   public:
     using duration = std::chrono::steady_clock::duration;
