@@ -106,6 +106,8 @@ namespace remote_display_topology {
     // never recomposes or moves a peer owned by another session.
     std::optional<node_t> saved_stream_placement(const node_t &target, const std::vector<node_t> &active_nodes) const;
     void set_physical_baseline(std::vector<node_t> nodes);
+    // Inventory reads must not replace a baseline while managed displays own it.
+    void refresh_idle_physical_baseline(std::vector<node_t> nodes);
     std::vector<std::string> physical_node_ids() const;
     // Managed ownership is independent of transport lifetime. A retryable or
     // transport-less Remote Monitor remains protected until an explicit owner

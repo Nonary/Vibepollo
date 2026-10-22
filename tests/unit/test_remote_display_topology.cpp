@@ -1648,6 +1648,41 @@ TEST(RemoteDisplayTopology, SupervisedShutdownPreservesPlatformDisplaysUntouched
   EXPECT_TRUE(coordinator.generic_virtual_display_cleanup_allowed());
 }
 
+TEST(RemoteDisplayTopology, IdleShutdownAfterDevicesRefreshDoesNotTouchPhysicalMonitors) {
+  remote_display_topology::coordinator_t coordinator;
+  int topology_applies = 0;
+  int virtual_removals = 0;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [&](const auto &) {
+      ++topology_applies;
+      return true;
+    },
+    .remove_owned_display = [&](const auto &) {
+      ++virtual_removals;
+      return true;
+    },
+  });
+  // Model a physical inventory refresh from the Devices page, including
+  // real (non-overlapping) coordinates for two physical monitors.
+  coordinator.refresh_idle_physical_baseline({
+    {.id = "left", .device_id = "left", .physical = true, .active = true,
+     .primary = true, .x = 0, .y = 0, .configured_mode = {1920, 1080, 144}},
+    {.id = "right", .device_id = "right", .physical = true, .active = true,
+     .x = 1920, .y = 0, .configured_mode = {1920, 1080, 144}},
+  });
+  const auto devices_page = coordinator.snapshot({});
+  ASSERT_EQ(devices_page["nodes"].size(), 2u);
+  const auto right = std::find_if(devices_page["nodes"].begin(), devices_page["nodes"].end(),
+    [](const auto &node) { return node["id"] == "right"; });
+  ASSERT_NE(right, devices_page["nodes"].end());
+  EXPECT_EQ((*right)["desired_position"]["x"], 1920);
+
+  coordinator.shutdown(false);
+  EXPECT_EQ(topology_applies, 0);
+  EXPECT_EQ(virtual_removals, 0);
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 0u);
+}
+
 TEST(RemoteDisplayTopology, ResumeReusesRetainedLeaseWithoutReplacingDisplay) {
   remote_display_topology::coordinator_t coordinator;
   int creates = 0;
@@ -2108,4 +2143,32 @@ TEST(RemoteDisplayTopology, RetainedRemoteMonitorBlocksPhysicalRestoreIncludingS
     EXPECT_FALSE(coordinator.physical_display_restore_allowed());
     EXPECT_FALSE(coordinator.generic_virtual_display_cleanup_allowed());
   }
+}
+
+TEST(RemoteDisplayTopology, InventoryRefreshPreservesManagedBaselineAndRejectsEmptyInventory) {
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.refresh_idle_physical_baseline({{.id = "original", .physical = true, .active = true, .x = -1920, .y = 120}});
+  coordinator.refresh_idle_physical_baseline({});
+  EXPECT_EQ(coordinator.physical_node_ids(), std::vector<std::string> {"original"});
+  const auto reservation = coordinator.reserve_normal_game_identity("one", "One", {});
+  ASSERT_TRUE(reservation.accepted);
+  coordinator.refresh_idle_physical_baseline({{.id = "changed", .physical = true, .active = true}});
+  EXPECT_EQ(coordinator.physical_node_ids(), std::vector<std::string> {"original"});
+  coordinator.rollback_normal_game_identity("one", reservation.token);
+  coordinator.refresh_idle_physical_baseline({{.id = "changed", .physical = true, .active = true}});
+  EXPECT_EQ(coordinator.physical_node_ids(), std::vector<std::string> {"changed"});
+}
+
+TEST(RemoteDisplayTopology, InventoryRefreshPreservesTransportlessMonitorBaseline) {
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) { return std::optional<std::string> {"display"}; },
+  });
+  coordinator.refresh_idle_physical_baseline({{.id = "original", .physical = true, .active = true}});
+  ASSERT_TRUE(coordinator.activate_or_resume("one", "One", {}, 1).ready);
+  coordinator.transport_lost("one", 1);
+  coordinator.refresh_idle_physical_baseline({{.id = "changed", .physical = true, .active = true}});
+  EXPECT_EQ(coordinator.physical_node_ids(), std::vector<std::string> {"original"});
 }

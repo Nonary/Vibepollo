@@ -166,6 +166,14 @@ namespace remote_display_topology {
   }
 
   void coordinator_t::set_physical_baseline(std::vector<node_t> nodes) { std::lock_guard lock(mutex_); physical_baseline_ = std::move(nodes); }
+  void coordinator_t::refresh_idle_physical_baseline(std::vector<node_t> nodes) {
+    std::lock_guard lock(mutex_);
+    if (nodes.empty() || std::any_of(clients_.begin(), clients_.end(), [](const auto &entry) {
+          return entry.second.normal_game || entry.second.remote_monitor;
+        })) return;
+    physical_baseline_ = std::move(nodes);
+  }
+
   std::vector<std::string> coordinator_t::physical_node_ids() const {
     std::lock_guard lock(mutex_);
     std::vector<std::string> ids;
@@ -341,6 +349,15 @@ namespace remote_display_topology {
       if (state.normal_game || state.remote_monitor) managed_ids.push_back(uuid);
     }
     std::sort(managed_ids.begin(), managed_ids.end());
+
+    // With no managed display there is nothing to restore or remove. Applying
+    // the physical baseline on idle shutdown can mutate otherwise correct
+    // Windows monitor origins (including a baseline refreshed by the UI).
+    if (managed_ids.empty()) {
+      clients_.clear();
+      shutdown_pending_ = false;
+      return;
+    }
 
     auto retained_clients = std::move(clients_);
     clients_.clear();
