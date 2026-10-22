@@ -186,6 +186,26 @@ int main() {
  assert(!actual_is_virtual_display_present(std::optional<std::wstring>{L"\\\\.\\DISPLAY17"},std::optional<std::string>{"target-id"}));
  assert(actual_is_virtual_display_present(std::nullopt,std::optional<std::string>{"peer-id"}));
  assert(actual_is_virtual_display_present(std::optional<std::wstring>{L"client"},std::nullopt));
+ // A peer's pre-readiness GDI alias must be discarded after stable EDID
+ // selects the target. Rebuild it only from that selected target's device ID.
+ auto rebound_reuse_name=VDISPLAY::policy::bind_reuse_display_name_to_device_id(
+  true,std::optional<std::string>{"target-id"},std::optional<std::wstring>{L"\\\\.\\DISPLAY17"},
+  [](const std::string &id){assert(id=="target-id");return std::optional<std::wstring>{L"\\\\.\\DISPLAY18"};},
+  [](const std::wstring &name){return name.rfind(L"\\\\.\\DISPLAY",0)==0;});
+ assert(rebound_reuse_name&&*rebound_reuse_name==L"\\\\.\\DISPLAY18");
+ auto unresolved_reuse_name=VDISPLAY::policy::bind_reuse_display_name_to_device_id(
+  true,std::nullopt,std::optional<std::wstring>{L"\\\\.\\DISPLAY17"},
+  [](const std::string &){assert(false);return std::optional<std::wstring>{};},
+  [](const std::wstring &){return true;});
+ assert(!unresolved_reuse_name);
+ auto legacy_reuse_name=VDISPLAY::policy::bind_reuse_display_name_to_device_id(
+  false,std::nullopt,std::optional<std::wstring>{L"\\\\.\\DISPLAY17"},
+  [](const std::string &){assert(false);return std::optional<std::wstring>{};},
+  [](const std::wstring &){return true;});
+ assert(legacy_reuse_name&&*legacy_reuse_name==L"\\\\.\\DISPLAY17");
+ enumerated_devices={{"peer-id","peer-path","\\\\.\\DISPLAY17","client",true}};
+ assert(!actual_is_virtual_display_present(rebound_reuse_name,std::optional<std::string>{"target-id"}));
+ assert(!actual_is_virtual_display_present(unresolved_reuse_name,std::nullopt));
  assert(!VDISPLAY::policy::readiness_has_dynamic_identity_hint(false,false,false,false,false,false));
  assert(!VDISPLAY::policy::readiness_has_strong_identity_hint(false,false,false,false));
  assert(video::capture_recovery::lease_identity_matches(

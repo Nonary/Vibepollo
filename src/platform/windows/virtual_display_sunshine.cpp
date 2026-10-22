@@ -7183,6 +7183,21 @@ namespace VDISPLAY_SUNSHINE {
           std::optional<std::wstring> display_name = reuse_name;
           bool confirmed_active = false;
           if (wait_for_virtual_display_ready(display_name, device_id, width, height, display_id, nullptr, &confirmed_active, stop_token)) {
+            // Readiness may have selected the intended target by stable EDID
+            // after the pre-readiness client-name/GDI alias pointed at a peer.
+            // Rebind the published alias to the selected device ID; if Windows
+            // did not provide that ID, keep no name rather than persisting the
+            // peer's mutable GDI name.
+            display_name = VDISPLAY::policy::bind_reuse_display_name_to_device_id(
+              display_id.has_value(),
+              device_id,
+              std::move(display_name),
+              [](const std::string &exact_device_id) {
+                return resolve_virtual_display_name_for_device_id(exact_device_id);
+              },
+              [](const std::wstring &name) { return is_gdi_display_name(name); }
+            );
+
             if (display_name) {
               if (reclaimed_for_reuse) {
                 wprintf(L"[SunshineVirtualDisplay] Reusing securely reclaimed virtual display: %ls\n", display_name->c_str());
@@ -7220,7 +7235,7 @@ namespace VDISPLAY_SUNSHINE {
             if ((!result.display_name || result.display_name->empty() || !is_gdi_display_name(*result.display_name))) {
               const bool allow_any_name_fallback = !s_client_name || std::strlen(s_client_name) == 0;
               auto gdi_name = VDISPLAY::policy::resolve_reuse_display_name(
-                reclaimed_for_reuse,
+                display_id.has_value(),
                 result.device_id,
                 allow_any_name_fallback,
                 [](const std::string &exact_device_id) {

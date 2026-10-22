@@ -6,8 +6,8 @@
 #include <utility>
 
 namespace VDISPLAY::policy {
-  // A reclaimed driver lease is already owned by one stable display ID. Do
-  // not let a client friendly-name match replace that identity during reuse.
+  // If the caller has an exact stable target identity, do not let a client
+  // friendly-name match replace it during reuse.
   inline std::optional<std::string> select_reuse_device_id(
     bool reclaiming_owned_display,
     std::optional<std::string> exact_owned_device_id,
@@ -16,16 +16,38 @@ namespace VDISPLAY::policy {
     return reclaiming_owned_display ? std::move(exact_owned_device_id) : std::move(client_name_candidate);
   }
 
+  template<typename ResolveByDeviceId, typename IsGdiName>
+  std::optional<std::wstring> bind_reuse_display_name_to_device_id(
+    bool require_stable_identity,
+    const std::optional<std::string> &device_id,
+    std::optional<std::wstring> pre_readiness_name,
+    ResolveByDeviceId &&resolve_by_device_id,
+    IsGdiName &&is_gdi_name
+  ) {
+    if (!require_stable_identity) {
+      return pre_readiness_name;
+    }
+    if (!device_id || device_id->empty()) {
+      return std::nullopt;
+    }
+
+    auto exact_name = std::forward<ResolveByDeviceId>(resolve_by_device_id)(*device_id);
+    if (!exact_name || exact_name->empty() || !std::forward<IsGdiName>(is_gdi_name)(*exact_name)) {
+      return std::nullopt;
+    }
+    return exact_name;
+  }
+
   template<typename ResolveByDeviceId, typename ResolveByClientName, typename ResolveAny>
   std::optional<std::wstring> resolve_reuse_display_name(
-    bool reclaiming_owned_display,
+    bool require_exact_device_id,
     const std::optional<std::string> &exact_owned_device_id,
     bool allow_any_fallback,
     ResolveByDeviceId &&resolve_by_device_id,
     ResolveByClientName &&resolve_by_client_name,
     ResolveAny &&resolve_any
   ) {
-    if (reclaiming_owned_display) {
+    if (require_exact_device_id) {
       if (!exact_owned_device_id || exact_owned_device_id->empty()) {
         return std::nullopt;
       }
