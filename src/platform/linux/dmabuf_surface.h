@@ -62,6 +62,19 @@ namespace egl {
       (surface.modifier == implicit_modifier && !surface.direct_import_required);
   }
 
+  // Prefer zero-copy import. Only fall back to reading pixels when the
+  // descriptor's layout is safe to interpret on the CPU; never rewrite the
+  // producer's logical dimensions, pitch, offset, or modifier to force import.
+  // Callbacks keep this policy testable without a live EGL/VAAPI device.
+  template<class Import, class Upload>
+  auto import_source_with_cpu_fallback(const surface_descriptor_t &surface, Import &&import, Upload &&upload) {
+    auto result = import(surface);
+    if (!result && can_cpu_upload_surface(surface)) {
+      result = upload(surface);
+    }
+    return result;
+  }
+
   inline void reset_surface(surface_descriptor_t &surface) noexcept {
     for (auto &fd : surface.fds) {
       if (fd >= 0) {

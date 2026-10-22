@@ -8,7 +8,9 @@
 
 #include <cerrno>
 #include <fcntl.h>
+#include <optional>
 #include <stdexcept>
+#include <tuple>
 #include <sys/eventfd.h>
 
 namespace {
@@ -61,6 +63,84 @@ namespace {
     EXPECT_FALSE(egl::can_cpu_upload_surface(surface));
     surface.direct_import_required = true;
     EXPECT_FALSE(egl::can_cpu_upload_surface(surface));
+  }
+
+  TEST(DmabufSurface, SuccessfulDirectImportNeverUploads) {
+    egl::surface_descriptor_t surface;
+    int imports = 0;
+    int uploads = 0;
+    const auto result = egl::import_source_with_cpu_fallback(surface,
+      [&](const auto &) { ++imports; return std::optional<int> {17}; },
+      [&](const auto &) { ++uploads; return std::optional<int> {23}; });
+    EXPECT_EQ(result, 17);
+    EXPECT_EQ(imports, 1);
+    EXPECT_EQ(uploads, 0);
+  }
+
+  TEST(DmabufSurface, FailedLinearImportUploadsWithoutChangingRequestedLayout) {
+    for (const auto &[width, height, pitch] : {
+           std::tuple {3440, 1440, 13760u},
+           std::tuple {3440, 1440, 13824u},
+           std::tuple {3456, 1440, 13824u},
+           std::tuple {2190, 1179, 8960u}}) {
+      egl::surface_descriptor_t surface;
+      surface.width = width;
+      surface.height = height;
+      surface.pitches[0] = pitch;
+      surface.offsets[0] = 4096;
+      surface.fds[0] = 17;
+      surface.direct_import_required = true;
+      surface.modifier = 0;  // Explicitly linear managed framebuffer.
+      int imports = 0;
+      int uploads = 0;
+      const auto result = egl::import_source_with_cpu_fallback(surface,
+        [&](const auto &descriptor) {
+          ++imports;
+          EXPECT_EQ(&descriptor, &surface);
+          return std::optional<int> {};
+        },
+        [&](const auto &descriptor) {
+          ++uploads;
+          EXPECT_EQ(imports, 1);
+          EXPECT_EQ(&descriptor, &surface);
+          EXPECT_EQ(descriptor.width, width);
+          EXPECT_EQ(descriptor.height, height);
+          EXPECT_EQ(descriptor.pitches[0], pitch);
+          EXPECT_EQ(descriptor.offsets[0], 4096u);
+          EXPECT_EQ(descriptor.fds[0], 17);
+          EXPECT_EQ(descriptor.modifier, 0u);
+          return std::optional<int> {23};
+        });
+      EXPECT_EQ(result, 23);
+      EXPECT_EQ(imports, 1);
+      EXPECT_EQ(uploads, 1);
+    }
+  }
+
+  TEST(DmabufSurface, FailedUnknownOrTiledManagedImportNeverUploads) {
+    for (const auto modifier : {0x00ffffffffffffffULL, 0x0300000000606013ULL}) {
+      egl::surface_descriptor_t surface;
+      surface.direct_import_required = true;
+      surface.modifier = modifier;
+      int imports = 0;
+      int uploads = 0;
+      const auto result = egl::import_source_with_cpu_fallback(surface,
+        [&](const auto &) { ++imports; return std::optional<int> {}; },
+        [&](const auto &) { ++uploads; return std::optional<int> {23}; });
+      EXPECT_FALSE(result);
+      EXPECT_EQ(imports, 1);
+      EXPECT_EQ(uploads, 0);
+    }
+  }
+
+  TEST(DmabufSurface, FailedCpuUploadRemainsAnImportFailure) {
+    egl::surface_descriptor_t surface;
+    int uploads = 0;
+    const auto result = egl::import_source_with_cpu_fallback(surface,
+      [](const auto &) { return std::optional<int> {}; },
+      [&](const auto &) { ++uploads; return std::optional<int> {}; });
+    EXPECT_FALSE(result);
+    EXPECT_EQ(uploads, 1);
   }
 
   int open_frame_fd() {
