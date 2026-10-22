@@ -213,6 +213,9 @@ set(_sunshine_test_boost_components
     uuid)
 if(SUNSHINE_TEST_ENABLE_COMPONENT)
     list(APPEND _sunshine_test_boost_components process)
+    if(UNIX)
+        list(APPEND _sunshine_test_boost_components filesystem program_options)
+    endif()
 endif()
 set(_sunshine_test_missing_boost_target FALSE)
 foreach(_sunshine_test_boost_component IN LISTS _sunshine_test_boost_components)
@@ -1744,6 +1747,18 @@ endif()
 
 # Production-code regression harnesses exercise Windows policies on the native host.
 find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND AND UNIX AND SUNSHINE_TEST_ENABLE_COMPONENT)
+    add_library(sunshine_test_macos_build_api_dependencies INTERFACE)
+    target_link_libraries(sunshine_test_macos_build_api_dependencies INTERFACE
+        Boost::process Boost::program_options Boost::filesystem Boost::algorithm)
+    add_test(NAME regression_macos_build_api_compatibility
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/platform/macos/test_build_api_compatibility.py"
+            --compiler "${CMAKE_CXX_COMPILER}"
+            --process-library "$<TARGET_FILE:Boost::process>"
+            --include-dir "$<TARGET_PROPERTY:sunshine_test_macos_build_api_dependencies,INTERFACE_INCLUDE_DIRECTORIES>")
+    set_tests_properties(regression_macos_build_api_compatibility PROPERTIES LABELS "component" TIMEOUT 60)
+endif()
 if(Python3_Interpreter_FOUND)
     if(UNIX AND SUNSHINE_TEST_ENABLE_COMPONENT)
         find_program(SUNSHINE_TEST_WEB_MAKE NAMES gmake make)

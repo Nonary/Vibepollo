@@ -228,7 +228,7 @@ namespace platf {
     try {
       if (group) {
         if (!working_dir.empty()) {
-          auto start = v2::start_dir(v2::filesystem::path(working_dir.string()));
+          auto start = v2::process_start_dir(v2::filesystem::path(working_dir.string()));
           auto proc = v2::process(exec, exe_path, args, start, stdio, env_init, bp::detail::posix_group_initer {group});
           return bp::child(std::move(proc));
         }
@@ -237,7 +237,7 @@ namespace platf {
       }
 
       if (!working_dir.empty()) {
-        auto start = v2::start_dir(v2::filesystem::path(working_dir.string()));
+        auto start = v2::process_start_dir(v2::filesystem::path(working_dir.string()));
         auto proc = v2::process(exec, exe_path, args, start, stdio, env_init);
         return bp::child(std::move(proc));
       }
