@@ -283,6 +283,10 @@ static const char *hyprland_unset_environment(const struct session_identity *ide
                                 : "--property=UnsetEnvironment=DISPLAY XAUTHORITY";
 }
 
+static const char *hyprland_compositor_peer(const struct session_identity *identity) {
+  return identity->compositor + 33;
+}
+
 static bool validate_xauthority(const struct session_identity *identity) {
   if (!identity->xauthority[0]) return !strcmp(identity->role, "greeter") || hyprland_kms_identity(identity);
   if (!xauthority_path_is_confined(identity)) return false;
@@ -1330,7 +1334,7 @@ static bool steam_big_picture_request(const char *operation, const char *command
 static bool hyprland_request_supported(const struct session_identity *identity, const char *operation) {
   return !strcmp(operation, "display-observe") || !strcmp(operation, "display-observe-events") ||
          !strncmp(operation, "audio-", 6) || !strncmp(operation, "provider-", 9) ||
-         !strcmp(operation, "app") ||
+         !strcmp(operation, "app") || !strcmp(operation, "managed-focus") ||
          // X11/Proton launches need the bound Xwayland display.
          (identity->x_display[0] && (!strcmp(operation, "steam") || !strcmp(operation, "steam-direct") ||
                                      !strcmp(operation, "lutris")));
@@ -1562,6 +1566,13 @@ static int execute_request(int argc, char **argv,
       return exec_user_service(identity, NULL, arguments, false, false, 0, NULL);
     }
     case MANAGED_FOCUS: {
+      if (hyprland_kms_identity(identity)) {
+        // Hyprland IPC has no client authentication; the helper checks this peer.
+        char *const arguments[] = {"/usr/libexec/vibeshine/vibepollo-app-focus", "--managed-hyprland",
+                                  (char *) hyprland_compositor_peer(identity),
+                                  argv[2], argv[3], argv[4], argv[5], argv[6], NULL};
+        return exec_user_service(identity, NULL, arguments, false, false, 0, NULL);
+      }
       char *const arguments[] = {"/usr/libexec/vibeshine/vibepollo-app-focus", "--managed",
                                 argv[2], argv[3], argv[4], argv[5], argv[6], NULL};
       return exec_user_service(identity, NULL, arguments, false, false, 0, NULL);

@@ -1,6 +1,7 @@
 /** Unprivileged managed-library focus worker, run in the bound desktop session. */
 #include "src/lutris_integration.h"
 #include "src/managed_app_focus.h"
+#include "managed_app_focus_hyprland.h"
 #include "managed_app_focus_kwin.h"
 #include "src/managed_app_focus_candidates.h"
 #include "src/steam_integration.h"
@@ -168,7 +169,15 @@ int main(int argc, char **argv) {
     std::cout<<(matches?"1\n":"0\n");
     return observed.is_object()?0:1;
   }
-  if (argc != 7 || std::string_view(argv[1]) != "--managed") {
+  std::optional<managed_app_focus::hyprland::compositor> bound_compositor;
+  if (argc == 8 && std::string_view(argv[1]) == "--managed-hyprland") {
+    bound_compositor = managed_app_focus::hyprland::parse_compositor(argv[2]);
+    if (!bound_compositor) {
+      return 2;
+    }
+    --argc;
+    ++argv;
+  } else if (argc != 7 || std::string_view(argv[1]) != "--managed") {
     return 2;
   }
   const std::string provider = argv[2], id = argv[3];
@@ -216,7 +225,19 @@ int main(int argc, char **argv) {
     std::cerr << "Managed focus: no installed catalog target for " << provider << ':' << id << '\n';
     return 1;
   }
-  kwin_focus focus;
+  std::optional<kwin_focus> kwin;
+  managed_app_focus::hyprland::transport hyprland_ipc;
+  if (bound_compositor) {
+    // The runtime directory the broker validated, not the inherited one.
+    const auto runtime = "/run/user/" + std::to_string(geteuid());
+    hyprland_ipc = managed_app_focus::hyprland::socket_transport(runtime, *bound_compositor, std::chrono::milliseconds(1000));
+  } else {
+    kwin.emplace();
+  }
+  const auto apply = [&](const std::vector<std::uint64_t> &pids, const std::vector<std::string> &activate = {}) {
+    return kwin ? kwin->apply(pids, activate) : managed_app_focus::hyprland::apply(hyprland_ipc, pids, activate);
+  };
+  bool unavailable_reported = false;
   while (!cancelled && budget.active(managed_app_focus::budget::clock::now())) {
     std::vector<std::uint64_t> pids;
     if (auto snapshot = platf::steam::lifecycle::snapshot_processes()) {
@@ -229,7 +250,11 @@ int main(int argc, char **argv) {
       }
       pids = managed_app_focus::candidates({provider, id, directory}, *snapshot);
     }
-    const auto observed = focus.apply(pids);
+    const auto observed = apply(pids);
+    if (bound_compositor && !pids.empty() && observed.is_null() && !unavailable_reported) {
+      std::cerr << "Managed focus: the bound Hyprland IPC socket is unavailable\n";
+      unavailable_reported = true;
+    }
     if (observed.is_object() && observed.contains("windows") && observed["windows"].is_array()) {
       for (const auto &window : observed["windows"]) {
         if (window.is_string()) {
@@ -244,7 +269,7 @@ int main(int argc, char **argv) {
             allowed.push_back(identity);
           }
         }
-        const auto applied = focus.apply(pids, allowed);
+        const auto applied = apply(pids, allowed);
         if (!cancelled && applied.is_object() && applied.value("focused", false)) {
           budget.confirmed();
           std::cerr << "Managed focus: confirmed " << provider << ':' << id << '\n';
