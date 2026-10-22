@@ -32,6 +32,7 @@
 // clang-format off: SDDL declarations require the Windows types first.
   #include <Windows.h>
   #include <sddl.h>
+  #include <shellapi.h>
 // clang-format on
 #else
   #include <fcntl.h>
@@ -557,9 +558,7 @@ namespace pairing_recovery {
       const auto primary_hash = sha256(bytes);
       const auto backup_hash = sha256(backup);
       const auto token = sha256("auxiliary-reset:" + primary_hash + ":" + backup_hash);
-      json report = {{"schema_version", 1}, {"operation", "auxiliary_reset_not_recovery"}, {"snapshot_token", token}, {"primary_sha256", primary_hash}, {"backup_sha256", backup_hash},
-                     {"lost_state", {"API tokens", "Web UI sessions", "application ID aliases", "display metadata", "crash dismissal and notification metadata"}},
-                     {"warning", "This cannot recover lost data. Pairing state and Web UI credentials must remain separate and unchanged. Use only copies of the configured auxiliary state."}};
+      json report = {{"schema_version", 1}, {"operation", "auxiliary_reset_not_recovery"}, {"snapshot_token", token}, {"primary_sha256", primary_hash}, {"backup_sha256", backup_hash}, {"lost_state", {"API tokens", "Web UI sessions", "application ID aliases", "display metadata", "crash dismissal and notification metadata"}}, {"warning", "This cannot recover lost data. Pairing state and Web UI credentials must remain separate and unchanged. Use only copies of the configured auxiliary state."}};
       if (operation == "inspect") {
         out << report.dump(2, ' ', true) << '\n';
         return 0;
@@ -576,11 +575,7 @@ namespace pairing_recovery {
       write_new_file(output / "backup.original.json", backup);
       write_new_file(output / "vibeshine_state.reset.json", candidate);
       write_new_file(output / "vibeshine_state.reset.json.bak", candidate);
-      require(read_snapshot(output / "primary.original.json") == bytes &&
-              read_snapshot(output / "backup.original.json") == backup &&
-              read_snapshot(output / "vibeshine_state.reset.json") == candidate &&
-              read_snapshot(output / "vibeshine_state.reset.json.bak") == candidate,
-              "Output read-back verification failed; do not use the incomplete output directory.");
+      require(read_snapshot(output / "primary.original.json") == bytes && read_snapshot(output / "backup.original.json") == backup && read_snapshot(output / "vibeshine_state.reset.json") == candidate && read_snapshot(output / "vibeshine_state.reset.json.bak") == candidate, "Output read-back verification failed; do not use the incomplete output directory.");
       report["candidate_sha256"] = sha256(candidate);
       report["complete"] = true;
       // Complete manifest is published last, as for pairing recovery.
@@ -604,5 +599,62 @@ namespace pairing_recovery {
       return std::nullopt;
     }
     return run(argc - 2, argv + 2, out, error);
+  }
+#ifdef _WIN32
+  std::optional<int> dispatch_windows_command_line(const wchar_t *command_line, std::ostream &out, std::ostream &error) {
+    try {
+      require(command_line && *command_line, "Could not read the wide recovery command line.");
+      int count = 0;
+      auto *wide = CommandLineToArgvW(command_line, &count);
+      require(wide != nullptr, "Could not parse the wide recovery command line.");
+      const auto release = [](wchar_t **arguments) {
+        LocalFree(arguments);
+      };
+      std::unique_ptr<wchar_t *, decltype(release)> owner(wide, release);
+      if (count < 2 || (std::wstring_view(wide[1]) != L"--pairing-recovery" && std::wstring_view(wide[1]) != L"--auxiliary-recovery")) {
+        return std::nullopt;
+      }
+      std::vector<std::string> utf8;
+      utf8.reserve(static_cast<std::size_t>(count));
+      for (int i = 0; i < count; ++i) {
+        const auto size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide[i], -1, nullptr, 0, nullptr, nullptr);
+        require(size > 0, "Recovery arguments contain invalid Unicode.");
+        std::string converted(static_cast<std::size_t>(size), '\0');
+        require(WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide[i], -1, converted.data(), size, nullptr, nullptr) == size, "Could not convert recovery arguments to UTF-8.");
+        converted.pop_back();  // The conversion count includes the terminating NUL.
+        utf8.push_back(std::move(converted));
+      }
+      std::vector<const char *> arguments;
+      arguments.reserve(utf8.size());
+      for (const auto &argument : utf8) {
+        arguments.push_back(argument.c_str());
+      }
+      return dispatch(count, arguments.data(), out, error);
+    } catch (const recovery_error_t &exception) {
+      error << exception.what() << '\n';
+    } catch (const std::exception &) {
+      error << "Could not prepare Unicode recovery arguments; no snapshots were changed.\n";
+    }
+    return 2;
+  }
+#endif
+
+  std::optional<int> dispatch_native(int argc, const char *const argv[], std::ostream &out, std::ostream &error) {
+#ifdef _WIN32
+    // Only these ASCII flags are read from CRT argv. All actual arguments come
+    // from UTF-16: ACP argv may already have replaced non-ACP characters with '?'.
+    // Do not reinterpret or change encoding for unrelated host CLI options.
+    if (argc < 2 || (std::string_view(argv[1]) != "--pairing-recovery" && std::string_view(argv[1]) != "--auxiliary-recovery")) {
+      return std::nullopt;
+    }
+    const auto result = dispatch_windows_command_line(GetCommandLineW(), out, error);
+    if (!result) {
+      error << "Wide recovery command line did not match the explicit recovery flag.\n";
+      return 2;
+    }
+    return result;
+#else
+    return dispatch(argc, argv, out, error);
+#endif
   }
 }  // namespace pairing_recovery

@@ -738,7 +738,7 @@ sunshine_register_component(NAME test_component_pairing_recovery TEST_SOURCE uni
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/crypto.cpp"
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_pairing_policy.cpp"
     LINK_LIBRARIES Boost::property_tree nlohmann_json::nlohmann_json OpenSSL::Crypto
-                   $<$<PLATFORM_ID:Windows>:advapi32>)
+                   $<$<PLATFORM_ID:Windows>:advapi32> $<$<PLATFORM_ID:Windows>:shell32>)
 sunshine_register_component(NAME test_component_virtual_display_scale TEST_SOURCE unit/test_virtual_display_scale.cpp)
 
 # The additive host policy deliberately compiles against the pinned 3.7 control

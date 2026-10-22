@@ -348,7 +348,7 @@ int main(int argc, char *argv[]) {
 
   // Explicit snapshot copies only: recover without parsing the host profile,
   // repairing its ACLs, initializing logging or changing driver preferences.
-  if (const auto result = pairing_recovery::dispatch(argc, argv, std::cout, std::cerr)) {
+  if (const auto result = pairing_recovery::dispatch_native(argc, argv, std::cout, std::cerr)) {
     return *result;
   }
 
