@@ -765,6 +765,32 @@ TEST(SteamPressureVessel, NormalizesContainerHostPaths) {
 }
 #endif
 
+#ifdef _WIN32
+TEST(SteamDiscovery, WindowsSkipsLinuxOnlyLaunchEntry) {
+  const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());
+  const auto base = fs::temp_directory_path() / ("vibepollo-steam-launch-os-test-" + std::to_string(nonce));
+  const auto install = base / "steamapps/common/DualGame";
+  std::error_code ec;
+  fs::create_directories(install / "bin", ec);
+  fs::create_directories(base / "appcache", ec);
+  {
+    std::ofstream output(base / "steamapps/appmanifest_42.acf");
+    output << R"VDF("AppState" { "appid" "42" "name" "Dual Game" "installdir" "DualGame" })VDF";
+  }
+  write_test_appinfo(base / "appcache/appinfo.vdf", 42, "Dual Game", true);
+
+  const auto games = discover_catalog({base});
+  ASSERT_EQ(games.size(), 1U);
+  ASSERT_EQ(games[0].app_id, 42U);
+  // Only the Windows depot is installed on a Windows host, so the Linux entry's
+  // paths do not exist there.
+  EXPECT_EQ(games[0].launch_os, "windows");
+  EXPECT_EQ(games[0].launch_executable, install / "Game.exe");
+  EXPECT_EQ(games[0].launch_working_dir, install / "bin");
+  fs::remove_all(base, ec);
+}
+#endif
+
 TEST(SteamLaunch, RejectsZeroAndBuildsValidatedUri) {
   EXPECT_TRUE(launch_uri(480).ends_with("steam://rungameid/480"));
   EXPECT_TRUE(launch_uri(0).empty());

@@ -489,6 +489,15 @@ namespace {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
       return static_cast<char>(std::tolower(ch));
     });
+#ifdef _WIN32
+    // A Windows host can only run a Windows build. A Linux-only entry names
+    // paths that exist only when the Linux depot is installed (Dungeon
+    // Clawler's "Linux" working directory made CreateProcess fail with 267).
+    if (value.empty() || value.find("windows") != std::string::npos) {
+      return "windows";
+    }
+    return {};
+#else
     if (value.find("linux") != std::string::npos) {
       return "linux";
     }
@@ -496,6 +505,7 @@ namespace {
       return "windows";
     }
     return {};
+#endif
   }
 
   void apply_launch_node(platf::steam::game_t &game, const vdf_node &appinfo, std::string_view required_os = {}) {
