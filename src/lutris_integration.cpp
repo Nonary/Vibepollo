@@ -98,7 +98,7 @@ namespace platf::lutris {
       hash_bytes(hash, error ? "missing" : std::to_string(size));
       error.clear();
       const auto modified = std::filesystem::last_write_time(path, error);
-      hash_bytes(hash, error ? "unstatable" : std::to_string(modified.time_since_epoch().count()));
+      hash_bytes(hash, error ? "unstatable" : std::to_string(static_cast<std::int64_t>(modified.time_since_epoch().count())));
     }
 
 #if defined(__linux__)

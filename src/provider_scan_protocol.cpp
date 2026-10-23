@@ -150,7 +150,7 @@ namespace platf::provider_scan {
         if (ec) continue;
         found = true;
         const auto value = path.generic_string() + ":" + std::to_string(size) + ":" +
-                           std::to_string(time.time_since_epoch().count());
+                           std::to_string(static_cast<std::int64_t>(time.time_since_epoch().count()));
         for (const unsigned char byte : value) hash = (hash ^ byte) * 1099511628211ULL;
       }
       return found ? std::to_string(hash) : std::string {};
