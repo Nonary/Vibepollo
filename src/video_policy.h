@@ -42,6 +42,16 @@ namespace video::policy {
     };
   }
 
+  /**
+   * A repeated input is skipped, which must not swallow a keyframe requested in
+   * the same pass: the request is carried forward so the last input is encoded as
+   * the IDR without waiting for another capture. A repeat with no request is a
+   * plain skip, and an input that was converted never needs a retry.
+   */
+  inline bool retry_idr_after_repeat(const converted_input_t &input, bool idr_requested) {
+    return !input.encode && idr_requested;
+  }
+
   template<class Queue, class Context, class ShutdownSignal, class JoinSignal>
   bool try_admit_capture_session(
     Queue &queue,

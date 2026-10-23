@@ -203,3 +203,16 @@ TEST(ConvertedInputPolicy, RepeatedFrameIsSkippedWithoutStamps) {
   EXPECT_FALSE(input.frame_timestamp);
   EXPECT_FALSE(input.host_processing_timestamp);
 }
+
+// A skipped repeat must not delay a requested keyframe behind the next capture.
+TEST(ConvertedInputPolicy, RepeatedFrameKeepsARequestedKeyframePending) {
+  const auto claim = std::chrono::steady_clock::time_point {std::chrono::milliseconds {100}};
+  const auto repeated = video::policy::resolve_converted_input(converted_t {true, claim, claim}, claim, claim);
+  EXPECT_TRUE(video::policy::retry_idr_after_repeat(repeated, true));
+  // A repeat without a keyframe request is a plain skip.
+  EXPECT_FALSE(video::policy::retry_idr_after_repeat(repeated, false));
+  // A converted frame carries its own keyframe request; there is nothing to retry.
+  const auto converted = video::policy::resolve_converted_input(converted_t {}, claim, claim);
+  EXPECT_FALSE(video::policy::retry_idr_after_repeat(converted, true));
+  EXPECT_FALSE(video::policy::retry_idr_after_repeat(converted, false));
+}

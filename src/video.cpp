@@ -5428,6 +5428,9 @@ namespace video {
       std::chrono::steady_clock::time_point last_log = std::chrono::steady_clock::now();
     } loop_stats;
 
+    // A keyframe request that arrived with an input the conversion then reported as a repeat.
+    bool retry_idr = false;
+
     while (true) {
       raise_touch_port_if_geometry_changed(touch_port_event, disp.get(), config);
       if (auto now = std::chrono::steady_clock::now(); now - loop_stats.last_log >= 10s) {
@@ -5479,7 +5482,7 @@ namespace video {
         }
       }
 
-      bool requested_idr_frame = false;
+      bool requested_idr_frame = std::exchange(retry_idr, false);
 
       while (invalidate_ref_frames_events->peek()) {
         if (auto frames = invalidate_ref_frames_events->pop(0ms)) {
@@ -5603,6 +5606,9 @@ namespace video {
           const auto converted = policy::resolve_converted_input(session->converted_frame(), capture_timestamp, host_processing_timestamp);
           if (!converted.encode) {
             ++loop_stats.repeated_inputs;
+            // Skipping must not delay a requested keyframe until the next capture: carry
+            // it into the next iteration, which encodes the last input without waiting.
+            retry_idr = policy::retry_idr_after_repeat(converted, requested_idr_frame);
             continue;
           }
           ++loop_stats.converted;
@@ -6131,7 +6137,9 @@ namespace video {
             continue;
           }
 
+          bool idr_requested = false;
           if (ctx->idr_events->peek()) {
+            idr_requested = true;
             pos->session->request_idr_frame();
             ctx->idr_events->pop();
           }
@@ -6183,10 +6191,12 @@ namespace video {
             // Direct WGC input: encode the frame the conversion actually read, and
             // skip pixels this session already sent rather than repeating them.
             const auto converted = policy::resolve_converted_input(pos->session->converted_frame(), capture_timestamp, host_processing_timestamp);
-            if (!converted.encode) {
+            if (!converted.encode && !policy::retry_idr_after_repeat(converted, idr_requested)) {
               ++pos;
               continue;
             }
+            // Otherwise a requested keyframe is not delayed behind the repeat: the last
+            // input is encoded as the IDR now, unstamped like the no-new-frame path.
 
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
             if (refresh_rtx_hdr_metadata_if_needed(
