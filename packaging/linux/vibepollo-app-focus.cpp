@@ -14,11 +14,18 @@
 #include <gio/gio.h>
 #include <iostream>
 #include <nlohmann/json.hpp>
+#include <syslog.h>
 #include <thread>
 #include <unistd.h>
 
 namespace {
   volatile sig_atomic_t cancelled = 0;
+
+  // The session broker discards stderr; mirror diagnostics into the journal.
+  void report(int priority, const std::string &message) {
+    std::cerr << "Managed focus: " << message << '\n';
+    syslog(priority, "%s", message.c_str());
+  }
 
   void cancel(int) {
     cancelled = 1;
@@ -116,7 +123,7 @@ namespace {
       GError *error = nullptr;
       auto *reply = g_dbus_connection_call_sync(bus_, "org.kde.KWin", object, interface, method, args, nullptr, G_DBUS_CALL_FLAGS_NONE, timeout_ms_, nullptr, &error);
       if (error) {
-        std::cerr << "Managed focus: " << error->message << '\n';
+        report(LOG_WARNING, error->message);
         g_error_free(error);
       }
       return reply;
@@ -143,6 +150,7 @@ namespace {
 }  // namespace
 
 int main(int argc, char **argv) {
+  openlog("vibepollo-app-focus", LOG_PID, LOG_USER);
   if (argc == 4 && std::string_view(argv[1]) == "--foreground") {
     // This is a read-only query in the selected desktop identity. The dummy
     // candidate cannot activate anything: the script gets no activation list.
@@ -222,7 +230,7 @@ int main(int argc, char **argv) {
     }
   }
   if (directory.empty() || directory == directory.root_path()) {
-    std::cerr << "Managed focus: no installed catalog target for " << provider << ':' << id << '\n';
+    report(LOG_ERR, "no installed catalog target for " + provider + ':' + id);
     return 1;
   }
   std::optional<kwin_focus> kwin;
@@ -252,7 +260,7 @@ int main(int argc, char **argv) {
     }
     const auto observed = apply(pids);
     if (bound_compositor && !pids.empty() && observed.is_null() && !unavailable_reported) {
-      std::cerr << "Managed focus: the bound Hyprland IPC socket is unavailable\n";
+      report(LOG_WARNING, "the bound Hyprland IPC socket is unavailable");
       unavailable_reported = true;
     }
     if (observed.is_object() && observed.contains("windows") && observed["windows"].is_array()) {
@@ -272,7 +280,7 @@ int main(int argc, char **argv) {
         const auto applied = apply(pids, allowed);
         if (!cancelled && applied.is_object() && applied.value("focused", false)) {
           budget.confirmed();
-          std::cerr << "Managed focus: confirmed " << provider << ':' << id << '\n';
+          report(LOG_INFO, "confirmed " + provider + ':' + id);
         }
       }
     }
