@@ -93,6 +93,10 @@ namespace video {
     std::uint64_t pyrowave_peer_link_bps = 0;
     // Highest loss-free frame pace the client calibrated (0 = not calibrated).
     std::uint64_t pyrowave_peer_pace_bps = 0;
+    // Set on a shared capture's config only: some live consumer of that capture
+    // is PyroWave, which pins and reads each capture image's own texture and
+    // keyed mutex, so the capture must give every image a stable copy.
+    bool shared_capture_pyrowave = false;
   };
 
   platf::mem_type_e map_base_dev_type(AVHWDeviceType type);
@@ -281,11 +285,19 @@ namespace video {
 
     virtual int convert(platf::img_t &img) = 0;
 
+    /**
+     * @brief What the last convert() actually read from the capture image.
+     */
+    virtual platf::converted_frame_t converted_frame() const {
+      return {};
+    }
+
     virtual void request_idr_frame() = 0;
 
     virtual void request_normal_frame() = 0;
 
-    virtual void invalidate_ref_frames(int64_t first_frame, int64_t last_frame) = 0;
+    // Returns false when invalidation falls back to a requested IDR.
+    virtual bool invalidate_ref_frames(int64_t first_frame, int64_t last_frame) = 0;
 
     /**
      * @brief Apply a new encoder bitrate to the live encoder without rebuilding it.

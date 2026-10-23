@@ -328,6 +328,73 @@ namespace platf::dxgi::wgc_policy {
     return vrr_low_latency ? low_latency_initial_buffer_size : adaptive_max_buffer_size;
   }
 
+  /**
+   * A new WGC frame may skip the scratch handoff and go straight into the
+   * shared texture only when no older frame is queued or mid-delivery;
+   * otherwise it would be published ahead of that older frame.
+   */
+  constexpr bool may_publish_directly(const bool stopping, const bool frame_pending, const bool frame_delivering) noexcept {
+    return !stopping && !frame_pending && !frame_delivering;
+  }
+
+  /**
+   * How far an encoder reading the helper's shared texture directly has got:
+   * the frame-record generation and the newest frame id it converted.
+   */
+  struct direct_frame_cursor_t {
+    std::uint64_t generation = 0;
+    std::uint64_t frame_id = 0;
+  };
+
+  /**
+   * Advance the cursor to the frame now in the shared texture. Returns false
+   * when the encoder already converted that frame, so encoding it again would
+   * repeat it. A new record generation (a restarted helper) restarts frame ids.
+   */
+  constexpr bool take_direct_frame(direct_frame_cursor_t &cursor, const std::uint64_t generation, const std::uint64_t frame_id) noexcept {
+    if (cursor.generation != generation) {
+      cursor = {generation, frame_id};
+      return true;
+    }
+    if (frame_id <= cursor.frame_id) {
+      return false;
+    }
+    cursor.frame_id = frame_id;
+    return true;
+  }
+
+  enum class direct_frame_e : std::uint8_t {
+    convert,  ///< A frame this encoder has not converted yet.
+    repeat,  ///< Pixels this encoder already converted.
+    unreadable,  ///< The frame record could not be read, so the frame is unidentified.
+  };
+
+  /**
+   * Decide what an encoder does with the frame now in the shared texture.
+   * An unreadable frame record skips the frame and leaves the cursor alone:
+   * the encoder cannot tell which frame it holds, so it must not encode it or
+   * advance past frames it never converted. (A record is unreadable here only
+   * if the helper died mid-publish, which the IPC session turns into a capture
+   * restart.)
+   */
+  constexpr direct_frame_e classify_direct_frame(direct_frame_cursor_t &cursor, const bool record_readable, const std::uint64_t generation, const std::uint64_t frame_id) noexcept {
+    if (!record_readable) {
+      return direct_frame_e::unreadable;
+    }
+    return take_direct_frame(cursor, generation, frame_id) ? direct_frame_e::convert : direct_frame_e::repeat;
+  }
+
+  /**
+   * Whether GPU encoders may read the helper's shared texture directly. The
+   * copy path stays for sources that need a stable image of their own: constant
+   * frame rate capture re-sends its cached image on a timeout, which the
+   * frame cursor would drop as a repeat, and PyroWave pins and reads the
+   * capture image's own texture and keyed mutex.
+   */
+  constexpr bool direct_encoder_input_allowed(const bool enabled, const bool constant_frame_rate, const bool pyrowave) noexcept {
+    return enabled && !constant_frame_rate && !pyrowave;
+  }
+
   constexpr bool buffer_pool_is_quiet(
     const bool allow_decrease,
     const bool has_recent_drop,

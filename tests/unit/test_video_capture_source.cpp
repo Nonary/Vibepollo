@@ -56,6 +56,8 @@ namespace {
     int framerateX100;
     int encodingFramerate;
     int width;
+    int videoFormat = 0;
+    bool shared_capture_pyrowave = false;
   };
 
   struct consumer_t {
@@ -119,6 +121,59 @@ TEST(CaptureDemand, WindowsAutomaticAdjustmentCannotHideStrictDemand) {
   EXPECT_EQ(selected->framerateX100, 5995);
   EXPECT_EQ(consumers.front().config.framerateX100, 0);
   EXPECT_TRUE(video::same_capture_pacing(automatic, strict, {{120, 1}, 120, true}));
+}
+
+TEST(CaptureDemand, PyroWaveJoiningAnEncoderCaptureAsksForTheCopyPath) {
+  constexpr int hevc = 1;
+  constexpr int pyrowave = 3;
+  std::vector<consumer_t> consumers {{.config = {60, 0, 60000, 1920, hevc}}};
+  const auto running = video::capture_config_for_consumers(consumers);
+  ASSERT_TRUE(running);
+  EXPECT_FALSE(running->shared_capture_pyrowave);
+
+  // The later PyroWave client does not change the pace or the first client's
+  // codec, but the shared capture now has to give every image a stable copy.
+  consumers.push_back(consumer_t {.config = {60, 0, 60000, 1920, pyrowave}});
+  const auto joined = video::capture_config_for_consumers(consumers);
+  ASSERT_TRUE(joined);
+  EXPECT_EQ(joined->videoFormat, hevc);
+  EXPECT_TRUE(joined->shared_capture_pyrowave);
+  EXPECT_TRUE(video::same_capture_pacing(*running, *joined));
+  EXPECT_FALSE(video::same_capture_demand(*running, *joined));
+  // The capture restarted for the join is not restarted again.
+  EXPECT_TRUE(video::same_capture_demand(*joined, *joined));
+}
+
+TEST(CaptureDemand, PyroWaveLeavingDoesNotRestartTheCopyPath) {
+  constexpr int pyrowave = 3;
+  std::vector<consumer_t> consumers {
+    {.config = {60, 0, 60000, 1920, 1}},
+    {.config = {60, 0, 60000, 1920, pyrowave}},
+  };
+  const auto running = video::capture_config_for_consumers(consumers);
+  ASSERT_TRUE(running);
+  ASSERT_TRUE(running->shared_capture_pyrowave);
+
+  consumers.back().images->stop();
+  const auto remaining = video::capture_config_for_consumers(consumers);
+  ASSERT_TRUE(remaining);
+  EXPECT_FALSE(remaining->shared_capture_pyrowave);
+  // The copy path stays correct for the remaining encoder, so only a pace
+  // change restarts the capture.
+  EXPECT_TRUE(video::same_capture_demand(*running, *remaining));
+  consumers.front().config.framerate = 120;
+  EXPECT_FALSE(video::same_capture_demand(*running, *video::capture_config_for_consumers(consumers)));
+}
+
+TEST(CaptureDemand, PyroWaveAloneIsFlaggedAndStoppedPyroWaveIsIgnored) {
+  constexpr int pyrowave = 3;
+  std::vector<consumer_t> consumers {
+    {.config = {60, 0, 60000, 1920, pyrowave}},
+    {.config = {60, 0, 60000, 1920, 1}},
+  };
+  EXPECT_TRUE(video::capture_config_for_consumers(consumers)->shared_capture_pyrowave);
+  consumers.front().images->stop();
+  EXPECT_FALSE(video::capture_config_for_consumers(consumers)->shared_capture_pyrowave);
 }
 
 TEST(CaptureDemand, StoppedInitialConsumerAdmitsPendingLiveConsumer) {

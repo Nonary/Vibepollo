@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pyrowave_protocol.h"
 #include "thread_safe.h"
 #include "video_policy.h"
 
@@ -54,18 +55,47 @@ namespace video {
            std::int64_t {rhs.numerator} * lhs.denominator;
   }
 
+  // PyroWave reads each capture image's own texture and keyed mutex, so one
+  // PyroWave consumer decides how the whole shared capture hands out images.
+  template<class Config>
+  bool consumer_is_pyrowave(const Config &config) {
+    if constexpr (requires { config.videoFormat; }) {
+      return config.videoFormat == pyrowave::protocol::BITSTREAM_FORMAT;
+    } else {
+      return false;
+    }
+  }
+
+  // The shared capture must be restarted when a consumer joins that needs
+  // something the running capture was not set up for: a different pace, or
+  // stable images for PyroWave. A PyroWave consumer leaving needs no restart;
+  // the copy path it forced stays correct for the consumers that remain, and
+  // the next restart goes back to whatever the remaining demand allows.
+  template<class Config>
+  bool same_capture_demand(const Config &running, const Config &demand, const capture_pacing_context_t &context = {}) {
+    if constexpr (requires { demand.shared_capture_pyrowave; }) {
+      if (demand.shared_capture_pyrowave && !running.shared_capture_pyrowave) {
+        return false;
+      }
+    }
+    return same_capture_pacing(running, demand, context);
+  }
+
   // A shared producer must service the fastest live consumer. Copy only its
-  // capture-rate fields; each encoder keeps its own negotiated configuration.
+  // capture-rate fields (and whether any live consumer is PyroWave); each
+  // encoder keeps its own negotiated configuration.
   // Compare exact fractional rates, including equivalent X100 aliases, so
   // equal demand does not needlessly tear down a display generation.
   template<class Contexts>
   auto capture_config_for_consumers(const Contexts &contexts, const capture_pacing_context_t &pacing = {}) {
     using config_t = std::decay_t<decltype(contexts.front().config)>;
     std::optional<config_t> result;
+    bool any_pyrowave = false;
     for (const auto &context : contexts) {
       if (!context.images->running()) {
         continue;
       }
+      any_pyrowave = any_pyrowave || consumer_is_pyrowave(context.config);
       if (!result) {
         result = context.config;
         continue;
@@ -77,6 +107,11 @@ namespace video {
       if (lhs > rhs || (lhs == rhs && context.config.framerateX100 > 0 && result->framerateX100 <= 0)) {
         result->framerate = context.config.framerate;
         result->framerateX100 = context.config.framerateX100;
+      }
+    }
+    if constexpr (requires { result->shared_capture_pyrowave; }) {
+      if (result) {
+        result->shared_capture_pyrowave = any_pyrowave;
       }
     }
     return result;
