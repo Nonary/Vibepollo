@@ -96,8 +96,10 @@ struct session_identity {};
 static int user_calls=0, direct_calls=0;
 int execv(const char *, char *const[]) { ++direct_calls; return -1; }
 int exec_user_service(const session_identity *identity, const char *directory,
-                      char *const args[], bool recover, bool hdr) {
+                      char *const args[], bool recover, bool hdr,
+                      size_t stream_environment_count, char *const stream_environment[]) {
   assert(identity && !directory && !recover && !hdr);
+  assert(stream_environment_count == 0 && !stream_environment);
   assert(!std::strcmp(args[0],"/usr/libexec/vibeshine/vibepollo-app-focus"));
   assert(!std::strcmp(args[1],"--foreground"));
   assert(!std::strcmp(args[2],"steam") && !std::strcmp(args[3],"2679460"));

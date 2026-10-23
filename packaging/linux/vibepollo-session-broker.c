@@ -1562,7 +1562,7 @@ static int execute_request(int argc, char **argv,
       // ProtectHome=read-only in this broker namespace prevents creating it;
       // observe through the same supervised user boundary as managed focus.
       char *const arguments[] = {"/usr/libexec/vibeshine/vibepollo-app-focus", "--foreground", argv[2], argv[3], NULL};
-      return exec_user_service(identity, NULL, arguments, false, false);
+      return exec_user_service(identity, NULL, arguments, false, false, 0, NULL);
     }
     case LUTRIS:
     case LUTRIS_WAYLAND_HDR: {
