@@ -1663,6 +1663,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
 endif()
 
 if(WIN32)
+    sunshine_register_component(NAME test_component_display_coordinator_restore
+        TEST_SOURCE unit/test_display_coordinator_restore.cpp
+        LINK_LIBRARIES sunshine_test_displaydevice_headers Boost::algorithm)
+    if(TARGET libdisplaydevice::display_device)
+        # Exercises the production library with an injected fake Windows API.
+        sunshine_register_component(NAME test_component_display_modes_restore
+            TEST_SOURCE unit/test_display_modes_restore.cpp
+            LINK_LIBRARIES libdisplaydevice::display_device Boost::algorithm)
+    endif()
     sunshine_register_component(NAME test_component_playnite_protocol TEST_SOURCE test_playnite_protocol.cpp
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_protocol.cpp")
     foreach(_playnite_test IN ITEMS

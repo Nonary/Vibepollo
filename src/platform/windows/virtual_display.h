@@ -3,6 +3,7 @@
 #include "src/utility.h"
 #include "src/uuid.h"
 #include "src/platform/windows/virtual_display_policy.h"
+#include "src/platform/windows/virtual_display_identity.h"
 
 #include <chrono>
 #include <array>
@@ -263,12 +264,6 @@ namespace VDISPLAY {
   uint64_t client_uuid_to_virtual_display_id(const GUID &client_guid);
   uuid_util::uuid_t virtualDisplayUuidFromStableId(const std::string &stable_id);
   GUID sharedVirtualDisplayGuid();
-  bool is_sunshine_virtual_display_identity(
-    const std::string &device_path,
-    const std::string &friendly_name,
-    const std::string &edid_manufacturer_id,
-    const std::string &edid_product_code
-  );
 
   std::vector<std::wstring> matchDisplay(std::wstring sMatch);
 

@@ -94,6 +94,13 @@ namespace display_device {
                        /*mutating=*/true);
     }
 
+    [[nodiscard]] bool setDisplayModesExactTemporary(const DeviceDisplayModeMap &modes) override {
+      return run<bool>([&] {
+        return m_inner->setDisplayModesExactTemporary(modes);
+      },
+                       /*mutating=*/true);
+    }
+
     [[nodiscard]] bool setDisplayModesWithFallback(const DeviceDisplayModeMap &modes) override {
       return run<bool>([&] {
         return m_inner->setDisplayModesWithFallback(modes);

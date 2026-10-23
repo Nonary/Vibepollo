@@ -62,6 +62,7 @@
 
   #include "src/platform/windows/display_restore_task.h"
   #include "src/platform/windows/display_restore_policy.h"
+  #include "src/platform/windows/display_snapshot_policy.h"
   #include "tools/display_helper_paths.h"
   #include "src/platform/windows/legacy_restore_event_policy.h"
   #include "src/platform/windows/recovery_status.h"
@@ -1012,9 +1013,9 @@ namespace {
             detail += ")";
             enumerated_devices.push_back(std::move(detail));
           }
-          if (is_virtual_display_device(d)) {
-            if (is_active_display_device(d) && !id.empty()) {
-              virtual_devices.push_back(id);
+          if (display_helper_integration::snapshot_policy::is_virtual(d)) {
+            if (display_helper_integration::snapshot_policy::blocks_capture(d, snapshot_exclusions)) {
+              virtual_devices.push_back(id.empty() ? "<unknown>" : id);
             }
             continue;
           }
@@ -1032,7 +1033,7 @@ namespace {
             }
             joined += virtual_devices[i];
           }
-          BOOST_LOG(warning) << "Skipping display snapshot save; active virtual display device(s) are present: ["
+          BOOST_LOG(warning) << "Skipping display snapshot save; active transient virtual display device(s) are present: ["
                              << joined << "]";
           return false;
         }

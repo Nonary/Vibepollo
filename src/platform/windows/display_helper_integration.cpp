@@ -42,6 +42,10 @@
   #include "src/globals.h"
   #include "src/logging.h"
   #include "src/platform/windows/display_helper_coordinator.h"
+  #include "src/platform/windows/display_snapshot_restore.h"
+  #include "src/platform/windows/display_snapshot_policy.h"
+  #include "src/platform/windows/display_restore_guard.h"
+  #include "src/platform/windows/display_baseline_presence.h"
   #include "src/platform/windows/display_helper_request_helpers.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/impersonating_display_device.h"
@@ -361,6 +365,8 @@ namespace {
     return delay;
   }
 
+  display_helper_integration::DisplayRestoreGuard composed_restore_guard;
+
   struct InProcessDisplayContext {
     std::shared_ptr<display_device::SettingsManagerInterface> settings_mgr;
     std::shared_ptr<display_device::WinDisplayDeviceInterface> display;
@@ -434,6 +440,15 @@ namespace {
         ids.push_back(std::move(vd));
       }
     }
+    // Retained encoder-probe/shared displays use the shared GUID in both backends.
+    // Read cached ownership only: an All-paths query before capture can activate
+    // dummy plugs. Do not exempt unrelated tracked session displays.
+    const auto shared_guid = VDISPLAY::sharedVirtualDisplayGuid();
+    std::array<std::uint8_t, 16> shared_guid_bytes {};
+    static_assert(sizeof(shared_guid) == shared_guid_bytes.size());
+    std::memcpy(shared_guid_bytes.data(), &shared_guid, shared_guid_bytes.size());
+    display_helper_integration::snapshot_policy::append_shared_display_exclusions(
+      ids, VDISPLAY::tracked_display_cleanup_targets(), shared_guid_bytes);
     return ids;
   }
 
@@ -531,59 +546,23 @@ namespace {
   ) {
     auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
     if (!borrowed_output_mutation) return false;
-    if (topology.topology.empty() && topology.monitor_positions.empty()) {
-      return true;
-    }
-
+    if (topology.topology.empty() && topology.monitor_positions.empty() &&
+        !topology.primary_device && topology.device_refresh_rate_overrides.empty()) return true;
     auto ctx = make_settings_manager();
     if (!ctx) {
       BOOST_LOG(warning) << "Display helper: unable to initialize display context for topology apply (" << label << ").";
       return false;
     }
-
-    bool topology_ok = true;
-    if (!topology.topology.empty()) {
-      try {
-        auto current_topology = ctx->display->getCurrentTopology();
-        const bool already_matches = ctx->display->isTopologyTheSame(current_topology, topology.topology);
-        if (!already_matches) {
-          BOOST_LOG(info) << "Display helper: applying requested topology (" << label << ").";
-          topology_ok = ctx->display->setTopology(topology.topology);
-          if (!topology_ok) {
-            BOOST_LOG(warning) << "Display helper: requested topology apply failed (" << label << ").";
-          }
-        } else {
-          BOOST_LOG(debug) << "Display helper: requested topology already active (" << label << ").";
-        }
-      } catch (const std::exception &ex) {
-        BOOST_LOG(warning) << "Display helper: topology inspection failed (" << label << "): " << ex.what();
-        topology_ok = false;
-      } catch (...) {
-        BOOST_LOG(warning) << "Display helper: topology inspection failed (" << label << ") with an unknown error.";
-        topology_ok = false;
-      }
+    try {
+      return display_helper::restore_composed_topology(*ctx->display, topology, [&](const auto &stage, const auto &id) {
+        BOOST_LOG(warning) << "Display helper: failed " << stage << " for " << id << " (" << label << ").";
+      });
+    } catch (const std::exception &ex) {
+      BOOST_LOG(warning) << "Display helper: topology apply failed (" << label << "): " << ex.what();
+    } catch (...) {
+      BOOST_LOG(warning) << "Display helper: topology apply failed (" << label << ").";
     }
-
-    for (const auto &[device_id, point] : topology.monitor_positions) {
-      BOOST_LOG(debug) << "Display helper: setting origin for " << device_id
-                       << " to (" << point.m_x << "," << point.m_y << ") after " << label << ".";
-      if (!ctx->display->setDisplayOrigin(device_id, point)) {
-        BOOST_LOG(warning) << "Display helper: failed to set origin for " << device_id << " (" << label << ").";
-        // Do not continue applying later origins after one move fails. A
-        // second move can occupy the failed device's still-current origin and
-        // turn an otherwise extended topology into an unintended clone.
-        return false;
-      }
-    }
-
-    if (topology.primary_device && !topology.primary_device->empty() &&
-        !ctx->display->setAsPrimary(*topology.primary_device)) {
-      BOOST_LOG(warning) << "Display helper: failed to set remote composed primary "
-                         << *topology.primary_device << " (" << label << ").";
-      topology_ok = false;
-    }
-
-    return topology_ok;
+    return false;
   }
 
   display_device::SettingsManagerInterface::ApplyResult apply_in_process(
@@ -2940,57 +2919,81 @@ namespace display_helper_integration {
     return ok;
   }
 
+  bool coordinator_baseline_protected() {
+    return composed_restore_guard.protects_baseline();
+  }
+
   bool snapshot_current_display_state(
     std::function<bool()> cancellation_predicate,
     const std::chrono::steady_clock::time_point operation_deadline) {
-    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::defer_lock);
-    if (!lock_pending_apply_execution(execution_lock, cancellation_predicate, operation_deadline)) {
+    if (remote_display_topology::instance().normal_game_release_pending()) {
+      BOOST_LOG(warning) << "Display helper: skipping SNAPSHOT_CURRENT while normal-game release is pending.";
       return false;
     }
-    if (cancellation_requested(cancellation_predicate) ||
-        operation_deadline_expired(operation_deadline)) {
-      return false;
-    }
-    if (restore_expected_with_live_helper(
-          cancellation_predicate,
-          operation_deadline)) {
-      BOOST_LOG(info) << "Display helper: skipping SNAPSHOT_CURRENT while an unconfirmed restore is pending.";
-      return false;
-    }
+    const auto disconnected = [&] {
+      try {
+        display_device::WinApiLayer api;
+        const auto id = disconnected_baseline_device(api, remote_display_topology::instance().physical_node_ids());
+        if (id) BOOST_LOG(warning) << "Display helper: disconnected baseline device " << *id << "; considering recapture.";
+        return id.has_value();
+      } catch (...) {
+        return false;
+      }
+    };
+    return composed_restore_guard.snapshot([&](const auto &superseded) {
+      const auto snapshot_cancelled = [&] { return superseded() || cancellation_requested(cancellation_predicate); };
+      std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::defer_lock);
+      if (!lock_pending_apply_execution(execution_lock, snapshot_cancelled, operation_deadline)) {
+        return false;
+      }
+      if (cancellation_requested(snapshot_cancelled) ||
+          operation_deadline_expired(operation_deadline)) {
+        return false;
+      }
+      if (restore_expected_with_live_helper(
+            snapshot_cancelled,
+            operation_deadline)) {
+        BOOST_LOG(info) << "Display helper: skipping SNAPSHOT_CURRENT while an unconfirmed restore is pending.";
+        return false;
+      }
 
-    if (!ensure_helper_started(
-          false,
-          false,
-          cancellation_predicate,
-          operation_deadline)) {
-      BOOST_LOG(info) << "Display helper unavailable; cannot snapshot current display state.";
-      return false;
-    }
-    BOOST_LOG(info) << "Display helper: sending SNAPSHOT_CURRENT request.";
-    const auto payload = build_snapshot_exclude_payload();
-    // Wire behavior is selected from the helper that actually answered APPLY,
-    // not from a configuration value that may have changed while a helper was
-    // being reused. An unknown connection dispatches in pipe order; APPLY has
-    // its own pre-apply baseline fallback if that snapshot is not yet saved.
-    const bool bounded =
-      operation_deadline != std::chrono::steady_clock::time_point::max();
-    const bool v2_helper =
-      !bounded &&
-      platf::display_helper_client::uses_v2_response_protocol();
-    const bool ok =
-      bounded ?
-        platf::display_helper_client::send_snapshot_current_within(
-          payload,
-          operation_deadline,
-          cancellation_predicate
-        ) :
-        (v2_helper ?
-           platf::display_helper_client::send_snapshot_current_and_wait(payload) :
-           platf::display_helper_client::send_snapshot_current(payload));
-    BOOST_LOG(info) << "Display helper: SNAPSHOT_CURRENT "
-                    << (bounded ? "bounded operation" : (v2_helper ? "completion" : "dispatch"))
-                    << " result=" << (ok ? "true" : "false");
-    return ok;
+      if (!ensure_helper_started(
+            false,
+            false,
+            snapshot_cancelled,
+            operation_deadline)) {
+        BOOST_LOG(info) << "Display helper unavailable; cannot snapshot current display state.";
+        return false;
+      }
+      if (snapshot_cancelled()) return false;
+      BOOST_LOG(info) << "Display helper: sending SNAPSHOT_CURRENT request.";
+      const auto payload = build_snapshot_exclude_payload();
+      // Wire behavior is selected from the helper that actually answered APPLY,
+      // not from a configuration value that may have changed while a helper was
+      // being reused. An unknown connection dispatches in pipe order; APPLY has
+      // its own pre-apply baseline fallback if that snapshot is not yet saved.
+      const bool bounded =
+        operation_deadline != std::chrono::steady_clock::time_point::max();
+      const bool v2_helper =
+        !bounded &&
+        platf::display_helper_client::uses_v2_response_protocol();
+      const bool ok =
+        bounded ?
+          platf::display_helper_client::send_snapshot_current_within(
+            payload,
+            operation_deadline,
+            snapshot_cancelled
+          ) :
+          (v2_helper ?
+             platf::display_helper_client::send_snapshot_current_and_wait(payload) :
+             platf::display_helper_client::send_snapshot_current(payload));
+      BOOST_LOG(info) << "Display helper: SNAPSHOT_CURRENT "
+                      << (bounded ? "bounded operation" : (v2_helper ? "completion" : "dispatch"))
+                      << " result=" << (ok ? "true" : "false");
+      return ok;
+    }, disconnected, [](const char *reason) {
+      BOOST_LOG(warning) << "Display helper: skipping SNAPSHOT_CURRENT: " << reason << '.';
+    });
   }
 
   bool apply_pending_if_ready(std::function<bool()> cancellation_predicate) {
@@ -3468,7 +3471,23 @@ namespace display_helper_integration {
   bool apply_remote_composed_topology(const DisplayTopologyDefinition &topology) {
     auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
     if (!borrowed_output_mutation) return false;
-    return apply_topology_definition(topology, "remote-monitor coordinator");
+    return composed_restore_guard.compose([&] {
+      return apply_topology_definition(topology, "remote-monitor coordinator");
+    });
+  }
+
+  std::optional<display_device::EnumeratedDeviceList> enumerate_active_devices() {
+    try {
+      display_device::DisplayRecoveryBehaviorGuard recovery(display_device::DisplayRecoveryBehavior::Skip);
+      display_device::WinDisplayDevice display(std::make_shared<display_device::WinApiLayer>());
+      return display.enumActiveDevices(display_device::DeviceEnumerationDetail::Minimal);
+    } catch (...) {
+      return std::nullopt;
+    }
+  }
+
+  std::vector<std::string> snapshot_excluded_devices() {
+    return effective_snapshot_exclude_devices();
   }
 
   std::string enumerate_devices_json(display_device::DeviceEnumerationDetail detail) {
