@@ -2775,7 +2775,7 @@ namespace video {
     state.pending_virtual_display_adapter_hint = adapter_luid;
     state.pending_virtual_display_adapter_hint_lease = lease;
     state.pending_virtual_display_adapter_hint_ready_for_verification = false;
-    BOOST_LOG(debug)
+    BOOST_LOG(verbose)
       << "Published pending virtual-display adapter identity "
       << luid_cache_identity(adapter_luid)
       << " for encoder capability matching (lease=" << lease << ").";
@@ -2806,8 +2806,8 @@ namespace video {
     state.pending_virtual_display_adapter_hint.reset();
     state.pending_virtual_display_adapter_hint_lease = 0;
     state.pending_virtual_display_adapter_hint_ready_for_verification = false;
-    BOOST_LOG(debug)
-      << "Cleared pending virtual-display adapter identity after display publication (lease="
+    BOOST_LOG(verbose)
+      << "Cleared pending virtual-display adapter identity (lease="
       << lease << ").";
     return true;
   }
@@ -2816,6 +2816,14 @@ namespace video {
   advertised_encoder_capabilities_t advertised_encoder_capabilities(
     const bool probe_before_negative,
     bool *probe_complete
+  ) {
+    return advertised_encoder_capabilities(probe_before_negative, probe_complete, nullptr);
+  }
+
+  advertised_encoder_capabilities_t advertised_encoder_capabilities(
+    const bool probe_before_negative,
+    bool *probe_complete,
+    std::string *adapter_identity
   ) {
     auto current_key = build_probe_cache_key();
     auto probe_status = encoder_probe_status_for_key(current_key);
@@ -2850,6 +2858,9 @@ namespace video {
     // when the current identity has not produced a successful probe.
     if (probe_complete) {
       *probe_complete = probe_status.successful;
+    }
+    if (adapter_identity) {
+      *adapter_identity = current_key.adapter_identity;
     }
     if (!probe_status.successful) {
       log_probe_cache_miss(current_key);

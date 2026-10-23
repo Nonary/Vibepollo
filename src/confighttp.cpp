@@ -635,7 +635,12 @@ namespace confighttp {
    * @param request The HTTP request object.
    */
   void print_req(const req_https_t &request) {
-    BOOST_LOG(debug) << "HTTP "sv << request->method << ' ' << request->path;
+    // Keep routine read polling available at Verbose. In particular, opening
+    // the logs page should not continually add Debug lines to the file it reads.
+    const bool polling = request->method == "GET" &&
+                         (request->path == "/api/logs" || request->path == "/api/configLocale");
+    auto &logger = polling ? verbose : debug;
+    BOOST_LOG(logger) << "HTTP "sv << request->method << ' ' << request->path;
 
     if (!request->header.empty()) {
       BOOST_LOG(verbose) << "Headers:"sv;

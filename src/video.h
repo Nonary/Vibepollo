@@ -480,6 +480,13 @@ namespace video {
     bool probe_before_negative = false,
     bool *probe_complete = nullptr
   );
+  // Diagnostic outputs describe the same adapter-keyed snapshot as the returned
+  // capabilities, including when a temporary adapter hint is in use.
+  advertised_encoder_capabilities_t advertised_encoder_capabilities(
+    bool probe_before_negative,
+    bool *probe_complete,
+    std::string *adapter_identity
+  );
 
 #ifdef _WIN32
   // Bridge the interval between selecting a virtual-display render adapter and

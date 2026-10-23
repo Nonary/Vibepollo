@@ -802,6 +802,40 @@ namespace nvhttp {
     bool probe_complete;
   };
 
+  namespace {
+    void log_http_encoder_capabilities(
+      const video::advertised_encoder_capabilities_t &caps,
+      bool probe_complete,
+      std::string_view adapter_identity,
+      std::string_view reason
+    ) {
+      if (!debug.open_record()) {
+        return;
+      }
+      const auto message = std::format(
+        "HTTP encoder capabilities: adapter='{}', probe_complete={}, hdr={}, hevc_mode={}, av1_mode={}, pyrowave_mode={}, yuv444=[{},{},{}], source={}.",
+        adapter_identity,
+        probe_complete,
+        caps.hevc_mode == 3 || caps.av1_mode == 3,
+        caps.hevc_mode,
+        caps.av1_mode,
+        caps.pyrowave_mode,
+        caps.yuv444_for_codec[0],
+        caps.yuv444_for_codec[1],
+        caps.yuv444_for_codec[2],
+        reason
+      );
+      // Discovery and web UI polling share this snapshot. Serialize comparison
+      // and emission so concurrent identical responses produce one Debug line.
+      static std::mutex mutex;
+      static std::string last_message;
+      std::lock_guard lock {mutex};
+      auto &logger = message == last_message ? verbose : debug;
+      BOOST_LOG(logger) << message;
+      last_message = message;
+    }
+  }  // namespace
+
 #ifdef _WIN32
   namespace {
     bool display_helper_session_available() {
@@ -860,19 +894,13 @@ namespace nvhttp {
         }
       });
 
-      const auto publish = [](
+      std::string adapter_identity;
+      const auto publish = [&adapter_identity](
                              video::advertised_encoder_capabilities_t caps,
                              const bool probe_complete,
                              const std::string_view reason
                            ) {
-        BOOST_LOG(debug)
-          << "HTTP encoder capabilities: probe_complete=" << probe_complete
-          << ", hdr="
-          << (caps.hevc_mode == 3 || caps.av1_mode == 3)
-          << ", hevc_mode=" << caps.hevc_mode
-          << ", av1_mode=" << caps.av1_mode
-          << ", pyrowave_mode=" << caps.pyrowave_mode
-          << ", source=" << reason << '.';
+        log_http_encoder_capabilities(caps, probe_complete, adapter_identity, reason);
         return http_encoder_capabilities_t {
           .advertised = std::move(caps),
           .probe_complete = probe_complete,
@@ -880,7 +908,7 @@ namespace nvhttp {
       };
 
       bool probe_complete = false;
-      auto caps = video::advertised_encoder_capabilities(false, &probe_complete);
+      auto caps = video::advertised_encoder_capabilities(false, &probe_complete, &adapter_identity);
       if (probe_complete) {
         return publish(std::move(caps), true, "matching-cache");
       }
@@ -893,16 +921,14 @@ namespace nvhttp {
         std::try_to_lock
       );
       if (!lifecycle_lock.owns_lock()) {
-        BOOST_LOG(debug) << "Skipping HTTP encoder capability probe while stream lifecycle work owns the gate.";
         return publish(std::move(caps), false, "lifecycle-gate");
       }
-      caps = video::advertised_encoder_capabilities(false, &probe_complete);
+      caps = video::advertised_encoder_capabilities(false, &probe_complete, &adapter_identity);
       if (probe_complete) {
         return publish(std::move(caps), true, "matching-cache-after-gate");
       }
 
       if (has_active_or_stopping_stream_session()) {
-        BOOST_LOG(debug) << "Skipping HTTP encoder capability probe while a streaming session is active or stopping.";
         return publish(std::move(caps), false, "active-or-stopping-session");
       }
 
@@ -917,7 +943,7 @@ namespace nvhttp {
         BOOST_LOG(info)
           << "HTTP capability discovery is probing synthetic surfaces before the temporary display is published.";
       }
-      caps = video::advertised_encoder_capabilities(true, &probe_complete);
+      caps = video::advertised_encoder_capabilities(true, &probe_complete, &adapter_identity);
       return publish(std::move(caps), probe_complete, "idle-probe");
     }
 
@@ -2129,16 +2155,10 @@ namespace nvhttp {
 #ifndef _WIN32
   namespace {
     http_encoder_capabilities_t advertised_encoder_capabilities_for_http() {
-      const auto publish = [](video::advertised_encoder_capabilities_t caps, const std::string_view reason) {
+      std::string adapter_identity;
+      const auto publish = [&adapter_identity](video::advertised_encoder_capabilities_t caps, const std::string_view reason) {
         const bool probe_complete = video::has_successful_encoder_probe();
-        BOOST_LOG(debug)
-          << "HTTP encoder capabilities: probe_complete=" << probe_complete
-          << ", hdr="
-          << (caps.hevc_mode == 3 || caps.av1_mode == 3)
-          << ", hevc_mode=" << caps.hevc_mode
-          << ", av1_mode=" << caps.av1_mode
-          << ", pyrowave_mode=" << caps.pyrowave_mode
-          << ", source=" << reason << '.';
+        log_http_encoder_capabilities(caps, probe_complete, adapter_identity, reason);
         return http_encoder_capabilities_t {
           .advertised = std::move(caps),
           .probe_complete = probe_complete,
@@ -2146,23 +2166,21 @@ namespace nvhttp {
       };
 
       if (video::has_successful_encoder_probe()) {
-        return publish(video::advertised_encoder_capabilities(false), "matching-cache");
+        return publish(video::advertised_encoder_capabilities(false, nullptr, &adapter_identity), "matching-cache");
       }
 
       std::unique_lock<std::mutex> lifecycle_lock(stream_lifecycle_mutex(), std::try_to_lock);
       if (!lifecycle_lock.owns_lock()) {
-        BOOST_LOG(debug) << "Skipping HTTP encoder capability probe while stream lifecycle work owns the gate.";
-        return publish(video::advertised_encoder_capabilities(false), "lifecycle-gate");
+        return publish(video::advertised_encoder_capabilities(false, nullptr, &adapter_identity), "lifecycle-gate");
       }
       if (video::has_successful_encoder_probe()) {
-        return publish(video::advertised_encoder_capabilities(false), "matching-cache-after-gate");
+        return publish(video::advertised_encoder_capabilities(false, nullptr, &adapter_identity), "matching-cache-after-gate");
       }
       if (has_stream_session_activity()) {
-        BOOST_LOG(debug) << "Skipping HTTP encoder capability probe while a streaming session is active or stopping.";
-        return publish(video::advertised_encoder_capabilities(false), "active-or-stopping-session");
+        return publish(video::advertised_encoder_capabilities(false, nullptr, &adapter_identity), "active-or-stopping-session");
       }
 
-      return publish(video::advertised_encoder_capabilities(true), "idle-probe");
+      return publish(video::advertised_encoder_capabilities(true, nullptr, &adapter_identity), "idle-probe");
     }
   }  // namespace
 #endif
