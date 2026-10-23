@@ -23,16 +23,19 @@ retain suspend-transition retry behavior and never admit an unverified replaceme
 See [Hyprland's systemd startup guide](https://wiki.hypr.land/Useful-Utilities/Systemd-start/).
 
 Install the native package manually following [the Linux installation guide](install.md#install-manually).
-The recommended installer script retains its Plasma requirements. After package
-configuration selects the intended desktop account, an administrator can add
-this setting to the existing root-owned mode 0600 `/etc/vibepollo/machine.conf`:
+A first install with the recommended installer script still requires Plasma.
+After package configuration selects the intended desktop account, an
+administrator can add this setting to the existing root-owned mode 0600
+`/etc/vibepollo/machine.conf`:
 
 ```ini
 desktop_backend=hyprland-kms
 ```
 
 Keep the existing `desktop_user` line. The package's configure/upgrade path
-preserves this selection; omitting the setting selects `kwin`. A policy or
+preserves this selection; omitting the setting selects `kwin`. With the setting
+present, later installer and local-deploy upgrades check for Hyprland and UWSM
+instead of Plasma and KWin. A policy or
 session change stops the host and its applications before binding a new
 generation, interrupting active streams. The Plasma Login greeter continues to
 use the KWin backend, independent of the desktop policy. SDDM greeter streaming
