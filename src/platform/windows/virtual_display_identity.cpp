@@ -1,38 +1,9 @@
 #include "src/platform/windows/virtual_display.h"
 #include "src/virtual_display_scale.h"
 
-#include <algorithm>
-#include <cctype>
 #include <cstring>
-#include <ranges>
 
 namespace {
-  bool equals_ascii_ci(const std::string_view lhs, const std::string_view rhs) {
-    return lhs.size() == rhs.size() &&
-           std::ranges::equal(lhs, rhs, [](const char left, const char right) {
-             return std::tolower(static_cast<unsigned char>(left)) ==
-                    std::tolower(static_cast<unsigned char>(right));
-           });
-  }
-
-  bool contains_ascii_ci(const std::string_view haystack, const std::string_view needle) {
-    if (needle.empty()) {
-      return true;
-    }
-    return std::ranges::search(
-             haystack,
-             needle,
-             [](const char left, const char right) {
-               return std::tolower(static_cast<unsigned char>(left)) ==
-                      std::tolower(static_cast<unsigned char>(right));
-             }
-           ).begin() != haystack.end();
-  }
-
-  bool starts_with_ascii_ci(const std::string_view value, const std::string_view prefix) {
-    return value.size() >= prefix.size() && equals_ascii_ci(value.substr(0, prefix.size()), prefix);
-  }
-
   bool starts_with_wide_ascii_ci(const std::wstring_view value, const std::wstring_view prefix) {
     if (value.size() < prefix.size()) {
       return false;
@@ -169,25 +140,4 @@ namespace VDISPLAY {
     return guid;
   }
 
-  bool is_sunshine_virtual_display_identity(
-    const std::string &device_path,
-    const std::string &friendly_name,
-    const std::string &edid_manufacturer_id,
-    const std::string &edid_product_code
-  ) {
-    if (contains_ascii_ci(device_path, "SunshineVirtualDisplay") ||
-        contains_ascii_ci(device_path, "Sunshine Virtual Display")) {
-      return true;
-    }
-    if (equals_ascii_ci(friendly_name, "Sunshine Virtual Display Driver")) {
-      return true;
-    }
-    if (!equals_ascii_ci(edid_manufacturer_id, "SDD")) {
-      return false;
-    }
-    return starts_with_ascii_ci(edid_product_code, "4") ||
-           starts_with_ascii_ci(edid_product_code, "0x4") ||
-           starts_with_ascii_ci(edid_product_code, "5") ||
-           starts_with_ascii_ci(edid_product_code, "0x5");
-  }
 }  // namespace VDISPLAY
